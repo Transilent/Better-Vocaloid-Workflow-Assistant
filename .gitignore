@@ -33,3 +33,7 @@ dependencies/vocal2midi/experiments/
 *.mp3
 .env
 *.bvwa-partial
+# Bootstrap adds fixed runtime files; existing vendored source stays tracked.
+/dependencies/vocal2midi/
+/vendor/
+/models/
