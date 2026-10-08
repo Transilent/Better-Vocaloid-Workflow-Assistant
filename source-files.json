@@ -124,6 +124,7 @@
     "tests/test_bilibili_dual_cover.py",
     "tests/test_core.py",
     "tests/test_gui.py",
+    "tests/test_local_music.py",
     "tests/test_publish_adapters.py",
     "tests/test_publish_browser.py",
     "tools/build_portable.py",

@@ -121,7 +121,7 @@ def prepare(job, video, content, cover_seconds=20, cover_file=None, parent=None,
         validate_content(fields, platform)
     info = inspect_video(video)
     stamp = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime("%Y%m%d-%H%M%S-%f")
-    bundle = Path(parent or ROOT / "publish-packages") / f"{request['bv']}_{stamp}"
+    bundle = Path(parent or ROOT / "publish-packages") / f"{request.get('bv') or 'Local'}_{stamp}"
     bundle.mkdir(parents=True)
     try:
         if cover_file or cover_mode == "original":
@@ -168,7 +168,7 @@ def prepare(job, video, content, cover_seconds=20, cover_file=None, parent=None,
             (bundle / (platform + "_标题.txt")).write_text(fields["title"], encoding="utf-8")
             (bundle / (platform + "_简介.txt")).write_text(fields["description"], encoding="utf-8")
         (bundle / "发布前核对.txt").write_text(
-            f"成品：{info['path']}\n本家：{request['bv']}\n时长：{info['duration']:.2f} 秒\n"
+            f"成品：{info['path']}\n本家：{request.get('bv') or '待填写（本地音乐）'}\n时长：{info['duration']:.2f} 秒\n"
             f"封面来源：{ {'original':'本家原始封面','frame':'视频画面截图','custom':'手选图片'}[cover['kind']] }。\n"
             "B站封面按4:3、16:9分别适配，比例不同时补黑边，保留完整原图。\n"
             "标题与简介使用你在助手中填写的版本。\n"

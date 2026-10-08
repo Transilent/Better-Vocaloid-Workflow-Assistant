@@ -70,16 +70,39 @@ class Window(QWidget):
         layout = QVBoxLayout(processing)
         layout.setContentsMargins(28, 24, 28, 24)
         layout.setSpacing(13)
-        title = QLabel("从 BV 号到可调音的 MIDI")
+        title = QLabel("从 BV 号或本地音乐到可调音的 MIDI")
         title.setStyleSheet("font-size: 26px; font-weight: 600;")
         layout.addWidget(title)
-        subtitle = QLabel("下载原视频  →  分离主唱、和声与伴奏  →  生成双轨 MIDI")
+        subtitle = QLabel("下载原视频 / 导入音乐  →  分离主唱、和声与伴奏  →  生成双轨 MIDI")
         subtitle.setStyleSheet("color: #607184; background: transparent;")
         layout.addWidget(subtitle)
-        layout.addWidget(QLabel("BV 号 / B站视频链接"))
+        input_row = QHBoxLayout()
+        input_row.addWidget(QLabel("音乐来源"))
+        self.input_mode = QComboBox()
+        self.input_mode.addItem("B站 BV 号 / 链接", "bilibili")
+        self.input_mode.addItem("导入本地音乐", "local")
+        input_row.addWidget(self.input_mode, 1)
+        layout.addLayout(input_row)
+        self.bv_panel = QWidget()
+        bv_layout = QVBoxLayout(self.bv_panel)
+        bv_layout.setContentsMargins(0, 0, 0, 0)
+        bv_layout.addWidget(QLabel("BV 号 / B站视频链接"))
         self.source = QLineEdit(load_config().get("default_source", ""))
         self.source.setPlaceholderText("BV1… 或 https://www.bilibili.com/video/BV1…/")
-        layout.addWidget(self.source)
+        bv_layout.addWidget(self.source)
+        layout.addWidget(self.bv_panel)
+        self.music_panel = QWidget()
+        music_layout = QHBoxLayout(self.music_panel)
+        music_layout.setContentsMargins(0, 0, 0, 0)
+        self.local_music = QLineEdit()
+        self.local_music.setPlaceholderText("选择或粘贴本地音乐路径，直接分离并转 MIDI")
+        music_layout.addWidget(self.local_music, 1)
+        self.choose_music_btn = QPushButton("选择音乐…")
+        self.choose_music_btn.clicked.connect(self.choose_music)
+        music_layout.addWidget(self.choose_music_btn)
+        layout.addWidget(self.music_panel)
+        self.input_mode.currentIndexChanged.connect(self.update_source_panel)
+        self.update_source_panel()
         row = QHBoxLayout()
         row.addWidget(QLabel("歌词语言"))
         self.language = QComboBox()
@@ -178,7 +201,9 @@ class Window(QWidget):
     def start_new(self):
         try:
             from pipeline import create_job
-            self.job = create_job(self.source.text(), **self.options())
+            self.job = create_job(self.source.text() if self.input_mode.currentData() == "bilibili" else "",
+                                  local_music=self.local_music.text() if self.input_mode.currentData() == "local" else None,
+                                  **self.options())
             self.launch()
         except Exception as exc:
             QMessageBox.warning(self, "输入或配置错误", str(exc))
@@ -187,6 +212,17 @@ class Window(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, "选择音频图层", str(ROOT), "WAV 音频 (*.wav)")
         if path:
             self.stem_fields[key].setText(path)
+
+    def choose_music(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择本地音乐", str(ROOT),
+                    "音频文件 (*.wav *.mp3 *.flac *.m4a *.aac *.ogg *.opus *.wma *.aif *.aiff *.ape *.wv);;所有文件 (*)")
+        if path:
+            self.local_music.setText(path)
+
+    def update_source_panel(self):
+        local = self.input_mode.currentData() == "local"
+        self.bv_panel.setVisible(not local)
+        self.music_panel.setVisible(local)
 
     def update_import_panel(self):
         self.import_panel.setVisible(self.voice_mode.currentData() == "import")
@@ -219,7 +255,12 @@ class Window(QWidget):
     def launch(self):
         self.log.clear()
         request = json.loads((self.job / "request.json").read_text(encoding="utf-8"))
-        self.source.setText(request["bv"])
+        local = request.get("source_kind") == "local"
+        self.input_mode.setCurrentIndex(self.input_mode.findData("local" if local else "bilibili"))
+        if local:
+            self.local_music.setText(str(app_path(request["source_audio"])))
+        else:
+            self.source.setText(request["bv"])
         self.voice_mode.setCurrentIndex(max(0, self.voice_mode.findData(request.get("voice_mode", "single"))))
         self.language.setCurrentIndex(max(0, self.language.findData(request["language"])))
         self.recognize.setChecked(request.get("recognize_lyrics", True))
@@ -261,7 +302,7 @@ class Window(QWidget):
         self.log.ensureCursorVisible()
 
     def set_running(self, active):
-        for control in (self.start, self.resume, self.reprocess, self.source, self.language,
+        for control in (self.start, self.resume, self.reprocess, self.source, self.input_mode, self.music_panel, self.language,
                         self.recognize, self.voice_mode, self.precision, self.import_panel):
             control.setEnabled(not active)
         self.lyrics.setEnabled(not active and self.recognize.isChecked())

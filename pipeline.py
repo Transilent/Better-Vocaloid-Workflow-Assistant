@@ -36,9 +36,15 @@ def singer_candidate(description, title=""):
             (f"（和声：{harmony.group(1).strip()}）" if harmony else ""))
 
 
-def create_job(source, lyrics="", language="zh", recognize_lyrics=True, parent=None,
-               voice_mode="dual", imported_stems=None, midi_steps=16, backing_lyrics="", remember=True):
-    bv = extract_bv(source)
+def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, parent=None,
+               voice_mode="dual", imported_stems=None, midi_steps=16, backing_lyrics="", remember=True,
+               local_music=None):
+    if local_music is not None and not str(local_music).strip().strip('"'):
+        raise ValueError("请选择本地音乐文件。")
+    local = app_path(local_music) if local_music is not None else None
+    if local is not None and (not local.is_file() or local.stat().st_size == 0):
+        raise ValueError("请选择存在且非空的本地音乐文件。")
+    bv = None if local is not None else extract_bv(source)
     if voice_mode not in ("single", "dual", "import"):
         raise ValueError("未知的分轨模式。")
     if language not in ("zh", "ja"):
@@ -52,10 +58,13 @@ def create_job(source, lyrics="", language="zh", recognize_lyrics=True, parent=N
                 raise ValueError("请分别选择主唱、和声、伴奏的完整 WAV 文件。")
         imported_stems = {key: saved_path(imported_stems[key]) for key in ("lead", "backing", "instrumental")}
     timestamp = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime("%Y%m%d-%H%M%S-%f")
-    job = Path(parent or ROOT / "jobs") / f"{bv}_{timestamp}"
+    job = Path(parent or ROOT / "jobs") / f"{bv or 'Local'}_{timestamp}"
     job.mkdir(parents=True)
     atomic_json(job / "request.json", {
-        "version": 2, "bv": bv, "url": f"https://www.bilibili.com/video/{bv}/",
+        "version": 2, "bv": bv, "url": f"https://www.bilibili.com/video/{bv}/" if bv else None,
+        "source_kind": "local" if local is not None else "bilibili",
+        **({"source_audio": saved_path(local), "source_title": local.stem,
+            "input_file": "input/source" + local.suffix.lower()} if local is not None else {}),
         "language": language, "lyrics": clean_lyrics(lyrics),
         "recognize_lyrics": bool(recognize_lyrics), "tools": load_config(resolve_paths=False),
         "voice_mode": voice_mode, "imported_stems": imported_stems or {},
@@ -72,14 +81,20 @@ def reuse_download(previous, **options):
     previous = app_path(previous)
     old = json.loads((previous / "request.json").read_text(encoding="utf-8"))
     prior_status = json.loads((previous / "status.json").read_text(encoding="utf-8"))
-    job = create_job(old["bv"], remember=False, **options)
+    if old.get("source_kind") == "local":
+        options["local_music"] = previous / old["input_file"]
+    job = create_job(old.get("bv") or "", remember=False, **options)
+    if old.get("source_kind") == "local":
+        new_request = json.loads((job / "request.json").read_text(encoding="utf-8"))
+        new_request["source_title"] = old["source_title"]
+        atomic_json(job / "request.json", new_request)
     copied = {"steps": {}}
     for stage in ("metadata", "download", "audio"):
         if prior_status["steps"].get(stage, {}).get("state") != "done":
             break
-        if not all((previous / path).is_file() for path in REQUIRED[stage]):
+        if not all((previous / path).is_file() for path in requirements(stage, old)):
             break
-        files = list(REQUIRED[stage])
+        files = list(requirements(stage, old))
         if stage == "metadata":
             files += [p.name for p in previous.glob("*.txt") if p.name != "last_job.txt"]
         for name in dict.fromkeys(files):
@@ -184,6 +199,17 @@ def check_audio(path, stereo=True):
 
 
 def prepare_metadata(job, request):
+    if request.get("source_kind") == "local":
+        title = request["source_title"]
+        atomic_json(job / "source-info.json", {"kind": "local", "bvid": None,
+                    "title": title, "desc": "", "owner": {"name": ""}})
+        atomic_json(job / "upstream-info.json", [])
+        (job / "发布简介草稿.txt").write_text(
+            f"本家：待填写（本地音乐导入）\n歌曲：{title}\n原作者 / 歌姬：待填写\nSTAFF：待填写", encoding="utf-8")
+        (job / "参考歌词.txt").write_text(request["lyrics"], encoding="utf-8")
+        (job / "歌词候选_需核对.txt").write_text("", encoding="utf-8")
+        print(f"已准备本地音乐：{title}；本家与 STAFF 可在发布页手填。", flush=True)
+        return
     data = get_view(request["bv"])
     atomic_json(job / "source-info.json", data)
     (job / "原视频简介.txt").write_text(data.get("desc", ""), encoding="utf-8")
@@ -221,6 +247,33 @@ def prepare_metadata(job, request):
 
 
 def download(job, request):
+    if request.get("source_kind") == "local":
+        import hashlib
+        source = app_path(request["source_audio"])
+        if not source.is_file():
+            raise FileNotFoundError("本地音乐文件已移动，请重新选择文件。")
+        target = job / request["input_file"]
+        target.parent.mkdir(exist_ok=True)
+        temporary = target.with_name(target.name + ".part")
+        before = source.stat()
+        digest = hashlib.sha256()
+        try:
+            with source.open("rb") as reader, temporary.open("wb") as writer:
+                for block in iter(lambda: reader.read(4 * 1024**2), b""):
+                    cancelled(job)
+                    digest.update(block)
+                    writer.write(block)
+            after = source.stat()
+            if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns) or temporary.stat().st_size != before.st_size:
+                raise ValueError("音乐文件在导入时发生变化，请重新导入。")
+            temporary.replace(target)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+        atomic_json(job / "import-report.json", {"kind": "local", "file": request["input_file"],
+                    "bytes": before.st_size, "sha256": digest.hexdigest()})
+        print("已保存本地音乐副本；原文件保持不变。", flush=True)
+        return
     import yt_dlp
     last = [0.0]
 
@@ -260,7 +313,8 @@ def download(job, request):
 def audio_and_cover(job, request):
     (job / "audio").mkdir(exist_ok=True)
     ffmpeg = resolve_tools(request["tools"])["ffmpeg"]
-    source = str(job / "video/source.mp4")
+    local = request.get("source_kind") == "local"
+    source = str(job / (request["input_file"] if local else "video/source.mp4"))
     # Earlier development jobs shared source WAVs via hard links. Detach
     # this job's old output before ffmpeg opens it for rewriting.
     (job / "audio/source.wav").unlink(missing_ok=True)
@@ -268,6 +322,11 @@ def audio_and_cover(job, request):
                  "-map", "0:a:0", "-vn", "-ar", "44100", "-ac", "2", "-c:a", "pcm_f32le",
                  str(job / "audio/source.wav")], job, "extract_audio")
     info = check_audio(job / "audio/source.wav")
+    if local:
+        atomic_json(job / "audio-info.json", {"sample_rate": info.samplerate, "samples": info.frames,
+                    "duration": info.duration, "source_kind": "local", "cover_kind": None})
+        print(f"已解码完整本地音乐：{info.duration:.3f} 秒，44100Hz 双声道浮点 WAV。", flush=True)
+        return
     from cover_art import job_cover
     image, art = job_cover(job)
     if image.read_bytes().startswith(b"\xff\xd8\xff"):
@@ -301,7 +360,7 @@ def separate(job, request):
             if audio.shape[1] != 2 or not np.isfinite(audio).all():
                 raise ValueError(f"导入音频格式无效：{path}")
             if abs(len(audio) - original.frames) > 88:
-                raise ValueError(f"{name} 与原视频长度不一致。请从 0 秒导出完整图层，保留开头静音。")
+                raise ValueError(f"{name} 与输入音乐长度不一致。请从 0 秒导出完整图层，保留开头静音。")
             audio = np.pad(audio[:original.frames], ((0, max(0, original.frames - len(audio))), (0, 0)))
             sf.write(str(job / "audio" / (name + ".wav")), audio, 44100, subtype="FLOAT")
             stems[name] = audio
@@ -370,6 +429,11 @@ REQUIRED = {"metadata": ["source-info.json", "upstream-info.json", "发布简介
 
 
 def requirements(key, request):
+    if request.get("source_kind") == "local":
+        if key == "download":
+            return [request["input_file"], "import-report.json"]
+        if key == "audio":
+            return ["audio/source.wav", "audio-info.json"]
     if request.get("voice_mode", "single") != "single":
         if key == "separation":
             return REQUIRED[key] + ["audio/lead.wav", "audio/backing.wav"]
@@ -427,9 +491,18 @@ def _run(job, until):
                 if not config.get(key) or not (ROOT / config[key]).is_file():
                     raise FileNotFoundError(f"主唱/和声分离模型路径不存在：{config.get(key, key)}")
         for key, title, function in STEPS:
+            if request.get("source_kind") == "local":
+                title = {"metadata": "准备本地音乐资料", "download": "导入本地音乐",
+                         "audio": "解码本地音乐"}.get(key, title)
             cancelled(job)
             completed = status["steps"].get(key, {}).get("state") == "done"
             intact = all((job / x).is_file() and (job / x).stat().st_size > 0 for x in requirements(key, request))
+            if key == "download" and intact and request.get("source_kind") == "local":
+                try:
+                    saved = json.loads((job / "import-report.json").read_text(encoding="utf-8"))
+                    intact = saved["sha256"] == file_hash(job / request["input_file"])
+                except (OSError, KeyError, ValueError):
+                    intact = False
             if key == "midi" and intact and request.get("version", 1) >= 2:
                 voices = ("vocals",) if request.get("voice_mode") == "single" else ("lead", "backing")
                 intact = all(completed_voice(job, request, voice) for voice in voices)
@@ -472,9 +545,11 @@ def _run(job, until):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="BV → 下载 → 分离 → Vocal2Midi")
-    parser.add_argument("--source")
-    parser.add_argument("--job", help="继续已有任务")
+    parser = argparse.ArgumentParser(description="BV / 本地音乐 → 分离 → Vocal2Midi")
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--source", help="BV 号或 B站链接")
+    inputs.add_argument("--audio-file", help="直接导入本地音乐")
+    inputs.add_argument("--job", help="继续已有任务")
     parser.add_argument("--language", choices=("zh", "ja"), default="zh")
     parser.add_argument("--lyrics-file")
     parser.add_argument("--notes-only", action="store_true")
@@ -488,13 +563,12 @@ def main():
     try:
         if args.job:
             job = Path(args.job)
-        elif args.source:
-            lyrics = Path(args.lyrics_file).read_text(encoding="utf-8-sig") if args.lyrics_file else ""
-            job = create_job(args.source, lyrics, args.language, not args.notes_only,
-                             voice_mode=args.voice_mode, midi_steps=args.midi_steps,
-                             imported_stems={"lead": args.lead_wav, "backing": args.backing_wav, "instrumental": args.instrumental_wav})
         else:
-            parser.error("需要 --source BV号/链接 或 --job 任务目录。")
+            lyrics = Path(args.lyrics_file).read_text(encoding="utf-8-sig") if args.lyrics_file else ""
+            job = create_job(args.source or "", lyrics, args.language, not args.notes_only,
+                             voice_mode=args.voice_mode, midi_steps=args.midi_steps,
+                             local_music=args.audio_file,
+                             imported_stems={"lead": args.lead_wav, "backing": args.backing_wav, "instrumental": args.instrumental_wav})
         print(f"任务目录：{job}", flush=True)
         run(job, args.until)
     except (ValueError, FileNotFoundError) as exc:

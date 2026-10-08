@@ -1,5 +1,6 @@
 """Build a ZIP64 release using explicit source and dependency inventories."""
 import argparse
+import copy
 import hashlib
 import json
 import time
@@ -103,14 +104,83 @@ def split(archive, size_mib):
             number += 1
     return parts
 
+
+def update_from_zip(output, base, compression=1):
+    """Reuse verified compressed runtime members when only source changes.
+
+    Copy complete local records and let ZipFile rebuild the central directory,
+    including new ZIP64 offsets. The source ZIP must match its SHA256 sidecar.
+    """
+    expected_base = base.with_suffix(base.suffix + '.sha256').read_text(encoding='ascii').split()[0]
+    if digest(base) != expected_base:
+        raise ValueError('Base ZIP checksum mismatch')
+    source_names = set(json.loads((ROOT / 'source-files.json').read_text(encoding='utf-8'))['files'])
+    dependency = json.loads((ROOT / 'dependencies/manifest.json').read_text(encoding='utf-8'))
+    dependencies = {e['file']: e for e in dependency['entries']}
+    names = sorted(source_names | set(dependencies))
+    if output.exists():
+        raise FileExistsError(output)
+    started = time.monotonic()
+    inventory = []
+    reused = changed = 0
+    with zipfile.ZipFile(base) as original, zipfile.ZipFile(output, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=compression, allowZip64=True) as destination:
+        old_entries = {e['file']: e for e in json.loads(original.read('BVWA/release-inventory.json'))['entries']}
+        records = original.infolist()
+        ends = {info.filename: records[i+1].header_offset if i+1 < len(records) else original.start_dir for i, info in enumerate(records)}
+        for name in names:
+            old = old_entries.get(name)
+            if name in source_names:
+                path = checked_path(ROOT, name)
+                new = {'file': name, 'bytes': path.stat().st_size, 'sha256': digest(path)}
+            else:
+                new = dict(dependencies[name])
+            if name in dependencies and (new['bytes'], new['sha256']) != (dependencies[name]['bytes'], dependencies[name]['sha256']):
+                raise ValueError('Frozen dependency source changed: ' + name)
+            if old == new:
+                source_info = original.getinfo('BVWA/' + name)
+                info = copy.copy(source_info)
+                destination.fp.seek(destination.start_dir)
+                info.header_offset = destination.fp.tell()
+                destination._writecheck(info)
+                destination._didModify = True
+                original.fp.seek(source_info.header_offset)
+                remaining = ends[source_info.filename] - source_info.header_offset
+                while remaining:
+                    chunk = original.fp.read(min(BLOCK, remaining))
+                    if not chunk:
+                        raise ValueError('Incomplete ZIP local record')
+                    destination.fp.write(chunk)
+                    remaining -= len(chunk)
+                destination.filelist.append(info)
+                destination.NameToInfo[info.filename] = info
+                destination.start_dir = destination.fp.tell()
+                reused += 1
+            else:
+                if name not in source_names:
+                    raise ValueError('New binary dependency requires a complete build: ' + name)
+                destination.write(path, arcname='BVWA/' + name)
+                changed += 1
+            inventory.append(new)
+        destination.writestr('BVWA/release-inventory.json', json.dumps({'format': 1, 'entries': inventory}, ensure_ascii=False, indent=2).encode('utf-8'))
+    sha = digest(output)
+    output.with_suffix(output.suffix + '.sha256').write_text(sha + '  ' + output.name + '\n', encoding='ascii')
+    report = {'archive': {'name': output.name, 'bytes': output.stat().st_size, 'sha256': sha},
+              'files': len(inventory)+1, 'uncompressed_bytes': sum(e['bytes'] for e in inventory),
+              'reused_compressed_files': reused, 'updated_source_files': changed,
+              'seconds': round(time.monotonic()-started, 2)}
+    output.with_suffix('.build.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+    print(json.dumps(report), flush=True)
+    return report
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--runtime-dir', type=Path, default=ROOT)
+    parser.add_argument('--base-zip', type=Path, help='Reuse unchanged members from a checksum-verified previous ZIP')
     parser.add_argument('--compression', type=int, choices=range(10), default=1)
     parser.add_argument('--split-mib', type=int, default=0)
     args = parser.parse_args()
-    report = build(args.output, args.runtime_dir.resolve(), args.compression)
+    report = update_from_zip(args.output.resolve(), args.base_zip.resolve(), args.compression) if args.base_zip else build(args.output, args.runtime_dir.resolve(), args.compression)
     if args.split_mib:
         if not 1 <= args.split_mib < 2048:
             raise ValueError('Release parts must be between 1 and 2047 MiB')

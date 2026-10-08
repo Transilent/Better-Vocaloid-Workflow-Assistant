@@ -129,6 +129,7 @@ class PublishingTab(QWidget):
         self.cover_mode = QComboBox()
         self.cover_mode.addItem("本家原始封面（默认）", "original")
         self.cover_mode.addItem("视频画面截图（可选）", "frame")
+        self.cover_mode.addItem("手选封面图片", "custom")
         cover_row.addWidget(self.cover_mode)
         cover_row.addWidget(QLabel("截图秒数"))
         self.cover_seconds = QDoubleSpinBox()
@@ -226,9 +227,10 @@ class PublishingTab(QWidget):
         draft = source_draft(path)
         data = json.loads((path / "source-info.json").read_text(encoding="utf-8"))
         self.job.setText(str(path))
-        self.bv.setText(data["bvid"])
+        self.bv.setText(data.get("bvid") or "")
         self.song.setText(song_from_title(data["title"]))
-        self.source_info.setText(f"本家：{data['bvid']} / @{data['owner']['name']} / {data['title']}（约 {data.get('duration', '?')} 秒）")
+        self.source_info.setText(f"本地音乐：{data['title']} · 本家、歌姬和 STAFF 请手填" if data.get("kind") == "local" else
+                                f"本家：{data['bvid']} / @{data['owner']['name']} / {data['title']}（约 {data.get('duration', '?')} 秒）")
         self.voice.clear()
         self.credit.clear()
         for fields in self.fields.values():
@@ -238,8 +240,10 @@ class PublishingTab(QWidget):
         self.bundle_inputs = None
         self.cover_file.clear()
         self.cover_mode.setCurrentIndex(0)
+        if data.get("kind") == "local":
+            self.cover_mode.setCurrentIndex(max(0, self.cover_mode.findData("custom")))
         self.cover_preview.clear()
-        self.cover_preview.setText("点击获取本家原始封面")
+        self.cover_preview.setText("请选择本地封面图片；本家资料可通过 BV 另行读取。" if data.get("kind") == "local" else "点击获取本家原始封面")
         try:
             cover_data = json.loads((path / "original-cover.json").read_text(encoding="utf-8"))
             self.show_cover(path / Path(cover_data["file"]).name)
@@ -341,6 +345,11 @@ class PublishingTab(QWidget):
         mode = self.cover_mode.currentData()
         destination = ROOT / "cache/publish-preview.jpg"
         def render():
+            if mode == "custom":
+                image = clean_path(self.cover_file.text()) if self.cover_file.text().strip() else None
+                if image is None or not image.is_file():
+                    raise ValueError("请先选择封面图片。")
+                return image
             if mode == "original":
                 from cover_art import job_cover
                 return job_cover(job)[0]
@@ -348,7 +357,8 @@ class PublishingTab(QWidget):
             return destination
         def ready(path):
             self.show_cover(path)
-            self.status.setText("已获取本家在 B站展示的原始封面。" if mode == "original" else f"视频画面截图：原视频 {seconds:.2f} 秒。")
+            self.status.setText("已预览手选封面图片。" if mode == "custom" else
+                               "已获取本家在 B站展示的原始封面。" if mode == "original" else f"视频画面截图：原视频 {seconds:.2f} 秒。")
         self.start_task(render, ready)
 
     def show_cover(self, path):
