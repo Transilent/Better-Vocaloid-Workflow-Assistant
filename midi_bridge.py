@@ -1,4 +1,4 @@
-"""Call the user's Vocal2Midi application layer without modifying its files."""
+"""Call the bundled Vocal2Midi application layer without modifying its files."""
 import json
 import os
 import sys

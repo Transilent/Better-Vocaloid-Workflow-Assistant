@@ -118,7 +118,7 @@ class Window(QWidget):
         mode_row.addWidget(QLabel("分离方式"))
         self.voice_mode = QComboBox()
         self.voice_mode.addItem("模型全自动：人声 → 主唱 / 和声", "dual")
-        self.voice_mode.addItem("软件分离：导入 SpectraLayers 主唱、和声、伴奏", "import")
+        self.voice_mode.addItem("外部分轨：导入主唱、和声、伴奏", "import")
         self.voice_mode.addItem("原版：合并人声单轨", "single")
         mode_row.addWidget(self.voice_mode, 1)
         self.precision = QCheckBox("精细提取（较慢）")
@@ -129,7 +129,7 @@ class Window(QWidget):
         self.import_panel = QWidget()
         import_layout = QVBoxLayout(self.import_panel)
         import_layout.setContentsMargins(0, 0, 0, 0)
-        import_layout.addWidget(QLabel("在 SpectraLayers 用高质量“音频分离歌曲”后，对人声使用“音频分离合唱”。\n从项目开始导出完整图层，保留开头静音，再选择下面三个文件。"))
+        import_layout.addWidget(QLabel("从分离软件导出主唱、和声和伴奏。\n从项目开始导出完整长度，保留开头静音，再选择下面三个文件。"))
         for key, label in (("lead", "主唱"), ("backing", "和声"), ("instrumental", "伴奏")):
             row = QHBoxLayout()
             row.addWidget(QLabel(label))

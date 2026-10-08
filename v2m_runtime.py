@@ -24,7 +24,7 @@ def configure(root):
     # Libraries may have queried tempfile before the runtime was configured.
     tempfile.tempdir = str(temp)
     # llama.cpp switches its working directory to its bin folder. Use a
-    # local copy of the existing DLLs instead of requiring an E: directory
+    # Use bundled DLLs so inference paths remain portable.
     # as the working directory in a restricted executor.
     source = root / "inference/qwen3asr_dml/bin"
     local = ROOT / "cache/qwen-runtime"

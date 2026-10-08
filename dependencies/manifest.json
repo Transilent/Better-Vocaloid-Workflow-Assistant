@@ -4,7 +4,7 @@
   "platform": "Windows x86_64",
   "legacy_tool_paths": {},
   "files": 13132,
-  "bytes": 7989609402,
+  "bytes": 7989609737,
   "entries": [
     {
       "file": "dependencies/vocal2midi/python/get-pip.py",
@@ -58813,8 +58813,8 @@
     },
     {
       "file": "models/来源说明.md",
-      "bytes": 893,
-      "sha256": "8962736c6d405d74dec8f5927c328d58b4872ef6094b717259eb39dbd1e08900"
+      "bytes": 1228,
+      "sha256": "165a2fd8a40cef2dcdf44d4b9d2fca87c405de4b0264691604670b72cd45db44"
     },
     {
       "file": "vendor/typing_extensions.py",
