@@ -1,0 +1,28 @@
+{
+  "bilibili": {
+    "url": "https://member.bilibili.com/platform/upload/video/frame",
+    "title": ["input[placeholder*='标题']", ".video-title input", ".archive-title input"],
+    "description": [".desc-text-wrp .ql-editor[contenteditable='true']", "textarea[placeholder*='简介']", "[contenteditable='true'][data-placeholder*='简介']", ".desc-container [contenteditable='true']", ".archive-desc [contenteditable='true']"],
+    "video_input": [".upload-wrp input[type='file']", "input[type='file'][accept*='video']", "input[type='file'][accept*='.mp4']", "input[type='file'][accept*='.MP4']"],
+    "cover_input": ["input[type='file'][accept*='image']", "input[type='file'][accept*='.jpg']", "input[type='file'][accept*='.png']"],
+    "cover_preview": [".cover-main .cover-img", ".cover-main img", ".cover-container img", ".cover-preview img", ".cover-wrapper img", ".cover-img img"],
+    "upload_done": [".upload-queue", ".upload-status", ".upload-state", ".upload-item", ".video-upload-status"],
+    "cover_open": ["添加封面", "更改封面", "编辑封面", "设置封面", "上传封面"],
+    "cover_open_selector": [".cover-main .cover-slot", ".cover-main .cover-img"],
+    "cover_tabs": ["上传封面", "上传图片", "自选封面"]
+  },
+  "xiaohongshu": {
+    "url": "https://creator.xiaohongshu.com/publish/publish?source=official",
+    "title": ["input[placeholder*='填写标题']", "input[placeholder*='标题']"],
+    "description": [".tiptap[contenteditable='true']", ".ProseMirror[contenteditable='true']", "[contenteditable='true'][data-placeholder*='正文']", "textarea[placeholder*='正文']"],
+    "video_input": ["input[type='file'][accept*='video']", "input[type='file'][accept*='.mp4']", "input[type='file'][accept*='.MP4']"],
+    "cover_input": ["input[type='file'][aria-label='上传封面图片']", ".pk-cover-list-file-input", "input[type='file'][accept*='image']", "input[type='file'][accept*='.jpg']"],
+    "cover_preview": [".cover-plugin-preview .cover > .default", ".cover-preview img", ".cover-wrapper img", ".cover-edit-entry img"],
+    "upload_done": [".upload-status", ".video-upload-status", ".video-info", ".video-card", ".upload-progress"],
+    "upload_ready": [".cover-container > .preview-new"],
+    "cover_open": ["设置封面", "编辑封面", "修改封面"],
+    "cover_hover": [".cover-plugin-preview .cover > .default"],
+    "cover_open_selector": [".cover-plugin-preview .cover-edit-entry"],
+    "cover_tabs": ["上传封面", "上传图片", "本地上传"]
+  }
+}

@@ -1,0 +1,213 @@
+import pathlib
+import warnings
+
+
+class BaseG2P:
+    def __init__(self, language):
+        self.language = language
+
+    def _g2p(self, input_text):
+        # input text, return phoneme sequence, word sequence, and phoneme index to word index mapping
+        # ph_seq: list of phonemes, SP is the silence phoneme.
+        # word_seq: list of words.
+        # ph_idx_to_word_idx: ph_idx_to_word_idx[i] = j means the i-th phoneme belongs to the j-th word.
+        # if ph_idx_to_word_idx[i] = -1, the i-th phoneme is a silence phoneme.
+        # example: ph_seq = ['SP', 'ay', 'SP', 'ae', 'm', 'SP', 'ah', 'SP', 's', 't', 'uw', 'd', 'ah', 'n', 't', 'SP']
+        #          word_seq = ['I', 'am', 'a', 'student']
+        #          ph_idx_to_word_idx = [-1, 0, -1, 1, 1, -1, 2, -1, 3, 3, 3, 3, 3, 3, 3, -1]
+        raise NotImplementedError
+
+    def __call__(self, text):
+        ph_seq, word_seq, ph_idx_to_word_idx = self._g2p(text)
+
+        # The first and last phonemes should be `SP`,
+        # and there should not be more than two consecutive `SP`s at any position.
+        assert ph_seq[0] == "SP" and ph_seq[-1] == "SP"
+        assert all(
+            ph_seq[i] != "SP" or ph_seq[i + 1] != "SP" for i in range(len(ph_seq) - 1)
+        )
+        ph_seq = [f"{self.language}/{ph}" if self.language is not None and ph != "SP" else ph for ph in ph_seq]
+        return ph_seq, word_seq, ph_idx_to_word_idx
+
+
+class PhonemeG2P(BaseG2P):
+    def __init__(self, language):
+        super().__init__(language)
+
+    def _g2p(self, input_text):
+        _word_seq = input_text.strip().split(" ")
+        _word_seq = [ph for ph in _word_seq if ph != "SP"]
+        _ph_seq = ["SP"]
+        _ph_idx_to_word_idx = [-1]
+        for word_idx, word in enumerate(_word_seq):
+            _ph_seq.append(word)
+            _ph_idx_to_word_idx.append(word_idx)
+            _ph_seq.append("SP")
+            _ph_idx_to_word_idx.append(-1)
+        return _ph_seq, _word_seq, _ph_idx_to_word_idx
+
+
+class JapanesePhonemeMoraG2P(BaseG2P):
+    """Parse raw Japanese phoneme tokens into mora words while keeping phoneme-level FA."""
+
+    _VOWEL_MAP = {"a": "a", "i": "i", "u": "u", "e": "e", "o": "o", "I": "i", "U": "u"}
+    _JOIN_MAP = {
+        ("sh", "a"): "sha", ("sh", "i"): "shi", ("sh", "u"): "shu", ("sh", "e"): "she", ("sh", "o"): "sho",
+        ("ch", "a"): "cha", ("ch", "i"): "chi", ("ch", "u"): "chu", ("ch", "e"): "che", ("ch", "o"): "cho",
+        ("j", "a"): "ja", ("j", "i"): "ji", ("j", "u"): "ju", ("j", "e"): "je", ("j", "o"): "jo",
+        ("ts", "u"): "tsu",
+        ("k", "i"): "ki", ("g", "i"): "gi",
+        ("s", "i"): "shi", ("z", "i"): "ji",
+        ("n", "i"): "ni", ("h", "i"): "hi",
+        ("b", "i"): "bi", ("p", "i"): "pi",
+        ("m", "i"): "mi", ("r", "i"): "ri",
+        ("f", "u"): "fu",
+        ("ky", "i"): "ki", ("gy", "i"): "gi",
+        ("ny", "i"): "ni", ("hy", "i"): "hi",
+        ("my", "i"): "mi", ("ry", "i"): "ri",
+        ("by", "i"): "bi", ("py", "i"): "pi",
+        ("ty", "i"): "chi", ("ty", "u"): "chu", ("ty", "o"): "cho",
+        ("dy", "i"): "ji", ("dy", "u"): "ju", ("dy", "o"): "jo",
+    }
+    _CONSONANTS = {
+        "b", "by", "ch", "d", "dy", "f", "fy", "g", "gw", "gy", "h", "hy", "j", "k", "kw", "ky",
+        "m", "my", "n", "ny", "p", "py", "r", "ry", "s", "sh", "t", "ts", "ty", "v", "w", "y", "z"
+    }
+    _MORA_ONSETS = sorted(_CONSONANTS, key=len, reverse=True)
+    _IGNORE = {"AP", "EP"}
+
+    def __init__(self, language):
+        super().__init__(language)
+
+    @classmethod
+    def _parse_groups(cls, input_text):
+        tokens = [t.strip() for t in input_text.strip().split(" ") if t.strip()]
+        groups = []
+        i = 0
+        while i < len(tokens):
+            t = tokens[i]
+            if t == "SP":
+                i += 1
+                continue
+            if t in cls._IGNORE:
+                i += 1
+                continue
+            if t == "N":
+                groups.append(("n", ["N"]))
+                i += 1
+                continue
+            if t == "cl":
+                groups.append(("cl", ["cl"]))
+                i += 1
+                continue
+            mora_token = t.lower()
+            mora_phones = cls._split_mora_token(mora_token)
+            if mora_phones:
+                groups.append((mora_token, mora_phones))
+                i += 1
+                continue
+            if t in cls._VOWEL_MAP:
+                # Canonicalize phone symbol as well (e.g. I/U -> i/u),
+                # otherwise it may miss vocab entries after language prefixing.
+                v = cls._VOWEL_MAP[t]
+                groups.append((v, [v]))
+                i += 1
+                continue
+            if i + 1 < len(tokens) and t in cls._CONSONANTS and tokens[i + 1] in cls._VOWEL_MAP:
+                v_raw = tokens[i + 1]
+                v = cls._VOWEL_MAP[v_raw]
+                groups.append((cls._JOIN_MAP.get((t, v), f"{t}{v}"), [t, v]))
+                i += 2
+                continue
+            groups.append((t.lower(), [t]))
+            i += 1
+        return groups
+
+    @classmethod
+    def _split_mora_token(cls, token):
+        vowels = set("aiueo")
+        if token in cls._VOWEL_MAP:
+            return [cls._VOWEL_MAP[token]]
+        if token == "n":
+            return ["N"]
+        if token == "hu":
+            return ["h", "u"]
+        if token == "fy":
+            return ["f", "y"]
+        if token.startswith("fy") and len(token) > 2 and all(ch in vowels for ch in token[2:]):
+            return ["f", "y", *token[2:]]
+
+        for onset in cls._MORA_ONSETS:
+            if token == onset:
+                return [onset]
+            if token.startswith(onset):
+                rest = token[len(onset):]
+                if rest and all(ch in vowels for ch in rest):
+                    return [onset, *rest]
+
+        # Fallback for rare mora spellings whose palatal onset is not in the
+        # HubertFA vocab, e.g. fyu -> f y u.
+        if len(token) >= 2 and token[-1] in vowels:
+            onset = token[:-1]
+            vowel = token[-1]
+            if onset.endswith("y") and onset[:-1] in cls._CONSONANTS:
+                return [onset[:-1], "y", vowel]
+            if len(onset) == 1 and onset in cls._CONSONANTS:
+                return [onset, vowel]
+        return None
+
+    def _g2p(self, input_text):
+        groups = self._parse_groups(input_text)
+        _word_seq = []
+        _ph_seq = ["SP"]
+        _ph_idx_to_word_idx = [-1]
+
+        for word_idx, (mora_text, phones) in enumerate(groups):
+            _word_seq.append(mora_text)
+            for ph in phones:
+                _ph_seq.append(ph)
+                _ph_idx_to_word_idx.append(word_idx)
+            if _ph_seq[-1] != "SP":
+                _ph_seq.append("SP")
+                _ph_idx_to_word_idx.append(-1)
+
+        return _ph_seq, _word_seq, _ph_idx_to_word_idx
+
+
+class DictionaryG2P(BaseG2P):
+    def __init__(self, language, dict_path: str | pathlib.Path):
+        super().__init__(language)
+        with open(dict_path, "r") as f:
+            dictionary = f.read().strip().split("\n")
+        self.dictionary = {
+            item.split("\t")[0].strip(): item.split("\t")[1].strip().split(" ")
+            for item in dictionary
+        }
+
+    def _g2p(self, input_text):
+        word_seq_raw = input_text.strip().split(" ")
+        _word_seq = []
+        word_seq_idx = 0
+        _ph_seq = ["SP"]
+        _ph_idx_to_word_idx = [-1]
+        for word in word_seq_raw:
+            if word not in self.dictionary:
+                warnings.warn(f"Word '{word}' is not in the dictionary. Ignored.")
+                continue
+            _word_seq.append(word)
+            phones = self.dictionary[word]
+            for i, ph in enumerate(phones):
+                if (i == 0 or i == len(phones) - 1) and ph == "SP":
+                    warnings.warn(
+                        f"The first or last phoneme of word {word} is SP, which is not allowed. "
+                        "Please check your dictionary."
+                    )
+                    continue
+                _ph_seq.append(ph)
+                _ph_idx_to_word_idx.append(word_seq_idx)
+            if _ph_seq[-1] != "SP":
+                _ph_seq.append("SP")
+                _ph_idx_to_word_idx.append(-1)
+            word_seq_idx += 1
+
+        return _ph_seq, _word_seq, _ph_idx_to_word_idx

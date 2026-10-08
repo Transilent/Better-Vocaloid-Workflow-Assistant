@@ -1,0 +1,17 @@
+# Runtime note:
+# - `llama.cpp` stays on CPU OR Vulkan.
+# - The ONNX backends default to DirectML and fall back to CPU when DML is unavailable.
+
+click
+librosa
+mido
+numpy<2.0.0
+PyQt5
+PyQt-Fluent-Widgets
+PyYAML
+scipy>=1.10.0
+onnxruntime-directml
+soundfile
+textgrid
+tqdm
+pyopenjtalk

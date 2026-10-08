@@ -1,0 +1,34 @@
+# Private state and produced music/video
+cache/
+jobs/
+publish-packages/
+quality-test/
+work/
+last_job.txt
+publish-ui.json
+launcher.log
+*验证报告.json
+依赖检查报告.json
+__pycache__/
+*.pyc
+*.pyo
+# Fixed runtime assets are attached to the GitHub Release, not Git blobs
+dependencies/browser/
+dependencies/ffmpeg/
+dependencies/models/
+dependencies/vocal2midi/python/
+dependencies/vocal2midi/experiments/
+*.exe
+*.dll
+*.pyd
+*.onnx
+*.gguf
+*.bin
+*.zip
+*.zip.*
+*.mid
+*.wav
+*.mp4
+*.m4a
+*.mp3
+.env

@@ -1,0 +1,12 @@
+* text=auto
+*.py text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.onnx binary
+*.gguf binary
+# Frozen third-party files are hashed byte-for-byte in dependencies/manifest.json.
+/dependencies/** -text
+/vendor/** -text

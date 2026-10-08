@@ -1,0 +1,39 @@
+name: vocal2midi_torch
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pytorch=2.3.0
+  - torchaudio=2.3.0
+  - torchvision=0.18.0
+  - pytorch-cuda=12.1
+  - onnxruntime
+  - pip
+  - pip:
+    - lightning
+    - librosa
+    - soundfile
+    - pyyaml
+    - click
+    - tqdm
+    - scipy>=1.10.0
+    - numpy<2.0.0
+    - textgrid
+    - colorednoise
+    - dask
+    - einops>=0.7.0
+    - h5py
+    - loguru
+    - mido
+    - omegaconf
+    - onnx
+    - onnxscript
+    - onnxslim
+    - pydantic>=2.11,<3.0
+    - resampy
+    - sympy
+    - tensorboard
+    - tensorboardX
+    - torchmetrics
