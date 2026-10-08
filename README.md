@@ -6,7 +6,7 @@ A Windows x64 assistant for preparing singing-synthesis projects. Start with a B
 
 ## Quick start
 
-1. Download the **portable package** from [Releases](../../releases). The automatically generated **Source code** archive does not include the runtime or models.
+1. Download the **portable package** from [Releases](../../releases) for a complete offline installation. GitHub's generated **Source code** archive and a Git clone contain source only. Their `Start-Assistant.bat` installs the runtime before launching, using an existing portable ZIP when available or downloading Release parts (about 5.7 GB).
 2. Extract the complete `BVWA` folder to a writable, short path, such as `D:\BVWA`.
 3. Double-click **`Start-Assistant.bat`**. This is the only application launcher.
 4. Choose **Bilibili BV/link** or **local music**, set the separation mode and optional lyrics, then start processing.
@@ -32,7 +32,7 @@ The original cover is the image shown on the source video's Bilibili listing, fe
 
 ## Portable package
 
-Includes Python, inference code and models, FFmpeg, browser runtime, and automation dependencies. Targets **Windows 10/11 x64**. Recommended: at least 16 GB RAM and 12 GB free space. DirectML/Vulkan acceleration depends on the hardware; CPU inference is available and slower.
+Includes Python, inference code and models, FFmpeg, browser runtime, and automation dependencies. Targets **Windows 10/11 x64**. Recommended: at least 16 GB RAM and 25 GB free space for download, joining and extraction; media and job outputs need additional space. DirectML/Vulkan acceleration depends on the hardware; CPU inference is available and slower.
 
 Release files are split to satisfy GitHub's attachment limits. Download all `.zip.00x` parts and `release-assets.json` to one folder. Open `.zip.001` with 7-Zip, or use `Merge-PortableParts.ps1` to verify and join the parts. Extract the resulting ZIP before running the application.
 
@@ -47,7 +47,15 @@ There is no additional `.cmd` launcher. Each new computer requires fresh Bilibil
 
 ## Source and development
 
-Git stores assistant source, frozen integration source, tests, configuration, packaging tools, and the dependency inventory. Large binaries and models are stored in private Release assets. For development, extract the portable package, then overlay the repository source.
+Git stores assistant source, frozen integration source, tests, configuration, packaging tools, and the dependency inventory. Large binaries and models are stored in Release assets. Launch a source checkout with `Start-Assistant.bat` to install them. Alternatively, extract the portable package and overlay the repository source.
+
+For offline runtime installation, put `BVWA-Windows-x64.zip` in the source folder or its parent, or run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Install-Runtime.ps1 -Archive 'D:\Downloads\BVWA-Windows-x64.zip' -Offline
+```
+
+Installation checks every fixed dependency against `dependencies/manifest.json` and preserves assistant configuration, jobs and platform profiles. An interrupted installation can be resumed by running the launcher again. `--check` checks runtime readiness; `--smoke-test` also opens and closes the application window for diagnostics.
 
 ```powershell
 & '.\dependencies\vocal2midi\python\python.exe' -B .\launch.py --check

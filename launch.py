@@ -30,6 +30,19 @@ def main():
     ])
     print("Better Vocaloid Workflow Assistant startup", sys.version, flush=True)
     print("Runtime:", runtime, flush=True)
+    if "--smoke-test" in sys.argv:
+        namespace = runpy.run_path(str(ROOT / "app.py"))
+        from PyQt5.QtCore import QTimer
+        application = namespace["QApplication"]([])
+        window = namespace["Window"]()
+        window.show()
+        application.processEvents()
+        if not window.isVisible():
+            raise RuntimeError("Application window did not initialize")
+        QTimer.singleShot(1000, application.quit)
+        application.exec_()
+        print("GUI ready; startup smoke test passed", flush=True)
+        return
     runpy.run_path(str(ROOT / "app.py"), run_name="__main__")
 
 

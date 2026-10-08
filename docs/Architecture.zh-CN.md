@@ -24,6 +24,7 @@ BV / 链接先读取来源并下载；本地音乐先保存副本。两者统一
 | `publishing_ui.py`、`publish_browser.py` | 登录及上传填写 |
 | `publish-selectors.json` | 平台页面选择器 |
 | `tools/build_portable.py` | 按清单构建 ZIP 和分卷 |
+| `tools/Install-Runtime.ps1` | 源码启动前安装、Release 下载、依赖校验 |
 
 ## 配置与数据
 

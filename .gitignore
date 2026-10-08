@@ -32,3 +32,4 @@ dependencies/vocal2midi/experiments/
 *.m4a
 *.mp3
 .env
+*.bvwa-partial

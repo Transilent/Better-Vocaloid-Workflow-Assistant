@@ -23,6 +23,7 @@ The first checks startup requirements. The second hashes every fixed dependency.
 | Platform adapters | File selection, text fields, cover controls on local pages |
 | Dual covers | Independent 4:3 and 16:9 cover handling |
 | Launchers | Single startup entry, runtime check, CPU/GPU settings |
+| Runtime bootstrap | Offline install, Release-part downloads on local HTTP fixtures, integrity, retry and preserved user data |
 
 ## Release verification
 

@@ -6,7 +6,7 @@
 
 ## 快速开始
 
-1. 从 [Releases](../../releases) 下载完整便携包。自动生成的 **Source code** 压缩包不包含运行库和模型。
+1. 从 [Releases](../../releases) 下载完整便携包，可离线解压使用。GitHub 的 **Source code** 包或克隆仓库仅含源码；其中的 `Start-Assistant.bat` 会先安装运行库，再启动。优先使用现有完整 ZIP，否则下载 Release 分卷（约 5.7 GB）。
 2. 将完整 `BVWA` 文件夹解压到可写的短路径，例如 `D:\BVWA`。
 3. 双击唯一的启动器 **`Start-Assistant.bat`**。
 4. 选择 BV / B站链接或本地音乐，设置分离方式和可选歌词，开始处理。
@@ -30,7 +30,7 @@
 
 ## 便携包
 
-包内含 Python、推理代码和模型、FFmpeg、浏览器及自动化依赖。目标平台为 Windows 10/11 x64，推荐至少 16 GB 内存、12 GB 可用空间。显卡加速取决于硬件；CPU 模式速度较慢。
+包内含 Python、推理代码和模型、FFmpeg、浏览器及自动化依赖。目标平台为 Windows 10/11 x64，推荐至少 16 GB 内存、25 GB 可用空间用于下载、合并和解压，素材与任务另占空间。显卡加速取决于硬件；CPU 模式速度较慢。
 
 GitHub 附件为分卷：将全部 `.zip.00x` 和 `release-assets.json` 下载到同一目录，用 7-Zip 打开 `.zip.001`，或使用 `Merge-PortableParts.ps1` 校验合并。先解压，再启动。
 
@@ -45,7 +45,15 @@ GitHub 附件为分卷：将全部 `.zip.00x` 和 `release-assets.json` 下载�
 
 ## 源码与资料
 
-Git 保存助手源码、冻结的集成代码、测试、配置、打包工具和依赖清单；模型及大型二进制存于私有 Release。开发时可先解压便携包，再覆盖仓库源码。
+Git 保存助手源码、冻结的集成代码、测试、配置、打包工具和依赖清单；模型及大型二进制存于 Release。源码目录可直接双击 `Start-Assistant.bat` 安装依赖；也可先解压便携包，再覆盖源码。
+
+离线安装时，将完整 `BVWA-Windows-x64.zip` 放在源码目录或其上一级，或执行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Install-Runtime.ps1 -Archive 'D:\Downloads\BVWA-Windows-x64.zip' -Offline
+```
+
+安装逐文件核对依赖清单哈希，保留助手配置、任务和平台登录。中断后再次运行启动器可继续。`--check` 检查运行环境，`--smoke-test` 还会打开并关闭界面进行诊断。
 
 仓库和发行包不含账号会话、令牌、私人音视频、任务历史或发布草稿。运行数据保存于 `cache/`、`jobs/`、`publish-packages/`。
 

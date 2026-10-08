@@ -30,6 +30,7 @@ Automatic dual-part processing first estimates combined vocals and accompaniment
 | `publishing_ui.py`, `publish_browser.py` | Platform sign-in and upload preparation |
 | `publish-selectors.json` | Platform page selectors |
 | `tools/build_portable.py` | Inventory-based ZIP creation and splitting |
+| `tools/Install-Runtime.ps1` | Source-checkout bootstrap, Release downloads and dependency integrity |
 
 ## Files and state
 

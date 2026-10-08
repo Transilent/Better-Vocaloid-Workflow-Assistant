@@ -17,4 +17,4 @@ The portable package includes third-party components and model weights. Their or
 
 The original model directories and bundled libraries retain upstream materials. GAME, HubertFA, Qwen3-ASR, RMVPE, RomajiASR, llama.cpp and ONNX Runtime acknowledgements are included with Vocal2Midi. This snapshot was tested as one fixed environment; it does not imply that licenses for all third-party binaries are identical.
 
-The archive excludes browser profiles, cookies, saved sessions, source songs, videos, covers, generated MIDI, and user publication drafts. Review third-party redistribution terms before making the private binary backup public.
+The archive excludes browser profiles, cookies, saved sessions, source songs, videos, covers, generated MIDI, and user publication drafts. Third-party redistribution terms apply to their corresponding components in the binary package.

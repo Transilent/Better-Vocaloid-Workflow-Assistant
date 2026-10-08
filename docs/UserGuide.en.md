@@ -4,6 +4,8 @@
 
 ## Input
 
+The portable folder includes the runtime. A source checkout's launcher installs it first, using a complete portable ZIP in this folder or its parent, or downloading the Release files. This requires about 5.7 GB of network data when no local archive exists. It verifies dependency hashes and preserves assistant settings, jobs and sign-in profiles. After an interruption, run the launcher again.
+
 Run `Start-Assistant.bat`. In **音乐来源** (Music source), select **B站 BV 号 / 链接** for a BV identifier/link, or **导入本地音乐** for a local file. **选择音乐…** opens the music chooser. A local file requires no BV and is copied before decoding; the original is not modified. Saved snapshots allow resume after the original is moved.
 
 ## Separation and transcription
