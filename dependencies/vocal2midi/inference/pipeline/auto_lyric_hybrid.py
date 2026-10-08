@@ -1,3 +1,5 @@
+# BVWA integration: alignment coverage reports without lyric text.
+import json
 import pathlib
 import sys
 import tempfile
@@ -268,6 +270,9 @@ def auto_lyric_hybrid_pipeline(
     all_notes = []
     chunk_logs = []
     run_lyric_alignment = output_lyrics
+    processed_aligned_chunks = set()
+    alignment_errors = {}
+    asr_engine = None
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_dir_path = pathlib.Path(temp_dir)
@@ -289,6 +294,7 @@ def auto_lyric_hybrid_pipeline(
                     use_phoneme_asr = False
 
             if use_phoneme_asr:
+                asr_engine = "romaji_asr"
                 chars_dict, chunk_logs = run_romaji_asr(
                     chunks,
                     sr,
@@ -302,6 +308,7 @@ def auto_lyric_hybrid_pipeline(
                     cancel_checker=cancel_checker,
                 )
             else:
+                asr_engine = "qwen_asr"
                 if language == "ja" and lyric_output_mode in {"romaji", "kana"}:
                     print("\n--- Stage 1/3: Mora ASR unavailable; fallback to text ASR + Japanese G2P ---")
                 else:
@@ -342,6 +349,7 @@ def auto_lyric_hybrid_pipeline(
                         language=language,
                         cancel_checker=cancel_checker,
                     )
+                    alignment_errors = dict(getattr(hfa_model, "alignment_errors", {}))
                     _check_cancel()
                     if not pred_dict:
                         print(
@@ -432,6 +440,40 @@ def auto_lyric_hybrid_pipeline(
             free_memory()
 
     all_notes.sort(key=lambda x: x.onset)
+
+    alignment_chunks = []
+    for chunk_idx, chunk in enumerate(chunks):
+        stem = f"chunk_{chunk_idx}"
+        aligned = chunk_idx in processed_aligned_chunks
+        reason = None
+        if not output_lyrics:
+            reason = "lyrics_disabled"
+        elif stem not in chars_dict:
+            reason = "asr_empty_or_failed"
+        elif stem in alignment_errors:
+            reason = "alignment_failed"
+        elif not aligned:
+            reason = "alignment_unusable"
+        alignment_chunks.append({
+            "chunk": stem, "start_seconds": float(chunk["offset"]),
+            "duration_seconds": len(chunk["waveform"]) / sr,
+            "mode": "lyrics" if aligned else "pitch_only", "reason": reason,
+            **({"error": alignment_errors[stem]} if stem in alignment_errors else {}),
+        })
+    alignment_report = {
+        "language": language, "asr_engine": asr_engine, "requested_lyrics": output_lyrics,
+        "total_chunks": len(chunks), "aligned_chunks": len(processed_aligned_chunks),
+        "pitch_only_chunks": len(chunks) - len(processed_aligned_chunks),
+        "asr_empty_chunks": sum(c["reason"] == "asr_empty_or_failed" for c in alignment_chunks),
+        "alignment_failed_chunks": len(alignment_errors), "chunks": alignment_chunks,
+    }
+    (output_dir / f"{output_key}_alignment.json").write_text(
+        json.dumps(alignment_report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    if output_lyrics:
+        print(f"[Alignment] {len(processed_aligned_chunks)}/{len(chunks)} chunks aligned; "
+              f"{alignment_report['asr_empty_chunks']} empty ASR; "
+              f"{len(alignment_errors)} alignment errors. Remaining chunks retain pitch-only notes.")
     
                                                      
     export_asr_match_log = output_lyrics and (("asr_match_log" in output_format_set) or ("chunks" in output_format_set))

@@ -25,6 +25,8 @@ Paste reference lyrics only. Spaces, punctuation, and line breaks are removed. L
 
 Models separate musical roles, not singer identities. Listen for leakage, missed notes, and lyric errors. More inference steps do not guarantee higher accuracy.
 
+Chinese lyrics use Qwen ASR. Japanese lyrics retain the bundled Romaji ASR model, followed by HubertFA alignment; selecting Japanese does not replace its weights with Qwen. If a chunk has empty recognition or an unusable alignment, it keeps pitch-only notes and is recorded in the alignment report. A bad alignment chunk does not discard successfully aligned chunks. Short Japanese mora repairs do not bridge pauses longer than 150 ms.
+
 ## Run and recovery
 
 **开始处理** starts a new job. **继续上次任务** resumes with saved parameters. **重做上次分离 / MIDI** starts a new job with current settings while reusing input assets. **取消** cancels the processing tree; cooperative model cancellation can take up to 30 seconds before forced termination. **打开结果目录** opens the job folder.
@@ -41,11 +43,14 @@ Changed inputs, settings, or corrupted MIDI invalidate the affected cached resul
 | `midi/voices.mid` | Two vocal note tracks plus tempo metadata |
 | `midi/lead/lead.mid`, `midi/backing/backing.mid` | Separate MIDI imports |
 | `midi/vocals.mid` | Single-part output |
+| `midi/lead/lead_alignment.json`, `midi/backing/backing_alignment.json` | Chunk times, alignment coverage and fallback reasons, without lyric text |
 | `midi/需要核对的音符.csv` | Time-based review hints; pitches are not automatically changed |
 | `original-cover.*` | Original Bilibili cover, for BV inputs |
 | `status.json` and logs | Stage state and diagnostics |
 
 MIDI uses 120 BPM to represent time and disables quantization. This is not detected song tempo. Preserve positions in seconds if changing project tempo. Tuning and final audio/video alignment are manual.
+
+In VOCALOID 6, create a project and use **File → Import** to import `voices.mid` or an individual vocal MIDI. **Open** is for project files. Select UTF-8 for embedded lyrics when the import dialog offers an encoding option; lyric import is supported from version 6.2. See the [official reference manual](https://rsc-net.vocaloid.com/assets/pdf_files/bb/VOCALOID_Reference_Manual_ENG.pdf) and [MIDI import support](https://www.vocaloid.com/en/support/faq/617).
 
 ## Upload preparation
 

@@ -4,7 +4,7 @@
   "platform": "Windows x86_64",
   "legacy_tool_paths": {},
   "files": 13132,
-  "bytes": 7989609737,
+  "bytes": 7989614281,
   "entries": [
     {
       "file": "dependencies/vocal2midi/python/get-pip.py",
@@ -56673,13 +56673,13 @@
     },
     {
       "file": "dependencies/vocal2midi/inference/API/game_api.py",
-      "bytes": 14409,
-      "sha256": "6b15d3ae2ed3883f37f1737dae8699f8f5dedb94c86c698c83802f7ca7707fe1"
+      "bytes": 14499,
+      "sha256": "20693cf65fccc47cca18f0b5841cc798ac90a8d5492d44297e61ca6cc5fc8aaa"
     },
     {
       "file": "dependencies/vocal2midi/inference/API/hfa_api.py",
-      "bytes": 7820,
-      "sha256": "62c7e5c9ff62a815fc19c0080af522200bea2cb51fe202772b81b74affcae93f"
+      "bytes": 9112,
+      "sha256": "41a3ff2280048856237c5661ec070017bbf35535cafcbe1ee799be895f168821"
     },
     {
       "file": "dependencies/vocal2midi/inference/API/lfa_api.py",
@@ -56738,8 +56738,8 @@
     },
     {
       "file": "dependencies/vocal2midi/inference/pipeline/auto_lyric_hybrid.py",
-      "bytes": 19646,
-      "sha256": "225c13dda2bd08867941da706bc799bc96ab427a1c9e4aec686fb244d85b3ee7"
+      "bytes": 21704,
+      "sha256": "6c522becd72591abb9b29dc738ddb8d38923d8e4616fef501ad0fbca71d64d92"
     },
     {
       "file": "dependencies/vocal2midi/inference/quant/quantization.py",
@@ -56873,8 +56873,8 @@
     },
     {
       "file": "dependencies/vocal2midi/inference/HubertFA/tools/infer_base.py",
-      "bytes": 9883,
-      "sha256": "1e1309045cf9d26b730cbe0231b608211f19fb213d2a419af0bffbace18b0d5d"
+      "bytes": 10987,
+      "sha256": "4e6d5e407defee935a758dc1a8169ca2a97b89285ae71dcaec8401f35feb906f"
     },
     {
       "file": "dependencies/vocal2midi/inference/HubertFA/tools/metrics.py",

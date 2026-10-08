@@ -17,6 +17,7 @@ The first checks startup requirements. The second hashes every fixed dependency.
 | Test group | Coverage |
 | --- | --- |
 | Core | Stage reuse, cancellation, stem normalization, MIDI checks |
+| Japanese MIDI | Short mora pauses, kana token positions, supported phones, chunk error isolation, cancellation and atomic track assembly |
 | Desktop UI | Input selection, job state, publication controls |
 | Local music | WAV/MP3/FLAC/M4A, snapshots, resume, invalid inputs, no source API requests |
 | Browser lifecycle | Sign-in profiles, process handling, upload state |

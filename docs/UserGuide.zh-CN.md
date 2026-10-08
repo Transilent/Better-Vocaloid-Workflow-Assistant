@@ -25,6 +25,8 @@
 
 模型按音乐角色分离，不按歌姬身份识别。需试听串音、漏音及错字；更多步数不能保证更高准确率。
 
+中文歌词使用 Qwen ASR；日语保留包内 Romaji ASR，再由 HubertFA 对齐，选择日语不会改用 Qwen 权重。识别为空或对齐不可用的片段保留仅音符结果，并写入对齐报告；单个片段出错不会丢弃其他已对齐片段。日语短音节修复不会跨过超过 150 毫秒的停顿。
+
 ## 运行与恢复
 
 “开始处理”新建任务；“继续上次任务”沿用保存参数；“重做上次分离 / MIDI”按当前选项新建任务并复用输入；“取消”结束处理树，模型最多等待 30 秒后强制停止；“打开结果目录”查看任务。
@@ -41,11 +43,14 @@
 | `midi/voices.mid` | 两个声部音符轨及速度元数据 |
 | `midi/lead/lead.mid`、`midi/backing/backing.mid` | 单独导入的声部 MIDI |
 | `midi/vocals.mid` | 单声部结果 |
+| `midi/lead/lead_alignment.json`、`midi/backing/backing_alignment.json` | 片段秒数、对齐覆盖与回退原因，不含歌词原文 |
 | `midi/需要核对的音符.csv` | 按秒记录的核对提示，不自动改音高 |
 | `original-cover.*` | BV 输入的本家封面 |
 | `status.json` 与日志 | 步骤和诊断 |
 
 MIDI 以 120 BPM 表示实际时间，关闭量化；120 不是检测出的歌曲速度。修改工程 BPM 时应保持秒数位置。调音与最终音视频对齐由人完成。
+
+在 VOCALOID 6 中，先建工程，再使用“文件 → 导入”载入 `voices.mid` 或单独声部 MIDI。“打开”用于工程文件。导入对话框若提供歌词编码选项，请选 UTF-8；6.2 起支持读取 MIDI 内的歌词。参见[官方手册](https://rsc-net.vocaloid.com/assets/pdf_files/bb/VOCALOID_Reference_Manual_ENG.pdf)与[MIDI 导入说明](https://www.vocaloid.com/en/support/faq/617)。
 
 ## 发布准备
 

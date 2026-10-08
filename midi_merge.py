@@ -12,6 +12,7 @@ def merge_voices(sources, destination):
         mido.MetaMessage("end_of_track", time=0),
     ]))
     reports = []
+    last_tick = 0
     for channel, (name, path) in enumerate(sources):
         source = mido.MidiFile(str(path), charset="utf8")
         track = mido.MidiTrack([mido.MetaMessage("track_name", name=name, time=0)])
@@ -33,9 +34,18 @@ def merge_voices(sources, destination):
                 count += 1
         track.append(mido.MetaMessage("end_of_track", time=0))
         result.tracks.append(track)
+        last_tick = max(last_tick, previous_tick)
         reports.append({"name": name, "notes": count, "source": str(path), "channel": channel})
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    result.save(str(destination))
+    result.tracks[0][-1] = mido.MetaMessage("end_of_track", time=last_tick)
+    temporary = destination.with_name(destination.name + ".bvwa-partial")
+    try:
+        result.save(str(temporary))
+        from midi_checks import inspect_midi
+        inspect_midi(temporary)
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
     return {"format": 1, "voice_tracks": reports, "tempo": 120,
             "ticks_per_beat": 480, "timeline_offset_seconds": 0}

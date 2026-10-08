@@ -1,3 +1,4 @@
+# BVWA integration: supported Japanese phones and explicit input diagnostics.
 import os
 import pathlib
 import warnings
@@ -153,6 +154,8 @@ class InferenceBase:
                                            hop_size=self.mel_cfg["hop_size"])
 
     def get_dataset(self, wav_folder, language, g2p="dictionary", dictionary_path=None, in_format="lab"):
+        source_language = language
+        self.dataset_errors = {}
         if dictionary_path is None:
             dictionary_path = self.vocab_folder / self.vocab["dictionaries"].get(language, "")
         language = language if self.vocab['language_prefix'] else None
@@ -167,19 +170,32 @@ class InferenceBase:
         else:
             raise f"g2p - {g2p} is not supported, which should be 'dictionary', 'phoneme' or 'ja_mora_phoneme'."
 
-        wav_paths = pathlib.Path(wav_folder).rglob("*.wav")
+        wav_paths = sorted(pathlib.Path(wav_folder).rglob("*.wav"))
         for wav_path in wav_paths:
             try:
                 lab_path = wav_path.with_suffix("." + in_format)
                 if lab_path.exists():
                     with open(lab_path, "r", encoding="utf-8") as f:
                         lab_text = f.read().strip()
-                    ph_seq, word_seq, ph_idx_to_word_idx = g2p(lab_text)
+                    converter = g2p
+                    if source_language == "ja" and isinstance(g2p, DictionaryG2P):
+                        if any(token not in g2p.dictionary for token in lab_text.split()):
+                            # Romaji ASR can emit a standalone consonant at a
+                            # slice boundary. Preserve supported Japanese phones
+                            # instead of silently dropping them from the words.
+                            converter = JapanesePhonemeMoraG2P(language)
+                    ph_seq, word_seq, ph_idx_to_word_idx = converter(lab_text)
+                    missing = sorted(set(ph_seq) - set(self.vocab["vocab"]))
+                    if missing:
+                        raise ValueError(f"Unsupported alignment phonemes: {missing}")
+                    if not word_seq:
+                        raise ValueError("No lexical words available for alignment")
                     self.dataset.append((wav_path, ph_seq, word_seq, ph_idx_to_word_idx))
                 else:
                     warnings.warn(f"{pathlib.Path(wav_path).absolute()} does not exist.")
             except Exception as e:
-                e.args = (f" Error when processing {wav_path}: {e} ",)
+                self.dataset_errors[wav_path.stem] = f"{type(e).__name__}: {e}"
+                warnings.warn(f"Alignment input {wav_path.name} skipped: {e}")
         print(f"Loaded {len(self.dataset)} samples.")
 
     def infer(self, non_lexical_phonemes, pad_times=1, pad_length=5):

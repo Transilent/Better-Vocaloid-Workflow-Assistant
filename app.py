@@ -324,6 +324,13 @@ class Window(QWidget):
                 self.append_line("未能读取 MIDI 报告，请检查任务目录中的日志。")
             if report.get("voices", {}).get("backing", {}).get("notes") == 0:
                 self.append_line("提示：本次未检出和声音符，双轨 MIDI 的和声轨为空，请试听和声 WAV 后核对。")
+            voice_reports = report.get("voices") or {"vocals": report}
+            partial = sum((details.get("alignment") or {}).get("pitch_only_chunks", 0)
+                          for details in voice_reports.values()
+                          if (details.get("alignment") or {}).get("requested_lyrics"))
+            if partial:
+                self.append_line(f"提示：{partial} 个片段保留了音符但未可靠对齐歌词，详见声部目录的 *_alignment.json。")
+            self.append_line("VOCALOID 6：请用“文件 → 导入”导入 MIDI；带歌词的文件请选择 UTF-8 编码。")
         else:
             try:
                 status = json.loads((self.job / "status.json").read_text(encoding="utf-8"))

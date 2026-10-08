@@ -1,3 +1,4 @@
+# BVWA integration: bounded Japanese repairs and per-chunk alignment recovery.
 import pathlib
 
 from inference.device_utils import resolve_onnx_providers
@@ -8,13 +9,14 @@ _HFA_REPAIR_IGNORE_TOKENS = {"SP", "AP", "EP", "br", "sil", "pau"}
 _HFA_REPAIR_RATIO = 0.6
 _HFA_REPAIR_MIN_GLOBAL_K = 3
 _HFA_REPAIR_GLOBAL_PORTION = 0.15
+_JA_REPAIR_MAX_GAP_SEC = 0.15
 
 
 def _is_lexical_word(word) -> bool:
     return getattr(word, "text", None) not in _HFA_REPAIR_IGNORE_TOKENS
 
 
-def _repair_short_word_boundaries(words) -> list[str]:
+def _repair_short_word_boundaries(words, max_gap_sec=None) -> list[str]:
     """
     Repair abnormally short lexical words produced by HFA.
 
@@ -60,6 +62,10 @@ def _repair_short_word_boundaries(words) -> list[str]:
             continue
         if next_word.start <= cur_word.end:
             continue
+        if max_gap_sec is not None and next_word.start - cur_word.end > max_gap_sec:
+            # A very short ASR mora is not evidence that a long silent gap
+            # belongs to that syllable. Keep the pause for manual review.
+            continue
         if any(_is_lexical_word(word) for word in middle_words):
             continue
 
@@ -80,13 +86,15 @@ def _repair_short_word_boundaries(words) -> list[str]:
     return repair_logs
 
 
-def _repair_pred_dict_short_words(pred_dict) -> None:
+def _repair_pred_dict_short_words(pred_dict, language="zh") -> None:
     total_repaired = 0
     for stem, pred in pred_dict.items():
         if len(pred) < 3:
             continue
         words = pred[2]
-        repair_logs = _repair_short_word_boundaries(words)
+        repair_logs = _repair_short_word_boundaries(
+            words, max_gap_sec=_JA_REPAIR_MAX_GAP_SEC if language == "ja" else None
+        )
         if repair_logs:
             print(f"[HFA Repair] {stem}: repaired {len(repair_logs)} short word(s)")
             for log in repair_logs:
@@ -134,12 +142,27 @@ def run_hubert_fa(hfa_model, temp_dir, language="zh", cancel_checker=None, use_p
         hfa_model.get_dataset(wav_folder=temp_dir, language=language, g2p="dictionary", dictionary_path=dict_path)
     if cancel_checker and cancel_checker():
         raise InterruptedError("HFA 任务已取消")
-    if len(hfa_model.dataset) > 0:
-        nl_phonemes = "AP" if language == "zh" else ""
-        hfa_model.infer(non_lexical_phonemes=nl_phonemes, pad_times=1, pad_length=5)
+    hfa_model.alignment_errors = dict(getattr(hfa_model, "dataset_errors", {}))
+    dataset = list(hfa_model.dataset)
+    nl_phonemes = "AP" if language == "zh" else ""
+    try:
+        for sample in dataset:
+            if cancel_checker and cancel_checker():
+                raise InterruptedError("HFA 任务已取消")
+            hfa_model.dataset = [sample]
+            prediction_start = len(hfa_model.predictions)
+            try:
+                hfa_model.infer(non_lexical_phonemes=nl_phonemes, pad_times=1, pad_length=5)
+            except (ValueError, KeyError, IndexError, AssertionError, FloatingPointError) as exc:
+                del hfa_model.predictions[prediction_start:]
+                stem = pathlib.Path(sample[0]).stem
+                hfa_model.alignment_errors[stem] = f"{type(exc).__name__}: {exc}"
+                print(f"[Warning] HFA {stem}: {exc}; this chunk will use pitch-only fallback.")
+    finally:
+        hfa_model.dataset = dataset
 
     pred_dict = {p[0].stem: p for p in hfa_model.predictions}
-    _repair_pred_dict_short_words(pred_dict)
+    _repair_pred_dict_short_words(pred_dict, language=language)
     return pred_dict
 
 def export_hfa_artifacts(chunks, temp_dir_path, hfa_model, output_key, output_dir, output_formats, cancel_checker=None):

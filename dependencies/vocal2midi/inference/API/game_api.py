@@ -1,3 +1,4 @@
+# BVWA integration: preserve display-token positions for non-singing morae.
 import pathlib
 import sys
 import traceback
@@ -99,6 +100,16 @@ def extract_vowel_boundaries(result_word, original_chars: list[str], language: s
                 last_end = word.end
             continue
 
+        # Every lexical mora consumes one display token, even when it has no
+        # singable nucleus (e.g. Japanese cl / small tsu). Otherwise kana lyrics
+        # after it are assigned to the preceding mora.
+        if is_romaji:
+            while char_idx < len(original_chars) and original_chars[char_idx].lower() != word.text.lower():
+                char_idx += 1
+        word_lyric = original_chars[char_idx] if char_idx < len(original_chars) else word.text
+        if char_idx < len(original_chars):
+            char_idx += 1
+
         vowel_start = _find_word_nucleus_start(word, language)
         if vowel_start is None:
             if word.end > last_end:
@@ -134,20 +145,7 @@ def extract_vowel_boundaries(result_word, original_chars: list[str], language: s
         word_durs.append(dur)
         word_vuvs.append(1)
 
-        if is_romaji:
-            while char_idx < len(original_chars) and original_chars[char_idx].lower() != word.text.lower():
-                char_idx += 1
-            if char_idx < len(original_chars):
-                lyrics.append(original_chars[char_idx])
-                char_idx += 1
-            else:
-                lyrics.append(word.text)
-        else:
-            if char_idx < len(original_chars):
-                lyrics.append(original_chars[char_idx])
-                char_idx += 1
-            else:
-                lyrics.append(word.text)
+        lyrics.append(word_lyric)
 
         last_end = note_end
 

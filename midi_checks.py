@@ -5,6 +5,13 @@ import mido
 
 def inspect_midi(path, allow_empty=False):
     midi = mido.MidiFile(str(path), charset="utf8")
+    if midi.type not in (0, 1) or not 0 < midi.ticks_per_beat < 32768:
+        raise ValueError("MIDI 格式或时间分辨率不受支持。")
+    for track in midi.tracks:
+        if not track or track[-1].type != "end_of_track":
+            raise ValueError("MIDI 轨道缺少完整的结束事件。")
+        if any(not isinstance(message.time, int) or not 0 <= message.time <= 0x0fffffff for message in track):
+            raise ValueError("MIDI 时间事件超出标准文件范围。")
     notes = []
     active = {}
     seconds = 0.0
@@ -42,6 +49,7 @@ def inspect_midi(path, allow_empty=False):
         if reasons:
             hints.append({**note, "reason": "；".join(reasons)})
     return {"notes": len(notes), "lyrics_events": lyric_count,
+            "format": midi.type, "tracks": len(midi.tracks), "lyric_encoding": "utf-8",
             "first_note_seconds": notes[0]["start"] if notes else None,
             "last_note_seconds": max((n["end"] for n in notes), default=0),
             "last_event_seconds": seconds,

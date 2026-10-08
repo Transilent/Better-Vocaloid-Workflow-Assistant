@@ -107,7 +107,7 @@ def file_hash(path):
 def midi_signature(job, request, voice):
     """Bind a completed voice to its audio and extraction parameters."""
     settings = Path(resolve_tools(request["tools"])["vocal2midi"]) / "settings/vocal2midi.ini"
-    data = {"adapter_version": 3, "audio": file_hash(Path(job) / "audio" / (voice + ".wav")),
+    data = {"adapter_version": 4, "audio": file_hash(Path(job) / "audio" / (voice + ".wav")),
             "voice": voice, "language": request["language"],
             "lyrics": request.get("backing_lyrics", "") if voice == "backing" else request.get("lyrics", ""),
             "recognize_lyrics": request.get("recognize_lyrics", True),

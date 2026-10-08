@@ -1,4 +1,4 @@
-"""Call the bundled Vocal2Midi application layer without modifying its files."""
+"""Call the bundled Vocal2Midi application layer with portable runtime paths."""
 import json
 import os
 import sys
@@ -59,6 +59,8 @@ def run(job, voice="vocals"):
     pending = job / "temp/midi-output" / voice
     pending.mkdir(parents=True, exist_ok=True)
     signature = midi_signature(job, request, voice)
+    alignment_file = pending / (voice + "_alignment.json")
+    alignment_file.unlink(missing_ok=True)
     cfg = PipelineConfig(
         audio_path=str(job / "audio" / (voice + ".wav")),
         output_filename=voice + ".wav", output_dir=pending,
@@ -98,9 +100,15 @@ def run(job, voice="vocals"):
         run_auto_lyric_job(cfg)
     cancelled(job)
     report = inspect_midi(pending / (voice + ".mid"), allow_empty=voice == "backing")
+    alignment = json.loads(alignment_file.read_text(encoding="utf-8")) if alignment_file.exists() else None
     for suffix in ("mid", "csv", "txt"):
         (pending / (voice + "." + suffix)).replace(out / (voice + "." + suffix))
+    if alignment_file.exists():
+        alignment_file.replace(out / alignment_file.name)
+    else:
+        (out / alignment_file.name).unlink(missing_ok=True)
     report.update({
+        "alignment": alignment,
         "language": language, "reference_lyrics_used": bool(cfg.original_lyrics),
         "recognize_lyrics": cfg.output_lyrics,
         "voice": voice, "inference_steps": nsteps,
@@ -111,6 +119,9 @@ def run(job, voice="vocals"):
     })
     atomic_json(out / "report.json", report)
     print(f"MIDI 验证通过：{report['notes']} 个音符，{report['lyrics_events']} 个歌词事件。", flush=True)
+    if alignment and alignment["requested_lyrics"] and alignment["pitch_only_chunks"]:
+        print(f"提示：{alignment['pitch_only_chunks']} 个片段保留音符但没有可靠歌词对齐；"
+              f"详情见 {alignment_file.name}。", flush=True)
 
 
 if __name__ == "__main__":

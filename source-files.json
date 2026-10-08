@@ -135,6 +135,7 @@
     "tests/test_bootstrap.py",
     "tests/test_core.py",
     "tests/test_gui.py",
+    "tests/test_japanese_midi.py",
     "tests/test_launchers.py",
     "tests/test_local_music.py",
     "tests/test_publish_adapters.py",
