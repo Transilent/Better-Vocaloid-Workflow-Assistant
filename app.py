@@ -50,155 +50,39 @@ class Window(QWidget):
     def __init__(self):
         super().__init__()
         self.runner = None
+        self.processing_active = False
         self.job = None
-        self.setWindowTitle("Better Vocaloid Workflow Assistant")
-        self.resize(920, 940)
         self.stem_fields = {}
-        self.setStyleSheet("""
-            QWidget { font-family: 'Microsoft YaHei'; font-size: 14px; color: #233242; background: #f5f7fa; }
-            QLineEdit, QTextEdit, QComboBox { background: white; border: 1px solid #cad4de; border-radius: 6px; padding: 8px; }
-            QPushButton { background: #e5ebf2; border: 0; border-radius: 6px; padding: 11px 17px; }
-            QPushButton#start { background: #2469ad; color: white; font-weight: 600; }
-            QPushButton:disabled { background: #e4e7ec; color: #8b96a1; }
-        """)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        self.tabs = QTabWidget()
-        outer.addWidget(self.tabs)
-        processing = QWidget()
-        self.tabs.addTab(processing, "下载 / 分离 / MIDI")
-        layout = QVBoxLayout(processing)
-        layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(13)
-        title = QLabel("从 BV 号或本地音乐到可调音的 MIDI")
-        title.setStyleSheet("font-size: 26px; font-weight: 600;")
-        layout.addWidget(title)
-        subtitle = QLabel("下载原视频 / 导入音乐  →  分离主唱、和声与伴奏  →  生成双轨 MIDI")
-        subtitle.setStyleSheet("color: #607184; background: transparent;")
-        layout.addWidget(subtitle)
-        input_row = QHBoxLayout()
-        input_row.addWidget(QLabel("音乐来源"))
-        self.input_mode = QComboBox()
-        self.input_mode.addItem("B站 BV 号 / 链接", "bilibili")
-        self.input_mode.addItem("导入本地音乐", "local")
-        input_row.addWidget(self.input_mode, 1)
-        layout.addLayout(input_row)
-        self.bv_panel = QWidget()
-        bv_layout = QVBoxLayout(self.bv_panel)
-        bv_layout.setContentsMargins(0, 0, 0, 0)
-        bv_layout.addWidget(QLabel("BV 号 / B站视频链接"))
-        self.source = QLineEdit(load_config().get("default_source", ""))
-        self.source.setPlaceholderText("BV1… 或 https://www.bilibili.com/video/BV1…/")
-        bv_layout.addWidget(self.source)
-        layout.addWidget(self.bv_panel)
-        self.music_panel = QWidget()
-        music_layout = QHBoxLayout(self.music_panel)
-        music_layout.setContentsMargins(0, 0, 0, 0)
-        self.local_music = QLineEdit()
-        self.local_music.setPlaceholderText("选择或粘贴本地音乐路径，直接分离并转 MIDI")
-        music_layout.addWidget(self.local_music, 1)
-        self.choose_music_btn = QPushButton("选择音乐…")
-        self.choose_music_btn.clicked.connect(self.choose_music)
-        music_layout.addWidget(self.choose_music_btn)
-        layout.addWidget(self.music_panel)
-        self.input_mode.currentIndexChanged.connect(self.update_source_panel)
-        self.update_source_panel()
-        row = QHBoxLayout()
-        row.addWidget(QLabel("歌词语言"))
-        self.language = QComboBox()
-        self.language.addItem("中文", "zh")
-        self.language.addItem("日语", "ja")
-        row.addWidget(self.language)
-        self.recognize = QCheckBox("识别歌词并写入 MIDI")
-        self.recognize.setChecked(True)
-        row.addWidget(self.recognize)
-        row.addStretch()
-        layout.addLayout(row)
-        mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel("分离方式"))
-        self.voice_mode = QComboBox()
-        self.voice_mode.addItem("模型全自动：人声 → 主唱 / 和声", "dual")
-        self.voice_mode.addItem("外部分轨：导入主唱、和声、伴奏", "import")
-        self.voice_mode.addItem("原版：合并人声单轨", "single")
-        mode_row.addWidget(self.voice_mode, 1)
-        self.precision = QCheckBox("精细提取（较慢）")
-        self.precision.setToolTip("使用 16 步 GAME 推理；关闭时用 8 步。识别准确率仍取决于音频与模型。")
-        self.precision.setChecked(True)
-        mode_row.addWidget(self.precision)
-        layout.addLayout(mode_row)
-        self.import_panel = QWidget()
-        import_layout = QVBoxLayout(self.import_panel)
-        import_layout.setContentsMargins(0, 0, 0, 0)
-        import_layout.addWidget(QLabel("从分离软件导出主唱、和声和伴奏。\n从项目开始导出完整长度，保留开头静音，再选择下面三个文件。"))
-        for key, label in (("lead", "主唱"), ("backing", "和声"), ("instrumental", "伴奏")):
-            row = QHBoxLayout()
-            row.addWidget(QLabel(label))
-            field = QLineEdit()
-            field.setPlaceholderText("选择完整 WAV 文件")
-            self.stem_fields[key] = field
-            row.addWidget(field, 1)
-            browse = QPushButton("选择…")
-            browse.clicked.connect(lambda checked=False, k=key: self.choose_stem(k))
-            row.addWidget(browse)
-            import_layout.addLayout(row)
-        layout.addWidget(self.import_panel)
-        self.voice_mode.currentIndexChanged.connect(self.update_import_panel)
-        self.update_import_panel()
-        layout.addWidget(QLabel("参考歌词（可选，只粘贴歌词；空格、标点和换行会自动去除）"))
-        self.lyrics = QTextEdit()
-        self.lyrics.setPlaceholderText("推荐填写参考歌词，减少分离伪影导致的错字。留空则本地识别。不要粘贴作者、STAFF 或完整简介。")
-        self.lyrics.setMaximumHeight(112)
-        layout.addWidget(self.lyrics)
-        self.backing_lyrics = QLineEdit()
-        self.backing_lyrics.setPlaceholderText("和声参考歌词（可选；留空时独立识别，不套用主唱歌词）")
-        layout.addWidget(self.backing_lyrics)
-        buttons = QHBoxLayout()
-        self.start = QPushButton("开始处理")
-        self.start.setObjectName("start")
-        self.start.clicked.connect(self.start_new)
-        self.resume = QPushButton("继续上次任务")
-        self.resume.clicked.connect(self.resume_last)
-        self.reprocess = QPushButton("重做上次分离 / MIDI")
-        self.reprocess.clicked.connect(self.reprocess_last)
-        self.stop = QPushButton("取消")
-        self.stop.setEnabled(False)
-        self.stop.clicked.connect(self.cancel)
-        self.folder = QPushButton("打开结果目录")
-        self.folder.clicked.connect(self.open_folder)
-        buttons.addWidget(self.start)
-        buttons.addWidget(self.resume)
-        buttons.addWidget(self.reprocess)
-        buttons.addWidget(self.stop)
-        buttons.addStretch()
-        buttons.addWidget(self.folder)
-        layout.addLayout(buttons)
-        self.status = QLabel("准备就绪 · 输出自动保存至本程序的 jobs 文件夹")
-        self.status.setWordWrap(True)
-        layout.addWidget(self.status)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 6)
-        self.progress.setValue(0)
-        self.progress.setFormat("已完成 %v / %m 个处理阶段")
-        layout.addWidget(self.progress)
-        self.log = QTextEdit()
-        self.log.setReadOnly(True)
-        self.log.document().setMaximumBlockCount(1800)
-        self.log.setStyleSheet("font-family: 'Microsoft YaHei'; font-size: 12px;")
-        layout.addWidget(self.log, 1)
-        foot = QLabel("模型全自动与软件分离都可选。调音、剪辑完成后，在“发布准备 / 上传”页选择成品，最后人工确认发布。")
-        foot.setWordWrap(True)
-        foot.setStyleSheet("color: #607184;")
-        layout.addWidget(foot)
-        self.recognize.toggled.connect(self.lyrics.setEnabled)
-        self.recognize.toggled.connect(self.backing_lyrics.setEnabled)
+        self.setObjectName('workspace')
+        self.setWindowTitle('Better Vocaloid Workflow Assistant')
+        from workspace_ui import build_window
+        build_window(self)
         self.timer = QTimer(self)
         self.timer.setInterval(700)
         self.timer.timeout.connect(self.refresh_progress)
-        from publishing_ui import PublishingTab
-        self.publishing = PublishingTab(self)
-        self.tabs.addTab(self.publishing, "发布准备 / 上传")
+
+    def navigate(self, index):
+        self.pages.setCurrentIndex(index)
+        self.nav_buttons[index].setChecked(True)
+        if index == 2 and hasattr(self, 'results'):
+            self.results.reload()
+        elif index == 1 and hasattr(self, 'components'):
+            self.components.refresh()
+
+    def update_component_state(self):
+        from optional_components import status
+        new_model = self.voice_mode.currentData() == 'dual' and self.separator_model.currentData() == 'roformer'
+        installed = status()['ready']
+        busy = bool(getattr(self, 'components', None) and self.components.busy())
+        active = self.processing_active
+        self.component_status.setText(('BS-RoFormer 已安装，可离线使用' if installed else 'BS-RoFormer 尚未安装，需先下载组件') if new_model else '已内置 · 无需额外下载')
+        self.component_link.setVisible(new_model and not installed)
+        self.start.setEnabled(not active and (not new_model or (installed and not busy)))
+        self.roformer_device.setEnabled(new_model and not active)
 
     def start_new(self):
+        if self.processing_active:
+            return
         try:
             from pipeline import create_job
             self.job = create_job(self.source.text() if self.input_mode.currentData() == "bilibili" else "",
@@ -226,10 +110,16 @@ class Window(QWidget):
 
     def update_import_panel(self):
         self.import_panel.setVisible(self.voice_mode.currentData() == "import")
+        self.automatic_panel.setVisible(self.voice_mode.currentData() == 'dual')
+        self.output_summary.setText('单轨 MIDI · 人声 WAV · 伴奏 WAV' if self.voice_mode.currentData() == 'single' else
+                                    '双轨 MIDI · 主唱 WAV · 和声 WAV · 伴奏 WAV')
+        self.update_component_state()
 
     def options(self):
         return {"lyrics": self.lyrics.toPlainText(), "language": self.language.currentData(),
-                "recognize_lyrics": self.recognize.isChecked(), "voice_mode": self.voice_mode.currentData(),
+                "recognize_lyrics": self.recognize.isChecked(),
+                "voice_mode": self.separator_model.currentData() if self.voice_mode.currentData() == 'dual' else self.voice_mode.currentData(),
+                "roformer_device": self.roformer_device.currentData(),
                 "imported_stems": {key: field.text() for key, field in self.stem_fields.items()},
                 "midi_steps": 16 if self.precision.isChecked() else 8,
                 "backing_lyrics": self.backing_lyrics.text()}
@@ -237,7 +127,7 @@ class Window(QWidget):
     def reprocess_last(self):
         try:
             from pipeline import reuse_download
-            previous = app_path((ROOT / "last_job.txt").read_text(encoding="utf-8").strip())
+            previous = self.results.selected_job or app_path((ROOT / "last_job.txt").read_text(encoding="utf-8").strip())
             self.job = reuse_download(previous, **self.options())
             self.launch()
         except Exception as exc:
@@ -245,7 +135,7 @@ class Window(QWidget):
 
     def resume_last(self):
         try:
-            self.job = app_path((ROOT / "last_job.txt").read_text(encoding="utf-8").strip())
+            self.job = self.results.selected_job or app_path((ROOT / "last_job.txt").read_text(encoding="utf-8").strip())
             if not (self.job / "request.json").exists():
                 raise FileNotFoundError("没有找到上次任务。请先新建一个任务。")
             self.launch()
@@ -261,7 +151,10 @@ class Window(QWidget):
             self.local_music.setText(str(app_path(request["source_audio"])))
         else:
             self.source.setText(request["bv"])
-        self.voice_mode.setCurrentIndex(max(0, self.voice_mode.findData(request.get("voice_mode", "single"))))
+        requested_mode = request.get('voice_mode', 'single')
+        self.voice_mode.setCurrentIndex(max(0, self.voice_mode.findData('dual' if requested_mode == 'roformer' else requested_mode)))
+        self.separator_model.setCurrentIndex(self.separator_model.findData('roformer' if requested_mode == 'roformer' else 'dual'))
+        self.roformer_device.setCurrentIndex(self.roformer_device.findData(request.get('roformer_device', 'auto')))
         self.language.setCurrentIndex(max(0, self.language.findData(request["language"])))
         self.recognize.setChecked(request.get("recognize_lyrics", True))
         self.precision.setChecked(request.get("midi_steps", 8) >= 16)
@@ -272,7 +165,8 @@ class Window(QWidget):
             field.setText(str(app_path(value)) if value else "")
         self.progress.setRange(0, 5 if request.get("voice_mode", "single") == "single" else 6)
         self.progress.setValue(0)
-        self.status.setText("正在处理 · " + str(self.job))
+        self.status.setText("正在处理 · " + self.job.name)
+        self.status.setToolTip(str(self.job))
         self.set_running(True)
         self.runner = Runner(self.job)
         self.runner.line.connect(self.append_line)
@@ -302,12 +196,15 @@ class Window(QWidget):
         self.log.ensureCursorVisible()
 
     def set_running(self, active):
+        self.processing_active = active
         for control in (self.start, self.resume, self.reprocess, self.source, self.input_mode, self.music_panel, self.language,
-                        self.recognize, self.voice_mode, self.precision, self.import_panel):
+                        self.recognize, self.voice_mode, self.separator_model, self.precision, self.import_panel):
             control.setEnabled(not active)
         self.lyrics.setEnabled(not active and self.recognize.isChecked())
         self.backing_lyrics.setEnabled(not active and self.recognize.isChecked())
         self.stop.setEnabled(active)
+        self.stop.setVisible(active)
+        self.update_component_state()
 
     def on_result(self, code):
         self.timer.stop()
@@ -332,11 +229,13 @@ class Window(QWidget):
                 self.append_line(f"提示：{partial} 个片段保留了音符但未可靠对齐歌词，详见声部目录的 *_alignment.json。")
             self.append_line("VOCALOID 6：请用“文件 → 导入”导入 MIDI；带歌词的文件请选择 UTF-8 编码。")
         else:
+            self.log_toggle.setChecked(True)
             try:
                 status = json.loads((self.job / "status.json").read_text(encoding="utf-8"))
                 self.status.setText(status.get("error", "处理未完成，查看日志后可继续上次任务。"))
             except Exception:
                 self.status.setText("处理未完成，查看日志后可继续上次任务。")
+        self.results.reload()
 
     def cancel(self):
         if self.job:
@@ -345,12 +244,15 @@ class Window(QWidget):
             self.stop.setEnabled(False)
 
     def open_folder(self):
-        destination = self.job or ROOT / "jobs"
+        destination = self.results.selected_job or self.job or ROOT / "jobs"
         destination.mkdir(parents=True, exist_ok=True)
         os.startfile(str(destination))
 
     def closeEvent(self, event):
-        if self.publishing.busy():
+        if self.components.busy():
+            event.ignore()
+            self.components.request_cancel()
+        elif self.publishing.busy():
             event.ignore()
             self.publishing.status.setText("正在准备发布资料，请完成后再关闭窗口。")
         elif self.runner is not None and self.runner.isRunning():

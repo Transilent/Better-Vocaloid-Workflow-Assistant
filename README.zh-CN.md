@@ -13,13 +13,41 @@
 5. 将 MIDI 和伴奏导入调音软件；调音及 mixdown 与视频的对齐由人完成。
 6. 在发布页选择成品，编辑标题、来源并登录平台，核对上传页面后手动发布。
 
+新版工作区与组件下载入口提供于 **BVWA-Workspace-Components-Update.zip**。
+已有完整 v0.1.0–v0.1.2 便携目录：关闭助手，将更新包解压内容复制到
+`Start-Assistant.bat` 所在目录，覆盖同名文件。更新累计包含日语对齐修复，
+保留设置、任务、模型和登录资料。最新源码目录已经包含这些改动。
+
 ## 功能
+
+新版侧栏分为“处理音乐”“模型与组件”“任务与结果”“发布准备”。处理页只保留
+一个主要操作，参考歌词、高级设置和日志按需展开。继续任务、重做和打开结果位于任务页。
+
+![处理工作区](docs/images/processing.png)
+
+Karaoke 2 已内置。需要 BS-RoFormer 时，在“模型与组件”选择 NVIDIA GPU / CUDA
+或仅 CPU，点击“下载并安装”。安装支持进度、取消、校验续传，并在模型与运行库
+验证成功后启用。点击“使用此模型”返回处理页。
+
+| 可选运行库 | 下载量 | 安装空间，约 |
+| --- | --- | --- |
+| NVIDIA GPU / CUDA | 3.52 GB | 6.14 GB |
+| CPU | 0.46 GB | 1.56 GB |
+
+组件从固定版本的模型和 Python 包来源下载，使用 SHA-256 校验。一次只保留一份
+可选环境，切换运行库会在新环境验证成功后替换旧环境；基础运行库保留。
+安装时还需预留下载文件空间，界面会显示并检查磁盘需求。
+
+新模型沿用“MDX 总人声 → BS-RoFormer 主唱／和声”的顺序，中日文使用相同的
+分离方法，语言选项影响后续歌词处理。以和声为主的片段出现较弱主唱轨可能合理。
+中日文 ASR 权重保持原样。
 
 | 输入或方式 | 处理 | 主要结果 |
 | --- | --- | --- |
 | BV / B站链接 | 获取视频、音频、来源与本家封面 | 来源素材与简介草稿 |
 | 本地 WAV / MP3 / FLAC / M4A | 保存副本并解码，无需 BV | 统一格式的原音频 |
 | 模型双轨 | 分离人声 / 伴奏，再拆分主唱 / 和声 | 主唱、和声、伴奏、双声部 MIDI |
+| 可选 BS-RoFormer | 同一顺序，使用原始和声分离权重；支持 CPU / CUDA | 主唱、和声、伴奏、双声部 MIDI |
 | 外部分轨 | 导入完整主唱、和声、伴奏 WAV | 双声部 MIDI |
 | 合并人声单轨 | 提取合并人声的音符和歌词 | 单声部 MIDI |
 | 上传准备 | 填写标题、来源、封面 | 待人工核对的 B站 / 小红书页面 |
@@ -67,6 +95,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Install-Runtime.ps1 
 | --- | --- |
 | [Vocal2Midi](https://github.com/Xiantaidu/Vocal2Midi) | 通过内置应用层提取音符、对齐歌词并输出 MIDI；仓库许可为 Apache-2.0 |
 | [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui) 与 [UVR 模型仓库](https://github.com/TRvlvr/model_repo) | MDX 推理参考、分离权重及参数；无需运行 UVR 桌面软件 |
+| [Pymss](https://github.com/pymss-project/pymss) / [Pymss Studio](https://github.com/pymss-project/pymss-studio) | 可选 BS-RoFormer 推理；Studio 的侧栏、卡片与操作分组作为界面设计参考 |
+| [becruily/bs-roformer-karaoke](https://huggingface.co/becruily/bs-roformer-karaoke) | 可选原始权重与配套配置 |
+| [PyTorch](https://pytorch.org/) | 可选组件的 CPU / CUDA 推理运行库 |
 | [yt-dlp](https://github.com/yt-dlp/yt-dlp) | B站媒体下载 |
 | [FFmpeg](https://ffmpeg.org/) / [Jellyfin FFmpeg](https://github.com/jellyfin/jellyfin-ffmpeg) | 音频解码、媒体检测、视频截图 |
 | [Playwright for Python](https://github.com/microsoft/playwright-python) | 浏览器登录及创作页面操作 |

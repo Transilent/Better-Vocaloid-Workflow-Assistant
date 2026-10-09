@@ -18,7 +18,9 @@ The first checks startup requirements. The second hashes every fixed dependency.
 | --- | --- |
 | Core | Stage reuse, cancellation, stem normalization, MIDI checks |
 | Japanese MIDI | Short mora pauses, kana token positions, supported phones, chunk error isolation, cancellation and atomic track assembly |
-| Desktop UI | Input selection, job state, publication controls |
+| Desktop UI | Four-page navigation, folded controls, primary actions, component state, multi-GB progress signals, 980×680 layout |
+| Optional installer | Local HTTP Range resume, ignored/bad Range responses, SHA-256 mismatch, cancellation, archive traversal and cleanup boundaries |
+| Publication workspace | Real synthetic-video bundle preparation, primary action dispatch, edited-draft guard, custom-cover restore and error recovery |
 | Local music | WAV/MP3/FLAC/M4A, snapshots, resume, invalid inputs, no source API requests |
 | Browser lifecycle | Sign-in profiles, process handling, upload state |
 | Platform adapters | File selection, text fields, cover controls on local pages |
@@ -31,6 +33,12 @@ The first checks startup requirements. The second hashes every fixed dependency.
 The portable ZIP is extracted into a separate directory. Every member's CRC, size and SHA-256 are checked against the release inventory; fixed dependencies are cross-checked with their manifest. Startup and regressions are then run with the extracted Python. Split-part hashes and the full ZIP hash are recorded in `release-assets.json`.
 
 Model verification also exercises real local separation and transcription, including two-part MIDI and lyrics. Repository tests use short fixtures; they do not assert musical accuracy for arbitrary songs. Release verification reports omit account state, private media, and machine-specific installation paths.
+
+The optional-component integration was additionally checked using real CPU and
+CUDA downloads and original-model loading. Short Chinese and Japanese samples
+exercise the offscreen Start action, CUDA separation, and note-only two-part MIDI.
+This verifies integration and output structure, not lyric or musical accuracy.
+The retained ASR paths are covered by the existing transcription regression tests.
 
 ## Practical limits
 

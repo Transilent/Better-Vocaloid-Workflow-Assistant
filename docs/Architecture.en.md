@@ -16,6 +16,16 @@ For local music, metadata is a placeholder for manually supplied source credits.
 
 Automatic dual-part processing first estimates combined vocals and accompaniment with the MDX instrumental model. The karaoke model then estimates backing content from the vocal stem; its residual is used as lead vocals. This estimates musical roles rather than singer identities. External full-length stems bypass this separation. Vocal2Midi transcribes each vocal part independently, and the assistant combines their MIDI while preserving timing.
 
+The optional BS-RoFormer route uses the same first stage. Its original checkpoint
+estimates lead from combined vocals; subtracting lead from those vocals gives
+backing. It does not treat low lead energy as a reason to swap parts. Chinese and
+Japanese use identical separation parameters: 44.1 kHz stereo, 20-second chunks,
+75% overlap, batch size 1, no TTA and no independent stem normalization.
+
+The native Qt workspace has four sidebar pages. Advanced controls and logs are
+folded; task recovery is in Results. Publication uses one primary action whose
+state depends on whether the prepared bundle matches the current form.
+
 Japanese transcription uses the original bundled Romaji ASR weights. The integration preserves supported standalone phones at slice boundaries, checks HubertFA input phonemes, isolates recoverable alignment data errors by chunk, and records pitch-only fallbacks separately from empty ASR. Short-mora boundary repair is limited to 150 ms gaps in Japanese. Non-singing mora tokens consume their kana display token so subsequent syllables stay aligned. Chinese ASR selection remains Qwen.
 
 ## Code map
@@ -23,6 +33,9 @@ Japanese transcription uses the original bundled Romaji ASR weights. The integra
 | Module | Responsibility |
 | --- | --- |
 | `launch.py`, `app.py` | Runtime bootstrap, desktop controls, background jobs |
+| `desktop_theme.py`, `workspace_ui.py`, `publishing_layout.py` | Theme, sidebar workspace and publication form |
+| `components_ui.py`, `optional_components.py`, `components/roformer.json` | Download UI, pinned install manifest, resumable installer and validation |
+| `roformer.py` | Optional Pymss inference and timeline-preserving lead/backing outputs |
 | `common.py`, `check_dependencies.py` | Relative paths, configuration, subprocess cancellation, dependency checks |
 | `pipeline.py` | Input snapshots, metadata, downloads, stages, resume |
 | `mdx.py`, `separate_audio.py` | ONNX separation and local separation CLI |
@@ -41,6 +54,16 @@ Japanese transcription uses the original bundled Romaji ASR weights. The integra
 Runtime state is separate: `jobs/` stores stage inputs/results, `cache/` stores temporary data and dedicated browser profiles, and `publish-packages/` stores finished-video snapshots and publication text. These folders can contain private data and are excluded from Git and clean releases. Do not distribute a working application folder without removing its runtime state.
 
 Resume validates expected stage outputs and relevant settings. Separate vocal transcription results can be reused. A changed source snapshot or damaged output requires rebuilding the affected stage.
+
+Optional files reside under `dependencies/optional/bs-roformer/current` and are
+excluded from Git and the base archive. CPU/CUDA wheels use a private import path
+in inference subprocesses, leaving the base ONNX runtime unchanged. Downloads
+verify pinned sizes and SHA-256. A staged environment must pass original-model
+loading and an available-device computation before activation. Successful
+installation removes downloaded archives. Cancellation retains downloads for
+retry; the active environment remains usable. Only one optional runtime is active.
+The PyTorch payload omits C++ headers and CMake development files, retaining
+Python inference files, DLLs and license metadata.
 
 ## Automation boundary
 

@@ -38,19 +38,24 @@ def singer_candidate(description, title=""):
 
 def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, parent=None,
                voice_mode="dual", imported_stems=None, midi_steps=16, backing_lyrics="", remember=True,
-               local_music=None):
+               local_music=None, roformer_device='auto'):
     if local_music is not None and not str(local_music).strip().strip('"'):
         raise ValueError("请选择本地音乐文件。")
     local = app_path(local_music) if local_music is not None else None
     if local is not None and (not local.is_file() or local.stat().st_size == 0):
         raise ValueError("请选择存在且非空的本地音乐文件。")
     bv = None if local is not None else extract_bv(source)
-    if voice_mode not in ("single", "dual", "import"):
+    if voice_mode not in ("single", "dual", "import", "roformer"):
         raise ValueError("未知的分轨模式。")
     if language not in ("zh", "ja"):
         raise ValueError("歌词语言请选择中文或日语。")
     if midi_steps not in (8, 16, 32):
         raise ValueError("MIDI 推理步数应为 8、16 或 32。")
+    if roformer_device not in ('auto', 'cpu', 'cuda'):
+        raise ValueError('新模型的设备请选择自动、CPU 或 CUDA。')
+    if voice_mode == 'roformer':
+        from optional_components import require_ready
+        require_ready()
     if voice_mode == "import":
         for key in ("lead", "backing", "instrumental"):
             path = (imported_stems or {}).get(key)
@@ -69,6 +74,7 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
         "recognize_lyrics": bool(recognize_lyrics), "tools": load_config(resolve_paths=False),
         "voice_mode": voice_mode, "imported_stems": imported_stems or {},
         "midi_steps": int(midi_steps), "backing_lyrics": clean_lyrics(backing_lyrics),
+        **({'roformer_device': roformer_device} if voice_mode == 'roformer' else {}),
     })
     if remember:
         (ROOT / "last_job.txt").write_text(saved_path(job), encoding="utf-8")
@@ -379,8 +385,12 @@ def separate(job, request):
         print("进一步拆分主唱与和声（Karaoke 2）……", flush=True)
         report["chorus"] = separate_mdx(job / "audio/vocals.wav", job / "audio", config, job,
                                          output_names=("lead.wav", "backing.wav"))
+    elif mode == 'roformer':
+        from roformer import separate_vocals
+        report['chorus'] = separate_vocals(job / 'audio/vocals.wav', job / 'audio', job,
+                                          request.get('roformer_device', 'auto'))
     original = check_audio(job / "audio/source.wav")
-    for name in (("vocals.wav", "instrumental.wav", "lead.wav", "backing.wav") if mode == "dual" else ("vocals.wav", "instrumental.wav")):
+    for name in (("vocals.wav", "instrumental.wav", "lead.wav", "backing.wav") if mode in ("dual", "roformer") else ("vocals.wav", "instrumental.wav")):
         if check_audio(job / "audio" / name).frames != original.frames:
             raise RuntimeError("分离输出长度与原音频不一致。")
     atomic_json(job / "separation-report.json", report)
@@ -483,6 +493,9 @@ def _run(job, until):
     status.pop("error", None)
     atomic_json(status_file, status)
     try:
+        if request.get('voice_mode') == 'roformer':
+            from optional_components import require_ready
+            require_ready()
         for key in keys:
             if not config.get(key) or not Path(config[key]).exists():
                 raise FileNotFoundError(f"工具路径不存在：{config.get(key, key)}（可编辑 config.json 后重做任务）")
@@ -553,7 +566,8 @@ def main():
     parser.add_argument("--language", choices=("zh", "ja"), default="zh")
     parser.add_argument("--lyrics-file")
     parser.add_argument("--notes-only", action="store_true")
-    parser.add_argument("--voice-mode", choices=("single", "dual", "import"), default="dual")
+    parser.add_argument("--voice-mode", choices=("single", "dual", "import", "roformer"), default="dual")
+    parser.add_argument('--roformer-device', choices=('auto', 'cpu', 'cuda'), default='auto')
     parser.add_argument("--lead-wav")
     parser.add_argument("--backing-wav")
     parser.add_argument("--instrumental-wav")
@@ -567,6 +581,7 @@ def main():
             lyrics = Path(args.lyrics_file).read_text(encoding="utf-8-sig") if args.lyrics_file else ""
             job = create_job(args.source or "", lyrics, args.language, not args.notes_only,
                              voice_mode=args.voice_mode, midi_steps=args.midi_steps,
+                             roformer_device=args.roformer_device,
                              local_music=args.audio_file,
                              imported_stems={"lead": args.lead_wav, "backing": args.backing_wav, "instrumental": args.instrumental_wav})
         print(f"任务目录：{job}", flush=True)

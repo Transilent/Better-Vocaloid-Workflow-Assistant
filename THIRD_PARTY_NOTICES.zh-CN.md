@@ -8,6 +8,8 @@
 | --- | --- |
 | Vocal2Midi | [上游项目](https://github.com/Xiantaidu/Vocal2Midi)，Apache-2.0；保留 `dependencies/vocal2midi/LICENSE` 与 `ACKNOWLEDGEMENTS.md` |
 | MDX 分离模型 | [UVR 模型发布](https://github.com/TRvlvr/model_repo/releases/tag/all_public_uvr_models)、[模型参数](https://github.com/TRvlvr/application_data)；模型授权与助手代码不同 |
+| 可选 BS-RoFormer 模型 | [becruily/bs-roformer-karaoke](https://huggingface.co/becruily/bs-roformer-karaoke) 的原权重与配置；版本、哈希见 `components/roformer.json`；模型授权独立适用 |
+| 可选 Pymss、Pymss Core、PyTorch 及支持库 | 从冻结的上游 wheel 下载，包元数据及原声明保留于 `dependencies/optional/bs-roformer/current/packages` |
 | Python | 3.12.10，保留运行库的 `LICENSE.txt` |
 | Python 库 | 保留原 `LICENSE`、`COPYING`、包内许可及元数据 |
 | yt-dlp | [上游](https://github.com/yt-dlp/yt-dlp)，`vendor/` 内保留代码与许可 |
@@ -17,4 +19,6 @@
 
 Vocal2Midi 的上游资料保留 GAME、HubertFA、Qwen3-ASR、RMVPE、RomajiASR、llama.cpp、ONNX Runtime 的致谢。固定环境经过验证，不代表所有第三方文件具有相同许可证。
 
-干净发行包不含浏览器账号、会话、私人音视频、封面、MIDI 或发布草稿。二进制包中的第三方组件仍需遵守各自的再分发条款。
+侧栏、卡片和操作分组参考 [Pymss Studio](https://github.com/pymss-project/pymss-studio)。本助手的 Qt 布局与 SVG 控件为原创实现，未打包 Studio 的前端代码或素材。
+
+基础包不含可选 BS-RoFormer 运行库，也不含浏览器账号、会话、私人音视频、封面、MIDI 或发布草稿。二进制包中的第三方组件仍需遵守各自的再分发条款。

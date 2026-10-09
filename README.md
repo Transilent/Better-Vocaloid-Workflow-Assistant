@@ -11,9 +11,46 @@ A Windows x64 assistant for preparing singing-synthesis projects. Start with a B
 3. Double-click **`Start-Assistant.bat`**. This is the only application launcher.
 4. Choose **Bilibili BV/link** or **local music**, set the separation mode and optional lyrics, then start processing.
 5. Import MIDI and accompaniment into a tuning application. Complete tuning and align the mixdown with the video manually.
-6. Select the finished video in the publishing tab, edit titles and credits, and sign in. Review the prepared upload and publish manually.
+6. Open **发布准备** (Publication), select the finished video, edit titles and credits, and sign in. Review the prepared upload and publish manually.
 
 The interface currently uses Chinese labels. The [English guide](docs/UserGuide.en.md) explains them; a [Chinese guide](docs/UserGuide.zh-CN.md) is also available.
+
+For the new workspace and component downloader, apply
+**BVWA-Workspace-Components-Update.zip** from Releases over an existing complete
+v0.1.0–v0.1.2 portable folder. Close the assistant first, then copy the extracted
+files into the folder containing `Start-Assistant.bat`, replacing same-name files.
+The update is cumulative, includes the Japanese alignment fixes, and preserves
+settings, jobs, models and sign-in profiles. A current source checkout already
+contains these changes.
+
+## Workspace and optional model
+
+The sidebar separates **processing**, **models/components**, **tasks/results**, and
+**publication**. Processing has one primary action; lyrics, advanced settings and
+logs expand when needed. Resume and reprocess controls are in Tasks/Results.
+
+![Processing workspace](docs/images/processing.png)
+
+Karaoke 2 remains included. To use BS-RoFormer, open **模型与组件**, choose **NVIDIA
+GPU / CUDA** or **仅 CPU**, and select **下载并安装**. The installer shows progress,
+supports cancellation and verified resume, and activates the component after
+model/runtime validation. Select **使用此模型** to return to processing.
+
+| Optional runtime | Download | Approximate installed space |
+| --- | --- | --- |
+| NVIDIA GPU / CUDA | 3.52 GB | 6.14 GB |
+| CPU | 0.46 GB | 1.56 GB |
+
+The component is downloaded from pinned upstream model/Python package sources,
+with SHA-256 verification. Only one optional runtime is retained; changing it
+replaces the existing optional environment after successful validation. The base
+runtime is preserved. Installation needs download space in addition to the
+installed space; the interface checks available disk space.
+
+BS-RoFormer runs after MDX extracts total vocals, predicts the lead candidate,
+and obtains backing by subtraction. Chinese/Japanese use the same separator;
+the language setting affects lyric processing. A quiet lead can be correct in
+a backing-only passage. ASR weights remain unchanged.
 
 ## Features
 
@@ -22,6 +59,7 @@ The interface currently uses Chinese labels. The [English guide](docs/UserGuide.
 | Bilibili BV/link | Fetch source metadata, video, audio, and original cover | Source assets and credits draft |
 | Local WAV / MP3 / FLAC / M4A | Save a snapshot and decode locally; no BV required | Normalized source audio |
 | Automatic two-stage separation | Separate vocals/accompaniment, then lead/backing vocals | Vocal parts, accompaniment, two-part MIDI |
+| Optional BS-RoFormer | Same stage order with the original karaoke weights; CPU or CUDA | Vocal parts, accompaniment, two-part MIDI |
 | External stems | Import full-length lead, backing, and accompaniment WAVs | Two-part MIDI |
 | Combined-vocal mode | Transcribe the combined vocal stem | Single-part MIDI |
 | Upload preparation | Fill source credits, titles, and covers | Bilibili / Xiaohongshu upload awaiting review |
@@ -80,6 +118,10 @@ This assistant integrates existing tools and model pipelines. Thanks to their au
 | [Playwright for Python](https://github.com/microsoft/playwright-python) | Browser sign-in and creator-page automation |
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime) | CPU / DirectML model execution |
 | [PyQt](https://www.riverbankcomputing.com/software/pyqt/) | Desktop interface |
+| [Pymss](https://github.com/pymss-project/pymss) | Optional BS-RoFormer inference API and model implementation |
+| [Pymss Studio](https://github.com/pymss-project/pymss-studio) | Workspace layout and model-management workflow reference |
+| [becruily / BS-RoFormer karaoke](https://huggingface.co/becruily/bs-roformer-karaoke) | Original optional checkpoint and configuration |
+| [PyTorch](https://pytorch.org/) | Optional CPU / CUDA inference runtime |
 | [NumPy](https://numpy.org/), [SciPy](https://scipy.org/), [librosa](https://librosa.org/), [SoundFile](https://github.com/bastibe/python-soundfile), [Mido](https://github.com/mido/mido), [Pillow](https://python-pillow.org/) | Audio, numeric, MIDI and image processing |
 
 Vocal2Midi's pipeline also builds on [GAME](https://github.com/openvpi/GAME), [HubertFA](https://github.com/wolfgitpr/HubertFA), [LyricFA](https://github.com/wolfgitpr/LyricFA), and [llama.cpp](https://github.com/ggml-org/llama.cpp), alongside its ASR and pitch models. See its preserved [acknowledgements](dependencies/vocal2midi/ACKNOWLEDGEMENTS.md) and the [third-party notices](THIRD_PARTY_NOTICES.md) for attribution and component-specific terms. These projects and models retain their own licenses; this list does not grant a common license to the package.
