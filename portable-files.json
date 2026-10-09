@@ -102,6 +102,10 @@
       "source": "publication.py"
     },
     {
+      "file": "publish-selectors.json",
+      "source": "publish-selectors.json"
+    },
+    {
       "file": "publish_browser.py",
       "source": "publish_browser.py"
     },
