@@ -1,0 +1,149 @@
+{
+  "format": 1,
+  "entries": [
+    {
+      "file": "README.md",
+      "source": "docs/Portable.en.md"
+    },
+    {
+      "file": "README.zh-CN.md",
+      "source": "docs/Portable.zh-CN.md"
+    },
+    {
+      "file": "Start-Assistant.bat",
+      "source": "Start-Assistant.bat"
+    },
+    {
+      "file": "THIRD_PARTY_NOTICES.md",
+      "source": "THIRD_PARTY_NOTICES.md"
+    },
+    {
+      "file": "THIRD_PARTY_NOTICES.zh-CN.md",
+      "source": "THIRD_PARTY_NOTICES.zh-CN.md"
+    },
+    {
+      "file": "app.py",
+      "source": "app.py"
+    },
+    {
+      "file": "assets/check.svg",
+      "source": "assets/check.svg"
+    },
+    {
+      "file": "assets/chevron-down.svg",
+      "source": "assets/chevron-down.svg"
+    },
+    {
+      "file": "check_dependencies.py",
+      "source": "check_dependencies.py"
+    },
+    {
+      "file": "common.py",
+      "source": "common.py"
+    },
+    {
+      "file": "components/roformer.json",
+      "source": "components/roformer.json"
+    },
+    {
+      "file": "components_ui.py",
+      "source": "components_ui.py"
+    },
+    {
+      "file": "config.json",
+      "source": "config.json"
+    },
+    {
+      "file": "cover_art.py",
+      "source": "cover_art.py"
+    },
+    {
+      "file": "dependencies/manifest.json",
+      "source": "dependencies/manifest.json"
+    },
+    {
+      "file": "desktop_theme.py",
+      "source": "desktop_theme.py"
+    },
+    {
+      "file": "launch.py",
+      "source": "launch.py"
+    },
+    {
+      "file": "mdx.py",
+      "source": "mdx.py"
+    },
+    {
+      "file": "midi_bridge.py",
+      "source": "midi_bridge.py"
+    },
+    {
+      "file": "midi_checks.py",
+      "source": "midi_checks.py"
+    },
+    {
+      "file": "midi_merge.py",
+      "source": "midi_merge.py"
+    },
+    {
+      "file": "models/来源说明.md",
+      "source": "models/来源说明.md"
+    },
+    {
+      "file": "optional_components.py",
+      "source": "optional_components.py"
+    },
+    {
+      "file": "pipeline.py",
+      "source": "pipeline.py"
+    },
+    {
+      "file": "publication.py",
+      "source": "publication.py"
+    },
+    {
+      "file": "publish_browser.py",
+      "source": "publish_browser.py"
+    },
+    {
+      "file": "publishing_layout.py",
+      "source": "publishing_layout.py"
+    },
+    {
+      "file": "publishing_ui.py",
+      "source": "publishing_ui.py"
+    },
+    {
+      "file": "roformer.py",
+      "source": "roformer.py"
+    },
+    {
+      "file": "tools/Check-Dependencies.bat",
+      "source": "tools/portable/Check-Dependencies.bat"
+    },
+    {
+      "file": "tools/Install-Runtime.ps1",
+      "source": "tools/Install-Runtime.ps1"
+    },
+    {
+      "file": "tools/Use-CPU.bat",
+      "source": "tools/portable/Use-CPU.bat"
+    },
+    {
+      "file": "tools/Use-GPU.bat",
+      "source": "tools/portable/Use-GPU.bat"
+    },
+    {
+      "file": "tools/set_device.py",
+      "source": "tools/set_device.py"
+    },
+    {
+      "file": "v2m_runtime.py",
+      "source": "v2m_runtime.py"
+    },
+    {
+      "file": "workspace_ui.py",
+      "source": "workspace_ui.py"
+    }
+  ]
+}

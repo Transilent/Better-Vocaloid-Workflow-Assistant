@@ -97,6 +97,11 @@ MIDI 以 120 BPM 表示实际时间，关闭量化；120 不是检测出的歌�
 
 `--notes-only` 仅音符；`--midi-steps 8|16|32` 设置步数；`--until separation` 在 MIDI 前停止。三种输入参数互斥。本地分离输出目录必须为空。
 
-`Check-Dependencies.bat` 校验依赖；启动错误见 `launcher.log`。CPU/GPU 切换脚本修改设备设置，重启后生效。
+独立 `separate_audio.py` 工具位于源码仓库。便携版命令行分离可使用
+`pipeline.py --until separation`。
+
+诊断批处理在便携包的 `tools/` 中，源码目录仍位于根目录。
+`Check-Dependencies.bat` 校验依赖；启动错误见 `launcher.log`。
+CPU/GPU 切换脚本修改基础 CPU / DirectML 设置，重启后生效。
 
 `cache/` 保存临时文件、专用登录会话，`jobs/` 保存音频和 MIDI，`publish-packages/` 保存发布资料。它们不进入 Git 或干净发行包。每台新电脑需重新登录。

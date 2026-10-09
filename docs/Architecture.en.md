@@ -49,7 +49,13 @@ Japanese transcription uses the original bundled Romaji ASR weights. The integra
 
 ## Files and state
 
-`config.json` stores application settings. Paths in a clean release resolve relative to the extracted application folder. `dependencies/manifest.json` records fixed runtime files and SHA-256 hashes; `source-files.json` selects repository files for packaging. A generated ZIP also includes `release-inventory.json` for all packaged files.
+`config.json` stores application settings. Paths in a clean release resolve relative to the extracted application folder. `dependencies/manifest.json` records fixed runtime files and SHA-256 hashes. `source-files.json` inventories the repository; `portable-files.json` selects release runtime files and maps the concise bilingual guides to the package README files. A generated ZIP also includes `release-inventory.json` for all packaged files.
+
+Release assets contain three ZIP parts, the merge script and a minimal archive/part
+checksum inventory. Tests, screenshots and build materials are kept in the source
+repository. Dependency test directories and the unused upstream desktop GUI are
+excluded from the runtime inventory. Diagnostic batch files are placed in `tools`;
+the root has one application launcher.
 
 Runtime state is separate: `jobs/` stores stage inputs/results, `cache/` stores temporary data and dedicated browser profiles, and `publish-packages/` stores finished-video snapshots and publication text. These folders can contain private data and are excluded from Git and clean releases. Do not distribute a working application folder without removing its runtime state.
 

@@ -37,7 +37,9 @@ Qt 界面使用四页侧栏，高级设置与日志折叠，任务恢复放在�
 
 ## 配置与数据
 
-`config.json` 保存应用设置，干净发行包使用相对程序目录的路径。`dependencies/manifest.json` 保存固定依赖和 SHA-256；`source-files.json` 选择入包源码。ZIP 内另有完整文件清单 `release-inventory.json`。
+`config.json` 保存应用设置，干净发行包使用相对程序目录的路径。`dependencies/manifest.json` 保存固定依赖和 SHA-256；`source-files.json` 记录仓库，`portable-files.json` 选择入包运行文件，并把简明中英文指南映射为包内 README。ZIP 内另有完整文件清单 `release-inventory.json`。
+
+Release 只提供三份分卷、合并脚本及最小归档/分卷校验清单。测试、截图、构建资料留在源码仓库；运行清单移除依赖测试目录与未使用的上游桌面界面。诊断批处理放入 `tools`，根目录只保留一个程序启动入口。
 
 `jobs/` 保存任务素材与结果，`cache/` 保存临时文件和平台登录，`publish-packages/` 保存成品副本与发布资料。这些运行目录含私人数据，不进入 Git 和干净发行包。分发使用过的程序目录前，需移除运行数据。
 

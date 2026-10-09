@@ -26,15 +26,24 @@ def checked_path(root, name):
         raise ValueError('Private or escaping release path: ' + name)
     return path
 
+def package_sources():
+    entries = json.loads((ROOT / 'portable-files.json').read_text(encoding='utf-8'))['entries']
+    if len({entry['file'] for entry in entries}) != len(entries):
+        raise ValueError('Duplicate portable destination')
+    for entry in entries:
+        checked_path(ROOT, entry['file'])
+        checked_path(ROOT, entry['source'])
+    return {entry['file']: entry['source'] for entry in entries}
+
 def build(output, runtime, compression=1):
-    source_names = json.loads((ROOT / 'source-files.json').read_text(encoding='utf-8'))['files']
+    source_names = package_sources()
     dependency = json.loads((ROOT / 'dependencies/manifest.json').read_text(encoding='utf-8'))
     names = sorted(set(source_names) | {e['file'] for e in dependency['entries']})
     expected = {e['file']: e for e in dependency['entries']}
     sources = []
     total = 0
     for name in names:
-        path = checked_path(ROOT, name)
+        path = checked_path(ROOT, source_names.get(name, name))
         if not path.is_file():
             path = checked_path(runtime, name)
         if not path.is_file():
@@ -114,10 +123,10 @@ def update_from_zip(output, base, compression=1):
     expected_base = base.with_suffix(base.suffix + '.sha256').read_text(encoding='ascii').split()[0]
     if digest(base) != expected_base:
         raise ValueError('Base ZIP checksum mismatch')
-    source_names = set(json.loads((ROOT / 'source-files.json').read_text(encoding='utf-8'))['files'])
+    source_names = package_sources()
     dependency = json.loads((ROOT / 'dependencies/manifest.json').read_text(encoding='utf-8'))
     dependencies = {e['file']: e for e in dependency['entries']}
-    names = sorted(source_names | set(dependencies))
+    names = sorted(set(source_names) | set(dependencies))
     if output.exists():
         raise FileExistsError(output)
     started = time.monotonic()
@@ -130,7 +139,7 @@ def update_from_zip(output, base, compression=1):
         for name in names:
             old = old_entries.get(name)
             if name in source_names:
-                path = checked_path(ROOT, name)
+                path = checked_path(ROOT, source_names[name])
                 new = {'file': name, 'bytes': path.stat().st_size, 'sha256': digest(path)}
             else:
                 new = dict(dependencies[name])
@@ -185,4 +194,5 @@ if __name__ == '__main__':
         if not 1 <= args.split_mib < 2048:
             raise ValueError('Release parts must be between 1 and 2047 MiB')
         report['parts'] = split(args.output.resolve(), args.split_mib)
-        (args.output.resolve().parent / 'release-assets.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+        public = {'archive': report['archive'], 'parts': report['parts']}
+        (args.output.resolve().parent / 'release-assets.json').write_text(json.dumps(public, indent=2), encoding='utf-8')

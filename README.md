@@ -15,13 +15,10 @@ A Windows x64 assistant for preparing singing-synthesis projects. Start with a B
 
 The interface currently uses Chinese labels. The [English guide](docs/UserGuide.en.md) explains them; a [Chinese guide](docs/UserGuide.zh-CN.md) is also available.
 
-For the new workspace and component downloader, apply
-**BVWA-Workspace-Components-Update.zip** from Releases over an existing complete
-v0.1.0–v0.1.2 portable folder. Close the assistant first, then copy the extracted
-files into the folder containing `Start-Assistant.bat`, replacing same-name files.
-The update is cumulative, includes the Japanese alignment fixes, and preserves
-settings, jobs, models and sign-in profiles. A current source checkout already
-contains these changes.
+The current portable package includes the new workspace, component downloader
+and Japanese alignment fixes. It needs no separate update archive. Release
+attachments contain only three ZIP parts, the merge script and the checksum
+inventory. Development tests and build materials remain in the source repository.
 
 ## Workspace and optional model
 
@@ -77,15 +74,24 @@ Release files are split to satisfy GitHub's attachment limits. Download all `.zi
 | Batch file | Purpose |
 | --- | --- |
 | `Start-Assistant.bat` | Launch the application, the only startup entry |
-| `Check-Dependencies.bat` | Verify fixed runtime files using SHA-256 |
-| `Use-CPU.bat` | Select CPU inference; restart afterward |
-| `Use-GPU.bat` | Select DirectML inference; restart afterward |
+| `tools/Check-Dependencies.bat` | Verify fixed runtime files using SHA-256 |
+| `tools/Use-CPU.bat` | Select CPU inference; restart afterward |
+| `tools/Use-GPU.bat` | Select DirectML inference; restart afterward |
 
 There is no additional `.cmd` launcher. Each new computer requires fresh Bilibili and Xiaohongshu sign-in.
+
+The portable folder contains runtime files, concise bilingual instructions and
+third-party notices. Repository tests, screenshots, build scripts and other
+development material are excluded. Base runtime test directories and the unused
+upstream desktop GUI are also excluded; inference models and licenses are retained.
 
 ## Source and development
 
 Git stores assistant source, frozen integration source, tests, configuration, packaging tools, and the dependency inventory. Large binaries and models are stored in Release assets. Launch a source checkout with `Start-Assistant.bat` to install them. Alternatively, extract the portable package and overlay the repository source.
+
+`portable-files.json` selects assistant runtime files for release packaging;
+`source-files.json` inventories the complete repository. In a source checkout,
+the diagnostic batch files remain at the root.
 
 For offline runtime installation, put `BVWA-Windows-x64.zip` in the source folder or its parent, or run:
 

@@ -103,6 +103,12 @@ Run from the extracted folder:
 
 `--notes-only` skips lyrics; `--midi-steps 8|16|32` selects inference steps; `--until separation` stops before MIDI. `--source`, `--audio-file` and `--job` are mutually exclusive. Local separation needs an empty output directory.
 
-`Check-Dependencies.bat` verifies fixed dependencies. Startup errors appear in `launcher.log`. `Use-CPU.bat` and `Use-GPU.bat` change device settings; restart afterward.
+The standalone `separate_audio.py` helper is available in the source repository.
+For portable CLI separation, use `pipeline.py --until separation`.
+
+Diagnostic batch files are under `tools/` in the portable package and at the root
+in a source checkout. `Check-Dependencies.bat` verifies fixed dependencies.
+Startup errors appear in `launcher.log`. `Use-CPU.bat` and `Use-GPU.bat` change
+base CPU/DirectML device settings; restart afterward.
 
 `cache/` holds temporary files and dedicated sign-in profiles, `jobs/` holds audio/MIDI, and `publish-packages/` holds publication snapshots. These private runtime directories are excluded from Git and clean releases. Sign in again on each new computer.

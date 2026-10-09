@@ -12,8 +12,11 @@ before_log = log.read_bytes() if log.exists() else None
 env = dict(os.environ, PYTHONUTF8='1', PYTHONNOUSERSITE='1')
 
 def run(name, *args):
+    launcher = APP / name
+    if not launcher.is_file():
+        launcher = APP / 'tools' / name
     result = subprocess.run([str(Path(os.environ['WINDIR']) / 'System32/cmd.exe'),
-                             '/d', '/c', name, *args], cwd=APP, env=env,
+                             '/d', '/c', str(launcher), *args], cwd=APP, env=env,
                             capture_output=True, timeout=60)
     assert result.returncode == 0, result.stdout.decode('utf-8', errors='replace')[-2000:]
 
