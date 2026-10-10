@@ -127,9 +127,12 @@ VOCALOID 6 请通过“文件 → 导入”载入 MIDI，提供歌词编码选�
 
 ## 开发
 
-仓库包含源码、测试与构建工具，模型及大型运行库单独分发。源码目录可通过 `tools/Start-Diagnostics.bat` 安装运行库，再运行 `tools/build_windows_launcher.py` 构建 EXE。
+应用源码位于 `src/`，配置模板与构建清单位于 `packaging/`；测试、工具和文档各自存放在对应目录。模型及大型运行库单独分发。
+
+从源码启动时，`tools/Start-Diagnostics.bat` 会准备开发运行目录并安装缺失运行库。请修改 `src/` 中的代码，并在测试或构建前执行下面的准备命令。该命令只复制开发文件，不修改用户设置或项目数据。
 
 ```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Prepare-Source.ps1
 & '.\dependencies\vocal2midi\python\python.exe' -B .\tools\build_windows_launcher.py
 & '.\dependencies\vocal2midi\python\python.exe' -B .\tests\run_tests.py
 & '.\dependencies\vocal2midi\python\python.exe' -B .\pipeline.py --audio-file 'D:\Music\song.wav' --zh-lyric-mode pinyin

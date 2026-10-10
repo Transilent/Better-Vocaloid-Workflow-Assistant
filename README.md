@@ -128,9 +128,12 @@ Original covers come from the video's metadata. Frame capture and custom images 
 
 ## Development
 
-The repository contains source, tests and build tools. Models and large runtime files are distributed separately. For a source checkout, use `tools/Start-Diagnostics.bat` to install the runtime, then build the EXE with `tools/build_windows_launcher.py`.
+Application code is in `src/`; configuration templates and build inventories are in `packaging/`. Tests, build tools and documentation have their own folders. Models and large runtime files are distributed separately.
+
+For a source checkout, `tools/Start-Diagnostics.bat` prepares the development layout and installs a missing runtime. Edit files in `src/`, then run the preparation command below before testing or building. It copies source files to the runtime layout without changing user settings or project data.
 
 ```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Prepare-Source.ps1
 & '.\dependencies\vocal2midi\python\python.exe' -B .\tools\build_windows_launcher.py
 & '.\dependencies\vocal2midi\python\python.exe' -B .\tests\run_tests.py
 & '.\dependencies\vocal2midi\python\python.exe' -B .\pipeline.py --audio-file 'D:\Music\song.wav' --zh-lyric-mode pinyin

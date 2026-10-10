@@ -23,7 +23,7 @@
     },
     {
       "file": "app.py",
-      "source": "app.py"
+      "source": "src/app.py"
     },
     {
       "file": "assets/app.ico",
@@ -47,11 +47,11 @@
     },
     {
       "file": "check_dependencies.py",
-      "source": "check_dependencies.py"
+      "source": "src/check_dependencies.py"
     },
     {
       "file": "common.py",
-      "source": "common.py"
+      "source": "src/common.py"
     },
     {
       "file": "components/roformer.json",
@@ -59,15 +59,15 @@
     },
     {
       "file": "components_ui.py",
-      "source": "components_ui.py"
+      "source": "src/components_ui.py"
     },
     {
       "file": "config.json",
-      "source": "config.example.json"
+      "source": "packaging/config.example.json"
     },
     {
       "file": "cover_art.py",
-      "source": "cover_art.py"
+      "source": "src/cover_art.py"
     },
     {
       "file": "dependencies/manifest.json",
@@ -75,35 +75,35 @@
     },
     {
       "file": "desktop_theme.py",
-      "source": "desktop_theme.py"
+      "source": "src/desktop_theme.py"
     },
     {
       "file": "download_sources.py",
-      "source": "download_sources.py"
+      "source": "src/download_sources.py"
     },
     {
       "file": "error_recovery.py",
-      "source": "error_recovery.py"
+      "source": "src/error_recovery.py"
     },
     {
       "file": "launch.py",
-      "source": "launch.py"
+      "source": "src/launch.py"
     },
     {
       "file": "mdx.py",
-      "source": "mdx.py"
+      "source": "src/mdx.py"
     },
     {
       "file": "midi_bridge.py",
-      "source": "midi_bridge.py"
+      "source": "src/midi_bridge.py"
     },
     {
       "file": "midi_checks.py",
-      "source": "midi_checks.py"
+      "source": "src/midi_checks.py"
     },
     {
       "file": "midi_merge.py",
-      "source": "midi_merge.py"
+      "source": "src/midi_merge.py"
     },
     {
       "file": "models/来源说明.md",
@@ -111,63 +111,63 @@
     },
     {
       "file": "optional_components.py",
-      "source": "optional_components.py"
+      "source": "src/optional_components.py"
     },
     {
       "file": "pipeline.py",
-      "source": "pipeline.py"
+      "source": "src/pipeline.py"
     },
     {
       "file": "progress_state.py",
-      "source": "progress_state.py"
+      "source": "src/progress_state.py"
     },
     {
       "file": "publication.py",
-      "source": "publication.py"
+      "source": "src/publication.py"
     },
     {
       "file": "publish-selectors.json",
-      "source": "publish-selectors.json"
+      "source": "packaging/publish-selectors.json"
     },
     {
       "file": "publish_browser.py",
-      "source": "publish_browser.py"
+      "source": "src/publish_browser.py"
     },
     {
       "file": "publishing_layout.py",
-      "source": "publishing_layout.py"
+      "source": "src/publishing_layout.py"
     },
     {
       "file": "publishing_ui.py",
-      "source": "publishing_ui.py"
+      "source": "src/publishing_ui.py"
     },
     {
       "file": "results_ui.py",
-      "source": "results_ui.py"
+      "source": "src/results_ui.py"
     },
     {
       "file": "roformer.py",
-      "source": "roformer.py"
+      "source": "src/roformer.py"
     },
     {
       "file": "storage.py",
-      "source": "storage.py"
+      "source": "src/storage.py"
     },
     {
       "file": "storage_ui.py",
-      "source": "storage_ui.py"
+      "source": "src/storage_ui.py"
     },
     {
       "file": "subtitles.py",
-      "source": "subtitles.py"
+      "source": "src/subtitles.py"
     },
     {
       "file": "subtitles_ui.py",
-      "source": "subtitles_ui.py"
+      "source": "src/subtitles_ui.py"
     },
     {
       "file": "task_store.py",
-      "source": "task_store.py"
+      "source": "src/task_store.py"
     },
     {
       "file": "tools/Check-Dependencies.bat",
@@ -179,7 +179,7 @@
     },
     {
       "file": "tools/Start-Diagnostics.bat",
-      "source": "tools/Start-Diagnostics.bat"
+      "source": "tools/portable/Start-Diagnostics.bat"
     },
     {
       "file": "tools/Use-CPU.bat",
@@ -199,31 +199,31 @@
     },
     {
       "file": "updater.py",
-      "source": "updater.py"
+      "source": "src/updater.py"
     },
     {
       "file": "updates_ui.py",
-      "source": "updates_ui.py"
+      "source": "src/updates_ui.py"
     },
     {
       "file": "v2m_runtime.py",
-      "source": "v2m_runtime.py"
+      "source": "src/v2m_runtime.py"
     },
     {
       "file": "version.json",
-      "source": "version.json"
+      "source": "packaging/version.json"
     },
     {
       "file": "workflow.py",
-      "source": "workflow.py"
+      "source": "src/workflow.py"
     },
     {
       "file": "workflow_ui.py",
-      "source": "workflow_ui.py"
+      "source": "src/workflow_ui.py"
     },
     {
       "file": "workspace_ui.py",
-      "source": "workspace_ui.py"
+      "source": "src/workspace_ui.py"
     }
   ]
 }

@@ -29,13 +29,18 @@ def checked_path(root, name):
     return path
 
 def package_sources():
-    entries = json.loads((ROOT / 'portable-files.json').read_text(encoding='utf-8'))['entries']
+    entries = json.loads(inventory_path('portable-files.json').read_text(encoding='utf-8'))['entries']
     if len({entry['file'] for entry in entries}) != len(entries):
         raise ValueError('Duplicate portable destination')
     for entry in entries:
         checked_path(ROOT, entry['file'])
         checked_path(ROOT, entry['source'])
     return {entry['file']: entry['source'] for entry in entries}
+
+
+def inventory_path(name):
+    canonical = ROOT / 'packaging' / name
+    return canonical if canonical.is_file() else ROOT / name
 
 
 def release_notes(version):
@@ -210,7 +215,7 @@ if __name__ == '__main__':
         report['parts'] = split(args.output.resolve(), args.split_mib)
         from tools.build_app_update import build as build_app_update
         update = build_app_update(args.output.resolve().parent / 'BVWA-App-Update.zip')
-        version = json.loads((ROOT / 'version.json').read_text(encoding='utf-8'))['version']
+        version = json.loads(inventory_path('version.json').read_text(encoding='utf-8'))['version']
         notes = release_notes(version)
         public = {'version': version, 'archive': report['archive'], 'parts': report['parts'],
                   'update': update, 'release_notes': notes}

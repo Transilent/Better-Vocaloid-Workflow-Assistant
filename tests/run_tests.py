@@ -15,7 +15,7 @@ env['PATH'] = os.pathsep.join([str(runtime), str(runtime / 'DLLs'), str(qt / 'bi
 folder = APP / 'work/test-results'
 folder.mkdir(parents=True, exist_ok=True)
 reports = {}
-for name in ('test_core.py', 'test_japanese_midi.py', 'test_chinese_lyrics.py', 'test_updates.py', 'test_gui.py', 'test_workspace_ui.py', 'test_components.py', 'test_publication_workspace.py', 'test_local_music.py', 'test_output_directory.py', 'test_workflow_features.py', 'test_subtitles.py', 'test_publish_browser.py', 'test_publish_adapters.py', 'test_bilibili_dual_cover.py', 'test_launchers.py', 'test_bootstrap.py'):
+for name in ('test_core.py', 'test_japanese_midi.py', 'test_chinese_lyrics.py', 'test_updates.py', 'test_gui.py', 'test_workspace_ui.py', 'test_components.py', 'test_publication_workspace.py', 'test_local_music.py', 'test_output_directory.py', 'test_workflow_features.py', 'test_subtitles.py', 'test_publish_browser.py', 'test_publish_adapters.py', 'test_bilibili_dual_cover.py', 'test_launchers.py', 'test_bootstrap.py', 'test_source_layout.py'):
     started = time.monotonic()
     result = subprocess.run([sys.executable, '-B', '-u', str(APP / 'tests' / name)], capture_output=True, env=env, timeout=180)
     (folder / (name + '.log')).write_bytes(result.stdout + result.stderr)

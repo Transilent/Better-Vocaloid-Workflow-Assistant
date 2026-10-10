@@ -40,3 +40,13 @@ dependencies/vocal2midi/experiments/
 /vendor/
 /models/
 /dependencies/optional/
+
+# Generated development layout; canonical sources are in src/ and packaging/.
+/*.py
+/config.json
+/source-files.json
+/portable-files.json
+/config.example.json
+/publish-selectors.json
+/version.json
+/requirements-runtime.lock.txt

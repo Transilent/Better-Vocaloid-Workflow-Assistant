@@ -1,5 +1,6 @@
 """Create a small program-only update after confirmed local user testing."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -7,14 +8,23 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from common import file_hash
 from tools.update_apply import validate_file
 
 
+def file_hash(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def inventory_path(name):
+    canonical = ROOT / 'packaging' / name
+    return canonical if canonical.is_file() else ROOT / name
+
+
 def build(output):
-    version = json.loads((ROOT / 'version.json').read_text(encoding='utf-8'))['version']
+    version = json.loads(inventory_path('version.json').read_text(encoding='utf-8'))['version']
     runtime_sha = file_hash(ROOT / 'dependencies/manifest.json')
-    entries = json.loads((ROOT / 'portable-files.json').read_text(encoding='utf-8'))['entries']
+    entries = json.loads(inventory_path('portable-files.json').read_text(encoding='utf-8'))['entries']
     selected = []
     for entry in entries:
         if entry['file'] == 'config.json' or entry['file'].startswith(('dependencies/', 'models/', 'vendor/', 'components/')):

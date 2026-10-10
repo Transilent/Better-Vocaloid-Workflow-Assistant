@@ -1,8 +1,6 @@
 @echo off
 setlocal
 cd /d "%~dp0.."
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%CD%\tools\Prepare-Source.ps1"
-if errorlevel 1 exit /b 1
 set "PYTHONUTF8=1"
 set "PYTHONDONTWRITEBYTECODE=1"
 set "PYTHONNOUSERSITE=1"

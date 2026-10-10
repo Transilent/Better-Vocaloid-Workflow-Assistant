@@ -4,6 +4,8 @@ Bug reports should include the application version, Windows version, selected pr
 
 ## Development
 
+Edit application code in `src/` and build metadata in `packaging/`. Run `tools/Prepare-Source.ps1` after source edits to refresh the ignored development files in the checkout root. It preserves user settings and media.
+
 Install the portable runtime using `tools/Start-Diagnostics.bat`. Build the GUI launcher with `tools/build_windows_launcher.py`, then run `tests/run_tests.py` using the bundled Python. Inference weights and browser binaries are excluded from Git.
 
 Keep English documentation as the main version and update its Chinese counterpart. User-facing text should describe the feature, action or recovery step directly. Implementation details belong in developer documentation unless they help a user choose an option.
@@ -20,6 +22,8 @@ Keep English documentation as the main version and update its Chinese counterpar
 The confirmation flag records a completed review step; it does not replace user approval. Do not enable it before confirmation.
 
 ## 中文说明
+
+应用代码在 `src/`，构建配置在 `packaging/`。修改源码后，运行 `tools/Prepare-Source.ps1` 更新根目录中由 Git 忽略的开发文件。用户设置与素材不会被覆盖。
 
 提交问题时请附上版本、系统、处理选项和相关报错，并清除日志中的账号及私人信息。文档以英文为主，同时维护中文版本。面向用户的文字应直接说明功能、操作与恢复方法。
 

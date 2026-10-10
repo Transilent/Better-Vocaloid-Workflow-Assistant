@@ -16,7 +16,7 @@ def native(path):
 
 def main():
     sys.path.insert(0, str(ROOT/'tools'))
-    from build_portable import package_sources, checked_path
+    from build_portable import package_sources, checked_path, inventory_path
     work = ROOT/'work'
     work.mkdir(exist_ok=True)
     temporary_base = Path(tempfile.gettempdir()).resolve()
@@ -24,7 +24,7 @@ def main():
     if directory.parent != temporary_base or not directory.name.startswith('bvwa-qa-'):
         raise ValueError('Invalid temporary test directory')
     try:
-        mapping = {name: name for name in json.loads((ROOT/'source-files.json').read_text(encoding='utf-8'))['files']}
+        mapping = {name: name for name in json.loads(inventory_path('source-files.json').read_text(encoding='utf-8'))['files']}
         mapping.update({e['file']: e['file'] for e in json.loads((ROOT/'dependencies/manifest.json').read_text(encoding='utf-8'))['entries']})
         mapping.update(package_sources())
         # Source-checkout inventories can include files intentionally pruned from the runtime.
@@ -41,6 +41,10 @@ def main():
                 os.link(native(source), native(target))
             else:
                 shutil.copy2(native(source), native(target))
+        if (directory/'packaging/source-files.json').is_file():
+            shell = Path(os.environ['WINDIR'])/'System32/WindowsPowerShell/v1.0/powershell.exe'
+            subprocess.run([str(shell), '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+                            str(directory/'tools/Prepare-Source.ps1')], check=True)
         interpreter = directory/'dependencies/vocal2midi/python/python.exe'
         print('Testing curated runtime; excluded files are physically absent.', flush=True)
         result = subprocess.run([str(interpreter), '-B', str(directory/'tests/run_tests.py')], cwd=directory,
