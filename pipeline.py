@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-from common import ROOT, BV_PATTERN, atomic_json, cancelled, clean_lyrics, extract_bv, load_config, resolve_tools, completed_voice, file_hash, app_path, saved_path
+from common import ROOT, BV_PATTERN, atomic_json, cancelled, clean_lyrics, extract_bv, load_config, resolve_tools, completed_voice, file_hash, app_path, saved_path, output_directory, remember_job
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "vendor"))
@@ -38,7 +38,19 @@ def singer_candidate(description, title=""):
 
 def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, parent=None,
                voice_mode="dual", imported_stems=None, midi_steps=16, backing_lyrics="", remember=True,
-               local_music=None, roformer_device='auto'):
+               local_music=None, roformer_device='auto', zh_lyric_mode='hanzi',
+               workflow_graph=None, separation_device=None, midi_device=None):
+    from workflow import validate_graph
+    if workflow_graph is not None:
+        end_stage = validate_graph(workflow_graph)
+        if end_stage == 'subtitles' and not recognize_lyrics:
+            raise ValueError('字幕节点需要歌词事件，请开启歌词识别或移除字幕节点。')
+    tools = load_config(resolve_paths=False)
+    for key, value in [('separation_device', separation_device), ('midi_device', midi_device)]:
+        if value is not None:
+            if value not in ('cpu', 'dml'):
+                raise ValueError('推理设备应为 CPU 或 DirectML。')
+            tools[key] = value
     if local_music is not None and not str(local_music).strip().strip('"'):
         raise ValueError("请选择本地音乐文件。")
     local = app_path(local_music) if local_music is not None else None
@@ -49,6 +61,8 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
         raise ValueError("未知的分轨模式。")
     if language not in ("zh", "ja"):
         raise ValueError("歌词语言请选择中文或日语。")
+    if zh_lyric_mode not in ('hanzi', 'pinyin'):
+        raise ValueError('中文歌词格式请选择汉字或拼音。')
     if midi_steps not in (8, 16, 32):
         raise ValueError("MIDI 推理步数应为 8、16 或 32。")
     if roformer_device not in ('auto', 'cpu', 'cuda'):
@@ -63,21 +77,31 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
                 raise ValueError("请分别选择主唱、和声、伴奏的完整 WAV 文件。")
         imported_stems = {key: saved_path(imported_stems[key]) for key in ("lead", "backing", "instrumental")}
     timestamp = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime("%Y%m%d-%H%M%S-%f")
-    job = Path(parent or ROOT / "jobs") / f"{bv or 'Local'}_{timestamp}"
-    job.mkdir(parents=True)
+    destination = output_directory(parent or ROOT / 'jobs')
+    if destination.exists() and not destination.is_dir():
+        raise ValueError('保存位置是文件，请选择用于存放任务的文件夹。')
+    job = destination / f"{bv or 'Local'}_{timestamp}"
+    try:
+        job.mkdir(parents=True)
+    except OSError as exc:
+        raise ValueError('无法在所选目录创建任务文件夹，请检查目录权限和磁盘状态。') from exc
     atomic_json(job / "request.json", {
         "version": 2, "bv": bv, "url": f"https://www.bilibili.com/video/{bv}/" if bv else None,
         "source_kind": "local" if local is not None else "bilibili",
+        "output_directory": saved_path(destination),
         **({"source_audio": saved_path(local), "source_title": local.stem,
             "input_file": "input/source" + local.suffix.lower()} if local is not None else {}),
         "language": language, "lyrics": clean_lyrics(lyrics),
-        "recognize_lyrics": bool(recognize_lyrics), "tools": load_config(resolve_paths=False),
+        "zh_lyric_mode": zh_lyric_mode,
+        "recognize_lyrics": bool(recognize_lyrics), "tools": tools,
+        'created_at': dt.datetime.now().astimezone().isoformat(),
+        **({'workflow_graph': workflow_graph} if workflow_graph is not None else {}),
         "voice_mode": voice_mode, "imported_stems": imported_stems or {},
         "midi_steps": int(midi_steps), "backing_lyrics": clean_lyrics(backing_lyrics),
         **({'roformer_device': roformer_device} if voice_mode == 'roformer' else {}),
     })
     if remember:
-        (ROOT / "last_job.txt").write_text(saved_path(job), encoding="utf-8")
+        remember_job(job)
     return job.resolve()
 
 
@@ -111,7 +135,7 @@ def reuse_download(previous, **options):
             shutil.copy2(previous / name, destination)
         copied["steps"][stage] = {"state": "done", "reused_from": str(previous)}
     atomic_json(job / "status.json", copied)
-    (ROOT / "last_job.txt").write_text(saved_path(job), encoding="utf-8")
+    remember_job(job)
     return job
 
 
@@ -168,6 +192,9 @@ def run_process(argv, job, label, cooperative=False):
                     for line in lines:
                         text = line.decode("utf-8", errors="replace").strip()
                         if text:
+                            if label.startswith('midi'):
+                                from progress_state import from_log
+                                from_log(job, text, {'midi_lead': '主唱', 'midi_backing': '和声'}.get(label, '人声'))
                             print(text, flush=True)
                 code = process.poll()
                 if code is not None:
@@ -292,6 +319,10 @@ def download(job, request):
             last[0] = now
             total = info.get("total_bytes") or info.get("total_bytes_estimate") or 0
             current = info.get("downloaded_bytes", 0)
+            from progress_state import publish
+            speed = info.get('speed') or 0
+            publish(job, 'download', '下载媒体轨', current, total, speed=speed,
+                    downloaded=current, bytes_total=total, eta=info.get('eta'))
             print(f"下载进度：{current / 1048576:.1f} MB" + (f" / {total / 1048576:.1f} MB" if total else ""), flush=True)
 
     options = {
@@ -409,6 +440,8 @@ def midi(job, request):
         if completed_voice(job, request, voice):
             print(f"已完成，跳过 {voice} 的提取。", flush=True)
             continue
+        from progress_state import publish
+        publish(job, 'midi', ('主唱' if voice == 'lead' else '和声')+' · 准备模型')
         run_process([config["python"], "-B", "-u", str(ROOT / "midi_bridge.py"), str(job), voice],
                     job, "midi_" + voice, cooperative=True)
     from midi_merge import merge_voices
@@ -428,17 +461,24 @@ def midi(job, request):
     print("已合并双轨 MIDI：voices.mid（Lead Vocal / Backing Vocal）。", flush=True)
 
 
+def subtitles(job, request):
+    from subtitles import export_job
+    export_job(job, request)
+
+
 STEPS = [("metadata", "抓取简介与来源", prepare_metadata), ("download", "下载原视频", download),
          ("audio", "提取原音频和封面", audio_and_cover), ("separation", "分离人声和伴奏", separate),
-         ("midi", "生成 MIDI", midi)]
+         ("midi", "生成 MIDI", midi), ('subtitles', '导出字幕', subtitles)]
 REQUIRED = {"metadata": ["source-info.json", "upstream-info.json", "发布简介草稿.txt"],
             "download": ["video/source.mp4", "download-report.json"],
             "audio": ["audio/source.wav", "cover.jpg", "audio-info.json"],
             "separation": ["audio/vocals.wav", "audio/instrumental.wav", "separation-report.json"],
-            "midi": ["midi/vocals.mid", "midi/report.json"]}
+            "midi": ["midi/vocals.mid", "midi/report.json"], 'subtitles': ['subtitles/report.json']}
 
 
 def requirements(key, request):
+    if key == 'subtitles':
+        return REQUIRED[key]
     if request.get("source_kind") == "local":
         if key == "download":
             return [request["input_file"], "import-report.json"]
@@ -471,7 +511,7 @@ def job_lock(job):
             msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
 
 
-def run(job, until="midi"):
+def run(job, until=None):
     job = app_path(job)
     with job_lock(job):
         # Cancel removal happens only after obtaining the lock, so a second
@@ -483,6 +523,10 @@ def run(job, until="midi"):
 def _run(job, until):
     job = Path(job).resolve()
     request = json.loads((job / "request.json").read_text(encoding="utf-8"))
+    from workflow import validate_graph
+    from progress_state import publish
+    target = validate_graph(request['workflow_graph']) if 'workflow_graph' in request else 'midi'
+    until = until or target
     config = resolve_tools(request["tools"])
     keys = ["python", "vocal2midi", "ffmpeg"]
     if request.get("voice_mode") != "import":
@@ -490,6 +534,8 @@ def _run(job, until):
     status_file = job / "status.json"
     status = json.loads(status_file.read_text(encoding="utf-8")) if status_file.exists() else {"steps": {}}
     status["state"] = "running"
+    status['run_started'] = time.time()
+    status['planned_steps'] = [key for key, _, _ in STEPS][:next(i for i, item in enumerate(STEPS) if item[0] == until)+1]
     status.pop("error", None)
     atomic_json(status_file, status)
     try:
@@ -510,6 +556,15 @@ def _run(job, until):
             cancelled(job)
             completed = status["steps"].get(key, {}).get("state") == "done"
             intact = all((job / x).is_file() and (job / x).stat().st_size > 0 for x in requirements(key, request))
+            if key == 'subtitles' and intact:
+                try:
+                    output = json.loads((job/'subtitles/report.json').read_text(encoding='utf-8'))
+                    from pathlib import PurePosixPath
+                    intact = bool(output.get('outputs')) and all(
+                        PurePosixPath(name).parts[:1] == ('subtitles',) and '..' not in PurePosixPath(name).parts
+                        and (job/name).is_file() and (job/name).stat().st_size > 0 for name in output['outputs'])
+                except (OSError, ValueError, TypeError):
+                    intact = False
             if key == "download" and intact and request.get("source_kind") == "local":
                 try:
                     saved = json.loads((job / "import-report.json").read_text(encoding="utf-8"))
@@ -536,8 +591,9 @@ def _run(job, until):
                         status["steps"].pop(next_key, None)
                     later = later or next_key == key
                 status["current_step"] = key
-                status["steps"][key] = {"state": "running"}
+                status["steps"][key] = {"state": "running", 'started': time.time()}
                 atomic_json(status_file, status)
+                publish(job, key, title)
                 print(f"\n正在{title}……", flush=True)
                 started = time.monotonic()
                 function(job, request)
@@ -545,7 +601,7 @@ def _run(job, until):
                 atomic_json(status_file, status)
             if key == until:
                 break
-        status["state"] = "done" if until == "midi" else "partial"
+        status["state"] = "done" if until == target else "partial"
         status.pop("error", None)
         status.pop("current_step", None)
         atomic_json(status_file, status)
@@ -555,6 +611,9 @@ def _run(job, until):
         status["error"] = str(exc)
         atomic_json(status_file, status)
         raise
+    finally:
+        status['elapsed_seconds'] = status.get('elapsed_seconds', 0) + max(0, time.time() - status.pop('run_started', time.time()))
+        atomic_json(status_file, status)
 
 
 def main():
@@ -566,13 +625,15 @@ def main():
     parser.add_argument("--language", choices=("zh", "ja"), default="zh")
     parser.add_argument("--lyrics-file")
     parser.add_argument("--notes-only", action="store_true")
+    parser.add_argument('--output-dir', help='Parent directory for a new task; defaults to the application jobs folder')
+    parser.add_argument('--zh-lyric-mode', choices=('hanzi', 'pinyin'), default='hanzi')
     parser.add_argument("--voice-mode", choices=("single", "dual", "import", "roformer"), default="dual")
     parser.add_argument('--roformer-device', choices=('auto', 'cpu', 'cuda'), default='auto')
     parser.add_argument("--lead-wav")
     parser.add_argument("--backing-wav")
     parser.add_argument("--instrumental-wav")
     parser.add_argument("--midi-steps", type=int, choices=(8, 16, 32), default=16)
-    parser.add_argument("--until", choices=[x[0] for x in STEPS], default="midi")
+    parser.add_argument("--until", choices=[x[0] for x in STEPS])
     args = parser.parse_args()
     try:
         if args.job:
@@ -582,6 +643,8 @@ def main():
             job = create_job(args.source or "", lyrics, args.language, not args.notes_only,
                              voice_mode=args.voice_mode, midi_steps=args.midi_steps,
                              roformer_device=args.roformer_device,
+                             zh_lyric_mode=args.zh_lyric_mode,
+                             parent=args.output_dir,
                              local_music=args.audio_file,
                              imported_stems={"lead": args.lead_wav, "backing": args.backing_wav, "instrumental": args.instrumental_wav})
         print(f"任务目录：{job}", flush=True)

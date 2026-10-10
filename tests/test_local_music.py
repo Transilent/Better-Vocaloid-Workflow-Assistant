@@ -1,5 +1,6 @@
 """Local import, decoding, resume and publishing without a network request."""
 import contextlib
+import atexit
 import io
 import json
 import subprocess
@@ -12,6 +13,17 @@ import pipeline
 from common import file_hash, load_config
 from tests.support import ensure_fixture
 from publication import load_bundle, prepare
+
+state_files = (APP / 'last_job.txt', APP / 'cache/workspace.json')
+saved_state = {path: path.read_bytes() if path.is_file() else None for path in state_files}
+def restore_state():
+    for path, data in saved_state.items():
+        if data is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+atexit.register(restore_state)
 
 def no_network(*args, **kwargs):
     raise AssertionError('Local music must not fetch Bilibili data or cover art')

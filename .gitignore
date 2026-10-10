@@ -1,6 +1,8 @@
 # Private state and produced music/video
 cache/
 jobs/
+BV1*_*/
+Local_*/
 publish-packages/
 quality-test/
 work/

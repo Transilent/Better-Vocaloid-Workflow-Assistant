@@ -2,90 +2,34 @@
 import json
 from pathlib import Path
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QPixmap
+from PyQt5.QtWidgets import QApplication
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit,
                             QTextEdit, QComboBox, QCheckBox, QProgressBar, QStackedWidget,
                             QButtonGroup, QTreeWidget, QTreeWidgetItem, QHeaderView)
-from common import ROOT, app_path, load_config
+from common import ROOT, app_path, load_config, output_directory, job_directories
 from desktop_theme import apply_theme, button, card, fold, label, page, scroll_content
-
-
-class ResultsPage(QWidget):
-    def __init__(self, owner):
-        super().__init__()
-        self.owner, self.selected_job = owner, None
-        container, layout = page('任务与结果', '查看生成文件，继续未完成任务，或使用原输入重新处理。')
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(container)
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(['音乐 / 任务', '状态', '处理方式'])
-        self.tree.setRootIsDecorated(False)
-        self.tree.setAlternatingRowColors(False)
-        self.tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.tree.itemSelectionChanged.connect(self.select)
-        layout.addWidget(self.tree, 1)
-        self.detail = label('暂无任务。先在“处理音乐”页面添加音乐。', 'muted')
-        layout.addWidget(self.detail)
-        row = QHBoxLayout()
-        owner.folder = button('打开结果目录', owner.open_folder, 'primary')
-        owner.resume = button('继续任务', owner.resume_last)
-        owner.reprocess = button('重新分离 / MIDI', owner.reprocess_last)
-        row.addWidget(owner.folder)
-        row.addWidget(owner.resume)
-        row.addWidget(owner.reprocess)
-        row.addStretch()
-        row.addWidget(button('刷新', self.reload))
-        layout.addLayout(row)
-        layout.addWidget(label('VOCALOID 6：通过“文件 → 导入”导入 MIDI，带歌词时选择 UTF-8。空声部不代表文件损坏。', 'muted'))
-        self.reload()
-
-    def reload(self):
-        selected = self.selected_job
-        self.tree.clear()
-        self.selected_job = None
-        jobs = ROOT / 'jobs'
-        for directory in sorted(jobs.glob('*'), reverse=True) if jobs.exists() else []:
-            try:
-                request = json.loads((directory / 'request.json').read_text(encoding='utf-8'))
-                status_file = directory / 'status.json'
-                state = json.loads(status_file.read_text(encoding='utf-8')).get('state', 'ready') if status_file.exists() else 'ready'
-                text = {'done': '已完成', 'completed': '已完成', 'failed': '未完成', 'running': '处理中', 'cancelled': '已取消', 'ready': '待处理'}.get(state, state)
-                mode = {'dual': 'Karaoke 2 双轨', 'roformer': 'BS-RoFormer 双轨', 'import': '外部分轨', 'single': '人声单轨'}.get(request.get('voice_mode'), '人声单轨')
-                item = QTreeWidgetItem([request.get('source_title') or request.get('bv') or directory.name, text, mode])
-                item.setData(0, Qt.UserRole, str(directory))
-                item.setData(1, Qt.UserRole, request.get('voice_mode', 'single'))
-                item.setToolTip(0, directory.name)
-                self.tree.addTopLevelItem(item)
-                if selected == directory or (selected is None and self.owner.job == directory):
-                    self.tree.setCurrentItem(item)
-            except (OSError, ValueError, KeyError):
-                continue
-        if self.tree.topLevelItemCount() and not self.tree.selectedItems():
-            self.tree.setCurrentItem(self.tree.topLevelItem(0))
-        self.select()
-
-    def select(self):
-        items = self.tree.selectedItems()
-        self.selected_job = Path(items[0].data(0, Qt.UserRole)) if items else None
-        if self.selected_job:
-            single = items[0].data(1, Qt.UserRole) == 'single'
-            output = 'vocals.mid（单轨）与人声、伴奏 WAV' if single else 'voices.mid（双轨）与分轨 WAV'
-            self.detail.setText('输出：' + output + ' · ' + self.selected_job.name)
-        else:
-            self.detail.setText('暂无任务。先在“处理音乐”页面添加音乐。')
-        self.detail.setToolTip(str(self.selected_job or ''))
-        active = self.owner.runner is not None and self.owner.runner.isRunning()
-        self.owner.resume.setEnabled(bool(self.selected_job) and not active)
-        self.owner.reprocess.setEnabled(bool(self.selected_job) and not active)
-        self.owner.folder.setEnabled(bool(self.selected_job))
+from results_ui import ResultsPage
 
 
 def build_processing(window):
-    panel, outer = page('处理音乐', '添加音乐，选择分离方案，生成可调音的 MIDI。')
+    panel, outer = page('处理音乐', '选择工作流预设，添加音乐后开始处理。')
+    preset_row = QHBoxLayout()
+    preset_row.addWidget(label('工作流预设'))
+    window.workflow_preset = QComboBox()
+    window.workflow_preset.setMinimumWidth(225)
+    window.workflow_preset.setMaximumWidth(390)
+    window.workflow_preset.setToolTip('选择已保存的工作流，流程、模型、设备和歌词设置会一起应用。')
+    preset_row.addWidget(window.workflow_preset, 1)
+    preset_row.addStretch()
+    preset_row.addWidget(button('编辑工作流与设备', lambda: window.navigate(5)))
+    outer.addLayout(preset_row)
+    window.workflow_summary = label('使用当前工作流', 'muted')
+    outer.addWidget(window.workflow_summary)
     content = scroll_content(outer)
     grid = QGridLayout(content)
     grid.setContentsMargins(0, 0, 0, 0)
-    grid.setSpacing(18)
+    grid.setSpacing(24)
     grid.setColumnStretch(0, 3)
     grid.setColumnStretch(1, 2)
     left, right = QVBoxLayout(), QVBoxLayout()
@@ -130,6 +74,19 @@ def build_processing(window):
     window.recognize = QCheckBox('识别歌词并写入 MIDI')
     window.recognize.setChecked(True)
     body.addWidget(window.recognize)
+    window.zh_lyric_panel = QWidget()
+    formats = QHBoxLayout(window.zh_lyric_panel)
+    formats.setContentsMargins(0, 0, 0, 0)
+    formats.addWidget(label('中文歌词格式'))
+    window.zh_lyric_mode = QComboBox()
+    window.zh_lyric_mode.addItem('汉字', 'hanzi')
+    window.zh_lyric_mode.addItem('拼音', 'pinyin')
+    window.zh_lyric_mode.setToolTip('选择 MIDI 歌词事件使用的文字格式，主唱和和声使用同一设置。')
+    formats.addWidget(window.zh_lyric_mode, 1)
+    body.addWidget(window.zh_lyric_panel)
+    window.language.currentIndexChanged.connect(window.update_lyric_options)
+    window.recognize.toggled.connect(window.update_lyric_options)
+    window.update_lyric_options()
     reference = QWidget()
     reference_layout = QVBoxLayout(reference)
     reference_layout.setContentsMargins(0, 0, 0, 0)
@@ -181,7 +138,20 @@ def build_processing(window):
     window.separator_model.currentIndexChanged.connect(window.update_component_state)
     window.voice_mode.currentIndexChanged.connect(window.update_import_panel)
     right.addWidget(model)
-    settings, body = card('输出与处理设置', '文件自动保存至助手目录的 jobs 文件夹。', '04')
+    settings, body = card('输出与处理设置', '每个任务单独保存原视频、音频和 MIDI。', '04')
+    body.addWidget(label('保存目录', 'muted'))
+    window.output_panel = QWidget()
+    output = QHBoxLayout(window.output_panel)
+    output.setContentsMargins(0, 0, 0, 0)
+    window.output_dir = QLineEdit()
+    initial_directory = output_directory()
+    window.output_dir.setText('jobs' if initial_directory == ROOT / 'jobs' else str(initial_directory))
+    window.output_dir.setPlaceholderText('默认：助手目录 / jobs')
+    window.output_dir.setToolTip('选择任务保存目录。留空时使用助手目录的 jobs 文件夹。')
+    output.addWidget(window.output_dir, 1)
+    window.choose_output_btn = button('选择目录', window.choose_output_directory)
+    output.addWidget(window.choose_output_btn)
+    body.addWidget(window.output_panel)
     window.output_summary = label('双轨 MIDI · 主唱 WAV · 和声 WAV · 伴奏 WAV', 'success')
     body.addWidget(window.output_summary)
     advanced = QWidget()
@@ -198,6 +168,9 @@ def build_processing(window):
     window.roformer_device.addItem('NVIDIA GPU / CUDA', 'cuda')
     advanced_layout.addWidget(window.roformer_device)
     window.advanced_toggle = fold('高级设置', advanced, body)
+    # Device and extraction precision are edited on the workflow canvas.
+    window.advanced_toggle.hide()
+    advanced.hide()
     right.addWidget(settings)
     right.addStretch()
 
@@ -222,6 +195,29 @@ def build_processing(window):
     window.progress.setTextVisible(False)
     window.progress.setFixedHeight(8)
     footer_layout.addWidget(window.progress)
+    window.progress_detail = label('尚未开始', 'muted')
+    footer_layout.addWidget(window.progress_detail)
+    stage_row = QHBoxLayout()
+    window.stage_labels = {}
+    from progress_state import TITLES
+    for key, name in TITLES.items():
+        value = label(name, 'muted')
+        window.stage_labels[key] = value
+        stage_row.addWidget(value)
+    footer_layout.addLayout(stage_row)
+    window.error_panel, error_body = card('任务需要处理')
+    window.error_message = label('', 'error')
+    error_body.addWidget(window.error_message)
+    recovery_row = QHBoxLayout()
+    recovery_row.addWidget(button('继续 / 重试', window.retry_job, 'primary'))
+    window.cpu_retry = button('改用 CPU 继续', window.retry_cpu)
+    recovery_row.addWidget(window.cpu_retry)
+    recovery_row.addWidget(button('查看日志', lambda: window.log_toggle.setChecked(True)))
+    window.recovery_action = button('检查设置', window.open_recovery)
+    recovery_row.addWidget(window.recovery_action)
+    error_body.addLayout(recovery_row)
+    footer_layout.addWidget(window.error_panel)
+    window.error_panel.hide()
     window.log = QTextEdit()
     window.log.setReadOnly(True)
     window.log.setAcceptRichText(False)
@@ -232,33 +228,49 @@ def build_processing(window):
     return panel
 
 
+def workspace_geometry(screen, offscreen=False):
+    if offscreen:
+        return (1600, 1000), (1000, 680)
+    available = (max(1, screen.width() - 48), max(1, screen.height() - 48))
+    initial = (min(1600, available[0]), min(1000, available[1]))
+    minimum = (min(1000, available[0]), min(680, available[1]))
+    return initial, minimum
+
+
 def build_window(window):
     apply_theme(window)
-    window.resize(1220, 820)
-    window.setMinimumSize(980, 680)
+    screen = QApplication.primaryScreen().availableGeometry()
+    initial, minimum = workspace_geometry(screen, QApplication.platformName() == 'offscreen')
+    window.setMinimumSize(*minimum)
+    window.resize(*initial)
     outer = QHBoxLayout(window)
     outer.setContentsMargins(0, 0, 0, 0)
     outer.setSpacing(0)
     sidebar = QWidget()
     sidebar.setObjectName('sidebar')
-    sidebar.setFixedWidth(180)
+    sidebar.setFixedWidth(208)
     nav = QVBoxLayout(sidebar)
     nav.setContentsMargins(14, 28, 14, 20)
     nav.setSpacing(8)
+    icon = label()
+    icon.setPixmap(QPixmap(str(ROOT / 'assets/app.png')).scaled(56, 56, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+    nav.addWidget(icon)
     brand = label('BVWA', 'heading')
     brand.setProperty('role', 'success')
-    brand.setStyleSheet('font-size: 25px; font-weight: 600; color: #8fd6bd;')
+    brand.setStyleSheet('font-size: 28px; font-weight: 600; color: #a7edd6;')
     nav.addWidget(brand)
-    nav.addWidget(label('音乐工作流助手', 'muted'))
+    nav.addWidget(label('术力口工作流助手', 'muted'))
     nav.addSpacing(28)
     window.nav_group = QButtonGroup(window)
-    window.nav_buttons = []
-    for index, title in enumerate(('处理音乐', '模型与组件', '任务与结果', '发布准备')):
+    titles = ('处理音乐', '模型与组件', '任务与结果', '发布准备', '设置与更新', '工作流', '缓存与磁盘', '歌词转字幕')
+    window.nav_buttons = [None] * len(titles)
+    for index in (0, 1, 2, 3, 5, 6, 7, 4):
+        title = titles[index]
         item = button(title, lambda checked=False, i=index: window.navigate(i), 'nav')
         item.setCheckable(True)
         window.nav_group.addButton(item)
         nav.addWidget(item)
-        window.nav_buttons.append(item)
+        window.nav_buttons[index] = item
     nav.addStretch()
     nav.addWidget(label('分离与 MIDI 在本地运行\n上传后由你确认发布', 'muted'))
     outer.addWidget(sidebar)
@@ -274,5 +286,22 @@ def build_window(window):
     from publishing_ui import PublishingTab
     window.publishing = PublishingTab(window)
     window.pages.addWidget(window.publishing)
+    from updates_ui import UpdatesPage
+    window.updates = UpdatesPage(window)
+    window.pages.addWidget(window.updates)
+    from workflow_ui import WorkflowPage
+    window.workflow = WorkflowPage(window)
+    window.pages.addWidget(window.workflow)
+    window.workflow_preset.currentIndexChanged.connect(window.choose_processing_preset)
+    from storage_ui import StoragePage
+    window.storage = StoragePage(window)
+    window.pages.addWidget(window.storage)
+    from subtitles_ui import SubtitlesPage
+    window.subtitles = SubtitlesPage(window)
+    window.pages.addWidget(window.subtitles)
+    for control in (window.language, window.zh_lyric_mode, window.voice_mode, window.separator_model, window.roformer_device):
+        control.currentIndexChanged.connect(window.quick_options_changed)
+    window.recognize.toggled.connect(window.quick_options_changed)
     window.update_import_panel()
+    window.refresh_workflow_summary()
     window.navigate(0)

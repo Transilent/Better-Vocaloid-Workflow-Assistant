@@ -47,6 +47,16 @@ def main():
 
 
 if __name__ == "__main__":
+    if '--desktop' in sys.argv:
+        # pythonw intentionally has no console streams. Bind them before imports
+        # and keep native-crash diagnostics in the same log as normal startup.
+        log = (ROOT / 'launcher.log').open('w', encoding='utf-8', buffering=1)
+        sys.stdout = sys.stderr = log
+        import faulthandler
+        faulthandler.enable(log)
+        if os.name == 'nt':
+            import ctypes
+            print('Desktop launcher console attached:', bool(ctypes.windll.kernel32.GetConsoleWindow()), flush=True)
     try:
         main()
     except Exception:

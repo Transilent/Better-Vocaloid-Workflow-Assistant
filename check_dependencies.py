@@ -52,7 +52,7 @@ def validate():
     result = check()
     if result["errors"]:
         details = "\n".join(str(e["file"]) for e in result["errors"][:10])
-        raise FileNotFoundError("助手依赖缺失或损坏。请恢复整个 dependencies 目录，或运行 Check-Dependencies.bat：\n" + details)
+        raise FileNotFoundError("助手依赖缺失或损坏。请恢复整个 dependencies 目录，或运行 tools/Check-Dependencies.bat：\n" + details)
 
 
 if __name__ == "__main__":

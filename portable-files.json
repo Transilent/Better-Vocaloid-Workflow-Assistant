@@ -2,16 +2,16 @@
   "format": 1,
   "entries": [
     {
+      "file": "BVWA.exe",
+      "source": "BVWA.exe"
+    },
+    {
       "file": "README.md",
       "source": "docs/Portable.en.md"
     },
     {
       "file": "README.zh-CN.md",
       "source": "docs/Portable.zh-CN.md"
-    },
-    {
-      "file": "Start-Assistant.bat",
-      "source": "Start-Assistant.bat"
     },
     {
       "file": "THIRD_PARTY_NOTICES.md",
@@ -24,6 +24,18 @@
     {
       "file": "app.py",
       "source": "app.py"
+    },
+    {
+      "file": "assets/app.ico",
+      "source": "assets/app.ico"
+    },
+    {
+      "file": "assets/app.png",
+      "source": "assets/app.png"
+    },
+    {
+      "file": "assets/app.svg",
+      "source": "assets/app.svg"
     },
     {
       "file": "assets/check.svg",
@@ -51,7 +63,7 @@
     },
     {
       "file": "config.json",
-      "source": "config.json"
+      "source": "config.example.json"
     },
     {
       "file": "cover_art.py",
@@ -64,6 +76,14 @@
     {
       "file": "desktop_theme.py",
       "source": "desktop_theme.py"
+    },
+    {
+      "file": "download_sources.py",
+      "source": "download_sources.py"
+    },
+    {
+      "file": "error_recovery.py",
+      "source": "error_recovery.py"
     },
     {
       "file": "launch.py",
@@ -98,6 +118,10 @@
       "source": "pipeline.py"
     },
     {
+      "file": "progress_state.py",
+      "source": "progress_state.py"
+    },
+    {
       "file": "publication.py",
       "source": "publication.py"
     },
@@ -118,32 +142,84 @@
       "source": "publishing_ui.py"
     },
     {
+      "file": "results_ui.py",
+      "source": "results_ui.py"
+    },
+    {
       "file": "roformer.py",
       "source": "roformer.py"
     },
     {
+      "file": "storage.py",
+      "source": "storage.py"
+    },
+    {
+      "file": "storage_ui.py",
+      "source": "storage_ui.py"
+    },
+    {
+      "file": "subtitles.py",
+      "source": "subtitles.py"
+    },
+    {
+      "file": "subtitles_ui.py",
+      "source": "subtitles_ui.py"
+    },
+    {
+      "file": "task_store.py",
+      "source": "task_store.py"
+    },
+    {
       "file": "tools/Check-Dependencies.bat",
-      "source": "tools/portable/Check-Dependencies.bat"
+      "source": "tools/Check-Dependencies.bat"
     },
     {
       "file": "tools/Install-Runtime.ps1",
       "source": "tools/Install-Runtime.ps1"
     },
     {
+      "file": "tools/Start-Diagnostics.bat",
+      "source": "tools/Start-Diagnostics.bat"
+    },
+    {
       "file": "tools/Use-CPU.bat",
-      "source": "tools/portable/Use-CPU.bat"
+      "source": "tools/Use-CPU.bat"
     },
     {
       "file": "tools/Use-GPU.bat",
-      "source": "tools/portable/Use-GPU.bat"
+      "source": "tools/Use-GPU.bat"
     },
     {
       "file": "tools/set_device.py",
       "source": "tools/set_device.py"
     },
     {
+      "file": "tools/update_apply.py",
+      "source": "tools/update_apply.py"
+    },
+    {
+      "file": "updater.py",
+      "source": "updater.py"
+    },
+    {
+      "file": "updates_ui.py",
+      "source": "updates_ui.py"
+    },
+    {
       "file": "v2m_runtime.py",
       "source": "v2m_runtime.py"
+    },
+    {
+      "file": "version.json",
+      "source": "version.json"
+    },
+    {
+      "file": "workflow.py",
+      "source": "workflow.py"
+    },
+    {
+      "file": "workflow_ui.py",
+      "source": "workflow_ui.py"
     },
     {
       "file": "workspace_ui.py",

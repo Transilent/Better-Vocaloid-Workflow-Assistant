@@ -22,8 +22,7 @@ backing. It does not treat low lead energy as a reason to swap parts. Chinese an
 Japanese use identical separation parameters: 44.1 kHz stereo, 20-second chunks,
 75% overlap, batch size 1, no TTA and no independent stem normalization.
 
-The native Qt workspace has four sidebar pages. Advanced controls and logs are
-folded; task recovery is in Results. Publication uses one primary action whose
+The native Qt workspace has eight sidebar pages. Workflow nodes collect processing parameters and devices; a validated graph records the final execution stage. Presets, current options and output history live in private `cache/workspace.json`. Progress events use a separate JSON file, while pipeline status records stage completion and elapsed processing time. The task library detects stale runs through the existing file lock. Cleanup operates only on explicit disposable locations and refuses links and running tasks. Publication uses one primary action whose
 state depends on whether the prepared bundle matches the current form.
 
 Japanese transcription uses the original bundled Romaji ASR weights. The integration preserves supported standalone phones at slice boundaries, checks HubertFA input phonemes, isolates recoverable alignment data errors by chunk, and records pitch-only fallbacks separately from empty ASR. Short-mora boundary repair is limited to 150 ms gaps in Japanese. Non-singing mora tokens consume their kana display token so subsequent syllables stay aligned. Chinese ASR selection remains Qwen.
@@ -38,6 +37,11 @@ Japanese transcription uses the original bundled Romaji ASR weights. The integra
 | `roformer.py` | Optional Pymss inference and timeline-preserving lead/backing outputs |
 | `common.py`, `check_dependencies.py` | Relative paths, configuration, subprocess cancellation, dependency checks |
 | `pipeline.py` | Input snapshots, metadata, downloads, stages, resume |
+| `workflow.py`, `workflow_ui.py` | Validated graphs, private presets and native node canvas |
+| `progress_state.py`, `error_recovery.py` | Subtask events, elapsed time, failure classification and CPU retry |
+| `task_store.py`, `results_ui.py` | Task metadata, search/filter UI, stale-run detection and bounded deletion |
+| `storage.py`, `storage_ui.py` | Disposable-location allowlist, asynchronous scan and confirmed cleanup |
+| `subtitles.py`, `subtitles_ui.py` | Timed lyrics, MIDI tempo conversion, cue editing and SRT/WebVTT |
 | `mdx.py`, `separate_audio.py` | ONNX separation and local separation CLI |
 | `v2m_runtime.py`, `midi_bridge.py` | Bundled transcription integration |
 | `midi_checks.py`, `midi_merge.py` | Review hints, MIDI validation and track assembly |
@@ -51,8 +55,8 @@ Japanese transcription uses the original bundled Romaji ASR weights. The integra
 
 `config.json` stores application settings. Paths in a clean release resolve relative to the extracted application folder. `dependencies/manifest.json` records fixed runtime files and SHA-256 hashes. `source-files.json` inventories the repository; `portable-files.json` selects release runtime files and maps the concise bilingual guides to the package README files. A generated ZIP also includes `release-inventory.json` for all packaged files.
 
-Release assets contain three ZIP parts, the merge script and a minimal archive/part
-checksum inventory. Tests, screenshots and build materials are kept in the source
+Release assets contain the full ZIP parts, the merge script, a small program update,
+and an archive/part/update checksum inventory. Tests, screenshots and build materials are kept in the source
 repository. Dependency test directories and the unused upstream desktop GUI are
 excluded from the runtime inventory. Diagnostic batch files are placed in `tools`;
 the root has one application launcher.
@@ -74,3 +78,9 @@ Python inference files, DLLs and license metadata.
 ## Automation boundary
 
 Inference runs in local subprocesses. Website automation uses Playwright selectors with dedicated browser profiles. Upload preparation leaves the creator page open for review and does not click the final publish control. Page changes can invalidate selectors. Manual tuning and final audio/video assembly remain outside this assistant.
+
+## Program updates
+
+`download_sources.py` routes public downloads. `updater.py` discovers stable releases, checks runtime compatibility and stages an allowlisted program archive. `updates_ui.py` manages download settings and progress. After the desktop and EXE launcher exit, `tools/update_apply.py` replaces verified files with rollback on failure. Configuration, task files, browser profiles and model environments are outside the update allowlist. `tools/build_app_update.py` produces the small program archive after confirmed user testing.
+
+Task outputs default to `jobs/` and may use a custom parent directory. The selected parent and previously used task parents are kept in private `cache/workspace.json`, enabling task discovery across locations. Requests record their output parent; resuming uses the actual existing task path, while reprocessing creates a new task under the selected parent.

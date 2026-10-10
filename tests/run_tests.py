@@ -8,14 +8,14 @@ from pathlib import Path
 APP = Path(__file__).resolve().parents[1]
 runtime = Path(sys.executable).parent
 qt = runtime / 'Lib/site-packages/PyQt5/Qt5'
-env = dict(os.environ, PYTHONUTF8='1', PYTHONDONTWRITEBYTECODE='1', PYTHONNOUSERSITE='1', QT_QPA_PLATFORM='offscreen',
+env = dict(os.environ, PYTHONUTF8='1', PYTHONDONTWRITEBYTECODE='1', PYTHONNOUSERSITE='1', QT_QPA_PLATFORM='offscreen', BVWA_TESTING='1',
            NUMBA_CACHE_DIR=str(APP / 'work/test-numba-cache'),
            QT_PLUGIN_PATH=str(qt / 'plugins'), QT_QPA_PLATFORM_PLUGIN_PATH=str(qt / 'plugins/platforms'))
 env['PATH'] = os.pathsep.join([str(runtime), str(runtime / 'DLLs'), str(qt / 'bin'), str(Path(os.environ['WINDIR']) / 'System32')])
 folder = APP / 'work/test-results'
 folder.mkdir(parents=True, exist_ok=True)
 reports = {}
-for name in ('test_core.py', 'test_japanese_midi.py', 'test_gui.py', 'test_workspace_ui.py', 'test_components.py', 'test_publication_workspace.py', 'test_local_music.py', 'test_publish_browser.py', 'test_publish_adapters.py', 'test_bilibili_dual_cover.py', 'test_launchers.py', 'test_bootstrap.py'):
+for name in ('test_core.py', 'test_japanese_midi.py', 'test_chinese_lyrics.py', 'test_updates.py', 'test_gui.py', 'test_workspace_ui.py', 'test_components.py', 'test_publication_workspace.py', 'test_local_music.py', 'test_output_directory.py', 'test_workflow_features.py', 'test_subtitles.py', 'test_publish_browser.py', 'test_publish_adapters.py', 'test_bilibili_dual_cover.py', 'test_launchers.py', 'test_bootstrap.py'):
     started = time.monotonic()
     result = subprocess.run([sys.executable, '-B', '-u', str(APP / 'tests' / name)], capture_output=True, env=env, timeout=180)
     (folder / (name + '.log')).write_bytes(result.stdout + result.stderr)

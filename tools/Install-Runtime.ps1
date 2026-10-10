@@ -95,7 +95,7 @@ try {
     }
     Write-Output 'Installing fixed dependencies; every file is checked against the repository manifest.'
     New-Item -ItemType Directory -Path (Split-Path -Parent $marker) -Force | Out-Null
-    [IO.File]::WriteAllText($marker, 'Installation in progress; rerun Start-Assistant.bat if interrupted.')
+    [IO.File]::WriteAllText($marker, 'Installation in progress; rerun tools/Start-Diagnostics.bat if interrupted.')
     $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
     $count = 0
     $installed = 0

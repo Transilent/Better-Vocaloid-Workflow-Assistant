@@ -7,6 +7,7 @@ import sys
 import threading
 import tempfile
 import zipfile
+from unittest.mock import patch
 
 APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP))
@@ -22,6 +23,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         header = self.headers.get('Range')
         ranges.append((self.path, header))
+        if self.path == '/unavailable':
+            self.send_error(503)
+            return
         offset = int(header.split('=')[1].split('-')[0]) if header else 0
         if self.path == '/ignore':
             offset = 0
@@ -79,6 +83,14 @@ try:
     cancel[0] = False
     assert components.download(item, SCRATCH, lambda *args: None).read_bytes() == DATA
     passed.append('cancel-then-resume')
+    item = {'name': 'fallback.whl', 'url': base + '/unavailable',
+            'sha256': hashlib.sha256(DATA).hexdigest(), 'bytes': len(DATA)}
+    (SCRATCH / (item['name'] + '.partial')).write_bytes(DATA[:123456])
+    with patch.object(components, 'download_urls', return_value=[base + '/unavailable', base + '/resume']):
+        assert components.download(item, SCRATCH, lambda *args: None).read_bytes() == DATA
+    assert ('/unavailable', 'bytes=123456-') in ranges
+    assert ('/resume', 'bytes=123456-') in ranges
+    passed.append('alternate-source-preserves-range-and-hash')
 finally:
     server.shutdown()
     server.server_close()

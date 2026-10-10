@@ -36,6 +36,8 @@ def separate_vocals(source, directory, job, device='auto'):
                          inference_params={'batch_size': 1, 'normalize': False, 'use_amp': True}) as separator:
             def progress(done, total, message):
                 cancelled(job)
+                from progress_state import publish
+                publish(job, 'separation', '主唱 / 和声 · BS-RoFormer', done, total)
                 print(f'主唱／和声分离：{done}/{total}', flush=True)
             separator.progress_callback = progress
             print(f'BS-RoFormer · 设备 {separator.device}', flush=True)

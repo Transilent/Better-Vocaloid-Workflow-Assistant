@@ -1,117 +1,145 @@
+<p align="center"><img src="assets/app.svg" width="80" alt="BVWA icon"></p>
+
 # Better Vocaloid Workflow Assistant
+
+术力口工作流助手 (BVWA)
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-A Windows x64 assistant for preparing singing-synthesis projects. Start with a Bilibili video or local music, separate vocals and accompaniment, and export lyric-aligned MIDI. After manual tuning and video editing, prepare covers, credits, and creator uploads.
+A desktop assistant for preparing vocal-synthesis projects on Windows. Import a song or a Bilibili video, separate its vocal parts, and export MIDI with aligned lyrics. After tuning, prepare the finished video's cover, credits and creator uploads.
 
-## Quick start
-
-1. Download the **portable package** from [Releases](../../releases) for a complete offline installation. GitHub's generated **Source code** archive and a Git clone contain source only. Their `Start-Assistant.bat` installs the runtime before launching, using an existing portable ZIP when available or downloading Release parts (about 5.7 GB).
-2. Extract the complete `BVWA` folder to a writable, short path, such as `D:\BVWA`.
-3. Double-click **`Start-Assistant.bat`**. This is the only application launcher.
-4. Choose **Bilibili BV/link** or **local music**, set the separation mode and optional lyrics, then start processing.
-5. Import MIDI and accompaniment into a tuning application. Complete tuning and align the mixdown with the video manually.
-6. Open **发布准备** (Publication), select the finished video, edit titles and credits, and sign in. Review the prepared upload and publish manually.
-
-The interface currently uses Chinese labels. The [English guide](docs/UserGuide.en.md) explains them; a [Chinese guide](docs/UserGuide.zh-CN.md) is also available.
-
-The current portable package includes the new workspace, component downloader
-and Japanese alignment fixes. It needs no separate update archive. Release
-attachments contain only three ZIP parts, the merge script and the checksum
-inventory. Development tests and build materials remain in the source repository.
-
-## Workspace and optional model
-
-The sidebar separates **processing**, **models/components**, **tasks/results**, and
-**publication**. Processing has one primary action; lyrics, advanced settings and
-logs expand when needed. Resume and reprocess controls are in Tasks/Results.
-
-![Processing workspace](docs/images/processing.png)
-
-Karaoke 2 remains included. To use BS-RoFormer, open **模型与组件**, choose **NVIDIA
-GPU / CUDA** or **仅 CPU**, and select **下载并安装**. The installer shows progress,
-supports cancellation and verified resume, and activates the component after
-model/runtime validation. Select **使用此模型** to return to processing.
-
-| Optional runtime | Download | Approximate installed space |
-| --- | --- | --- |
-| NVIDIA GPU / CUDA | 3.52 GB | 6.14 GB |
-| CPU | 0.46 GB | 1.56 GB |
-
-The component is downloaded from pinned upstream model/Python package sources,
-with SHA-256 verification. Only one optional runtime is retained; changing it
-replaces the existing optional environment after successful validation. The base
-runtime is preserved. Installation needs download space in addition to the
-installed space; the interface checks available disk space.
-
-BS-RoFormer runs after MDX extracts total vocals, predicts the lead candidate,
-and obtains backing by subtraction. Chinese/Japanese use the same separator;
-the language setting affects lyric processing. A quiet lead can be correct in
-a backing-only passage. ASR weights remain unchanged.
+> **v0.3.0 is available.** This release adds reusable workflows, task management, subtitles, a console-free launcher and verified updates. Upgrading from v0.2.0 requires the complete portable package.
 
 ## Features
 
-| Input or mode | Behavior | Main output |
-| --- | --- | --- |
-| Bilibili BV/link | Fetch source metadata, video, audio, and original cover | Source assets and credits draft |
-| Local WAV / MP3 / FLAC / M4A | Save a snapshot and decode locally; no BV required | Normalized source audio |
-| Automatic two-stage separation | Separate vocals/accompaniment, then lead/backing vocals | Vocal parts, accompaniment, two-part MIDI |
-| Optional BS-RoFormer | Same stage order with the original karaoke weights; CPU or CUDA | Vocal parts, accompaniment, two-part MIDI |
-| External stems | Import full-length lead, backing, and accompaniment WAVs | Two-part MIDI |
-| Combined-vocal mode | Transcribe the combined vocal stem | Single-part MIDI |
-| Upload preparation | Fill source credits, titles, and covers | Bilibili / Xiaohongshu upload awaiting review |
+- Bilibili BV/link input and local audio import.
+- Vocals/accompaniment separation, with separate lead and backing-vocal MIDI tracks.
+- Built-in Karaoke 2 and an optional BS-RoFormer component for CPU or NVIDIA GPU.
+- Chinese and Japanese lyrics; Chinese MIDI lyrics can use characters or pinyin.
+- Resumable tasks, reference lyrics and full-length external WAV stems.
+- Draggable workflows with saved presets and per-engine CPU/GPU settings.
+- Searchable task history, stage progress, recovery actions and cache management.
+- Editable lyric timing with LRC/TXT/CSV/MIDI input and SRT/WebVTT output.
+- Original video covers, editable credits, and Bilibili/Xiaohongshu upload preparation.
+- A console-free Windows launcher and verified program updates.
 
-Models run locally through command-line interfaces. Browser automation uses Playwright DOM controls. Separation can leave leakage; transcription and lyrics need listening and correction. Tuning, finished mixdown/video alignment, and final publishing are manual.
+Tuning, final mixdown/video alignment and the final publishing action remain manual. Review the separated audio, pitches and lyrics before using them in a finished project.
 
-The original cover is the image shown on the source video's Bilibili listing, fetched from metadata. A video frame is an explicit alternative. Bilibili 4:3 covers preserve the whole image with padding; 16:9 covers preserve the source ratio.
+## Getting started
 
-## Portable package
+1. Download the complete portable package from [Releases](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases). The generated **Source code** archives contain source, rather than the bundled runtime.
+2. Keep all ZIP parts and `release-assets.json` in one folder. Open `.001` with 7-Zip, or use `Merge-PortableParts.ps1` to verify and join the parts.
+3. Extract the complete `BVWA` folder to a writable location, such as `D:\BVWA`.
+4. Start **`BVWA.exe`**.
+5. In **处理音乐** (Process music), select a workflow preset and add the input, then select **开始处理** (Start).
 
-Includes Python, inference code and models, FFmpeg, browser runtime, and automation dependencies. Targets **Windows 10/11 x64**. Recommended: at least 16 GB RAM and 25 GB free space for download, joining and extraction; media and job outputs need additional space. DirectML/Vulkan acceleration depends on the hardware; CPU inference is available and slower.
+## Upgrading from v0.2.0
 
-Release files are split to satisfy GitHub's attachment limits. Download all `.zip.00x` parts and `release-assets.json` to one folder. Open `.zip.001` with 7-Zip, or use `Merge-PortableParts.ps1` to verify and join the parts. Extract the resulting ZIP before running the application.
+Version 0.3.0 uses a revised base-runtime inventory and requires the complete portable package. Close the assistant and extract the new package into a separate folder. To retain data on the same computer, copy `config.json`, `jobs/`, `publish-packages/`, `last_job.txt`, `cache/workspace.json` and `cache/publish-browser/` from the old folder when present. An installed BS-RoFormer component can be retained by copying `dependencies/optional/bs-roformer/`. Keep custom task directories in their existing locations. Avoid copying old program files or update caches over the new package. On another computer, sign in to the publishing platforms again.
 
-| Batch file | Purpose |
+The program-only update is for installations with the same base runtime. When that runtime differs, Settings/updates directs you to the complete package.
+
+The interface currently uses Chinese labels. See the [English user guide](docs/UserGuide.en.md) for controls and outputs.
+
+![Processing workspace](docs/images/processing.png)
+
+## Save location
+
+In **输出与处理设置** (Output/processing settings), use **选择目录** (Choose folder) to set the save location, or enter a new folder path. The default is the assistant's `jobs` folder. Each task creates a separate subfolder containing the downloaded video (`video/source.mp4` for BV inputs), audio and MIDI. The assistant remembers the chosen location and earlier task folders. Resuming uses the original task folder; reprocessing creates a new task in the currently selected save location.
+
+## Lyrics and output
+
+With Chinese selected, **中文歌词格式** chooses **汉字** (characters) or **拼音** (pinyin). The selected format applies to both vocal tracks and is saved with the task. Disable **识别歌词并写入 MIDI** to export notes without lyrics. The Chinese format setting does not affect Japanese transcription.
+
+Reference lyrics are optional. Enter lead and backing lyrics separately; include only the sung text. Find completed files in **任务与结果** (Tasks/results).
+
+| File | Content |
 | --- | --- |
-| `Start-Assistant.bat` | Launch the application, the only startup entry |
-| `tools/Check-Dependencies.bat` | Verify fixed runtime files using SHA-256 |
-| `tools/Use-CPU.bat` | Select CPU inference; restart afterward |
-| `tools/Use-GPU.bat` | Select DirectML inference; restart afterward |
+| `midi/voices.mid` | Lead and backing vocal tracks on a shared timeline |
+| `midi/lead/lead.mid`, `midi/backing/backing.mid` | Individual vocal parts |
+| `midi/vocals.mid` | Combined-vocal mode output |
+| `audio/lead.wav`, `audio/backing.wav` | Separated vocal parts |
+| `audio/instrumental.wav` | Accompaniment |
 
-There is no additional `.cmd` launcher. Each new computer requires fresh Bilibili and Xiaohongshu sign-in.
+In VOCALOID 6, use **File → Import** for MIDI and select UTF-8 when a lyric-encoding option is provided. MIDI timing uses 120 BPM as a time reference; this is not automatic song-tempo detection.
 
-The portable folder contains runtime files, concise bilingual instructions and
-third-party notices. Repository tests, screenshots, build scripts and other
-development material are excluded. Base runtime test directories and the unused
-upstream desktop GUI are also excluded; inference models and licenses are retained.
+## Workflows, tasks and recovery
 
-## Source and development
+Select a built-in or saved preset from **工作流预设** at the top of **处理音乐** (Process music), add a song, and click **开始处理**. The selected graph, model, language, lyric format and devices are applied together. To edit a workflow, open **工作流**, save it, and click **用于处理音乐** to return. Preset selections stay synchronized between both pages.
 
-Git stores assistant source, frozen integration source, tests, configuration, packaging tools, and the dependency inventory. Large binaries and models are stored in Release assets. Launch a source checkout with `Start-Assistant.bat` to install them. Alternatively, extract the portable package and overlay the repository source.
+Drag modules from the palette. Moving a module near a compatible neighbor shows a connection preview; releasing it snaps the modules into alignment and connects them. Pull a module away and release to disconnect. Double-clicking a palette item appends it after its predecessor. Click a module to edit its parameters; right-click to remove a module or connection. **整理画布** arranges modules in processing order and connects adjacent compatible modules. Ctrl + wheel zooms.
 
-`portable-files.json` selects assistant runtime files for release packaging;
-`source-files.json` inventories the complete repository. In a source checkout,
-the diagnostic batch files remain at the root.
+The supported sequence is **Music input → Separation → MIDI → Subtitles**. Ending at Separation exports audio without running MIDI inference. The subtitle node exports SRT and WebVTT from MIDI lyric events. Incomplete or invalid connections are rejected before creating a task. Input files, BV links and reference lyrics are entered on the processing page.
 
-For offline runtime installation, put `BVWA-Windows-x64.zip` in the source folder or its parent, or run:
+Select a node to change language, model, lyric format, extraction precision or device. The base separation and MIDI engines offer CPU/DirectML; the optional BS-RoFormer engine offers Auto/CPU/CUDA. Current settings and named presets are saved locally. Presets contain processing parameters and the graph, without song paths or reference lyrics. Existing tasks retain their recorded settings; **用当前工作流重做** creates a new task using the current workflow and the original input.
+
+**任务与结果** supports search, status filters, sorting and renaming. The task menu can open logs, send MIDI lyrics to the subtitle editor, or delete a task after confirmation. Deleting a task removes its files permanently. A run interrupted by an application exit is shown as interrupted and can be resumed.
+
+Progress shows the active stage, voice or model subtask, completed stages and elapsed time. Measurable subtasks show processed chunks or download size/speed; stage counts are not estimates of remaining processing time. Failures show a readable explanation and a retry action. Device failures also offer **改用 CPU 继续**; disk-space failures link to disk management. Completed stages are reused when their outputs remain valid.
+
+## Disk management and subtitles
+
+In **缓存与磁盘**, scan disk usage, select cache or temporary-file entries, and confirm cleanup. Tasks, installed models, sign-in sessions and presets are protected. Cleanup waits until processing, component installation and upload preparation have finished. Removing task temporary files may require regenerating them on retry.
+
+**歌词转字幕** imports UTF-8 LRC, TXT, timed CSV (`start,end,text` in seconds), and MIDI lyric events. Preview and edit each cue, apply a global time offset, then export UTF-8 SRT or WebVTT. LRC timestamps are preserved, including repeated timestamps and offset tags. Empty timestamped lines end the preceding cue. A final line without an end marker defaults to three seconds. MIDI phrase boundaries are inferred from lyric pauses. Plain text has no timing: the tool distributes lines across a user-specified duration as an initial estimate and requires manual checking.
+
+The portable inventory excludes development installers, third-party tests, unused Qt Quick resources and an alternate HFA export that the pipeline never loads. Active Chinese/Japanese ASR and pitch/alignment weights remain unchanged. The current inventory saves approximately 447 MB of extracted space; the compressed size is measured when an approved release is built.
+
+## Optional model and download sources
+
+Open **模型与组件** (Models/components), choose the runtime and download source, then select **下载并安装** (Download/install). After installation, select **使用此模型** (Use model).
+
+| Runtime | Download | Installed space, approximately |
+| --- | --- | --- |
+| CPU | 0.46 GB | 1.56 GB |
+| NVIDIA GPU / CUDA | 3.52 GB | 6.14 GB |
+
+The installer supports cancellation, resume and SHA-256 verification. The original BS-RoFormer checkpoint is used for both lyric languages. Japanese transcription retains the existing Romaji ASR model.
+
+Download options are **Auto**, **Official sources**, and **Prefer acceleration**. Auto tries an alternate source after a connection failure. GitHub downloads support [GitProxy](https://gitproxy.dev/guide); Hugging Face weights support [HF-Mirror](https://hf-mirror.com/). Other runtime packages use their official sources. Availability and speed depend on the selected service and network.
+
+## Program updates
+
+Open **设置与更新** (Settings/updates) to check versions, read release notes and choose the default download source. Startup checks and automatic background downloads are configurable. Once a download has been verified, select **重启并安装更新** (Restart/install) when the current task is finished.
+
+Program updates use a small update package. Settings, jobs, platform sign-in and installed models are preserved. Failed file replacement restores the previous program files. Releases that change the base runtime require the complete portable package.
+
+`release-assets.json` contains release metadata and checksums. Version 0.3.0 includes a program update package for compatible base runtimes; v0.2.0 requires the complete package.
+
+## Upload preparation
+
+In **发布准备** (Publication), choose the source task and finished video. Review the source cover, titles and credits, prepare the publication files, then sign in and upload to the selected platforms. The assistant leaves the creator pages open for review and manual publishing.
+
+Original covers come from the video's metadata. Frame capture and custom images are separate choices. Cover conversion preserves the complete image with padding when required.
+
+## Requirements and troubleshooting
+
+- Windows 10/11 x64; 16 GB RAM is recommended.
+- Reserve approximately 25 GB for downloading, joining and extracting the portable package. Optional components and media need additional space.
+- Keep `dependencies`, `models`, `assets` and `components` with the executable. Transfer the complete folder to another computer.
+- Startup errors are recorded in `launcher.log`. Diagnostic controls are in `tools/`.
+- Platform sign-in is required on each new computer.
+
+| Diagnostic tool | Purpose |
+| --- | --- |
+| `tools/Start-Diagnostics.bat` | Start with visible diagnostic output; install a missing runtime |
+| `tools/Check-Dependencies.bat` | Verify bundled runtime files |
+| `tools/Use-CPU.bat`, `tools/Use-GPU.bat` | Select CPU/DirectML for the base pipeline |
+
+## Development
+
+The repository contains source, tests and build tools. Models and large runtime files are distributed separately. For a source checkout, use `tools/Start-Diagnostics.bat` to install the runtime, then build the EXE with `tools/build_windows_launcher.py`.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Install-Runtime.ps1 -Archive 'D:\Downloads\BVWA-Windows-x64.zip' -Offline
-```
-
-Installation checks every fixed dependency against `dependencies/manifest.json` and preserves assistant configuration, jobs and platform profiles. An interrupted installation can be resumed by running the launcher again. `--check` checks runtime readiness; `--smoke-test` also opens and closes the application window for diagnostics.
-
-```powershell
-& '.\dependencies\vocal2midi\python\python.exe' -B .\launch.py --check
+& '.\dependencies\vocal2midi\python\python.exe' -B .\tools\build_windows_launcher.py
 & '.\dependencies\vocal2midi\python\python.exe' -B .\tests\run_tests.py
-& '.\dependencies\vocal2midi\python\python.exe' -B .\pipeline.py --audio-file 'D:\Music\song.mp3' --voice-mode dual
+& '.\dependencies\vocal2midi\python\python.exe' -B .\pipeline.py --audio-file 'D:\Music\song.wav' --zh-lyric-mode pinyin
 ```
 
-Account profiles, cookies, tokens, personal media, job history, and publication drafts are excluded from Git and release packages. Runtime data lives in `cache/`, `jobs/`, and `publish-packages/`.
-
-See the [guide](docs/UserGuide.en.md), [architecture](docs/Architecture.en.md), [verification](docs/Verification.en.md), and [third-party notices](THIRD_PARTY_NOTICES.md).
+User data under `cache/`, `jobs/` and `publish-packages/` is excluded from clean packages and Git. See [Contributing](CONTRIBUTING.md), [Changelog](CHANGELOG.md) and the [architecture](docs/Architecture.en.md). Release packaging requires passing automated checks and confirmed user testing.
 
 ## Related projects and acknowledgements
+
 
 This assistant integrates existing tools and model pipelines. Thanks to their authors and contributors.
 

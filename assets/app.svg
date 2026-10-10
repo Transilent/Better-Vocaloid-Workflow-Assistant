@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="base" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#315769"/><stop offset="1" stop-color="#152d40"/></linearGradient>
+    <linearGradient id="voice" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#c6fbe1"/><stop offset="1" stop-color="#7cddd7"/></linearGradient>
+    <linearGradient id="harmony" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#c0e6ff"/><stop offset="1" stop-color="#77aedf"/></linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="58" fill="url(#base)" stroke="#91bac8" stroke-opacity=".45" stroke-width="2"/>
+  <path d="M37 74Q110 16 208 42" fill="none" stroke="#ffffff" stroke-opacity=".09" stroke-width="31" stroke-linecap="round"/>
+  <path d="M57 77L104 183Q110 197 120 178L160 89" fill="none" stroke="url(#voice)" stroke-width="23" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M123 82L153 144Q160 158 168 143L199 77" fill="none" stroke="url(#harmony)" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="199" cy="77" r="14" fill="#c0e6ff"/>
+  <circle cx="160" cy="89" r="16" fill="#c6fbe1"/>
+  <path d="M51 218Q126 228 197 211" fill="none" stroke="#b4e9df" stroke-opacity=".12" stroke-width="2"/>
+</svg>

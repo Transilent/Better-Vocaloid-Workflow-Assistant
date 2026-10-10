@@ -12,5 +12,8 @@
   "chorus_metadata": "models/mdx-model-data.json",
   "mdx_overlap": 0.5,
   "mdx_denoise": true,
-  "publish_browser_executable": "dependencies/browser/chrome/chrome.exe"
+  "publish_browser_executable": "dependencies/browser/chrome/chrome.exe",
+  "download_source": "auto",
+  "check_for_updates": true,
+  "auto_download_updates": false
 }

@@ -4,13 +4,23 @@
 
 ## Input
 
-The portable folder includes the runtime. A source checkout's launcher installs it first, using a complete portable ZIP in this folder or its parent, or downloading the Release files. This requires about 5.7 GB of network data when no local archive exists. It verifies dependency hashes and preserves assistant settings, jobs and sign-in profiles. After an interruption, run the launcher again.
+The portable folder includes the runtime. For a source checkout, `tools/Start-Diagnostics.bat` installs it first, using a complete portable ZIP in this folder or its parent, or downloading the Release files. Without a local archive, it downloads the complete package; its current size is listed in the Release. It verifies dependency hashes and preserves assistant settings, jobs and sign-in profiles. After an interruption, run the diagnostic script again.
 
-Run `Start-Assistant.bat`. Open **处理音乐** (Process music). Under **音乐来源**,
+Run `BVWA.exe` to start without a console window. Open **处理音乐** (Process music). Under **音乐来源**,
 select **B站 BV 号 / 链接** or **本地音乐文件**. **选择文件** opens the music chooser.
 A local file requires no BV and is copied before decoding. Saved snapshots allow
 resume after the original is moved. The sidebar also contains **模型与组件**
-(Models/components), **任务与结果** (Tasks/results), and **发布准备** (Publication).
+(Models/components), **任务与结果** (Tasks/results), **发布准备** (Publication), and **设置与更新** (Settings/updates).
+
+## Upgrading from v0.2.0
+
+Version 0.3.0 uses a revised base-runtime inventory and requires the complete portable package. Close the assistant and extract the new package into a separate folder. To retain data on the same computer, copy `config.json`, `jobs/`, `publish-packages/`, `last_job.txt`, `cache/workspace.json` and `cache/publish-browser/` from the old folder when present. An installed BS-RoFormer component can be retained by copying `dependencies/optional/bs-roformer/`. Keep custom task directories in their existing locations. Avoid copying old program files or update caches over the new package. On another computer, sign in to the publishing platforms again.
+
+The program-only update is for installations with the same base runtime. When that runtime differs, Settings/updates directs you to the complete package.
+
+## Save location
+
+In **输出与处理设置** (Output/processing settings), use **选择目录** (Choose folder) to set the save location, or enter a new folder path. The default is the assistant's `jobs` folder. Each task creates a separate subfolder containing the downloaded video (`video/source.mp4` for BV inputs), audio and MIDI. The assistant remembers the chosen location and earlier task folders. Resuming uses the original task folder; reprocessing creates a new task in the currently selected save location.
 
 ## Separation and transcription
 
@@ -20,15 +30,16 @@ resume after the original is moved. The sidebar also contains **模型与组件*
 | 导入外部分轨 | Use full-length lead, backing, and accompaniment WAV stems |
 | 合并人声 · 单轨 MIDI | Combined vocal transcription |
 | 中文 / 日语 | Chinese / Japanese lyric processing |
+| 中文歌词格式 | Characters or pinyin for both Chinese vocal tracks |
 | 识别歌词并写入 MIDI | Enable lyric recognition; unchecked gives notes only |
-| 精细提取 MIDI（较慢）, in 高级设置 | 16 GAME steps; unchecked uses 8 |
+| 工作流 → 生成 MIDI → 提取精度 | Choose 8, 16 or 32 GAME steps |
 
 External stems must come from the same source and retain the full timeline from zero, including initial silence. Mono and 48 kHz WAVs are converted. A different duration is rejected; equal duration does not prove correct alignment.
 
 Paste reference lyrics only. Spaces, punctuation, and line breaks are removed. Lead and backing lyrics are independent. Do not paste credits or a full description. Empty backing lyrics allow independent recognition.
 
-Expand **参考歌词（可选）** to enter lyrics. Expand **高级设置** for MIDI steps
-and the optional model's inference device. Logs are available through **处理日志**.
+Expand **参考歌词（可选）** to enter lyrics. Open **工作流** to set MIDI steps
+and each engine's inference device. Logs are available through **处理日志**.
 
 ## Optional BS-RoFormer component
 
@@ -49,9 +60,9 @@ Chinese lyrics use Qwen ASR. Japanese lyrics retain the bundled Romaji ASR model
 
 ## Run and recovery
 
-**开始处理** starts a new job. In Tasks/Results, select a task and use **继续任务**
-to resume its saved parameters or **重新分离 / MIDI** to create a new job with the
-current processing settings and reuse its input. **取消处理** appears while running.
+**开始处理** starts a new job. In Tasks/Results, select a task and use **继续 / 重试**
+to resume its saved parameters or **用当前工作流重做** to create a new job with the
+current workflow and reuse its input. **取消处理** appears while running.
 Cooperative cancellation can take up to 30 seconds before forced termination.
 **打开结果目录** opens the selected job folder.
 
@@ -112,3 +123,31 @@ Startup errors appear in `launcher.log`. `Use-CPU.bat` and `Use-GPU.bat` change
 base CPU/DirectML device settings; restart afterward.
 
 `cache/` holds temporary files and dedicated sign-in profiles, `jobs/` holds audio/MIDI, and `publish-packages/` holds publication snapshots. These private runtime directories are excluded from Git and clean releases. Sign in again on each new computer.
+
+## Downloads and program updates
+
+Models/components offers automatic, official and accelerated download modes. Settings/updates sets the default. GitHub files use GitProxy; Hugging Face models use HF-Mirror. Other dependencies use their official sources. Automatic and accelerated modes try the alternate source after connection failures. File-size and SHA-256 checks remain enabled.
+
+Use Settings/updates to check versions, read release notes and download program updates. Startup checks and automatic downloads are separate preferences. Once verification finishes, end active tasks and select Restart/install. Updates preserve settings, tasks, platform sign-in and optional models. Replacement failures restore the previous program. A changed base runtime requires a full portable package. Version 0.2.0 requires the complete package when upgrading to 0.3.0.
+
+## Workflows, tasks and recovery
+
+Select a built-in or saved preset from **工作流预设** at the top of **处理音乐** (Process music), add a song, and click **开始处理**. The selected graph, model, language, lyric format and devices are applied together. To edit a workflow, open **工作流**, save it, and click **用于处理音乐** to return. Preset selections stay synchronized between both pages.
+
+Drag modules from the palette. Moving a module near a compatible neighbor shows a connection preview; releasing it snaps the modules into alignment and connects them. Pull a module away and release to disconnect. Double-clicking a palette item appends it after its predecessor. Click a module to edit its parameters; right-click to remove a module or connection. **整理画布** arranges modules in processing order and connects adjacent compatible modules. Ctrl + wheel zooms.
+
+The supported sequence is **Music input → Separation → MIDI → Subtitles**. Ending at Separation exports audio without running MIDI inference. The subtitle node exports SRT and WebVTT from MIDI lyric events. Incomplete or invalid connections are rejected before creating a task. Input files, BV links and reference lyrics are entered on the processing page.
+
+Select a node to change language, model, lyric format, extraction precision or device. The base separation and MIDI engines offer CPU/DirectML; the optional BS-RoFormer engine offers Auto/CPU/CUDA. Current settings and named presets are saved locally. Presets contain processing parameters and the graph, without song paths or reference lyrics. Existing tasks retain their recorded settings; **用当前工作流重做** creates a new task using the current workflow and the original input.
+
+**任务与结果** supports search, status filters, sorting and renaming. The task menu can open logs, send MIDI lyrics to the subtitle editor, or delete a task after confirmation. Deleting a task removes its files permanently. A run interrupted by an application exit is shown as interrupted and can be resumed.
+
+Progress shows the active stage, voice or model subtask, completed stages and elapsed time. Measurable subtasks show processed chunks or download size/speed; stage counts are not estimates of remaining processing time. Failures show a readable explanation and a retry action. Device failures also offer **改用 CPU 继续**; disk-space failures link to disk management. Completed stages are reused when their outputs remain valid.
+
+## Disk management and subtitles
+
+In **缓存与磁盘**, scan disk usage, select cache or temporary-file entries, and confirm cleanup. Tasks, installed models, sign-in sessions and presets are protected. Cleanup waits until processing, component installation and upload preparation have finished. Removing task temporary files may require regenerating them on retry.
+
+**歌词转字幕** imports UTF-8 LRC, TXT, timed CSV (`start,end,text` in seconds), and MIDI lyric events. Preview and edit each cue, apply a global time offset, then export UTF-8 SRT or WebVTT. LRC timestamps are preserved, including repeated timestamps and offset tags. Empty timestamped lines end the preceding cue. A final line without an end marker defaults to three seconds. MIDI phrase boundaries are inferred from lyric pauses. Plain text has no timing: the tool distributes lines across a user-specified duration as an initial estimate and requires manual checking.
+
+The portable inventory excludes development installers, third-party tests, unused Qt Quick resources and an alternate HFA export that the pipeline never loads. Active Chinese/Japanese ASR and pitch/alignment weights remain unchanged. The current inventory saves approximately 447 MB of extracted space; the compressed size is measured when an approved release is built.

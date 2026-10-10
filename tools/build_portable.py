@@ -35,7 +35,16 @@ def package_sources():
         checked_path(ROOT, entry['source'])
     return {entry['file']: entry['source'] for entry in entries}
 
-def build(output, runtime, compression=1):
+
+def release_notes(version):
+    changelog = (ROOT / 'CHANGELOG.md').read_text(encoding='utf-8')
+    for section in changelog.split('\n## ')[1:]:
+        heading, _, notes = section.partition('\n')
+        if heading.split(' ', 1)[0] == version:
+            return notes.strip()
+    raise ValueError('Missing changelog section for release ' + version)
+
+def build(output, runtime, compression=6):
     source_names = package_sources()
     dependency = json.loads((ROOT / 'dependencies/manifest.json').read_text(encoding='utf-8'))
     names = sorted(set(source_names) | {e['file'] for e in dependency['entries']})
@@ -186,13 +195,21 @@ if __name__ == '__main__':
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--runtime-dir', type=Path, default=ROOT)
     parser.add_argument('--base-zip', type=Path, help='Reuse unchanged members from a checksum-verified previous ZIP')
-    parser.add_argument('--compression', type=int, choices=range(10), default=1)
+    parser.add_argument('--compression', type=int, choices=range(10), default=6)
     parser.add_argument('--split-mib', type=int, default=0)
+    parser.add_argument('--user-test-confirmed', action='store_true', help='Use only after explicit user testing confirmation')
     args = parser.parse_args()
+    if not args.user_test_confirmed:
+        parser.error('Local user testing must be confirmed before creating a portable release archive.')
     report = update_from_zip(args.output.resolve(), args.base_zip.resolve(), args.compression) if args.base_zip else build(args.output, args.runtime_dir.resolve(), args.compression)
     if args.split_mib:
         if not 1 <= args.split_mib < 2048:
             raise ValueError('Release parts must be between 1 and 2047 MiB')
         report['parts'] = split(args.output.resolve(), args.split_mib)
-        public = {'archive': report['archive'], 'parts': report['parts']}
+        from build_app_update import build as build_app_update
+        update = build_app_update(args.output.resolve().parent / 'BVWA-App-Update.zip')
+        version = json.loads((ROOT / 'version.json').read_text(encoding='utf-8'))['version']
+        notes = release_notes(version)
+        public = {'version': version, 'archive': report['archive'], 'parts': report['parts'],
+                  'update': update, 'release_notes': notes}
         (args.output.resolve().parent / 'release-assets.json').write_text(json.dumps(public, indent=2), encoding='utf-8')

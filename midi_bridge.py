@@ -51,6 +51,10 @@ def run(job, voice="vocals"):
     language = request["language"]
     saved_mode = value("lyric_output_mode_" + language, "汉字" if language == "zh" else "罗马音")
     mode = {"汉字": "hanzi", "拼音": "pinyin", "罗马音": "romaji", "假名": "kana"}.get(saved_mode, "auto")
+    if language == 'zh' and 'zh_lyric_mode' in request:
+        mode = request['zh_lyric_mode']
+        if mode not in ('hanzi', 'pinyin'):
+            raise ValueError('任务中的中文歌词格式无效，请重新建立任务。')
     t0, nsteps = value("t0", 0.0), request.get("midi_steps", value("nsteps", 8))
     if not 0 <= t0 < 1 or nsteps < 1:
         raise ValueError("Vocal2Midi 的 t0/nsteps 设置无效。")
@@ -111,6 +115,7 @@ def run(job, voice="vocals"):
         "alignment": alignment,
         "language": language, "reference_lyrics_used": bool(cfg.original_lyrics),
         "recognize_lyrics": cfg.output_lyrics,
+        "lyric_output_mode": mode,
         "voice": voice, "inference_steps": nsteps,
         "input_signature": signature, "midi_sha256": file_hash(out / (voice + ".mid")),
         "silent_input": silent,

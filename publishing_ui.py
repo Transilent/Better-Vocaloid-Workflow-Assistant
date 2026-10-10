@@ -117,7 +117,7 @@ class PublishingTab(QWidget):
             pass
 
     def choose_job(self):
-        path = QFileDialog.getExistingDirectory(self, "选择来源任务", str(ROOT / "jobs"))
+        path = QFileDialog.getExistingDirectory(self, "选择来源任务", str(self.owner.output_parent()))
         if path:
             self.try_load(path)
 
@@ -172,6 +172,9 @@ class PublishingTab(QWidget):
     def start_task(self, function, success):
         if self.task is not None and self.task.isRunning():
             return
+        if hasattr(self.owner, 'storage') and self.owner.storage.busy():
+            self.status.setText('请等待缓存管理操作结束后再准备发布资料。')
+            return
         self.set_busy(True)
         self.status.setText("正在处理发布资料…")
         self.task = Task(function)
@@ -197,12 +200,15 @@ class PublishingTab(QWidget):
 
     def fetch_source(self):
         source = self.bv.text()
+        output_parent = self.owner.output_parent()
         def fetch():
             from pipeline import create_job, run
-            job = create_job(source, remember=False)
+            job = create_job(source, parent=output_parent, remember=False)
             run(job, until="audio")
             return job
         def ready(path):
+            from common import save_output_directory
+            save_output_directory(path.parent)
             self.load_job(path)
             self.status.setText("本家资料、原视频与封面已准备。此操作不重新提取 MIDI。")
         self.start_task(fetch, ready)

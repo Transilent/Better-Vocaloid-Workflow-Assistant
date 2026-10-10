@@ -18,17 +18,24 @@ The first checks startup requirements. The second hashes every fixed dependency.
 | --- | --- |
 | Core | Stage reuse, cancellation, stem normalization, MIDI checks |
 | Japanese MIDI | Short mora pauses, kana token positions, supported phones, chunk error isolation, cancellation and atomic track assembly |
-| Desktop UI | Four-page navigation, folded controls, primary actions, component state, multi-GB progress signals, 980×680 layout |
+| Chinese MIDI | Real lyric-token selection and MIDI writing in characters/pinyin with a recognition fixture; unchanged note timing and cache invalidation |
+| Program updates | Version checks, download routes, staging, file allowlist, hash rejection, preserved data and rollback |
+| Desktop UI | Eight-page navigation, folded controls, primary actions, component state, multi-GB progress signals, default 1600×1000 and minimum 1000×680 layouts |
+| Workflow and task management | Real input snapshots/FFmpeg and imported stems, graph-controlled termination, inference fixture and real subtitle output, validated resume, processing-page preset selection and actual start, Qt proximity snapping and disconnection, task search, cache boundaries and retry |
+| Subtitles | Repeated/empty/enhanced LRC timestamps, offset tags, SRT/WebVTT time formatting, text estimates, Unicode MIDI and tempo maps |
 | Optional installer | Local HTTP Range resume, ignored/bad Range responses, SHA-256 mismatch, cancellation, archive traversal and cleanup boundaries |
 | Publication workspace | Real synthetic-video bundle preparation, primary action dispatch, edited-draft guard, custom-cover restore and error recovery |
+| Custom save location | Real synthetic video/WAV outputs, Unicode/spaces, resume/reuse, remembered task folders, browsing/restart and invalid destinations |
 | Local music | WAV/MP3/FLAC/M4A, snapshots, resume, invalid inputs, no source API requests |
 | Browser lifecycle | Sign-in profiles, process handling, upload state |
 | Platform adapters | File selection, text fields, cover controls on local pages |
 | Dual covers | Independent 4:3 and 16:9 cover handling |
-| Launchers | Single startup entry, runtime check, CPU/GPU settings |
+| Launchers | Actual Windows GUI-subsystem EXE startup without a console, runtime check and CPU/GPU settings |
 | Runtime bootstrap | Offline install, Release-part downloads on local HTTP fixtures, integrity, retry and preserved user data |
 
 ## Release verification
+
+Before delivery packaging, `tools/verify_portable_layout.py` creates a temporary test tree from the curated inventories and runs the regression suite using its own Python. Excluded dependencies are physically absent. Large immutable assets use NTFS hard links; writable files are copied. The test tree is removed afterward, and no delivery archive is created. A short real MDX probe additionally checks CPU and DirectML execution, timeline length, stem reconstruction and structured chunk progress. Neither fixture-based inference nor short tone probes measure lyric or music accuracy.
 
 The portable ZIP is extracted into a separate directory. Every member's CRC, size and SHA-256 are checked against the release inventory; fixed dependencies are cross-checked with their manifest. Startup and regressions are then run with the extracted Python. Split-part hashes and the full ZIP hash are recorded in `release-assets.json`.
 

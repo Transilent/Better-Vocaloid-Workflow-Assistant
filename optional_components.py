@@ -15,6 +15,7 @@ import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import ROOT, atomic_json, file_hash, load_config
+from download_sources import download_urls, source_name
 
 COMPONENT = ROOT / 'dependencies/optional/bs-roformer'
 
@@ -54,7 +55,7 @@ def cancelled(check):
         raise InterruptedError('已取消安装；已下载的数据会保留，重试可继续下载。')
 
 
-def download(item, folder, progress, check=None, opener=urllib.request.urlopen):
+def download(item, folder, progress, check=None, opener=urllib.request.urlopen, source='auto'):
     """Honor Range only when the server confirms the exact offset and total."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -63,6 +64,7 @@ def download(item, folder, progress, check=None, opener=urllib.request.urlopen):
         raise ValueError('Invalid download filename')
     target = folder / name
     partial = folder / (name + '.partial')
+    routes = download_urls(item['url'], source)
     cancelled(check)
     if target.is_file() and target.stat().st_size == item['bytes'] and file_hash(target) == item['sha256']:
         progress(item['bytes'], item['bytes'], '已校验下载文件')
@@ -82,7 +84,9 @@ def download(item, folder, progress, check=None, opener=urllib.request.urlopen):
         headers = {'User-Agent': 'pip/25.0 (Better-Vocaloid-Workflow-Assistant)'}
         if offset:
             headers['Range'] = f'bytes={offset}-'
-        request = urllib.request.Request(item['url'], headers=headers)
+        route = routes[min(attempt, len(routes) - 1)]
+        request = urllib.request.Request(route, headers=headers)
+        progress(offset, item['bytes'], '连接' + source_name(route))
         try:
             with opener(request, timeout=30) as response:
                 code = response.status
@@ -95,14 +99,14 @@ def download(item, folder, progress, check=None, opener=urllib.request.urlopen):
                 else:
                     raise ValueError(f'下载服务器返回状态 {code}')
                 with partial.open('ab' if offset else 'wb') as writer:
-                    progress(offset, item['bytes'], '正在下载')
+                    progress(offset, item['bytes'], '正在下载 · ' + source_name(route))
                     while block := response.read(1024 * 1024):
                         cancelled(check)
                         writer.write(block)
                         offset += len(block)
                         if offset > item['bytes']:
                             raise ValueError('下载文件超出清单大小。')
-                        progress(offset, item['bytes'], '正在下载')
+                        progress(offset, item['bytes'], '正在下载 · ' + source_name(route))
             cancelled(check)
             if offset != item['bytes']:
                 raise OSError('下载未完成，正在重试。')
@@ -195,7 +199,8 @@ def probe(directory):
     print('COMPONENT_PROBE=' + json.dumps(result), flush=True)
 
 
-def install(runtime, progress=print, check=None, root=COMPONENT, force=False):
+def install(runtime, progress=print, check=None, root=COMPONENT, force=False, source='auto'):
+    download_urls('https://github.com/', source)  # Validate before modifying the install stage.
     if runtime not in ('cpu', 'cuda'):
         raise ValueError('请选择 CPU 或 NVIDIA GPU 运行库。')
     if sys.version_info[:2] != (3, 12) or sys.maxsize < 2**32 or sys.platform != 'win32':
@@ -223,7 +228,7 @@ def install(runtime, progress=print, check=None, root=COMPONENT, force=False):
             cancelled(check)
             def update(done, count, message, base=completed, number=index + 1):
                 progress(base + done, total, f'{message} · 文件 {number}/{len(items)}')
-            download_path = download(item, root / 'downloads', update, check)
+            download_path = download(item, root / 'downloads', update, check, source=source)
             downloads.append(download_path)
             if item['name'].endswith('.whl'):
                 progress(completed + item['bytes'], total, '正在安装运行库')
@@ -288,8 +293,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--install', choices=('cpu', 'cuda'))
     parser.add_argument('--probe')
+    parser.add_argument('--download-source', choices=('auto', 'direct', 'mirror'), default='auto')
     args = parser.parse_args()
     if args.probe:
         probe(args.probe)
     elif args.install:
-        install(args.install, lambda done, total, text: print(f'{done}/{total}: {text}', flush=True))
+        install(args.install, lambda done, total, text: print(f'{done}/{total}: {text}', flush=True), source=args.download_source)

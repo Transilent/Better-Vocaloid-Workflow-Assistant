@@ -2,7 +2,8 @@
 import threading
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QProgressBar, QMenu, QToolButton
-from desktop_theme import button, card, label, page
+from desktop_theme import button, card, label, page, scroll_content
+from common import load_config
 import optional_components as components
 
 
@@ -11,14 +12,15 @@ class Installer(QThread):
     value = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, runtime, force=False):
+    def __init__(self, runtime, force=False, source='auto'):
         super().__init__()
         self.runtime, self.force = runtime, force
+        self.source = source
         self.stop = threading.Event()
 
     def run(self):
         try:
-            self.value.emit(components.install(self.runtime, self.progress.emit, self.stop.is_set, force=self.force))
+            self.value.emit(components.install(self.runtime, self.progress.emit, self.stop.is_set, force=self.force, source=self.source))
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -31,12 +33,16 @@ class ComponentsPage(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(container)
+        content = scroll_content(layout)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(20)
         base, body = card('Karaoke 2', '主唱／和声分离 · 已内置，无需额外下载', '01')
         body.addWidget(label('适合快速处理。先分出总人声和伴奏，再拆主唱与和声。', 'muted'))
         body.addWidget(button('使用内置方案', lambda: self.use('dual')))
         layout.addWidget(base)
         extra, body = card('BS-RoFormer', '主唱／和声分离 · 可选组件', '02')
-        body.addWidget(label('保留原模型权重；中日文使用同一流程。静音主唱轨可能是合理结果，完成后请试听。', 'muted'))
+        body.addWidget(label('用于拆分主唱与和声，支持 CPU 和 NVIDIA GPU。中文和日语共用此分离模型。', 'muted'))
         self.badge = label('', 'success')
         body.addWidget(self.badge)
         row = QHBoxLayout()
@@ -46,6 +52,16 @@ class ComponentsPage(QWidget):
         self.runtime.addItem('仅 CPU', 'cpu')
         row.addWidget(self.runtime, 1)
         body.addLayout(row)
+        row = QHBoxLayout()
+        row.addWidget(label('下载方式'))
+        self.source = QComboBox()
+        self.source.addItem('自动选择', 'auto')
+        self.source.addItem('官方源直连', 'direct')
+        self.source.addItem('优先加速源', 'mirror')
+        self.source.setCurrentIndex(max(0, self.source.findData(load_config().get('download_source', 'auto'))))
+        row.addWidget(self.source, 1)
+        body.addLayout(row)
+        body.addWidget(label('自动模式在连接失败后尝试备用源。GitHub 文件使用 GitProxy，模型权重使用 HF-Mirror。', 'muted'))
         self.size = label('', 'muted')
         body.addWidget(self.size)
         self.runtime.currentIndexChanged.connect(self.refresh)
@@ -106,16 +122,20 @@ class ComponentsPage(QWidget):
     def start_install(self, force=False):
         if self.busy():
             return
+        if hasattr(self.owner, 'storage') and self.owner.storage.busy():
+            self.message.setText('请等待缓存管理操作结束后再安装组件。')
+            return
         if self.owner.runner and self.owner.runner.isRunning():
             self.message.setText('请等待当前音乐任务结束后再安装组件。')
             return
-        self.worker = Installer(self.runtime.currentData(), force)
+        self.worker = Installer(self.runtime.currentData(), force, self.source.currentData())
         self.worker.progress.connect(self.update_progress)
         self.worker.value.connect(lambda value: self.message.setText('安装完成。选择“使用此模型”即可开始处理。'))
         self.worker.failed.connect(self.message.setText)
         self.worker.finished.connect(self.finished)
         self.download.setEnabled(False)
         self.runtime.setEnabled(False)
+        self.source.setEnabled(False)
         self.more.setEnabled(False)
         self.cancel.show()
         self.cancel.setEnabled(True)
@@ -131,6 +151,7 @@ class ComponentsPage(QWidget):
     def finished(self):
         self.download.setEnabled(True)
         self.runtime.setEnabled(True)
+        self.source.setEnabled(True)
         self.more.setEnabled(True)
         self.cancel.hide()
         self.refresh()

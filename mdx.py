@@ -119,6 +119,8 @@ def separate(source, directory, config, job, log=print,
         result[:, start:start + size] += estimate * window
         divider[start:start + size] += window
         log(f"分离进度：{index + 1}/{len(positions)}", flush=True)
+        from progress_state import publish
+        publish(job, 'separation', '主唱 / 和声' if output_names[0] == 'lead.wav' else '人声 / 伴奏', index+1, len(positions))
     target = slice(trim, trim + len(audio))
     if not np.all(divider[target] > 0):
         raise RuntimeError("分离窗口没有完整覆盖歌曲。")
