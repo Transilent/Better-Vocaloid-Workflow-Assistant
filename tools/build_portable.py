@@ -3,11 +3,13 @@ import argparse
 import copy
 import hashlib
 import json
+import sys
 import time
 import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 BLOCK = 4 * 1024**2
 FORBIDDEN = {'cache', 'jobs', 'publish-packages', 'quality-test', 'work', '.git'}
 
@@ -206,7 +208,7 @@ if __name__ == '__main__':
         if not 1 <= args.split_mib < 2048:
             raise ValueError('Release parts must be between 1 and 2047 MiB')
         report['parts'] = split(args.output.resolve(), args.split_mib)
-        from build_app_update import build as build_app_update
+        from tools.build_app_update import build as build_app_update
         update = build_app_update(args.output.resolve().parent / 'BVWA-App-Update.zip')
         version = json.loads((ROOT / 'version.json').read_text(encoding='utf-8'))['version']
         notes = release_notes(version)
