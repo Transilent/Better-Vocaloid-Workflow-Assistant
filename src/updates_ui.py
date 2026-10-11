@@ -1,7 +1,7 @@
 """Update preferences, release notes and verified download progress."""
 import json
 import threading
-from PyQt5.QtCore import QThread, QTimer, pyqtSignal
+from PyQt5.QtCore import QEvent, QThread, QTimer, pyqtSignal
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QCheckBox, QTextEdit, QProgressBar
 from common import ROOT, load_config, atomic_json
 from desktop_theme import button, card, label, page, scroll_content
@@ -34,6 +34,7 @@ class UpdatesPage(QWidget):
         self.owner, self.worker, self.release = owner, None, None
         self.plan = None
         self.startup_update = False
+        self.startup_interrupted = False
         self.restart_deferred = False
         self.restart_remaining = None
         self.restart_timer = QTimer(self)
@@ -96,6 +97,9 @@ class UpdatesPage(QWidget):
         body.addWidget(label('自动更新只在启动时执行，并提供 10 秒重启倒计时。手动下载的更新由你确认安装。', 'muted'))
         body_layout.addWidget(updates)
         body_layout.addStretch()
+        self.application = QApplication.instance()
+        self.application.aboutToQuit.connect(self.stop_watching)
+        self.application.installEventFilter(self)
         pending = updater.pending_update()
         if pending:
             self.plan = pending['plan']
@@ -115,6 +119,31 @@ class UpdatesPage(QWidget):
             import os
             if not os.environ.get('BVWA_TESTING'):
                 QTimer.singleShot(1800, lambda: self.check(startup=True))
+
+    def eventFilter(self, watched, event):
+        if event.type() in (QEvent.MouseButtonPress, QEvent.KeyPress, QEvent.Wheel, QEvent.Close):
+            if isinstance(self.owner, QWidget) and isinstance(watched, QWidget):
+                widget = watched
+                while widget is not None and widget is not self.owner:
+                    widget = widget.parentWidget()
+                if widget is self.owner:
+                    self.startup_interrupted = True
+                    self.stop_watching()
+                    if self.startup_update:
+                        self.restart_deferred = True
+                        self.restart_timer.stop()
+                        self.restart_remaining = None
+                        if self.plan:
+                            self.cancel.hide()
+                            self.message.setText('已开始使用助手，自动安装已暂缓。可手动重启安装，或在下次启动时应用更新。')
+        return False
+
+    def stop_watching(self):
+        self.application.removeEventFilter(self)
+
+    def closeEvent(self, event):
+        self.stop_watching()
+        super().closeEvent(event)
 
     def save_settings(self):
         config = load_config(resolve_paths=False)
@@ -136,8 +165,8 @@ class UpdatesPage(QWidget):
     def check(self, startup=False):
         if self.busy() or self.plan:
             return
-        if startup and self.active_operations():
-            self.message.setText('当前操作已开始，本次启动的自动更新已跳过。可稍后手动检查更新。')
+        if startup and (self.startup_interrupted or self.active_operations()):
+            self.message.setText('已开始使用助手，本次启动的自动更新已跳过。可稍后手动检查更新。')
             return
         self.startup_update = bool(startup)
         self.worker = UpdateWorker(self.source.currentData())
@@ -174,7 +203,7 @@ class UpdatesPage(QWidget):
         else:
             self.message.setText('新版本 ' + release['version'] + ' · 下载约 ' + f"{release['update']['bytes'] / 1024**2:.1f} MB")
             self.action.setText('下载程序更新')
-            if self.startup_update and self.auto_download.isChecked():
+            if self.startup_update and self.auto_download.isChecked() and not self.restart_deferred:
                 if hasattr(self.owner, 'navigate'):
                     self.owner.navigate(4)
                 QTimer.singleShot(100, self.download)
@@ -190,7 +219,7 @@ class UpdatesPage(QWidget):
 
     def downloaded(self, plan):
         self.plan = str(plan)
-        self.restart_deferred = False
+        self.restart_deferred = self.startup_update and self.startup_interrupted
         self.restart_remaining = None
         self.action.setText('重启并安装更新')
         self.message.setText('下载完成，全部文件已校验。重启后安装更新。')

@@ -11,7 +11,9 @@ APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP))
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 os.environ['BVWA_TESTING'] = '1'
-from PyQt5.QtWidgets import QApplication, QComboBox
+from PyQt5.QtCore import Qt
+from PyQt5.QtTest import QTest
+from PyQt5.QtWidgets import QApplication, QComboBox, QLineEdit, QWidget
 import updates_ui
 
 application = QApplication([])
@@ -126,4 +128,29 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='auto-restart-') as di
                 application.processEvents()
                 assert not disabled.restart_timer.isActive()
                 disabled.close()
+        # Interaction permanently ends this launch's automatic-install window,
+        # including a short task that finishes before the download completes.
+        interactive = QWidget()
+        for key, value in vars(owner).items():
+            setattr(interactive, key, value)
+        edit = QLineEdit(interactive)
+        guarded = updates_ui.UpdatesPage(interactive)
+        guarded.startup_update = True
+        interactive.processing_active = True
+        QTest.keyClick(edit, Qt.Key_A)
+        interactive.processing_active = False
+        guarded.downloaded(root / 'late-plan.json')
+        guarded.finished()
+        assert guarded.startup_interrupted and guarded.restart_deferred
+        assert not guarded.restart_timer.isActive()
+        with patch.object(updates_ui.updater, 'restart_to_apply') as restarting:
+            for _ in range(12):
+                guarded.maybe_auto_restart()
+            restarting.assert_not_called()
+        guarded.plan = None
+        with patch.object(updates_ui, 'UpdateWorker') as worker:
+            guarded.check(startup=True)
+            worker.assert_not_called()
+        guarded.close()
+        interactive.close()
 print('PASS: startup-only download/restart, manual updates, countdown, active work, postponement, settings and next-launch resume')

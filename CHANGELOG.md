@@ -14,7 +14,7 @@
 ### Changed
 
 - Check, download and apply program updates automatically at startup by default, displaying a ten-second restart countdown. Manual downloads require an explicit restart action.
-- Postpone startup installation to the next launch if processing or another operation has begun; do not check periodically during use.
+- Postpone startup installation to the next launch once the user interacts with the assistant or an operation has begun; do not check periodically during use.
 - Allow postponing installation or disabling automatic restart in Settings/updates.
 - Save workflow preferences before applying an update and include the running version in startup diagnostics.
 
