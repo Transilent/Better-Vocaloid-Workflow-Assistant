@@ -33,7 +33,7 @@ In **输出与处理设置** (Output/processing settings), use **选择目录** 
 
 For Chinese, choose **汉字** (characters) or **拼音** (pinyin) under **中文歌词格式**. The choice applies to both vocal tracks and is saved with the task.
 
-Open **设置与更新** (Settings/updates) to check for new versions and choose official or accelerated downloads. Startup checks and automatic downloads are configurable. After verification, restart to install. Program updates preserve settings, tasks, platform sign-in and installed models.
+Automatic updates run only at startup: check, download, verify, then restart after a 10-second countdown. Starting a task or postponing installation defers it to the next launch. Normal use has no periodic checks. Open **设置与更新** (Settings/updates) to change these preferences, select a download source or check manually. Manually downloaded updates require Restart/install. Program updates preserve settings, tasks, platform sign-in and installed models.
 
 GitHub files support GitProxy; Hugging Face models support HF-Mirror. All downloaded packages are verified using SHA-256.
 

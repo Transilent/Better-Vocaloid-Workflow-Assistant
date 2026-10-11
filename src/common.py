@@ -3,6 +3,7 @@ import json
 import hashlib
 import re
 import unicodedata
+import urllib.request
 from functools import lru_cache
 from pathlib import Path
 
@@ -12,6 +13,12 @@ BV_PATTERN = re.compile(r"(?<![A-Za-z0-9])BV1[A-Za-z0-9]{9}(?![A-Za-z0-9])")
 
 TOOL_PATHS = ("python", "vocal2midi", "ffmpeg", "mdx_model", "mdx_metadata",
               "chorus_model", "chorus_metadata", "publish_browser_executable")
+
+
+def direct_urlopen(request, timeout=30):
+    """Open public metadata/downloads without environment or system proxies."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return opener.open(request, timeout=timeout)
 
 
 @lru_cache(maxsize=1)

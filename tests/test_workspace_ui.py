@@ -101,6 +101,7 @@ try:
     assert window.updates.worker.wait(1000)
     app.processEvents()
     assert window.updates.action.text() == '重启并安装更新'
+    window.updates.restart_timer.stop()  # The fixture is not an installable update.
     window.set_running(True)
     window.updates.primary_action()
     assert '当前任务' in window.updates.message.text(), 'Update installation must wait for active processing'

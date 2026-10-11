@@ -508,8 +508,8 @@ def browser_engine_options(headless=False):
     if executable:
         if not Path(executable).is_file():
             raise FileNotFoundError("助手内浏览器不存在，请恢复 dependencies/browser/chrome 目录。")
-        return {"executable_path": executable, "headless": headless}
-    return {"channel": config.get("publish_browser", "chrome"), "headless": headless}
+        return {"executable_path": executable, "headless": headless, "args": ["--no-proxy-server"]}
+    return {"channel": config.get("publish_browser", "chrome"), "headless": headless, "args": ["--no-proxy-server"]}
 
 
 def browser_options(headless=False):

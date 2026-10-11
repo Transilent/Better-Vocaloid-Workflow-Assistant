@@ -128,7 +128,7 @@ base CPU/DirectML device settings; restart afterward.
 
 Models/components offers automatic, official and accelerated download modes. Settings/updates sets the default. GitHub files use GitProxy; Hugging Face models use HF-Mirror. Other dependencies use their official sources. Automatic and accelerated modes try the alternate source after connection failures. File-size and SHA-256 checks remain enabled.
 
-Use Settings/updates to check versions, read release notes and download program updates. Startup checks and automatic downloads are separate preferences. Once verification finishes, end active tasks and select Restart/install. Updates preserve settings, tasks, platform sign-in and optional models. Replacement failures restore the previous program. A changed base runtime requires a full portable package. Version 0.2.0 requires the complete package when upgrading to 0.3.0.
+Automatic updates run only at startup. By default, the assistant checks for a compatible program update, downloads and verifies it, then restarts after a 10-second countdown. You can postpone installation or disable these preferences in Settings/updates. If a task begins, installation is deferred until the next launch. There are no periodic checks during normal use. Manually checked or downloaded updates require you to select Restart/install. Updates preserve settings, tasks, platform sign-in and optional models. Replacement failures restore the previous program. A changed base runtime requires a full portable package. Version 0.2.0 requires the complete package when upgrading to 0.3.0 or later.
 
 ## Workflows, tasks and recovery
 

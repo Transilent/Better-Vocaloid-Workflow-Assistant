@@ -2,6 +2,7 @@
 from urllib.parse import urlsplit, urlunsplit
 import urllib.error
 import urllib.request
+from common import direct_urlopen
 
 SOURCES = ('auto', 'direct', 'mirror')
 
@@ -30,7 +31,7 @@ def source_name(url):
     return {'api.gitproxy.dev': 'GitProxy', 'hf-mirror.com': 'HF-Mirror'}.get(host, '官方源')
 
 
-def read_small(url, source='auto', limit=2 * 1024**2, opener=urllib.request.urlopen):
+def read_small(url, source='auto', limit=2 * 1024**2, opener=direct_urlopen):
     """Bounded metadata requests; no platform cookies or credentials are sent."""
     last_error = None
     for candidate in download_urls(url, source):

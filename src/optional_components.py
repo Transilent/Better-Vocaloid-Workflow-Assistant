@@ -14,7 +14,7 @@ import urllib.request
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import ROOT, atomic_json, file_hash, load_config
+from common import ROOT, atomic_json, file_hash, load_config, direct_urlopen
 from download_sources import download_urls, source_name
 
 COMPONENT = ROOT / 'dependencies/optional/bs-roformer'
@@ -55,7 +55,7 @@ def cancelled(check):
         raise InterruptedError('已取消安装；已下载的数据会保留，重试可继续下载。')
 
 
-def download(item, folder, progress, check=None, opener=urllib.request.urlopen, source='auto'):
+def download(item, folder, progress, check=None, opener=direct_urlopen, source='auto'):
     """Honor Range only when the server confirms the exact offset and total."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)

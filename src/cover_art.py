@@ -6,7 +6,7 @@ import urllib.request
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import atomic_json, file_hash, extract_bv
+from common import atomic_json, file_hash, extract_bv, direct_urlopen
 
 
 def original_cover(info, folder, refresh=False):
@@ -29,7 +29,7 @@ def original_cover(info, folder, refresh=False):
         except (OSError, ValueError, KeyError):
             pass
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.bilibili.com/"})
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with direct_urlopen(request, timeout=30) as response:
         data = response.read(12 * 1024 * 1024 + 1)
     if len(data) > 12 * 1024 * 1024:
         raise ValueError("封面文件过大，请手动选择图片。")

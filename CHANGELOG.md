@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.3.1 — 2026-10-11
+
+### Fixed
+
+- Use direct connections for Bilibili metadata, original covers and media downloads, independent of system and environment proxies.
+- Apply the same direct connection policy to component downloads, program updates and runtime installation while retaining accelerated download sources.
+- Use direct connections in the dedicated sign-in/upload browser.
+- Clarify Bilibili connection failures and keep the existing task available for retry.
+
+### Changed
+
+- Check, download and apply program updates automatically at startup by default, displaying a ten-second restart countdown. Manual downloads require an explicit restart action.
+- Postpone startup installation to the next launch if processing or another operation has begun; do not check periodically during use.
+- Allow postponing installation or disabling automatic restart in Settings/updates.
+- Save workflow preferences before applying an update and include the running version in startup diagnostics.
+
 ## 0.3.0 — 2026-10-11
 
 - Add a draggable workflow canvas with validated execution connections, named presets and per-engine device selection.

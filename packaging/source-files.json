@@ -168,6 +168,8 @@
     "tests/run_tests.py",
     "tests/support.py",
     "tests/test_bilibili_dual_cover.py",
+    "tests/test_auto_restart.py",
+    "tests/test_bilibili_network.py",
     "tests/test_bootstrap.py",
     "tests/test_chinese_lyrics.py",
     "tests/test_components.py",

@@ -13,7 +13,7 @@ Briefly describe the main changes in this release.
 ## Installation
 
 - **New installation:** download all `BVWA-Windows-x64.zip.00x` parts and `release-assets.json`. Open `.001` with 7-Zip, or use `Merge-PortableParts.ps1` to verify and join. Extract the complete folder and start `BVWA.exe`.
-- **Existing installation:** open Settings/updates in the assistant. Download the verified program update, then restart to install. When the base runtime changes, use the complete package.
+- **Existing installation:** compatible updates are checked and installed at startup, with a restart countdown. Manual downloads require Restart/install in Settings/updates. When the base runtime changes, use the complete package.
 - **Optional BS-RoFormer:** install the CPU or CUDA component from Models/components.
 
 Include the actual download size, supported Windows versions and material compatibility changes.

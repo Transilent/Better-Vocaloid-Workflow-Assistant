@@ -4,6 +4,7 @@ import http.server
 import json
 import os
 import subprocess
+import socket
 import tempfile
 import threading
 import zipfile
@@ -13,7 +14,11 @@ APP = Path(__file__).resolve().parents[1]
 SCRIPT = APP / 'tools/Install-Runtime.ps1'
 shell = Path(os.environ['WINDIR']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
 
-def run(app, archive=None, release_api=None):
+def run(app, archive=None, release_api=None, proxy_wrapper=None, proxy=None):
+    if proxy_wrapper:
+        args = [str(shell), '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(proxy_wrapper),
+                str(SCRIPT), str(app), release_api, proxy]
+        return subprocess.run(args, capture_output=True, timeout=60)
     args = [str(shell), '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT),
             '-AppRoot', str(app)]
     args += ['-ReleaseApiUri', release_api] if release_api else ['-Offline']
@@ -91,7 +96,9 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-', dir='\\\\?\\' + str(APP / 
         def log_message(self, *args):
             pass
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-    base = 'http://127.0.0.1:' + str(server.server_port)
+    # localhost. resolves locally but is not treated as an automatic proxy bypass
+    # by .NET, so the refused default proxy is exercised by the control request.
+    base = 'http://localhost.:' + str(server.server_port)
     parts = [{'name': name, 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
              for name, data in pieces.items()]
     routes['/inventory'] = json.dumps({'parts': parts, 'archive': {
@@ -104,8 +111,31 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-', dir='\\\\?\\' + str(APP / 
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        result = run(download_app, release_api=base + '/release')
-        assert result.returncode == 0, result.stdout.decode(errors='replace')
+        wrapper = root / 'refused-proxy.ps1'
+        wrapper.write_text('''Add-Type @'
+using System;
+using System.Net;
+public class RefusedProxy : IWebProxy {
+    private readonly Uri destination;
+    public RefusedProxy(string value) { destination = new Uri(value); }
+    public Uri GetProxy(Uri value) { return destination; }
+    public bool IsBypassed(Uri value) { return false; }
+    public ICredentials Credentials { get; set; }
+}
+'@
+[Net.WebRequest]::DefaultWebProxy = [RefusedProxy]::new($args[3])
+$request = [Net.WebRequest]::CreateHttp([Uri]$args[2])
+$request.Timeout = 1000
+$refused = $false
+try { $request.GetResponse().Dispose() } catch [Net.WebException] { $refused = $true }
+if (!$refused) { throw 'Fixture failed to route through the refused default proxy.' }
+& $args[0] -AppRoot $args[1] -ReleaseApiUri $args[2]
+''', encoding='utf-8-sig')
+        with socket.socket() as stopped_proxy:
+            stopped_proxy.bind(('127.0.0.1', 0))
+            proxy = 'http://127.0.0.1:' + str(stopped_proxy.getsockname()[1])
+            result = run(download_app, release_api=base + '/release', proxy_wrapper=wrapper, proxy=proxy)
+        assert result.returncode == 0, (result.stdout + result.stderr).decode(errors='replace')
         assert all((download_app / n).read_bytes() == data for n, data in files.items())
         assert (download_app / 'cache/runtime-install/BVWA-Windows-x64.zip').read_bytes() == archive_bytes
         assert all('/' + name in requests for name in pieces)
@@ -115,4 +145,4 @@ with tempfile.TemporaryDirectory(prefix='bootstrap-', dir='\\\\?\\' + str(APP / 
         server.server_close()
         thread.join(timeout=5)
 print('PASS: offline installer, Unicode/spaces, integrity, retry, boundary and user-data preservation')
-print('PASS: Release discovery, part downloads, SHA-256 verification, join and installation on local HTTP fixtures')
+print('PASS: Release discovery, part downloads, SHA-256 verification, join and installation despite a refused system proxy')

@@ -19,6 +19,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 from common import ROOT, BV_PATTERN, atomic_json, cancelled, clean_lyrics, extract_bv, load_config, resolve_tools, completed_voice, file_hash, app_path, saved_path, output_directory, remember_job
+from common import direct_urlopen
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "vendor"))
@@ -142,7 +143,7 @@ def reuse_download(previous, **options):
 def get_view(bv):
     url = "https://api.bilibili.com/x/web-interface/view?" + urllib.parse.urlencode({"bvid": bv})
     req = urllib.request.Request(url, headers=HEADERS)
-    with urllib.request.urlopen(req, timeout=30) as response:
+    with direct_urlopen(req, timeout=30) as response:
         data = json.load(response)
     if data.get("code") != 0:
         raise RuntimeError(f"读取 B站简介失败：{data.get('message', data.get('code'))}")
@@ -332,6 +333,8 @@ def download(job, request):
         "merge_output_format": "mp4", "ffmpeg_location": resolve_tools(request["tools"])["ffmpeg"],
         "progress_hooks": [progress], "socket_timeout": 30, "retries": 3,
         "fragment_retries": 3, "overwrites": False,
+        # Bilibili metadata, covers and media share the direct connection policy.
+        "proxy": "",
     }
     (job / "video").mkdir(exist_ok=True)
     # No cookie extraction. If login is needed, expose the error and allow

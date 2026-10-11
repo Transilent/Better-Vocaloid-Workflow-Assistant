@@ -23,6 +23,39 @@ function Get-DisplayPath([string]$FilePath) {
     if ($FilePath.StartsWith('\\?\')) { return $FilePath.Substring(4) }
     return $FilePath
 }
+function Invoke-DirectDownload([string]$Uri, [string]$OutFile = '') {
+    # Windows PowerShell 5.1 compatibility: an empty per-request proxy overrides
+    # Internet Settings without changing system settings or process defaults.
+    $request = [Net.WebRequest]::CreateHttp([Uri]$Uri)
+    $request.Proxy = [Net.WebProxy]::new()
+    $request.UserAgent = 'BVWA-Runtime-Installer'
+    $request.Timeout = 30000
+    $request.ReadWriteTimeout = 30000
+    $response = $null
+    $stream = $null
+    $writer = $null
+    $reader = $null
+    try {
+        $response = $request.GetResponse()
+        $stream = $response.GetResponseStream()
+        if ($OutFile) {
+            $pending = $OutFile + '.network-partial'
+            $writer = [IO.File]::Create((Get-NativePath $pending))
+            $stream.CopyTo($writer)
+            $writer.Dispose()
+            $writer = $null
+            Move-Item -LiteralPath $pending -Destination $OutFile -Force
+        } else {
+            $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8)
+            return ($reader.ReadToEnd() | ConvertFrom-Json)
+        }
+    } finally {
+        if ($reader) { $reader.Dispose() }
+        if ($writer) { $writer.Dispose() }
+        if ($stream) { $stream.Dispose() }
+        if ($response) { $response.Dispose() }
+    }
+}
 $AppRoot = Get-DisplayPath $AppRoot
 $Archive = Get-DisplayPath $Archive
 $app = [IO.Path]::GetFullPath($AppRoot).TrimEnd('\')
@@ -53,10 +86,10 @@ try {
         if ($Offline) { throw 'No portable ZIP found. Supply -Archive, or allow the Release download.' }
         New-Item -ItemType Directory -Path $cache -Force | Out-Null
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $release = Invoke-RestMethod -Uri $ReleaseApiUri -Headers @{'User-Agent'='BVWA-Runtime-Installer'}
+        $release = Invoke-DirectDownload $ReleaseApiUri
         $metadataAsset = @($release.assets | Where-Object { $_.name -eq 'release-assets.json' })
         if ($metadataAsset.Count -ne 1) { throw 'The Release does not contain a runtime inventory.' }
-        $assets = Invoke-RestMethod -Uri $metadataAsset[0].browser_download_url
+        $assets = Invoke-DirectDownload $metadataAsset[0].browser_download_url
         Write-Output ('Downloading portable runtime: approximately {0:N1} GB. This may take several minutes.' -f ($assets.archive.bytes / 1000000000))
         foreach ($part in $assets.parts) {
             if ([IO.Path]::GetFileName($part.name) -ne $part.name -or $part.name -notmatch '^BVWA-Windows-x64\.zip\.\d{3}$') { throw 'Invalid Release part name.' }
@@ -67,7 +100,7 @@ try {
             if ($valid) { $valid = (Get-DependencyHash $partPath) -eq $part.sha256 }
             if (!$valid) {
                 Write-Output ('Downloading ' + $part.name)
-                Invoke-WebRequest -Uri $remote[0].browser_download_url -UseBasicParsing -OutFile $partPath
+                Invoke-DirectDownload $remote[0].browser_download_url $partPath
             }
             if ((Get-Item -LiteralPath $partPath).Length -ne $part.bytes -or (Get-DependencyHash $partPath) -ne $part.sha256) { throw ('Invalid downloaded part: ' + $part.name) }
         }

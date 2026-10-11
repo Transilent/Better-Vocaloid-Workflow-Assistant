@@ -29,6 +29,8 @@ def main():
         os.environ.get("PATH", ""),
     ])
     print("Better Vocaloid Workflow Assistant startup", sys.version, flush=True)
+    from updater import current_version
+    print("Version:", current_version(), flush=True)
     print("Runtime:", runtime, flush=True)
     if "--smoke-test" in sys.argv:
         namespace = runpy.run_path(str(ROOT / "app.py"))

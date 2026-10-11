@@ -82,6 +82,7 @@ results={'test_environment':'local DOM fixtures with real browser and HTTP uploa
 try:
     with sync_playwright() as p:
         options=browser_engine_options(headless=True)
+        assert '--no-proxy-server' in options['args'], 'Dedicated creator browser must ignore system proxies'
         browser=p.chromium.launch(**options)
         try:
             for name,route in [('xiaohongshu','/xhs'),('bilibili_iframe','/bili')]:

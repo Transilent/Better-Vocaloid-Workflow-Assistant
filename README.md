@@ -8,7 +8,7 @@
 
 A desktop assistant for preparing vocal-synthesis projects on Windows. Import a song or a Bilibili video, separate its vocal parts, and export MIDI with aligned lyrics. After tuning, prepare the finished video's cover, credits and creator uploads.
 
-> **v0.3.0 is available.** This release adds reusable workflows, task management, subtitles, a console-free launcher and verified updates. Upgrading from v0.2.0 requires the complete portable package.
+> **v0.3.1 is available.** This patch fixes connections affected by stale proxy settings and adds automatic restart after verified updates. Existing v0.3.0 installations can use the small program update. Upgrading from v0.2.0 requires the complete portable package.
 
 ## Features
 
@@ -100,7 +100,7 @@ Download options are **Auto**, **Official sources**, and **Prefer acceleration**
 
 ## Program updates
 
-Open **设置与更新** (Settings/updates) to check versions, read release notes and choose the default download source. Startup checks and automatic background downloads are configurable. Once a download has been verified, select **重启并安装更新** (Restart/install) when the current task is finished.
+Open **设置与更新** (Settings/updates) to check versions, read release notes and choose the default download source. Automatic checks, downloads and installation run only at startup by default. Verified startup updates show a ten-second restart countdown, then install and reopen the application. Choose **暂缓安装** (Postpone) to continue using the current version. If processing or another operation has started, installation is postponed to the next launch. There are no periodic update checks during use. Manually downloaded updates require **重启并安装更新** (Restart/install).
 
 Program updates use a small update package. Settings, jobs, platform sign-in and installed models are preserved. Failed file replacement restores the previous program files. Releases that change the base runtime require the complete portable package.
 
@@ -113,6 +113,8 @@ In **发布准备** (Publication), choose the source task and finished video. Re
 Original covers come from the video's metadata. Frame capture and custom images are separate choices. Cover conversion preserves the complete image with padding when required.
 
 ## Requirements and troubleshooting
+
+Bilibili metadata, original covers and media downloads use direct connections and do not inherit system or environment proxy settings. Component downloads and update checks connect directly to the selected official or accelerated source. Runtime installation and the assistant's dedicated sign-in/upload browser also use direct connections. If retrieval fails, check access to the source, then retry or choose another download source.
 
 - Windows 10/11 x64; 16 GB RAM is recommended.
 - Reserve approximately 25 GB for downloading, joining and extracting the portable package. Optional components and media need additional space.

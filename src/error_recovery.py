@@ -30,6 +30,10 @@ def explain(error, stage='', cancelled=False):
     ]
     for words, title, message, action in rules:
         if any(word in text for word in words):
+            if title == '网络请求未完成' and stage in ('metadata', 'download', 'audio'):
+                return {'title': 'B站连接未完成',
+                        'message': 'B站资料和媒体使用直连。请检查网络是否能访问 B站，再继续／重试；视频访问限制可在日志中查看。',
+                        'action': 'resume'}
             return {'title': title, 'message': message, 'action': action}
     return {'title': '处理未完成', 'message': '已完成的阶段已保留。可重试，或查看日志了解失败原因。', 'action': 'resume'}
 

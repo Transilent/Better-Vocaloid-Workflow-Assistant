@@ -15,5 +15,6 @@
   "publish_browser_executable": "dependencies/browser/chrome/chrome.exe",
   "download_source": "auto",
   "check_for_updates": true,
-  "auto_download_updates": false
+  "startup_auto_update": true,
+  "auto_restart_updates": true
 }
