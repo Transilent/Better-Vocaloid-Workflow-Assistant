@@ -130,6 +130,41 @@ def split(archive, size_mib):
     return parts
 
 
+def write_release_metadata(report, folder, migration=None):
+    """Finalize existing archives without rebuilding the large portable ZIP."""
+    folder = Path(folder).resolve()
+    version = json.loads(inventory_path('version.json').read_text(encoding='utf-8'))['version']
+    runtime_sha = digest(ROOT / 'dependencies/manifest.json')
+    public = {'version': version, 'archive': report['archive'], 'parts': report['parts'],
+              'release_notes': release_notes(version)}
+    from tools.build_app_update import build as build_app_update
+    if migration:
+        data = json.loads(Path(migration).read_text(encoding='utf-8'))
+        item = data['runtime_upgrade']
+        if item['version'] != version or item['target_runtime_sha256'] != runtime_sha:
+            raise ValueError('Runtime migration does not match this release.')
+        for asset in (data['update'], item):
+            path = folder / asset['name']
+            if path.stat().st_size != asset['bytes'] or digest(path) != asset['sha256']:
+                raise ValueError('Migration archive checksum mismatch: ' + asset['name'])
+        public.update(update=data['update'], runtime_upgrade=item)
+        name = 'BVWA-Program-Update.zip'
+    else:
+        name = 'BVWA-App-Update.zip'
+    program = folder / name
+    if program.is_file():
+        with zipfile.ZipFile(program) as zipped:
+            inventory = json.loads(zipped.read('update-inventory.json'))
+        if inventory['version'] != version or inventory['runtime_sha256'] != runtime_sha:
+            raise ValueError('Existing program archive does not match this release.')
+        update = {'name':name,'bytes':program.stat().st_size,'sha256':digest(program),'runtime_sha256':runtime_sha}
+    else:
+        update = build_app_update(program)
+    public['program_update' if migration else 'update'] = update
+    (folder / 'release-assets.json').write_text(json.dumps(public,ensure_ascii=False,indent=2),encoding='utf-8')
+    return public
+
+
 def update_from_zip(output, base, compression=1):
     """Reuse verified compressed runtime members when only source changes.
 
@@ -205,6 +240,7 @@ if __name__ == '__main__':
     parser.add_argument('--base-zip', type=Path, help='Reuse unchanged members from a checksum-verified previous ZIP')
     parser.add_argument('--compression', type=int, choices=range(10), default=6)
     parser.add_argument('--split-mib', type=int, default=0)
+    parser.add_argument('--migration-metadata', type=Path, help='Verified runtime-upgrade.build.json for legacy online upgrades')
     parser.add_argument('--user-test-confirmed', action='store_true', help='Use only after explicit user testing confirmation')
     args = parser.parse_args()
     if args.plan_profile:
@@ -219,10 +255,4 @@ if __name__ == '__main__':
         if not 1 <= args.split_mib < 2048:
             raise ValueError('Release parts must be between 1 and 2047 MiB')
         report['parts'] = split(args.output.resolve(), args.split_mib)
-        from tools.build_app_update import build as build_app_update
-        update = build_app_update(args.output.resolve().parent / 'BVWA-App-Update.zip')
-        version = json.loads(inventory_path('version.json').read_text(encoding='utf-8'))['version']
-        notes = release_notes(version)
-        public = {'version': version, 'archive': report['archive'], 'parts': report['parts'],
-                  'update': update, 'release_notes': notes}
-        (args.output.resolve().parent / 'release-assets.json').write_text(json.dumps(public, indent=2), encoding='utf-8')
+        write_release_metadata(report, args.output.resolve().parent, args.migration_metadata)
