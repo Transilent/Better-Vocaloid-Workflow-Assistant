@@ -14,6 +14,8 @@ workspace = APP/'cache/workspace.json'
 before_workspace = workspace.read_bytes() if workspace.exists() else None
 log = APP / 'launcher.log'
 before_log = log.read_bytes() if log.exists() else None
+diagnostic_log = APP/'diagnostics.log'
+before_diagnostic = diagnostic_log.read_bytes() if diagnostic_log.exists() else None
 env = dict(os.environ, PYTHONUTF8='1', PYTHONNOUSERSITE='1')
 
 def run(name, *args):
@@ -24,6 +26,7 @@ def run(name, *args):
                              '/d', '/c', str(launcher), *args], cwd=APP, env=env,
                             capture_output=True, timeout=60)
     assert result.returncode == 0, result.stdout.decode('utf-8', errors='replace')[-2000:]
+    return result
 
 try:
     assert not list(APP.glob('*.cmd')), 'The application must have one startup entry.'
@@ -38,8 +41,9 @@ try:
         text = log.read_text(encoding='utf-8')
         assert 'GUI ready; startup smoke test passed' in text
         assert 'console attached: False' in text
-    run('Start-Diagnostics.bat', '--check')
-    assert 'dependencies ready' in log.read_text(encoding='utf-8')
+    diagnostic=run('Start-Diagnostics.bat', '--check')
+    assert 'dependencies ready' in diagnostic_log.read_text(encoding='utf-8'), (
+        diagnostic_log.read_text(encoding='utf-8'),diagnostic.stdout.decode(errors='replace'),diagnostic.stderr.decode(errors='replace'))
     original_state = json.loads(before_workspace) if before_workspace else {}
     from workflow import default_graph, DEFAULT_OPTIONS
     fixture_state = {**original_state, 'workflow': {'graph': default_graph(), 'options': dict(DEFAULT_OPTIONS), 'presets': {}, 'preset': '自定义'}}
@@ -65,4 +69,8 @@ finally:
         log.unlink(missing_ok=True)
     else:
         log.write_bytes(before_log)
+    if before_diagnostic is None:
+        diagnostic_log.unlink(missing_ok=True)
+    else:
+        diagnostic_log.write_bytes(before_diagnostic)
 print('PASS: actual batch launcher and CPU/GPU settings; configuration restored')

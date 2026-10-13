@@ -215,15 +215,34 @@ def _validate_runtime_stage(root, stage, plan):
     return records, removals
 
 
+def _runtime_name(item):
+    name = item.get('name', '')
+    if not isinstance(name, str) or not re.fullmatch(r'BVWA-Runtime-Upgrade(?:-v\d+\.\d+\.\d+)?\.zip', name):
+        raise ValueError('运行库升级包名称无效。')
+    return name
+
+
+def _runtime_routes(url, source):
+    mirror = 'https://api.gitproxy.dev/' + url.removeprefix('https://')
+    if source in ('official', 'direct'):
+        return [url]
+    if source == 'mirror':
+        return [mirror, url]
+    if source == 'auto':
+        return [url, mirror]
+    raise ValueError('请选择自动、官方源或加速源。')
+
+
 def _runtime_download(item, folder, progress, check, source):
+    name = _runtime_name(item)
     folder.mkdir(parents=True, exist_ok=True)
-    archive = folder / RUNTIME_UPDATE_NAME
+    archive = folder / name
     pending = archive.with_suffix('.zip.partial')
     if archive.is_file() and archive.stat().st_size == item['bytes'] and sha(archive) == item['sha256']:
         return archive
     base_url = 'https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/download/v'
-    url = base_url + quote(item['version'], safe='') + '/' + RUNTIME_UPDATE_NAME
-    routes = [url] if source == 'official' else ['https://api.gitproxy.dev/' + url.removeprefix('https://')] if source == 'mirror' else [url, 'https://api.gitproxy.dev/' + url.removeprefix('https://')]
+    url = base_url + quote(item['version'], safe='') + '/' + quote(name, safe='')
+    routes = _runtime_routes(url, source)
     last_error = None
     for route in routes:
         try:
@@ -257,7 +276,8 @@ def _runtime_download(item, folder, progress, check, source):
                         if offset > item['bytes']:
                             raise ValueError('升级文件大小超过发布清单。')
                         stream.write(block)
-                        progress(offset, item['bytes'], '正在下载新增依赖与程序文件…')
+                        provider = 'GitProxy' if route.startswith('https://api.gitproxy.dev/') else 'GitHub'
+                        progress(offset, item['bytes'], f'正在通过 {provider} 下载升级文件…')
             if offset != item['bytes'] or sha(pending) != item['sha256']:
                 pending.unlink(missing_ok=True)
                 raise ValueError('升级文件校验失败，请重试下载。')
@@ -272,7 +292,8 @@ def _runtime_download(item, folder, progress, check, source):
 
 def prepare_runtime_upgrade(item, root, progress=lambda *args: None, check=None, source='official', downloader=None):
     root = Path(root).resolve()
-    if (item.get('name') != RUNTIME_UPDATE_NAME or not re.fullmatch(r'\d+\.\d+\.\d+', item.get('version', '')) or
+    name = _runtime_name(item)
+    if (not re.fullmatch(r'\d+\.\d+\.\d+', item.get('version', '')) or
             not isinstance(item.get('bytes'), int) or not 0 < item['bytes'] <= MAX_RUNTIME_BYTES or
             any(not re.fullmatch(r'[a-f0-9]{64}', item.get(key, '')) for key in
                 ('sha256', 'source_runtime_sha256', 'target_runtime_sha256'))):
@@ -282,8 +303,8 @@ def prepare_runtime_upgrade(item, root, progress=lambda *args: None, check=None,
     cache = validate_destination(root, 'cache/updates')
     cache.mkdir(parents=True, exist_ok=True)
     folder = validate_destination(root, 'cache/updates/runtime-downloads')
-    for name in (RUNTIME_UPDATE_NAME, RUNTIME_UPDATE_NAME + '.partial'):
-        validate_destination(root, 'cache/updates/runtime-downloads/' + name)
+    for filename in (name, name + '.partial'):
+        validate_destination(root, 'cache/updates/runtime-downloads/' + filename)
     archive = (downloader or _runtime_download)(item, folder, progress, check, source)
     if archive.stat().st_size != item['bytes'] or sha(archive) != item['sha256']:
         raise ValueError('运行库升级包校验失败。')

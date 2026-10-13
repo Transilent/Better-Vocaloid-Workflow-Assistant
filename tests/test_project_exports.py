@@ -90,6 +90,35 @@ with tempfile.TemporaryDirectory(dir=APP/'work',prefix='project-formats-') as te
     backup_count=len(list((job/'backups').iterdir()))
     export_job(job,request)
     assert len(list((job/'backups').iterdir()))==backup_count,'Intact generated files created redundant backups'
+    # Disabling pitch must ignore old pitched native caches and remove flat
+    # converter defaults. Notes, lyrics, timing and accompaniment still survive.
+    notes_only=dict(request,export_pitch=False,audio_formats=['wav'])
+    assert not outputs_intact(job,notes_only), 'Pitch toggle reused the previous project'
+    plain=export_job(job,notes_only)
+    assert all(item['pitch_points']==0 for item in plain['projects']['tracks'])
+    import yaml
+    import xml.etree.ElementTree as ET
+    ustx=yaml.safe_load((job/'exports/voices.ustx').read_text(encoding='utf-8'))
+    for part in ustx['voice_parts']:
+        assert not any(curve.get('abbr') in ('pitd','pbs') for curve in part.get('curves',[]))
+        assert all('pitch' not in note and note['vibrato']=={'length':0} for note in part['notes'])
+    svp=json.loads((job/'exports/voices.svp').read_bytes().removesuffix(b'\x00'))
+    for track in svp['tracks']:
+        group=track['mainGroup']
+        assert 'pitchDelta' not in group.get('parameters',{}) and not group.get('pitchControls')
+        assert all(not any(key.startswith(('tF0','dF0','pF0')) for key in note.get('attributes',{})) for note in group['notes'])
+    assert any(track.get('mainRef',{}).get('isInstrumental') for track in svp['tracks'])
+    vsqx=ET.parse(job/'exports/voices.vsqx')
+    assert not any(element.get('id') in ('P','S','PIT','PBS','pit','pbs') for element in vsqx.iter())
+    for fmt in ('ustx','vsqx','svp'):
+        loaded=converters[fmt].load(job/'exports'/('voices.'+fmt),{'import_pitch':False,'import_instrumental_track':False})
+        vocal=[track for track in loaded.track_list if isinstance(track,SingingTrack)]
+        assert [len(track.note_list) for track in vocal]==[2,2]
+        assert [note.lyric for note in vocal[0].note_list]==['你','好']
+        assert [(note.start_pos,note.length) for note in vocal[0].note_list]==[(480,864),(1440,864)]
+    assert outputs_intact(job,notes_only)
+    restored=export_job(job,request)
+    assert all(row['pitch_points']>10 for row in restored['projects']['tracks'])
     # A silent backing part still needs an editable named track in native files.
     save_ustx([],job/'midi/backing/backing.ustx',tempo=120)
     request['audio_formats']=['wav']

@@ -29,7 +29,7 @@ def read_receipts(job):
 
 
 def project_input(job, request):
-    return fingerprint({'schema': 1, 'language': request['language'],
+    return fingerprint({'schema': 2, 'language': request['language'], 'pitch': bool(request.get('export_pitch',False)),
         'native': {v: file_hash(job / 'midi' / ('' if v == 'vocals' else v) / (v + '.ustx')) for v in voices_for(request)},
         'instrumental': request.get('include_instrumental', True), 'converter': file_hash(Path(__file__))})
 
@@ -153,6 +153,48 @@ def restore_vsqx_lyrics(path, tracks):
     tree.write(path,encoding='utf-8',xml_declaration=True)
 
 
+def remove_pitch_data(path, fmt):
+    """Remove explicit tuning data while retaining editor structure and notes."""
+    if fmt == 'ustx':
+        import yaml
+        data = yaml.safe_load(path.read_text(encoding='utf-8-sig'))
+        for part in data.get('voice_parts', []):
+            part['curves'] = [curve for curve in part.get('curves', []) if curve.get('abbr') not in ('pitd','pbs')]
+            for note in part.get('notes', []):
+                note.pop('pitch', None)
+                # Keep vibrato disabled without injecting depth/period presets.
+                note['vibrato'] = {'length': 0}
+        path.write_text(yaml.safe_dump(data,allow_unicode=True,sort_keys=False),encoding='utf-8')
+    elif fmt == 'svp':
+        raw = path.read_bytes()
+        data = json.loads(raw.removesuffix(b'\x00').decode('utf-8-sig'))
+        groups = list(data.get('library', [])) + [track.get('mainGroup', {}) for track in data.get('tracks', [])]
+        for group in groups:
+            group.pop('pitchControls', None)
+            parameters = group.get('parameters', {})
+            parameters.pop('pitchDelta', None)
+            parameters.pop('vibratoEnv', None)
+            for note in group.get('notes', []):
+                attributes = note.get('attributes', {})
+                for key in list(attributes):
+                    if key.startswith(('tF0','dF0','pF0')):
+                        attributes.pop(key)
+        path.write_bytes(json.dumps(data,ensure_ascii=False,separators=(',', ':')).encode('utf-8')
+                         + (b'\x00' if raw.endswith(b'\x00') else b''))
+    elif fmt == 'vsqx':
+        tree = ET.parse(path)
+        root = tree.getroot()
+        namespace = root.tag.partition('}')[0].removeprefix('{')
+        ET.register_namespace('',namespace)
+        for parent in root.iter():
+            for child in list(parent):
+                if child.tag.rsplit('}',1)[-1] in ('cc','mCtrl') and any(
+                    element.get('id') in ('P','S','PIT','PBS','pit','pbs') for element in child.iter()
+                ):
+                    parent.remove(child)
+        tree.write(path,encoding='utf-8',xml_declaration=True)
+
+
 def export_projects(job, request):
     formats=request.get('project_formats',[])
     if not formats:
@@ -174,12 +216,15 @@ def export_projects(job, request):
         path=folder/(voice+'.ustx')
         if not path.is_file():
             raise FileNotFoundError('缺少声部工程，请启用工程导出后重新提取 MIDI：'+str(path.name))
-        project=converters['ustx'].load(path, {'import_pitch':True,'import_instrumental_track':False,
+        pitch_requested = bool(request.get('export_pitch',False))
+        project=converters['ustx'].load(path, {'import_pitch':pitch_requested,'import_instrumental_track':False,
             'plus_handling_mode':'monosyllabic' if request['language']=='zh' else 'polysyllabic'})
         vocal=[track for track in project.track_list if isinstance(track,SingingTrack)]
         if not vocal:
             vocal=[SingingTrack(title=voice)]
         for track in vocal:
+            if not pitch_requested:
+                track.edited_params.pitch.points.root.clear()
             for note in track.note_list:
                 note.pronunciation=None
             track.title={'lead':'Lead Vocal','backing':'Backing Vocal','vocals':'Vocals'}[voice]
@@ -210,6 +255,8 @@ def export_projects(job, request):
             converters[fmt].dump(pending,merged,options)
             if fmt=='vsqx':
                 restore_vsqx_lyrics(pending,[track for track in merged.track_list if isinstance(track,SingingTrack)])
+            if not request.get('export_pitch',False):
+                remove_pitch_data(pending,fmt)
             # Read the actual file back to catch broken serializers and lost notes.
             loaded=converters[fmt].load(pending,{'import_pitch':True,'import_instrumental_track':False})
             expected=sum(item['notes'] for item in tracks)

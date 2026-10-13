@@ -4,7 +4,7 @@
   "platform": "Windows x86_64",
   "legacy_tool_paths": {},
   "files": 10815,
-  "bytes": 7505758722,
+  "bytes": 7505758386,
   "entries": [
     {
       "file": "dependencies/browser/chrome/154.0.8037.98/154.0.8037.98.manifest",
@@ -14213,8 +14213,8 @@
     },
     {
       "file": "dependencies/vocal2midi/inference/API/slicer_api.py",
-      "bytes": 31110,
-      "sha256": "73ba0c18f938d0501d1a36bfbef166cc731110b3edaa69e1a80560d10953baff"
+      "bytes": 30856,
+      "sha256": "98ab65bbfd873ca5cf44f120f75d332fc109ecc90b5e68c4459acff2bf8b08bf"
     },
     {
       "file": "dependencies/vocal2midi/inference/API/ustx_api.py",
@@ -46753,8 +46753,8 @@
     },
     {
       "file": "dependencies/vocal2midi2/inference/API/slicer_api.py",
-      "bytes": 30411,
-      "sha256": "31d7cb1725a8a37b1c893315657f22b7039ef0b0167bd63739e4374947687845"
+      "bytes": 30329,
+      "sha256": "c3c78dfd9120f202f66b6091c04be0cf7e71b619f89d6ea45611dfb4cd31c16b"
     },
     {
       "file": "dependencies/vocal2midi2/inference/API/ustx_api.py",

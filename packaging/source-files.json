@@ -347,6 +347,7 @@
     "tests/test_source_layout.py",
     "tests/test_subtitles.py",
     "tests/test_updates.py",
+    "tests/test_slicing_bounds.py",
     "tests/test_v2_backend.py",
     "tests/test_workflow_features.py",
     "tests/test_workspace_ui.py",
@@ -1672,6 +1673,7 @@
     "src/upgrade_bootstrap.py",
     "tools/build_runtime_upgrade.py",
     "tests/test_runtime_upgrade.py",
-    "docs/releases/v0.4.0.md"
+    "docs/releases/v0.4.0.md",
+    "docs/releases/v0.4.1.md"
   ]
 }

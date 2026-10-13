@@ -120,6 +120,14 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work',prefix='native-edit-') as tempo
             mido.Message('note_off',note=60,time=480)]))
         midi.save(str(cfg.output_dir/(name+'.mid')))
         for suffix in ('txt','csv'):(cfg.output_dir/(name+'.'+suffix)).write_text('generated',encoding='utf-8')
+        if 'ustx' in cfg.output_formats:
+            from types import SimpleNamespace
+            from inference.API.ustx_api import save_ustx
+            from inference.API.vsqx_api import save_vsqx
+            notes=[SimpleNamespace(onset=.25,offset=.75,pitch=60,lyric='测')]
+            save_ustx(notes,cfg.output_dir/(name+'.ustx'),tempo=120)
+            if 'vsqx' in cfg.output_formats:
+                save_vsqx(notes,cfg.output_dir/(name+'.vsqx'),tempo=120,language='zh')
     with patch('application.pipeline.run_auto_lyric_job',side_effect=native_fixture):
         midi_bridge.run(job)
         original=job/'midi/vocals.mid'
@@ -132,5 +140,13 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work',prefix='native-edit-') as tempo
     committed=json.loads((job/'midi/report.json').read_text(encoding='utf-8'))
     assert (job/committed['preserved_copies']['mid']).read_bytes()==edited_bytes
     assert len(committed['output_sha256'])==3
+    request.update(project_formats=['svp'],export_pitch=False)
+    atomic_json(job/'request.json',request)
+    with patch('application.pipeline.run_auto_lyric_job',side_effect=native_fixture):
+        midi_bridge.run(job)
+    import yaml
+    native=yaml.safe_load((job/'midi/vocals.ustx').read_text(encoding='utf-8'))
+    assert 'pitch' not in native['voice_parts'][0]['notes'][0]
+    assert native['voice_parts'][0]['notes'][0]['vibrato']=={'length':0}
 
 print('PASS: V2 headless runtime, Japanese gap safeguard, memory-aware reuse, failure/cancel cleanup and device isolation')

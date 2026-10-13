@@ -1,4 +1,4 @@
-"""Startup-only runtime migration for the original 0.3.x update client."""
+"""Startup-only runtime migration for compatible legacy update clients."""
 import json
 import os
 from pathlib import Path
@@ -50,7 +50,14 @@ class UpgradeDialog(QDialog):
         info = QLabel('下载新增依赖与程序文件后，助手会自动重启。\n现有任务、设置、登录会话和可选模型会保留。')
         info.setWordWrap(True);body.addWidget(info)
         self.source = QComboBox()
-        self.source.addItem('GitHub 直连','official');self.source.addItem('GitProxy 加速','mirror')
+        self.source.addItem('自动选择（直连失败时使用 GitProxy）','auto')
+        self.source.addItem('GitHub 直连','direct');self.source.addItem('优先 GitProxy 加速','mirror')
+        try:
+            saved_source = json.loads((self.root/'config.json').read_text(encoding='utf-8')).get('download_source','auto')
+        except (OSError,ValueError):
+            saved_source = 'auto'
+        if saved_source == 'official': saved_source = 'direct'
+        self.source.setCurrentIndex(max(0,self.source.findData(saved_source)))
         body.addWidget(self.source)
         self.progress = QProgressBar();self.progress.setRange(0,1000);body.addWidget(self.progress)
         self.message = QLabel('准备下载…');self.message.setWordWrap(True);body.addWidget(self.message)

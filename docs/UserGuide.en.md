@@ -14,9 +14,9 @@ resume after the original is moved. The sidebar also contains **模型与组件*
 
 ## Upgrading
 
-Version 0.4.0 changes the base runtime. Upgrading from v0.3.1 or earlier requires its complete portable package once released. Close the assistant and extract the new package into a separate folder. To retain data on the same computer, copy `config.json`, `jobs/`, `publish-packages/`, `last_job.txt`, `cache/workspace.json` and `cache/publish-browser/` from the old folder when present. An installed BS-RoFormer component can be retained by copying `dependencies/optional/bs-roformer/`. Keep custom task directories in their existing locations. Avoid copying old program files or update caches over the new package. On another computer, sign in to the publishing platforms again.
+v0.3.1 and v0.4.0 can upgrade to v0.4.1 in **Settings/updates**. Check, download and restart to install. The migration window downloads the delta matching the existing runtime, preserving model weights, tasks, settings, sign-in profiles and optional components. It retains your download-source preference and supports GitProxy, resumable verified downloads and rollback. The same legacy path supports v0.3.0.
 
-The program-only update is for installations with the same base runtime. When that runtime differs, Settings/updates directs you to the complete package.
+v0.4.1 provides update archives only. New installations should use the v0.4.0 complete portable package first. Individual update ZIPs cannot run as standalone installations.
 
 ## Save location
 

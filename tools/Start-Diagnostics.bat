@@ -11,11 +11,11 @@ set "BVWA_PYTHON=%BVWA_ROOT%\dependencies\vocal2midi\python\python.exe"
 if not exist "%BVWA_PYTHON%" goto install
 if exist "%BVWA_ROOT%\cache\runtime-install-in-progress" goto install
 :run
-"%BVWA_PYTHON%" -B -u "%BVWA_ROOT%\launch.py" %* > "%BVWA_ROOT%\launcher.log" 2>&1
+"%BVWA_PYTHON%" -B -u "%BVWA_ROOT%\launch.py" %* > "%BVWA_ROOT%\diagnostics.log" 2>&1
 set "BVWA_EXIT=%ERRORLEVEL%"
 if "%BVWA_EXIT%"=="0" exit /b 0
-type "%BVWA_ROOT%\launcher.log"
-echo Startup failed. See launcher.log for details.
+type "%BVWA_ROOT%\diagnostics.log"
+echo Startup failed. See diagnostics.log for details.
 pause
 exit /b %BVWA_EXIT%
 :install

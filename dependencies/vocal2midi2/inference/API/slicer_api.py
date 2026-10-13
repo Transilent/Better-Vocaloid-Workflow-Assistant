@@ -119,40 +119,35 @@ def _merge_short_segments(chunks: list, sr: int, min_len_sec: float, max_len_sec
     return merged
 
 
-def _merge_tiny_chunks(chunks: list, sr: int, tiny_sec: float = 0.35) -> list:
-    """Merge tiny chunks into adjacent chunks instead of discarding them."""
+def _merge_tiny_chunks(
+    chunks: list, sr: int, tiny_sec: float = 0.35, *, max_len_sec: float = 22.0,
+) -> list:
+    """Keep short vocal fragments without exceeding the inference window.
+
+    A neighbor can be far away in the original timeline. Its silence gap is
+    part of the merged duration, just as in the regular short-chunk merger.
+    If it does not fit, keep the fragment at its original offset so the next
+    neighbor can still be considered. No audio fragment is discarded.
+    """
     if not chunks:
         return chunks
 
     merged = []
-    pending_head = None
-
     for seg in chunks:
-        seg_dur = len(seg['waveform']) / sr
-
-        if seg_dur < tiny_sec:
-            if merged:
-                logger.info(f"  Merging tiny segment at {seg['offset']:.2f}s ({seg_dur:.2f}s) into previous chunk")
-                merged[-1] = _merge_segments(merged[-1], seg, sr)
-            else:
-                if pending_head is None:
-                    pending_head = seg
-                else:
-                    pending_head = _merge_segments(pending_head, seg, sr)
-            continue
-
-        if pending_head is not None:
-            pdur = len(pending_head['waveform']) / sr
-            logger.info(f"  Merging leading tiny segment at {pending_head['offset']:.2f}s ({pdur:.2f}s) into next chunk")
-            seg = _merge_segments(pending_head, seg, sr)
-            pending_head = None
-
-        merged.append(seg)
-
-    if pending_head is not None:
-        # No neighbor chunk available (e.g., all chunks are tiny), keep it to avoid data loss.
-        logger.info(f"  Keeping isolated tiny segment at {pending_head['offset']:.2f}s (no neighbor to merge)")
-        merged.append(pending_head)
+        if merged:
+            previous = merged[-1]
+            has_tiny_fragment = (
+                _segment_duration_sec(previous, sr) < tiny_sec
+                or _segment_duration_sec(seg, sr) < tiny_sec
+            )
+            if has_tiny_fragment and _merged_duration_sec(previous, seg, sr) <= max_len_sec:
+                logger.info(
+                    f"  Merging short fragment at {seg['offset']:.2f}s "
+                    f"within {max_len_sec:.2f}s inference window"
+                )
+                merged[-1] = _merge_segments(previous, seg, sr)
+                continue
+        merged.append(dict(seg))
 
     return merged
 
@@ -397,7 +392,9 @@ def heuristic_slice(
              final_chunks.append(segment)
 
     final_chunks.sort(key=lambda x: x['offset'])
-    final_chunks = _merge_tiny_chunks(final_chunks, sr=sr, tiny_sec=ultra_short_sec)
+    final_chunks = _merge_tiny_chunks(
+        final_chunks, sr=sr, tiny_sec=ultra_short_sec, max_len_sec=max_len_sec,
+    )
 
     # Stage 3: merge neighboring short segments toward the target duration range.
     if final_chunks:
@@ -597,7 +594,9 @@ def pitch_based_slice(
     else:
         final_chunks = short_segments
 
-    final_chunks = _merge_tiny_chunks(final_chunks, sr=sr, tiny_sec=ultra_short_sec)
+    final_chunks = _merge_tiny_chunks(
+        final_chunks, sr=sr, tiny_sec=ultra_short_sec, max_len_sec=max_len_sec,
+    )
 
     # Stage 3: merge neighboring short segments toward the target duration range.
     if final_chunks:

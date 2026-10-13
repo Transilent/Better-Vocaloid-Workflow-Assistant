@@ -140,6 +140,19 @@ if (!$refused) { throw 'Fixture failed to route through the refused default prox
         assert (download_app / 'cache/runtime-install/BVWA-Windows-x64.zip').read_bytes() == archive_bytes
         assert all('/' + name in requests for name in pieces)
         assert (download_app / 'cache/runtime-install/BVWA-Windows-x64.zip.sha256').read_text() == hashlib.sha256(archive_bytes).hexdigest()
+        # An update-only latest Release points fresh source installations to
+        # the previous full package without publishing another multi-GB ZIP.
+        routes['/releases/latest'] = json.dumps({'assets': [
+            {'name':'release-assets.json','browser_download_url':base+'/update-only'}]}).encode()
+        routes['/update-only'] = json.dumps({'version':'0.4.1','portable_release':'v0.4.0'}).encode()
+        routes['/releases/tags/v0.4.0'] = routes['/release']
+        update_app=root/'update-only release runtime'
+        (update_app/'dependencies').mkdir(parents=True)
+        (update_app/'dependencies/manifest.json').write_bytes(manifest.read_bytes())
+        result=run(update_app,release_api=base+'/releases/latest')
+        assert result.returncode==0,(result.stdout+result.stderr).decode(errors='replace')
+        assert '/releases/tags/v0.4.0' in requests
+        assert all((update_app/n).read_bytes()==data for n,data in files.items())
     finally:
         server.shutdown()
         server.server_close()

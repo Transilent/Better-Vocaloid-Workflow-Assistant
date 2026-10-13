@@ -90,6 +90,28 @@ with tempfile.TemporaryDirectory(dir=APP/'work',prefix='process-cancel-') as tem
     (job/'exports.log').write_text('libresvip.core.exceptions.NotesOverlappedError: Notes overlapped near bar 39\n',encoding='utf-8')
     recovery=failure(job)
     assert recovery['title']=='工程含有重叠音符' and recovery['action']=='workflow'
+    assert 'NotesOverlappedError' in recovery['raw']
+    # A successfully selected provider is not the cause of an unrelated failure.
+    atomic_json(job/'status.json',{'state':'failed','current_step':'midi',
+        'error':'midi_voices 失败（退出码 1）；详情见 midi_voices.log。'})
+    (job/'midi_voices.log').write_text(
+        '[GAME ONNX] Using DirectML adapter 0: GPU\n'
+        "GAME loaded: ['DmlExecutionProvider', 'CPUExecutionProvider']\n"
+        'ValueError: invalid alignment dimensions\n',encoding='utf-8')
+    recovery=failure(job)
+    assert recovery['action']=='resume' and 'ValueError: invalid alignment dimensions' in recovery['raw']
+    # Localized ONNX device errors can be written as UTF-16 then wrapped in
+    # UnicodeDecodeError. Keep the native reset code in the user-facing cause.
+    (job/'midi_voices.log').write_bytes(
+        'Non-zero status code: DmlFusedNode 887A0007 GPU reset\n'.encode('utf-16-le')
+        + b"UnicodeDecodeError: 'utf-8' codec can't decode byte 0xb2 in position 370: invalid start byte\n")
+    recovery=failure(job)
+    assert recovery['title']=='显卡推理被中断' and recovery['action']=='cpu'
+    assert '0x887A0007' in recovery['raw'] and '显卡设备被重置' in recovery['raw']
+    (job/'midi_voices.log').write_text('ModuleNotFoundError: No module named cuda_utils\n',encoding='utf-8')
+    assert failure(job)['action']=='components'
+    (job/'midi_voices.log').write_text("UnicodeDecodeError: 'utf-8' codec can't decode byte 0xb2\n",encoding='utf-8')
+    assert failure(job)['action']=='resume', 'An encoding failure alone does not establish a GPU error'
     from common import preserve_changed_file,file_hash
     edited=job/'edited.mid'
     edited.write_bytes(b'generated MIDI')

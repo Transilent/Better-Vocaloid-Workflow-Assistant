@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.1 — 2026-10-14
+
+### Fixed
+
+- Honor the pitch-curve switch in all three project formats, including native intermediate projects. With pitch disabled, omit explicit curves and flat tuning presets while retaining notes, lyrics and accompaniment. Switching the option invalidates the project cache.
+- Respect the maximum audio slice length when merging tiny vocal fragments, including intervening silence. Retain fragments that cannot fit, with their original timestamps. Apply the correction to both extraction backends.
+- Surface the underlying subprocess exception and localized DirectML device-reset codes instead of only the exit-code summary. Normal provider-selection logs no longer classify unrelated failures as GPU errors.
+- Preserve the selected download source after restarting into the upgrade window. Both upgrade stages support GitProxy, source fallback, resume and SHA-256 verification.
+- Write command-line startup diagnostics to `diagnostics.log`, avoiding a log-file conflict with an already running desktop window.
+
+### Updating
+
+- Provide separate compatible upgrade paths for v0.3.1 and v0.4.0. Existing models, settings, tasks, sign-in profiles and optional components are retained.
+- Publish update archives only. New installations can use the v0.4.0 portable package, then update through Settings/updates.
+
 ## 0.4.0 — 2026-10-13
 
 - Support verified in-place online upgrades from v0.3.0/v0.3.1 using a compatible bootstrap and a small runtime delta; retain models, tasks and sign-in state.

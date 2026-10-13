@@ -134,6 +134,11 @@ def run(job, voice="vocals", asr_session=None):
         finally: logging.getLogger().removeHandler(listener)
     cancelled(job)
     logging.getLogger().removeHandler(listener)
+    if not cfg.output_pitch_curve:
+        from project_exports import remove_pitch_data
+        for suffix in ('ustx','vsqx'):
+            if suffix in formats:
+                remove_pitch_data(pending/(voice+'.'+suffix),suffix)
     report = inspect_midi(pending / (voice + ".mid"), allow_empty=voice == "backing" or silent)
     alignment = json.loads(alignment_file.read_text(encoding="utf-8")) if alignment_file.exists() else None
     if alignment is None and warnings:

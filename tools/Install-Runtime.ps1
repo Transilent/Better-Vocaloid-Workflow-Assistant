@@ -90,6 +90,15 @@ try {
         $metadataAsset = @($release.assets | Where-Object { $_.name -eq 'release-assets.json' })
         if ($metadataAsset.Count -ne 1) { throw 'The Release does not contain a runtime inventory.' }
         $assets = Invoke-DirectDownload $metadataAsset[0].browser_download_url
+        if (!$assets.archive -or !$assets.parts) {
+            if ($assets.portable_release -notmatch '^v\d+\.\d+\.\d+$') { throw 'This Release has no portable runtime or compatible base Release.' }
+            $baseApi = [Uri]::new([Uri]$ReleaseApiUri, ('tags/' + $assets.portable_release)).AbsoluteUri
+            $release = Invoke-DirectDownload $baseApi
+            $metadataAsset = @($release.assets | Where-Object { $_.name -eq 'release-assets.json' })
+            if ($metadataAsset.Count -ne 1) { throw 'The base Release does not contain a runtime inventory.' }
+            $assets = Invoke-DirectDownload $metadataAsset[0].browser_download_url
+            if (!$assets.archive -or !$assets.parts) { throw 'The base Release has no complete portable runtime.' }
+        }
         Write-Output ('Downloading portable runtime: approximately {0:N1} GB. This may take several minutes.' -f ($assets.archive.bytes / 1000000000))
         foreach ($part in $assets.parts) {
             if ([IO.Path]::GetFileName($part.name) -ne $part.name -or $part.name -notmatch '^BVWA-Windows-x64\.zip\.\d{3}$') { throw 'Invalid Release part name.' }

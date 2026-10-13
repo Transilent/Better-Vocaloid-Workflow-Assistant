@@ -26,7 +26,7 @@ Tuning, final mixdown/video alignment and the final publishing action remain man
 
 ## Getting started
 
-1. Download the complete portable package from [Releases](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases). The generated **Source code** archives contain source, rather than the bundled runtime.
+1. Download the complete portable package from [v0.4.0](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v0.4.0), then update to v0.4.1 through Settings/updates. v0.4.1 contains update archives only. The generated **Source code** archives do not include the bundled runtime.
 2. Keep all ZIP parts and `release-assets.json` in one folder. Open `.001` with 7-Zip, or use `Merge-PortableParts.ps1` to verify and join the parts.
 3. Extract the complete `BVWA` folder to a writable location, such as `D:\BVWA`.
 4. Start **`BVWA.exe`**.
@@ -34,7 +34,7 @@ Tuning, final mixdown/video alignment and the final publishing action remain man
 
 ## Upgrading
 
-v0.3.0 and v0.3.1 support online upgrading to v0.4.0. In **Settings/updates**, check for updates, download the update and restart to install. The first restart opens a short migration window that downloads only new dependencies and adapted code, reuses the installed models, then restarts into v0.4.0. It supports GitHub direct downloads and GitProxy, verified resume and rollback. Settings, tasks, platform sessions and optional models remain in place. Later updates use the program package matching the installed runtime.
+v0.3.1 and v0.4.0 support online upgrading to v0.4.1. In **Settings/updates**, check for updates, download the update and restart to install. The migration window downloads the delta matching your installed runtime and restarts into v0.4.1. Existing models are reused; settings, tasks, platform sessions and optional models remain in place. Both download stages support GitProxy, fallback, verified resume and rollback. The migration window retains your selected download source. v0.3.0 uses the same legacy upgrade path.
 
 For a fresh installation, use the complete portable package. Keep a backup of working editor projects before any upgrade. The GitHub Source code archives and individual update ZIPs are not complete portable installations.
 

@@ -77,12 +77,33 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work') as tmp:
         proxies.assert_called_once_with({})
         assert received.read_bytes()==raw
         assert opener.open.call_args.args[0].headers['Range']==f'bytes={offset}-'
+    # Runtime-specific assets have separate names, caches and resumable ranges.
+    variant = dict(item, name='BVWA-Runtime-Upgrade-v0.4.0.zip')
+    mirror_folder = scratch/'mirror-download';mirror_folder.mkdir()
+    (mirror_folder/(variant['name']+'.partial')).write_bytes(raw[:offset])
+    response=io.BytesIO(raw[offset:]);response.status=206
+    response.headers={'Content-Range':f'bytes {offset}-{len(raw)-1}/{len(raw)}'}
+    opener=Mock();opener.open.side_effect=[OSError('mirror interrupted'),response]
+    with patch.object(apply.urllib.request,'build_opener',return_value=opener):
+        received=apply._runtime_download(variant,mirror_folder,lambda *args:None,None,'mirror')
+    assert received.name==variant['name'] and received.read_bytes()==raw
+    requests=[call.args[0] for call in opener.open.call_args_list]
+    assert requests[0].full_url.startswith('https://api.gitproxy.dev/github.com/')
+    assert requests[1].full_url.startswith('https://github.com/')
+    assert all(request.full_url.endswith('/'+variant['name']) and request.headers['Range']==f'bytes={offset}-' for request in requests)
+    for bad_name in ('../BVWA-Runtime-Upgrade.zip','other.zip','BVWA-Runtime-Upgrade-v0.4.0.zip/../../secret'):
+        try:apply._runtime_name(dict(item,name=bad_name));raise AssertionError('Unsafe delta name accepted')
+        except ValueError:pass
+    url='https://github.com/example/releases/download/v0.4.1/file.zip'
+    assert apply._runtime_routes(url,'auto')==[url,'https://api.gitproxy.dev/'+url.removeprefix('https://')]
+    assert apply._runtime_routes(url,'direct')==[url]
     from PyQt5.QtWidgets import QApplication
     import upgrade_bootstrap
     app=QApplication([])
     (scratch/'version.json').write_text(json.dumps({'runtime_upgrade':item}),encoding='utf-8')
     with patch.object(upgrade_bootstrap.QTimer,'singleShot'):
         window=upgrade_bootstrap.UpgradeDialog(scratch)
+    assert window.source.currentData()=='auto'
     with patch.object(upgrade_bootstrap.subprocess,'Popen') as spawn:
         window.install(plan);assert window.install_started and spawn.called
     quitting=Mock()
@@ -96,4 +117,17 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work') as tmp:
         assert not schedule.called and failed_window.retry.isEnabled()
         assert '上次安装未完成' in failed_window.message.text()
         failed_window.close()
+    for saved,expected in (('mirror','mirror'),('direct','direct'),('official','direct'),('auto','auto'),('unknown','auto')):
+        (scratch/'config.json').write_text(json.dumps({'download_source':saved}),encoding='utf-8')
+        with patch.object(upgrade_bootstrap.QTimer,'singleShot'):
+            source_window=upgrade_bootstrap.UpgradeDialog(scratch)
+        assert source_window.source.currentData()==expected
+        source_window.close()
+    from tools.build_runtime_upgrade import build_bootstrap
+    bootstrap_folder=scratch/'bootstrap';bootstrap_folder.mkdir()
+    for filename in ('BVWA-App-Update.zip','BVWA-Program-Update.zip'):
+        built=build_bootstrap(bootstrap_folder,variant,filename)
+        assert built['name']==filename
+        with zipfile.ZipFile(bootstrap_folder/filename) as zipped:
+            assert json.loads(zipped.read('version.json'))['runtime_upgrade']['name']==variant['name']
 print('PASS: runtime hashes, user/model preservation, rollback, unsafe paths, direct resumed download, startup helper handoff')
