@@ -199,13 +199,19 @@ def update_from_zip(output, base, compression=1):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--output', type=Path)
+    parser.add_argument('--plan-profile',choices=('complete','music','japanese'),help='Inspect dependency space without creating an archive')
     parser.add_argument('--runtime-dir', type=Path, default=ROOT)
     parser.add_argument('--base-zip', type=Path, help='Reuse unchanged members from a checksum-verified previous ZIP')
     parser.add_argument('--compression', type=int, choices=range(10), default=6)
     parser.add_argument('--split-mib', type=int, default=0)
     parser.add_argument('--user-test-confirmed', action='store_true', help='Use only after explicit user testing confirmation')
     args = parser.parse_args()
+    if args.plan_profile:
+        from dependency_profiles import installation_plan
+        print(json.dumps(installation_plan(args.plan_profile),indent=2))
+        sys.exit(0)
+    if args.output is None: parser.error('--output is required to build an archive')
     if not args.user_test_confirmed:
         parser.error('Local user testing must be confirmed before creating a portable release archive.')
     report = update_from_zip(args.output.resolve(), args.base_zip.resolve(), args.compression) if args.base_zip else build(args.output, args.runtime_dir.resolve(), args.compression)

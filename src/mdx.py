@@ -76,11 +76,10 @@ def separate(source, directory, config, job, log=print,
     options = ort.SessionOptions()
     options.enable_mem_pattern = False
     options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-    options.intra_op_num_threads = 4
-    providers = ["CPUExecutionProvider"]
-    if config.get("separation_device") == "dml" and "DmlExecutionProvider" in ort.get_available_providers():
-        providers.insert(0, "DmlExecutionProvider")
-    session = ort.InferenceSession(config["mdx_model"], sess_options=options, providers=providers)
+    from runtime_devices import providers, session_threads
+    effective_device, selected = providers(config, config.get('separation_device', 'cpu'))
+    session_threads(options, default=4)
+    session = ort.InferenceSession(config["mdx_model"], sess_options=options, providers=selected)
     shape = session.get_inputs()[0].shape
     if shape[1:] != [4, bins, frames]:
         raise ValueError(f"模型输入尺寸与 UVR 参数不匹配：{shape}")
@@ -95,6 +94,7 @@ def separate(source, directory, config, job, log=print,
     scale = max(peak, 1e-8)
     mix = audio.T / scale
     padded = np.pad(mix, ((0, 0), (trim, pad_end)))
+    del mix
     result = np.zeros_like(padded)
     divider = np.zeros(padded.shape[-1], dtype=np.float32)
     overlap = float(config.get("mdx_overlap", 0.5))
@@ -124,24 +124,33 @@ def separate(source, directory, config, job, log=print,
     target = slice(trim, trim + len(audio))
     if not np.all(divider[target] > 0):
         raise RuntimeError("分离窗口没有完整覆盖歌曲。")
-    primary = (result[:, target] / divider[target] * scale * float(params["compensate"])).T
-    secondary = audio - primary
-    if params["primary_stem"] == "Instrumental":
-        instrumental, vocals = primary, secondary
-    else:
-        vocals, instrumental = primary, secondary
-    if not np.isfinite(vocals).all() or not np.isfinite(instrumental).all():
-        raise RuntimeError("分离模型产生了无效采样。")
+    del padded
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    # Float WAV avoids clipping and independent volume changes to stems.
-    sf.write(str(directory / output_names[0]), vocals, sr, subtype="FLOAT")
-    sf.write(str(directory / output_names[1]), instrumental, sr, subtype="FLOAT")
+    pending = [directory / (Path(name).stem + '.pending.wav') for name in output_names]
+    max_error = 0.
+    try:
+        with sf.SoundFile(str(pending[0]), 'w', samplerate=sr, channels=2, subtype='FLOAT') as a, \
+             sf.SoundFile(str(pending[1]), 'w', samplerate=sr, channels=2, subtype='FLOAT') as b:
+            for start in range(0, len(audio), 65536):
+                cancelled(job)
+                end = min(len(audio), start + 65536)
+                primary = (result[:, trim+start:trim+end] / divider[trim+start:trim+end] * scale * float(params['compensate'])).T
+                secondary = audio[start:end] - primary
+                if not np.isfinite(primary).all() or not np.isfinite(secondary).all():
+                    raise RuntimeError('分离模型产生了无效采样。')
+                vocals, instrumental = (secondary, primary) if params['primary_stem'] == 'Instrumental' else (primary, secondary)
+                a.write(vocals); b.write(instrumental)
+                max_error = max(max_error, float(np.max(np.abs(vocals + instrumental - audio[start:end]))))
+        for path, name in zip(pending, output_names): path.replace(directory / name)
+    finally:
+        for path in pending: path.unlink(missing_ok=True)
     return {
         "model": config["mdx_model"], "model_hash": fingerprint,
         "provider": session.get_providers()[0], "sample_rate": sr,
+        'provider_options': session.get_provider_options(),
         "samples": len(audio), "duration": len(audio) / sr,
         "timeline_offset_seconds": 0,
         "overlap": overlap, "polarity_averaging": denoise,
-        "sum_max_error": float(np.max(np.abs(vocals + instrumental - audio))),
+        "sum_max_error": max_error,
     }

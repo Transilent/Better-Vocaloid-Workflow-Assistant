@@ -373,7 +373,9 @@ def save_ustx(notes: list[Any], filepath: Path, tempo: float, rmvpe_result: Rmvp
     for note in notes:
         pos = _to_ticks(note.onset, tempo)
         end = _to_ticks(note.offset, tempo)
-        dur = max(10, end - pos)
+        # Preserve the transcribed duration. Padding short notes to 10 ticks
+        # creates overlaps between otherwise valid adjacent MIDI notes.
+        dur = max(1, end - pos)
         tone = int(np.clip(round(note.pitch), 0, 127))
         max_end_tick = max(max_end_tick, pos + dur)
         ustx_notes.append(

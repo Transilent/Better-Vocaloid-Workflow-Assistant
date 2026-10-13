@@ -115,6 +115,8 @@ def load_hfa_model(model_dir, device="dml"):
     import onnxruntime as ort
     provider_name, providers = resolve_onnx_providers(device, label="HubertFA ONNX")
     options = ort.SessionOptions()
+    from inference.device_utils import configure_onnx_threads
+    configure_onnx_threads(options)
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     options.enable_mem_pattern = False
     options.enable_cpu_mem_arena = False

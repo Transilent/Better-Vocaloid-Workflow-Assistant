@@ -1,0 +1,1 @@
+{"version": "2.0.0", "entrypoint": "application.pipeline.run_auto_lyric_job", "languages": ["zh", "ja"], "source": "https://github.com/Xiantaidu/Vocal2Midi"}

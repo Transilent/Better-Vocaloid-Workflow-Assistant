@@ -23,7 +23,8 @@ def separate_vocals(source, directory, job, device='auto'):
         import soundfile as sf
         import torch
         from pymss import MSSeparator
-        torch.set_num_threads(6)
+        request=json.loads((Path(job)/'request.json').read_text(encoding='utf-8')) if (Path(job)/'request.json').is_file() else {}
+        torch.set_num_threads(request.get('tools',{}).get('cpu_threads',0) or 6)
         if device == 'cuda' and not torch.cuda.is_available():
             raise RuntimeError('当前环境无法使用 CUDA，请在处理设置中选择“自动”或“CPU”。')
         audio, rate = sf.read(str(source), dtype='float32', always_2d=True)
@@ -44,17 +45,30 @@ def separate_vocals(source, directory, job, device='auto'):
             result = separator.separate(audio.T, pbar=False)
             lead = np.asarray(next(value for key, value in result.items() if key.casefold() == 'vocals'), dtype='float32')
             provider = str(separator.device)
+            del result
         cancelled(job)
         if lead.shape != audio.shape or not np.isfinite(lead).all():
             raise RuntimeError('BS-RoFormer 输出格式无效。')
         # Silence can be correct for a backing-only passage. Preserve the prediction.
-        backing = audio - lead
         directory = Path(directory)
-        sf.write(str(directory / 'lead.wav'), lead, rate, subtype='FLOAT')
-        sf.write(str(directory / 'backing.wav'), backing, rate, subtype='FLOAT')
+        directory.mkdir(parents=True,exist_ok=True)
+        pending=[directory/'lead.pending.wav',directory/'backing.pending.wav']
+        max_error=0.
+        try:
+            with sf.SoundFile(str(pending[0]),'w',samplerate=rate,channels=2,subtype='FLOAT') as a, \
+                 sf.SoundFile(str(pending[1]),'w',samplerate=rate,channels=2,subtype='FLOAT') as b:
+                for start in range(0,len(audio),65536):
+                    cancelled(job)
+                    primary=lead[start:start+65536];mix=audio[start:start+65536]
+                    backing=mix-primary
+                    a.write(primary);b.write(backing)
+                    max_error=max(max_error,float(np.abs(primary+backing-mix).max()))
+            pending[0].replace(directory/'lead.wav');pending[1].replace(directory/'backing.wav')
+        finally:
+            for path in pending:path.unlink(missing_ok=True)
         return {'model': spec['weights'][0]['name'], 'sha256': spec['weights'][0]['sha256'],
                 'provider': provider, 'method': 'total_vocals_then_karaoke',
                 'sample_rate': rate, 'samples': len(audio), 'timeline_offset_seconds': 0,
                 'batch_size': 1, 'chunk_size': 882000, 'overlap_size': 661500, 'tta': False,
                 'output_normalization': False, 'processing_seconds': round(time.monotonic() - started, 2),
-                'sum_max_error': float(np.abs(lead + backing - audio).max())}
+                'sum_max_error': max_error}

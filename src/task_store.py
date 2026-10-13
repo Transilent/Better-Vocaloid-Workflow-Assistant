@@ -28,19 +28,44 @@ def locked(job):
         return True
 
 
-def records():
+def records(check=None):
+    index_path = ROOT / 'cache/task-index.json'
+    old = read_json(index_path).get('entries', {})
+    if not isinstance(old, dict): old = {}
+    entries, changed = {}, False
     rows = []
     for path in job_directories():
-        request, state, info = read_json(path/'request.json'), read_json(path/'status.json'), read_json(path/'source-info.json')
-        if not request:
-            continue
+        if check and check(): return []
+        try:
+            stamps = {}
+            for name in ('request.json','status.json','source-info.json','task.json'):
+                try:
+                    info = (path / name).stat()
+                    stamps[name] = [info.st_size, info.st_mtime_ns]
+                except FileNotFoundError: stamps[name] = None
+            saved = old.get(str(path), {})
+            cached = saved.get('row', {})
+            if (saved.get('stamps') == stamps and isinstance(cached, dict)
+                    and isinstance(cached.get('request'), dict) and isinstance(cached.get('status'), dict)
+                    and isinstance(cached.get('title'), str) and isinstance(cached.get('modified'), (int, float))):
+                row = dict(saved['row'])
+            else:
+                request, state, info = read_json(path/'request.json'), read_json(path/'status.json'), read_json(path/'source-info.json')
+                if not request: continue
+                row = {'title': read_json(path/'task.json').get('name') or info.get('title') or request.get('source_title') or request.get('bv') or path.name,
+                       'request': request, 'status': state, 'created': request.get('created_at') or path.name.split('_')[-1],
+                       'modified': stamps['status.json'][1]/1e9 if stamps['status.json'] else path.stat().st_mtime}
+                changed = True
+            entries[str(path)] = {'stamps': stamps, 'row': row}
+        except OSError:
+            continue  # A deleted/moved task must not fail the entire library.
+        state = row['status']
         status = state.get('state', 'ready')
         if status == 'running' and not locked(path):
             status = 'interrupted'
-        rows.append({'path': path, 'title': read_json(path/'task.json').get('name') or info.get('title') or request.get('source_title') or request.get('bv') or path.name,
-                     'state': status, 'request': request, 'status': state,
-                     'created': request.get('created_at') or path.name.split('_')[-1],
-                     'modified': (path/'status.json').stat().st_mtime if (path/'status.json').exists() else path.stat().st_mtime})
+        rows.append({**row, 'path': path, 'state': status})
+    if changed or set(entries) != set(old):
+        atomic_json(index_path, {'version': 1, 'entries': entries})
     return sorted(rows, key=lambda r: r['modified'], reverse=True)
 
 
@@ -68,19 +93,22 @@ def checked_tree(path, boundary):
 def size(path):
     total = 0
     path = Path(path)
-    if not path.exists() or path.is_symlink():
+    if not path.exists() or path.is_symlink() or getattr(path.lstat(), 'st_file_attributes', 0) & 1024:
         return 0
     if path.is_file():
         return path.stat().st_size
-    for directory, dirs, files in os.walk(path, followlinks=False):
-        dirs[:] = [name for name in dirs if not (Path(directory)/name).is_symlink() and not getattr((Path(directory)/name).lstat(), 'st_file_attributes', 0) & 1024]
-        for name in files:
-            item = Path(directory)/name
-            try:
-                if not item.is_symlink():
-                    total += item.stat().st_size
-            except OSError:
-                pass
+    pending = [path]
+    while pending:
+        try:
+            with os.scandir(pending.pop()) as entries:
+                for entry in entries:
+                    try:
+                        info = entry.stat(follow_symlinks=False)
+                        if entry.is_symlink() or getattr(info, 'st_file_attributes', 0) & 1024: continue
+                        if entry.is_dir(follow_symlinks=False): pending.append(Path(entry.path))
+                        elif entry.is_file(follow_symlinks=False): total += info.st_size
+                    except OSError: pass
+        except OSError: pass
     return total
 
 

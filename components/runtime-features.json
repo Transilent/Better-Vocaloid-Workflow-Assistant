@@ -1,0 +1,31 @@
+{
+  "format": 1,
+  "features": {
+    "chinese": {
+      "name": "Chinese lyrics · Qwen3-ASR",
+      "files": [
+        {
+          "file": "dependencies/vocal2midi/experiments/Qwen3-ASR-1.7B-dml/qwen3_asr_encoder_backend.fp16.onnx",
+          "bytes": 611548981,
+          "sha256": "dce32f4d7f7679b5a9e7359d881a3d57763cd91dd1023a3dcbab15f64d59d325",
+          "url": "https://huggingface.co/xian-taidu/Qwen3-ASR-1.7B-DML/resolve/ba77390c544ce36b6736d95a1c25adcf4651566c/qwen3_asr_encoder_backend.fp16.onnx"
+        },
+        {
+          "file": "dependencies/vocal2midi/experiments/Qwen3-ASR-1.7B-dml/qwen3_asr_encoder_frontend.fp16.onnx",
+          "bytes": 27112576,
+          "sha256": "ac8deb4e34e6d0cc4b4aec164d8a848c1de3fc9e2b4dc8e81243ba8c18666ce3",
+          "url": "https://huggingface.co/xian-taidu/Qwen3-ASR-1.7B-DML/resolve/ba77390c544ce36b6736d95a1c25adcf4651566c/qwen3_asr_encoder_frontend.fp16.onnx"
+        },
+        {
+          "file": "dependencies/vocal2midi/experiments/Qwen3-ASR-1.7B-dml/qwen3_asr_llm.f16.gguf",
+          "bytes": 4069674560,
+          "sha256": "0e1c4916952c169d3198fd078b1e92acf173b2863017e657c03dd01d63164d01",
+          "url": "https://huggingface.co/xian-taidu/Qwen3-ASR-1.7B-DML/resolve/ba77390c544ce36b6736d95a1c25adcf4651566c/qwen3_asr_llm.f16.gguf"
+        }
+      ],
+      "bytes": 4708336117,
+      "revision": "ba77390c544ce36b6736d95a1c25adcf4651566c",
+      "upstream": "https://huggingface.co/xian-taidu/Qwen3-ASR-1.7B-DML"
+    }
+  }
+}

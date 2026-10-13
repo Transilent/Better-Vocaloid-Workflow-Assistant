@@ -53,6 +53,7 @@ class Window(QWidget):
         self.processing_active = False
         self.job = None
         self.stem_fields = {}
+        self.reference_metadata = {'local':None, 'netease':None}
         self.setObjectName('workspace')
         self.setWindowTitle('术力口工作流助手 · BVWA')
         from workspace_ui import build_window
@@ -62,6 +63,12 @@ class Window(QWidget):
         self.timer.timeout.connect(self.refresh_progress)
 
     def navigate(self, index):
+        if index == 5: index = 0
+        if index == 6: index = 4
+        if index == 7:
+            index=0
+            self.step_cards['subtitles'].toggle.setChecked(True)
+            QTimer.singleShot(0,lambda: self.step_area.parentWidget().parentWidget().ensureWidgetVisible(self.step_cards['subtitles'],0,0))
         self.pages.setCurrentIndex(index)
         self.nav_buttons[index].setChecked(True)
         if index == 2 and hasattr(self, 'results'):
@@ -85,7 +92,7 @@ class Window(QWidget):
         self.component_status.setText(('BS-RoFormer 已安装，可离线使用' if installed else 'BS-RoFormer 尚未安装，需先下载组件') if new_model else '已内置 · 无需额外下载')
         self.component_link.setVisible(new_model and not installed)
         self.start.setEnabled(not active and connected and (not new_model or (installed and not busy)))
-        self.start.setToolTip('' if connected else '请先在工作流页面连接音乐输入和处理节点。')
+        self.start.setToolTip('' if connected else '请检查处理步骤和模型设置。')
         self.roformer_device.setEnabled(new_model and not active)
 
     def start_new(self):
@@ -138,18 +145,63 @@ class Window(QWidget):
         import workflow
         graph = copy.deepcopy(self.workflow.graph)
         workflow.validate_graph(graph)
-        return {"lyrics": self.lyrics.toPlainText(), "language": self.language.currentData(),
-                "recognize_lyrics": self.recognize.isChecked(),
-                "zh_lyric_mode": self.zh_lyric_mode.currentData(),
-                "parent": self.output_parent(),
-                "voice_mode": self.separator_model.currentData() if self.voice_mode.currentData() == 'dual' else self.voice_mode.currentData(),
-                "roformer_device": self.roformer_device.currentData(),
+        values = self.workflow.options()
+        mode=self.reference_mode.currentData()
+        editor=self.netease_lyrics if mode=='netease' else self.lyrics
+        reference=self.reference_metadata[mode]
+        if mode=='netease' and self.midi_enabled.isChecked() and self.recognize.isChecked():
+            if not reference or not editor.toPlainText().strip():
+                raise ValueError('请在“参考歌词与校准”中搜索并选择网易云歌曲，或切换为本地匹配。')
+        return {**values, "lyrics": editor.toPlainText(), "parent": self.output_parent(),
                 "imported_stems": {key: field.text() for key, field in self.stem_fields.items()},
-                'workflow_graph': graph,
-                'separation_device': self.workflow.fields['separation_device'].currentData(),
-                'midi_device': self.workflow.fields['midi_device'].currentData(),
-                "midi_steps": self.workflow.fields['midi_steps'].currentData(),
-                "backing_lyrics": self.backing_lyrics.text()}
+                "workflow_graph": graph, "backing_lyrics": self.backing_lyrics.text(),
+                "lyric_reference": reference}
+
+    def update_reference_options(self):
+        netease=self.reference_mode.currentData()=='netease'
+        self.netease_reference_panel.setVisible(netease)
+        self.local_reference_panel.setVisible(not netease)
+
+    def import_reference(self,voice):
+        path,_=QFileDialog.getOpenFileName(self,'导入主唱歌词' if voice=='lead' else '导入和声歌词',
+                                         str(self.output_parent()),'歌词文件 (*.lrc *.yrc *.txt)')
+        if path:
+            try:
+                from lyrics_sources import from_file
+                reference=from_file(path)
+                self.reference_mode.setCurrentIndex(self.reference_mode.findData('local'))
+                if voice=='lead':
+                    self.lyrics.setPlainText(reference.text)
+                    self.reference_metadata['local']={'origin':reference.origin}
+                    self.local_reference_status.setText('主唱歌词已载入 · '+Path(path).name)
+                else:
+                    self.backing_lyrics.setText(reference.text)
+                    self.local_reference_status.setText('和声歌词已载入 · '+Path(path).name)
+                self.step_cards['reference'].toggle.setChecked(True)
+            except Exception as exc:
+                QMessageBox.warning(self,'无法导入参考歌词',str(exc))
+
+    def load_reference(self, subtitles=False):
+        from lyrics_dialog import LyricsDialog
+        dialog = LyricsDialog(self,purpose='subtitles' if subtitles else 'reference')
+        if dialog.exec_() == dialog.Accepted:
+            if subtitles: self.subtitles.load_reference(dialog.reference)
+            else:
+                self.reference_mode.setCurrentIndex(self.reference_mode.findData('netease'))
+                self.netease_lyrics.setPlainText(dialog.reference.text)
+                self.reference_metadata['netease'] = dialog.serialized()
+                self.reference_status.setText('主唱歌词已载入 · 网易云歌曲 '+str(dialog.reference.origin.get('song_id','')))
+                self.step_cards['reference'].toggle.setChecked(True)
+
+    def change_theme(self):
+        from desktop_theme import apply_theme
+        mode = self.theme_picker.currentData()
+        apply_theme(self, mode)
+        if os.environ.get('BVWA_TESTING') != '1':
+            from common import atomic_json
+            config = load_config(resolve_paths=False)
+            config['theme'] = mode
+            atomic_json(ROOT / 'config.json', config)
 
     def reprocess_last(self):
         if self.processing_active or self.storage.busy():
@@ -198,13 +250,21 @@ class Window(QWidget):
         self.workflow.graph = request.get('workflow_graph', default_graph())
         values = {**DEFAULT_OPTIONS, **{k: request[k] for k in DEFAULT_OPTIONS if k in request},
                   **{k: request['tools'][k] for k in ('separation_device', 'midi_device') if k in request['tools']}}
+        if 'reference_mode' not in request:
+            provider=((request.get('lyric_reference') or {}).get('origin') or {}).get('provider')
+            values['reference_mode']='netease' if provider=='netease' else 'local'
         self.workflow.apply_options(values)
-        self.workflow.draw_graph()
         self.workflow.loading = False
         self.workflow.reload_presets(self.workflow.matching_preset())
-        self.workflow.update_message()
         self.refresh_workflow_summary()
-        self.lyrics.setPlainText(request.get("lyrics", ""))
+        self.reference_metadata = {'local':None, 'netease':None}
+        mode=values['reference_mode']
+        self.reference_metadata[mode]=request.get('lyric_reference')
+        self.lyrics.clear()
+        self.netease_lyrics.clear()
+        (self.netease_lyrics if mode=='netease' else self.lyrics).setPlainText(request.get('lyrics',''))
+        self.reference_status.setText('已载入任务的网易云主唱歌词' if mode=='netease' else '尚未选择网易云歌曲。')
+        self.local_reference_status.setText('已载入任务主唱歌词' if mode=='local' and request.get('lyrics') else '导入歌词或直接填写；留空时从对应人声音频识别歌词。')
         self.backing_lyrics.setText(request.get("backing_lyrics", ""))
         for key, field in self.stem_fields.items():
             value = request.get("imported_stems", {}).get(key)
@@ -268,11 +328,17 @@ class Window(QWidget):
                         self.workflow_preset):
             control.setEnabled(not active)
         self.lyrics.setEnabled(not active and self.recognize.isChecked())
+        self.netease_lyrics.setEnabled(not active and self.recognize.isChecked())
         self.backing_lyrics.setEnabled(not active and self.recognize.isChecked())
         self.update_lyric_options()
         self.stop.setEnabled(active)
         self.stop.setVisible(active)
         self.update_component_state()
+        self.step_area.setEnabled(not active)
+        self.device_button.setEnabled(not active)
+        self.device_panel.setEnabled(not active)
+        self.save_preset_button.setEnabled(not active)
+        self.delete_preset_button.setEnabled(not active)
         self.workflow.setEnabled(not active)
         self.results.select()
 
@@ -280,6 +346,8 @@ class Window(QWidget):
         chinese = self.language.currentData() == 'zh'
         self.zh_lyric_panel.setVisible(chinese)
         self.zh_lyric_mode.setEnabled(chinese and self.recognize.isChecked() and not self.processing_active)
+        editable=self.recognize.isChecked() and not self.processing_active
+        for field in (self.lyrics,self.netease_lyrics,self.backing_lyrics): field.setEnabled(editable)
 
     def on_result(self, code):
         self.timer.stop()
@@ -334,28 +402,39 @@ class Window(QWidget):
         if not hasattr(self, 'workflow'):
             return
         import workflow
+        self.update_step_dependencies()
         self.workflow.sync_preset_picker()
         self.update_component_state()
-        try:
-            target = workflow.validate_graph(self.workflow.graph)
-        except ValueError:
-            self.workflow_summary.setText('工作流尚未连接完整，请打开工作流检查。')
-            self.output_summary.setText('请完成工作流连接后开始处理')
-            return
-        name = self.workflow.preset.currentText()
-        output = '分离音频' if target == 'separation' else 'MIDI 与音频' if target == 'midi' else 'MIDI、音频与字幕'
-        self.workflow_summary.setText(name+' · 输出 '+output)
-        if target == 'separation':
-            self.output_summary.setText('分离音频 WAV · 保留原始时间线')
-        elif target == 'subtitles':
-            self.output_summary.setText(('单轨' if self.voice_mode.currentData() == 'single' else '双轨')+' MIDI · 分离音频 · SRT / WebVTT 字幕')
-        else:
-            self.output_summary.setText('单轨 MIDI · 人声 WAV · 伴奏 WAV' if self.voice_mode.currentData() == 'single' else
-                                        '双轨 MIDI · 主唱 WAV · 和声 WAV · 伴奏 WAV')
-        for key, value in self.stage_labels.items():
+        target = workflow.validate_graph(self.workflow.graph)
+        values = self.workflow.options()
+        outputs = ['分离音频']
+        if target != 'separation': outputs.append('单轨 MIDI' if self.voice_mode.currentData() == 'single' else '双轨 MIDI')
+        outputs.extend(fmt.upper() for fmt in values['project_formats'])
+        if target == 'subtitles': outputs.append('SRT / WebVTT 字幕')
+        self.workflow_summary.setText(self.workflow.preset.currentText() + ' · ' + ' · '.join(outputs))
+        self.output_summary.setText(' · '.join(outputs))
+        self.step_cards['source'].summary.setText('导入本地音频' if self.input_mode.currentData() == 'local' else '下载原视频与音频，保留本家资料和封面。')
+        self.step_cards['separation'].summary.setText(self.voice_mode.currentText() + (' · ' + self.separator_model.currentText() if self.voice_mode.currentData() == 'dual' else ''))
+        self.step_cards['midi'].summary.setText(('已跳过' if target == 'separation' else self.language.currentText() + ' · ' + self.midi_steps.currentText()))
+        self.step_cards['audio'].summary.setText(' · '.join(map(str.upper, values['audio_formats'])))
+        for key,value in self.stage_labels.items():
             value.setVisible(key != 'subtitles' or target == 'subtitles')
-            if key == 'midi':
-                value.setVisible(target != 'separation')
+            if key == 'midi': value.setVisible(target != 'separation')
+            if key == 'exports': value.setVisible(bool(values['project_formats']) or any(fmt != 'wav' for fmt in values['audio_formats']))
+
+    def update_step_dependencies(self):
+        enabled = self.midi_enabled.isChecked()
+        subtitles = enabled and self.recognize.isChecked() and self.subtitles.match_mode.currentData()=='midi'
+        self.subtitles_enabled.setEnabled(subtitles)
+        if not subtitles:
+            self.subtitles_enabled.blockSignals(True)
+            self.subtitles_enabled.setChecked(False)
+            self.subtitles_enabled.blockSignals(False)
+        self.exports_enabled.setEnabled(enabled)
+        self.project_options.setEnabled(enabled and self.exports_enabled.isChecked())
+        self.alignment_engine.setEnabled(enabled)
+        self.delete_preset_button.setEnabled(not self.processing_active and self.workflow.preset.currentText() in self.workflow.presets)
+        self.update_lyric_options()
 
     def show_failure(self):
         from error_recovery import failure
@@ -364,7 +443,7 @@ class Window(QWidget):
         self.error_message.setText(self.recovery['title']+'：'+self.recovery['message']+'\n详细原因：'+raw[:600])
         self.error_message.setToolTip(raw)
         self.cpu_retry.setVisible(self.recovery['action'] == 'cpu')
-        self.recovery_action.setText({'storage': '查看磁盘', 'subtitles': '打开字幕工具'}.get(self.recovery['action'], '检查工作流'))
+        self.recovery_action.setText({'storage': '查看磁盘', 'subtitles': '打开字幕工具', 'components':'检查模型与组件'}.get(self.recovery['action'], '检查处理设置'))
         self.error_panel.show()
 
     def retry_job(self):
@@ -383,7 +462,7 @@ class Window(QWidget):
                 QMessageBox.warning(self, '无法继续任务', str(exc))
 
     def open_recovery(self):
-        self.navigate({'storage': 6, 'subtitles': 7}.get(getattr(self, 'recovery', {}).get('action'), 5))
+        self.navigate({'storage': 6, 'subtitles': 7, 'components':1}.get(getattr(self, 'recovery', {}).get('action'), 5))
 
     def show_job(self, job):
         self.job = job
@@ -434,6 +513,9 @@ class Window(QWidget):
             self.cancel()
             self.status.setText("已请求停止；处理停止后即可关闭窗口。")
         else:
+            if not self.results.stop_scan():
+                event.ignore()
+                return
             self.workflow.persist(dirty=False)
             event.accept()
 

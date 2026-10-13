@@ -3,7 +3,7 @@ from pathlib import Path
 import mido
 
 
-def merge_voices(sources, destination):
+def merge_voices(sources, destination, job=None, expected_sha256=None):
     result = mido.MidiFile(type=1, ticks_per_beat=480, charset="utf8")
     result.tracks.append(mido.MidiTrack([
         mido.MetaMessage("track_name", name="Tempo", time=0),
@@ -44,8 +44,10 @@ def merge_voices(sources, destination):
         result.save(str(temporary))
         from midi_checks import inspect_midi
         inspect_midi(temporary)
+        from common import preserve_changed_file, file_hash
+        preserved = preserve_changed_file(job or destination.parent,destination,expected_sha256,file_hash(temporary))
         temporary.replace(destination)
     finally:
         temporary.unlink(missing_ok=True)
     return {"format": 1, "voice_tracks": reports, "tempo": 120,
-            "ticks_per_beat": 480, "timeline_offset_seconds": 0}
+            "ticks_per_beat": 480, "timeline_offset_seconds": 0, 'preserved_copy':preserved}

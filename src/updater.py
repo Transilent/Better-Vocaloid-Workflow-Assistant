@@ -17,6 +17,7 @@ REPO = 'Transilent/Better-Vocaloid-Workflow-Assistant'
 RELEASES = 'https://github.com/' + REPO + '/releases'
 API = 'https://api.github.com/repos/' + REPO + '/releases/latest'
 UPDATE_NAME = 'BVWA-App-Update.zip'
+PROGRAM_UPDATE_NAME = 'BVWA-Program-Update.zip'
 MAX_UPDATE_BYTES = 64 * 1024**2
 
 
@@ -51,6 +52,13 @@ def legacy_release(inventory):
             'notes': '当前发布版尚未提供自动更新信息。请从发布页面查看版本并下载完整便携包。'}
 
 
+def compatible_update(inventory):
+    item = inventory.get('program_update')
+    if item and item.get('runtime_sha256') == file_hash(ROOT / 'dependencies/manifest.json'):
+        return item
+    return inventory.get('update')
+
+
 def check_release(source='auto', reader=read_small):
     if source == 'mirror':
         try:
@@ -60,7 +68,7 @@ def check_release(source='auto', reader=read_small):
                 version_key(version)
                 return {'version': version, 'notes': inventory.get('release_notes', ''),
                         'url': RELEASES + '/tag/v' + version, 'available': is_newer(version),
-                        'update': inventory.get('update')}
+                        'update': compatible_update(inventory)}
         except (OSError, json.JSONDecodeError):
             pass
     try:
@@ -75,7 +83,7 @@ def check_release(source='auto', reader=read_small):
             inventory = json.loads(reader(asset_url(version, 'release-assets.json'), source))
             if inventory.get('version') and inventory['version'] != version:
                 raise ValueError('更新清单与发布版本不一致。')
-            result['update'] = inventory.get('update')
+            result['update'] = compatible_update(inventory)
         return result
     except (OSError, KeyError, json.JSONDecodeError):
         # Published inventory is also available through GitProxy when the API
@@ -87,7 +95,7 @@ def check_release(source='auto', reader=read_small):
         version_key(version)
         return {'version': version, 'notes': inventory.get('release_notes', ''),
                 'url': RELEASES + '/tag/v' + version,
-                'available': is_newer(version), 'update': inventory.get('update')}
+                'available': is_newer(version), 'update': compatible_update(inventory)}
 
 
 def prepare_update(release, source='auto', progress=lambda *args: None, check=None,
@@ -98,7 +106,7 @@ def prepare_update(release, source='auto', progress=lambda *args: None, check=No
     version = release['version']
     version_key(version)
     item = dict(release.get('update') or {})
-    if item.get('name') != UPDATE_NAME:
+    if item.get('name') not in (UPDATE_NAME, PROGRAM_UPDATE_NAME):
         raise ValueError('此版本未提供程序更新包，请从发布页面下载完整版。')
     if not isinstance(item.get('bytes'), int) or not 0 < item['bytes'] <= MAX_UPDATE_BYTES:
         raise ValueError('程序更新包大小无效。')
@@ -109,7 +117,7 @@ def prepare_update(release, source='auto', progress=lambda *args: None, check=No
         raise ValueError('此版本需要新的基础运行库，请从发布页面下载完整版。现有任务可以继续保留。')
     cache = root / 'cache/updates'
     cache.mkdir(parents=True, exist_ok=True)
-    item['url'] = asset_url(version, UPDATE_NAME)
+    item['url'] = asset_url(version, item['name'])
     archive = (downloader or download)(item, cache / 'downloads', progress, check, source=source)
     if archive.stat().st_size != item['bytes'] or file_hash(archive) != item['sha256']:
         raise ValueError('程序更新包校验失败。')

@@ -22,10 +22,12 @@ backing. It does not treat low lead energy as a reason to swap parts. Chinese an
 Japanese use identical separation parameters: 44.1 kHz stereo, 20-second chunks,
 75% overlap, batch size 1, no TTA and no independent stem normalization.
 
-The native Qt workspace has eight sidebar pages. Workflow nodes collect processing parameters and devices; a validated graph records the final execution stage. Presets, current options and output history live in private `cache/workspace.json`. Progress events use a separate JSON file, while pipeline status records stage completion and elapsed processing time. The task library detects stale runs through the existing file lock. Cleanup operates only on explicit disposable locations and refuses links and running tasks. Publication uses one primary action whose
-state depends on whether the prepared bundle matches the current form.
+The sidebar contains Tuning workflow, Publishing workflow, Models/components, Tasks/results and Settings/updates. Tuning uses full-width expandable steps with a device dialog in the toolbar. Publishing uses four scrollable pages with bottom navigation and a final action outside the scroll area. The cover widget keeps the original pixmap and rescales without cropping. Cache management is embedded in Settings/updates. Legacy graph serialization remains readable; current controls generate valid processing sequences without a canvas. Processing runs in isolated children; the export child alone loads LibreSVIP's separate dependency directory.
+
 
 Japanese transcription uses the original bundled Romaji ASR weights. The integration preserves supported standalone phones at slice boundaries, checks HubertFA input phonemes, isolates recoverable alignment data errors by chunk, and records pitch-only fallbacks separately from empty ASR. Short-mora boundary repair is limited to 150 ms gaps in Japanese. Non-singing mora tokens consume their kana display token so subsequent syllables stay aligned. Chinese ASR selection remains Qwen.
+
+The appearance is defined by two solid color palettes and shared Qt styles. The desktop uses a standard system frame; there is no native backdrop API, background painter or transparency requirement.
 
 ## Code map
 
@@ -33,11 +35,12 @@ Japanese transcription uses the original bundled Romaji ASR weights. The integra
 | --- | --- |
 | `launch.py`, `app.py` | Runtime bootstrap, desktop controls, background jobs |
 | `desktop_theme.py`, `workspace_ui.py`, `publishing_layout.py` | Theme, sidebar workspace and publication form |
+| `workflow_widgets.py` | Step navigation and proportional cover preview |
 | `components_ui.py`, `optional_components.py`, `components/roformer.json` | Download UI, pinned install manifest, resumable installer and validation |
 | `roformer.py` | Optional Pymss inference and timeline-preserving lead/backing outputs |
 | `common.py`, `check_dependencies.py` | Relative paths, configuration, subprocess cancellation, dependency checks |
 | `pipeline.py` | Input snapshots, metadata, downloads, stages, resume |
-| `workflow.py`, `workflow_ui.py` | Validated graphs, private presets and native node canvas |
+| `workflow.py`, `processing_workflow.py`, `processing_ui.py` | Preset migration and ordered processing cards |
 | `progress_state.py`, `error_recovery.py` | Subtask events, elapsed time, failure classification and CPU retry |
 | `task_store.py`, `results_ui.py` | Task metadata, search/filter UI, stale-run detection and bounded deletion |
 | `storage.py`, `storage_ui.py` | Disposable-location allowlist, asynchronous scan and confirmed cleanup |
@@ -61,7 +64,7 @@ repository. Dependency test directories and the unused upstream desktop GUI are
 excluded from the runtime inventory. Diagnostic batch files are placed in `tools`;
 the root has one application launcher.
 
-Runtime state is separate: `jobs/` stores stage inputs/results, `cache/` stores temporary data and dedicated browser profiles, and `publish-packages/` stores finished-video snapshots and publication text. These folders can contain private data and are excluded from Git and clean releases. Do not distribute a working application folder without removing its runtime state.
+Runtime state is separate: `jobs/` stores stage inputs/results, `cache/` stores temporary data and dedicated browser profiles, and `publish-packages/` stores finished-video references, cover assets and publication text. These folders can contain private data and are excluded from Git and clean releases. Do not distribute a working application folder without removing its runtime state.
 
 Resume validates expected stage outputs and relevant settings. Separate vocal transcription results can be reused. A changed source snapshot or damaged output requires rebuilding the affected stage.
 
@@ -84,3 +87,21 @@ Inference runs in local subprocesses. Website automation uses Playwright selecto
 `download_sources.py` routes public downloads. `updater.py` discovers stable releases, checks runtime compatibility and stages an allowlisted program archive. `updates_ui.py` manages download settings and progress. After the desktop and EXE launcher exit, `tools/update_apply.py` replaces verified files with rollback on failure. Configuration, task files, browser profiles and model environments are outside the update allowlist. `tools/build_app_update.py` produces the small program archive after confirmed user testing.
 
 Task outputs default to `jobs/` and may use a custom parent directory. The selected parent and previously used task parents are kept in private `cache/workspace.json`, enabling task discovery across locations. Requests record their output parent; resuming uses the actual existing task path, while reprocessing creates a new task under the selected parent.
+
+Project export merges native Vocal2Midi USTX voice tracks with LibreSVIP, preserves original lyric text and pitch curves, and reads files back to validate serialization. Native files and final exports are checked on resume. NetEase lyric timing is used only by the subtitle editor, while original lyric text is passed to Vocal2Midi forced alignment. HTTP Range downloads use bounded workers and atomic SHA-256 validation before activation.
+
+Reference lyrics and subtitle matching keep independent sources and drafts. New GUI tasks select the v2 backend; existing requests retain their recorded backend. NetEase references target lead vocals, and subtitle imports do not rewrite transcription references. The subtitle UI accepts NetEase timelines or MIDI lyrics; untimed text is rejected at conversion. Source choices enter tasks/presets, while lyric contents stay outside presets.
+
+## Runtime and storage boundaries
+
+Stage receipts bind downloaded inputs and audio to their content hashes and relevant parameters. Audio checks include sample rate, channels, frame count and finite PCM values. Transcription signatures contain recognition inputs and the effective model/settings selection; theme and final converter format choices are excluded. Historical task receipts migrate after validation.
+
+A sequential worker reuses native inference sessions within one CPU/Japanese task. Chinese GPU tasks keep separate voice workers to release resident models before the next ASR stage. Retained Chinese CPU ASR additionally requires a measured host-memory margin. DirectML adapters and optional CPU thread limits are shared across the inference engines.
+
+Exports commit and validate each output separately. Retrying one damaged format preserves other outputs. Multiple audio encoders share one decode per stem. Separation/import output buffers and silence scans use bounded blocks. Range downloads write into one partial file plus a small range receipt; the final SHA-256 check precedes activation.
+
+The task library scans on a background thread and caches metadata by file size/mtime. Disk enumeration uses non-following directory entries. Cleanup rejects links, active tasks/uploads/installers and cache ancestors of registered custom task directories.
+
+Startup checks the core runtime. Tasks check the features they use. Japanese Romaji ASR and notes-only extraction do not require Qwen weights. Chinese originals have a pinned repair/download entry in Models/components. Native ASR DLLs are loaded from their existing directory. Browser and language dependency plans can be inspected with `tools/build_portable.py --plan-profile`; these plans do not create or publish an archive.
+
+The 0.3.x update protocol remains supported through `BVWA-App-Update.zip`, an allowlisted bootstrap accepted by the unmodified old client. It opens a startup migration dialog and fetches `BVWA-Runtime-Upgrade.zip`, containing only new/changed fixed dependencies and current program files. The standalone apply helper verifies the source and target manifests, rejects private-state destinations, stages and backs up replacements, removes only unchanged obsolete runtime files, and rolls back on failure. `BVWA-Program-Update.zip` is the program-only asset for the new runtime; release metadata selects the compatible variant.

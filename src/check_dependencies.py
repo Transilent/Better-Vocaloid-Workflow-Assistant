@@ -11,16 +11,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import ROOT, TOOL_PATHS, atomic_json, file_hash, load_config
 
 
-def check(full=False):
+def check(full=False, features=None):
     started = time.monotonic()
     config = load_config()
     missing = []
-    for key in TOOL_PATHS:
+    selected = set(features) if features is not None else None
+    paths = TOOL_PATHS if selected is None else ('python', 'ffmpeg')
+    for key in paths:
         value = config.get(key)
         if not value or not Path(value).exists():
             missing.append({"component": key, "file": value or "未配置"})
     manifest = json.loads((ROOT / "dependencies/manifest.json").read_text(encoding="utf-8"))
-    files = manifest["entries"] if full else [e for e in manifest["entries"] if "/experiments/" in e["file"]]
+    critical={'dependencies/vocal2midi2/application/pipeline.py',
+              'dependencies/vocal2midi2/inference/pipeline/auto_lyric_hybrid.py',
+              'dependencies/export/libresvip/__init__.py'}
+    files = manifest["entries"] if full else [e for e in manifest["entries"] if "/experiments/" in e["file"] or e['file'] in critical]
+    if selected is not None:
+        from dependency_profiles import group
+        files = [e for e in files if group(e['file']) in selected]
     def verify(entry):
         path = (ROOT / entry["file"]).resolve()
         if not path.is_relative_to(ROOT):
@@ -48,11 +56,11 @@ def check(full=False):
             "updated_at": dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).isoformat(timespec="seconds")}
 
 
-def validate():
-    result = check()
+def validate(features=None):
+    result = check(features={'core'} if features is None else features)
     if result["errors"]:
         details = "\n".join(str(e["file"]) for e in result["errors"][:10])
-        raise FileNotFoundError("助手依赖缺失或损坏。请恢复整个 dependencies 目录，或运行 tools/Check-Dependencies.bat：\n" + details)
+        raise FileNotFoundError("所需运行库或模型缺失。请在模型与组件页恢复中文模型，其他依赖可用 tools/Check-Dependencies.bat 检查：\n" + details)
 
 
 if __name__ == "__main__":

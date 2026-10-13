@@ -1,4 +1,4 @@
-"""Timestamped lyric conversion. Plain text timing is always an explicit estimate."""
+"""Convert existing lyric timestamps and MIDI events to editable subtitles."""
 from dataclasses import dataclass
 import csv
 import io
@@ -54,14 +54,6 @@ def lrc(text, duration=None):
     return validate(cues)
 
 
-def plain(text, duration):
-    words = [line.strip() for line in text.splitlines() if line.strip()]
-    if not words or not math.isfinite(duration) or duration <= 0:
-        raise ValueError('纯文本歌词需要填写大于 0 的总时长，或逐行编辑时间。')
-    step = duration / len(words)
-    return validate([Cue(i*step, (i+1)*step, line) for i, line in enumerate(words)])
-
-
 def timed_csv(text):
     rows = csv.DictReader(io.StringIO(text))
     if not {'start', 'end', 'text'} <= set(rows.fieldnames or []):
@@ -109,16 +101,17 @@ def midi_cues(path, track=None):
     return validate(cues)
 
 
-def load(path, duration=180):
+def load(path):
     path = Path(path)
     if path.suffix.lower() in ('.mid', '.midi'):
         return midi_cues(path), '来自 MIDI 歌词时间；分句由停顿推断，请预览核对。'
+    if path.suffix.lower() not in ('.lrc','.csv'):
+        raise ValueError('字幕需要已有时间轴。请选择带歌词事件的 MIDI 或带时间的 LRC／CSV；纯文本不能直接生成字幕。')
     text = path.read_text(encoding='utf-8-sig')
     if path.suffix.lower() == '.lrc':
         return lrc(text), '保留 LRC 时间戳。末行无结束标记时默认显示 3 秒，可修改。'
     if path.suffix.lower() == '.csv':
         return timed_csv(text), '保留 CSV 时间戳。'
-    return plain(text, duration), '纯文本没有时间戳：已按总时长均分，请逐行校准后导出。'
 
 
 def render(cues, format='srt', offset=0):
@@ -160,7 +153,9 @@ def export_job(job, request):
             path = folder / (voice+'.'+format)
             path.write_text(render(cues, format), encoding='utf-8')
             outputs.append(path.relative_to(job).as_posix())
+    from common import file_hash
     atomic_json(job / 'subtitles/report.json', {'outputs': outputs, 'warnings': warnings,
+                'sha256': {name: file_hash(job / name) for name in outputs},
                 'note': '分句由 MIDI 歌词停顿推断，使用前请检查时间与文字。'})
     for warning in warnings:
         print('字幕：'+warning, flush=True)

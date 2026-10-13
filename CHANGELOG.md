@@ -1,6 +1,44 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-10-13
+
+- Support verified in-place online upgrades from v0.3.0/v0.3.1 using a compatible bootstrap and a small runtime delta; retain models, tasks and sign-in state.
+
+- Rename the main pages to Tuning workflow and Publishing workflow, keeping them together in the sidebar.
+- Guide publication through four full-page steps with larger cover previews, visible platform drafts/account controls and a fixed final action.
+- Check required inputs before advancing, clear stale cover previews and show platform-specific status.
+- Recheck publication prerequisites when navigating by step number; recover from missing source tasks and show clear restoration errors.
+- Disable project formats, pitch-curve and accompaniment options when project export is off, preserving selections for re-enabling.
+- Enlarge workflow controls and use opaque light/dark color themes with a restrained green accent and standard system window controls.
+- Move per-engine devices to the tuning toolbar while preserving preset settings.
+
+- Use Vocal2Midi 2.0 for new GUI tasks without a backend selector.
+- Separate reference calibration into NetEase/local sources, with NetEase lyrics applied to the lead vocal.
+- Split subtitle matching into NetEase timelines and MIDI lyric tracks; remove untimed text estimation.
+
+- Merge workflow editing and music processing into compact expandable cards; embed subtitles and move cache management into settings.
+- Add dark/light themes and reusable processing/export presets.
+- Integrate the Vocal2Midi 2.0 application layer with existing Chinese/Japanese models and shared Python/FFmpeg.
+- Add NetEase song/artist search, song links/IDs and lyric-file reference import.
+- Export USTX, VSQX and SVP projects with pitch curves, plus WAV/FLAC/MP3/OGG stems.
+- Add verified resumable parallel downloads with configurable connections and source fallback.
+- License original assistant source under MIT and retain upstream notices.
+- Deduplicate native ASR binaries; keep new core export libraries separate from the main runtime.
+- Validate stage caches against their inputs and output hashes; repair damaged exports without regenerating intact formats.
+- Retrieve publication metadata and original covers without downloading the full source video.
+- Reduce intermediate audio allocations with block processing and shared decoding for multiple output codecs.
+- Write resumable parallel downloads to one temporary file, avoiding duplicate range assembly.
+- Reuse native inference sessions sequentially where appropriate while retaining per-voice isolation for Chinese GPU transcription.
+- Add a DirectML adapter selector, optional CPU thread limits and feature-scoped dependency checks.
+- Add pinned repair/download of the original Chinese ASR model; Japanese and notes-only transcription can run independently.
+- Load task history asynchronously and protect custom task folders during cache cleanup.
+- Fix cancellation leaving subprocesses running and concurrent JSON writes failing on Windows.
+- Remove verified unused runtime files while preserving original model weights and component licenses.
+- Preserve sub-10-tick note durations in native USTX exports, preventing artificial overlaps that stopped editor-project conversion.
+- Surface Vocal2Midi 2.0 stage logs and live carriage-return progress updates instead of leaving the display at model loading.
+- Avoid clipping compressed stem exports when float audio exceeds full scale; use shared peak attenuation, record the gain and preserve original WAV files.
+- Preserve modified MIDI, project and encoded audio files in task backups before regenerating them; unchanged generated outputs do not create duplicates.
+
 
 ## 0.3.1 — 2026-10-11
 

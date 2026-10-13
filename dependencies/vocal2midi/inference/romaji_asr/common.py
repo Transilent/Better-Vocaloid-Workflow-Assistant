@@ -33,6 +33,8 @@ def load_audio(audio_path: str | Path, sample_rate: int = DEFAULT_SAMPLE_RATE) -
 def create_session(model_path: Path, provider: str = "dml") -> ort.InferenceSession:
     provider = provider.lower()
     sess_options = ort.SessionOptions()
+    from inference.device_utils import configure_onnx_threads
+    configure_onnx_threads(sess_options)
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
     if provider == "dml":

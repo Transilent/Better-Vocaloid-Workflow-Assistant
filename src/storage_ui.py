@@ -32,10 +32,14 @@ class StorageWorker(QThread):
 
 
 class StoragePage(QWidget):
-    def __init__(self, owner):
+    def __init__(self, owner, compact=False):
         super().__init__()
         self.owner, self.worker = owner, None
-        panel, body = page('缓存与磁盘', '检查磁盘占用，选择并清理可再生成的缓存和任务临时文件。')
+        if compact:
+            from desktop_theme import card
+            panel,body=card('缓存与磁盘')
+        else:
+            panel, body = page('缓存与磁盘', '检查磁盘占用，选择并清理可再生成的缓存和任务临时文件。')
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(panel)
@@ -46,6 +50,7 @@ class StoragePage(QWidget):
         self.tree.setRootIsDecorated(False)
         self.tree.setColumnWidth(0, 360)
         self.tree.setColumnWidth(1, 120)
+        if compact: self.tree.setFixedHeight(270)
         body.addWidget(self.tree, 1)
         row = QHBoxLayout()
         self.scan = button('扫描占用', self.refresh, 'primary')

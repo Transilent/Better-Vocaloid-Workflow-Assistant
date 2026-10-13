@@ -15,7 +15,9 @@ env['PATH'] = os.pathsep.join([str(runtime), str(runtime / 'DLLs'), str(qt / 'bi
 folder = APP / 'work/test-results'
 folder.mkdir(parents=True, exist_ok=True)
 reports = {}
-for name in ('test_core.py', 'test_bilibili_network.py', 'test_japanese_midi.py', 'test_chinese_lyrics.py', 'test_updates.py', 'test_auto_restart.py', 'test_gui.py', 'test_workspace_ui.py', 'test_components.py', 'test_publication_workspace.py', 'test_local_music.py', 'test_output_directory.py', 'test_workflow_features.py', 'test_subtitles.py', 'test_publish_browser.py', 'test_publish_adapters.py', 'test_bilibili_dual_cover.py', 'test_launchers.py', 'test_bootstrap.py', 'test_source_layout.py'):
+selected=set(os.environ.get('BVWA_TEST_SELECTION','').split(','))-{''}
+for name in ('test_runtime_upgrade.py','test_process_recovery.py','test_dependency_profiles.py','test_cache_integrity.py','test_parallel_download.py','test_v2_backend.py','test_lyrics_sources.py','test_project_exports.py','test_processing_steps.py','test_reference_modes.py','test_core.py', 'test_bilibili_network.py', 'test_japanese_midi.py', 'test_chinese_lyrics.py', 'test_updates.py', 'test_auto_restart.py', 'test_gui.py', 'test_workspace_ui.py', 'test_components.py', 'test_publication_workspace.py', 'test_publication_steps.py', 'test_local_music.py', 'test_output_directory.py', 'test_workflow_features.py', 'test_subtitles.py', 'test_publish_browser.py', 'test_publish_adapters.py', 'test_bilibili_dual_cover.py', 'test_launchers.py', 'test_bootstrap.py', 'test_source_layout.py'):
+    if selected and name not in selected: continue
     started = time.monotonic()
     result = subprocess.run([sys.executable, '-B', '-u', str(APP / 'tests' / name)], capture_output=True, env=env, timeout=180)
     (folder / (name + '.log')).write_bytes(result.stdout + result.stderr)
@@ -23,5 +25,5 @@ for name in ('test_core.py', 'test_bilibili_network.py', 'test_japanese_midi.py'
     print(name + (': PASS' if result.returncode == 0 else ': FAIL'), flush=True)
     if result.returncode:
         print((result.stdout + result.stderr).decode('utf-8', errors='replace')[-4000:], flush=True)
-(folder / 'regression.json').write_text(json.dumps(reports, ensure_ascii=False, indent=2), encoding='utf-8')
+(folder / ('regression-subset.json' if selected else 'regression.json')).write_text(json.dumps(reports, ensure_ascii=False, indent=2), encoding='utf-8')
 sys.exit(0 if all(value['exit_code'] == 0 for value in reports.values()) else 1)

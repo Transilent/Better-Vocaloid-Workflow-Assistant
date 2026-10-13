@@ -3,7 +3,7 @@ import datetime
 import json
 import os
 from pathlib import Path
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem, QHeaderView, QLineEdit, QComboBox, QInputDialog, QMessageBox
 from desktop_theme import page, button, label
@@ -14,10 +14,23 @@ STATES = {'done': '已完成', 'completed': '已完成', 'partial': '阶段完�
 MODES = {'dual': 'Karaoke 2 双轨', 'roformer': 'BS-RoFormer 双轨', 'import': '外部分轨', 'single': '人声单轨'}
 
 
+class TaskScan(QThread):
+    result = pyqtSignal(object)
+    error = pyqtSignal(str)
+
+    def run(self):
+        try:
+            rows = task_store.records(self.isInterruptionRequested)
+            if not self.isInterruptionRequested(): self.result.emit(rows)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
 class ResultsPage(QWidget):
     def __init__(self, owner):
         super().__init__()
         self.owner, self.selected_job, self.rows = owner, None, []
+        self.worker, self.rescan = None, False
         panel, body = page('任务与结果', '搜索任务，检查输出和处理参数，继续未完成的工作。')
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -66,8 +79,33 @@ class ResultsPage(QWidget):
         self.reload()
 
     def reload(self):
-        self.rows = task_store.records()
+        if self.worker and self.worker.isRunning():
+            self.rescan = True
+            return
+        self.worker = TaskScan(self)
+        self.worker.result.connect(self.ready)
+        self.worker.error.connect(lambda text: self.detail.setText('无法读取任务列表：'+text))
+        self.worker.finished.connect(self.scan_finished)
+        self.worker.start()
+
+    def ready(self, rows):
+        self.rows = rows
         self.render()
+
+    def scan_finished(self):
+        old = self.sender()
+        if self.worker is old: self.worker = None
+        if old is not None: old.deleteLater()
+        if self.rescan:
+            self.rescan = False
+            self.reload()
+
+    def stop_scan(self):
+        self.rescan = False
+        if self.worker and self.worker.isRunning():
+            self.worker.requestInterruption()
+            return self.worker.wait(2000)
+        return True
 
     def render(self):
         selected = self.selected_job or self.owner.job

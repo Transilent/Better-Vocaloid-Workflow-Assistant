@@ -50,6 +50,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if not args.user_test_confirmed:
         parser.error('Local user testing must be confirmed before creating a distributable update archive.')
-    if args.output.name != 'BVWA-App-Update.zip':
-        parser.error('The program update asset must be named BVWA-App-Update.zip.')
+    if args.output.name not in ('BVWA-App-Update.zip', 'BVWA-Program-Update.zip'):
+        parser.error('Use BVWA-App-Update.zip or BVWA-Program-Update.zip for the program update asset.')
     print(json.dumps(build(args.output), indent=2))

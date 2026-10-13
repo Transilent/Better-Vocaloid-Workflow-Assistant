@@ -68,6 +68,8 @@ class RmvpeTranscriber:
 
     def _create_session(self, providers: list[str]):
         sess_options = ort.SessionOptions()
+        from inference.device_utils import configure_onnx_threads
+        configure_onnx_threads(sess_options)
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         sess_options.enable_mem_pattern = False
         sess_options.enable_cpu_mem_arena = False

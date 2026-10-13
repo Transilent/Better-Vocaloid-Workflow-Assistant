@@ -30,6 +30,7 @@ window = Window()
 window.show()
 window.navigate(3)
 tab = window.publishing
+tab.select_step(3)
 tab.load_job(job)
 tab.video.setText(original['video']['path'])
 tab.cover_file.setText(original['cover']['source'])

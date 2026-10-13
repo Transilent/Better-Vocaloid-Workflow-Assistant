@@ -6,6 +6,10 @@
       "source": "BVWA.exe"
     },
     {
+      "file": "LICENSE",
+      "source": "LICENSE"
+    },
+    {
       "file": "README.md",
       "source": "docs/Portable.en.md"
     },
@@ -90,6 +94,10 @@
       "source": "src/launch.py"
     },
     {
+      "file": "lyrics_sources.py",
+      "source": "src/lyrics_sources.py"
+    },
+    {
       "file": "mdx.py",
       "source": "src/mdx.py"
     },
@@ -114,12 +122,20 @@
       "source": "src/optional_components.py"
     },
     {
+      "file": "parallel_download.py",
+      "source": "src/parallel_download.py"
+    },
+    {
       "file": "pipeline.py",
       "source": "src/pipeline.py"
     },
     {
       "file": "progress_state.py",
       "source": "src/progress_state.py"
+    },
+    {
+      "file": "project_exports.py",
+      "source": "src/project_exports.py"
     },
     {
       "file": "publication.py",
@@ -218,12 +234,48 @@
       "source": "src/workflow.py"
     },
     {
-      "file": "workflow_ui.py",
-      "source": "src/workflow_ui.py"
-    },
-    {
       "file": "workspace_ui.py",
       "source": "src/workspace_ui.py"
+    },
+    {
+      "file": "lyrics_dialog.py",
+      "source": "src/lyrics_dialog.py"
+    },
+    {
+      "file": "processing_ui.py",
+      "source": "src/processing_ui.py"
+    },
+    {
+      "file": "processing_workflow.py",
+      "source": "src/processing_workflow.py"
+    },
+    {
+      "file": "workflow_widgets.py",
+      "source": "src/workflow_widgets.py"
+    },
+    {
+      "file": "artifact_cache.py",
+      "source": "src/artifact_cache.py"
+    },
+    {
+      "file": "runtime_devices.py",
+      "source": "src/runtime_devices.py"
+    },
+    {
+      "file": "dependency_profiles.py",
+      "source": "src/dependency_profiles.py"
+    },
+    {
+      "file": "feature_components.py",
+      "source": "src/feature_components.py"
+    },
+    {
+      "file": "components/runtime-features.json",
+      "source": "components/runtime-features.json"
+    },
+    {
+      "file": "process_control.py",
+      "source": "src/process_control.py"
     }
   ]
 }

@@ -55,12 +55,12 @@ def cancelled(check):
         raise InterruptedError('已取消安装；已下载的数据会保留，重试可继续下载。')
 
 
-def download(item, folder, progress, check=None, opener=direct_urlopen, source='auto'):
+def download(item, folder, progress, check=None, opener=direct_urlopen, source='auto', workers=None):
     """Honor Range only when the server confirms the exact offset and total."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     name = item['name']
-    if Path(name).name != name or any(c in name for c in ('/', '\\', ':')):
+    if name in ('', '.', '..') or Path(name).name != name or any(c in name for c in ('/', '\\', ':')):
         raise ValueError('Invalid download filename')
     target = folder / name
     partial = folder / (name + '.partial')
@@ -69,6 +69,22 @@ def download(item, folder, progress, check=None, opener=direct_urlopen, source='
     if target.is_file() and target.stat().st_size == item['bytes'] and file_hash(target) == item['sha256']:
         progress(item['bytes'], item['bytes'], '已校验下载文件')
         return target
+    if workers is None:
+        from common import load_config
+        workers = int(load_config(False).get('download_workers', 4))
+    if not 1 <= workers <= 8:
+        raise ValueError('下载连接数应为 1–8。')
+    if workers > 1 and item['bytes'] >= 8 * 1024**2 and not partial.exists():
+        from parallel_download import download as parallel, RangeUnsupported
+        try:
+            return parallel(item, folder, progress, check, source=source, workers=workers, opener=opener)
+        except RangeUnsupported:
+            progress(0, item['bytes'], '当前下载源未支持分段，切换为单连接续传')
+            from parallel_download import sequential_partial
+            sequential_partial(item, folder)
+    elif workers == 1 and not partial.exists():
+        from parallel_download import sequential_partial
+        sequential_partial(item, folder)
     for attempt in range(3):
         cancelled(check)
         offset = partial.stat().st_size if partial.exists() else 0
@@ -81,7 +97,7 @@ def download(item, folder, progress, check=None, opener=direct_urlopen, source='
         elif offset > item['bytes']:
             partial.unlink()
             offset = 0
-        headers = {'User-Agent': 'pip/25.0 (Better-Vocaloid-Workflow-Assistant)'}
+        headers = {'User-Agent': 'pip/25.0 (Better-Vocaloid-Workflow-Assistant)', 'Accept-Encoding': 'identity'}
         if offset:
             headers['Range'] = f'bytes={offset}-'
         route = routes[min(attempt, len(routes) - 1)]
@@ -112,11 +128,22 @@ def download(item, folder, progress, check=None, opener=direct_urlopen, source='
                 raise OSError('下载未完成，正在重试。')
             if file_hash(partial) != item['sha256']:
                 partial.unlink()
-                raise ValueError('下载文件 SHA-256 校验失败，请重试。')
+                from parallel_download import ChecksumMismatch
+                raise ChecksumMismatch('下载文件 SHA-256 校验失败，请重试。')
             partial.replace(target)
+            segments=folder/(name+'.segments')
+            if segments.exists():
+                from task_store import checked_tree
+                checked_tree(segments,folder)
+                shutil.rmtree(segments)
             return target
         except InterruptedError:
             raise
+        except ValueError as exc:
+            from parallel_download import ChecksumMismatch
+            if not isinstance(exc, ChecksumMismatch) or attempt == 2:
+                raise
+            progress(0, item['bytes'], '文件校验失败，尝试其他下载源')
         except (OSError, urllib.error.URLError):
             if attempt == 2:
                 raise

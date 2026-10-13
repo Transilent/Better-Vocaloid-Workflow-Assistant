@@ -4,7 +4,7 @@ import ctypes
 from dataclasses import dataclass
 from functools import lru_cache
 
-import onnxruntime as ort
+import os
 
 
 RUNTIME_DEVICE_CHOICES = ("dml", "cpu", "cuda")
@@ -171,6 +171,12 @@ def describe_gpu_adapter(adapter: DxgiAdapterInfo) -> str:
 def select_preferred_gpu_adapter(
     min_dedicated_vram_bytes: int = MIN_GPU_DEDICATED_VRAM_BYTES,
 ) -> DxgiAdapterInfo | None:
+    selected = os.environ.get("BVWA_DML_ADAPTER")
+    if selected is not None:
+        matches = [a for a in _enumerate_dxgi_adapters() if a.index == int(selected) and not a.is_software]
+        if not matches:
+            raise ValueError("The selected DirectML adapter is unavailable; choose Auto or another adapter.")
+        return matches[0]
     eligible = [
         adapter
         for adapter in _enumerate_dxgi_adapters()
@@ -186,6 +192,7 @@ def _select_preferred_dml_adapter() -> DxgiAdapterInfo | None:
 
 
 def resolve_onnx_providers(device: str | None, *, label: str = "ONNX") -> tuple[str, list[ProviderSpec]]:
+    import onnxruntime as ort
     normalized = normalize_runtime_device(device)
     available = set(ort.get_available_providers())
     if normalized == "cpu":
@@ -209,3 +216,14 @@ def resolve_onnx_providers(device: str | None, *, label: str = "ONNX") -> tuple[
 
 def use_dml(device: str | None) -> bool:
     return normalize_runtime_device(device) != "cpu"
+
+
+def configure_onnx_threads(options):
+    selected = os.environ.get("BVWA_CPU_THREADS")
+    if selected:
+        threads = int(selected)
+        if not 1 <= threads <= 64:
+            raise ValueError("CPU thread count must be between 1 and 64.")
+        options.intra_op_num_threads = threads
+        options.inter_op_num_threads = 1
+    return options

@@ -27,8 +27,8 @@ app.processEvents()
 assert window.pages.count() == 8
 sidebar = window.nav_buttons[4].parentWidget().layout()
 visual_order = [sidebar.itemAt(i).widget().text() for i in range(sidebar.count())
-                if sidebar.itemAt(i).widget() in window.nav_buttons]
-assert visual_order == ['处理音乐', '模型与组件', '任务与结果', '发布准备', '工作流', '缓存与磁盘', '歌词转字幕', '设置与更新']
+                if sidebar.itemAt(i).widget() is not None and sidebar.itemAt(i).widget() in window.nav_buttons]
+assert visual_order == ['调音工作流', '发布工作流', '模型与组件', '任务与结果', '设置与更新']
 QTest.mouseClick(window.nav_buttons[4], Qt.LeftButton)
 assert window.pages.currentWidget() == window.updates
 window.navigate(0)
@@ -47,9 +47,10 @@ assert not window.zh_lyric_mode.isEnabled()
 window.recognize.setChecked(True)
 assert window.zh_lyric_mode.isEnabled()
 assert not window.windowIcon().isNull()
-QTest.mouseClick(window.lyrics_toggle, Qt.LeftButton)
+window.step_cards['reference'].toggle.setChecked(True)
+app.processEvents()
 assert window.lyrics.isVisible()
-QTest.mouseClick(window.lyrics_toggle, Qt.LeftButton)
+window.step_cards['reference'].toggle.setChecked(False)
 window.set_running(True)
 assert not window.start.isEnabled() and window.stop.isVisible()
 window.set_running(False)
@@ -59,6 +60,7 @@ original_status, original_install = components.status, components.install
 state = {'ready': False, 'runtime': None}
 try:
     components.status = lambda *args: dict(state)
+    window.step_cards['separation'].toggle.setChecked(True)
     window.separator_model.setCurrentIndex(window.separator_model.findData('roformer'))
     assert not window.start.isEnabled() and window.component_link.isVisible()
     QTest.mouseClick(window.component_link, Qt.LeftButton)
@@ -120,7 +122,7 @@ window.show()
 app.processEvents()
 images = APP / 'docs/images'
 images.mkdir(parents=True, exist_ok=True)
-for index, name in ((0, 'processing'), (1, 'components'), (3, 'publishing'), (4, 'updates'), (5, 'workflow'), (6, 'storage'), (7, 'subtitles')):
+for index, name in ((0, 'processing'), (1, 'components'), (3, 'publishing'), (4, 'updates'), (6, 'storage'), (7, 'subtitles')):
     window.navigate(index)
     app.processEvents()
     window.grab().save(str(images / (name + '.png')))
@@ -142,6 +144,8 @@ assert tab.prepare_button.text() == '生成发布资料'
 assert not tab.log.isVisible()
 assert not tab.cover_seconds.isVisible()
 tab.cover_mode.setCurrentIndex(tab.cover_mode.findData('frame'))
+tab.select_step(1)
+app.processEvents()
 assert tab.cover_seconds.isVisible() and tab.cover_seconds.isEnabled()
 window.close()
 app.processEvents()

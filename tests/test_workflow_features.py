@@ -25,7 +25,7 @@ from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QPushButton, QInputDialog
 from app import Window
 # Resolve immutable component/runtime module paths before isolating private state.
-import workspace_ui, components_ui, updates_ui, subtitles_ui, results_ui, workflow_ui, storage_ui
+import workspace_ui, components_ui, updates_ui, subtitles_ui, results_ui, processing_workflow, storage_ui
 
 application = QApplication([])
 config = common.load_config()
@@ -125,6 +125,22 @@ with tempfile.TemporaryDirectory(prefix='workflow-features-', dir=APP/'work') as
         assert storage.clean([cache]) == 100
         assert (root/'cache/workspace.json').read_bytes() == protected
         assert common.file_hash(job/'audio/lead.wav') == before
+        nested=cache/'user-tasks/task';nested.mkdir(parents=True)
+        common.atomic_json(nested/'request.json',{'source_title':'Protected custom output'})
+        common.remember_job(nested)
+        assert str(cache) not in [str(r['path']) for r in storage.candidates()]
+        try:
+            storage.clean([cache]);raise AssertionError('A cache ancestor of user work was deleted')
+        except ValueError:pass
+        assert (nested/'request.json').is_file()
+        # Remove only this metadata fixture; keep the task set used later unchanged.
+        (nested/'request.json').unlink();nested.rmdir();nested.parent.rmdir();cache.rmdir()
+        common.remember_job(job)
+        profile=root/'cache/publish-browser/bilibili';profile.mkdir(parents=True)
+        with pipeline.job_lock(profile):
+            try:
+                storage.require_idle();raise AssertionError('Active upload cache was considered idle')
+            except ValueError:pass
         for path in (root, root/'cache/workspace.json', job/'audio'):
             try:
                 storage.clean([path])
@@ -151,15 +167,15 @@ with tempfile.TemporaryDirectory(prefix='workflow-features-', dir=APP/'work') as
         window.workflow.preset.setCurrentText('内置 · 仅分离音频')
         assert workflow.validate_graph(window.options()['workflow_graph']) == 'separation'
         canvas = window.workflow
-        canvas.fields['mode'].setCurrentIndex(canvas.fields['mode'].findData('import'))
-        canvas.fields['language'].setCurrentIndex(canvas.fields['language'].findData('ja'))
+        window.voice_mode.setCurrentIndex(window.voice_mode.findData('import'))
+        window.language.setCurrentIndex(window.language.findData('ja'))
         canvas.fields['midi_device'].setCurrentIndex(canvas.fields['midi_device'].findData('cpu'))
         canvas.fields['separation_device'].setCurrentIndex(canvas.fields['separation_device'].findData('cpu'))
         canvas.fields['midi_steps'].setCurrentIndex(canvas.fields['midi_steps'].findData(8))
         with patch.object(QInputDialog, 'getText', return_value=('我的分离工作流', True)):
-            QTest.mouseClick(next(b for b in canvas.findChildren(QPushButton) if b.text() == '保存为预设'), Qt.LeftButton)
+            QTest.mouseClick(window.save_preset_button, Qt.LeftButton)
         assert window.workflow_preset.findData('我的分离工作流') >= 0
-        QTest.mouseClick(canvas.use_button, Qt.LeftButton)
+        window.navigate(0)
         assert window.pages.currentIndex() == 0
         window.workflow_preset.setCurrentIndex(window.workflow_preset.findData('内置 · 中文双轨'))
         assert window.options()['language'] == 'zh' and window.options()['voice_mode'] == 'dual'
@@ -213,54 +229,35 @@ with tempfile.TemporaryDirectory(prefix='workflow-features-', dir=APP/'work') as
 
         window.navigate(5)
         canvas.preset.setCurrentText('内置 · 仅分离音频')
-        canvas.add_node('midi', QPointF(720, 330))
-        assert 'midi' in canvas.graph['nodes']
-        assert ['separation','midi'] not in canvas.graph['edges'] and not window.start.isEnabled()
-        canvas.canvas.fitInView(canvas.canvas.scene().itemsBoundingRect().adjusted(-60,-100,60,100), Qt.KeepAspectRatio)
-        viewport = canvas.canvas.viewport()
-        def drag_node(name, target, preview):
-            node = canvas.nodes[name]
-            anchor = QPointF(70,25)
-            start = canvas.canvas.mapFromScene(node.pos()+anchor)
-            finish = canvas.canvas.mapFromScene(target+anchor)
-            QTest.mousePress(viewport, Qt.LeftButton, pos=start)
-            movement = QMouseEvent(QEvent.MouseMove, QPointF(finish), QPointF(viewport.mapToGlobal(finish)), Qt.NoButton, Qt.LeftButton, Qt.NoModifier)
-            application.sendEvent(viewport, movement)
-            assert bool(canvas.preview) == preview
-            QTest.mouseRelease(viewport, Qt.LeftButton, pos=finish)
-            application.processEvents()
-        drag_node('midi', QPointF(555,174), True)
-        assert canvas.graph['nodes']['midi'] == [534,150]
-        assert ['separation','midi'] in canvas.graph['edges'] and window.start.isEnabled()
-        assert workflow.read_state()['graph'] == canvas.graph
-        canvas.finish_move('midi')
-        assert canvas.graph['edges'].count(['separation','midi']) == 1
-        saved = canvas.graph['nodes']['midi'][:]
-        QTest.mouseClick(viewport, Qt.LeftButton, pos=canvas.canvas.mapFromScene(canvas.nodes['midi'].pos()+QPointF(70,25)))
-        assert canvas.graph['nodes']['midi'] == saved, 'Editing a node must not move it'
-        drag_node('midi', QPointF(720,330), False)
-        assert ['separation','midi'] not in canvas.graph['edges'] and not window.start.isEnabled()
-        assert not canvas.use_button.isEnabled()
-        drag_node('midi', QPointF(555,174), True)
-        assert window.start.isEnabled() and canvas.use_button.isEnabled()
-        canvas.append_node('subtitles')
-        assert ['midi','subtitles'] in canvas.graph['edges']
+        assert window.pages.currentIndex() == 0, 'Workflow is edited on the processing page'
+        window.midi_enabled.setChecked(True)
+        assert workflow.validate_graph(window.options()['workflow_graph']) == 'midi'
+        window.subtitles_enabled.setChecked(True)
         assert workflow.validate_graph(window.options()['workflow_graph']) == 'subtitles'
         assert '字幕' in window.output_summary.text()
-        canvas.nodes['midi'].setPos(720,330)
-        canvas.finish_move('midi')
-        assert not window.start.isEnabled()
-        canvas.arrange()
-        assert workflow.validate_graph(canvas.graph) == 'subtitles' and window.start.isEnabled()
-        for graph, name in [({'nodes': {'source':[0,0], 'midi':[220,0]}, 'edges': []}, 'midi'),
-                            ({'nodes': {'source':[300,0], 'separation':[50,0]}, 'edges': []}, 'separation')]:
-            assert workflow.nearby_connection(graph, name) is None, 'Never connect skipped or reversed processing nodes'
+        window.recognize.setChecked(False)
+        assert not window.subtitles_enabled.isChecked() and not window.subtitles_enabled.isEnabled()
+        assert workflow.validate_graph(window.options()['workflow_graph']) == 'midi'
+        window.recognize.setChecked(True)
+        window.subtitles_enabled.setChecked(True)
+        window.midi_enabled.setChecked(False)
+        assert not window.subtitles_enabled.isChecked()
+        assert window.options()['project_formats'] == []
+        window.midi_enabled.setChecked(True)
+        window.step_cards['midi'].toggle.setChecked(True)
+        application.processEvents()
+        assert window.language.isVisible()
+        assert not hasattr(canvas,'canvas')
         canvas.fields['midi_steps'].setCurrentIndex(canvas.fields['midi_steps'].findData(8))
         assert window.options()['midi_steps'] == 8
         window.set_running(True)
         assert not canvas.isEnabled() and not window.workflow_preset.isEnabled()
         window.set_running(False)
         window.results.reload()
+        for _ in range(300):
+            application.processEvents()
+            if not (window.results.worker and window.results.worker.isRunning()) and not window.results.rescan: break
+            QTest.qWait(10)
         window.results.search.setText('重命名')
         assert window.results.tree.topLevelItemCount() == 1
         window.results.filter.setCurrentIndex(window.results.filter.findData('failed'))
@@ -271,4 +268,4 @@ with tempfile.TemporaryDirectory(prefix='workflow-features-', dir=APP/'work') as
         window.close()
         task_store.delete(full)
         assert not full.exists() and job.exists()
-print('PASS: graph execution/resume, processing-page saved presets and real start, persistence, Qt proximity snap/detach, task filters, safe cleanup and retry')
+print('PASS: graph execution/resume, processing-page saved presets and real start, persistence, ordered expandable steps, legacy preset migration, task filters, safe cleanup and retry')

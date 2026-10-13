@@ -20,7 +20,12 @@ class Installer(QThread):
 
     def run(self):
         try:
-            self.value.emit(components.install(self.runtime, self.progress.emit, self.stop.is_set, force=self.force, source=self.source))
+            if self.runtime == 'chinese':
+                from feature_components import install
+                value = install('chinese',self.progress.emit,self.stop.is_set,source=self.source)
+            else:
+                value = components.install(self.runtime, self.progress.emit, self.stop.is_set, force=self.force, source=self.source)
+            self.value.emit(value)
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -88,6 +93,13 @@ class ComponentsPage(QWidget):
         actions.addWidget(self.more)
         body.addLayout(actions)
         layout.addWidget(extra)
+        language, body = card('中文歌词识别', 'Qwen3-ASR · 原始权重', '03')
+        body.addWidget(label('使用原版模型识别中文歌词。日语识别与纯音符提取可独立运行。', 'muted'))
+        self.language_status = label('', 'muted')
+        body.addWidget(self.language_status)
+        self.language_download = button('校验 / 恢复中文模型', lambda: self.start_install(feature='chinese'))
+        body.addWidget(self.language_download)
+        layout.addWidget(language)
         layout.addWidget(label('网络中断后可重试续传。运行库保存在助手目录中，复制完整助手目录时可一并迁移。', 'muted'))
         layout.addStretch()
         installed = components.status()
@@ -104,6 +116,9 @@ class ComponentsPage(QWidget):
         self.badge.setText('已安装 · ' + ('NVIDIA GPU / CUDA' if installed['runtime'] == 'cuda' else 'CPU') if installed['ready'] else '尚未安装')
         same = installed['ready'] and installed['runtime'] == runtime
         self.download.setText('使用此模型' if same else '下载并安装')
+        from dependency_profiles import status
+        chinese = status(['chinese'])['chinese']
+        self.language_status.setText(('已安装' if chinese['ready'] else '需要下载') + f' · 原始模型 {chinese["bytes"] / 1024**3:.2f} GiB · 支持官方源与加速源')
         if hasattr(self.owner, 'separator_model'):
             self.owner.update_component_state()
 
@@ -119,7 +134,7 @@ class ComponentsPage(QWidget):
         else:
             self.start_install()
 
-    def start_install(self, force=False):
+    def start_install(self, force=False, feature=None):
         if self.busy():
             return
         if hasattr(self.owner, 'storage') and self.owner.storage.busy():
@@ -128,15 +143,16 @@ class ComponentsPage(QWidget):
         if self.owner.runner and self.owner.runner.isRunning():
             self.message.setText('请等待当前音乐任务结束后再安装组件。')
             return
-        self.worker = Installer(self.runtime.currentData(), force, self.source.currentData())
+        self.worker = Installer(feature or self.runtime.currentData(), force, self.source.currentData())
         self.worker.progress.connect(self.update_progress)
-        self.worker.value.connect(lambda value: self.message.setText('安装完成。选择“使用此模型”即可开始处理。'))
+        self.worker.value.connect(lambda value: self.message.setText('中文原始模型已就绪。' if feature else '安装完成。选择“使用此模型”即可开始处理。'))
         self.worker.failed.connect(self.message.setText)
         self.worker.finished.connect(self.finished)
         self.download.setEnabled(False)
         self.runtime.setEnabled(False)
         self.source.setEnabled(False)
         self.more.setEnabled(False)
+        self.language_download.setEnabled(False)
         self.cancel.show()
         self.cancel.setEnabled(True)
         self.progress.show()
@@ -153,6 +169,7 @@ class ComponentsPage(QWidget):
         self.runtime.setEnabled(True)
         self.source.setEnabled(True)
         self.more.setEnabled(True)
+        self.language_download.setEnabled(True)
         self.cancel.hide()
         self.refresh()
 

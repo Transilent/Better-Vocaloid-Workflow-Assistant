@@ -46,6 +46,7 @@ class UpdatesPage(QWidget):
         outer.addWidget(container)
         content = scroll_content(layout)
         body_layout = QVBoxLayout(content)
+        self.body_layout=body_layout
         body_layout.setContentsMargins(0, 0, 0, 0)
         settings, body = card('下载与更新设置')
         config = load_config()
@@ -57,6 +58,14 @@ class UpdatesPage(QWidget):
         self.source.setCurrentIndex(max(0, self.source.findData(config.get('download_source', 'auto'))))
         row.addWidget(self.source, 1)
         body.addLayout(row)
+        row = QHBoxLayout()
+        row.addWidget(label('下载连接数'))
+        self.download_workers = QComboBox()
+        for count in (1,2,4,8): self.download_workers.addItem(str(count),count)
+        self.download_workers.setCurrentIndex(max(0,self.download_workers.findData(config.get('download_workers',4))))
+        row.addWidget(self.download_workers,1)
+        body.addLayout(row)
+        self.download_workers.currentIndexChanged.connect(self.save_settings)
         body.addWidget(label('GitHub 下载支持 GitProxy，Hugging Face 模型支持 HF-Mirror。所有更新文件均校验 SHA-256。', 'muted'))
         self.auto_check = QCheckBox('启动时检查更新')
         self.auto_check.setChecked(config.get('check_for_updates', True))
@@ -148,6 +157,7 @@ class UpdatesPage(QWidget):
     def save_settings(self):
         config = load_config(resolve_paths=False)
         config.update(download_source=self.source.currentData(), check_for_updates=self.auto_check.isChecked(),
+                      download_workers=self.download_workers.currentData(),
                       startup_auto_update=self.auto_download.isChecked(),
                       auto_restart_updates=self.auto_restart.isChecked())
         atomic_json(ROOT / 'config.json', config)

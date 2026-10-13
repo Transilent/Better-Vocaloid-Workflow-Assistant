@@ -1,0 +1,147 @@
+import re
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import List, Dict, Type, Optional
+
+from .ZhG2p import ZhG2p, split_string as zh_split_string
+from .JaG2p import JaG2p
+
+
+class LanguageProcessor(ABC):
+    def __init__(self, language_code: str, allowed_chars: str) -> None:
+        self.language_code = language_code.lower()
+        self._allowed_chars = allowed_chars
+
+    def clean_text(self, text: str) -> str:
+        cleaned = re.sub(rf'[^{self._allowed_chars}]', '', text)
+        return re.sub(r'\s+', ' ', cleaned).strip()
+
+    @abstractmethod
+    def split_text(self, text: str) -> List[str]:
+        pass
+
+    @abstractmethod
+    def get_phonetic_list(self, text_list: List[str]) -> List[str]:
+        pass
+
+
+class ChineseProcessor(LanguageProcessor):
+    _CHINESE_CHAR_RANGE: str = r'[\u4e00-\u9fa5]'
+
+    def __init__(self) -> None:
+        super().__init__('zh', self._CHINESE_CHAR_RANGE)
+        self.g2p: ZhG2p = ZhG2p('mandarin')
+
+    def split_text(self, text: str) -> List[str]:
+        return zh_split_string(text)
+
+    def get_phonetic_list(self, text_list: List[str]) -> List[str]:
+        return self.g2p.convert_list(text_list).split(' ')
+
+
+class EnglishProcessor(LanguageProcessor):
+    _ALLOWED_CHARS: str = r'a-zA-Z0-9\s,.!?;:"\'-'
+
+    def __init__(self) -> None:
+        super().__init__('en', self._ALLOWED_CHARS)
+
+    def split_text(self, text: str) -> List[str]:
+        return zh_split_string(text.lower())
+
+    def get_phonetic_list(self, text_list: List[str]) -> List[str]:
+        return text_list
+
+
+class JapaneseProcessor(LanguageProcessor):
+    def __init__(self, engine: str = "kashi-g2p-onnx", model_dir: Optional[str] = None) -> None:
+        # Japanese text often contains kana/kanji/full-width symbols. We avoid
+        # aggressive regex filtering here and rely on JaG2p frontend analysis.
+        super().__init__('ja', r'.')
+        self.g2p: JaG2p = JaG2p(engine=engine, model_dir=model_dir)
+
+    def clean_text(self, text: str) -> str:
+        # Keep original Japanese content and only normalize whitespace.
+        return re.sub(r'\s+', ' ', text).strip()
+
+    def split_text(self, text: str) -> List[str]:
+        # Keep Japanese display tokens at kana mora level while phonetic alignment
+        # still uses romaji mora tokens for HFA compatibility.
+        if not text:
+            return []
+        return self.g2p.split_kana_no_regex(text)
+
+    def get_phonetic_list(self, text_list: List[str]) -> List[str]:
+        if not text_list:
+            return []
+        return self.g2p.convert_list(text_list, include_tone=False, convert_number=True).split()
+
+    def build_reference_lyric(self, text: str) -> tuple[List[str], List[str]]:
+        """Prepare Japanese reference lyrics as kana moras plus romaji moras.
+
+        One analysis pass derives both lists so they stay index-aligned 1:1 --
+        the aligner indexes the kana list by phonetic position, and per-mora
+        re-conversion used to re-split digraphs (じょ -> ji+yo), silently
+        desynchronizing every kana/romaji pair after the first digraph. See
+        JaG2p.analyze_lyric_text for the full conventions (digraph merging,
+        orthographic は for standalone kana edges, latin words via the model's
+        alnum table).
+        """
+        if not text:
+            return [], []
+        kana_moras, romaji_moras = self.g2p.analyze_lyric_text(text)
+        return kana_moras, romaji_moras
+
+    def split_and_phonetic(self, text: str) -> tuple[List[str], List[str]]:
+        """ASR-side twin of build_reference_lyric: aligned kana + romaji moras.
+
+        Matching compares the ASR phonetics against the reference phonetics,
+        so both sides must follow the same conventions (whole digraphs,
+        orthographic は) or every digraph position pays a spurious alignment
+        penalty.
+        """
+        if not text:
+            return [], []
+        return self.g2p.analyze_lyric_text(text)
+
+
+@dataclass(frozen=True)
+class LyricData:
+    text_list: List[str]
+    phonetic_list: List[str]
+    raw_text: str
+
+
+class CantoneseProcessor(LanguageProcessor):
+    _CHINESE_CHAR_RANGE: str = r'[\u4e00-\u9fa5]'
+
+    def __init__(self) -> None:
+        super().__init__('yue', self._CHINESE_CHAR_RANGE)
+        self.g2p: ZhG2p = ZhG2p('cantonese')
+
+    def split_text(self, text: str) -> List[str]:
+        return zh_split_string(text)
+
+    def get_phonetic_list(self, text_list: List[str]) -> List[str]:
+        return self.g2p.convert_list(text_list, include_tone=False).split(' ')
+
+
+class ProcessorFactory:
+    _PROCESSOR_MAP: Dict[str, Type[LanguageProcessor]] = {
+        'zh': ChineseProcessor,
+        'en': EnglishProcessor,
+        'ja': JapaneseProcessor,
+        'yue': CantoneseProcessor,
+    }
+
+    @classmethod
+    def create_processor(cls, language_code: str, **kwargs) -> LanguageProcessor:
+        code: str = language_code.lower()
+        if code not in cls._PROCESSOR_MAP:
+            raise ValueError(f"Unsupported language: {language_code}")
+        if code == 'ja':
+            return cls._PROCESSOR_MAP[code](**kwargs)
+        return cls._PROCESSOR_MAP[code]()
+
+    @classmethod
+    def get_supported_languages(cls) -> List[str]:
+        return list(cls._PROCESSOR_MAP.keys())

@@ -13,10 +13,11 @@ def _validate_model_paths(cfg: PipelineConfig) -> None:
     """Validate that required model paths exist before starting the pipeline."""
     required_paths = [("GAME 模型目录", cfg.game_model_dir)]
     if cfg.output_lyrics:
-        required_paths.extend([
-            ("HubertFA 模型目录", cfg.hfa_model_dir),
-            ("ASR 模型路径", cfg.asr_model_path),
-        ])
+        required_paths.append(("HubertFA 模型目录", cfg.hfa_model_dir))
+        if cfg.language == 'ja':
+            required_paths.append(("日语 ASR 模型路径", cfg.phoneme_asr_model_path))
+        else:
+            required_paths.append(("ASR 模型路径", cfg.asr_model_path))
 
     errors = []
     for label, path in required_paths:

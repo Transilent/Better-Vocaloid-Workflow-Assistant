@@ -1,16 +1,18 @@
 """Keep native runtime working directories and caches inside Better Vocaloid Workflow Assistant."""
 import os
-import shutil
 import sys
 import tempfile
 from pathlib import Path
 
-from common import ROOT
+from common import ROOT, load_config
 
 
 def configure(root):
     root = Path(root).resolve()
     sys.path.insert(0, str(root))
+    # Both backends use the assistant's one FFmpeg installation.
+    ffmpeg=Path(load_config()['ffmpeg']).parent
+    os.environ['PATH']=str(ffmpeg)+os.pathsep+os.environ.get('PATH','')
     cache = ROOT / "cache/numba"
     cache.mkdir(parents=True, exist_ok=True)
     os.environ["NUMBA_CACHE_DIR"] = str(cache)
@@ -23,25 +25,17 @@ def configure(root):
     os.environ["TMP"] = os.environ["TEMP"] = str(temp)
     # Libraries may have queried tempfile before the runtime was configured.
     tempfile.tempdir = str(temp)
-    # llama.cpp switches its working directory to its bin folder. Use a
-    # Use bundled DLLs so inference paths remain portable.
-    # as the working directory in a restricted executor.
+    # Native libraries are loaded read-only. Share the existing DLL directory
+    # instead of creating another 100 MiB copy for every installation.
     source = root / "inference/qwen3asr_dml/bin"
-    local = ROOT / "cache/qwen-runtime"
-    binary = local / "bin"
-    binary.mkdir(parents=True, exist_ok=True)
-    for file in source.glob("*.dll"):
-        target = binary / file.name
-        if not target.exists() or target.stat().st_size != file.stat().st_size or target.stat().st_mtime < file.stat().st_mtime:
-            shutil.copy2(file, target)
-    license_file = root / "LICENSE"
-    if license_file.exists() and not (local / "Vocal2Midi-LICENSE").exists():
-        shutil.copy2(license_file, local / "Vocal2Midi-LICENSE")
+    if not source.is_dir():
+        source=ROOT/'dependencies/vocal2midi/inference/qwen3asr_dml/bin'
+    binary = source
     os.environ["PATH"] = str(binary) + os.pathsep + os.environ.get("PATH", "")
     # No installed source is changed. The runtime locates DLLs using its
     # module file location, and its model loader accepts absolute paths.
     # An absolute model path also works when the cache and model are on
     # different drives (os.path.relpath cannot handle that case).
     from inference.qwen3asr_dml import llama
-    llama.__file__ = str(local / "llama.py")
+    llama.__file__ = str(source.parent / "llama.py")
     llama.relpath = lambda path, start: str(Path(path).resolve())

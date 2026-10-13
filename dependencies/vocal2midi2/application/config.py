@@ -1,0 +1,135 @@
+"""Pipeline configuration dataclass for Vocal2Midi.
+
+Replaces the 30+ parameter dict/kwargs pattern used between
+GUI -> application -> inference layers.
+"""
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, Optional
+
+SLICE_DURATION_MIN_SEC = 0.0
+SLICE_DURATION_MAX_SEC = 60.0
+DEFAULT_SLICE_MIN_SEC = 5.0
+DEFAULT_SLICE_MAX_SEC = 10.0
+
+
+def validate_slice_bounds(slice_min_sec: float, slice_max_sec: float) -> None:
+    """Validate user-facing slice duration settings."""
+    if not SLICE_DURATION_MIN_SEC <= slice_min_sec <= SLICE_DURATION_MAX_SEC:
+        raise ValueError(
+            f"slice_min_sec must be within {SLICE_DURATION_MIN_SEC:.0f}-{SLICE_DURATION_MAX_SEC:.0f} seconds"
+        )
+    if not SLICE_DURATION_MIN_SEC <= slice_max_sec <= SLICE_DURATION_MAX_SEC:
+        raise ValueError(
+            f"slice_max_sec must be within {SLICE_DURATION_MIN_SEC:.0f}-{SLICE_DURATION_MAX_SEC:.0f} seconds"
+        )
+    if slice_max_sec <= 0:
+        raise ValueError("slice_max_sec must be greater than 0 seconds")
+    if slice_min_sec > slice_max_sec:
+        raise ValueError("slice_min_sec must be less than or equal to slice_max_sec")
+
+
+@dataclass
+class PipelineConfig:
+    """Configuration for the auto-lyric hybrid pipeline.
+
+    Required fields have no default value.
+    Optional fields have sensible defaults matching the GUI.
+    """
+
+    # ── Required ──────────────────────────────────────────────
+    audio_path: str
+    output_filename: str
+    output_dir: Path
+    game_model_dir: str
+    hfa_model_dir: str
+    asr_model_path: str
+    device: str
+    language: str
+    ts: list[float]
+
+    # ── Optional with defaults ────────────────────────────────
+    lyric_output_mode: str = "auto"
+    original_lyrics: str = ""
+    output_formats: list = field(default_factory=lambda: ["mid"])
+    slicing_method: str = "auto"
+    slice_min_sec: float = DEFAULT_SLICE_MIN_SEC
+    slice_max_sec: float = DEFAULT_SLICE_MAX_SEC
+    tempo: float = 120.0
+    quantization_step: int = 0
+    quantization_mode: str = "smart"
+    # Smart-mode rhythmic simplification strength; intentionally fixed at 0
+    # (conservative) — the GUI exposes no control for it.
+    quant_simplicity: float = 0.0
+    pitch_format: str = "name"
+    round_pitch: bool = True
+    seg_threshold: float = 0.2
+    seg_radius: float = 0.02
+    est_threshold: float = 0.2
+    batch_size: int = 1
+    asr_batch_size: int = 2
+    output_lyrics: bool = True
+    rmvpe_model_path: str = ""
+    phoneme_asr_model_path: str = ""
+    pinyin_asr_model_path: str = ""
+    # Direct-phoneme engine selection: "pinyin"|"qwen" for Chinese,
+    # "romaji"|"qwen" for Japanese.
+    chinese_asr_engine: str = "qwen"
+    japanese_asr_engine: str = "romaji"
+    # Forced-alignment engine: "tifa" (default) or "hfa".
+    alignment_engine: str = "tifa"
+    tifa_model_path: str = ""
+    # Japanese G2P engine: "kashi-g2p-onnx" (default) or "pyopenjtalk"
+    japanese_g2p_engine: str = "kashi-g2p-onnx"
+    kashi_g2p_model_path: str = ""
+    output_pitch_curve: bool = False
+    # Runtime handles (like cancel_checker): an optional shared ASR
+    # subprocess session so a batch of jobs reuses one spawned worker
+    # instead of reloading the model per file.
+    asr_session: Optional[object] = None
+    cancel_checker: Optional[Callable[[], bool]] = None
+
+    def to_kwargs(self) -> dict:
+        """Convert to dict for passing to auto_lyric_hybrid_pipeline."""
+        return {
+            "audio_path": self.audio_path,
+            "output_filename": self.output_filename,
+            "output_dir": self.output_dir,
+            "game_model_dir": self.game_model_dir,
+            "hfa_model_dir": self.hfa_model_dir,
+            "asr_model_path": self.asr_model_path,
+            "device": self.device,
+            "language": self.language,
+            "ts": self.ts,
+            "lyric_output_mode": self.lyric_output_mode,
+            "original_lyrics": self.original_lyrics,
+            "output_formats": self.output_formats,
+            "slicing_method": self.slicing_method,
+            "slice_min_sec": self.slice_min_sec,
+            "slice_max_sec": self.slice_max_sec,
+            "tempo": self.tempo,
+            "quantization_step": self.quantization_step,
+            "quantization_mode": self.quantization_mode,
+            "quant_simplicity": self.quant_simplicity,
+            "pitch_format": self.pitch_format,
+            "round_pitch": self.round_pitch,
+            "seg_threshold": self.seg_threshold,
+            "seg_radius": self.seg_radius,
+            "est_threshold": self.est_threshold,
+            "batch_size": self.batch_size,
+            "asr_batch_size": self.asr_batch_size,
+            "output_lyrics": self.output_lyrics,
+            "rmvpe_model_path": self.rmvpe_model_path,
+            "phoneme_asr_model_path": self.phoneme_asr_model_path,
+            "pinyin_asr_model_path": self.pinyin_asr_model_path,
+            "chinese_asr_engine": self.chinese_asr_engine,
+            "japanese_asr_engine": self.japanese_asr_engine,
+            "alignment_engine": self.alignment_engine,
+            "tifa_model_path": self.tifa_model_path,
+            "japanese_g2p_engine": self.japanese_g2p_engine,
+            "kashi_g2p_model_path": self.kashi_g2p_model_path,
+            "asr_session": self.asr_session,
+            "output_pitch_curve": self.output_pitch_curve,
+            "cancel_checker": self.cancel_checker,
+        }

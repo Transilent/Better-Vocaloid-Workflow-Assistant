@@ -16,6 +16,28 @@ def clean_path(value):
     return app_path(value)
 
 
+class SourceInfoError(ValueError):
+    """A missing or unreadable publication source that can be selected again."""
+
+
+def read_source_info(job):
+    if job is None or not str(job).strip().strip('"').strip():
+        raise SourceInfoError("请先选择来源任务，或读取本家 BV 资料。")
+    job = clean_path(job)
+    path = job / "source-info.json"
+    if not path.is_file():
+        raise SourceInfoError("来源任务资料不存在，可能已移动或清理。请重新选择任务，或读取本家 BV 资料。")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise SourceInfoError("来源资料无法读取。请重新选择来源任务，或重新读取本家 BV 资料。") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("title"), str):
+        raise SourceInfoError("来源资料格式不完整。请重新选择来源任务，或重新读取本家 BV 资料。")
+    if "owner" in data and not isinstance(data["owner"], dict):
+        raise SourceInfoError("来源资料格式不完整。请重新选择来源任务，或重新读取本家 BV 资料。")
+    return data
+
+
 def inspect_video(path, ffmpeg=None):
     path = clean_path(path)
     if not path.is_file():
@@ -55,11 +77,15 @@ def extract_cover(video, destination, seconds, ffmpeg=None):
 
 
 def source_draft(job):
+    read_source_info(job)
     job = clean_path(job)
     path = job / "发布简介草稿.txt"
-    if not path.is_file() or not (job / "source-info.json").is_file():
-        raise ValueError("这个任务没有来源信息，请选择已完成抓取简介的任务。")
-    return path.read_text(encoding="utf-8-sig")
+    if not path.is_file():
+        raise SourceInfoError("这个来源任务缺少简介草稿。请重新选择已读取资料的任务，或重新读取本家 BV 资料。")
+    try:
+        return path.read_text(encoding="utf-8-sig")
+    except (OSError, ValueError) as exc:
+        raise SourceInfoError("来源简介无法读取。请重新选择来源任务，或重新读取本家 BV 资料。") from exc
 
 
 def validate_content(content, platform):
@@ -112,9 +138,9 @@ def prepare_bilibili_covers(bundle):
 
 def prepare(job, video, content, cover_seconds=20, cover_file=None, parent=None, cover_mode="original"):
     """Snapshot only deliberate inputs; finished video stays in its location."""
+    source_draft(job)
     job = clean_path(job)
     request = json.loads((job / "request.json").read_text(encoding="utf-8"))
-    source_draft(job)
     if not content:
         raise ValueError("至少选择一个发布平台。")
     for platform, fields in content.items():

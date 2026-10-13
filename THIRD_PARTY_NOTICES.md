@@ -2,7 +2,7 @@
 
 [English](THIRD_PARTY_NOTICES.md) | [简体中文](THIRD_PARTY_NOTICES.zh-CN.md) | [README](README.md)
 
-The portable package includes third-party components and model weights. Their original licenses and notices apply to those components; the name Better Vocaloid Workflow Assistant does not replace their ownership or license terms. No project-wide license has been selected for the assistant's original code.
+The portable package includes third-party components and model weights. Their original licenses and notices apply to those components; the name Better Vocaloid Workflow Assistant does not replace their ownership or license terms. The assistant’s original source is licensed under MIT; this does not relicense third-party components or weights.
 
 | Component | Source / notice |
 | --- | --- |
@@ -22,3 +22,7 @@ The original model directories and bundled libraries retain upstream materials. 
 The sidebar/card layout draws design inspiration from [Pymss Studio](https://github.com/pymss-project/pymss-studio). The assistant's Qt layout and SVG controls are original; Studio's frontend code and assets are not bundled.
 
 The base archive excludes the optional BS-RoFormer payload as well as browser profiles, cookies, saved sessions, source songs, videos, covers, generated MIDI, and user publication drafts. Third-party redistribution terms apply to their corresponding components in the binary package.
+
+LibreSVIP 2.9.2 core and its dependencies reside in `dependencies/export`, with package licenses and metadata retained; its desktop GUI is not included. Vocal2Midi 2.0 application/inference code resides in `dependencies/vocal2midi2`, reusing existing models and Python, with Apache-2.0 LICENSE, NOTICE and acknowledgements preserved. The assistant bounds Japanese HFA boundary repairs to 150 ms gaps to keep longer pauses separate. NetEase lookup is an independently implemented public API client; 163MusicLyrics is a behavioral reference, without copied or bundled application code. The compact card layout references the supplied MaaEnd screenshot; the Qt implementation is original.
+
+Integration patches also scope original model-path checks by language and apply shared DirectML adapter/CPU-thread preferences. Original model weights are unchanged. Unused upstream GUI modules and Qt facilities are omitted from the headless assistant runtime; retained package license metadata remains included.

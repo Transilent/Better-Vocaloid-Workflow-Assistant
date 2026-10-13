@@ -120,6 +120,10 @@ class QwenAudioEncoder:
         self.verbose = verbose
 
         sess_opts = ort.SessionOptions()
+
+        from inference.device_utils import configure_onnx_threads
+
+        configure_onnx_threads(sess_opts)
         sess_opts.log_severity_level = 3
         sess_opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
         sess_opts.add_session_config_entry("session.inter_op.allow_spinning", "0")

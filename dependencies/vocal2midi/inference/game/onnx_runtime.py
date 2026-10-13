@@ -31,6 +31,8 @@ class GameOnnxModel:
 
     def _load_sessions(self, providers: list[str]) -> dict[str, ort.InferenceSession]:
         sess_options = ort.SessionOptions()
+        from inference.device_utils import configure_onnx_threads
+        configure_onnx_threads(sess_options)
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         sess_options.enable_mem_pattern = False
         sess_options.enable_cpu_mem_arena = False

@@ -40,6 +40,16 @@ dependencies/vocal2midi/experiments/
 /vendor/
 /models/
 /dependencies/optional/
+/dependencies/export/
+# Keep the adapted headless backend reviewable; large assets and local settings
+# stay outside source control. Binary patterns above apply inside these folders.
+/dependencies/vocal2midi2/*
+!/dependencies/vocal2midi2/application/
+!/dependencies/vocal2midi2/inference/
+!/dependencies/vocal2midi2/backend-version.json
+!/dependencies/vocal2midi2/ACKNOWLEDGEMENTS.md
+!/dependencies/vocal2midi2/LICENSE
+!/dependencies/vocal2midi2/NOTICE
 
 # Generated development layout; canonical sources are in src/ and packaging/.
 /*.py

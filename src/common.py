@@ -4,11 +4,15 @@ import hashlib
 import re
 import unicodedata
 import urllib.request
+import threading
+import weakref
 from functools import lru_cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 BV_PATTERN = re.compile(r"(?<![A-Za-z0-9])BV1[A-Za-z0-9]{9}(?![A-Za-z0-9])")
+_ATOMIC_LOCKS = weakref.WeakValueDictionary()
+_ATOMIC_GUARD = threading.Lock()
 
 
 TOOL_PATHS = ("python", "vocal2midi", "ffmpeg", "mdx_model", "mdx_metadata",
@@ -112,12 +116,15 @@ def job_directories():
     except (OSError, ValueError):
         pass
     jobs = set()
+    import os
     for directory in roots:
         try:
-            jobs.update(p.resolve() for p in directory.iterdir()
-                        if p.is_dir() and not p.is_symlink()
-                        and not getattr(p.lstat(), 'st_file_attributes', 0) & 1024
-                        and (p / 'request.json').is_file())
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if (entry.is_dir(follow_symlinks=False) and not entry.is_symlink()
+                            and not getattr(entry.stat(follow_symlinks=False), 'st_file_attributes', 0) & 1024
+                            and (Path(entry.path) / 'request.json').is_file()):
+                        jobs.add(Path(entry.path).absolute())
         except OSError:
             continue
     return sorted(jobs, key=lambda p: p.name, reverse=True)
@@ -148,6 +155,31 @@ def resolve_tools(tools):
     return result
 
 
+def preserve_changed_file(job, path, expected_sha256=None, replacement_sha256=None):
+    """Keep edits before regenerating an output; intact generated files need no copy."""
+    import datetime as dt
+    import shutil
+    import uuid
+    from task_store import checked_tree
+    job, path = Path(job).resolve(), Path(path).absolute()
+    checked_tree(path, job)
+    if not path.is_file() or path.stat().st_size == 0:
+        return None
+    current = file_hash(path)
+    if current in (expected_sha256, replacement_sha256):
+        return None
+    stamp = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime('%y%m%d-%H%M%S')
+    backup = job/'backups'/(stamp+'-'+uuid.uuid4().hex[:6]+'_'+path.stem[:60]+path.suffix)
+    checked_tree(backup, job)
+    backup.parent.mkdir(parents=True,exist_ok=True)
+    shutil.copy2(path, backup)
+    if file_hash(backup) != current or file_hash(path) != current:
+        raise OSError('备份期间文件发生变化，请重试：'+path.name)
+    relative = backup.relative_to(job).as_posix()
+    print('已保留原文件：'+relative,flush=True)
+    return relative
+
+
 def extract_bv(text):
     ids = list(dict.fromkeys(BV_PATTERN.findall(text)))
     if len(ids) != 1:
@@ -165,9 +197,38 @@ def clean_lyrics(text):
 def atomic_json(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp.replace(path)
+    key = str(path.absolute()).casefold()
+    with _ATOMIC_GUARD:
+        lock = _ATOMIC_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _ATOMIC_LOCKS[key] = lock
+    with lock:
+        _write_json(path, data)
+
+
+def _write_json(path, data):
+    import os
+    import tempfile
+    import time
+    # Concurrent progress writers must not share a temporary filename.
+    name = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                         prefix=path.name + '.', suffix='.tmp', delete=False) as stream:
+            name = stream.name
+            json.dump(data, stream, ensure_ascii=False, indent=2)
+        for attempt in range(6):
+            try:
+                os.replace(name, path)
+                break
+            except OSError as error:
+                if os.name != 'nt' or getattr(error, 'winerror', None) not in (5, 32, 33) or attempt == 5:
+                    raise
+                time.sleep(.01 * 2**attempt)
+    finally:
+        if name:
+            Path(name).unlink(missing_ok=True)
 
 
 def cancelled(job):
@@ -183,7 +244,7 @@ def file_hash(path):
     return digest.hexdigest()
 
 
-def midi_signature(job, request, voice):
+def legacy_midi_signature(job, request, voice):
     """Bind a completed voice to its audio and extraction parameters."""
     settings = Path(resolve_tools(request["tools"])["vocal2midi"]) / "settings/vocal2midi.ini"
     data = {"adapter_version": 4, "audio": file_hash(Path(job) / "audio" / (voice + ".wav")),
@@ -191,17 +252,34 @@ def midi_signature(job, request, voice):
             "lyrics": request.get("backing_lyrics", "") if voice == "backing" else request.get("lyrics", ""),
             "recognize_lyrics": request.get("recognize_lyrics", True),
             "midi_steps": request.get("midi_steps"), "tools": request["tools"],
-            "settings": file_hash(settings)}
+            "settings": file_hash(settings) if settings.is_file() else None}
+    if request.get('midi_backend') == 'v2' or request.get('project_formats'):
+        data.update(adapter_version=5, project_formats=request.get('project_formats',[]),
+                    export_pitch=request.get('export_pitch',False),alignment_engine=request.get('alignment_engine','hfa'))
     if request['language'] == 'zh' and 'zh_lyric_mode' in request:
         data['zh_lyric_mode'] = request['zh_lyric_mode']
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def midi_signature(job, request, voice):
+    from artifact_cache import fingerprint, inference_inputs
+    return fingerprint(inference_inputs(job, request, voice))
 
 
 def completed_voice(job, request, voice):
     folder = Path(job) / "midi" if voice == "vocals" else Path(job) / "midi" / voice
     try:
         report = json.loads((folder / "report.json").read_text(encoding="utf-8"))
-        return (report.get("input_signature") == midi_signature(job, request, voice)
-                and report.get("midi_sha256") == file_hash(folder / (voice + ".mid")))
+        if request.get('project_formats'):
+            for suffix in (('ustx','vsqx') if request.get('midi_backend')=='v2' else ('ustx',)):
+                artifact = folder / (voice + '.' + suffix)
+                if not artifact.is_file() or artifact.stat().st_size == 0:
+                    return False
+                if report.get('native_sha256',{}).get(suffix) not in (None,file_hash(artifact)):
+                    return False
+        matches = report.get('input_signature') == midi_signature(job, request, voice)
+        if not matches and 'cache_schema' not in report:
+            matches = report.get('input_signature') == legacy_midi_signature(job, request, voice)
+        return matches and report.get("midi_sha256") == file_hash(folder / (voice + ".mid"))
     except (OSError, ValueError, KeyError):
         return False

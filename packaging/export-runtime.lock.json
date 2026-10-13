@@ -1,0 +1,352 @@
+{
+  "libresvip": "2.9.2",
+  "sources": [
+    "https://pypi.org/simple",
+    "https://www.piwheels.org/simple"
+  ],
+  "packages": [
+    {
+      "name": "annotated-types",
+      "version": "0.8.0",
+      "wheel": "annotated_types-0.8.0-py3-none-any.whl",
+      "bytes": 13427,
+      "sha256": "f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0"
+    },
+    {
+      "name": "arrow",
+      "version": "1.4.0",
+      "wheel": "arrow-1.4.0-py3-none-any.whl",
+      "bytes": 68797,
+      "sha256": "749f0769958ebdc79c173ff0b0670d59051a535fa26e8eba02953dc19eb43205"
+    },
+    {
+      "name": "backports.zstd",
+      "version": "1.7.0",
+      "wheel": "backports_zstd-1.7.0-cp312-cp312-win_amd64.whl",
+      "bytes": 329876,
+      "sha256": "2ea62ba2f1a6e6c9e6dc108921f9ae881969ca72e073162fa488d0de3eb2713f"
+    },
+    {
+      "name": "bidict",
+      "version": "0.24.1",
+      "wheel": "bidict-0.24.1-py3-none-any.whl",
+      "bytes": 36173,
+      "sha256": "92b4319fb3e7ed7725603f8cf280961efab658928cfd48f0318693495ad6d7ce"
+    },
+    {
+      "name": "cbor2",
+      "version": "6.1.5",
+      "wheel": "cbor2-6.1.5-cp312-cp312-win_amd64.whl",
+      "bytes": 304308,
+      "sha256": "9677ce1c3c0cb1fa5a4f721a127fc2cc06e8efc43ee8e5f94e292186d6b51953"
+    },
+    {
+      "name": "charset-normalizer",
+      "version": "3.5.2",
+      "wheel": "charset_normalizer-3.5.2-cp312-cp312-win_amd64.whl",
+      "bytes": 207486,
+      "sha256": "780fbe7cab297b81dad9fb8dc5eb003c0468ffb0d9e5f65068c53a34661a96bc"
+    },
+    {
+      "name": "colorama",
+      "version": "0.4.6",
+      "wheel": "colorama-0.4.6-py2.py3-none-any.whl",
+      "bytes": 25335,
+      "sha256": "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6"
+    },
+    {
+      "name": "construct",
+      "version": "2.10.70",
+      "wheel": "construct-2.10.70-py3-none-any.whl",
+      "bytes": 63021,
+      "sha256": "cbb962d36274c9b667a9b47ff29da0c20e2eb59f35f278c1ea5ec13880d6723e"
+    },
+    {
+      "name": "construct-typing",
+      "version": "0.8.1",
+      "wheel": "construct_typing-0.8.1-py3-none-any.whl",
+      "bytes": 26727,
+      "sha256": "de58326fcec080cecf6e099168ad76f732a03ece97dbd33c0a15721d0cf4a7f6"
+    },
+    {
+      "name": "fsspec",
+      "version": "2026.9.0",
+      "wheel": "fsspec-2026.9.0-py3-none-any.whl",
+      "bytes": 221738,
+      "sha256": "8dd6e646e99ea382bd85f97a45e6b526a442d79423a7dc673f1e2756d05fcb5f"
+    },
+    {
+      "name": "Jinja2",
+      "version": "3.1.6",
+      "wheel": "jinja2-3.1.6-py3-none-any.whl",
+      "bytes": 134899,
+      "sha256": "fe8571fbbd1ff453eb75ea114f68611e5b3e5b8b018397eeb70573daa35d45ea"
+    },
+    {
+      "name": "jyutping",
+      "version": "0.3.4",
+      "wheel": "jyutping-0.3.4-py2.py3-none-any.whl",
+      "bytes": 39220,
+      "sha256": "6c6ceffbcee26bc13ea68ebe3a3982e3d57630ec5cac286344f4ea193ae6ef03"
+    },
+    {
+      "name": "ko-pron",
+      "version": "1.3",
+      "wheel": "ko_pron-1.3-py3-none-any.whl",
+      "bytes": 12531,
+      "sha256": "72c9ebbdb6c0c5f6981c143cee978158662d12c6302545686a1c4e0fcaad2017"
+    },
+    {
+      "name": "libresvip",
+      "version": "2.9.2",
+      "wheel": "libresvip-2.9.2-py3-none-any.whl",
+      "bytes": 1524918,
+      "sha256": "5f966e11732909b4c9ae2a515405da156f94efc35f18c0ef0f580890fc87dc9b"
+    },
+    {
+      "name": "loguru",
+      "version": "0.7.3",
+      "wheel": "loguru-0.7.3-py3-none-any.whl",
+      "bytes": 61595,
+      "sha256": "31a33c10c8e1e10422bfd431aeb5d351c7cf7fa671e3c4df004162264b28220c"
+    },
+    {
+      "name": "MarkupSafe",
+      "version": "3.0.4",
+      "wheel": "markupsafe-3.0.4-cp312-cp312-win_amd64.whl",
+      "bytes": 14303,
+      "sha256": "11935df9bf455ed0c04eb87bcd720f02b1fe5e02128a9430f23aed6f93336fc7"
+    },
+    {
+      "name": "more-itertools",
+      "version": "11.1.0",
+      "wheel": "more_itertools-11.1.0-py3-none-any.whl",
+      "bytes": 72226,
+      "sha256": "0599d66e4a01997581178d874230b8408a2de4834788d69a791e071c529cce72"
+    },
+    {
+      "name": "packaging",
+      "version": "26.3",
+      "wheel": "packaging-26.3-py3-none-any.whl",
+      "bytes": 129967,
+      "sha256": "414c46fcfb5f98edc3e3139a1f1d780e01cf76995b072f11975c665fcc57de83"
+    },
+    {
+      "name": "pathlib_abc",
+      "version": "0.5.2",
+      "wheel": "pathlib_abc-0.5.2-py3-none-any.whl",
+      "bytes": 19070,
+      "sha256": "e39feacb986ccae71d0092aac3220dec6d3e8ef1829d0a34344cf1af86d24e7b"
+    },
+    {
+      "name": "platformdirs",
+      "version": "4.13.0",
+      "wheel": "platformdirs-4.13.0-py3-none-any.whl",
+      "bytes": 32724,
+      "sha256": "3dbcf4cd708f21cf876c4eaa90e58412bc4f033d87143f41b1493ff77c25b7e1"
+    },
+    {
+      "name": "portion",
+      "version": "2.6.3",
+      "wheel": "portion-2.6.3-py3-none-any.whl",
+      "bytes": 28491,
+      "sha256": "9f5a26de92ff1241c7ba7ab23da0b544e67308187100681512871a50d6d206f1"
+    },
+    {
+      "name": "protobuf-py",
+      "version": "0.6.0",
+      "wheel": "protobuf_py-0.6.0-py3-none-any.whl",
+      "bytes": 216054,
+      "sha256": "2aba52a2d017487901cb4b8a7983e64a7bd369128c2ca86cafa4dd03da31012e"
+    },
+    {
+      "name": "protobuf-py-ext",
+      "version": "0.6.0",
+      "wheel": "protobuf_py_ext-0.6.0-cp311-abi3-win_amd64.whl",
+      "bytes": 440643,
+      "sha256": "b5be43ebf9ec28aa7e3734bf07c0ea4ae50c2e7554b9299ea08433549052e8d2"
+    },
+    {
+      "name": "pydantic",
+      "version": "2.14.1",
+      "wheel": "pydantic-2.14.1-py3-none-any.whl",
+      "bytes": 488106,
+      "sha256": "9195d967ec791692a04438115466764fb8b9a27b31f14a760437694f40d6b454"
+    },
+    {
+      "name": "pydantic_core",
+      "version": "2.50.1",
+      "wheel": "pydantic_core-2.50.1-cp312-cp312-win_amd64.whl",
+      "bytes": 2172522,
+      "sha256": "132529c83901437ff642f585216831bf5fd7a91df66829907e155192ead62498"
+    },
+    {
+      "name": "pydantic-extra-types",
+      "version": "2.11.1",
+      "wheel": "pydantic_extra_types-2.11.1-py3-none-any.whl",
+      "bytes": 79526,
+      "sha256": "1722ea2bddae5628ace25f2aa685b69978ef533123e5638cfbddb999e0100ec1"
+    },
+    {
+      "name": "pydantic-settings",
+      "version": "2.15.0",
+      "wheel": "pydantic_settings-2.15.0-py3-none-any.whl",
+      "bytes": 69413,
+      "sha256": "0ba092c291c94baceb5eff768aa0d56400a457585bc0175925a5a5510303da42"
+    },
+    {
+      "name": "pymediainfo",
+      "version": "7.0.1",
+      "wheel": "pymediainfo-7.0.1-py3-none-win_amd64.whl",
+      "bytes": 3271232,
+      "sha256": "13224fa7590e198763b8baf072e704ea81d334e71aa32a469091460e243893c7"
+    },
+    {
+      "name": "pypinyin",
+      "version": "0.55.0",
+      "wheel": "pypinyin-0.55.0-py2.py3-none-any.whl",
+      "bytes": 840202,
+      "sha256": "2f1c34b897560cff29d0f4f16838557c5c5b6892879982701fd8b9e909e493f2"
+    },
+    {
+      "name": "pysubs2",
+      "version": "1.9.0",
+      "wheel": "pysubs2-1.9.0-py3-none-any.whl",
+      "bytes": 48175,
+      "sha256": "83f1979cb7e064294f0c8473ef672ca2e5c0a7172bbf8ae9b4337899d5cdf01f"
+    },
+    {
+      "name": "python-dateutil",
+      "version": "2.9.0.post0",
+      "wheel": "python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+      "bytes": 229892,
+      "sha256": "5d23f9d7e398684c7dac22b46a93fb71de568cfdcd004512f7072819e41ef54c"
+    },
+    {
+      "name": "python-dotenv",
+      "version": "1.2.4",
+      "wheel": "python_dotenv-1.2.4-py3-none-any.whl",
+      "bytes": 23266,
+      "sha256": "a2746a25cfa0b90b2780637cd9fa150cf96ea3b689c900b4a19184a32ace681a"
+    },
+    {
+      "name": "PyYAML",
+      "version": "6.0.3",
+      "wheel": "pyyaml-6.0.3-cp312-cp312-win_amd64.whl",
+      "bytes": 154003,
+      "sha256": "5fcd34e47f6e0b794d17de1b4ff496c00986e1c83f7ab2fb8fcfe9616ff7477b"
+    },
+    {
+      "name": "retrie",
+      "version": "0.3.1",
+      "wheel": "retrie-0.3.1-py3-none-any.whl",
+      "bytes": 9463,
+      "sha256": "da74a1ae41e860c7b2e8cb4e9cd15c124dc68503c83fdce677a142458b79a85c"
+    },
+    {
+      "name": "ruamel.yaml",
+      "version": "0.19.1",
+      "wheel": "ruamel_yaml-0.19.1-py3-none-any.whl",
+      "bytes": 118102,
+      "sha256": "40fd4f73376a0b0f7b2112cb212658bedb0fb9750d3154e9a24290fc3d223119"
+    },
+    {
+      "name": "six",
+      "version": "1.17.0",
+      "wheel": "six-1.17.0-py2.py3-none-any.whl",
+      "bytes": 11050,
+      "sha256": "cb514bebb7be30e172d571b0e5035990437dd202f3c9f6e911d9406254151b92"
+    },
+    {
+      "name": "sortedcontainers",
+      "version": "2.4.0",
+      "wheel": "sortedcontainers-2.4.0-py2.py3-none-any.whl",
+      "bytes": 29575,
+      "sha256": "a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0"
+    },
+    {
+      "name": "svg.py",
+      "version": "1.10.0",
+      "wheel": "svg_py-1.10.0-py3-none-any.whl",
+      "bytes": 15243,
+      "sha256": "9ec1f8085c387805d3224b9e3d034dc831d4ea3e0d9e234083f3834999405cac"
+    },
+    {
+      "name": "TatSu-LTS",
+      "version": "5.16.0",
+      "wheel": "tatsu_lts-5.16.0-py3-none-any.whl",
+      "bytes": 82963,
+      "sha256": "43b21f741a8d1b03148e84294aa6867ab0607f9c3325d93df8b0cf3ad8ece74b"
+    },
+    {
+      "name": "that-depends",
+      "version": "4.2.0",
+      "wheel": "that_depends-4.2.0-py3-none-any.whl",
+      "bytes": 46949,
+      "sha256": "535b8f084188933522c8dc38831852a88f27b57e0c9ce524f4632210ec0e17af"
+    },
+    {
+      "name": "typing_extensions",
+      "version": "4.16.0",
+      "wheel": "typing_extensions-4.16.0-py3-none-any.whl",
+      "bytes": 45571,
+      "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"
+    },
+    {
+      "name": "typing-inspection",
+      "version": "0.4.4",
+      "wheel": "typing_inspection-0.4.4-py3-none-any.whl",
+      "bytes": 14750,
+      "sha256": "65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147"
+    },
+    {
+      "name": "tzdata",
+      "version": "2026.5",
+      "wheel": "tzdata-2026.5-py2.py3-none-any.whl",
+      "bytes": 347996,
+      "sha256": "50f9600ad318dbf2f6560fb7e49581c356df7080c8cc7fe730e03ffc556a1346"
+    },
+    {
+      "name": "universal_pathlib",
+      "version": "0.3.10",
+      "wheel": "universal_pathlib-0.3.10-py3-none-any.whl",
+      "bytes": 83528,
+      "sha256": "dfff6163a29f4a8a021f66cf19aa6f198ba882788445db6e656d6045583dffee"
+    },
+    {
+      "name": "wanakana-python",
+      "version": "1.2.2",
+      "wheel": "wanakana_python-1.2.2-py3-none-any.whl",
+      "bytes": 20961,
+      "sha256": "ec16d1cdd66a8bf80304a46707a5860a887dfa86166c75c8272829bbb09210d8"
+    },
+    {
+      "name": "win32_setctime",
+      "version": "1.2.0",
+      "wheel": "win32_setctime-1.2.0-py3-none-any.whl",
+      "bytes": 4090,
+      "sha256": "418e750701b8f8f123a36c4361b114cc3d92569da2485c240850f0e562790f89"
+    },
+    {
+      "name": "xsdata",
+      "version": "26.2",
+      "wheel": "xsdata-26.2-py3-none-any.whl",
+      "bytes": 235561,
+      "sha256": "625f08453aada79c7f3a2e30cbd27207009675cdb74ac50c07fbc334aaff015c"
+    },
+    {
+      "name": "xsdata_pydantic",
+      "version": "24.5",
+      "wheel": "xsdata_pydantic-24.5-py3-none-any.whl",
+      "bytes": 8891,
+      "sha256": "acd80c7fc0c523aeaf05cc7c2102bba5a1d2e6f92c48c5f785cfe08b35e4900e"
+    },
+    {
+      "name": "zhon",
+      "version": "2.1.1",
+      "wheel": "zhon-2.1.1-py3-none-any.whl",
+      "bytes": 83933,
+      "sha256": "9ec0d42229ae60708a045270f755ccefb48f2689f2a6ce0bc6597abf6c4a9871"
+    }
+  ]
+}

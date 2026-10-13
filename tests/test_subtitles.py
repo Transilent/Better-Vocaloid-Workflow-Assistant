@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP))
-from subtitles import Cue, lrc, plain, timed_csv, midi_cues, render, load
+from subtitles import Cue, lrc, timed_csv, midi_cues, render, load
 import mido
 
 cues = lrc('[ar:作者]\n[offset:-500]\n[00:01.00]你好\n[00:02.00][00:04.00]世界\n[00:03.00]\n[00:06.000]終わり')
@@ -14,9 +14,8 @@ assert lrc('[00:01]<00:01.1>あ<00:01.3>い')[0].text == 'あい'
 assert render([Cue(0,1.234,'你好')]).startswith('1\n00:00:00,000 --> 00:00:01,234\n你好')
 assert render([Cue(0,1,'a')],'vtt',.5).startswith('WEBVTT\n\n1\n00:00:00.500')
 assert '00:00:00,000 --> 00:00:00,500' in render([Cue(0,1,'a')],offset=-.5)
-assert plain('一\n\n二',10)[1] == Cue(5,10,'二')
 assert timed_csv('start,end,text\n1,2,你好')[0].start == 1
-for function in (lambda: lrc('[00:99]bad'), lambda: plain('a',0), lambda: render([Cue(2,1,'bad')]),
+for function in (lambda: lrc('[00:99]bad'), lambda: render([Cue(2,1,'bad')]),
                  lambda: render([Cue(0,1,'a')],offset=-2), lambda: render([Cue(float('nan'),1,'a')])):
     try:
         function()
@@ -35,4 +34,11 @@ with tempfile.TemporaryDirectory(dir=APP/'work',prefix='subtitle-') as folder:
     textfile = Path(folder)/'lyrics.lrc'
     textfile.write_text('[00:01.00]你好',encoding='utf-8-sig')
     assert load(textfile)[0][0].text == '你好'
-print('PASS: LRC metadata/repeated/empty/enhanced timestamps, SRT/VTT, plain-text estimate, Unicode MIDI tempo map')
+    untimed=Path(folder)/'lyrics.txt'
+    untimed.write_text('一\n二',encoding='utf-8')
+    try:
+        load(untimed)
+        raise AssertionError('Untimed text was given invented subtitle timestamps')
+    except ValueError as exc:
+        assert '时间轴' in str(exc)
+print('PASS: existing timestamps, SRT/VTT, rejection of untimed text, Unicode MIDI tempo map')

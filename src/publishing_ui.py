@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QLabe
                             QDoubleSpinBox, QTextEdit, QCheckBox, QFileDialog, QMessageBox, QTabWidget,
                             QScrollArea, QComboBox)
 from common import ROOT, atomic_json, load_config, saved_path
-from publication import source_draft, clean_path, extract_cover, prepare
+from publication import SourceInfoError, read_source_info, source_draft, clean_path, extract_cover, prepare
 
 
 class Task(QThread):
@@ -48,6 +48,7 @@ class PublishingTab(QWidget):
         self.processes = {}
         self.log_streams = {}
         self.fields = {}
+        self.cover_stamp=None
         from publishing_layout import build
         build(self)
         self.timer = QTimer(self)
@@ -58,27 +59,135 @@ class PublishingTab(QWidget):
         if settings_path.exists():
             try:
                 settings = json.loads(settings_path.read_text(encoding="utf-8"))
+                if not isinstance(settings, dict):
+                    raise ValueError("发布设置格式无效。")
                 self.video.setText(str(clean_path(settings["video"])) if settings.get("video") else "")
-                self.load_job(settings["job"])
+                if settings.get("job"):
+                    self.load_job(settings["job"])
                 if settings.get("bundle"):
                     self.restore_bundle(settings["bundle"], settings.get("inputs"))
-            except (OSError, ValueError, KeyError):
-                pass
+            except (OSError, ValueError, KeyError) as exc:
+                self.status.setText("上次的发布资料未能恢复，请重新选择来源任务或发布包。")
+                self.log_message(str(exc))
         self.count_text()
+        self.refresh_browser_controls()
 
     def row(self, layout, label, field, button_text, function):
+        from desktop_theme import button as action
         row = QHBoxLayout()
         row.addWidget(QLabel(label))
         row.addWidget(field, 1)
-        button = QPushButton(button_text)
-        button.clicked.connect(function)
-        row.addWidget(button)
+        row.addWidget(action(button_text,function))
         layout.addLayout(row)
 
     def refresh_action(self):
         if hasattr(self, 'prepare_button'):
             ready = self.bundle is not None and self.bundle_inputs == self.input_snapshot()
             self.prepare_button.setText('上传所选平台' if ready else '生成发布资料')
+            self.refresh_review()
+
+    def refresh_review(self):
+        if not hasattr(self,'review'): return
+        platforms=['B站' if name=='bilibili' else '小红书' for name in self.content()]
+        self.review.setText('成品：'+(Path(self.video.text()).name or '未选择')+'\n封面：'+self.cover_mode.currentText()+
+                            '\n平台：'+('、'.join(platforms) or '未选择')+'\n资料：'+
+                            ('已生成，可上传' if self.bundle is not None and self.bundle_inputs==self.input_snapshot() else '需要生成发布资料'))
+
+    def select_step(self,index):
+        self.workspace.select(index)
+
+    def step_changed(self,index):
+        self.workspace.next.setVisible(index<3)
+        self.prepare_button.setVisible(index==3)
+        if index==1: self.cached_cover_preview()
+        if index==3: self.refresh_review()
+
+    def next_step(self):
+        index=self.workspace.stack.currentIndex()
+        if index not in (0, 1, 2) or self.busy():
+            return
+        try:
+            self.validate_inputs(index)
+            self.workspace.select(index+1)
+            if self.workspace.stack.currentIndex()==index+1:
+                self.status.setText('检查'+self.workspace.titles[index+1]+'，完成后继续下一步。' if index<2 else '资料检查完成，可生成发布资料并上传。')
+        except (OSError,ValueError) as exc:
+            self.status.setText(str(exc))
+
+    def selected_source(self):
+        data = read_source_info(self.job.text())
+        source_draft(self.job.text())
+        return clean_path(self.job.text()), data
+
+    def validate_inputs(self, through):
+        """Recheck prerequisites even when the user navigates by step number."""
+        try:
+            if not self.video.text().strip() or not clean_path(self.video.text()).is_file():
+                self.video.setFocus()
+                raise ValueError("请先选择存在的成品视频。")
+            source = self.selected_source()
+        except (OSError, ValueError):
+            self.workspace.select(0)
+            raise
+        if through >= 1:
+            try:
+                self.validate_cover_choice(source)
+            except (OSError, ValueError):
+                self.workspace.select(1)
+                raise
+        if through >= 2:
+            from publication import validate_content
+            try:
+                if not self.content():
+                    raise ValueError("请至少选择一个发布平台。")
+                for platform, content in self.content().items():
+                    validate_content(content, platform)
+            except ValueError:
+                self.workspace.select(2)
+                raise
+
+    def validate_cover_choice(self, source=None):
+        mode=self.cover_mode.currentData()
+        if mode=='custom':
+            if not self.cover_file.text().strip() or not clean_path(self.cover_file.text()).is_file():
+                raise ValueError('请先选择封面图片。')
+            if QPixmap(str(clean_path(self.cover_file.text()))).isNull(): raise ValueError('封面图片无法读取，请选择其他图片。')
+        else:
+            job, data = source if source is not None else self.selected_source()
+            if mode=='frame' and not (job/'video/source.mp4').is_file():
+                if not data.get('bvid'): raise ValueError('来源任务没有原视频，请选择自选图片或本家封面。')
+            if mode=='original':
+                if not data.get('bvid') and not (job/'original-cover.json').is_file():
+                    raise ValueError('本地任务没有本家封面，请读取本家资料或选择自选图片。')
+
+    def cover_key(self):
+        return (self.job.text(),self.cover_mode.currentData(),self.cover_file.text(),self.cover_seconds.value())
+
+    def invalidate_cover_preview(self,*args):
+        if not hasattr(self,'cover_preview'): return
+        self.cover_stamp=None
+        self.cover_preview.clear()
+        self.cover_preview.setText('封面设置已改变，点击获取 / 刷新预览。')
+        self.cover_detail.setText('预览按原图比例显示。')
+
+    def update_cover_options(self):
+        mode=self.cover_mode.currentData()
+        self.frame_panel.setVisible(mode=='frame')
+        self.cover_seconds.setEnabled(mode=='frame')
+        self.custom_cover_panel.setVisible(mode=='custom')
+        self.invalidate_cover_preview()
+        if hasattr(self,'workspace') and self.workspace.stack.currentIndex()==1: self.cached_cover_preview()
+
+    def cached_cover_preview(self):
+        if self.cover_stamp==self.cover_key(): return
+        try:
+            if self.cover_mode.currentData()=='custom' and self.cover_file.text().strip():
+                self.show_cover(clean_path(self.cover_file.text()))
+            elif self.cover_mode.currentData()=='original' and self.job.text().strip():
+                job=clean_path(self.job.text())
+                info=json.loads((job/'original-cover.json').read_text(encoding='utf-8'))
+                self.show_cover(job/Path(info['file']).name)
+        except (OSError,ValueError,KeyError): pass
 
     def primary_action(self):
         if self.busy():
@@ -89,14 +198,14 @@ class PublishingTab(QWidget):
             self.prepare_bundle()
 
     def load_job(self, job):
+        data = read_source_info(job)
         path = clean_path(job)
         draft = source_draft(path)
-        data = json.loads((path / "source-info.json").read_text(encoding="utf-8"))
         self.job.setText(str(path))
         self.bv.setText(data.get("bvid") or "")
         self.song.setText(song_from_title(data["title"]))
         self.source_info.setText(f"本地音乐：{data['title']} · 本家、歌姬和 STAFF 请手填" if data.get("kind") == "local" else
-                                f"本家：{data['bvid']} / @{data['owner']['name']} / {data['title']}（约 {data.get('duration', '?')} 秒）")
+                                f"本家：{data.get('bvid') or '未提供'} / @{data.get('owner', {}).get('name', '')} / {data['title']}（约 {data.get('duration', '?')} 秒）")
         self.voice.clear()
         self.credit.clear()
         for fields in self.fields.values():
@@ -151,6 +260,9 @@ class PublishingTab(QWidget):
         for platform, fields in self.fields.items():
             a, b = (80, 2000) if platform == "bilibili" else (20, 1000)
             fields["counter"].setText(f"标题 {len(fields['title'].text())}/{a} 字 · 简介 {len(fields['description'].toPlainText())}/{b} 字；超长时请编辑，助手不会自动删去 STAFF。")
+            role='error' if len(fields['title'].text())>a or len(fields['description'].toPlainText())>b else 'muted'
+            fields['counter'].setProperty('role',role)
+            fields['counter'].style().unpolish(fields['counter']);fields['counter'].style().polish(fields['counter'])
 
     def apply_title(self):
         name = self.voice.text().strip()
@@ -185,8 +297,10 @@ class PublishingTab(QWidget):
 
     def set_busy(self, active):
         self.form_panel.setEnabled(not active)
+        self.workspace.set_locked(active)
         for button in (self.fetch, self.prepare_button, self.cover_button):
             button.setEnabled(not active)
+        if not active: self.refresh_browser_controls()
 
     def task_error(self, text):
         self.status.setText(text)
@@ -204,19 +318,31 @@ class PublishingTab(QWidget):
         def fetch():
             from pipeline import create_job, run
             job = create_job(source, parent=output_parent, remember=False)
-            run(job, until="audio")
+            run(job, until="metadata")
+            from cover_art import job_cover
+            job_cover(job)
             return job
         def ready(path):
             from common import save_output_directory
             save_output_directory(path.parent)
             self.load_job(path)
-            self.status.setText("本家资料、原视频与封面已准备。此操作不重新提取 MIDI。")
+            self.status.setText("本家简介与原封面已准备。选择视频截帧时会另行下载原视频。")
         self.start_task(fetch, ready)
 
     def preview_cover(self):
-        job = clean_path(self.job.text())
+        try:
+            self.validate_cover_choice()
+        except SourceInfoError as exc:
+            self.workspace.select(0)
+            self.task_error(str(exc))
+            return
+        except (OSError, ValueError) as exc:
+            self.workspace.select(1)
+            self.task_error(str(exc))
+            return
         seconds = self.cover_seconds.value()
         mode = self.cover_mode.currentData()
+        job = None if mode == "custom" else clean_path(self.job.text())
         destination = ROOT / "cache/publish-preview.jpg"
         def render():
             if mode == "custom":
@@ -227,7 +353,8 @@ class PublishingTab(QWidget):
             if mode == "original":
                 from cover_art import job_cover
                 return job_cover(job)[0]
-            extract_cover(job / "video/source.mp4", destination, seconds)
+            from pipeline import ensure_source_video
+            extract_cover(ensure_source_video(job), destination, seconds)
             return destination
         def ready(path):
             self.show_cover(path)
@@ -238,13 +365,23 @@ class PublishingTab(QWidget):
     def show_cover(self, path):
         pixmap = QPixmap(str(path))
         if not pixmap.isNull():
-            self.cover_preview.setPixmap(pixmap.scaled(390, 180, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.cover_preview.setPixmap(pixmap)
+            self.cover_stamp=self.cover_key()
+            self.cover_detail.setText(f'原图 {pixmap.width()} × {pixmap.height()} · 完整预览，保留原比例')
+        else:
+            self.cover_preview.clear();self.cover_preview.setText('封面图片无法读取。')
+            self.cover_stamp=None
 
     def content(self):
         return {platform: {"title": fields["title"].text().strip(), "description": fields["description"].toPlainText()}
                 for platform, fields in self.fields.items() if fields["enabled"].isChecked()}
 
     def prepare_bundle(self):
+        try:
+            self.validate_inputs(2)
+        except (OSError, ValueError) as exc:
+            self.task_error(str(exc))
+            return
         content = self.content()
         if any("【XX翻唱】" in value["title"] for value in content.values()):
             QMessageBox.warning(self, "请填写歌姬", "请将标题里的 XX 替换为这次使用的歌姬，或直接填写发布标题。")
@@ -254,6 +391,9 @@ class PublishingTab(QWidget):
         mode = self.cover_mode.currentData()
         inputs = self.input_snapshot()
         def make():
+            if mode == 'frame':
+                from pipeline import ensure_source_video
+                ensure_source_video(job)
             return prepare(job, video, content, seconds, image, cover_mode=mode)
         def ready(bundle):
             self.bundle = bundle
@@ -386,6 +526,8 @@ class PublishingTab(QWidget):
                                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         self.processes[platform].vf_location = location
         self.status.setText("浏览器已打开。登录、验证码和最终发布由你在网页完成。")
+        self.account_status[platform].setText('登录窗口已打开，完成后请关闭。' if login_only else '正在启动上传任务…')
+        self.refresh_browser_controls()
 
     def upload_selected(self):
         platforms = list(self.content())
@@ -404,14 +546,20 @@ class PublishingTab(QWidget):
             path = process.vf_location / (platform + "_上传状态.json")
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                messages.append(platform + "：" + data.get("message", data["state"]))
+                message=data.get('message') or data.get('state','正在等待平台响应。')
+                self.account_status[platform].setText(message)
+                messages.append(('B站' if platform=='bilibili' else '小红书')+'：'+message)
             except (OSError, ValueError):
                 pass
-            if process.poll() is not None and platform in self.log_streams:
-                self.log_streams.pop(platform).close()
+            if process.poll() is not None:
+                stream=self.log_streams.pop(platform,None)
+                if stream: stream.close()
                 self.log_message(platform + " 浏览器任务已结束；详情见 " + str(process.vf_location))
                 if process.returncode:
                     messages.append(platform + "：启动或上传失败，请查看浏览器日志。")
+                    self.account_status[platform].setText('任务已结束，启动或上传失败。请查看发布日志。')
+                else:
+                    self.account_status[platform].setText('浏览器任务已结束；可重新登录或上传。')
                 self.processes.pop(platform, None)
         if messages:
             self.status.setText("\n".join(messages))
@@ -421,16 +569,33 @@ class PublishingTab(QWidget):
                     if self.browser_location(platform):
                         location = self.browser_location(platform)
                         data = json.loads((location / (platform + "_上传状态.json")).read_text(encoding="utf-8"))
-                        messages.append(platform + "：" + data.get("message", data["state"]))
+                        message=data.get('message') or data.get('state','正在等待平台响应。')
+                        self.account_status[platform].setText(message)
+                        messages.append(('B站' if platform=='bilibili' else '小红书')+'：'+message)
                 except (OSError, ValueError):
                     pass
             if messages:
                 self.status.setText("\n".join(messages))
+        self.refresh_browser_controls()
+
+    def refresh_browser_controls(self):
+        for platform,actions in self.account_actions.items():
+            location=self.browser_location(platform)
+            actions['login'].setEnabled(location is None)
+            actions['stop'].setEnabled(location is not None)
+            can_resume=False
+            if location is not None and self.bundle is not None and self.bundle_inputs==self.input_snapshot():
+                try:
+                    state=json.loads((location/(platform+'_上传状态.json')).read_text(encoding='utf-8'))
+                    can_resume=bool(state.get('checks',{}).get('video_selected'))
+                except (OSError,ValueError): pass
+            actions['resume'].setEnabled(can_resume)
 
     def stop_browser(self, platform):
         location = self.browser_location(platform)
         if location:
             (location / (platform + ".stop")).touch()
+            self.account_status[platform].setText('正在关闭平台任务…')
 
     def open_bundle(self):
         location = self.bundle or ROOT / "publish-packages"

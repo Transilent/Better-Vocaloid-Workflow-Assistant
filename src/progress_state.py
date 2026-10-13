@@ -6,7 +6,7 @@ from pathlib import Path
 from common import atomic_json
 
 TITLES = {'metadata': '准备资料', 'download': '下载 / 导入', 'audio': '解码音频',
-          'separation': '分离声部', 'midi': '生成 MIDI', 'subtitles': '导出字幕'}
+          'separation': '分离声部', 'midi': '生成 MIDI', 'subtitles': '导出字幕', 'exports':'导出文件'}
 
 
 def publish(job, stage, detail, done=None, total=None, **extra):
@@ -18,14 +18,16 @@ def publish(job, stage, detail, done=None, total=None, **extra):
 
 def from_log(job, text, voice):
     patterns = [(r'ASR batch (\d+)/(\d+) done', '歌词识别'),
-                (r'(?:GAME|HFA).*?(\d+)\s*/\s*(\d+)', '音符 / 歌词对齐')]
+                (r'(?:GAME|HFA).*?(\d+)\s*/\s*(\d+)', '音符 / 歌词对齐'),
+                (r'Processing:\s*\d+%.*?\b(\d+)\s*/\s*(\d+)', '片段处理')]
     for pattern, title in patterns:
         match = re.search(pattern, text, re.I)
         if match:
             publish(job, 'midi', f'{voice} · {title}', int(match[1]), int(match[2]))
             return
     if any(word in text for word in ('Loading ', 'Stage ', 'Extracting pitches', 'forced alignment', 'Sliced into')):
-        phase = '加载模型' if 'Loading ' in text else '音高提取' if 'pitches' in text else '歌词对齐' if 'alignment' in text else '准备片段'
+        phase = ('加载模型' if 'Loading ' in text else '音高提取' if 'pitches' in text
+                 else '歌词对齐' if 'alignment' in text else '歌词识别' if 'ASR' in text else '准备片段')
         publish(job, 'midi', f'{voice} · {phase}')
 
 

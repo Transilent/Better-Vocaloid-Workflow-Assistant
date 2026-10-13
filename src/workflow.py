@@ -11,7 +11,10 @@ SNAP_DISTANCE = 100
 DISCONNECT_DISTANCE = 150
 DEFAULT_OPTIONS = {'language': 'zh', 'recognize_lyrics': True, 'zh_lyric_mode': 'hanzi',
                    'voice_mode': 'dual', 'midi_steps': 16, 'roformer_device': 'auto',
-                   'separation_device': 'dml', 'midi_device': 'dml'}
+                   'separation_device': 'dml', 'midi_device': 'dml', 'midi_backend':'v2',
+                   'alignment_engine':'hfa','project_formats':['ustx','vsqx','svp'],
+                   'audio_formats':['wav'],'export_pitch':True,'include_instrumental':True,
+                   'reference_mode':'local','subtitles_mode':'midi','dml_adapter':'auto','cpu_threads':0}
 
 
 def default_graph(subtitles=False):
@@ -81,8 +84,16 @@ def validate_options(options):
                'zh_lyric_mode': ('hanzi', 'pinyin'), 'midi_steps': (8, 16, 32),
                'roformer_device': ('auto', 'cpu', 'cuda'),
                'separation_device': ('cpu', 'dml'), 'midi_device': ('cpu', 'dml')}
+    choices.update(midi_backend=('v1','v2'),alignment_engine=('hfa','tifa'))
+    choices.update(reference_mode=('local','netease'),subtitles_mode=('midi','netease'))
     if any(result[key] not in values for key, values in choices.items()) or type(result['recognize_lyrics']) is not bool:
         raise ValueError('预设中的语言、模型或设备参数无效。')
+    from project_exports import validate_options
+    validate_options(result['project_formats'],result['audio_formats'])
+    if type(result['export_pitch']) is not bool or type(result['include_instrumental']) is not bool:
+        raise ValueError('工程导出参数无效。')
+    from runtime_devices import validate
+    validate(result['dml_adapter'], result['cpu_threads'])
     return result
 
 

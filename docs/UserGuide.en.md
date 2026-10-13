@@ -6,21 +6,21 @@
 
 The portable folder includes the runtime. For a source checkout, `tools/Start-Diagnostics.bat` installs it first, using a complete portable ZIP in this folder or its parent, or downloading the Release files. Without a local archive, it downloads the complete package; its current size is listed in the Release. It verifies dependency hashes and preserves assistant settings, jobs and sign-in profiles. After an interruption, run the diagnostic script again.
 
-Run `BVWA.exe` to start without a console window. Open **处理音乐** (Process music). Under **音乐来源**,
+Run `BVWA.exe` to start without a console window. Open **调音工作流** (Tuning workflow). Under **音乐来源**,
 select **B站 BV 号 / 链接** or **本地音乐文件**. **选择文件** opens the music chooser.
 A local file requires no BV and is copied before decoding. Saved snapshots allow
 resume after the original is moved. The sidebar also contains **模型与组件**
-(Models/components), **任务与结果** (Tasks/results), **发布准备** (Publication), and **设置与更新** (Settings/updates).
+(Models/components), **任务与结果** (Tasks/results), **发布工作流** (Publishing workflow), and **设置与更新** (Settings/updates).
 
-## Upgrading from v0.2.0
+## Upgrading
 
-Version 0.3.0 uses a revised base-runtime inventory and requires the complete portable package. Close the assistant and extract the new package into a separate folder. To retain data on the same computer, copy `config.json`, `jobs/`, `publish-packages/`, `last_job.txt`, `cache/workspace.json` and `cache/publish-browser/` from the old folder when present. An installed BS-RoFormer component can be retained by copying `dependencies/optional/bs-roformer/`. Keep custom task directories in their existing locations. Avoid copying old program files or update caches over the new package. On another computer, sign in to the publishing platforms again.
+Version 0.4.0 changes the base runtime. Upgrading from v0.3.1 or earlier requires its complete portable package once released. Close the assistant and extract the new package into a separate folder. To retain data on the same computer, copy `config.json`, `jobs/`, `publish-packages/`, `last_job.txt`, `cache/workspace.json` and `cache/publish-browser/` from the old folder when present. An installed BS-RoFormer component can be retained by copying `dependencies/optional/bs-roformer/`. Keep custom task directories in their existing locations. Avoid copying old program files or update caches over the new package. On another computer, sign in to the publishing platforms again.
 
 The program-only update is for installations with the same base runtime. When that runtime differs, Settings/updates directs you to the complete package.
 
 ## Save location
 
-In **输出与处理设置** (Output/processing settings), use **选择目录** (Choose folder) to set the save location, or enter a new folder path. The default is the assistant's `jobs` folder. Each task creates a separate subfolder containing the downloaded video (`video/source.mp4` for BV inputs), audio and MIDI. The assistant remembers the chosen location and earlier task folders. Resuming uses the original task folder; reprocessing creates a new task in the currently selected save location.
+In **音频导出 → 保存目录** (Audio export → Save folder), use **选择目录** (Choose folder) to set the save location, or enter a new folder path. The default is the assistant's `jobs` folder. Each task creates a separate subfolder containing the downloaded video (`video/source.mp4` for BV inputs), audio and MIDI. The assistant remembers the chosen location and earlier task folders. Resuming uses the original task folder; reprocessing creates a new task in the currently selected save location.
 
 ## Separation and transcription
 
@@ -32,14 +32,13 @@ In **输出与处理设置** (Output/processing settings), use **选择目录** 
 | 中文 / 日语 | Chinese / Japanese lyric processing |
 | 中文歌词格式 | Characters or pinyin for both Chinese vocal tracks |
 | 识别歌词并写入 MIDI | Enable lyric recognition; unchecked gives notes only |
-| 工作流 → 生成 MIDI → 提取精度 | Choose 8, 16 or 32 GAME steps |
+| 调音工作流 → MIDI 与工程 → 提取精度 | Choose 8, 16 or 32 GAME steps |
 
 External stems must come from the same source and retain the full timeline from zero, including initial silence. Mono and 48 kHz WAVs are converted. A different duration is rejected; equal duration does not prove correct alignment.
 
 Paste reference lyrics only. Spaces, punctuation, and line breaks are removed. Lead and backing lyrics are independent. Do not paste credits or a full description. Empty backing lyrics allow independent recognition.
 
-Expand **参考歌词（可选）** to enter lyrics. Open **工作流** to set MIDI steps
-and each engine's inference device. Logs are available through **处理日志**.
+Expand **参考歌词与校准** to search NetEase or import/edit local reference lyrics. Set extraction precision under **MIDI 与工程**, and devices in the top toolbar's **设备设置**. Logs are available through **处理日志**.
 
 ## Optional BS-RoFormer component
 
@@ -57,6 +56,8 @@ download. Retain the complete `dependencies/optional` folder when moving the app
 Models separate musical roles, not singer identities. Listen for leakage, missed notes, and lyric errors. More inference steps do not guarantee higher accuracy.
 
 Chinese lyrics use Qwen ASR. Japanese lyrics retain the bundled Romaji ASR model, followed by HubertFA alignment; selecting Japanese does not replace its weights with Qwen. If a chunk has empty recognition or an unusable alignment, it keeps pitch-only notes and is recorded in the alignment report. A bad alignment chunk does not discard successfully aligned chunks. Short Japanese mora repairs do not bridge pauses longer than 150 ms.
+
+Models/components includes **中文歌词识别 → 校验 / 恢复中文模型** (Chinese lyrics → Verify/restore Chinese model). It verifies the original Qwen weights and downloads missing or damaged files. The complete runtime includes these approximately 4.38 GiB of weights. Japanese and notes-only extraction check their own dependencies and can run without Qwen. Cache cleanup does not remove installed weights.
 
 ## Run and recovery
 
@@ -82,6 +83,8 @@ Changed inputs, settings, or corrupted MIDI invalidate the affected cached resul
 | `midi/需要核对的音符.csv` | Time-based review hints; pitches are not automatically changed |
 | `original-cover.*` | Original Bilibili cover, for BV inputs |
 | `status.json` and logs | Stage state and diagnostics |
+| `exports/voices.ustx`, `voices.vsqx`, `voices.svp` | Editor projects, with optional pitch curves |
+| `exports/audio/` | Selected compressed stem formats; WAV uses `audio/` |
 
 MIDI uses 120 BPM to represent time and disables quantization. This is not detected song tempo. Preserve positions in seconds if changing project tempo. Tuning and final audio/video alignment are manual.
 
@@ -89,17 +92,18 @@ In VOCALOID 6, create a project and use **File → Import** to import `voices.mi
 
 ## Upload preparation
 
-1. Open **发布准备** in the sidebar. Select a source job or fetch metadata using a BV identifier.
-2. Choose a finished video containing both audio and video streams.
-3. Enter the cover singer and tuning credit. Apply the `【singer翻唱】song` title template, or edit the title directly.
-4. Review each platform's description. Source credits are editable drafts and must be checked.
-5. Fetch the original cover, explicitly choose a frame, or select an image. Local music jobs need a chosen image and manually completed source/STAFF information, or a separately fetched BV source.
-6. Click **生成发布资料**. Bilibili covers preserve the full image, with padding for 4:3 and 16:9 when necessary. The primary button then changes to **上传所选平台**.
-7. Expand **账号与上传控制**, sign in using each platform's dedicated browser and close its sign-in window.
-8. Click **上传所选平台**. The assistant waits for upload completion and fills text/covers, leaving the browser open.
-9. Review categories, tags, attribution, platform requirements, and remaining fields. Publish manually.
+Open **发布工作流** (Publishing workflow), directly below Tuning workflow. Each page shows one step:
 
-Regenerate the bundle after changing a finished file, cover or draft. The primary button returns to preparation when the form changes. Under each platform's **更多** menu, **继续填写当前上传** can update an open upload with the same verified video without uploading it again. **发布资料** opens or restores existing bundles. Closed browsers require a new upload. Website changes may require manual intervention or selector updates.
+1. **Finished video/source:** select the finished video and its source task, or fetch source information from a BV identifier.
+2. **Cover:** preview the original cover at a large size, choose a custom image, or capture a video frame. Local music tasks require a custom image unless BV source information is added.
+3. **Title/description:** review both platforms side by side, apply the singer/title template and check credits and character limits.
+4. **Account/upload:** select **生成发布资料** (Prepare assets), then sign in and select **上传所选平台** (Upload selected platforms). The main action stays visible at the bottom while the page scrolls.
+
+Use Previous/Next or the numbered steps to move between pages. Next checks the required inputs before advancing. Each platform has visible sign-in, resume and close controls; unavailable actions are disabled. Close the sign-in window after logging in. The assistant leaves creator pages open for review and manual publishing.
+
+Original covers come from video metadata. Frame capture and custom images are separate choices. Cover conversion preserves the complete image with padding for 4:3 and 16:9 when needed.
+
+Regenerate publication files after changing a finished video, cover or draft. **继续填写当前上传** (Continue current upload) updates an open task with the same verified video. Closed browsers require a new upload. Review categories, tags, credits and remaining required fields on the creator page before publishing.
 
 ## CLI and diagnostics
 
@@ -117,12 +121,11 @@ Run from the extracted folder:
 The standalone `separate_audio.py` helper is available in the source repository.
 For portable CLI separation, use `pipeline.py --until separation`.
 
-Diagnostic batch files are under `tools/` in the portable package and at the root
-in a source checkout. `Check-Dependencies.bat` verifies fixed dependencies.
+Diagnostic batch files are under `tools/`. `Check-Dependencies.bat` verifies fixed dependencies.
 Startup errors appear in `launcher.log`. `Use-CPU.bat` and `Use-GPU.bat` change
 base CPU/DirectML device settings; restart afterward.
 
-`cache/` holds temporary files and dedicated sign-in profiles, `jobs/` holds audio/MIDI, and `publish-packages/` holds publication snapshots. These private runtime directories are excluded from Git and clean releases. Sign in again on each new computer.
+`cache/` holds temporary files and dedicated sign-in profiles, `jobs/` holds audio/MIDI, and `publish-packages/` holds cover assets, publication text and a verified reference to the finished video. The complete finished video is not copied. Keep it in place until upload; regenerate publication assets after moving or changing it. These private runtime directories are excluded from Git and clean releases. Sign in again on each new computer.
 
 ## Downloads and program updates
 
@@ -132,22 +135,26 @@ Automatic updates run only at startup. By default, the assistant checks for a co
 
 ## Workflows, tasks and recovery
 
-Select a built-in or saved preset from **工作流预设** at the top of **处理音乐** (Process music), add a song, and click **开始处理**. The selected graph, model, language, lyric format and devices are applied together. To edit a workflow, open **工作流**, save it, and click **用于处理音乐** to return. Preset selections stay synchronized between both pages.
+The **调音工作流** (Tuning workflow) page contains six expandable steps: Music source, Separation, Reference lyrics/calibration, MIDI/projects, Audio export and Lyrics/subtitles. Expanded controls use the full content width, with larger text and click targets. Open **设备设置** (Device settings) in the top toolbar to choose each engine's device. Presets save language, models, devices and output formats, without song paths or reference lyrics.
 
-Drag modules from the palette. Moving a module near a compatible neighbor shows a connection preview; releasing it snaps the modules into alignment and connects them. Pull a module away and release to disconnect. Double-clicking a palette item appends it after its predecessor. Click a module to edit its parameters; right-click to remove a module or connection. **整理画布** arranges modules in processing order and connects adjacent compatible modules. Ctrl + wheel zooms.
+The sidebar order is Tuning workflow, Publishing workflow, Models/components, Tasks/results and Settings/updates. Choose the light or dark theme at its bottom. The light theme uses a soft grey-green background, white cards and a restrained green accent. The dark theme uses solid charcoal-green surfaces. Standard window controls are retained.
 
-The supported sequence is **Music input → Separation → MIDI → Subtitles**. Ending at Separation exports audio without running MIDI inference. The subtitle node exports SRT and WebVTT from MIDI lyric events. Incomplete or invalid connections are rejected before creating a task. Input files, BV links and reference lyrics are entered on the processing page.
+Device settings also provides a shared **DirectML 显卡** (DirectML adapter) selector and **CPU 线程数** (CPU threads). Auto prefers a dedicated graphics adapter and keeps each engine's thread defaults. An explicit thread limit applies to the relevant CPU operations; more threads may not improve speed. These choices are saved with presets.
 
-Select a node to change language, model, lyric format, extraction precision or device. The base separation and MIDI engines offer CPU/DirectML; the optional BS-RoFormer engine offers Auto/CPU/CUDA. Current settings and named presets are saved locally. Presets contain processing parameters and the graph, without song paths or reference lyrics. Existing tasks retain their recorded settings; **用当前工作流重做** creates a new task using the current workflow and the original input.
+Disable MIDI/projects for an audio-only task. Project export can be switched off independently of MIDI. USTX, VSQX and SVP support optional RMVPE pitch curves and accompaniment references. Audio exports support WAV, FLAC, MP3 and OGG; WAV outputs reuse the task audio. Render the synthesized singing voice in your editor.
 
-**任务与结果** supports search, status filters, sorting and renaming. The task menu can open logs, send MIDI lyrics to the subtitle editor, or delete a task after confirmation. Deleting a task removes its files permanently. A run interrupted by an application exit is shown as interrupted and can be resumed.
+When any stem exceeds full scale, FLAC, MP3 and OGG exports share peak attenuation to preserve the balance between vocals and accompaniment. The applied gain is recorded in `exports/report.json`. Original float WAV files retain their full signal.
 
-Progress shows the active stage, voice or model subtask, completed stages and elapsed time. Measurable subtasks show processed chunks or download size/speed; stage counts are not estimates of remaining processing time. Failures show a readable explanation and a retry action. Device failures also offer **改用 CPU 继续**; disk-space failures link to disk management. Completed stages are reused when their outputs remain valid.
+**任务与结果** (Tasks/results) offers search, filters, renaming, logs and retry actions. Continuing uses the task's recorded parameters; **用当前工作流重做** creates a new task with the current preset. Progress shows completed stages, elapsed time and measurable subtasks. Validated outputs are reused. Failed device operations offer a CPU retry.
 
 ## Disk management and subtitles
 
-In **缓存与磁盘**, scan disk usage, select cache or temporary-file entries, and confirm cleanup. Tasks, installed models, sign-in sessions and presets are protected. Cleanup waits until processing, component installation and upload preparation have finished. Removing task temporary files may require regenerating them on retry.
+Before regenerating an output that has changed since export, the assistant preserves it under the task’s `backups/` folder and records the path in its report. This protects in-place MIDI and project edits. Unchanged generated files do not create backups. Keep your working editor project in a separate file when possible.
 
-**歌词转字幕** imports UTF-8 LRC, TXT, timed CSV (`start,end,text` in seconds), and MIDI lyric events. Preview and edit each cue, apply a global time offset, then export UTF-8 SRT or WebVTT. LRC timestamps are preserved, including repeated timestamps and offset tags. Empty timestamped lines end the preceding cue. A final line without an end marker defaults to three seconds. MIDI phrase boundaries are inferred from lyric pauses. Plain text has no timing: the tool distributes lines across a user-specified duration as an initial estimate and requires manual checking.
+Open **设置与更新 → 缓存与磁盘** (Settings/updates → Cache/disk), scan usage and select disposable files to clean. Task outputs, model weights, presets and sign-in sessions are protected. Downloads and unfinished range segments can be cleaned after the active operation ends.
 
-The portable inventory excludes development installers, third-party tests, unused Qt Quick resources and an alternate HFA export that the pipeline never loads. Active Chinese/Japanese ASR and pitch/alignment weights remain unchanged. The current inventory saves approximately 447 MB of extracted space; the compressed size is measured when an approved release is built.
+WAV export uses the task's existing audio files. Compressed formats are stored separately. Continuing a task validates inputs and outputs before reuse; damaged exports are repaired individually. Reading source credits and the original cover does not download the full video. Video is retrieved when needed for frame capture or source-video access.
+
+The **参考歌词与校准** (Reference lyrics/calibration) card sits after Separation. Choose **NetEase matching** to search by song and artist or paste a song ID/link; the selected original lyrics fill the lead vocal by default. Choose **Local matching** to import LRC/YRC/TXT reference lyrics or edit them directly. Empty fields use local recognition for that voice. Lead text is kept separately for each source, and backing lyrics are never overwritten by a NetEase lead match. Reference text is aligned against vocal audio; song timestamps do not move MIDI notes.
+
+The **歌词转字幕** (Lyrics/subtitles) card has two inputs: **NetEase matching** uses an existing song lyric timeline, while **MIDI matching** uses lyric events and the MIDI tempo map. Select a vocal track when importing a multi-track MIDI. Each input keeps its own editable draft. Preview and adjust cue text/times and the overall offset before exporting UTF-8 SRT or WebVTT. Untimed plain text is rejected; its duration is never divided into estimated subtitles. Subtitle matching does not replace the transcription reference lyrics.

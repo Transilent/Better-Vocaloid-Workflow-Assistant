@@ -99,6 +99,11 @@ with tempfile.TemporaryDirectory(prefix='output-directory-', dir=APP / 'work') a
         window.show()
         application.processEvents()
         assert window.output_parent() == chosen
+        for _ in range(300):
+            application.processEvents()
+            if not (window.results.worker and window.results.worker.isRunning()): break
+            QTest.qWait(10)
+        application.processEvents()
         assert window.results.tree.topLevelItemCount() == 2
         with patch.object(QFileDialog, 'getExistingDirectory', return_value=str(destination)):
             QTest.mouseClick(window.choose_output_btn, Qt.LeftButton)
