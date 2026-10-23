@@ -1,0 +1,163 @@
+name: Deliver exact VWA 1.0.0 assets
+on:
+  push:
+    branches: [codex/vwa-1.0.0-delivery-20261023]
+    paths: [.github/workflows/vwa-1.0.0-delivery.yml]
+permissions:
+  contents: write
+concurrency:
+  group: vwa-1.0.0-exact-delivery
+  cancel-in-progress: false
+jobs:
+  deliver:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Reconstruct and upload already verified bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -u - <<'PY'
+          import os,json,hashlib,urllib.request,urllib.error,urllib.parse,time,zipfile,shutil
+          from pathlib import Path
+          
+          REPO='Transilent/Better-Vocaloid-Workflow-Assistant'
+          RELEASE_ID=421660159
+          TARGET='ebc48f345e2dff331e3a620d8a91651dc84339ce'
+          PACK_NAME='vwa-upload-reconstruction.zip'
+          PACK_SHA='764385a3ff9b7ac81e7df0951b95cc13e41051f55610ce6729352df6f384358e'
+          TOKEN=os.environ['GH_TOKEN']
+          API='https://api.github.com/repos/'+REPO
+          work=Path('vwa-upload-work');work.mkdir(exist_ok=True)
+          
+          class SafeRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self,req,fp,code,msg,headers,newurl):
+                  result=super().redirect_request(req,fp,code,msg,headers,newurl)
+                  if result and urllib.parse.urlparse(req.full_url).netloc!=urllib.parse.urlparse(newurl).netloc:
+                      result.remove_header('Authorization')
+                  return result
+          opener=urllib.request.build_opener(SafeRedirect())
+          
+          def request(url,method='GET',data=None,headers=None,timeout=180):
+              h={'User-Agent':'VWA-exact-delivery/1.0'}
+              if urllib.parse.urlparse(url).hostname in ('api.github.com','uploads.github.com'):
+                  h.update(Authorization='Bearer '+TOKEN,Accept='application/vnd.github+json',**{'X-GitHub-Api-Version':'2022-11-28'})
+              h.update(headers or {})
+              return opener.open(urllib.request.Request(url,data=data,headers=h,method=method),timeout=timeout)
+          
+          def api(path,method='GET'):
+              with request(API+path,method) as r:
+                  data=r.read()
+                  return json.loads(data) if data else None
+          
+          def guarded_release():
+              r=api('/releases/'+str(RELEASE_ID))
+              assert r['id']==RELEASE_ID and r['draft'] and not r['prerelease']
+              assert r['tag_name']=='v1.0.0' and r['target_commitish']==TARGET
+              return r
+          
+          def assets():return api('/releases/'+str(RELEASE_ID)+'/assets?per_page=100')
+          def matches(actual,expected):
+              return actual.get('state')=='uploaded' and actual['size']==expected['bytes'] and actual.get('digest')=='sha256:'+expected['sha256']
+          
+          guarded_release()
+          pack=next(a for a in assets() if a['name']==PACK_NAME)
+          assert pack['state']=='uploaded' and pack['digest']=='sha256:'+PACK_SHA
+          bundle=work/PACK_NAME
+          with request(API+'/releases/assets/'+str(pack['id']),headers={'Accept':'application/octet-stream'}) as r,bundle.open('wb') as f:
+              shutil.copyfileobj(r,f,4*1024**2)
+          assert hashlib.sha256(bundle.read_bytes()).hexdigest()==PACK_SHA
+          with zipfile.ZipFile(bundle) as z:
+              assert set(z.namelist())=={'plan.json','literal.bin'}
+              plan=json.loads(z.read('plan.json'))
+              with (work/'literal.bin').open('wb') as f:f.write(z.read('literal.bin'))
+          assert plan['format']==1 and plan['release_id']==RELEASE_ID and plan['target_commit']==TARGET
+          assert hashlib.sha256((work/'literal.bin').read_bytes()).hexdigest()==plan['literal_sha256']
+          assert len(plan['expected_assets'])==21
+          expected={a['name']:a for a in plan['expected_assets']}
+          assert len(expected)==21 and PACK_NAME not in expected
+          for name in expected:assert Path(name).name==name and '/' not in name and '\\' not in name
+          
+          base=work/'base.zip'
+          need=plan['base']['bytes']+max(v['archive']['bytes'] for v in plan['variants'])+1992294400+256*1024**2
+          assert shutil.disk_usage(work).free>need,'Insufficient hosted-runner scratch space'
+          whole=hashlib.sha256();base_bytes=0
+          with base.open('wb') as f:
+              for part in plan['base']['parts']:
+                  assert part['url'].startswith('https://github.com/'+REPO+'/releases/download/v0.4.0/')
+                  digest=hashlib.sha256();size=0
+                  with request(part['url']) as r:
+                      while True:
+                          data=r.read(4*1024**2)
+                          if not data:break
+                          f.write(data);digest.update(data);whole.update(data);size+=len(data);base_bytes+=len(data)
+                  assert size==part['bytes'] and digest.hexdigest()==part['sha256'],part['name']
+                  print('Verified historical part:',part['name'],flush=True)
+          assert base_bytes==plan['base']['bytes'] and whole.hexdigest()==plan['base']['sha256']
+          
+          def upload(path,record):
+              assert path.stat().st_size==record['bytes']<2147483648
+              for attempt in range(3):
+                  guarded_release()
+                  existing=[a for a in assets() if a['name']==record['name']]
+                  if len(existing)==1 and matches(existing[0],record):
+                      print('Already verified:',record['name'],flush=True);return
+                  for stale in existing:
+                      api('/releases/assets/'+str(stale['id']),'DELETE')
+                  try:
+                      url='https://uploads.github.com/repos/'+REPO+'/releases/'+str(RELEASE_ID)+'/assets?name='+urllib.parse.quote(record['name'],safe='')
+                      with path.open('rb') as f,request(url,'POST',f,{'Content-Type':'application/octet-stream','Content-Length':str(record['bytes'])},timeout=300) as r:
+                          result=json.load(r)
+                      assert matches(result,record),(record['name'],result.get('size'),result.get('digest'))
+                      print('Uploaded and verified:',record['name'],flush=True);return
+                  except (OSError,ValueError,AssertionError) as error:
+                      print('Retrying upload:',record['name'],'attempt',attempt+1,type(error).__name__,flush=True)
+                      if attempt==2:raise
+                      time.sleep(5)
+          
+          for variant in plan['variants']:
+              archive=variant['archive'];name=archive['name']
+              assert name in ('VWA-Windows-x64.zip','VWA-Windows-x64-JPN.zip','BVWA-Windows-x64.zip')
+              current={a['name']:a for a in assets()}
+              if all(a['name'] in current and matches(current[a['name']],a) for a in variant['assets']):
+                  print('Variant already verified:',name,flush=True);continue
+              output=work/name;whole=hashlib.sha256();size=0
+              with base.open('rb') as old,(work/'literal.bin').open('rb') as literals,output.open('wb') as f:
+                  for kind,offset,length,digest in variant['segments']:
+                      assert kind in ('base','literal') and isinstance(offset,int) and isinstance(length,int) and offset>=0 and length>=0
+                      source=old if kind=='base' else literals
+                      assert offset+length<=os.fstat(source.fileno()).st_size
+                      source.seek(offset);remain=length;segment=hashlib.sha256()
+                      while remain:
+                          data=source.read(min(remain,4*1024**2));assert data
+                          f.write(data);whole.update(data);segment.update(data);remain-=len(data);size+=len(data)
+                      assert segment.hexdigest()==digest,'Compressed stream differs at '+str(offset)
+              assert size==archive['bytes'] and whole.hexdigest()==archive['sha256'],name
+              print('Exact validated archive reconstructed:',name,whole.hexdigest(),flush=True)
+              if len(variant['assets'])==1:
+                  assert variant['assets'][0]['name']==name
+                  upload(output,variant['assets'][0])
+              else:
+                  with output.open('rb') as f:
+                      for record in variant['assets']:
+                          assert record['name'] in expected and expected[record['name']]==record
+                          part=work/record['name'];digest=hashlib.sha256();remain=record['bytes']
+                          with part.open('wb') as destination:
+                              while remain:
+                                  data=f.read(min(remain,4*1024**2));assert data
+                                  destination.write(data);digest.update(data);remain-=len(data)
+                          assert digest.hexdigest()==record['sha256']
+                          upload(part,record);part.unlink()
+                      assert not f.read(1)
+              output.unlink()
+          
+          guarded_release()
+          actual={a['name']:a for a in assets()}
+          assert all(name in actual and matches(actual[name],record) for name,record in expected.items())
+          assert set(actual)-set(expected)=={PACK_NAME}
+          api('/releases/assets/'+str(actual[PACK_NAME]['id']),'DELETE')
+          actual={a['name']:a for a in assets()}
+          assert set(actual)==set(expected) and all(matches(actual[name],record) for name,record in expected.items())
+          print(json.dumps({'state':'passed','assets':21,'all_remote_sha256_matched':True,'all_archives_byte_identical':True,'draft_preserved':True,'temporary_asset_removed':True}),flush=True)
+          PY
+
