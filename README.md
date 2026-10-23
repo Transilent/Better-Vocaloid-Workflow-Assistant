@@ -1,12 +1,14 @@
-<p align="center"><img src="assets/app.svg" width="80" alt="BVWA icon"></p>
+<p align="center"><img src="assets/app.svg" width="80" alt="VWA icon"></p>
 
-# Better Vocaloid Workflow Assistant
+# VWA — Vocaloid Workflow Assistant
 
-术力口工作流助手 (BVWA)
+术力口工作流助手 (VWA)
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 A desktop assistant for preparing vocal-synthesis projects on Windows. Import a song or a Bilibili video, separate its vocal parts, and export MIDI with aligned lyrics. After tuning, prepare the finished video's cover, credits and creator uploads.
+
+Use **Preparation → Tuning → Assemble video → Publishing** to work from a song to a finished upload. The [Moonlight workspace](docs/Frontend.en.md) supports light/dark themes, solid or translucent panels, and interface scaling. Start the app with **`VWA.exe`**.
 
 
 ## Features
@@ -20,21 +22,32 @@ A desktop assistant for preparing vocal-synthesis projects on Windows. Import a 
 - Searchable task history, stage progress, recovery actions and cache management.
 - NetEase lyric search/import, editable timings and SRT/WebVTT output.
 - Original video covers, editable credits, and Bilibili/Xiaohongshu upload preparation.
-- A console-free Windows launcher and verified program updates.
+- A console-free Windows launcher (`VWA.exe`) and verified program updates.
 
-Tuning, final mixdown/video alignment and the final publishing action remain manual. Review the separated audio, pitches and lyrics before using them in a finished project.
+The tuning workflow saves a separate SVP candidate. Render the singing voice in your editor, then optionally align your Mixdown with a video. Finished videos can go straight to Publishing. Review the audio, notes and lyrics before use; confirm the final publication on the platform website.
+
+[Reference expression for SVP](docs/ReferenceDynamics.en.md) can add editable Loudness, Tension, Breathiness and Voicing curves. Reference mapping is optional and experimental. Timbre controls require the optional WORLD analyzer.
+
+The [expression research notes](docs/research/SVExpression.en.md) explain the tuning references, public datasets and limits of transferring acoustic measurements to SV controls.
+
+See [optional workflows](docs/OptionalWorkflows.en.md) for video assembly and independent lead extraction. [Voicebank calibration](docs/ReferenceDynamics.en.md#measured-voicebank-response-fitting-development-experiment) requires a measured response for the chosen voicebank.
+
+[Notes and continuous pitch](docs/TranscriptionQuality.en.md) covers syllable boundaries, reference-lyric alignment and measured pitch export. Recognition results still need review.
 
 ## Getting started
 
-1. Download the complete portable package from [v0.4.0](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v0.4.0), then update to v0.4.1 through Settings/updates. v0.4.1 contains update archives only. The generated **Source code** archives do not include the bundled runtime.
-2. Keep all ZIP parts and `release-assets.json` in one folder. Open `.001` with 7-Zip, or use `Merge-PortableParts.ps1` to verify and join the parts.
-3. Extract the complete `BVWA` folder to a writable location, such as `D:\BVWA`.
-4. Start **`BVWA.exe`**.
-5. In **调音工作流** (Tuning workflow), select a workflow preset and add the input, then select **开始处理** (Start).
+1. Download the complete portable package from [Releases](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases): `VWA-Windows-x64.zip` for the full package, or `VWA-Windows-x64-JPN.zip` for Japanese recognition without the Chinese Qwen weights. GitHub **Source code** archives do not include the runtime.
+2. If the package is split, keep all parts with the matching `portable-metadata-full.json` or `portable-metadata-jpn.json` and use the merge helper supplied with that package.
+3. Extract the archive to a writable location. The extracted top-level folder is `VWA`; keep its contents together.
+4. Open `VWA` and start **`VWA.exe`**.
+5. Open Preparation, add music, review lyrics, notes and outputs, then select Start preparation.
+6. Set the interface language in **Settings and updates → Appearance → Interface language**. Chinese, Japanese and English are available; changes apply on the next launch.
 
 ## Upgrading
 
-v0.3.1 and v0.4.0 support online upgrading to v0.4.1. In **Settings/updates**, check for updates, download the update and restart to install. The migration window downloads the delta matching your installed runtime and restarts into v0.4.1. Existing models are reused; settings, tasks, platform sessions and optional models remain in place. Both download stages support GitProxy, fallback, verified resume and rollback. The migration window retains your selected download source. v0.3.0 uses the same legacy upgrade path.
+Open **Settings and updates**, check for updates, then download the matching update and restart to install. Available upgrade routes are listed in each release. The assistant reuses installed models and preserves settings, tasks, sign-in sessions and optional components. Downloads support alternative sources, verification, resume and rollback. See the [update guide](docs/UpdateProtocol.en.md) when an older installation needs the compatibility helper.
+
+For older installations, follow the release instructions or use `VWA-Updater.exe` when provided. Update archives are not complete installations.
 
 For a fresh installation, use the complete portable package. Keep a backup of working editor projects before any upgrade. The GitHub Source code archives and individual update ZIPs are not complete portable installations.
 
@@ -58,13 +71,17 @@ Reference lyrics are optional. Enter lead and backing lyrics separately; include
 | `audio/lead.wav`, `audio/backing.wav` | Separated vocal parts |
 | `audio/instrumental.wav` | Accompaniment |
 
-In VOCALOID 6, use **File → Import** for MIDI and select UTF-8 when a lyric-encoding option is provided. MIDI timing uses 120 BPM as a time reference; this is not automatic song-tempo detection.
+In VOCALOID 6, use **File → Import** for MIDI and select UTF-8 when a lyric-encoding option is provided.
+
+In **MIDI 与工程 → 手动指定 BPM** (MIDI/projects → Manual BPM), set a constant tempo from 20 to 400 BPM, including decimals. MIDI, USTX, VSQX and SVP use that tempo while retaining the actual timing of notes, pitch curves and accompaniment. The choice is saved in presets and new tasks. When disabled, the assistant uses the existing 120 BPM time reference; it does not detect song tempo. This setting does not stretch audio or add a tempo map for songs with changing speed. Existing tasks resume with their recorded tempo; use **用当前工作流重做** to apply a new BPM.
 
 ## Workflows, tasks and recovery
 
-The **调音工作流** (Tuning workflow) page contains six expandable steps: Music source, Separation, Reference lyrics/calibration, MIDI/projects, Audio export and Lyrics/subtitles. Expanded controls use the full content width, with larger text and click targets. Open **设备设置** (Device settings) in the top toolbar to choose each engine's device. Presets save language, models, devices and output formats, without song paths or reference lyrics.
+Preparation groups music input, processing, lyrics/notes and output choices on one page. Keep output choices compact and expand lyric or note settings as needed. Device settings selects each engine’s device. Presets retain processing options without storing song paths or reference lyrics.
 
-The sidebar order is Tuning workflow, Publishing workflow, Models/components, Tasks/results and Settings/updates. Choose the light or dark theme at its bottom. The light theme uses a soft grey-green background, white cards and a restrained green accent. The dark theme uses solid charcoal-green surfaces. Standard window controls are retained.
+The workflow order is **Preparation → Tuning → Assemble video → Publishing**. Tuning accepts a task project or an imported SVP and saves a recoverable candidate. Choose one primary parameter source, optionally add a style and pitch gestures, then choose curve density. See [Tuning workflow](docs/TuningWorkflow.en.md) for supported formats and recovery. New preparation tasks defer expression processing to Tuning; existing tasks retain their recorded settings.
+
+Models, Tasks and results, and Settings provide model installation, task management, appearance and updates. Choose light or dark, Moonlight glass or solid reading, and a suitable interface scale in Settings. The window uses standard system controls.
 
 Device settings also provides a shared **DirectML 显卡** (DirectML adapter) selector and **CPU 线程数** (CPU threads). Auto prefers a dedicated graphics adapter and keeps each engine's thread defaults. An explicit thread limit applies to the relevant CPU operations; more threads may not improve speed. These choices are saved with presets.
 
@@ -97,21 +114,21 @@ Open **模型与组件** (Models/components), choose the runtime and download so
 
 The installer supports cancellation, resume and SHA-256 verification. The original BS-RoFormer checkpoint is used for both lyric languages. Japanese transcription retains the existing Romaji ASR model.
 
-**中文歌词识别 → 校验 / 恢复中文模型** (Chinese lyrics → Verify/restore Chinese model) checks the original Qwen ASR weights and downloads only missing or damaged files. These weights occupy approximately 4.38 GiB and are included in the complete runtime. Japanese lyrics and notes-only extraction can run without them. Leave model files in place when cleaning caches.
+Open **Models → Chinese lyric recognition** to download the original Qwen weights if they are not included in your package. **Verify / Repair** checks existing files and downloads only missing or damaged ones. The model requires approximately 4.38 GiB. Japanese lyrics and notes-only extraction work without it. See [Interface languages](docs/InterfaceLanguages.en.md) for the separate display-language setting.
 
-Download options are **Auto**, **Official sources**, and **Prefer acceleration**. Auto tries an alternate source after a connection failure. GitHub downloads support [GitProxy](https://gitproxy.dev/guide); Hugging Face weights support [HF-Mirror](https://hf-mirror.com/). Other runtime packages use their official sources. Availability and speed depend on the selected service and network.
+Download options include Automatic, Direct, Prefer acceleration and named providers. GitHub files support GitProxy, GH-Proxy and ghfast; Hugging Face supports HF-Mirror; pinned runtime packages support TUNA, Aliyun and SJTU where available. See [Download sources](docs/DownloadSources.en.md). Availability and speed depend on the network and selected service.
 
 ## Program updates
 
 Open **设置与更新** (Settings/updates) to check versions, read release notes and choose the default download source. Automatic checks, downloads and installation run only at startup by default. Verified startup updates show a ten-second restart countdown, then install and reopen the application. Choose **暂缓安装** (Postpone) to continue using the current version. If processing or another operation has started, installation is postponed to the next launch. There are no periodic update checks during use. Manually downloaded updates require **重启并安装更新** (Restart/install).
 
-Program updates use a small update package. Settings, jobs, platform sign-in and installed models are preserved. Failed file replacement restores the previous program files. Releases that change the base runtime require the complete portable package.
+Program updates reuse installed models and preserve settings, tasks and sign-in sessions. Failed file replacement restores the previous program files. Follow the release instructions for runtime changes. Older installations can use the [compatible upgrade path](docs/UpdateProtocol.en.md) and `VWA-Updater.exe` when directed.
 
-`release-assets.json` contains release metadata and checksums. Version 0.3.0 includes a program update package for compatible base runtimes; v0.2.0 requires the complete package.
+The release catalog’s `portable_downloads.full` and `portable_downloads.jpn` entries identify the canonical VWA packages. Use the package intended for your installation; update archives are not complete installations.
 
 ## Upload preparation
 
-Open **发布工作流** (Publishing workflow), directly below Tuning workflow. Each page shows one step:
+Open **发布** (Publishing), after the optional **合成视频** (Video assembly) page. Each page shows one step:
 
 1. **Finished video/source:** select the finished video and its source task, or fetch source information from a BV identifier.
 2. **Cover:** preview the original cover at a large size, choose a custom image, or capture a video frame. Local music tasks require a custom image unless BV source information is added.
@@ -183,6 +200,7 @@ This assistant integrates existing tools and model pipelines. Thanks to their au
 | [Pymss Studio](https://github.com/pymss-project/pymss-studio) | Workspace layout and model-management workflow reference |
 | [becruily / BS-RoFormer karaoke](https://huggingface.co/becruily/bs-roformer-karaoke) | Original optional checkpoint and configuration |
 | [PyTorch](https://pytorch.org/) | Optional CPU / CUDA inference runtime |
+| [PyWORLD](https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder) / [WORLD](https://github.com/mmorise/World) | Optional harmonic and aperiodic analysis for reference-expression curves; MIT / BSD-3-Clause |
 | [NumPy](https://numpy.org/), [SciPy](https://scipy.org/), [librosa](https://librosa.org/), [SoundFile](https://github.com/bastibe/python-soundfile), [Mido](https://github.com/mido/mido), [Pillow](https://python-pillow.org/) | Audio, numeric, MIDI and image processing |
 
 Vocal2Midi's pipeline also builds on [GAME](https://github.com/openvpi/GAME), [HubertFA](https://github.com/wolfgitpr/HubertFA), [LyricFA](https://github.com/wolfgitpr/LyricFA), and [llama.cpp](https://github.com/ggml-org/llama.cpp), alongside its ASR and pitch models. See its preserved [acknowledgements](dependencies/vocal2midi/ACKNOWLEDGEMENTS.md) and the [third-party notices](THIRD_PARTY_NOTICES.md) for attribution and component-specific terms. These projects and models retain their own licenses; this list does not grant a common license to the package.

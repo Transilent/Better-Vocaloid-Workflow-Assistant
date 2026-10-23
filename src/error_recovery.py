@@ -11,6 +11,8 @@ def explain(error, stage='', cancelled=False):
     if cancelled:
         return {'title': '任务已停止', 'message': '已完成的阶段已保留，可以继续处理。', 'action': 'resume'}
     rules = [
+        (('b站登录', 'b站，完成登录', '登录状态不可读取'), 'B站登录需要更新',
+         '在工作流“音乐来源”中点击“登录 B站 / 更换账号”，完成后关闭窗口，再继续任务。也可取消下载使用登录状态。', 'workflow'),
         (('notesoverlappederror', 'notes overlapped near bar'), '工程含有重叠音符',
          'MIDI 和分轨音频已保留。请导入已生成的 MIDI，核对同一声部中相邻音符的起止位置。', 'workflow'),
         (('没有可用的 midi 歌词事件',), '字幕缺少歌词时间',

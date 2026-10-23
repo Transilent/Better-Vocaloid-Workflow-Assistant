@@ -19,6 +19,17 @@ TOOL_PATHS = ("python", "vocal2midi", "ffmpeg", "mdx_model", "mdx_metadata",
               "chorus_model", "chorus_metadata", "publish_browser_executable")
 
 
+def native_path(path):
+    """Use extended Windows paths only at filesystem/cache API boundaries."""
+    import os
+    value = os.path.abspath(os.fspath(path))
+    if os.name != 'nt' or value.startswith('\\\\?\\'):
+        return value
+    if value.startswith('\\\\'):
+        return '\\\\?\\UNC\\' + value[2:]
+    return '\\\\?\\' + value
+
+
 def direct_urlopen(request, timeout=30):
     """Open public metadata/downloads without environment or system proxies."""
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -187,16 +198,18 @@ def extract_bv(text):
     return ids[0]
 
 
-def clean_lyrics(text):
+def clean_lyrics(text, *, preserve_lines=False):
     # Content selection must happen before this function: removing punctuation
     # alone cannot distinguish actual lyrics from author names or STAFF.
+    if preserve_lines:
+        return '\n'.join(line for raw in text.splitlines() if (line := clean_lyrics(raw)))
     return "".join(c for c in unicodedata.normalize("NFC", text)
                    if unicodedata.category(c)[0] in {"L", "N", "M"})
 
 
 def atomic_json(path, data):
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    Path(native_path(path.parent)).mkdir(parents=True, exist_ok=True)
     key = str(path.absolute()).casefold()
     with _ATOMIC_GUARD:
         lock = _ATOMIC_LOCKS.get(key)
@@ -214,13 +227,13 @@ def _write_json(path, data):
     # Concurrent progress writers must not share a temporary filename.
     name = None
     try:
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=native_path(path.parent),
                                          prefix=path.name + '.', suffix='.tmp', delete=False) as stream:
             name = stream.name
             json.dump(data, stream, ensure_ascii=False, indent=2)
         for attempt in range(6):
             try:
-                os.replace(name, path)
+                os.replace(name, native_path(path))
                 break
             except OSError as error:
                 if os.name != 'nt' or getattr(error, 'winerror', None) not in (5, 32, 33) or attempt == 5:
@@ -238,7 +251,7 @@ def cancelled(job):
 
 def file_hash(path):
     digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
+    with open(native_path(path), "rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
@@ -258,6 +271,9 @@ def legacy_midi_signature(job, request, voice):
                     export_pitch=request.get('export_pitch',False),alignment_engine=request.get('alignment_engine','hfa'))
     if request['language'] == 'zh' and 'zh_lyric_mode' in request:
         data['zh_lyric_mode'] = request['zh_lyric_mode']
+    if request.get('bpm') is not None:
+        from music_timing import effective_bpm
+        data['bpm'] = effective_bpm(request)
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
@@ -277,9 +293,27 @@ def completed_voice(job, request, voice):
                     return False
                 if report.get('native_sha256',{}).get(suffix) not in (None,file_hash(artifact)):
                     return False
+        if report.get('pitch_source')=='absolute_rmvpe':
+            artifact=folder/(voice+'.pitch.npz')
+            if not artifact.is_file() or report.get('output_sha256',{}).get('pitch.npz') != file_hash(artifact):
+                return False
         matches = report.get('input_signature') == midi_signature(job, request, voice)
         if not matches and 'cache_schema' not in report:
             matches = report.get('input_signature') == legacy_midi_signature(job, request, voice)
         return matches and report.get("midi_sha256") == file_hash(folder / (voice + ".mid"))
     except (OSError, ValueError, KeyError):
         return False
+
+
+def environment_value(name, default=None):
+    """Prefer VWA environment names and accept released BVWA callers."""
+    import os
+    if name in os.environ:
+        return os.environ[name]
+    legacy = 'B' + name if name.startswith('VWA_') else name
+    return os.environ.get(legacy, default)
+
+
+def canonical_kind(value):
+    """Compare saved legacy record types without rewriting their signed bytes."""
+    return 'vwa.' + value[5:] if isinstance(value, str) and value.startswith('bvwa.') else value

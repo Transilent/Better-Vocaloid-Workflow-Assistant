@@ -13,7 +13,7 @@ from PyQt5.QtGui import QColor,QPainter,QPixmap,QPalette
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication
 from app import Window
-from common import atomic_json
+from common import atomic_json, workspace_state
 from desktop_theme import apply_theme
 
 app=QApplication([])
@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work') as tmp:
     cover_path=scratch/'cover.png';assert cover.save(str(cover_path))
     # Reading publication credits/cover must not download or decode full media.
     downloads=[]
-    def metadata(bv):
+    def metadata(bv, tools=None):
         return {'bvid':bv,'title':'测试歌曲','desc':'','owner':{'name':'测试作者'},'duration':3}
     def media(destination,request):
         downloads.append(destination)
@@ -49,7 +49,9 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work') as tmp:
          patch('pipeline.STEPS',[(k,t,media if k=='download' else f) for k,t,f in STEPS]), \
          patch('cover_art.job_cover',return_value=(cover_path,{'url':'fixture'})), \
          patch.object(tab,'start_task',side_effect=lambda function,ready:ready(function())):
+        before_state = workspace_state()
         tab.bv.setText('BV1000000000');tab.fetch_source()
+        assert workspace_state() == before_state, 'Fetching publication metadata must not change processing output preferences'
         source_job=Path(tab.job.text())
         assert not downloads and not (source_job/'video').exists() and not (source_job/'audio').exists()
         assert not (source_job/'midi').exists() and (source_job/'source-info.json').exists()
@@ -111,13 +113,13 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work') as tmp:
     tab.load_job(job)
     QTest.mouseClick(tab.workspace.next,Qt.LeftButton);app.processEvents()
     assert tab.workspace.stack.currentIndex()==1
-    assert not tab.video.isVisible() and tab.cover_mode.isVisible()
+    assert not tab.video.isVisible() and tab.cover_mode._vwa_choice.isVisible()
     assert not tab.frame_panel.isVisible() and tab.custom_cover_panel.isVisible()
     QTest.mouseClick(tab.workspace.next,Qt.LeftButton)
     assert tab.workspace.stack.currentIndex()==1 and '封面图片' in tab.status.text()
     tab.cover_file.setText(str(cover_path));tab.select_step(1);app.processEvents()
     assert not tab.cover_preview.original.isNull()
-    assert tab.cover_preview.width()>700 and tab.cover_preview.height()>=300
+    assert tab.cover_preview.width()>=300 and tab.cover_preview.height()>=230
     shown=tab.cover_preview.pixmap()
     assert abs(shown.width()/shown.height()-16/9)<.01
     tab.job.setText(str(scratch/'other-source'))
@@ -183,16 +185,19 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work') as tmp:
             background=window.grab().toImage()
             point=window.pages.mapTo(window,QPoint(8,8))
             color=background.pixelColor(point)
-            assert color.alpha()==255 and color==app.palette().color(QPalette.Window)
+            assert color.alpha()==255, 'Application-internal glass keeps an opaque standard system window'
+            assert window._vwa_backdrop._pixmap is not None
             window.navigate(0);app.processEvents();visible_inside(window.start)
             window.navigate(3)
     window.resize(1600,1000);apply_theme(window,'light');app.processEvents()
     window.navigate(0)
     window.step_cards['reference'].toggle.setChecked(True);app.processEvents()
-    assert window.lyrics.width()>1000 and window.lyrics.height()>=220
-    assert window.language.height()>=50 and window.device_button.isEnabled()
+    assert window.lyrics.width()>=300 and window.lyrics.height()>=150
+    language_view=getattr(window.language,'_vwa_choice',window.language)
+    assert language_view.isVisible() and language_view.height()>=42 and window.device_button.isEnabled()
     window.devices_dialog.show();app.processEvents()
-    assert window.midi_device.isVisible() and window.midi_device.height()>=50
+    device_view=getattr(window.midi_device,'_vwa_choice',window.midi_device)
+    assert device_view.isVisible() and device_view.height()>=42
     window.midi_device.setCurrentIndex(window.midi_device.findData('dml'))
     assert window.options()['midi_device']=='dml'
     window.devices_dialog.close()

@@ -60,3 +60,6 @@ dependencies/vocal2midi/experiments/
 /publish-selectors.json
 /version.json
 /requirements-runtime.lock.txt
+
+*.vwa-partial
+*.vwa-update

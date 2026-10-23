@@ -1,6 +1,7 @@
 """Cancellation must stop a spawned recognizer even without a nested Windows job."""
 import ctypes
 import json
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -10,6 +11,7 @@ from unittest.mock import patch
 APP=Path(__file__).resolve().parents[1];sys.path.insert(0,str(APP))
 from pipeline import run_process
 from common import atomic_json
+from process_control import application_lock,terminate_tree
 
 def alive(pid):
     kernel=ctypes.windll.kernel32
@@ -24,6 +26,20 @@ def alive(pid):
 
 with tempfile.TemporaryDirectory(dir=APP/'work',prefix='process-cancel-') as temp:
     job=Path(temp)
+    owner = application_lock(job)
+    assert owner is not None and application_lock(job) is None
+    owner.unlock()
+    recovered = application_lock(job)
+    assert recovered is not None
+    recovered.unlock()
+    child = ('import os,sys;sys.path.insert(0,sys.argv[1]);'
+             'from process_control import application_lock;'
+             'guard=application_lock(sys.argv[2]);assert guard is not None;os._exit(0)')
+    subprocess.run([sys.executable, '-B', '-c', child, str(APP), str(job)], check=True, timeout=20)
+    assert (job/'cache/BVWA.lock').exists(), 'The abrupt-exit fixture must leave a stale owner record'
+    recovered = application_lock(job)
+    assert recovered is not None, 'A crashed owner must not permanently block startup'
+    recovered.unlock()
     script=job/'spawn.py'
     script.write_text('import subprocess,sys,time\nfrom pathlib import Path\n'
         'child=subprocess.Popen([sys.executable,"-c","import time;time.sleep(120)"])\n'
@@ -124,4 +140,30 @@ with tempfile.TemporaryDirectory(dir=APP/'work',prefix='process-cancel-') as tem
         preserve_changed_file(job,job.parent/'outside.mid')
         raise AssertionError('Output backup escaped its task')
     except ValueError:pass
-print('PASS: recognizer tree cancellation, concurrent JSON commits, live child progress and nested export diagnostics')
+with tempfile.TemporaryDirectory(dir=APP/'work',prefix='exited-wrapper-') as temp:
+    root=Path(temp);flag=root/'owned-child.pid';script=root/'wrapper.py'
+    script.write_text('import subprocess,sys\nfrom pathlib import Path\n'
+        'child=subprocess.Popen([sys.executable,"-B","-c","import time;time.sleep(120)"],'
+        'stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n'
+        'Path(sys.argv[1]).write_text(str(child.pid))\n',encoding='utf-8')
+    wrapper=subprocess.Popen([sys.executable,'-B',str(script),str(flag)],
+        creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+    wrapper.wait(timeout=15);pid=int(flag.read_text());assert alive(pid)
+    kernel=ctypes.windll.kernel32;kernel.OpenProcess.restype=ctypes.c_void_p
+    child_handle=kernel.OpenProcess(0x1001,False,pid)
+    unrelated=subprocess.Popen([sys.executable,'-B','-c','import time;time.sleep(120)'],
+        creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+    try:
+        terminate_tree(wrapper)
+        for _ in range(100):
+            if not alive(pid):break
+            time.sleep(.01)
+        assert not alive(pid),'Exited wrapper left its owned child running'
+        assert unrelated.poll() is None,'Unrelated process was terminated'
+        terminate_tree(wrapper)  # Repeating cleanup must remain harmless.
+    finally:
+        if child_handle:
+            kernel.TerminateProcess(ctypes.c_void_p(child_handle),1)
+            kernel.CloseHandle(ctypes.c_void_p(child_handle))
+        unrelated.terminate();unrelated.wait(timeout=10)
+print('PASS: recognizer tree cancellation, exited-wrapper cleanup, unrelated process protection, JSON commits and progress')

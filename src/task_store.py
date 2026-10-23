@@ -1,9 +1,26 @@
 """Task metadata, bounded deletion and stale-run detection."""
 import json
+import math
 import os
 import shutil
 from pathlib import Path
 from common import ROOT, atomic_json, job_directories, app_path, workspace_state
+
+INDEX_MAX_ENTRIES = 256
+INDEX_MAX_BYTES = 8 * 1024**2
+
+
+def _bounded_index(entries, rows):
+    """Cache recent metadata only. All tasks remain visible in the returned rows."""
+    selected, used = {}, 128
+    for row in rows:
+        if len(selected)>=INDEX_MAX_ENTRIES: break
+        key=str(row['path']);record=entries[key]
+        text=json.dumps({key:record},ensure_ascii=False,indent=2)
+        cost=len(text.encode('utf-8'))+4*(text.count('\n')+1)+16
+        if used+cost>INDEX_MAX_BYTES: continue
+        selected[key]=record;used+=cost
+    return selected
 
 
 def read_json(path):
@@ -30,32 +47,37 @@ def locked(job):
 
 def records(check=None):
     index_path = ROOT / 'cache/task-index.json'
-    old = read_json(index_path).get('entries', {})
+    try:
+        data = read_json(index_path) if index_path.stat().st_size<=INDEX_MAX_BYTES else {}
+    except OSError: data = {}
+    valid = data.get('version')==1 and isinstance(data.get('entries'),dict)
+    old = data.get('entries', {})
     if not isinstance(old, dict): old = {}
-    entries, changed = {}, False
+    entries = {}
     rows = []
     for path in job_directories():
         if check and check(): return []
         try:
             stamps = {}
-            for name in ('request.json','status.json','source-info.json','task.json'):
+            for name in ('request.json','status.json','source-info.json','task.json','artifacts.json'):
                 try:
                     info = (path / name).stat()
                     stamps[name] = [info.st_size, info.st_mtime_ns]
                 except FileNotFoundError: stamps[name] = None
             saved = old.get(str(path), {})
+            if not isinstance(saved,dict): saved={}
             cached = saved.get('row', {})
             if (saved.get('stamps') == stamps and isinstance(cached, dict)
                     and isinstance(cached.get('request'), dict) and isinstance(cached.get('status'), dict)
-                    and isinstance(cached.get('title'), str) and isinstance(cached.get('modified'), (int, float))):
+                    and isinstance(cached.get('title'), str) and type(cached.get('modified')) in (int, float)
+                    and math.isfinite(cached['modified'])):
                 row = dict(saved['row'])
             else:
                 request, state, info = read_json(path/'request.json'), read_json(path/'status.json'), read_json(path/'source-info.json')
                 if not request: continue
-                row = {'title': read_json(path/'task.json').get('name') or info.get('title') or request.get('source_title') or request.get('bv') or path.name,
+                row = {'title': str(read_json(path/'task.json').get('name') or info.get('title') or request.get('source_title') or request.get('bv') or path.name),
                        'request': request, 'status': state, 'created': request.get('created_at') or path.name.split('_')[-1],
                        'modified': stamps['status.json'][1]/1e9 if stamps['status.json'] else path.stat().st_mtime}
-                changed = True
             entries[str(path)] = {'stamps': stamps, 'row': row}
         except OSError:
             continue  # A deleted/moved task must not fail the entire library.
@@ -63,10 +85,18 @@ def records(check=None):
         status = state.get('state', 'ready')
         if status == 'running' and not locked(path):
             status = 'interrupted'
-        rows.append({**row, 'path': path, 'state': status})
-    if changed or set(entries) != set(old):
-        atomic_json(index_path, {'version': 1, 'entries': entries})
-    return sorted(rows, key=lambda r: r['modified'], reverse=True)
+        from task_contract import handoff, ContractError
+        try:
+            action = handoff(path) if status != 'interrupted' else 'retry'
+        except (OSError, ValueError, KeyError, TypeError):
+            action = 'needs_review'
+        rows.append({**row, 'path': path, 'state': status, 'next_action': action})
+    rows.sort(key=lambda r:r['modified'],reverse=True)
+    selected=_bounded_index(entries,rows)
+    if check and check(): return []
+    if selected != old or not valid:
+        atomic_json(index_path, {'version': 1, 'entries': selected})
+    return rows
 
 
 def checked_tree(path, boundary):
@@ -125,11 +155,17 @@ def rename(job, name):
     job = known_job(job)
     if not name.strip() or len(name.strip()) > 120:
         raise ValueError('任务名应为 1 到 120 个字符。')
-    atomic_json(job/'task.json', {'name': name.strip()})
+    from task_contract import update_metadata
+    update_metadata(job, name=name.strip())
 
 
 def delete(job):
     job = known_job(job)
+    from task_contract import protected_references
+    uses = [(path, owner) for path, owner, _ in protected_references(p for p in job_directories() if p != job)
+            if path == job or path.is_relative_to(job)]
+    if uses:
+        raise ValueError('其他任务仍引用此目录中的文件，请先更换引用：' + str(uses[0][1]))
     checked_tree(job, job.parent)
     shutil.rmtree(job)
     last = ROOT/'last_job.txt'

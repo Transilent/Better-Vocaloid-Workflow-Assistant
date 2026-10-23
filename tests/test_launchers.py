@@ -17,6 +17,16 @@ before_log = log.read_bytes() if log.exists() else None
 diagnostic_log = APP/'diagnostics.log'
 before_diagnostic = diagnostic_log.read_bytes() if diagnostic_log.exists() else None
 env = dict(os.environ, PYTHONUTF8='1', PYTHONNOUSERSITE='1')
+from tools import build_windows_launcher
+
+release_version = json.loads((APP / 'packaging/version.json').read_text(encoding='utf-8'))['version']
+assembly_version = build_windows_launcher.assembly_version(release_version)
+launcher_template = (APP / 'tools/windows/Launcher.cs').read_text(encoding='utf-8')
+assert build_windows_launcher.ASSEMBLY_VERSION_TOKEN in launcher_template
+assert build_windows_launcher.INFORMATIONAL_VERSION_TOKEN in launcher_template
+rendered_launcher = build_windows_launcher.render_launcher_source(launcher_template, release_version)
+assert ('AssemblyVersion("%s")' % assembly_version) in rendered_launcher
+assert ('AssemblyFileVersion("%s")' % assembly_version) in rendered_launcher
 
 def run(name, *args):
     launcher = APP / name
@@ -30,7 +40,7 @@ def run(name, *args):
 
 try:
     assert not list(APP.glob('*.cmd')), 'The application must have one startup entry.'
-    executable = APP / 'BVWA.exe'
+    executable = APP / 'VWA.exe'
     if executable.is_file():
         data = executable.read_bytes()
         pe = struct.unpack_from('<I', data, 0x3c)[0]

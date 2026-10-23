@@ -21,10 +21,10 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='auto-restart-') as di
     root = Path(directory)
     source = QComboBox()
     source.addItem('Auto', 'auto')
-    busy = {'components': False, 'publishing': False, 'storage': False}
+    busy = {'components': False, 'publishing': False, 'storage': False, 'browser': False}
     owner = SimpleNamespace(processing_active=False,
         components=SimpleNamespace(source=source, busy=lambda: busy['components']),
-        publishing=SimpleNamespace(busy=lambda: busy['publishing']),
+        publishing=SimpleNamespace(busy=lambda: busy['publishing'], live_browser_active=lambda: busy['browser']),
         storage=SimpleNamespace(busy=lambda: busy['storage']), workflow=SimpleNamespace(persist=Mock()),
         navigate=Mock())
     with patch.object(updates_ui, 'ROOT', root), \
@@ -75,7 +75,7 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='auto-restart-') as di
             owner.workflow.persist.assert_called_once_with(dirty=False)
             qt.instance().quit.assert_called_once()
         # Every kind of active task cancels the automatic countdown for this launch.
-        for field in ('processing', 'components', 'publishing', 'storage'):
+        for field in ('processing', 'components', 'publishing', 'storage', 'browser'):
             page.startup_update = True
             page.downloaded(root / 'plan.json')
             page.finished()
@@ -91,6 +91,16 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='auto-restart-') as di
                 page.finished()
                 assert not page.restart_timer.isActive()
                 restarting.assert_not_called()
+        # A live login/upload child blocks the manual restart path too.
+        page.plan = str(root / 'plan.json')
+        page.startup_update = False
+        busy['browser'] = True
+        with patch.object(updates_ui.updater, 'restart_to_apply') as restarting:
+            page.primary_action()
+            restarting.assert_not_called()
+        assert '浏览器' in page.message.text()
+        busy['browser'] = False
+        page.startup_update = True
         # Starting work during the countdown also defers, even after work finishes.
         page.downloaded(root / 'plan.json')
         page.finished()
@@ -153,4 +163,11 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='auto-restart-') as di
             worker.assert_not_called()
         guarded.close()
         interactive.close()
+        receipt = root/'cache/updates/last-result.json'
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        for malformed in ([], {'state':'failed','error':123}):
+            receipt.write_text(json.dumps(malformed), encoding='utf-8')
+            recovered = updates_ui.UpdatesPage(owner)
+            assert '更新' in recovered.message.text()
+            recovered.close()
 print('PASS: startup-only download/restart, manual updates, countdown, active work, postponement, settings and next-launch resume')

@@ -2,8 +2,36 @@
   "format": 1,
   "entries": [
     {
-      "file": "BVWA.exe",
-      "source": "BVWA.exe"
+      "file": "context_structure.py",
+      "source": "src/context_structure.py"
+    },
+    {
+      "file": "gesture_catalog.py",
+      "source": "src/gesture_catalog.py"
+    },
+    {
+      "file": "context_semantics.py",
+      "source": "src/context_semantics.py"
+    },
+    {
+      "file": "context_planner.py",
+      "source": "src/context_planner.py"
+    },
+    {
+      "file": "context_evidence.py",
+      "source": "src/context_evidence.py"
+    },
+    {
+      "file": "context_plan.py",
+      "source": "src/context_plan.py"
+    },
+    {
+      "file": "context_workflow.py",
+      "source": "src/context_workflow.py"
+    },
+    {
+      "file": "VWA.exe",
+      "source": "VWA.exe"
     },
     {
       "file": "LICENSE",
@@ -136,6 +164,10 @@
     {
       "file": "project_exports.py",
       "source": "src/project_exports.py"
+    },
+    {
+      "file": "vocal_expression.py",
+      "source": "src/vocal_expression.py"
     },
     {
       "file": "publication.py",
@@ -276,6 +308,174 @@
     {
       "file": "process_control.py",
       "source": "src/process_control.py"
+    },
+    {
+      "file": "expression_component.py",
+      "source": "src/expression_component.py"
+    },
+    {
+      "file": "vocal_timbre.py",
+      "source": "src/vocal_timbre.py"
+    },
+    {
+      "file": "pitch_accuracy.py",
+      "source": "src/pitch_accuracy.py"
+    },
+    {
+      "file": "components/world-LICENSE.txt",
+      "source": "components/world-LICENSE.txt"
+    },
+    {
+      "file": "transcription_quality.py",
+      "source": "src/transcription_quality.py"
+    },
+    {
+      "file": "bilibili_session.py",
+      "source": "src/bilibili_session.py"
+    },
+    {
+      "file": "video_mixdown.py",
+      "source": "src/video_mixdown.py"
+    },
+    {
+      "file": "video_mixdown_ui.py",
+      "source": "src/video_mixdown_ui.py"
+    },
+    {
+      "file": "calibration_workflow.py",
+      "source": "src/calibration_workflow.py"
+    },
+    {
+      "file": "calibration_refinement.py",
+      "source": "src/calibration_refinement.py"
+    },
+    {
+      "file": "expression_calibration.py",
+      "source": "src/expression_calibration.py"
+    },
+    {
+      "file": "calibration_session.py",
+      "source": "src/calibration_session.py"
+    },
+    {
+      "file": "calibration_ui.py",
+      "source": "src/calibration_ui.py"
+    },
+    {
+      "file": "vocal_partition.py",
+      "source": "src/vocal_partition.py"
+    },
+    {
+      "file": "music_timing.py",
+      "source": "src/music_timing.py"
+    },
+    {
+      "file": "task_contract.py",
+      "source": "src/task_contract.py"
+    },
+    {
+      "file": "task_contract_ui.py",
+      "source": "src/task_contract_ui.py"
+    },
+    {
+      "file": "context_alignment.py",
+      "source": "src/context_alignment.py"
+    },
+    {
+      "file": "context_adapter.py",
+      "source": "src/context_adapter.py"
+    },
+    {
+      "file": "context_reading.py",
+      "source": "src/context_reading.py"
+    },
+    {
+      "file": "context_project.py",
+      "source": "src/context_project.py"
+    },
+    {
+      "file": "style_presets.py",
+      "source": "src/style_presets.py"
+    },
+    {
+      "file": "style_pitch.py",
+      "source": "src/style_pitch.py"
+    },
+    {
+      "file": "ui_input.py",
+      "source": "src/ui_input.py"
+    },
+    {
+      "file": "tuning_engine.py",
+      "source": "src/tuning_engine.py"
+    },
+    {
+      "file": "tuning_workflow.py",
+      "source": "src/tuning_workflow.py"
+    },
+    {
+      "file": "tuning_ui.py",
+      "source": "src/tuning_ui.py"
+    },
+    {
+      "file": "ui_components.py",
+      "source": "src/ui_components.py"
+    },
+    {
+      "file": "ui_materials.py",
+      "source": "src/ui_materials.py"
+    },
+    {
+      "file": "ui_preferences.py",
+      "source": "src/ui_preferences.py"
+    },
+    {
+      "file": "media_preview.py",
+      "source": "src/media_preview.py"
+    },
+    {
+      "file": "assets/headphone-character.png",
+      "source": "assets/headphone-character.png"
+    },
+    {
+      "file": "assets/moonlight-background.png",
+      "source": "assets/moonlight-background.png"
+    },
+    {
+      "file": "i18n.py",
+      "source": "src/i18n.py"
+    },
+    {
+      "file": "strength_control.py",
+      "source": "src/strength_control.py"
+    },
+    {
+      "file": "assets/i18n/en.json",
+      "source": "assets/i18n/en.json"
+    },
+    {
+      "file": "assets/i18n/ja.json",
+      "source": "assets/i18n/ja.json"
+    },
+    {
+      "file": "assets/i18n/additions.json",
+      "source": "assets/i18n/additions.json"
+    },
+    {
+      "file": "docs/InterfaceLanguages.en.md",
+      "source": "docs/InterfaceLanguages.en.md"
+    },
+    {
+      "file": "docs/InterfaceLanguages.zh-CN.md",
+      "source": "docs/InterfaceLanguages.zh-CN.md"
+    },
+    {
+      "file": "docs/DownloadSources.en.md",
+      "source": "docs/DownloadSources.en.md"
+    },
+    {
+      "file": "docs/DownloadSources.zh-CN.md",
+      "source": "docs/DownloadSources.zh-CN.md"
     }
   ]
 }

@@ -12,6 +12,24 @@ from common import atomic_json, cancelled, clean_lyrics, midi_signature, file_ha
 from midi_checks import inspect_midi
 from v2m_runtime import configure
 
+
+def lead_check_context(job, request):
+    """Only consume the current, hash-verified lead analysis from this task."""
+    from common import completed_voice
+    from pitch_accuracy import load_pitch
+    if not completed_voice(job,request,'lead'):
+        return None
+    separation=job/'separation-report.json'
+    if not separation.is_file():return None
+    report=json.loads(separation.read_text(encoding='utf-8')).get('partition',{})
+    if report.get('method')!='coherent_shared_components' or not report.get('intervals'):return None
+    sidecar=job/'midi/lead/lead.pitch.npz'
+    if not sidecar.is_file():return None
+    receipt=json.loads((job/'midi/lead/report.json').read_text(encoding='utf-8'))
+    if (receipt.get('pitch_source')!='absolute_rmvpe'
+            or receipt.get('output_sha256',{}).get('pitch.npz')!=file_hash(sidecar)):return None
+    return {'pitch':load_pitch(sidecar),'audio':job/'audio/lead.wav','intervals':report['intervals']}
+
 # Windows spawn executes this module in each ASR/slicer worker. Apply the
 # runtime paths there too, before the worker target starts loading models.
 if os.environ.get("VOCALFLOW_V2M_ROOT"):
@@ -27,6 +45,17 @@ def run(job, voice="vocals", asr_session=None):
     from runtime_devices import prepare_environment
     prepare_environment(request['tools'])
     configure(root)
+    if (root/'backend-version.json').is_file():
+        from v2m_runtime import validate_backend_contract
+        validate_backend_contract()
+        from pitch_accuracy import install as install_pitch_guards
+        install_pitch_guards(job/'temp/midi-output'/voice/(voice+'.pitch.npz'))
+        from transcription_quality import install as install_transcription_guards
+        install_transcription_guards(request['language'],job/'audio'/(voice+'.wav'),
+            job/'temp/midi-output'/voice/(voice+'.quality.json'),
+            clean_lyrics(request.get('backing_lyrics','') if voice=='backing' else request.get('lyrics','')),
+            pitch_available=True,
+            peer=lead_check_context(job,request) if voice=='backing' else None)
     # ONNX and llama native libraries use the same locations as run.bat.
     os.environ["PATH"] = os.pathsep.join([str(root / "python"), str(root / "python/DLLs"),
                                          str(root / "inference/qwen3asr_dml/bin"), os.environ.get("PATH", "")])
@@ -54,6 +83,9 @@ def run(job, voice="vocals", asr_session=None):
         return (job / "cancel.flag").exists()
 
     language = request["language"]
+    from music_timing import effective_bpm, install_midi_tempo
+    tempo = effective_bpm(request)
+    install_midi_tempo(tempo)
     saved_mode = value("lyric_output_mode_" + language, "汉字" if language == "zh" else "罗马音")
     mode = {"汉字": "hanzi", "拼音": "pinyin", "罗马音": "romaji", "假名": "kana"}.get(saved_mode, "auto")
     if language == 'zh' and 'zh_lyric_mode' in request:
@@ -70,6 +102,8 @@ def run(job, voice="vocals", asr_session=None):
     signature = midi_signature(job, request, voice)
     alignment_file = pending / (voice + "_alignment.json")
     alignment_file.unlink(missing_ok=True)
+    for suffix in ('pitch.npz','quality.json'):
+        (pending/(voice+'.'+suffix)).unlink(missing_ok=True)
     formats=['mid','csv','txt']
     if request.get('project_formats'):
         formats.append('ustx')
@@ -86,7 +120,7 @@ def run(job, voice="vocals", asr_session=None):
         output_formats=formats,
         output_lyrics=request.get("recognize_lyrics", True), output_pitch_curve=bool(request.get('export_pitch') and request.get('project_formats')),
         slicing_method='smart' if (root/'backend-version.json').is_file() else '智能切片', slice_min_sec=value("slice_min_sec", 5.0),
-        slice_max_sec=value("slice_max_sec", 10.0), tempo=120.0,
+        slice_max_sec=value("slice_max_sec", 10.0), tempo=tempo,
         quantization_step=0, quantization_mode="simple", pitch_format="name",
         round_pitch=value("round_pitch", True),
         seg_threshold=value("seg_thresh", 0.2), seg_radius=value("seg_rad", 0.02),
@@ -105,6 +139,7 @@ def run(job, voice="vocals", asr_session=None):
     cfg=PipelineConfig(**{key:value for key,value in config_values.items() if key in inspect.signature(PipelineConfig).parameters})
     cancelled(job)
     print(f"开始提取 {voice}：GAME 推理 {nsteps} 步。", flush=True)
+    print('[VWA Progress] '+json.dumps({'voice':voice,'detail':'音符 / 歌词提取','done':0,'total':1}), flush=True)
     import logging,re
     warnings=[]
     class AlignmentMessages(logging.Handler):
@@ -118,16 +153,16 @@ def run(job, voice="vocals", asr_session=None):
     silent = silent_audio(cfg.audio_path)
     if silent:
         empty = mido.MidiFile(charset="utf8")
-        empty.tracks.append(mido.MidiTrack([mido.MetaMessage("set_tempo", tempo=500000)]))
+        empty.tracks.append(mido.MidiTrack([mido.MetaMessage("set_tempo", tempo=mido.bpm2tempo(tempo))]))
         empty.save(str(pending / (voice+'.mid')))
         for suffix in ("csv", "txt"):
             (pending / (voice+'.'+suffix)).write_text("", encoding="utf-8")
         if 'ustx' in formats:
             from inference.API.ustx_api import save_ustx
-            save_ustx([],pending/(voice+'.ustx'),tempo=120)
+            save_ustx([],pending/(voice+'.ustx'),tempo=tempo)
             if 'vsqx' in formats:
                 from inference.API.vsqx_api import save_vsqx
-                save_vsqx([],pending/(voice+'.vsqx'),tempo=120,language=language)
+                save_vsqx([],pending/(voice+'.vsqx'),tempo=tempo,language=language)
         print('未检测到该声部的有效人声，已保留空轨道。',flush=True)
     else:
         try: run_auto_lyric_job(cfg)
@@ -140,10 +175,15 @@ def run(job, voice="vocals", asr_session=None):
             if suffix in formats:
                 remove_pitch_data(pending/(voice+'.'+suffix),suffix)
     report = inspect_midi(pending / (voice + ".mid"), allow_empty=voice == "backing" or silent)
+    print('[VWA Progress] '+json.dumps({'voice':voice,'detail':'文件验证','done':1,'total':1}), flush=True)
     alignment = json.loads(alignment_file.read_text(encoding="utf-8")) if alignment_file.exists() else None
     if alignment is None and warnings:
         alignment={'requested_lyrics':cfg.output_lyrics,'pitch_only_chunks':sum(warnings)}
         atomic_json(alignment_file,alignment)
+    if (pending/(voice+'.pitch.npz')).is_file():
+        formats.append('pitch.npz')
+    if (pending/(voice+'.quality.json')).is_file():
+        formats.append('quality.json')
     try:
         old = json.loads((out/'report.json').read_text(encoding='utf-8'))
     except (OSError,ValueError):
@@ -167,15 +207,19 @@ def run(job, voice="vocals", asr_session=None):
         'project_formats':formats, 'pitch_curve_requested':cfg.output_pitch_curve,
         'native_sha256':{suffix:file_hash(out/(voice+'.'+suffix)) for suffix in formats if suffix in ('ustx','vsqx')},
         'output_sha256':{suffix:file_hash(out/(voice+'.'+suffix)) for suffix in formats},
+        'pitch_source': 'absolute_rmvpe' if 'pitch.npz' in formats else None,
         'preserved_copies':preserved,
         "voice": voice, "inference_steps": nsteps,
         "input_signature": signature, "midi_sha256": file_hash(out / (voice + ".mid")),
         'cache_schema': 6,
         "silent_input": silent,
-        "tempo": 120, "quantization": "disabled",
-        "note": "120 BPM 用于换算时间，不代表已检测到歌曲 BPM；人声开头静音保留。",
+        "tempo": tempo, "tempo_source": "manual" if request.get('bpm') is not None else "time_reference",
+        "quantization": "disabled",
+        "note": "BPM 用于换算节拍位置；保留音符的实际时间和开头静音，不拉伸音频。",
     })
     atomic_json(out / "report.json", report)
+    from task_contract import index_voice
+    index_voice(job, voice, replace=True)
     print(f"MIDI 验证通过：{report['notes']} 个音符，{report['lyrics_events']} 个歌词事件。", flush=True)
     if alignment and alignment["requested_lyrics"] and alignment["pitch_only_chunks"]:
         print(f"提示：{alignment['pitch_only_chunks']} 个片段保留音符但没有可靠歌词对齐；"
@@ -203,7 +247,7 @@ def run_many(job, voices):
     try:
         for voice in voices:
             cancelled(job)
-            print('[BVWA Voice] ' + voice, flush=True)
+            print('[VWA Voice] ' + voice, flush=True)
             started = time.monotonic()
             run(job, voice, asr_session=session)
             durations[voice] = round(time.monotonic() - started, 3)

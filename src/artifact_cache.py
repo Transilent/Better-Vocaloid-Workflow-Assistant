@@ -61,15 +61,18 @@ def inference_inputs(job, request, voice):
         raw = settings.get(key, str(default))
         effective[key] = raw.lower() in ('true', '1') if isinstance(default, bool) else type(default)(raw)
     effective['nsteps'] = request.get('midi_steps', int(settings.get('nsteps', 8)))
+    from music_timing import effective_bpm
+    effective['tempo'] = effective_bpm(request)
     recognize = request.get('recognize_lyrics', True)
     pitch = bool(request.get('export_pitch') and request.get('project_formats'))
+    analyze_pitch = pitch or (backend/'backend-version.json').is_file()
     language = request['language']
     models = {'game_model': 'experiments/GAME-1.0.3-medium-onnx'}
     if recognize:
         models['hfa_model'] = 'experiments/1218_hfa_model_new_dict'
         models['asr_model' if language == 'zh' else 'phoneme_asr_model'] = (
             'experiments/Qwen3-ASR-1.7B-dml' if language == 'zh' else 'experiments/romajiASR')
-    if pitch:
+    if analyze_pitch:
         models['rmvpe_model'] = 'experiments/RMVPE/rmvpe.onnx'
     identities = {}
     for key, default in models.items():
@@ -80,7 +83,20 @@ def inference_inputs(job, request, voice):
         identities[key] = model_identity(candidate)
     code = [(str(p.relative_to(backend)), file_hash(p))
             for directory in ('application', 'inference') for p in sorted((backend / directory).rglob('*.py'))]
-    return {'schema': 6, 'audio': file_hash(Path(job) / 'audio' / (voice + '.wav')),
+    cross_voice={}
+    if voice=='backing' and analyze_pitch and (backend/'backend-version.json').is_file():
+        peer=Path(job)/'midi/lead/lead.pitch.npz'
+        partition=Path(job)/'separation-report.json'
+        cross_voice={'lead_signature':fingerprint(inference_inputs(job,request,'lead')),
+            'lead_pitch':file_hash(peer) if peer.is_file() else None,
+            'partition_report':file_hash(partition) if partition.is_file() else None,
+            'adapter':file_hash(CODE_ROOT/'vocal_partition.py')}
+    return {'schema': 8, 'audio': file_hash(Path(job) / 'audio' / (voice + '.wav')),
+            **({'cross_voice':cross_voice} if cross_voice else {}),
+            'worker_code': {name:file_hash(CODE_ROOT/name) for name in ('midi_bridge.py','v2m_runtime.py','music_timing.py')},
+            **({'pitch_adapter': file_hash(CODE_ROOT / 'pitch_accuracy.py')} if analyze_pitch and (backend / 'backend-version.json').is_file() else {}),
+            **({'transcription_adapter': file_hash(CODE_ROOT / 'transcription_quality.py')}
+               if (backend / 'backend-version.json').is_file() else {}),
             'voice': voice, 'language': language, 'recognize_lyrics': recognize,
             'lyrics': request.get('backing_lyrics', '') if voice == 'backing' else request.get('lyrics', ''),
             'lyric_mode': request.get('zh_lyric_mode', settings.get('lyric_output_mode_zh', '汉字')) if language == 'zh'
@@ -99,12 +115,16 @@ def stage_signature(job, request, key):
         data.update(bv=request.get('bv'), title=request.get('source_title'), lyrics=request.get('lyrics', ''))
     elif key == 'download':
         data.update(source=request.get('source_audio') if local else request.get('bv'))
+        if not local:
+            from bilibili_session import task_options
+            data['authenticated'] = task_options(request['tools'])['use_login']
     elif key == 'audio':
         data.update(source=file_hash(job / (request['input_file'] if local else 'video/source.mp4')),
                     pcm='44100/stereo/float32')
     elif key == 'separation':
         mode = request.get('voice_mode', 'single')
-        data.update(audio=file_hash(job / 'audio/source.wav'), mode=mode)
+        data.update(audio=file_hash(job / 'audio/source.wav'), mode=mode,
+                    separation_flow=request.get('separation_flow','cascade'))
         if mode == 'import':
             data['stems'] = {name: file_hash(app_path(path)) for name, path in request['imported_stems'].items()}
         else:
@@ -119,7 +139,10 @@ def stage_signature(job, request, key):
                 data['roformer_model'] = [(e['name'], e['sha256']) for e in manifest()['weights']]
                 data['roformer_adapter'] = file_hash(CODE_ROOT / 'roformer.py')
         data['adapter'] = file_hash(CODE_ROOT / 'mdx.py') if mode != 'import' else 1
+        if mode in ('dual','roformer'):
+            data['partition_adapter'] = file_hash(CODE_ROOT/'vocal_partition.py')
     elif key == 'subtitles':
+        data['reference_lines'] = [request.get('lyric_lines', []), request.get('backing_lyric_lines', [])]
         voices = ('vocals',) if request.get('voice_mode') == 'single' else ('lead', 'backing')
         data['midi'] = {voice: file_hash(job / 'midi' / ('' if voice == 'vocals' else voice) / (voice + '.mid'))
                         for voice in voices}

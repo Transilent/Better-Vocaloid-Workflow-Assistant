@@ -5,10 +5,19 @@ import subprocess
 import time
 
 
+def application_lock(root):
+    """Hold one desktop owner per installation; dead owners are recoverable."""
+    from tools.update_apply import application_lock as acquire
+    return acquire(root)
+
+
 def terminate_tree(process):
-    if process.poll() is not None: return
     if os.name != 'nt':
-        process.terminate(); return
+        if process.poll() is None:process.terminate()
+        return
+    # A wrapper may have exited while its children are still running. The
+    # retained Popen handle identifies the original process even after exit.
+    process.poll()
     kernel=ctypes.windll.kernel32
     class ProcessEntry(ctypes.Structure):
         _fields_=[('size',ctypes.c_ulong),('usage',ctypes.c_ulong),('pid',ctypes.c_ulong),
@@ -27,11 +36,12 @@ def terminate_tree(process):
                 parents[entry.pid]=entry.parent
                 more=kernel.Process32NextW(ctypes.c_void_p(snapshot),ctypes.byref(entry))
         finally:kernel.CloseHandle(ctypes.c_void_p(snapshot))
-    def created(handle):
+    def lifetime(handle):
         values=[ctypes.c_ulonglong() for _ in range(4)]
-        return values[0].value if kernel.GetProcessTimes(ctypes.c_void_p(handle),*[ctypes.byref(v) for v in values]) else 0
-    root_created=created(int(process._handle))
-    owned={process.pid:root_created};handles=[]
+        if kernel.GetProcessTimes(ctypes.c_void_p(handle),*[ctypes.byref(v) for v in values]):
+            return values[0].value,values[1].value
+        return 0,0
+    owned={process.pid:lifetime(int(process._handle))};owner_handles={process.pid:int(process._handle)};handles=[]
     try:
         # Open handles while ancestors are still alive. Creation times exclude
         # stale/recycled parent identifiers; held handles cannot change identity.
@@ -43,12 +53,16 @@ def terminate_tree(process):
                 handle=kernel.OpenProcess(0x1001,False,pid)
                 remaining.pop(pid)
                 if not handle:continue
-                stamp=created(handle)
-                if not stamp or not owned[parent] or stamp<owned[parent]:
+                stamp,exited=lifetime(handle)
+                # Refresh the original ancestor handle after opening the
+                # candidate: it may have exited since the snapshot was taken.
+                parent_created,parent_exited=lifetime(owner_handles[parent])
+                if (not stamp or not parent_created or stamp<parent_created
+                        or (parent_exited and stamp>parent_exited)):
                     kernel.CloseHandle(ctypes.c_void_p(handle));continue
-                owned[pid]=stamp;handles.append(handle);added=True
+                owned[pid]=(stamp,exited);owner_handles[pid]=handle;handles.append(handle);added=True
             if not added:break
-        if not parents:
+        if not parents and process.poll() is None:
             # Retain the OS utility as a secondary route when enumeration is unavailable.
             subprocess.run(['taskkill','/PID',str(process.pid),'/T','/F'],stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),timeout=10)

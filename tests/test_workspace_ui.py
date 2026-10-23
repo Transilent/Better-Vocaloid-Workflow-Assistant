@@ -15,7 +15,8 @@ import updater
 from app import Window
 from workspace_ui import workspace_geometry
 
-assert workspace_geometry(QRect(0, 0, 1920, 1040))[0] == (1600, 992)
+assert workspace_geometry(QRect(0, 0, 1920, 1040))[0] == (1440, 900)
+assert workspace_geometry(QRect(0, 0, 2560, 1400))[0] == (1440, 900)
 assert workspace_geometry(QRect(0, 0, 1280, 672)) == ((1232, 624), (1000, 624))
 assert workspace_geometry(QRect(0, 0, 800, 600)) == ((752, 552), (752, 552))
 
@@ -24,17 +25,17 @@ app.setFont(QFont('Microsoft YaHei', 10))
 window = Window()
 window.show()
 app.processEvents()
-assert window.pages.count() == 8
+assert window.pages.count() == 10
 sidebar = window.nav_buttons[4].parentWidget().layout()
 visual_order = [sidebar.itemAt(i).widget().text() for i in range(sidebar.count())
                 if sidebar.itemAt(i).widget() is not None and sidebar.itemAt(i).widget() in window.nav_buttons]
-assert visual_order == ['调音工作流', '发布工作流', '模型与组件', '任务与结果', '设置与更新']
+assert visual_order == ['准备工作流', '调音工作流', '合成视频', '发布', '模型与组件', '任务与结果', '设置与更新']
 QTest.mouseClick(window.nav_buttons[4], Qt.LeftButton)
 assert window.pages.currentWidget() == window.updates
 window.navigate(0)
-assert window.windowTitle() == '术力口工作流助手 · BVWA'
+assert window.windowTitle() == '术力口工作流助手 · VWA'
 assert window.width() == 1600 and window.height() == 1000
-assert not window.log.isVisible() and not window.lyrics.isVisible()
+assert not window.log.isVisible() and window.lyrics.isVisible(), 'Important lyrics are visible by default'
 assert window.start.property('role') == 'primary'
 assert window.zh_lyric_mode.currentData() == 'hanzi'
 window.zh_lyric_mode.setCurrentIndex(window.zh_lyric_mode.findData('pinyin'))
@@ -138,7 +139,9 @@ assert tab.prepare_button.text() == '生成发布资料'
 tab.bundle = APP / 'work/placeholder-bundle'
 tab.bundle_inputs = tab.input_snapshot()
 tab.refresh_action()
-assert tab.prepare_button.text() == '上传所选平台'
+assert tab.prepare_button.text() == '生成发布资料'
+assert tab.upload_button.text() == '打开平台填写'
+assert not tab.upload_button.isEnabled(), 'A placeholder path is not a prepared publication bundle'
 tab.fields['bilibili']['title'].setText('修改后的草稿')
 assert tab.prepare_button.text() == '生成发布资料'
 assert not tab.log.isVisible()

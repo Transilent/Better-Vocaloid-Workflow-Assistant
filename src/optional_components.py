@@ -14,7 +14,7 @@ import urllib.request
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import ROOT, atomic_json, file_hash, load_config, direct_urlopen
+from common import ROOT, atomic_json, file_hash, load_config, direct_urlopen, native_path
 from download_sources import download_urls, source_name
 
 COMPONENT = ROOT / 'dependencies/optional/bs-roformer'
@@ -28,20 +28,33 @@ def current(root=COMPONENT):
     return Path(root) / 'current'
 
 
+def _status_tree(directory):
+    directory = Path(directory)
+    receipt = json.loads((directory / 'installed.json').read_text(encoding='utf-8'))
+    spec = manifest()
+    if receipt['manifest_sha256'] != file_hash(ROOT / 'components/roformer.json'):
+        raise ValueError('Version mismatch')
+    required = [(directory / item['name'], item['bytes']) for item in spec['weights']]
+    required += [(directory / entry['file'], entry['bytes']) for entry in receipt['critical_files']]
+    resolved_directory = directory.resolve()
+    if any(not path.resolve().is_relative_to(resolved_directory)
+           or not path.is_file() or path.stat().st_size != size for path, size in required):
+        raise ValueError('Missing component files')
+    return {'ready': True, 'runtime': receipt['runtime'], 'probe': receipt['probe']}
+
+
 def status(root=COMPONENT):
     try:
-        directory = current(root)
-        receipt = json.loads((directory / 'installed.json').read_text(encoding='utf-8'))
-        spec = manifest()
-        if receipt['manifest_sha256'] != file_hash(ROOT / 'components/roformer.json'):
-            raise ValueError('Version mismatch')
-        required = [(directory / item['name'], item['bytes']) for item in spec['weights']]
-        required += [(directory / entry['file'], entry['bytes']) for entry in receipt['critical_files']]
-        if any(not path.is_file() or path.stat().st_size != size for path, size in required):
-            raise ValueError('Missing component files')
-        return {'ready': True, 'runtime': receipt['runtime'], 'probe': receipt['probe']}
+        return _status_tree(current(root))
     except (OSError, ValueError, KeyError):
         return {'ready': False, 'runtime': None}
+
+
+def _directory_ready(directory):
+    try:
+        return _status_tree(directory)['ready']
+    except (OSError, ValueError, KeyError):
+        return False
 
 
 def require_ready():
@@ -97,7 +110,7 @@ def download(item, folder, progress, check=None, opener=direct_urlopen, source='
         elif offset > item['bytes']:
             partial.unlink()
             offset = 0
-        headers = {'User-Agent': 'pip/25.0 (Better-Vocaloid-Workflow-Assistant)', 'Accept-Encoding': 'identity'}
+        headers = {'User-Agent': 'pip/25.0 (Vocaloid-Workflow-Assistant)', 'Accept-Encoding': 'identity'}
         if offset:
             headers['Range'] = f'bytes={offset}-'
         route = routes[min(attempt, len(routes) - 1)]
@@ -203,9 +216,67 @@ def remove_owned_tree(path, root):
     shutil.rmtree(walk_root)
 
 
+def recover_verified_previous(root, ready):
+    """Restore only a receipt-valid backup when an interrupted swap left no current tree."""
+    root = Path(root).resolve()
+    destination, backup = current(root), root / 'previous'
+    if destination.exists() or not backup.exists() or not ready(backup):
+        return False
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    backup.replace(destination)
+    return True
+
+
+def replace_verified_tree(stage, destination, backup, root, ready):
+    """Promote a verified stage while retaining the last valid tree until commit."""
+    root = Path(root).resolve()
+    stage, destination, backup = Path(stage), Path(destination), Path(backup)
+    paths = (stage, destination, backup)
+    resolved = [path.resolve() for path in paths]
+    if any(path == root or not path.is_relative_to(root) for path in resolved) or len(set(resolved)) != 3:
+        raise ValueError('Component transaction path escaped its root')
+    if not ready(stage):
+        raise ValueError('Staged component failed verification')
+
+    quarantine = root / 'rejected-current'
+    previous_ready = backup.exists() and ready(backup)
+    restore_source = None
+    if destination.exists():
+        if ready(destination):
+            # The current tree itself is last-known-good, so it becomes the rollback copy.
+            remove_owned_tree(backup, root)
+            destination.replace(backup)
+            restore_source = backup
+        else:
+            remove_owned_tree(quarantine, root)
+            destination.replace(quarantine)
+            if previous_ready:
+                restore_source = backup
+            elif ready(quarantine):
+                restore_source = quarantine
+    elif previous_ready:
+        # Prior crash left current absent. Keep this verified backup in place until commit.
+        restore_source = backup
+
+    try:
+        stage.replace(destination)
+        if not ready(destination):
+            raise ValueError('Installed component failed verification')
+    except BaseException:
+        if destination.exists():
+            remove_owned_tree(destination, root)
+        if restore_source is not None and restore_source.exists():
+            restore_source.replace(destination)
+        raise
+
+    # Cleanup is deliberately after the new current tree has passed full verification.
+    remove_owned_tree(backup, root)
+    remove_owned_tree(quarantine, root)
+
+
 def probe(directory):
     sys.path.insert(0, str(Path(directory) / 'packages'))
-    os.environ['NUMBA_CACHE_DIR'] = str(ROOT / 'cache/numba')
+    os.environ['NUMBA_CACHE_DIR'] = native_path(ROOT / 'cache/numba')
     os.environ['PYMSS_PLUGINS_DIR'] = str(ROOT / 'cache/pymss-plugins')
     import torch
     from pymss import MSSeparator
@@ -236,6 +307,7 @@ def install(runtime, progress=print, check=None, root=COMPONENT, force=False, so
     root = Path(root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     with job_lock(root):
+        recover_verified_previous(root, _directory_ready)
         existing = status(root)
         if not force and existing['ready'] and existing['runtime'] == runtime:
             progress(1, 1, '组件已安装，可以直接使用')
@@ -299,17 +371,12 @@ def install(runtime, progress=print, check=None, root=COMPONENT, force=False, so
         atomic_json(stage / 'installed.json', {'runtime': runtime, 'probe': probed, 'critical_files': critical,
                     'manifest_sha256': file_hash(ROOT / 'components/roformer.json'),
                     'source_sha256': {item['name']: item['sha256'] for item in items}})
+        if not _directory_ready(stage):
+            if check and check():
+                cancelled(check)
+            raise ValueError('暂存的 BS-RoFormer 组件未通过完整性校验')
         cancelled(check)
-        remove_owned_tree(backup, root)
-        if destination.exists():
-            destination.replace(backup)
-        try:
-            stage.replace(destination)
-        except OSError:
-            if backup.exists():
-                backup.replace(destination)
-            raise
-        remove_owned_tree(backup, root)
+        replace_verified_tree(stage, destination, backup, root, _directory_ready)
         for path in downloads:
             path.unlink(missing_ok=True)
         progress(total, total, '安装完成，可以使用 BS-RoFormer')
@@ -320,7 +387,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--install', choices=('cpu', 'cuda'))
     parser.add_argument('--probe')
-    parser.add_argument('--download-source', choices=('auto', 'direct', 'mirror'), default='auto')
+    from download_sources import SOURCES
+    parser.add_argument('--download-source', choices=SOURCES, default='auto')
     args = parser.parse_args()
     if args.probe:
         probe(args.probe)

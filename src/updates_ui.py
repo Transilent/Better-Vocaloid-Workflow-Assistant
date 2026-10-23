@@ -1,10 +1,14 @@
 """Update preferences, release notes and verified download progress."""
+
+from common import environment_value
+from i18n import tr as _tr
 import json
 import threading
 from PyQt5.QtCore import QEvent, QThread, QTimer, pyqtSignal
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QCheckBox, QTextEdit, QProgressBar
 from common import ROOT, load_config, atomic_json
 from desktop_theme import button, card, label, page, scroll_content
+from ui_components import choice
 import updater
 
 
@@ -40,72 +44,89 @@ class UpdatesPage(QWidget):
         self.restart_timer = QTimer(self)
         self.restart_timer.setInterval(1000)
         self.restart_timer.timeout.connect(self.maybe_auto_restart)
-        container, layout = page('设置与更新', '检查新版本，选择适合当前网络的下载方式。')
+        container, layout = page(_tr('设置与更新'), _tr('管理下载、更新、外观与设备设置。'))
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(container)
         content = scroll_content(layout)
         body_layout = QVBoxLayout(content)
-        self.body_layout=body_layout
+        self.body_layout = body_layout
         body_layout.setContentsMargins(0, 0, 0, 0)
-        settings, body = card('下载与更新设置')
+        body_layout.setSpacing(16)
+
+        settings, body = card(_tr('下载设置'), _tr('选项同时用于组件和程序更新；切换来源不会改动画质、语言或声学参数。'))
         config = load_config()
-        row = QHBoxLayout()
-        row.addWidget(label('默认下载方式'))
+        body.addWidget(label(_tr('下载方式'), 'muted'))
         self.source = QComboBox()
-        for title, value in (('自动选择', 'auto'), ('官方源直连', 'direct'), ('优先加速源', 'mirror')):
-            self.source.addItem(title, value)
-        self.source.setCurrentIndex(max(0, self.source.findData(config.get('download_source', 'auto'))))
-        row.addWidget(self.source, 1)
-        body.addLayout(row)
-        row = QHBoxLayout()
-        row.addWidget(label('下载连接数'))
+        from download_sources import SOURCE_OPTIONS, normalize_source
+        for title, value in SOURCE_OPTIONS:
+            self.source.addItem(_tr(title), value)
+        try: configured_source = normalize_source(config.get('download_source', 'auto'))
+        except ValueError: configured_source = 'auto'
+        self.source.setCurrentIndex(max(0, self.source.findData(configured_source)))
+        # Named download routes fit a dropdown better than a wall of cards.
+        self.source_choice = None
+        body.addWidget(self.source)
+
+        body.addWidget(label(_tr('并行下载数'), 'muted'))
         self.download_workers = QComboBox()
-        for count in (1,2,4,8): self.download_workers.addItem(str(count),count)
-        self.download_workers.setCurrentIndex(max(0,self.download_workers.findData(config.get('download_workers',4))))
-        row.addWidget(self.download_workers,1)
-        body.addLayout(row)
+        for count in (1, 2, 4, 8):
+            self.download_workers.addItem(str(count), count)
+        self.download_workers.setCurrentIndex(
+            max(0, self.download_workers.findData(config.get('download_workers', 4))))
+        self.workers_choice = choice(self.download_workers, columns=4, compact=True)
+        body.addWidget(self.workers_choice)
         self.download_workers.currentIndexChanged.connect(self.save_settings)
-        body.addWidget(label('GitHub 下载支持 GitProxy，Hugging Face 模型支持 HF-Mirror。所有更新文件均校验 SHA-256。', 'muted'))
-        self.auto_check = QCheckBox('启动时检查更新')
+        self.source.currentIndexChanged.connect(self.save_settings)
+        body.addWidget(label(_tr('自动模式会尝试可用来源；组件和程序更新在安装前会校验文件完整性。'), 'muted'))
+        body.addWidget(label(_tr('指定镜像仅用于对应来源；其他文件直连。优先加速源会按文件来源自动匹配。'), 'muted'))
+        body_layout.addWidget(settings)
+
+        automatic, body = card(_tr('自动更新'), _tr('可在启动时检查并下载更新；安装前会检查正在使用的功能，并给出重启倒计时。'))
+        self.auto_check = QCheckBox(_tr('启动时检查更新'))
         self.auto_check.setChecked(config.get('check_for_updates', True))
-        self.auto_download = QCheckBox('启动时自动下载可用的程序更新')
+        self.auto_download = QCheckBox(_tr('启动时自动下载可用的程序更新'))
         self.auto_download.setChecked(config.get('startup_auto_update', True))
-        self.auto_restart = QCheckBox('启动更新完成后自动重启安装')
+        self.auto_restart = QCheckBox(_tr('启动更新完成后自动重启安装'))
         self.auto_restart.setChecked(config.get('auto_restart_updates', True))
         body.addWidget(self.auto_check)
         body.addWidget(self.auto_download)
         body.addWidget(self.auto_restart)
-        self.source.currentIndexChanged.connect(self.save_settings)
+        body.addWidget(label(_tr('音乐处理、组件安装、缓存管理、发布浏览器、视频或校准进行中时，暂不安装更新。'), 'muted'))
         self.auto_check.toggled.connect(self.save_settings)
         self.auto_download.toggled.connect(self.save_settings)
         self.auto_restart.toggled.connect(self.save_settings)
-        body_layout.addWidget(settings)
-        updates, body = card('程序版本', '当前版本 · ' + updater.current_version())
-        self.message = label('点击“检查更新”获取最新版本。', 'muted')
+        body_layout.addWidget(automatic)
+
+        updates, body = card(_tr('程序版本'), _tr('当前版本 · ') + updater.current_version())
+        self.message = label(_tr('点击“检查更新”获取最新版本。'), 'muted')
+        self.message.setWordWrap(True)
+        self.message.setAccessibleName(_tr('更新状态'))
         body.addWidget(self.message)
         self.notes = QTextEdit()
         self.notes.setReadOnly(True)
         self.notes.setAcceptRichText(False)
-        self.notes.setPlaceholderText('新版本的变更说明会显示在这里。')
-        self.notes.setMinimumHeight(170)
+        self.notes.setPlaceholderText(_tr('新版本的变更说明会显示在这里。'))
+        self.notes.setMinimumHeight(190)
+        self.notes.setAccessibleName(_tr('更新说明'))
         body.addWidget(self.notes)
         self.progress = QProgressBar()
         self.progress.setVisible(False)
         body.addWidget(self.progress)
         row = QHBoxLayout()
-        self.action = button('检查更新', self.primary_action, 'primary')
-        self.cancel = button('取消下载', self.cancel_download, 'danger')
+        row.setSpacing(10)
+        self.action = button(_tr('检查更新'), self.primary_action, 'primary')
+        self.cancel = button(_tr('取消下载'), self.cancel_download, 'danger')
         self.cancel.hide()
-        row.addWidget(self.action)
+        row.addWidget(self.action, 1)
         row.addWidget(self.cancel)
-        row.addStretch()
-        self.release_link = button('发布页面', self.open_release)
+        self.release_link = button(_tr('发布页面'), self.open_release)
         row.addWidget(self.release_link)
         body.addLayout(row)
-        body.addWidget(label('自动更新只在启动时执行，并提供 10 秒重启倒计时。手动下载的更新由你确认安装。', 'muted'))
+        body.addWidget(label(_tr('自动安装前会倒计时 10 秒。选择“暂缓安装”后，可在下次启动时应用，或稍后返回这里手动安装。'), 'muted'))
         body_layout.addWidget(updates)
         body_layout.addStretch()
+
         self.application = QApplication.instance()
         self.application.aboutToQuit.connect(self.stop_watching)
         self.application.installEventFilter(self)
@@ -113,20 +134,23 @@ class UpdatesPage(QWidget):
         if pending:
             self.plan = pending['plan']
             self.startup_update = True
-            self.action.setText('重启并安装更新')
-            self.message.setText('更新 ' + pending['version'] + ' 已下载，重启后安装。')
+            self.action.setText(_tr('重启并安装更新'))
+            self.message.setText(_tr('更新 ') + pending['version'] + _tr(' 已下载，重启后安装。'))
             QTimer.singleShot(0, self.queue_auto_restart)
         receipt = ROOT / 'cache/updates/last-result.json'
         if receipt.is_file() and not pending:
             try:
                 result = json.loads(receipt.read_text(encoding='utf-8'))
-                if result['state'] == 'failed':
-                    self.message.setText('上次更新未完成：' + result['error'])
+                if not isinstance(result, dict):
+                    self.message.setText(_tr('上次更新记录无法读取，可重新检查更新。'))
+                elif result.get('state') == 'failed':
+                    error = result.get('error')
+                    self.message.setText(_tr('上次更新未完成：') + (error if isinstance(error, str) else _tr('请重新检查更新。')))
             except (OSError, ValueError, KeyError):
                 pass
         if self.auto_check.isChecked() and not pending:
             import os
-            if not os.environ.get('BVWA_TESTING'):
+            if not environment_value('VWA_TESTING'):
                 QTimer.singleShot(1800, lambda: self.check(startup=True))
 
     def eventFilter(self, watched, event):
@@ -144,7 +168,7 @@ class UpdatesPage(QWidget):
                         self.restart_remaining = None
                         if self.plan:
                             self.cancel.hide()
-                            self.message.setText('已开始使用助手，自动安装已暂缓。可手动重启安装，或在下次启动时应用更新。')
+                            self.message.setText(_tr('已开始使用助手，自动安装已暂缓。可手动重启安装，或在下次启动时应用更新。'))
         return False
 
     def stop_watching(self):
@@ -167,7 +191,7 @@ class UpdatesPage(QWidget):
             self.restart_remaining = None
             if self.plan:
                 self.cancel.hide()
-                self.message.setText('更新已校验，可点击“重启并安装更新”应用。')
+                self.message.setText(_tr('更新已校验，可点击“重启并安装更新”应用。'))
 
     def busy(self):
         return self.worker is not None and self.worker.isRunning()
@@ -176,7 +200,7 @@ class UpdatesPage(QWidget):
         if self.busy() or self.plan:
             return
         if startup and (self.startup_interrupted or self.active_operations()):
-            self.message.setText('已开始使用助手，本次启动的自动更新已跳过。可稍后手动检查更新。')
+            self.message.setText(_tr('已开始使用助手，本次启动的自动更新已跳过。可稍后手动检查更新。'))
             return
         self.startup_update = bool(startup)
         self.worker = UpdateWorker(self.source.currentData())
@@ -185,14 +209,14 @@ class UpdatesPage(QWidget):
 
     def start_worker(self, message, downloading):
         if hasattr(self.owner, 'storage') and self.owner.storage.busy():
-            self.message.setText('请等待缓存管理操作结束后再检查或下载更新。')
+            self.message.setText(_tr('请等待缓存管理操作结束后再检查或下载更新。'))
             return
         self.message.setText(message)
         self.action.setEnabled(False)
         self.source.setEnabled(False)
         self.cancel.setVisible(downloading)
         self.cancel.setEnabled(True)
-        self.cancel.setText('取消下载')
+        self.cancel.setText(_tr('取消下载'))
         self.worker.failed.connect(self.failed)
         self.worker.finished.connect(self.finished)
         self.worker.progress.connect(self.update_progress)
@@ -202,17 +226,18 @@ class UpdatesPage(QWidget):
         self.release = release
         self.notes.setPlainText(release['notes'])
         if release.get('legacy'):
-            self.message.setText('当前发布版尚未提供自动更新信息，请前往“发布页面”查看。')
-            self.action.setText('重新检查')
+            self.message.setText(_tr('当前发布版尚未提供自动更新信息，请前往“发布页面”查看。'))
+            self.action.setText(_tr('重新检查'))
         elif not release['available']:
-            self.message.setText('暂无可用更新 · 最新正式版 ' + release['version'])
-            self.action.setText('重新检查')
+            self.message.setText(_tr('暂无可用更新 · 最新正式版 ') + release['version'])
+            self.action.setText(_tr('重新检查'))
         elif not release.get('update'):
-            self.message.setText('新版本 ' + release['version'] + ' 需要下载完整便携包。')
-            self.action.setText('检查更新')
+            self.message.setText(_tr('新版本 ') + release['version'] + _tr(' 暂不支持当前运行库，请查看发布说明。'))
+            self.action.setText(_tr('检查更新'))
         else:
-            self.message.setText('新版本 ' + release['version'] + ' · 下载约 ' + f"{release['update']['bytes'] / 1024**2:.1f} MB")
-            self.action.setText('下载程序更新')
+            size = release['update'].get('download_bytes', release['update']['bytes'])
+            self.message.setText(_tr('新版本 ') + release['version'] + _tr(' · 下载约 ') + f'{size / 1024 ** 2:.1f} MB')
+            self.action.setText(_tr('下载程序更新'))
             if self.startup_update and self.auto_download.isChecked() and not self.restart_deferred:
                 if hasattr(self.owner, 'navigate'):
                     self.owner.navigate(4)
@@ -231,8 +256,8 @@ class UpdatesPage(QWidget):
         self.plan = str(plan)
         self.restart_deferred = self.startup_update and self.startup_interrupted
         self.restart_remaining = None
-        self.action.setText('重启并安装更新')
-        self.message.setText('下载完成，全部文件已校验。重启后安装更新。')
+        self.action.setText(_tr('重启并安装更新'))
+        self.message.setText(_tr('下载完成，全部文件已校验。重启后安装更新。'))
 
     def failed(self, message):
         self.message.setText(message)
@@ -248,15 +273,34 @@ class UpdatesPage(QWidget):
                 and self.auto_download.isChecked() and self.auto_restart.isChecked() and not self.restart_deferred):
             if hasattr(self.owner, 'navigate'):
                 self.owner.navigate(4)
-            self.cancel.setText('暂缓安装')
+            self.cancel.setText(_tr('暂缓安装'))
             self.cancel.setEnabled(True)
             self.cancel.show()
             self.restart_timer.start()
 
     def active_operations(self):
         owner = self.owner
-        return (self.busy() or owner.processing_active or owner.components.busy()
-                or owner.publishing.busy() or owner.storage.busy())
+        publishing = getattr(owner, 'publishing', None)
+        publishing_busy = getattr(publishing, 'busy', None)
+        publishing_busy = bool(callable(publishing_busy) and publishing_busy())
+        # A prepared upload is only one publishing activity; its login/upload child can outlive it.
+        poll = getattr(publishing, 'poll_browser', None)
+        if callable(poll):
+            poll()
+        live_browser = getattr(publishing, 'live_browser_active', None)
+        live_browser = bool(callable(live_browser) and live_browser())
+        components = getattr(owner, 'components', None)
+        storage = getattr(owner, 'storage', None)
+        component_busy = getattr(components, 'busy', None)
+        storage_busy = getattr(storage, 'busy', None)
+        preview_busy = getattr(getattr(owner, 'video_mixdown', None), 'preview_busy', None)
+        return (self.busy() or getattr(owner, 'processing_active', False)
+                or bool(callable(component_busy) and component_busy())
+                or publishing_busy or live_browser
+                or bool(callable(storage_busy) and storage_busy())
+                or bool(callable(preview_busy) and preview_busy())
+                or bool(getattr(owner, 'video_mixdown', None) and owner.video_mixdown.busy())
+                or bool(getattr(owner,'calibration_dialog',None) and owner.calibration_dialog.busy()))
 
     def maybe_auto_restart(self):
         if (not self.plan or not self.startup_update or not self.auto_check.isChecked()
@@ -269,12 +313,12 @@ class UpdatesPage(QWidget):
                 return
             self.restart_deferred = True
             self.restart_timer.stop()
-            self.message.setText('当前操作已开始，自动安装已暂缓。更新将在下一次启动时应用，也可手动重启安装。')
+            self.message.setText(_tr('当前操作已开始，自动安装已暂缓。更新将在下一次启动时应用，也可手动重启安装。'))
             return
         if self.restart_remaining is None:
             self.restart_remaining = 10
         if self.restart_remaining > 0:
-            self.message.setText(f'更新已校验，将在 {self.restart_remaining} 秒后自动重启安装。')
+            self.message.setText(_tr('更新已校验，将在 {0} 秒后自动重启安装。', f'{self.restart_remaining}'))
             self.restart_remaining -= 1
             return
         self.restart_timer.stop()
@@ -289,19 +333,19 @@ class UpdatesPage(QWidget):
             self.restart_deferred = True
             self.restart_timer.stop()
             self.restart_remaining = None
-            self.message.setText('已暂缓自动安装，更新文件已保留。可稍后点击“重启并安装更新”。')
+            self.message.setText(_tr('已暂缓自动安装，更新文件已保留。可稍后点击“重启并安装更新”。'))
             self.cancel.hide()
             return
         if self.worker:
             self.worker.stop.set()
-            self.message.setText('正在取消下载，已下载的数据会保留。')
+            self.message.setText(_tr('正在取消下载，已下载的数据会保留。'))
             self.cancel.setEnabled(False)
 
     def primary_action(self):
         if self.plan:
             owner = self.owner
             if self.active_operations():
-                self.message.setText('请等待当前任务结束后再重启安装。')
+                self.message.setText(_tr('请等待当前任务结束，并关闭登录或上传浏览器后再重启安装。'))
                 return
             try:
                 owner.workflow.persist(dirty=False)

@@ -9,8 +9,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 APP = Path(__file__).resolve().parents[1]
-os.environ['NUMBA_CACHE_DIR'] = str(APP / 'work/test-numba-cache')
 sys.path[:0] = [str(APP), str(APP / 'dependencies/vocal2midi')]
+from common import native_path
+os.environ['NUMBA_CACHE_DIR'] = native_path(APP / 'work/test-numba-cache')
 from inference.API.hfa_api import _repair_short_word_boundaries, run_hubert_fa
 from inference.API.game_api import extract_vowel_boundaries
 from inference.HubertFA.tools.align_word import Word, WordList

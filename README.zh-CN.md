@@ -1,12 +1,14 @@
-<p align="center"><img src="assets/app.svg" width="80" alt="BVWA 图标"></p>
+<p align="center"><img src="assets/app.svg" width="80" alt="VWA 图标"></p>
 
-# 术力口工作流助手
+# VWA（术力口工作流助手）
 
-Better Vocaloid Workflow Assistant (BVWA)
+Vocaloid Workflow Assistant (VWA)
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 面向 Windows 的声库调音工作流助手。从本地音乐或 B站视频开始，分离人声与伴奏，生成带歌词的 MIDI；调音完成后，准备成品视频的封面、简介和平台上传。
+
+按**准备工作流 → 调音工作流 → 合成视频 → 发布**完成制作。[月光工作空间](docs/Frontend.zh-CN.md)支持浅色与深色、玻璃与纯色材质及界面缩放，启动入口为 **`VWA.exe`**。
 
 
 ## 功能
@@ -21,21 +23,32 @@ Better Vocaloid Workflow Assistant (BVWA)
 - 支持中文和日语歌词；中文 MIDI 可选择汉字或拼音。
 - 支持任务续跑、参考歌词和完整 WAV 分轨导入。
 - 获取原视频封面，编辑来源署名，准备 B站和小红书上传。
-- 提供无控制台窗口的 EXE 启动器及经过校验的程序更新。
+- 提供无控制台窗口的 `VWA.exe` 启动器及经过校验的程序更新。
 
-调音、最终音视频对齐和最终发布由用户完成。使用结果前，请试听分离音频并核对音符与歌词。
+调音工作流生成独立 SVP 候选，你在声库编辑器中合成歌声后，可将 Mixdown 对齐到视频；已有成品可直接进入发布。使用结果前请核对音频、音符和歌词，最终发布在平台页面手动确认。
+
+视频合成与原曲独立提取主唱见[可选工作流](docs/OptionalWorkflows.zh-CN.md)。[声库校准](docs/ReferenceDynamics.zh-CN.md#声库响应校准拟合开发实验)需要对应目标声库的实测响应。
+
+[参考演唱参数](docs/ReferenceDynamics.zh-CN.md)可为 SVP 添加可编辑的力度、张力、气声和发声强度曲线。参考映射是可选实验功能，音色分析需要安装 WORLD 组件。
+
+[参考演唱参数调研](docs/research/SVExpression.zh-CN.md)记录了调音教程、公开数据集，以及将声学测量映射到 SV 参数时的限制。
+
+[音符与连续音高](docs/TranscriptionQuality.zh-CN.md)说明音节边界、参考歌词对齐和实测音高导出；识别结果仍需核对。
 
 ## 快速开始
 
-1. 下载 [0.4.0 完整便携包](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v0.4.0)，启动后通过“设置与更新”升级到 0.4.1。0.4.1 仅提供更新包。GitHub 自动生成的 **Source code** 是源码，不包含完整运行库。
-2. 将全部分卷和 `release-assets.json` 放在同一目录。用 7-Zip 打开 `.001`，或通过 `Merge-PortableParts.ps1` 校验并合并。
-3. 解压完整 `BVWA` 文件夹到可写目录，例如 `D:\BVWA`。
-4. 双击 **`BVWA.exe`**。
-5. 在“调音工作流”中选择工作流预设、添加音乐，点击“开始处理”。
+1. 在[发行页](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases)下载完整便携包：全量包为 `VWA-Windows-x64.zip`，JPN 包为 `VWA-Windows-x64-JPN.zip`。JPN 包不含中文 Qwen 权重。GitHub 的 **Source code** 不含运行库。
+2. 如提供分卷，请将全部分卷与对应的 `portable-metadata-full.json` 或 `portable-metadata-jpn.json` 放在同一目录，并使用该包附带的合并工具。
+3. 解压到可写目录。解压后的顶层文件夹为 `VWA`，请保留其中全部内容。
+4. 进入 `VWA`，双击 **`VWA.exe`**。
+5. 在准备工作流添加音乐，核对歌词、音符及输出，点击开始准备。
+6. 在**设置与更新 → 外观 → 界面语言**选择简体中文、日本語或 English，下次启动生效。
 
 ## 升级
 
-0.3.1 和 0.4.0 均可在线升级到 0.4.1。在**设置与更新**中检查更新、下载并重启安装；升级窗口会下载与现有运行库匹配的增量文件，完成后自动重启进入 0.4.1。现有模型继续复用，设置、任务、平台登录会话和可选模型会保留。两个下载阶段均支持 GitProxy 加速、下载源回退、校验续传和失败回滚；重启后的升级窗口会沿用已选择的下载源。0.3.0 也支持相同的旧版升级路径。
+在**设置与更新**检查更新，下载匹配的更新后重启安装。可用升级路径以对应发行说明为准。助手复用已安装模型，保留设置、任务、登录和可选组件；下载支持备用源、校验、续传与失败回退。旧版需要兼容工具时，请参阅[升级说明](docs/UpdateProtocol.zh-CN.md)。
+
+已有安装可按发行说明升级，或在提供兼容工具时运行 `VWA-Updater.exe`；更新包不能作为完整安装包。
 
 首次安装请下载完整便携包。升级前请备份正在编辑的工程。GitHub 的 Source code 和单独的更新 ZIP 均不能作为完整安装包使用。
 
@@ -59,7 +72,9 @@ Better Vocaloid Workflow Assistant (BVWA)
 | `audio/lead.wav`、`audio/backing.wav` | 主唱、和声分离音频 |
 | `audio/instrumental.wav` | 伴奏 |
 
-VOCALOID 6 请通过“文件 → 导入”载入 MIDI，提供歌词编码选项时选择 UTF-8。MIDI 使用 120 BPM 换算时间，不代表自动检测了歌曲速度。
+VOCALOID 6 请通过“文件 → 导入”载入 MIDI，提供歌词编码选项时选择 UTF-8。
+
+在 **MIDI 与工程 → 手动指定 BPM** 中设置 20–400 之间的固定速度，支持小数。MIDI、USTX、VSQX 和 SVP 会使用该速度，同时保留音符、音高线和伴奏的实际时间。设置随预设和新任务保存。关闭时沿用 120 BPM 时间基准，不自动检测歌曲速度，也不拉伸音频。变速歌曲暂不支持逐段设置速度。继续旧任务沿用原任务 BPM；需要修改时，使用“用当前工作流重做”。
 
 ## 可选模型与下载源
 
@@ -72,15 +87,15 @@ VOCALOID 6 请通过“文件 → 导入”载入 MIDI，提供歌词编码选�
 
 安装支持取消、续传和 SHA-256 校验。中日文使用同一份原始 BS-RoFormer 权重；日语识别保留现有 Romaji ASR。
 
-“中文歌词识别 → 校验 / 恢复中文模型”会检查原始 Qwen 权重，只下载缺失或损坏的文件。完整运行库包含这部分模型，约占 4.38 GiB；日语识别和纯音符提取可独立运行。清理缓存时请保留模型文件。
+打开**模型与组件 → 中文歌词识别**，未预装时点击**下载中文模型**；已有文件可用**校验 / 修复**检查，只下载缺失或损坏部分。原始 Qwen 权重约占 4.38 GiB，日语和纯音符提取可独立运行。显示语言单独在设置中选择，见[界面语言](docs/InterfaceLanguages.zh-CN.md)。
 
-下载方式包括“自动选择”“官方源直连”和“优先加速源”。自动模式在连接失败后尝试备用源。GitHub 文件支持 [GitProxy](https://gitproxy.dev/guide)，Hugging Face 模型支持 [HF-Mirror](https://hf-mirror.com/)；其他运行库依赖从官方源下载。下载速度和可用性取决于网络与所选服务。
+下载支持自动、直连、优先加速及指定服务。GitHub 文件可选 GitProxy、GH-Proxy、ghfast；Hugging Face 可选 HF-Mirror；部分固定运行库文件可选清华、阿里云及上海交大镜像。适用范围见[下载源](docs/DownloadSources.zh-CN.md)，速度和可用性取决于网络与所选服务。
 
 ## 工作流、任务与恢复
 
-**调音工作流**包含六个可展开的步骤：音乐来源、分离声部、参考歌词与校准、MIDI 与工程、音频导出、歌词转字幕。展开后使用完整内容宽度，文字、输入框和点击区域均已增大。顶部的**设备设置**集中选择各引擎的处理设备。预设保存语言、模型、设备与导出格式，不包含歌曲路径或参考歌词。
+准备工作流集中显示音乐来源、处理方式、歌词与音符、输出内容，按需展开歌词和音符选项。顶部设备设置选择各引擎的设备。预设保存处理选项，不包含歌曲路径或参考歌词。
 
-侧栏依次是调音工作流、发布工作流、模型与组件、任务与结果、设置与更新，底部可切换浅色与深色界面。浅色界面使用淡绿灰背景、白色卡片和绿色强调色；深色界面使用实色深灰绿面板。窗口保留系统标题栏和常规操作。
+工作流依次是**准备、调音、合成视频、发布**。调音可选择任务工程或导入 SVP，生成独立可恢复候选；选择一种主参数来源，再按需加入风格、音高变化和曲线加密。强度可按 1% 拖动或直接输入数值。新准备任务将表现处理留给调音，旧任务沿用原设置。格式与恢复方式见[调音工作流](docs/TuningWorkflow.zh-CN.md)。设置提供浅色／深色、月光玻璃／纯色阅读及界面缩放。
 
 “设备设置”还提供共用的“DirectML 显卡”和“CPU 线程数”。自动模式优先选择独立显卡，并保留各引擎的默认线程设置。指定线程数会限制相关 CPU 运算的线程数量；线程更多不一定更快。这些选项随预设保存。
 
@@ -108,11 +123,13 @@ WAV 导出直接使用任务中已有的音频，压缩格式另行保存。继�
 
 程序更新下载与现有运行库匹配的更新包，保留配置、任务、平台登录及已安装模型。文件替换失败会恢复原程序。发布版提供运行库增量升级时，助手会在重启后下载并安装对应文件。
 
-`release-assets.json` 提供版本信息与校验值。v0.3.0 已提供程序更新包，适用于基础运行库相同的安装目录；v0.2.0 需下载完整版。
+旧版 BVWA 客户端使用兼容路径时，可按发行说明运行 `VWA-Updater.exe`；具体方式见[旧版兼容说明](docs/UpdateProtocol.zh-CN.md)。
+
+发行目录中的 `portable_downloads.full` 与 `portable_downloads.jpn` 标识当前 VWA 包。请使用适合当前安装目录的包；更新包不能替代完整便携包。
 
 ## 发布工作流
 
-**发布工作流**位于调音工作流下方，每次显示一个完整步骤：
+**发布**位于可选的**合成视频**页面之后，每次显示一个完整步骤：
 
 1. **成品与来源**：选择成品视频和来源任务，或通过 BV 读取本家资料。
 2. **视频封面**：大图预览本家原始封面，也可选择图片或视频画面。本地音乐任务需要自选图片，或另行读取 BV 来源。
@@ -178,6 +195,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Prepare-Source.ps1
 | [Pymss](https://github.com/pymss-project/pymss) / [Pymss Studio](https://github.com/pymss-project/pymss-studio) | 可选 BS-RoFormer 推理；Studio 的侧栏、卡片与操作分组作为界面设计参考 |
 | [becruily/bs-roformer-karaoke](https://huggingface.co/becruily/bs-roformer-karaoke) | 可选原始权重与配套配置 |
 | [PyTorch](https://pytorch.org/) | 可选组件的 CPU / CUDA 推理运行库 |
+| [PyWORLD](https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder) / [WORLD](https://github.com/mmorise/World) | 参考演唱曲线所需的可选谐波与噪声分析；MIT / BSD-3-Clause |
 | [yt-dlp](https://github.com/yt-dlp/yt-dlp) | B站媒体下载 |
 | [FFmpeg](https://ffmpeg.org/) / [Jellyfin FFmpeg](https://github.com/jellyfin/jellyfin-ffmpeg) | 音频解码、媒体检测、视频截图 |
 | [Playwright for Python](https://github.com/microsoft/playwright-python) | 浏览器登录及创作页面操作 |

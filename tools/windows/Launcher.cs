@@ -5,10 +5,11 @@ using System.Reflection;
 using System.Text;
 using System.Windows.Forms;
 
-[assembly: AssemblyTitle("Better Vocaloid Workflow Assistant")]
+[assembly: AssemblyTitle("Vocaloid Workflow Assistant")]
 [assembly: AssemblyDescription("Portable desktop launcher")]
-[assembly: AssemblyVersion("0.4.0.0")]
-[assembly: AssemblyFileVersion("0.4.0.0")]
+[assembly: AssemblyVersion("__VWA_ASSEMBLY_VERSION__")]
+[assembly: AssemblyFileVersion("__VWA_ASSEMBLY_VERSION__")]
+[assembly: AssemblyInformationalVersion("__VWA_INFORMATIONAL_VERSION__")]
 
 internal static class Launcher
 {
@@ -35,6 +36,22 @@ internal static class Launcher
         bool diagnostic = Array.Exists(args, a => a == "--check" || a == "--smoke-test");
         try
         {
+            // Only upgraded installs retain a hidden alias for existing shortcuts.
+            if (String.Equals(Path.GetFileName(Application.ExecutablePath), "BVWA.exe", StringComparison.OrdinalIgnoreCase))
+            {
+                string canonical = Path.Combine(root, "VWA.exe");
+                if (!File.Exists(canonical)) throw new FileNotFoundException("缺少 VWA.exe，请修复安装。", canonical);
+                var forwarded = new StringBuilder();
+                foreach (string arg in args) { forwarded.Append(Quote(arg)); forwarded.Append(' '); }
+                Environment.SetEnvironmentVariable("VWA_COMPAT_LAUNCHER_PID", Process.GetCurrentProcess().Id.ToString());
+                var redirect = new ProcessStartInfo(canonical, forwarded.ToString());
+                redirect.WorkingDirectory = root; redirect.UseShellExecute = false; redirect.CreateNoWindow = true;
+                using (var child = Process.Start(redirect))
+                {
+                    if (diagnostic) { child.WaitForExit(); return child.ExitCode; }
+                }
+                return 0;
+            }
             string python = Path.Combine(root, "dependencies", "vocal2midi", "python", "pythonw.exe");
             if (!File.Exists(python))
                 throw new FileNotFoundException("缺少运行库。请下载并解压完整便携包，保留 dependencies 文件夹。\n\nThe portable runtime is missing. Extract the complete package, including dependencies.");
@@ -54,6 +71,8 @@ internal static class Launcher
             Environment.SetEnvironmentVariable("PYTHONUTF8", "1");
             Environment.SetEnvironmentVariable("PYTHONDONTWRITEBYTECODE", "1");
             Environment.SetEnvironmentVariable("PYTHONNOUSERSITE", "1");
+            if (!diagnostic) Environment.SetEnvironmentVariable("VWA_COMPAT_LAUNCHER_PID", null);
+            Environment.SetEnvironmentVariable("VWA_LAUNCHER_PID", Process.GetCurrentProcess().Id.ToString());
             Environment.SetEnvironmentVariable("BVWA_LAUNCHER_PID", Process.GetCurrentProcess().Id.ToString());
             using (var process = Process.Start(start))
             {

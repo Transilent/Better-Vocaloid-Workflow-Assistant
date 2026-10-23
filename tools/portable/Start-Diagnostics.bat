@@ -4,22 +4,23 @@ cd /d "%~dp0.."
 set "PYTHONUTF8=1"
 set "PYTHONDONTWRITEBYTECODE=1"
 set "PYTHONNOUSERSITE=1"
-set "BVWA_ROOT=%CD%"
-set "BVWA_PYTHON=%BVWA_ROOT%\dependencies\vocal2midi\python\python.exe"
-if not exist "%BVWA_PYTHON%" goto install
-if exist "%BVWA_ROOT%\cache\runtime-install-in-progress" goto install
+set "VWA_ROOT=%CD%"
+set "VWA_PYTHON=%VWA_ROOT%\dependencies\vocal2midi\python\python.exe"
+set "VWA_DIAGNOSTICS=%VWA_ROOT%\diagnostics.log"
+if not exist "%VWA_PYTHON%" goto install
+if exist "%VWA_ROOT%\cache\runtime-install-in-progress" goto install
 :run
-"%BVWA_PYTHON%" -B -u "%BVWA_ROOT%\launch.py" %* > "%BVWA_ROOT%\diagnostics.log" 2>&1
-set "BVWA_EXIT=%ERRORLEVEL%"
-if "%BVWA_EXIT%"=="0" exit /b 0
-type "%BVWA_ROOT%\diagnostics.log"
+"%VWA_PYTHON%" -B -u "%VWA_ROOT%\launch.py" %* > "%VWA_DIAGNOSTICS%" 2>&1
+set "VWA_EXIT=%ERRORLEVEL%"
+if "%VWA_EXIT%"=="0" exit /b 0
+type "%VWA_DIAGNOSTICS%"
 echo Startup failed. See diagnostics.log for details.
 pause
-exit /b %BVWA_EXIT%
+exit /b %VWA_EXIT%
 :install
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%BVWA_ROOT%\tools\Install-Runtime.ps1"
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%VWA_ROOT%\tools\Install-Runtime.ps1"
 if errorlevel 1 goto failed
-if not exist "%BVWA_PYTHON%" goto failed
+if not exist "%VWA_PYTHON%" goto failed
 goto run
 :failed
 echo Runtime installation failed. Download and extract the complete portable package.

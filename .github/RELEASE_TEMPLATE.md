@@ -1,31 +1,29 @@
-# BVWA VERSION
+# VWA VERSION
 
-Briefly describe the main changes in this release.
+A short description of the main benefits for users.
 
-## What's new
+## What’s new
 
-- Feature or behavior visible to users.
+- Describe the available functions and where to find them.
 
-## Fixes
+## Choose a package
 
-- Problem and resulting behavior.
+- **Full package:** `VWA-Windows-x64.zip` for a new installation with all included lyric models. Its split metadata is `portable-metadata-full.json`.
+- **JPN package:** `VWA-Windows-x64-JPN.zip` for Japanese lyrics and note extraction without the Chinese Qwen weights. Its split metadata is `portable-metadata-jpn.json`. Add Chinese lyric recognition later from Models.
+- **Update package:** use the compatible update for an existing installation. Settings, tasks and installed models are retained.
 
-## Installation
+## Start and update
 
-- **New installation:** download all `BVWA-Windows-x64.zip.00x` parts and `release-assets.json`. Open `.001` with 7-Zip, or use `Merge-PortableParts.ps1` to verify and join. Extract the complete folder and start `BVWA.exe`.
-- **Existing installation:** compatible updates are checked and installed at startup, with a restart countdown. Manual downloads require Restart/install in Settings/updates. When the base runtime changes, use the complete package.
-- **Optional BS-RoFormer:** install the CPU or CUDA component from Models/components.
+Extract the archive. Its top-level folder is `VWA`; keep the contents together and start **`VWA.exe`**. If the download is split, keep all parts with the matching `portable-metadata-full.json` or `portable-metadata-jpn.json` and use the supplied merge helper. Source code archives and update archives are not full installations.
 
-Include the actual download size, supported Windows versions and material compatibility changes.
+For an existing installation, use **Settings and updates** and restart to install. Released clients that still use legacy BVWA protocol aliases should follow the release notes and run **`VWA-Updater.exe`** when it is provided as the compatibility tool. Select the interface language under **Appearance**. Install optional models from **Models**.
 
-## Validation
+## Known limitations
 
-State which automated checks, archive checks and representative workflows passed. User testing must be confirmed before packaging and publication.
-
-## Known issues
-
-Include only known issues that affect this release and a useful workaround.
+List only limitations that affect users, with a practical workaround.
 
 ## 中文说明
 
-概述本次新增功能、修复和兼容性变化。新用户下载完整分卷并解压，双击 `BVWA.exe`；已有用户可在“设置与更新”中获取程序更新。涉及基础运行库变更时使用完整版。填写实际下载大小、已完成验证和已知问题。
+简述新增功能与操作入口。全量包为 `VWA-Windows-x64.zip`，其分卷清单为 `portable-metadata-full.json`；JPN 包为 `VWA-Windows-x64-JPN.zip`，其分卷清单为 `portable-metadata-jpn.json`。JPN 包不含中文 Qwen 权重，可稍后在模型与组件中下载。解压后的顶层文件夹为 `VWA`，启动 **`VWA.exe`**，界面语言在外观设置中选择。
+
+旧版 BVWA 客户端需要兼容路径时，按发行说明运行 **`VWA-Updater.exe`**。更新包不能作为完整安装包使用。

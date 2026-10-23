@@ -3,11 +3,14 @@ from pathlib import Path
 import mido
 
 
-def merge_voices(sources, destination, job=None, expected_sha256=None):
+def merge_voices(sources, destination, job=None, expected_sha256=None, *, bpm=None):
+    from music_timing import effective_bpm
+    value = effective_bpm({'bpm': bpm})
+    tempo = mido.bpm2tempo(value)
     result = mido.MidiFile(type=1, ticks_per_beat=480, charset="utf8")
     result.tracks.append(mido.MidiTrack([
         mido.MetaMessage("track_name", name="Tempo", time=0),
-        mido.MetaMessage("set_tempo", tempo=500000, time=0),
+        mido.MetaMessage("set_tempo", tempo=tempo, time=0),
         mido.MetaMessage("time_signature", numerator=4, denominator=4, time=0),
         mido.MetaMessage("end_of_track", time=0),
     ]))
@@ -24,7 +27,7 @@ def merge_voices(sources, destination, job=None, expected_sha256=None):
             seconds += message.time
             if message.type in ("set_tempo", "time_signature", "track_name", "end_of_track"):
                 continue
-            tick = round(mido.second2tick(seconds, result.ticks_per_beat, 500000))
+            tick = round(mido.second2tick(seconds, result.ticks_per_beat, tempo))
             changes = {"time": tick - previous_tick}
             if not message.is_meta and hasattr(message, "channel"):
                 changes["channel"] = channel
@@ -39,7 +42,7 @@ def merge_voices(sources, destination, job=None, expected_sha256=None):
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     result.tracks[0][-1] = mido.MetaMessage("end_of_track", time=last_tick)
-    temporary = destination.with_name(destination.name + ".bvwa-partial")
+    temporary = destination.with_name(destination.name + ".vwa-partial")
     try:
         result.save(str(temporary))
         from midi_checks import inspect_midi
@@ -49,5 +52,5 @@ def merge_voices(sources, destination, job=None, expected_sha256=None):
         temporary.replace(destination)
     finally:
         temporary.unlink(missing_ok=True)
-    return {"format": 1, "voice_tracks": reports, "tempo": 120,
+    return {"format": 1, "voice_tracks": reports, "tempo": value,
             "ticks_per_beat": 480, "timeline_offset_seconds": 0, 'preserved_copy':preserved}

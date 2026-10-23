@@ -20,8 +20,8 @@ def main():
     work = ROOT/'work'
     work.mkdir(exist_ok=True)
     temporary_base = Path(tempfile.gettempdir()).resolve()
-    directory = Path(tempfile.mkdtemp(prefix='bvwa-qa-', dir=temporary_base)).resolve()
-    if directory.parent != temporary_base or not directory.name.startswith('bvwa-qa-'):
+    directory = Path(tempfile.mkdtemp(prefix='vwa-qa-', dir=temporary_base)).resolve()
+    if directory.parent != temporary_base or not directory.name.startswith('vwa-qa-'):
         raise ValueError('Invalid temporary test directory')
     try:
         mapping = {name: name for name in json.loads(inventory_path('source-files.json').read_text(encoding='utf-8'))['files']}
@@ -59,7 +59,7 @@ def main():
         return result.returncode
     finally:
         # Verify the final absolute target again immediately before recursive removal.
-        if directory.parent != temporary_base or not directory.name.startswith('bvwa-qa-'):
+        if directory.parent != temporary_base or not directory.name.startswith('vwa-qa-'):
             raise ValueError('Refusing removal of unexpected test directory')
         shutil.rmtree(native(directory))
 

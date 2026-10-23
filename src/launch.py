@@ -17,7 +17,7 @@ def main():
     validate()
     config = load_config()
     if "--check" in sys.argv:
-        print("Better Vocaloid Workflow Assistant dependencies ready", flush=True)
+        print("Vocaloid Workflow Assistant dependencies ready", flush=True)
         print("Runtime:", config["python"], flush=True)
         return
     runtime = Path(config["python"]).parent
@@ -28,21 +28,14 @@ def main():
         str(runtime), str(runtime / "DLLs"), str(qt / "bin"),
         os.environ.get("PATH", ""),
     ])
-    print("Better Vocaloid Workflow Assistant startup", sys.version, flush=True)
+    print("Vocaloid Workflow Assistant startup", sys.version, flush=True)
     from updater import current_version
     print("Version:", current_version(), flush=True)
     print("Runtime:", runtime, flush=True)
     if "--smoke-test" in sys.argv:
         namespace = runpy.run_path(str(ROOT / "app.py"))
-        from PyQt5.QtCore import QTimer
-        application = namespace["QApplication"]([])
-        window = namespace["Window"]()
-        window.show()
-        application.processEvents()
-        if not window.isVisible():
-            raise RuntimeError("Application window did not initialize")
-        QTimer.singleShot(1000, application.quit)
-        application.exec_()
+        if namespace['main'](smoke=True) != 0:
+            raise RuntimeError('The startup smoke test could not acquire the application lock')
         print("GUI ready; startup smoke test passed", flush=True)
         return
     runpy.run_path(str(ROOT / "app.py"), run_name="__main__")
@@ -52,7 +45,7 @@ if __name__ == "__main__":
     if '--desktop' in sys.argv:
         # pythonw intentionally has no console streams. Bind them before imports
         # and keep native-crash diagnostics in the same log as normal startup.
-        log = (ROOT / 'launcher.log').open('w', encoding='utf-8', buffering=1)
+        log = (ROOT / 'launcher.log').open('a', encoding='utf-8', buffering=1)
         sys.stdout = sys.stderr = log
         import faulthandler
         faulthandler.enable(log)

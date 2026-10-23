@@ -2,13 +2,13 @@
 import argparse
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tools.update_apply import validate_file
+from tools.update_apply import program_name, validate_file
 
 
 def file_hash(path):
@@ -21,19 +21,43 @@ def inventory_path(name):
     return canonical if canonical.is_file() else ROOT / name
 
 
+def require_compatible_clients(records):
+    """A new installer's allowlist cannot grant capabilities to old clients."""
+    clients = json.loads(inventory_path('update-clients.json').read_text(encoding='utf-8'))['clients']
+    for client in clients:
+        allowed = set(client['ROOT_FILES']) | set(client['TOOL_FILES'])
+        unsupported = []
+        for record in records:
+            name = record['file']
+            path = PurePosixPath(name)
+            asset = len(path.parts) == 2 and path.parts[0] == 'assets' and path.suffix in ('.svg', '.ico', '.png')
+            if name not in allowed and not asset:
+                unsupported.append(name)
+        if unsupported:
+            raise ValueError('Client '+client['version']+' cannot accept these direct-update files: '+', '.join(unsupported)+
+                             '. Build the compatible first hop with build_runtime_upgrade.py --base-ref '+client['commit']+
+                             ' --program-variant '+client['version']+'; install the new helper before new modules.')
+
+
 def build(output):
+    from tools.verify_source_layout import verify
+    output = Path(output).resolve()
+    program_name({'name':output.name})
+    verify(ROOT)
     version = json.loads(inventory_path('version.json').read_text(encoding='utf-8'))['version']
     runtime_sha = file_hash(ROOT / 'dependencies/manifest.json')
     entries = json.loads(inventory_path('portable-files.json').read_text(encoding='utf-8'))['entries']
     selected = []
     for entry in entries:
-        if entry['file'] == 'config.json' or entry['file'].startswith(('dependencies/', 'models/', 'vendor/', 'components/')):
+        if entry['file'] == 'config.json' or entry['file'].startswith(('dependencies/', 'models/', 'vendor/')):
+            continue
+        if entry['file'].startswith('components/') and entry['file'] != 'components/world-LICENSE.txt':
             continue
         source = ROOT / entry['source']
         record = {'file': entry['file'], 'bytes': source.stat().st_size, 'sha256': file_hash(source)}
         validate_file(record)
         selected.append((record, source))
-    output = output.resolve()
+    require_compatible_clients([record for record, _ in selected])
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zipped:
         for entry, source in selected:
@@ -50,6 +74,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if not args.user_test_confirmed:
         parser.error('Local user testing must be confirmed before creating a distributable update archive.')
-    if args.output.name not in ('BVWA-App-Update.zip', 'BVWA-Program-Update.zip'):
-        parser.error('Use BVWA-App-Update.zip or BVWA-Program-Update.zip for the program update asset.')
+    try:
+        program_name({'name':args.output.name})
+    except ValueError:
+        parser.error('Use VWA-App-Update.zip or VWA-Program-Update.zip for the program update asset '
+                     '(BVWA-App-Update.zip and BVWA-Program-Update.zip are accepted for legacy releases).')
     print(json.dumps(build(args.output), indent=2))

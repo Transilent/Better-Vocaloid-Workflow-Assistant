@@ -19,6 +19,26 @@ class ManualStep(RuntimeError):
     pass
 
 
+def load_selectors(platform):
+    data = json.loads((ROOT/'publish-selectors.json').read_text(encoding='utf-8'))
+    if not isinstance(data, dict):
+        raise ValueError('上传页面配置需要是 JSON 对象。')
+    metadata = data.get('_meta', {'schema': 1, 'revision': 0})
+    if (not isinstance(metadata, dict) or metadata.get('schema') != 1
+            or type(metadata.get('revision')) is not int or metadata['revision'] < 0):
+        raise ValueError('上传页面配置版本不兼容，请更新助手。')
+    settings = data.get(platform)
+    hosts = {'bilibili': 'member.bilibili.com', 'xiaohongshu': 'creator.xiaohongshu.com'}
+    if not isinstance(settings, dict) or platform not in hosts:
+        raise ValueError('上传平台配置无效。')
+    if not isinstance(settings.get('url'), str):
+        raise ValueError('上传页面地址无效。')
+    url = urllib.parse.urlsplit(settings['url'])
+    if url.scheme != 'https' or url.hostname != hosts[platform]:
+        raise ValueError('上传页面地址不属于对应的创作中心。')
+    return settings
+
+
 def candidates(page, selectors, *, visible=True, container_visible=False):
     for selector in selectors:
         for frame in page.frames:
@@ -364,6 +384,8 @@ def fill_existing(page, settings, data, cover, update, check=lambda: None, timeo
             atomic_json(target / (platform + "_上传状态.json"), {"state": state, "checks": checks or {},
                         "message": message, "updated_at": dt_now(), "platform": platform, "final_publish": "human_only",
                         "control_bundle": str(control_root)})
+            from task_contract import publication_state
+            publication_state(target, platform, state)
     if platform:
         owner = {"pid": os.getpid(), "bundle": str(Path(cover).parent), "control_bundle": str(control_root)}
         atomic_json(Path(cover).parent / (platform + "_helper.json"), owner)
@@ -536,7 +558,7 @@ def restore_migrated_session(context, profile):
 def run(platform, bundle=None, headless=False, login_only=False):
     from playwright.sync_api import sync_playwright
     from pipeline import job_lock
-    settings = json.loads((ROOT / "publish-selectors.json").read_text(encoding="utf-8"))[platform]
+    settings = load_selectors(platform)
     data = load_bundle(bundle, platform) if bundle is not None else None
     if not login_only and data is None:
         raise ValueError("请先生成发布资料包。")
@@ -551,6 +573,7 @@ def run(platform, bundle=None, headless=False, login_only=False):
         stop_path.unlink(missing_ok=True)
         atomic_json(output / (platform + "_helper.json"), {"pid": os.getpid(), "bundle": str(output)})
         atomic_json(profile / "active.json", {"pid": os.getpid(), "bundle": str(output)})
+        last_capture = [0.]
 
         def update(state, checks=None, message=""):
             if checks is None and status_path.exists():
@@ -561,16 +584,25 @@ def run(platform, bundle=None, headless=False, login_only=False):
             atomic_json(status_path, {"state": state, "checks": checks or {}, "message": message,
                                       "updated_at": dt_now(), "platform": platform,
                                       "final_publish": "human_only"})
+            from task_contract import publication_state
+            publication_state(output, platform, state)
             print(message or state, flush=True)
 
         def check():
             if stop_path.exists():
                 raise InterruptedError("已停止浏览器任务。")
+            if platform == 'bilibili' and time.monotonic() - last_capture[0] >= 2:
+                last_capture[0] = time.monotonic()
+                try:
+                    from bilibili_session import capture
+                    capture(context)
+                except Exception:
+                    pass  # Closing a browser must still release its profile lock.
             if inspect_path.exists():
                 inspect_path.unlink()
                 atomic_json(output / (platform + "_DOM诊断.json"), diagnose_page(page))
             try:
-                settings.update(json.loads((ROOT / "publish-selectors.json").read_text(encoding="utf-8"))[platform])
+                settings.update(load_selectors(platform))
             except (OSError, ValueError):
                 pass
 
@@ -594,7 +626,7 @@ def run(platform, bundle=None, headless=False, login_only=False):
                             page.wait_for_timeout(500)
                         except Exception:
                             break
-                    update("login_window_closed", message="登录窗口已关闭；后续上传会复用登录状态。")
+                    update("login_window_closed", message="登录窗口已关闭；下载与上传可复用助手的登录状态。")
                     return
                 def editor_ready():
                     parsed = urllib.parse.urlsplit(page.url)

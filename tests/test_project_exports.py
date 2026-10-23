@@ -4,12 +4,14 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import shutil
 from types import SimpleNamespace
 from unittest.mock import patch
 
 APP=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(APP))
-os.environ['NUMBA_CACHE_DIR']=str(APP/'work/test-numba-cache')
+from common import native_path
+os.environ['NUMBA_CACHE_DIR']=native_path(APP/'work/test-numba-cache')
 from v2m_runtime import configure
 configure(APP/'dependencies/vocal2midi2')
 import numpy as np
@@ -37,10 +39,108 @@ with tempfile.TemporaryDirectory(dir=APP/'work',prefix='project-formats-') as te
         save_ustx(notes,out/(voice+'.ustx'),tempo=120,rmvpe_result=rmvpe)
     request={'voice_mode':'dual','language':'zh','project_formats':['ustx','vsqx','svp'],
              'audio_formats':['wav','flac','mp3','ogg'],'export_pitch':True,'tools':load_config(False)}
-    report=export_job(job,request)
+    starting_directory=Path.cwd()
+    with patch('project_exports.os.chdir',side_effect=AssertionError('Project export changed the global working directory')):
+        report=export_job(job,request)
+    assert Path.cwd()==starting_directory
     assert len(report['projects']['outputs'])==3 and len(report['audio'])==12
+    # Styles are independent SVP candidates over the verified cached baseline.
+    # Switching/retrying a style must not reconvert or compound the baseline.
+    import copy
+    from common import file_hash
+    import task_contract
+    base_hashes={fmt:file_hash(job/'exports'/('voices.'+fmt)) for fmt in ('ustx','vsqx','svp')}
+    baseline=json.loads((job/'exports/voices.svp').read_text(encoding='utf-8-sig').rstrip('\x00'))
+    styled={**request,'performance_style':'soft_ballad','style_strength':.6,'style_scope':'lead'}
+    with patch('project_exports.library',side_effect=AssertionError('A cached baseline was reconverted')):
+        style_report=export_job(job,styled)
+    style_item=style_report['styles']['outputs'][0];candidate=job/style_item['file']
+    styled_data=json.loads(candidate.read_text(encoding='utf-8'))
+    assert styled_data['tracks'][1:]==baseline['tracks'][1:]
+    assert styled_data['tracks'][0]['mainGroup']['notes']==baseline['tracks'][0]['mainGroup']['notes']
+    assert all(file_hash(job/'exports'/('voices.'+fmt))==digest for fmt,digest in base_hashes.items())
+    assert outputs_intact(job,styled)
+    # Every algorithm dependency must invalidate candidate reuse even when the
+    # verified baseline bytes and user settings remain unchanged.
+    import project_exports
+    style_path,style_signature=project_exports._style_target(job,styled,{'sha256':base_hashes['svp']})
+    for dependency in ('style_presets.py','style_pitch.py','calibration_refinement.py','vocal_expression.py','expression_calibration.py'):
+        def updated_hash(path):
+            value=file_hash(path)
+            return value+'-updated' if Path(path).name==dependency else value
+        with patch('project_exports.file_hash',side_effect=updated_hash):
+            updated_path,updated_signature=project_exports._style_target(job,styled,{'sha256':base_hashes['svp']})
+            assert updated_signature!=style_signature and updated_path!=style_path,dependency
+    style_bytes=candidate.read_bytes()
+    with patch('style_presets.apply_style',side_effect=AssertionError('Cached style was compounded')):
+        export_job(job,styled)
+    assert candidate.read_bytes()==style_bytes
+    candidate.write_bytes(style_bytes+b' ')
+    assert not outputs_intact(job,styled)
+    restored=export_job(job,styled)['styles']['outputs'][0]
+    assert candidate.read_bytes()==style_bytes and (job/restored['preserved_copy']).is_file()
+    all_voices={**styled,'style_scope':'all_vocals'}
+    assert not outputs_intact(job,all_voices)
+    next_item=export_job(job,all_voices)['styles']['outputs'][0]
+    assert next_item['file']!=style_item['file'] and candidate.is_file()
+    assert outputs_intact(job,all_voices)
+    entries=task_contract.read(job)['entries'].values()
+    assert any(row.get('active') is False and row.get('location',{}).get('path')==style_item['file'] for row in entries)
+    pitched_request={**styled,'style_pitch':True}
+    pitched_item=export_job(job,pitched_request)['styles']['outputs'][0]
+    assert pitched_item['file'] not in (style_item['file'],next_item['file'])
+    pitch_receipt=pitched_item['adaptation']['pitch']
+    assert pitch_receipt['enabled'] and outputs_intact(job,pitched_request)
+    source_mode=baseline['tracks'][0]['mainGroup']['parameters']['pitchDelta'].get('mode','cubic')
+    if source_mode!='linear':
+        assert pitch_receipt['status']=='skipped' and not pitched_item['adaptation']['pitch_changed']
+        assert pitch_receipt['tracks'][0]['reason']=='preserved_nonlinear'
+    else:assert pitched_item['adaptation']['pitch_changed'],json.dumps(pitch_receipt,ensure_ascii=False)
+    assert all(file_hash(job/'exports'/('voices.'+fmt))==digest for fmt,digest in base_hashes.items())
+    pitched_path=job/pitched_item['file'];pitched_bytes=pitched_path.read_bytes()
+    with patch('style_presets.apply_style',side_effect=AssertionError('Pitch candidate was compounded')):
+        export_job(job,pitched_request)
+    assert pitched_path.read_bytes()==pitched_bytes
+    # Disabling styles retires receipts without deleting either trial; the
+    # ordinary original-format output and subsequent tests remain unaffected.
+    export_job(job,request)
+    assert outputs_intact(job,request) and candidate.is_file() and (job/next_item['file']).is_file()
+    assert pitched_path.is_file()
+    import task_contract
+    task_contract.begin_stage(job,'exports')
+    export_job(job,request)
+    assert all(row['state']=='verified' for row in task_contract.inspect(job)), 'Cache reuse left committed files stale'
     assert all(item['pitch_points']>10 for item in report['projects']['tracks'])
+    # Project export remains independent when the audio-export card is disabled.
+    with patch('project_exports.audio_inputs', side_effect=AssertionError('Disabled audio was scanned')):
+        projects_only=dict(request,audio_formats=[])
+        project_report=export_job(job,projects_only)
+        assert len(project_report['projects']['outputs'])==3 and project_report['audio']==[]
+        assert outputs_intact(job,projects_only)
     converters,_,SingingTrack,_=library()
+    # Import the actual accompaniment after moving the complete task folder.
+    with tempfile.TemporaryDirectory(dir=APP/'work',prefix='relocated-') as moved:
+        moved_job=Path(moved)/'中文 song';shutil.copytree(job,moved_job)
+        for fmt in ('ustx','vsqx','svp'):
+            target=moved_job/'exports'/('voices.'+fmt)
+            assert str(job) not in target.read_text(encoding='utf-8'),fmt
+            loaded=converters[fmt].load(target,{'import_pitch':True,'import_instrumental_track':True})
+            audio=[track for track in loaded.track_list if hasattr(track,'audio_file_path')]
+            assert len(audio)==1,(fmt,'Missing accompaniment')
+            audio_path=Path(audio[0].audio_file_path)
+            if not audio_path.is_absolute():audio_path=target.parent/audio_path
+            assert audio_path.resolve().is_relative_to(moved_job) and audio_path.is_file(),(fmt,audio_path)
+            if fmt=='vsqx':
+                info=sf.info(audio_path)
+                assert info.subtype=='PCM_16' and info.samplerate==44100 and info.channels==2
+    companion=job/'exports/voices.wavparts/instrumental.wav'
+    assert companion.is_file()
+    old_bytes=companion.read_bytes();companion.unlink()
+    assert next(row for row in task_contract.inspect(job) if row['path']==str(job/'exports/voices.vsqx'))['state']=='stale'
+    assert not outputs_intact(job,request)
+    export_job(job,request)
+    assert companion.read_bytes()==old_bytes and outputs_intact(job,request)
+    assert next(row for row in task_contract.inspect(job) if row['path']==str(job/'exports/voices.vsqx'))['state']=='verified'
     for fmt in ('ustx','vsqx','svp'):
         project=converters[fmt].load(job/'exports'/('voices.'+fmt),{'import_pitch':True,'import_instrumental_track':False})
         tracks=[track for track in project.track_list if isinstance(track,SingingTrack)]
@@ -162,4 +262,63 @@ with tempfile.TemporaryDirectory(dir=APP/'work',prefix='project-formats-') as te
     with patch('pipeline.run_process',side_effect=AssertionError('Stable gain triggered redundant encoding')):
         export_job(job,request)
     assert all((job/name).stat().st_mtime_ns==stamp for name,stamp in encoded_stamps.items())
-print('PASS: two tracks, note timing/pitches/lyrics, non-flat pitch in USTX/VSQX/SVP, WAV reuse and FLAC/MP3/OGG encoding')
+    # A same-song redo must retain the fitted controls while keeping revised
+    # notes and measured pitch. Losing the source fails before replacing output.
+    from calibration_session import project_data
+    from calibration_workflow import register_expression,inherit_expression
+    from expression_calibration import CONTROLS
+    from common import atomic_json,file_hash
+    import copy
+    sf.write(job/'audio/source.wav',wave,44100,subtype='FLOAT')
+    atomic_json(job/'request.json',request)
+    tuned=project_data(job/'exports/voices.svp')
+    for name,(lo,hi,neutral,step) in CONTROLS.items():
+        tuned['tracks'][0]['mainGroup'].setdefault('parameters',{})[name]={
+            'mode':'linear','points':[0,neutral,705600000,neutral+step*.3,1411200000,neutral]}
+    tuned['tracks'][0]['mainRef']['database']={'name':'Retained Test Voice'}
+    original_tuning=job/'exports/fitted.svp';atomic_json(original_tuning,tuned)
+    assert register_expression(job,original_tuning)
+    # A user can save or refine the same score in SV before using redo.
+    tuned['tracks'][0]['mainGroup']['parameters']['tension']['points'][3]=.11
+    atomic_json(original_tuning,tuned)
+    child=job/'redo';child.mkdir()
+    for folder in ('audio','midi'):shutil.copytree(job/folder,child/folder)
+    new_request={'voice_mode':'dual','language':'zh','project_formats':['svp'],'audio_formats':['wav'],
+                 'export_pitch':True,'tools':request['tools']}
+    # First serialize the revised score without parameters as a comparison.
+    export_job(child,new_request)
+    fresh=project_data(child/'exports/voices.svp')
+    inherit_expression(job,child,new_request)
+    restored=export_job(child,new_request)
+    saved=project_data(child/'exports/voices.svp')
+    for current,baseline in zip(saved['tracks'],fresh['tracks']):
+        # LibreSVIP assigns fresh UUIDs on every serialization.
+        musical_notes=lambda t:[{k:v for k,v in n.items() if k!='uuid'} for n in t.get('mainGroup',{}).get('notes',[])]
+        assert musical_notes(current)==musical_notes(baseline)
+        assert current.get('mainGroup',{}).get('parameters',{}).get('pitchDelta')==baseline.get('mainGroup',{}).get('parameters',{}).get('pitchDelta')
+    for name in CONTROLS:
+        curve=saved['tracks'][0]['mainGroup']['parameters'][name]
+        prior=tuned['tracks'][0]['mainGroup']['parameters'][name]
+        lookup=dict(zip(curve['points'][::2],curve['points'][1::2]))
+        assert all(lookup[x]==v for x,v in zip(prior['points'][::2],prior['points'][1::2]))
+        assert len(curve['points'])>len(prior['points']) and curve['mode']==prior['mode']
+        state=restored['projects']['outputs'][0]['expression_density']['tracks'][0]['controls'][name]
+        assert state['original_knots_preserved'] and state['max_changing_gap_ms']<=5.00001
+    assert restored['projects']['outputs'][0]['retained_expression']['lead']['new_fit'] is False
+    assert outputs_intact(child,new_request)
+    # Sampling mode must reach retained automation and change only SVP cache.
+    raw_request={**new_request,'expression_density':'original'}
+    raw_export=export_job(child,raw_request)
+    raw_saved=project_data(child/'exports/voices.svp')
+    for name in CONTROLS:
+        assert raw_saved['tracks'][0]['mainGroup']['parameters'][name]==tuned['tracks'][0]['mainGroup']['parameters'][name]
+    assert raw_export['projects']['outputs'][0]['expression_density']['status']=='preserved_original'
+    assert outputs_intact(child,raw_request) and not outputs_intact(child,new_request)
+    export_job(child,new_request)
+    final_hash=file_hash(child/'exports/voices.svp')
+    (child/new_request['retained_expression']['tracks']['lead']['file']).write_text('{}')
+    try:export_job(child,new_request)
+    except ValueError:pass
+    else:raise AssertionError('Missing expression silently became a neutral project')
+    assert file_hash(child/'exports/voices.svp')==final_hash
+print('PASS: native formats, audio, parameter retention, note/pitch preservation and failed-source protection')

@@ -1,4 +1,6 @@
 """One adapter and CPU-thread policy for the assistant's inference engines."""
+
+from common import environment_value
 import importlib.util
 import os
 from functools import lru_cache
@@ -29,16 +31,17 @@ def validate(adapter='auto', threads=0):
 def prepare_environment(tools):
     adapter, threads = tools.get('dml_adapter', 'auto'), tools.get('cpu_threads', 0)
     validate(adapter, threads)
-    for key, value in [('BVWA_DML_ADAPTER', None if adapter == 'auto' else str(adapter)),
-                       ('BVWA_CPU_THREADS', str(threads) if threads else None)]:
-        if value is None: os.environ.pop(key, None)
-        else: os.environ[key] = value
+    for key, value in [('VWA_DML_ADAPTER', None if adapter == 'auto' else str(adapter)),
+                       ('VWA_CPU_THREADS', str(threads) if threads else None)]:
+        for current in (key, 'B' + key):
+            if value is None: os.environ.pop(current, None)
+            else: os.environ[current] = value
 
 
 @lru_cache(maxsize=1)
 def device_module():
     path = ROOT / 'dependencies/vocal2midi2/inference/device_utils.py'
-    spec = importlib.util.spec_from_file_location('_bvwa_device_probe', path)
+    spec = importlib.util.spec_from_file_location('_vwa_device_probe', path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -57,7 +60,7 @@ def providers(tools, device, label='MDX'):
 
 
 def session_threads(options, default=0):
-    threads = int(os.environ.get('BVWA_CPU_THREADS', default))
+    threads = int(environment_value('VWA_CPU_THREADS', default))
     if threads:
         options.intra_op_num_threads = threads
         options.inter_op_num_threads = 1

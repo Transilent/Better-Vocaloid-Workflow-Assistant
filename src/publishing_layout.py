@@ -1,112 +1,302 @@
-"""Four full-area publication steps with visible draft and account controls."""
+"""Four publication steps with visible drafts, real cover variants, and review."""
+from i18n import tr as _tr
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QLineEdit,QTextEdit,QCheckBox,QComboBox,QDoubleSpinBox
-from desktop_theme import button,card,fold,label
-from workflow_widgets import StepWorkspace,CoverPreview
+from PyQt5.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QGridLayout,
+                             QHBoxLayout, QLineEdit, QTextEdit, QVBoxLayout,
+                             QWidget)
+
+from desktop_theme import button, card, fold, label
+from ui_components import AdaptiveColumns, choice
+from workflow_widgets import CoverPreview, StepWorkspace
+
+
+def _summary_row(layout, key, title, checks):
+    row = QHBoxLayout()
+    row.setSpacing(12)
+    row.addWidget(label(title, 'muted'))
+    row.addStretch()
+    value = label(_tr('待检查'), 'muted')
+    value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    checks[key] = value
+    row.addWidget(value)
+    layout.addLayout(row)
+    return value
 
 
 def build(tab):
-    outer=QVBoxLayout(tab)
-    outer.setContentsMargins(28,24,28,20)
+    outer = QVBoxLayout(tab)
+    outer.setContentsMargins(28, 24, 28, 20)
     outer.setSpacing(16)
-    outer.addWidget(label('发布工作流','heading'))
-    outer.addWidget(label('逐步检查成品、封面和文案，上传后在平台页面确认发布。','muted'))
-    tab.workspace=StepWorkspace(('成品','封面','文案','上传'))
-    tab.form_panel=tab.workspace.stack
-    outer.addWidget(tab.workspace,1)
+    outer.addWidget(label(_tr('发布'), 'heading'))
+    outer.addWidget(label(_tr('核对成品、来源、封面与平台草稿，最后在平台网页确认发布。'), 'muted'))
+    tab.page_context = label(_tr('尚未选择成品与来源任务'), 'muted')
+    tab.page_context.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    outer.addWidget(tab.page_context)
+
+    tab.workspace = StepWorkspace(('成品与来源', '封面', '平台文稿', '核对与填写'))
+    tab.form_panel = tab.workspace.stack
+    outer.addWidget(tab.workspace, 1)
     tab.workspace.changed.connect(tab.step_changed)
     tab.workspace.next.clicked.disconnect()
     tab.workspace.next.clicked.connect(tab.next_step)
-    source,body=tab.workspace.add_step('01 · 成品与来源','选择调音后的成品视频，再关联本家与 STAFF 资料。')
-    body.addWidget(label('成品视频','muted'))
-    tab.video=QLineEdit();tab.video.setPlaceholderText('选择调音与剪辑完成的视频')
-    tab.row(body,'视频',tab.video,'选择视频',tab.choose_video)
-    body.addWidget(label('来源任务','muted'))
-    tab.job=QLineEdit();tab.job.setReadOnly(True);tab.job.setPlaceholderText('选择本首歌对应的来源任务')
-    tab.row(body,'任务',tab.job,'选择任务',tab.choose_job)
-    body.addWidget(button('使用当前调音任务',tab.current_job))
-    body.addWidget(label('通过 BV 读取本家','muted'))
-    tab.bv=QLineEdit();tab.bv.setPlaceholderText('粘贴本家 BV 号或 B站链接')
-    row=QHBoxLayout();row.addWidget(tab.bv,1)
-    tab.fetch=button('读取本家资料',tab.fetch_source);row.addWidget(tab.fetch);body.addLayout(row)
-    tab.source_info=label('来源任务将提供本家、STAFF 和原始封面。','muted')
-    tab.source_info.setTextInteractionFlags(Qt.TextSelectableByMouse);body.addWidget(tab.source_info)
-    row=QHBoxLayout();row.addWidget(button('载入已有发布包',tab.choose_bundle));row.addWidget(button('打开发布包目录',tab.open_bundle));row.addStretch();body.addLayout(row)
-    body.addStretch()
 
-    cover,body=tab.workspace.add_step('02 · 视频封面','使用本家原始封面，或选择自己的图片／视频画面。')
-    columns=QHBoxLayout();columns.setSpacing(26)
-    settings=QWidget();settings.setMinimumWidth(250);settings.setMaximumWidth(360)
-    controls=QVBoxLayout(settings);controls.setContentsMargins(0,0,0,0);controls.setSpacing(18)
-    controls.addWidget(label('封面来源','card-title'))
-    tab.cover_mode=QComboBox()
-    for title,value in [('本家原始封面','original'),('视频画面截图','frame'),('自选图片','custom')]: tab.cover_mode.addItem(title,value)
-    controls.addWidget(tab.cover_mode)
-    tab.frame_panel=QWidget();frame=QVBoxLayout(tab.frame_panel);frame.setContentsMargins(0,0,0,0)
-    frame.addWidget(label('原视频截图时间','muted'))
-    tab.cover_seconds=QDoubleSpinBox();tab.cover_seconds.setRange(0,86400);tab.cover_seconds.setDecimals(2);tab.cover_seconds.setValue(20);tab.cover_seconds.setSuffix(' 秒')
-    frame.addWidget(tab.cover_seconds);controls.addWidget(tab.frame_panel)
-    tab.custom_cover_panel=QWidget();custom=QVBoxLayout(tab.custom_cover_panel);custom.setContentsMargins(0,0,0,0)
-    tab.cover_file=QLineEdit();tab.cover_file.setPlaceholderText('JPG / PNG / WebP 图片');custom.addWidget(tab.cover_file);custom.addWidget(button('选择图片',tab.choose_cover));controls.addWidget(tab.custom_cover_panel)
-    tab.cover_button=button('获取 / 刷新预览',tab.preview_cover,'primary');controls.addWidget(tab.cover_button)
-    controls.addWidget(label('上传时自动生成 4:3 与 16:9 版本，上下或左右补边，保留完整原图。','muted'))
-    controls.addStretch();columns.addWidget(settings)
-    tab.cover_preview=CoverPreview();columns.addWidget(tab.cover_preview,1);body.addLayout(columns,1)
-    tab.cover_detail=label('预览按原图比例显示。','muted');body.addWidget(tab.cover_detail)
+    source, body = tab.workspace.add_step(
+        '01 · 成品与来源',
+        '选择调音后的成品视频，再关联提供本家资料与简介草稿的任务。',
+    )
+    video_card, video_controls = card(_tr('成品视频'), _tr('选择本次要发布的成品。'))
+    tab.video = QLineEdit()
+    tab.video.setPlaceholderText(_tr('选择调音与剪辑完成的视频'))
+    tab.row(video_controls, '视频', tab.video, '选择视频', tab.choose_video)
+    video_controls.addWidget(label(_tr('生成时会固定当前成品；更换视频后请重新生成。'), 'muted'))
+    video_controls.addStretch()
+
+    source_card, source_controls = card(_tr('来源任务'), _tr('提供本家、STAFF、简介和 B站原封面。'))
+    tab.job = QLineEdit(tab)
+    tab.job.setReadOnly(True)
+    tab.job.setPlaceholderText(_tr('选择本首歌对应的来源任务'))
+    tab.job.hide()  # Keep the existing path value owner for saved publication data.
+    tab.job_display=label(_tr('尚未选择来源任务'),'muted')
+    source_controls.addWidget(tab.job_display)
+    tab.choose_task_button=button(_tr('从任务与结果选择'),tab.choose_job)
+    source_controls.addWidget(tab.choose_task_button)
+    source_controls.addWidget(label(_tr('按 BV 读取本家资料'), 'muted'))
+    tab.bv = QLineEdit()
+    tab.bv.setPlaceholderText(_tr('粘贴本家 BV 号或 B站链接'))
+    source_row = QHBoxLayout()
+    source_row.addWidget(tab.bv, 1)
+    tab.fetch = button(_tr('读取本家资料'), tab.fetch_source)
+    source_row.addWidget(tab.fetch)
+    source_controls.addLayout(source_row)
+    tab.source_info = label(_tr('来源任务会提供本家、STAFF 与 B站原封面。'), 'muted')
+    tab.source_info.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    source_controls.addWidget(tab.source_info)
+
+    bundle_row = QHBoxLayout()
+    bundle_row.addWidget(button(_tr('载入已有发布资料'), tab.choose_bundle))
+    bundle_row.addWidget(button(_tr('打开资料目录'), tab.open_bundle))
+    bundle_row.addStretch()
+    source_controls.addLayout(bundle_row)
+    source_controls.addStretch()
+    body.addWidget(AdaptiveColumns(video_card, source_card, breakpoint=920, ratio=(3, 2)), 1)
+
+    cover, body = tab.workspace.add_step(
+        '02 · 封面',
+        '从 B站原封面、来源原视频截图或自选图片开始，生成发布资料时自动制作平台尺寸封面。',
+    )
+    controls_card, controls = card(_tr('封面来源'), _tr('选择封面来源；下方选项会随类型变化。'))
+    tab.cover_mode = QComboBox()
+    for title, value in (('B站原封面', 'original'),
+                         ('来源原视频截图', 'frame'),
+                         ('自选图片', 'custom')):
+        tab.cover_mode.addItem(_tr(title), value)
+    tab.cover_mode_choice = choice(tab.cover_mode, columns=3, compact=True)
+    for option in tab.cover_mode_choice.buttons:
+        option.setMinimumHeight(64)
+    controls.addWidget(tab.cover_mode_choice)
+
+    tab.frame_panel = QWidget()
+    frame = QVBoxLayout(tab.frame_panel)
+    frame.setContentsMargins(0, 0, 0, 0)
+    frame.setSpacing(8)
+    frame.addWidget(label(_tr('截图时间'), 'muted'))
+    tab.cover_seconds = QDoubleSpinBox()
+    tab.cover_seconds.setRange(0, 86400)
+    tab.cover_seconds.setDecimals(2)
+    tab.cover_seconds.setValue(20)
+    tab.cover_seconds.setSuffix(' 秒')
+    frame.addWidget(tab.cover_seconds)
+    controls.addWidget(tab.frame_panel)
+
+    tab.custom_cover_panel = QWidget()
+    custom = QVBoxLayout(tab.custom_cover_panel)
+    custom.setContentsMargins(0, 0, 0, 0)
+    custom.setSpacing(8)
+    tab.cover_file = QLineEdit()
+    tab.cover_file.setPlaceholderText(_tr('JPG / PNG / WebP 图片'))
+    custom.addWidget(tab.cover_file)
+    custom.addWidget(button(_tr('选择图片'), tab.choose_cover))
+    controls.addWidget(tab.custom_cover_panel)
+
+    tab.cover_button = button(_tr('获取 / 刷新来源预览'), tab.preview_cover, 'primary')
+    controls.addWidget(tab.cover_button)
+    controls.addWidget(label(
+        _tr('生成发布资料后，B站 4:3 与 16:9 封面会完整补边。'),
+        'muted',
+    ))
+    controls.addStretch()
+
+    preview_card, preview_controls = card(_tr('封面预览'), _tr('查看原图或 B站补边封面。'))
+    tab.cover_asset_mode = QComboBox()
+    for title, value in (('原图', 'original'),
+                         ('B站 4:3', '4:3'),
+                         ('B站 16:9', '16:9')):
+        tab.cover_asset_mode.addItem(_tr(title), value)
+    tab.cover_asset_choice = choice(tab.cover_asset_mode, columns=3, compact=True)
+    preview_controls.addWidget(tab.cover_asset_choice)
+    tab.cover_preview = CoverPreview()
+    preview_controls.addWidget(tab.cover_preview, 1)
+    tab.cover_detail = label(_tr('预览保持原图比例。'), 'muted')
+    tab.cover_detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    preview_controls.addWidget(tab.cover_detail)
+    tab.cover_asset_hint = label(
+        _tr('B站 4:3 与 16:9 封面尚未生成；生成发布资料后可在此查看。'),
+        'muted',
+    )
+    tab.cover_asset_hint.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    preview_controls.addWidget(tab.cover_asset_hint)
+    body.addWidget(AdaptiveColumns(controls_card, preview_card, breakpoint=900, ratio=(1, 2)), 1)
+
     tab.cover_mode.currentIndexChanged.connect(tab.update_cover_options)
+    tab.cover_asset_mode.currentIndexChanged.connect(tab.show_cover_asset)
     tab.cover_file.textChanged.connect(tab.invalidate_cover_preview)
     tab.job.textChanged.connect(tab.invalidate_cover_preview)
     tab.cover_seconds.valueChanged.connect(tab.invalidate_cover_preview)
     tab.update_cover_options()
 
-    draft,body=tab.workspace.add_step('03 · 标题与简介','填写本次翻唱信息，并分别检查两个平台的文案。')
-    tab.song,tab.voice,tab.credit=QLineEdit(),QLineEdit(),QLineEdit()
-    for field,text in [(tab.song,'歌名'),(tab.voice,'翻唱歌姬（可留空）'),(tab.credit,'调音署名（可留空）')]: field.setPlaceholderText(text)
-    row=QHBoxLayout()
-    for title,field in [('歌名',tab.song),('歌姬',tab.voice),('署名',tab.credit)]: row.addWidget(label(title));row.addWidget(field,1)
-    body.addLayout(row)
-    def template(): tab.apply_title();tab.append_credit()
-    body.addWidget(button('应用标题格式与署名',template))
-    grid=QGridLayout();grid.setSpacing(24)
-    for column,(platform,name) in enumerate([('bilibili','B站'),('xiaohongshu','小红书')]):
-        panel,layout=card(name)
-        enabled=QCheckBox('上传到'+name);enabled.setChecked(True);layout.addWidget(enabled)
-        layout.addWidget(label('标题','muted'))
-        title=QLineEdit();title.setPlaceholderText('【歌姬翻唱】歌名，也可自行编辑');layout.addWidget(title)
-        layout.addWidget(label('简介与 STAFF','muted'))
-        description=QTextEdit();description.setAcceptRichText(False);description.setPlaceholderText('本家、歌姬与 STAFF 列表');description.setMinimumHeight(280);layout.addWidget(description,1)
-        counter=label('','muted');layout.addWidget(counter)
-        tab.fields[platform]={'enabled':enabled,'title':title,'description':description,'counter':counter}
-        for signal in (title.textChanged,description.textChanged): signal.connect(tab.count_text);signal.connect(tab.refresh_action)
-        enabled.toggled.connect(tab.refresh_action)
-        grid.addWidget(panel,0,column);grid.setColumnStretch(column,1)
-    body.addLayout(grid,1)
+    draft, body = tab.workspace.add_step(
+        '03 · 平台文稿',
+        '分别编辑两个平台的标题、简介和启用状态；生成发布资料时会一并保存。',
+    )
+    basics, basic_controls = card(_tr('本次翻唱信息'), _tr('用于生成标题与署名，之后仍可分别修改两个平台。'))
+    tab.song, tab.voice, tab.credit = QLineEdit(), QLineEdit(), QLineEdit()
+    for field, text in ((tab.song, '歌名'),
+                        (tab.voice, '翻唱歌姬（可留空）'),
+                        (tab.credit, '调音署名（可留空）')):
+        field.setPlaceholderText(text)
+    identity = QGridLayout()
+    identity.setHorizontalSpacing(16)
+    identity.setVerticalSpacing(8)
+    for column, (title, field) in enumerate((('歌名', tab.song),
+                                             ('歌姬', tab.voice),
+                                             ('署名', tab.credit))):
+        identity.addWidget(label(title, 'muted'), 0, column)
+        identity.addWidget(field, 1, column)
+        identity.setColumnStretch(column, 1)
+    basic_controls.addLayout(identity)
 
-    upload,body=tab.workspace.add_step('04 · 账号与上传','生成发布资料并上传；验证码与最终发布在平台网页完成。')
-    tab.review=label('添加成品视频与来源后，可在这里检查上传资料。','muted');tab.review.setTextInteractionFlags(Qt.TextSelectableByMouse);body.addWidget(tab.review)
-    tab.account_status={}
-    tab.account_actions={}
-    accounts=QGridLayout();accounts.setSpacing(24)
-    for column,(platform,name) in enumerate([('bilibili','B站'),('xiaohongshu','小红书')]):
-        panel,controls=card(name+'账号与上传')
-        status=label('登录后关闭登录窗口，再开始上传。已有登录会话会自动复用。','muted');tab.account_status[platform]=status;controls.addWidget(status)
-        actions={
-            'login':button('登录 / 更换账号',lambda checked=False,p=platform: tab.launch_browser(p,login_only=True)),
-            'resume':button('继续填写当前上传',lambda checked=False,p=platform: tab.resume_browser(p)),
-            'stop':button('关闭平台任务',lambda checked=False,p=platform: tab.stop_browser(p),'danger')}
-        tab.account_actions[platform]=actions
-        for control in actions.values(): controls.addWidget(control)
-        accounts.addWidget(panel,0,column);accounts.setColumnStretch(column,1)
-    body.addLayout(accounts)
-    row=QHBoxLayout();row.addWidget(button('打开发布包目录',tab.open_bundle));row.addWidget(button('载入已有发布包',tab.choose_bundle));row.addStretch()
-    body.addLayout(row);body.addStretch()
-    tab.prepare_button=button('生成发布资料',tab.primary_action,'primary');tab.prepare_button.setMinimumWidth(180)
-    tab.workspace.navigation.addWidget(tab.prepare_button)
+    def template():
+        tab.apply_title()
+        tab.append_credit()
+
+    basic_controls.addWidget(button(_tr('应用标题与署名'), template))
+    body.addWidget(basics)
+
+    platform_panels = []
+    for platform, name in (('bilibili', 'B站'), ('xiaohongshu', '小红书')):
+        panel, controls = card(name + _tr('草稿'), _tr('勾选后才会进入本次发布资料。'))
+        enabled = QCheckBox(_tr('纳入 ') + name + _tr(' 发布草稿'))
+        enabled.setChecked(True)
+        enabled.setAccessibleName(name + _tr(' 发布启用状态'))
+        controls.addWidget(enabled)
+        draft_state = label(_tr('已启用 · 待核对标题与简介'), 'muted')
+        controls.addWidget(draft_state)
+        controls.addWidget(label(_tr('标题'), 'muted'))
+        title = QLineEdit()
+        title.setPlaceholderText(_tr('【歌姬翻唱】歌名，也可自行编辑'))
+        title.setMinimumHeight(48)
+        controls.addWidget(title)
+        controls.addWidget(label(_tr('简介与 STAFF'), 'muted'))
+        description = QTextEdit()
+        description.setAcceptRichText(False)
+        description.setPlaceholderText(_tr('本家、歌姬与 STAFF 列表'))
+        description.setMinimumHeight(260)
+        controls.addWidget(description, 1)
+        counter = label('', 'muted')
+        controls.addWidget(counter)
+        tab.fields[platform] = {
+            'enabled': enabled,
+            'title': title,
+            'description': description,
+            'counter': counter,
+            'draft_state': draft_state,
+            'panel': panel,
+        }
+        for signal in (title.textChanged, description.textChanged):
+            signal.connect(tab.count_text)
+            signal.connect(tab.refresh_action)
+        enabled.toggled.connect(tab.count_text)
+        enabled.toggled.connect(tab.refresh_action)
+        platform_panels.append(panel)
+    body.addWidget(AdaptiveColumns(platform_panels[0], platform_panels[1],
+                                   breakpoint=1060, ratio=(1, 1)), 1)
+
+    upload, body = tab.workspace.add_step(
+        '04 · 核对与填写',
+        '核对成品、来源、封面和文稿，再生成发布资料；生成后可打开平台填写。',
+    )
+    summary_card, summary = card(_tr('核对摘要'), _tr('汇总当前选择与资料状态；这里不代表已在平台发布。'))
+    tab.review = label(_tr('完成前三步后，在这里核对发布资料。'), 'muted')
+    tab.review.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    summary.addWidget(tab.review)
+    tab.review_checks = {}
+    for key, title in (('video', '成品视频'),
+                       ('source', '来源任务'),
+                       ('cover', '封面与补边封面'),
+                       ('drafts', '平台文稿'),
+                       ('bundle', '发布资料'),
+                       ('browser', '平台填写')):
+        _summary_row(summary, key, title, tab.review_checks)
+    summary.addWidget(label(_tr('最终发布始终由你在平台网页确认；助手不会提交最终投稿。'), 'muted'))
+    summary.addStretch()
+
+    accounts_card, accounts_controls = card(
+        _tr('平台填写'),
+        _tr('登录后会保留浏览器会话，方便再次填写。'),
+    )
+    tab.account_status = {}
+    tab.account_actions = {}
+    for platform, name in (('bilibili', 'B站'), ('xiaohongshu', '小红书')):
+        platform_box, controls = card(name + _tr('账号与填写'), _tr('先登录或复用已有会话。'))
+        status = label(_tr('登录完成后请关闭登录窗口，再打开平台填写；已有会话会继续使用。'), 'muted')
+        status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        tab.account_status[platform] = status
+        controls.addWidget(status)
+        actions = {
+            'login': button(_tr('登录 / 更换账号'),
+                            lambda checked=False, p=platform: tab.launch_browser(p, login_only=True)),
+            'resume': button(_tr('继续填写当前页面'),
+                             lambda checked=False, p=platform: tab.resume_browser(p)),
+            'stop': button(_tr('关闭平台任务'),
+                           lambda checked=False, p=platform: tab.stop_browser(p), 'danger'),
+        }
+        tab.account_actions[platform] = actions
+        for control in actions.values():
+            controls.addWidget(control)
+        platform_box.setMinimumHeight(260)
+        accounts_controls.addWidget(platform_box)
+    accounts_controls.addStretch()
+    body.addWidget(AdaptiveColumns(summary_card, accounts_card,
+                                   breakpoint=1080, ratio=(3, 2)), 1)
+
+    tab.prepare_button = button(_tr('生成发布资料'), tab.prepare_bundle, 'primary')
+    tab.prepare_button.setObjectName('prepare-publication')
+    tab.prepare_button.setMinimumHeight(54)
+    tab.prepare_button.setMinimumWidth(190)
+    tab.upload_button = button(_tr('打开平台填写'), tab.upload_selected)
+    tab.upload_button.setObjectName('upload-publication')
+    tab.upload_button.setMinimumHeight(54)
+    tab.upload_button.setMinimumWidth(190)
+    tab.upload_button.setToolTip(_tr('内容一致并生成发布资料后可用。'))
+    tab.workspace.actions.addStretch()
+    tab.workspace.actions.addWidget(tab.prepare_button, 1)
+    tab.workspace.actions.addWidget(tab.upload_button, 1)
+    tab.workspace.actions.addStretch()
     tab.prepare_button.hide()
-    tab.status=label('准备就绪 · 添加成品视频与来源资料');outer.addWidget(tab.status)
-    tab.log=QTextEdit();tab.log.setReadOnly(True);tab.log.setAcceptRichText(False);tab.log.setFixedHeight(140)
-    tab.log_toggle=fold('发布日志',tab.log,outer)
-    for field in (tab.job,tab.video,tab.cover_file): field.textChanged.connect(tab.refresh_action)
+    tab.upload_button.hide()
+
+    tab.status = label(_tr('先添加成品与来源资料'), 'muted')
+    tab.status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    outer.addWidget(tab.status)
+    tab.log = QTextEdit()
+    tab.log.setReadOnly(True)
+    tab.log.setAcceptRichText(False)
+    tab.log.setFixedHeight(140)
+    tab.log.document().setMaximumBlockCount(1800)
+    tab.log_toggle = fold(_tr('发布日志'), tab.log, outer)
+
+    for field in (tab.job, tab.video, tab.cover_file):
+        field.textChanged.connect(tab.refresh_action)
     tab.cover_mode.currentIndexChanged.connect(tab.refresh_action)
     tab.cover_seconds.valueChanged.connect(tab.refresh_action)
     tab.workspace.refresh()

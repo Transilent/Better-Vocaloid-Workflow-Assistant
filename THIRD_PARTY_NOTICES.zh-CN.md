@@ -12,6 +12,7 @@
 | 可选 Pymss、Pymss Core、PyTorch 及支持库 | 从冻结的上游 wheel 下载，包元数据及原声明保留于 `dependencies/optional/bs-roformer/current/packages` |
 | Python | 3.12.10，保留运行库的 `LICENSE.txt` |
 | Python 库 | 保留原 `LICENSE`、`COPYING`、包内许可及元数据 |
+| 可选参考演唱分析器 | [PyWORLD](https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder)，MIT；其内置 [WORLD](https://github.com/mmorise/World) 使用 BSD-3-Clause。保留 wheel 元数据和 `components/world-LICENSE.txt` 声明 |
 | yt-dlp | [上游](https://github.com/yt-dlp/yt-dlp)，`vendor/` 内保留代码与许可 |
 | Playwright / Node.js | [上游](https://github.com/microsoft/playwright-python)，`vendor/` 内保留原声明 |
 | FFmpeg | 7.1.3-Jellyfin，启用 GPL/version3；[源码](https://github.com/jellyfin/jellyfin-ffmpeg)、[许可说明](https://ffmpeg.org/legal.html) |

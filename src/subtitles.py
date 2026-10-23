@@ -61,7 +61,7 @@ def timed_csv(text):
     return validate([Cue(float(r['start']), float(r['end']), r['text']) for r in rows])
 
 
-def midi_cues(path, track=None):
+def midi_cues(path, track=None, *, reference_lines=None):
     import mido
     midi = mido.MidiFile(str(path), charset='utf8')
     if midi.type == 2:
@@ -79,25 +79,77 @@ def midi_cues(path, track=None):
                 out.append(msg.copy(time=pending))
                 pending = 0
         tracks.append(out)
-    seconds, tempo, syllables, duration = 0.0, 500000, [], 0.0
+    seconds, tempo, beat, syllables = 0.0, 500000, 0.0, []
+    from collections import defaultdict, deque
+    active, notes = defaultdict(deque), []
     for msg in mido.merge_tracks(tracks):
         seconds += mido.tick2second(msg.time, midi.ticks_per_beat, tempo)
-        duration = seconds
+        beat += msg.time / midi.ticks_per_beat
         if msg.type == 'set_tempo':
             tempo = msg.tempo
         if msg.type == 'lyrics' and msg.text.strip():
-            syllables.append((seconds, msg.text.strip()))
+            syllables.append((seconds, msg.text.strip(), beat))
+        elif msg.type == 'note_on' and msg.velocity:
+            active[(msg.channel, msg.note)].append(seconds)
+        elif msg.type == 'note_off' or msg.type == 'note_on' and not msg.velocity:
+            key = (msg.channel, msg.note)
+            if active[key]:
+                onset = active[key].popleft()
+                if seconds > onset:
+                    notes.append((onset, seconds))
+    # Associate note releases with timed lyrics, including unlabelled melisma
+    # notes. Do not extend the final cue to an unrelated end-of-track marker.
+    from bisect import bisect_right
+    starts = [item[0] for item in syllables]
+    releases = {}
+    for onset, end in sorted(notes):
+        index = bisect_right(starts, onset + 1e-8) - 1
+        if index >= 0:
+            start = starts[index]
+            if onset <= releases.get(start, start) + .25:
+                releases[start] = max(releases.get(start, start), end)
+        # A late lyric within a held note can still use its measured release.
+        index = bisect_right(starts, onset + 1e-8)
+        while index < len(starts) and starts[index] < end - 1e-8:
+            start = starts[index]
+            releases[start] = max(releases.get(start, start), end)
+            index += 1
+    # Reference lines are usable only when all characters and syllable boundaries
+    # agree. Never invent timestamps or split a multi-character lyric event.
+    from common import clean_lyrics
+    lines = [clean_lyrics(line) for line in (reference_lines or []) if clean_lyrics(line)]
+    boundaries, consumed = set(), 0
+    if lines and ''.join(lines) == ''.join(clean_lyrics(text) for _, text, _ in syllables):
+        cursor = 0
+        for line in lines[:-1]:
+            cursor += len(line)
+            boundaries.add(cursor)
+        event_boundaries = set()
+        for _, text, _ in syllables:
+            consumed += len(clean_lyrics(text))
+            event_boundaries.add(consumed)
+        if not boundaries <= event_boundaries:
+            boundaries.clear()
+    consumed = 0
     groups = []
-    for start, text in syllables:
-        if groups and start - groups[-1][-1][0] <= .8 and start - groups[-1][0][0] < 6:
-            groups[-1].append((start, text))
+    for start, text, beat in syllables:
+        join = (groups and consumed not in boundaries
+                and ((bool(boundaries)) or
+                     (start - groups[-1][-1][0] <= 2 and beat - groups[-1][-1][2] <= 1.6
+                      and start - groups[-1][0][0] < 10 and beat - groups[-1][0][2] < 8)))
+        if join:
+            groups[-1].append((start, text, beat))
         else:
-            groups.append([(start, text)])
+            groups.append([(start, text, beat)])
+        consumed += len(clean_lyrics(text))
     cues = []
     for i, group in enumerate(groups):
-        roman = all(re.fullmatch(r'[\x20-\x7e]+', s) for _, s in group)
-        end = min(group[-1][0]+1.5, groups[i+1][0][0]) if i+1 < len(groups) else max(duration, group[-1][0]+.5)
-        cues.append(Cue(group[0][0], end, (' ' if roman else '').join(s for _, s in group)))
+        roman = all(re.fullmatch(r'[\x20-\x7e]+', s) for _, s, _ in group)
+        fallback = 1.5 if i+1 < len(groups) else .5
+        end = max(releases.get(start, start + fallback) for start, _, _ in group)
+        if i+1 < len(groups):
+            end = min(end, groups[i+1][0][0])
+        cues.append(Cue(group[0][0], end, (' ' if roman else '').join(s for _, s, _ in group)))
     return validate(cues)
 
 
@@ -143,7 +195,8 @@ def export_job(job, request):
     for voice in voices:
         source = job / 'midi' / (voice+'.mid') if voice == 'vocals' else job / 'midi' / voice / (voice+'.mid')
         try:
-            cues = midi_cues(source)
+            cues = midi_cues(source, reference_lines=request.get(
+                'backing_lyric_lines' if voice == 'backing' else 'lyric_lines'))
         except ValueError as exc:
             warnings.append(f'{voice}：{exc}')
             continue

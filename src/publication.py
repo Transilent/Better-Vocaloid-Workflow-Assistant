@@ -199,6 +199,13 @@ def prepare(job, video, content, cover_seconds=20, cover_file=None, parent=None,
             "B站封面按4:3、16:9分别适配，比例不同时补黑边，保留完整原图。\n"
             "标题与简介使用你在助手中填写的版本。\n"
             "上传完成后请在网页核对封面、分区、标签、原创/转载及其他必填项，再手动发布。\n", encoding="utf-8")
+        # Only unchanged generated files can later be offered for cleanup.
+        # Edited drafts, unknown files and legacy bundles remain protected.
+        atomic_json(bundle / 'cleanup-inventory.json', {'version':1,'kind':'publication-generated',
+            'entries':[{'file':path.name,'bytes':path.stat().st_size,'sha256':file_hash(path)}
+                       for path in sorted(bundle.iterdir()) if path.is_file()]})
+        from task_contract import register_publication
+        register_publication(job, bundle)
         return bundle.resolve()
     except BaseException:
         # Preserve diagnostics without presenting an incomplete bundle as ready.

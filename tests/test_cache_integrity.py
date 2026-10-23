@@ -39,9 +39,27 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='cache-integrity-') as
     changed = dict(request, project_formats=['ustx'], midi_backend='v2')
     signature = common.midi_signature(job, changed, 'lead')
     assert signature == common.midi_signature(job, dict(changed, project_formats=['svp']), 'lead')
+    assert signature == common.midi_signature(job, dict(changed, reference_dynamics=True, dynamics_strength=.3), 'lead')
     assert signature == common.midi_signature(job, dict(changed, tools=dict(changed['tools'], theme='dark', download_workers=8)), 'lead')
     for edit in ({'lyrics': '改变歌词'}, {'language': 'ja'}, {'midi_steps': 32}, {'zh_lyric_mode': 'pinyin'}, {'export_pitch': True}):
         assert signature != common.midi_signature(job, dict(changed, **edit), 'lead'), edit
+    # MIDI-only v2 still verifies f0. Its sidecar is checked and participates in
+    # backing deduplication even when no editor curve is requested.
+    from artifact_cache import inference_inputs
+    midi_only=dict(changed,project_formats=[],export_pitch=False,
+        tools=dict(changed['tools'],vocal2midi=str(APP/'dependencies/vocal2midi2')))
+    inputs=inference_inputs(job,midi_only,'lead')
+    assert 'rmvpe_model' in inputs['models'] and 'pitch_adapter' in inputs
+    folder=job/'midi/lead';folder.mkdir(parents=True,exist_ok=True)
+    (folder/'lead.mid').write_bytes(b'cached-midi')
+    sidecar=folder/'lead.pitch.npz';sidecar.write_bytes(b'original-pitch')
+    common.atomic_json(folder/'report.json',{'input_signature':common.midi_signature(job,midi_only,'lead'),
+        'midi_sha256':common.file_hash(folder/'lead.mid'),'pitch_source':'absolute_rmvpe',
+        'output_sha256':{'pitch.npz':common.file_hash(sidecar)}})
+    assert common.completed_voice(job,midi_only,'lead')
+    before=common.midi_signature(job,midi_only,'backing');sidecar.write_bytes(b'changed-pitch')
+    assert not common.completed_voice(job,midi_only,'lead')
+    assert before!=common.midi_signature(job,midi_only,'backing')
     # Header-correct changes and nonempty non-audio files must both be rejected.
     sf.write(job / 'audio/backing.wav', wave / 5, 44100, subtype='FLOAT')
     assert not valid_receipt(job, request, 'separation', files, saved)

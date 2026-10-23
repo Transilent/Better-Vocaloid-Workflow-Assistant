@@ -117,7 +117,7 @@ def download(item, folder, progress, check=None, source='auto', workers=4,
                 raise RangeUnsupported('分段下载已停止。')
         try:
             cancelled()
-            probe = urllib.request.Request(route, headers={'User-Agent':'BVWA-Downloader', 'Range':'bytes=0-0', 'Accept-Encoding':'identity'})
+            probe = urllib.request.Request(route, headers={'User-Agent':'VWA-Downloader', 'Range':'bytes=0-0', 'Accept-Encoding':'identity'})
             with opener(probe, timeout=12) as response:
                 if response.status != 206 or response.headers.get('Content-Range') != f'bytes 0-0/{total}' or len(response.read(2)) != 1:
                     raise RangeUnsupported('服务器不支持分段下载，将使用单连接。')
@@ -143,7 +143,7 @@ def download(item, folder, progress, check=None, source='auto', workers=4,
                 for attempt in range(3):
                     cancelled()
                     offset = start + lengths[index]
-                    headers = {'User-Agent':'BVWA-Downloader','Accept-Encoding':'identity', 'Range':f'bytes={offset}-{end}'}
+                    headers = {'User-Agent':'VWA-Downloader','Accept-Encoding':'identity', 'Range':f'bytes={offset}-{end}'}
                     if validator:
                         headers['If-Range'] = validator
                     try:

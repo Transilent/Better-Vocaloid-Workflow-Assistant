@@ -14,7 +14,9 @@ from pipeline import create_job
 import mido,numpy as np,soundfile as sf
 application=QApplication([])
 w=Window();w.show();application.processEvents()
-assert list(w.step_cards)==['source','separation','reference','midi','audio','subtitles']
+assert {'source','separation','reference','midi','audio','subtitles','output'} <= set(w.step_cards)
+assert w.step_cards['midi'] is w.step_cards['reference']
+assert w.step_cards['audio'] is w.step_cards['output']
 assert not hasattr(w,'midi_backend')
 assert not any(label.text()=='提取后端' for label in w.findChildren(QLabel))
 w.workflow.choose_preset('内置 · 中文双轨')

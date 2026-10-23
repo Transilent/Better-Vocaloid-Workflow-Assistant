@@ -12,6 +12,7 @@ The portable package includes third-party components and model weights. Their or
 | Optional Pymss, Pymss Core, PyTorch and supporting libraries | Downloaded from pinned upstream wheels; original package metadata and bundled notices are retained in `dependencies/optional/bs-roformer/current/packages` |
 | Python | Python 3.12.10; included `dependencies/vocal2midi/python/LICENSE.txt` |
 | Python libraries | Original `LICENSE`, `COPYING`, `.dist-info/licenses/` and package metadata retained in the portable runtime |
+| Optional reference-expression analyzer | [PyWORLD](https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder), MIT, wrapping [WORLD](https://github.com/mmorise/World), BSD-3-Clause; wheel metadata is retained, and the WORLD notice is included in `components/world-LICENSE.txt` |
 | yt-dlp | Included source, license and metadata in `vendor/`; [upstream](https://github.com/yt-dlp/yt-dlp) |
 | Playwright and Node.js driver | Included upstream licenses and notices in `vendor/`; [upstream](https://github.com/microsoft/playwright-python) |
 | FFmpeg | 7.1.3-Jellyfin, built with `--enable-gpl --enable-version3`; [Jellyfin FFmpeg source](https://github.com/jellyfin/jellyfin-ffmpeg), [FFmpeg licensing](https://ffmpeg.org/legal.html) |

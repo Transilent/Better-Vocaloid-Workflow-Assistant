@@ -9,7 +9,7 @@ from app import Window
 
 application = QApplication([])
 window = Window()
-assert window.windowTitle() == '术力口工作流助手 · BVWA'
+assert window.windowTitle() == '术力口工作流助手 · VWA'
 assert window.source.text() == '' and window.job is None
 window.show()
 application.processEvents()

@@ -59,10 +59,28 @@ with tempfile.TemporaryDirectory(prefix='workflow-features-', dir=APP/'work') as
         snap = progress_state.snapshot(job)
         assert snap['completed'] == 4 and snap['elapsed'] >= 0
 
-        workflow.save_state(workflow.default_graph(True), dict(workflow.DEFAULT_OPTIONS, midi_steps=32, midi_device='cpu'),
-                            {'我的日语': workflow.builtins()['内置 · 日语双轨']}, '自定义')
+        style_options=dict(workflow.DEFAULT_OPTIONS, midi_steps=32, midi_device='cpu',
+                           performance_style='power_pop', style_strength=.85, style_scope='all_vocals')
+        style_presets={'我的日语': workflow.builtins()['内置 · 日语双轨']}
+        workflow.save_state(workflow.default_graph(True), style_options, style_presets, '自定义')
         restored = workflow.read_state()
         assert restored['options']['midi_steps'] == 32 and restored['presets']['我的日语']['options']['language'] == 'ja'
+        assert (restored['options']['performance_style'], restored['options']['style_strength'],
+                restored['options']['style_scope']) == ('power_pop', .85, 'all_vocals')
+        exported = workflow.export_preferences(style_options)
+        assert (exported['performance_style'], exported['style_strength'], exported['style_scope']) == (
+            'power_pop', .85, 'all_vocals')
+        legacy=dict(style_options)
+        for field in ('performance_style','style_strength','style_scope'):
+            legacy.pop(field)
+        common.atomic_json(root/'cache/workspace.json', {'workflow': {
+            'graph': workflow.default_graph(), 'options': legacy, 'preset': '旧工作区',
+            'presets': {'旧预设': {'graph': workflow.default_graph(), 'options': legacy}}}})
+        old_state = workflow.read_state()
+        for options in (old_state['options'], old_state['presets']['旧预设']['options']):
+            assert (options['performance_style'], options['style_strength'], options['style_scope']) == (
+                'none', .6, 'lead')
+        workflow.save_state(workflow.default_graph(True), style_options, style_presets, '自定义')
         request = task_store.read_json(job/'request.json')
         assert request['tools']['midi_device'] == 'cpu'
         invalids = [ {'nodes': {'source':[0,0], 'midi':[2,3]}, 'edges': [['source', 'midi']]},
@@ -72,6 +90,20 @@ with tempfile.TemporaryDirectory(prefix='workflow-features-', dir=APP/'work') as
             try:
                 workflow.validate_graph(graph)
                 raise AssertionError('Invalid graph accepted')
+            except ValueError:
+                pass
+        style_valid=dict(workflow.DEFAULT_OPTIONS, performance_style='soft_ballad', style_strength=.3,
+                         style_scope='all_vocals')
+        normalized=workflow.validate_options(style_valid)
+        assert normalized['style_strength']==.3
+        for key,value in [('style_pitch',1),('style_pitch','true'),('performance_style','unknown'),('style_scope','unknown'),
+                          ('style_strength',True),('style_strength',float('nan')),
+                          ('style_strength',float('inf')),('style_strength',-.01),
+                          ('style_strength',1.01),('style_strength','0.5')]:
+            invalid=dict(style_valid);invalid[key]=value
+            try:
+                workflow.validate_options(invalid)
+                raise AssertionError(f'Invalid style option accepted: {key}={value!r}')
             except ValueError:
                 pass
         try:
@@ -246,7 +278,7 @@ with tempfile.TemporaryDirectory(prefix='workflow-features-', dir=APP/'work') as
         window.midi_enabled.setChecked(True)
         window.step_cards['midi'].toggle.setChecked(True)
         application.processEvents()
-        assert window.language.isVisible()
+        assert window.language._vwa_choice.isVisible()
         assert not hasattr(canvas,'canvas')
         canvas.fields['midi_steps'].setCurrentIndex(canvas.fields['midi_steps'].findData(8))
         assert window.options()['midi_steps'] == 8

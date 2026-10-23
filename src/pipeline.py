@@ -12,6 +12,7 @@ import uuid
 from contextlib import contextmanager
 import urllib.parse
 import urllib.request
+import urllib.error
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -19,7 +20,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 from common import ROOT, BV_PATTERN, atomic_json, cancelled, clean_lyrics, extract_bv, load_config, resolve_tools, completed_voice, file_hash, app_path, saved_path, output_directory, remember_job
-from common import direct_urlopen
+from common import direct_urlopen, native_path
 from check_dependencies import validate as validate_dependencies
 
 sys.dont_write_bytecode = True
@@ -44,11 +45,57 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
                workflow_graph=None, separation_device=None, midi_device=None,
                midi_backend=None, alignment_engine='hfa', project_formats=None,
                audio_formats=None, export_pitch=False, include_instrumental=True, lyric_reference=None,
-               reference_mode='local', subtitles_mode='midi', dml_adapter=None, cpu_threads=None):
+               reference_mode='local', subtitles_mode='midi', dml_adapter=None, cpu_threads=None,
+               reference_dynamics=False, dynamics_strength=.6,
+               reference_tension=False, reference_breathiness=False, reference_voicing=False,
+               separation_flow='cascade', reference_calibration=None, bpm=None, expression_density='dense',
+               project_export_enabled=None, audio_export_enabled=None, export_preferences=None,
+               performance_style='none', style_strength=.6, style_scope='lead',style_pitch=False,prepare_only=False):
+    if type(prepare_only) is not bool:raise ValueError('准备工作流开关必须为布尔值。')
+    if prepare_only:
+        reference_dynamics=reference_tension=reference_breathiness=reference_voicing=False
+        reference_calibration=None;performance_style='none';style_pitch=False;expression_density='original'
+    from music_timing import validate_bpm
+    bpm = validate_bpm(bpm)
+    from calibration_refinement import density_settings
+    density_settings({'expression_density':expression_density})
+    from style_presets import settings as style_settings
+    performance_style,style_strength,style_scope=style_settings({
+        'performance_style':performance_style,'style_strength':style_strength,'style_scope':style_scope,'style_pitch':style_pitch})
     from project_exports import validate_options
     projects=list(project_formats or [])
-    audios=list(audio_formats or ['wav'])
+    audios=list(['wav'] if audio_formats is None else audio_formats)
     validate_options(projects,audios)
+    for value in (project_export_enabled, audio_export_enabled):
+        if value is not None and type(value) is not bool:
+            raise ValueError('导出开关必须为开启或关闭。')
+    if project_export_enabled is False: projects=[]
+    if audio_export_enabled is False: audios=[]
+    if export_preferences is not None:
+        if not isinstance(export_preferences, dict):
+            raise ValueError('导出偏好格式无效。')
+        from workflow import export_preferences as checked_export_preferences
+        export_preferences=checked_export_preferences(export_preferences)
+    if separation_flow not in ('cascade', 'independent') or separation_flow == 'independent' and voice_mode != 'roformer':
+        raise ValueError('原曲独立提取目前需要选择 BS-RoFormer 分离组件。')
+    if reference_calibration:
+        if 'svp' not in projects: raise ValueError('声库校准拟合需要启用 SVP 工程导出。')
+        from expression_calibration import read_profile
+        read_profile(app_path(reference_calibration))
+        from expression_component import status as calibration_component_status
+        if not calibration_component_status()['ready']:
+            raise FileNotFoundError('声库校准拟合需要 WORLD 组件，请在“模型与组件”中下载。')
+    from vocal_expression import expression_settings
+    expression = {'reference_dynamics':reference_dynamics, 'dynamics_strength':dynamics_strength,
+                  'reference_tension':reference_tension, 'reference_breathiness':reference_breathiness,
+                  'reference_voicing':reference_voicing}
+    _, _, timbre = expression_settings(expression)
+    if (reference_dynamics or timbre) and 'svp' not in projects:
+        raise ValueError('参考演唱参数需要选择 Synthesizer V · SVP 工程。')
+    if timbre and dynamics_strength > 0:
+        from expression_component import status as expression_status
+        if not expression_status()['ready']:
+            raise FileNotFoundError('参考音色组件尚未安装，请在“模型与组件”下载 WORLD 分析器。')
     if reference_mode not in ('local','netease') or subtitles_mode not in ('midi','netease'):
         raise ValueError('歌词或字幕匹配方式无效。')
     if midi_backend not in (None,'v1','v2') or alignment_engine not in ('hfa','tifa'):
@@ -59,6 +106,8 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
     if workflow_graph is not None:
         end_stage = validate_graph(workflow_graph)
         if end_stage=='separation': projects=[]
+        if end_stage=='separation' and (reference_dynamics or timbre or reference_calibration):
+            raise ValueError('参考演唱参数需要启用 MIDI 与工程导出。')
         if end_stage == 'subtitles' and not recognize_lyrics:
             raise ValueError('字幕节点需要歌词事件，请开启歌词识别或移除字幕节点。')
         if end_stage=='subtitles' and subtitles_mode!='midi':
@@ -119,14 +168,24 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
         **({"source_audio": saved_path(local), "source_title": local.stem,
             "input_file": "input/source" + local.suffix.lower()} if local is not None else {}),
         "language": language, "lyrics": clean_lyrics(lyrics),
+        'lyric_lines': clean_lyrics(lyrics, preserve_lines=True).splitlines(),
+        'backing_lyric_lines': clean_lyrics(backing_lyrics, preserve_lines=True).splitlines(),
         "zh_lyric_mode": zh_lyric_mode,
         "recognize_lyrics": bool(recognize_lyrics), "tools": tools,
         'created_at': dt.datetime.now().astimezone().isoformat(),
         **({'workflow_graph': workflow_graph} if workflow_graph is not None else {}),
         "voice_mode": voice_mode, "imported_stems": imported_stems or {},
-        "midi_steps": int(midi_steps), "backing_lyrics": clean_lyrics(backing_lyrics),
+        'separation_flow': separation_flow,
+        **({'reference_calibration':saved_path(reference_calibration)} if reference_calibration else {}),
+        "midi_steps": int(midi_steps), "bpm": bpm, "backing_lyrics": clean_lyrics(backing_lyrics),
         'project_formats':projects,'audio_formats':audios,'export_pitch':bool(export_pitch),
+        'project_export_enabled':bool(projects),'audio_export_enabled':bool(audios),
+        **({'export_preferences':export_preferences} if export_preferences is not None else {}),
         'include_instrumental':bool(include_instrumental),'alignment_engine':alignment_engine,
+        'reference_dynamics':reference_dynamics,'dynamics_strength':float(dynamics_strength),'expression_density':expression_density,
+        'performance_style':performance_style,'style_strength':style_strength,'style_scope':style_scope,'style_pitch':style_pitch,
+        'prepare_only':prepare_only,
+        'reference_tension':reference_tension,'reference_breathiness':reference_breathiness,'reference_voicing':reference_voicing,
         'reference_mode':reference_mode,'subtitles_mode':subtitles_mode,
         **({'midi_backend':midi_backend} if midi_backend else {}),
         **({'lyric_reference':lyric_reference} if lyric_reference else {}),
@@ -186,16 +245,34 @@ def reuse_download(previous, **options):
         if stage == 'metadata':
             (job/'参考歌词.txt').write_text(new_request.get('lyrics',''),encoding='utf-8')
         copied['steps'][stage]['receipt'] = receipt(job,new_request,stage,requirements(stage,new_request))
+    if 'metadata' in copied['steps']:
+        from cover_art import reuse_cached_cover
+        reuse_cached_cover(previous, job)
+    from calibration_workflow import inherit_expression
+    inherit_expression(previous,job,new_request)
     atomic_json(job / "status.json", copied)
     remember_job(job)
     return job
 
 
-def get_view(bv):
+def get_view(bv, tools=None):
+    from bilibili_session import task_options, download_cookies, cookie_header
+    settings = task_options(tools)
     url = "https://api.bilibili.com/x/web-interface/view?" + urllib.parse.urlencode({"bvid": bv})
-    req = urllib.request.Request(url, headers=HEADERS)
-    with direct_urlopen(req, timeout=30) as response:
-        data = json.load(response)
+    headers = dict(HEADERS)
+    req = urllib.request.Request(url, headers=headers)
+    if cookie := cookie_header(download_cookies(settings), url):
+        req.add_unredirected_header('Cookie', cookie)
+    for attempt in range(settings['retries'] + 1):
+        try:
+            with direct_urlopen(req, timeout=settings['timeout']) as response:
+                data = json.load(response)
+            break
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+            if (attempt == settings['retries'] or
+                    isinstance(error, urllib.error.HTTPError) and error.code not in (429, 500, 502, 503, 504)):
+                raise
+            time.sleep(min(4, .5 * 2 ** attempt))
     if data.get("code") != 0:
         raise RuntimeError(f"读取 B站简介失败：{data.get('message', data.get('code'))}")
     return data["data"]
@@ -209,7 +286,7 @@ def run_process(argv, job, label, cooperative=False):
     env.update(TMP=str(temp), TEMP=str(temp))
     cache = ROOT / "cache/numba"
     cache.mkdir(parents=True, exist_ok=True)
-    env["NUMBA_CACHE_DIR"] = str(cache)
+    env["NUMBA_CACHE_DIR"] = native_path(cache)
     output = Path(job) / f"{label}.log"
     # A Windows job contains child processes, including ASR workers. Closing
     # it on cancellation prevents an inference process surviving the job.
@@ -248,7 +325,7 @@ def run_process(argv, job, label, cooperative=False):
                         text = line.decode("utf-8", errors="replace").strip()
                         if text:
                             if label.startswith('midi'):
-                                if text.startswith('[BVWA Voice] '):
+                                if text.startswith(('[VWA Voice] ', '[BVWA Voice] ')):
                                     active_voice = {'lead': '主唱', 'backing': '和声'}.get(text.rsplit(' ', 1)[-1], '人声')
                                 from progress_state import from_log
                                 from_log(job, text, active_voice)
@@ -306,7 +383,7 @@ def prepare_metadata(job, request):
         (job / "歌词候选_需核对.txt").write_text("", encoding="utf-8")
         print(f"已准备本地音乐：{title}；本家与 STAFF 可在发布页手填。", flush=True)
         return
-    data = get_view(request["bv"])
+    data = get_view(request["bv"], request.get('tools', {}))
     atomic_json(job / "source-info.json", data)
     (job / "原视频简介.txt").write_text(data.get("desc", ""), encoding="utf-8")
     linked = [x for x in dict.fromkeys(BV_PATTERN.findall(data.get("desc", ""))) if x != request["bv"]]
@@ -314,7 +391,7 @@ def prepare_metadata(job, request):
     # Keep one-hop citations as citations: do not silently change the input.
     for bv in linked[:5]:
         try:
-            detail = get_view(bv)
+            detail = get_view(bv, request.get('tools', {}))
             upstream.append(detail)
         except Exception as exc:
             upstream.append({"bvid": bv, "desc": "", "retrieval_error": str(exc)})
@@ -371,12 +448,18 @@ def download(job, request):
         print("已保存本地音乐副本；原文件保持不变。", flush=True)
         return
     import yt_dlp
+    from bilibili_session import task_options as download_options, download_cookies, configure_downloader, verify_login
+    settings = download_options(request.get('tools', {}))
+    cookies = download_cookies(settings)
+    if cookies:
+        verify_login(cookies, settings['timeout'])
     source = job / 'video/source.mp4'
     report_path = job / 'download-report.json'
     if source.is_file():
         try:
             old = json.loads(report_path.read_text(encoding='utf-8'))
-            if old.get('sha256') == file_hash(source):
+            if (old.get('sha256') == file_hash(source)
+                    and bool(old.get('authenticated', False)) == settings['use_login']):
                 print('原视频已校验，可以继续使用。',flush=True)
                 return
         except (OSError,ValueError): pass
@@ -405,22 +488,23 @@ def download(job, request):
         "format": "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best",
         "outtmpl": str(job / "video/source.%(ext)s"),
         "merge_output_format": "mp4", "ffmpeg_location": resolve_tools(request["tools"])["ffmpeg"],
-        "progress_hooks": [progress], "socket_timeout": 30, "retries": 3,
-        "fragment_retries": 3, "overwrites": False,
+        "progress_hooks": [progress], "socket_timeout": settings['timeout'], "retries": settings['retries'],
+        "fragment_retries": settings['retries'], "overwrites": False,
         # Bilibili metadata, covers and media share the direct connection policy.
         "proxy": "",
     }
     (job / "video").mkdir(exist_ok=True)
-    # No cookie extraction. If login is needed, expose the error and allow
-    # the user to choose a separate login integration in a later iteration.
     with yt_dlp.YoutubeDL(options) as downloader:
+        if cookies:
+            configure_downloader(downloader, cookies)
         info = downloader.extract_info(request["url"], download=True)
     selected = [{k: item.get(k) for k in ("format_id", "width", "height", "vcodec", "acodec", "abr")}
                 for item in info.get("requested_formats", [info])]
     if not source.is_file() or source.stat().st_size < 1024:
         raise RuntimeError("没有得到完整的 source.mp4。")
     atomic_json(report_path, {"title": info.get("title"), "duration": info.get("duration"),
-                             "formats": selected, 'sha256':file_hash(source)})
+                             "formats": selected, 'sha256':file_hash(source),
+                             'authenticated': bool(cookies)})
     print("原视频下载完成。", flush=True)
 
 
@@ -522,8 +606,29 @@ def separate(job, request):
                                          output_names=("lead.wav", "backing.wav"))
     elif mode == 'roformer':
         from roformer import separate_vocals
-        report['chorus'] = separate_vocals(job / 'audio/vocals.wav', job / 'audio', job,
-                                          request.get('roformer_device', 'auto'))
+        independent = request.get('separation_flow', 'cascade') == 'independent'
+        target = job/'temp/direct-lead' if independent else job/'audio'
+        report['chorus'] = separate_vocals(job/('audio/source.wav' if independent else 'audio/vocals.wav'),
+            target, job, request.get('roformer_device', 'auto'), input_kind='mix' if independent else 'vocals')
+        if independent:
+            from roformer import combine_independent
+            report['combination'] = combine_independent(job/'audio/vocals.wav', target/'lead.wav', job/'audio', job)
+            # These original-mix predictions are intermediate copies. Keep the
+            # validated final stems, not an extra full-length pair per task.
+            for name in ('lead.wav','backing.wav'):
+                try: (target/name).unlink(missing_ok=True)
+                except OSError: pass  # Task-temp cleanup can remove an in-use file later.
+            try: target.rmdir()
+            except OSError: pass
+        report.update(method='independent_original_mix' if independent else 'cascaded_vocals',
+                      maximum_model_depth=1 if independent else 2, model_invocations=2)
+    if mode in ('dual','roformer'):
+        from vocal_partition import repair
+        from progress_state import publish
+        print('检查主唱与和声中的重复成分……',flush=True)
+        report['partition'] = repair(job/'audio',job,
+            progress=lambda done,total:publish(job,'separation','检查声部串音',done,total))
+        print('声部检查完成：已保留时间轴和总人声。',flush=True)
     original = check_audio(job / "audio/source.wav")
     for name in (("vocals.wav", "instrumental.wav", "lead.wav", "backing.wav") if mode in ("dual", "roformer") else ("vocals.wav", "instrumental.wav")):
         if check_audio(job / "audio" / name).frames != original.frames:
@@ -543,6 +648,8 @@ def midi(job, request):
         cancelled(job)
         output = job / "midi" / voice
         if completed_voice(job, request, voice):
+            from task_contract import index_voice
+            index_voice(job, voice, replace=True)
             print(f"已完成，跳过 {voice} 的提取。", flush=True)
             continue
         pending.append(voice)
@@ -565,7 +672,8 @@ def midi(job, request):
         previous_merge = {}
     report = merge_voices([("Lead Vocal", job / "midi/lead/lead.mid"),
                            ("Backing Vocal", job / "midi/backing/backing.mid")], job / "midi/voices.mid",
-                          job=job, expected_sha256=previous_merge.get('merged_sha256'))
+                          job=job, expected_sha256=previous_merge.get('merged_sha256'),
+                          bpm=request.get('bpm'))
     report["voices"] = {voice: json.loads((job / "midi" / voice / "report.json").read_text(encoding="utf-8"))
                          for voice in ("lead", "backing")}
     report["merged_sha256"] = file_hash(job / "midi/voices.mid")
@@ -662,11 +770,11 @@ def ensure_source_video(job):
     return source
 
 
-def _run(job, until):
-    job = Path(job).resolve()
-    request = json.loads((job / "request.json").read_text(encoding="utf-8"))
+def planned_steps(request, until=None):
+    """Resolve one ordered stage plan for CLI, resume and publication calls."""
     from workflow import validate_graph
-    from progress_state import publish
+    if until is not None and until not in {item[0] for item in STEPS}:
+        raise ValueError('未知的结束阶段：'+str(until)+'。可选阶段：'+', '.join(item[0] for item in STEPS))
     target = validate_graph(request['workflow_graph']) if 'workflow_graph' in request else 'midi'
     wants_exports=(bool(request.get('project_formats')) and target!='separation') or any(fmt!='wav' for fmt in request.get('audio_formats',['wav']))
     enabled={'metadata','download','audio','separation'}
@@ -680,7 +788,19 @@ def _run(job, until):
     if wants_exports:
         target='exports'
     until = until or target
-    steps = steps[:next(i for i, item in enumerate(steps) if item[0] == until) + 1]
+    if until not in enabled:
+        raise ValueError('当前工作流未启用 '+until+' 阶段，请检查处理步骤和导出格式。')
+    steps = steps[:[item[0] for item in steps].index(until) + 1]
+    return steps, target, until
+
+
+def _run(job, until):
+    job = Path(job).resolve()
+    from task_contract import read as read_contract, begin_stage, index_stage, fail_stage, reconcile
+    read_contract(job)
+    request = json.loads((job / "request.json").read_text(encoding="utf-8"))
+    from progress_state import publish
+    steps, target, until = planned_steps(request, until)
     enabled = {item[0] for item in steps}
     config = resolve_tools(request["tools"])
     keys = (['python', 'ffmpeg'] if enabled - {'metadata'} else []) + (['vocal2midi'] if 'midi' in enabled else [])
@@ -689,9 +809,12 @@ def _run(job, until):
     status_file = job / "status.json"
     status = json.loads(status_file.read_text(encoding="utf-8")) if status_file.exists() else {"steps": {}}
     status["state"] = "running"
+    status['schema'] = 1
+    status.pop('current_step', None)
     status['run_started'] = time.time()
-    status['planned_steps'] = [key for key, _, _ in steps][:next(i for i, item in enumerate(steps) if item[0] == until)+1]
+    status['planned_steps'] = [key for key, _, _ in steps]
     status.pop("error", None)
+    status.pop('artifact_error', None)
     atomic_json(status_file, status)
     try:
         from dependency_profiles import task_features
@@ -750,6 +873,7 @@ def _run(job, until):
             if completed and intact:
                 if key in cached_stages and not status['steps'][key].get('receipt'):
                     status['steps'][key]['receipt'] = receipt(job, request, key, requirements(key, request))
+                index_stage(job, key, requirements(key, request), receipt=status['steps'][key].get('receipt'))
                 print(f"已完成，跳过：{title}。", flush=True)
             else:
                 # An upstream step being regenerated invalidates downstream
@@ -762,6 +886,7 @@ def _run(job, until):
                 status["current_step"] = key
                 status["steps"][key] = {"state": "running", 'started': time.time()}
                 atomic_json(status_file, status)
+                begin_stage(job, key)
                 publish(job, key, title)
                 print(f"\n正在{title}……", flush=True)
                 started = time.monotonic()
@@ -769,6 +894,7 @@ def _run(job, until):
                 status["steps"][key] = {"state": "done", "seconds": round(time.monotonic() - started, 2)}
                 if key in cached_stages:
                     status['steps'][key]['receipt'] = receipt(job, request, key, requirements(key, request))
+                index_stage(job, key, requirements(key, request), receipt=status['steps'][key].get('receipt'), replace=True)
                 atomic_json(status_file, status)
             if key == until:
                 break
@@ -776,11 +902,21 @@ def _run(job, until):
         status.pop("error", None)
         status.pop("current_step", None)
         atomic_json(status_file, status)
+        reconcile(job)
         print(f"\n本轮处理完成：{job}", flush=True)
     except BaseException as exc:
         status["state"] = "cancelled" if isinstance(exc, InterruptedError) else "failed"
         status["error"] = str(exc)
+        current = status.get('current_step')
+        if current:
+            status['steps'][current].update(state=status['state'], error=str(exc))
         atomic_json(status_file, status)
+        if current:
+            try:
+                fail_stage(job, current, status['state'], exc)
+            except Exception as record_error:
+                status['artifact_error'] = str(record_error)
+                atomic_json(status_file, status)
         raise
     finally:
         status['elapsed_seconds'] = status.get('elapsed_seconds', 0) + max(0, time.time() - status.pop('run_started', time.time()))
@@ -800,14 +936,30 @@ def main():
     parser.add_argument('--zh-lyric-mode', choices=('hanzi', 'pinyin'), default='hanzi')
     parser.add_argument("--voice-mode", choices=("single", "dual", "import", "roformer"), default="dual")
     parser.add_argument('--roformer-device', choices=('auto', 'cpu', 'cuda'), default='auto')
+    parser.add_argument('--separation-flow', choices=('cascade','independent'), default='cascade')
+    parser.add_argument('--calibration-profile', type=Path, help='可选的声库试音校准配置')
     parser.add_argument("--lead-wav")
     parser.add_argument("--backing-wav")
     parser.add_argument("--instrumental-wav")
     parser.add_argument("--midi-steps", type=int, choices=(8, 16, 32), default=16)
+    parser.add_argument('--bpm', type=float, help='Constant export tempo, 20–400 BPM; omitted: 120 BPM time reference')
     parser.add_argument('--midi-backend',choices=('v1','v2'),default='v2')
     parser.add_argument('--project-formats',nargs='+',choices=('ustx','vsqx','svp'),default=[])
-    parser.add_argument('--audio-formats',nargs='+',choices=('wav','flac','mp3','ogg'),default=['wav'])
+    audio_export = parser.add_mutually_exclusive_group()
+    audio_export.add_argument('--audio-formats',nargs='+',choices=('wav','flac','mp3','ogg'),default=['wav'])
+    audio_export.add_argument('--no-audio-export',action='store_true',help='Keep internal WAV stems without selecting audio exports')
     parser.add_argument('--no-pitch-curve',action='store_true')
+    parser.add_argument('--reference-dynamics', action='store_true', help='Transfer reference dynamics to SVP loudness (experimental)')
+    parser.add_argument('--dynamics-strength', type=float, default=.6, help='Reference dynamics amount, from 0 to 1')
+    parser.add_argument('--expression-density', choices=('original','dense'), default='dense', help='SVP expression sampling; dense preserves the original linear contour at 5 ms')
+    parser.add_argument('--performance-style',choices=('none','soft_ballad','intimate_narration','power_pop'),default='none',help='Independent experimental SVP style candidate')
+    parser.add_argument('--style-strength',type=float,default=.6)
+    parser.add_argument('--style-scope',choices=('lead','all_vocals'),default='lead')
+    parser.add_argument('--style-pitch',action='store_true',help='Optional structural pitch style gestures')
+    parser.add_argument('--prepare-only',action='store_true',help='Prepare score/projects; tune in the independent tuning workflow')
+    parser.add_argument('--reference-tension', action='store_true', help='Add relative SVP tension (experimental; WORLD component required)')
+    parser.add_argument('--reference-breathiness', action='store_true', help='Add relative SVP breathiness (experimental)')
+    parser.add_argument('--reference-voicing', action='store_true', help='Add relative SVP voicing (experimental)')
     parser.add_argument('--netease-song',help='NetEase song ID or URL for reference lyrics')
     parser.add_argument("--until", choices=[x[0] for x in STEPS])
     args = parser.parse_args()
@@ -824,13 +976,18 @@ def main():
                 reference=from_file(args.lyrics_file)
             lyrics=reference.text if reference else ''
             job = create_job(args.source or "", lyrics, args.language, not args.notes_only,
-                             voice_mode=args.voice_mode, midi_steps=args.midi_steps,
+                             voice_mode=args.voice_mode, midi_steps=args.midi_steps, bpm=args.bpm,
                              roformer_device=args.roformer_device,
+                             separation_flow=args.separation_flow,reference_calibration=args.calibration_profile,
                              zh_lyric_mode=args.zh_lyric_mode,
                              parent=args.output_dir,
                              local_music=args.audio_file,
-                             midi_backend=args.midi_backend,project_formats=args.project_formats,audio_formats=args.audio_formats,
+                             midi_backend=args.midi_backend,project_formats=args.project_formats,
+                             audio_formats=[] if args.no_audio_export else args.audio_formats,
                              export_pitch=bool(args.project_formats) and not args.no_pitch_curve,
+                             reference_dynamics=args.reference_dynamics,dynamics_strength=args.dynamics_strength,expression_density=args.expression_density,
+                             performance_style=args.performance_style,style_strength=args.style_strength,style_scope=args.style_scope,style_pitch=args.style_pitch,prepare_only=args.prepare_only,
+                             reference_tension=args.reference_tension,reference_breathiness=args.reference_breathiness,reference_voicing=args.reference_voicing,
                              lyric_reference={'origin':reference.origin} if reference else None,
                              reference_mode='netease' if args.netease_song else 'local',
                              imported_stems={"lead": args.lead_wav, "backing": args.backing_wav, "instrumental": args.instrumental_wav})

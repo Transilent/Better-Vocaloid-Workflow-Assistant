@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.0 — Unreleased
+
+- Separate preparation, tuning, optional video assembly and publication workflows, with a task library shared by workflow inputs.
+- Refresh the VWA desktop interface, stage progress and functional guidance.
+- Add Chinese, Japanese and English interface preferences, effective on the next launch. Lyric recognition remains Chinese/Japanese.
+- Support fine-grained expression strength, optional original Chinese model installation and additional public download routes.
+
 ## 0.4.1 — 2026-10-14
 
 ### Fixed
