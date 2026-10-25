@@ -20,7 +20,7 @@ import json
 import math
 from pathlib import Path
 
-VERSION = 2
+VERSION = 3
 PRESETS = {
     'none': {'label': '保留原表现', 'controls': {}},
     'soft_ballad': {'label': '柔和抒情〔实验〕', 'controls': {
@@ -32,12 +32,34 @@ PRESETS = {
     'power_pop': {'label': '有力流行〔实验〕', 'controls': {
         'loudness': (2.5, 1.8, .5), 'tension': (.30, .20, .10),
         'breathiness': (-.10, -.06, -.02)}},
+    'melancholy': {'label': '忧伤克制〔实验〕', 'category': 'emotion', 'pitch_default': True,
+        'description': '较轻的起音、克制的句中力度与下行收尾；保留原有长音起伏。', 'controls': {
+        'loudness': (-1.2, -.4, -1.8), 'tension': (-.16, -.06, -.20),
+        'breathiness': (.08, .02, .14), 'voicing': (0., 0., -.06)}},
+    'bright_joy': {'label': '明亮轻快〔实验〕', 'category': 'emotion', 'pitch_default': True,
+        'description': '轻快的起音与清晰的有声核心，局部音高更利落；不改变音符节奏。', 'controls': {
+        'loudness': (.9, .6, .2), 'tension': (.12, .14, .04),
+        'breathiness': (-.06, -.03, -.02)}},
+    'fragile_tender': {'label': '脆弱含泪〔实验〕', 'category': 'emotion', 'pitch_default': True,
+        'description': '含泪感的轻声起收与局部音高上挑；请按所用声库试听。', 'controls': {
+        'loudness': (-1.8, -.7, -2.4), 'tension': (-.18, -.04, -.26),
+        'breathiness': (.18, .06, .28), 'voicing': (0., -.02, -.14)}},
 }
 CONTROLS = {'loudness': (-48., 12., 0.), 'tension': (-1., 1., 0.),
             'breathiness': (-1., 1., 0.), 'voicing': (0., 1., 1.)}
 MAX_POINTS = 2_000_000
 PHRASE_GAP = .25
 STYLE_GRID = .02
+
+
+def pitch_default(preset):
+    """Only newly added emotion drafts recommend pitch by default."""
+    return isinstance(preset,str) and PRESETS.get(preset, {}).get('pitch_default') is True
+
+
+def preset_description(preset):
+    return (PRESETS.get(preset, {}) if isinstance(preset,str) else {}).get('description',
+        '在原工程上添加所选风格的局部增量，生成后请在声库中试听。')
 
 
 def settings(options):
@@ -148,7 +170,7 @@ def _weights(times, phrases, definition):
     return weights
 
 
-def apply_style(project, preset, *, strength=.6, track_indices=None, density_mode='dense', pitch_enabled=False, cancel=lambda:None, finalize=True):
+def apply_style(project, preset, *, strength=.6, track_indices=None, density_mode='dense', pitch_enabled=None, cancel=lambda:None, finalize=True):
     """Return an independent candidate and a receipt; no synthesis or I/O.
 
     Baseline linear knots are never removed. Changes are additive smooth
@@ -158,6 +180,8 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
     import numpy as np
     from vocal_expression import TempoMap
     from calibration_refinement import density_settings,finalize_expression,_serialized_position
+    if pitch_enabled is None:
+        pitch_enabled = pitch_default(preset)
     preset,strength,_=settings({'performance_style':preset,'style_strength':strength,'style_pitch':pitch_enabled})
     density_settings({'expression_density':density_mode})
     if not isinstance(project,dict) or not isinstance(project.get('tracks'),list):
@@ -169,7 +193,8 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
         raise ValueError('风格目标轨道索引无效或重复。')
     out=copy.deepcopy(project);rows=[];changed=set();remaining=MAX_POINTS
     receipt={'schema':1,'kind':'vwa.style-adaptation','version':VERSION,'preset':preset,
-        'label':PRESETS[preset]['label'],'strength':strength,'density_mode':density_mode,
+        'label':PRESETS[preset]['label'],'category':PRESETS[preset].get('category','singing_style'),
+        'description':preset_description(preset),'strength':strength,'density_mode':density_mode,
         'track_indices':selected,'status':'not_selected','experimental':True,
         'recipe_origin':'manual_audition_draft','semantic_model_used':False,
         'learned_coefficients':False,'voicebank_calibrated':False,'rendered':False,'listened':False,
@@ -277,7 +302,7 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
     return out,receipt
 
 
-def apply_style_svp(source, destination, *, preset, strength=.6, track_indices=None, density_mode='dense', pitch_enabled=False, cancel=lambda:None):
+def apply_style_svp(source, destination, *, preset, strength=.6, track_indices=None, density_mode='dense', pitch_enabled=None, cancel=lambda:None):
     """Write a recoverable candidate and bound receipt, refusing input overwrite."""
     from common import atomic_json
     import os
@@ -298,7 +323,7 @@ def apply_style_svp(source, destination, *, preset, strength=.6, track_indices=N
     if source.read_bytes()!=raw:raise ValueError('生成风格期间原工程发生变化，请重试。')
     receipt.update(kind='vwa.style-candidate',source_sha256=source_sha,output_sha256=_sha(payload))
     receipt['producer_sha256']=_sha(Path(__file__).read_bytes())
-    receipt['pitch_producer_sha256']=_sha(Path(__file__).with_name('style_pitch.py').read_bytes()) if pitch_enabled else None
+    receipt['pitch_producer_sha256']=_sha(Path(__file__).with_name('style_pitch.py').read_bytes()) if receipt['pitch']['enabled'] else None
     if destination.exists() and destination.read_bytes()!=payload:
         raise FileExistsError('已有不同的风格候选，未覆盖：'+str(destination))
     if sidecar.exists():
@@ -330,7 +355,9 @@ if __name__=='__main__':
     parser.add_argument('--strength',type=float,default=.6)
     parser.add_argument('--tracks',help='Comma-separated zero-based track indices; default first vocal')
     parser.add_argument('--density',choices=('original','dense'),default='dense')
-    parser.add_argument('--style-pitch',action='store_true',help='Add structural pitch gestures over the original curve')
+    pitch_options=parser.add_mutually_exclusive_group()
+    pitch_options.add_argument('--style-pitch',dest='style_pitch',action='store_true',default=None,help='Add structural pitch gestures over the original curve')
+    pitch_options.add_argument('--no-style-pitch',dest='style_pitch',action='store_false',help='Keep authored pitch unchanged')
     args=parser.parse_args()
     result=apply_style_svp(args.source,args.destination,preset=args.preset,strength=args.strength,
         track_indices=[int(x) for x in args.tracks.split(',')] if args.tracks else None,density_mode=args.density,pitch_enabled=args.style_pitch)

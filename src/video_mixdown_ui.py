@@ -1,6 +1,8 @@
 """Independent video assembly page with real still previews and external open."""
 from i18n import tr as _tr
 import json
+import math
+import threading
 import uuid
 from pathlib import Path
 
@@ -10,7 +12,7 @@ from PyQt5.QtWidgets import (QCheckBox, QDoubleSpinBox, QFileDialog, QFrame, QHB
                              QLabel, QLineEdit, QProgressBar, QPushButton, QScrollArea,
                              QSizePolicy, QVBoxLayout, QWidget)
 
-from common import ROOT, app_path
+from common import ROOT, app_path, file_hash
 from desktop_theme import button, card, label
 from media_preview import PreviewTask, discard_preview_job
 from ui_components import AdaptiveColumns
@@ -29,6 +31,103 @@ class RenderTask(QThread):
             self.succeeded.emit(self.function())
         except Exception as error:
             self.failed.emit(str(error))
+
+
+class AlignmentTask(RenderTask):
+    """Owned analysis task; cancellation is safe before or during the worker."""
+
+    cancelled = pyqtSignal()
+
+    def __init__(self, job, function, parent):
+        super().__init__(function, parent)
+        self.job = Path(job)
+        self.cancel_event = threading.Event()
+
+    def cancel(self):
+        self.cancel_event.set()
+        try:
+            self.job.mkdir(parents=True, exist_ok=True)
+            (self.job / 'cancel.flag').touch()
+        except OSError:
+            pass
+
+    def run(self):
+        if self.cancel_event.is_set():
+            self.cancelled.emit()
+            return
+        try:
+            result = self.function()
+        except Exception as error:
+            if self.cancel_event.is_set():
+                self.cancelled.emit()
+            else:
+                self.failed.emit(str(error))
+            return
+        if self.cancel_event.is_set():
+            self.cancelled.emit()
+        else:
+            self.succeeded.emit(result)
+
+
+ALIGNMENT_INPUTS_CHANGED = '输入文件已发生变化，请重新分析音频对齐后再合成。'
+
+
+def _input_signature(path):
+    info = Path(path).stat()
+    return (int(info.st_size), int(info.st_mtime_ns))
+
+
+def _alignment_payload(result):
+    if not isinstance(result, dict):
+        return {}
+    payload = dict(result)
+    nested = result.get('alignment')
+    if isinstance(nested, dict):
+        merged = dict(nested)
+        merged.update(payload)
+        payload = merged
+    return payload
+
+
+def _digest_value(value):
+    if isinstance(value, str):
+        value = value.strip().lower()
+        return value if len(value) == 64 and all(char in '0123456789abcdef' for char in value) else None
+    if isinstance(value, dict):
+        for key in ('sha256', 'hash', 'digest'):
+            digest = _digest_value(value.get(key))
+            if digest:
+                return digest
+    return None
+
+
+def _alignment_input_hashes(report, video, mixdown):
+    """Read path-keyed or role-keyed input digests from an analysis report."""
+    if not isinstance(report, dict):
+        return {}
+    values = report.get('inputs')
+    if not isinstance(values, dict):
+        values = report.get('input_sha256')
+    if not isinstance(values, dict):
+        values = {}
+    found = {}
+    for role, path in (('video', video), ('mixdown', mixdown)):
+        path = Path(path).resolve()
+        candidates = [role, str(path), str(path).lower(), path.name]
+        digest = None
+        for key in candidates:
+            if key in values:
+                digest = _digest_value(values[key])
+                if digest:
+                    break
+        if digest is None:
+            for key in (role + '_sha256', role + '_sha', role + '_hash'):
+                digest = _digest_value(report.get(key))
+                if digest:
+                    break
+        if digest:
+            found[role] = digest
+    return found
 
 
 class StillView(QLabel):
@@ -82,6 +181,21 @@ class VideoMixdownPage(QWidget):
         self.preview_generation = 0
         self.preview_error = ''
         self._preview_cancel_message = '首帧预览已取消。'
+
+        self.alignment_task = None
+        self.alignment_inputs = {}
+        self.alignment_request_key = None
+        self.alignment_request_signature = {}
+        self.alignment_result = None
+        self.alignment_result_key = None
+        self.alignment_result_signature = {}
+        self.alignment_input_hashes = {}
+        self.alignment_generation = 0
+        self.alignment_error = ''
+        self._alignment_cancel_message = '音频对齐分析已取消。'
+        self.alignment_job = None
+
+        # These names retain the original post-render candidate lifecycle.
         self.alignment_candidate = None
         self.alignment_candidate_key = None
         self._reset_pending = False
@@ -125,8 +239,41 @@ class VideoMixdownPage(QWidget):
             opens.addWidget(action)
         opens.addStretch()
         preview_body.addLayout(opens)
+
+        self.alignment_panel = QFrame()
+        self.alignment_panel.setObjectName('video-alignment-panel')
+        alignment_body = QVBoxLayout(self.alignment_panel)
+        alignment_body.setContentsMargins(0, 8, 0, 0)
+        alignment_body.setSpacing(9)
+        self.alignment_title = label(_tr('生成前音频对齐'), 'card-title')
+        alignment_body.addWidget(self.alignment_title)
+        alignment_body.addWidget(label(_tr('先分析原视频音轨与 Mixdown，获取建议偏移和可信状态。'), 'muted'))
+        self.alignment_state = label(_tr('尚未分析音频对齐。'), 'muted')
+        self.alignment_state.setObjectName('alignment-state')
+        self.alignment_state.setAccessibleName(_tr('音频对齐状态'))
+        self.alignment_state.setWordWrap(True)
+        self.alignment_state.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        alignment_body.addWidget(self.alignment_state)
+        alignment_actions = QHBoxLayout()
+        self.alignment_analyze = button(_tr('分析音频对齐'), self.analyze_alignment, 'primary')
+        self.alignment_analyze.setObjectName('alignment-analyze')
+        self.alignment_analyze.setAccessibleName(_tr('分析音频对齐'))
+        self.alignment_stop = button(_tr('取消分析'), self.cancel_alignment, 'danger')
+        self.alignment_stop.setObjectName('alignment-cancel')
+        self.alignment_stop.hide()
+        self.use_alignment_suggestion = button(_tr('使用建议偏移'), self.apply_alignment_suggestion, 'primary')
+        self.use_alignment_suggestion.setObjectName('alignment-use-suggestion')
+        self.use_alignment_suggestion.setAccessibleName(_tr('使用建议偏移'))
+        self.use_alignment_suggestion.hide()
+        for action in (self.alignment_analyze, self.alignment_stop, self.use_alignment_suggestion):
+            alignment_actions.addWidget(action)
+        alignment_actions.addStretch()
+        alignment_body.addLayout(alignment_actions)
+        preview_body.insertWidget(2, self.alignment_panel)
+
         self.alignment = label(_tr('自动对齐：合成后显示对齐结果。'), 'muted')
-        preview_body.addWidget(self.alignment)
+        self.alignment.setWordWrap(True)
+        preview_body.insertWidget(3, self.alignment)
 
         form_card, body = card(_tr('文件与合成参数'), _tr('保留原视频画面，成品保存为 MP4；合成期间不能修改当前设置。'))
         self.fields = {}
@@ -221,9 +368,88 @@ class VideoMixdownPage(QWidget):
         """Formal render only; preview has an independent lifetime."""
         return self.task is not None and self.task.isRunning()
 
-    def preview_busy(self):
+    def _still_preview_busy(self):
         return ((self.preview_task is not None and self.preview_task.isRunning())
                 or bool(self.preview_inputs))
+
+    def alignment_busy(self):
+        return ((self.alignment_task is not None and self.alignment_task.isRunning())
+                or bool(self.alignment_inputs))
+
+    def preview_busy(self):
+        """Any owned auxiliary media task uses the existing preview gates."""
+        return self._still_preview_busy() or self.alignment_busy()
+
+    def _alignment_key(self):
+        video, mixdown = self._path('video'), self._path('mixdown')
+        if not video or not mixdown or not video.is_file() or not mixdown.is_file():
+            return None
+        try:
+            return (str(video.resolve()), str(mixdown.resolve()))
+        except OSError:
+            return None
+
+    def _alignment_signatures(self):
+        video, mixdown = self._path('video'), self._path('mixdown')
+        try:
+            return {'video': _input_signature(video), 'mixdown': _input_signature(mixdown)}
+        except (OSError, TypeError):
+            return {}
+
+    def _current_alignment_report(self, require_hashes=False):
+        report = self.alignment_result
+        if not isinstance(report, dict) or report.get('accepted') is not True:
+            return None
+        key = self._alignment_key()
+        if key is None or key != self.alignment_result_key:
+            return None
+        if self._alignment_signatures() != self.alignment_result_signature:
+            return None
+        try:
+            offset = float(report.get('offset_seconds'))
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(offset) or abs(offset) > 3600:
+            return None
+        hashes = self.alignment_input_hashes
+        if require_hashes and not all(hashes.get(role) for role in ('video', 'mixdown')):
+            return None
+        return dict(report)
+
+    def _sync_alignment_actions(self):
+        if not hasattr(self, 'alignment_analyze'):
+            return
+        active = self.alignment_busy()
+        self.alignment_analyze.setEnabled(not self.busy() and not active and not self._still_preview_busy())
+        self.alignment_stop.setVisible(active)
+        stopping = bool(active and self.alignment_task is not None
+                        and self.alignment_task.cancel_event.is_set())
+        self.alignment_stop.setEnabled(active and not stopping)
+        report = self._current_alignment_report(require_hashes=True)
+        self.use_alignment_suggestion.setVisible(bool(report))
+        self.use_alignment_suggestion.setEnabled(bool(report) and not self.busy() and not active)
+        if hasattr(self, 'preview_button'):
+            self.preview_button.setEnabled(not self.busy() and not self._still_preview_busy() and not active)
+        if hasattr(self, 'start'):
+            self.start.setEnabled(not self.busy() and not active)
+        if hasattr(self, 'choose_task_button'):
+            self.choose_task_button.setEnabled(not self.busy() and not self.preview_busy())
+
+    def _refresh_alignment_summary(self):
+        if not hasattr(self, 'alignment'):
+            return
+        report = self._current_alignment_report()
+        if report and self.auto.isChecked():
+            self.alignment.setText(_tr('自动对齐：已校验生成前分析，合成时会复用建议偏移。'))
+        elif isinstance(self.alignment_result, dict) and self.alignment_result.get('accepted') is False:
+            if self.auto.isChecked():
+                self.alignment.setText(_tr('自动对齐：尚未采用不可靠的分析结果；请试听后手动偏移。'))
+            else:
+                self.alignment.setText(_tr('手动偏移：{:+.3f} 秒（合成后请试听确认）。').format(self.offset.value()))
+        elif self.auto.isChecked():
+            self.alignment.setText(_tr('自动对齐：合成后显示对齐结果。'))
+        else:
+            self.alignment.setText(_tr('手动偏移：{:+.3f} 秒（合成后请试听确认）。').format(self.offset.value()))
 
     def _set_context(self):
         job = self.source_job
@@ -248,6 +474,7 @@ class VideoMixdownPage(QWidget):
         self.summary.setText('\n'.join(text) if text else _tr('尚未选择原视频与 Mixdown。'))
         self._set_context()
         self._refresh_candidate()
+        self._refresh_alignment_binding()
 
     def short_path(self, path, width=72):
         value = str(path)
@@ -271,11 +498,7 @@ class VideoMixdownPage(QWidget):
             self.report_text.setText(_tr('合成完成后显示对齐、响度与成品检查。'))
             self.report_file.clear()
             self.report.hide()
-        if hasattr(self, 'alignment'):
-            if self.auto.isChecked():
-                self.alignment.setText(_tr('自动对齐：合成后显示对齐结果。'))
-            else:
-                self.alignment.setText(_tr('手动偏移：{:+.3f} 秒（合成后请试听确认）。').format(self.offset.value()))
+        self._refresh_alignment_summary()
         if hasattr(self, 'open_video'):
             self.refresh_paths()
 
@@ -291,8 +514,17 @@ class VideoMixdownPage(QWidget):
             self.preview.clear_frame(message)
         if hasattr(self, 'preview_state'):
             self.preview_state.setText(message)
-        if self.preview_busy():
+        if self._still_preview_busy():
             self.cancel_preview()
+
+    def _refresh_alignment_binding(self):
+        current = self._alignment_key()
+        bound = self.alignment_request_key or self.alignment_result_key
+        if bound is not None and current != bound:
+            self.invalidate_alignment('原视频或 Mixdown 已变化，请重新分析音频对齐。')
+            return
+        self._refresh_alignment_summary()
+        self._sync_alignment_actions()
 
     def use_current_job(self):
         job = getattr(self.owner, 'job', None)
@@ -332,7 +564,10 @@ class VideoMixdownPage(QWidget):
         return True
 
     def preview_still(self):
-        if self.busy() or self.preview_busy():
+        if self.busy() or self._still_preview_busy():
+            return
+        if self.alignment_busy():
+            self.preview_state.setText(_tr('请等待音频对齐分析结束或先取消分析。'))
             return
         if getattr(self.owner.storage, 'busy', lambda: False)() or getattr(self.owner.updates, 'busy', lambda: False)():
             self.preview_state.setText(_tr('请等待缓存管理或更新操作结束。'))
@@ -373,6 +608,7 @@ class VideoMixdownPage(QWidget):
             self.preview_result = dict(result)
             self.preview_error = ''
             self.preview_state.setText(_tr('首帧预览 · 0.000 秒。确认画面后再合成。'))
+            self._sync_alignment_actions()
 
         def rejected(message):
             if stale():
@@ -380,6 +616,7 @@ class VideoMixdownPage(QWidget):
                 return
             self.preview_error = str(message)
             self.preview_state.setText(_tr('预览失败：') + str(message))
+            self._sync_alignment_actions()
 
         def cancelled():
             if not stale():
@@ -392,12 +629,10 @@ class VideoMixdownPage(QWidget):
                 # signal is rejected by the generation/token guards above.
                 self.preview_task = None
                 self.preview_stop.hide()
-                self.preview_button.setEnabled(not self.busy())
+                self._sync_alignment_actions()
                 if self.preview_result is None and self.preview_error == '' and task.cancel_event.is_set():
                     self.preview_state.setText(self._preview_cancel_message)
-                if self._reset_pending and not self.preview_busy():
-                    self._reset_pending = False
-                    QTimer.singleShot(0, self.render)
+                self._resume_pending_render()
             task.deleteLater()
             # Stale and cancelled tasks must clean their own UUID directory now
             # that the owned FFmpeg process has exited.
@@ -431,7 +666,9 @@ class VideoMixdownPage(QWidget):
                 pass
 
     def cancel_preview(self):
-        if self.preview_busy():
+        if self.alignment_busy():
+            self.cancel_alignment()
+        if self._still_preview_busy():
             self.preview_generation += 1
             self.preview_result = None
             self.preview_state.setText(_tr('正在取消首帧预览…'))
@@ -440,6 +677,194 @@ class VideoMixdownPage(QWidget):
                 # Keep preview_inputs until the owned process has actually exited;
                 # app close, storage and results guards must keep seeing the source.
                 self.preview_task.cancel()
+        self._sync_alignment_actions()
+
+    def _resume_pending_render(self):
+        if self._reset_pending and not self.busy() and not self.preview_busy():
+            self._reset_pending = False
+            QTimer.singleShot(0, self.render)
+
+    def _clear_alignment_result(self):
+        self.alignment_result = None
+        self.alignment_result_key = None
+        self.alignment_result_signature = {}
+        self.alignment_input_hashes = {}
+        self.alignment_error = ''
+        if hasattr(self, 'alignment_state'):
+            self.alignment_state.setToolTip('')
+
+    def invalidate_alignment(self, message='尚未分析音频对齐。'):
+        self.alignment_generation += 1
+        self._alignment_cancel_message = message
+        self._clear_alignment_result()
+        if hasattr(self, 'alignment_state'):
+            self.alignment_state.setText(_tr(message))
+        if self.alignment_busy():
+            self.cancel_alignment()
+        else:
+            self.alignment_request_key = None
+            self.alignment_request_signature = {}
+            self.alignment_inputs = {}
+        self._refresh_alignment_summary()
+        self._sync_alignment_actions()
+
+    def cancel_alignment(self):
+        if not self.alignment_busy():
+            return
+        self.alignment_generation += 1
+        self._clear_alignment_result()
+        self.alignment_state.setText(_tr('正在取消音频对齐分析…'))
+        if self.alignment_task is not None:
+            self.alignment_task.cancel()
+        self._sync_alignment_actions()
+
+    def analyze_alignment(self):
+        if self.busy() or self.alignment_busy() or self._still_preview_busy():
+            if self._still_preview_busy():
+                self.alignment_state.setText(_tr('请等待首帧预览结束或先取消预览。'))
+            return
+        if getattr(self.owner.storage, 'busy', lambda: False)() or getattr(self.owner.updates, 'busy', lambda: False)():
+            self.alignment_state.setText(_tr('请等待缓存管理或更新操作结束。'))
+            return
+        video, mixdown = self._path('video'), self._path('mixdown')
+        if not video or not mixdown or not video.is_file() or not mixdown.is_file():
+            self.alignment_state.setText(_tr('请选择可用的原视频和 Mixdown 后再分析音频对齐。'))
+            self._sync_alignment_actions()
+            return
+        key, signatures = self._alignment_key(), self._alignment_signatures()
+        if key is None or set(signatures) != {'video', 'mixdown'}:
+            self.alignment_state.setText(_tr('无法读取输入文件信息，请重新选择后再分析。'))
+            return
+        try:
+            import video_mixdown
+            function = getattr(video_mixdown, 'analyze_alignment', None)
+            if not callable(function):
+                self.alignment_state.setText(_tr('当前版本不支持生成前音频对齐分析。'))
+                return
+            job = ROOT / 'cache/video-alignment' / ('task-' + uuid.uuid4().hex)
+            job.mkdir(parents=True)
+        except (OSError, ValueError) as error:
+            self.alignment_state.setText(_tr('分析无法开始：') + str(error))
+            return
+
+        self.invalidate_alignment('正在分析音频对齐…')
+        generation = self.alignment_generation
+        task = AlignmentTask(
+            job,
+            lambda: function(job, video, mixdown, reset_cancel=False),
+            self,
+        )
+        self._alignment_cancel_message = '音频对齐分析已取消。'
+        self.alignment_job = job
+        self.alignment_task = task
+        self.alignment_request_key = key
+        self.alignment_request_signature = dict(signatures)
+        self.alignment_inputs = {
+            'video': str(video.resolve()),
+            'mixdown': str(mixdown.resolve()),
+            'job': str(job),
+        }
+        self.alignment_state.setText(_tr('正在分析音频对齐…'))
+        self._sync_alignment_actions()
+
+        def stale():
+            return (task is not self.alignment_task or generation != self.alignment_generation
+                    or key != self.alignment_request_key)
+
+        def accepted(result):
+            if stale() or task.cancel_event.is_set():
+                return
+            if key != self._alignment_key() or signatures != self._alignment_signatures():
+                self._alignment_cancel_message = '原视频或 Mixdown 已变化，请重新分析音频对齐。'
+                self.alignment_state.setText(_tr(self._alignment_cancel_message))
+                return
+            payload = _alignment_payload(result)
+            try:
+                offset = float(payload.get('offset_seconds'))
+            except (TypeError, ValueError):
+                offset = None
+            reason = str(payload.get('reason') or payload.get('rejection_reason')
+                         or payload.get('message') or '').strip()
+            hashes = _alignment_input_hashes(payload, video, mixdown)
+            if payload.get('accepted') is True:
+                if offset is None or not math.isfinite(offset) or abs(offset) > 3600:
+                    self.alignment_state.setText(_tr('分析结果缺少有效的建议偏移，请重试。'))
+                    return
+                if not all(hashes.get(role) for role in ('video', 'mixdown')):
+                    self.alignment_state.setText(_tr('分析结果缺少输入校验信息，请重新分析。'))
+                    return
+                self.alignment_result = payload
+                self.alignment_result_key = key
+                self.alignment_result_signature = dict(signatures)
+                self.alignment_input_hashes = hashes
+                self.alignment_error = ''
+                self.alignment_state.setText(
+                    _tr('建议偏移：{:+.3f} 秒。请试听确认后选择“使用建议偏移”。').format(offset))
+            else:
+                self.alignment_result = payload
+                self.alignment_result_key = key
+                self.alignment_result_signature = dict(signatures)
+                self.alignment_input_hashes = hashes
+                self.alignment_error = ''
+                if offset is not None and math.isfinite(offset):
+                    self.alignment_state.setText(
+                        _tr('建议偏移：{:+.3f} 秒，但结果不够可靠，未自动采用。请试听 Mixdown 后手动填写偏移。').format(offset))
+                else:
+                    self.alignment_state.setText(
+                        _tr('未能可靠判断音频偏移，未自动采用。请试听 Mixdown 后手动填写偏移。'))
+            if reason:
+                self.alignment_state.setToolTip(_tr(reason))
+            self._refresh_alignment_summary()
+            self._sync_alignment_actions()
+
+        def rejected(message):
+            if stale():
+                return
+            self._clear_alignment_result()
+            self.alignment_error = str(message)
+            self.alignment_state.setText(_tr('分析音频对齐失败：') + _tr(str(message)))
+            self._refresh_alignment_summary()
+            self._sync_alignment_actions()
+
+        def cancelled():
+            if not stale():
+                self._clear_alignment_result()
+                self.alignment_state.setText(_tr(self._alignment_cancel_message))
+                self._refresh_alignment_summary()
+
+        def finished():
+            if task is self.alignment_task:
+                self.alignment_inputs = {}
+                self.alignment_task = None
+                self.alignment_request_key = None
+                self.alignment_request_signature = {}
+                if (self.alignment_result is None and self.alignment_error == ''
+                        and task.cancel_event.is_set()):
+                    self.alignment_state.setText(_tr(self._alignment_cancel_message))
+                self._refresh_alignment_summary()
+                self._sync_alignment_actions()
+                self._resume_pending_render()
+            task.deleteLater()
+
+        task.succeeded.connect(accepted)
+        task.failed.connect(rejected)
+        task.cancelled.connect(cancelled)
+        task.finished.connect(finished)
+        task.start()
+
+    def apply_alignment_suggestion(self):
+        report = self._current_alignment_report(require_hashes=True)
+        if report is None:
+            self.alignment_state.setText(_tr('当前分析结果已失效，请重新分析音频对齐。'))
+            self._sync_alignment_actions()
+            return
+        offset = float(report['offset_seconds'])
+        self.auto.setChecked(False)
+        self.offset.setValue(offset)
+        self.status.setText(_tr('已使用建议偏移 {:+.3f} 秒，并切换为手动偏移。').format(offset))
+        self.alignment_state.setText(_tr('已使用建议偏移 {:+.3f} 秒；合成时将按手动偏移处理。').format(offset))
+        self._refresh_alignment_summary()
+        self._sync_alignment_actions()
 
     def open_media(self, key):
         path = self._path(key)
@@ -452,7 +877,12 @@ class VideoMixdownPage(QWidget):
     def render(self):
         if self.busy():
             return
-        if self.preview_busy():
+        if self.alignment_busy():
+            self.cancel_alignment()
+            self._reset_pending = True
+            self.status.setText(_tr('正在停止音频对齐分析；结束后可再次开始合成。'))
+            return
+        if self._still_preview_busy():
             self.cancel_preview()
             self._reset_pending = True
             self.status.setText(_tr('正在停止首帧预览；结束后可再次开始合成。'))
@@ -470,6 +900,10 @@ class VideoMixdownPage(QWidget):
                 raise ValueError('成品已存在，请选择其他文件名。')
             options = {'offset': None if self.auto.isChecked() else self.offset.value(),
                        'normalize': self.normalize.isChecked()}
+            alignment_report = self._current_alignment_report(require_hashes=True)
+            alignment_hashes = dict(self.alignment_input_hashes) if alignment_report else {}
+            if alignment_report is not None and options['offset'] is None:
+                options['alignment_report'] = alignment_report
             self.invalidate_result()
             self.report.hide()
             self.job = ROOT / 'cache/video-mixdown' / ('task-' + uuid.uuid4().hex)
@@ -481,6 +915,10 @@ class VideoMixdownPage(QWidget):
             render_job = self.job
 
             def make():
+                if alignment_report is not None:
+                    current_hashes = {role: file_hash(values[role]) for role in ('video', 'mixdown')}
+                    if current_hashes != alignment_hashes:
+                        raise ValueError(ALIGNMENT_INPUTS_CHANGED)
                 from task_contract import bind, reconcile, selected
                 linked = source_job if (source_job and values['video'] == (source_job / 'video/source.mp4').resolve()) else None
                 if linked:
@@ -525,26 +963,21 @@ class VideoMixdownPage(QWidget):
         elif not self.preview_busy():
             self.preview_button.setEnabled(True)
         self.refresh_paths()
+        self._sync_alignment_actions()
 
     def _alignment_text(self, alignment):
         if not alignment:
-            return '自动对齐：未获得对齐结果。'
+            return _tr('自动对齐：未获得对齐结果。')
         method = alignment.get('method')
         if method == 'manual':
-            return '手动偏移：{:+.3f} 秒。'.format(float(alignment.get('offset_seconds', 0) or 0))
-        values = []
+            return _tr('手动偏移：{:+.3f} 秒。').format(float(alignment.get('offset_seconds', 0) or 0))
         if alignment.get('accepted') is False:
-            values.append('结果不确定')
-        for key, title, fmt in (('offset_seconds', '偏移', '{:+.3f} 秒'),
-                                ('correlation', '相关度', '{:.3f}'),
-                                ('margin', '差距', '{:.3f}'),
-                                ('overlap_seconds', '重叠', '{:.2f} 秒')):
-            if alignment.get(key) is not None:
-                try:
-                    values.append(title + ' ' + fmt.format(float(alignment[key])))
-                except (TypeError, ValueError):
-                    pass
-        return '自动对齐：' + (' / '.join(values) if values else method or '分析完成')
+            return _tr('自动对齐结果不够可靠；请试听 Mixdown 后手动填写偏移。')
+        try:
+            offset = float(alignment.get('offset_seconds'))
+        except (TypeError, ValueError):
+            return _tr('自动对齐完成。')
+        return _tr('自动对齐偏移：{:+.3f} 秒。').format(offset)
 
     def completed(self, report):
         if self.sender() is not None and self.sender() is not self.task:
@@ -604,12 +1037,14 @@ class VideoMixdownPage(QWidget):
         self.alignment_candidate = candidate
         self.alignment_candidate_key = key
         if candidate and candidate.get('accepted') is False:
-            self.alignment.setText(self._alignment_text(candidate) + _tr('。请试听后手动填写偏移。'))
+            self.alignment.setText(self._alignment_text(candidate))
         return candidate
 
     def failed(self, error):
         if self.sender() is not None and self.sender() is not self.task:
             return
+        if str(error) == ALIGNMENT_INPUTS_CHANGED:
+            self.invalidate_alignment(ALIGNMENT_INPUTS_CHANGED)
         if self.job and (self.job / 'cancel.flag').exists():
             self.status.setText(_tr('已取消合成。'))
             self.report_title.setText(_tr('合成已取消'))
@@ -621,7 +1056,7 @@ class VideoMixdownPage(QWidget):
         self.report.show()
         candidate = self._alignment_candidate()
         if candidate:
-            self.alignment.setText(self._alignment_text(candidate) + _tr('。请试听后手动填写偏移。'))
+            self.alignment.setText(self._alignment_text(candidate))
         self.refresh_paths()
 
     def finished(self):
@@ -630,12 +1065,24 @@ class VideoMixdownPage(QWidget):
             return
         self.active_inputs = {}
         self.set_locked(False)
+        self._resume_pending_render()
 
     def cancel(self):
         if self.busy():
             (self.job / 'cancel.flag').touch()
             self.stop.setEnabled(False)
             self.status.setText(_tr('正在停止合成，原视频与 Mixdown 保持不变…'))
+
+    def closeEvent(self, event):
+        if self.preview_busy():
+            event.ignore()
+            self.cancel_preview()
+            return
+        if self.busy():
+            event.ignore()
+            self.cancel()
+            return
+        super().closeEvent(event)
 
     def use_result(self):
         if self.result and Path(self.result['output']).is_file():

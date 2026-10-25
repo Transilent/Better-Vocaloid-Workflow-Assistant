@@ -18,7 +18,9 @@ import media_preview
 from media_preview import (PreviewCancelled, PreviewTask, discard_preview_job, extract_still,
                            new_preview_job)
 from PyQt5.QtTest import QTest
+from PyQt5.QtGui import QCloseEvent
 from PyQt5.QtWidgets import QApplication
+import video_mixdown
 from video_mixdown_ui import VideoMixdownPage
 application = QApplication([])
 
@@ -34,6 +36,15 @@ def run_ffmpeg(*arguments):
     )
     assert result.returncode == 0, result.stderr.decode(errors="replace")
     return result
+
+
+def wait_until(predicate, timeout=20):
+    deadline = time.monotonic() + timeout
+    while predicate() and time.monotonic() < deadline:
+        application.processEvents()
+        QTest.qWait(10)
+    application.processEvents()
+    assert not predicate(), 'timed out waiting for Qt task'
 
 
 with tempfile.TemporaryDirectory(dir=APP / "work", prefix="video-preview-") as folder:
@@ -93,6 +104,150 @@ with tempfile.TemporaryDirectory(dir=APP / "work", prefix="video-preview-") as f
     assert not page.preview_busy() and page.preview_task is None and page.preview_result is None
     assert page.result is None and not page.to_publish.isEnabled()
     assert not finished_cache.exists() and file_hash(video) == original
+    page.close(); application.processEvents()
+
+    # Pre-render analysis is discoverable, cancellable, bound to both inputs,
+    # and an accepted report is explicitly convertible into a manual offset.
+    mixdown = work / 'mixdown.wav'
+    mixdown.write_bytes(b'analysis fixture')
+
+    def accepted_analysis(job, source, mix, *, reference=None, max_shift=30, reset_cancel=True):
+        assert Path(job).is_dir() and reset_cancel is False
+        assert reference is None and max_shift == 30
+        return {
+            'offset_seconds': .25,
+            'accepted': True,
+            'method': 'normalized_stereo_energy_correlation',
+            'correlation': .93,
+            'margin': .17,
+            'overlap_seconds': 12.0,
+            'message': '匹配完成',
+            'inputs': {
+                str(Path(source).resolve()): file_hash(source),
+                str(Path(mix).resolve()): file_hash(mix),
+            },
+        }
+
+    page = VideoMixdownPage(owner)
+    page.resize(1200, 900)
+    page.show()
+    page.fields['video'].setText(str(video))
+    page.fields['mixdown'].setText(str(mixdown))
+    page.fields['output'].setText(str(work / 'accepted.mp4'))
+    assert page.alignment_analyze.text() == '分析音频对齐'
+    assert page.alignment_analyze.objectName() == 'alignment-analyze'
+    assert page.alignment_analyze.accessibleName() == '分析音频对齐'
+    with patch.object(video_mixdown, 'analyze_alignment', accepted_analysis):
+        page.alignment_analyze.click()
+        assert page.alignment_busy() and page.preview_busy()
+        wait_until(page.alignment_busy)
+    assert page.alignment_result and page.alignment_result['accepted'] is True
+    assert page.use_alignment_suggestion.isVisible() and page.use_alignment_suggestion.isEnabled()
+    assert '+0.250' in page.alignment_state.text()
+    assert 'correlation' not in page.alignment_state.text() and '.93' not in page.alignment_state.text()
+    assert page.auto.isChecked() and page.offset.value() == 0
+    page.use_alignment_suggestion.click()
+    application.processEvents()
+    assert not page.auto.isChecked() and abs(page.offset.value() - .25) < 1e-9
+    assert '已使用建议偏移' in page.alignment_state.text() and '手动偏移' in page.alignment.text()
+
+    captured = {}
+
+    def fake_render(render_job, *, video, mixdown, output, reset_cancel=True, **options):
+        captured.update(options)
+        Path(output).write_bytes(b'rendered fixture')
+        report = options.get('alignment_report') or accepted_analysis(
+            render_job, video, mixdown, reset_cancel=reset_cancel)
+        return {
+            'output': str(Path(output).resolve()),
+            'sha256': file_hash(output),
+            'inputs': report.get('inputs', {}),
+            'alignment': report,
+            'normalized': False,
+            'loudness_measurement': None,
+        }
+
+    # Returning to automatic mode reuses only the still-current validated report.
+    page.auto.setChecked(True)
+    with patch.object(video_mixdown, 'render', fake_render):
+        page.render()
+        wait_until(page.busy)
+    assert captured.get('offset') is None
+    assert captured.get('alignment_report', {}).get('accepted') is True, (captured, page.status.text())
+    assert page.result and page.to_publish.isEnabled()
+    assert page.preview_result is None, 'Analysis must not manufacture a still preview'
+    page.close(); application.processEvents()
+
+    def low_confidence_analysis(job, source, mix, *, reference=None, max_shift=30, reset_cancel=True):
+        return {
+            'offset_seconds': .18,
+            'accepted': False,
+            'method': 'normalized_stereo_energy_correlation',
+            'correlation': .44,
+            'margin': .03,
+            'overlap_seconds': 12.0,
+            'message': '存在相近的多个峰值，无法唯一确认偏移。',
+            'inputs': {
+                str(Path(source).resolve()): file_hash(source),
+                str(Path(mix).resolve()): file_hash(mix),
+            },
+        }
+
+    page = VideoMixdownPage(owner)
+    page.fields['video'].setText(str(video))
+    page.fields['mixdown'].setText(str(mixdown))
+    with patch.object(video_mixdown, 'analyze_alignment', low_confidence_analysis):
+        page.alignment_analyze.click()
+        wait_until(page.alignment_busy)
+    assert page.auto.isChecked() and page.offset.value() == 0
+    assert page.use_alignment_suggestion.isHidden()
+    assert '+0.180' in page.alignment_state.text() and '未自动采用' in page.alignment_state.text()
+    assert 'correlation' not in page.alignment_state.text() and '相关度' not in page.alignment_state.text()
+    assert page.open_mixdown.isEnabled()
+
+    entered = threading.Event()
+
+    def blocked_analysis(job, source, mix, *, reference=None, max_shift=30, reset_cancel=True):
+        entered.set()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if (Path(job) / 'cancel.flag').is_file():
+                raise RuntimeError('cancelled fixture')
+            time.sleep(.01)
+        raise RuntimeError('analysis fixture timeout')
+
+    other_mixdown = work / 'other.wav'
+    other_mixdown.write_bytes(b'changed analysis input')
+    with patch.object(video_mixdown, 'analyze_alignment', blocked_analysis):
+        page.alignment_analyze.click()
+        assert entered.wait(5)
+        assert not page.alignment_stop.isHidden() and not page.alignment_analyze.isEnabled()
+        assert not page.preview_button.isEnabled() and not page.start.isEnabled()
+        assert not page.choose_task_button.isEnabled()
+        page.preview_still()
+        assert page.preview_task is None and '等待音频对齐分析' in page.preview_state.text()
+        started = time.monotonic()
+        page.fields['mixdown'].setText(str(other_mixdown))
+        assert time.monotonic() - started < .2, 'Input invalidation blocked the GUI'
+        wait_until(page.alignment_busy)
+    assert page.alignment_result is None and page.use_alignment_suggestion.isHidden()
+    assert '已变化' in page.alignment_state.text()
+    page.close(); application.processEvents()
+
+    # Closing the page cancels the owned analysis while keeping the source files.
+    page = VideoMixdownPage(owner)
+    page.fields['video'].setText(str(video))
+    page.fields['mixdown'].setText(str(mixdown))
+    entered.clear()
+    with patch.object(video_mixdown, 'analyze_alignment', blocked_analysis):
+        page.alignment_analyze.click()
+        assert entered.wait(5)
+        event = QCloseEvent()
+        page.closeEvent(event)
+        assert not event.isAccepted()
+        wait_until(page.alignment_busy)
+    assert page.alignment_result is None and '已取消' in page.alignment_state.text()
+    assert file_hash(video) == original
     page.close(); application.processEvents()
 
     task = PreviewTask(video, source_job=work, cache_root=cache)

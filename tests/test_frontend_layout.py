@@ -40,7 +40,10 @@ for mode,material in ((m,s) for m in ('light','dark') for s in ('glass','solid')
                             viewport=window.step_area.parentWidget()
                             assert viewport.rect().contains(viewport.mapFromGlobal(point)),(important.text(),'below initial preparation viewport')
                 elif index==9:inside(window.tuning.apply_button)
-                elif index==8:inside(window.video_mixdown.start)
+                elif index==8:
+                    inside(window.video_mixdown.start)
+                    if scale==100 and size==(1600,1000):
+                        inside(window.video_mixdown.alignment_analyze)
                 elif index==3:
                     window.publishing.select_step(3);settle();inside(window.publishing.prepare_button);inside(window.publishing.upload_button)
                 assert not window.testAttribute(Qt.WA_TranslucentBackground)

@@ -85,6 +85,7 @@ def validate_graph(graph):
 
 
 def validate_options(options):
+    from style_presets import PRESETS
     if not isinstance(options, dict):
         raise ValueError('预设参数格式无效。')
     result = {key: options.get(key, value) for key, value in DEFAULT_OPTIONS.items()}
@@ -102,7 +103,7 @@ def validate_options(options):
     choices.update(midi_backend=('v1','v2'),alignment_engine=('hfa','tifa'))
     choices.update(reference_mode=('local','netease'),subtitles_mode=('midi','netease'))
     choices.update(separation_flow=('cascade','independent'),
-                   performance_style=('none','soft_ballad','intimate_narration','power_pop'),
+                   performance_style=tuple(PRESETS),
                    style_scope=('lead','all_vocals'))
     if any(result[key] not in values for key, values in choices.items()) or type(result['recognize_lyrics']) is not bool:
         raise ValueError('预设中的语言、模型或设备参数无效。')

@@ -38,6 +38,16 @@ assert prep['expression_density']=='original' and prep['reference_calibration'] 
 assert not any(prep['reference_'+name] for name in ('dynamics','tension','breathiness','voicing'))
 window.workflow.choose_preset('内置 · 日语双轨')
 assert page.performance_style.currentData()=='power_pop' and page.style_pitch.isChecked()
+from style_presets import preset_description
+for emotion in ('melancholy','bright_joy','fragile_tender'):
+    page.style_pitch.setChecked(False)
+    page.performance_style.setCurrentIndex(page.performance_style.findData(emotion))
+    assert page.style_pitch.isChecked() and page.style_hint.text()==preset_description(emotion)
+    assert window.workflow.preferences()['performance_style']==emotion
+    assert window.options()['performance_style']=='none', 'Preparation must not apply the independent emotion'
+    page.apply_preferences({'performance_style':emotion,'style_pitch':False})
+    assert not page.style_pitch.isChecked(), 'Restored explicit pitch opt-out must remain off'
+page.performance_style.setCurrentIndex(page.performance_style.findData('power_pop'));page.style_pitch.setChecked(True)
 for control in (page.performance_style,page.style_strength,page.expression_density):
     before=control.currentData();control.setFocus()
     event=QWheelEvent(QPointF(5,5),QPointF(control.mapToGlobal(QPoint(5,5))),QPoint(),QPoint(0,120),Qt.NoButton,Qt.NoModifier,Qt.NoScrollPhase,False)

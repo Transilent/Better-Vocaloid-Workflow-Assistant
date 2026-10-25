@@ -109,4 +109,27 @@ with tempfile.TemporaryDirectory(dir=APP/'work') as temporary:
     assert r['pitch_producer_sha256'] and r['pitch_changed']
     assert json.loads(b.read_text(encoding='utf-8'))!=project() and a.read_bytes()==original
     assert styles.apply_style_svp(a,b,preset='power_pop',pitch_enabled=True)==r
-print('PASS: optional pitch gestures, signed connections, original pitch detail, safe vibrato, nonlinear preservation and independent IO')
+emotion_outputs=[]
+for preset in ('melancholy','bright_joy','fragile_tender'):
+    source=project();frozen=copy.deepcopy(source)
+    output,report=styles.apply_style(source,preset,strength=.6,track_indices=[0])
+    assert report['category']=='emotion' and report['pitch']['enabled'] and report['pitch_changed']
+    assert report['notes_unchanged'] and source==frozen and output['tracks'][1:]==source['tracks'][1:]
+    assert output['tracks'][0]['mainRef']==source['tracks'][0]['mainRef']
+    assert output['tracks'][0]['mainGroup']['notes']==source['tracks'][0]['mainGroup']['notes']
+    assert report['applied_controls']>1
+    voice_only,rv=styles.apply_style(source,preset,strength=.6,track_indices=[0],pitch_enabled=False)
+    assert not rv['pitch_changed'] and voice_only['tracks'][0]['mainGroup']['parameters']['pitchDelta']==source['tracks'][0]['mainGroup']['parameters']['pitchDelta']
+    silent,rs=styles.apply_style(source,preset,strength=0.)
+    assert silent==source and rs['status']=='not_selected'
+    clock=TempoMap(source['time']['tempo']);curve=output['tracks'][0]['mainGroup']['parameters']['pitchDelta'];old=source['tracks'][0]['mainGroup']['parameters']['pitchDelta']
+    grid=np.asarray(curve['points'][::2]);times=np.array([clock.to_seconds(float(x)+Q) for x in grid])
+    delta=np.asarray(curve['points'][1::2])-np.interp(grid,old['points'][::2],old['points'][1::2])
+    active=np.zeros(len(grid),dtype=bool)
+    for gesture in report['pitch']['tracks'][0]['gestures']:
+        active|=(times>=gesture['start']-1e-8)&(times<=gesture['end']+1e-8)
+    assert np.max(abs(delta[~active]),initial=0.)<1e-10
+    assert set(old['points'][::2])<=set(curve['points'][::2])
+    emotion_outputs.append(output)
+assert all(emotion_outputs[a]!=emotion_outputs[b] for a in range(3) for b in range(a))
+print('PASS: optional pitch, protected authored curves and joint emotion/timbre defaults with explicit opt-out')

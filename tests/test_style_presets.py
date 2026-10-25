@@ -58,6 +58,17 @@ for invalid in ({'performance_style':'unknown'},{'performance_style':[]},{'style
     try:styles.settings(invalid);raise AssertionError(invalid)
     except ValueError:pass
 
+# Legacy task/preset storage accepts the same style IDs without turning on
+# pitch for an existing explicit opt-out or applying style during preparation.
+import workflow
+for preset in ('melancholy','bright_joy','fragile_tender'):
+    preferences=workflow.validate_options({'performance_style':preset,'style_pitch':False})
+    exported=workflow.export_preferences(preferences)
+    restored=workflow.validate_options(exported)
+    assert restored['performance_style']==preset and restored['style_pitch'] is False
+    prepared=workflow.execution_options(preferences)
+    assert prepared['prepare_only'] and prepared['performance_style']=='none' and not prepared['style_pitch']
+
 # Headroom is shared across an entire control. Peaks retain their differences;
 # the original curve is not clipped or renormalized into a new flat line.
 limited=project();curve=limited['tracks'][0]['mainGroup']['parameters']['tension']

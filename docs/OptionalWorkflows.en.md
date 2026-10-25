@@ -2,15 +2,24 @@
 
 [English](OptionalWorkflows.en.md) | [简体中文](OptionalWorkflows.zh-CN.md)
 
-These features are part of the development version. They have not been published as a new release.
-
 ## Video assembly
 
 **视频合成** is a separate sidebar page. It accepts an original video, a Mixdown and an output filename without requiring a music-processing task. The publishing workflow accepts finished videos directly, so assembly is optional.
 
-Automatic alignment estimates a shared energy/rhythm pattern and rejects ambiguous matches. Use manual offset when the recordings lack sufficient common material. Positive offsets delay the Mixdown; negative offsets advance it. Optional two-pass normalization targets −14 LUFS. The original video packets are copied and its original audio is replaced. Audio is padded or trimmed to retain the full video duration.
+Automatic alignment estimates a shared energy/rhythm pattern and rejects ambiguous matches. Use manual offset when the recordings lack sufficient common material. Positive offsets delay the Mixdown; negative offsets advance it.
+
+Before rendering, click **Analyze audio alignment** in **Pre-render audio alignment**.
+The assistant compares the source video's first audio track with the Mixdown
+using shared energy/rhythm changes and reports a suggested offset and whether
+the evidence is reliable. For a reliable result, **Use suggested offset**
+copies it to the manual offset. With automatic alignment enabled, a verified
+pre-render result can also be reused during assembly. Weak, ambiguous or stale
+analyses are not adopted automatically; audition the Mixdown and enter a manual
+offset instead. Manual offsets remain available at any time. Optional two-pass normalization targets −14 LUFS. The original video packets are copied and its original audio is replaced. Audio is padded or trimmed to retain the full video duration.
 
 Inputs and existing output files are not overwritten. Cancellation removes temporary output. After checking the result, use **将成品带入发布工作流** to fill in the video field; this does not start an upload. Active assembly blocks update installation and cache cleanup. Its working files belong to the removable `cache/video-mixdown` cache.
+Analysis files use `cache/video-alignment`. Analysis compares energy changes
+only; it neither classifies musical content nor replaces listening.
 
 ## Separation without cascaded lead filtering
 
@@ -38,7 +47,3 @@ This is a conservative correction, not a guarantee of clean stems. Delayed or sp
 ## Measured voicebank fitting
 
 The calibration experiment is described in [Reference expression](ReferenceDynamics.en.md#measured-voicebank-response-fitting-development-experiment). It prepares one seven-track trial project, waits for a single user-triggered track export in SV, and automatically collects and validates the seven WAVs before fitting a separate project. It adds no neural model weights. Calibration belongs to the current score, is separate from the default reference-to-control heuristics and is disabled by default. SV's Bounce action remains manual.
-
-## Validation limits
-
-Developer tests cover optional-page navigation, manual handoff to publishing, cancellation, busy-state interlocks, real FFmpeg alignment/mux/normalization, independent-input routing, residual consistency and calibration safety. Actual Chinese and Japanese original-mix excerpts have also run through HQ3 on DirectML and both BS paths on CUDA. These are short functional checks, not a full-song quality benchmark. SV-rendered calibrated comparisons and listening evaluation are still required.

@@ -312,6 +312,25 @@ class TuningEngineTests(unittest.TestCase):
         self.assertEqual(lead['mainGroup']['parameters']['unknownVendor'], original['mainGroup']['parameters']['unknownVendor'])
         self.assertEqual(output['tracks'][1:], frozen['tracks'][1:])
 
+    def test_emotion_defaults_jointly_process_pitch_and_timbre_with_one_density_pass(self):
+        for preset in ('melancholy','bright_joy','fragile_tender'):
+            with self.subTest(preset=preset):
+                data=base_project();frozen=copy.deepcopy(data)
+                options={'expression_mode':'preserve','track_indices':[0],'performance_style':preset,
+                         'style_strength':.6,'expression_density':'dense'}
+                self.assertTrue(settings(options)['style_pitch'])
+                with patch('calibration_refinement.finalize_expression', wraps=calibration_refinement.finalize_expression) as finalizer:
+                    output,report=process_project(data,options)
+                self.assertEqual(finalizer.call_count,1)
+                self.assertEqual(report['final_density_passes'],1)
+                self.assertTrue(report['pitch_changed'])
+                self.assertEqual(data,frozen)
+                self.assertEqual(output['tracks'][1:],frozen['tracks'][1:])
+                self.assertEqual(output['tracks'][0]['mainRef'],frozen['tracks'][0]['mainRef'])
+                self.assertEqual(output['tracks'][0]['mainGroup']['notes'],frozen['tracks'][0]['mainGroup']['notes'])
+                self.assertNotEqual(output['tracks'][0]['mainGroup']['parameters']['loudness'],frozen['tracks'][0]['mainGroup']['parameters']['loudness'])
+                self.assertFalse(settings({**options,'style_pitch':False})['style_pitch'])
+
     def test_calibration_partial_profile_rejects_unmeasured_authored_bias(self):
         data = base_project()
         with tempfile.TemporaryDirectory(prefix='engine-', dir=TEST_TEMP) as temp:

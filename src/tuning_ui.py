@@ -264,11 +264,15 @@ class TuningPage(QWidget):
         strength_label.setBuddy(self.dynamics_strength_spin)
         choice_area.addWidget(label(_tr('拖动滑条按 1% 调整，也可直接输入；0% 不应用。'),'muted'))
 
-        style,style_area=card(_tr('04 · 风格与曲线'),_tr('选择演唱风格，再调整强度、音高表现和曲线密度。'))
+        style,style_area=card(_tr('04 · 风格与曲线'),_tr('选择演唱风格或情绪表达，再调整强度、音高与音色。'))
         style_column.addWidget(style)
         style_area.addWidget(label(_tr('风格预设'),'muted'))
-        self.performance_style=combo([(_tr('不叠加风格'), 'none'), (_tr('柔和抒情〔实验〕'), 'soft_ballad'), (_tr('轻声叙述〔实验〕'), 'intimate_narration'), (_tr('有力流行〔实验〕'), 'power_pop')])
+        from style_presets import PRESETS
+        self.performance_style=combo([(_tr('不叠加风格') if key=='none' else _tr(value['label']),key)
+                                     for key,value in PRESETS.items()])
         self.performance_style_choice=choice(self.performance_style,columns=2);style_area.addWidget(self.performance_style_choice)
+        self.style_hint=label('','muted');style_area.addWidget(self.style_hint)
+        style_area.addWidget(label(_tr('情绪预设默认联动局部音高与音色，可单独关闭附加音高。'),'muted'))
         style_strength_label=label(_tr('风格强度'),'muted');style_area.addWidget(style_strength_label)
         self.style_strength=combo(strength_choices((.3,.6,.85,1.)))
         self.style_strength_choice=StrengthControl(self.style_strength);style_area.addWidget(self.style_strength_choice)
@@ -351,7 +355,7 @@ class TuningPage(QWidget):
         saved=workspace_state().get('tuning',{});self.last_session=saved.get('session')
         self.apply_preferences(saved.get('preferences',read_state()['options']))
         self.mode.currentIndexChanged.connect(self.refresh)
-        self.performance_style.currentIndexChanged.connect(self.refresh)
+        self.performance_style.currentIndexChanged.connect(self.style_selected)
         self.calibration_enabled.toggled.connect(self.calibration_toggle)
         self.jobs.currentIndexChanged.connect(self.show_job_projects)
         self.style_scope.currentIndexChanged.connect(self.select_scope)
@@ -507,13 +511,26 @@ class TuningPage(QWidget):
         field.style().unpolish(field);field.style().polish(field)
 
     def apply_preferences(self,values):
-        for name in ('dynamics_strength','expression_density','performance_style','style_strength','style_scope'):
-            field=getattr(self,name);value=values.get(name,field.currentData())
-            if name in ('dynamics_strength','style_strength'):
-                if normalized_strength(value) is not None:set_combo_strength(field,value)
-            elif field.findData(value)>=0:field.setCurrentIndex(field.findData(value))
-        for name in ('reference_dynamics','reference_tension','reference_breathiness','reference_voicing','style_pitch'):
-            getattr(self,name).setChecked(values.get(name) is True)
+        from style_presets import pitch_default
+        restoring=getattr(self,'_restoring_preferences',False)
+        self._restoring_preferences=True
+        try:
+            for name in ('dynamics_strength','expression_density','performance_style','style_strength','style_scope'):
+                field=getattr(self,name);value=values.get(name,field.currentData())
+                if name in ('dynamics_strength','style_strength'):
+                    if normalized_strength(value) is not None:set_combo_strength(field,value)
+                elif field.findData(value)>=0:field.setCurrentIndex(field.findData(value))
+            for name in ('reference_dynamics','reference_tension','reference_breathiness','reference_voicing','style_pitch'):
+                default=pitch_default(self.performance_style.currentData()) if name=='style_pitch' else False
+                getattr(self,name).setChecked(values.get(name,default) is True)
+        finally:
+            self._restoring_preferences=restoring
+
+    def style_selected(self,*args):
+        from style_presets import pitch_default
+        if not self.loading and not getattr(self,'_restoring_preferences',False) and pitch_default(self.performance_style.currentData()):
+            self.style_pitch.setChecked(True)
+        self.refresh()
 
     def preferences(self):
         names=('dynamics_strength','expression_density','performance_style','style_strength','style_scope')
@@ -525,12 +542,14 @@ class TuningPage(QWidget):
         return values
 
     def persist(self,*args):
-        if self.loading or environment_value('VWA_TESTING')=='1':return
+        if self.loading or getattr(self,'_restoring_preferences',False) or environment_value('VWA_TESTING')=='1':return
         if self.session:self.last_session=str(self.session)
         state=workspace_state();state['tuning']={'preferences':self.preferences(),'session':self.last_session}
         atomic_json(ROOT/'cache/workspace.json',state)
 
     def refresh(self,*args):
+        from style_presets import preset_description
+        self.style_hint.setText(_tr(preset_description(self.performance_style.currentData())))
         mode=self.mode.currentData()
         self.reference_panel.setVisible(mode=='reference');self.calibration_panel.setVisible(mode=='calibrated');self.retained_panel.setVisible(mode=='retained')
         self.calibration_enabled.blockSignals(True);self.calibration_enabled.setChecked(mode=='calibrated');self.calibration_enabled.blockSignals(False)

@@ -14,6 +14,7 @@ TONAL_KEYS=('reference_dynamics','dynamics_strength','reference_tension','refere
 
 def _owner_tuning_preferences(owner):
     from workflow import DEFAULT_OPTIONS
+    from style_presets import PRESETS
     result={key:DEFAULT_OPTIONS[key] for key in TONAL_KEYS}
     for key in ('reference_dynamics','reference_tension','reference_breathiness','reference_voicing','style_pitch'):
         field=getattr(owner,key,None)
@@ -24,7 +25,7 @@ def _owner_tuning_preferences(owner):
     density=result['expression_density']
     result['expression_density']=density if density in ('dense','original') else 'original'
     style=result['performance_style']
-    result['performance_style']=style if style in ('none','soft_ballad','intimate_narration','power_pop') else 'none'
+    result['performance_style']=style if style in tuple(PRESETS) else 'none'
     result['style_scope']=result['style_scope'] if result['style_scope'] in ('lead','all_vocals') else 'lead'
     for key in ('dynamics_strength','style_strength'):
         try:value=float(result[key])

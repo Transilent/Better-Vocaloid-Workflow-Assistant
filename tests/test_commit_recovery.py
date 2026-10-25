@@ -126,6 +126,22 @@ class TuningCommitRecoveryTests(unittest.TestCase):
             self.assertEqual(retry_engine.call_count, 0)
             self.assertTrue(repaired['receipt_verified'])
             self.assertEqual(source.read_bytes(), source_before)
+            # Both directory and session-file entry points must work beyond
+            # MAX_PATH, including direct creation and explicit registration.
+            self.assertEqual(tuning_workflow.read_session(deep_session)['id'],
+                             tuning_workflow.read_session(session)['id'])
+            job = root / 'registration-job';job.mkdir()
+            (job / 'request.json').write_text('{"language":"zh"}', encoding='utf-8')
+            with patch('task_contract.bind') as binder:
+                registered = register_result(deep_session, job=job)
+            self.assertEqual(registered, Path(repaired['output']))
+            binder.assert_called_once_with(job, 'project', registered)
+            created = create_session(source, deep / 'created-session' / ('x' * 48))
+            self.assertGreater(len(str(created)), 260)
+            with patch.object(tuning_workflow, 'process_project', side_effect=fake_tuning):
+                created_result = run_session(created.parent, options)
+            self.assertTrue(created_result['receipt_verified'])
+            self.assertEqual(source.read_bytes(), source_before)
         finally:
             shutil.rmtree(native_path(root), ignore_errors=False)
 

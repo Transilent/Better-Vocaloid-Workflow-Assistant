@@ -37,7 +37,9 @@ def settings(options):
         if type(value) not in (int,float) or not math.isfinite(value) or not 0<=value<=1:
             raise ValueError('调音强度应为0到1的有限数值。')
         result[name]=float(value)
-    from style_presets import settings as style_settings
+    from style_presets import settings as style_settings, pitch_default
+    if 'style_pitch' not in options:
+        result['style_pitch']=pitch_default(result['performance_style'])
     from calibration_refinement import density_settings
     style_settings(result);density_settings(result)
     indices=result['track_indices']

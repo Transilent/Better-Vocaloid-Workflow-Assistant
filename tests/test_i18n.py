@@ -62,6 +62,20 @@ for language in ('zh-CN', 'ja', 'en'):
         assert window.appearance_panel.language.currentData() == language
         assert [window.language.itemData(i) for i in range(window.language.count())] == ['zh', 'ja']
         assert window.publishing.cover_mode.itemData(0) == 'original'
+        from style_presets import PRESETS, preset_description
+        for emotion in ('melancholy', 'bright_joy', 'fragile_tender'):
+            combo = window.tuning.performance_style
+            combo.setCurrentIndex(combo.findData(emotion))
+            assert combo.currentText() == i18n.tr(PRESETS[emotion]['label'])
+            assert window.tuning.style_hint.text() == i18n.tr(preset_description(emotion))
+            if language != 'zh-CN':
+                assert combo.currentText() != PRESETS[emotion]['label']
+                assert window.tuning.style_hint.text() != preset_description(emotion)
+        video_page = window.pages.widget(8)
+        assert video_page.alignment_analyze.text() == i18n.tr('分析音频对齐')
+        assert video_page.use_alignment_suggestion.text() == i18n.tr('使用建议偏移')
+        if language != 'zh-CN':
+            assert video_page.alignment_analyze.text() != '分析音频对齐'
         assert i18n.tr('来源任务：{0}', '发布').endswith('发布'), 'Formatted private task titles must remain verbatim'
         from tuning_ui import format_tuning_result_summary
         summary = format_tuning_result_summary({'status': 'applied', 'report': {'track_indices': [0], 'pitch_changed': False}})

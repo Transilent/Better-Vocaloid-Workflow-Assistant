@@ -924,6 +924,7 @@ def _run(job, until):
 
 
 def main():
+    from style_presets import PRESETS
     parser = argparse.ArgumentParser(description="BV / 本地音乐 → 分离 → Vocal2Midi")
     inputs = parser.add_mutually_exclusive_group(required=True)
     inputs.add_argument("--source", help="BV 号或 B站链接")
@@ -952,7 +953,7 @@ def main():
     parser.add_argument('--reference-dynamics', action='store_true', help='Transfer reference dynamics to SVP loudness (experimental)')
     parser.add_argument('--dynamics-strength', type=float, default=.6, help='Reference dynamics amount, from 0 to 1')
     parser.add_argument('--expression-density', choices=('original','dense'), default='dense', help='SVP expression sampling; dense preserves the original linear contour at 5 ms')
-    parser.add_argument('--performance-style',choices=('none','soft_ballad','intimate_narration','power_pop'),default='none',help='Independent experimental SVP style candidate')
+    parser.add_argument('--performance-style',choices=tuple(PRESETS),default='none',help='Independent experimental SVP style candidate')
     parser.add_argument('--style-strength',type=float,default=.6)
     parser.add_argument('--style-scope',choices=('lead','all_vocals'),default='lead')
     parser.add_argument('--style-pitch',action='store_true',help='Optional structural pitch style gestures')

@@ -6,7 +6,7 @@ used. Nonlinear curves retain their original interpolation and are skipped.
 import copy
 import math
 
-VERSION=1
+VERSION=2
 GRID_SECONDS=.005
 MAX_POINTS=2_000_000
 # Entry cents/seconds, interval lag cents per semitone / limit / seconds,
@@ -15,6 +15,9 @@ RECIPES={
     'soft_ballad':{'entry':(-24.,.16),'connection':(3.,18.,.10),'release':(-28.,.22),'vibrato':(7.,5.,.45)},
     'intimate_narration':{'entry':(-12.,.08),'connection':(1.5,9.,.06),'release':(-20.,.14),'vibrato':None},
     'power_pop':{'entry':(18.,.07),'connection':(2.5,18.,.075),'release':(-14.,.12),'vibrato':(10.,5.5,.38)},
+    'melancholy':{'entry':(-16.,.13),'connection':(1.5,10.,.09),'release':(-24.,.20),'vibrato':None},
+    'bright_joy':{'entry':(12.,.06),'connection':(1.7,11.,.055),'release':(-7.,.08),'vibrato':None},
+    'fragile_tender':{'entry':(6.,.08),'connection':(1.,8.,.06),'release':(24.,.16),'vibrato':None},
 }
 
 

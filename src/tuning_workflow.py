@@ -68,7 +68,7 @@ def _relocate_media(data,source_directory):
             resolved=(source_directory/filename).resolve()
             audio['filename']=str(resolved)
             changes.append({'track_index':index,'original_reference':filename,'output_reference':str(resolved),
-                            'exists':resolved.is_file(),'audio_modified':False})
+                            'exists':_isfile(resolved),'audio_modified':False})
     return changes
 
 
@@ -87,13 +87,13 @@ def inspect_project(path):
 
 def job_projects(job):
     job=Path(job).resolve()
-    if not (job/'request.json').is_file():raise ValueError('请选择已有准备任务目录。')
+    if not _isfile(job/'request.json'):raise ValueError('请选择已有准备任务目录。')
     receipt_path=job/'exports/receipts.json'
-    receipts=_read(receipt_path) if receipt_path.is_file() else {}
+    receipts=_read(receipt_path) if _isfile(receipt_path) else {}
     results=[];seen=set()
     def add(path,label,kind,expected=None):
         path=Path(path).resolve()
-        if path in seen or path.suffix.lower()!='.svp' or not path.is_file():return
+        if path in seen or path.suffix.lower()!='.svp' or not _isfile(path):return
         seen.add(path);info=inspect_project(path)
         results.append({'path':str(path),'label':label,'kind':kind,'sha256':info['sha256'],
                         'verified':expected is not None and expected==info['sha256']})
@@ -115,7 +115,7 @@ def _owned(root,path):
     root=Path(root).resolve();path=Path(path).absolute()
     if not path.resolve().is_relative_to(root):raise ValueError('调音会话路径越界，已停止。')
     from task_store import checked_tree
-    checked_tree(path,root)
+    checked_tree(native_path(path),native_path(root))
     return path
 
 
@@ -203,12 +203,12 @@ def create_session(project,destination,*,job=None):
     raw=_raw(project)
     if hashlib.sha256(raw).hexdigest()!=info['sha256']:raise ValueError('导入期间工程发生变化，请重试。')
     associated=Path(job).resolve() if job else None
-    if associated and not (associated/'request.json').is_file():raise ValueError('关联准备任务不存在。')
+    if associated and not _isfile(associated/'request.json'):raise ValueError('关联准备任务不存在。')
     destination=Path(destination).absolute()
-    if destination.exists():raise FileExistsError('调音会话目录已存在，请选择新目录或继续原会话。')
-    destination.mkdir(parents=True,exist_ok=False);root=destination.resolve()
-    snapshot=_owned(root,root/'inputs/source.svp');snapshot.parent.mkdir()
-    with snapshot.open('xb') as stream:stream.write(raw)
+    if _exists(destination):raise FileExistsError('调音会话目录已存在，请选择新目录或继续原会话。')
+    Path(native_path(destination)).mkdir(parents=True,exist_ok=False);root=destination.resolve()
+    snapshot=_owned(root,root/'inputs/source.svp');Path(native_path(snapshot.parent)).mkdir()
+    with Path(native_path(snapshot)).open('xb') as stream:stream.write(raw)
     if _raw(project)!=raw or _raw(snapshot)!=raw:raise ValueError('导入期间工程发生变化，未创建有效会话。')
     spec={'schema':SCHEMA,'kind':'vwa.tuning-session','id':uuid.uuid4().hex,
           'created_at':datetime.now(timezone.utc).isoformat(),'source':str(project),'source_sha256':info['sha256'],
@@ -221,7 +221,7 @@ def create_session(project,destination,*,job=None):
 
 def read_session(session):
     session=Path(session).resolve()
-    if session.is_dir():session=session/'session.json'
+    if Path(native_path(session)).is_dir():session=session/'session.json'
     spec=_read(session)
     if not isinstance(spec,dict) or spec.get('schema')!=SCHEMA or canonical_kind(spec.get('kind'))!='vwa.tuning-session':
         raise ValueError('调音会话格式无效。')
@@ -234,7 +234,7 @@ def _check_source(root,spec):
     snapshot=_owned(root,root/spec['input_file'])
     if file_hash(snapshot)!=spec['input_sha256']:raise ValueError('调音输入快照已改变，未提交。')
     original=Path(spec['source'])
-    if original.exists() and file_hash(original)!=spec['source_sha256']:
+    if _exists(original) and file_hash(original)!=spec['source_sha256']:
         raise ValueError('原始工程已在外部改变；请为新版另建调音会话，原会话结果仍保留。')
     return snapshot
 
@@ -271,7 +271,7 @@ def _exclusive(root):
     if not lock.acquire(blocking=False):raise RuntimeError('此调音会话正在运行，请等待或停止当前处理。')
     stream=None;acquired=False
     try:
-        stream=_owned(root,root/'run.lock').open('a+b')
+        stream=Path(native_path(_owned(root,root/'run.lock'))).open('a+b')
         if stream.seek(0,2)==0:stream.write(b'0');stream.flush()
         stream.seek(0)
         if os.name=='nt':
@@ -296,7 +296,7 @@ def _exclusive(root):
 
 
 def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None):
-    path=Path(session).resolve();path=path/'session.json' if path.is_dir() else path
+    path=Path(session).resolve();path=path/'session.json' if Path(native_path(path)).is_dir() else path
     root=path.parent;spec=read_session(path);options=_normalize(options)
     with _exclusive(root):
         pending=None;signature=None;committed=False
@@ -431,7 +431,7 @@ def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None):
 
 
 def register_result(session,*,job=None):
-    path=Path(session).resolve();path=path/'session.json' if path.is_dir() else path
+    path=Path(session).resolve();path=path/'session.json' if Path(native_path(path)).is_dir() else path
     root=path.parent;spec=read_session(path);state=_read(root/'status.json')
     if state.get('state')!='done':raise ValueError('请先完成并核对调音结果，回执待补全时不能登记。')
     signature=state.get('signature')
@@ -439,7 +439,7 @@ def register_result(session,*,job=None):
     output=_owned(root,Path(state.get('output','')))
     target=_owned(root,root/'outputs'/('tuned-'+signature[:16]+'.svp'))
     receipt_path=_owned(root,target.with_suffix('.svp.tuning.json'))
-    if output.resolve()!=target.resolve() or not target.is_file():
+    if output.resolve()!=target.resolve() or not _isfile(target):
         raise ValueError('调音状态没有指向已提交的独立候选，不能登记。')
     receipt=_read(receipt_path)
     if (not isinstance(receipt,dict) or receipt.get('schema')!=SCHEMA or canonical_kind(receipt.get('kind'))!='vwa.tuning-result'
@@ -458,7 +458,7 @@ def register_result(session,*,job=None):
     if verified is None or state.get('receipt_verified') is False:
         raise ValueError('调音回执未通过完整验签，不能登记。')
     job=Path(job or spec.get('job') or '').resolve()
-    if not (job/'request.json').is_file():raise ValueError('请选择要登记到的已有准备任务。')
+    if not _isfile(job/'request.json'):raise ValueError('请选择要登记到的已有准备任务。')
     from task_contract import bind
     bind(job,'project',target)
     return target

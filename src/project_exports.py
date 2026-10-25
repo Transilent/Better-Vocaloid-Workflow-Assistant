@@ -653,11 +653,12 @@ def export_job(job, request):
 
 
 if __name__=='__main__':
+    from style_presets import PRESETS
     parser=argparse.ArgumentParser()
     parser.add_argument('--job',required=True,type=Path)
     parser.add_argument('--context',action='store_true',help='Prepare context evidence and advisory plan')
     parser.add_argument('--context-plan',help='Validate an existing context plan without changing project parameters')
-    parser.add_argument('--performance-style',choices=('none','soft_ballad','intimate_narration','power_pop'))
+    parser.add_argument('--performance-style',choices=tuple(PRESETS))
     parser.add_argument('--style-strength',type=float)
     parser.add_argument('--style-scope',choices=('lead','all_vocals'))
     parser.add_argument('--style-pitch',action=argparse.BooleanOptionalAction,default=None)
