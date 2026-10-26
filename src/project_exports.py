@@ -91,10 +91,10 @@ def cached_output(job, path, signature, receipts):
 
 
 def _style_target(job, request, baseline):
-    from style_presets import settings
+    from style_presets import settings,detail_settings
     from style_pitch import enabled
     preset,strength,scope=settings(request)
-    signature=fingerprint(['style-candidate-v2',baseline['sha256'],preset,strength,scope,enabled(request),
+    signature=fingerprint(['style-candidate-v3',baseline['sha256'],preset,strength,scope,enabled(request),detail_settings(request.get('style_detail')),
         request.get('expression_density','dense'),
         [file_hash(Path(__file__).with_name(name)) for name in
          ('tuning_engine.py','style_presets.py','style_pitch.py','calibration_refinement.py','vocal_expression.py','expression_calibration.py')]])
@@ -121,7 +121,7 @@ def _style_intact(job, request, receipts):
 
 def export_style(job, request):
     """Keep baseline SVP and style candidates separate, including on cache reuse."""
-    from style_presets import settings,track_indices_for
+    from style_presets import settings,track_indices_for,detail_settings
     from tuning_engine import process_project
     from style_pitch import enabled
     preset,strength,scope=settings(request)
@@ -150,7 +150,7 @@ def export_style(job, request):
         data=json.loads(source.read_text(encoding='utf-8-sig').rstrip('\x00'))
         result,transaction=process_project(data,{'performance_style':preset,'style_strength':strength,
             'track_indices':track_indices_for(data,scope),'expression_density':request.get('expression_density','dense'),
-            'style_pitch':enabled(request)},cancel=lambda:cancelled(job))
+            'style_pitch':enabled(request),'style_detail':detail_settings(request.get('style_detail'))},cancel=lambda:cancelled(job))
         adaptation=dict(transaction['style'])
         adaptation['transaction']={key:value for key,value in transaction.items() if key!='style'}
         adaptation['expression_density']=transaction['expression_density']
@@ -169,7 +169,8 @@ def export_style(job, request):
             preserved=preserve_changed_file(job,path,receipts.get(path.relative_to(job).as_posix(),{}).get('sha256'),file_hash(pending))
             pending.replace(path)
             item=commit_receipt(job,path,signature,receipts,kind='style_candidate',active=True,
-                preset=preset,strength=strength,scope=scope,style_pitch=enabled(request),baseline_sha256=original_hash,
+                preset=preset,strength=strength,scope=scope,style_pitch=enabled(request),
+                style_detail=detail_settings(request.get('style_detail')),baseline_sha256=original_hash,
                 adaptation=adaptation,verified_notes=sum(len(t.get('mainGroup',{}).get('notes',[])) for t in result['tracks']))
             if preserved:
                 item['preserved_copy']=preserved;atomic_json(job/'exports/receipts.json',receipts)
@@ -662,10 +663,11 @@ if __name__=='__main__':
     parser.add_argument('--style-strength',type=float)
     parser.add_argument('--style-scope',choices=('lead','all_vocals'))
     parser.add_argument('--style-pitch',action=argparse.BooleanOptionalAction,default=None)
+    parser.add_argument('--style-detail',type=json.loads)
     args=parser.parse_args()
     options=json.loads((args.job/'request.json').read_text(encoding='utf-8'))
     if args.context: options['context_enabled']=True
     if args.context_plan: options['context_plan']=args.context_plan
-    for key in ('performance_style','style_strength','style_scope','style_pitch'):
+    for key in ('performance_style','style_strength','style_scope','style_pitch','style_detail'):
         if getattr(args,key) is not None:options[key]=getattr(args,key)
     export_job(args.job,options)

@@ -25,7 +25,8 @@ window.navigate(5);assert window.pages.currentIndex()==0
 window.navigate(6);assert window.pages.currentIndex()==4
 window.navigate(9)
 
-page.performance_style.setCurrentIndex(page.performance_style.findData('power_pop'))
+assert [page.performance_style.itemData(i) for i in range(page.performance_style.count())] == ['none','gentle','bold']
+page.performance_style.setCurrentIndex(page.performance_style.findData('bold'))
 page.style_pitch.setChecked(True)
 page.reference_tension.setChecked(True)
 page.calibration_enabled.setChecked(True);page.calibration_file.setText('not-configured.json')
@@ -37,9 +38,9 @@ assert prep['prepare_only'] and prep['performance_style']=='none' and not prep['
 assert prep['expression_density']=='original' and prep['reference_calibration'] is None
 assert not any(prep['reference_'+name] for name in ('dynamics','tension','breathiness','voicing'))
 window.workflow.choose_preset('内置 · 日语双轨')
-assert page.performance_style.currentData()=='power_pop' and page.style_pitch.isChecked()
+assert page.performance_style.currentData()=='bold' and page.style_pitch.isChecked()
 from style_presets import preset_description
-for emotion in ('melancholy','bright_joy','fragile_tender'):
+for emotion in ('gentle','bold'):
     page.style_pitch.setChecked(False)
     page.performance_style.setCurrentIndex(page.performance_style.findData(emotion))
     assert page.style_pitch.isChecked() and page.style_hint.text()==preset_description(emotion)
@@ -47,7 +48,7 @@ for emotion in ('melancholy','bright_joy','fragile_tender'):
     assert window.options()['performance_style']=='none', 'Preparation must not apply the independent emotion'
     page.apply_preferences({'performance_style':emotion,'style_pitch':False})
     assert not page.style_pitch.isChecked(), 'Restored explicit pitch opt-out must remain off'
-page.performance_style.setCurrentIndex(page.performance_style.findData('power_pop'));page.style_pitch.setChecked(True)
+page.performance_style.setCurrentIndex(page.performance_style.findData('bold'));page.style_pitch.setChecked(True)
 for control in (page.performance_style,page.style_strength,page.expression_density):
     before=control.currentData();control.setFocus()
     event=QWheelEvent(QPointF(5,5),QPointF(control.mapToGlobal(QPoint(5,5))),QPoint(),QPoint(0,120),Qt.NoButton,Qt.NoModifier,Qt.NoScrollPhase,False)
@@ -78,6 +79,8 @@ with tempfile.TemporaryDirectory(prefix='tuning-ui-',dir=APP/'work') as temp:
     page.mode.setCurrentIndex(page.mode.findData('preserve'))
     page.performance_style.setCurrentIndex(page.performance_style.findData('none'))
     page.style_pitch.setChecked(False);page.expression_density.setCurrentIndex(page.expression_density.findData('original'))
+    page.style_detail['connection'].set_percent(62.5)
+    assert page.options()['style_detail']=={'onset':1.0,'sustain':1.0,'connection':.625,'release':1.0}
     assert page.options()['reference_sources']==[] and page.options()['reference_calibration'] is None
     page.start_run()
     worker_running = page.busy()
@@ -101,7 +104,7 @@ with tempfile.TemporaryDirectory(prefix='tuning-ui-',dir=APP/'work') as temp:
     assert not (job/'task.json').exists(),'Generation must not auto-register the result'
     session=page.session;page.start_run();wait()
     assert page.result['cached'] and page.result['project_commit_count']==0
-    page.performance_style.setCurrentIndex(page.performance_style.findData('power_pop'))
+    page.performance_style.setCurrentIndex(page.performance_style.findData('bold'))
     page.style_pitch.setChecked(True);page.start_run();wait()
     assert page.result['output']!=first['output'] and Path(first['output']).read_bytes()==raw
     assert hashlib.sha256(source.read_bytes()).hexdigest()==before
@@ -130,4 +133,4 @@ with tempfile.TemporaryDirectory(prefix='tuning-ui-',dir=APP/'work') as temp:
     window.grab().save(str(APP/'work/test-results/tuning-ui.png'))
 
 window.close();application.processEvents()
-print('PASS: 10 pages, requested navigation, independent options, source snapshots, actual QThread processing, cache/no stacking, explicit registration, recovery and wheel protection')
+print('PASS: 10 pages, two visible styles, phase-detail options, independent source snapshots, QThread processing, cache/no stacking, explicit registration, recovery and wheel protection')

@@ -62,15 +62,25 @@ for language in ('zh-CN', 'ja', 'en'):
         assert window.appearance_panel.language.currentData() == language
         assert [window.language.itemData(i) for i in range(window.language.count())] == ['zh', 'ja']
         assert window.publishing.cover_mode.itemData(0) == 'original'
-        from style_presets import PRESETS, preset_description
-        for emotion in ('melancholy', 'bright_joy', 'fragile_tender'):
-            combo = window.tuning.performance_style
-            combo.setCurrentIndex(combo.findData(emotion))
-            assert combo.currentText() == i18n.tr(PRESETS[emotion]['label'])
-            assert window.tuning.style_hint.text() == i18n.tr(preset_description(emotion))
+        from style_presets import PRESETS, preset_description, visible_presets
+        combo = window.tuning.performance_style
+        assert visible_presets() == ('none', 'gentle', 'bold')
+        assert [combo.itemData(i) for i in range(combo.count())] == list(visible_presets())
+        for style in visible_presets()[1:]:
+            combo.setCurrentIndex(combo.findData(style))
+            assert combo.currentIndex() >= 0
+            assert combo.currentText() == i18n.tr(PRESETS[style]['label'])
+            assert window.tuning.style_hint.text() == i18n.tr(preset_description(style))
             if language != 'zh-CN':
-                assert combo.currentText() != PRESETS[emotion]['label']
-                assert window.tuning.style_hint.text() != preset_description(emotion)
+                assert combo.currentText() != PRESETS[style]['label']
+                assert window.tuning.style_hint.text() != preset_description(style)
+        for legacy in ('soft_ballad', 'intimate_narration', 'power_pop',
+                       'melancholy', 'bright_joy', 'fragile_tender'):
+            legacy_label = i18n.tr(PRESETS[legacy]['label'])
+            if language == 'zh-CN':
+                assert legacy_label == PRESETS[legacy]['label']
+            else:
+                assert legacy_label != PRESETS[legacy]['label']
         video_page = window.pages.widget(8)
         assert video_page.alignment_analyze.text() == i18n.tr('分析音频对齐')
         assert video_page.use_alignment_suggestion.text() == i18n.tr('使用建议偏移')

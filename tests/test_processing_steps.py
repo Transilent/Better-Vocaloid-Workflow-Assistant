@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work') as tmp:
         assert w.options()['midi_backend']=='v2' and w.options()['project_formats']==['ustx','vsqx','svp']
         assert w.expression_density.isEnabled() and w.options()['expression_density']=='original'
         assert w.options()['prepare_only'] and w.options()['reference_calibration'] is None
-        w.performance_style.setCurrentIndex(w.performance_style.findData('soft_ballad'))
+        w.tuning.apply_preferences({'performance_style':'soft_ballad'})
         w.style_strength.setCurrentIndex(w.style_strength.findData(.3))
         w.style_pitch.setChecked(True)
         w.reference_tension.setChecked(True)
@@ -39,7 +39,7 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work') as tmp:
         w.exports_enabled.setChecked(False)
         assert w.expression_density.isEnabled() and w.performance_style.isEnabled()
         assert w.style_strength.isEnabled() and w.style_pitch.isEnabled()
-        assert w.workflow.preferences()['performance_style']=='soft_ballad'
+        assert w.workflow.preferences()['performance_style']=='gentle'
         w.exports_enabled.setChecked(True)
         w.workflow.choose_preset('内置 · 中文双轨')
         assert w.tuning.preferences()==saved_tuning,'Preparation preset changed independent tuning'
@@ -50,7 +50,7 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work') as tmp:
         w.project_checks['svp'].setChecked(True)
         w.workflow._persist_test=True;w.workflow.persist(dirty=False);w.close()
         w=Window();w.show();app.processEvents()
-        assert w.performance_style.currentData()=='soft_ballad' and w.style_strength.currentData()==.3
+        assert w.performance_style.currentData()=='gentle' and w.style_strength.currentData()==.3
         assert w.style_pitch.isChecked() and not w.options()['style_pitch']
         assert w.options()['bpm'] is None and not w.bpm.isEnabled()
         w.manual_bpm.setChecked(True);w.bpm.setValue(137.5)

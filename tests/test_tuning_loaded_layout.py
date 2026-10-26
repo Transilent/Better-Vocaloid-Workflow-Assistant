@@ -25,7 +25,7 @@ for theme in ('light','dark'):
             window.resize(*size);settle()
             for mode in ('preserve','reference'):
                 page.mode.setCurrentIndex(page.mode.findData(mode))
-                for style in ('none','power_pop'):
+                for style in ('none','bold'):
                     page.performance_style.setCurrentIndex(page.performance_style.findData(style));settle()
                     for group in page._choice_views:
                         if not group.isVisibleTo(page.form):continue

@@ -6,12 +6,14 @@ used. Nonlinear curves retain their original interpolation and are skipped.
 import copy
 import math
 
-VERSION=2
+VERSION=3
 GRID_SECONDS=.005
 MAX_POINTS=2_000_000
 # Entry cents/seconds, interval lag cents per semitone / limit / seconds,
 # release cents/seconds. Different phases; no constant detuning of whole notes.
 RECIPES={
+    'gentle':{'entry':(-36.,.14),'connection':(3.,28.,.10),'release':(-44.,.22),'vibrato':None},
+    'bold':{'entry':(28.,.055),'connection':(1.5,16.,.055),'release':(-18.,.09),'vibrato':None},
     'soft_ballad':{'entry':(-24.,.16),'connection':(3.,18.,.10),'release':(-28.,.22),'vibrato':(7.,5.,.45)},
     'intimate_narration':{'entry':(-12.,.08),'connection':(1.5,9.,.06),'release':(-20.,.14),'vibrato':None},
     'power_pop':{'entry':(18.,.07),'connection':(2.5,18.,.075),'release':(-14.,.12),'vibrato':(10.,5.5,.38)},
@@ -34,7 +36,7 @@ def _pulse(t,a,b,peak):
     return v*v*(3.-2.*v)
 
 
-def apply_pitch(data,preset,*,strength,track_indices,cancel=lambda:None):
+def apply_pitch(data,preset,*,strength,track_indices,detail=None,time_range=None,cancel=lambda:None):
     """Mutate only the independent output's selected pitchDelta, return audit data.
 
     Explicitly authored/generated pitch modes are not flattened or converted.
@@ -43,15 +45,19 @@ def apply_pitch(data,preset,*,strength,track_indices,cancel=lambda:None):
     """
     import numpy as np
     from vocal_expression import TempoMap
-    from style_presets import _curve,_phrases,PHRASE_GAP
+    from style_presets import _curve,_phrases,_note_spans,_range_gate,time_range_settings,detail_settings,PHRASE_GAP,PRESETS
+    detail=detail_settings(detail)
+    time_range=time_range_settings(time_range) if time_range is not None else None
     recipe=RECIPES[preset];clock=TempoMap(data['time']['tempo'])
     report={'enabled':True,'version':VERSION,'status':'skipped','units':'cents',
             'recipe_origin':'manual_audition_draft','recipe':{k:list(v) if v is not None else None for k,v in recipe.items()},
-            'sample_seconds':GRID_SECONDS,'tracks':[],'note_attributes_unchanged':True,
+            'sample_seconds':GRID_SECONDS,'detail':detail,'time_range_seconds':time_range,
+            'tracks':[],'note_attributes_unchanged':True,
             'vibratoEnv_unchanged':True,'original_knot_positions_preserved':True}
     changed=set()
     for index in track_indices:
         cancel();track=data['tracks'][index];_,offset=_phrases(track,clock)
+        allowed = set(_note_spans(track,clock,offset)[0]) if PRESETS[preset].get('note_envelope') else None
         group=track['mainGroup'];params=group.get('parameters',{});original=params.get('pitchDelta')
         row={'track_index':index,'status':'skipped','gestures':[],'skipped_notes':[]}
         report['tracks'].append(row)
@@ -68,12 +74,19 @@ def apply_pitch(data,preset,*,strength,track_indices,cancel=lambda:None):
                 row['skipped_notes'].append({'note_index':ni,'reason':'invalid_note_pitch'});continue
             a=clock.to_seconds(note['onset']+offset)
             b=clock.to_seconds(note['onset']+note['duration']+offset)
+            if allowed is not None and (a,b) not in allowed:
+                row['skipped_notes'].append({'note_index':ni,'reason':'protected_note_preserved'});continue
             notes.append((a,b,float(pitch),ni,note))
         notes.sort(key=lambda n:(n[0],n[1],n[3]))
         gestures=row['gestures'];skipped=row['skipped_notes']
         def add(kind,a,b,amount,ni,peak=.22,frequency=None):
+            phase={'phrase_entry':'onset','interval_connection':'connection',
+                   'phrase_release':'release','delayed_vibrato':'sustain'}[kind]
+            amount*=detail[phase]
             if b-a<.025 or abs(amount)<1e-9:return
+            if time_range and min(b,time_range[1])-max(a,time_range[0]) < .025:return
             gestures.append({'kind':kind,'start':a,'end':b,'cents_at_full_strength':amount,
+                             'phase_multiplier':detail[phase],
                              'note_index':ni,'peak_fraction':peak,'frequency_hz':frequency})
         for j,(a,b,pitch,ni,note) in enumerate(notes):
             cancel();duration=b-a;previous=notes[j-1] if j else None
@@ -112,6 +125,8 @@ def apply_pitch(data,preset,*,strength,track_indices,cancel=lambda:None):
         extra=[]
         for gesture in gestures:
             a,b=gesture['start'],gesture['end'];count=math.ceil((b-a)/GRID_SECONDS)
+            if time_range:a,b=max(a,time_range[0]),min(b,time_range[1])
+            count=math.ceil((b-a)/GRID_SECONDS)
             if count+len(extra)+len(xs)>MAX_POINTS:raise ValueError('风格音高超过采样容量。')
             extra.extend(clock.to_position(float(t))-offset for t in np.linspace(a,b,count+1))
             extra.extend((clock.to_position(a)-offset-1,clock.to_position(b)-offset+1,
@@ -130,6 +145,7 @@ def apply_pitch(data,preset,*,strength,track_indices,cancel=lambda:None):
             if gesture['frequency_hz'] is not None:
                 shape*=np.sin(2.*np.pi*gesture['frequency_hz']*(t-a))
             local=shape*gesture['cents_at_full_strength']*strength
+            local*=_range_gate(t,time_range)
             active_local=abs(local)>1e-10;source=base[left:right]
             if np.any(abs(source[active_local])>1200.):
                 omitted.append({**gesture,'reason':'source_outside_nominal_range_preserved'});continue

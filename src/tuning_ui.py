@@ -14,11 +14,11 @@ from PyQt5.QtCore import QThread,pyqtSignal,QUrl,Qt,QTimer
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QLineEdit,QComboBox,QCheckBox,
     QSpinBox,QFileDialog,QTableWidget,QHeaderView,QPlainTextEdit,QProgressBar,QScrollArea,QFrame,QSizePolicy,
-    QDialog)
+    QDialog,QListWidget)
 from common import ROOT,atomic_json,workspace_state
 from desktop_theme import page,card,label,button,scroll_content,fold
-from ui_components import AdaptiveColumns,FlowLayout,choice
-from strength_control import StrengthControl,normalized_strength,set_combo_strength,strength_choices
+from ui_components import AdaptiveColumns,FlowLayout,StyleTimeline,choice
+from strength_control import PercentStrengthControl,StrengthControl,normalized_strength,percent_text,set_combo_strength,strength_choices
 
 
 def combo(rows):
@@ -103,7 +103,9 @@ def format_tuning_result_summary(result):
     style = report.get('style') if isinstance(report.get('style'), dict) else None
     if style:
         style_status = str(style.get('status') or 'unknown')
-        style_text = _tr('风格：') + _tr(_STATUS_TEXT.get(style_status, style_status))
+        style_name = style.get('label')
+        style_prefix = _tr('时间片段风格：') if style.get('mode') == 'regions' or style_name == '时间片段风格' else _tr('风格：')
+        style_text = style_prefix + _tr(_STATUS_TEXT.get(style_status, style_status))
         if 'applied_controls' in style:
             style_text += _tr(' · 已应用 ') + str(_integer(style.get('applied_controls'))) + _tr(' 项')
         if 'skipped_controls' in style:
@@ -179,11 +181,12 @@ class TuningWorker(QThread):
 class TuningPage(QWidget):
     def __init__(self,owner):
         super().__init__(owner);self.owner=owner;self.worker=None;self.session=None;self.last_session=None;self.job=None
-        self._selecting_scope=False;self._run_outcome='idle'
+        self._selecting_scope=False;self._run_outcome='idle';self._style_migration_source=None
         self._progress_clock=TuningVisualProgress();self._stage_cursor=-1;self._stage_states={};self._observed_stages=set()
         self._progress_timer=QTimer(self);self._progress_timer.setInterval(160);self._progress_timer.setTimerType(Qt.CoarseTimer)
         self._progress_timer.timeout.connect(self._advance_progress)
         self.input_path=None;self.result=None;self.rows=[];self.loading=True
+        self.style_regions=[];self._style_input_sha256=None;self._style_timeline_data=None
         panel,outer=page(_tr('调音工作流'),_tr('选择任务或导入 SVP，调整后另存为新工程。'))
         layout=QVBoxLayout(self);layout.setContentsMargins(0,0,0,0);layout.addWidget(panel)
         content=scroll_content(outer);body=QVBoxLayout(content);body.setContentsMargins(0,0,0,0);body.setSpacing(18)
@@ -266,13 +269,34 @@ class TuningPage(QWidget):
 
         style,style_area=card(_tr('04 · 风格与曲线'),_tr('选择演唱风格或情绪表达，再调整强度、音高与音色。'))
         style_column.addWidget(style)
+        style_mode_label=label(_tr('风格应用方式'),'muted');style_area.addWidget(style_mode_label)
+        self.style_mode=combo([(_tr('整轨'),'whole'),(_tr('时间片段'),'regions')])
+        self.style_mode_choice=choice(self.style_mode,columns=2,compact=True);style_area.addWidget(self.style_mode_choice)
+        self.style_region_panel=QWidget();region_layout=QVBoxLayout(self.style_region_panel)
+        region_layout.setContentsMargins(0,4,0,0);region_layout.setSpacing(8)
+        self.style_timeline=StyleTimeline();self.style_timeline.selectionChanged.connect(self.region_selection_changed)
+        region_layout.addWidget(self.style_timeline)
+        self.region_summary=label(_tr('尚未添加时间片段。'),'muted');region_layout.addWidget(self.region_summary)
+        self.region_list=QListWidget();self.region_list.setMinimumHeight(84);self.region_list.setMaximumHeight(150)
+        self.region_list.setAccessibleName(_tr('时间片段列表'));self.region_list.currentRowChanged.connect(self.select_style_region)
+        region_layout.addWidget(self.region_list)
+        region_actions=FlowLayout(spacing=8)
+        self.add_region_button=button(_tr('添加片段'),self.add_style_region,'primary');region_actions.addWidget(self.add_region_button)
+        self.update_region_button=button(_tr('更新所选片段'),self.update_style_region);region_actions.addWidget(self.update_region_button)
+        self.delete_region_button=button(_tr('删除所选片段'),self.delete_style_region,'danger');region_actions.addWidget(self.delete_region_button)
+        self.clear_regions_button=button(_tr('清空片段'),self.clear_style_regions,'danger');region_actions.addWidget(self.clear_regions_button)
+        region_layout.addLayout(region_actions)
+        region_layout.addWidget(label(_tr('先在钢琴卷帘选择时间，再添加当前工具设置。片段不能重叠；执行不会在已有风格结果上继续叠加。'),'muted'))
+        region_layout.addWidget(label(_tr('时间片段只改变所选实际目标轨的风格；参考、校准或沿用参数仍按现有整轨范围处理。'),'muted'))
+        self.style_region_panel.hide();style_area.addWidget(self.style_region_panel)
         style_area.addWidget(label(_tr('风格预设'),'muted'))
-        from style_presets import PRESETS
-        self.performance_style=combo([(_tr('不叠加风格') if key=='none' else _tr(value['label']),key)
-                                     for key,value in PRESETS.items()])
+        from style_presets import PRESETS,visible_presets
+        self.performance_style=combo([(_tr('不叠加风格') if key=='none' else _tr(PRESETS[key]['label']),key)
+                                     for key in visible_presets()])
         self.performance_style_choice=choice(self.performance_style,columns=2);style_area.addWidget(self.performance_style_choice)
         self.style_hint=label('','muted');style_area.addWidget(self.style_hint)
-        style_area.addWidget(label(_tr('情绪预设默认联动局部音高与音色，可单独关闭附加音高。'),'muted'))
+        style_area.addWidget(label(_tr('每次只应用一个可见风格；新工程不会在上一次风格结果上继续叠加。'),'muted'))
+        style_area.addWidget(label(_tr('柔和与明亮有力默认联动局部音高与音色，可单独关闭附加音高。'),'muted'))
         style_strength_label=label(_tr('风格强度'),'muted');style_area.addWidget(style_strength_label)
         self.style_strength=combo(strength_choices((.3,.6,.85,1.)))
         self.style_strength_choice=StrengthControl(self.style_strength);style_area.addWidget(self.style_strength_choice)
@@ -284,6 +308,21 @@ class TuningPage(QWidget):
         self.style_scope.model().item(2).setEnabled(False);self.style_scope.setToolTip(_tr('快捷勾选首轨或全部；手动勾选后显示实际范围，自定义项只表示当前状态。'))
         self.style_scope_choice=choice(self.style_scope,columns=3,compact=True);style_area.addWidget(self.style_scope_choice)
         self.style_pitch=QCheckBox(_tr('附加局部音高表现（实验）'));self.style_pitch.setToolTip(_tr('为所选风格添加局部音高变化，不改基准音符。'));style_area.addWidget(self.style_pitch)
+        detail_panel=QWidget();detail_layout=QVBoxLayout(detail_panel);detail_layout.setContentsMargins(0,4,0,0);detail_layout.setSpacing(8)
+        detail_layout.addWidget(label(_tr('各段系数会与风格强度相乘，并同时作用于音色和相应附加音高。'),'muted'))
+        detail_grid=QGridLayout();detail_grid.setContentsMargins(0,0,0,0);detail_grid.setHorizontalSpacing(12);detail_grid.setVerticalSpacing(8)
+        self.style_detail={}
+        for row,(key,title) in enumerate((('onset','起音'),('sustain','持续'),('connection','衔接'),('release','收尾'))):
+            detail_label=label(_tr(title),'muted')
+            editor=PercentStrengthControl(100,self._style_detail_changed,self)
+            detail_label.setBuddy(editor.spin)
+            detail_grid.addWidget(detail_label,row,0);detail_grid.addWidget(editor,row,1)
+            self.style_detail[key]=editor
+        detail_grid.setColumnStretch(1,1);detail_layout.addLayout(detail_grid)
+        detail_layout.addWidget(label(_tr('不修改音符、节奏或原有颤音；衔接只调整局部音高连接。关闭附加音高后仅停止音高变化。'),'muted'))
+        detail_layout.addWidget(label(_tr('切换风格时保留当前四段系数。'),'muted'))
+        self.style_detail_panel=detail_panel
+        self.style_detail_toggle=fold(_tr('分段细调'),detail_panel,style_area)
         style_area.addWidget(label(_tr('曲线密度'),'muted'))
         self.expression_density=combo([(_tr('加密采样 · 保留原点和形状'), 'dense'), (_tr('保留原始采样'), 'original')])
         self.expression_density_choice=choice(self.expression_density,columns=2,compact=True);style_area.addWidget(self.expression_density_choice)
@@ -319,7 +358,7 @@ class TuningPage(QWidget):
         detail_layout.addWidget(label(_tr('已保存的工程可以打开；关联任务并通过检查后可登记。'),'muted'))
 
         body.addStretch()
-        self._choice_views=(self.mode_choice,self.dynamics_strength_choice,self.performance_style_choice,
+        self._choice_views=(self.mode_choice,self.dynamics_strength_choice,self.style_mode_choice,self.performance_style_choice,
             self.style_strength_choice,self.style_scope_choice,self.expression_density_choice)
 
         self.action_footer=QWidget();self.action_footer.setObjectName('footer');footer=QVBoxLayout(self.action_footer)
@@ -356,6 +395,7 @@ class TuningPage(QWidget):
         self.apply_preferences(saved.get('preferences',read_state()['options']))
         self.mode.currentIndexChanged.connect(self.refresh)
         self.performance_style.currentIndexChanged.connect(self.style_selected)
+        self.style_mode.currentIndexChanged.connect(self.style_mode_selected)
         self.calibration_enabled.toggled.connect(self.calibration_toggle)
         self.jobs.currentIndexChanged.connect(self.show_job_projects)
         self.style_scope.currentIndexChanged.connect(self.select_scope)
@@ -510,35 +550,233 @@ class TuningPage(QWidget):
         field.setText(text);field.setProperty('role','error' if error else 'muted')
         field.style().unpolish(field);field.style().polish(field)
 
-    def apply_preferences(self,values):
-        from style_presets import pitch_default
+    def _style_detail_changed(self,*args):
+        self.persist()
+
+    def _selected_track_indices(self):
+        return [row['track_index'] for row in self.rows if row['check'].isChecked()]
+
+    def _load_style_timeline(self,info):
+        path=Path(info['path'])
+        self._style_timeline_data=json.loads(path.read_bytes().decode('utf-8-sig').rstrip('\x00'))
+        self._sync_style_timeline()
+
+    def _sync_style_timeline(self):
+        project=self._style_timeline_data
+        if project is None:project={'version':153,'time':{'tempo':[{'position':0,'bpm':120}]},'tracks':[]}
+        self.style_timeline.set_project(project,self._selected_track_indices())
+        self._render_style_timeline_regions()
+        self._update_region_controls()
+
+    def _render_style_timeline_regions(self):
+        regions=self.style_regions if self.style_mode.currentData()=='regions' else []
+        self.style_timeline.set_regions(regions)
+
+    def _track_selection_changed(self,*args):
+        self.sync_scope_label()
+        if hasattr(self,'style_timeline'):self._sync_style_timeline()
+
+    def _style_selection_range(self):
+        from style_presets import time_range_settings
+        value=self.style_timeline.selection()
+        if value is None:return None
+        try:return time_range_settings(value)
+        except ValueError:return None
+
+    def region_selection_changed(self,*args):
+        self._update_region_controls()
+
+    def _style_mode_selected(self,value):
+        blocked=self.style_mode.blockSignals(True)
+        try:self.style_mode.setCurrentIndex(self.style_mode.findData(value))
+        finally:self.style_mode.blockSignals(blocked)
+        self.style_mode_selected()
+
+    def style_mode_selected(self,*args):
+        regions=self.style_mode.currentData()=='regions'
+        self.style_region_panel.setVisible(regions)
+        self._render_style_timeline_regions()
+        self._refresh_style_hint()
+        self._update_region_controls()
+
+    def _region_from_tool(self,start,end):
+        style=self.performance_style.currentData()
+        if style not in ('gentle','bold'):raise ValueError('时间片段需要选择“柔和”或“明亮有力”。')
+        values=self.preferences()
+        return {'start':float(start),'end':float(end),'preset':style,
+                'strength':float(self.style_strength.currentData()),'detail':dict(values['style_detail']),
+                'pitch':bool(self.style_pitch.isChecked())}
+
+    def _region_item_text(self,region):
+        from style_presets import PRESETS
+        label=_tr(PRESETS[region['preset']]['label'])
+        pitch=_tr('含附加音高') if region['pitch'] else _tr('仅音色')
+        return f"{region['start']:.3f}–{region['end']:.3f} s · {label} · {percent_text(region['strength'])} · {pitch}"
+
+    def _render_style_regions(self,select_index=None):
+        current=self.region_list.currentRow() if select_index is None else select_index
+        blocked=self.region_list.blockSignals(True)
+        try:
+            self.region_list.clear()
+            for region in self.style_regions:self.region_list.addItem(self._region_item_text(region))
+            if 0<=current<len(self.style_regions):self.region_list.setCurrentRow(current)
+        finally:self.region_list.blockSignals(blocked)
+        self.region_summary.setText(_tr('已添加 {0} 个时间片段；最多 128 个。',len(self.style_regions)) if self.style_regions else _tr('尚未添加时间片段。'))
+        self._render_style_timeline_regions()
+        self._update_region_controls()
+
+    def _replace_style_regions(self,regions,*,select_index=None,activate=False):
+        from style_presets import region_settings
+        self.style_regions=region_settings(regions)
+        if activate:self._style_mode_selected('regions' if self.style_regions else 'whole')
+        self._render_style_regions(select_index)
+
+    def _update_region_controls(self):
+        if not hasattr(self,'add_region_button'):return
+        regions_mode=self.style_mode.currentData()=='regions'
+        busy=self.processing_active
+        has_project=self._style_timeline_data is not None and bool(self.rows)
+        selection=self._style_selection_range()
+        style=self.performance_style.currentData() in ('gentle','bold')
+        row=self.region_list.currentRow()
+        has_row=0<=row<len(self.style_regions)
+        self.style_mode.setEnabled(not busy)
+        self.style_timeline.setEnabled(regions_mode and not busy and has_project)
+        self.region_list.setEnabled(regions_mode and not busy)
+        self.add_region_button.setEnabled(regions_mode and not busy and has_project and selection is not None and style)
+        self.update_region_button.setEnabled(regions_mode and not busy and has_project and has_row and style)
+        self.delete_region_button.setEnabled(regions_mode and not busy and has_row)
+        self.clear_regions_button.setEnabled(regions_mode and not busy and bool(self.style_regions))
+        if regions_mode:self.style_region_panel.show()
+
+    def _load_region_tool_settings(self,region):
         restoring=getattr(self,'_restoring_preferences',False)
         self._restoring_preferences=True
         try:
+            index=self.performance_style.findData(region['preset'])
+            if index>=0:self.performance_style.setCurrentIndex(index)
+            set_combo_strength(self.style_strength,region['strength'])
+            for key,amount in region['detail'].items():self.style_detail[key].set_percent(amount*100.)
+            self.style_pitch.setChecked(region['pitch'] is True)
+            self._style_migration_source=None
+        finally:self._restoring_preferences=restoring
+        self._refresh_style_hint();self._sync_choices();self._update_region_controls();self.persist()
+
+    def select_style_region(self,row):
+        if not 0<=row<len(self.style_regions):self._update_region_controls();return
+        region=self.style_regions[row];self._load_region_tool_settings(region)
+        try:self.style_timeline.set_selection(region['start'],region['end'])
+        except (TypeError,ValueError):self.style_timeline.clear_selection()
+        self._update_region_controls()
+
+    def add_style_region(self):
+        if self.processing_active:return
+        selection=self._style_selection_range()
+        if selection is None:
+            self.status.setText(_tr('请先在钢琴卷帘选择时间范围，再添加片段。'));return
+        if len(self.style_regions)>=128:
+            self.status.setText(_tr('时间片段最多 128 个。'));return
+        try:
+            from style_presets import region_settings
+            candidate=self._region_from_tool(*selection)
+            normalized=region_settings(self.style_regions+[candidate])
+            index=next((i for i,item in enumerate(normalized) if item==candidate),-1)
+            self._replace_style_regions(normalized,select_index=index,activate=True)
+            self.status.setText(_tr('已添加时间片段。'))
+        except Exception as error:self.status.setText(_tr(str(error)))
+
+    def update_style_region(self):
+        row=self.region_list.currentRow()
+        if self.processing_active or not 0<=row<len(self.style_regions):return
+        selection=self._style_selection_range() or (self.style_regions[row]['start'],self.style_regions[row]['end'])
+        try:
+            from style_presets import region_settings
+            candidate=self._region_from_tool(*selection)
+            rows=[dict(item) for item in self.style_regions];rows[row]=candidate
+            normalized=region_settings(rows)
+            index=next((i for i,item in enumerate(normalized) if item==candidate),row)
+            self._replace_style_regions(normalized,select_index=index,activate=True)
+            self.status.setText(_tr('已更新时间片段。'))
+        except Exception as error:self.status.setText(_tr(str(error)))
+
+    def delete_style_region(self):
+        row=self.region_list.currentRow()
+        if self.processing_active or not 0<=row<len(self.style_regions):return
+        rows=[dict(item) for item in self.style_regions];rows.pop(row)
+        self._replace_style_regions(rows,select_index=min(row,len(rows)-1),activate=False)
+        self.status.setText(_tr('已删除时间片段。'))
+
+    def clear_style_regions(self):
+        if self.processing_active:return
+        self._replace_style_regions([],select_index=-1,activate=False)
+        self.style_timeline.clear_selection();self.status.setText(_tr('已清空时间片段。'))
+
+    def restore_style_regions(self,value):
+        from style_presets import region_settings
+        restored=region_settings(value)
+        self._replace_style_regions(restored,select_index=-1,activate=True)
+
+    def _clear_style_regions(self):
+        self.style_regions=[]
+        self._style_mode_selected('whole')
+        if hasattr(self,'region_list'):self._render_style_regions(select_index=-1)
+        if hasattr(self,'style_timeline'):self.style_timeline.clear_selection()
+
+    def _refresh_style_hint(self):
+        from style_presets import PRESETS,merged_preset,preset_description
+        current=self.performance_style.currentData()
+        text=_tr(preset_description(current))
+        source=getattr(self,'_style_migration_source',None)
+        if isinstance(source,str) and merged_preset(source)==current:
+            old_label=_tr(PRESETS[source]['label'])
+            new_label=_tr(PRESETS[current]['label'])
+            text += '\n' + _tr('旧风格“{0}”已归并为“{1}”；旧工程保持原样。',old_label,new_label)
+        if self.style_mode.currentData()=='regions':
+            text += '\n' + _tr('时间片段模式下，“柔和”和“明亮有力”是待添加片段的工具设置；执行只读取片段列表。')
+            if not self.style_regions:text += '\n' + _tr('时间片段列表为空；请添加片段或切回整轨模式。')
+        self.style_hint.setText(text)
+
+    def apply_preferences(self,values):
+        from style_presets import PRESETS,detail_settings,merged_preset,pitch_default
+        values=values if isinstance(values,dict) else {}
+        restoring=getattr(self,'_restoring_preferences',False)
+        self._restoring_preferences=True
+        try:
+            requested_style=values.get('performance_style',self.performance_style.currentData())
+            if not isinstance(requested_style,str) or requested_style not in PRESETS:requested_style=self.performance_style.currentData()
+            visible_style=merged_preset(requested_style)
             for name in ('dynamics_strength','expression_density','performance_style','style_strength','style_scope'):
-                field=getattr(self,name);value=values.get(name,field.currentData())
+                field=getattr(self,name);value=visible_style if name=='performance_style' else values.get(name,field.currentData())
                 if name in ('dynamics_strength','style_strength'):
                     if normalized_strength(value) is not None:set_combo_strength(field,value)
                 elif field.findData(value)>=0:field.setCurrentIndex(field.findData(value))
+            if 'performance_style' in values:
+                self._style_migration_source=requested_style if visible_style!=requested_style else None
+            for key,amount in detail_settings(values.get('style_detail')).items():
+                self.style_detail[key].set_percent(amount*100.)
             for name in ('reference_dynamics','reference_tension','reference_breathiness','reference_voicing','style_pitch'):
-                default=pitch_default(self.performance_style.currentData()) if name=='style_pitch' else False
+                default=pitch_default(requested_style) if name=='style_pitch' else False
                 getattr(self,name).setChecked(values.get(name,default) is True)
         finally:
             self._restoring_preferences=restoring
+        self._refresh_style_hint()
 
     def style_selected(self,*args):
         from style_presets import pitch_default
-        if not self.loading and not getattr(self,'_restoring_preferences',False) and pitch_default(self.performance_style.currentData()):
-            self.style_pitch.setChecked(True)
+        if not self.loading and not getattr(self,'_restoring_preferences',False):
+            self._style_migration_source=None
+            if pitch_default(self.performance_style.currentData()):self.style_pitch.setChecked(True)
         self.refresh()
 
     def preferences(self):
+        from style_presets import detail_settings
         names=('dynamics_strength','expression_density','performance_style','style_strength','style_scope')
         values={name:getattr(self,name).currentData() for name in names}
         # Scope is a shortcut for new inputs. Explicit track_indices own a
         # custom selection in the execution/session contract.
         if values['style_scope']=='custom':values['style_scope']='lead'
         values.update({name:getattr(self,name).isChecked() for name in ('reference_dynamics','reference_tension','reference_breathiness','reference_voicing','style_pitch')})
+        values['style_detail']=detail_settings({key:float(editor.value())/100. for key,editor in self.style_detail.items()})
         return values
 
     def persist(self,*args):
@@ -548,8 +786,7 @@ class TuningPage(QWidget):
         atomic_json(ROOT/'cache/workspace.json',state)
 
     def refresh(self,*args):
-        from style_presets import preset_description
-        self.style_hint.setText(_tr(preset_description(self.performance_style.currentData())))
+        self._refresh_style_hint()
         mode=self.mode.currentData()
         self.reference_panel.setVisible(mode=='reference');self.calibration_panel.setVisible(mode=='calibrated');self.retained_panel.setVisible(mode=='retained')
         self.calibration_enabled.blockSignals(True);self.calibration_enabled.setChecked(mode=='calibrated');self.calibration_enabled.blockSignals(False)
@@ -561,6 +798,12 @@ class TuningPage(QWidget):
         if mapped and self.tracks.columnWidth(0)<300:self.tracks.setColumnWidth(0,300)
         style=self.performance_style.currentData()!='none'
         self.style_strength.setEnabled(style);self.style_pitch.setEnabled(style);self.style_scope.setEnabled(True)
+        detail_enabled=style and not self.processing_active
+        self.style_detail_toggle.setEnabled(detail_enabled);self.style_detail_panel.setEnabled(detail_enabled)
+        for editor in self.style_detail.values():editor.setEnabled(detail_enabled)
+        self.style_region_panel.setVisible(self.style_mode.currentData()=='regions')
+        self.style_mode.setEnabled(not self.processing_active)
+        self._update_region_controls()
         self._sync_choices();self._update_session_context();self.sync_scope_label()
         self.register_gate.setText(format_register_gate(self.job,self.result))
         self.register_button.setEnabled(register_ready(self.job,self.result))
@@ -667,8 +910,10 @@ class TuningPage(QWidget):
             source_track=QSpinBox();source_track.setRange(1,999);source_track.setValue(ordinal+1);source_track.setToolTip(_tr('原参数工程中的实际轨号'));self.tracks.setCellWidget(number,4,source_track)
             row={'track_index':item['track_index'],'name':item['name'],'note_count':item['note_count'],
                 'check':check,'voice':role,'path':reference,'source_track':source_track}
-            self.rows.append(row);check.toggled.connect(self.sync_scope_label)
+            self.rows.append(row);check.toggled.connect(self._track_selection_changed)
         self.refresh_track_geometry();self._sync_row_controls();self.sync_scope_label()
+        self._style_input_sha256=info.get('sha256');self._style_timeline_data=None
+        self._clear_style_regions();self._load_style_timeline(info)
 
     def select_scope(self,*args):
         scope=self.style_scope.currentData()
@@ -780,13 +1025,18 @@ class TuningPage(QWidget):
                     prior=next((item for item in retained if item['track_index']==row['track_index']),None)
                     if prior:row['source_track'].setValue(prior.get('source_track_index',0)+1)
                     elif values.get('retained_project'):row['source_track'].setValue(values.get('retained_track_index',0)+1)
+                if spec.get('input_sha256')==self._style_input_sha256:
+                    self.restore_style_regions(values.get('style_regions',[]))
+                else:
+                    self._clear_style_regions()
             self.open_button.setEnabled(False);self.register_button.setEnabled(False);self.refresh();self.status.setText(_tr('处理记录已恢复，可继续生成工程。'))
             return True
         except Exception as error:self.status.setText(str(error));return False
 
     def options(self):
         mode=self.mode.currentData();values=self.preferences()
-        values['expression_mode']=mode;values['track_indices']=[row['track_index'] for row in self.rows if row['check'].isChecked()]
+        values['expression_mode']=mode;values['track_indices']=self._selected_track_indices()
+        values['style_regions']=[dict(region) for region in self.style_regions] if self.style_mode.currentData()=='regions' else []
         for name in ('dynamics','tension','breathiness','voicing'):values['reference_'+name]=mode=='reference' and getattr(self,'reference_'+name).isChecked()
         if mode in ('reference','calibrated'):values['reference_sources']=[{'track_index':row['track_index'],'voice':row['voice'].currentData(),'path':row['path'].text()} for row in self.rows if row['check'].isChecked()]
         if mode=='calibrated':values['reference_calibration']=self.calibration_file.text()
@@ -802,6 +1052,8 @@ class TuningPage(QWidget):
             self.status.setText(_tr('请先完成或停止当前处理、校准或缓存操作。'));return
         try:
             if self.input_path is None or self.project.text().strip()!=str(self.input_path):raise ValueError('请先载入工程；手动修改路径后点击重新导入。')
+            if self.style_mode.currentData()=='regions' and not self.style_regions:
+                self.status.setText(_tr('时间片段模式至少需要一个片段；请添加片段或切回整轨模式。'));return
             options=self.options()
             if self.session is None:
                 from tuning_workflow import create_session
@@ -810,7 +1062,8 @@ class TuningPage(QWidget):
             self.persist();self.result=None;self._update_session_context();self._reset_result_panel();self.form.setEnabled(False);self.apply_button.setEnabled(False)
             self._run_outcome='running';self.run_state.setText(_tr('正在生成调音工程'));self.run_stage.setText(_tr('正在准备工程…'))
             self.progress_detail.setText(_tr('正在准备工程…'));self.status.setText(_tr('正在生成独立调音工程…'));self._set_progress('running')
-            if options.get('performance_style')=='none' or options.get('style_strength',0)<=0:self._set_stage('style','skipped')
+            style_regions=options.get('style_regions') or []
+            if not style_regions and (options.get('performance_style')=='none' or options.get('style_strength',0)<=0):self._set_stage('style','skipped')
             self._sync_choices();self.open_button.setEnabled(False);self.register_button.setEnabled(False);self.stop_button.setEnabled(True)
             self.worker=TuningWorker(self.session,options,self);self.worker.message.connect(self._worker_message)
             self.worker.succeeded.connect(self.completed);self.worker.failed.connect(self._failed);self.worker.finished.connect(self.finished);self.worker.start()

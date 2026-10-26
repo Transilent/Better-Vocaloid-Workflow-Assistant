@@ -121,4 +121,69 @@ with tempfile.TemporaryDirectory(prefix='style-presets-',dir=APP/'work') as fold
     try:styles.apply_style_svp(source,root/'cancelled.svp',preset='power_pop',cancel=cancelled);raise AssertionError('Cancel ignored')
     except InterruptedError:pass
     assert not (root/'cancelled.svp').exists() and source.read_bytes()==raw
-print('PASS: three styles, source variation, phase/rest guards, bank/pitch/unknown protection, headroom, partial receipts, independent I/O, no stacking and cancellation')
+
+# New cards use note-local envelopes. Old IDs still execute the original
+# recipes above; the UI offers their explicit merged replacements instead.
+assert styles.visible_presets()==('none','gentle','bold')
+assert {styles.merged_preset(p) for p in ('soft_ballad','intimate_narration','melancholy','fragile_tender')}=={'gentle'}
+assert {styles.merged_preset(p) for p in ('power_pop','bright_joy')}=={'bold'}
+assert styles.detail_settings({'onset':.625})=={'onset':.625,'sustain':1.,'connection':1.,'release':1.}
+for invalid in ([],False,{'unknown':.5},{'onset':True},{'sustain':float('nan')},{'release':1.01}):
+    try:styles.detail_settings(invalid);raise AssertionError(invalid)
+    except ValueError:pass
+
+for preset in ('gentle','bold'):
+    out,r=styles.apply_style(original,preset,track_indices=[0],density_mode='original',pitch_enabled=False)
+    assert original==frozen and out['tracks'][1:]==original['tracks'][1:]
+    assert r['tracks'][0]['envelope_scope']=='note' and r['notes_unchanged']
+    assert r['tracks'][0]['controls']['loudness']['maximum_applied_delta']>0
+    disabled,rd=styles.apply_style(original,preset,track_indices=[0],detail=dict.fromkeys(styles.DETAIL_DEFAULTS,0.))
+    assert disabled==original and rd['status']=='not_selected'
+    # Exact old coordinates remain, including fractional coordinates.
+    for channel in styles.PRESETS[preset]['controls']:
+        before=original['tracks'][0]['mainGroup']['parameters'][channel]
+        after=out['tracks'][0]['mainGroup']['parameters'][channel]
+        assert set(before['points'][::2])<=set(after['points'][::2])
+        assert after.get('custom')==before.get('custom')
+
+protected=project()
+protected['tracks'][0]['mainGroup']['notes']=[
+    {'onset':0,'duration':Q//8,'pitch':60,'lyrics':'快'},
+    {'onset':Q,'duration':Q,'pitch':60,'lyrics':'br'},
+    {'onset':2*Q,'duration':Q,'pitch':60,'lyrics':'啊','musicalType':'rap'},
+    {'onset':3*Q,'duration':Q,'pitch':60,'lyrics':'啊','attributes':{'muted':True}},
+    {'onset':4*Q,'duration':2*Q,'pitch':60,'lyrics':'啊'},
+    {'onset':5*Q,'duration':2*Q,'pitch':64,'lyrics':'哈'}]
+for preset in ('gentle','bold'):
+    out,r=styles.apply_style(protected,preset,track_indices=[0])
+    assert out==protected and r['status']=='skipped' and r['protected_notes']==6
+
+# A time window cuts the original envelope rather than inventing a new note
+# onset at its left edge. Outside the window the original linear function is
+# unchanged, with a smooth zero-delta boundary even through a sustained note.
+source=project();bounds=(1.25,2.25)
+out,r=styles.apply_style(source,'gentle',track_indices=[0],time_range=bounds,
+                         pitch_enabled=False,density_mode='original')
+channel_deltas={}
+for name in styles.PRESETS['gentle']['controls']:
+    old=source['tracks'][0]['mainGroup']['parameters'][name]['points']
+    new=out['tracks'][0]['mainGroup']['parameters'][name]['points']
+    xs=np.asarray(new[::2]);times=np.asarray([clock.to_seconds(float(p)+Q) for p in xs])
+    difference=np.asarray(new[1::2])-np.interp(xs,old[::2],old[1::2])
+    outside=(times<=bounds[0]+1e-10)|(times>=bounds[1]-1e-10)
+    assert np.max(abs(difference[outside]),initial=0.)<1e-10
+    channel_deltas[name]=np.max(abs(difference),initial=0.)
+assert all(channel_deltas[name]>0 for name in ('loudness','tension','breathiness'))
+assert channel_deltas['voicing']==0.,'Sustained voiced core should retain its source voicing'
+
+# Local phase factors change their own contribution, not the stored total.
+full,rf=styles.apply_style(source,'bold',strength=.625,track_indices=[0],pitch_enabled=False,density_mode='original')
+less,rl=styles.apply_style(source,'bold',strength=.625,detail={'onset':0.},track_indices=[0],pitch_enabled=False,density_mode='original')
+assert rf['strength']==rl['strength']==.625
+def delta_at(data,name,seconds):
+    curve=data['tracks'][0]['mainGroup']['parameters'][name]['points']
+    pos=clock.to_position(seconds)-Q
+    return np.interp(pos,curve[::2],curve[1::2])
+assert delta_at(less,'loudness',.52)<delta_at(full,'loudness',.52)
+assert abs(delta_at(less,'loudness',2.)-delta_at(full,'loudness',2.))<1e-10
+print('PASS: merged cards and legacy recipes, phase/range guards, protected notes, headroom, independent I/O, no stacking and cancellation')

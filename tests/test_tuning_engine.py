@@ -691,5 +691,61 @@ class TuningEngineTests(unittest.TestCase):
             json.dumps(summary, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 
 
+class TimeRegionStyles(unittest.TestCase):
+    def test_regions_are_local_ordered_and_do_not_stack_global_style(self):
+        import numpy as np
+        from style_presets import apply_style,region_settings
+        from vocal_expression import TempoMap
+        source=base_project();frozen=copy.deepcopy(source)
+        regions=[{'start':.8,'end':1.6,'preset':'bold','strength':.7,'pitch':False},
+                 {'start':.2,'end':.7,'preset':'gentle','strength':.625,'detail':{'onset':.5},'pitch':True}]
+        options={'track_indices':[0],'style_regions':regions,'expression_density':'dense'}
+        output,report=process_project(source,options)
+        self.assertEqual(source,frozen)
+        self.assertEqual(output['tracks'][1:],source['tracks'][1:])
+        self.assertEqual(report['style']['mode'],'regions')
+        self.assertEqual(report['final_density_passes'],1)
+        self.assertTrue(report['pitch_changed'])
+        changed_global={**options,'performance_style':'bold','style_strength':.05,'style_pitch':False,
+                        'style_detail':{'onset':0.,'sustain':0.}}
+        self.assertEqual(output,process_project(source,changed_global)[0])
+        expected=copy.deepcopy(source)
+        normalized=region_settings(regions)
+        for row in normalized:
+            expected,_=apply_style(expected,row['preset'],strength=row['strength'],detail=row['detail'],
+                pitch_enabled=row['pitch'],time_range=(row['start'],row['end']),track_indices=[0],finalize=False)
+        self.assertEqual(expected,process_project(source,options,finalize=False)[0])
+        clock=TempoMap(source['time']['tempo']);offset=source['tracks'][0]['mainRef']['blickOffset']
+        before=source['tracks'][0]['mainGroup']['parameters']
+        after=output['tracks'][0]['mainGroup']['parameters']
+        for name in ('loudness','tension','pitchDelta'):
+            old,new=before[name]['points'],after[name]['points']
+            xs=np.asarray(new[::2]);times=np.array([clock.to_seconds(float(x)+offset) for x in xs])
+            outside=np.ones(len(xs),dtype=bool)
+            for row in normalized:
+                if name=='pitchDelta' and not row['pitch']:continue
+                outside &= (times<=row['start']+1e-10)|(times>=row['end']-1e-10)
+            delta=np.asarray(new[1::2])-np.interp(xs,old[::2],old[1::2])
+            self.assertLess(np.max(abs(delta[outside]),initial=0.),1e-9)
+
+    def test_invalid_regions_are_rejected_before_processing(self):
+        good={'start':.2,'end':.7,'preset':'gentle'}
+        for bad in ({},False,[{**good,'start':True}],[{**good,'end':float('nan')}],
+                    [{**good,'end':.21}],[{**good,'preset':'power_pop'}],
+                    [{**good,'unknown':1}],[{**good,'detail':{'sustain':-1}}],
+                    [good,{**good,'start':.6,'end':.9}], [good]*129):
+            with self.subTest(value=str(bad)[:120]),self.assertRaises(ValueError):
+                settings({'style_regions':bad})
+        self.assertEqual(settings({'style_regions':[]})['style_regions'],[])
+        self.assertEqual(len(settings({'style_regions':[good,{**good,'start':.7,'end':.9}]})['style_regions']),2)
+
+    def test_region_cancel_does_not_mutate_input(self):
+        source=base_project();frozen=copy.deepcopy(source)
+        def cancel():raise RuntimeError('cancel-region')
+        with self.assertRaisesRegex(RuntimeError,'cancel-region'):
+            process_project(source,{'track_indices':[0],'style_regions':[{'start':.2,'end':.7,'preset':'gentle'}]},cancel=cancel)
+        self.assertEqual(source,frozen)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -64,6 +64,9 @@ with tempfile.TemporaryDirectory(dir=APP/'work',prefix='project-formats-') as te
     # verified baseline bytes and user settings remain unchanged.
     import project_exports
     style_path,style_signature=project_exports._style_target(job,styled,{'sha256':base_hashes['svp']})
+    detailed_path,detailed_signature=project_exports._style_target(job,{**styled,'style_detail':{'onset':.625}},
+                                                                   {'sha256':base_hashes['svp']})
+    assert detailed_path!=style_path and detailed_signature!=style_signature,'Phase controls must invalidate candidate cache'
     for dependency in ('style_presets.py','style_pitch.py','calibration_refinement.py','vocal_expression.py','expression_calibration.py'):
         def updated_hash(path):
             value=file_hash(path)

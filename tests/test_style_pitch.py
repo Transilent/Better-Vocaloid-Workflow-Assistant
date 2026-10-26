@@ -98,6 +98,32 @@ assert out['tracks'][0]['mainGroup']['parameters']['pitchDelta']['points'][1]==1
 for bad in (1,None,'true',[],{}):
     try:enabled({'style_pitch':bad});raise AssertionError('Invalid boolean accepted')
     except ValueError:pass
+
+# The merged cards have different signed entries and transition time scales,
+# without adding a second vibrato over authored/editor-generated modulation.
+for preset,sign in (('gentle',-1),('bold',1)):
+    source=project()
+    out,r=styles.apply_style(source,preset,track_indices=[0],pitch_enabled=True,density_mode='original')
+    row=r['pitch']['tracks'][0]
+    entries=[g for g in row['gestures'] if g['kind']=='phrase_entry']
+    assert entries and all(g['cents_at_full_strength']*sign>0 for g in entries)
+    assert not any(g['kind']=='delayed_vibrato' for g in row['gestures'])
+    assert out['tracks'][0]['mainGroup']['parameters']['vibratoEnv']==source['tracks'][0]['mainGroup']['parameters']['vibratoEnv']
+    _,off=styles.apply_style(source,preset,track_indices=[0],pitch_enabled=True,
+                              detail={'connection':0.},density_mode='original')
+    assert not any(g['kind']=='interval_connection' for g in off['pitch']['tracks'][0]['gestures'])
+    assert any(g['kind']=='phrase_entry' for g in off['pitch']['tracks'][0]['gestures'])
+    bounds=(.51,.56)
+    partial,rp=styles.apply_style(source,preset,track_indices=[0],pitch_enabled=True,
+                                  time_range=bounds,density_mode='original')
+    old=source['tracks'][0]['mainGroup']['parameters']['pitchDelta']['points']
+    new=partial['tracks'][0]['mainGroup']['parameters']['pitchDelta']['points']
+    xs=np.asarray(new[::2]);clock=TempoMap(source['time']['tempo'])
+    times=np.array([clock.to_seconds(float(x)+Q) for x in xs])
+    delta=np.asarray(new[1::2])-np.interp(xs,old[::2],old[1::2])
+    outside=(times<=bounds[0]+1e-10)|(times>=bounds[1]-1e-10)
+    assert np.max(abs(delta[outside]),initial=0.)<1e-10
+    assert np.max(abs(delta),initial=0.)>0
 for preset,amount in (('none',.6),('power_pop',0.)):
     out,r=styles.apply_style(project(),preset,strength=amount,pitch_enabled=True)
     assert out==project() and r['status']=='not_selected'

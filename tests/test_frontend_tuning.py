@@ -11,8 +11,9 @@ APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP))
 from PyQt5.QtCore import QRect,QTimer
 from PyQt5.QtWidgets import QApplication,QLabel,QProgressBar,QWidget
-from ui_components import AdaptiveColumns,FlowLayout
+from ui_components import AdaptiveColumns,FlowLayout,StyleTimeline
 import tuning_ui
+from style_presets import merged_preset,pitch_default,visible_presets
 os.environ['BVWA_TESTING'] = '1'
 from tuning_ui import TuningPage, format_register_gate, format_receipt_summary, format_tuning_result_summary
 
@@ -50,6 +51,14 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
     assert page.session is None and page.last_session == recent
     assert len(page.findChildren(AdaptiveColumns)) >= 3
     assert page.mode_choice.combo is page.mode
+    shown_styles = [page.performance_style.itemData(i) for i in range(page.performance_style.count())]
+    assert shown_styles == list(visible_presets()) == ['none', 'gentle', 'bold']
+    assert tuple(page.style_detail) == ('onset', 'sustain', 'connection', 'release')
+    assert page.style_detail_toggle.text() == '分段细调' and not page.style_detail_toggle.isChecked()
+    assert [page.style_mode.itemData(i) for i in range(page.style_mode.count())] == ['whole', 'regions']
+    assert isinstance(page.style_timeline, StyleTimeline) and page.style_region_panel.isHidden()
+    assert 'style_regions' not in page.preferences()
+    assert all(editor.value() == 100 for editor in page.style_detail.values())
 
     # Wide layouts expose input/mapping and both independent setting groups.
     # Each adaptive pair collapses without fixed full-screen dimensions.
@@ -145,6 +154,74 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
     assert page.dynamics_strength.currentData() == .42
     assert page.style_strength.currentData() == .57
     assert page.dynamics_strength is not page.style_strength
+    assert page.performance_style.currentData() == 'gentle'
+    assert '已归并' in page.style_hint.text() and '旧工程保持原样' in page.style_hint.text()
+
+    legacy_styles = {
+        'soft_ballad': ('gentle', False),
+        'intimate_narration': ('gentle', False),
+        'melancholy': ('gentle', True),
+        'fragile_tender': ('gentle', True),
+        'power_pop': ('bold', False),
+        'bright_joy': ('bold', True),
+    }
+    for legacy, (expected_style, expected_pitch) in legacy_styles.items():
+        assert merged_preset(legacy) == expected_style
+        assert pitch_default(legacy) is expected_pitch
+        page.apply_preferences({'performance_style': legacy, 'style_strength': .625})
+        assert page.performance_style.currentData() == expected_style
+        assert page.style_strength.currentData() == .625
+        assert page.style_pitch.isChecked() is expected_pitch
+        assert page.preferences()['style_pitch'] is expected_pitch
+        page.apply_preferences({'performance_style': legacy, 'style_strength': .625,
+                                'style_pitch': False})
+        assert page.performance_style.currentData() == expected_style
+        assert not page.style_pitch.isChecked()
+
+    for damaged in ([], {}):
+        page.apply_preferences({'performance_style': damaged, 'style_pitch': False})
+        assert page.performance_style.currentData() == 'bold'
+        assert not page.style_pitch.isChecked()
+
+    page.performance_style.setCurrentIndex(page.performance_style.findData('none'))
+    page.style_pitch.setChecked(False)
+    page.performance_style.setCurrentIndex(page.performance_style.findData('gentle'))
+    assert page.style_pitch.isChecked(), 'The new gentle card links pitch on by default'
+    page.style_pitch.setChecked(False)
+    page.performance_style.setCurrentIndex(page.performance_style.findData('none'))
+    page.performance_style_choice.buttons[page.performance_style.findData('bold')].click()
+    assert page.performance_style.currentData() == 'bold' and page.style_pitch.isChecked()
+
+    detail = {'onset': .125, 'sustain': .3333, 'connection': .625, 'release': .0}
+    page.apply_preferences({'performance_style': 'gentle', 'style_strength': .57,
+                            'style_detail': detail, 'style_pitch': False})
+    assert page.preferences()['style_detail'] == detail
+    assert all(page.style_detail[key].value() == amount * 100 for key, amount in detail.items())
+    for switched in ('bold', 'none', 'gentle'):
+        page.performance_style.setCurrentIndex(page.performance_style.findData(switched))
+        assert page.preferences()['style_detail'] == detail, 'Style switches retain detail coefficients'
+    page.apply_preferences({'performance_style': 'gentle', 'style_detail': {'sustain': .4}})
+    assert page.preferences()['style_detail'] == {'onset': 1.0, 'sustain': .4,
+                                                   'connection': 1.0, 'release': 1.0}
+
+    page.style_mode.setCurrentIndex(page.style_mode.findData('regions'))
+    assert not page.style_region_panel.isHidden()
+    assert not page.style_timeline.isEnabled(), 'An empty page has no project timeline to draw'
+    page.style_mode.setCurrentIndex(page.style_mode.findData('whole'))
+    assert page.style_region_panel.isHidden()
+    page.performance_style.setCurrentIndex(page.performance_style.findData('none'))
+    assert not page.style_detail_toggle.isEnabled()
+    assert all(not editor.isEnabled() for editor in page.style_detail.values())
+    page.performance_style.setCurrentIndex(page.performance_style.findData('gentle'))
+    assert page.style_detail_toggle.isEnabled()
+    assert all(editor.isEnabled() for editor in page.style_detail.values())
+    with patch.object(page, 'busy', return_value=True):
+        page.refresh()
+    assert not page.style_detail_toggle.isEnabled()
+    assert all(not editor.isEnabled() for editor in page.style_detail.values())
+    assert page.preferences()['style_detail'] == {'onset': 1.0, 'sustain': .4,
+                                                   'connection': 1.0, 'release': 1.0}
+    page.style_pitch.setChecked(False)
 
     partial = {
         'status': 'partial', 'cached': False, 'output': str(root / 'candidate.svp'),
@@ -159,6 +236,9 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
             'pitch_changed': False, 'notes_and_timing_unchanged': True}}
     summary = format_tuning_result_summary(partial)
     assert '部分应用' in summary and '#1、#3' in summary
+    region_summary = format_tuning_result_summary({**partial, 'report': {**partial['report'],
+        'style': {**partial['report']['style'], 'mode': 'regions', 'label': '时间片段风格'}}})
+    assert '时间片段风格：部分应用' in region_summary
     assert '已应用 2 项' in summary and '跳过 1 项' in summary
     assert '新增 12 点' in summary and '非线性保留 1 项' in summary and '浮点时间保留 1 项' in summary
     assert '待补全' in format_receipt_summary(partial)

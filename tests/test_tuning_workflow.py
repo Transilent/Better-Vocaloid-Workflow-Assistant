@@ -425,5 +425,35 @@ class TuningWorkflowTests(unittest.TestCase):
             self.assertEqual(source.read_bytes(), write_svp(root / 'expected.svp', project(media='media/accompaniment.wav')).read_bytes())
 
 
+class RegionalStyleSessionTests(unittest.TestCase):
+    def test_region_identity_cache_cancel_and_retry_use_the_immutable_input(self):
+        with tempfile.TemporaryDirectory(prefix='regions-',dir=TEST_TEMP) as temp:
+            root=Path(temp);make_media(root)
+            source=write_svp(root/'source.svp',project(media='media/accompaniment.wav'))
+            raw=source.read_bytes();session=create_session(source,root/'session')
+            options={'track_indices':[0],'expression_density':'original','style_regions':[
+                {'start':.04,'end':.42,'preset':'gentle','strength':.625,'detail':{'onset':.625},'pitch':True}]}
+            first=run_session(session,options)
+            before=Path(first['output']).read_bytes()
+            with patch('tuning_workflow.process_project',side_effect=AssertionError('Cached regions were stacked')):
+                reused=run_session(session,options)
+            self.assertTrue(reused['cached'])
+            self.assertEqual(Path(reused['output']).read_bytes(),before)
+            changed=copy.deepcopy(options);changed['style_regions'][0]['detail']['onset']=.3
+            def stop_at_style(text):
+                if '按时间片段' in text:raise RuntimeError('cancel-region')
+            with self.assertRaisesRegex(RuntimeError,'cancel-region'):
+                run_session(session,changed,progress=stop_at_style)
+            self.assertEqual(Path(first['output']).read_bytes(),before)
+            second=run_session(session,changed)
+            self.assertNotEqual(second['signature'],first['signature'])
+            self.assertNotEqual(second['output'],first['output'])
+            self.assertEqual(source.read_bytes(),raw)
+            self.assertEqual((root/'session/inputs/source.svp').read_bytes(),raw)
+            saved=json.loads((root/'session/last-options.json').read_text(encoding='utf-8'))
+            self.assertEqual(saved['style_regions'][0]['detail']['onset'],.3)
+            self.assertEqual(json.loads(Path(second['output']).read_text(encoding='utf-8'))['tracks'][0]['mainGroup']['notes'],project()['tracks'][0]['mainGroup']['notes'])
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

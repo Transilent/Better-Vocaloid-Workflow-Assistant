@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
     root=Path(folder);job=root/'job';job.mkdir()
     page.mode.setCurrentIndex(page.mode.findData('calibrated'))
     page.calibration_file.setText('chosen-profile.json')
-    page.performance_style.setCurrentIndex(page.performance_style.findData('power_pop'))
+    page.performance_style.setCurrentIndex(page.performance_style.findData('bold'))
     page.style_pitch.setChecked(True)
     chosen=(page.mode.currentData(),page.calibration_file.text(),page.performance_style.currentData(),page.style_pitch.isChecked())
     for legacy in (None,'old-task-profile.json'):
@@ -117,6 +117,54 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
     assert page.options()['track_indices']==[0]
     assert page.style_scope.currentData()=='lead'
 
+    page.style_mode.setCurrentIndex(page.style_mode.findData('regions'))
+    page.apply_preferences({'performance_style':'gentle','style_strength':.4,
+        'style_detail':{'onset':.5,'sustain':.75,'connection':.25,'release':1.0},'style_pitch':True})
+    page.style_timeline.set_selection(.05,.35)
+    assert page.style_timeline.selection()==(.05,.35)
+    page.add_style_region()
+    first_region={'start':.05,'end':.35,'preset':'gentle','strength':.4,
+                  'detail':{'onset':.5,'sustain':.75,'connection':.25,'release':1.0},'pitch':True}
+    assert page.style_regions==[first_region] and page.region_list.count()==1
+    option_regions=page.options()['style_regions']
+    assert option_regions==[first_region], option_regions
+    assert 'style_regions' not in page.preferences(), 'Regions belong to execution/session state, not global preferences'
+
+    page.apply_preferences({'performance_style':'bold','style_strength':.7,
+        'style_detail':{'onset':1.0,'sustain':.9,'connection':.8,'release':.7},'style_pitch':False})
+    page.style_timeline.set_selection(.38,.48);page.add_style_region()
+    assert len(page.style_regions)==2 and page.style_regions[0]['start']==.05 and page.style_regions[1]['start']==.38
+    page.style_timeline.set_selection(.15,.4);before=len(page.style_regions);page.add_style_region()
+    assert len(page.style_regions)==before and '不能重叠' in page.status.text()
+
+    page.region_list.setCurrentRow(0)
+    assert page.performance_style.currentData()=='gentle' and page.style_strength.currentData()==.4
+    assert page.preferences()['style_detail']==first_region['detail'] and page.style_pitch.isChecked()
+    page.apply_preferences({'performance_style':'gentle','style_strength':.55,
+        'style_detail':first_region['detail'],'style_pitch':False});page.update_style_region()
+    assert page.style_regions[0]['strength']==.55 and page.style_regions[0]['pitch'] is False
+
+    page.clear_style_regions()
+    assert page.style_mode.currentData()=='regions' and not page.style_regions
+    page.start_run()
+    assert '至少需要一个片段' in page.status.text() and page.session is None and page.worker is None
+
+    recorded={'start':.05,'end':.35,'preset':'gentle','strength':.4,
+              'detail':{'onset':.5,'sustain':.75,'connection':.25,'release':1.0},'pitch':True}
+    page.restore_style_regions([recorded]);saved_options=page.options()
+    from tuning_workflow import create_session
+    region_session=root/'region-session';session_file=create_session(source,region_session)
+    atomic_json(region_session/'last-options.json',saved_options)
+    other=copy.deepcopy(data);other['tracks']=other['tracks'][:1];other_path=root/'other.svp';atomic_json(other_path,other)
+    assert page.load_project(other_path)
+    assert page.style_regions==[] and page.style_mode.currentData()=='whole' and page.options()['style_regions']==[]
+    assert page.restore_session(session_file)
+    assert page.style_mode.currentData()=='regions' and page.style_regions==[recorded]
+    assert page.options()['style_regions']==[recorded]
+    with patch.object(page,'busy',return_value=True):page.refresh()
+    assert not page.style_timeline.isEnabled() and not page.add_region_button.isEnabled()
+    assert not page.delete_region_button.isEnabled() and not page.clear_regions_button.isEnabled()
+
     state_root=root/'production-state';workspace=state_root/'cache/workspace.json'
     recent=str(root/'prior-session/session.json')
     atomic_json(workspace,{'untouched':{'sentinel':True},'tuning':{'session':recent,'preferences':{}}})
@@ -127,9 +175,17 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
         first=TuningPage(window)
         assert first.session is None and first.last_session==recent
         first.expression_density.setCurrentIndex(first.expression_density.findData('original'))
+        detail={'onset':.125,'sustain':.3333,'connection':.625,'release':0.0}
+        first.apply_preferences({'performance_style':'gentle','style_strength':.625,
+                                 'style_pitch':False,'style_detail':detail})
+        first.persist()
         assert state()['tuning']['session']==recent and state()['untouched']=={'sentinel':True}
         second=TuningPage(window)
         assert second.session is None and second.last_session==recent
+        assert second.performance_style.currentData()=='gentle'
+        assert second.style_strength.currentData()==.625 and not second.style_pitch.isChecked()
+        assert second.preferences()['style_detail']==detail
+        assert all(second.style_detail[key].value()==amount*100 for key,amount in detail.items())
         with patch('tuning_ui.QFileDialog.getOpenFileName',return_value=('','')) as chooser:
             second.choose_session()
             assert chooser.call_args.args[2]==recent
@@ -141,4 +197,4 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
         first.deleteLater();second.deleteLater()
 
 window.close();application.processEvents()
-print('PASS: preparation preserves tuning, custom range, recent session, and active tuning/calibration component interlock')
+print('PASS: preparation preserves exact tuning detail, custom range, recent session, and active tuning/calibration component interlock')

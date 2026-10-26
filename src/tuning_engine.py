@@ -16,7 +16,7 @@ DEFAULTS={'expression_mode':'preserve','track_indices':None,'reference_sources':
  'reference_dynamics':False,'reference_tension':False,'reference_breathiness':False,'reference_voicing':False,
  'dynamics_strength':.6,'reference_calibration':None,'retained_project':None,'retained_track_index':0,
  'retained_sources':[],'retained_match_policy':'exact','performance_style':'none','style_strength':.6,'style_pitch':False,
- 'style_scope':'lead','expression_density':'dense'}
+ 'style_scope':'lead','style_detail':None,'style_regions':[],'expression_density':'dense'}
 
 
 def digest(data):
@@ -37,11 +37,13 @@ def settings(options):
         if type(value) not in (int,float) or not math.isfinite(value) or not 0<=value<=1:
             raise ValueError('调音强度应为0到1的有限数值。')
         result[name]=float(value)
-    from style_presets import settings as style_settings, pitch_default
+    from style_presets import settings as style_settings, pitch_default, detail_settings, region_settings
     if 'style_pitch' not in options:
         result['style_pitch']=pitch_default(result['performance_style'])
     from calibration_refinement import density_settings
     style_settings(result);density_settings(result)
+    result['style_detail']=detail_settings(result['style_detail'])
+    result['style_regions']=region_settings(result['style_regions'])
     indices=result['track_indices']
     if indices is not None and (not isinstance(indices,list) or not indices or
             any(type(x) is not int or x<0 for x in indices) or len(indices)!=len(set(indices))):
@@ -244,11 +246,32 @@ def process_project(data,options,*,cancel=lambda:None,progress=lambda text:None,
     report['primary_curve_replacements']=replacements
     report['primary']=primary;report['stages'].append('primary')
     style={'status':'not_selected','pitch_changed':False}
-    if options['performance_style']!='none' and options['style_strength']>0:
+    regions=options['style_regions']
+    if regions:
+        progress('按时间片段叠加风格增量')
+        from style_presets import apply_style
+        receipts=[]
+        for region in regions:
+            cancel()
+            output,item=apply_style(output,region['preset'],strength=region['strength'],
+                track_indices=indices,density_mode='original',pitch_enabled=region['pitch'],
+                detail=region['detail'],time_range=(region['start'],region['end']),cancel=cancel,finalize=False)
+            receipts.append(item)
+        applied=any(r['status'] in ('applied','partial') for r in receipts)
+        incomplete=any(r['status'] in ('partial','skipped') for r in receipts)
+        style={'status':'partial' if applied and incomplete else 'applied' if applied else 'skipped' if incomplete else 'not_selected',
+               'mode':'regions','label':'时间片段风格','regions':receipts,
+               'applied_controls':sum(r.get('applied_controls',0) for r in receipts),
+               'skipped_controls':sum(r.get('skipped_controls',0) for r in receipts),
+               'pitch_changed':any(r.get('pitch_changed') for r in receipts),
+               'outside_regions_style_unchanged':True}
+        report['stages'].append('style')
+    elif options['performance_style']!='none' and options['style_strength']>0:
         progress('叠加所选风格增量')
         from style_presets import apply_style
         output,style=apply_style(output,options['performance_style'],strength=options['style_strength'],
-            track_indices=indices,density_mode='original',pitch_enabled=options['style_pitch'],cancel=cancel,finalize=False)
+            track_indices=indices,density_mode='original',pitch_enabled=options['style_pitch'],
+            detail=options['style_detail'],cancel=cancel,finalize=False)
         report['stages'].append('style')
     report['style']=style
     progress('统一保形加密与保护校验')
@@ -258,7 +281,8 @@ def process_project(data,options,*,cancel=lambda:None,progress=lambda text:None,
     if finalize:report['stages'].append('density')
     # Primary calibration/retention can legitimately install the selected bank's
     # expression offsets; all score/pitch/retake/unknown objects still compare.
-    if _protected(data,indices,EXPRESSION,options['style_pitch'],mode in ('calibrated','retained'))!=_protected(output,indices,EXPRESSION,options['style_pitch'],mode in ('calibrated','retained')):
+    pitch_allowed=any(r['pitch'] for r in regions) if regions else options['style_pitch']
+    if _protected(data,indices,EXPRESSION,pitch_allowed,mode in ('calibrated','retained'))!=_protected(output,indices,EXPRESSION,pitch_allowed,mode in ('calibrated','retained')):
         raise ValueError('调音处理改变了保护范围之外的工程内容，未提交。')
     if digest(data)!=source_sha:raise ValueError('调音处理意外修改了输入对象，未提交。')
     cancel();changed=digest(output)!=source_sha

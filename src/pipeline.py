@@ -50,7 +50,7 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
                reference_tension=False, reference_breathiness=False, reference_voicing=False,
                separation_flow='cascade', reference_calibration=None, bpm=None, expression_density='dense',
                project_export_enabled=None, audio_export_enabled=None, export_preferences=None,
-               performance_style='none', style_strength=.6, style_scope='lead',style_pitch=False,prepare_only=False):
+               performance_style='none', style_strength=.6, style_scope='lead',style_pitch=False,prepare_only=False,style_detail=None):
     if type(prepare_only) is not bool:raise ValueError('准备工作流开关必须为布尔值。')
     if prepare_only:
         reference_dynamics=reference_tension=reference_breathiness=reference_voicing=False
@@ -59,7 +59,8 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
     bpm = validate_bpm(bpm)
     from calibration_refinement import density_settings
     density_settings({'expression_density':expression_density})
-    from style_presets import settings as style_settings
+    from style_presets import settings as style_settings,detail_settings
+    style_detail=detail_settings(style_detail)
     performance_style,style_strength,style_scope=style_settings({
         'performance_style':performance_style,'style_strength':style_strength,'style_scope':style_scope,'style_pitch':style_pitch})
     from project_exports import validate_options
@@ -183,7 +184,7 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
         **({'export_preferences':export_preferences} if export_preferences is not None else {}),
         'include_instrumental':bool(include_instrumental),'alignment_engine':alignment_engine,
         'reference_dynamics':reference_dynamics,'dynamics_strength':float(dynamics_strength),'expression_density':expression_density,
-        'performance_style':performance_style,'style_strength':style_strength,'style_scope':style_scope,'style_pitch':style_pitch,
+        'performance_style':performance_style,'style_strength':style_strength,'style_scope':style_scope,'style_pitch':style_pitch,'style_detail':style_detail,
         'prepare_only':prepare_only,
         'reference_tension':reference_tension,'reference_breathiness':reference_breathiness,'reference_voicing':reference_voicing,
         'reference_mode':reference_mode,'subtitles_mode':subtitles_mode,
@@ -957,6 +958,7 @@ def main():
     parser.add_argument('--style-strength',type=float,default=.6)
     parser.add_argument('--style-scope',choices=('lead','all_vocals'),default='lead')
     parser.add_argument('--style-pitch',action='store_true',help='Optional structural pitch style gestures')
+    parser.add_argument('--style-detail',type=json.loads,help='JSON phase multipliers for a style candidate')
     parser.add_argument('--prepare-only',action='store_true',help='Prepare score/projects; tune in the independent tuning workflow')
     parser.add_argument('--reference-tension', action='store_true', help='Add relative SVP tension (experimental; WORLD component required)')
     parser.add_argument('--reference-breathiness', action='store_true', help='Add relative SVP breathiness (experimental)')
@@ -987,7 +989,8 @@ def main():
                              audio_formats=[] if args.no_audio_export else args.audio_formats,
                              export_pitch=bool(args.project_formats) and not args.no_pitch_curve,
                              reference_dynamics=args.reference_dynamics,dynamics_strength=args.dynamics_strength,expression_density=args.expression_density,
-                             performance_style=args.performance_style,style_strength=args.style_strength,style_scope=args.style_scope,style_pitch=args.style_pitch,prepare_only=args.prepare_only,
+                             performance_style=args.performance_style,style_strength=args.style_strength,style_scope=args.style_scope,style_pitch=args.style_pitch,
+                             style_detail=args.style_detail,prepare_only=args.prepare_only,
                              reference_tension=args.reference_tension,reference_breathiness=args.reference_breathiness,reference_voicing=args.reference_voicing,
                              lyric_reference={'origin':reference.origin} if reference else None,
                              reference_mode='netease' if args.netease_song else 'local',

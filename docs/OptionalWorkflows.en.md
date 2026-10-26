@@ -2,6 +2,39 @@
 
 [English](OptionalWorkflows.en.md) | [简体中文](OptionalWorkflows.zh-CN.md)
 
+## Consolidated experimental singing styles
+
+The Tuning workflow now lists only **Gentle [Experimental]** and **Bright &
+Powerful [Experimental]**, with the original performance preserved by default.
+Whole-track mode uses one style; different non-overlapping time segments may each
+choose either. Neither stacks on an earlier style candidate. Overall strength
+and four `0…1` segment coefficients, `onset`, `sustain`, `connection` and
+`release`, scale local changes: onset and release affect timbre and added pitch,
+sustain affects timbre only, and connection affects local pitch links only.
+Disabling added local pitch stops pitch gestures. Notes shorter than 160 ms,
+rap/BR material, silence and overlapping notes receive no new gestures. Existing
+nonlinear curves, vibrato states and unknown content remain protected.
+
+Time segments show notes from the selected actual target tracks on a simple
+piano-roll view. Drag horizontally to select time, then keep a style, overall
+strength, four segment coefficients and pitch choice independently for each
+non-overlapping segment. When the list is nonempty, only segment ranges receive
+style changes; outside them, the primary source's style line remains. Reference,
+calibration or retained primary processing still covers the selected whole
+tracks. Up to 128 segments are allowed, and selections shorter than 25 ms are
+invalid. The piano roll displays notes and selects ranges; it does not edit
+notes, syllables, lyrics, timing or the voicebank.
+
+`style_regions` belongs only to execution options for the current input session,
+not general preferences. Changing the input clears it, and record recovery
+requires a matching input SHA. Legacy IDs remain readable from existing tasks and
+older command-line records. Opening an older project or candidate does not
+automatically rewrite the file; the UI displays its merged `gentle` or `bold`
+card, and a later preference save or candidate regeneration uses the new ID.
+Historical pitch defaults still follow the original ID. See [experimental
+singing styles](StylePresets.en.md) for the public choices, segment record, and
+audition limits.
+
 ## Video assembly
 
 **视频合成** is a separate sidebar page. It accepts an original video, a Mixdown and an output filename without requiring a music-processing task. The publishing workflow accepts finished videos directly, so assembly is optional.

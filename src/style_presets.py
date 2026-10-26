@@ -20,9 +20,23 @@ import json
 import math
 from pathlib import Path
 
-VERSION = 3
+VERSION = 4
 PRESETS = {
     'none': {'label': '保留原表现', 'controls': {}},
+    'gentle': {'label': '柔和〔实验〕', 'pitch_default': True,
+        'description': '轻柔起音、稳定的有声核心与渐弱收尾；可分别调整各段表现。',
+        'note_envelope': {'onset': .14, 'release': .22,
+                          'sustain_arc': {'loudness': .65, 'tension': .04, 'breathiness': -.015}},
+        'controls': {'loudness': (-3.2, -.8, -4.2), 'tension': (-.36, -.10, -.44),
+                     'breathiness': (.20, .03, .30), 'voicing': (-.04, 0., -.12)}},
+    'bold': {'label': '明亮有力〔实验〕', 'pitch_default': True,
+        'description': '短促起音、清晰衔接与扎实的持续段；可分别调整各段表现。',
+        'note_envelope': {'onset': .055, 'release': .09,
+                          'sustain_arc': {'loudness': .40, 'tension': .025, 'breathiness': -.015}},
+        'controls': {'loudness': (3.6, 1.4, .4), 'tension': (.34, .20, .04),
+                     'breathiness': (-.12, -.05, -.01)}},
+    # Stored task/CLI IDs retain their original recipes. Only the two new IDs
+    # are offered for new selections; loading an old UI choice is explicit.
     'soft_ballad': {'label': '柔和抒情〔实验〕', 'controls': {
         'loudness': (-.8, .5, -1.5), 'tension': (-.18, -.08, -.18),
         'breathiness': (.06, .02, .12), 'voicing': (0., 0., -.06)}},
@@ -50,10 +64,73 @@ CONTROLS = {'loudness': (-48., 12., 0.), 'tension': (-1., 1., 0.),
 MAX_POINTS = 2_000_000
 PHRASE_GAP = .25
 STYLE_GRID = .02
+DETAIL_DEFAULTS = {'onset': 1., 'sustain': 1., 'connection': 1., 'release': 1.}
+PRESET_MERGES = {'soft_ballad': 'gentle', 'intimate_narration': 'gentle',
+                 'melancholy': 'gentle', 'fragile_tender': 'gentle',
+                 'power_pop': 'bold', 'bright_joy': 'bold'}
+
+
+def visible_presets():
+    return ('none', 'gentle', 'bold')
+
+
+def merged_preset(preset):
+    return PRESET_MERGES.get(preset, preset) if isinstance(preset, str) else preset
+
+
+def detail_settings(value=None):
+    """Validate independent phase multipliers, without altering global strength."""
+    if value is None:
+        return dict(DETAIL_DEFAULTS)
+    if not isinstance(value, dict):
+        raise ValueError('风格分段控制必须为对象。')
+    unknown = set(value) - set(DETAIL_DEFAULTS)
+    if unknown:
+        raise ValueError('未知风格分段控制：' + ','.join(sorted(map(str, unknown))))
+    result = dict(DETAIL_DEFAULTS)
+    for key, amount in value.items():
+        if type(amount) not in (int, float) or not math.isfinite(amount) or not 0 <= amount <= 1:
+            raise ValueError('风格分段强度应为 0–100%。')
+        result[key] = float(amount)
+    return result
+
+
+def time_range_settings(value):
+    if (not isinstance(value, (list, tuple)) or len(value) != 2
+            or any(type(v) not in (int, float) or not math.isfinite(v) for v in value)
+            or not math.isfinite(value[1]-value[0]) or value[1]-value[0] < .025):
+        raise ValueError('风格时间选区无效。')
+    return tuple(float(v) for v in value)
+
+
+def region_settings(value=None):
+    """Non-overlapping seconds in project time; each region owns its recipe."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError('风格时间片段必须为列表。')
+    if len(value) > 128:
+        raise ValueError('风格时间片段过多。')
+    regions = []
+    for row in value:
+        if (not isinstance(row, dict) or set(row)-{'start','end','preset','strength','detail','pitch'}
+                or row.get('preset') not in ('gentle', 'bold')):
+            raise ValueError('风格时间片段格式无效。')
+        start, end = time_range_settings((row.get('start'), row.get('end')))
+        preset = row['preset']
+        strength = settings({'performance_style':preset,'style_strength':row.get('strength',.6),
+                             'style_pitch':row.get('pitch',pitch_default(preset))})[1]
+        regions.append({'start':start,'end':end,'preset':preset,'strength':strength,
+                        'detail':detail_settings(row.get('detail')),
+                        'pitch':row.get('pitch',pitch_default(preset))})
+    regions.sort(key=lambda r:(r['start'],r['end']))
+    if any(b['start'] < a['end'] for a,b in zip(regions,regions[1:])):
+        raise ValueError('风格时间片段不能重叠。')
+    return regions
 
 
 def pitch_default(preset):
-    """Only newly added emotion drafts recommend pitch by default."""
+    """New cards recommend pitch; stored legacy IDs retain their old default."""
     return isinstance(preset,str) and PRESETS.get(preset, {}).get('pitch_default') is True
 
 
@@ -65,6 +142,7 @@ def preset_description(preset):
 def settings(options):
     from style_pitch import enabled
     enabled(options)
+    detail_settings(options.get('style_detail'))
     preset = options.get('performance_style', 'none')
     strength = options.get('style_strength', .6)
     scope = options.get('style_scope', 'lead')
@@ -170,7 +248,75 @@ def _weights(times, phrases, definition):
     return weights
 
 
-def apply_style(project, preset, *, strength=.6, track_indices=None, density_mode='dense', pitch_enabled=None, cancel=lambda:None, finalize=True):
+def _note_spans(track, clock, offset):
+    """Keep new note envelopes off short, non-singing and overlapping notes.
+
+    Neighbours include excluded notes so an overlapping breath/rap note cannot
+    accidentally receive another note's expression. _phrases validates timing.
+    """
+    spans = sorted((clock.to_seconds(n['onset'] + offset),
+                    clock.to_seconds(n['onset'] + n['duration'] + offset), i, n)
+                   for i, n in enumerate(track['mainGroup']['notes']))
+    accepted, skipped = [], []
+    preceding_end = -math.inf
+    for j, (a, b, i, note) in enumerate(spans):
+        lyric = str(note.get('lyrics', '')).strip().lower()
+        attributes = note.get('attributes', {})
+        reason = None
+        if (lyric in ('sil', 'sp', 'pau', 'br') or (lyric.startswith('br') and lyric[2:].isdigit())
+                or note.get('musicalType') == 'rap'
+                or (isinstance(attributes, dict) and attributes.get('muted') is True)):
+            reason = 'non_singing_or_rap'
+        elif b - a < .16 - 1e-9:
+            reason = 'short_note_preserved'
+        elif preceding_end > a+1e-8 or (j+1 < len(spans) and spans[j+1][0] < b-1e-8):
+            reason = 'overlapping_notes'
+        if reason:
+            skipped.append({'note_index': i, 'reason': reason, 'start': a, 'end': b})
+        else:
+            accepted.append((a, b))
+        preceding_end = max(preceding_end, b)
+    return accepted, skipped
+
+
+def _range_gate(times, time_range):
+    import numpy as np
+    if time_range is None:
+        return np.ones(len(times))
+    a,b = time_range
+    edge = min(.02,(b-a)*.2)
+    u = np.minimum(np.clip((times-a)/edge,0.,1.),np.clip((b-times)/edge,0.,1.))
+    return u*u*(3.-2.*u)
+
+
+def _note_weights(times, spans, values, recipe, detail, channel):
+    """Smooth note-local phase blend; a single broad arc is not vibrato."""
+    import numpy as np
+    weights = np.zeros(len(times), dtype=float)
+    smooth = lambda x: (lambda u: u*u*(3-2*u))(np.clip(x, 0., 1.))
+    for a, b in spans:
+        first, last = np.searchsorted(times, [a, b], side='left')
+        if first == last:
+            continue
+        duration = b-a
+        t = times[first:last]-a
+        onset = min(recipe['onset'], duration*.28)
+        release = min(recipe['release'], duration*.30)
+        entry = 1-smooth(t/onset)
+        ending = smooth((t-(duration-release))/release)
+        core = 1-entry-ending
+        local = (values[0]*detail['onset']*entry + values[1]*detail['sustain']*core
+                 + values[2]*detail['release']*ending)
+        arc = recipe['sustain_arc'].get(channel, 0.)
+        if duration >= .65 and arc:
+            u = np.clip((t-onset)/(duration-onset-release), 0., 1.)
+            local += arc*detail['sustain']*np.sin(np.pi*u)**2
+        edge = min(.025, duration*.1)
+        weights[first:last] = local*smooth(t/edge)*smooth((duration-t)/edge)
+    return weights
+
+
+def apply_style(project, preset, *, strength=.6, track_indices=None, density_mode='dense', pitch_enabled=None, detail=None, time_range=None, cancel=lambda:None, finalize=True):
     """Return an independent candidate and a receipt; no synthesis or I/O.
 
     Baseline linear knots are never removed. Changes are additive smooth
@@ -183,6 +329,8 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
     if pitch_enabled is None:
         pitch_enabled = pitch_default(preset)
     preset,strength,_=settings({'performance_style':preset,'style_strength':strength,'style_pitch':pitch_enabled})
+    detail = detail_settings(detail)
+    time_range = time_range_settings(time_range) if time_range is not None else None
     density_settings({'expression_density':density_mode})
     if not isinstance(project,dict) or not isinstance(project.get('tracks'),list):
         raise ValueError('风格输入必须为 SVP 工程对象。')
@@ -194,34 +342,50 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
     out=copy.deepcopy(project);rows=[];changed=set();remaining=MAX_POINTS
     receipt={'schema':1,'kind':'vwa.style-adaptation','version':VERSION,'preset':preset,
         'label':PRESETS[preset]['label'],'category':PRESETS[preset].get('category','singing_style'),
-        'description':preset_description(preset),'strength':strength,'density_mode':density_mode,
-        'track_indices':selected,'status':'not_selected','experimental':True,
+        'description':preset_description(preset),'strength':strength,'detail':detail,'density_mode':density_mode,
+        'track_indices':selected,'time_range_seconds':list(time_range) if time_range else None,
+        'status':'not_selected','experimental':True,
         'recipe_origin':'manual_audition_draft','semantic_model_used':False,
         'learned_coefficients':False,'voicebank_calibrated':False,'rendered':False,'listened':False,
         'phrase_gap_seconds':PHRASE_GAP,'style_grid_seconds':STYLE_GRID,'tracks':rows,
         'pitch':{'enabled':pitch_enabled,'status':'not_selected'}}
-    if preset=='none' or strength==0:
+    if (preset=='none' or strength==0 or (not any(detail[k] for k in ('onset','sustain','release'))
+                                        and (not pitch_enabled or not detail['connection']))):
         return out,receipt
     for index in selected:
         cancel();track=project['tracks'][index];phrases,offset=_phrases(track,clock)
+        note_recipe = PRESETS[preset].get('note_envelope')
+        segments, skipped_notes = _note_spans(track,clock,offset) if note_recipe else (phrases, [])
+        edit_segments = ([(max(a,time_range[0]),min(b,time_range[1])) for a,b in segments
+                          if min(b,time_range[1])-max(a,time_range[0]) >= .025]
+                         if time_range else segments)
+        if time_range:
+            skipped_notes=[r for r in skipped_notes if r['start']<time_range[1] and r['end']>time_range[0]]
         controls={};row={'track_index':index,'name':track.get('name',''),
-            'phrases':[{'start':a,'end':b} for a,b in phrases],'controls':controls}
+            'phrases':[{'start':a,'end':b} for a,b in phrases],'controls':controls,
+            'envelope_scope':'note' if note_recipe else 'phrase',
+            'segments':[{'start':a,'end':b} for a,b in edit_segments],'skipped_notes':skipped_notes}
         rows.append(row)
-        if not phrases:row['status']='no_singing_notes';continue
+        if not edit_segments:row['status']='no_eligible_singing_notes';continue
         parameters=track['mainGroup'].get('parameters',{})
         if not isinstance(parameters,dict):raise ValueError('风格目标参数列表无效。')
         sample_seconds=[]
-        for a,b in phrases:
+        for a,b in edit_segments:
             count=math.ceil((b-a)/STYLE_GRID)
             if count>remaining:raise ValueError('风格选区超过参数采样容量。')
             sample_seconds.extend(a+np.arange(count+1)*STYLE_GRID)
             duration=b-a
-            sample_seconds.extend([a,b,a+min(.04,duration*.15),b-min(.04,duration*.15),
-                a+min(.16,duration*.25),b-min(.24,duration*.30)])
+            if note_recipe:
+                sample_seconds.extend([a,b,a+min(.025,duration*.1),b-min(.025,duration*.1),
+                    a+min(note_recipe['onset'],duration*.28),
+                    b-min(note_recipe['release'],duration*.30),(a+b)/2])
+            else:
+                sample_seconds.extend([a,b,a+min(.04,duration*.15),b-min(.04,duration*.15),
+                    a+min(.16,duration*.25),b-min(.24,duration*.30)])
         # Guards at one blick outside the edited interval preserve extrapolation
         # and all original piecewise-linear spans outside selected phrases.
         positions=[clock.to_position(float(t))-offset for t in sample_seconds]
-        positions.extend(p for a,b in phrases for p in (clock.to_position(a)-offset-1,clock.to_position(b)-offset+1))
+        positions.extend(p for a,b in edit_segments for p in (clock.to_position(a)-offset-1,clock.to_position(b)-offset+1))
         for name,values in PRESETS[preset]['controls'].items():
             cancel();original=parameters.get(name)
             state={'status':'skipped','recipe_start_core_release':list(values)};controls[name]=state
@@ -238,8 +402,11 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
             times=np.asarray([clock.to_seconds(float(x)+offset) for x in grid])
             # Three recipe values are interpolation anchors at onset/core/release.
             # The duplicated core anchor makes long sustained notes retain shape.
-            definition=[values[0],values[1],values[1],values[2]]
-            delta=_weights(times,phrases,definition)*strength
+            definition=[values[0]*detail['onset'],values[1]*detail['sustain'],
+                        values[1]*detail['sustain'],values[2]*detail['release']]
+            delta=(_note_weights(times,segments,values,note_recipe,detail,name) if note_recipe
+                   else _weights(times,phrases,definition))*strength
+            delta *= _range_gate(times,time_range)
             active=np.abs(delta)>1e-12
             if not active.any():state['reason']='no_effective_delta';continue
             low,high,_=CONTROLS[name]
@@ -277,7 +444,7 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
                 changed_samples=int(np.count_nonzero(np.abs(delta*scale)>1e-12)))
     if pitch_enabled:
         from style_pitch import apply_pitch
-        receipt['pitch'],pitch_changed=apply_pitch(out,preset,strength=strength,track_indices=selected,cancel=cancel)
+        receipt['pitch'],pitch_changed=apply_pitch(out,preset,strength=strength,detail=detail,time_range=time_range,track_indices=selected,cancel=cancel)
         changed.update(pitch_changed)
     view={'time':out['time'],'tracks':[]}
     for index in selected:
@@ -289,10 +456,11 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
     assert _protected(project,changed)==_protected(out,changed),'Style changed protected project content'
     applied=sum(s['status']=='applied' for r in rows for s in r['controls'].values())
     skipped=sum(s['status']=='skipped' for r in rows for s in r['controls'].values())
+    protected_notes = sum(len(r['skipped_notes']) for r in rows) if PRESETS[preset].get('note_envelope') else 0
     if pitch_enabled:
         applied+=receipt['pitch']['applied_tracks'];skipped+=receipt['pitch']['skipped_tracks']+receipt['pitch']['partial_tracks']
-    receipt.update(status='partial' if applied and skipped else 'applied' if applied else 'skipped',
-        applied_controls=applied,skipped_controls=skipped,expression_density=density,
+    receipt.update(status='partial' if applied and (skipped or protected_notes) else 'applied' if applied else 'skipped',
+        applied_controls=applied,skipped_controls=skipped,protected_notes=protected_notes,expression_density=density,
         source_content_sha256=_sha(_canonical(project).encode('utf-8')),
         output_content_sha256=_sha(_canonical(out).encode('utf-8')),
         protected_content_unchanged=True,notes_unchanged=True,
@@ -302,7 +470,7 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
     return out,receipt
 
 
-def apply_style_svp(source, destination, *, preset, strength=.6, track_indices=None, density_mode='dense', pitch_enabled=None, cancel=lambda:None):
+def apply_style_svp(source, destination, *, preset, strength=.6, track_indices=None, density_mode='dense', pitch_enabled=None, detail=None, time_range=None, cancel=lambda:None):
     """Write a recoverable candidate and bound receipt, refusing input overwrite."""
     from common import atomic_json
     import os
@@ -316,7 +484,7 @@ def apply_style_svp(source, destination, *, preset, strength=.6, track_indices=N
         if canonical_kind(record.get('kind'))=='vwa.style-candidate':raise ValueError('输入已是风格候选；请从原表现工程生成，避免重复叠加。')
     raw=source.read_bytes();source_sha=_sha(raw)
     project=json.loads(raw.decode('utf-8-sig').rstrip('\x00'))
-    out,receipt=apply_style(project,preset,strength=strength,track_indices=track_indices,density_mode=density_mode,pitch_enabled=pitch_enabled,cancel=cancel)
+    out,receipt=apply_style(project,preset,strength=strength,track_indices=track_indices,density_mode=density_mode,pitch_enabled=pitch_enabled,detail=detail,time_range=time_range,cancel=cancel)
     if preset!='none' and strength>0 and receipt['status']=='skipped':
         raise ValueError('目标曲线未形成可用风格变化；请检查非线性曲线、可用余量或空轨道。')
     payload=(json.dumps(out,ensure_ascii=False,indent=2,allow_nan=False)+'\n').encode('utf-8')
@@ -355,10 +523,13 @@ if __name__=='__main__':
     parser.add_argument('--strength',type=float,default=.6)
     parser.add_argument('--tracks',help='Comma-separated zero-based track indices; default first vocal')
     parser.add_argument('--density',choices=('original','dense'),default='dense')
+    parser.add_argument('--style-detail',type=json.loads,help='JSON object of onset/sustain/connection/release multipliers')
+    parser.add_argument('--time-range',nargs=2,type=float,metavar=('START','END'),help='Project seconds; expression outside this range is retained')
     pitch_options=parser.add_mutually_exclusive_group()
     pitch_options.add_argument('--style-pitch',dest='style_pitch',action='store_true',default=None,help='Add structural pitch gestures over the original curve')
     pitch_options.add_argument('--no-style-pitch',dest='style_pitch',action='store_false',help='Keep authored pitch unchanged')
     args=parser.parse_args()
     result=apply_style_svp(args.source,args.destination,preset=args.preset,strength=args.strength,
-        track_indices=[int(x) for x in args.tracks.split(',')] if args.tracks else None,density_mode=args.density,pitch_enabled=args.style_pitch)
+        track_indices=[int(x) for x in args.tracks.split(',')] if args.tracks else None,density_mode=args.density,pitch_enabled=args.style_pitch,
+        detail=args.style_detail,time_range=args.time_range)
     print(json.dumps(result,ensure_ascii=False,indent=2))
