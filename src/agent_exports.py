@@ -467,6 +467,7 @@ def plan_export(path: Any, formats: Any = None, options: Any = None) -> dict[str
         "ticks_per_beat": midi.ticks_per_beat,
         "formats": normal_formats,
         "options": normal_options,
+        "timeline_adapter": "vwa-native-clock-v1",
         "targets": _format_targets(normal_formats),
         "expected": evidence,
         "conversion_losses": _conversion_losses(evidence, normal_formats),
@@ -503,6 +504,8 @@ def _validate_plan(plan: Any) -> dict[str, Any]:
         raise ValueError("计划摘要与当前 plan 内容不一致，计划可能已被篡改。")
     if saved.get("schema_version") != _SCHEMA_VERSION or saved.get("kind") != _PLAN_KIND:
         raise ValueError("不支持的 export plan schema/kind。")
+    if saved.get('timeline_adapter') != 'vwa-native-clock-v1':
+        raise ValueError('导出时间线合同已更新，请重新生成方案。')
     return saved
 
 
@@ -678,6 +681,43 @@ def _project_tempo(project: Any) -> list[list[Any]]:
         [int(row.position), round(float(row.bpm), 3)]
         for row in project.song_tempo_list
     ]
+
+
+def _source_tempo(plan):
+    # MIDI's clock has no count-in. Resolve all track events in playback order.
+    rows={0:float(plan['options']['default_bpm'])}
+    for event in plan['expected']['tempos']:
+        rows[round(event['tick']*480/plan['ticks_per_beat'])]=event['bpm']
+    return [[position,bpm] for position,bpm in sorted(rows.items())]
+
+
+def _converter_project(project, fmt):
+    """Adapt local LibreSVIP plugin clocks without changing notes or the runtime.
+
+    MIDI imports tempos in playback ticks. SVP/USTX writers remove one internal
+    first bar, while VSQX also needs its on-disk pre-measure retained. The
+    adapters are explicit and tested by independent physical-seconds audits.
+    """
+    from libresvip.core.tick_counter import shift_tempo_list,shift_beat_list
+    adapted=project.model_copy(deep=True)
+    prefix=round(project.time_signature_list[0].bar_length())
+    adapted.song_tempo_list=shift_tempo_list(project.song_tempo_list,prefix*(2 if fmt=='vsqx' else 1))
+    if fmt=='svp':
+        adapted.time_signature_list=shift_beat_list(project.time_signature_list,1)
+    return adapted
+
+
+def _loaded_clock(project, fmt):
+    """Return reloaded plugin data on the MIDI playback clock for comparison."""
+    from libresvip.core.tick_counter import skip_tempo_list,skip_beat_list
+    tempos=project.song_tempo_list
+    signatures=project.time_signature_list
+    if fmt in ('svp','ustx'):
+        prefix=1920 if fmt=='ustx' else round(signatures[0].bar_length())
+        tempos=skip_tempo_list(tempos,prefix)
+    if fmt=='svp':signatures=skip_beat_list(signatures,1)
+    return ([[int(row.position),round(float(row.bpm),3)] for row in tempos],
+            [[int(row.bar_index),int(row.numerator),int(row.denominator)] for row in signatures])
 
 
 def _project_timesig(project: Any) -> list[list[int]]:
@@ -952,7 +992,9 @@ def apply_export(
                     "LibreSVIP 导入的 MIDI 音符或歌词与计划不一致："
                     + _canonical(diff)
                 )
-            input_tempo = _project_tempo(project)
+            from libresvip.model.base import SongTempo
+            input_tempo = _source_tempo(saved)
+            project.song_tempo_list=[SongTempo(position=position,bpm=bpm) for position,bpm in input_tempo]
             input_timesig = _project_timesig(project)
 
             for candidate_index, fmt in enumerate(saved["formats"]):
@@ -962,7 +1004,7 @@ def apply_export(
                 pending_paths.append(temporary)
                 try:
                     converters[fmt].dump(
-                        _io_path(temporary), project, _output_options(fmt, saved)
+                        _io_path(temporary), _converter_project(project,fmt), _output_options(fmt, saved)
                     )
                     if fmt == "vsqx":
                         _restore_vsqx_lyrics(temporary, project)
@@ -979,9 +1021,8 @@ def apply_export(
                     raise ValueError(
                         f"{fmt.upper()} 回读后音符/歌词不一致：" + _canonical(diff)
                     )
-                output_tempo = _project_tempo(loaded)
+                output_tempo,output_timesig = _loaded_clock(loaded,fmt)
                 tempo_verified = output_tempo == input_tempo
-                output_timesig = _project_timesig(loaded)
                 raw_bytes = _io_path(temporary).read_bytes()
                 if not raw_bytes:
                     raise ValueError(f"{fmt.upper()} 转换产生空文件。")
@@ -1019,6 +1060,7 @@ def apply_export(
                         + ([] if output_timesig == input_timesig
                            else ["time_signature_normalized"])),
                     "engine": "LibreSVIP",
+                    "timing_basis": "midi_playback_ticks_with_explicit_plugin_prefix_adapter",
                 })
                 try:
                     _io_path(temporary).unlink(missing_ok=True)

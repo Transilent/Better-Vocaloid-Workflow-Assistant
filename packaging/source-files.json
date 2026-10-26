@@ -1867,6 +1867,14 @@
     "tests/test_agent_preparation.py",
     "tests/test_agent_lyrics.py",
     "tests/test_agent_exports.py",
-    "tests/test_agent_workflow.py"
+    "tests/test_agent_workflow.py",
+    "src/agent_supervision.py",
+    "src/agent_export_audit.py",
+    "src/agent_reference.py",
+    "src/agent_structure.py",
+    "tests/test_agent_supervision.py",
+    "tests/test_agent_export_audit.py",
+    "tests/test_agent_reference.py",
+    "tests/test_agent_structure.py"
   ]
 }

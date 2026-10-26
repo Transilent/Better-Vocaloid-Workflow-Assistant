@@ -528,6 +528,22 @@
     {
       "file": "agent_workflow.py",
       "source": "src/agent_workflow.py"
+    },
+    {
+      "file": "agent_supervision.py",
+      "source": "src/agent_supervision.py"
+    },
+    {
+      "file": "agent_export_audit.py",
+      "source": "src/agent_export_audit.py"
+    },
+    {
+      "file": "agent_reference.py",
+      "source": "src/agent_reference.py"
+    },
+    {
+      "file": "agent_structure.py",
+      "source": "src/agent_structure.py"
     }
   ]
 }

@@ -7,10 +7,12 @@ that an unknown lyric is correct or silently invokes a semantic provider.
 from __future__ import annotations
 
 import copy
+import math
 from pathlib import Path
 import time
 from agent_control import (ControlError, atomic_json, digest, file_lock, file_hash,
                            io_path, safe_path)
+from agent_supervision import summarize_export, validate_export_review, SupervisionError
 
 
 class Workflow:
@@ -108,6 +110,14 @@ class Workflow:
         elif stage == 'review':
             next_step = {'tool': 'vwa_workflow_review', 'arguments': {'workflow_id': identifier},
                          'reason': 'agent_must_review_notes_and_lyrics'}
+        elif stage == 'project_ready' and not self._export_accepted(value):
+            summary = value.get('export_summary') or {}
+            next_step = {'tool':'vwa_workflow_advance','arguments':arguments,
+                'reason':'review_export_report' if summary.get('can_accept') else 'resolve_export_blockers',
+                'report_sha256':summary.get('report_sha256'),
+                'required_input':{'export_review':{'decision':['accept','needs_revision'],
+                    'rationale':'核对导出后的音符、歌词与实际时间后填写理由。',
+                    'accepted_loss_codes':summary.get('required_loss_codes',[])}}}
         elif stage == 'project_ready' and value['request']['brief']:
             next_step = {'tool': 'vwa_context_read', 'arguments': {'artifact_id': value['project_artifact_id']},
                          'then': 'vwa_workflow_advance with an explicit style_proposal, or finish=true',
@@ -133,6 +143,13 @@ class Workflow:
                                             'arguments':{'operation_id':operation['id']}}
         return {**value, 'operation': operation, 'next': next_step,
                 'completed': stage == 'ready', 'semantic_provider': 'caller_supplied_plan'}
+
+    @staticmethod
+    def _export_accepted(value):
+        summary = value.get('export_summary') or {}
+        decision = value.get('export_review') or {}
+        return bool(summary.get('report_sha256') and decision.get('decision')=='accept'
+                    and decision.get('report_sha256')==summary['report_sha256'])
 
     def review(self, identifier, limit=100, offset=0):
         value = self._read(identifier)
@@ -178,15 +195,68 @@ class Workflow:
                 refs = hint.get('note_ids',[])
                 hint['note_ids_total'] = len(refs)
                 hint['note_ids'] = refs[:200]
+        references = copy.deepcopy(value.get('references', {}))
+        reference_evidence = {}
+        if references.get('pitch_artifact_id'):
+            reference_evidence['pitch'] = self.control.reference_pitch_review(artifact['id'],
+                references['pitch_artifact_id'], references.get('track_indices'),
+                references.get('time_origin', 0.0), limit, offset)
+        if references.get('audio_artifact_id'):
+            audio = self.control.reference_audio_read(references['audio_artifact_id'])
+            reference_evidence['audio'] = audio
+            starts = [row['onset_seconds']-references.get('audio_time_origin',0.0)
+                      for row in page if row.get('onset_seconds') is not None]
+            if starts:
+                start = max(0.0, min(starts)-.2)
+                end = min(audio['duration_seconds'],start+30,
+                    max(row['onset_seconds']+(row.get('duration_seconds') or 0)
+                        -references.get('audio_time_origin',0.0) for row in page
+                        if row.get('onset_seconds') is not None)+.2)
+                if end > start:
+                    reference_evidence['audio_excerpt_next'] = {'tool':'vwa_reference_audio_read',
+                        'arguments':{'artifact_id':references['audio_artifact_id'],
+                                     'start':start,'end':end,'make_excerpt':True}}
+        available = self.control.discover_references(value['job_id']) if value.get('job_id') else []
         return {'workflow_id': identifier, 'revision': value['revision'],
                 'artifact_id': artifact['id'], 'evidence': bundle, 'total_notes': len(notes),
+                'references':references,'reference_evidence':reference_evidence,
+                'available_references':available,
                 'total_evidence_rows':total_rows,
                 'next_offset': offset+limit if offset+limit < total_rows else None,
                 'full_evidence_tools':['vwa_score_read','vwa_score_review','vwa_lyrics_read','vwa_lyrics_review'],
                 'decision_tool': 'vwa_workflow_apply_review',
                 'instructions': '先核对音符与歌词；以具体修改或保留理由提交决策。提示不是已证实错误。'}
 
-    def apply_review(self, identifier, revision, rationale, note_edits=None, lyric_edits=None):
+    def references_set(self, identifier, revision, pitch_artifact_id=None, audio_artifact_id=None,
+                       track_indices=None, time_origin=0.0, audio_time_origin=0.0, rationale=''):
+        if not isinstance(rationale,str) or not rationale.strip() or len(rationale)>8000:
+            raise ControlError('reference_rationale_required','请记录参考来源、对齐依据或清除理由。')
+        for origin in (time_origin,audio_time_origin):
+            if isinstance(origin,bool) or not isinstance(origin,(int,float)) or not math.isfinite(origin) or abs(origin)>86400:
+                raise ControlError('invalid_time_origin','参考第0帧在MIDI时间中的位置必须是有限秒数。')
+        if track_indices is not None and (not isinstance(track_indices,list) or not track_indices
+                or any(type(i) is not int or i<0 for i in track_indices) or len(set(track_indices))!=len(track_indices)):
+            raise ControlError('invalid_tracks','参考音轨索引需为不重复的非负整数。')
+        with self._lock(identifier):
+            value=self._expected(identifier,revision)
+            if value['stage'] not in ('review','reviewed'):
+                raise ControlError('wrong_stage','只能在MIDI核对阶段设置参考。')
+            for reference,kind in ((pitch_artifact_id,'reference_pitch'),(audio_artifact_id,'reference_audio')):
+                if reference and self.control.artifact(reference)['kind']!=kind:
+                    raise ControlError('wrong_reference_kind','参考产物类型不匹配。')
+            if pitch_artifact_id:
+                # Validate scope/alignment against this exact MIDI before accepting the binding.
+                self.control.reference_pitch_review(value['score_artifact_id'],pitch_artifact_id,
+                    track_indices,time_origin,1,0)
+            references={'pitch_artifact_id':pitch_artifact_id,'audio_artifact_id':audio_artifact_id,
+                'track_indices':track_indices,'time_origin':float(time_origin),
+                'audio_time_origin':float(audio_time_origin),'rationale':rationale.strip(),
+                'provenance':'caller_supplied_unverified','inference_performed':False}
+            self._write(value,'references_set',references=references,stage='review')
+        return self.get(identifier)
+
+    def apply_review(self, identifier, revision, rationale, note_edits=None, lyric_edits=None,
+                     structure_edits=None):
         if not isinstance(rationale, str) or not rationale.strip() or len(rationale) > 8000:
             raise ControlError('review_rationale_required', '需要记录核对结论与修改/保留理由。')
         with self._lock(identifier):
@@ -195,13 +265,15 @@ class Workflow:
                 raise ControlError('wrong_stage', '当前阶段不能提交音符/歌词核对。')
             arguments = {'workflow_id': identifier, 'expected_revision': revision,
                          'rationale': rationale, 'note_edits': note_edits or [],
-                         'lyric_edits': lyric_edits or [], 'artifact_id': value['score_artifact_id']}
+                         'lyric_edits': lyric_edits or [], 'structure_edits':structure_edits or [],
+                         'artifact_id': value['score_artifact_id']}
             operation = self.control.start_operation('workflow_review', arguments,
                                                      identifier + '-review-' + str(revision))
             self._write(value, 'review_started', stage='reviewing', operation_id=operation['id'])
         return self.get(identifier)
 
-    def advance(self, identifier, revision, style_proposal=None, retry=False, finish=False):
+    def advance(self, identifier, revision, style_proposal=None, retry=False, finish=False,
+                export_review=None):
         with self._lock(identifier):
             value = self._expected(identifier, revision)
             stage = value['stage']
@@ -253,9 +325,17 @@ class Workflow:
                     projects = result['artifacts']
                     if not projects:
                         self._bad_result(value, 'missing_project', '导出没有返回可验证工程。')
+                    try:
+                        source = self.control.artifact(value['score_artifact_id'])
+                        for project in projects:
+                            self.control.artifact(project['id'])
+                        summary = summarize_export(result, source['sha256'], operation['id'])
+                    except (SupervisionError, ControlError) as error:
+                        self._bad_result(value, error.code, str(error))
                     selected = next((row for row in projects if Path(row['path']).suffix.lower()=='.svp'), projects[0])
                     self._write(value, 'project_exported', stage='project_ready',
-                                project_artifact_id=selected['id'], project_artifacts=projects)
+                                project_artifact_id=selected['id'], project_artifacts=projects,
+                                export_summary=summary, export_review=None)
                 else:
                     if not operation.get('result',{}).get('artifacts'):
                         self._bad_result(value, 'missing_styled_project', '风格操作没有返回可验证工程。')
@@ -273,9 +353,26 @@ class Workflow:
                 operation = self.control.start_plan(plan['id'], 'export', identifier+'-export-'+str(revision))
                 self._write(value, 'export_started', stage='exporting', active_plan_id=plan['id'], operation_id=operation['id'])
             elif stage == 'project_ready':
+                if not self._export_accepted(value):
+                    if export_review is None:
+                        return self.get(identifier)
+                    decision = validate_export_review(value.get('export_summary'), export_review)
+                    source = self.control.artifact(value['score_artifact_id'])
+                    if source['sha256'] != decision['source_sha256']:
+                        raise ControlError('export_review_conflict', '导出核对的源 MIDI 已改变。')
+                    for row in decision['candidates']:
+                        candidate = self.control.artifact(row['artifact_id'])
+                        if candidate['sha256'] != row['sha256']:
+                            raise ControlError('export_review_conflict', '导出候选已改变，需重新核对。')
+                    decision['reviewed_at'] = time.time()
+                    if decision['decision'] == 'needs_revision':
+                        self._write(value, 'export_revision_requested', stage='review', export_review=decision,
+                            previous_export_summary=copy.deepcopy(value['export_summary']))
+                        return self.get(identifier)
+                    value = self._write(value, 'export_review_accepted', export_review=decision)
                 if style_proposal is not None:
                     plan = self.control.make_plan('style', value['project_artifact_id'], proposal=style_proposal)
-                    operation = self.control.start_plan(plan['id'], 'style', identifier+'-style-'+str(revision))
+                    operation = self.control.start_plan(plan['id'], 'style', identifier+'-style-'+str(value['revision']))
                     self._write(value, 'style_started', stage='styling', active_plan_id=plan['id'], operation_id=operation['id'])
                 elif finish or not value['request']['brief']:
                     self._write(value, 'project_ready', stage='ready',
@@ -290,7 +387,7 @@ class Workflow:
         raise ControlError(code, message)
 
     def execute_review(self, operation_id, arguments, output, cancel, progress):
-        """Lyrics first, then remap pitch/timing edits by unchanged note geometry."""
+        """Structure, lyrics, then pitch/time; rebind unchanged notes between candidates."""
         with self._lock(arguments['workflow_id']):
             value = self._read(arguments['workflow_id'])
             if value['stage'] != 'reviewing' or value.get('operation_id') != operation_id:
@@ -300,30 +397,52 @@ class Workflow:
         from agent_score import read_score, plan_patch, apply_patch
         before = read_score(original['path'])
         note_edits = copy.deepcopy(arguments['note_edits'])
+        lyric_edits = copy.deepcopy(arguments['lyric_edits'])
+        structure_edits = arguments.get('structure_edits',[])
         receipts = []
+        def remap(edits, previous, following):
+            if not edits:
+                return
+            def geometry(note):
+                return tuple(note[k] for k in ('track_index','channel','pitch','onset_tick','duration_tick'))
+            after_ids = {}
+            for note in following['notes']:
+                after_ids.setdefault(geometry(note),[]).append(note['note_id'])
+            old = {note['note_id']:note for note in previous['notes']}
+            for edit in edits:
+                prior=old.get(edit['note_id'])
+                matches=after_ids.get(geometry(prior),[]) if prior else []
+                if not matches:
+                    raise ControlError('stale_note_id','音符身份无法关联到修正后的 MIDI。')
+                if len(matches)!=1:
+                    raise ControlError('ambiguous_note_mapping','同形音符无法安全关联组合修改。')
+                edit['note_id']=matches[0]
+        deleted={edit.get('note_id') for edit in structure_edits if edit.get('operation')=='delete'}
+        if deleted & {edit.get('note_id') for edit in note_edits+lyric_edits}:
+            raise ControlError('review_edit_conflict','删除目标不能同时提交歌词或音高修改。')
         cancel()
-        if arguments['lyric_edits']:
+        if structure_edits:
+            from agent_structure import plan_structure_patch,apply_structure_patch
+            progress('核验并修正音符结构及歌词归属')
+            plan=plan_structure_patch(current['path'],current['sha256'],structure_edits)
+            receipt=apply_structure_patch(current['path'],plan,output/'structure')
+            current=self.control.register_artifact(receipt['candidate_path'])
+            receipts.append(receipt)
+            after=read_score(current['path'])
+            remap(note_edits,before,after)
+            remap(lyric_edits,before,after)
+            before=after
+        cancel()
+        if lyric_edits:
             from agent_lyrics import plan_lyrics_patch, apply_lyrics_patch
             progress('核验并修正 MIDI 歌词')
-            plan = plan_lyrics_patch(current['path'], current['sha256'], arguments['lyric_edits'])
+            plan = plan_lyrics_patch(current['path'], current['sha256'], lyric_edits)
             receipt = apply_lyrics_patch(current['path'], plan, output / 'lyrics')
             current = self.control.register_artifact(receipt['candidate_path'])
             receipts.append(receipt)
             if note_edits:
                 after = read_score(current['path'])
-                def geometry(note):
-                    return tuple(note[k] for k in ('track_index','channel','pitch','onset_tick','duration_tick'))
-                after_ids = {}
-                for note in after['notes']:
-                    key = geometry(note)
-                    if key in after_ids:
-                        raise ControlError('ambiguous_note_mapping', '同形音符无法安全关联音符与歌词修改。')
-                    after_ids[key] = note['note_id']
-                old = {note['note_id']:note for note in before['notes']}
-                for edit in note_edits:
-                    if edit['note_id'] not in old or geometry(old[edit['note_id']]) not in after_ids:
-                        raise ControlError('stale_note_id', '音符身份无法关联到歌词修正后的 MIDI。')
-                    edit['note_id'] = after_ids[geometry(old[edit['note_id']])]
+                remap(note_edits,before,after)
         cancel()
         if note_edits:
             progress('核验并修正 MIDI 音符')

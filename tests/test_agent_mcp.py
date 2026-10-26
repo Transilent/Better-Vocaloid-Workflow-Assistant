@@ -50,6 +50,14 @@ def fixtures(directory):
     for track in (conductor, vocal):
         raw += b'MTrk' + struct.pack('>I', len(track)) + track
     (exchange / 'review.mid').write_bytes(raw)
+    import numpy as np
+    import wave
+    np.savez(exchange/'reference.npz',schema=np.int64(1),time_step=np.float64(.01),
+        midi_pitch=np.array([72.0]*50+[64.0]*60,dtype=np.float32),
+        voiced_mask=np.ones(110,dtype=np.bool_))
+    with wave.open(str(exchange/'reference.wav'),'wb') as stream:
+        stream.setnchannels(1);stream.setsampwidth(2);stream.setframerate(8000)
+        stream.writeframes(struct.pack('<h',1000)*16000)
     q = 705600000
     project = {'version': 137, 'uuid': 'agent-fixture', 'library': [],
         'renderConfig': {'keep': True}, 'time': {
@@ -136,6 +144,21 @@ async def client_contract(configuration):
         review = await call(client, 'vwa_score_review', {'artifact_id': midi['id']})
         check(len(score['notes']) == 2 and isinstance(review, dict), 'real_midi_notes')
         note = score['notes'][0]
+        structure = await call(client,'vwa_structure_patch_plan',{'artifact_id':midi['id'],
+            'expected_sha256':score['source_sha256'],'edits':[
+                {'operation':'delete','note_id':score['notes'][1]['note_id'],'lyric_policy':'preserve'},
+                {'operation':'insert','track_index':1,'channel':0,'pitch':65,'onset_tick':960,
+                 'duration_tick':480,'velocity':80,'lyric':'海'}]})
+        structure_op = await call(client,'vwa_structure_patch_apply',
+            {'plan_id':structure['id'],'idempotency_key':'structure-1'})
+        structured = await poll(client,structure_op['id'])
+        structured_score = await call(client,'vwa_score_read',
+            {'artifact_id':structured['result']['artifacts'][0]['id']})
+        check([n['pitch'] for n in structured_score['notes']]==[60,65] and
+              structured_score['notes'][1]['lyric']=='海','structure_candidate_verified')
+        await call(client,'vwa_structure_patch_plan',{'artifact_id':midi['id'],
+            'expected_sha256':score['source_sha256'],'edits':[
+                {'operation':'delete','note_id':note['note_id']}]},error=True)
         arguments = {'artifact_id': midi['id'], 'expected_sha256': score['source_sha256'],
                      'edits': [{'note_id': note['note_id'], 'pitch': note['pitch'] + 1}]}
         await call(client, 'vwa_score_patch_plan', {**arguments, 'expected_sha256': '0'*64}, error=True)
@@ -331,10 +354,33 @@ async def workflow_contract(configuration):
         flow = await call(client,'vwa_workflow_create',{'score_artifact_id':artifact['id'],
             'options':{'language':'zh'},'brief':'首句克制思乡，少量戏腔。','reference_lyrics':'山河',
             'idempotency_key':'supervised-demo'})
+        pitch = await call(client,'vwa_reference_import',
+            {'path':str(configuration.parent/'exchange/reference.npz'),'kind':'pitch'})
+        audio = await call(client,'vwa_reference_import',
+            {'path':str(configuration.parent/'exchange/reference.wav'),'kind':'audio'})
+        flow = await call(client,'vwa_workflow_references_set',version(flow,
+            pitch_artifact_id=pitch['id'],audio_artifact_id=audio['id'],track_indices=[1],
+            time_origin=0.0,audio_time_origin=0.0,
+            rationale='自制夹具明确以MIDI秒0对齐；参考仅为条件性证据。'))
         check(flow['stage']=='review' and flow['next']['tool']=='vwa_workflow_review','review_gate_and_next_tool')
         unchanged = await call(client,'vwa_workflow_advance',version(flow))
         check(unchanged['stage']=='review' and unchanged['revision']==flow['revision'],'cannot_skip_review')
         bundle = await call(client,'vwa_workflow_review',{'workflow_id':flow['id'],'limit':1})
+        check(bundle['reference_evidence']['pitch']['summary']['notes_selected']==2,
+              'existing_pitch_evidence_attached')
+        check(not bundle['reference_evidence']['audio']['frame_analysis_performed'],
+              'audio_header_default_no_inference')
+        excerpt_next=bundle['reference_evidence']['audio_excerpt_next']
+        excerpt=await call(client,excerpt_next['tool'],excerpt_next['arguments'])
+        deadline=asyncio.get_running_loop().time()+30
+        while asyncio.get_running_loop().time()<deadline:
+            excerpt_result=await call(client,'vwa_operations_get',{'operation_id':excerpt['id']})
+            if excerpt_result['state'] in ('succeeded','failed','interrupted','cancelled'):
+                break
+            await asyncio.sleep(.1)
+        check(excerpt_result['state']=='succeeded' and
+              not excerpt_result['result']['receipt']['frame_preservation']['resampled'],
+              'pcm_excerpt_generated_without_resampling')
         check(bundle['total_notes']==2 and bundle['next_offset']==1,'review_note_pagination')
         score = await call(client,'vwa_score_read',{'artifact_id':artifact['id']})
         await call(client,'vwa_workflow_apply_review',version(flow,rationale=''),error=True)
@@ -355,6 +401,18 @@ async def workflow_contract(configuration):
         flow = await wait(client,flow)
         flow = await call(client,'vwa_workflow_advance',version(flow))
         check(flow['stage']=='project_ready','verified_svp_exported')
+        summary=flow['export_summary']
+        check(summary['independent_audit']['status']=='verified' and summary['can_accept'],
+              'independent_export_seconds_verified')
+        check(summary['required_loss_codes'] and summary['review_required'],'losses_visible_by_default')
+        unchanged=await call(client,'vwa_workflow_advance',version(flow,finish=True))
+        check(unchanged['stage']=='project_ready' and unchanged['revision']==flow['revision'],
+              'cannot_finish_without_export_review')
+        review={'report_sha256':summary['report_sha256'],'decision':'accept',
+            'rationale':'自制谱的音符、歌词和实际秒数回读一致；明确认可列明格式损失。',
+            'accepted_loss_codes':summary['required_loss_codes']}
+        await call(client,'vwa_workflow_advance',version(flow,
+            export_review={**review,'report_sha256':'0'*64}),error=True)
         context = await call(client,'vwa_context_read',{'artifact_id':flow['project_artifact_id']})
         first = next(note for note in context['notes'] if note.get('singing'))
         proposal = {'track_indices':[first['track_index']],'brief':'首句克制思乡，少量戏腔。','regions':[{
@@ -362,7 +420,7 @@ async def workflow_contract(configuration):
             'preset':'sad','strength':.5,'style_pitch':True,'style_technique':'chinese_opera',
             'technique_strength':.3,'technique_pitch':True,'rationale':'按创作背景保留山字的完整时值并轻收起音。',
             'evidence_refs':[first['note_id']]}]}
-        flow = await call(client,'vwa_workflow_advance',version(flow,style_proposal=proposal))
+        flow = await call(client,'vwa_workflow_advance',version(flow,style_proposal=proposal,export_review=review))
         flow = await wait(client,flow)
         flow = await call(client,'vwa_workflow_advance',version(flow))
         check(flow['completed'] and flow['stage']=='ready','editable_styled_project_ready')

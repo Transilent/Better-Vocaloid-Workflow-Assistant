@@ -14,6 +14,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import wave
 from pathlib import Path
 
 APP = Path(__file__).resolve().parents[1]
@@ -21,10 +22,12 @@ SRC = APP / "src"
 sys.path.insert(0, str(SRC))
 
 import mido
+import numpy as np
 
 from agent_control import ControlError, digest, io_path, read_json
 from agent_lyrics import read_lyrics
 from agent_score import read_score
+from agent_supervision import SupervisionError, _digest as supervision_digest
 from agent_workflow import Workflow
 from common import native_path
 
@@ -35,6 +38,32 @@ def sha256_bytes(data):
 
 def sha256_file(path):
     return sha256_bytes(io_path(path).read_bytes())
+
+
+def write_pitch_npz(path):
+    path = Path(path)
+    io_path(path.parent).mkdir(parents=True, exist_ok=True)
+    pitch = np.concatenate((
+        np.full(50, 60.0, dtype=np.float32),
+        np.full(50, 62.0, dtype=np.float32),
+        np.full(50, 64.0, dtype=np.float32),
+    ))
+    with open(native_path(path), "wb") as stream:
+        np.savez(stream, schema=np.int64(1), time_step=np.float64(0.01),
+                 midi_pitch=pitch, voiced_mask=np.ones(150, dtype=np.bool_))
+    return path
+
+
+def write_wav(path):
+    path = Path(path)
+    io_path(path.parent).mkdir(parents=True, exist_ok=True)
+    with open(native_path(path), "wb") as stream:
+        with wave.open(stream, "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(8000)
+            audio.writeframes(b"\0\0" * 12800)
+    return path
 
 
 def write_midi(path):
@@ -108,17 +137,18 @@ class FakeControl:
         return value
 
     def import_asset(self, path):
+        return self.register_artifact(path, kind="input")
+
+    def register_artifact(self, path, *, kind="candidate", job_id=None, origin=None):
         path = Path(path).resolve()
         sha = sha256_file(path)
-        identifier = "art_" + digest({"path": str(path), "sha256": sha})[:32]
+        identifier = "art_" + digest({"path": str(path), "sha256": sha, "kind": kind,
+                                      "job_id": job_id, "origin": origin})[:32]
         value = {"schema": 1, "id": identifier, "path": str(path), "sha256": sha,
-                 "bytes": io_path(path).stat().st_size, "kind": "input",
-                 "job_id": None, "origin": None}
+                 "bytes": io_path(path).stat().st_size, "kind": kind,
+                 "job_id": job_id, "origin": copy.deepcopy(origin)}
         self.records["artifacts"][identifier] = copy.deepcopy(value)
         return copy.deepcopy(value)
-
-    def register_artifact(self, path):
-        return self.import_asset(path)
 
     def preparation_plan(self, source, options):
         self.preparation_calls.append((source, copy.deepcopy(options)))
@@ -177,6 +207,29 @@ class FakeControl:
         lyrics = read_lyrics(arguments["path"], arguments.get("language", "zh"))
         return {"score": score, "score_review": {"hints": []},
                 "lyrics": lyrics, "lyric_review": {"hints": []}}
+
+    def reference_pitch_review(self, score_artifact_id, pitch_artifact_id,
+                               track_indices=None, time_origin=0.0, limit=100, offset=0):
+        from agent_reference import review_reference_pitch
+        score = self.artifact(score_artifact_id)
+        pitch = self.artifact(pitch_artifact_id)
+        self.worker_calls.append(("reference_pitch_review", {
+            "score_artifact_id": score_artifact_id, "pitch_artifact_id": pitch_artifact_id,
+            "track_indices": copy.deepcopy(track_indices), "time_origin": time_origin,
+            "limit": limit, "offset": offset}))
+        return review_reference_pitch(score["path"], pitch["path"], track_indices,
+                                      time_origin, limit, offset)
+
+    def reference_audio_read(self, artifact_id, start=None, end=None, make_excerpt=False):
+        from agent_reference import inspect_reference_audio
+        audio = self.artifact(artifact_id)
+        self.worker_calls.append(("reference_audio_read", {
+            "artifact_id": artifact_id, "start": start, "end": end,
+            "make_excerpt": make_excerpt}))
+        return inspect_reference_audio(audio["path"], start, end)
+
+    def discover_references(self, job_id):
+        return []
 
     def make_plan(self, kind, artifact_id, **arguments):
         self.plan_calls.append((kind, artifact_id, copy.deepcopy(arguments)))
@@ -239,25 +292,165 @@ class WorkflowTestBase(unittest.TestCase):
             value["id"], value["revision"], arguments.pop("rationale", "试听并核对全部音符与歌词。"),
             **arguments)
 
-    def complete_review(self, value, note_edits=None, lyric_edits=None):
+    def execute_review_worker(self, pending, directory_name):
+        output = self.root / directory_name
+        io_path(output).mkdir(parents=True, exist_ok=True)
+        operation_id = pending["operation_id"]
+        arguments = self.control.records["operations"][operation_id]["request"]["arguments"]
+        return self.workflow.execute_review(
+            operation_id, arguments, output, lambda: None, lambda text: None)
+
+    def complete_review(self, value, note_edits=None, lyric_edits=None,
+                        structure_edits=None):
         pending = self.apply_review(value, note_edits=note_edits or [],
-                                    lyric_edits=lyric_edits or [])
+                                    lyric_edits=lyric_edits or [],
+                                    structure_edits=structure_edits or [])
         reviewed = self.succeed(pending, self.control.review_success(
             pending["id"], pending["score_artifact_id"]))
         accepted = self.workflow.advance(reviewed["id"], reviewed["revision"])
         self.assertEqual(accepted["stage"], "reviewed")
         return accepted
 
-    def complete_export(self, value, artifacts):
+    def export_candidate(self, name, content=None):
+        path = self.root / "assets" / name
+        if content is None:
+            suffix = path.suffix.lower()
+            if suffix == ".svp":
+                content = json.dumps({"tracks": [], "fixture": "workflow"}, ensure_ascii=False)
+            elif suffix == ".ustx":
+                content = "ustx workflow fixture"
+            elif suffix == ".vsqx":
+                content = "vsqx workflow fixture"
+            else:
+                raise AssertionError("unsupported export fixture format")
+        if isinstance(content, str):
+            io_path(path).write_text(content, encoding="utf-8")
+        else:
+            io_path(path).write_bytes(content)
+        return self.control.register_artifact(path, kind="candidate")
+
+    def build_export_result(self, value, artifacts, *, conversion_loss_codes=None,
+                            audit_blockers=None, include_audit=True):
+        """Build the same outer/inner receipt shape emitted by agent_exports."""
+        source = self.control.artifact(value["score_artifact_id"])
+        score = read_score(source["path"])
+        formats = [Path(row["path"]).suffix.lower().lstrip(".") for row in artifacts]
+        if not artifacts or any(fmt not in {"svp", "ustx", "vsqx"} for fmt in formats):
+            raise AssertionError("export candidate fixture formats are invalid")
+        conversion_loss_codes = (["tempo_table_normalized"]
+                                 if conversion_loss_codes is None
+                                 else list(conversion_loss_codes))
+        losses = [{"code": code, "count": 1, "message": "自制格式损失夹具：" + code}
+                  for code in conversion_loss_codes]
+        expected_tempo = copy.deepcopy(score["timing"]["tempo_events"])
+        candidates = []
+        for artifact, fmt in zip(artifacts, formats):
+            candidate_path = str(Path(artifact["path"]).resolve())
+            codes = list(conversion_loss_codes)
+            candidates.append({
+                "format": fmt,
+                "candidate_path": candidate_path,
+                "candidate_sha256": artifact["sha256"],
+                "bytes": artifact["bytes"],
+                "verified_notes": len(score["notes"]),
+                "verified_lyrics": sum(1 for note in score["notes"] if note.get("lyric")),
+                "tempo_verified": "tempo_table_normalized" not in codes,
+                "timing_verified": True,
+                "time_signature_verified": "time_signature_normalized" not in codes,
+                "time_signatures": [],
+                "expected_tempo": expected_tempo,
+                "output_tempo": expected_tempo,
+                "loss_codes": codes,
+                "engine": "LibreSVIP",
+            })
+        plan_sha256 = digest({"operation": "export",
+                              "candidates": [row["candidate_sha256"] for row in candidates]})
+        receipt = {
+            "schema_version": 1,
+            "kind": "vwa-export-receipt",
+            "plan_sha256": plan_sha256,
+            "source_path": source["path"],
+            "source_sha256": source["sha256"],
+            "output_root": str((self.root / "assets").resolve()),
+            "formats": formats,
+            "runtime_path": "fixture://read-only-libresvip",
+            "engine": "LibreSVIP",
+            "candidates": candidates,
+            "verified": {
+                "notes": len(score["notes"]),
+                "lyrics": sum(1 for note in score["notes"] if note.get("lyric")),
+                "tempo": expected_tempo,
+                "time_signatures": [],
+            },
+            "conversion_losses": losses,
+            "semantic_model_used": False,
+            "synthesized": False,
+            "published": False,
+        }
+        receipt["receipt_sha256"] = digest(receipt)
+        outer = copy.deepcopy(receipt)
+        outer["receipt"] = copy.deepcopy(receipt)
+        outer["receipt_path"] = str(self.root / "assets" / "fixture.receipt.json")
+        outer["replay"] = False
+        outer["source_unchanged"] = True
+        if include_audit:
+            blockers = copy.deepcopy(audit_blockers or [])
+            audit_candidates = []
+            for artifact, fmt in zip(artifacts, formats):
+                audit_candidates.append({
+                    "format": fmt,
+                    "status": "differences" if blockers else "verified",
+                    "candidate_path": str(Path(artifact["path"]).resolve()),
+                    "candidate_sha256": artifact["sha256"],
+                    "declared_candidate_sha256": artifact["sha256"],
+                    "source_sha256": source["sha256"],
+                    "parsed": True,
+                    "blockers": copy.deepcopy(blockers),
+                    "warnings": [],
+                })
+            audit = {
+                "schema_version": 1,
+                "kind": "vwa-export-audit",
+                "status": "differences" if blockers else "verified",
+                "source_sha256": source["sha256"],
+                "source": {"path": source["path"], "sha256": source["sha256"]},
+                "receipt": {
+                    "kind": receipt["kind"],
+                    "plan_sha256": plan_sha256,
+                    "declared_source_sha256": source["sha256"],
+                },
+                "candidates": audit_candidates,
+                "blockers": blockers,
+                "warnings": [],
+                "acoustic_or_phonetic_verified": False,
+                "inference_performed": False,
+            }
+            audit["audit_sha256"] = supervision_digest(audit)
+            outer["independent_audit"] = audit
+        return {"receipt": outer, "artifacts": artifacts}
+
+    def complete_export(self, value, artifacts, **receipt_options):
         exporting = self.workflow.advance(value["id"], value["revision"])
         self.assertEqual(exporting["stage"], "exporting")
         operation = exporting["operation"]
-        self.control.set_operation(operation["id"], "succeeded",
-                                   result={"receipt": {"candidates": artifacts},
-                                           "artifacts": artifacts})
+        self.control.set_operation(
+            operation["id"], "succeeded",
+            result=self.build_export_result(value, artifacts, **receipt_options))
         project = self.workflow.advance(exporting["id"], exporting["revision"])
         self.assertEqual(project["stage"], "project_ready")
         return project
+
+    def export_review(self, project, *, decision="accept", accepted_loss_codes=None,
+                      rationale="已核对实际音符、歌词与秒数，并逐项认可可见损失。"):
+        summary = project["export_summary"]
+        if accepted_loss_codes is None:
+            accepted_loss_codes = summary["required_loss_codes"]
+        return {"report_sha256": summary["report_sha256"], "decision": decision,
+                "rationale": rationale, "accepted_loss_codes": list(accepted_loss_codes)}
+
+    def approve_export(self, project, **arguments):
+        return self.workflow.advance(project["id"], project["revision"],
+                                     export_review=self.export_review(project), **arguments)
 
 
 class WorkflowCreateGetTests(WorkflowTestBase):
@@ -393,6 +586,101 @@ class WorkflowReviewTests(WorkflowTestBase):
         self.assertTrue(result["caller_reviewed"])
         self.assertFalse(result["semantic_model_used"])
 
+    def test_reference_binding_rejects_stale_revision_and_wrong_stage(self):
+        created, _ = self.create_midi_flow(key="reference binding")
+        pitch_path = write_pitch_npz(self.root / "assets" / "参考 pitch.npz")
+        audio_path = write_wav(self.root / "assets" / "参考 audio.wav")
+        pitch = self.control.register_artifact(pitch_path, kind="reference_pitch")
+        audio = self.control.register_artifact(audio_path, kind="reference_audio")
+
+        with self.assertRaises(ControlError) as raised:
+            self.workflow.references_set(
+                created["id"], created["revision"] + 1,
+                pitch_artifact_id=pitch["id"], audio_artifact_id=audio["id"],
+                track_indices=[1], time_origin=0.0, audio_time_origin=0.0,
+                rationale="自制参考，第0帧明确对齐MIDI秒0。")
+        self.assertEqual(raised.exception.code, "workflow_conflict")
+
+        bound = self.workflow.references_set(
+            created["id"], created["revision"], pitch_artifact_id=pitch["id"],
+            audio_artifact_id=audio["id"], track_indices=[1], time_origin=0.0,
+            audio_time_origin=0.0, rationale="自制参考，第0帧明确对齐MIDI秒0。")
+        self.assertEqual(bound["stage"], "review")
+        self.assertEqual(bound["references"]["pitch_artifact_id"], pitch["id"])
+        self.assertEqual(bound["references"]["audio_artifact_id"], audio["id"])
+        self.assertEqual(bound["references"]["track_indices"], [1])
+
+        evidence = self.workflow.review(bound["id"], limit=1, offset=0)
+        self.assertEqual(evidence["reference_evidence"]["pitch"]["summary"]["notes_selected"], 3)
+        self.assertFalse(evidence["reference_evidence"]["audio"]["frame_analysis_performed"])
+        self.assertEqual(evidence["reference_evidence"]["audio_excerpt_next"]["tool"],
+                         "vwa_reference_audio_read")
+
+        pending = self.apply_review(bound, rationale="保留音符，参考仅作条件证据。")
+        self.assertEqual(pending["stage"], "reviewing")
+        with self.assertRaises(ControlError) as raised:
+            self.workflow.references_set(
+                pending["id"], pending["revision"], audio_artifact_id=audio["id"],
+                rationale="操作启动后不应重绑参考。")
+        self.assertEqual(raised.exception.code, "wrong_stage")
+
+    def test_structure_delete_insert_lyrics_and_pitch_use_real_worker_batch(self):
+        created, _ = self.create_midi_flow(key="combined structure")
+        source_sha = sha256_file(self.midi)
+        before = read_score(self.midi)
+        deleted = next(note for note in before["notes"] if note["pitch"] == 62)
+        lyric_target = next(note for note in before["notes"] if note["pitch"] == 60)
+        pitch_target = next(note for note in before["notes"] if note["pitch"] == 64)
+        pending = self.apply_review(
+            created,
+            structure_edits=[
+                {"operation": "delete", "note_id": deleted["note_id"],
+                 "lyric_policy": "delete_owned"},
+                {"operation": "insert", "track_index": deleted["track_index"],
+                 "channel": deleted["channel"], "pitch": 67, "onset_tick": 1440,
+                 "duration_tick": 480, "velocity": 77, "lyric": "新"},
+            ],
+            lyric_edits=[{"note_id": lyric_target["note_id"], "lyric": "晴",
+                          "operation": "replace"}],
+            note_edits=[{"note_id": pitch_target["note_id"], "pitch": 65}])
+        self.assertEqual(pending["stage"], "reviewing")
+        result = self.execute_review_worker(pending, "review-combined-real")
+        candidate = self.control.artifact(result["artifact_id"])
+        after = read_score(candidate["path"])
+        by_onset = {note["onset_tick"]: note for note in after["notes"]}
+        self.assertEqual(sorted(by_onset), [0, 960, 1440])
+        self.assertEqual(by_onset[0]["pitch"], 60)
+        self.assertEqual(by_onset[0]["lyric"], "晴")
+        self.assertEqual(by_onset[960]["pitch"], 65)
+        self.assertEqual(by_onset[1440]["pitch"], 67)
+        self.assertEqual(by_onset[1440]["lyric"], "新")
+        self.assertEqual(len(result["receipts"]), 3)
+        self.assertEqual(sha256_file(self.midi), source_sha)
+        midi = mido.MidiFile(native_path(candidate["path"]), charset="utf8")
+        self.assertTrue(any(message.type == "marker" and message.text == "keep-tail"
+                            for track in midi.tracks for message in track))
+        self.assertEqual(sum(message.type == "set_tempo"
+                             for track in midi.tracks for message in track), 1)
+        self.assertEqual(sum(message.type == "time_signature"
+                             for track in midi.tracks for message in track), 1)
+
+    def test_structure_delete_conflicts_with_lyric_or_pitch_edits(self):
+        created, _ = self.create_midi_flow(key="combined conflict")
+        before_sha = sha256_file(self.midi)
+        target = next(note for note in read_score(self.midi)["notes"]
+                      if note["pitch"] == 62)
+        pending = self.apply_review(
+            created,
+            structure_edits=[{"operation": "delete", "note_id": target["note_id"],
+                              "lyric_policy": "preserve"}],
+            lyric_edits=[{"note_id": target["note_id"], "lyric": "改",
+                          "operation": "replace"}],
+            note_edits=[{"note_id": target["note_id"], "pitch": 63}])
+        with self.assertRaises(ControlError) as raised:
+            self.execute_review_worker(pending, "review-delete-conflict")
+        self.assertEqual(raised.exception.code, "review_edit_conflict")
+        self.assertEqual(sha256_file(self.midi), before_sha)
+
     def test_review_rejects_stale_note_id_with_real_midi(self):
         created, _ = self.create_midi_flow()
         pending = self.apply_review(created, note_edits=[{"note_id": "note-stale", "pitch": 61}])
@@ -425,22 +713,32 @@ class WorkflowReviewTests(WorkflowTestBase):
 
 class WorkflowExportStyleTests(WorkflowTestBase):
     def test_export_success_publishes_project_and_all_candidates(self):
-        created, _ = self.create_midi_flow()
+        created, _ = self.create_midi_flow(formats=["ustx", "svp"])
         reviewed = self.complete_review(created)
-        svp = self.root / "assets" / "song.svp"
-        ust = self.root / "assets" / "song.ustx"
-        io_path(svp).write_text(json.dumps({"tracks": []}), encoding="utf-8")
-        io_path(ust).write_text("ustx fixture", encoding="utf-8")
-        artifacts = [{"schema": 1, "id": "art_" + "2" * 32, "path": str(ust),
-                      "sha256": sha256_file(ust), "bytes": io_path(ust).stat().st_size},
-                     {"schema": 1, "id": "art_" + "3" * 32, "path": str(svp),
-                      "sha256": sha256_file(svp), "bytes": io_path(svp).stat().st_size}]
-        for row in artifacts:
-            self.control.records["artifacts"][row["id"]] = copy.deepcopy(row)
+        ust = self.export_candidate("song.ustx")
+        svp = self.export_candidate("song.svp")
+        artifacts = [ust, svp]
         project = self.complete_export(reviewed, artifacts)
-        self.assertEqual(project["project_artifact_id"], artifacts[1]["id"])
+        summary = project["export_summary"]
+        self.assertEqual(project["project_artifact_id"], svp["id"])
         self.assertEqual(project["project_artifacts"], artifacts)
+        self.assertTrue(summary["can_accept"])
+        self.assertEqual(summary["required_loss_codes"], ["tempo_table_normalized"])
+        self.assertEqual(summary["independent_audit"]["kind"], "vwa-export-audit")
+        self.assertEqual(len(summary["independent_audit"]["candidates"]), len(artifacts))
         self.assertFalse(project["completed"])
+
+        without_review = self.workflow.advance(project["id"], project["revision"],
+                                               finish=True)
+        self.assertEqual(without_review["stage"], "project_ready")
+        self.assertEqual(without_review["revision"], project["revision"])
+        self.assertEqual(without_review["next"]["reason"], "review_export_report")
+        self.assertFalse(without_review["completed"])
+
+        ready = self.approve_export(project, finish=True)
+        self.assertEqual(ready["stage"], "ready")
+        self.assertTrue(ready["completed"])
+        self.assertEqual(ready["final_artifacts"], artifacts)
 
     def test_failed_export_and_style_backend_remain_resumable(self):
         created, _ = self.create_midi_flow()
@@ -464,23 +762,21 @@ class WorkflowExportStyleTests(WorkflowTestBase):
     def test_successful_style_is_consumed_before_project_completion(self):
         created, _ = self.create_midi_flow(brief="明亮但克制")
         reviewed = self.complete_review(created)
-        project_svp = self.root / "assets" / "project.svp"
-        io_path(project_svp).write_text(json.dumps({"tracks": []}), encoding="utf-8")
-        project_artifact = {"schema": 1, "id": "art_" + "5" * 32,
-                            "path": str(project_svp), "sha256": sha256_file(project_svp),
-                            "bytes": io_path(project_svp).stat().st_size}
-        self.control.records["artifacts"][project_artifact["id"]] = copy.deepcopy(project_artifact)
+        project_artifact = self.export_candidate("project.svp")
         project = self.complete_export(reviewed, [project_artifact])
         proposal = {"track_indices": [1], "brief": "明亮但克制", "regions": []}
-        styling = self.workflow.advance(project["id"], project["revision"],
-                                        style_proposal=proposal)
+        style_plans_before = sum(row[1] == "style" for row in self.control.plan_starts)
+        without_review = self.workflow.advance(project["id"], project["revision"],
+                                               style_proposal=proposal)
+        self.assertEqual(without_review["stage"], "project_ready")
+        self.assertFalse(without_review["completed"])
+        self.assertEqual(sum(row[1] == "style" for row in self.control.plan_starts),
+                         style_plans_before)
+
+        styling = self.approve_export(project, style_proposal=proposal)
         self.assertEqual(styling["stage"], "styling")
-        styled_svp = self.root / "assets" / "styled-success.svp"
-        io_path(styled_svp).write_text(json.dumps({"tracks": [{"mainGroup": {}}]}), encoding="utf-8")
-        styled_artifact = {"schema": 1, "id": "art_" + "6" * 32,
-                           "path": str(styled_svp), "sha256": sha256_file(styled_svp),
-                           "bytes": io_path(styled_svp).stat().st_size}
-        self.control.records["artifacts"][styled_artifact["id"]] = copy.deepcopy(styled_artifact)
+        styled_artifact = self.export_candidate(
+            "styled-success.svp", json.dumps({"tracks": [{"mainGroup": {}}]}))
         self.control.set_operation(styling["operation_id"], "succeeded",
                                    result={"artifacts": [styled_artifact]})
         not_yet = self.workflow.get(styling["id"])
@@ -511,21 +807,22 @@ class WorkflowExportStyleTests(WorkflowTestBase):
     def test_style_is_caller_supplied_and_finish_is_explicit(self):
         created, _ = self.create_midi_flow(brief="悲伤但克制")
         reviewed = self.complete_review(created)
-        svp = self.root / "assets" / "styled.svp"
-        io_path(svp).write_text(json.dumps({"tracks": []}), encoding="utf-8")
-        artifact = {"schema": 1, "id": "art_" + "4" * 32, "path": str(svp),
-                    "sha256": sha256_file(svp), "bytes": io_path(svp).stat().st_size}
-        self.control.records["artifacts"][artifact["id"]] = copy.deepcopy(artifact)
+        artifact = self.export_candidate("styled.svp")
         project = self.complete_export(reviewed, [artifact])
         self.assertEqual(project["stage"], "project_ready")
         self.assertIn("export", [row[1] for row in self.control.plan_starts])
-        self.assertEqual(project["next"]["tool"], "vwa_context_read")
-        without_style = self.workflow.advance(project["id"], project["revision"])
-        self.assertEqual(without_style["stage"], "project_ready")
-        self.assertFalse(without_style["completed"])
+        self.assertEqual(project["next"]["tool"], "vwa_workflow_advance")
+        self.assertEqual(project["next"]["reason"], "review_export_report")
+        without_finish = self.workflow.advance(project["id"], project["revision"],
+                                               finish=True)
+        self.assertEqual(without_finish["stage"], "project_ready")
+        self.assertFalse(without_finish["completed"])
         proposal = {"track_indices": [1], "brief": "悲伤但克制", "regions": []}
-        styling = self.workflow.advance(project["id"], project["revision"],
-                                        style_proposal=proposal)
+        without_style = self.workflow.advance(project["id"], project["revision"],
+                                              style_proposal=proposal)
+        self.assertEqual(without_style["stage"], "project_ready")
+        self.assertFalse(any(row[1] == "style" for row in self.control.plan_starts))
+        styling = self.approve_export(project, style_proposal=proposal)
         self.assertEqual(styling["stage"], "styling")
         self.assertEqual(self.control.plan_calls[-1][0], "style")
         self.assertEqual(self.control.plan_calls[-1][2]["proposal"], proposal)
@@ -538,6 +835,98 @@ class WorkflowExportStyleTests(WorkflowTestBase):
         failed = self.workflow.advance(styling["id"], styling["revision"], retry=True)
         self.assertEqual(failed["stage"], "styling")
         self.assertFalse(failed["completed"])
+
+    def test_export_review_rejects_stale_report_without_advancing(self):
+        created, _ = self.create_midi_flow()
+        reviewed = self.complete_review(created)
+        project = self.complete_export(reviewed, [self.export_candidate("stale.svp")])
+        stale = self.export_review(project)
+        stale["report_sha256"] = "0" * 64
+        with self.assertRaises(SupervisionError) as raised:
+            self.workflow.advance(project["id"], project["revision"], finish=True,
+                                  export_review=stale)
+        self.assertEqual(raised.exception.code, "export_review_conflict")
+        observed = self.workflow.get(project["id"])
+        self.assertEqual(observed["stage"], "project_ready")
+        self.assertEqual(observed["revision"], project["revision"])
+        self.assertFalse(observed["export_review"])
+
+    def test_export_review_requires_every_loss_and_missing_audit_ack(self):
+        created, _ = self.create_midi_flow()
+        reviewed = self.complete_review(created)
+        project = self.complete_export(
+            reviewed, [self.export_candidate("loss.svp")], include_audit=False)
+        required = project["export_summary"]["required_loss_codes"]
+        self.assertIn("tempo_table_normalized", required)
+        self.assertIn("independent_audit_unavailable", required)
+        partial = self.export_review(project, accepted_loss_codes=["tempo_table_normalized"])
+        with self.assertRaises(SupervisionError) as raised:
+            self.workflow.advance(project["id"], project["revision"], finish=True,
+                                  export_review=partial)
+        self.assertEqual(raised.exception.code, "export_losses_unacknowledged")
+        self.assertEqual(self.workflow.get(project["id"])["stage"], "project_ready")
+
+        ready = self.approve_export(project, finish=True)
+        self.assertEqual(ready["stage"], "ready")
+        self.assertEqual(ready["export_review"]["accepted_loss_codes"], required)
+
+    def test_export_review_cannot_accept_hard_blocker(self):
+        created, _ = self.create_midi_flow()
+        reviewed = self.complete_review(created)
+        blocker = {"code": "lyric_content_mismatch", "format": "svp",
+                   "message": "自制审计确认歌词文本不同。"}
+        project = self.complete_export(
+            reviewed, [self.export_candidate("blocked.svp")],
+            audit_blockers=[blocker])
+        self.assertFalse(project["export_summary"]["can_accept"])
+        self.assertEqual(project["next"]["reason"], "resolve_export_blockers")
+        with self.assertRaises(SupervisionError) as raised:
+            self.workflow.advance(project["id"], project["revision"],
+                                  export_review=self.export_review(project))
+        self.assertEqual(raised.exception.code, "export_blockers")
+        observed = self.workflow.get(project["id"])
+        self.assertEqual(observed["stage"], "project_ready")
+        self.assertFalse(observed["completed"])
+
+    def test_export_needs_revision_returns_to_review_stage(self):
+        created, _ = self.create_midi_flow()
+        reviewed = self.complete_review(created)
+        project = self.complete_export(reviewed, [self.export_candidate("revise.svp")])
+        original_summary = copy.deepcopy(project["export_summary"])
+        decision = self.export_review(
+            project, decision="needs_revision", accepted_loss_codes=[],
+            rationale="实际歌词与工程不一致，先退回MIDI核对。")
+        returned = self.workflow.advance(project["id"], project["revision"],
+                                         export_review=decision)
+        self.assertEqual(returned["stage"], "review")
+        self.assertFalse(returned["completed"])
+        self.assertEqual(returned["export_review"]["decision"], "needs_revision")
+        self.assertEqual(returned["previous_export_summary"], original_summary)
+        self.assertEqual(returned["next"]["tool"], "vwa_workflow_review")
+
+    def test_export_review_rejects_changed_candidate(self):
+        created, _ = self.create_midi_flow()
+        reviewed = self.complete_review(created)
+        artifact = self.export_candidate("changed.svp")
+        project = self.complete_export(reviewed, [artifact])
+        candidate_path = Path(artifact["path"])
+        io_path(candidate_path).write_bytes(io_path(candidate_path).read_bytes() + b"\0")
+
+        with self.assertRaises(ControlError) as raised:
+            self.workflow.advance(project["id"], project["revision"],
+                                  export_review=self.export_review(project))
+        self.assertEqual(raised.exception.code, "stale_artifact")
+
+        changed = self.control.records["artifacts"][artifact["id"]]
+        changed["sha256"] = sha256_file(candidate_path)
+        changed["bytes"] = io_path(candidate_path).stat().st_size
+        with self.assertRaises(ControlError) as raised:
+            self.workflow.advance(project["id"], project["revision"],
+                                  export_review=self.export_review(project))
+        self.assertEqual(raised.exception.code, "export_review_conflict")
+        observed = self.workflow.get(project["id"])
+        self.assertEqual(observed["stage"], "project_ready")
+        self.assertFalse(observed["completed"])
 
 
 if __name__ == "__main__":

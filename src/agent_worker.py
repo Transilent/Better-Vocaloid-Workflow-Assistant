@@ -59,6 +59,22 @@ def dispatch(control, action, arguments):
     if action == 'export_plan':
         from agent_exports import plan_export
         return plan_export(path, arguments.get('formats'), arguments.get('options'))
+    if action == 'structure_plan':
+        from agent_structure import plan_structure_patch
+        return plan_structure_patch(path,arguments['expected_sha256'],arguments['edits'])
+    if action == 'reference_validate':
+        from agent_reference import inspect_reference_audio,inspect_reference_pitch
+        if arguments['kind']=='pitch':return inspect_reference_pitch(path)
+        if arguments['kind']=='audio':return inspect_reference_audio(path)
+        raise ControlError('invalid_reference_kind','参考类型无效。')
+    if action == 'reference_pitch_review':
+        from agent_reference import review_reference_pitch
+        pitch=safe_path(arguments['pitch_path'],[control.state])
+        return review_reference_pitch(path,pitch,arguments.get('track_indices'),
+            arguments.get('time_origin',0.0),arguments.get('limit',100),arguments.get('offset',0))
+    if action == 'reference_audio_read':
+        from agent_reference import inspect_reference_audio
+        return inspect_reference_audio(path,arguments.get('start'),arguments.get('end'))
     if action == 'review_bundle':
         from agent_score import read_score, review_score
         from agent_lyrics import read_lyrics, review_lyrics

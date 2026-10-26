@@ -283,8 +283,9 @@ class AgentExportRealConversionTests(unittest.TestCase):
                 self.assertEqual(row["verified_notes"], 3)
                 self.assertIn("expected_tempo", row)
                 self.assertIn("output_tempo", row)
-                self.assertFalse(row["tempo_verified"])
-                self.assertIn("tempo_table_normalized", row["loss_codes"])
+                self.assertTrue(row["tempo_verified"])
+                self.assertEqual(row['expected_tempo'],row['output_tempo'])
+                self.assertNotIn("tempo_table_normalized", row["loss_codes"])
 
 
     def test_stale_tampered_cancelled_and_colliding_requests_are_rejected(self):

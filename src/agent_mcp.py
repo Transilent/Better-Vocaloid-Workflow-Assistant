@@ -74,18 +74,50 @@ class LyricEdit(StrictModel):
     operation: Literal['replace','insert']
 
 
+class ExportReview(StrictModel):
+    report_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    decision: Literal['accept','needs_revision']
+    rationale: str = Field(min_length=1, max_length=8000)
+    accepted_loss_codes: list[str] = Field(default_factory=list, max_length=128)
+
+
+class DeleteNote(StrictModel):
+    operation: Literal['delete']
+    note_id: str = Field(min_length=1,max_length=180)
+    lyric_policy: Literal['preserve','delete_owned']
+
+
+class InsertNote(StrictModel):
+    operation: Literal['insert']
+    track_index: int = Field(ge=0)
+    channel: int = Field(ge=0,le=15)
+    pitch: int = Field(ge=0,le=127)
+    onset_tick: int = Field(ge=0)
+    duration_tick: int = Field(gt=0)
+    velocity: int = Field(ge=1,le=127)
+    lyric: str | None = Field(default=None,max_length=256)
+
+
+StructureEdit = Annotated[DeleteNote | InsertNote,Field(discriminator='operation')]
+
+
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 
 
 def build_server(config_path):
     control = Control(config_path)
-    mcp = MCPServer('VWA Agent', version='0.1.0', log_level='WARNING', instructions=(
+    mcp = MCPServer('VWA Agent', version='0.3.0', log_level='WARNING', instructions=(
         '先读取 vwa_system_capabilities。首选一体化 vwa_workflow_create：传歌曲链接/本地音乐，'
         '或 score_artifact_id。之后读取工作流 next 字段，按工具和当前 revision 连续推进，'
         '运行中按 after_seconds 查询。到 review 时使用 workflow_review 核对音符和歌词，'
         '用 workflow_apply_review 提交修改或有理由的保留决策；没有实际核对不得跳过。'
-        '创作背景非空时，从导出 SVP 的 context_read 填写显式 style_proposal，再 advance。'
+        'reference_import 可导入已有F0 NPZ和PCM WAV；workflow_references_set绑定显式对齐秒数，'
+        '随后review包含条件性音高证据和音频摘录入口。参考来源未经声学验证，不能视为真值。'
+        '结构修改可显式插入音符或删除并指定歌词归属策略；未知读音及一字多音仍需判断。'
+        'project_ready 时先读 export_summary，按真实秒数/歌词/音符核对结果提交 export_review；'
+        '认可损失须逐项列 accepted_loss_codes，硬差异必须 needs_revision，不能直接 finish。'
+        '创作背景非空时，再从导出 SVP 的 context_read 填写显式 style_proposal。'
         '最终 completed=true 表示得到工程；合成/投稿另有交接。'
         '低层素材通过 vwa_assets_import 导入独立快照。'
         'MIDI 流程为 read/review → patch_plan → 检查 diff → patch_apply → operations_get。'
@@ -244,6 +276,37 @@ def build_server(config_path):
         return await invoke(control.start_plan, plan_id, 'lyrics', idempotency_key)
 
     @mcp.tool(annotations=WRITE)
+    async def vwa_structure_patch_plan(artifact_id: str, expected_sha256: str,
+            edits: list[StructureEdit]) -> Result:
+        """规划MIDI音符增删；删除须指定歌词保留/删除策略，歧义拒绝隐式处理。"""
+        return await invoke(control.make_plan,'structure',artifact_id,expected_sha256=expected_sha256,
+                            edits=[edit.model_dump(exclude_none=True) for edit in edits])
+
+    @mcp.tool(annotations=WRITE)
+    async def vwa_structure_patch_apply(plan_id: str, idempotency_key: str) -> Result:
+        """执行已核对的结构方案，生成独立MIDI并复核剩余事件。"""
+        return await invoke(control.start_plan,plan_id,'structure',idempotency_key)
+
+    @mcp.tool(annotations=WRITE)
+    async def vwa_reference_import(path: str, kind: Literal['pitch','audio']) -> Result:
+        """把允许目录中的已有F0 NPZ或整数PCM WAV验证后导入只读快照，不执行推理。"""
+        return await invoke(control.import_reference,path,kind)
+
+    @mcp.tool(annotations=READ)
+    async def vwa_reference_pitch_review(score_artifact_id: str, pitch_artifact_id: str,
+            track_indices: list[int] | None = None, time_origin: float = 0.0,
+            limit: int = 100, offset: int = 0) -> Result:
+        """按真实tempo秒数与已有F0作条件性比较；time_origin是F0第0帧的MIDI秒位置。"""
+        return await invoke(control.reference_pitch_review,score_artifact_id,pitch_artifact_id,
+                            track_indices,time_origin,limit,offset)
+
+    @mcp.tool(annotations=WRITE)
+    async def vwa_reference_audio_read(artifact_id: str, start: float | None = None,
+            end: float | None = None, make_excerpt: bool = False) -> Result:
+        """默认只读WAV头；指定<=30秒范围可测量PCM，make_excerpt生成可试听的逐帧摘录操作。"""
+        return await invoke(control.reference_audio_read,artifact_id,start,end,make_excerpt)
+
+    @mcp.tool(annotations=WRITE)
     async def vwa_exports_plan(artifact_id: str, formats: list[Literal['svp','ustx','vsqx']] | None = None,
                                options: dict[str, Any] | None = None) -> Result:
         """从当前修正 MIDI 规划可编辑工程导出，列明歌词、音符和格式转换限制。"""
@@ -279,19 +342,32 @@ def build_server(config_path):
         return await invoke(workflow().review, workflow_id, limit, offset)
 
     @mcp.tool(annotations=WRITE)
+    async def vwa_workflow_references_set(workflow_id: str, expected_revision: int, rationale: str,
+            pitch_artifact_id: str | None = None, audio_artifact_id: str | None = None,
+            track_indices: list[int] | None = None, time_origin: float = 0.0,
+            audio_time_origin: float = 0.0) -> Result:
+        """替换核对参考及对齐来源；新增证据使已有核对失效，两个ID留空则清除参考。"""
+        return await invoke(workflow().references_set,workflow_id,expected_revision,pitch_artifact_id,
+                            audio_artifact_id,track_indices,time_origin,audio_time_origin,rationale)
+
+    @mcp.tool(annotations=WRITE)
     async def vwa_workflow_apply_review(workflow_id: str, expected_revision: int, rationale: str,
-            note_edits: list[ScoreEdit] | None = None, lyric_edits: list[LyricEdit] | None = None) -> Result:
-        """提交有理由的核对结论；歌词和音符可一次修正，后台安全重映射版本 ID。"""
+            note_edits: list[ScoreEdit] | None = None, lyric_edits: list[LyricEdit] | None = None,
+            structure_edits: list[StructureEdit] | None = None) -> Result:
+        """提交核对结论；结构增删、歌词、音高/时长可批量修正并安全重映射ID。"""
         return await invoke(workflow().apply_review, workflow_id, expected_revision, rationale,
             [edit.model_dump(exclude_none=True) for edit in note_edits] if note_edits else [],
-            [edit.model_dump() for edit in lyric_edits] if lyric_edits else [])
+            [edit.model_dump() for edit in lyric_edits] if lyric_edits else [],
+            [edit.model_dump(exclude_none=True) for edit in structure_edits] if structure_edits else [])
 
     @mcp.tool(annotations=WRITE)
     async def vwa_workflow_advance(workflow_id: str, expected_revision: int,
-            style_proposal: StyleProposal | None = None, retry: bool = False, finish: bool = False) -> Result:
-        """按当前阶段推进准备、回填结果、导出或风格；冲突需重读版本，失败可显式重试。"""
+            style_proposal: StyleProposal | None = None, retry: bool = False, finish: bool = False,
+            export_review: ExportReview | None = None) -> Result:
+        """推进流程；工程导出后须按报告SHA核对并认可损失，硬差异应退回修改。"""
         return await invoke(workflow().advance, workflow_id, expected_revision,
-            style_proposal.model_dump() if style_proposal else None, retry, finish)
+            style_proposal.model_dump() if style_proposal else None, retry, finish,
+            export_review.model_dump() if export_review else None)
 
     @mcp.resource('vwa://capabilities')
     def capabilities_resource() -> str:
@@ -304,7 +380,9 @@ def build_server(config_path):
                 '连续按 next.tool/arguments 操作；运行中遵守 after_seconds，冲突先 get 重读 revision。'
                 'review 时获取分页证据，综合音符和歌词作决定，再 apply_review。缺词/重复/错位是线索，'
                 '延音、一字多音和读音未知应保留歧义；缺依据不编歌词。可一次提交音符与歌词修改。'
-                '导出 SVP 后结合背景和 context_read 提供 style_proposal，再 advance；无风格需求可 finish。'
+                '已有F0/WAV可reference_import后用workflow_references_set绑定，review中按next摘录音频。'
+                '导出后先检查export_summary的实际秒数、歌词与损失，以export_review逐项认可或退回。'
+                '然后结合背景和 context_read 提供 style_proposal；无风格需求可 finish。'
                 'completed 表示可编辑工程就绪，合成与投稿另有交接。详细操作回执由 operations_get 获取。')
 
     return mcp

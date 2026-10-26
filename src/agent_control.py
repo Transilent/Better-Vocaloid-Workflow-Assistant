@@ -29,9 +29,13 @@ TOOLS = (
     'vwa_lyrics_read', 'vwa_lyrics_review', 'vwa_lyrics_patch_plan', 'vwa_lyrics_patch_apply',
     'vwa_exports_plan', 'vwa_exports_start', 'vwa_workflow_create', 'vwa_workflow_get',
     'vwa_workflow_review', 'vwa_workflow_apply_review', 'vwa_workflow_advance',
+    'vwa_structure_patch_plan', 'vwa_structure_patch_apply', 'vwa_reference_import',
+    'vwa_reference_pitch_review', 'vwa_reference_audio_read', 'vwa_workflow_references_set',
 )
 TERMINAL = ('succeeded', 'failed', 'cancelled', 'interrupted')
 CODE_FILES = ('agent_control.py', 'agent_worker.py', 'agent_score.py', 'agent_style.py',
+              'agent_supervision.py', 'agent_export_audit.py', 'agent_reference.py', 'agent_structure.py',
+              'pitch_accuracy.py',
               'agent_preparation.py', 'agent_lyrics.py', 'agent_exports.py', 'agent_workflow.py',
               'pipeline.py', 'project_exports.py', 'midi_merge.py', 'task_contract.py',
               'tuning_workflow.py', 'tuning_engine.py', 'style_presets.py', 'style_pitch.py',
@@ -204,6 +208,10 @@ class Control:
                 'tools': list(TOOLS), 'code_revision': self.code_revision,
                 'source_commit': self.config.get('source_commit'),
                 'score_patch_formats': ['midi'], 'lyric_patch_formats': ['midi'], 'style_formats': ['svp'],
+                'note_structure_operations':['insert','delete'],
+                'reference_inputs':['existing_pitch_npz','pcm_wav'],
+                'reference_inference':False,'post_export_review_required':True,
+                'independent_export_seconds_audit':True,
                 'preparation_sources': ['bilibili_bv_url', 'approved_local_audio'],
                 'supervision': 'caller_agent_reviews_notes_and_lyrics_before_export',
                 'workflow_entry': 'vwa_workflow_create', 'workflow_next_steps': True,
@@ -421,7 +429,8 @@ class Control:
         if action not in ('health', 'job_snapshot', 'score_read', 'score_review',
                           'score_plan', 'context_read', 'style_plan', 'preparation_plan',
                           'preparation_create', 'lyrics_read', 'lyrics_review', 'lyrics_plan',
-                          'export_plan', 'review_bundle'):
+                          'export_plan', 'review_bundle', 'structure_plan', 'reference_validate',
+                          'reference_pitch_review', 'reference_audio_read'):
             raise ControlError('unsupported_action', '不支持该业务调用。')
         directory = safe_path(self.state / 'calls' / uuid.uuid4().hex)
         directory.mkdir()
@@ -469,7 +478,7 @@ class Control:
         if artifact['kind'] != 'input' and not safe_path(artifact['path']).is_relative_to(self.state / 'outputs'):
             raise ControlError('snapshot_required', '请先通过 assets_import 将任务工程导入为独立快照。')
         action = {'score': 'score_plan', 'style': 'style_plan', 'lyrics': 'lyrics_plan',
-                  'export': 'export_plan'}.get(kind)
+                  'export': 'export_plan', 'structure':'structure_plan'}.get(kind)
         if action is None:
             raise ControlError('invalid_plan', '方案类型无效。')
         plan = self.call_worker(action, {'path': artifact['path'], **arguments})
@@ -494,7 +503,7 @@ class Control:
             raise ControlError('stale_plan', '方案类型或业务代码已改变，请重新生成方案。')
         self.artifact(plan['artifact_id'])
         action = {'score': 'score_apply', 'style': 'style_render',
-                  'lyrics': 'lyrics_apply', 'export': 'export_apply'}.get(kind)
+                  'lyrics': 'lyrics_apply', 'export': 'export_apply', 'structure':'structure_apply'}.get(kind)
         if action is None:
             raise ControlError('invalid_plan', '此方案类型不能生成候选。')
         return self.start_operation(action, {'plan_id': plan_id}, idempotency_key)
@@ -505,6 +514,84 @@ class Control:
         if review:
             arguments['reference_text'] = reference_text
         return self.call_worker('lyrics_review' if review else 'lyrics_read', arguments)
+
+    def import_reference(self, path, kind):
+        if kind not in ('pitch','audio'):
+            raise ControlError('invalid_reference_kind', '参考类型应为 pitch 或 audio。')
+        source = safe_path(path, [*self.assets,*self.jobs])
+        suffix = '.npz' if kind=='pitch' else '.wav'
+        if source.suffix.lower()!=suffix or not io_path(source).is_file():
+            raise ControlError('invalid_reference', '参考输入需为匹配的 NPZ 或 PCM WAV 文件。')
+        maximum = 32*1024**2 if kind=='pitch' else 256*1024**2
+        if io_path(source).stat().st_size>maximum:
+            raise ControlError('reference_too_large', '参考文件超出本接口限制。')
+        temporary = safe_path(self.state/'inputs'/('.reference-'+uuid.uuid4().hex+suffix))
+        before = io_path(source).stat()
+        try:
+            sha = hashlib.sha256()
+            with io_path(source).open('rb') as incoming, io_path(temporary).open('xb') as outgoing:
+                total = 0
+                while block:=incoming.read(1024*1024):
+                    total+=len(block)
+                    if total>maximum:
+                        raise ControlError('reference_too_large', '参考文件读取期间超过大小限制。')
+                    outgoing.write(block);sha.update(block)
+                outgoing.flush();os.fsync(outgoing.fileno())
+            after = io_path(source).stat()
+            source_sha = sha.hexdigest()
+            if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns) or file_hash(source)!=source_sha:
+                raise ControlError('stale_reference', '导入期间参考文件发生变化。')
+            metadata = self.call_worker('reference_validate', {'path':str(temporary),'kind':kind})
+            if metadata.get('source_sha256')!=source_sha or file_hash(temporary)!=source_sha:
+                raise ControlError('stale_reference','参考验证结果与快照摘要不一致。')
+            destination = safe_path(self.state/'inputs'/('reference-'+source_sha+suffix))
+            with file_lock(self.state/'locks'/'reference-imports.lock'):
+                if io_path(destination).exists():
+                    if file_hash(destination)!=source_sha:
+                        raise ControlError('snapshot_conflict', '已有参考快照摘要不一致。')
+                else:
+                    os.replace(io_path(temporary),io_path(destination))
+            return self.register_artifact(destination,kind='reference_'+kind,
+                origin={'path':str(source),'sha256':source_sha,'reference_kind':kind,
+                        'metadata':{**metadata,'source_path':str(destination)},
+                        'provenance':'caller_supplied_unverified'})
+        finally:
+            io_path(temporary).unlink(missing_ok=True)
+
+    def reference_pitch_review(self, score_artifact_id, pitch_artifact_id, track_indices=None,
+                               time_origin=0.0, limit=100, offset=0):
+        score = self.artifact(score_artifact_id)
+        pitch = self.artifact(pitch_artifact_id)
+        if pitch['kind']!='reference_pitch':
+            raise ControlError('wrong_reference_kind', '需要已导入的 pitch 参考。')
+        return self.call_worker('reference_pitch_review',{'path':score['path'],'pitch_path':pitch['path'],
+            'track_indices':track_indices,'time_origin':time_origin,'limit':limit,'offset':offset})
+
+    def reference_audio_read(self, artifact_id, start=None, end=None, make_excerpt=False):
+        audio = self.artifact(artifact_id)
+        if audio['kind']!='reference_audio':
+            raise ControlError('wrong_reference_kind', '需要已导入的 audio 参考。')
+        if not make_excerpt:
+            return self.call_worker('reference_audio_read',{'path':audio['path'],'start':start,'end':end})
+        if start is None or end is None:
+            raise ControlError('audio_range_required', '音频片段需明确起止秒数。')
+        request = {'artifact_id':artifact_id,'start':start,'end':end}
+        return self.start_operation('reference_excerpt',request,'excerpt-'+digest(request))
+
+    def discover_references(self, job_id):
+        job = self.job_path(job_id)
+        request = read_json(job/'request.json')
+        voices = ('vocals',) if request.get('voice_mode')=='single' else ('lead','backing')
+        rows = []
+        for voice in voices:
+            folder = job/'midi' if voice=='vocals' else job/'midi'/voice
+            for kind,path in (('pitch',folder/(voice+'.pitch.npz')),('audio',job/'audio'/(voice+'.wav'))):
+                path = safe_path(path,[job])
+                if io_path(path).is_file():
+                    rows.append({'kind':kind,'voice':voice,'path':str(path),
+                        'bytes':io_path(path).stat().st_size,'provenance':'not_yet_verified',
+                        'import_tool':{'tool':'vwa_reference_import','arguments':{'path':str(path),'kind':kind}}})
+        return rows
 
     def preparation_plan(self, source, options=None):
         if not isinstance(source, str) or not source.strip():
@@ -545,7 +632,7 @@ class Control:
         if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 128:
             raise ControlError('invalid_idempotency_key', '重试键需为 1–128 字符。')
         if action not in ('score_apply', 'style_render', 'verify_artifact', 'lyrics_apply',
-                          'export_apply', 'preparation_run', 'workflow_review'):
+                          'export_apply', 'preparation_run', 'workflow_review','structure_apply','reference_excerpt'):
             raise ControlError('unsupported_action', '不支持该操作。')
         request = {'action': action, 'arguments': arguments, 'code_revision': self.code_revision}
         key = digest({'action': action, 'idempotency_key': idempotency_key})
@@ -670,6 +757,18 @@ class Control:
                     from agent_workflow import Workflow
                     output = safe_path(self.state / 'outputs' / operation_id)
                     result = Workflow(self).execute_review(operation_id, request['arguments'], output, cancel, progress)
+                elif action == 'reference_excerpt':
+                    from agent_reference import create_audio_excerpt
+                    arguments=request['arguments'];artifact=self.artifact(arguments['artifact_id'])
+                    if artifact['kind']!='reference_audio':
+                        raise ControlError('wrong_reference_kind','参考类型不是 audio。')
+                    output=safe_path(self.state/'outputs'/operation_id)
+                    receipt=create_audio_excerpt(artifact['path'],arguments['start'],arguments['end'],output)
+                    candidate=safe_path(receipt['candidate_path'],[output])
+                    if file_hash(candidate)!=receipt['candidate_sha256']:
+                        raise ControlError('candidate_mismatch','音频片段摘要不一致。')
+                    result={'receipt':receipt,'artifacts':[self.register_artifact(candidate,kind='reference_excerpt')],
+                            'handoff':'audio_excerpt_ready','inference_performed':False}
                 else:
                     plan_record = self.plan_get(request['arguments']['plan_id'])
                     artifact = self.artifact(plan_record['artifact_id'])
@@ -700,6 +799,14 @@ class Control:
                             runtime = safe_path(runtime)
                             result = apply_export(artifact['path'], plan_record['plan'], output,
                                 export_runtime=runtime, cancel=cancel, progress=progress)
+                            from agent_export_audit import audit_export
+                            progress('独立核对导出工程的音符、歌词与实际秒数')
+                            audit=audit_export(artifact['path'],result,export_runtime=runtime,
+                                               output_root=output/'audit',cancel=cancel)
+                            result={**result,'independent_audit':audit}
+                        elif action == 'structure_apply':
+                            from agent_structure import apply_structure_patch
+                            result=apply_structure_patch(artifact['path'],plan_record['plan'],output)
                         else:
                             raise ControlError('unsupported_action', '未知操作类型。')
                         rows = result['candidates'] if action == 'export_apply' else [result]
