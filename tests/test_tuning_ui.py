@@ -25,7 +25,7 @@ window.navigate(5);assert window.pages.currentIndex()==0
 window.navigate(6);assert window.pages.currentIndex()==4
 window.navigate(9)
 
-assert [page.performance_style.itemData(i) for i in range(page.performance_style.count())] == ['none','gentle','bold']
+assert [page.performance_style.itemData(i) for i in range(page.performance_style.count())] == ['none','gentle','sad','bold']
 page.performance_style.setCurrentIndex(page.performance_style.findData('bold'))
 page.style_pitch.setChecked(True)
 page.reference_tension.setChecked(True)
@@ -39,11 +39,11 @@ assert prep['expression_density']=='original' and prep['reference_calibration'] 
 assert not any(prep['reference_'+name] for name in ('dynamics','tension','breathiness','voicing'))
 window.workflow.choose_preset('内置 · 日语双轨')
 assert page.performance_style.currentData()=='bold' and page.style_pitch.isChecked()
-from style_presets import preset_description
-for emotion in ('gentle','bold'):
+from tuning_ui import style_card_description
+for emotion in ('gentle','sad','bold'):
     page.style_pitch.setChecked(False)
     page.performance_style.setCurrentIndex(page.performance_style.findData(emotion))
-    assert page.style_pitch.isChecked() and page.style_hint.text()==preset_description(emotion)
+    assert page.style_pitch.isChecked() and page.style_hint.text()==style_card_description(emotion)
     assert window.workflow.preferences()['performance_style']==emotion
     assert window.options()['performance_style']=='none', 'Preparation must not apply the independent emotion'
     page.apply_preferences({'performance_style':emotion,'style_pitch':False})
@@ -133,4 +133,4 @@ with tempfile.TemporaryDirectory(prefix='tuning-ui-',dir=APP/'work') as temp:
     window.grab().save(str(APP/'work/test-results/tuning-ui.png'))
 
 window.close();application.processEvents()
-print('PASS: 10 pages, two visible styles, phase-detail options, independent source snapshots, QThread processing, cache/no stacking, explicit registration, recovery and wheel protection')
+print('PASS: 10 pages, four visible styles, phase-detail options, independent source snapshots, QThread processing, cache/no stacking, explicit registration, recovery and wheel protection')

@@ -62,18 +62,28 @@ for language in ('zh-CN', 'ja', 'en'):
         assert window.appearance_panel.language.currentData() == language
         assert [window.language.itemData(i) for i in range(window.language.count())] == ['zh', 'ja']
         assert window.publishing.cover_mode.itemData(0) == 'original'
-        from style_presets import PRESETS, preset_description, visible_presets
+        from style_presets import PRESETS, visible_presets
+        from tuning_ui import style_card_description, style_card_keys, style_card_label
         combo = window.tuning.performance_style
-        assert visible_presets() == ('none', 'gentle', 'bold')
-        assert [combo.itemData(i) for i in range(combo.count())] == list(visible_presets())
-        for style in visible_presets()[1:]:
+        assert style_card_keys() == visible_presets() == ('none', 'gentle', 'sad', 'bold')
+        assert [combo.itemData(i) for i in range(combo.count())] == list(style_card_keys())
+        source_labels={'gentle':'柔和〔实验〕','sad':'悲伤〔实验〕','bold':'明亮欢快〔实验〕'}
+        for style in style_card_keys()[1:]:
             combo.setCurrentIndex(combo.findData(style))
             assert combo.currentIndex() >= 0
-            assert combo.currentText() == i18n.tr(PRESETS[style]['label'])
-            assert window.tuning.style_hint.text() == i18n.tr(preset_description(style))
+            assert combo.currentText() == style_card_label(style)
+            assert window.tuning.style_hint.text() == style_card_description(style)
             if language != 'zh-CN':
-                assert combo.currentText() != PRESETS[style]['label']
-                assert window.tuning.style_hint.text() != preset_description(style)
+                assert combo.currentText() != source_labels[style]
+                assert style_card_label(style) != source_labels[style]
+        if language == 'zh-CN':
+            assert i18n.tr('明亮欢快〔实验〕') == '明亮欢快〔实验〕'
+            assert i18n.tr('悲伤〔实验〕') == '悲伤〔实验〕'
+        else:
+            assert i18n.tr('明亮欢快〔实验〕') != '明亮欢快〔实验〕'
+            assert i18n.tr('悲伤〔实验〕') != '悲伤〔实验〕'
+            expected_kind={'en':'Emotion (Sad)','ja':'感情（悲しみ）'}[language]
+            assert expected_kind in style_card_description('sad')
         for legacy in ('soft_ballad', 'intimate_narration', 'power_pop',
                        'melancholy', 'bright_joy', 'fragile_tender'):
             legacy_label = i18n.tr(PRESETS[legacy]['label'])

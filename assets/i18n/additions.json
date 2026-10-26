@@ -261,7 +261,21 @@
     "最佳候选相关度不足，无法可靠确认偏移。": "The best candidate has insufficient correlation, so the offset cannot be confirmed reliably.",
     "存在相近的多个峰值，无法唯一确认偏移。": "Multiple similar peaks exist, so the offset cannot be identified uniquely.",
     "自动对齐：未获得对齐结果。": "Automatic alignment: no alignment result was obtained.",
-    "手动偏移：{:+.3f} 秒。": "Manual offset: {:+.3f} s."
+    "手动偏移：{:+.3f} 秒。": "Manual offset: {:+.3f} s.",
+    "悲伤〔实验〕": "Sad [Experimental]",
+    "明亮欢快〔实验〕": "Bright & Cheerful [Experimental]",
+    "声线（柔和）": "Vocal texture (Gentle)",
+    "情绪（悲伤）": "Emotion (Sad)",
+    "保留输入工程现有参数，不添加所选风格。": "Keep the input project's current expression and add no selected style.",
+    "柔和、悲伤与明亮欢快默认联动局部音高与音色，可单独关闭附加音高。": "Gentle, Sad, and Bright & Cheerful link local pitch and timbre by default; added pitch can be disabled separately.",
+    "时间片段模式下，“柔和”“悲伤”和“明亮欢快”是待添加片段的工具设置；执行只读取片段列表。": "In time-segment mode, Gentle, Sad, and Bright & Cheerful are tool settings for segments you add; execution reads only the segment list.",
+    "时间片段需要选择“柔和”“悲伤”或“明亮欢快”。": "A time segment requires Gentle, Sad, or Bright & Cheerful.",
+    "悲伤": "Sad",
+    "明亮欢快": "Bright & Cheerful",
+    "轻快起音、清晰衔接与明亮的持续段；可分别调整各段表现。": "Light, quick entrances, crisp connections, and a bright sustained core; each phrase segment can be adjusted separately.",
+    "演唱表现（明亮欢快）": "Performance approach (Bright & Cheerful)",
+    "柔和侧重声线；悲伤侧重句中收敛和下行收尾；明亮欢快侧重清晰、利落的起音。": "Gentle focuses on vocal texture; Sad focuses on mid-phrase restraint and a descending release; Bright & Cheerful focuses on clear, crisp entrances.",
+    "保持清楚的有声核心，长音中段收敛，句尾缓慢下落；与柔和声线分开控制。": "Maintain a clear voiced core, restrain the middle of long notes, and let phrase endings fall slowly; this is controlled separately from the Gentle vocal texture."
   },
   "ja": {
     "界面语言": "表示言語",
@@ -525,6 +539,20 @@
     "最佳候选相关度不足，无法可靠确认偏移。": "最良候補の相関が不足しているため、オフセットを確実に確認できません。",
     "存在相近的多个峰值，无法唯一确认偏移。": "類似した複数のピークがあるため、オフセットを一意に特定できません。",
     "自动对齐：未获得对齐结果。": "自動位置合わせ：位置合わせ結果を取得できませんでした。",
-    "手动偏移：{:+.3f} 秒。": "手動オフセット：{:+.3f} 秒。"
+    "手动偏移：{:+.3f} 秒。": "手動オフセット：{:+.3f} 秒。",
+    "悲伤〔实验〕": "悲しみ〔実験〕",
+    "明亮欢快〔实验〕": "明るく軽快〔実験〕",
+    "声线（柔和）": "声の質感（やわらか）",
+    "情绪（悲伤）": "感情（悲しみ）",
+    "保留输入工程现有参数，不添加所选风格。": "入力プロジェクトの現在の表現を保ち、選択したスタイルは追加しません。",
+    "柔和、悲伤与明亮欢快默认联动局部音高与音色，可单独关闭附加音高。": "「やわらか」「悲しみ」「明るく軽快」は既定で局所ピッチと音色を連動させます。追加ピッチだけを個別にオフにできます。",
+    "时间片段模式下，“柔和”“悲伤”和“明亮欢快”是待添加片段的工具设置；执行只读取片段列表。": "時間セグメントモードでは、「やわらか」「悲しみ」「明るく軽快」は追加するセグメント用のツール設定です。実行時はセグメント一覧だけを読み取ります。",
+    "时间片段需要选择“柔和”“悲伤”或“明亮欢快”。": "時間セグメントには「やわらか」「悲しみ」「明るく軽快」のいずれかを選択してください。",
+    "悲伤": "悲しみ",
+    "明亮欢快": "明るく軽快",
+    "轻快起音、清晰衔接与明亮的持续段；可分别调整各段表现。": "軽快な入り、明瞭なつなぎ、明るい持続区間。各フレーズ区間を個別に調整できます。",
+    "演唱表现（明亮欢快）": "演唱表現（明るく軽快）",
+    "柔和侧重声线；悲伤侧重句中收敛和下行收尾；明亮欢快侧重清晰、利落的起音。": "「やわらか」は声の質感、「悲しみ」はフレーズ中盤の抑制と下降するリリース、「明るく軽快」は明瞭で切れのある入りを重視します。",
+    "保持清楚的有声核心，长音中段收敛，句尾缓慢下落；与柔和声线分开控制。": "明瞭な有声音の芯を保ち、ロングトーンの中盤を抑え、フレーズ末尾をゆっくり下げます。やわらかな声の質感とは別に制御します。"
   }
 }

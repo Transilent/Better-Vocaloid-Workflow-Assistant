@@ -123,10 +123,29 @@ bar.setValue(0);application.processEvents()
 
 regions=[{'start':.8,'end':2.2,'preset':'gentle','strength':.6},
          {'start':2.6,'end':3.1,'label':'A','preset':'bold'},
+         {'start':3.3,'end':3.8,'preset':'sad','strength':.6},
          {'start':20,'end':30,'label':'B','preset':'bold'}]
 regions_frozen=copy.deepcopy(regions);timeline.set_regions(regions);application.processEvents()
 assert regions==regions_frozen,'Timeline must not mutate region records'
 assert [row['label'] for row in timeline._canvas._regions][0] in ('柔和','Gentle','やわらか')
+assert timeline._canvas._regions[2]['label'] in ('悲伤','Sad','悲しみ')
+assert timeline._canvas._regions[2]['color'].name()=='#8a5ba8'
+
+# Custom labels must not bypass preset selection, including the first region
+# and a different style immediately after a sad region.
+labelled_regions=[{'start':.8,'end':1.2,'label':'Custom Sad','preset':'sad'},
+                  {'start':1.3,'end':1.7,'label':'Custom Bright','preset':'bold'},
+                  {'start':1.8,'end':2.2,'label':'Custom Sad Again','preset':'sad'},
+                  {'start':2.3,'end':2.7,'label':'Unspecified Style'}]
+labelled_frozen=copy.deepcopy(labelled_regions)
+timeline.set_regions(labelled_regions);application.processEvents()
+assert labelled_regions==labelled_frozen
+shown=timeline._canvas._regions
+assert [row['label'] for row in shown]==[row['label'] for row in labelled_regions]
+assert shown[0]['color'].name()==shown[2]['color'].name()=='#8a5ba8'
+assert shown[1]['color'].name()!='#8a5ba8','A labelled bright region inherited the preceding sad colour'
+assert shown[3]['color'].name()!='#8a5ba8','A labelled region without a preset inherited the preceding sad colour'
+timeline.set_regions(regions);application.processEvents()
 
 timeline.set_selection(1.2,2.4);assert timeline.selection()==(1.2,2.4)
 assert timeline.set_selection(2.4,1.2)==(1.2,2.4)

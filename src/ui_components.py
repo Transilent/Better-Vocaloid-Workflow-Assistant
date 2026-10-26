@@ -259,6 +259,7 @@ _TRACK_COLORS = tuple(QColor(value) for value in (
     '#4e9af1', '#e0715b', '#51ad72', '#b179d6', '#d2a347', '#42aeb3'))
 _REGION_COLORS = tuple(QColor(value) for value in (
     '#6d5bb5', '#ad6a3d', '#347d8a', '#9c596f'))
+_STYLE_REGION_COLORS = {'sad': QColor('#8a5ba8')}
 
 
 def _finite_number(value):
@@ -464,19 +465,24 @@ class _TimelineCanvas(QWidget):
             end = _finite_number(row.get('end'))
             if start is None or end is None or end <= start:
                 continue
+            preset = row.get('preset')
             label = row.get('label')
             if not isinstance(label, str) or not label.strip():
-                preset = row.get('preset')
                 if preset == 'gentle':
                     label = _tr('柔和')
+                elif preset == 'sad':
+                    label = _tr('悲伤')
                 elif preset == 'bold':
-                    label = _tr('明亮有力')
+                    label = _tr('明亮欢快')
                 else:
                     label = _tr('风格区域')
             else:
                 label = _tr(label)
+            color = _STYLE_REGION_COLORS.get(preset)
+            if color is None:
+                color = _REGION_COLORS[index % len(_REGION_COLORS)]
             display.append({'start': start, 'end': end, 'label': label,
-                            'color': QColor(_REGION_COLORS[index % len(_REGION_COLORS)])})
+                            'color': QColor(color)})
         self._regions = display
         self._refresh_bounds()
         if self._selection is not None:

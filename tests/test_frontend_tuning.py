@@ -13,9 +13,11 @@ from PyQt5.QtCore import QRect,QTimer
 from PyQt5.QtWidgets import QApplication,QLabel,QProgressBar,QWidget
 from ui_components import AdaptiveColumns,FlowLayout,StyleTimeline
 import tuning_ui
-from style_presets import merged_preset,pitch_default,visible_presets
+from style_presets import pitch_default,visible_presets
 os.environ['BVWA_TESTING'] = '1'
-from tuning_ui import TuningPage, format_register_gate, format_receipt_summary, format_tuning_result_summary
+from tuning_ui import (TuningPage,format_register_gate,format_receipt_summary,format_tuning_result_summary,
+                       style_card_description,style_card_keys,style_card_label,style_pitch_default,
+                       ui_merged_preset)
 
 application = QApplication.instance() or QApplication([])
 
@@ -52,7 +54,10 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
     assert len(page.findChildren(AdaptiveColumns)) >= 3
     assert page.mode_choice.combo is page.mode
     shown_styles = [page.performance_style.itemData(i) for i in range(page.performance_style.count())]
-    assert shown_styles == list(visible_presets()) == ['none', 'gentle', 'bold']
+    assert shown_styles == list(style_card_keys()) == list(visible_presets()) == ['none', 'gentle', 'sad', 'bold']
+    assert style_card_label('bold') == '明亮欢快〔实验〕'
+    assert '情绪（悲伤）' in style_card_description('sad')
+    assert '声线（柔和）' in style_card_description('gentle')
     assert tuple(page.style_detail) == ('onset', 'sustain', 'connection', 'release')
     assert page.style_detail_toggle.text() == '分段细调' and not page.style_detail_toggle.isChecked()
     assert [page.style_mode.itemData(i) for i in range(page.style_mode.count())] == ['whole', 'regions']
@@ -157,17 +162,21 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
     assert page.performance_style.currentData() == 'gentle'
     assert '已归并' in page.style_hint.text() and '旧工程保持原样' in page.style_hint.text()
 
+    page.apply_preferences({'performance_style': 'sad'})
+    assert page.performance_style.currentData() == 'sad' and page.style_pitch.isChecked()
+
     legacy_styles = {
         'soft_ballad': ('gentle', False),
         'intimate_narration': ('gentle', False),
-        'melancholy': ('gentle', True),
-        'fragile_tender': ('gentle', True),
+        'melancholy': ('sad', True),
+        'fragile_tender': ('sad', True),
         'power_pop': ('bold', False),
         'bright_joy': ('bold', True),
     }
     for legacy, (expected_style, expected_pitch) in legacy_styles.items():
-        assert merged_preset(legacy) == expected_style
-        assert pitch_default(legacy) is expected_pitch
+        assert ui_merged_preset(legacy) == expected_style
+        assert style_pitch_default(legacy) is expected_pitch
+        assert pitch_default(legacy) is expected_pitch, 'Old IDs must retain their recipe pitch defaults'
         page.apply_preferences({'performance_style': legacy, 'style_strength': .625})
         assert page.performance_style.currentData() == expected_style
         assert page.style_strength.currentData() == .625

@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 APP=Path(__file__).resolve().parents[1];sys.path.insert(0,str(APP))
 import style_presets as styles
+import style_pitch as pitches
 from style_pitch import enabled
 from vocal_expression import TempoMap,SV_QUARTER as Q
 
@@ -22,6 +23,12 @@ def project():
                     'meter':[{'index':0,'numerator':4,'denominator':4}]},
             'tracks':[track,backing],'library':[{'private':'keep'}],'other':[1,2,3]}
 
+assert pitches.VERSION==4
+assert pitches.RECIPES['gentle']=={'entry':(-20.,.11),'connection':(1.8,16.,.07),'release':(-12.,.09),'vibrato':None}
+assert pitches.RECIPES['sad']=={'entry':(-12.,.18),'connection':(4.,32.,.13),'release':(-58.,.30),'vibrato':None}
+assert pitches.RECIPES['melancholy']=={'entry':(-16.,.13),'connection':(1.5,10.,.09),'release':(-24.,.20),'vibrato':None}
+assert pitches.RECIPES['fragile_tender']=={'entry':(6.,.08),'connection':(1.,8.,.06),'release':(24.,.16),'vibrato':None}
+assert pitches.RECIPES['bright_joy']=={'entry':(12.,.06),'connection':(1.7,11.,.055),'release':(-7.,.08),'vibrato':None}
 for preset in ('soft_ballad','intimate_narration','power_pop'):
     source=project();frozen=copy.deepcopy(source)
     voice,rv=styles.apply_style(source,preset,strength=.6,track_indices=[0],pitch_enabled=False)
@@ -99,9 +106,9 @@ for bad in (1,None,'true',[],{}):
     try:enabled({'style_pitch':bad});raise AssertionError('Invalid boolean accepted')
     except ValueError:pass
 
-# The merged cards have different signed entries and transition time scales,
+# The canonical cards have different signed entries and transition scales,
 # without adding a second vibrato over authored/editor-generated modulation.
-for preset,sign in (('gentle',-1),('bold',1)):
+for preset,sign in (('gentle',-1),('sad',-1),('bold',1)):
     source=project()
     out,r=styles.apply_style(source,preset,track_indices=[0],pitch_enabled=True,density_mode='original')
     row=r['pitch']['tracks'][0]
@@ -136,7 +143,7 @@ with tempfile.TemporaryDirectory(dir=APP/'work') as temporary:
     assert json.loads(b.read_text(encoding='utf-8'))!=project() and a.read_bytes()==original
     assert styles.apply_style_svp(a,b,preset='power_pop',pitch_enabled=True)==r
 emotion_outputs=[]
-for preset in ('melancholy','bright_joy','fragile_tender'):
+for preset in ('sad','melancholy','bright_joy','fragile_tender'):
     source=project();frozen=copy.deepcopy(source)
     output,report=styles.apply_style(source,preset,strength=.6,track_indices=[0])
     assert report['category']=='emotion' and report['pitch']['enabled'] and report['pitch_changed']
@@ -157,5 +164,5 @@ for preset in ('melancholy','bright_joy','fragile_tender'):
     assert np.max(abs(delta[~active]),initial=0.)<1e-10
     assert set(old['points'][::2])<=set(curve['points'][::2])
     emotion_outputs.append(output)
-assert all(emotion_outputs[a]!=emotion_outputs[b] for a in range(3) for b in range(a))
-print('PASS: optional pitch, protected authored curves and joint emotion/timbre defaults with explicit opt-out')
+assert all(emotion_outputs[a]!=emotion_outputs[b] for a in range(len(emotion_outputs)) for b in range(a))
+print('PASS: canonical sad pitch, exact legacy recipes, four-phase guards, protected authored curves and joint emotion/timbre defaults with explicit opt-out')

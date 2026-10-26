@@ -122,17 +122,30 @@ with tempfile.TemporaryDirectory(prefix='style-presets-',dir=APP/'work') as fold
     except InterruptedError:pass
     assert not (root/'cancelled.svp').exists() and source.read_bytes()==raw
 
-# New cards use note-local envelopes. Old IDs still execute the original
-# recipes above; the UI offers their explicit merged replacements instead.
-assert styles.visible_presets()==('none','gentle','bold')
-assert {styles.merged_preset(p) for p in ('soft_ballad','intimate_narration','melancholy','fragile_tender')}=={'gentle'}
+# Canonical cards use note-local envelopes. Old IDs still execute their
+# original recipes; only the explicit UI mapping changes.
+assert styles.VERSION==5
+assert styles.visible_presets()==('none','gentle','sad','bold')
+assert styles.PRESETS['gentle']['note_envelope']=={'onset':.14,'release':.22,'sustain_arc':{'loudness':.65,'tension':.04,'breathiness':-.015}}
+assert styles.PRESETS['gentle']['controls']=={'loudness':(-3.2,-.8,-2.4),'tension':(-.36,-.10,-.26),'breathiness':(.20,.03,.20),'voicing':(-.04,0.,-.08)}
+assert styles.PRESETS['sad']['note_envelope']=={'onset':.19,'release':.30,'sustain_arc':{'loudness':-.75,'tension':-.06,'breathiness':.035}}
+assert styles.PRESETS['sad']['controls']=={'loudness':(-.8,-.15,-3.0),'tension':(-.06,-.03,-.25),'breathiness':(.04,0.,.18),'voicing':(-.015,0.,-.08)}
+
+assert {styles.merged_preset(p) for p in ('soft_ballad','intimate_narration')}=={'gentle'}
+assert {styles.merged_preset(p) for p in ('melancholy','fragile_tender')}=={'sad'}
 assert {styles.merged_preset(p) for p in ('power_pop','bright_joy')}=={'bold'}
+assert [styles.pitch_default(p) for p in ('none','gentle','sad','bold')]==[False,True,True,True]
+assert styles.pitch_default('soft_ballad') is False and styles.pitch_default('intimate_narration') is False
+assert all(styles.pitch_default(p) for p in ('melancholy','fragile_tender','bright_joy'))
+for legacy in ('soft_ballad','intimate_narration','melancholy','fragile_tender','power_pop','bright_joy'):
+    _,legacy_receipt=styles.apply_style(original,legacy,strength=0.,pitch_enabled=False)
+    assert legacy_receipt['preset']==legacy and legacy_receipt['label']==styles.PRESETS[legacy]['label']
 assert styles.detail_settings({'onset':.625})=={'onset':.625,'sustain':1.,'connection':1.,'release':1.}
 for invalid in ([],False,{'unknown':.5},{'onset':True},{'sustain':float('nan')},{'release':1.01}):
     try:styles.detail_settings(invalid);raise AssertionError(invalid)
     except ValueError:pass
 
-for preset in ('gentle','bold'):
+for preset in ('gentle','sad','bold'):
     out,r=styles.apply_style(original,preset,track_indices=[0],density_mode='original',pitch_enabled=False)
     assert original==frozen and out['tracks'][1:]==original['tracks'][1:]
     assert r['tracks'][0]['envelope_scope']=='note' and r['notes_unchanged']
@@ -154,7 +167,7 @@ protected['tracks'][0]['mainGroup']['notes']=[
     {'onset':3*Q,'duration':Q,'pitch':60,'lyrics':'啊','attributes':{'muted':True}},
     {'onset':4*Q,'duration':2*Q,'pitch':60,'lyrics':'啊'},
     {'onset':5*Q,'duration':2*Q,'pitch':64,'lyrics':'哈'}]
-for preset in ('gentle','bold'):
+for preset in ('gentle','sad','bold'):
     out,r=styles.apply_style(protected,preset,track_indices=[0])
     assert out==protected and r['status']=='skipped' and r['protected_notes']==6
 
@@ -162,19 +175,31 @@ for preset in ('gentle','bold'):
 # onset at its left edge. Outside the window the original linear function is
 # unchanged, with a smooth zero-delta boundary even through a sustained note.
 source=project();bounds=(1.25,2.25)
-out,r=styles.apply_style(source,'gentle',track_indices=[0],time_range=bounds,
-                         pitch_enabled=False,density_mode='original')
-channel_deltas={}
-for name in styles.PRESETS['gentle']['controls']:
-    old=source['tracks'][0]['mainGroup']['parameters'][name]['points']
-    new=out['tracks'][0]['mainGroup']['parameters'][name]['points']
-    xs=np.asarray(new[::2]);times=np.asarray([clock.to_seconds(float(p)+Q) for p in xs])
-    difference=np.asarray(new[1::2])-np.interp(xs,old[::2],old[1::2])
-    outside=(times<=bounds[0]+1e-10)|(times>=bounds[1]-1e-10)
-    assert np.max(abs(difference[outside]),initial=0.)<1e-10
-    channel_deltas[name]=np.max(abs(difference),initial=0.)
-assert all(channel_deltas[name]>0 for name in ('loudness','tension','breathiness'))
-assert channel_deltas['voicing']==0.,'Sustained voiced core should retain its source voicing'
+range_outputs={}
+for preset in ('gentle','sad','bold'):
+    out,r=styles.apply_style(source,preset,track_indices=[0],time_range=bounds,
+                             pitch_enabled=False,density_mode='original')
+    channel_deltas={}
+    for name in styles.PRESETS[preset]['controls']:
+        old=source['tracks'][0]['mainGroup']['parameters'][name]['points']
+        new=out['tracks'][0]['mainGroup']['parameters'][name]['points']
+        xs=np.asarray(new[::2]);times=np.asarray([clock.to_seconds(float(p)+Q) for p in xs])
+        difference=np.asarray(new[1::2])-np.interp(xs,old[::2],old[1::2])
+        outside=(times<=bounds[0]+1e-10)|(times>=bounds[1]-1e-10)
+        assert np.max(abs(difference[outside]),initial=0.)<1e-10
+        channel_deltas[name]=np.max(abs(difference),initial=0.)
+    assert all(channel_deltas[name]>0 for name in ('loudness','tension','breathiness'))
+    assert channel_deltas.get('voicing',0.)==0.,'Sustained voiced core should retain its source voicing'
+    range_outputs[preset]=out
+assert len({json.dumps(v,sort_keys=True) for v in range_outputs.values()})==3
+
+# Gentle is a voice treatment; sad is a separate emotion card. Their long-note
+# arcs move in opposite directions, and only sad retains the deliberate long fall.
+gentle_out,_=styles.apply_style(source,'gentle',track_indices=[0],pitch_enabled=False,density_mode='original')
+sad_out,_=styles.apply_style(source,'sad',track_indices=[0],pitch_enabled=False,density_mode='original')
+assert styles.PRESETS['gentle']['controls']['loudness'][-1]>styles.PRESETS['sad']['controls']['loudness'][-1]
+assert styles.PRESETS['gentle']['note_envelope']['sustain_arc']['loudness']>0>styles.PRESETS['sad']['note_envelope']['sustain_arc']['loudness']
+assert gentle_out!=sad_out
 
 # Local phase factors change their own contribution, not the stored total.
 full,rf=styles.apply_style(source,'bold',strength=.625,track_indices=[0],pitch_enabled=False,density_mode='original')
@@ -186,4 +211,4 @@ def delta_at(data,name,seconds):
     return np.interp(pos,curve[::2],curve[1::2])
 assert delta_at(less,'loudness',.52)<delta_at(full,'loudness',.52)
 assert abs(delta_at(less,'loudness',2.)-delta_at(full,'loudness',2.))<1e-10
-print('PASS: merged cards and legacy recipes, phase/range guards, protected notes, headroom, independent I/O, no stacking and cancellation')
+print('PASS: canonical cards, legacy recipes/mapping/defaults, sad region recipe, phase/range guards, protected notes, headroom, independent I/O, no stacking and cancellation')

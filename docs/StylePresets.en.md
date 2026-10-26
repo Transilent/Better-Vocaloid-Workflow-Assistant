@@ -3,29 +3,31 @@
 [English](StylePresets.en.md) | [简体中文](StylePresets.zh-CN.md)
 
 The independent **Tuning workflow** accepts an existing task or imported SVP
-and offers **Gentle [Experimental]** or **Bright & Powerful [Experimental]**.
-The default preserves the original performance. Whole-track mode uses one style;
-non-overlapping time segments may each choose either style. Neither mode stacks
-on an earlier style candidate. Settings apply only when the user regenerates a
-candidate. Opening, restoring or registering an older project does not rewrite
-it. See [Tuning workflow](TuningWorkflow.en.md) for source snapshots and recovery.
+and offers **Gentle [Experimental]**, **Sad [Experimental]** and **Bright &
+Cheerful [Experimental]**. The default preserves the original performance.
+Whole-track mode uses one style; non-overlapping time segments may each choose
+one of the three. None stacks on an earlier style candidate. Settings apply only
+when the user regenerates a candidate, and opening, restoring or registering an
+older project does not rewrite it.
 
-The user chooses the style manually; the application does not analyze lyrics or
-infer emotion. The style overlay follows the primary expression source, and every
-attempt starts from the verified original-performance snapshot. Switching styles
-or retrying never stacks on an earlier styled candidate.
+Gentle focuses on vocal texture; Sad focuses on mid-phrase restraint and a
+descending release; Bright & Cheerful focuses on clear, crisp entrances. The user
+chooses manually: the application does not analyze lyrics or infer emotion. Every
+attempt starts from the verified original-performance snapshot. See [Tuning
+workflow](TuningWorkflow.en.md) for source snapshots and recovery.
 
 | Style | ID | Public description |
 |---|---|---|
-| Gentle [Experimental] | `gentle` | Soft entrances, a stable voiced core, and a tapered release; each phrase segment can be adjusted separately. |
-| Bright & Powerful [Experimental] | `bold` | Quick entrances, crisp connections, and a solid sustained core; each phrase segment can be adjusted separately. |
+| Gentle [Experimental] | `gentle` | Vocal texture: lighter entrances, a stable voiced core, and a softened descending release. |
+| Sad [Experimental] | `sad` | Emotional direction: a clear voiced core, restrained middle phrases, and a slow descending release without turning the whole phrase into extra breathiness. |
+| Bright & Cheerful [Experimental] | `bold` | Performance approach: quick entrances, crisp connections, and a solid sustained core. The `bold` recipe values stay unchanged; only the public name changes. |
 
 These descriptions identify draft directions awaiting audition. They are not
 measured voicebank results, listening guarantees or physical voice categories.
-The recipe values are manually authored, not learned corpus coefficients,
-automatic semantic classifiers or calibrated responses from a target voicebank.
-Brightness and distortion risk vary with the voicebank, version and settings.
-The user must synthesize and audition the result in the selected voicebank.
+The recipes are manually authored, not learned corpus coefficients, automatic
+semantic classifiers or calibrated responses from a target voicebank.
+Brightness, breathiness and distortion risk vary with the voicebank, version and
+settings. The user must synthesize and audition the result.
 
 ## Segment strength and detail
 
@@ -69,8 +71,8 @@ absence of artifacts or a statistically measured style effect.
 
 The Tuning page provides two style-application modes:
 
-- **Whole track** applies the current visible style card once to the selected
-  actual target tracks.
+- **Whole track** applies one of the three visible style cards once to the
+  selected actual target tracks.
 - **Time segments** show notes from those tracks in a simple piano roll with
   horizontal time selection. Drag to select, press Esc to clear, and use Ctrl
   plus the wheel or the zoom buttons to zoom. This view is for notes and style
@@ -85,8 +87,8 @@ segments** manage the current input. Segments cannot overlap, at most 128 are
 allowed, and a selection shorter than 25 ms cannot become a segment.
 
 When the segment list is nonempty, execution reads only that list. Each segment
-can use its own `gentle`/`bold`, overall strength, four coefficients and pitch
-switch within its start/end time. Outside a segment, the style line produced by
+can use its own `gentle`/`sad`/`bold`, overall strength, four coefficients and
+pitch switch within its start/end time. Outside a segment, the style line produced by
 the primary parameter source remains. In this mode, the style and segment
 controls above are tool settings for adding or updating segments; they do not
 create an additional whole-track style overlay. Reference, calibration or
@@ -103,17 +105,18 @@ settings or timing.
 
 ## Pitch defaults and compatibility mapping
 
-The `gentle` and `bold` IDs enable added local pitch by default; an explicit
-off choice is retained. Opening an older project or candidate does not
-automatically rewrite the stored style settings or candidate file. A restored
-legacy ID is displayed with its merged card. Saved overall strength and an
-explicit `style_pitch=False` are retained; when `style_pitch` is absent, the
-original legacy ID's default applies. When the user later saves preferences or
-regenerates a candidate, the new selection and result use `gentle` or `bold`.
+The `gentle`, `sad` and `bold` IDs enable added local pitch by default; an
+explicit off choice is retained. Opening an older project or candidate does not
+rewrite its stored settings or candidate file. A restored legacy ID is displayed
+with its mapped card. Saved overall strength and an explicit
+`style_pitch=False` are retained; when `style_pitch` is absent, the original
+legacy ID's default applies. Later preference saves and regenerated candidates
+use `gentle`, `sad` or `bold`.
 
 | Legacy ID | Displayed style |
 |---|---|
-| `soft_ballad`, `intimate_narration`, `melancholy`, `fragile_tender` | `gentle` |
+| `soft_ballad`, `intimate_narration` | `gentle` |
+| `melancholy`, `fragile_tender` | `sad` |
 | `power_pop`, `bright_joy` | `bold` |
 
 Legacy IDs remain readable from existing tasks and older command-line records;
@@ -140,9 +143,9 @@ dependencies\vocal2midi\python\python.exe -B style_presets.py A.svp B.svp --pres
 ```
 
 Both options are optional; outside the single CLI range, the original style
-line remains. `gentle` and `bold` include added local pitch by default; use
-`--no-style-pitch` to stop pitch while retaining timbre segments. Legacy IDs
-remain accepted with their historical defaults.
+line remains. `gentle`, `sad` and `bold` include added local pitch by default;
+use `--no-style-pitch` to stop pitch while retaining timbre segments. Legacy IDs
+remain accepted with their historical recipes and defaults.
 
 The standalone command refuses to overwrite the source or a different existing
 candidate. It writes a `.svp.style.json` receipt and uses that adjacent receipt

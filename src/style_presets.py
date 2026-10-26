@@ -20,22 +20,28 @@ import json
 import math
 from pathlib import Path
 
-VERSION = 4
+VERSION = 5
 PRESETS = {
     'none': {'label': '保留原表现', 'controls': {}},
     'gentle': {'label': '柔和〔实验〕', 'pitch_default': True,
         'description': '轻柔起音、稳定的有声核心与渐弱收尾；可分别调整各段表现。',
         'note_envelope': {'onset': .14, 'release': .22,
                           'sustain_arc': {'loudness': .65, 'tension': .04, 'breathiness': -.015}},
-        'controls': {'loudness': (-3.2, -.8, -4.2), 'tension': (-.36, -.10, -.44),
-                     'breathiness': (.20, .03, .30), 'voicing': (-.04, 0., -.12)}},
-    'bold': {'label': '明亮有力〔实验〕', 'pitch_default': True,
-        'description': '短促起音、清晰衔接与扎实的持续段；可分别调整各段表现。',
+        'controls': {'loudness': (-3.2, -.8, -2.4), 'tension': (-.36, -.10, -.26),
+                     'breathiness': (.20, .03, .20), 'voicing': (-.04, 0., -.08)}},
+    'sad': {'label': '悲伤〔实验〕', 'category': 'emotion', 'pitch_default': True,
+        'description': '保持清楚的有声核心，长音中段收敛，句尾缓慢下落；与柔和声线分开控制。',
+        'note_envelope': {'onset': .19, 'release': .30,
+                          'sustain_arc': {'loudness': -.75, 'tension': -.06, 'breathiness': .035}},
+        'controls': {'loudness': (-.8, -.15, -3.0), 'tension': (-.06, -.03, -.25),
+                     'breathiness': (.04, 0., .18), 'voicing': (-.015, 0., -.08)}},
+    'bold': {'label': '明亮欢快〔实验〕', 'pitch_default': True,
+        'description': '轻快起音、清晰衔接与明亮的持续段；可分别调整各段表现。',
         'note_envelope': {'onset': .055, 'release': .09,
                           'sustain_arc': {'loudness': .40, 'tension': .025, 'breathiness': -.015}},
         'controls': {'loudness': (3.6, 1.4, .4), 'tension': (.34, .20, .04),
                      'breathiness': (-.12, -.05, -.01)}},
-    # Stored task/CLI IDs retain their original recipes. Only the two new IDs
+    # Stored task/CLI IDs retain their original recipes. Only canonical IDs
     # are offered for new selections; loading an old UI choice is explicit.
     'soft_ballad': {'label': '柔和抒情〔实验〕', 'controls': {
         'loudness': (-.8, .5, -1.5), 'tension': (-.18, -.08, -.18),
@@ -66,12 +72,12 @@ PHRASE_GAP = .25
 STYLE_GRID = .02
 DETAIL_DEFAULTS = {'onset': 1., 'sustain': 1., 'connection': 1., 'release': 1.}
 PRESET_MERGES = {'soft_ballad': 'gentle', 'intimate_narration': 'gentle',
-                 'melancholy': 'gentle', 'fragile_tender': 'gentle',
+                 'melancholy': 'sad', 'fragile_tender': 'sad',
                  'power_pop': 'bold', 'bright_joy': 'bold'}
 
 
 def visible_presets():
-    return ('none', 'gentle', 'bold')
+    return ('none', 'gentle', 'sad', 'bold')
 
 
 def merged_preset(preset):
@@ -114,7 +120,7 @@ def region_settings(value=None):
     regions = []
     for row in value:
         if (not isinstance(row, dict) or set(row)-{'start','end','preset','strength','detail','pitch'}
-                or row.get('preset') not in ('gentle', 'bold')):
+                or row.get('preset') not in ('gentle', 'sad', 'bold')):
             raise ValueError('风格时间片段格式无效。')
         start, end = time_range_settings((row.get('start'), row.get('end')))
         preset = row['preset']

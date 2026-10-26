@@ -149,7 +149,7 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
     page.start_run()
     assert '至少需要一个片段' in page.status.text() and page.session is None and page.worker is None
 
-    recorded={'start':.05,'end':.35,'preset':'gentle','strength':.4,
+    recorded={'start':.05,'end':.35,'preset':'sad','strength':.4,
               'detail':{'onset':.5,'sustain':.75,'connection':.25,'release':1.0},'pitch':True}
     page.restore_style_regions([recorded]);saved_options=page.options()
     from tuning_workflow import create_session

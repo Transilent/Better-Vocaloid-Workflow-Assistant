@@ -313,7 +313,7 @@ class TuningEngineTests(unittest.TestCase):
         self.assertEqual(output['tracks'][1:], frozen['tracks'][1:])
 
     def test_emotion_defaults_jointly_process_pitch_and_timbre_with_one_density_pass(self):
-        for preset in ('melancholy','bright_joy','fragile_tender'):
+        for preset in ('sad','melancholy','bright_joy','fragile_tender'):
             with self.subTest(preset=preset):
                 data=base_project();frozen=copy.deepcopy(data)
                 options={'expression_mode':'preserve','track_indices':[0],'performance_style':preset,
@@ -698,12 +698,16 @@ class TimeRegionStyles(unittest.TestCase):
         from vocal_expression import TempoMap
         source=base_project();frozen=copy.deepcopy(source)
         regions=[{'start':.8,'end':1.6,'preset':'bold','strength':.7,'pitch':False},
-                 {'start':.2,'end':.7,'preset':'gentle','strength':.625,'detail':{'onset':.5},'pitch':True}]
+                 {'start':.2,'end':.7,'preset':'gentle','strength':.625,'detail':{'onset':.5},'pitch':True},
+                 {'start':1.7,'end':2.2,'preset':'sad','strength':.55,'detail':{'sustain':.75}}]
         options={'track_indices':[0],'style_regions':regions,'expression_density':'dense'}
         output,report=process_project(source,options)
         self.assertEqual(source,frozen)
         self.assertEqual(output['tracks'][1:],source['tracks'][1:])
         self.assertEqual(report['style']['mode'],'regions')
+        sad_region=next(row for row in report['style']['regions'] if row['preset']=='sad')
+        self.assertEqual(sad_region['category'],'emotion')
+        self.assertTrue(sad_region['pitch']['enabled'])
         self.assertEqual(report['final_density_passes'],1)
         self.assertTrue(report['pitch_changed'])
         changed_global={**options,'performance_style':'bold','style_strength':.05,'style_pitch':False,

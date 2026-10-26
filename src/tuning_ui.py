@@ -41,6 +41,41 @@ _TUNING_STAGE_TITLES=(
 )
 _TUNING_STAGE_KEYS=tuple(key for key,_ in _TUNING_STAGE_TITLES)
 _TUNING_STAGE_INDEX={key:index for index,(key,_) in enumerate(_TUNING_STAGE_TITLES)}
+_STYLE_CARD_KINDS={'gentle':'声线（柔和）','sad':'情绪（悲伤）',
+                   'bold':'演唱表现（明亮欢快）'}
+
+
+def style_card_keys():
+    from style_presets import visible_presets
+    return visible_presets()
+
+
+def style_card_label(value):
+    if value=='none':return _tr('不叠加风格')
+    from style_presets import PRESETS
+    return _tr(PRESETS[value]['label'])
+
+
+def ui_merged_preset(value):
+    from style_presets import merged_preset
+    return merged_preset(value)
+
+
+def style_pitch_default(value):
+    from style_presets import pitch_default
+    return pitch_default(value)
+
+
+def style_card_description(value):
+    from style_presets import preset_description
+    source=_tr('保留输入工程现有参数，不添加所选风格。') if value=='none' else _tr(preset_description(value))
+    kind=_STYLE_CARD_KINDS.get(value)
+    return ((_tr(kind)+'\n') if kind else '')+source
+
+
+def _style_is_selectable(value):
+    from style_presets import PRESETS
+    return isinstance(value,str) and value in PRESETS
 
 
 class TuningVisualProgress:
@@ -290,13 +325,14 @@ class TuningPage(QWidget):
         region_layout.addWidget(label(_tr('时间片段只改变所选实际目标轨的风格；参考、校准或沿用参数仍按现有整轨范围处理。'),'muted'))
         self.style_region_panel.hide();style_area.addWidget(self.style_region_panel)
         style_area.addWidget(label(_tr('风格预设'),'muted'))
-        from style_presets import PRESETS,visible_presets
-        self.performance_style=combo([(_tr('不叠加风格') if key=='none' else _tr(PRESETS[key]['label']),key)
-                                     for key in visible_presets()])
+        self.performance_style=combo([(style_card_label(key),key) for key in style_card_keys()])
+        for index in range(self.performance_style.count()):
+            key=self.performance_style.itemData(index)
+            self.performance_style.setItemData(index,style_card_description(key),Qt.ToolTipRole)
         self.performance_style_choice=choice(self.performance_style,columns=2);style_area.addWidget(self.performance_style_choice)
         self.style_hint=label('','muted');style_area.addWidget(self.style_hint)
         style_area.addWidget(label(_tr('每次只应用一个可见风格；新工程不会在上一次风格结果上继续叠加。'),'muted'))
-        style_area.addWidget(label(_tr('柔和与明亮有力默认联动局部音高与音色，可单独关闭附加音高。'),'muted'))
+        style_area.addWidget(label(_tr('柔和、悲伤与明亮欢快默认联动局部音高与音色，可单独关闭附加音高。'),'muted'))
         style_strength_label=label(_tr('风格强度'),'muted');style_area.addWidget(style_strength_label)
         self.style_strength=combo(strength_choices((.3,.6,.85,1.)))
         self.style_strength_choice=StrengthControl(self.style_strength);style_area.addWidget(self.style_strength_choice)
@@ -601,15 +637,14 @@ class TuningPage(QWidget):
 
     def _region_from_tool(self,start,end):
         style=self.performance_style.currentData()
-        if style not in ('gentle','bold'):raise ValueError('时间片段需要选择“柔和”或“明亮有力”。')
+        if style not in ('gentle','sad','bold'):raise ValueError('时间片段需要选择“柔和”“悲伤”或“明亮欢快”。')
         values=self.preferences()
         return {'start':float(start),'end':float(end),'preset':style,
                 'strength':float(self.style_strength.currentData()),'detail':dict(values['style_detail']),
                 'pitch':bool(self.style_pitch.isChecked())}
 
     def _region_item_text(self,region):
-        from style_presets import PRESETS
-        label=_tr(PRESETS[region['preset']]['label'])
+        label=style_card_label(region['preset'])
         pitch=_tr('含附加音高') if region['pitch'] else _tr('仅音色')
         return f"{region['start']:.3f}–{region['end']:.3f} s · {label} · {percent_text(region['strength'])} · {pitch}"
 
@@ -637,7 +672,7 @@ class TuningPage(QWidget):
         busy=self.processing_active
         has_project=self._style_timeline_data is not None and bool(self.rows)
         selection=self._style_selection_range()
-        style=self.performance_style.currentData() in ('gentle','bold')
+        style=self.performance_style.currentData() in ('gentle','sad','bold')
         row=self.region_list.currentRow()
         has_row=0<=row<len(self.style_regions)
         self.style_mode.setEnabled(not busy)
@@ -723,28 +758,27 @@ class TuningPage(QWidget):
         if hasattr(self,'style_timeline'):self.style_timeline.clear_selection()
 
     def _refresh_style_hint(self):
-        from style_presets import PRESETS,merged_preset,preset_description
         current=self.performance_style.currentData()
-        text=_tr(preset_description(current))
+        text=style_card_description(current)
         source=getattr(self,'_style_migration_source',None)
-        if isinstance(source,str) and merged_preset(source)==current:
-            old_label=_tr(PRESETS[source]['label'])
-            new_label=_tr(PRESETS[current]['label'])
+        if isinstance(source,str) and ui_merged_preset(source)==current:
+            old_label=style_card_label(source)
+            new_label=style_card_label(current)
             text += '\n' + _tr('旧风格“{0}”已归并为“{1}”；旧工程保持原样。',old_label,new_label)
         if self.style_mode.currentData()=='regions':
-            text += '\n' + _tr('时间片段模式下，“柔和”和“明亮有力”是待添加片段的工具设置；执行只读取片段列表。')
+            text += '\n' + _tr('时间片段模式下，“柔和”“悲伤”和“明亮欢快”是待添加片段的工具设置；执行只读取片段列表。')
             if not self.style_regions:text += '\n' + _tr('时间片段列表为空；请添加片段或切回整轨模式。')
         self.style_hint.setText(text)
 
     def apply_preferences(self,values):
-        from style_presets import PRESETS,detail_settings,merged_preset,pitch_default
+        from style_presets import detail_settings
         values=values if isinstance(values,dict) else {}
         restoring=getattr(self,'_restoring_preferences',False)
         self._restoring_preferences=True
         try:
             requested_style=values.get('performance_style',self.performance_style.currentData())
-            if not isinstance(requested_style,str) or requested_style not in PRESETS:requested_style=self.performance_style.currentData()
-            visible_style=merged_preset(requested_style)
+            if not isinstance(requested_style,str) or not _style_is_selectable(requested_style):requested_style=self.performance_style.currentData()
+            visible_style=ui_merged_preset(requested_style)
             for name in ('dynamics_strength','expression_density','performance_style','style_strength','style_scope'):
                 field=getattr(self,name);value=visible_style if name=='performance_style' else values.get(name,field.currentData())
                 if name in ('dynamics_strength','style_strength'):
@@ -755,17 +789,16 @@ class TuningPage(QWidget):
             for key,amount in detail_settings(values.get('style_detail')).items():
                 self.style_detail[key].set_percent(amount*100.)
             for name in ('reference_dynamics','reference_tension','reference_breathiness','reference_voicing','style_pitch'):
-                default=pitch_default(requested_style) if name=='style_pitch' else False
+                default=style_pitch_default(requested_style) if name=='style_pitch' else False
                 getattr(self,name).setChecked(values.get(name,default) is True)
         finally:
             self._restoring_preferences=restoring
         self._refresh_style_hint()
 
     def style_selected(self,*args):
-        from style_presets import pitch_default
         if not self.loading and not getattr(self,'_restoring_preferences',False):
             self._style_migration_source=None
-            if pitch_default(self.performance_style.currentData()):self.style_pitch.setChecked(True)
+            if style_pitch_default(self.performance_style.currentData()):self.style_pitch.setChecked(True)
         self.refresh()
 
     def preferences(self):
