@@ -415,6 +415,35 @@ class ControlFixtureTests(unittest.TestCase):
         write_json(broken, value)
         self.assert_error('invalid_config', self.new_control, broken)
 
+    def test_unowned_job_cannot_execute_arbitrary_request_tools(self):
+        job = self.jobs / 'unowned'
+        write_json(job/'request.json', {'language':'zh','tools':{'python':'C:/untrusted/python.exe'}})
+        identifier = 'job_' + agent_control.digest(str(job.resolve()))[:32]
+        with patch.object(agent_control.subprocess,'Popen') as spawn:
+            self.assert_error('not_found',self.control.preparation_start,identifier,None,'unowned')
+            spawn.assert_not_called()
+
+    def test_preparation_failure_partial_and_cancel_are_not_upgraded(self):
+        job = self.jobs / 'owned-preparation'
+        write_json(job/'request.json',{'language':'zh'})
+        identifier = 'job_' + agent_control.digest(str(job.resolve()))[:32]
+        owned = {'schema':1,'id':identifier,'path':str(job.resolve()),
+            'request_sha256':agent_control.file_hash(job/'request.json'),
+            'code_revision':self.control.code_revision,'plan_id':'fixture'}
+        agent_control.atomic_json(self.state/'preparations'/(identifier+'.json'),owned)
+        for status,expected in (('failed','failed'),('cancelled','cancelled'),
+                                ('partial','failed'),('done','failed')):
+            with self.subTest(status=status):
+                with patch.object(agent_control.subprocess,'Popen',return_value=FakeProcess()):
+                    operation=self.control.preparation_start(identifier,None,'status-'+status)
+                receipt={'status':status,'job_path':str(job),'files':[],
+                         'error':{'code':'fixture','message':'fixture state '+status}}
+                module=SimpleNamespace(run_preparation=lambda *args,**kwargs:receipt)
+                with patch.dict(sys.modules,{'agent_preparation':module}):
+                    finished=self.control.run_operation(operation['id'])
+                self.assertEqual(finished['state'],expected)
+                self.assertEqual(finished['business_receipt']['status'],status)
+
     @unittest.skipUnless(os.name == 'nt', 'Windows sharing violations')
     def test_atomic_record_retries_a_transient_windows_reader(self):
         path = self.state / 'reader-race.json'

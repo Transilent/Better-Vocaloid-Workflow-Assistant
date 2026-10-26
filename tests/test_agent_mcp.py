@@ -117,7 +117,7 @@ async def client_contract(configuration):
                  for p in configuration.parent.rglob('*') if p.is_file()}
     async with Client(params, read_timeout_seconds=70) as client:
         listed = await client.list_tools()
-        check({t.name for t in listed.tools} == set(TOOLS), 'all_18_tools_discovered')
+        check({t.name for t in listed.tools} == set(TOOLS), 'all_tools_discovered')
         check(all(t.input_schema and t.output_schema for t in listed.tools), 'input_and_output_schemas')
         caps = await call(client, 'vwa_system_capabilities')
         check(caps['semantic_provider'] == 'caller_supplied_plan' and caps['candidate_only'], 'honest_capabilities')
@@ -260,10 +260,127 @@ class MCPContract(unittest.TestCase):
             self.assertGreater(len(receipt['checks']), 45)
             (reports / 'mcp-stdio-client.json').write_text(json.dumps(receipt, ensure_ascii=False, indent=2), encoding='utf-8')
 
+    @unittest.skipUnless(os.environ.get('VWA_MCP_SDK_PYTHON') and os.environ.get('VWA_MCP_EXPORT_RUNTIME'),
+                         'Optional SDK and real export runtime not configured')
+    def test_real_supervised_lyrics_to_project_workflow(self):
+        parent = APP / 'work/mcp-supervised'
+        parent.mkdir(parents=True, exist_ok=True)
+        with temporary_workspace(parent) as root:
+            config = fixtures(root)
+            value = json.loads(config.read_text(encoding='utf-8'))
+            value['export_runtime'] = os.environ['VWA_MCP_EXPORT_RUNTIME']
+            config.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
+            result = subprocess.run([os.environ['VWA_MCP_SDK_PYTHON'], '-B', str(Path(__file__).resolve()),
+                '--workflow-client', str(config)], cwd=APP, capture_output=True,
+                env=dict(os.environ, VWA_MCP_WORKER_PYTHON=sys.executable,
+                         TEMP=str(root), TMP=str(root), PYTHONUTF8='1'), timeout=140)
+            reports = APP / 'work/test-results'
+            reports.mkdir(parents=True, exist_ok=True)
+            (reports / 'mcp-supervised-client.log').write_bytes(result.stdout + result.stderr)
+            self.assertEqual(result.returncode, 0, (result.stdout + result.stderr).decode('utf-8', errors='replace')[-8000:])
+            receipt = json.loads(result.stdout)
+            self.assertTrue(receipt['project_ready'])
+            (reports / 'mcp-supervised-client.json').write_text(json.dumps(receipt, ensure_ascii=False, indent=2), encoding='utf-8')
+
+
+async def workflow_contract(configuration):
+    import asyncio
+    from mcp import Client
+    from mcp.client.stdio import StdioServerParameters
+    sys.path.insert(0, str(APP))
+    from agent_control import io_path
+    config = json.loads(configuration.read_text(encoding='utf-8'))
+    params = StdioServerParameters(command=sys.executable,
+        args=['-B','-u',str(Path(config['application_root'])/'agent_mcp.py'),'--config',str(configuration)],
+        env={'PYTHONUTF8':'1','PYTHONDONTWRITEBYTECODE':'1'})
+    checks = []; calls = []
+    def check(condition, label):
+        if not condition:
+            raise AssertionError(label)
+        checks.append(label)
+    async def call(client, name, arguments, error=False):
+        response = await client.call_tool(name, arguments)
+        calls.append({'tool':name, 'error':response.is_error})
+        if error:
+            check(response.is_error, 'rejected_'+name)
+            return
+        if response.is_error:
+            raise AssertionError(name+': '+str(response.content))
+        return response.structured_content['data']
+    async def wait(client, flow):
+        deadline = asyncio.get_running_loop().time()+90
+        while asyncio.get_running_loop().time()<deadline:
+            value = await call(client,'vwa_workflow_get',{'workflow_id':flow['id']})
+            operation = value.get('operation')
+            if operation and operation['state'] in ('succeeded','failed','cancelled','interrupted'):
+                check(operation['state']=='succeeded', 'operation_'+operation['request']['action']+str(operation.get('error','')))
+                return value
+            await asyncio.sleep(.1)
+        raise AssertionError('supervised operation timeout')
+    def version(flow, **kwargs):
+        return {'workflow_id':flow['id'],'expected_revision':flow['revision'],**kwargs}
+    original = configuration.parent/'exchange/review.mid'
+    original_sha = hashlib.sha256(original.read_bytes()).hexdigest()
+    async with Client(params,read_timeout_seconds=80) as client:
+        # The real link plan is validated without downloading or running models.
+        link_plan = await call(client,'vwa_preparation_plan',{'source':'https://www.bilibili.com/video/BV1xx411c7mD/',
+            'options':{'language':'zh','voice_mode':'single','lyrics':'山河'}})
+        check(link_plan['kind']=='preparation','real_link_preparation_plan')
+        await call(client,'vwa_preparation_plan',{'source':'https://example.com/a-song'},error=True)
+        artifact = await call(client,'vwa_assets_import',{'path':str(original)})
+        flow = await call(client,'vwa_workflow_create',{'score_artifact_id':artifact['id'],
+            'options':{'language':'zh'},'brief':'首句克制思乡，少量戏腔。','reference_lyrics':'山河',
+            'idempotency_key':'supervised-demo'})
+        check(flow['stage']=='review' and flow['next']['tool']=='vwa_workflow_review','review_gate_and_next_tool')
+        unchanged = await call(client,'vwa_workflow_advance',version(flow))
+        check(unchanged['stage']=='review' and unchanged['revision']==flow['revision'],'cannot_skip_review')
+        bundle = await call(client,'vwa_workflow_review',{'workflow_id':flow['id'],'limit':1})
+        check(bundle['total_notes']==2 and bundle['next_offset']==1,'review_note_pagination')
+        score = await call(client,'vwa_score_read',{'artifact_id':artifact['id']})
+        await call(client,'vwa_workflow_apply_review',version(flow,rationale=''),error=True)
+        flow = await call(client,'vwa_workflow_apply_review',version(flow,
+            rationale='两音歌词缺失；明确补入山河，首音按谱升高半音，第二音保持。',
+            lyric_edits=[{'note_id':note['note_id'],'lyric':lyric,'operation':'insert'}
+                         for note,lyric in zip(score['notes'],('山','河'))],
+            note_edits=[{'note_id':score['notes'][0]['note_id'],'pitch':61}]))
+        await call(client,'vwa_workflow_advance',{'workflow_id':flow['id'],'expected_revision':0},error=True)
+        flow = await wait(client,flow)
+        flow = await call(client,'vwa_workflow_advance',version(flow))
+        check(flow['stage']=='reviewed','review_decision_consumed')
+        corrected = await call(client,'vwa_score_read',{'artifact_id':flow['score_artifact_id']})
+        check(corrected['notes'][0]['pitch']==61 and [n['lyric'] for n in corrected['notes']]==['山','河'],
+              'lyrics_and_pitch_corrected_together')
+        check(hashlib.sha256(original.read_bytes()).hexdigest()==original_sha,'original_midi_unchanged')
+        flow = await call(client,'vwa_workflow_advance',version(flow))
+        flow = await wait(client,flow)
+        flow = await call(client,'vwa_workflow_advance',version(flow))
+        check(flow['stage']=='project_ready','verified_svp_exported')
+        context = await call(client,'vwa_context_read',{'artifact_id':flow['project_artifact_id']})
+        first = next(note for note in context['notes'] if note.get('singing'))
+        proposal = {'track_indices':[first['track_index']],'brief':'首句克制思乡，少量戏腔。','regions':[{
+            'start':first['start_seconds']+.01,'end':first['end_seconds']-.01,
+            'preset':'sad','strength':.5,'style_pitch':True,'style_technique':'chinese_opera',
+            'technique_strength':.3,'technique_pitch':True,'rationale':'按创作背景保留山字的完整时值并轻收起音。',
+            'evidence_refs':[first['note_id']]}]}
+        flow = await call(client,'vwa_workflow_advance',version(flow,style_proposal=proposal))
+        flow = await wait(client,flow)
+        flow = await call(client,'vwa_workflow_advance',version(flow))
+        check(flow['completed'] and flow['stage']=='ready','editable_styled_project_ready')
+        final = flow['final_artifacts'][0]
+        data = json.loads(io_path(final['path']).read_text(encoding='utf-8-sig').rstrip('\0'))
+        notes = [note for track in data['tracks'] for note in track.get('mainGroup',{}).get('notes',[])]
+        check([note['lyrics'] for note in notes]==['山','河'] and notes[0]['pitch']==61,'exported_project_keeps_corrected_score_and_lyrics')
+        check(flow['next']['external_handoff']=='voice_synthesis_if_requested','project_completion_is_not_voice_synthesis')
+    return {'project_ready':True,'checks':checks,'calls':calls,'workflow_id':flow['id'],
+            'final_artifacts':flow['final_artifacts'],'model_inference':False,'synthesis':False}
+
 
 if __name__ == '__main__':
     if len(sys.argv) == 3 and sys.argv[1] == '--client':
         import asyncio
         print(json.dumps(asyncio.run(client_contract(Path(sys.argv[2]))), ensure_ascii=False))
+    elif len(sys.argv) == 3 and sys.argv[1] == '--workflow-client':
+        import asyncio
+        print(json.dumps(asyncio.run(workflow_contract(Path(sys.argv[2]))), ensure_ascii=False))
     else:
         unittest.main()

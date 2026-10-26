@@ -512,6 +512,22 @@
     {
       "file": "packaging/requirements-mcp.lock.txt",
       "source": "packaging/requirements-mcp.lock.txt"
+    },
+    {
+      "file": "agent_preparation.py",
+      "source": "src/agent_preparation.py"
+    },
+    {
+      "file": "agent_lyrics.py",
+      "source": "src/agent_lyrics.py"
+    },
+    {
+      "file": "agent_exports.py",
+      "source": "src/agent_exports.py"
+    },
+    {
+      "file": "agent_workflow.py",
+      "source": "src/agent_workflow.py"
     }
   ]
 }

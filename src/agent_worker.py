@@ -26,6 +26,16 @@ def dispatch(control, action, arguments):
             safe_path(path / name, [path])
         from progress_state import snapshot
         return {'id': arguments['job_id'], 'path': str(path), **snapshot(path)}
+    if action == 'preparation_plan':
+        from agent_preparation import plan_preparation
+        source = arguments['source']
+        if Path(source).is_absolute():
+            safe_path(source, control.assets)
+        return plan_preparation(source, arguments.get('options'))
+    if action == 'preparation_create':
+        from agent_preparation import create_preparation
+        parent = safe_path(arguments['parent'], control.jobs)
+        return create_preparation(arguments['plan'], parent)
     path = safe_path(arguments['path'], [control.state, *control.assets, *control.jobs])
     if action in ('score_read', 'score_review', 'score_plan'):
         from agent_score import read_score, review_score, plan_patch
@@ -39,6 +49,23 @@ def dispatch(control, action, arguments):
         if action == 'context_read':
             return read_context(path, arguments.get('track_indices'))
         return plan_style(path, arguments['proposal'])
+    if action in ('lyrics_read', 'lyrics_review', 'lyrics_plan'):
+        from agent_lyrics import read_lyrics, review_lyrics, plan_lyrics_patch
+        if action == 'lyrics_read':
+            return read_lyrics(path, arguments.get('language','zh'))
+        if action == 'lyrics_review':
+            return review_lyrics(path, arguments.get('reference_text'), arguments.get('language','zh'))
+        return plan_lyrics_patch(path, arguments['expected_sha256'], arguments['edits'])
+    if action == 'export_plan':
+        from agent_exports import plan_export
+        return plan_export(path, arguments.get('formats'), arguments.get('options'))
+    if action == 'review_bundle':
+        from agent_score import read_score, review_score
+        from agent_lyrics import read_lyrics, review_lyrics
+        language = arguments.get('language','zh')
+        return {'score':read_score(path), 'score_review':review_score(path),
+                'lyrics':read_lyrics(path,language),
+                'lyric_review':review_lyrics(path,arguments.get('reference_text'),language)}
     raise ControlError('unsupported_action', '不支持该业务调用。')
 
 

@@ -53,6 +53,27 @@ class StyleProposal(StrictModel):
     regions: list[StyleRegion] = Field(min_length=1, max_length=256)
 
 
+class PreparationOptions(StrictModel):
+    language: Literal['zh','ja'] = 'zh'
+    lyrics: str = Field(default='', max_length=100000)
+    backing_lyrics: str = Field(default='', max_length=100000)
+    recognize_lyrics: bool = True
+    voice_mode: Literal['single','dual'] = 'dual'
+    midi_backend: Literal['v1','v2'] | None = None
+    alignment_engine: Literal['hfa','tifa'] = 'hfa'
+    midi_steps: Literal[8,16,32] = 16
+    bpm: float | None = Field(default=None, gt=0, le=1000)
+    separation_device: Literal['cpu','cuda','auto','dml'] | None = None
+    midi_device: Literal['cpu','cuda','auto','dml'] | None = None
+    cpu_threads: int | None = Field(default=None, ge=1, le=128)
+
+
+class LyricEdit(StrictModel):
+    note_id: str = Field(min_length=1, max_length=180)
+    lyric: str = Field(max_length=256)
+    operation: Literal['replace','insert']
+
+
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 
@@ -60,7 +81,13 @@ WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHin
 def build_server(config_path):
     control = Control(config_path)
     mcp = MCPServer('VWA Agent', version='0.1.0', log_level='WARNING', instructions=(
-        '先读取 vwa_system_capabilities。素材通过 vwa_assets_import 导入独立快照。'
+        '先读取 vwa_system_capabilities。首选一体化 vwa_workflow_create：传歌曲链接/本地音乐，'
+        '或 score_artifact_id。之后读取工作流 next 字段，按工具和当前 revision 连续推进，'
+        '运行中按 after_seconds 查询。到 review 时使用 workflow_review 核对音符和歌词，'
+        '用 workflow_apply_review 提交修改或有理由的保留决策；没有实际核对不得跳过。'
+        '创作背景非空时，从导出 SVP 的 context_read 填写显式 style_proposal，再 advance。'
+        '最终 completed=true 表示得到工程；合成/投稿另有交接。'
+        '低层素材通过 vwa_assets_import 导入独立快照。'
         'MIDI 流程为 read/review → patch_plan → 检查 diff → patch_apply → operations_get。'
         '风格流程为 context_read → 调用方结合用户语义填写 style_plan → 检查整音符范围与理由'
         ' → tuning_start → tuning_result。调用方负责语义判断；服务不会隐式调用模型。'
@@ -176,9 +203,109 @@ def build_server(config_path):
             return value
         return await invoke(result)
 
+    @mcp.tool(annotations=WRITE)
+    async def vwa_preparation_plan(source: str, options: PreparationOptions | None = None) -> Result:
+        """验证 B站链接/BV 或允许目录内音乐的准备方案，记录歌词/识别选项；不推理。"""
+        return await invoke(control.preparation_plan, source,
+            options.model_dump(exclude_unset=True, exclude_none=True) if options else {})
+
+    @mcp.tool(annotations=WRITE)
+    async def vwa_preparation_create(plan_id: str) -> Result:
+        """从准备方案创建独立任务并登记请求摘要；同方案重试复用原任务。"""
+        return await invoke(control.preparation_create, plan_id)
+
+    @mcp.tool(annotations=WRITE)
+    async def vwa_preparation_start(job_id: str, idempotency_key: str,
+            until: Literal['metadata','download','audio','separation','midi'] | None = None) -> Result:
+        """运行/续跑本服务创建的准备任务，复用真实阶段回执；包含下载和模型步骤。"""
+        return await invoke(control.preparation_start, job_id, until, idempotency_key)
+
+    @mcp.tool(annotations=READ)
+    async def vwa_lyrics_read(artifact_id: str, language: Literal['zh','ja'] = 'zh') -> Result:
+        """读取 MIDI 歌词与音符/时间关系，保留歧义、孤立歌词和未知读音。"""
+        return await invoke(control.lyrics_read, artifact_id, language=language)
+
+    @mcp.tool(annotations=READ)
+    async def vwa_lyrics_review(artifact_id: str, reference_text: str | None = None,
+                                language: Literal['zh','ja'] = 'zh') -> Result:
+        """核对 MIDI 漏词、重复、错位和参考歌词覆盖；一字多音等仅列为待审线索。"""
+        return await invoke(control.lyrics_read, artifact_id, reference_text, language, True)
+
+    @mcp.tool(annotations=WRITE)
+    async def vwa_lyrics_patch_plan(artifact_id: str, expected_sha256: str,
+            edits: Annotated[list[LyricEdit], Field(min_length=1, max_length=4096)]) -> Result:
+        """验证替换/插入歌词的音符级 diff，不改变 MIDI 音高、节奏或其他事件。"""
+        return await invoke(control.make_plan, 'lyrics', artifact_id, expected_sha256=expected_sha256,
+                            edits=[edit.model_dump() for edit in edits])
+
+    @mcp.tool(annotations=WRITE)
+    async def vwa_lyrics_patch_apply(plan_id: str, idempotency_key: str) -> Result:
+        """按已检查方案生成独立歌词修正 MIDI 与回执。"""
+        return await invoke(control.start_plan, plan_id, 'lyrics', idempotency_key)
+
+    @mcp.tool(annotations=WRITE)
+    async def vwa_exports_plan(artifact_id: str, formats: list[Literal['svp','ustx','vsqx']] | None = None,
+                               options: dict[str, Any] | None = None) -> Result:
+        """从当前修正 MIDI 规划可编辑工程导出，列明歌词、音符和格式转换限制。"""
+        return await invoke(control.make_plan, 'export', artifact_id, formats=formats, options=options)
+
+    @mcp.tool(annotations=WRITE)
+    async def vwa_exports_start(plan_id: str, idempotency_key: str) -> Result:
+        """用真实转换器导出并回读校验工程，保留独立候选及转换回执。"""
+        return await invoke(control.start_plan, plan_id, 'export', idempotency_key)
+
+    def workflow():
+        from agent_workflow import Workflow
+        return Workflow(control)
+
+    @mcp.tool(annotations=WRITE)
+    async def vwa_workflow_create(source: str = '', options: PreparationOptions | None = None,
+            brief: str = '', reference_lyrics: str = '', score_artifact_id: str | None = None,
+            formats: list[Literal['svp','ustx','vsqx']] | None = None,
+            idempotency_key: str | None = None) -> Result:
+        """一体化入口：歌曲链接/音乐，或已有 MIDI → 核对歌词与音符 → 工程 → 可选风格。"""
+        return await invoke(workflow().create, source,
+            options.model_dump(exclude_unset=True, exclude_none=True) if options else {},
+            brief, reference_lyrics, score_artifact_id, formats, idempotency_key)
+
+    @mcp.tool(annotations=READ)
+    async def vwa_workflow_get(workflow_id: str, include_details: bool = False) -> Result:
+        """查看修订、实际进度、工程和下一步；默认简洁，include_details 可读完整回执。"""
+        return await invoke(workflow().get, workflow_id, include_details)
+
+    @mcp.tool(annotations=READ)
+    async def vwa_workflow_review(workflow_id: str, limit: int = 100, offset: int = 0) -> Result:
+        """一次获取音符与歌词核对证据，分页音符表并提示下一步提交决策。"""
+        return await invoke(workflow().review, workflow_id, limit, offset)
+
+    @mcp.tool(annotations=WRITE)
+    async def vwa_workflow_apply_review(workflow_id: str, expected_revision: int, rationale: str,
+            note_edits: list[ScoreEdit] | None = None, lyric_edits: list[LyricEdit] | None = None) -> Result:
+        """提交有理由的核对结论；歌词和音符可一次修正，后台安全重映射版本 ID。"""
+        return await invoke(workflow().apply_review, workflow_id, expected_revision, rationale,
+            [edit.model_dump(exclude_none=True) for edit in note_edits] if note_edits else [],
+            [edit.model_dump() for edit in lyric_edits] if lyric_edits else [])
+
+    @mcp.tool(annotations=WRITE)
+    async def vwa_workflow_advance(workflow_id: str, expected_revision: int,
+            style_proposal: StyleProposal | None = None, retry: bool = False, finish: bool = False) -> Result:
+        """按当前阶段推进准备、回填结果、导出或风格；冲突需重读版本，失败可显式重试。"""
+        return await invoke(workflow().advance, workflow_id, expected_revision,
+            style_proposal.model_dump() if style_proposal else None, retry, finish)
+
     @mcp.resource('vwa://capabilities')
     def capabilities_resource() -> str:
         return json.dumps(control.capabilities(), ensure_ascii=False, indent=2)
+
+    @mcp.resource('vwa://workflow')
+    def workflow_resource() -> str:
+        return ('歌曲到工程：优先 vwa_workflow_create(source=含BV号的B站链接，brief=用户背景，'
+                'reference_lyrics=已获准参考歌词)。已有 MIDI 先 assets_import，再以 score_artifact_id 创建。'
+                '连续按 next.tool/arguments 操作；运行中遵守 after_seconds，冲突先 get 重读 revision。'
+                'review 时获取分页证据，综合音符和歌词作决定，再 apply_review。缺词/重复/错位是线索，'
+                '延音、一字多音和读音未知应保留歧义；缺依据不编歌词。可一次提交音符与歌词修改。'
+                '导出 SVP 后结合背景和 context_read 提供 style_proposal，再 advance；无风格需求可 finish。'
+                'completed 表示可编辑工程就绪，合成与投稿另有交接。详细操作回执由 operations_get 获取。')
 
     return mcp
 

@@ -1859,6 +1859,14 @@
     "tools/Setup-AgentMCP.ps1",
     "docs/AgentMCP.zh-CN.md",
     "packaging/agent-mcp.example.json",
-    "packaging/requirements-mcp.lock.txt"
+    "packaging/requirements-mcp.lock.txt",
+    "src/agent_preparation.py",
+    "src/agent_lyrics.py",
+    "src/agent_exports.py",
+    "src/agent_workflow.py",
+    "tests/test_agent_preparation.py",
+    "tests/test_agent_lyrics.py",
+    "tests/test_agent_exports.py",
+    "tests/test_agent_workflow.py"
   ]
 }
