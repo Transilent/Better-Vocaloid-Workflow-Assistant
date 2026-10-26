@@ -5,14 +5,20 @@ APP=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(APP))
 assert os.environ.get('BVWA_TESTING')=='1' and APP.parent.name=='test-sandboxes', 'Use tests/run_tests.py isolation'
 from PyQt5.QtCore import QEvent,QPoint,QPointF,Qt
-from PyQt5.QtGui import QMouseEvent,QWheelEvent
+from PyQt5.QtGui import QColor,QMouseEvent,QWheelEvent
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication,QComboBox,QVBoxLayout,QWidget
-from ui_components import choice,AdaptiveColumns,LyricsEdit,StyleTimeline
+from ui_components import (choice,AdaptiveColumns,LyricsEdit,STYLE_PRESET_COLORS,
+                           StyleTimeline,style_preset_color)
 from ui_preferences import AppearancePanel,merge_appearance,normalize,save_appearance
 from common import ROOT,atomic_json,workspace_state
 from vocal_expression import SV_QUARTER,TempoMap
 application=QApplication([])
+style_colors={'gentle':'#187f78','sad':'#8a5ba8','bold':'#b26519'}
+for preset,expected in style_colors.items():
+    assert STYLE_PRESET_COLORS[preset]==expected
+    color=style_preset_color(preset)
+    assert isinstance(color,QColor) and color.isValid() and color.name()==expected
 owner=QWidget();layout=QVBoxLayout(owner)
 combo=QComboBox();combo.addItem('中文','zh');combo.addItem('日语','ja')
 view=choice(combo,columns=2,compact=True);layout.addWidget(view)
@@ -63,6 +69,22 @@ owner.update();application.processEvents();assert backdrop._pixmap.cacheKey()==k
 owner.close();columns.close();panel.close();application.processEvents()
 print('PASS: real choice events/model changes/unset/disabled, multiline compatibility, responsive reflow, appearance merge/init guards and cached material')
 
+# The themed preview owns a separate window. Run it after the keyboard fixture
+# closes, so it cannot steal that fixture's focus or change its initial palette.
+style_combo=QComboBox()
+for preset in style_colors:style_combo.addItem(preset,preset)
+style_combo.setProperty('stylePresetChoices',True)
+style_view=choice(style_combo);style_owner=QWidget();style_layout=QVBoxLayout(style_owner)
+style_layout.addWidget(style_view);style_owner.resize(520,300);style_owner.show();application.processEvents()
+from desktop_theme import apply_theme
+apply_theme(style_owner,'light');application.processEvents()
+style_sheet=style_owner.styleSheet()
+for index,(preset,expected) in enumerate(style_colors.items()):
+    button=style_view.buttons[index]
+    assert button.property('stylePreset')==preset
+    assert f'QRadioButton[stylePreset="{preset}"] {{ border-color: {expected};' in style_sheet,preset
+style_owner.close();application.processEvents()
+
 # Real offscreen interaction for the style timeline. Use the same TempoMap as
 # export so a blick offset and a tempo change are checked at display geometry.
 quarter=SV_QUARTER
@@ -78,6 +100,9 @@ timeline_project={
          'mainGroup':{'notes':[{'onset':0,'duration':quarter,'pitch':55,'lyrics':'c'}]}}]}
 project_frozen=copy.deepcopy(timeline_project)
 timeline=StyleTimeline();timeline.resize(720,320);timeline.show();application.processEvents()
+assert timeline._canvas.RULER_HEIGHT==64
+assert timeline._canvas.REGION_LANE_TOP==26
+assert timeline._canvas.REGION_HANDLE_WIDTH==14
 assert timeline.pitch_height()>=36,'The default piano roll must draw readable note rows'
 assert math.isclose(timeline.zoom_factor(),3.25,rel_tol=1e-9,abs_tol=1e-9)
 assert timeline._canvas.pixels_per_second>=240,'The default timeline must leave enough horizontal detail for notes'
@@ -135,9 +160,28 @@ regions=[{'start':.8,'end':2.2,'preset':'gentle','strength':.6},
          {'start':20,'end':30,'label':'B','preset':'bold'}]
 regions_frozen=copy.deepcopy(regions);timeline.set_regions(regions);application.processEvents()
 assert regions==regions_frozen,'Timeline must not mutate region records'
-assert [row['label'] for row in timeline._canvas._regions][0] in ('柔和','Gentle','やわらか')
-assert timeline._canvas._regions[2]['label'] in ('悲伤','Sad','悲しみ')
-assert timeline._canvas._regions[2]['color'].name()=='#8a5ba8'
+shown_regions=timeline._canvas._regions
+assert [row['preset'] for row in shown_regions]==['gentle','bold','sad','bold']
+assert [row['color'].name() for row in shown_regions]==[style_colors['gentle'],style_colors['bold'],style_colors['sad'],style_colors['bold']]
+assert shown_regions[0]['label'] in ('柔和','Gentle','やわらか')
+assert shown_regions[2]['label'] in ('悲伤','Sad','悲しみ')
+assert shown_regions[1]['label']=='A' and shown_regions[3]['label']=='B','Custom labels were not preserved'
+# Keep both handles inside the viewport for the rendering check. The far-away
+# region expands scene margins, so the default phrase zoom can clip this one.
+ruler_zoom=timeline.zoom_factor();timeline.set_zoom(1.0);bar.setValue(0);application.processEvents()
+ruler_image=timeline._ruler_header.grab().toImage();lane_top=timeline._canvas.REGION_LANE_TOP;lane_bottom=timeline._canvas.RULER_HEIGHT
+assert not ruler_image.isNull()
+def light_pixel_count(x0,x1):
+    return sum(1 for y in range(lane_top+2,lane_bottom-2)
+               for x in range(max(0,int(x0)),min(ruler_image.width(),int(x1)))
+               if min(ruler_image.pixelColor(x,y).getRgb()[:3])>=230)
+first=shown_regions[0];offset=bar.value()+timeline._canvas.PIANO_WIDTH
+first_left=timeline._canvas.time_to_x(first['start'])-offset;first_right=timeline._canvas.time_to_x(first['end'])-offset
+assert first_right-first_left>=2*timeline._canvas.REGION_HANDLE_WIDTH
+assert light_pixel_count(first_left,first_left+timeline._canvas.REGION_HANDLE_WIDTH)>=4,'Left resize handle is not visible'
+assert light_pixel_count(first_right-timeline._canvas.REGION_HANDLE_WIDTH,first_right)>=4,'Right resize handle is not visible'
+assert light_pixel_count(first_left+timeline._canvas.REGION_HANDLE_WIDTH+5,first_right-timeline._canvas.REGION_HANDLE_WIDTH-5)>=4,'Region text is not visible'
+timeline.set_zoom(ruler_zoom);bar.setValue(0);application.processEvents()
 
 # Custom labels must not bypass preset selection, including the first region
 # and a different style immediately after a sad region.
@@ -150,10 +194,38 @@ timeline.set_regions(labelled_regions);application.processEvents()
 assert labelled_regions==labelled_frozen
 shown=timeline._canvas._regions
 assert [row['label'] for row in shown]==[row['label'] for row in labelled_regions]
-assert shown[0]['color'].name()==shown[2]['color'].name()=='#8a5ba8'
-assert shown[1]['color'].name()!='#8a5ba8','A labelled bright region inherited the preceding sad colour'
-assert shown[3]['color'].name()!='#8a5ba8','A labelled region without a preset inherited the preceding sad colour'
+assert [row['preset'] for row in shown]==['sad','bold','sad',None]
+assert shown[0]['color'].name()==shown[2]['color'].name()==style_colors['sad']
+assert shown[1]['color'].name()==style_colors['bold'],'A labelled bright region inherited the preceding sad colour'
+assert shown[3]['color'].name() not in (style_colors['gentle'],style_colors['sad'],style_colors['bold']),'A labelled region without a preset inherited a fixed style colour'
+reordered=[labelled_regions[2],labelled_regions[1],
+           {'start':2.75,'end':3.1,'label':'Custom Gentle','preset':'gentle'},labelled_regions[3]]
+timeline.set_regions(reordered);application.processEvents()
+restacked=timeline._canvas._regions
+assert [row['preset'] for row in restacked]==['sad','bold','gentle',None]
+assert [row['color'].name() for row in restacked][:3]==[style_colors['sad'],style_colors['bold'],style_colors['gentle']]
+assert restacked[0]['color'].name()==shown[2]['color'].name() and restacked[1]['color'].name()==shown[1]['color'].name(),'Style colours changed when the clips were reordered'
 timeline.set_regions(regions);application.processEvents()
+timeline.set_selection(1.2,2.4)
+timeline.set_active_region(1);timeline.set_selection_style('gentle')
+assert timeline._canvas.selection_color().name()==style_colors['bold'],'The active region did not own the selection colour'
+timeline.set_active_region(-1)
+for preset,expected in style_colors.items():
+    timeline.set_selection_style(preset)
+    assert timeline._canvas.selection_color().name()==expected,'Blank selection did not use the selected style colour'
+timeline.set_selection_style('gentle')
+
+# A left press on the canvas clears the active style clip before starting a
+# new range. The signal and blank-selection colour must follow the tool style.
+canvas_region_selected=[];timeline.regionSelected.connect(canvas_region_selected.append)
+timeline.set_active_region(1);timeline.set_selection_style('sad')
+bar.setValue(min(bar.maximum(),max(bar.minimum(),120)));application.processEvents()
+canvas_y=timeline._canvas.RULER_HEIGHT+20;press_x=bar.value()+timeline._canvas.PIANO_WIDTH+100;release_x=press_x+80
+QTest.mousePress(timeline._canvas,Qt.LeftButton,pos=QPoint(press_x,canvas_y))
+QApplication.sendEvent(timeline._canvas,QMouseEvent(QEvent.MouseMove,QPointF(release_x,canvas_y),Qt.NoButton,Qt.LeftButton,Qt.NoModifier))
+QTest.mouseRelease(timeline._canvas,Qt.LeftButton,pos=QPoint(release_x,canvas_y));application.processEvents()
+assert canvas_region_selected==[-1] and timeline._canvas._active_region==-1
+assert timeline._canvas.selection_color().name()==style_colors['sad'],'New canvas selection did not use the tool style colour'
 
 timeline.set_selection(1.2,2.4);assert timeline.selection()==(1.2,2.4)
 assert timeline.set_selection(2.4,1.2)==(1.2,2.4)
@@ -228,7 +300,7 @@ editor_regions=[{'start':2.4,'end':3.4,'preset':'gentle'},{'start':4.2,'end':7.0
 editor_regions_frozen=copy.deepcopy(editor_regions)
 timeline.set_project(editor_project,[0]);timeline.set_regions(editor_regions);timeline.set_snap_enabled(False);timeline.set_zoom(.9);application.processEvents()
 assert timeline._canvas.pitch_to_y(60)-timeline._canvas.pitch_to_y(61)>=36,'Piano rows are too small to read and target'
-bar=timeline._view.horizontalScrollBar();piano_width=timeline._canvas.PIANO_WIDTH;header=timeline._ruler_header;lane_y=timeline._canvas.RULER_HEIGHT-6
+bar=timeline._view.horizontalScrollBar();piano_width=timeline._canvas.PIANO_WIDTH;header=timeline._ruler_header;lane_y=timeline._canvas.REGION_LANE_TOP+(timeline._canvas.RULER_HEIGHT-timeline._canvas.REGION_LANE_TOP)//2
 bar.setValue(min(bar.maximum(),max(bar.minimum(),round(timeline._canvas.time_to_x(5.6)-piano_width-300))));application.processEvents()
 def ruler_x(seconds):
     return int(round(timeline._canvas.time_to_x(seconds)-bar.value()-piano_width))
@@ -242,6 +314,19 @@ timeline.set_active_region(99);assert timeline._canvas._active_region==-1
 QTest.mouseClick(header,Qt.LeftButton,pos=QPoint(target_x,lane_y));application.processEvents()
 assert region_selected==[1] and timeline._canvas._active_region==1
 assert not region_edits and editor_regions==editor_regions_frozen,'A region click selected but also edited caller data'
+
+# A visible handle is a 14px band with a 12px resize hit target. Pressing
+# inside that band must resize the named edge rather than moving the clip.
+handle_inset=timeline._canvas.REGION_HANDLE_WIDTH-3
+region_edits.clear();handle_start=ruler_x(target_start)+handle_inset
+handle_end=handle_start+16
+timeline_drag(header,QPoint(handle_start,lane_y),QPoint(handle_end,lane_y))
+assert len(region_edits)==1 and abs(region_edits[-1][2]-target_end)<1e-9 and region_edits[-1][1]>target_start,'An 11px left-handle grab did not resize the left edge'
+region_edits.clear();handle_end=ruler_x(target_end)-handle_inset
+handle_start=handle_end-16
+timeline_drag(header,QPoint(handle_end,lane_y),QPoint(handle_start,lane_y))
+assert len(region_edits)==1 and abs(region_edits[-1][1]-target_start)<1e-9 and region_edits[-1][2]<target_end,'An 11px right-handle grab did not resize the right edge'
+assert editor_regions==editor_regions_frozen
 
 # A sub-two-pixel press/move/release stays a click, including while snapping is
 # on, so selecting a region cannot silently nudge it onto a nearby note edge.
@@ -283,7 +368,8 @@ timeline_drag(header,QPoint(upper_start,8),QPoint(upper_end,8))
 expected_selection=sorted((timeline._canvas.x_to_time(bar.value()+piano_width+upper_start),timeline._canvas.x_to_time(bar.value()+piano_width+upper_end)))
 assert all(abs(a-b)<1e-9 for a,b in zip(timeline.selection(),expected_selection))
 assert region_selected==[-1] and timeline._canvas._active_region==-1 and not region_edits and editor_regions==editor_regions_frozen
-blank_start=ruler_x(3.55);blank_end=ruler_x(3.95);timeline.set_active_region(1);region_selected.clear();selection_changes.clear()
+# Keep the blank drag beyond both enlarged resize hit zones in this gap.
+blank_start=ruler_x(3.65);blank_end=ruler_x(3.95);timeline.set_active_region(1);region_selected.clear();selection_changes.clear()
 timeline_drag(header,QPoint(blank_start,lane_y),QPoint(blank_end,lane_y))
 expected_selection=sorted((timeline._canvas.x_to_time(bar.value()+piano_width+blank_start),timeline._canvas.x_to_time(bar.value()+piano_width+blank_end)))
 assert all(abs(a-b)<1e-9 for a,b in zip(timeline.selection(),expected_selection))
@@ -324,6 +410,41 @@ QApplication.sendEvent(timeline._canvas,QMouseEvent(QEvent.MouseMove,QPointF(pan
 QTest.mouseRelease(timeline._canvas,Qt.MiddleButton,pos=pan_end);application.processEvents()
 assert bar.value()<pan_h and vertical.value()<pan_v,'Middle-button drag did not pan both axes'
 region_edits.clear();assert editor_project==editor_project_frozen and editor_regions==editor_regions_frozen
+
+# The dedicated pan controls move only the viewport by roughly 65% of the
+# usable viewport width and leave the project, regions and selection untouched.
+bar.setValue((bar.minimum()+bar.maximum())//2);application.processEvents()
+assert timeline.pan_left_button.isEnabled() and timeline.pan_right_button.isEnabled()
+assert timeline.pan_left_button.arrowType()==Qt.LeftArrow and timeline.pan_right_button.arrowType()==Qt.RightArrow
+pan_state_before=(copy.deepcopy(editor_project),copy.deepcopy(editor_regions),timeline.selection(),timeline._canvas._active_region,timeline.zoom_factor())
+pan_origin=bar.value();step=max(80,round((timeline._view.viewport().width()-piano_width)*.65))
+QTest.mouseClick(timeline.pan_right_button,Qt.LeftButton);application.processEvents()
+assert bar.value()==min(bar.maximum(),pan_origin+step),'Right pan button did not advance by the viewport step'
+QTest.mouseClick(timeline.pan_left_button,Qt.LeftButton);application.processEvents()
+assert bar.value()==pan_origin,'Left pan button did not move the view back'
+assert (editor_project,editor_regions,timeline.selection(),timeline._canvas._active_region,timeline.zoom_factor())==pan_state_before,'Pan controls changed model or selection state'
+
+# Holding a clip drag at the ruler edge scrolls the view, while the pending
+# region edit remains local and is emitted exactly once when the button is released.
+autopan_regions=[{'start':2.0,'end':4.0,'preset':'bold'},{'start':9.0,'end':10.0,'preset':'gentle'}]
+autopan_frozen=copy.deepcopy(autopan_regions);timeline.set_regions(autopan_regions);application.processEvents()
+target_bar=round(timeline._canvas.time_to_x(2.0)-piano_width-100)
+bar.setValue(max(bar.minimum(),min(bar.maximum(),target_bar)));application.processEvents()
+region_edits.clear();autopan_start=QPoint(ruler_x(3.0),lane_y);autopan_end=QPoint(max(0,header.width()-2),lane_y)
+assert 0<autopan_start.x()<autopan_end.x()<header.width()
+QTest.mousePress(header,Qt.LeftButton,pos=autopan_start)
+QApplication.sendEvent(header,QMouseEvent(QEvent.MouseMove,QPointF(autopan_end),Qt.NoButton,Qt.LeftButton,Qt.NoModifier));application.processEvents()
+assert timeline._canvas._region_preview is not None and not region_edits,'Edge drag committed or failed to preview before release'
+assert isinstance(timeline._drag_pointer,tuple) and len(timeline._drag_pointer)==2
+assert isinstance(timeline._drag_pointer[0],QPoint) and timeline._edge_pan_timer.isActive()
+pan_before_tick=bar.value();timeline._pan_drag_tick();application.processEvents()
+assert bar.value()>pan_before_tick,'Ruler-edge drag did not auto-pan'
+assert not region_edits,'Auto-pan emitted a region edit before mouse release'
+QTest.mouseRelease(header,Qt.LeftButton,pos=autopan_end);application.processEvents()
+assert len(region_edits)==1 and region_edits[-1][0]==0,'Release did not commit exactly one region edit'
+assert autopan_regions==autopan_frozen and timeline._canvas._region_preview is None
+assert not timeline._edge_pan_timer.isActive() and timeline._drag_pointer is None
+timeline.set_regions(editor_regions);application.processEvents()
 
 # Fit uses the real toolbar button; selecting a range and zooming to it keeps
 # both endpoints visible and leaves the selected seconds unchanged.

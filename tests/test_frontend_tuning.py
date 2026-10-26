@@ -55,15 +55,29 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
     assert page.mode_choice.combo is page.mode
     shown_styles = [page.performance_style.itemData(i) for i in range(page.performance_style.count())]
     assert shown_styles == list(style_card_keys()) == list(visible_presets()) == ['none', 'gentle', 'sad', 'bold']
+    assert bool(page.performance_style.property('stylePresetChoices')) is True
+    assert [button.property('stylePreset') for button in page.performance_style_choice.buttons] == shown_styles
     assert style_card_label('bold') == '明亮欢快〔实验〕'
     assert '情绪（悲伤）' in style_card_description('sad')
     assert '声线（柔和）' in style_card_description('gentle')
     assert tuple(page.style_detail) == ('onset', 'sustain', 'connection', 'release')
     assert page.style_detail_toggle.text() == '分段细调' and not page.style_detail_toggle.isChecked()
     assert [page.style_mode.itemData(i) for i in range(page.style_mode.count())] == ['whole', 'regions']
-    assert isinstance(page.style_timeline, StyleTimeline) and page.style_region_panel.isHidden()
-    assert page.style_region_panel.parentWidget() is page.form
-    assert page.form.layout().indexOf(page.style_region_panel)>page.form.layout().indexOf(page.workspace)
+    assert isinstance(page.style_timeline, StyleTimeline)
+    assert isinstance(page.region_editor_entry,QWidget) and page.region_editor_entry.isHidden()
+    assert page.style_card.objectName() == 'card' and page.style_card.isAncestorOf(page.region_editor_entry)
+    assert page.start_style_editor_button.text() == '开始编辑'
+    assert page.start_style_editor_button.property('role') == 'primary'
+    assert page.start_style_editor_button.minimumHeight() == 68
+    assert page.fullscreen_region_button is page.start_style_editor_button
+    assert page._region_storage.parentWidget() is page and page._region_storage.isHidden()
+    assert page._region_embed_layout is page._region_storage.layout()
+    assert type(page.style_region_panel) is QWidget
+    assert page.style_region_panel.parentWidget() is page._region_storage
+    assert page._region_embed_layout.indexOf(page.style_region_panel) >= 0
+    assert page.style_region_panel.isHidden() and page._region_storage.isHidden()
+    assert page.form.layout().indexOf(page.style_region_panel) == -1
+    assert page.form.layout().indexOf(page._region_storage) == -1
     assert page.style_timeline.minimumHeight()==340
     assert isinstance(page.region_start_editor,QDoubleSpinBox) and page.region_start_editor.decimals()==3
     assert isinstance(page.region_end_editor,QDoubleSpinBox) and page.region_end_editor.decimals()==3
@@ -78,6 +92,7 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
     assert page.region_strength_choice.combo is page.style_strength
     assert page.performance_style_choice.combo is page.performance_style
     assert page.style_strength_choice.combo is page.style_strength
+    assert [button.property('stylePreset') for button in page.region_style_choice.buttons] == shown_styles
     for signal in (page.style_timeline.regionSelected,page.style_timeline.regionEditRequested,
                    page.style_timeline.regionDeleteRequested):
         assert page.style_timeline.receivers(signal)>=1
@@ -88,14 +103,13 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
                         for i in range(page.style_region_panel.layout().count()))
                         if isinstance(item.layout(),FlowLayout) and
                         item.layout().indexOf(page.add_region_button)>=0)
-    page.style_region_panel.show()
     region_actions._do_layout(QRect(0,0,320,220),False)
     region_buttons=(page.add_region_button,page.update_region_button,page.delete_region_button,
                     page.clear_regions_button,page.undo_region_button,page.redo_region_button)
     assert min(button.geometry().left() for button in region_buttons)>=0
     assert max(button.geometry().right() for button in region_buttons)<=319
     assert len({button.geometry().y() for button in region_buttons})>1
-    page.style_region_panel.hide()
+    assert page._region_storage.isHidden() and page.style_region_panel.isHidden()
     assert 'style_regions' not in page.preferences()
     assert all(editor.value() == 100 for editor in page.style_detail.values())
 
@@ -248,10 +262,17 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
                                                    'connection': 1.0, 'release': 1.0}
 
     page.style_mode.setCurrentIndex(page.style_mode.findData('regions'))
-    assert not page.style_region_panel.isHidden()
+    assert not page.region_editor_entry.isHidden()
+    assert page.style_card.isAncestorOf(page.region_editor_entry)
+    assert page.style_region_panel.isHidden() and page._region_storage.isHidden()
+    assert page._region_embed_layout.indexOf(page.style_region_panel) >= 0
     assert not page.style_timeline.isEnabled(), 'An empty page has no project timeline to draw'
+    assert not page.start_style_editor_button.isEnabled()
+    page.start_style_editor_button.click();application.processEvents()
+    assert page._region_dialog is None, 'The editor entry must stay disabled without a project'
     page.style_mode.setCurrentIndex(page.style_mode.findData('whole'))
-    assert page.style_region_panel.isHidden()
+    assert page.region_editor_entry.isHidden()
+    assert page.style_region_panel.isHidden() and page._region_storage.isHidden()
     page.performance_style.setCurrentIndex(page.performance_style.findData('none'))
     assert not page.style_detail_toggle.isEnabled()
     assert all(not editor.isEnabled() for editor in page.style_detail.values())

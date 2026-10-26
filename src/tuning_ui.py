@@ -12,13 +12,13 @@ import threading
 import time
 import uuid
 from PyQt5.QtCore import QThread,pyqtSignal,QUrl,Qt,QTimer
-from PyQt5.QtGui import QDesktopServices,QKeySequence
+from PyQt5.QtGui import QDesktopServices,QKeySequence,QIcon,QPixmap
 from PyQt5.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QLineEdit,QComboBox,QCheckBox,
     QSpinBox,QFileDialog,QTableWidget,QHeaderView,QPlainTextEdit,QProgressBar,QScrollArea,QFrame,QSizePolicy,
     QDialog,QListWidget,QDoubleSpinBox,QShortcut)
 from common import ROOT,atomic_json,workspace_state
 from desktop_theme import page,card,label,button,scroll_content,fold
-from ui_components import AdaptiveColumns,ChoiceGroup,FlowLayout,StyleTimeline,choice
+from ui_components import AdaptiveColumns,ChoiceGroup,FlowLayout,StyleTimeline,choice,style_preset_color
 from strength_control import PercentStrengthControl,StrengthControl,normalized_strength,percent_text,set_combo_strength,strength_choices
 
 
@@ -309,12 +309,26 @@ class TuningPage(QWidget):
         choice_area.addWidget(label(_tr('拖动滑条按 1% 调整，也可直接输入；0% 不应用。'),'muted'))
 
         style,style_area=card(_tr('04 · 风格与曲线'),_tr('选择演唱风格或情绪表达，再调整强度、音高与音色。'))
+        self.style_card=style
         style_column.addWidget(style)
         style_mode_label=label(_tr('风格应用方式'),'muted');style_area.addWidget(style_mode_label)
         self.style_mode=combo([(_tr('整轨'),'whole'),(_tr('时间片段'),'regions')])
         self.style_mode_choice=choice(self.style_mode,columns=2,compact=True);style_area.addWidget(self.style_mode_choice)
-        self.style_region_panel,region_layout=card(_tr('风格时间片段'),
-            _tr('点击上方片段选中；拖动移动，拖动边缘调整范围。'))
+        self.region_editor_entry=QWidget();entry_layout=QVBoxLayout(self.region_editor_entry)
+        entry_layout.setContentsMargins(0,4,0,4);entry_layout.setSpacing(8)
+        self.start_style_editor_button=button(_tr('开始编辑'),self.open_style_editor,'primary')
+        self.start_style_editor_button.setObjectName('style-editor-entry')
+        self.start_style_editor_button.setMinimumHeight(68)
+        self.start_style_editor_button.setToolTip(_tr('全屏编辑时间片段'))
+        self.fullscreen_region_button=self.start_style_editor_button
+        entry_layout.addWidget(self.start_style_editor_button)
+        self.style_editor_summary=label(_tr('尚未添加时间片段。'),'muted');entry_layout.addWidget(self.style_editor_summary)
+        style_area.addWidget(self.region_editor_entry);self.region_editor_entry.hide()
+        # The editor exists once, but lives outside the page until fullscreen.
+        self._region_storage=QWidget(self);self._region_storage.hide()
+        self._region_embed_layout=QVBoxLayout(self._region_storage)
+        self.style_region_panel=QWidget();region_layout=QVBoxLayout(self.style_region_panel)
+        region_layout.setContentsMargins(8,6,8,6)
         region_layout.setSpacing(10)
         self.style_timeline=StyleTimeline();self.style_timeline.selectionChanged.connect(self.region_selection_changed)
         self.style_timeline.setMinimumHeight(340)
@@ -372,10 +386,11 @@ class TuningPage(QWidget):
             self._region_shortcuts.append(shortcut)
         region_layout.addWidget(label(_tr('先在钢琴卷帘选择时间，再添加当前工具设置。片段不能重叠；执行不会在已有风格结果上继续叠加。'),'muted'))
         region_layout.addWidget(label(_tr('时间片段只改变所选实际目标轨的风格；参考、校准或沿用参数仍按现有整轨范围处理。'),'muted'))
-        self.style_region_panel.hide();form.addWidget(self.style_region_panel)
-        self._region_embed_layout=form
+        region_layout.addStretch(1)
+        self._region_embed_layout.addWidget(self.style_region_panel);self.style_region_panel.hide()
         style_area.addWidget(label(_tr('风格预设'),'muted'))
         self.performance_style=combo([(style_card_label(key),key) for key in style_card_keys()])
+        self.performance_style.setProperty('stylePresetChoices',True)
         for index in range(self.performance_style.count()):
             key=self.performance_style.itemData(index)
             self.performance_style.setItemData(index,style_card_description(key),Qt.ToolTipRole)
@@ -391,8 +406,7 @@ class TuningPage(QWidget):
         style_strength_label.setBuddy(self.style_strength_spin)
         region_tools=QWidget();tools=QVBoxLayout(region_tools);tools.setContentsMargins(0,0,0,0);tools.setSpacing(8)
         editor_header=QHBoxLayout();editor_header.addWidget(label(_tr('片段工具'),'muted'));editor_header.addStretch(1)
-        self.fullscreen_region_button=button(_tr('全屏编辑'),self.open_style_editor)
-        editor_header.addWidget(self.fullscreen_region_button);tools.addLayout(editor_header)
+        tools.addLayout(editor_header)
         self._fullscreen_shortcut=QShortcut(QKeySequence('F11'),self)
         self._fullscreen_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
         self._fullscreen_shortcut.activated.connect(self.open_style_editor)
@@ -674,7 +688,7 @@ class TuningPage(QWidget):
         self.style_timeline.set_active_region(index)
 
     def open_style_editor(self):
-        if self.processing_active or self.style_mode.currentData()!='regions':return
+        if self.processing_active or self.style_mode.currentData()!='regions' or self._style_timeline_data is None:return
         if self._region_dialog is not None:
             self._region_dialog.raise_();self._region_dialog.activateWindow();return
         dialog=QDialog(self.window());dialog.setWindowTitle(_tr('风格片段编辑器'))
@@ -694,7 +708,7 @@ class TuningPage(QWidget):
         self._region_embed_index=self._region_embed_layout.indexOf(self.style_region_panel)
         self._region_embed_layout.removeWidget(self.style_region_panel)
         scroll.setWidget(self.style_region_panel);self._region_dialog=dialog;self._region_dialog_scroll=scroll
-        self.fullscreen_region_button.hide();self.style_region_panel.show()
+        self.style_region_panel.show()
         settings_button.toggled.connect(scroll.setVisible)
         settings_button.setChecked(dialog.screen().availableGeometry().width()>=1100)
         scroll.setVisible(settings_button.isChecked())
@@ -713,8 +727,7 @@ class TuningPage(QWidget):
         self._region_dialog_scroll.takeWidget()
         self._timeline_embed_layout.insertWidget(self._timeline_embed_index,self.style_timeline)
         self._region_embed_layout.insertWidget(self._region_embed_index,self.style_region_panel)
-        self.style_region_panel.setVisible(self.style_mode.currentData()=='regions')
-        self.fullscreen_region_button.show()
+        self.style_region_panel.hide()
         for shortcut in self._region_shortcuts:shortcut.setParent(self)
         self._region_dialog=None;dialog.deleteLater();self._update_region_controls()
         def restore_view():
@@ -814,7 +827,8 @@ class TuningPage(QWidget):
     def style_mode_selected(self,*args):
         regions=self.style_mode.currentData()=='regions'
         if not regions and self._region_dialog is not None:self._region_dialog.close()
-        self.style_region_panel.setVisible(regions)
+        self.region_editor_entry.setVisible(regions)
+        self.style_region_panel.setVisible(self._region_dialog is not None)
         self._render_style_timeline_regions()
         self._refresh_style_hint()
         self._update_region_controls()
@@ -839,10 +853,12 @@ class TuningPage(QWidget):
             self.region_list.clear()
             for region in self.style_regions:
                 text=self._region_item_text(region);self.region_list.addItem(text)
-                self.region_list.item(self.region_list.count()-1).setToolTip(text)
+                item=self.region_list.item(self.region_list.count()-1);item.setToolTip(text)
+                swatch=QPixmap(16,16);swatch.fill(style_preset_color(region['preset']));item.setIcon(QIcon(swatch))
             if 0<=current<len(self.style_regions):self.region_list.setCurrentRow(current)
         finally:self.region_list.blockSignals(blocked)
         self.region_summary.setText(_tr('已添加 {0} 个时间片段；最多 128 个。',len(self.style_regions)) if self.style_regions else _tr('尚未添加时间片段。'))
+        self.style_editor_summary.setText(self.region_summary.text())
         self._render_style_timeline_regions()
         self._set_timeline_active_region(current)
         self._sync_region_time_editors()
@@ -887,7 +903,8 @@ class TuningPage(QWidget):
         if self._region_shortcuts:
             self._region_shortcuts[0].setEnabled(can_undo)
             self._region_shortcuts[1].setEnabled(can_redo);self._region_shortcuts[2].setEnabled(can_redo)
-        if regions_mode:self.style_region_panel.show()
+        self.region_editor_entry.setVisible(regions_mode)
+        self.style_region_panel.setVisible(self._region_dialog is not None)
 
     def _load_region_tool_settings(self,region):
         restoring=getattr(self,'_restoring_preferences',False)
@@ -1029,6 +1046,7 @@ class TuningPage(QWidget):
 
     def _refresh_style_hint(self):
         current=self.performance_style.currentData()
+        if hasattr(self,'style_timeline'):self.style_timeline.set_selection_style(current)
         text=style_card_description(current)
         source=getattr(self,'_style_migration_source',None)
         if isinstance(source,str) and ui_merged_preset(source)==current:

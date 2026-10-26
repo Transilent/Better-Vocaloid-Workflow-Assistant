@@ -29,6 +29,12 @@ semantic classifiers or calibrated responses from a target voicebank.
 Brightness, breathiness and distortion risk vary with the voicebank, version and
 settings. The user must synthesize and audition the result.
 
+On screen, styles keep fixed identifying colors: `gentle` is soft teal, `sad` is
+purple and `bold` is bright, cheerful orange. The color is bound to the style ID,
+not to segment creation order, list position or selection state. A segment uses
+that same style color in its style button, segment strip, range background and
+time selection.
+
 ## Segment strength and detail
 
 Overall application strength remains one value. The added `style_detail` record
@@ -73,21 +79,28 @@ The Tuning page provides two style-application modes:
 
 - **Whole track** applies one of the three visible style cards once to the
   selected actual target tracks.
-- **Time segments** show editable segment strips on the fixed ruler above a
-  read-only note view of the selected actual target tracks. Drag on the ruler or
-  note area to create a time selection. Click a segment strip to select it; drag
-  its middle to move it, or either edge to change its range. Esc cancels the
-  current drag or clears the selection; Delete removes the selected segment. Use
-  **Full project** and **Selection** to refit the view. Ctrl+wheel zooms around
-  the pointer, Shift+wheel scrolls horizontally, and dragging with the middle
-  mouse button pans. **Snap** is off by default; when enabled, it aligns to
+- **Time segments** selected in **Style & curves** show a large, prominent
+  **Start editing** button; the main page no longer embeds a separate piano-roll
+  card. The button opens the full-screen editor, which shows editable segment
+  strips on the fixed ruler above a read-only note view of the selected actual
+  target tracks. Drag on the ruler or note area to create a time selection. Click
+  a segment strip to select it; drag its middle to move it, or either edge to
+  change its range. Selected segments use larger edge handles: ◀ appears on the
+  left, ▶ on the right, and ↔ is shown as a resize cue. Esc cancels the current
+  drag or clears the selection; Delete removes the selected segment. A clear
+  horizontal scrollbar and **Move view left** and **Move view right** buttons
+  remain visible below the view. Use **Full project** and **Selection** to refit
+  the view. Ctrl+wheel zooms around the pointer, Shift+wheel scrolls horizontally,
+  and dragging with the middle mouse button pans. Dragging a segment near the
+  left or right edge auto-scrolls the view; releasing the drag commits one range
+  update. **Snap** is off by default; when enabled, it aligns to
   nearby note boundaries and holding Alt turns it off temporarily. This view
   edits only the start and end of style segments. It does not edit source notes,
   lyrics, voicebank settings or pitch curves, play audio, or synthesize a
   voicebank.
 
 In Time segments mode, enter **Start** and **End** in seconds (up to three
-decimal places), or create or adjust a time selection on the piano roll. Then
+decimal places), or create or adjust a time selection in the editor timeline. Then
 set the style, overall strength, four segment coefficients and added-pitch
 choice, and choose **Add**. Release a dragged segment, or edit the time fields
 and choose **Update**, to write its range back. Selecting a list row loads that
@@ -113,9 +126,9 @@ restores segments only when its input SHA matches; otherwise they remain
 cleared. Segment processing does not change notes, syllables, lyrics, voicebank
 settings or timing.
 
-The default piano-roll view uses 40 px note rows (notes paint at about 36 px), a 260 px/s time scale, and 11.5 pt lyric and piano-key labels. **Row height** changes only the display between 80%, 100%, 125% and 150%. **Readable** restores the default horizontal scale and centers the selection or current time; **Full project** and **Selection** remain available.
+A clear horizontal scrollbar and **Move view left** and **Move view right** buttons remain visible below the editor view. The default piano-roll view uses 40 px note rows (notes paint at about 36 px), a 260 px/s time scale, and 11.5 pt lyric and piano-key labels. **Row height** changes only the display between 80%, 100%, 125% and 150%. **Readable** restores the default horizontal scale and centers the selection or current time; **Full project** and **Selection** remain available.
 
-Use **Full screen** or F11 to make the piano roll the main area. The **Segment settings** panel on the right can be shown or hidden and starts collapsed on narrow screens. Exiting restores the same controls, segment data, and undo history. Colors follow VWA's light or dark theme; the view still edits only style-segment start and end times.
+Choose **Time segments** in **Style & curves** to reveal a large, prominent **Start editing** button. Choosing it opens the full-screen editor directly; the page does not embed a separate piano-roll card. F11 can also open or exit the editor. The **Segment settings** panel on the right can be shown or hidden and starts collapsed on narrow screens. Exiting returns to the original page and leaves only the entry; the same controls, segment data, selection, and undo history are retained. The interface follows VWA's light or dark theme, while each style keeps the fixed identifying color described above. The view still edits only style-segment start and end times.
 
 ## Pitch defaults and compatibility mapping
 

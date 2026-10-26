@@ -318,7 +318,16 @@
     "恢复清晰的音符大小和短句视野": "Restore clear note sizes and a phrase-level view.",
     "行高": "Row height",
     "音符行高": "Note row height",
-    "片段设置": "Segment settings"
+    "片段设置": "Segment settings",
+    "开始编辑": "Start editing",
+    "全屏编辑时间片段": "Full-screen time segment editor",
+    "拖动左边界调整开始时间": "Drag the left handle to adjust the start time",
+    "拖动右边界调整结束时间": "Drag the right handle to adjust the end time",
+    "拖动片段移动；靠近边缘自动滚动": "Drag the segment to move it; auto-scroll near an edge",
+    "向左移动视野": "Move view left",
+    "向右移动视野": "Move view right",
+    "中键拖动画面；Shift+滚轮横移": "Middle-drag to pan; Shift+wheel to scroll horizontally",
+    "拖动移动": "Drag to move"
   },
   "ja": {
     "界面语言": "表示言語",
@@ -639,6 +648,15 @@
     "恢复清晰的音符大小和短句视野": "音符サイズとフレーズ単位の見やすい表示に戻します。",
     "行高": "行の高さ",
     "音符行高": "ノート行の高さ",
-    "片段设置": "セグメント設定"
+    "片段设置": "セグメント設定",
+    "开始编辑": "編集を開始",
+    "全屏编辑时间片段": "時間セグメントを全画面で編集",
+    "拖动左边界调整开始时间": "左ハンドルをドラッグして開始時刻を調整",
+    "拖动右边界调整结束时间": "右ハンドルをドラッグして終了時刻を調整",
+    "拖动片段移动；靠近边缘自动滚动": "セグメントをドラッグして移動。端付近では自動スクロール",
+    "向左移动视野": "表示範囲を左へ移動",
+    "向右移动视野": "表示範囲を右へ移動",
+    "中键拖动画面；Shift+滚轮横移": "中ボタンのドラッグで画面を移動。Shift+ホイールで横スクロール",
+    "拖动移动": "ドラッグで移動"
   }
 }

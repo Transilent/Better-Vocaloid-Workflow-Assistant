@@ -118,6 +118,11 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
     assert page.style_scope.currentData()=='lead'
 
     page.style_mode.setCurrentIndex(page.style_mode.findData('regions'))
+    assert not page.region_editor_entry.isHidden()
+    assert page.fullscreen_region_button is page.start_style_editor_button
+    assert page.start_style_editor_button.isEnabled()
+    assert page.style_region_panel.isHidden() and page._region_storage.isHidden()
+    assert page._region_embed_layout.indexOf(page.style_region_panel)>=0
     page.apply_preferences({'performance_style':'gentle','style_strength':.4,
         'style_detail':{'onset':.5,'sustain':.75,'connection':.25,'release':1.0},'style_pitch':True})
     page.style_timeline.set_selection(.05,.35)
@@ -214,6 +219,7 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
         assert not page.delete_region_button.isEnabled() and not page.clear_regions_button.isEnabled()
         assert not page.undo_region_button.isEnabled() and not page.redo_region_button.isEnabled()
         assert not page.region_start_editor.isEnabled() and not page.region_end_editor.isEnabled()
+        assert not page.start_style_editor_button.isEnabled()
         page.undo_style_regions();page.redo_style_regions();page.style_timeline.regionEditRequested.emit(0,.9,1.1)
         page.style_timeline.regionDeleteRequested.emit(0)
         assert page.style_regions==before
@@ -222,7 +228,8 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
     # edits, selection, zoom and undo state, rather than recreating controls.
     page.refresh();page.region_list.setCurrentRow(0)
     original_timeline=page.style_timeline;fullscreen_before=copy.deepcopy(page.style_regions)
-    page.open_style_editor();application.processEvents()
+    assert page.start_style_editor_button.isEnabled()
+    page.start_style_editor_button.click();application.processEvents()
     dialog=page._region_dialog
     assert dialog is not None and dialog.isFullScreen()
     assert page._region_dialog_scroll.widget() is page.style_region_panel
@@ -243,6 +250,10 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
     dialog.close()
     for _ in range(6):application.processEvents()
     assert page._region_dialog is None and page._region_embed_layout.indexOf(page.style_region_panel)>=0
+    assert page.style_region_panel.parentWidget() is page._region_storage
+    assert page.style_region_panel.isHidden() and page._region_storage.isHidden()
+    assert page.form.layout().indexOf(page.style_region_panel)==-1
+    assert not page.region_editor_entry.isHidden()
     assert page.style_timeline is original_timeline and page.style_timeline.selection()==(.1,.2)
     assert page.style_timeline.zoom_factor()==1.3 and page.style_regions==fullscreen_before
     assert (len(page._region_undo),len(page._region_redo))==history_size

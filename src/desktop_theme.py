@@ -105,6 +105,10 @@ QToolTip { background: $input; color: $text; border: 1px solid $border; padding:
 QWidget#style-timeline QToolButton { padding: 6px 10px; min-height: 22px; border-radius: 11px; font-size: 16px; }
 QWidget#style-timeline QToolButton:checked { background: $selected; color: $selected_text; border-color: $accent; }
 QWidget#style-timeline QComboBox { padding: 5px 8px; min-height: 22px; border-radius: 10px; font-size: 16px; }
+QWidget#style-timeline QScrollBar:horizontal { height: 18px; background: $track; margin: 0; border-radius: 8px; }
+QWidget#style-timeline QScrollBar::handle:horizontal { background: $accent; min-width: 64px; border-radius: 8px; }
+QWidget#style-timeline QScrollBar::add-line:horizontal, QWidget#style-timeline QScrollBar::sub-line:horizontal { width: 0; }
+QPushButton#style-editor-entry { font-size: 22px; font-weight: 600; border-radius: 18px; }
 """)
 
 
@@ -142,6 +146,18 @@ def apply_theme(window, mode=None):
     icons=('QComboBox::down-arrow { image: url("'+(assets/'chevron-down.svg').as_posix()+'"); width: 12px; height: 12px; }'
            'QCheckBox::indicator:checked { image: url("'+(assets/'check.svg').as_posix()+'"); }')
     stylesheet=STYLE.substitute(colors, font=app.font().family().replace("'", ''))+icons
+    from ui_components import STYLE_PRESET_COLORS
+    for preset,value in STYLE_PRESET_COLORS.items():
+        tint=QColor(value);r,g,b,_=tint.getRgb()
+        selector='QRadioButton[stylePreset="'+preset+'"]'
+        stylesheet+=f'''
+{selector} {{ border-color: {value}; background: rgba({r},{g},{b},22); }}
+{selector}:hover {{ border-color: {value}; background: rgba({r},{g},{b},44); }}
+{selector}:checked {{ border-color: {value}; background: {value}; color: #ffffff; }}
+{selector}::indicator {{ border-color: {value}; }}
+{selector}::indicator:checked {{ border-color: #ffffff; background: {value}; }}
+{selector}:disabled {{ background: {colors['disabled']}; color: {colors['disabled_text']}; border-color: {colors['border']}; }}
+'''
     factor=preferences.get('ui_scale',100)/100.
     if factor!=1:
         stylesheet=re.sub(r'(\d+)px',lambda match:str(round(int(match.group(1))*factor))+'px',stylesheet)
