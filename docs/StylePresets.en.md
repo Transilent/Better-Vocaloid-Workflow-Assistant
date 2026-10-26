@@ -113,7 +113,9 @@ restores segments only when its input SHA matches; otherwise they remain
 cleared. Segment processing does not change notes, syllables, lyrics, voicebank
 settings or timing.
 
-Use **Full screen** or F11 to edit the same segments in a separate full-screen window. **Exit full screen** or F11 returns to the page while retaining the selection, zoom and undo history. Piano-key labels, note lyrics and pitch rows are larger for easier reading.
+The default piano-roll view uses 40 px note rows (notes paint at about 36 px), a 260 px/s time scale, and 11.5 pt lyric and piano-key labels. **Row height** changes only the display between 80%, 100%, 125% and 150%. **Readable** restores the default horizontal scale and centers the selection or current time; **Full project** and **Selection** remain available.
+
+Use **Full screen** or F11 to make the piano roll the main area. The **Segment settings** panel on the right can be shown or hidden and starts collapsed on narrow screens. Exiting restores the same controls, segment data, and undo history. Colors follow VWA's light or dark theme; the view still edits only style-segment start and end times.
 
 ## Pitch defaults and compatibility mapping
 

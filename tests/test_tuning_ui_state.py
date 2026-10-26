@@ -227,6 +227,14 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
     assert dialog is not None and dialog.isFullScreen()
     assert page._region_dialog_scroll.widget() is page.style_region_panel
     assert page.style_timeline is original_timeline and page.style_regions==fullscreen_before
+    assert page.style_timeline.isVisibleTo(dialog)
+    assert page.style_timeline.height()>=dialog.height()*.75,'Fullscreen should give the piano roll the main vertical area'
+    page._region_settings_button.setChecked(True);application.processEvents()
+    inspector_width=page.style_timeline.width()
+    page._region_settings_button.setChecked(False);application.processEvents()
+    assert page.style_timeline.width()>=inspector_width+250,'Collapsing settings should release width to the piano roll'
+    assert page.style_regions==fullscreen_before
+    assert page.style_timeline.selection()==(fullscreen_before[0]['start'],fullscreen_before[0]['end'])
     page.style_timeline.regionEditRequested.emit(0,.06,.36)
     assert page.style_regions[0]['start']==.06
     page.undo_style_regions();assert page.style_regions==fullscreen_before

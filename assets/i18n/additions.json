@@ -313,7 +313,12 @@
     "重做时间片段修改（Ctrl+Y 或 Ctrl+Shift+Z）": "Redo time segment changes (Ctrl+Y or Ctrl+Shift+Z)",
     "全屏编辑": "Full screen",
     "风格片段编辑器": "Style segment editor",
-    "退出全屏": "Exit full screen"
+    "退出全屏": "Exit full screen",
+    "编辑视野": "Readable",
+    "恢复清晰的音符大小和短句视野": "Restore clear note sizes and a phrase-level view.",
+    "行高": "Row height",
+    "音符行高": "Note row height",
+    "片段设置": "Segment settings"
   },
   "ja": {
     "界面语言": "表示言語",
@@ -629,6 +634,11 @@
     "重做时间片段修改（Ctrl+Y 或 Ctrl+Shift+Z）": "時間セグメントの変更をやり直す（Ctrl+Y または Ctrl+Shift+Z）",
     "全屏编辑": "全画面編集",
     "风格片段编辑器": "スタイルセグメントエディター",
-    "退出全屏": "全画面を終了"
+    "退出全屏": "全画面を終了",
+    "编辑视野": "編集表示",
+    "恢复清晰的音符大小和短句视野": "音符サイズとフレーズ単位の見やすい表示に戻します。",
+    "行高": "行の高さ",
+    "音符行高": "ノート行の高さ",
+    "片段设置": "セグメント設定"
   }
 }

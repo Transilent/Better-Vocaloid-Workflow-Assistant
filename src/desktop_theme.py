@@ -102,6 +102,9 @@ QMenu { background: $input; border: 1px solid $border; padding: 7px; }
 QMenu::item { padding: 9px 20px; }
 QMenu::item:selected { background: $selected; color: $selected_text; }
 QToolTip { background: $input; color: $text; border: 1px solid $border; padding: 6px; }
+QWidget#style-timeline QToolButton { padding: 6px 10px; min-height: 22px; border-radius: 11px; font-size: 16px; }
+QWidget#style-timeline QToolButton:checked { background: $selected; color: $selected_text; border-color: $accent; }
+QWidget#style-timeline QComboBox { padding: 5px 8px; min-height: 22px; border-radius: 10px; font-size: 16px; }
 """)
 
 
@@ -118,6 +121,7 @@ def apply_theme(window, mode=None):
         colors['surface']='rgba(250, 251, 255, 144)' if mode=='light' else 'rgba(37, 42, 66, 168)'
         colors['sidebar']='rgba(232, 236, 252, 120)' if mode=='light' else 'rgba(32, 36, 58, 120)'
     app=QApplication.instance()
+    app.setProperty('vwa-theme',mode)
     if not getattr(app,'_vwa_fonts_loaded',False):
         for filename in ('msyh.ttc','segoeui.ttf'):
             font=Path(os.environ.get('WINDIR','C:/Windows'))/'Fonts'/filename
@@ -142,8 +146,10 @@ def apply_theme(window, mode=None):
     if factor!=1:
         stylesheet=re.sub(r'(\d+)px',lambda match:str(round(int(match.group(1))*factor))+'px',stylesheet)
     window.setStyleSheet(stylesheet)
-    from ui_components import ChoiceGroup
+    from ui_components import ChoiceGroup,StyleTimeline
     for view in window.findChildren(ChoiceGroup):view.reflow()
+    for view in window.findChildren(StyleTimeline):
+        view._canvas.update();view._sync_headers()
     window.setWindowIcon(QIcon(str(assets/'app.ico')))
     from ui_materials import apply_material
     apply_material(window,mode,preferences)

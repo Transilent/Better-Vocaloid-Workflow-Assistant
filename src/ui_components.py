@@ -3,11 +3,11 @@ import math
 import bisect
 
 from PyQt5.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, QSignalBlocker, pyqtSignal
-from PyQt5.QtGui import QColor, QPainter, QPen
+from PyQt5.QtGui import QColor, QPainter, QPalette, QPen
 from PyQt5.QtWidgets import (QButtonGroup, QFrame, QGridLayout, QHBoxLayout,
                             QLabel, QRadioButton, QLayout, QScrollArea,
                             QSizePolicy, QTextEdit, QToolButton, QVBoxLayout,
-                            QWidget)
+                            QWidget, QComboBox, QApplication)
 from i18n import tr as _tr
 
 
@@ -263,6 +263,22 @@ _REGION_COLORS = tuple(QColor(value) for value in (
 _STYLE_REGION_COLORS = {'sad': QColor('#8a5ba8')}
 
 
+def _timeline_theme(widget):
+    # Use the same palette as the surrounding workspace, including fullscreen
+    # children. Project/track colours are display metadata, never style inputs.
+    from desktop_theme import COLORS
+    application = QApplication.instance()
+    mode = application.property('vwa-theme') if application is not None else None
+    if mode not in COLORS:
+        mode = 'dark' if widget.palette().color(QPalette.Window).lightness() < 128 else 'light'
+    return COLORS[mode]
+
+
+def _blend_color(first, second, amount):
+    a, b = QColor(first), QColor(second)
+    return QColor(*(round(x + (y - x) * amount) for x, y in zip(a.getRgb()[:3], b.getRgb()[:3])))
+
+
 def _finite_number(value):
     if type(value) not in (int, float) or not math.isfinite(float(value)):
         return None
@@ -291,10 +307,11 @@ class _TimelineCanvas(QWidget):
     zoomRequested = pyqtSignal(float)
 
     RULER_HEIGHT = 44
-    PITCH_HEIGHT = 24
+    PITCH_HEIGHT = 40
     PIANO_WIDTH = 72
     RIGHT_PADDING = 16
     BASE_PIXELS_PER_SECOND = 80.0
+    DEFAULT_ZOOM = 3.25
     MIN_ZOOM = .001
     MAX_ZOOM = 256.0
     MAX_CANVAS_WIDTH = 4_000_000
@@ -305,7 +322,7 @@ class _TimelineCanvas(QWidget):
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
         self.setCursor(Qt.CrossCursor)
-        self._zoom = 1.0
+        self._zoom = self.DEFAULT_ZOOM
         self._notes = []
         self._regions = []
         self._active_region = -1
@@ -620,9 +637,10 @@ class _TimelineCanvas(QWidget):
         if visible.isEmpty():
             visible = QRectF(self.rect())
         painter.setClipRect(visible)
-        painter.fillRect(self.rect(), QColor('#121820'))
+        colors = _timeline_theme(self)
+        painter.fillRect(self.rect(), QColor(colors['input']))
         panel = QRectF(self.PIANO_WIDTH, 0, max(0, self.width() - self.PIANO_WIDTH), self.height())
-        painter.fillRect(panel, QColor('#f4f6f8'))
+        painter.fillRect(panel, QColor(colors['input']))
         self._paint_rows(painter)
         self._paint_ruler(painter, visible)
         self._paint_regions(painter)
@@ -633,6 +651,7 @@ class _TimelineCanvas(QWidget):
         painter.end()
 
     def _paint_rows(self, painter):
+        colors = _timeline_theme(self)
         for row in range(128):
             pitch = 127 - row
             y = self.RULER_HEIGHT + row * self.PITCH_HEIGHT
@@ -641,19 +660,21 @@ class _TimelineCanvas(QWidget):
             painter.fillRect(0, y, self.PIANO_WIDTH, self.PITCH_HEIGHT, key_color)
             if black:
                 painter.fillRect(self.PIANO_WIDTH - 12, y, 12, self.PITCH_HEIGHT, QColor('#0d1116'))
-            row_color = QColor('#f1f4f7') if black else QColor('#fbfcfd')
+            row_color = _blend_color(colors['input'], colors['surface'], .6) if black else QColor(colors['input'])
             painter.fillRect(self.PIANO_WIDTH, y, self.width() - self.PIANO_WIDTH,
                              self.PITCH_HEIGHT, row_color)
-            painter.setPen(QPen(QColor('#c8d0d8'), 0))
+            line = _blend_color(colors['input'], colors['border'], .85 if pitch % 12 == 0 else .3)
+            painter.setPen(QPen(line, 0))
             painter.drawLine(0, y, self.width(), y)
             painter.setPen(QColor('#fffdf4') if black else QColor('#222830'))
             font = painter.font()
-            font.setPointSizeF(9.5)
+            font.setPointSizeF(11.5)
             painter.setFont(font)
             painter.drawText(QRectF(4, y, self.PIANO_WIDTH - 9, self.PITCH_HEIGHT),
                              Qt.AlignVCenter | Qt.AlignLeft, _pitch_name(pitch))
 
     def _paint_grid(self, painter, visible):
+        colors = _timeline_theme(self)
         left = self.PIANO_WIDTH
         visible = visible.intersected(QRectF(self.rect()))
         major = self._major_interval()
@@ -670,17 +691,19 @@ class _TimelineCanvas(QWidget):
             if x < left - 1 or x > self.width() + 1:
                 continue
             is_major = abs(seconds / major - round(seconds / major)) < 1e-6
-            painter.setPen(QPen(QColor('#aeb8c2' if is_major else '#e0e5ea'), 1 if is_major else 0))
+            line = QColor(colors['border']) if is_major else _blend_color(colors['input'], colors['border'], .35)
+            painter.setPen(QPen(line, 1 if is_major else 0))
             painter.drawLine(int(round(x)), self.RULER_HEIGHT, int(round(x)), self.height())
-        painter.fillRect(left, self.RULER_HEIGHT - 1, self.width() - left, 1, QColor('#87939f'))
+        painter.fillRect(left, self.RULER_HEIGHT - 1, self.width() - left, 1, QColor(colors['border']))
 
     def _paint_ruler(self, painter, visible):
+        colors = _timeline_theme(self)
         left = self.PIANO_WIDTH
-        painter.fillRect(left, 0, self.width() - left, self.RULER_HEIGHT, QColor('#202b36'))
-        painter.fillRect(0, 0, left, self.RULER_HEIGHT, QColor('#0d1217'))
-        painter.setPen(QColor('#dce7ef'))
+        painter.fillRect(left, 0, self.width() - left, self.RULER_HEIGHT, QColor(colors['surface']))
+        painter.fillRect(0, 0, left, self.RULER_HEIGHT, QColor(colors['sidebar']))
+        painter.setPen(QColor(colors['text']))
         font = painter.font()
-        font.setPointSizeF(9.5)
+        font.setPointSizeF(11)
         painter.setFont(font)
         painter.drawText(QRectF(4, 0, left - 8, self.RULER_HEIGHT),
                          Qt.AlignCenter, _tr('音高'))
@@ -695,13 +718,13 @@ class _TimelineCanvas(QWidget):
             x = self.time_to_x(seconds)
             if x < left - 1 or x > self.width() + 1:
                 continue
-            painter.setPen(QColor('#8eb7d4'))
+            painter.setPen(QColor(colors['border_hover']))
             painter.drawLine(int(round(x)), self.RULER_HEIGHT - 7,
                              int(round(x)), self.RULER_HEIGHT)
-            painter.setPen(QColor('#e8f2f8'))
+            painter.setPen(QColor(colors['text']))
             label = f'{seconds:.{decimals}f} s'
             painter.drawText(QRectF(x + 4, 3, 82, 17), Qt.AlignLeft | Qt.AlignVCenter, label)
-        painter.setPen(QColor('#8eb7d4'))
+        painter.setPen(QColor(colors['border']))
         painter.drawLine(left, 0, left, self.height())
 
     def _paint_regions(self, painter):
@@ -715,7 +738,7 @@ class _TimelineCanvas(QWidget):
                 continue
             color = QColor(region['color'])
             background = QColor(color)
-            background.setAlpha(56 if region['index'] == self._active_region else 30)
+            background.setAlpha(25 if region['index'] == self._active_region else 12)
             painter.fillRect(QRectF(left, self.RULER_HEIGHT, max(1, right - left),
                                     self.height() - self.RULER_HEIGHT), background)
             ruler = QColor(color)
@@ -735,8 +758,9 @@ class _TimelineCanvas(QWidget):
 
     def _paint_notes(self, painter):
         painter.save()
+        colors = _timeline_theme(self)
         font = painter.font()
-        font.setPointSizeF(10.0)
+        font.setPointSizeF(11.5)
         painter.setFont(font)
         painter.setClipRect(QRectF(self.PIANO_WIDTH, self.RULER_HEIGHT,
                                    self.width() - self.PIANO_WIDTH,
@@ -746,15 +770,15 @@ class _TimelineCanvas(QWidget):
             right = self.time_to_x(note['end'])
             y = self.pitch_to_y(note['pitch'])
             width = max(2.0, right - left)
-            color = QColor(note['color'])
+            color = QColor(colors['accent']) if note['color'] == _TRACK_COLORS[0] else QColor(note['color'])
             painter.setPen(QPen(color.darker(155), 1))
             painter.setBrush(color)
-            painter.drawRoundedRect(QRectF(left, y + 2, width, self.PITCH_HEIGHT - 4), 2, 2)
+            painter.drawRoundedRect(QRectF(left, y + 2, width, self.PITCH_HEIGHT - 4), 4, 4)
             lyric = note.get('lyric', '')
             if lyric and width >= 18:
                 painter.setClipRect(QRectF(left + 2, y + 2, max(0, width - 4),
                                            self.PITCH_HEIGHT - 4))
-                painter.setPen(QColor('#ffffff'))
+                painter.setPen(QColor(colors['accent_text']) if note['color'] == _TRACK_COLORS[0] else QColor('#101526'))
                 metrics = painter.fontMetrics()
                 painter.drawText(QRectF(left + 4, y + 1, max(0, width - 7),
                                         self.PITCH_HEIGHT - 2), Qt.AlignVCenter | Qt.AlignLeft,
@@ -769,9 +793,9 @@ class _TimelineCanvas(QWidget):
             return
         left = self.time_to_x(self._selection[0])
         right = self.time_to_x(self._selection[1])
-        color = QColor('#2f86d8')
+        color = QColor(_timeline_theme(self)['accent'])
         fill = QColor(color)
-        fill.setAlpha(48)
+        fill.setAlpha(24)
         painter.fillRect(QRectF(left, self.RULER_HEIGHT, max(1, right - left),
                                 self.height() - self.RULER_HEIGHT), fill)
         painter.setPen(QPen(color, 2))
@@ -781,9 +805,9 @@ class _TimelineCanvas(QWidget):
     def _paint_empty_message(self, painter):
         if self._notes:
             return
-        painter.setPen(QColor('#65717d'))
+        painter.setPen(QColor(_timeline_theme(self)['muted']))
         font = painter.font()
-        font.setPointSizeF(9)
+        font.setPointSizeF(11.5)
         painter.setFont(font)
         rect = QRectF(self.PIANO_WIDTH + 20, self.RULER_HEIGHT + 24,
                       max(80, self.width() - self.PIANO_WIDTH - 40), 28)
@@ -802,7 +826,8 @@ class _TimelinePianoHeader(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, False)
-        painter.fillRect(self.rect(), QColor('#0d1217'))
+        colors = _timeline_theme(self)
+        painter.fillRect(self.rect(), QColor(colors['sidebar']))
         font = painter.font()
         offset = self.vertical_scroll.value()
         for row in range(128):
@@ -819,19 +844,19 @@ class _TimelinePianoHeader(QWidget):
             painter.setPen(QPen(QColor('#c8d0d8'), 0))
             painter.drawLine(0, y, self.width(), y)
             painter.setPen(QColor('#fffdf4') if black else QColor('#222830'))
-            font.setPointSizeF(9.5)
+            font.setPointSizeF(11.5)
             painter.setFont(font)
             painter.drawText(QRectF(4, y, self.width() - 9, self.canvas.PITCH_HEIGHT),
                              Qt.AlignVCenter | Qt.AlignLeft, _pitch_name(pitch))
         # Draw the corner after scrolling rows so a partially visible row cannot
         # cover the fixed pitch heading.
-        painter.fillRect(0, 0, self.width(), self.canvas.RULER_HEIGHT, QColor('#0d1217'))
-        painter.setPen(QColor('#dce7ef'))
-        font.setPointSizeF(9.5)
+        painter.fillRect(0, 0, self.width(), self.canvas.RULER_HEIGHT, QColor(colors['sidebar']))
+        painter.setPen(QColor(colors['text']))
+        font.setPointSizeF(11)
         painter.setFont(font)
         painter.drawText(QRectF(4, 0, self.width() - 8, self.canvas.RULER_HEIGHT),
                          Qt.AlignCenter, _tr('音高'))
-        painter.setPen(QColor('#8eb7d4'))
+        painter.setPen(QColor(colors['border']))
         painter.drawLine(self.width() - 1, 0, self.width() - 1, self.height())
         painter.end()
 
@@ -876,7 +901,8 @@ class _TimelineRulerHeader(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, False)
-        painter.fillRect(self.rect(), QColor('#202b36'))
+        colors = _timeline_theme(self)
+        painter.fillRect(self.rect(), QColor(colors['surface']))
         start, end = self._visible_span()
         offset = self.horizontal_scroll.value() + self.canvas.PIANO_WIDTH
         for region in self.canvas.display_regions():
@@ -907,18 +933,21 @@ class _TimelineRulerHeader(QWidget):
         if not ticks:
             ticks = (min(end, max(start, (start + end) / 2)),)
         self.visible_ticks = ticks
+        font = painter.font()
+        font.setPointSizeF(11)
+        painter.setFont(font)
         for seconds in ticks:
             x = self.canvas.time_to_x(seconds) - offset
             if x < -1 or x > self.width() + 1:
                 continue
-            painter.setPen(QColor('#8eb7d4'))
+            painter.setPen(QColor(colors['border_hover']))
             painter.drawLine(int(round(x)), self.height() - 7,
                              int(round(x)), self.height())
-            painter.setPen(QColor('#e8f2f8'))
+            painter.setPen(QColor(colors['text']))
             painter.drawText(QRectF(x + 4, 3, 82, 17),
                              Qt.AlignLeft | Qt.AlignVCenter,
                              f'{seconds:.{decimals}f} s')
-        painter.setPen(QColor('#87939f'))
+        painter.setPen(QColor(colors['border']))
         painter.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
         painter.end()
 
@@ -969,6 +998,10 @@ class StyleTimeline(QWidget):
         toolbar.addWidget(self.zoom_out)
         toolbar.addWidget(self.zoom_percent)
         toolbar.addWidget(self.zoom_in)
+        self.readable_button = QToolButton(self)
+        self.readable_button.setText(_tr('编辑视野'))
+        self.readable_button.setToolTip(_tr('恢复清晰的音符大小和短句视野'))
+        toolbar.addWidget(self.readable_button)
         self.fit_button = QToolButton(self)
         self.fit_button.setText(_tr('全曲'))
         self.fit_button.setToolTip(_tr('缩放至完整工程'))
@@ -982,7 +1015,28 @@ class StyleTimeline(QWidget):
         for tool in (self.fit_button, self.zoom_selection_button, self.snap_button):
             tool.setAccessibleName(tool.toolTip())
             toolbar.addWidget(tool)
-        self._layout.addLayout(toolbar)
+        # Flowing tools keep the viewport usable at narrow window widths.
+        tools_widget = QWidget(self)
+        tools_flow = FlowLayout(tools_widget, spacing=5)
+        while toolbar.count():
+            item = toolbar.takeAt(0)
+            if item.widget() is not None:
+                tools_flow.addWidget(item.widget())
+        self._layout.addWidget(tools_widget)
+        size_widget = QWidget(self)
+        size_row = QHBoxLayout(size_widget)
+        size_row.setContentsMargins(0, 0, 0, 0)
+        size_row.setSpacing(5)
+        size_row.addWidget(QLabel(_tr('行高'), self))
+        self.row_height_choice = QComboBox(self)
+        for text, height in (('80%', 32), ('100%', 40), ('125%', 50), ('150%', 60)):
+            self.row_height_choice.addItem(text, height)
+        self.row_height_choice.setCurrentIndex(1)
+        self.row_height_choice.setAccessibleName(_tr('音符行高'))
+        self.row_height_choice.setMaximumWidth(116)
+        size_row.addWidget(self.row_height_choice)
+        # Row height lives alongside horizontal zoom, rather than changing data.
+        tools_flow.addWidget(size_widget)
         self._canvas = _TimelineCanvas(self)
         self._view = QScrollArea(self)
         self._view.setFrameShape(QFrame.NoFrame)
@@ -1008,6 +1062,9 @@ class StyleTimeline(QWidget):
         self.zoom_out.clicked.connect(lambda: self.zoom_by(1 / 1.2))
         self.zoom_in.clicked.connect(lambda: self.zoom_by(1.2))
         self.fit_button.clicked.connect(self.fit_project)
+        self.readable_button.clicked.connect(self.readable_zoom)
+        self.row_height_choice.currentIndexChanged.connect(
+            lambda: self.set_pitch_height(self.row_height_choice.currentData()))
         self.zoom_selection_button.clicked.connect(self.zoom_to_selection)
         self.snap_button.toggled.connect(self.set_snap_enabled)
         self._canvas.installEventFilter(self)
@@ -1032,6 +1089,38 @@ class StyleTimeline(QWidget):
 
     def snap_enabled(self):
         return self._canvas._snap_enabled
+
+    def pitch_height(self):
+        return self._canvas.PITCH_HEIGHT
+
+    def set_pitch_height(self, pixels):
+        try:
+            value = float(pixels)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not math.isfinite(value):
+            return False
+        value = max(32, min(64, int(round(value))))
+        canvas, bar = self._canvas, self._view.verticalScrollBar()
+        center = bar.value() + self._view.viewport().height() / 2.
+        pitch_row = (center - canvas.RULER_HEIGHT) / canvas.PITCH_HEIGHT
+        self._cancel_gesture()
+        canvas.PITCH_HEIGHT = value
+        canvas._refresh_geometry()
+        bar.setValue(round(canvas.RULER_HEIGHT + pitch_row * value - self._view.viewport().height() / 2.))
+        with QSignalBlocker(self.row_height_choice):
+            self.row_height_choice.setCurrentIndex(self.row_height_choice.findData(value))
+        self._sync_headers()
+        return True
+
+    def readable_zoom(self):
+        bounds = self.selection()
+        center_x = (self._canvas.PIANO_WIDTH + self._view.viewport().width()) / 2.
+        seconds = sum(bounds) / 2. if bounds else self.time_at_view_x(center_x)
+        self.set_zoom(self._canvas.DEFAULT_ZOOM)
+        self._restore_view_time(seconds, center_x)
+        self._center_vertical_on_notes(visible_only=True)
+        return True
 
     def fit_project(self):
         start, end = self._canvas.scene_bounds()
@@ -1239,8 +1328,14 @@ class StyleTimeline(QWidget):
         bar.setValue(int(round(max(bar.minimum(), min(bar.maximum(), target)))))
         self._sync_headers()
 
-    def _center_vertical_on_notes(self):
-        pitches = [note['pitch'] for note in self._canvas._notes]
+    def _center_vertical_on_notes(self, visible_only=False):
+        notes = self._canvas._notes
+        if visible_only:
+            start = self.time_at_view_x(self._canvas.PIANO_WIDTH)
+            end = self.time_at_view_x(self._view.viewport().width())
+            visible = [note for note in notes if note['start'] < end and note['end'] > start]
+            notes = visible or notes
+        pitches = [note['pitch'] for note in notes]
         target = (min(pitches) + max(pitches)) / 2 if pitches else 60
         y = self._canvas.pitch_to_y(target) - self._view.viewport().height() / 2
         bar = self._view.verticalScrollBar()

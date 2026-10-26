@@ -78,6 +78,9 @@ timeline_project={
          'mainGroup':{'notes':[{'onset':0,'duration':quarter,'pitch':55,'lyrics':'c'}]}}]}
 project_frozen=copy.deepcopy(timeline_project)
 timeline=StyleTimeline();timeline.resize(720,320);timeline.show();application.processEvents()
+assert timeline.pitch_height()>=36,'The default piano roll must draw readable note rows'
+assert math.isclose(timeline.zoom_factor(),3.25,rel_tol=1e-9,abs_tol=1e-9)
+assert timeline._canvas.pixels_per_second>=240,'The default timeline must leave enough horizontal detail for notes'
 selection_changes=[];timeline.selectionChanged.connect(selection_changes.append)
 timeline.set_project(timeline_project,[0,1]);application.processEvents()
 def timeline_drag(widget,start,end,modifiers=Qt.NoModifier):
@@ -111,7 +114,7 @@ assert piano_header.geometry().x()==0 and piano_header.height()==viewport.height
 assert ruler_header.geometry().x()==timeline._canvas.PIANO_WIDTH and ruler_header.height()==timeline._canvas.RULER_HEIGHT
 piano_image=piano_header.grab().toImage();ruler_image=ruler_header.grab().toImage();viewport_image=viewport.grab().toImage()
 assert not piano_image.isNull() and not ruler_image.isNull() and not viewport_image.isNull()
-key_colors={piano_image.pixelColor(4,y).name() for y in range(timeline._canvas.RULER_HEIGHT,piano_image.height(),timeline._canvas.PITCH_HEIGHT)}
+key_colors={piano_image.pixelColor(4,y).name() for y in range(timeline._canvas.RULER_HEIGHT,piano_image.height(),int(round(timeline.pitch_height())))}
 assert {'#171c22','#f8f7f1'}.issubset(key_colors),key_colors
 assert viewport_image.pixelColor(10,100)==piano_image.pixelColor(10,100)
 assert viewport_image.pixelColor(100,10)==ruler_image.pixelColor(28,10)
@@ -182,7 +185,10 @@ timeline.set_selection(.5,1.5);timeline.clear_selection();assert timeline.select
 # Zoom preserves the visible center time and selection seconds; scrolling only
 # changes viewport position. Non-finite zoom requests are ignored.
 timeline.set_selection(1.25,2.75);center_x=max(0,timeline._view.viewport().width()//2)
-before_wheel=timeline.zoom_factor();wheel_anchor=timeline.time_at_view_x(center_x);wheel=QWheelEvent(QPointF(center_x,20),QPointF(center_x,20),QPoint(0,0),QPoint(0,120),Qt.NoButton,Qt.ControlModifier,Qt.NoScrollPhase,False)
+bar=timeline._view.horizontalScrollBar();bar.setValue(min(bar.maximum(),max(bar.minimum(),round(timeline._canvas.time_to_x(2.0)-center_x))));application.processEvents()
+before_wheel=timeline.zoom_factor();wheel_anchor=timeline.time_at_view_x(center_x)
+canvas_x=bar.value()+center_x
+wheel=QWheelEvent(QPointF(canvas_x,20),QPointF(timeline._canvas.mapToGlobal(QPoint(canvas_x,20))),QPoint(0,0),QPoint(0,120),Qt.NoButton,Qt.ControlModifier,Qt.NoScrollPhase,False)
 QApplication.sendEvent(timeline._canvas,wheel);application.processEvents()
 assert timeline.zoom_factor()>before_wheel,'Ctrl+wheel did not zoom'
 assert abs(timeline.time_at_view_x(center_x)-wheel_anchor)<=max(1e-6,1.5/timeline._canvas.pixels_per_second),'Ctrl+wheel moved the time under the pointer'
@@ -221,7 +227,7 @@ editor_project_frozen=copy.deepcopy(editor_project)
 editor_regions=[{'start':2.4,'end':3.4,'preset':'gentle'},{'start':4.2,'end':7.0,'preset':'sad','strength':.6},{'start':7.8,'end':8.8,'preset':'bold'}]
 editor_regions_frozen=copy.deepcopy(editor_regions)
 timeline.set_project(editor_project,[0]);timeline.set_regions(editor_regions);timeline.set_snap_enabled(False);timeline.set_zoom(.9);application.processEvents()
-assert timeline._canvas.pitch_to_y(60)-timeline._canvas.pitch_to_y(61)>=20,'Piano rows are too small to read and target'
+assert timeline._canvas.pitch_to_y(60)-timeline._canvas.pitch_to_y(61)>=36,'Piano rows are too small to read and target'
 bar=timeline._view.horizontalScrollBar();piano_width=timeline._canvas.PIANO_WIDTH;header=timeline._ruler_header;lane_y=timeline._canvas.RULER_HEIGHT-6
 bar.setValue(min(bar.maximum(),max(bar.minimum(),round(timeline._canvas.time_to_x(5.6)-piano_width-300))));application.processEvents()
 def ruler_x(seconds):
@@ -358,3 +364,72 @@ assert timeline._piano_header.geometry().x()==0 and timeline._ruler_header.geome
 assert timeline._ruler_header.visible_ticks and all(math.isfinite(value) for value in timeline._ruler_header.visible_ticks)
 timeline.close();application.processEvents()
 print('PASS: style timeline tempo/offset, sticky headers, native selection and style-lane gestures, immutable requests, fit/selection zoom/snap, panning/scroll seconds, disabled/Escape, long-axis ticks, and narrow layout')
+
+# Readable vertical/horizontal controls preserve view and model state. The
+# project is long enough that default pps is not capped by MAX_CANVAS_WIDTH.
+readable_project={'time':{'tempo':[{'position':0,'bpm':120}]},'tracks':[{'mainRef':{'blickOffset':0},'mainGroup':{'notes':[{'onset':0,'duration':16*quarter,'pitch':60},{'onset':0,'duration':16*quarter,'pitch':72}]}}]}
+readable_regions=copy.deepcopy(editor_regions)
+readable=StyleTimeline();readable.resize(720,360);readable.show();application.processEvents()
+readable.set_project(readable_project,[0]);readable.set_regions(readable_regions);application.processEvents()
+project_snapshot=copy.deepcopy(readable_project);regions_snapshot=copy.deepcopy(readable_regions)
+readable.set_selection(1.0,2.0);selection_snapshot=readable.selection()
+assert readable.pitch_height()>=36 and readable._canvas.pixels_per_second>=240
+assert math.isclose(readable.zoom_factor(),3.25,rel_tol=1e-9,abs_tol=1e-9)
+
+def pitch_center(view):
+    canvas=view._canvas
+    y=view._view.verticalScrollBar().value()+view._view.viewport().height()/2.
+    return 127.-(y-canvas.RULER_HEIGHT)/view.pitch_height()
+
+before_pitch_center=pitch_center(readable)
+assert readable.set_pitch_height(1);application.processEvents()
+assert math.isclose(readable.pitch_height(),32,rel_tol=1e-9,abs_tol=1e-9)
+assert abs(pitch_center(readable)-before_pitch_center)<=.25,'Pitch resize changed the visible centre pitch'
+assert readable.set_pitch_height(1000);application.processEvents()
+assert math.isclose(readable.pitch_height(),64,rel_tol=1e-9,abs_tol=1e-9)
+assert abs(pitch_center(readable)-before_pitch_center)<=.25,'Maximum pitch height changed the visible centre pitch'
+canvas=readable._canvas
+state_before=(readable.pitch_height(),canvas.pitch_to_y(60),canvas.time_to_x(5),
+              readable.selection(),canvas.scene_bounds(),readable._view.verticalScrollBar().value(),
+              [(note['track_index'],note['start'],note['end'],note['pitch'],note['color'].name(),note['lyric']) for note in canvas._notes],
+              [(row['index'],row['start'],row['end'],row['label']) for row in canvas._regions],
+              copy.deepcopy(readable_project),copy.deepcopy(readable_regions))
+for invalid in (float('nan'),float('inf'),'bad',None):
+    try:
+        readable.set_pitch_height(invalid)
+    except (TypeError,ValueError,OverflowError):
+        pass
+    state_after=(readable.pitch_height(),canvas.pitch_to_y(60),canvas.time_to_x(5),
+                 readable.selection(),canvas.scene_bounds(),readable._view.verticalScrollBar().value(),
+                 [(note['track_index'],note['start'],note['end'],note['pitch'],note['color'].name(),note['lyric']) for note in canvas._notes],
+                 [(row['index'],row['start'],row['end'],row['label']) for row in canvas._regions],
+                 copy.deepcopy(readable_project),copy.deepcopy(readable_regions))
+    assert state_after==state_before,(invalid,state_after,state_before)
+
+readable.set_pitch_height(44);readable.set_zoom(.3);application.processEvents()
+vertical=readable._view.verticalScrollBar();vertical.setValue(vertical.minimum())
+readable.readable_zoom();application.processEvents()
+assert math.isclose(readable.zoom_factor(),3.25,rel_tol=1e-9,abs_tol=1e-9)
+assert readable._canvas.pixels_per_second>=240,'Readable zoom did not restore the horizontal default'
+assert readable.selection()==selection_snapshot
+selected_center=sum(selection_snapshot)/2
+content_center=(readable._canvas.PIANO_WIDTH+readable._view.viewport().width())/2
+assert abs(readable.view_x_for_time(selected_center)-content_center)<=1.5,'Readable zoom did not centre the existing selection'
+assert abs(pitch_center(readable)-66)<=.25,'Readable zoom did not centre the visible phrase pitch'
+
+readable.clear_selection();readable.set_zoom(.3);application.processEvents()
+readable.set_zoom(1.0);bar=readable._view.horizontalScrollBar();bar.setValue((bar.minimum()+bar.maximum())//2);application.processEvents()
+center_x=(readable._canvas.PIANO_WIDTH+readable._view.viewport().width())/2;before_center=readable.time_at_view_x(center_x)
+readable.readable_zoom();application.processEvents()
+assert math.isclose(readable.zoom_factor(),3.25,rel_tol=1e-9,abs_tol=1e-9) and readable.selection() is None
+assert abs(readable.time_at_view_x(center_x)-before_center)<=.02,'Readable zoom moved the centre time without a selection'
+
+readable.fit_project();application.processEvents();fit_zoom=readable.zoom_factor()
+assert not math.isclose(fit_zoom,3.25,rel_tol=1e-9,abs_tol=1e-9),'Fit did not change the zoom in this test viewport'
+readable.readable_zoom();application.processEvents()
+assert math.isclose(readable.zoom_factor(),3.25,rel_tol=1e-9,abs_tol=1e-9)
+readable.fit_project();application.processEvents()
+assert math.isclose(readable.zoom_factor(),fit_zoom,rel_tol=1e-9,abs_tol=1e-9),'Fit/readable zoom did not round trip'
+assert readable_project==project_snapshot and readable_regions==regions_snapshot
+readable.close();application.processEvents()
+print('PASS: readable pitch defaults, pitch-height bounds/centre preservation, invalid-input immutability and readable/fit round trip')
