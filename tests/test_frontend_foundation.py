@@ -521,6 +521,77 @@ timeline.clear_selection();timeline_drag(timeline._canvas,drag_start,snap_target
 timeline.clear_selection();snap_target=QPoint(round(timeline._canvas.time_to_x(snap_edge))+11,snap_y);timeline_drag(timeline._canvas,drag_start,snap_target);assert abs(timeline.selection()[1]-timeline._canvas.x_to_time(snap_target.x()))<1e-8,'Snap exceeded its pixel radius'
 timeline.set_snap_enabled(False);assert not timeline.snap_enabled() and not timeline.snap_button.isChecked();assert snap_project==snap_project_frozen
 
+# complete_note_range is a pure alignment helper over the displayed selected
+# tracks. The tempo change and per-track offsets deliberately make its seconds
+# differ from raw onset/duration values.
+range_project={
+    'time':{'tempo':[{'position':0,'bpm':120},{'position':4*quarter,'bpm':60}]},
+    'tracks':[
+        {'mainRef':{'blickOffset':quarter},'mainGroup':{'notes':[
+            {'onset':7*quarter,'duration':2*quarter,'pitch':62,'lyrics':'bridge'},
+            {'onset':0,'duration':4*quarter,'pitch':60,'lyrics':'long'},
+            {'onset':13*quarter,'duration':quarter,'pitch':64,'lyrics':'tail'}]}},
+        {'mainRef':{'blickOffset':-quarter},'mainGroup':{'notes':[
+            {'onset':5*quarter,'duration':3*quarter,'pitch':55,'lyrics':'overlap'}]}},
+        {'mainRef':{'blickOffset':0},'mainGroup':{'notes':[
+            {'onset':7.25*quarter,'duration':.25*quarter,'pitch':70,'lyrics':'unselected'}]}}]}
+range_project_frozen=copy.deepcopy(range_project)
+range_regions=[{'start':6.0,'end':7.0,'preset':'gentle'},{'start':24.0,'end':25.0,'preset':'sad'}]
+range_regions_frozen=copy.deepcopy(range_regions)
+timeline.set_project(range_project,[0,1]);timeline.set_regions(range_regions);application.processEvents()
+range_selection=timeline.set_selection(6.25,6.75)
+range_display=[(note['track_index'],note['start'],note['end'],note['pitch'],note['lyric'])
+               for note in timeline._canvas._notes]
+range_region_display=[(row['index'],row['start'],row['end'],row['label'],row['color'].name())
+                      for row in timeline._canvas._regions]
+range_clock=TempoMap(range_project['time']['tempo'])
+range_sources={(track_index,note['lyrics']):note for track_index,track in enumerate(range_project['tracks'])
+               for note in track['mainGroup']['notes'] if track_index in (0,1)}
+for note in timeline._canvas._notes:
+    source=range_sources[(note['track_index'],note['lyric'])]
+    offset=range_project['tracks'][note['track_index']]['mainRef']['blickOffset']
+    assert math.isclose(note['start'],range_clock.to_seconds(source['onset']+offset),abs_tol=1e-12)
+    assert math.isclose(note['end'],range_clock.to_seconds(source['onset']+offset+source['duration']),abs_tol=1e-12)
+range_notes={note['lyric']:note for note in timeline._canvas._notes}
+assert set(range_notes)=={'long','bridge','tail','overlap'}
+long_start,long_end=range_notes['long']['start'],range_notes['long']['end']
+bridge_start,bridge_end=range_notes['bridge']['start'],range_notes['bridge']['end']
+overlap_start,overlap_end=range_notes['overlap']['start'],range_notes['overlap']['end']
+tail_start,tail_end=range_notes['tail']['start'],range_notes['tail']['end']
+assert all(math.isclose(value,expected,abs_tol=1e-12) for value,expected in (
+    (long_start,.5),(long_end,3.0),(overlap_start,2.0),(overlap_end,5.0),
+    (bridge_start,6.0),(bridge_end,8.0),(tail_start,12.0),(tail_end,13.0)))
+# First isolate the long note from the later cross-track overlap component.
+timeline.set_project(range_project,[0]);application.processEvents()
+assert timeline.complete_note_range(long_start+.5,long_start+1)==(long_start,long_end),'An inner long-note start did not expand to the whole note'
+selection_commits.clear()
+timeline.set_project(range_project,[0,1]);timeline.set_regions(range_regions);application.processEvents();assert timeline.set_selection(*range_selection)==range_selection
+assert timeline.complete_note_range(long_start+1,bridge_start+1)==(long_start,bridge_end),'A range spanning two separated notes did not include both whole notes'
+assert timeline.complete_note_range(overlap_start+.5,overlap_start+1)==(long_start,overlap_end),'Overlapping notes across tracks did not become one complete component'
+assert timeline.complete_note_range(overlap_end+.5,bridge_start+1)==(overlap_end+.5,bridge_end),'A silent leading gap endpoint was not retained'
+assert timeline.complete_note_range(tail_start+.5,tail_end+3)==(tail_start,tail_end+3),'A silent trailing gap endpoint was not retained'
+try:
+    timeline.complete_note_range(overlap_end+.1,bridge_start-.1)
+except ValueError:
+    pass
+else:
+    raise AssertionError('A silent selected-track gap without notes was accepted')
+for first,last in ((None,long_end),('bad',long_end),(float('nan'),long_end),
+                   (long_start,float('inf')),(long_end,long_start),(long_start,long_start)):
+    try:
+        timeline.complete_note_range(first,last)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(('Invalid note-range endpoint was accepted',first,last))
+assert not selection_commits
+assert range_project==range_project_frozen and range_regions==range_regions_frozen
+assert timeline.selection()==range_selection
+assert range_display==[(note['track_index'],note['start'],note['end'],note['pitch'],note['lyric'])
+                       for note in timeline._canvas._notes]
+assert range_region_display==[(row['index'],row['start'],row['end'],row['label'],row['color'].name())
+                              for row in timeline._canvas._regions]
+
 long_project={'time':{'tempo':[{'position':0,'bpm':120}]},'tracks':[{'mainRef':{'blickOffset':0},'mainGroup':{'notes':[{'onset':0,'duration':7200*quarter,'pitch':60}]}}]}
 timeline.resize(720,320);timeline.set_project(long_project,[0]);application.processEvents();timeline.set_zoom(.125);application.processEvents();bar=timeline._view.horizontalScrollBar();bar.setValue(min(bar.maximum(),5000));application.processEvents()
 assert math.isclose(timeline.zoom_factor(),.125,rel_tol=1e-9,abs_tol=1e-9),'Initial note focus overrode the long-axis zoom'

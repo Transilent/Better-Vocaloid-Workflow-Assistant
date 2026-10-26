@@ -344,7 +344,16 @@
     "暂存编辑设置；生成独立工程后可在 SV 中打开。": "Saves editor settings; after generating an independent project, open it in SV.",
     "上次草稿无法恢复；可重新绘制。": "The previous draft could not be restored; you can draw again.",
     "片段不能重叠；每次从原工程生成独立候选。": "Segments cannot overlap. Each candidate is generated from the original project.",
-    "时间片段列表为空；请拖选一段时间。": "No segments yet. Drag across a time range."
+    "时间片段列表为空；请拖选一段时间。": "No segments yet. Drag across a time range.",
+    "下一段设置": "Next segment settings",
+    "编辑所选片段": "Edit selected segment",
+    "新建下一段": "Create next segment",
+    "切换风格只用于下一段；点击已有片段后才修改它。": "Switching styles applies only to the next segment; click an existing segment before editing it.",
+    "选中片段的修改会自动暂存。": "Changes to the selected segment are saved automatically.",
+    "选区内没有音符，请选择有音符的范围。": "The selection contains no notes. Choose a range that contains notes.",
+    "片段边界已对齐完整音符。": "Segment boundaries aligned to complete notes.",
+    "片段边界位于音符内部，请拖动边缘重新对齐。": "A segment boundary falls inside a note. Drag the edge to realign the boundary.",
+    "无法保持完整音符且不与相邻片段重叠，请调整范围。": "The range cannot preserve complete notes without overlapping an adjacent segment. Adjust the range."
   },
   "ja": {
     "界面语言": "表示言語",
@@ -691,6 +700,15 @@
     "暂存编辑设置；生成独立工程后可在 SV 中打开。": "編集設定を保存します。独立プロジェクトを生成した後、SV で開けます。",
     "上次草稿无法恢复；可重新绘制。": "前回の下書きを復元できませんでした。描き直せます。",
     "片段不能重叠；每次从原工程生成独立候选。": "セグメントは重ねられません。候補は毎回元のプロジェクトから生成します。",
-    "时间片段列表为空；请拖选一段时间。": "セグメントがありません。時間範囲をドラッグしてください。"
+    "时间片段列表为空；请拖选一段时间。": "セグメントがありません。時間範囲をドラッグしてください。",
+    "下一段设置": "次のセグメント設定",
+    "编辑所选片段": "選択中のセグメントを編集",
+    "新建下一段": "次のセグメントを新規作成",
+    "切换风格只用于下一段；点击已有片段后才修改它。": "スタイルの切り替えは次のセグメントにのみ適用されます。既存のセグメントは、クリックして選択した場合にのみ変更されます。",
+    "选中片段的修改会自动暂存。": "選択中のセグメントへの変更は自動保存されます。",
+    "选区内没有音符，请选择有音符的范围。": "選択範囲に音符がありません。音符を含む範囲を選択してください。",
+    "片段边界已对齐完整音符。": "セグメント境界を完全な音符に合わせました。",
+    "片段边界位于音符内部，请拖动边缘重新对齐。": "セグメント境界が音符の途中にあります。端をドラッグして境界を合わせ直してください。",
+    "无法保持完整音符且不与相邻片段重叠，请调整范围。": "完全な音符を保ち、かつ隣接するセグメントと重ならない範囲にできません。範囲を調整してください。"
   }
 }

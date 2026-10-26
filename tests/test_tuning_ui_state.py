@@ -106,7 +106,8 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
 
     Q=705600000
     track={'name':'Lead','mainRef':{'blickOffset':0,'database':{'name':'Fixture'}},'groups':[],
-        'mainGroup':{'uuid':'lead','notes':[{'onset':0,'duration':Q,'pitch':60,'lyrics':'la'}],'parameters':{}}}
+        'mainGroup':{'uuid':'lead','notes':[{'onset':index*Q,'duration':Q//2,
+            'pitch':60+index*2,'lyrics':chr(97+index)} for index in range(3)],'parameters':{}}}
     data={'version':153,'time':{'tempo':[{'position':0,'bpm':120}],'meter':[]},'tracks':[]}
     for i in range(3):
         item=copy.deepcopy(track);item['name']=str(i);item['mainGroup']['uuid']=str(i);data['tracks'].append(item)
@@ -133,20 +134,21 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
     assert page._region_embed_layout.indexOf(page.style_region_panel)>=0
     page.apply_preferences({'performance_style':'gentle','style_strength':.4,
         'style_detail':{'onset':.5,'sustain':.75,'connection':.25,'release':1.0},'style_pitch':True})
-    page.style_timeline.set_selection(.05,.35)
-    assert page.style_timeline.selection()==(.05,.35)
+    page.style_timeline.set_selection(.04,.12)
+    assert page.style_timeline.selection()==(.04,.12)
     page.add_style_region()
-    first_region={'start':.05,'end':.35,'preset':'gentle','strength':.4,
+    first_region={'start':0.,'end':.25,'preset':'gentle','strength':.4,
                   'detail':{'onset':.5,'sustain':.75,'connection':.25,'release':1.0},'pitch':True}
     assert page.style_regions==[first_region] and page.region_list.count()==1
     option_regions=page.options()['style_regions']
     assert option_regions==[first_region], option_regions
     assert 'style_regions' not in page.preferences(), 'Regions belong to execution/session state, not global preferences'
 
+    page.begin_new_style_region()
     page.apply_preferences({'performance_style':'bold','style_strength':.7,
         'style_detail':{'onset':1.0,'sustain':.9,'connection':.8,'release':.7},'style_pitch':False})
-    page.style_timeline.set_selection(.38,.48);page.add_style_region()
-    assert len(page.style_regions)==2 and page.style_regions[0]['start']==.05 and page.style_regions[1]['start']==.38
+    page.style_timeline.set_selection(.54,.62);page.add_style_region()
+    assert len(page.style_regions)==2 and page.style_regions[0]['start']==0 and page.style_regions[1]['start']==.5
     original_regions=copy.deepcopy(page.style_regions)
     before=copy.deepcopy(page.style_regions)
     page.style_timeline.regionEditRequested.emit(1,.02,.30)
@@ -165,34 +167,34 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
     # A release-time drag request copies the original recipe, changes only its
     # boundaries, sorts the result, and records one reversible edit.
     undo_count=len(page._region_undo)
-    page.style_timeline.regionEditRequested.emit(0,.50,.70)
-    assert [region['start'] for region in page.style_regions]==[.38,.50]
-    dragged=copy.deepcopy(original_regions[0]);dragged['start']=.50;dragged['end']=.70
+    page.style_timeline.regionEditRequested.emit(0,1.04,1.10)
+    assert [region['start'] for region in page.style_regions]==[.5,1.0]
+    dragged=copy.deepcopy(original_regions[0]);dragged['start']=1.;dragged['end']=1.25
     assert page.style_regions[1]==dragged
-    assert [(row['start'],row['end']) for row in page.style_timeline._canvas.display_regions()]==[(.38,.48),(.50,.70)]
-    assert page.region_list.currentRow()==1 and page.style_timeline.selection()==(.5,.7)
+    assert [(row['start'],row['end']) for row in page.style_timeline._canvas.display_regions()]==[(.5,.75),(1.,1.25)]
+    assert page.region_list.currentRow()==1 and page.style_timeline.selection()==(1.,1.25)
     assert len(page._region_undo)==undo_count+1 and not page._region_redo
     page.undo_style_regions()
     assert page.style_regions==original_regions and page.region_list.currentRow()==0
-    assert page.style_timeline.selection()==(.05,.35)
+    assert page.style_timeline.selection()==(0.,.25)
     page.redo_style_regions()
     assert page.style_regions==[original_regions[1],dragged] and page.region_list.currentRow()==1
-    assert page.style_timeline.selection()==(.5,.7)
+    assert page.style_timeline.selection()==(1.,1.25)
     page.undo_style_regions()
 
     # Each valid numeric time edit now stages the selected region immediately.
     # No Add/Update action is needed, and both edits remain reversible.
-    page.region_list.setCurrentRow(1);before=copy.deepcopy(page.style_regions);undo_count=len(page._region_undo)
-    page.region_end_editor.setValue(.90);page.region_start_editor.setValue(.80)
-    timed=copy.deepcopy(before);timed[1]['start']=.80;timed[1]['end']=.90
+    page.style_timeline.regionSelected.emit(1);before=copy.deepcopy(page.style_regions);undo_count=len(page._region_undo)
+    page.region_end_editor.setValue(1.25);page.region_start_editor.setValue(1.04)
+    timed=copy.deepcopy(before);timed[1]['start']=1.;timed[1]['end']=1.25
     assert page.style_regions==timed and len(page._region_undo)==undo_count+2
     assert json.loads(page._style_draft_path().read_text(encoding='utf-8'))['style_regions']==timed
-    assert page.style_timeline.selection()==(.8,.9)
-    assert (page.region_start_editor.value(),page.region_end_editor.value())==(.8,.9)
+    assert page.style_timeline.selection()==(1.,1.25)
+    assert (page.region_start_editor.value(),page.region_end_editor.value())==(1.,1.25)
     page.style_timeline.set_selection(.15,.4);before=len(page.style_regions);page.add_style_region()
     assert len(page.style_regions)==before and '不能重叠' in page.status.text()
 
-    page.region_list.setCurrentRow(0)
+    page.select_style_region(0)
     assert page.performance_style.currentData()=='gentle' and page.style_strength.currentData()==.4
     assert page.preferences()['style_detail']==first_region['detail'] and page.style_pitch.isChecked()
     page.apply_preferences({'performance_style':'gentle','style_strength':.55,
@@ -216,7 +218,10 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
     atomic_json(region_session/'last-options.json',saved_options)
     other=copy.deepcopy(data);other['tracks']=other['tracks'][:1];other_path=root/'other.svp';atomic_json(other_path,other)
     assert page.load_project(other_path)
-    assert page.style_regions==[] and page.style_mode.currentData()=='whole' and page.options()['style_regions']==[]
+    assert page.style_regions==[] and page.style_mode.currentData()=='regions'
+    assert page.style_mode_choice.buttons[1].isChecked()
+    assert not page.region_editor_entry.isHidden() and page.start_style_editor_button.isEnabled()
+    assert page.options()['style_regions']==[]
     assert page._region_undo==[] and page._region_redo==[]
     assert page.restore_session(session_file)
     assert page.style_mode.currentData()=='regions' and page.style_regions==[recorded]
@@ -253,7 +258,7 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
     assert page.style_regions==fullscreen_before
     assert page.style_timeline.selection()==(fullscreen_before[0]['start'],fullscreen_before[0]['end'])
     page.style_timeline.regionEditRequested.emit(0,.06,.36)
-    assert page.style_regions[0]['start']==.06
+    assert page.style_regions[0]['start']==0 and page.style_regions[0]['end']==.36
     page.undo_style_regions();assert page.style_regions==fullscreen_before
     page.style_timeline.set_selection(.1,.2);page.style_timeline.set_zoom(1.3)
     history_size=(len(page._region_undo),len(page._region_redo))
@@ -332,7 +337,7 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
         assert draft_path.is_file()
         payload=json.loads(draft_path.read_text(encoding='utf-8'))
         assert set(payload)=={'schema_version','input_sha256','style_regions','mode',
-                              'selection','selected_index','tool','track_indices'}
+                              'selection','selected_index','tool','track_indices','editor_intent','next_tool'}
         assert payload['schema_version']==1 and payload['input_sha256']==source_sha
         assert payload['style_regions']==[expected] and payload['mode']=='regions'
         assert payload['track_indices']==[0,1,2] and payload['selected_index']==0
@@ -341,6 +346,13 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
         assert payload['tool']['style_strength']==.625
         assert payload['tool']['style_pitch'] is False
         assert payload['tool']['style_detail']==detail
+        assert payload['editor_intent']=='new' and payload['next_tool']==payload['tool']
+
+        # Version-one drafts predating the explicit next-tool fields remain
+        # readable and start in new-segment intent without rewriting a region.
+        legacy_payload=copy.deepcopy(payload)
+        legacy_payload.pop('editor_intent');legacy_payload.pop('next_tool')
+        atomic_json(draft_path,legacy_payload)
 
         # Reopening the same input restores all draft-owned state, including
         # explicit track selection and undo history reset to the loaded draft.
@@ -355,15 +367,17 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
         assert not second.style_pitch.isChecked()
         assert second.preferences()['style_detail']==expected['detail']
         assert second._region_undo==[] and second._region_redo==[]
+        assert second._region_tool_intent=='new' and second._new_region_tool==payload['tool']
+        second._flush_style_autosave()
 
         # A different project gets a different SHA and starts clean without
         # replacing the first project's draft.
         original_payload=draft_path.read_bytes()
         assert second.load_project(draft_other)
         assert second._selected_track_indices()==[0]
-        assert second.style_mode.currentData()=='whole' and second.style_regions==[]
+        assert second.style_mode.currentData()=='regions' and second.style_regions==[]
         other_draft=second._style_draft_path()
-        assert other_draft!=draft_path and not other_draft.is_file()
+        assert other_draft!=draft_path and other_draft.is_file()
         second.style_mode.setCurrentIndex(second.style_mode.findData('regions'))
         second.apply_preferences({'performance_style':'gentle','style_strength':.5,
                                  'style_pitch':True,'style_detail':detail})
@@ -387,7 +401,7 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
         # and its available history.
         third._restore_style_draft()
         assert third.style_regions==[expected]
-        third.region_list.setCurrentRow(0)
+        third.select_style_region(0)
         third.performance_style.setCurrentIndex(third.performance_style.findData('bold'))
         third.style_strength_spin.setValue(74)
         third.style_detail['sustain'].spin.setValue(41)
@@ -406,12 +420,15 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
         third._flush_style_autosave()
         undone=json.loads(draft_path.read_text(encoding='utf-8'))
         assert undone['style_regions']==[expected] and undone['selected_index']==0
+        assert undone['editor_intent']=='edit' and undone['next_tool']==payload['next_tool']
         third.redo_style_regions();third._flush_style_autosave()
         redone=json.loads(draft_path.read_text(encoding='utf-8'))
         assert redone['style_regions']==[changed]
+        assert redone['editor_intent']=='edit' and redone['next_tool']==payload['next_tool']
         third.delete_style_region();third._flush_style_autosave()
         deleted=json.loads(draft_path.read_text(encoding='utf-8'))
         assert deleted['style_regions']==[] and deleted['selected_index']==-1
+        assert deleted['editor_intent']=='new'
         third.undo_style_regions();third._flush_style_autosave()
         restored=json.loads(draft_path.read_text(encoding='utf-8'))
         assert restored['style_regions']==[changed]

@@ -80,35 +80,61 @@ The Tuning page provides two style-application modes:
 - **Whole track** applies one of the three visible style cards once to the
   selected actual target tracks.
 - **Time segments** selected in **Style & curves** show a large, prominent
-  **Start editing** button; the main page does not embed a separate piano-roll
-  card. The button opens the full-screen editor, which shows editable segment
-  strips on the fixed ruler above a read-only note view of the selected actual
-  target tracks.
+  **Start editing** button. The button opens the full-screen editor, which shows
+  editable segment strips on the fixed ruler above a read-only note view of the
+  selected actual target tracks. Each non-overlapping segment keeps its own
+  style, overall strength, four detail coefficients and added-pitch switch.
+
+When **Time segments** is already selected, importing an SVP keeps that mode
+selected. The **Start editing** entry and its state update immediately.
 
 The editor opens at the first note-bearing part of the project and keeps a
 readable phrase-level view with large notes. **Note start** returns to the
-earliest note. **Draw segment** is selected by default: drag on the ruler or note
-area, then release the mouse to add or update the current style segment. If no
-style is selected, VWA keeps the selection in the draft and asks you to choose a
-style; an overlapping selection is rejected with a request to adjust its range.
-A selection shorter than 25 ms cannot be written. At most 128 non-overlapping
-segments are allowed.
+earliest note. The editor initially shows **Next segment settings**. Choosing
+**Create next segment** while editing an existing segment also returns to this
+separate new-drawing tool. Dragging on the ruler or note area and releasing the
+mouse creates a new segment with the pending settings; it does not rewrite an
+existing segment. A successfully created segment returns the tool automatically
+to **Next segment settings**. When no style is selected, VWA keeps the pending
+range and asks you to choose a style. A selection shorter than 25 ms or one that
+contains no notes is not saved. At most 128 non-overlapping segments are
+allowed.
 
-Selecting a list row loads its settings. Changes to style, overall strength, the
-four coefficients, added pitch or start/end time are saved automatically to that
-row. **Delete**, **Clear**, **Undo** and **Redo** changes are also saved. Click a
-segment strip to select it; drag its middle to move it or either edge to change
-its range. Selected segments use larger edge handles: ◀ appears on the left, ▶
-on the right, and ↔ is shown as a resize cue. Esc cancels the current drag or
+Clicking a segment strip or list row enters **Edit selected segment** and loads
+that segment's style, strength, detail and time. The main editor toolbar title
+switches between **Next segment settings** and **Edit selected segment** to show
+the current new/edit intent. Changes to the selected segment are saved
+automatically. **Create next segment** returns to the separate new-drawing
+tool. While **Next segment settings** is active,
+changing the style, strength or detail updates only the pending settings for the
+next segment. **Switching styles applies only to the next segment; click an
+existing segment before editing it.**
+
+When you draw a segment, enter a numeric start or end time, move a segment or
+resize an edge, VWA checks all actual target tracks. A boundary that enters a
+note is expanded outward to that note's complete start or end. Overlapping notes
+on multiple actual target tracks are included together, covering every
+intersecting note. VWA saves the segment only if the complete alignment still
+does not overlap an adjacent segment. If it cannot preserve complete notes
+without overlap, it rejects the change and asks you to adjust the range.
+
+Boundary alignment changes only the segment range. It does not shorten, copy or
+split the source `notes`, and generated style curves still cover the complete
+aligned segment range. Legacy segment drafts remain loadable. If a saved boundary
+falls inside a note, generation requires you to drag the edge or change the
+start/end time to realign it; old boundaries are not rewritten automatically.
+
+Click a segment strip to select it; drag its middle to move it or either edge to
+change its range. Selected segments use larger edge handles: ◀ appears on the
+left, ▶ on the right, and ↔ is shown as a resize cue. **Delete**, **Clear**,
+**Undo** and **Redo** changes are also saved. Esc cancels the current drag or
 clears the selection; Delete removes the selected segment. Dragging a segment
 near either view edge auto-scrolls it; releasing commits one range update.
-**Snap** is off by default; when enabled, it aligns to nearby note boundaries and
-holding Alt turns it off temporarily.
 
 A thicker horizontal scrollbar and explicit **Look left** and **Look right**
 buttons remain visible below the view. **Pan view** makes a left-button drag pan
-the canvas without creating a segment; switch to **Draw segment** to select a
-range. Middle-drag also pans, Shift+wheel scrolls horizontally and Ctrl+wheel
+the canvas without creating a segment; choose **Create next segment** to return
+to drawing. Middle-drag also pans, Shift+wheel scrolls horizontally and Ctrl+wheel
 zooms around the pointer. **Full project** and **Selection** refit the view. The
 default piano roll uses 40 px note rows (notes paint at about 36 px), a 260 px/s
 time scale and 11.5 pt lyric and piano-key labels. **Row height** changes only
@@ -118,16 +144,18 @@ horizontal scale and centers the selection or current time.
 When the segment list is nonempty, execution reads only that list. Each segment
 can use its own `gentle`/`sad`/`bold`, overall strength, four coefficients and
 pitch switch within its start/end time. Outside a segment, the style line
-produced by the primary parameter source remains. In this mode, the style and
-segment controls above are settings for the selected segment, not an additional
-whole-track overlay. Reference, calibration or retained primary processing still
-covers the entire selected actual target tracks. Every candidate starts from the
-fixed original performance rather than stacking on an existing style candidate.
+produced by the primary parameter source remains. Reference, calibration or
+retained primary processing still covers the entire selected actual target
+tracks. Every candidate starts from the fixed original performance rather than
+stacking on an existing style candidate.
 
 `style_regions` and editor settings are isolated by the input SVP SHA and stored
-as a local draft; they do not enter general workflow preferences. Reloading the
-same input project restores its previous segment draft. Another input uses only
-its own draft, so a draft is never applied to a different project. Restoring a
+as a local draft; they do not enter general workflow preferences. The draft
+stores current-tool segment settings and separate `next_tool` pending settings.
+Legacy drafts remain compatible with their earlier single-settings structure.
+Reloading the same input project restores its previous segment draft, including
+the current editing state and next-segment settings. Another input uses only its
+own draft, so a draft is never applied to a different project. Restoring a
 processing record still requires a matching input SHA. The draft only lets the
 editor continue; it does not overwrite the source SVP, process or synthesize
 audio, export a finished file, or represent a generated result. The separate
@@ -187,7 +215,7 @@ dependencies\vocal2midi\python\python.exe -B style_presets.py A.svp B.svp --pres
 Both options are optional; outside the single CLI range, the original style
 line remains. `gentle`, `sad` and `bold` include added local pitch by default;
 use `--no-style-pitch` to stop pitch while retaining timbre segments. Legacy IDs
-remain accepted with their historical recipes and defaults.
+remain accepted with their historical recipes and defaults. Complete-note alignment, empty-selection rejection and adjacent-segment checks are editor policies. The core CLI's `--time-range START END` API is unchanged and continues to use the supplied time window.
 
 The standalone command refuses to overwrite the source or a different existing
 candidate. It writes a `.svp.style.json` receipt and uses that adjacent receipt

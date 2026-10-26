@@ -1,6 +1,7 @@
 """Isolated frontend contracts for tuning choice adapters and honest result states."""
 from pathlib import Path
 from types import SimpleNamespace
+import copy
 import json
 import os
 import sys
@@ -73,6 +74,8 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
     assert page.start_style_editor_button.property('role') == 'primary'
     assert page.start_style_editor_button.minimumHeight() == 68
     assert page.fullscreen_region_button is page.start_style_editor_button
+    assert page.new_region_button.text() == '新建下一段'
+    assert page.region_tool_context.text() == '下一段设置'
     assert page._region_storage.parentWidget() is page and page._region_storage.isHidden()
     assert page._region_embed_layout is page._region_storage.layout()
     assert type(page.style_region_panel) is QWidget
@@ -422,19 +425,23 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
     page.deleteLater()
     application.processEvents()
 
-    # A real mouse release on the project timeline is the commit gesture. It
-    # stages the current tool as one region; a subsequent tuple with a valid
-    # selected row updates that row instead of appending another one.
+    # A real mouse release on the project timeline is the public draw gesture.
+    # Three separated notes make every region prove that user-visible boundaries
+    # expand to whole-note edges before they are staged.
     release_project=root/'release-project.svp'
-    quarter=3840
+    quarter=705600000
+    note_duration=quarter//2
+    release_notes=[{'onset':index*quarter,'duration':note_duration,
+        'pitch':60+index*2,'lyrics':chr(97+index)} for index in range(3)]
     release_track={'name':'Lead','mainRef':{'blickOffset':0,'database':{'name':'Fixture'}},
-        'groups':[],'mainGroup':{'uuid':'lead','notes':[{'onset':0,'duration':quarter,
-        'pitch':60,'lyrics':'la'}],'parameters':{}}}
+        'groups':[],'mainGroup':{'uuid':'lead','notes':release_notes},'parameters':{}}
     release_data={'version':153,'time':{'tempo':[{'position':0,'bpm':120}],'meter':[]},
                   'tracks':[release_track]}
     release_project.write_text(json.dumps(release_data,ensure_ascii=False),encoding='utf-8')
     release_root=root/'release-root'
     release_state={'tuning':{'session':None,'preferences':{}},'untouched':{'sentinel':True}}
+    first_detail={'onset':.2,'sustain':.35,'connection':.45,'release':.55}
+    second_detail={'onset':.8,'sustain':.75,'connection':.65,'release':.6}
     with patch.multiple(tuning_ui,ROOT=release_root,workspace_state=lambda:release_state), \
             patch.dict(os.environ,{'VWA_TESTING':'','BVWA_TESTING':'1'}):
         release_page=TuningPage(owner)
@@ -446,53 +453,165 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
         release_page.start_style_editor_button.click();application.processEvents()
         assert release_page.performance_style.currentData()=='gentle'
         assert release_page._region_dialog is not None
+        release_page.style_strength_spin.setValue(61)
+        for key,amount in first_detail.items():release_page.style_detail[key].spin.setValue(amount*100)
+        release_page.style_pitch.setChecked(True);application.processEvents()
+        assert release_page._new_region_tool['performance_style']=='gentle'
+
         timeline=release_page.style_timeline;canvas=timeline._canvas
         bar=timeline._view.horizontalScrollBar();vertical=timeline._view.verticalScrollBar()
         bar.setValue(bar.minimum());vertical.setValue(vertical.minimum());application.processEvents()
-        target_x=lambda seconds:round(canvas.time_to_x(seconds)-bar.value())
+        def target_x(seconds):
+            return min(max(0,round(canvas.time_to_x(seconds)-bar.value())),canvas.width()-1)
         lane_y=canvas.RULER_HEIGHT+32-vertical.value()
-        draw_start=QPoint(target_x(.20),lane_y);draw_end=QPoint(target_x(.55),lane_y)
         committed=[]
         timeline.selectionCommitted.connect(committed.append)
-        QTest.mousePress(canvas,Qt.LeftButton,pos=draw_start)
-        QApplication.sendEvent(canvas,QMouseEvent(QEvent.MouseMove,QPointF(draw_end),
-            Qt.NoButton,Qt.LeftButton,Qt.NoModifier))
-        QTest.mouseRelease(canvas,Qt.LeftButton,pos=draw_end);application.processEvents()
-        assert len(committed)==1
-        assert len(release_page.style_regions)==1
-        first=release_page.style_regions[0]
-        assert first['preset']=='gentle'
-        assert abs(first['start']-committed[0][0])<1e-9
-        assert abs(first['end']-committed[0][1])<1e-9
-        assert release_page.region_list.currentRow()==0
+        def draw_region(start,end):
+            before=len(committed)
+            begin=QPoint(target_x(start),lane_y);finish=QPoint(target_x(end),lane_y)
+            QTest.mousePress(canvas,Qt.LeftButton,pos=begin)
+            QApplication.sendEvent(canvas,QMouseEvent(QEvent.MouseMove,QPointF(finish),
+                Qt.NoButton,Qt.LeftButton,Qt.NoModifier))
+            QTest.mouseRelease(canvas,Qt.LeftButton,pos=finish);application.processEvents()
+            assert len(committed)==before+1
+            return committed[-1]
 
-        draft_path=release_page._style_draft_path()
-        assert draft_path==release_root/'cache/style-region-drafts'/(
-            release_page._style_input_sha256+'.json')
-        assert draft_path.is_file()
-        draft=json.loads(draft_path.read_text(encoding='utf-8'))
-        assert draft['style_regions']==release_page.style_regions
-        assert draft['track_indices']==[0]
+        note_ranges=sorted((note['start'],note['end']) for note in canvas._notes)
+        assert len(note_ranges)==3
+        assert all(abs(a-b)<1e-9 for a,b in zip(
+            [bound for pair in note_ranges for bound in pair],[0.,.25,.5,.75,1.,1.25]))
+        assert all(abs(a-b)<1e-9 for a,b in zip(
+            timeline.complete_note_range(.04,.12),(0.,.25)))
+
+        drawn=draw_region(.04,.12)
+        complete_first=timeline.complete_note_range(*drawn)
+        assert len(release_page.style_regions)==1
+        first=copy.deepcopy(release_page.style_regions[0])
+        assert first['preset']=='gentle'
+        assert abs(first['strength']-.61)<1e-12
+        assert first['detail']==first_detail and first['pitch'] is True
+        assert abs(first['start']-complete_first[0])<1e-9
+        assert abs(first['end']-complete_first[1])<1e-9
+        # The list may stay highlighted after drawing, but the active tool still
+        # targets a new region until the user explicitly selects an old one.
+        assert release_page._region_tool_intent=='new'
+        assert release_page.region_list.currentRow()==0
+        assert release_page.style_timeline.selection()==(first['start'],first['end'])
 
         release_page.performance_style.setCurrentIndex(
             release_page.performance_style.findData('sad'))
         release_page.style_strength_spin.setValue(72)
-        release_page.stage_style_selection((.30,.60))
-        assert len(release_page.style_regions)==1
-        updated=release_page.style_regions[0]
-        assert updated['preset']=='sad' and abs(updated['strength']-.72)<1e-12
-        assert abs(updated['start']-.30)<1e-9 and abs(updated['end']-.60)<1e-9
+        for key,amount in second_detail.items():release_page.style_detail[key].spin.setValue(amount*100)
+        release_page.style_pitch.setChecked(False);application.processEvents()
+        assert release_page._region_tool_intent=='new'
+        assert release_page.style_regions==[first]
+        assert release_page._new_region_tool=={
+            'performance_style':'sad','style_strength':.72,
+            'style_detail':second_detail,'style_pitch':False}
+        assert not release_page._region_autosave_timer.isActive()
+
+        drawn=draw_region(.54,.62)
+        complete_second=timeline.complete_note_range(*drawn)
+        assert len(release_page.style_regions)==2
+        assert release_page.style_regions[0]==first
+        second=copy.deepcopy(release_page.style_regions[1])
+        assert second['preset']=='sad' and abs(second['strength']-.72)<1e-12
+        assert second['detail']==second_detail and second['pitch'] is False
+        assert abs(second['start']-complete_second[0])<1e-9
+        assert abs(second['end']-complete_second[1])<1e-9
+        assert release_page._region_tool_intent=='new'
+        assert release_page.region_list.currentRow()==1
+        assert release_page.style_timeline.selection()==(second['start'],second['end'])
+
+        draft_path=release_page._style_draft_path()
+        assert draft_path==release_root/'cache/style-region-drafts'/(
+            release_page._style_input_sha256+'.json')
         release_page._flush_style_autosave()
         draft=json.loads(draft_path.read_text(encoding='utf-8'))
-        assert draft['style_regions']==[updated]
-        assert draft['selected_index']==0
-        assert tuple(draft['selection'])==(updated['start'],updated['end'])
+        assert draft['style_regions']==[first,second]
+        assert draft['track_indices']==[0]
+        assert draft['editor_intent']=='new'
+        assert draft['next_tool']==release_page._new_region_tool
+        assert draft['selected_index']==1
+        assert tuple(draft['selection'])==(second['start'],second['end'])
+
+        # Reopening the draft preserves both recipes and leaves the next tool
+        # independent from either highlighted region.
+        reloaded=TuningPage(owner);assert reloaded.load_project(release_project)
+        assert reloaded.style_mode.currentData()=='regions'
+        assert reloaded.style_regions==[first,second]
+        assert reloaded._region_tool_intent=='new'
+        assert reloaded.region_list.currentRow()==1
+        assert reloaded.style_timeline.selection()==(second['start'],second['end'])
+        assert reloaded.performance_style.currentData()=='sad'
+        assert reloaded.style_strength.currentData()==.72
+        assert reloaded.preferences()['style_detail']==second_detail
+        assert not reloaded.style_pitch.isChecked()
+
+        # Numeric and grip edits are user-visible and therefore also expand to
+        # whole notes. Targets inside the second note must remain unchanged.
+        reloaded.select_style_region(1)
+        assert reloaded._region_tool_intent=='edit'
+        reloaded.region_end_editor.setValue(.61)
+        reloaded.region_start_editor.setValue(.54);application.processEvents()
+        assert reloaded.style_regions==[first,second]
+        reloaded.style_timeline.regionEditRequested.emit(1,.54,.61);application.processEvents()
+        assert reloaded.style_regions==[first,second]
+
+        # Editing an old row requires that explicit selection. The next tool is
+        # retained independently and restored by the dedicated new-region button.
+        reloaded.select_style_region(0)
+        assert reloaded._region_tool_intent=='edit'
+        assert reloaded.performance_style.currentData()=='gentle'
+        reloaded.style_strength_spin.setValue(74)
+        reloaded.style_detail['sustain'].spin.setValue(41)
+        reloaded.style_pitch.setChecked(False)
+        assert reloaded._region_autosave_timer.isActive()
+        QTest.qWait(220);application.processEvents()
+        edited_first=copy.deepcopy(reloaded.style_regions[0])
+        assert edited_first['preset']=='gentle'
+        assert abs(edited_first['strength']-.74)<1e-12
+        assert edited_first['detail']['sustain']==.41 and edited_first['pitch'] is False
+        assert reloaded.style_regions[1]==second
+        assert reloaded._new_region_tool['performance_style']=='sad'
+        assert reloaded.new_region_button.text()=='新建下一段'
+        reloaded.new_region_button.click();application.processEvents()
+        assert reloaded._region_tool_intent=='new'
+        assert reloaded.region_list.currentRow()==-1
+        assert reloaded.style_timeline.selection() is None
+        assert reloaded.performance_style.currentData()=='sad'
+        assert reloaded.style_strength.currentData()==.72
+        assert reloaded.preferences()['style_detail']==second_detail
+        assert not reloaded.style_pitch.isChecked()
+
+        # The public raw API remains compatible with old callers. User-facing
+        # add/update paths align those raw ranges to full notes.
+        reloaded.clear_style_regions();reloaded.begin_new_style_region()
+        reloaded.stage_style_selection((.04,.12))
+        raw=reloaded.style_regions[0]
+        assert abs(raw['start']-.04)<1e-9 and abs(raw['end']-.12)<1e-9
+        try:reloaded._validate_complete_style_regions()
+        except ValueError:pass
+        else:raise AssertionError('A half-note raw region must be rejected before generation')
+
+        reloaded.clear_style_regions();reloaded.begin_new_style_region()
+        reloaded.style_timeline.set_selection(.04,.12);reloaded.add_style_region()
+        added=reloaded.style_regions[0]
+        added_complete=reloaded.style_timeline.complete_note_range(.04,.12)
+        assert abs(added['start']-added_complete[0])<1e-9
+        assert abs(added['end']-added_complete[1])<1e-9
+        reloaded.style_timeline.set_selection(.54,.62);reloaded.update_style_region()
+        updated=reloaded.style_regions[0]
+        updated_complete=reloaded.style_timeline.complete_note_range(.54,.62)
+        assert abs(updated['start']-updated_complete[0])<1e-9
+        assert abs(updated['end']-updated_complete[1])<1e-9
+        reloaded._validate_complete_style_regions()
 
         dialog=release_page._region_dialog
         dialog.close();application.processEvents()
         for _ in range(3):application.processEvents()
         assert release_page._region_dialog is None
-        release_page.close();application.processEvents()
-        release_page.deleteLater();application.processEvents()
+        for item in (release_page,reloaded):
+            item.close();item.deleteLater();application.processEvents()
 
-print('PASS: responsive tuning grid, visible region actions, release-time draft staging, 12px untracked-label progress, actual stage messages, terminal caps, late-signal protection and receipt gate contracts')
+print('PASS: responsive tuning grid, next-region intent, whole-note draw/numeric/grip/add/update boundaries, independent draft tools, 12px untracked-label progress, actual stage messages, terminal caps, late-signal protection and receipt gate contracts')

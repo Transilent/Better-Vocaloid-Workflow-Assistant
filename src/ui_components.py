@@ -1160,6 +1160,22 @@ class StyleTimeline(QWidget):
         self._canvas._selection_preset=preset if preset in STYLE_PRESET_COLORS else 'none'
         self._canvas.update()
 
+    def complete_note_range(self,start,end):
+        first,last=_finite_number(start),_finite_number(end)
+        if first is None or last is None or last<=first:
+            raise ValueError(_tr('时间轴选区端点必须是有限数值。'))
+        # A boundary is safe only if it cuts no selected-track note. Merge
+        # overlapping notes first, including overlaps across different tracks.
+        components=[];epsilon=1e-9
+        for note in sorted(self._canvas._notes,key=lambda n:n['start']):
+            a,b=note['start'],note['end']
+            if components and a<components[-1][1]-epsilon:
+                components[-1]=(components[-1][0],max(components[-1][1],b))
+            else:components.append((a,b))
+        touched=[(a,b) for a,b in components if a<last-epsilon and b>first+epsilon]
+        if not touched:raise ValueError(_tr('选区内没有音符，请选择有音符的范围。'))
+        return (min(first,touched[0][0]),max(last,touched[-1][1]))
+
     def pan_mode(self):return self._pan_enabled
 
     def set_pan_mode(self,enabled):
