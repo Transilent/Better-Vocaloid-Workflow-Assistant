@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import os
@@ -10,6 +11,7 @@ import sys
 import tempfile
 import unittest
 import wave
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -406,6 +408,23 @@ class AgentReferencePitchTests(unittest.TestCase):
             with patch.object(agent_reference, "MAX_NPZ_COMPRESSION_RATIO", 0.01):
                 with self.assertRaisesRegex(ValueError, "压缩比"):
                     review_reference_pitch(score, valid)
+
+    def test_forged_npy_allocation_is_rejected_before_numpy_load(self):
+        with self.temporary('reference-forged-header-') as temporary:
+            root=Path(temporary)
+            valid=save_pitch(root/'valid.npz',np.ones(10,dtype=np.float32),np.ones(10,dtype=np.bool_))
+            with zipfile.ZipFile(valid) as archive:
+                members={name:archive.read(name) for name in archive.namelist()}
+            for label,shape in (('huge',(10**12,)),('truncated',(10,))):
+                header=io.BytesIO()
+                np.lib.format.write_array_header_1_0(header,{'descr':'<f4','fortran_order':False,'shape':shape})
+                forged=root/(label+'.npz')
+                with zipfile.ZipFile(forged,'w') as archive:
+                    for name,data in members.items():
+                        archive.writestr(name,header.getvalue() if name=='midi_pitch.npy' else data)
+                with patch.object(agent_reference.np,'load',side_effect=AssertionError('np.load must not run')):
+                    with self.assertRaisesRegex(ValueError,'header|payload'):
+                        inspect_reference_pitch(forged)
 
     def test_pagination_strict_inputs_and_finite_json(self):
         with self.temporary("reference-pitch-page-") as temporary:

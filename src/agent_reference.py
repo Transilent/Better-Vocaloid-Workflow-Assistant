@@ -628,6 +628,7 @@ def _validate_npz_archive(raw: bytes) -> None:
                 extra = sorted(set(names) - _PITCH_MEMBERS)
                 raise ValueError(f"pitch NPZ 成员不严格；缺少={missing}，额外={extra}。")
             total = 0
+            shapes = {}
             for info in infos:
                 if info.is_dir() or info.flag_bits & 1:
                     raise ValueError("pitch NPZ 含目录或加密成员。")
@@ -641,6 +642,33 @@ def _validate_npz_archive(raw: bytes) -> None:
                 ratio = info.file_size / max(info.compress_size, 1)
                 if info.file_size and (info.compress_size == 0 or ratio > MAX_NPZ_COMPRESSION_RATIO):
                     raise ValueError("pitch NPZ 压缩比异常，拒绝潜在 ZIP bomb。")
+                # ZIP byte limits alone do not bound the allocation requested
+                # by a forged NPY header. Check shape/dtype and exact payload
+                # length before np.load can create any of these arrays.
+                with archive.open(info,'r') as member:
+                    version=np.lib.format.read_magic(member)
+                    if version==(1,0):
+                        shape,fortran,dtype=np.lib.format.read_array_header_1_0(member)
+                    elif version==(2,0):
+                        shape,fortran,dtype=np.lib.format.read_array_header_2_0(member)
+                    else:
+                        raise ValueError('pitch NPZ NPY header版本不支持。')
+                    if dtype.hasobject or any(type(size) is not int or size<0 for size in shape):
+                        raise ValueError('pitch NPZ NPY header含不安全dtype或维度。')
+                    if info.filename=='midi_pitch.npy':
+                        if len(shape)!=1 or shape[0]>MAX_PITCH_FRAMES or dtype.kind!='f' or dtype.itemsize not in (4,8):
+                            raise ValueError('pitch NPY header帧数、维度或dtype超出限制。')
+                    elif info.filename=='voiced_mask.npy':
+                        if len(shape)!=1 or shape[0]>MAX_PITCH_FRAMES or dtype!=np.dtype(np.bool_):
+                            raise ValueError('mask NPY header帧数、维度或dtype无效。')
+                    elif shape or dtype.itemsize>8 or dtype.kind not in ('iu' if info.filename=='schema.npy' else 'iuf'):
+                        raise ValueError('NPY标量header维度或dtype无效。')
+                    count=math.prod(shape)
+                    if member.tell()+count*dtype.itemsize!=info.file_size:
+                        raise ValueError('NPY header声明大小与实际payload不一致。')
+                    shapes[info.filename]=shape
+            if shapes['midi_pitch.npy']!=shapes['voiced_mask.npy']:
+                raise ValueError('pitch与mask的NPY header形状不一致。')
             bad_member = archive.testzip()
             if bad_member is not None:
                 raise ValueError(f"pitch NPZ 成员 CRC 无效：{bad_member}")
