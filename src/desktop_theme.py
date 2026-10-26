@@ -105,8 +105,9 @@ QToolTip { background: $input; color: $text; border: 1px solid $border; padding:
 QWidget#style-timeline QToolButton { padding: 6px 10px; min-height: 22px; border-radius: 11px; font-size: 16px; }
 QWidget#style-timeline QToolButton:checked { background: $selected; color: $selected_text; border-color: $accent; }
 QWidget#style-timeline QComboBox { padding: 5px 8px; min-height: 22px; border-radius: 10px; font-size: 16px; }
-QWidget#style-timeline QScrollBar:horizontal { height: 18px; background: $track; margin: 0; border-radius: 8px; }
-QWidget#style-timeline QScrollBar::handle:horizontal { background: $accent; min-width: 64px; border-radius: 8px; }
+QWidget#style-timeline QScrollBar:horizontal { height: 24px; background: $track; margin: 0; border-radius: 9px; }
+QWidget#style-timeline QScrollBar::handle:horizontal { background: $accent; min-width: 96px; border-radius: 9px; }
+QWidget#timeline-navigation { background: $surface; border: 1px solid $border; border-radius: 12px; }
 QWidget#style-timeline QScrollBar::add-line:horizontal, QWidget#style-timeline QScrollBar::sub-line:horizontal { width: 0; }
 QPushButton#style-editor-entry { font-size: 22px; font-weight: 600; border-radius: 18px; }
 """)

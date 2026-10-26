@@ -311,6 +311,7 @@ def _pitch_name(pitch):
 class _TimelineCanvas(QWidget):
     """Paint a scrollable piano-roll canvas; all input data remains external."""
     selectionChanged = pyqtSignal(object)
+    selectionCommitted = pyqtSignal(object)
     zoomRequested = pyqtSignal(float)
 
     RULER_HEIGHT = 64
@@ -602,8 +603,10 @@ class _TimelineCanvas(QWidget):
             return
         if self._drag_pixels >= 2:
             self.set_selection(self._drag_anchor, self.snap_time(self._time_at(event.pos().x()), bool(event.modifiers() & Qt.AltModifier)))
+        committed=self.selection() if self._drag_pixels>=2 else None
         self._drag_anchor = None
         self._drag_pixels = 0
+        if committed is not None:self.selectionCommitted.emit(committed)
         event.accept()
 
     def wheelEvent(self, event):
@@ -988,6 +991,7 @@ class _TimelineRulerHeader(QWidget):
 class StyleTimeline(QWidget):
     """Edit style regions over a read-only piano roll of an existing SVP."""
     selectionChanged = pyqtSignal(object)
+    selectionCommitted = pyqtSignal(object)
     regionSelected = pyqtSignal(int)
     regionEditRequested = pyqtSignal(int, float, float)
     regionDeleteRequested = pyqtSignal(int)
@@ -1004,6 +1008,7 @@ class StyleTimeline(QWidget):
         self._region_gesture = None
         self._range_gesture = None
         self._pan_origin = None
+        self._pan_button = None;self._pan_enabled=False;self._initial_note_view_pending=True
         self._drag_pointer = None
         self._edge_pan_timer=QTimer(self);self._edge_pan_timer.setInterval(30)
         self._edge_pan_timer.timeout.connect(self._pan_drag_tick)
@@ -1013,6 +1018,14 @@ class StyleTimeline(QWidget):
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(0, 0, 0, 0)
         toolbar.setSpacing(4)
+        self.draw_mode_button=QToolButton(self);self.draw_mode_button.setText(_tr('绘制片段'))
+        self.hand_mode_button=QToolButton(self);self.hand_mode_button.setText(_tr('移动视野'))
+        self._mode_group=QButtonGroup(self);self._mode_group.setExclusive(True)
+        for control in (self.draw_mode_button,self.hand_mode_button):
+            control.setCheckable(True);self._mode_group.addButton(control);toolbar.addWidget(control)
+        self.draw_mode_button.setChecked(True)
+        self.draw_mode_button.clicked.connect(lambda:self.set_pan_mode(False))
+        self.hand_mode_button.clicked.connect(lambda:self.set_pan_mode(True))
         self.hint = QLabel(_tr('拖选时间；拖动上方片段或边缘可编辑。'), self)
         self.hint.setProperty('role', 'muted')
         self.hint.setWordWrap(True)
@@ -1041,6 +1054,9 @@ class StyleTimeline(QWidget):
         self.fit_button = QToolButton(self)
         self.fit_button.setText(_tr('全曲'))
         self.fit_button.setToolTip(_tr('缩放至完整工程'))
+        self.note_start_button=QToolButton(self);self.note_start_button.setText(_tr('音符起点'))
+        self.note_start_button.setToolTip(_tr('音符起点'))
+        toolbar.addWidget(self.note_start_button)
         self.zoom_selection_button = QToolButton(self)
         self.zoom_selection_button.setText(_tr('选区'))
         self.zoom_selection_button.setToolTip(_tr('放大当前时间选区'))
@@ -1082,22 +1098,25 @@ class StyleTimeline(QWidget):
         self._view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._view.setWidget(self._canvas)
         self._layout.addWidget(self._view, 1)
-        navigation=QHBoxLayout();navigation.setContentsMargins(0,0,0,0);navigation.setSpacing(8)
+        nav_widget=QWidget(self);nav_widget.setObjectName('timeline-navigation')
+        navigation=QHBoxLayout(nav_widget);navigation.setContentsMargins(8,5,8,5);navigation.setSpacing(8)
         self.pan_left_button=QToolButton(self);self.pan_left_button.setArrowType(Qt.LeftArrow)
         self.pan_right_button=QToolButton(self);self.pan_right_button.setArrowType(Qt.RightArrow)
         for control,text,direction in ((self.pan_left_button,'向左移动视野',-1),
                                        (self.pan_right_button,'向右移动视野',1)):
             control.setToolTip(_tr(text));control.setAccessibleName(_tr(text))
-            control.setMinimumWidth(48);control.setIconSize(QSize(18,18))
+            control.setText(_tr('向左看') if direction<0 else _tr('向右看'))
+            control.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            control.setMinimumWidth(100);control.setIconSize(QSize(18,18))
             control.setAutoRepeat(True);control.setAutoRepeatDelay(300);control.setAutoRepeatInterval(80)
             control.clicked.connect(lambda checked=False,d=direction:self.pan_view(d))
         navigation.addWidget(self.pan_left_button)
         self.pan_hint=QLabel(self);self.pan_hint.setAlignment(Qt.AlignCenter)
         self.pan_hint.setProperty('role','muted');self.pan_hint.setMinimumWidth(0)
         self.pan_hint.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred)
-        self.pan_hint.setToolTip(_tr('中键拖动画面；Shift+滚轮横移'))
+        self.pan_hint.setToolTip(_tr('拖动滚动条浏览时间；也可切换“移动视野”后左键拖动画面。'))
         navigation.addWidget(self.pan_hint,1);navigation.addWidget(self.pan_right_button)
-        self._layout.addLayout(navigation)
+        self._layout.addWidget(nav_widget)
         viewport = self._view.viewport()
         self._piano_header = _TimelinePianoHeader(
             self._canvas, self._view.verticalScrollBar(), viewport)
@@ -1111,10 +1130,12 @@ class StyleTimeline(QWidget):
         self._view.horizontalScrollBar().rangeChanged.connect(self._sync_headers)
         self._view.verticalScrollBar().valueChanged.connect(self._sync_headers)
         self._canvas.selectionChanged.connect(self._selection_changed)
+        self._canvas.selectionCommitted.connect(self.selectionCommitted)
         self._canvas.zoomRequested.connect(self.zoom_by)
         self.zoom_out.clicked.connect(lambda: self.zoom_by(1 / 1.2))
         self.zoom_in.clicked.connect(lambda: self.zoom_by(1.2))
         self.fit_button.clicked.connect(self.fit_project)
+        self.note_start_button.clicked.connect(self.focus_note_start)
         self.readable_button.clicked.connect(self.readable_zoom)
         self.row_height_choice.currentIndexChanged.connect(
             lambda: self.set_pitch_height(self.row_height_choice.currentData()))
@@ -1138,6 +1159,30 @@ class StyleTimeline(QWidget):
     def set_selection_style(self,preset):
         self._canvas._selection_preset=preset if preset in STYLE_PRESET_COLORS else 'none'
         self._canvas.update()
+
+    def pan_mode(self):return self._pan_enabled
+
+    def set_pan_mode(self,enabled):
+        self._cancel_gesture();self._pan_origin=None;self._pan_button=None
+        self._pan_enabled=bool(enabled)
+        with QSignalBlocker(self.draw_mode_button),QSignalBlocker(self.hand_mode_button):
+            self.draw_mode_button.setChecked(not enabled);self.hand_mode_button.setChecked(bool(enabled))
+        cursor=Qt.OpenHandCursor if enabled else Qt.CrossCursor
+        self._canvas.setCursor(cursor);self._ruler_header.setCursor(cursor)
+
+    def focus_note_start(self):
+        notes=self._canvas._notes
+        if not notes:return False
+        first=min(notes,key=lambda note:note['start'])
+        self.set_zoom(self._canvas.DEFAULT_ZOOM)
+        self._restore_view_time(first['start'],self._canvas.PIANO_WIDTH+24)
+        y=self._canvas.pitch_to_y(first['pitch'])+self._canvas.PITCH_HEIGHT/2-self._view.viewport().height()/2
+        self._view.verticalScrollBar().setValue(round(y));self._sync_headers()
+        self._initial_note_view_pending=False
+        return True
+
+    def _focus_initial_notes(self):
+        if self._initial_note_view_pending and self.isVisible():self.focus_note_start()
 
     def pan_view(self,direction):
         if not self.isEnabled():return
@@ -1308,10 +1353,13 @@ class StyleTimeline(QWidget):
         if self._region_gesture is not None or self._range_gesture is not None:
             self._ruler_move(event)
         gesture, preview = self._region_gesture, self._canvas._region_preview
+        committed=(self.selection() if self._range_gesture is not None and
+                   abs(self._ruler_x(event)-self._range_gesture[0])>=2 else None)
         self._cancel_gesture()
         if gesture is not None and preview is not None and (
                 abs(preview[1] - gesture['start']) > 1e-9 or abs(preview[2] - gesture['end']) > 1e-9):
             self.regionEditRequested.emit(*preview)
+        elif committed is not None:self.selectionCommitted.emit(committed)
 
     def _cancel_gesture(self):
         self._edge_pan_timer.stop();self._drag_pointer=None
@@ -1343,6 +1391,7 @@ class StyleTimeline(QWidget):
         if self._center_on_show:
             self._center_vertical_on_notes()
             self._center_on_show = False
+        QTimer.singleShot(0,self._focus_initial_notes)
 
     def hideEvent(self,event):
         self._cancel_gesture()
@@ -1376,6 +1425,7 @@ class StyleTimeline(QWidget):
     def set_project(self, project, track_indices):
         self._cancel_gesture()
         self._canvas.set_project(project, track_indices)
+        self._initial_note_view_pending=True
         bar = self._view.horizontalScrollBar()
         bar.setValue(bar.minimum())
         self._center_on_show = not self.isVisible()
@@ -1383,6 +1433,7 @@ class StyleTimeline(QWidget):
             self._center_vertical_on_notes()
         self._update_zoom_label()
         self._sync_headers()
+        if self.isVisible():QTimer.singleShot(0,self._focus_initial_notes)
 
     def set_regions(self, regions):
         self._cancel_gesture()
@@ -1397,6 +1448,7 @@ class StyleTimeline(QWidget):
         return self._set_zoom_at(factor, center_x)
 
     def _set_zoom_at(self, factor, center_x):
+        self._initial_note_view_pending=False
         self._cancel_gesture()
         center_time = self.time_at_view_x(center_x)
         if not self._canvas.set_zoom(factor):
@@ -1450,6 +1502,8 @@ class StyleTimeline(QWidget):
         self.zoom_percent.setText(f'{round(self.zoom_factor() * 100)}%')
 
     def keyPressEvent(self, event):
+        if self.isEnabled() and event.key() in (Qt.Key_Left,Qt.Key_Right) and event.modifiers()==Qt.NoModifier:
+            self.pan_view(-1 if event.key()==Qt.Key_Left else 1);event.accept();return
         if self.isEnabled() and event.key() == Qt.Key_Delete and self._canvas._active_region >= 0:
             self.regionDeleteRequested.emit(self._canvas._active_region)
             event.accept()
@@ -1475,9 +1529,12 @@ class StyleTimeline(QWidget):
                     bar.setValue(int(round(bar.value() + shift)))
             self._sync_headers()
         if watched in (self._canvas, self._ruler_header) and self.isEnabled():
+            if self._pan_enabled and event.type()==QEvent.MouseButtonPress and event.button()==Qt.LeftButton:
+                self._pan_origin=(event.globalPos(),self._view.horizontalScrollBar().value(),self._view.verticalScrollBar().value())
+                self._pan_button=Qt.LeftButton;watched.setCursor(Qt.ClosedHandCursor);event.accept();return True
             if watched is self._canvas and event.type()==QEvent.MouseButtonPress and event.button()==Qt.LeftButton:
                 self.set_active_region(-1);self.regionSelected.emit(-1)
-            if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Escape, Qt.Key_Delete):
+            if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Escape, Qt.Key_Delete,Qt.Key_Left,Qt.Key_Right):
                 self.keyPressEvent(event)
                 return event.isAccepted()
             if event.type() == QEvent.Wheel:
@@ -1493,6 +1550,7 @@ class StyleTimeline(QWidget):
                     event.accept()
                     return True
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.MiddleButton:
+                self._pan_button=Qt.MiddleButton
                 self._pan_origin = (event.globalPos(), self._view.horizontalScrollBar().value(), self._view.verticalScrollBar().value())
                 watched.setCursor(Qt.ClosedHandCursor)
                 event.accept()
@@ -1504,9 +1562,9 @@ class StyleTimeline(QWidget):
                 self._view.verticalScrollBar().setValue(y - delta.y())
                 event.accept()
                 return True
-            if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.MiddleButton:
-                self._pan_origin = None
-                watched.setCursor(Qt.CrossCursor)
+            if event.type() == QEvent.MouseButtonRelease and event.button() == self._pan_button:
+                self._pan_origin = None;self._pan_button=None
+                watched.setCursor(Qt.OpenHandCursor if self._pan_enabled else Qt.CrossCursor)
                 event.accept()
                 return True
         return super().eventFilter(watched, event)

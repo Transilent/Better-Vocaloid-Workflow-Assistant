@@ -80,55 +80,70 @@ The Tuning page provides two style-application modes:
 - **Whole track** applies one of the three visible style cards once to the
   selected actual target tracks.
 - **Time segments** selected in **Style & curves** show a large, prominent
-  **Start editing** button; the main page no longer embeds a separate piano-roll
+  **Start editing** button; the main page does not embed a separate piano-roll
   card. The button opens the full-screen editor, which shows editable segment
   strips on the fixed ruler above a read-only note view of the selected actual
-  target tracks. Drag on the ruler or note area to create a time selection. Click
-  a segment strip to select it; drag its middle to move it, or either edge to
-  change its range. Selected segments use larger edge handles: ◀ appears on the
-  left, ▶ on the right, and ↔ is shown as a resize cue. Esc cancels the current
-  drag or clears the selection; Delete removes the selected segment. A clear
-  horizontal scrollbar and **Move view left** and **Move view right** buttons
-  remain visible below the view. Use **Full project** and **Selection** to refit
-  the view. Ctrl+wheel zooms around the pointer, Shift+wheel scrolls horizontally,
-  and dragging with the middle mouse button pans. Dragging a segment near the
-  left or right edge auto-scrolls the view; releasing the drag commits one range
-  update. **Snap** is off by default; when enabled, it aligns to
-  nearby note boundaries and holding Alt turns it off temporarily. This view
-  edits only the start and end of style segments. It does not edit source notes,
-  lyrics, voicebank settings or pitch curves, play audio, or synthesize a
-  voicebank.
+  target tracks.
 
-In Time segments mode, enter **Start** and **End** in seconds (up to three
-decimal places), or create or adjust a time selection in the editor timeline. Then
-set the style, overall strength, four segment coefficients and added-pitch
-choice, and choose **Add**. Release a dragged segment, or edit the time fields
-and choose **Update**, to write its range back. Selecting a list row loads that
-segment's settings into the controls. **Delete** and **Clear** manage the current
-input; **Undo/Redo** restores segment edits (Ctrl+Z; Ctrl+Y or Ctrl+Shift+Z).
-Segments cannot overlap, at most 128 are allowed, and a selection shorter than
-25 ms cannot become a segment.
+The editor opens at the first note-bearing part of the project and keeps a
+readable phrase-level view with large notes. **Note start** returns to the
+earliest note. **Draw segment** is selected by default: drag on the ruler or note
+area, then release the mouse to add or update the current style segment. If no
+style is selected, VWA keeps the selection in the draft and asks you to choose a
+style; an overlapping selection is rejected with a request to adjust its range.
+A selection shorter than 25 ms cannot be written. At most 128 non-overlapping
+segments are allowed.
+
+Selecting a list row loads its settings. Changes to style, overall strength, the
+four coefficients, added pitch or start/end time are saved automatically to that
+row. **Delete**, **Clear**, **Undo** and **Redo** changes are also saved. Click a
+segment strip to select it; drag its middle to move it or either edge to change
+its range. Selected segments use larger edge handles: ◀ appears on the left, ▶
+on the right, and ↔ is shown as a resize cue. Esc cancels the current drag or
+clears the selection; Delete removes the selected segment. Dragging a segment
+near either view edge auto-scrolls it; releasing commits one range update.
+**Snap** is off by default; when enabled, it aligns to nearby note boundaries and
+holding Alt turns it off temporarily.
+
+A thicker horizontal scrollbar and explicit **Look left** and **Look right**
+buttons remain visible below the view. **Pan view** makes a left-button drag pan
+the canvas without creating a segment; switch to **Draw segment** to select a
+range. Middle-drag also pans, Shift+wheel scrolls horizontally and Ctrl+wheel
+zooms around the pointer. **Full project** and **Selection** refit the view. The
+default piano roll uses 40 px note rows (notes paint at about 36 px), a 260 px/s
+time scale and 11.5 pt lyric and piano-key labels. **Row height** changes only
+the display between 80%, 100%, 125% and 150%. **Readable** restores the default
+horizontal scale and centers the selection or current time.
 
 When the segment list is nonempty, execution reads only that list. Each segment
 can use its own `gentle`/`sad`/`bold`, overall strength, four coefficients and
-pitch switch within its start/end time. Outside a segment, the style line produced by
-the primary parameter source remains. In this mode, the style and segment
-controls above are tool settings for adding or updating segments; they do not
-create an additional whole-track style overlay. Reference, calibration or
-retained primary processing still covers the entire selected actual target
-tracks. Segments do not overlap, and every candidate starts from the fixed
-original performance rather than stacking on an existing style candidate.
+pitch switch within its start/end time. Outside a segment, the style line
+produced by the primary parameter source remains. In this mode, the style and
+segment controls above are settings for the selected segment, not an additional
+whole-track overlay. Reference, calibration or retained primary processing still
+covers the entire selected actual target tracks. Every candidate starts from the
+fixed original performance rather than stacking on an existing style candidate.
 
-`style_regions` is stored only in execution options for the current input
-session, not in general workflow preferences. Loading or changing the input
-clears the segment list and returns to Whole track. A saved processing record
-restores segments only when its input SHA matches; otherwise they remain
-cleared. Segment processing does not change notes, syllables, lyrics, voicebank
-settings or timing.
+`style_regions` and editor settings are isolated by the input SVP SHA and stored
+as a local draft; they do not enter general workflow preferences. Reloading the
+same input project restores its previous segment draft. Another input uses only
+its own draft, so a draft is never applied to a different project. Restoring a
+processing record still requires a matching input SHA. The draft only lets the
+editor continue; it does not overwrite the source SVP, process or synthesize
+audio, export a finished file, or represent a generated result. The separate
+**Generate independent tuning project** button creates the tuning project copy;
+open that project in SV after generation. Segment processing does not change
+notes, syllables, lyrics, voicebank settings or timing.
 
-A clear horizontal scrollbar and **Move view left** and **Move view right** buttons remain visible below the editor view. The default piano-roll view uses 40 px note rows (notes paint at about 36 px), a 260 px/s time scale, and 11.5 pt lyric and piano-key labels. **Row height** changes only the display between 80%, 100%, 125% and 150%. **Readable** restores the default horizontal scale and centers the selection or current time; **Full project** and **Selection** remain available.
-
-Choose **Time segments** in **Style & curves** to reveal a large, prominent **Start editing** button. Choosing it opens the full-screen editor directly; the page does not embed a separate piano-roll card. F11 can also open or exit the editor. The **Segment settings** panel on the right can be shown or hidden and starts collapsed on narrow screens. Exiting returns to the original page and leaves only the entry; the same controls, segment data, selection, and undo history are retained. The interface follows VWA's light or dark theme, while each style keeps the fixed identifying color described above. The view still edits only style-segment start and end times.
+Choose **Time segments** in **Style & curves** to reveal the large **Start
+editing** button. F11 can also open or exit the editor. The **Segment settings**
+panel on the right can be shown or hidden and starts collapsed on narrow screens.
+Exiting returns to the original page and leaves only the entry; the same
+controls, segment data, selection and undo history are retained. The interface
+follows VWA's light or dark theme, while each style keeps its fixed identifying
+color described above. The view edits only style-segment ranges; it does not
+edit source notes, lyrics, voicebank settings or pitch curves, play audio, or
+synthesize a voicebank.
 
 ## Pitch defaults and compatibility mapping
 

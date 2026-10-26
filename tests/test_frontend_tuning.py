@@ -1,6 +1,7 @@
 """Isolated frontend contracts for tuning choice adapters and honest result states."""
 from pathlib import Path
 from types import SimpleNamespace
+import json
 import os
 import sys
 import tempfile
@@ -9,7 +10,9 @@ from unittest.mock import patch
 
 APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP))
-from PyQt5.QtCore import QRect,QTimer,Qt
+from PyQt5.QtCore import QEvent,QPoint,QPointF,QRect,QTimer,Qt
+from PyQt5.QtGui import QMouseEvent
+from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication,QDoubleSpinBox,QLabel,QProgressBar,QWidget
 from ui_components import AdaptiveColumns,FlowLayout,StyleTimeline
 import tuning_ui
@@ -84,10 +87,10 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
     for editor in (page.region_start_editor,page.region_end_editor):
         assert editor.minimum()<=-1_000_000 and editor.maximum()>=1_000_000
         assert editor.keyboardTracking() is False
-    assert [control.text() for control in (page.add_region_button,page.update_region_button,
-                                            page.delete_region_button,page.clear_regions_button,
-                                            page.undo_region_button,page.redo_region_button)] == [
-        '添加','更新','删除','清空','撤销','重做']
+    assert page.add_region_button.isHidden() and page.update_region_button.isHidden()
+    visible_region_buttons=(page.delete_region_button,page.clear_regions_button,
+                            page.undo_region_button,page.redo_region_button)
+    assert [control.text() for control in visible_region_buttons] == ['删除','清空','撤销','重做']
     assert page.region_style_choice.combo is page.performance_style
     assert page.region_strength_choice.combo is page.style_strength
     assert page.performance_style_choice.combo is page.performance_style
@@ -102,15 +105,34 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
     region_actions=next(item.layout() for item in (page.style_region_panel.layout().itemAt(i)
                         for i in range(page.style_region_panel.layout().count()))
                         if isinstance(item.layout(),FlowLayout) and
-                        item.layout().indexOf(page.add_region_button)>=0)
+                        item.layout().indexOf(page.delete_region_button)>=0)
     region_actions._do_layout(QRect(0,0,320,220),False)
-    region_buttons=(page.add_region_button,page.update_region_button,page.delete_region_button,
-                    page.clear_regions_button,page.undo_region_button,page.redo_region_button)
-    assert min(button.geometry().left() for button in region_buttons)>=0
-    assert max(button.geometry().right() for button in region_buttons)<=319
-    assert len({button.geometry().y() for button in region_buttons})>1
+    assert min(button.geometry().left() for button in visible_region_buttons)>=0
+    assert max(button.geometry().right() for button in visible_region_buttons)<=319
+    assert len({button.geometry().y() for button in visible_region_buttons})>1
     assert page._region_storage.isHidden() and page.style_region_panel.isHidden()
     assert 'style_regions' not in page.preferences()
+    assert page._region_autosave_timer.interval()==150
+    assert page._region_autosave_timer.isSingleShot()
+    assert page.style_timeline.receivers(page.style_timeline.selectionCommitted)>=1
+    navigation=StyleTimeline()
+    assert navigation.pan_mode() is False
+    navigation.set_pan_mode(True)
+    assert navigation.pan_mode() is True and navigation.hand_mode_button.isChecked()
+    assert not navigation.draw_mode_button.isChecked()
+    navigation.set_pan_mode(False)
+    assert navigation.pan_mode() is False and navigation.draw_mode_button.isChecked()
+    navigation_project={'time':{'tempo':[{'position':0,'bpm':120}]},'tracks':[
+        {'name':'Lead','mainRef':{'blickOffset':0},'mainGroup':{'notes':[
+            {'onset':7680,'duration':3840,'pitch':60,'lyrics':'a'}]}}]}
+    navigation.resize(720,340);navigation.show();application.processEvents()
+    with patch.object(navigation,'focus_note_start',wraps=navigation.focus_note_start) as scheduled:
+        navigation.set_project(navigation_project,[0]);application.processEvents()
+        assert scheduled.call_count>=1
+        assert navigation._initial_note_view_pending is False
+    assert navigation.focus_note_start() is True
+    assert navigation._canvas._notes and navigation._canvas._notes[0]['start']>0
+    navigation.close();navigation.deleteLater();application.processEvents()
     assert all(editor.value() == 100 for editor in page.style_detail.values())
 
     # Wide layouts expose input/mapping and both independent setting groups.
@@ -400,4 +422,77 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
     page.deleteLater()
     application.processEvents()
 
-print('PASS: responsive tuning grid, 12px untracked-label progress, actual stage messages, terminal caps, late-signal protection and receipt gate contracts')
+    # A real mouse release on the project timeline is the commit gesture. It
+    # stages the current tool as one region; a subsequent tuple with a valid
+    # selected row updates that row instead of appending another one.
+    release_project=root/'release-project.svp'
+    quarter=3840
+    release_track={'name':'Lead','mainRef':{'blickOffset':0,'database':{'name':'Fixture'}},
+        'groups':[],'mainGroup':{'uuid':'lead','notes':[{'onset':0,'duration':quarter,
+        'pitch':60,'lyrics':'la'}],'parameters':{}}}
+    release_data={'version':153,'time':{'tempo':[{'position':0,'bpm':120}],'meter':[]},
+                  'tracks':[release_track]}
+    release_project.write_text(json.dumps(release_data,ensure_ascii=False),encoding='utf-8')
+    release_root=root/'release-root'
+    release_state={'tuning':{'session':None,'preferences':{}},'untouched':{'sentinel':True}}
+    with patch.multiple(tuning_ui,ROOT=release_root,workspace_state=lambda:release_state), \
+            patch.dict(os.environ,{'VWA_TESTING':'','BVWA_TESTING':'1'}):
+        release_page=TuningPage(owner)
+        assert release_page.load_project(release_project)
+        release_page.style_mode.setCurrentIndex(release_page.style_mode.findData('regions'))
+        release_page.performance_style.setCurrentIndex(
+            release_page.performance_style.findData('none'))
+        assert release_page.start_style_editor_button.isEnabled()
+        release_page.start_style_editor_button.click();application.processEvents()
+        assert release_page.performance_style.currentData()=='gentle'
+        assert release_page._region_dialog is not None
+        timeline=release_page.style_timeline;canvas=timeline._canvas
+        bar=timeline._view.horizontalScrollBar();vertical=timeline._view.verticalScrollBar()
+        bar.setValue(bar.minimum());vertical.setValue(vertical.minimum());application.processEvents()
+        target_x=lambda seconds:round(canvas.time_to_x(seconds)-bar.value())
+        lane_y=canvas.RULER_HEIGHT+32-vertical.value()
+        draw_start=QPoint(target_x(.20),lane_y);draw_end=QPoint(target_x(.55),lane_y)
+        committed=[]
+        timeline.selectionCommitted.connect(committed.append)
+        QTest.mousePress(canvas,Qt.LeftButton,pos=draw_start)
+        QApplication.sendEvent(canvas,QMouseEvent(QEvent.MouseMove,QPointF(draw_end),
+            Qt.NoButton,Qt.LeftButton,Qt.NoModifier))
+        QTest.mouseRelease(canvas,Qt.LeftButton,pos=draw_end);application.processEvents()
+        assert len(committed)==1
+        assert len(release_page.style_regions)==1
+        first=release_page.style_regions[0]
+        assert first['preset']=='gentle'
+        assert abs(first['start']-committed[0][0])<1e-9
+        assert abs(first['end']-committed[0][1])<1e-9
+        assert release_page.region_list.currentRow()==0
+
+        draft_path=release_page._style_draft_path()
+        assert draft_path==release_root/'cache/style-region-drafts'/(
+            release_page._style_input_sha256+'.json')
+        assert draft_path.is_file()
+        draft=json.loads(draft_path.read_text(encoding='utf-8'))
+        assert draft['style_regions']==release_page.style_regions
+        assert draft['track_indices']==[0]
+
+        release_page.performance_style.setCurrentIndex(
+            release_page.performance_style.findData('sad'))
+        release_page.style_strength_spin.setValue(72)
+        release_page.stage_style_selection((.30,.60))
+        assert len(release_page.style_regions)==1
+        updated=release_page.style_regions[0]
+        assert updated['preset']=='sad' and abs(updated['strength']-.72)<1e-12
+        assert abs(updated['start']-.30)<1e-9 and abs(updated['end']-.60)<1e-9
+        release_page._flush_style_autosave()
+        draft=json.loads(draft_path.read_text(encoding='utf-8'))
+        assert draft['style_regions']==[updated]
+        assert draft['selected_index']==0
+        assert tuple(draft['selection'])==(updated['start'],updated['end'])
+
+        dialog=release_page._region_dialog
+        dialog.close();application.processEvents()
+        for _ in range(3):application.processEvents()
+        assert release_page._region_dialog is None
+        release_page.close();application.processEvents()
+        release_page.deleteLater();application.processEvents()
+
+print('PASS: responsive tuning grid, visible region actions, release-time draft staging, 12px untracked-label progress, actual stage messages, terminal caps, late-signal protection and receipt gate contracts')

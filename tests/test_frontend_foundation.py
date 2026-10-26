@@ -107,6 +107,9 @@ assert timeline.pitch_height()>=36,'The default piano roll must draw readable no
 assert math.isclose(timeline.zoom_factor(),3.25,rel_tol=1e-9,abs_tol=1e-9)
 assert timeline._canvas.pixels_per_second>=240,'The default timeline must leave enough horizontal detail for notes'
 selection_changes=[];timeline.selectionChanged.connect(selection_changes.append)
+selection_commits=[];timeline.selectionCommitted.connect(selection_commits.append)
+assert not timeline.pan_mode() and timeline.draw_mode_button.isChecked() and not timeline.hand_mode_button.isChecked()
+assert timeline.draw_mode_button.text()=='绘制片段' and timeline.hand_mode_button.text()=='移动视野'
 timeline.set_project(timeline_project,[0,1]);application.processEvents()
 def timeline_drag(widget,start,end,modifiers=Qt.NoModifier):
     QTest.mousePress(widget,Qt.LeftButton,modifier=modifiers,pos=start)
@@ -206,7 +209,7 @@ assert [row['preset'] for row in restacked]==['sad','bold','gentle',None]
 assert [row['color'].name() for row in restacked][:3]==[style_colors['sad'],style_colors['bold'],style_colors['gentle']]
 assert restacked[0]['color'].name()==shown[2]['color'].name() and restacked[1]['color'].name()==shown[1]['color'].name(),'Style colours changed when the clips were reordered'
 timeline.set_regions(regions);application.processEvents()
-timeline.set_selection(1.2,2.4)
+selection_commits.clear();timeline.set_selection(1.2,2.4)
 timeline.set_active_region(1);timeline.set_selection_style('gentle')
 assert timeline._canvas.selection_color().name()==style_colors['bold'],'The active region did not own the selection colour'
 timeline.set_active_region(-1)
@@ -214,6 +217,7 @@ for preset,expected in style_colors.items():
     timeline.set_selection_style(preset)
     assert timeline._canvas.selection_color().name()==expected,'Blank selection did not use the selected style colour'
 timeline.set_selection_style('gentle')
+assert not selection_commits,'Programmatic selection changes emitted a completed gesture'
 
 # A left press on the canvas clears the active style clip before starting a
 # new range. The signal and blank-selection colour must follow the tool style.
@@ -221,38 +225,55 @@ canvas_region_selected=[];timeline.regionSelected.connect(canvas_region_selected
 timeline.set_active_region(1);timeline.set_selection_style('sad')
 bar.setValue(min(bar.maximum(),max(bar.minimum(),120)));application.processEvents()
 canvas_y=timeline._canvas.RULER_HEIGHT+20;press_x=bar.value()+timeline._canvas.PIANO_WIDTH+100;release_x=press_x+80
-QTest.mousePress(timeline._canvas,Qt.LeftButton,pos=QPoint(press_x,canvas_y))
-QApplication.sendEvent(timeline._canvas,QMouseEvent(QEvent.MouseMove,QPointF(release_x,canvas_y),Qt.NoButton,Qt.LeftButton,Qt.NoModifier))
+selection_commits.clear();QTest.mousePress(timeline._canvas,Qt.LeftButton,pos=QPoint(press_x,canvas_y))
+QApplication.sendEvent(timeline._canvas,QMouseEvent(QEvent.MouseMove,QPointF(release_x,canvas_y),Qt.NoButton,Qt.LeftButton,Qt.NoModifier));application.processEvents()
+assert timeline.selection() is not None and not selection_commits,'Canvas drag committed before button release'
 QTest.mouseRelease(timeline._canvas,Qt.LeftButton,pos=QPoint(release_x,canvas_y));application.processEvents()
+assert len(selection_commits)==1 and isinstance(selection_commits[0],tuple) and selection_commits[0]==timeline.selection(),'Canvas drag did not commit one tuple range'
 assert canvas_region_selected==[-1] and timeline._canvas._active_region==-1
 assert timeline._canvas.selection_color().name()==style_colors['sad'],'New canvas selection did not use the tool style colour'
 
-timeline.set_selection(1.2,2.4);assert timeline.selection()==(1.2,2.4)
+selection_commits.clear();timeline.set_selection(1.2,2.4);assert timeline.selection()==(1.2,2.4)
 assert timeline.set_selection(2.4,1.2)==(1.2,2.4)
+click_x=round(timeline._canvas.time_to_x(1.5));click_y=timeline._view.verticalScrollBar().value()+timeline._canvas.RULER_HEIGHT+20
+QTest.mouseClick(timeline._canvas,Qt.LeftButton,pos=QPoint(click_x,click_y));application.processEvents()
+assert timeline.selection()==(1.2,2.4) and not selection_commits,'A plain canvas click committed a range'
 try:timeline.set_selection(float('nan'),2);raise AssertionError('non-finite selection accepted')
 except ValueError:pass
 assert timeline.selection()==(1.2,2.4)
 clamped=timeline.set_selection(-999,999);assert clamped==timeline._canvas.scene_bounds()
 timeline.set_project(timeline_project,[0,1]);assert timeline.selection() is None
-assert selection_changes and selection_changes[-1] is None
+assert selection_changes and selection_changes[-1] is None and not selection_commits
 assert not timeline._canvas._regions and timeline._canvas.scene_bounds()[1]<11,'New project retained stale region bounds'
 
 # Dragging from later time to earlier time sorts both real-time endpoints.
 left=round(timeline._canvas.time_to_x(2.4));right=round(timeline._canvas.time_to_x(.9));y=timeline._canvas.height()-100
-QTest.mousePress(timeline._canvas,Qt.LeftButton,pos=QPoint(left,y));QApplication.sendEvent(timeline._canvas,QMouseEvent(QEvent.MouseMove,QPointF(right,y),Qt.NoButton,Qt.LeftButton,Qt.NoModifier));QTest.mouseRelease(timeline._canvas,Qt.LeftButton,pos=QPoint(right,y));application.processEvents()
+selection_commits.clear();QTest.mousePress(timeline._canvas,Qt.LeftButton,pos=QPoint(left,y));QApplication.sendEvent(timeline._canvas,QMouseEvent(QEvent.MouseMove,QPointF(right,y),Qt.NoButton,Qt.LeftButton,Qt.NoModifier));QTest.mouseRelease(timeline._canvas,Qt.LeftButton,pos=QPoint(right,y));application.processEvents()
 assert timeline.selection() is not None and timeline.selection()[0]<timeline.selection()[1]
 assert abs(timeline.selection()[0]-timeline._canvas.x_to_time(right))<1e-9
 assert abs(timeline.selection()[1]-timeline._canvas.x_to_time(left))<1e-9
 assert selection_changes[-1]==timeline.selection()
+assert len(selection_commits)==1 and selection_commits[0]==timeline.selection(),'Reverse canvas drag did not commit once'
 
 # Disabling leaves the current choice intact and a programmatic clear/Escape
 # sends None through the sole public signal.
-selection_before=timeline.selection();timeline.setEnabled(False)
+selection_before=timeline.selection();selection_commits.clear();timeline.setEnabled(False)
 QTest.mousePress(timeline._canvas,Qt.LeftButton,pos=QPoint(left,y));QApplication.sendEvent(timeline._canvas,QMouseEvent(QEvent.MouseMove,QPointF(right,y),Qt.NoButton,Qt.LeftButton,Qt.NoModifier));QTest.mouseRelease(timeline._canvas,Qt.LeftButton,pos=QPoint(right,y));application.processEvents()
 assert timeline.selection()==selection_before
 timeline.setEnabled(True);timeline.set_selection(.5,1.5);timeline._canvas.setFocus();QTest.keyClick(timeline._canvas,Qt.Key_Escape);application.processEvents()
 assert timeline.selection() is None and selection_changes[-1] is None
 timeline.set_selection(.5,1.5);timeline.clear_selection();assert timeline.selection() is None and selection_changes[-1] is None
+assert not selection_commits,'Disabled input, Escape or programmatic clearing committed a range'
+
+# Escape discards an unfinished canvas range; its later release must not
+# commit the preview or restore a cached drag anchor.
+cancel_focus=QApplication.focusWidget();bar=timeline._view.horizontalScrollBar();bar.setValue((bar.minimum()+bar.maximum())//2);vertical=timeline._view.verticalScrollBar()
+cancel_y=vertical.value()+timeline._canvas.RULER_HEIGHT+20;cancel_left=bar.value()+timeline._canvas.PIANO_WIDTH+100;cancel_right=cancel_left+54
+QTest.mousePress(timeline._canvas,Qt.LeftButton,pos=QPoint(cancel_left,cancel_y));QApplication.sendEvent(timeline._canvas,QMouseEvent(QEvent.MouseMove,QPointF(cancel_right,cancel_y),Qt.NoButton,Qt.LeftButton,Qt.NoModifier));application.processEvents()
+assert timeline.selection() is not None and not selection_commits,'Pending canvas drag committed before release'
+QTest.keyClick(timeline._canvas,Qt.Key_Escape);application.processEvents();assert timeline.selection() is None and not selection_commits,'Escape committed or retained a pending range'
+QTest.mouseRelease(timeline._canvas,Qt.LeftButton,pos=QPoint(cancel_right,cancel_y));application.processEvents();assert not selection_commits,'Cancelled canvas drag was committed by its later release'
+if cancel_focus is not None:cancel_focus.setFocus(Qt.OtherFocusReason)
 
 # Zoom preserves the visible center time and selection seconds; scrolling only
 # changes viewport position. Non-finite zoom requests are ignored.
@@ -298,7 +319,9 @@ editor_project={'time':{'tempo':[{'position':0,'bpm':120}]},'tracks':[{'mainRef'
 editor_project_frozen=copy.deepcopy(editor_project)
 editor_regions=[{'start':2.4,'end':3.4,'preset':'gentle'},{'start':4.2,'end':7.0,'preset':'sad','strength':.6},{'start':7.8,'end':8.8,'preset':'bold'}]
 editor_regions_frozen=copy.deepcopy(editor_regions)
-timeline.set_project(editor_project,[0]);timeline.set_regions(editor_regions);timeline.set_snap_enabled(False);timeline.set_zoom(.9);application.processEvents()
+timeline.set_project(editor_project,[0]);timeline.set_zoom(.9);application.processEvents()
+timeline.set_regions(editor_regions);timeline.set_snap_enabled(False);application.processEvents()
+assert math.isclose(timeline.zoom_factor(),.9,rel_tol=1e-9,abs_tol=1e-9),'Explicit zoom did not cancel pending initial-note focus'
 assert timeline._canvas.pitch_to_y(60)-timeline._canvas.pitch_to_y(61)>=36,'Piano rows are too small to read and target'
 bar=timeline._view.horizontalScrollBar();piano_width=timeline._canvas.PIANO_WIDTH;header=timeline._ruler_header;lane_y=timeline._canvas.REGION_LANE_TOP+(timeline._canvas.RULER_HEIGHT-timeline._canvas.REGION_LANE_TOP)//2
 bar.setValue(min(bar.maximum(),max(bar.minimum(),round(timeline._canvas.time_to_x(5.6)-piano_width-300))));application.processEvents()
@@ -311,8 +334,8 @@ target_x=ruler_x((target_start+target_end)/2)
 assert 0<target_x<header.width(),'Target style region is outside the visible lane'
 timeline.set_active_region(0);assert timeline._canvas._active_region==0
 timeline.set_active_region(99);assert timeline._canvas._active_region==-1
-QTest.mouseClick(header,Qt.LeftButton,pos=QPoint(target_x,lane_y));application.processEvents()
-assert region_selected==[1] and timeline._canvas._active_region==1
+selection_commits.clear();QTest.mouseClick(header,Qt.LeftButton,pos=QPoint(target_x,lane_y));application.processEvents()
+assert region_selected==[1] and timeline._canvas._active_region==1 and not selection_commits
 assert not region_edits and editor_regions==editor_regions_frozen,'A region click selected but also edited caller data'
 
 # A visible handle is a 14px band with a 12px resize hit target. Pressing
@@ -341,12 +364,13 @@ assert len(region_edits)==1 and region_edits[-1][0]==1
 assert abs((region_edits[-1][2]-region_edits[-1][1])-(target_end-target_start))<1e-9,'Region move changed duration'
 assert abs(region_edits[-1][1]-(target_start+move_shift))<1e-8
 assert editor_regions==editor_regions_frozen and timeline._canvas._region_preview is None
+assert not selection_commits,'Region click, drag or resize emitted selectionCommitted'
 
 # Zooming during a real drag cancels its uncommitted preview. The following
 # release must neither emit an edit nor mutate the external region list.
 region_edits.clear();QTest.mousePress(header,Qt.LeftButton,pos=QPoint(target_x,lane_y));QApplication.sendEvent(header,QMouseEvent(QEvent.MouseMove,QPointF(target_x+30,lane_y),Qt.NoButton,Qt.LeftButton,Qt.NoModifier));application.processEvents();assert timeline._canvas._region_preview is not None
 timeline.set_zoom(1.1);application.processEvents();assert timeline._canvas._region_preview is None and timeline._region_gesture is None
-QTest.mouseRelease(header,Qt.LeftButton,pos=QPoint(target_x+30,lane_y));application.processEvents();assert not region_edits and editor_regions==editor_regions_frozen
+selection_commits.clear();QTest.mouseRelease(header,Qt.LeftButton,pos=QPoint(target_x+30,lane_y));application.processEvents();assert not region_edits and editor_regions==editor_regions_frozen and not selection_commits
 timeline.set_zoom(.9);bar.setValue(min(bar.maximum(),max(bar.minimum(),round(timeline._canvas.time_to_x(5.6)-piano_width-300))));application.processEvents();target_x=ruler_x((target_start+target_end)/2)
 
 region_edits.clear();timeline_drag(header,QPoint(ruler_x(target_start),lane_y),QPoint(ruler_x(3.0),lane_y))
@@ -361,25 +385,27 @@ assert editor_regions==editor_regions_frozen and timeline._canvas._region_previe
 
 # The upper seconds ruler and lower blank lanes start a range without selecting
 # or changing a style region; both report and clear the active region first.
-timeline.set_selection(.5,1.0);timeline.set_active_region(1);region_selected.clear();QTest.mouseClick(header,Qt.LeftButton,pos=QPoint(ruler_x(4.8),8));application.processEvents()
-assert region_selected==[-1] and timeline._canvas._active_region==-1 and timeline.selection()==(.5,1.0),'A blank ruler click did not clear the active region'
-region_edits.clear();region_selected.clear();selection_changes.clear();upper_start=ruler_x(4.8);upper_end=upper_start+42
+selection_commits.clear();timeline.set_selection(.5,1.0);timeline.set_active_region(1);region_selected.clear();QTest.mouseClick(header,Qt.LeftButton,pos=QPoint(ruler_x(4.8),8));application.processEvents()
+assert region_selected==[-1] and timeline._canvas._active_region==-1 and timeline.selection()==(.5,1.0) and not selection_commits,'A blank ruler click committed a zero-length range'
+region_edits.clear();region_selected.clear();selection_changes.clear();selection_commits.clear();upper_start=ruler_x(4.8);upper_end=upper_start+42
 timeline_drag(header,QPoint(upper_start,8),QPoint(upper_end,8))
 expected_selection=sorted((timeline._canvas.x_to_time(bar.value()+piano_width+upper_start),timeline._canvas.x_to_time(bar.value()+piano_width+upper_end)))
 assert all(abs(a-b)<1e-9 for a,b in zip(timeline.selection(),expected_selection))
 assert region_selected==[-1] and timeline._canvas._active_region==-1 and not region_edits and editor_regions==editor_regions_frozen
+assert len(selection_commits)==1 and selection_commits[0]==timeline.selection(),'Ruler drag did not commit the finished range exactly once'
 # Keep the blank drag beyond both enlarged resize hit zones in this gap.
-blank_start=ruler_x(3.65);blank_end=ruler_x(3.95);timeline.set_active_region(1);region_selected.clear();selection_changes.clear()
+blank_start=ruler_x(3.65);blank_end=ruler_x(3.95);timeline.set_active_region(1);region_selected.clear();selection_changes.clear();selection_commits.clear()
 timeline_drag(header,QPoint(blank_start,lane_y),QPoint(blank_end,lane_y))
 expected_selection=sorted((timeline._canvas.x_to_time(bar.value()+piano_width+blank_start),timeline._canvas.x_to_time(bar.value()+piano_width+blank_end)))
 assert all(abs(a-b)<1e-9 for a,b in zip(timeline.selection(),expected_selection))
 assert region_selected==[-1] and timeline._canvas._active_region==-1 and not region_edits and editor_regions==editor_regions_frozen
+assert len(selection_commits)==1 and selection_commits[0]==timeline.selection(),'Blank lower-lane drag did not commit exactly once'
 
-region_edits.clear();timeline.set_selection(1.0,2.0);esc_start=ruler_x((target_start+target_end)/2)
+region_edits.clear();selection_commits.clear();timeline.set_selection(1.0,2.0);esc_start=ruler_x((target_start+target_end)/2)
 QTest.mousePress(header,Qt.LeftButton,pos=QPoint(esc_start,lane_y));QApplication.sendEvent(header,QMouseEvent(QEvent.MouseMove,QPointF(esc_start+30,lane_y),Qt.NoButton,Qt.LeftButton,Qt.NoModifier));application.processEvents();assert timeline._canvas._region_preview is not None
 QTest.keyClick(header,Qt.Key_Escape);application.processEvents();assert timeline._canvas._region_preview is None and timeline.selection() is None
 QTest.mouseRelease(header,Qt.LeftButton,pos=QPoint(esc_start+30,lane_y));application.processEvents()
-assert not region_edits,'Escape did not cancel a pending region edit'
+assert not region_edits and not selection_commits,'Escape did not cancel a pending region edit or range commit'
 
 region_deletes.clear();QTest.mouseClick(header,Qt.LeftButton,pos=QPoint(target_x,lane_y));QTest.keyClick(header,Qt.Key_Delete);application.processEvents()
 assert region_deletes==[1] and timeline._canvas._active_region==1
@@ -394,28 +420,30 @@ move_shift=(timeline._canvas.x_to_time(bar.value()+scrolled_end+piano_width)-tim
 assert 0<scrolled_start<scrolled_end<header.width()
 timeline_drag(header,QPoint(scrolled_start,lane_y),QPoint(scrolled_end,lane_y))
 assert len(region_edits)==1 and abs(region_edits[-1][1]-(target_start+move_shift))<1e-8,'Scrolled/zoomed ruler x did not map to real seconds'
-wheel_x=ruler_x(5.6);wheel_view_x=wheel_x+piano_width;header_anchor=timeline.time_at_view_x(wheel_view_x);zoom_before=timeline.zoom_factor()
+selection_commits.clear();wheel_x=ruler_x(5.6);wheel_view_x=wheel_x+piano_width;header_anchor=timeline.time_at_view_x(wheel_view_x);zoom_before=timeline.zoom_factor()
 header_wheel=QWheelEvent(QPointF(wheel_x,10),QPointF(wheel_x,10),QPoint(0,0),QPoint(0,120),Qt.NoButton,Qt.ControlModifier,Qt.NoScrollPhase,False)
 QApplication.sendEvent(header,header_wheel);application.processEvents()
 assert timeline.zoom_factor()>zoom_before and abs(timeline.time_at_view_x(wheel_view_x)-header_anchor)<=max(1e-6,1.5/timeline._canvas.pixels_per_second),'Ruler Ctrl+wheel lost the pointer time'
 bar.setValue((bar.minimum()+bar.maximum())//2);shift_before=bar.value();shift_wheel=QWheelEvent(QPointF(80,10),QPointF(80,10),QPoint(0,0),QPoint(0,120),Qt.NoButton,Qt.ShiftModifier,Qt.NoScrollPhase,False)
-QApplication.sendEvent(header,shift_wheel);application.processEvents();assert bar.value()==shift_before-120
+QApplication.sendEvent(header,shift_wheel);application.processEvents();assert bar.value()==shift_before-120 and not selection_commits,'Ctrl/Shift wheel committed a range'
 
-bar.setValue((bar.minimum()+bar.maximum())//2);vertical=timeline._view.verticalScrollBar();vertical.setValue((vertical.minimum()+vertical.maximum())//2);pan_h,pan_v=bar.value(),vertical.value();pan_start=QPoint(bar.value()+200,vertical.value()+120);pan_end=pan_start+QPoint(60,30)
+selection_commits.clear();bar.setValue((bar.minimum()+bar.maximum())//2);vertical=timeline._view.verticalScrollBar();vertical.setValue((vertical.minimum()+vertical.maximum())//2);pan_h,pan_v=bar.value(),vertical.value();pan_start=QPoint(bar.value()+200,vertical.value()+120);pan_end=pan_start+QPoint(60,30)
 # Offscreen QTest.mouseMove does not deliver a native move event on Windows.
 # Supply the same pointer's screen position while the middle button is held.
 pan_global=timeline._canvas.mapToGlobal(pan_start)
 QTest.mousePress(timeline._canvas,Qt.MiddleButton,pos=pan_start)
 QApplication.sendEvent(timeline._canvas,QMouseEvent(QEvent.MouseMove,QPointF(pan_end),QPointF(pan_global+QPoint(60,30)),Qt.NoButton,Qt.MiddleButton,Qt.NoModifier))
 QTest.mouseRelease(timeline._canvas,Qt.MiddleButton,pos=pan_end);application.processEvents()
-assert bar.value()<pan_h and vertical.value()<pan_v,'Middle-button drag did not pan both axes'
+assert bar.value()<pan_h and vertical.value()<pan_v and not selection_commits,'Middle-button drag did not pan both axes without committing'
 region_edits.clear();assert editor_project==editor_project_frozen and editor_regions==editor_regions_frozen
 
 # The dedicated pan controls move only the viewport by roughly 65% of the
 # usable viewport width and leave the project, regions and selection untouched.
-bar.setValue((bar.minimum()+bar.maximum())//2);application.processEvents()
+selection_commits.clear();bar.setValue((bar.minimum()+bar.maximum())//2);application.processEvents()
 assert timeline.pan_left_button.isEnabled() and timeline.pan_right_button.isEnabled()
 assert timeline.pan_left_button.arrowType()==Qt.LeftArrow and timeline.pan_right_button.arrowType()==Qt.RightArrow
+for control in (timeline.pan_left_button,timeline.pan_right_button):
+    assert control.text() and control.toolTip() and control.toolButtonStyle()==Qt.ToolButtonTextBesideIcon
 pan_state_before=(copy.deepcopy(editor_project),copy.deepcopy(editor_regions),timeline.selection(),timeline._canvas._active_region,timeline.zoom_factor())
 pan_origin=bar.value();step=max(80,round((timeline._view.viewport().width()-piano_width)*.65))
 QTest.mouseClick(timeline.pan_right_button,Qt.LeftButton);application.processEvents()
@@ -423,6 +451,28 @@ assert bar.value()==min(bar.maximum(),pan_origin+step),'Right pan button did not
 QTest.mouseClick(timeline.pan_left_button,Qt.LeftButton);application.processEvents()
 assert bar.value()==pan_origin,'Left pan button did not move the view back'
 assert (editor_project,editor_regions,timeline.selection(),timeline._canvas._active_region,timeline.zoom_factor())==pan_state_before,'Pan controls changed model or selection state'
+assert not selection_commits,'Pan buttons committed a selection'
+
+# Hand mode is an explicit viewport gesture: a real left drag pans both axes,
+# bypassing canvas range selection and all style-region edit paths.
+mode_focus=QApplication.focusWidget();selection_before_hand=timeline.selection();active_before_hand=timeline._canvas._active_region
+timeline.set_selection(4.5,6.0);timeline.set_active_region(1);timeline.set_pan_mode(True);application.processEvents()
+assert timeline.pan_mode() and timeline.hand_mode_button.isChecked() and not timeline.draw_mode_button.isChecked()
+bar.setValue((bar.minimum()+bar.maximum())//2);vertical.setValue((vertical.minimum()+vertical.maximum())//2);application.processEvents()
+hand_h,hand_v=bar.value(),vertical.value();hand_start=QPoint(bar.value()+200,vertical.value()+120);hand_end=hand_start+QPoint(60,30);hand_global=timeline._canvas.mapToGlobal(hand_start)
+selection_changes.clear();selection_commits.clear();region_edits.clear()
+QTest.mousePress(timeline._canvas,Qt.LeftButton,pos=hand_start)
+QApplication.sendEvent(timeline._canvas,QMouseEvent(QEvent.MouseMove,QPointF(hand_end),QPointF(hand_global+QPoint(60,30)),Qt.NoButton,Qt.LeftButton,Qt.NoModifier))
+QTest.mouseRelease(timeline._canvas,Qt.LeftButton,pos=hand_end);application.processEvents()
+assert bar.value()<hand_h and vertical.value()<hand_v,'Hand-mode left drag did not pan both axes'
+assert timeline.selection()==(4.5,6.0) and timeline._canvas._active_region==1 and not selection_changes
+assert not selection_commits and not region_edits,'Hand-mode panning selected, committed or edited data'
+assert editor_project==editor_project_frozen and editor_regions==editor_regions_frozen
+timeline.set_pan_mode(False);assert not timeline.pan_mode() and timeline.draw_mode_button.isChecked() and not timeline.hand_mode_button.isChecked()
+if selection_before_hand is None:timeline.clear_selection()
+else:timeline.set_selection(*selection_before_hand)
+timeline.set_active_region(active_before_hand);assert not selection_commits
+if mode_focus is not None:mode_focus.setFocus(Qt.OtherFocusReason)
 
 # Holding a clip drag at the ruler edge scrolls the view, while the pending
 # region edit remains local and is emitted exactly once when the button is released.
@@ -459,7 +509,8 @@ assert piano_width-2<=timeline.view_x_for_time(4.5)<timeline.view_x_for_time(6.0
 # Snapping is toggled by the toolbar and a real selection drag honors the
 # nearest note edge, the 9-pixel radius, and Alt's temporary bypass.
 snap_project={'time':{'tempo':[{'position':0,'bpm':120}]},'tracks':[{'mainRef':{'blickOffset':0},'mainGroup':{'notes':[{'onset':0,'duration':2*quarter,'pitch':60},{'onset':4*quarter,'duration':2*quarter,'pitch':64},{'onset':12*quarter,'duration':2*quarter,'pitch':67}]}}]}
-snap_project_frozen=copy.deepcopy(snap_project);timeline.set_project(snap_project,[0]);timeline.set_zoom(1.0);timeline.set_snap_enabled(False);bar.setValue(bar.minimum());application.processEvents()
+snap_project_frozen=copy.deepcopy(snap_project);timeline.set_project(snap_project,[0]);application.processEvents();timeline.set_zoom(1.0);timeline.set_snap_enabled(False);bar.setValue(bar.minimum());application.processEvents()
+assert math.isclose(timeline.zoom_factor(),1.0,rel_tol=1e-9,abs_tol=1e-9),'Initial note focus overrode the deliberate snap-test zoom'
 snap_edge=sorted({value for note in timeline._canvas._notes for value in (note['start'],note['end'])})[2];pps=timeline._canvas.pixels_per_second
 QTest.mouseClick(timeline.snap_button,Qt.LeftButton);application.processEvents();assert timeline.snap_enabled() and timeline.snap_button.isChecked()
 assert abs(timeline._canvas.snap_time(snap_edge+8/pps)-snap_edge)<1e-9
@@ -471,7 +522,8 @@ timeline.clear_selection();snap_target=QPoint(round(timeline._canvas.time_to_x(s
 timeline.set_snap_enabled(False);assert not timeline.snap_enabled() and not timeline.snap_button.isChecked();assert snap_project==snap_project_frozen
 
 long_project={'time':{'tempo':[{'position':0,'bpm':120}]},'tracks':[{'mainRef':{'blickOffset':0},'mainGroup':{'notes':[{'onset':0,'duration':7200*quarter,'pitch':60}]}}]}
-timeline.resize(720,320);timeline.set_zoom(.125);timeline.set_project(long_project,[0]);application.processEvents();bar=timeline._view.horizontalScrollBar();bar.setValue(min(bar.maximum(),5000));application.processEvents()
+timeline.resize(720,320);timeline.set_project(long_project,[0]);application.processEvents();timeline.set_zoom(.125);application.processEvents();bar=timeline._view.horizontalScrollBar();bar.setValue(min(bar.maximum(),5000));application.processEvents()
+assert math.isclose(timeline.zoom_factor(),.125,rel_tol=1e-9,abs_tol=1e-9),'Initial note focus overrode the long-axis zoom'
 visible_start=timeline.time_at_view_x(timeline._canvas.PIANO_WIDTH);visible_end=timeline.time_at_view_x(timeline._view.viewport().width())
 ticks=timeline._canvas._major_ticks(visible_start,visible_end)
 assert len(ticks)>=4 and all(math.isfinite(value) for value in ticks)
@@ -485,6 +537,35 @@ assert timeline._piano_header.geometry().x()==0 and timeline._ruler_header.geome
 assert timeline._ruler_header.visible_ticks and all(math.isfinite(value) for value in timeline._ruler_header.visible_ticks)
 timeline.close();application.processEvents()
 print('PASS: style timeline tempo/offset, sticky headers, native selection and style-lane gestures, immutable requests, fit/selection zoom/snap, panning/scroll seconds, disabled/Escape, long-axis ticks, and narrow layout')
+
+# A late first note is the initial navigation target. Both extreme pitches
+# must land in the vertical middle with 24px after the piano keys, while the
+# long project keeps the horizontal target away from a scrollbar clamp.
+late_onset=180*quarter
+def late_first_project(first_pitch,other_pitch):
+    return {'time':{'tempo':[{'position':0,'bpm':120}]},'tracks':[{'mainRef':{'blickOffset':0},'mainGroup':{'notes':[
+        {'onset':late_onset,'duration':4*quarter,'pitch':first_pitch},
+        {'onset':900*quarter,'duration':quarter,'pitch':other_pitch}]}}]}
+navigation=StyleTimeline();navigation.resize(720,360);navigation.set_project(late_first_project(8,120),[0]);navigation.show();application.processEvents()
+def assert_first_note_view(view,first_pitch):
+    canvas=view._canvas;notes=canvas._notes;first=min(notes,key=lambda note:note['start']);viewport=view._view.viewport();hbar=view._view.horizontalScrollBar();vbar=view._view.verticalScrollBar()
+    assert first['pitch']==first_pitch and first['start']>60
+    assert math.isclose(view.zoom_factor(),3.25,rel_tol=1e-9,abs_tol=1e-9)
+    assert hbar.minimum()<hbar.value()<hbar.maximum(),'Late-note focus was clamped to a horizontal scene edge'
+    assert abs(view.view_x_for_time(first['start'])-(canvas.PIANO_WIDTH+24))<=1.0,'First note was not placed 24px after the piano keys'
+    assert view.time_at_view_x(canvas.PIANO_WIDTH)<=first['start']<view.time_at_view_x(viewport.width()),'Late first note is outside the visible time span'
+    top=canvas.pitch_to_y(first['pitch'])-vbar.value();bottom=top+view.pitch_height()
+    assert 0<=top<bottom<=viewport.height(),'Extreme-pitch first note row is not vertically visible'
+    assert abs((top+bottom)/2-viewport.height()/2)<=1.0,'First note row is not vertically centred'
+assert_first_note_view(navigation,8)
+navigation.set_project(late_first_project(120,8),[0]);application.processEvents();assert_first_note_view(navigation,120)
+navigation.set_zoom(1.7);navigation._view.horizontalScrollBar().setValue((navigation._view.horizontalScrollBar().minimum()+navigation._view.horizontalScrollBar().maximum())//2);navigation._view.verticalScrollBar().setValue((navigation._view.verticalScrollBar().minimum()+navigation._view.verticalScrollBar().maximum())//2);application.processEvents()
+saved_view=(navigation.zoom_factor(),navigation._view.horizontalScrollBar().value(),navigation._view.verticalScrollBar().value())
+navigation.hide();application.processEvents();navigation.show();application.processEvents()
+assert math.isclose(navigation.zoom_factor(),saved_view[0],rel_tol=1e-9,abs_tol=1e-9),'Reopening replaced the saved zoom'
+assert navigation._view.horizontalScrollBar().value()==saved_view[1] and abs(navigation._view.verticalScrollBar().value()-saved_view[2])<=1,'Reopening moved the saved viewport'
+navigation.close();application.processEvents()
+print('PASS: late first-note show/set_project focus, extreme-pitch visibility and reopen view preservation')
 
 # Readable vertical/horizontal controls preserve view and model state. The
 # project is long enough that default pps is not capped by MAX_CANVAS_WIDTH.
