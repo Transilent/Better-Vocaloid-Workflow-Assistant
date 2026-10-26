@@ -1,5 +1,6 @@
 """Accessible presentation adapters; existing Qt controls remain value owners."""
 import math
+import bisect
 
 from PyQt5.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, QSignalBlocker, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QPen
@@ -290,11 +291,11 @@ class _TimelineCanvas(QWidget):
     zoomRequested = pyqtSignal(float)
 
     RULER_HEIGHT = 44
-    PITCH_HEIGHT = 14
+    PITCH_HEIGHT = 24
     PIANO_WIDTH = 72
     RIGHT_PADDING = 16
     BASE_PIXELS_PER_SECOND = 80.0
-    MIN_ZOOM = .125
+    MIN_ZOOM = .001
     MAX_ZOOM = 256.0
     MAX_CANVAS_WIDTH = 4_000_000
 
@@ -307,6 +308,10 @@ class _TimelineCanvas(QWidget):
         self._zoom = 1.0
         self._notes = []
         self._regions = []
+        self._active_region = -1
+        self._region_preview = None
+        self._snap_enabled = False
+        self._note_edges = ()
         self._selection = None
         self._drag_anchor = None
         self._drag_pixels = 0
@@ -448,7 +453,10 @@ class _TimelineCanvas(QWidget):
                               'end': float(end), 'pitch': float(pitch), 'color': color,
                               'lyric': str(note.get('lyrics') or note.get('lyric') or '')})
         self._notes = notes
+        self._note_edges = tuple(sorted({t for note in notes for t in (note['start'], note['end'])}))
         self._regions = []
+        self._active_region = -1
+        self._region_preview = None
         self._drag_anchor = None
         self._drag_pixels = 0
         self._set_selection(None, emit=True)
@@ -481,9 +489,12 @@ class _TimelineCanvas(QWidget):
             color = _STYLE_REGION_COLORS.get(preset)
             if color is None:
                 color = _REGION_COLORS[index % len(_REGION_COLORS)]
-            display.append({'start': start, 'end': end, 'label': label,
+            display.append({'index': index, 'start': start, 'end': end, 'label': label,
                             'color': QColor(color)})
         self._regions = display
+        self._region_preview = None
+        if not any(row['index'] == self._active_region for row in display):
+            self._active_region = -1
         self._refresh_bounds()
         if self._selection is not None:
             self.set_selection(*self._selection)
@@ -521,12 +532,27 @@ class _TimelineCanvas(QWidget):
     def _time_at(self, x):
         return self.x_to_time(x)
 
+    def snap_time(self, seconds, bypass=False):
+        if bypass or not self._snap_enabled or not self._note_edges:
+            return seconds
+        index = bisect.bisect_left(self._note_edges, seconds)
+        candidates = self._note_edges[max(0, index - 1):index + 1]
+        nearest = min(candidates, key=lambda value: abs(value - seconds))
+        return nearest if abs(nearest - seconds) * self.pixels_per_second <= 9 else seconds
+
+    def display_regions(self):
+        if self._region_preview is None:
+            return self._regions
+        index, start, end = self._region_preview
+        return [{**row, 'start': start, 'end': end} if row['index'] == index else row
+                for row in self._regions]
+
     def mousePressEvent(self, event):
         if not self.isEnabled() or event.button() != Qt.LeftButton:
             super().mousePressEvent(event)
             return
         self.setFocus(Qt.MouseFocusReason)
-        self._drag_anchor = self._time_at(event.pos().x())
+        self._drag_anchor = self.snap_time(self._time_at(event.pos().x()), bool(event.modifiers() & Qt.AltModifier))
         self._drag_pixels = 0
         event.accept()
 
@@ -536,7 +562,7 @@ class _TimelineCanvas(QWidget):
             return
         self._drag_pixels = max(self._drag_pixels, abs(event.pos().x() - self.time_to_x(self._drag_anchor)))
         if self._drag_pixels >= 2:
-            self.set_selection(self._drag_anchor, self._time_at(event.pos().x()))
+            self.set_selection(self._drag_anchor, self.snap_time(self._time_at(event.pos().x()), bool(event.modifiers() & Qt.AltModifier)))
         event.accept()
 
     def mouseReleaseEvent(self, event):
@@ -544,7 +570,7 @@ class _TimelineCanvas(QWidget):
             super().mouseReleaseEvent(event)
             return
         if self._drag_pixels >= 2:
-            self.set_selection(self._drag_anchor, self._time_at(event.pos().x()))
+            self.set_selection(self._drag_anchor, self.snap_time(self._time_at(event.pos().x()), bool(event.modifiers() & Qt.AltModifier)))
         self._drag_anchor = None
         self._drag_pixels = 0
         event.accept()
@@ -622,7 +648,7 @@ class _TimelineCanvas(QWidget):
             painter.drawLine(0, y, self.width(), y)
             painter.setPen(QColor('#fffdf4') if black else QColor('#222830'))
             font = painter.font()
-            font.setPointSizeF(6.8)
+            font.setPointSizeF(9.5)
             painter.setFont(font)
             painter.drawText(QRectF(4, y, self.PIANO_WIDTH - 9, self.PITCH_HEIGHT),
                              Qt.AlignVCenter | Qt.AlignLeft, _pitch_name(pitch))
@@ -654,7 +680,7 @@ class _TimelineCanvas(QWidget):
         painter.fillRect(0, 0, left, self.RULER_HEIGHT, QColor('#0d1217'))
         painter.setPen(QColor('#dce7ef'))
         font = painter.font()
-        font.setPointSizeF(7.5)
+        font.setPointSizeF(9.5)
         painter.setFont(font)
         painter.drawText(QRectF(4, 0, left - 8, self.RULER_HEIGHT),
                          Qt.AlignCenter, _tr('音高'))
@@ -682,14 +708,14 @@ class _TimelineCanvas(QWidget):
         painter.save()
         painter.setClipRect(QRectF(self.PIANO_WIDTH, 0,
                                    self.width() - self.PIANO_WIDTH, self.height()))
-        for region in self._regions:
+        for region in self.display_regions():
             left = self.time_to_x(region['start'])
             right = self.time_to_x(region['end'])
             if right <= self.PIANO_WIDTH or left >= self.width():
                 continue
             color = QColor(region['color'])
             background = QColor(color)
-            background.setAlpha(38)
+            background.setAlpha(56 if region['index'] == self._active_region else 30)
             painter.fillRect(QRectF(left, self.RULER_HEIGHT, max(1, right - left),
                                     self.height() - self.RULER_HEIGHT), background)
             ruler = QColor(color)
@@ -709,6 +735,9 @@ class _TimelineCanvas(QWidget):
 
     def _paint_notes(self, painter):
         painter.save()
+        font = painter.font()
+        font.setPointSizeF(10.0)
+        painter.setFont(font)
         painter.setClipRect(QRectF(self.PIANO_WIDTH, self.RULER_HEIGHT,
                                    self.width() - self.PIANO_WIDTH,
                                    self.height() - self.RULER_HEIGHT))
@@ -790,7 +819,7 @@ class _TimelinePianoHeader(QWidget):
             painter.setPen(QPen(QColor('#c8d0d8'), 0))
             painter.drawLine(0, y, self.width(), y)
             painter.setPen(QColor('#fffdf4') if black else QColor('#222830'))
-            font.setPointSizeF(6.8)
+            font.setPointSizeF(9.5)
             painter.setFont(font)
             painter.drawText(QRectF(4, y, self.width() - 9, self.canvas.PITCH_HEIGHT),
                              Qt.AlignVCenter | Qt.AlignLeft, _pitch_name(pitch))
@@ -798,7 +827,7 @@ class _TimelinePianoHeader(QWidget):
         # cover the fixed pitch heading.
         painter.fillRect(0, 0, self.width(), self.canvas.RULER_HEIGHT, QColor('#0d1217'))
         painter.setPen(QColor('#dce7ef'))
-        font.setPointSizeF(7.5)
+        font.setPointSizeF(9.5)
         painter.setFont(font)
         painter.drawText(QRectF(4, 0, self.width() - 8, self.canvas.RULER_HEIGHT),
                          Qt.AlignCenter, _tr('音高'))
@@ -808,14 +837,36 @@ class _TimelinePianoHeader(QWidget):
 
 
 class _TimelineRulerHeader(QWidget):
-    """Sticky second ruler drawn at the scroll viewport's top edge."""
-    def __init__(self, canvas, horizontal_scroll, parent=None):
+    """Sticky seconds and editable style lane; project notes stay read-only."""
+    def __init__(self, canvas, horizontal_scroll, parent=None, timeline=None):
         super().__init__(parent)
         self.canvas = canvas
         self.horizontal_scroll = horizontal_scroll
+        self.timeline = timeline
         self.visible_ticks = ()
         self.setObjectName('style-timeline-ruler-header')
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def mousePressEvent(self, event):
+        if self.timeline is not None and self.isEnabled() and event.button() == Qt.LeftButton:
+            self.setFocus(Qt.MouseFocusReason)
+            self.timeline._ruler_press(event)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.timeline is not None and self.isEnabled():
+            self.timeline._ruler_move(event)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self.timeline is not None and self.isEnabled() and event.button() == Qt.LeftButton:
+            self.timeline._ruler_release(event)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def _visible_span(self):
         left, right = self.canvas.PIANO_WIDTH, self.canvas.PIANO_WIDTH + self.width()
@@ -828,15 +879,21 @@ class _TimelineRulerHeader(QWidget):
         painter.fillRect(self.rect(), QColor('#202b36'))
         start, end = self._visible_span()
         offset = self.horizontal_scroll.value() + self.canvas.PIANO_WIDTH
-        for region in self.canvas._regions:
+        for region in self.canvas.display_regions():
             left = self.canvas.time_to_x(region['start']) - offset
             right = self.canvas.time_to_x(region['end']) - offset
             if right <= 0 or left >= self.width():
                 continue
             color = QColor(region['color'])
             band = QColor(color)
-            band.setAlpha(82)
+            active = region['index'] == self.canvas._active_region
+            band.setAlpha(210 if active else 125)
             painter.fillRect(QRectF(left, 22, max(1, right - left), self.height() - 22), band)
+            if active:
+                painter.setPen(QPen(QColor('#f6f0ff'), 1))
+                painter.drawRect(QRectF(left, 22, max(1, right - left), self.height() - 23))
+                painter.fillRect(QRectF(left + 1, 25, 3, max(1, self.height() - 29)), QColor('#fff7ff'))
+                painter.fillRect(QRectF(right - 4, 25, 3, max(1, self.height() - 29)), QColor('#fff7ff'))
             available = right - left - 8
             if available >= 36:
                 painter.setPen(QColor('#eef6fc'))
@@ -867,8 +924,11 @@ class _TimelineRulerHeader(QWidget):
 
 
 class StyleTimeline(QWidget):
-    """Selectable, zoomable piano-roll overview for an existing SVP project."""
+    """Edit style regions over a read-only piano roll of an existing SVP."""
     selectionChanged = pyqtSignal(object)
+    regionSelected = pyqtSignal(int)
+    regionEditRequested = pyqtSignal(int, float, float)
+    regionDeleteRequested = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -877,15 +937,18 @@ class StyleTimeline(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setAccessibleName(_tr('钢琴卷帘时间轴'))
-        self.setAccessibleDescription(_tr('拖动选择时间；按 Esc 清除；按住 Ctrl 滚轮缩放。'))
+        self.setAccessibleDescription(_tr('拖选时间；上方片段可拖移和拉伸，Delete 删除，Esc 取消。'))
         self._center_on_show = True
+        self._region_gesture = None
+        self._range_gesture = None
+        self._pan_origin = None
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(4)
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(0, 0, 0, 0)
         toolbar.setSpacing(4)
-        self.hint = QLabel(_tr('拖动选择时间；按 Esc 清除；按住 Ctrl 滚轮缩放。'), self)
+        self.hint = QLabel(_tr('拖选时间；拖动上方片段或边缘可编辑。'), self)
         self.hint.setProperty('role', 'muted')
         self.hint.setWordWrap(True)
         self.hint.setMinimumWidth(0)
@@ -906,6 +969,19 @@ class StyleTimeline(QWidget):
         toolbar.addWidget(self.zoom_out)
         toolbar.addWidget(self.zoom_percent)
         toolbar.addWidget(self.zoom_in)
+        self.fit_button = QToolButton(self)
+        self.fit_button.setText(_tr('全曲'))
+        self.fit_button.setToolTip(_tr('缩放至完整工程'))
+        self.zoom_selection_button = QToolButton(self)
+        self.zoom_selection_button.setText(_tr('选区'))
+        self.zoom_selection_button.setToolTip(_tr('放大当前时间选区'))
+        self.snap_button = QToolButton(self)
+        self.snap_button.setText(_tr('吸附'))
+        self.snap_button.setCheckable(True)
+        self.snap_button.setToolTip(_tr('吸附到附近音符边界；按 Alt 临时关闭'))
+        for tool in (self.fit_button, self.zoom_selection_button, self.snap_button):
+            tool.setAccessibleName(tool.toolTip())
+            toolbar.addWidget(tool)
         self._layout.addLayout(toolbar)
         self._canvas = _TimelineCanvas(self)
         self._view = QScrollArea(self)
@@ -920,18 +996,146 @@ class StyleTimeline(QWidget):
         self._piano_header = _TimelinePianoHeader(
             self._canvas, self._view.verticalScrollBar(), viewport)
         self._ruler_header = _TimelineRulerHeader(
-            self._canvas, self._view.horizontalScrollBar(), viewport)
+            self._canvas, self._view.horizontalScrollBar(), viewport, timeline=self)
+        self._ruler_header.setToolTip(_tr('点击片段选中，拖动中部移动，拖动两侧调整范围。'))
         self._piano_header.show()
         self._ruler_header.show()
         viewport.installEventFilter(self)
         self._view.horizontalScrollBar().valueChanged.connect(self._sync_headers)
         self._view.verticalScrollBar().valueChanged.connect(self._sync_headers)
-        self._canvas.selectionChanged.connect(self.selectionChanged)
+        self._canvas.selectionChanged.connect(self._selection_changed)
         self._canvas.zoomRequested.connect(self.zoom_by)
         self.zoom_out.clicked.connect(lambda: self.zoom_by(1 / 1.2))
         self.zoom_in.clicked.connect(lambda: self.zoom_by(1.2))
+        self.fit_button.clicked.connect(self.fit_project)
+        self.zoom_selection_button.clicked.connect(self.zoom_to_selection)
+        self.snap_button.toggled.connect(self.set_snap_enabled)
         self._canvas.installEventFilter(self)
+        self._ruler_header.installEventFilter(self)
+        self.zoom_selection_button.setEnabled(False)
         self._sync_headers()
+
+    def _selection_changed(self, selection):
+        self.zoom_selection_button.setEnabled(self.isEnabled() and selection is not None)
+        self.selectionChanged.emit(selection)
+
+    def set_active_region(self, index):
+        self._canvas._active_region = index if type(index) is int and any(
+            row['index'] == index for row in self._canvas._regions) else -1
+        self._canvas.update()
+        self._ruler_header.update()
+
+    def set_snap_enabled(self, enabled):
+        self._canvas._snap_enabled = bool(enabled)
+        if self.snap_button.isChecked() != bool(enabled):
+            self.snap_button.setChecked(bool(enabled))
+
+    def snap_enabled(self):
+        return self._canvas._snap_enabled
+
+    def fit_project(self):
+        start, end = self._canvas.scene_bounds()
+        available = max(1, self._view.viewport().width() - self._canvas.PIANO_WIDTH - 18)
+        self.set_zoom(available / ((end - start) * self._canvas.BASE_PIXELS_PER_SECOND))
+        self._view.horizontalScrollBar().setValue(0)
+        self._center_vertical_on_notes()
+        return True
+
+    def zoom_to_selection(self):
+        bounds = self.selection()
+        if bounds is None:
+            return False
+        available = max(1, self._view.viewport().width() - self._canvas.PIANO_WIDTH - 18)
+        self.set_zoom(available / ((bounds[1] - bounds[0]) * 1.15 * self._canvas.BASE_PIXELS_PER_SECOND))
+        self._restore_view_time(sum(bounds) / 2, (self._canvas.PIANO_WIDTH + self._view.viewport().width()) / 2)
+        return True
+
+    def _ruler_x(self, event):
+        return event.pos().x() + self._view.horizontalScrollBar().value() + self._canvas.PIANO_WIDTH
+
+    def _region_hit(self, x):
+        for row in reversed(self._canvas._regions):
+            left, right = self._canvas.time_to_x(row['start']), self._canvas.time_to_x(row['end'])
+            if left - 5 <= x <= right + 5:
+                mode = 'move'
+                if min(abs(x - left), abs(x - right)) <= 7:
+                    mode = 'start' if abs(x - left) <= abs(x - right) else 'end'
+                return row, mode
+        return None, None
+
+    def _ruler_press(self, event):
+        x = self._ruler_x(event)
+        row, mode = self._region_hit(x) if event.pos().y() >= 22 else (None, None)
+        if row is not None:
+            self.set_active_region(row['index'])
+            self.regionSelected.emit(row['index'])
+            self._region_gesture = {**row, 'mode': mode, 'anchor': self._canvas.x_to_time(x), 'anchor_x': x}
+        else:
+            self.set_active_region(-1)
+            self.regionSelected.emit(-1)
+            self._range_gesture = (x, self._canvas.snap_time(self._canvas.x_to_time(x), bool(event.modifiers() & Qt.AltModifier)))
+
+    def _ruler_move(self, event):
+        x = self._ruler_x(event)
+        if self._range_gesture is not None:
+            anchor_x, anchor_time = self._range_gesture
+            if abs(x - anchor_x) >= 2:
+                self.set_selection(anchor_time, self._canvas.snap_time(self._canvas.x_to_time(x), bool(event.modifiers() & Qt.AltModifier)))
+            return
+        gesture = self._region_gesture
+        if gesture is None:
+            row, mode = self._region_hit(x) if event.pos().y() >= 22 else (None, None)
+            self._ruler_header.setCursor(Qt.SizeHorCursor if row and mode != 'move' else Qt.OpenHandCursor if row else Qt.CrossCursor)
+            return
+        if self._canvas._region_preview is None and abs(x - gesture['anchor_x']) < 2:
+            return
+        start, end = gesture['start'], gesture['end']
+        minimum, maximum = self._canvas.scene_bounds()
+        for other in self._canvas._regions:
+            if other['index'] == gesture['index']:
+                continue
+            if other['end'] <= gesture['start']:
+                minimum = max(minimum, other['end'])
+            if other['start'] >= gesture['end']:
+                maximum = min(maximum, other['start'])
+        seconds = self._canvas.x_to_time(x)
+        bypass = bool(event.modifiers() & Qt.AltModifier)
+        if gesture['mode'] == 'move':
+            duration = end - start
+            start += seconds - gesture['anchor']
+            end = start + duration
+            shifts = (self._canvas.snap_time(start, bypass) - start,
+                      self._canvas.snap_time(end, bypass) - end)
+            nonzero = [shift for shift in shifts if shift]
+            if nonzero:
+                start += min(nonzero, key=abs)
+            start = max(minimum, min(maximum - duration, start))
+            end = start + duration
+        elif gesture['mode'] == 'start':
+            start = max(minimum, min(end - .025, self._canvas.snap_time(seconds, bypass)))
+        else:
+            end = min(maximum, max(start + .025, self._canvas.snap_time(seconds, bypass)))
+        self._canvas._region_preview = (gesture['index'], start, end)
+        self._canvas.update()
+        self._ruler_header.update()
+
+    def _ruler_release(self, event):
+        if self._region_gesture is not None or self._range_gesture is not None:
+            self._ruler_move(event)
+        gesture, preview = self._region_gesture, self._canvas._region_preview
+        self._cancel_gesture()
+        if gesture is not None and preview is not None and (
+                abs(preview[1] - gesture['start']) > 1e-9 or abs(preview[2] - gesture['end']) > 1e-9):
+            self.regionEditRequested.emit(*preview)
+
+    def _cancel_gesture(self):
+        self._region_gesture = None
+        self._range_gesture = None
+        self._canvas._region_preview = None
+        self._canvas._drag_anchor = None
+        self._canvas._drag_pixels = 0
+        self._canvas.update()
+        self._ruler_header.update()
 
     def _sync_headers(self, *args):
         viewport = self._view.viewport()
@@ -960,7 +1164,10 @@ class StyleTimeline(QWidget):
         self.zoom_percent.setEnabled(enabled)
         self._view.setEnabled(enabled)
         self._canvas.setEnabled(enabled)
+        self.zoom_selection_button.setEnabled(enabled and self.selection() is not None)
         if not enabled:
+            self._cancel_gesture()
+            self._pan_origin = None
             self._canvas._drag_anchor = None
             self._canvas._drag_pixels = 0
 
@@ -974,6 +1181,7 @@ class StyleTimeline(QWidget):
         self._canvas.clear_selection()
 
     def set_project(self, project, track_indices):
+        self._cancel_gesture()
         self._canvas.set_project(project, track_indices)
         bar = self._view.horizontalScrollBar()
         bar.setValue(bar.minimum())
@@ -984,6 +1192,7 @@ class StyleTimeline(QWidget):
         self._sync_headers()
 
     def set_regions(self, regions):
+        self._cancel_gesture()
         self._canvas.set_regions(regions)
         self._sync_headers()
 
@@ -992,6 +1201,10 @@ class StyleTimeline(QWidget):
 
     def set_zoom(self, factor):
         center_x = max(0, self._view.viewport().width() // 2)
+        return self._set_zoom_at(factor, center_x)
+
+    def _set_zoom_at(self, factor, center_x):
+        self._cancel_gesture()
         center_time = self.time_at_view_x(center_x)
         if not self._canvas.set_zoom(factor):
             return False
@@ -1038,7 +1251,12 @@ class StyleTimeline(QWidget):
         self.zoom_percent.setText(f'{round(self.zoom_factor() * 100)}%')
 
     def keyPressEvent(self, event):
+        if self.isEnabled() and event.key() == Qt.Key_Delete and self._canvas._active_region >= 0:
+            self.regionDeleteRequested.emit(self._canvas._active_region)
+            event.accept()
+            return
         if event.key() == Qt.Key_Escape:
+            self._cancel_gesture()
             self.clear_selection()
             event.accept()
             return
@@ -1057,8 +1275,37 @@ class StyleTimeline(QWidget):
                     shift = (event.oldSize().height() - event.size().height()) / 2.
                     bar.setValue(int(round(bar.value() + shift)))
             self._sync_headers()
-        if watched is self._canvas and event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
-            self.clear_selection()
-            event.accept()
-            return True
+        if watched in (self._canvas, self._ruler_header) and self.isEnabled():
+            if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Escape, Qt.Key_Delete):
+                self.keyPressEvent(event)
+                return event.isAccepted()
+            if event.type() == QEvent.Wheel:
+                delta = event.angleDelta().y()
+                if delta and event.modifiers() & Qt.ControlModifier:
+                    x = event.pos().x() - self._view.horizontalScrollBar().value() if watched is self._canvas else event.pos().x() + self._canvas.PIANO_WIDTH
+                    self._set_zoom_at(self.zoom_factor() * (1.2 if delta > 0 else 1 / 1.2), x)
+                    event.accept()
+                    return True
+                if delta and event.modifiers() & Qt.ShiftModifier:
+                    bar = self._view.horizontalScrollBar()
+                    bar.setValue(bar.value() - delta)
+                    event.accept()
+                    return True
+            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.MiddleButton:
+                self._pan_origin = (event.globalPos(), self._view.horizontalScrollBar().value(), self._view.verticalScrollBar().value())
+                watched.setCursor(Qt.ClosedHandCursor)
+                event.accept()
+                return True
+            if event.type() == QEvent.MouseMove and self._pan_origin is not None:
+                origin, x, y = self._pan_origin
+                delta = event.globalPos() - origin
+                self._view.horizontalScrollBar().setValue(x - delta.x())
+                self._view.verticalScrollBar().setValue(y - delta.y())
+                event.accept()
+                return True
+            if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.MiddleButton:
+                self._pan_origin = None
+                watched.setCursor(Qt.CrossCursor)
+                event.accept()
+                return True
         return super().eventFilter(watched, event)

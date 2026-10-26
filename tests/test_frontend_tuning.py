@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP))
-from PyQt5.QtCore import QRect,QTimer
-from PyQt5.QtWidgets import QApplication,QLabel,QProgressBar,QWidget
+from PyQt5.QtCore import QRect,QTimer,Qt
+from PyQt5.QtWidgets import QApplication,QDoubleSpinBox,QLabel,QProgressBar,QWidget
 from ui_components import AdaptiveColumns,FlowLayout,StyleTimeline
 import tuning_ui
 from style_presets import pitch_default,visible_presets
@@ -62,6 +62,40 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
     assert page.style_detail_toggle.text() == '分段细调' and not page.style_detail_toggle.isChecked()
     assert [page.style_mode.itemData(i) for i in range(page.style_mode.count())] == ['whole', 'regions']
     assert isinstance(page.style_timeline, StyleTimeline) and page.style_region_panel.isHidden()
+    assert page.style_region_panel.parentWidget() is page.form
+    assert page.form.layout().indexOf(page.style_region_panel)>page.form.layout().indexOf(page.workspace)
+    assert page.style_timeline.minimumHeight()==340
+    assert isinstance(page.region_start_editor,QDoubleSpinBox) and page.region_start_editor.decimals()==3
+    assert isinstance(page.region_end_editor,QDoubleSpinBox) and page.region_end_editor.decimals()==3
+    for editor in (page.region_start_editor,page.region_end_editor):
+        assert editor.minimum()<=-1_000_000 and editor.maximum()>=1_000_000
+        assert editor.keyboardTracking() is False
+    assert [control.text() for control in (page.add_region_button,page.update_region_button,
+                                            page.delete_region_button,page.clear_regions_button,
+                                            page.undo_region_button,page.redo_region_button)] == [
+        '添加','更新','删除','清空','撤销','重做']
+    assert page.region_style_choice.combo is page.performance_style
+    assert page.region_strength_choice.combo is page.style_strength
+    assert page.performance_style_choice.combo is page.performance_style
+    assert page.style_strength_choice.combo is page.style_strength
+    for signal in (page.style_timeline.regionSelected,page.style_timeline.regionEditRequested,
+                   page.style_timeline.regionDeleteRequested):
+        assert page.style_timeline.receivers(signal)>=1
+    assert [shortcut.key().toString() for shortcut in page._region_shortcuts] == [
+        'Ctrl+Z','Ctrl+Y','Ctrl+Shift+Z']
+    assert all(shortcut.context()==Qt.WidgetWithChildrenShortcut for shortcut in page._region_shortcuts)
+    region_actions=next(item.layout() for item in (page.style_region_panel.layout().itemAt(i)
+                        for i in range(page.style_region_panel.layout().count()))
+                        if isinstance(item.layout(),FlowLayout) and
+                        item.layout().indexOf(page.add_region_button)>=0)
+    page.style_region_panel.show()
+    region_actions._do_layout(QRect(0,0,320,220),False)
+    region_buttons=(page.add_region_button,page.update_region_button,page.delete_region_button,
+                    page.clear_regions_button,page.undo_region_button,page.redo_region_button)
+    assert min(button.geometry().left() for button in region_buttons)>=0
+    assert max(button.geometry().right() for button in region_buttons)<=319
+    assert len({button.geometry().y() for button in region_buttons})>1
+    page.style_region_panel.hide()
     assert 'style_regions' not in page.preferences()
     assert all(editor.value() == 100 for editor in page.style_detail.values())
 

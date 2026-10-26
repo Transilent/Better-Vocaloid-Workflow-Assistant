@@ -134,6 +134,46 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
         'style_detail':{'onset':1.0,'sustain':.9,'connection':.8,'release':.7},'style_pitch':False})
     page.style_timeline.set_selection(.38,.48);page.add_style_region()
     assert len(page.style_regions)==2 and page.style_regions[0]['start']==.05 and page.style_regions[1]['start']==.38
+    original_regions=copy.deepcopy(page.style_regions)
+    before=copy.deepcopy(page.style_regions)
+    page.style_timeline.regionEditRequested.emit(1,.02,.30)
+    assert page.style_regions==before and '无法更新' in page.status.text()
+    page.style_timeline.regionSelected.emit(-1)
+    assert page.region_list.currentRow()==-1 and page.style_timeline.selection() is None
+    assert page.style_regions==before and page.style_timeline._canvas._active_region==-1
+    page.style_timeline.regionSelected.emit(0)
+    assert page.region_list.currentRow()==0 and page.performance_style.currentData()=='gentle'
+
+    page.style_timeline.regionDeleteRequested.emit(1)
+    assert len(page.style_regions)==1
+    page.undo_style_regions()
+    assert page.style_regions==before and page.region_list.currentRow()==1
+
+    # A release-time drag request copies the original recipe, changes only its
+    # boundaries, sorts the result, and records one reversible edit.
+    undo_count=len(page._region_undo)
+    page.style_timeline.regionEditRequested.emit(0,.50,.70)
+    assert [region['start'] for region in page.style_regions]==[.38,.50]
+    dragged=copy.deepcopy(original_regions[0]);dragged['start']=.50;dragged['end']=.70
+    assert page.style_regions[1]==dragged
+    assert [(row['start'],row['end']) for row in page.style_timeline._canvas.display_regions()]==[(.38,.48),(.50,.70)]
+    assert page.region_list.currentRow()==1 and page.style_timeline.selection()==(.5,.7)
+    assert len(page._region_undo)==undo_count+1 and not page._region_redo
+    page.undo_style_regions()
+    assert page.style_regions==original_regions and page.region_list.currentRow()==0
+    assert page.style_timeline.selection()==(.05,.35)
+    page.redo_style_regions()
+    assert page.style_regions==[original_regions[1],dragged] and page.region_list.currentRow()==1
+    assert page.style_timeline.selection()==(.5,.7)
+    page.undo_style_regions()
+
+    # Numeric time input only moves the preview selection; it never commits a
+    # region until Add/Update or a release-time canvas edit.
+    page.region_list.setCurrentRow(1);before=copy.deepcopy(page.style_regions);undo_count=len(page._region_undo)
+    page.region_end_editor.setValue(.90);page.region_start_editor.setValue(.80)
+    assert page.style_regions==before and len(page._region_undo)==undo_count
+    assert page.style_timeline.selection()==(.8,.9)
+    assert (page.region_start_editor.value(),page.region_end_editor.value())==(.8,.9)
     page.style_timeline.set_selection(.15,.4);before=len(page.style_regions);page.add_style_region()
     assert len(page.style_regions)==before and '不能重叠' in page.status.text()
 
@@ -144,8 +184,12 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
         'style_detail':first_region['detail'],'style_pitch':False});page.update_style_region()
     assert page.style_regions[0]['strength']==.55 and page.style_regions[0]['pitch'] is False
 
+    before_clear=copy.deepcopy(page.style_regions)
     page.clear_style_regions()
     assert page.style_mode.currentData()=='regions' and not page.style_regions
+    page.undo_style_regions()
+    assert page.style_regions==before_clear and page.style_mode.currentData()=='regions'
+    page.redo_style_regions();assert not page.style_regions
     page.start_run()
     assert '至少需要一个片段' in page.status.text() and page.session is None and page.worker is None
 
@@ -158,12 +202,42 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
     other=copy.deepcopy(data);other['tracks']=other['tracks'][:1];other_path=root/'other.svp';atomic_json(other_path,other)
     assert page.load_project(other_path)
     assert page.style_regions==[] and page.style_mode.currentData()=='whole' and page.options()['style_regions']==[]
+    assert page._region_undo==[] and page._region_redo==[]
     assert page.restore_session(session_file)
     assert page.style_mode.currentData()=='regions' and page.style_regions==[recorded]
+    assert page._region_undo==[] and page._region_redo==[]
     assert page.options()['style_regions']==[recorded]
-    with patch.object(page,'busy',return_value=True):page.refresh()
-    assert not page.style_timeline.isEnabled() and not page.add_region_button.isEnabled()
-    assert not page.delete_region_button.isEnabled() and not page.clear_regions_button.isEnabled()
+    page.style_timeline.set_selection(.6,.7);page.add_style_region();before=copy.deepcopy(page.style_regions)
+    with patch.object(page,'busy',return_value=True):
+        page.refresh()
+        assert not page.style_timeline.isEnabled() and not page.add_region_button.isEnabled()
+        assert not page.delete_region_button.isEnabled() and not page.clear_regions_button.isEnabled()
+        assert not page.undo_region_button.isEnabled() and not page.redo_region_button.isEnabled()
+        assert not page.region_start_editor.isEnabled() and not page.region_end_editor.isEnabled()
+        page.undo_style_regions();page.redo_style_regions();page.style_timeline.regionEditRequested.emit(0,.9,1.1)
+        page.style_timeline.regionDeleteRequested.emit(0)
+        assert page.style_regions==before
+
+    # Fullscreen hosts the same editor and data. Returning to the page keeps
+    # edits, selection, zoom and undo state, rather than recreating controls.
+    page.refresh();page.region_list.setCurrentRow(0)
+    original_timeline=page.style_timeline;fullscreen_before=copy.deepcopy(page.style_regions)
+    page.open_style_editor();application.processEvents()
+    dialog=page._region_dialog
+    assert dialog is not None and dialog.isFullScreen()
+    assert page._region_dialog_scroll.widget() is page.style_region_panel
+    assert page.style_timeline is original_timeline and page.style_regions==fullscreen_before
+    page.style_timeline.regionEditRequested.emit(0,.06,.36)
+    assert page.style_regions[0]['start']==.06
+    page.undo_style_regions();assert page.style_regions==fullscreen_before
+    page.style_timeline.set_selection(.1,.2);page.style_timeline.set_zoom(1.3)
+    history_size=(len(page._region_undo),len(page._region_redo))
+    dialog.close()
+    for _ in range(6):application.processEvents()
+    assert page._region_dialog is None and page._region_embed_layout.indexOf(page.style_region_panel)>=0
+    assert page.style_timeline is original_timeline and page.style_timeline.selection()==(.1,.2)
+    assert page.style_timeline.zoom_factor()==1.3 and page.style_regions==fullscreen_before
+    assert (len(page._region_undo),len(page._region_redo))==history_size
 
     state_root=root/'production-state';workspace=state_root/'cache/workspace.json'
     recent=str(root/'prior-session/session.json')

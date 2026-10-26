@@ -73,18 +73,28 @@ The Tuning page provides two style-application modes:
 
 - **Whole track** applies one of the three visible style cards once to the
   selected actual target tracks.
-- **Time segments** show notes from those tracks in a simple piano roll with
-  horizontal time selection. Drag to select, press Esc to clear, and use Ctrl
-  plus the wheel or the zoom buttons to zoom. This view is for notes and style
-  ranges only; it is not a full MIDI editor and does not edit pitch, syllables,
-  lyrics, timing or the voicebank.
+- **Time segments** show editable segment strips on the fixed ruler above a
+  read-only note view of the selected actual target tracks. Drag on the ruler or
+  note area to create a time selection. Click a segment strip to select it; drag
+  its middle to move it, or either edge to change its range. Esc cancels the
+  current drag or clears the selection; Delete removes the selected segment. Use
+  **Full project** and **Selection** to refit the view. Ctrl+wheel zooms around
+  the pointer, Shift+wheel scrolls horizontally, and dragging with the middle
+  mouse button pans. **Snap** is off by default; when enabled, it aligns to
+  nearby note boundaries and holding Alt turns it off temporarily. This view
+  edits only the start and end of style segments. It does not edit source notes,
+  lyrics, voicebank settings or pitch curves, play audio, or synthesize a
+  voicebank.
 
-In Time segments mode, select a valid time range, set the style, overall
-strength, four segment coefficients and added-pitch choice, then choose **Add
-segment**. Selecting a list row loads that segment's settings back into the
-controls. **Update selected segment**, **Delete selected segment** and **Clear
-segments** manage the current input. Segments cannot overlap, at most 128 are
-allowed, and a selection shorter than 25 ms cannot become a segment.
+In Time segments mode, enter **Start** and **End** in seconds (up to three
+decimal places), or create or adjust a time selection on the piano roll. Then
+set the style, overall strength, four segment coefficients and added-pitch
+choice, and choose **Add**. Release a dragged segment, or edit the time fields
+and choose **Update**, to write its range back. Selecting a list row loads that
+segment's settings into the controls. **Delete** and **Clear** manage the current
+input; **Undo/Redo** restores segment edits (Ctrl+Z; Ctrl+Y or Ctrl+Shift+Z).
+Segments cannot overlap, at most 128 are allowed, and a selection shorter than
+25 ms cannot become a segment.
 
 When the segment list is nonempty, execution reads only that list. Each segment
 can use its own `gentle`/`sad`/`bold`, overall strength, four coefficients and
@@ -102,6 +112,8 @@ clears the segment list and returns to Whole track. A saved processing record
 restores segments only when its input SHA matches; otherwise they remain
 cleared. Segment processing does not change notes, syllables, lyrics, voicebank
 settings or timing.
+
+Use **Full screen** or F11 to edit the same segments in a separate full-screen window. **Exit full screen** or F11 returns to the page while retaining the selection, zoom and undo history. Piano-key labels, note lyrics and pitch rows are larger for easier reading.
 
 ## Pitch defaults and compatibility mapping
 

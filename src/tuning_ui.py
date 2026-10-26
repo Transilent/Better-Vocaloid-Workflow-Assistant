@@ -2,6 +2,7 @@
 
 from common import environment_value
 from i18n import tr as _tr
+from copy import deepcopy
 from datetime import datetime
 import json
 import math
@@ -11,13 +12,13 @@ import threading
 import time
 import uuid
 from PyQt5.QtCore import QThread,pyqtSignal,QUrl,Qt,QTimer
-from PyQt5.QtGui import QDesktopServices
+from PyQt5.QtGui import QDesktopServices,QKeySequence
 from PyQt5.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QLineEdit,QComboBox,QCheckBox,
     QSpinBox,QFileDialog,QTableWidget,QHeaderView,QPlainTextEdit,QProgressBar,QScrollArea,QFrame,QSizePolicy,
-    QDialog,QListWidget)
+    QDialog,QListWidget,QDoubleSpinBox,QShortcut)
 from common import ROOT,atomic_json,workspace_state
 from desktop_theme import page,card,label,button,scroll_content,fold
-from ui_components import AdaptiveColumns,FlowLayout,StyleTimeline,choice
+from ui_components import AdaptiveColumns,ChoiceGroup,FlowLayout,StyleTimeline,choice
 from strength_control import PercentStrengthControl,StrengthControl,normalized_strength,percent_text,set_combo_strength,strength_choices
 
 
@@ -214,9 +215,14 @@ class TuningWorker(QThread):
 
 
 class TuningPage(QWidget):
+    _REGION_HISTORY_LIMIT=100
+
     def __init__(self,owner):
         super().__init__(owner);self.owner=owner;self.worker=None;self.session=None;self.last_session=None;self.job=None
         self._selecting_scope=False;self._run_outcome='idle';self._style_migration_source=None
+        self._region_undo=[];self._region_redo=[];self._region_shortcuts=[]
+        self._syncing_region_time=False;self._restoring_region_state=False
+        self._region_time_invalid=False;self._region_dialog=None
         self._progress_clock=TuningVisualProgress();self._stage_cursor=-1;self._stage_states={};self._observed_stages=set()
         self._progress_timer=QTimer(self);self._progress_timer.setInterval(160);self._progress_timer.setTimerType(Qt.CoarseTimer)
         self._progress_timer.timeout.connect(self._advance_progress)
@@ -307,23 +313,66 @@ class TuningPage(QWidget):
         style_mode_label=label(_tr('风格应用方式'),'muted');style_area.addWidget(style_mode_label)
         self.style_mode=combo([(_tr('整轨'),'whole'),(_tr('时间片段'),'regions')])
         self.style_mode_choice=choice(self.style_mode,columns=2,compact=True);style_area.addWidget(self.style_mode_choice)
-        self.style_region_panel=QWidget();region_layout=QVBoxLayout(self.style_region_panel)
-        region_layout.setContentsMargins(0,4,0,0);region_layout.setSpacing(8)
+        self.style_region_panel,region_layout=card(_tr('风格时间片段'),
+            _tr('点击上方片段选中；拖动移动，拖动边缘调整范围。'))
+        region_layout.setSpacing(10)
         self.style_timeline=StyleTimeline();self.style_timeline.selectionChanged.connect(self.region_selection_changed)
+        self.style_timeline.setMinimumHeight(340)
+        self.style_timeline.regionSelected.connect(self.select_style_region_from_timeline)
+        self.style_timeline.regionEditRequested.connect(self.edit_style_region_from_timeline)
+        self.style_timeline.regionDeleteRequested.connect(self.delete_style_region_from_timeline)
         region_layout.addWidget(self.style_timeline)
         self.region_summary=label(_tr('尚未添加时间片段。'),'muted');region_layout.addWidget(self.region_summary)
+        time_row=FlowLayout(spacing=8)
+        time_row.addWidget(label(_tr('时间（秒）'),'muted'))
+        time_row.addWidget(label(_tr('开始'),'muted'))
+        self.region_start_editor=QDoubleSpinBox();self.region_start_editor.setDecimals(3)
+        self.region_start_editor.setRange(-1_000_000_000.,1_000_000_000.);self.region_start_editor.setSingleStep(.001)
+        self.region_start_editor.setSuffix(' s');self.region_start_editor.setKeyboardTracking(False)
+        self.region_start_editor.setMinimumWidth(116);self.region_start_editor.setMaximumWidth(150)
+        self.region_start_editor.setToolTip(_tr('片段开始时间（秒，可输入 3 位小数）。'))
+        self.region_start_editor.setAccessibleName(_tr('片段开始时间（秒，可输入 3 位小数）。'))
+        time_row.addWidget(self.region_start_editor)
+        time_row.addWidget(label(_tr('结束'),'muted'))
+        self.region_end_editor=QDoubleSpinBox();self.region_end_editor.setDecimals(3)
+        self.region_end_editor.setRange(-1_000_000_000.,1_000_000_000.);self.region_end_editor.setSingleStep(.001)
+        self.region_end_editor.setSuffix(' s');self.region_end_editor.setKeyboardTracking(False)
+        self.region_end_editor.setMinimumWidth(116);self.region_end_editor.setMaximumWidth(150)
+        self.region_end_editor.setToolTip(_tr('片段结束时间（秒，可输入 3 位小数）。'))
+        self.region_end_editor.setAccessibleName(_tr('片段结束时间（秒，可输入 3 位小数）。'))
+        time_row.addWidget(self.region_end_editor)
+        self.region_start_editor.valueChanged.connect(self._region_time_edited)
+        self.region_end_editor.valueChanged.connect(self._region_time_edited)
+        region_layout.addLayout(time_row)
+        region_layout.addWidget(label(_tr('调整选区；点添加、更新或拖动片段后写入。'),'muted'))
         self.region_list=QListWidget();self.region_list.setMinimumHeight(84);self.region_list.setMaximumHeight(150)
         self.region_list.setAccessibleName(_tr('时间片段列表'));self.region_list.currentRowChanged.connect(self.select_style_region)
         region_layout.addWidget(self.region_list)
         region_actions=FlowLayout(spacing=8)
-        self.add_region_button=button(_tr('添加片段'),self.add_style_region,'primary');region_actions.addWidget(self.add_region_button)
-        self.update_region_button=button(_tr('更新所选片段'),self.update_style_region);region_actions.addWidget(self.update_region_button)
-        self.delete_region_button=button(_tr('删除所选片段'),self.delete_style_region,'danger');region_actions.addWidget(self.delete_region_button)
-        self.clear_regions_button=button(_tr('清空片段'),self.clear_style_regions,'danger');region_actions.addWidget(self.clear_regions_button)
+        self.add_region_button=button(_tr('添加'),self.add_style_region,'primary');region_actions.addWidget(self.add_region_button)
+        self.update_region_button=button(_tr('更新'),self.update_style_region);region_actions.addWidget(self.update_region_button)
+        self.delete_region_button=button(_tr('删除'),self.delete_style_region,'danger');region_actions.addWidget(self.delete_region_button)
+        self.clear_regions_button=button(_tr('清空'),self.clear_style_regions,'danger');region_actions.addWidget(self.clear_regions_button)
+        self.undo_region_button=button(_tr('撤销'),self.undo_style_regions);region_actions.addWidget(self.undo_region_button)
+        self.redo_region_button=button(_tr('重做'),self.redo_style_regions);region_actions.addWidget(self.redo_region_button)
+        for control,tip in ((self.add_region_button,'添加时间片段'),
+                            (self.update_region_button,'更新所选片段风格与时间'),
+                            (self.delete_region_button,'删除所选时间片段'),
+                            (self.clear_regions_button,'清空全部时间片段'),
+                            (self.undo_region_button,'撤销时间片段修改（Ctrl+Z）'),
+                            (self.redo_region_button,'重做时间片段修改（Ctrl+Y 或 Ctrl+Shift+Z）')):
+            control.setToolTip(_tr(tip));control.setAccessibleName(_tr(tip))
         region_layout.addLayout(region_actions)
+        for sequence,callback in (('Ctrl+Z',self.undo_style_regions),
+                                  ('Ctrl+Y',self.redo_style_regions),
+                                  ('Ctrl+Shift+Z',self.redo_style_regions)):
+            shortcut=QShortcut(QKeySequence(sequence),self)
+            shortcut.setContext(Qt.WidgetWithChildrenShortcut);shortcut.activated.connect(callback)
+            self._region_shortcuts.append(shortcut)
         region_layout.addWidget(label(_tr('先在钢琴卷帘选择时间，再添加当前工具设置。片段不能重叠；执行不会在已有风格结果上继续叠加。'),'muted'))
         region_layout.addWidget(label(_tr('时间片段只改变所选实际目标轨的风格；参考、校准或沿用参数仍按现有整轨范围处理。'),'muted'))
-        self.style_region_panel.hide();style_area.addWidget(self.style_region_panel)
+        self.style_region_panel.hide();form.addWidget(self.style_region_panel)
+        self._region_embed_layout=form
         style_area.addWidget(label(_tr('风格预设'),'muted'))
         self.performance_style=combo([(style_card_label(key),key) for key in style_card_keys()])
         for index in range(self.performance_style.count()):
@@ -339,6 +388,17 @@ class TuningPage(QWidget):
         self.style_strength_control=self.style_strength_choice
         self.style_strength_slider=self.style_strength_choice.slider;self.style_strength_spin=self.style_strength_choice.spin
         style_strength_label.setBuddy(self.style_strength_spin)
+        region_tools=QWidget();tools=QVBoxLayout(region_tools);tools.setContentsMargins(0,0,0,0);tools.setSpacing(8)
+        editor_header=QHBoxLayout();editor_header.addWidget(label(_tr('片段工具'),'muted'));editor_header.addStretch(1)
+        self.fullscreen_region_button=button(_tr('全屏编辑'),self.open_style_editor)
+        editor_header.addWidget(self.fullscreen_region_button);tools.addLayout(editor_header)
+        self._fullscreen_shortcut=QShortcut(QKeySequence('F11'),self)
+        self._fullscreen_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        self._fullscreen_shortcut.activated.connect(self.open_style_editor)
+        self.region_style_choice=ChoiceGroup(self.performance_style,columns=4,compact=True);tools.addWidget(self.region_style_choice)
+        tools.addWidget(label(_tr('片段强度'),'muted'))
+        self.region_strength_choice=StrengthControl(self.style_strength);tools.addWidget(self.region_strength_choice)
+        region_layout.insertWidget(0,region_tools)
         scope_label=label(_tr('风格适用范围'),'muted');style_area.addWidget(scope_label)
         self.style_scope=combo([(_tr('首条演唱轨'), 'lead'), (_tr('全部演唱轨'), 'all_vocals'), (_tr('自定义轨道'), 'custom')])
         self.style_scope.model().item(2).setEnabled(False);self.style_scope.setToolTip(_tr('快捷勾选首轨或全部；手动勾选后显示实际范围，自定义项只表示当前状态。'))
@@ -395,7 +455,8 @@ class TuningPage(QWidget):
 
         body.addStretch()
         self._choice_views=(self.mode_choice,self.dynamics_strength_choice,self.style_mode_choice,self.performance_style_choice,
-            self.style_strength_choice,self.style_scope_choice,self.expression_density_choice)
+            self.style_strength_choice,self.region_style_choice,self.region_strength_choice,
+            self.style_scope_choice,self.expression_density_choice)
 
         self.action_footer=QWidget();self.action_footer.setObjectName('footer');footer=QVBoxLayout(self.action_footer)
         footer.setContentsMargins(14,10,14,10);footer.setSpacing(8)
@@ -608,6 +669,114 @@ class TuningPage(QWidget):
         regions=self.style_regions if self.style_mode.currentData()=='regions' else []
         self.style_timeline.set_regions(regions)
 
+    def _set_timeline_active_region(self,index):
+        self.style_timeline.set_active_region(index)
+
+    def open_style_editor(self):
+        if self.processing_active or self.style_mode.currentData()!='regions':return
+        if self._region_dialog is not None:
+            self._region_dialog.raise_();self._region_dialog.activateWindow();return
+        dialog=QDialog(self.window());dialog.setWindowTitle(_tr('风格片段编辑器'))
+        outer=QVBoxLayout(dialog);outer.setContentsMargins(12,12,12,12);outer.setSpacing(8)
+        header=QHBoxLayout();title=label(_tr('风格片段编辑器'));header.addWidget(title);header.addStretch(1)
+        exit_button=button(_tr('退出全屏'),dialog.close);header.addWidget(exit_button);outer.addLayout(header)
+        scroll=QScrollArea(dialog);scroll.setWidgetResizable(True);scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff);outer.addWidget(scroll,1)
+        self._region_embed_index=self._region_embed_layout.indexOf(self.style_region_panel)
+        self._region_embed_layout.removeWidget(self.style_region_panel)
+        scroll.setWidget(self.style_region_panel);self._region_dialog=dialog;self._region_dialog_scroll=scroll
+        self.fullscreen_region_button.hide();self.style_region_panel.show()
+        for shortcut in self._region_shortcuts:shortcut.setParent(dialog)
+        toggle=QShortcut(QKeySequence('F11'),dialog);toggle.activated.connect(dialog.close)
+        dialog.finished.connect(self._restore_embedded_style_editor)
+        dialog.showFullScreen();self.style_timeline.setFocus(Qt.OtherFocusReason)
+
+    def _restore_embedded_style_editor(self,*args):
+        dialog=self._region_dialog
+        if dialog is None:return
+        timeline=self.style_timeline
+        left_time=timeline.time_at_view_x(timeline._canvas.PIANO_WIDTH+1)
+        pitch_center=timeline._view.verticalScrollBar().value()+timeline._view.viewport().height()/2.
+        self._region_dialog_scroll.takeWidget()
+        self._region_embed_layout.insertWidget(self._region_embed_index,self.style_region_panel)
+        self.style_region_panel.setVisible(self.style_mode.currentData()=='regions')
+        self.fullscreen_region_button.show()
+        for shortcut in self._region_shortcuts:shortcut.setParent(self)
+        self._region_dialog=None;dialog.deleteLater();self._update_region_controls()
+        def restore_view():
+            timeline._restore_view_time(left_time,timeline._canvas.PIANO_WIDTH+1)
+            timeline._view.verticalScrollBar().setValue(int(round(pitch_center-timeline._view.viewport().height()/2.)))
+        QTimer.singleShot(0,restore_view)
+
+    def _sync_region_time_editors(self):
+        if not hasattr(self,'region_start_editor'):return
+        self._region_time_invalid=False
+        value=self.style_timeline.selection()
+        if value is None:
+            row=self.region_list.currentRow()
+            if 0<=row<len(self.style_regions):
+                value=(self.style_regions[row]['start'],self.style_regions[row]['end'])
+        if value is None:
+            start=end=0.
+        else:
+            start,end=(float(value[0]),float(value[1]))
+        self._syncing_region_time=True
+        try:
+            for editor,amount in ((self.region_start_editor,start),(self.region_end_editor,end)):
+                blocked=editor.blockSignals(True)
+                try:editor.setValue(amount)
+                finally:editor.blockSignals(blocked)
+        finally:self._syncing_region_time=False
+
+    def _region_time_edited(self,*args):
+        if self._syncing_region_time or self.processing_active:return
+        if self.region_end_editor.value()-self.region_start_editor.value()<.025-1e-9:
+            self._region_time_invalid=True;self._update_region_controls();return
+        self._region_time_invalid=False
+        try:
+            self.style_timeline.set_selection(self.region_start_editor.value(),
+                                               self.region_end_editor.value())
+        except (TypeError,ValueError):
+            self._sync_region_time_editors()
+        self._sync_region_time_editors();self._update_region_controls()
+
+    def _region_state(self,history_index=None):
+        row=self.region_list.currentRow()
+        if history_index is not None and 0<=history_index<len(self.style_regions):row=history_index
+        selection=self.style_timeline.selection()
+        if history_index is not None and 0<=row<len(self.style_regions):
+            selection=(self.style_regions[row]['start'],self.style_regions[row]['end'])
+        if selection is not None:selection=(float(selection[0]),float(selection[1]))
+        return {'regions':deepcopy(self.style_regions),'index':row,'selection':selection,
+                'mode':self.style_mode.currentData()}
+
+    def _append_region_history(self,stack,state):
+        stack.append(state)
+        if len(stack)>self._REGION_HISTORY_LIMIT:del stack[0]
+
+    def _reset_region_history(self):
+        self._region_undo=[];self._region_redo=[]
+
+    def _restore_region_state(self,state):
+        from style_presets import region_settings
+        regions=region_settings(deepcopy(state.get('regions',[])))
+        mode=state.get('mode')
+        if mode not in ('whole','regions'):mode='regions' if regions else 'whole'
+        row=state.get('index',-1)
+        row=row if type(row) is int and 0<=row<len(regions) else -1
+        selection=state.get('selection')
+        self._restoring_region_state=True
+        try:
+            self.style_regions=regions
+            self._style_mode_selected(mode)
+            self._render_style_regions(select_index=row)
+            if row>=0:self._load_region_tool_settings(regions[row])
+            if selection is None:self.style_timeline.clear_selection()
+            else:self.style_timeline.set_selection(*selection)
+            self._set_timeline_active_region(row)
+        finally:self._restoring_region_state=False
+        self._sync_region_time_editors();self._update_region_controls()
+
     def _track_selection_changed(self,*args):
         self.sync_scope_label()
         if hasattr(self,'style_timeline'):self._sync_style_timeline()
@@ -620,7 +789,7 @@ class TuningPage(QWidget):
         except ValueError:return None
 
     def region_selection_changed(self,*args):
-        self._update_region_controls()
+        self._sync_region_time_editors();self._update_region_controls()
 
     def _style_mode_selected(self,value):
         blocked=self.style_mode.blockSignals(True)
@@ -630,6 +799,7 @@ class TuningPage(QWidget):
 
     def style_mode_selected(self,*args):
         regions=self.style_mode.currentData()=='regions'
+        if not regions and self._region_dialog is not None:self._region_dialog.close()
         self.style_region_panel.setVisible(regions)
         self._render_style_timeline_regions()
         self._refresh_style_hint()
@@ -658,13 +828,22 @@ class TuningPage(QWidget):
         finally:self.region_list.blockSignals(blocked)
         self.region_summary.setText(_tr('已添加 {0} 个时间片段；最多 128 个。',len(self.style_regions)) if self.style_regions else _tr('尚未添加时间片段。'))
         self._render_style_timeline_regions()
+        self._set_timeline_active_region(current)
+        self._sync_region_time_editors()
         self._update_region_controls()
 
-    def _replace_style_regions(self,regions,*,select_index=None,activate=False):
+    def _replace_style_regions(self,regions,*,select_index=None,activate=False,record_history=False,
+                               reset_history=False,history_index=None):
         from style_presets import region_settings
-        self.style_regions=region_settings(regions)
+        normalized=region_settings(regions);changed=normalized!=self.style_regions
+        previous=self._region_state(history_index=history_index) if changed and record_history else None
+        if reset_history:self._reset_region_history()
+        if previous is not None and not self._restoring_region_state:
+            self._append_region_history(self._region_undo,previous);self._region_redo=[]
+        self.style_regions=normalized
         if activate:self._style_mode_selected('regions' if self.style_regions else 'whole')
         self._render_style_regions(select_index)
+        self._update_region_controls()
 
     def _update_region_controls(self):
         if not hasattr(self,'add_region_button'):return
@@ -678,10 +857,20 @@ class TuningPage(QWidget):
         self.style_mode.setEnabled(not busy)
         self.style_timeline.setEnabled(regions_mode and not busy and has_project)
         self.region_list.setEnabled(regions_mode and not busy)
-        self.add_region_button.setEnabled(regions_mode and not busy and has_project and selection is not None and style)
-        self.update_region_button.setEnabled(regions_mode and not busy and has_project and has_row and style)
+        self.add_region_button.setEnabled(regions_mode and not busy and has_project and selection is not None and style and not self._region_time_invalid)
+        self.update_region_button.setEnabled(regions_mode and not busy and has_project and has_row and style and not self._region_time_invalid)
         self.delete_region_button.setEnabled(regions_mode and not busy and has_row)
         self.clear_regions_button.setEnabled(regions_mode and not busy and bool(self.style_regions))
+        self.region_start_editor.setEnabled(regions_mode and not busy and has_project)
+        self.region_end_editor.setEnabled(regions_mode and not busy and has_project)
+        self.fullscreen_region_button.setEnabled(regions_mode and not busy and has_project)
+        self._fullscreen_shortcut.setEnabled(regions_mode and not busy and has_project)
+        can_undo=regions_mode and not busy and bool(self._region_undo)
+        can_redo=regions_mode and not busy and bool(self._region_redo)
+        self.undo_region_button.setEnabled(can_undo);self.redo_region_button.setEnabled(can_redo)
+        if self._region_shortcuts:
+            self._region_shortcuts[0].setEnabled(can_undo)
+            self._region_shortcuts[1].setEnabled(can_redo);self._region_shortcuts[2].setEnabled(can_redo)
         if regions_mode:self.style_region_panel.show()
 
     def _load_region_tool_settings(self,region):
@@ -698,11 +887,51 @@ class TuningPage(QWidget):
         self._refresh_style_hint();self._sync_choices();self._update_region_controls();self.persist()
 
     def select_style_region(self,row):
-        if not 0<=row<len(self.style_regions):self._update_region_controls();return
+        if not 0<=row<len(self.style_regions):
+            self._set_timeline_active_region(-1);self.style_timeline.clear_selection()
+            self._sync_region_time_editors();self._update_region_controls();return
         region=self.style_regions[row];self._load_region_tool_settings(region)
+        self._set_timeline_active_region(row)
         try:self.style_timeline.set_selection(region['start'],region['end'])
         except (TypeError,ValueError):self.style_timeline.clear_selection()
-        self._update_region_controls()
+        self._sync_region_time_editors();self._update_region_controls()
+
+    def select_style_region_from_timeline(self,row):
+        if self.processing_active:return
+        if row<0:
+            if self.region_list.currentRow()!=-1:self.region_list.setCurrentRow(-1)
+            else:self.select_style_region(-1)
+            return
+        if not 0<=row<len(self.style_regions):
+            self._update_region_controls();return
+        if self.region_list.currentRow()!=row:self.region_list.setCurrentRow(row)
+        else:self.select_style_region(row)
+        self._set_timeline_active_region(row)
+
+    def _restore_region_display(self,row):
+        self._render_style_regions(select_index=row)
+        if 0<=row<len(self.style_regions):self.select_style_region(row)
+        else:self.style_timeline.clear_selection();self._set_timeline_active_region(-1)
+
+    def edit_style_region_from_timeline(self,row,start,end):
+        if self.processing_active:return
+        if not 0<=row<len(self.style_regions):
+            self._set_message(self.status,_tr('无法更新时间片段：请检查起止时间或重叠。'),True)
+            self._render_style_regions();return
+        original=self.style_regions[row];candidate=deepcopy(original)
+        candidate['start']=float(start);candidate['end']=float(end)
+        try:
+            from style_presets import region_settings
+            rows=deepcopy(self.style_regions);rows[row]=candidate
+            normalized=region_settings(rows)
+            index=next((i for i,item in enumerate(normalized) if item==candidate),-1)
+            if index<0:raise ValueError('风格时间片段不能重叠。')
+            self._replace_style_regions(normalized,select_index=index,activate=True,
+                                        record_history=True,history_index=row)
+            self.select_style_region(index);self.status.setText(_tr('已更新时间片段。'))
+        except Exception:
+            self._restore_region_display(row)
+            self._set_message(self.status,_tr('无法更新时间片段：请检查起止时间或重叠。'),True)
 
     def add_style_region(self):
         if self.processing_active:return
@@ -716,9 +945,10 @@ class TuningPage(QWidget):
             candidate=self._region_from_tool(*selection)
             normalized=region_settings(self.style_regions+[candidate])
             index=next((i for i,item in enumerate(normalized) if item==candidate),-1)
-            self._replace_style_regions(normalized,select_index=index,activate=True)
+            self._replace_style_regions(normalized,select_index=index,activate=True,record_history=True)
+            self.select_style_region(index)
             self.status.setText(_tr('已添加时间片段。'))
-        except Exception as error:self.status.setText(_tr(str(error)))
+        except Exception as error:self._set_message(self.status,_tr(str(error)),True)
 
     def update_style_region(self):
         row=self.region_list.currentRow()
@@ -730,32 +960,56 @@ class TuningPage(QWidget):
             rows=[dict(item) for item in self.style_regions];rows[row]=candidate
             normalized=region_settings(rows)
             index=next((i for i,item in enumerate(normalized) if item==candidate),row)
-            self._replace_style_regions(normalized,select_index=index,activate=True)
+            self._replace_style_regions(normalized,select_index=index,activate=True,
+                                        record_history=True,history_index=row)
+            self.select_style_region(index)
             self.status.setText(_tr('已更新时间片段。'))
-        except Exception as error:self.status.setText(_tr(str(error)))
+        except Exception as error:
+            self._restore_region_display(row);self._set_message(self.status,_tr(str(error)),True)
 
     def delete_style_region(self):
         row=self.region_list.currentRow()
         if self.processing_active or not 0<=row<len(self.style_regions):return
         rows=[dict(item) for item in self.style_regions];rows.pop(row)
-        self._replace_style_regions(rows,select_index=min(row,len(rows)-1),activate=False)
+        index=min(row,len(rows)-1)
+        self._replace_style_regions(rows,select_index=index,activate=False,record_history=True)
+        if index>=0:self.select_style_region(index)
+        else:self.style_timeline.clear_selection();self._set_timeline_active_region(-1)
         self.status.setText(_tr('已删除时间片段。'))
+
+    def delete_style_region_from_timeline(self,row):
+        if self.processing_active:return
+        if not 0<=row<len(self.style_regions):
+            self._set_message(self.status,_tr('无法删除时间片段，请重新选择。'),True);return
+        if self.region_list.currentRow()!=row:self.region_list.setCurrentRow(row)
+        self.delete_style_region()
 
     def clear_style_regions(self):
         if self.processing_active:return
-        self._replace_style_regions([],select_index=-1,activate=False)
+        self._replace_style_regions([],select_index=-1,activate=False,record_history=True)
         self.style_timeline.clear_selection();self.status.setText(_tr('已清空时间片段。'))
 
     def restore_style_regions(self,value):
         from style_presets import region_settings
         restored=region_settings(value)
-        self._replace_style_regions(restored,select_index=-1,activate=True)
+        self._replace_style_regions(restored,select_index=-1,activate=True,reset_history=True)
+
+    def undo_style_regions(self):
+        if self.processing_active or not self._region_undo:return
+        current=self._region_state();target=self._region_undo.pop();self._region_redo.append(current)
+        self._restore_region_state(target);self.status.setText(_tr('已撤销时间片段修改。'))
+
+    def redo_style_regions(self):
+        if self.processing_active or not self._region_redo:return
+        current=self._region_state();target=self._region_redo.pop();self._region_undo.append(current)
+        self._restore_region_state(target);self.status.setText(_tr('已重做时间片段修改。'))
 
     def _clear_style_regions(self):
-        self.style_regions=[]
+        self._reset_region_history();self.style_regions=[]
         self._style_mode_selected('whole')
         if hasattr(self,'region_list'):self._render_style_regions(select_index=-1)
-        if hasattr(self,'style_timeline'):self.style_timeline.clear_selection()
+        if hasattr(self,'style_timeline'):
+            self.style_timeline.clear_selection();self._set_timeline_active_region(-1);self._sync_region_time_editors()
 
     def _refresh_style_hint(self):
         current=self.performance_style.currentData()
