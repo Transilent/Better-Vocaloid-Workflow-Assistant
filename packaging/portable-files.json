@@ -476,6 +476,42 @@
     {
       "file": "docs/DownloadSources.zh-CN.md",
       "source": "docs/DownloadSources.zh-CN.md"
+    },
+    {
+      "file": "agent_control.py",
+      "source": "src/agent_control.py"
+    },
+    {
+      "file": "agent_worker.py",
+      "source": "src/agent_worker.py"
+    },
+    {
+      "file": "agent_mcp.py",
+      "source": "src/agent_mcp.py"
+    },
+    {
+      "file": "agent_score.py",
+      "source": "src/agent_score.py"
+    },
+    {
+      "file": "agent_style.py",
+      "source": "src/agent_style.py"
+    },
+    {
+      "file": "tools/Setup-AgentMCP.ps1",
+      "source": "tools/Setup-AgentMCP.ps1"
+    },
+    {
+      "file": "docs/AgentMCP.zh-CN.md",
+      "source": "docs/AgentMCP.zh-CN.md"
+    },
+    {
+      "file": "packaging/agent-mcp.example.json",
+      "source": "packaging/agent-mcp.example.json"
+    },
+    {
+      "file": "packaging/requirements-mcp.lock.txt",
+      "source": "packaging/requirements-mcp.lock.txt"
     }
   ]
 }

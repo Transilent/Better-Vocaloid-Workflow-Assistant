@@ -1846,6 +1846,19 @@
     "vendor/yt_dlp/version.py",
     "vendor/yt_dlp/webvtt.py",
     "vendor/yt_dlp/YoutubeDL.py",
-    "tests/test_name_migration.py"
+    "tests/test_name_migration.py",
+    "src/agent_control.py",
+    "src/agent_worker.py",
+    "src/agent_mcp.py",
+    "src/agent_score.py",
+    "src/agent_style.py",
+    "tests/test_agent_control.py",
+    "tests/test_agent_mcp.py",
+    "tests/test_agent_score.py",
+    "tests/test_agent_style.py",
+    "tools/Setup-AgentMCP.ps1",
+    "docs/AgentMCP.zh-CN.md",
+    "packaging/agent-mcp.example.json",
+    "packaging/requirements-mcp.lock.txt"
   ]
 }

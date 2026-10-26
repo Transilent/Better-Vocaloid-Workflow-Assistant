@@ -42,6 +42,8 @@ names = ('test_task_picker_integration.py','test_calibration_task_picker.py','te
 names = ('test_i18n.py', 'test_strength_control.py', 'test_download_sources.py', 'test_chinese_model_install.py') + names
 names = ('test_portable_variants.py',) + names
 names = ('test_name_migration.py',) + names
+# Optional local Agent/MCP boundary contracts.
+names = ('test_agent_control.py', 'test_agent_score.py', 'test_agent_style.py', 'test_agent_mcp.py') + names
 if selected - set(names):
     raise ValueError('Unknown selected tests: ' + ', '.join(sorted(selected - set(names))))
 print('Preparing isolated application; installed user state will not be changed.', flush=True)
