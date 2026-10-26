@@ -16,13 +16,15 @@ DEFAULT_OPTIONS = {'language': 'zh', 'recognize_lyrics': True, 'zh_lyric_mode': 
                    'audio_formats':['wav'],'project_export_enabled':True,'audio_export_enabled':True,
                    'export_pitch':True,'include_instrumental':True,'expression_density':'dense',
                    'performance_style':'none','style_strength':.6,'style_scope':'lead','style_pitch':False,'style_detail':None,
+                   'style_technique':'none','technique_strength':.6,'technique_pitch':True,
                    'reference_dynamics':False,'dynamics_strength':.6,
                    'reference_tension':False,'reference_breathiness':False,'reference_voicing':False,
                    'reference_mode':'local','subtitles_mode':'midi','dml_adapter':'auto','cpu_threads':0}
 EXPORT_PREFERENCE_KEYS = ('project_export_enabled', 'audio_export_enabled', 'project_formats', 'audio_formats',
                           'export_pitch', 'include_instrumental', 'reference_dynamics', 'reference_tension',
                           'reference_breathiness', 'reference_voicing', 'dynamics_strength', 'expression_density',
-                          'performance_style', 'style_strength', 'style_scope','style_pitch','style_detail')
+                          'performance_style', 'style_strength', 'style_scope','style_pitch','style_detail',
+                          'style_technique','technique_strength','technique_pitch')
 
 
 def default_graph(subtitles=False):
@@ -85,7 +87,7 @@ def validate_graph(graph):
 
 
 def validate_options(options):
-    from style_presets import PRESETS,detail_settings
+    from style_presets import PRESETS,detail_settings,technique_settings
     if not isinstance(options, dict):
         raise ValueError('预设参数格式无效。')
     result = {key: options.get(key, value) for key, value in DEFAULT_OPTIONS.items()}
@@ -112,6 +114,7 @@ def validate_options(options):
         raise ValueError('风格强度必须是 0 到 1 之间的有限数值。')
     result['style_strength'] = float(strength)
     result['style_detail'] = detail_settings(result['style_detail'])
+    result.update(technique_settings(result))
     if type(result['style_pitch']) is not bool:raise ValueError('风格音高开关必须为布尔值。')
     from project_exports import validate_options
     validate_options(result['project_formats'],result['audio_formats'])
@@ -146,6 +149,10 @@ def execution_options(preferences, *, midi_enabled=True):
     for name in ('reference_dynamics','reference_tension','reference_breathiness','reference_voicing','style_pitch'):
         result[name]=False
     result['performance_style']='none';result['expression_density']='original'
+    # These belong to the independent tuning transaction. Preparation's public
+    # create_job API keeps its existing signature; export_preferences stores
+    # the user's technique choices separately for later tuning.
+    for key in ('style_technique','technique_strength','technique_pitch'):result.pop(key,None)
     return result
 
 

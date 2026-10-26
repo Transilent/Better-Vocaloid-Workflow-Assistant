@@ -262,7 +262,7 @@ _TRACK_COLORS = tuple(QColor(value) for value in (
     '#4e9af1', '#e0715b', '#51ad72', '#b179d6', '#d2a347', '#42aeb3'))
 _REGION_COLORS = tuple(QColor(value) for value in (
     '#6d5bb5', '#ad6a3d', '#347d8a', '#9c596f'))
-STYLE_PRESET_COLORS = {'none':'#8190a8','gentle':'#187f78','sad':'#8a5ba8','bold':'#b26519'}
+STYLE_PRESET_COLORS = {'none':'#8190a8','gentle':'#187f78','sad':'#8a5ba8','bold':'#b26519','chinese_opera':'#b74f55'}
 _STYLE_REGION_COLORS = {key:QColor(value) for key,value in STYLE_PRESET_COLORS.items()}
 
 
@@ -514,7 +514,9 @@ class _TimelineCanvas(QWidget):
                     label = _tr('风格区域')
             else:
                 label = _tr(label)
-            color = _STYLE_REGION_COLORS.get(preset)
+            technique=row.get('technique')
+            if technique=='chinese_opera':label=(label+' · ' if preset!='none' else '')+_tr('戏腔')
+            color = _STYLE_REGION_COLORS.get(technique if technique=='chinese_opera' else preset)
             if color is None:
                 color = _REGION_COLORS[index % len(_REGION_COLORS)]
             display.append({'index': index, 'preset':preset, 'start': start, 'end': end, 'label': label,

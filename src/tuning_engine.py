@@ -9,14 +9,15 @@ import json
 import math
 from pathlib import Path
 
-VERSION=1
+VERSION=2
 REFERENCE=('dynamics','tension','breathiness','voicing')
 EXPRESSION=('loudness','tension','breathiness','voicing','gender','toneShift')
 DEFAULTS={'expression_mode':'preserve','track_indices':None,'reference_sources':[],
  'reference_dynamics':False,'reference_tension':False,'reference_breathiness':False,'reference_voicing':False,
  'dynamics_strength':.6,'reference_calibration':None,'retained_project':None,'retained_track_index':0,
  'retained_sources':[],'retained_match_policy':'exact','performance_style':'none','style_strength':.6,'style_pitch':False,
- 'style_scope':'lead','style_detail':None,'style_regions':[],'expression_density':'dense'}
+ 'style_scope':'lead','style_detail':None,'style_regions':[],'expression_density':'dense',
+ 'style_technique':'none','technique_strength':.6,'technique_pitch':True}
 
 
 def digest(data):
@@ -37,13 +38,14 @@ def settings(options):
         if type(value) not in (int,float) or not math.isfinite(value) or not 0<=value<=1:
             raise ValueError('调音强度应为0到1的有限数值。')
         result[name]=float(value)
-    from style_presets import settings as style_settings, pitch_default, detail_settings, region_settings
+    from style_presets import settings as style_settings, pitch_default, detail_settings, region_settings, technique_settings
     if 'style_pitch' not in options:
         result['style_pitch']=pitch_default(result['performance_style'])
     from calibration_refinement import density_settings
     style_settings(result);density_settings(result)
     result['style_detail']=detail_settings(result['style_detail'])
     result['style_regions']=region_settings(result['style_regions'])
+    result.update(technique_settings(result))
     indices=result['track_indices']
     if indices is not None and (not isinstance(indices,list) or not indices or
             any(type(x) is not int or x<0 for x in indices) or len(indices)!=len(set(indices))):
@@ -121,6 +123,30 @@ def _has_incomplete(report):
         return any(_has_incomplete(value) for value in report.values() if isinstance(value,(dict,list)))
     if isinstance(report,list):return any(_has_incomplete(value) for value in report)
     return False
+
+
+def _apply_style_layers(project,preset,*,strength,pitch,detail,technique,indices,time_range=None,cancel=lambda:None):
+    """Two explicitly selected layers in one transaction, with separate audit."""
+    from style_presets import apply_style
+    output,emotion=apply_style(project,preset,strength=strength,track_indices=indices,
+        density_mode='original',pitch_enabled=pitch,detail=detail,time_range=time_range,cancel=cancel,finalize=False)
+    if technique['style_technique']=='none' or technique['technique_strength']==0:return output,emotion
+    output,layer=apply_style(output,technique['style_technique'],strength=technique['technique_strength'],
+        track_indices=indices,density_mode='original',pitch_enabled=technique['technique_pitch'],
+        detail=detail,time_range=time_range,cancel=cancel,finalize=False)
+    selected=[emotion,layer]
+    applied=any(r['status'] in ('applied','partial') for r in selected)
+    incomplete=any(r['status'] in ('partial','skipped') for r in selected)
+    combined=copy.deepcopy(layer if emotion['status']=='not_selected' else emotion)
+    combined.update(preset=preset,emotion=emotion,technique=layer,technique_id=technique['style_technique'],
+        label=(emotion['label']+' · ' if preset!='none' else '')+layer['label'],
+        status='partial' if applied and incomplete else 'applied' if applied else 'skipped' if incomplete else 'not_selected',
+        applied_controls=sum(r.get('applied_controls',0) for r in selected),
+        skipped_controls=sum(r.get('skipped_controls',0) for r in selected),
+        pitch_changed=any(r.get('pitch_changed',False) for r in selected),
+        notes_and_pitch_unchanged=not any(r.get('pitch_changed',False) for r in selected),
+        source_content_sha256=digest(project),output_content_sha256=digest(output))
+    return output,combined
 
 
 def _review_calibration_channels(view,sources,profile):
@@ -249,13 +275,13 @@ def process_project(data,options,*,cancel=lambda:None,progress=lambda text:None,
     regions=options['style_regions']
     if regions:
         progress('按时间片段叠加风格增量')
-        from style_presets import apply_style
         receipts=[]
         for region in regions:
             cancel()
-            output,item=apply_style(output,region['preset'],strength=region['strength'],
-                track_indices=indices,density_mode='original',pitch_enabled=region['pitch'],
-                detail=region['detail'],time_range=(region['start'],region['end']),cancel=cancel,finalize=False)
+            output,item=_apply_style_layers(output,region['preset'],strength=region['strength'],pitch=region['pitch'],
+                indices=indices,detail=region['detail'],time_range=(region['start'],region['end']),cancel=cancel,
+                technique={'style_technique':region.get('technique','none'),
+                    'technique_strength':region.get('technique_strength',.6),'technique_pitch':region.get('technique_pitch',True)})
             receipts.append(item)
         applied=any(r['status'] in ('applied','partial') for r in receipts)
         incomplete=any(r['status'] in ('partial','skipped') for r in receipts)
@@ -266,12 +292,11 @@ def process_project(data,options,*,cancel=lambda:None,progress=lambda text:None,
                'pitch_changed':any(r.get('pitch_changed') for r in receipts),
                'outside_regions_style_unchanged':True}
         report['stages'].append('style')
-    elif options['performance_style']!='none' and options['style_strength']>0:
+    elif (options['performance_style']!='none' and options['style_strength']>0) or (
+            options['style_technique']!='none' and options['technique_strength']>0):
         progress('叠加所选风格增量')
-        from style_presets import apply_style
-        output,style=apply_style(output,options['performance_style'],strength=options['style_strength'],
-            track_indices=indices,density_mode='original',pitch_enabled=options['style_pitch'],
-            detail=options['style_detail'],cancel=cancel,finalize=False)
+        output,style=_apply_style_layers(output,options['performance_style'],strength=options['style_strength'],
+            indices=indices,pitch=options['style_pitch'],detail=options['style_detail'],technique=options,cancel=cancel)
         report['stages'].append('style')
     report['style']=style
     progress('统一保形加密与保护校验')
@@ -281,7 +306,9 @@ def process_project(data,options,*,cancel=lambda:None,progress=lambda text:None,
     if finalize:report['stages'].append('density')
     # Primary calibration/retention can legitimately install the selected bank's
     # expression offsets; all score/pitch/retake/unknown objects still compare.
-    pitch_allowed=any(r['pitch'] for r in regions) if regions else options['style_pitch']
+    pitch_allowed=any(r['pitch'] or (r.get('technique')=='chinese_opera' and r.get('technique_pitch',True))
+        for r in regions) if regions else options['style_pitch'] or (
+            options['style_technique']!='none' and options['technique_pitch'])
     if _protected(data,indices,EXPRESSION,pitch_allowed,mode in ('calibrated','retained'))!=_protected(output,indices,EXPRESSION,pitch_allowed,mode in ('calibrated','retained')):
         raise ValueError('调音处理改变了保护范围之外的工程内容，未提交。')
     if digest(data)!=source_sha:raise ValueError('调音处理意外修改了输入对象，未提交。')

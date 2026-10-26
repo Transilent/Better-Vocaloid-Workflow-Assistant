@@ -12,6 +12,18 @@ import common,workflow,lyrics_sources
 from lyrics_dialog import LyricsDialog
 from app import Window
 app=QApplication([])
+
+# Technique choices are stored for the separate tuning transaction. The
+# preparation payload must still bind to its public job-creation API.
+from inspect import signature
+from pipeline import create_job
+technique_prefs={**workflow.DEFAULT_OPTIONS,'style_technique':'chinese_opera',
+                 'technique_strength':.73,'technique_pitch':False}
+prepared=workflow.execution_options(technique_prefs)
+assert not set(('style_technique','technique_strength','technique_pitch')) & set(prepared)
+signature(create_job).bind_partial(**prepared)
+stored=workflow.export_preferences(technique_prefs)
+assert (stored['style_technique'],stored['technique_strength'],stored['technique_pitch'])==('chinese_opera',.73,False)
 def wheel(target):
     event=QWheelEvent(QPointF(5,5),QPointF(target.mapToGlobal(QPoint(5,5))),QPoint(),QPoint(0,120),Qt.NoButton,Qt.NoModifier,Qt.NoScrollPhase,False)
     QApplication.sendEvent(target,event);app.processEvents()

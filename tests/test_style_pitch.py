@@ -23,12 +23,30 @@ def project():
                     'meter':[{'index':0,'numerator':4,'denominator':4}]},
             'tracks':[track,backing],'library':[{'private':'keep'}],'other':[1,2,3]}
 
-assert pitches.VERSION==4
+assert pitches.VERSION==5
 assert pitches.RECIPES['gentle']=={'entry':(-20.,.11),'connection':(1.8,16.,.07),'release':(-12.,.09),'vibrato':None}
 assert pitches.RECIPES['sad']=={'entry':(-12.,.18),'connection':(4.,32.,.13),'release':(-58.,.30),'vibrato':None}
 assert pitches.RECIPES['melancholy']=={'entry':(-16.,.13),'connection':(1.5,10.,.09),'release':(-24.,.20),'vibrato':None}
 assert pitches.RECIPES['fragile_tender']=={'entry':(6.,.08),'connection':(1.,8.,.06),'release':(24.,.16),'vibrato':None}
 assert pitches.RECIPES['bright_joy']=={'entry':(12.,.06),'connection':(1.7,11.,.055),'release':(-7.,.08),'vibrato':None}
+assert pitches.RECIPES['chinese_opera']=={'entry':(-88.,.20),'connection':(9.,85.,.18),'release':(52.,.26),'vibrato':None}
+
+# The technique recipe adds structural gestures while existing vibrato, notes,
+# and the caller's project object remain untouched. Its pitch switch is explicit.
+source=project();frozen=copy.deepcopy(source)
+output,report=styles.apply_style(source,'chinese_opera',strength=.55,track_indices=[0],
+                                 pitch_enabled=True,density_mode='original')
+row=report['pitch']['tracks'][0]
+assert source==frozen and report['category']=='singing_technique'
+assert {'phrase_entry','interval_connection','phrase_release'}<={g['kind'] for g in row['gestures']}
+assert not any(g['kind']=='delayed_vibrato' for g in row['gestures'])
+assert output['tracks'][0]['mainGroup']['parameters']['vibratoEnv']==source['tracks'][0]['mainGroup']['parameters']['vibratoEnv']
+assert output['tracks'][0]['mainGroup']['notes']==source['tracks'][0]['mainGroup']['notes']
+voice_only,voice_report=styles.apply_style(source,'chinese_opera',strength=.55,track_indices=[0],
+                                          pitch_enabled=False,density_mode='original')
+assert not voice_report['pitch_changed']
+assert voice_only['tracks'][0]['mainGroup']['parameters']['pitchDelta']==source['tracks'][0]['mainGroup']['parameters']['pitchDelta']
+assert voice_only['tracks'][0]['mainGroup']['parameters']['vibratoEnv']==source['tracks'][0]['mainGroup']['parameters']['vibratoEnv']
 for preset in ('soft_ballad','intimate_narration','power_pop'):
     source=project();frozen=copy.deepcopy(source)
     voice,rv=styles.apply_style(source,preset,strength=.6,track_indices=[0],pitch_enabled=False)
@@ -74,10 +92,11 @@ source=project();source['tracks'][0]['mainGroup']['notes'][2]['attributes']['dF0
 _,r=styles.apply_style(source,'power_pop',pitch_enabled=True,track_indices=[0])
 assert 'delayed_vibrato' not in {g['kind'] for g in r['pitch']['tracks'][0]['gestures']}
 assert any(x['reason']=='existing_or_unknown_vibrato_preserved' for x in r['pitch']['tracks'][0]['skipped_notes'])
-source=project();curve=source['tracks'][0]['mainGroup']['parameters']['pitchDelta'];curve['mode']='cubic'
-output,r=styles.apply_style(source,'soft_ballad',pitch_enabled=True,track_indices=[0])
-assert r['status']=='partial' and r['pitch']['status']=='skipped'
-assert output['tracks'][0]['mainGroup']['parameters']['pitchDelta']==curve
+for preset in ('soft_ballad','chinese_opera'):
+    source=project();curve=source['tracks'][0]['mainGroup']['parameters']['pitchDelta'];curve['mode']='cubic'
+    output,r=styles.apply_style(source,preset,pitch_enabled=True,track_indices=[0])
+    assert r['status']=='partial' and r['pitch']['status']=='skipped'
+    assert output['tracks'][0]['mainGroup']['parameters']['pitchDelta']==curve
 
 # Unknown vibrato depth and rapid / overlapping / breath notes are not assigned
 # generic ornaments. The underlying original contours stay intact.
@@ -86,9 +105,10 @@ source=project();source['tracks'][0]['mainGroup']['notes']=[
     {'onset':Q,'duration':Q,'pitch':60,'lyrics':'br'},
     {'onset':2*Q,'duration':2*Q,'pitch':60,'lyrics':'啊'},
     {'onset':3*Q,'duration':2*Q,'pitch':64,'lyrics':'哈'}]
-out,r=styles.apply_style(source,'power_pop',pitch_enabled=True,track_indices=[0])
-assert not r['pitch_changed'] and r['pitch']['status']=='skipped'
-assert out['tracks'][0]['mainGroup']['parameters']['pitchDelta']==source['tracks'][0]['mainGroup']['parameters']['pitchDelta']
+for preset in ('power_pop','chinese_opera'):
+    out,r=styles.apply_style(source,preset,pitch_enabled=True,track_indices=[0])
+    assert not r['pitch_changed'] and r['pitch']['status']=='skipped'
+    assert out['tracks'][0]['mainGroup']['parameters']['pitchDelta']==source['tracks'][0]['mainGroup']['parameters']['pitchDelta']
 
 source=project();source['tracks'][0]['mainGroup']['parameters']['pitchDelta']['points']=[0,1199.,10*Q,1199.]
 out,r=styles.apply_style(source,'power_pop',pitch_enabled=True,track_indices=[0],strength=1.)

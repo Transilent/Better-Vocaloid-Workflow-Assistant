@@ -353,7 +353,16 @@
     "选区内没有音符，请选择有音符的范围。": "The selection contains no notes. Choose a range that contains notes.",
     "片段边界已对齐完整音符。": "Segment boundaries aligned to complete notes.",
     "片段边界位于音符内部，请拖动边缘重新对齐。": "A segment boundary falls inside a note. Drag the edge to realign the boundary.",
-    "无法保持完整音符且不与相邻片段重叠，请调整范围。": "The range cannot preserve complete notes without overlapping an adjacent segment. Adjust the range."
+    "无法保持完整音符且不与相邻片段重叠，请调整范围。": "The range cannot preserve complete notes without overlapping an adjacent segment. Adjust the range.",
+    "唱腔": "Singing technique",
+    "原唱法": "Original technique",
+    "中文戏腔〔实验〕": "Chinese Opera [Experimental]",
+    "戏腔": "Opera",
+    "唱腔强度": "Technique strength",
+    "戏腔倚滑与收腔": "Opera slides and phrase endings",
+    "字头倚滑、音间衔接、长音展开与收腔；可与所选风格组合，保留原有颤音。": "Onset slides, note-to-note connections, sustained-tone expansion, and phrase endings; combines with the selected style and preserves existing vibrato.",
+    "开启后添加局部音高装饰；关闭后只调整戏腔音色。": "When on, adds local pitch ornaments; when off, adjusts only the Chinese opera timbre.",
+    "请先选择风格或唱腔。": "Select a style or singing technique first."
   },
   "ja": {
     "界面语言": "表示言語",
@@ -709,6 +718,15 @@
     "选区内没有音符，请选择有音符的范围。": "選択範囲に音符がありません。音符を含む範囲を選択してください。",
     "片段边界已对齐完整音符。": "セグメント境界を完全な音符に合わせました。",
     "片段边界位于音符内部，请拖动边缘重新对齐。": "セグメント境界が音符の途中にあります。端をドラッグして境界を合わせ直してください。",
-    "无法保持完整音符且不与相邻片段重叠，请调整范围。": "完全な音符を保ち、かつ隣接するセグメントと重ならない範囲にできません。範囲を調整してください。"
+    "无法保持完整音符且不与相邻片段重叠，请调整范围。": "完全な音符を保ち、かつ隣接するセグメントと重ならない範囲にできません。範囲を調整してください。",
+    "唱腔": "歌唱法",
+    "原唱法": "元の歌唱法",
+    "中文戏腔〔实验〕": "中国戯曲唱法〔実験〕",
+    "戏腔": "戯曲唱法",
+    "唱腔强度": "歌唱法の強さ",
+    "戏腔倚滑与收腔": "戯曲唱法の滑音とフレーズ終止",
+    "字头倚滑、音间衔接、长音展开与收腔；可与所选风格组合，保留原有颤音。": "音頭の滑音、音間のつなぎ、ロングトーンの展開とフレーズ終止。選択したスタイルと組み合わせられ、既存のビブラートを保持します。",
+    "开启后添加局部音高装饰；关闭后只调整戏腔音色。": "オンにすると局所的なピッチ装飾を追加します。オフにすると戯曲唱法の音色のみを調整します。",
+    "请先选择风格或唱腔。": "先にスタイルまたは歌唱法を選択してください。"
   }
 }

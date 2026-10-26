@@ -20,7 +20,7 @@ import json
 import math
 from pathlib import Path
 
-VERSION = 5
+VERSION = 6
 PRESETS = {
     'none': {'label': '保留原表现', 'controls': {}},
     'gentle': {'label': '柔和〔实验〕', 'pitch_default': True,
@@ -41,6 +41,14 @@ PRESETS = {
                           'sustain_arc': {'loudness': .40, 'tension': .025, 'breathiness': -.015}},
         'controls': {'loudness': (3.6, 1.4, .4), 'tension': (.34, .20, .04),
                      'breathiness': (-.12, -.05, -.01)}},
+    # A separate technique layer; never offered as an emotion card. The
+    # handwritten ornament candidate retains native/baked vibrato and score.
+    'chinese_opera': {'label': '中文戏腔〔实验〕', 'category': 'singing_technique', 'pitch_default': True,
+        'description': '字头倚滑、音间衔接、长音展开与收腔；可与所选风格组合，保留原有颤音。',
+        'note_envelope': {'onset': .16, 'release': .26,
+                          'sustain_arc': {'loudness': 1.1, 'tension': .09, 'breathiness': -.025}},
+        'controls': {'loudness': (.7, .5, -1.4), 'tension': (.13, .16, -.06),
+                     'breathiness': (-.10, -.08, .04)}},
     # Stored task/CLI IDs retain their original recipes. Only canonical IDs
     # are offered for new selections; loading an old UI choice is explicit.
     'soft_ballad': {'label': '柔和抒情〔实验〕', 'controls': {
@@ -101,6 +109,20 @@ def detail_settings(value=None):
     return result
 
 
+def technique_settings(options):
+    """Independent manual ornament layer; old settings default to no technique."""
+    if not isinstance(options,dict):raise ValueError('唱腔设置必须为对象。')
+    technique=options.get('style_technique','none')
+    strength=options.get('technique_strength',.6)
+    pitch=options.get('technique_pitch',True)
+    if not isinstance(technique,str) or technique not in ('none','chinese_opera'):
+        raise ValueError('唱腔预设无效。')
+    if type(strength) not in (int,float) or not math.isfinite(strength) or not 0<=strength<=1:
+        raise ValueError('唱腔强度应为 0–100%。')
+    if type(pitch) is not bool:raise ValueError('唱腔音高开关必须为布尔值。')
+    return {'style_technique':technique,'technique_strength':float(strength),'technique_pitch':pitch}
+
+
 def time_range_settings(value):
     if (not isinstance(value, (list, tuple)) or len(value) != 2
             or any(type(v) not in (int, float) or not math.isfinite(v) for v in value)
@@ -119,16 +141,25 @@ def region_settings(value=None):
         raise ValueError('风格时间片段过多。')
     regions = []
     for row in value:
-        if (not isinstance(row, dict) or set(row)-{'start','end','preset','strength','detail','pitch'}
-                or row.get('preset') not in ('gentle', 'sad', 'bold')):
+        if (not isinstance(row, dict) or set(row)-{'start','end','preset','strength','detail','pitch',
+                'technique','technique_strength','technique_pitch'}):
+            raise ValueError('风格时间片段格式无效。')
+        technique=technique_settings({'style_technique':row.get('technique','none'),
+            'technique_strength':row.get('technique_strength',.6),'technique_pitch':row.get('technique_pitch',True)})
+        if row.get('preset') not in ('gentle','sad','bold') and not (
+                row.get('preset')=='none' and technique['style_technique']!='none'):
             raise ValueError('风格时间片段格式无效。')
         start, end = time_range_settings((row.get('start'), row.get('end')))
         preset = row['preset']
         strength = settings({'performance_style':preset,'style_strength':row.get('strength',.6),
                              'style_pitch':row.get('pitch',pitch_default(preset))})[1]
-        regions.append({'start':start,'end':end,'preset':preset,'strength':strength,
+        item={'start':start,'end':end,'preset':preset,'strength':strength,
                         'detail':detail_settings(row.get('detail')),
-                        'pitch':row.get('pitch',pitch_default(preset))})
+                        'pitch':row.get('pitch',pitch_default(preset))}
+        if technique['style_technique']!='none':
+            item.update(technique=technique['style_technique'],technique_strength=technique['technique_strength'],
+                        technique_pitch=technique['technique_pitch'])
+        regions.append(item)
     regions.sort(key=lambda r:(r['start'],r['end']))
     if any(b['start'] < a['end'] for a,b in zip(regions,regions[1:])):
         raise ValueError('风格时间片段不能重叠。')

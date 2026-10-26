@@ -14,8 +14,9 @@ sys.path.insert(0, str(APP))
 from PyQt5.QtCore import QEvent,QPoint,QPointF,QRect,QTimer,Qt
 from PyQt5.QtGui import QMouseEvent
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication,QDoubleSpinBox,QLabel,QProgressBar,QWidget
+from PyQt5.QtWidgets import QApplication,QCheckBox,QComboBox,QDoubleSpinBox,QLabel,QProgressBar,QWidget
 from ui_components import AdaptiveColumns,FlowLayout,StyleTimeline
+from strength_control import StrengthControl,set_combo_strength
 import tuning_ui
 from style_presets import pitch_default,visible_presets
 os.environ['BVWA_TESTING'] = '1'
@@ -66,6 +67,15 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
     assert '声线（柔和）' in style_card_description('gentle')
     assert tuple(page.style_detail) == ('onset', 'sustain', 'connection', 'release')
     assert page.style_detail_toggle.text() == '分段细调' and not page.style_detail_toggle.isChecked()
+    assert isinstance(page.style_technique,QComboBox)
+    assert isinstance(page.technique_strength,QComboBox)
+    assert isinstance(page.technique_pitch,QCheckBox)
+    assert isinstance(page.region_technique_strength,StrengthControl)
+    assert page.region_technique_choice.combo is page.style_technique
+    assert page.region_technique_strength.combo is page.technique_strength
+    assert [page.style_technique.itemData(i) for i in range(page.style_technique.count())] == ['none','chinese_opera']
+    technique_defaults={'style_technique':'none','technique_strength':.6,'technique_pitch':True}
+    assert {key:page.preferences()[key] for key in technique_defaults}==technique_defaults
     assert [page.style_mode.itemData(i) for i in range(page.style_mode.count())] == ['whole', 'regions']
     assert isinstance(page.style_timeline, StyleTimeline)
     assert isinstance(page.region_editor_entry,QWidget) and page.region_editor_entry.isHidden()
@@ -209,7 +219,8 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
     assert page.expression_density_choice.combo is page.expression_density
     for name in ('reference_dynamics', 'reference_tension', 'reference_breathiness', 'reference_voicing',
                  'dynamics_strength', 'expression_density', 'performance_style', 'style_strength',
-                 'style_scope', 'style_pitch', 'calibration_enabled', 'calibration_file',
+                 'style_scope', 'style_pitch', 'style_technique', 'technique_strength', 'technique_pitch',
+                 'calibration_enabled', 'calibration_file',
                  'calibration_choose', 'calibration_probes'):
         assert getattr(owner, name) is getattr(page, name)
 
@@ -455,8 +466,17 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
         assert release_page._region_dialog is not None
         release_page.style_strength_spin.setValue(61)
         for key,amount in first_detail.items():release_page.style_detail[key].spin.setValue(amount*100)
-        release_page.style_pitch.setChecked(True);application.processEvents()
-        assert release_page._new_region_tool['performance_style']=='gentle'
+        release_page.style_pitch.setChecked(True)
+        release_page.style_technique.setCurrentIndex(
+            release_page.style_technique.findData('chinese_opera'))
+        set_combo_strength(release_page.technique_strength,.58)
+        release_page.technique_pitch.setChecked(True)
+        release_page.performance_style.setCurrentIndex(
+            release_page.performance_style.findData('none'));application.processEvents()
+        assert release_page._region_tool_intent=='new'
+        assert (release_page.performance_style.currentData(),release_page.style_technique.currentData(),
+                release_page.technique_strength.currentData(),release_page.technique_pitch.isChecked())==(
+                'none','chinese_opera',.58,True)
 
         timeline=release_page.style_timeline;canvas=timeline._canvas
         bar=timeline._view.horizontalScrollBar();vertical=timeline._view.verticalScrollBar()
@@ -487,9 +507,13 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
         complete_first=timeline.complete_note_range(*drawn)
         assert len(release_page.style_regions)==1
         first=copy.deepcopy(release_page.style_regions[0])
-        assert first['preset']=='gentle'
+        assert first['preset']=='none'
         assert abs(first['strength']-.61)<1e-12
         assert first['detail']==first_detail and first['pitch'] is True
+        assert set(first)=={'start','end','preset','strength','detail','pitch',
+                           'technique','technique_strength','technique_pitch'}
+        first_technique=(first['technique'],first['technique_strength'],first['technique_pitch'])
+        assert first_technique==('chinese_opera',.58,True)
         assert abs(first['start']-complete_first[0])<1e-9
         assert abs(first['end']-complete_first[1])<1e-9
         # The list may stay highlighted after drawing, but the active tool still
@@ -502,12 +526,15 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
             release_page.performance_style.findData('sad'))
         release_page.style_strength_spin.setValue(72)
         for key,amount in second_detail.items():release_page.style_detail[key].spin.setValue(amount*100)
-        release_page.style_pitch.setChecked(False);application.processEvents()
+        release_page.style_pitch.setChecked(False)
+        set_combo_strength(release_page.technique_strength,.83)
+        release_page.technique_pitch.setChecked(False);application.processEvents()
         assert release_page._region_tool_intent=='new'
         assert release_page.style_regions==[first]
         assert release_page._new_region_tool=={
             'performance_style':'sad','style_strength':.72,
-            'style_detail':second_detail,'style_pitch':False}
+            'style_detail':second_detail,'style_pitch':False,
+            'style_technique':'chinese_opera','technique_strength':.83,'technique_pitch':False}
         assert not release_page._region_autosave_timer.isActive()
 
         drawn=draw_region(.54,.62)
@@ -517,6 +544,10 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
         second=copy.deepcopy(release_page.style_regions[1])
         assert second['preset']=='sad' and abs(second['strength']-.72)<1e-12
         assert second['detail']==second_detail and second['pitch'] is False
+        assert (second['technique'],second['technique_strength'],second['technique_pitch'])==(
+            'chinese_opera',.83,False)
+        assert (release_page.style_regions[0]['technique'],release_page.style_regions[0]['technique_strength'],
+                release_page.style_regions[0]['technique_pitch'])==first_technique
         assert abs(second['start']-complete_second[0])<1e-9
         assert abs(second['end']-complete_second[1])<1e-9
         assert release_page._region_tool_intent=='new'
@@ -547,6 +578,8 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
         assert reloaded.style_strength.currentData()==.72
         assert reloaded.preferences()['style_detail']==second_detail
         assert not reloaded.style_pitch.isChecked()
+        assert (reloaded.style_technique.currentData(),reloaded.technique_strength.currentData(),
+                reloaded.technique_pitch.isChecked())==('chinese_opera',.83,False)
 
         # Numeric and grip edits are user-visible and therefore also expand to
         # whole notes. Targets inside the second note must remain unchanged.
@@ -562,16 +595,18 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
         # retained independently and restored by the dedicated new-region button.
         reloaded.select_style_region(0)
         assert reloaded._region_tool_intent=='edit'
-        assert reloaded.performance_style.currentData()=='gentle'
-        reloaded.style_strength_spin.setValue(74)
+        assert reloaded.performance_style.currentData()=='none'
+        reloaded.region_technique_strength.spin.setValue(74)
         reloaded.style_detail['sustain'].spin.setValue(41)
         reloaded.style_pitch.setChecked(False)
         assert reloaded._region_autosave_timer.isActive()
         QTest.qWait(220);application.processEvents()
         edited_first=copy.deepcopy(reloaded.style_regions[0])
-        assert edited_first['preset']=='gentle'
-        assert abs(edited_first['strength']-.74)<1e-12
+        assert edited_first['preset']=='none'
+        assert edited_first['strength']==first['strength']
+        assert abs(edited_first['technique_strength']-.74)<1e-12
         assert edited_first['detail']['sustain']==.41 and edited_first['pitch'] is False
+        assert edited_first['technique']==first_technique[0] and edited_first['technique_pitch']==first_technique[2]
         assert reloaded.style_regions[1]==second
         assert reloaded._new_region_tool['performance_style']=='sad'
         assert reloaded.new_region_button.text()=='新建下一段'
@@ -583,6 +618,8 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
         assert reloaded.style_strength.currentData()==.72
         assert reloaded.preferences()['style_detail']==second_detail
         assert not reloaded.style_pitch.isChecked()
+        assert (reloaded.style_technique.currentData(),reloaded.technique_strength.currentData(),
+                reloaded.technique_pitch.isChecked())==('chinese_opera',.83,False)
 
         # The public raw API remains compatible with old callers. User-facing
         # add/update paths align those raw ranges to full notes.
@@ -614,4 +651,4 @@ with tempfile.TemporaryDirectory(prefix='vwa-tuning-frontend-') as temp:
         for item in (release_page,reloaded):
             item.close();item.deleteLater();application.processEvents()
 
-print('PASS: responsive tuning grid, next-region intent, whole-note draw/numeric/grip/add/update boundaries, independent draft tools, 12px untracked-label progress, actual stage messages, terminal caps, late-signal protection and receipt gate contracts')
+print('PASS: responsive tuning grid, independent opera technique controls, next-region intent, whole-note draw/numeric/grip/add/update boundaries, independent draft tools, 12px untracked-label progress, actual stage messages, terminal caps, late-signal protection and receipt gate contracts')

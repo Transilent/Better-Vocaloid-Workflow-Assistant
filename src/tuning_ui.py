@@ -44,6 +44,8 @@ _TUNING_STAGE_KEYS=tuple(key for key,_ in _TUNING_STAGE_TITLES)
 _TUNING_STAGE_INDEX={key:index for index,(key,_) in enumerate(_TUNING_STAGE_TITLES)}
 _STYLE_CARD_KINDS={'gentle':'声线（柔和）','sad':'情绪（悲伤）',
                    'bold':'演唱表现（明亮欢快）'}
+_TECHNIQUE_FIELDS=('style_technique','technique_strength','technique_pitch')
+_REGION_TOOL_FIELDS=('performance_style','style_strength','style_detail','style_pitch')+_TECHNIQUE_FIELDS
 
 
 def style_card_keys():
@@ -416,6 +418,21 @@ class TuningPage(QWidget):
         self.style_strength_control=self.style_strength_choice
         self.style_strength_slider=self.style_strength_choice.slider;self.style_strength_spin=self.style_strength_choice.spin
         style_strength_label.setBuddy(self.style_strength_spin)
+        technique_panel=QWidget();technique_area=QVBoxLayout(technique_panel)
+        technique_area.setContentsMargins(0,4,0,0);technique_area.setSpacing(8)
+        self.style_technique=combo([(_tr('原唱法'),'none'),(_tr('中文戏腔〔实验〕'),'chinese_opera')])
+        self.style_technique.setProperty('stylePresetChoices',True)
+        self.technique_choice=choice(self.style_technique,columns=2,compact=True);technique_area.addWidget(self.technique_choice)
+        self.technique_hint=label(_tr('字头倚滑、音间衔接、长音展开与收腔；可与所选风格组合，保留原有颤音。'),'muted')
+        technique_area.addWidget(self.technique_hint)
+        technique_area.addWidget(label(_tr('唱腔强度'),'muted'))
+        self.technique_strength=combo(strength_choices((.3,.6,.85,1.)))
+        set_combo_strength(self.technique_strength,.6)
+        self.technique_strength_choice=StrengthControl(self.technique_strength);technique_area.addWidget(self.technique_strength_choice)
+        self.technique_pitch=QCheckBox(_tr('戏腔倚滑与收腔'));self.technique_pitch.setChecked(True)
+        self.technique_pitch.setToolTip(_tr('开启后添加局部音高装饰；关闭后只调整戏腔音色。'))
+        technique_area.addWidget(self.technique_pitch)
+        self.technique_toggle=fold(_tr('唱腔'),technique_panel,style_area)
         region_tools=QWidget();tools=QVBoxLayout(region_tools);tools.setContentsMargins(0,0,0,0);tools.setSpacing(8)
         editor_header=QHBoxLayout();self.region_tool_context=label(_tr('下一段设置'),'card-title')
         editor_header.addWidget(self.region_tool_context);editor_header.addStretch(1)
@@ -430,6 +447,14 @@ class TuningPage(QWidget):
         self.region_style_choice=ChoiceGroup(self.performance_style,columns=4,compact=True);tools.addWidget(self.region_style_choice)
         tools.addWidget(label(_tr('片段强度'),'muted'))
         self.region_strength_choice=StrengthControl(self.style_strength);tools.addWidget(self.region_strength_choice)
+        tools.addWidget(label(_tr('唱腔'),'muted'))
+        self.region_technique_choice=ChoiceGroup(self.style_technique,columns=2,compact=True);tools.addWidget(self.region_technique_choice)
+        tools.addWidget(label(_tr('唱腔强度'),'muted'))
+        self.region_technique_strength=StrengthControl(self.technique_strength);tools.addWidget(self.region_technique_strength)
+        self.region_technique_pitch=QCheckBox(_tr('戏腔倚滑与收腔'));self.region_technique_pitch.setChecked(True)
+        self.region_technique_pitch.setToolTip(self.technique_pitch.toolTip());tools.addWidget(self.region_technique_pitch)
+        self.region_technique_pitch.toggled.connect(self.technique_pitch.setChecked)
+        self.technique_pitch.toggled.connect(self.region_technique_pitch.setChecked)
         region_layout.insertWidget(0,region_tools)
         scope_label=label(_tr('风格适用范围'),'muted');style_area.addWidget(scope_label)
         self.style_scope=combo([(_tr('首条演唱轨'), 'lead'), (_tr('全部演唱轨'), 'all_vocals'), (_tr('自定义轨道'), 'custom')])
@@ -451,6 +476,11 @@ class TuningPage(QWidget):
         detail_layout.addWidget(label(_tr('切换风格时保留当前四段系数。'),'muted'))
         self.style_detail_panel=detail_panel
         self.style_detail_toggle=fold(_tr('分段细调'),detail_panel,style_area)
+        fold_index=style_area.indexOf(self.technique_toggle)
+        style_area.removeWidget(self.technique_toggle);style_area.removeWidget(self.style_detail_toggle)
+        folded_tools=QHBoxLayout();folded_tools.setSpacing(18)
+        folded_tools.addWidget(self.technique_toggle);folded_tools.addWidget(self.style_detail_toggle);folded_tools.addStretch(1)
+        style_area.insertLayout(fold_index,folded_tools)
         style_area.addWidget(label(_tr('曲线密度'),'muted'))
         self.expression_density=combo([(_tr('加密采样 · 保留原点和形状'), 'dense'), (_tr('保留原始采样'), 'original')])
         self.expression_density_choice=choice(self.expression_density,columns=2,compact=True);style_area.addWidget(self.expression_density_choice)
@@ -488,6 +518,7 @@ class TuningPage(QWidget):
         body.addStretch()
         self._choice_views=(self.mode_choice,self.dynamics_strength_choice,self.style_mode_choice,self.performance_style_choice,
             self.style_strength_choice,self.region_style_choice,self.region_strength_choice,
+            self.technique_choice,self.technique_strength_choice,self.region_technique_choice,self.region_technique_strength,
             self.style_scope_choice,self.expression_density_choice)
 
         self.action_footer=QWidget();self.action_footer.setObjectName('footer');footer=QVBoxLayout(self.action_footer)
@@ -516,7 +547,8 @@ class TuningPage(QWidget):
         # Compatibility aliases preserve stored preferences and the calibration
         # dialog API without binding the tuning input to preparation's job.
         for name in ('reference_dynamics','reference_tension','reference_breathiness','reference_voicing','dynamics_strength',
-                     'expression_density','performance_style','style_strength','style_scope','style_pitch','calibration_enabled',
+                     'expression_density','performance_style','style_strength','style_scope','style_pitch',
+                     'style_technique','technique_strength','technique_pitch','calibration_enabled',
                      'calibration_file','calibration_choose','calibration_probes'):
             setattr(owner,name,getattr(self,name))
         from workflow import read_state
@@ -525,13 +557,15 @@ class TuningPage(QWidget):
         self._new_region_tool=self._region_tool_values()
         self.mode.currentIndexChanged.connect(self.refresh)
         self.performance_style.currentIndexChanged.connect(self.style_selected)
+        self.style_technique.currentIndexChanged.connect(self.refresh)
         self.style_mode.currentIndexChanged.connect(self.style_mode_selected)
         self.calibration_enabled.toggled.connect(self.calibration_toggle)
         self.jobs.currentIndexChanged.connect(self.show_job_projects)
         self.style_scope.currentIndexChanged.connect(self.select_scope)
-        for field in (self.expression_density,self.dynamics_strength,self.style_strength):field.currentIndexChanged.connect(self.persist)
+        for field in (self.expression_density,self.dynamics_strength,self.style_strength,self.technique_strength):field.currentIndexChanged.connect(self.persist)
         for name in ('dynamics','tension','breathiness','voicing'):getattr(self,'reference_'+name).toggled.connect(self.persist)
         self.style_pitch.toggled.connect(self.persist)
+        self.technique_pitch.toggled.connect(self.persist)
         self._sync_choices();self._update_session_context();self._reset_result_panel()
         self.loading=False;self.reload_jobs();self.refresh()
         # Keep the recent path without implicitly restoring the session.
@@ -690,7 +724,7 @@ class TuningPage(QWidget):
 
     def _region_tool_values(self):
         values=self.preferences()
-        return {key:deepcopy(values[key]) for key in ('performance_style','style_strength','style_detail','style_pitch')}
+        return {key:deepcopy(values[key]) for key in _REGION_TOOL_FIELDS}
 
     def _refresh_region_tool_context(self):
         editing=self._region_tool_intent=='edit'
@@ -724,7 +758,7 @@ class TuningPage(QWidget):
               'style_regions':deepcopy(self.style_regions),'mode':self.style_mode.currentData(),
               'selection':self.style_timeline.selection(),'selected_index':self.region_list.currentRow(),
               'track_indices':self._selected_track_indices(),
-              'tool':{key:values[key] for key in ('performance_style','style_strength','style_detail','style_pitch')},
+              'tool':{key:values[key] for key in _REGION_TOOL_FIELDS},
               'editor_intent':self._region_tool_intent,'next_tool':deepcopy(self._new_region_tool or self._region_tool_values())}
         identity=(self._style_input_sha256,json.dumps(data,ensure_ascii=False,sort_keys=True))
         try:
@@ -742,7 +776,7 @@ class TuningPage(QWidget):
             if path.stat().st_size>1024*1024:raise ValueError('Oversized style draft')
             data=json.loads(path.read_text(encoding='utf-8-sig'))
             if not isinstance(data,dict) or data.get('schema_version')!=1 or data.get('input_sha256')!=self._style_input_sha256:return False
-            from style_presets import region_settings,time_range_settings,detail_settings
+            from style_presets import region_settings,time_range_settings,detail_settings,technique_settings
             regions=region_settings(data.get('style_regions',[]))
             mode=data.get('mode');row=data.get('selected_index',-1);selection=data.get('selection')
             if mode not in ('whole','regions'):raise ValueError('Invalid draft mode')
@@ -752,12 +786,14 @@ class TuningPage(QWidget):
             if not isinstance(tool,dict) or tool.get('performance_style') not in ('none','gentle','sad','bold'):raise ValueError('Invalid draft tool')
             if normalized_strength(tool.get('style_strength')) is None or type(tool.get('style_pitch')) is not bool:raise ValueError('Invalid draft strength')
             detail_settings(tool.get('style_detail'))
+            tool.update(technique_settings(tool))
             next_tool=data.get('next_tool',tool);intent=data.get('editor_intent','new')
             if intent not in ('new','edit') or not isinstance(next_tool,dict):raise ValueError('Invalid draft intent')
             if next_tool.get('performance_style') not in ('none','gentle','sad','bold') or normalized_strength(next_tool.get('style_strength')) is None:
                 raise ValueError('Invalid next style tool')
             if type(next_tool.get('style_pitch')) is not bool:raise ValueError('Invalid next style pitch')
             detail_settings(next_tool.get('style_detail'))
+            next_tool.update(technique_settings(next_tool))
             tracks=data.get('track_indices',self._selected_track_indices())
             allowed={item['track_index'] for item in self.rows}
             if not isinstance(tracks,list) or any(type(i) is not int or i not in allowed for i in tracks) or len(tracks)!=len(set(tracks)):
@@ -767,7 +803,7 @@ class TuningPage(QWidget):
         self._loading_style_draft=True
         try:
             for item in self.rows:item['check'].setChecked(item['track_index'] in tracks)
-            self.apply_preferences({key:tool[key] for key in ('performance_style','style_strength','style_detail','style_pitch') if key in tool})
+            self.apply_preferences({key:tool[key] for key in _REGION_TOOL_FIELDS if key in tool})
             self._replace_style_regions(regions,select_index=row,reset_history=True)
             self._style_mode_selected(mode)
             self._new_region_tool=deepcopy(next_tool)
@@ -834,8 +870,8 @@ class TuningPage(QWidget):
                     0<.025-(bounds[1]-bounds[0])<1e-12):
                 bounds=(float(bounds[0]),math.nextafter(float(bounds[1]),math.inf))
             start,end=time_range_settings(bounds)
-            if self.performance_style.currentData() not in ('gentle','sad','bold'):
-                self._save_style_draft();self._set_region_draft_status(_tr('选区已暂存，请先选择风格。'));return
+            if not self._has_style_layer():
+                self._save_style_draft();self._set_region_draft_status(_tr('请先选择风格或唱腔。'));return
             creating=self._region_tool_intent=='new'
             candidate=self._region_from_tool(start,end);row=-1 if creating else self.region_list.currentRow()
             rows=deepcopy(self.style_regions)
@@ -901,7 +937,7 @@ class TuningPage(QWidget):
         if self.processing_active or self.style_mode.currentData()!='regions' or self._style_timeline_data is None:return
         if self._region_dialog is not None:
             self._region_dialog.raise_();self._region_dialog.activateWindow();return
-        if self.performance_style.currentData()=='none':self.performance_style.setCurrentIndex(self.performance_style.findData('gentle'))
+        if not self._has_style_layer():self.performance_style.setCurrentIndex(self.performance_style.findData('gentle'))
         dialog=QDialog(self.window());dialog.setWindowTitle(_tr('风格片段编辑器'))
         outer=QVBoxLayout(dialog);outer.setContentsMargins(12,12,12,12);outer.setSpacing(8)
         header=QHBoxLayout();title=label(_tr('风格片段编辑器'));header.addWidget(title);header.addStretch(1)
@@ -1062,16 +1098,27 @@ class TuningPage(QWidget):
 
     def _region_from_tool(self,start,end):
         style=self.performance_style.currentData()
-        if style not in ('gentle','sad','bold'):raise ValueError('时间片段需要选择“柔和”“悲伤”或“明亮欢快”。')
+        if not self._has_style_layer():raise ValueError(_tr('请先选择风格或唱腔。'))
         values=self.preferences()
-        return {'start':float(start),'end':float(end),'preset':style,
+        result={'start':float(start),'end':float(end),'preset':style,
                 'strength':float(self.style_strength.currentData()),'detail':dict(values['style_detail']),
                 'pitch':bool(self.style_pitch.isChecked())}
+        if values['style_technique']!='none':
+            result.update(technique=values['style_technique'],technique_strength=values['technique_strength'],
+                          technique_pitch=values['technique_pitch'])
+        return result
+
+    def _has_style_layer(self):
+        return self.performance_style.currentData() in ('gentle','sad','bold') or self.style_technique.currentData()=='chinese_opera'
 
     def _region_item_text(self,region):
-        label=style_card_label(region['preset'])
-        pitch=_tr('含附加音高') if region['pitch'] else _tr('仅音色')
-        return f"{region['start']:.3f}–{region['end']:.3f} s · {label} · {percent_text(region['strength'])} · {pitch}"
+        label=style_card_label(region['preset'])+' '+percent_text(region['strength'])
+        if region.get('technique')=='chinese_opera':
+            label=(label+' · ' if region['preset']!='none' else '')+_tr('戏腔')+' '+percent_text(region['technique_strength'])
+        has_pitch=(region['preset']!='none' and region['pitch']) or (
+            region.get('technique')=='chinese_opera' and region.get('technique_pitch',True))
+        pitch=_tr('含附加音高') if has_pitch else _tr('仅音色')
+        return f"{region['start']:.3f}–{region['end']:.3f} s · {label} · {pitch}"
 
     def _render_style_regions(self,select_index=None):
         current=self.region_list.currentRow() if select_index is None else select_index
@@ -1081,7 +1128,7 @@ class TuningPage(QWidget):
             for region in self.style_regions:
                 text=self._region_item_text(region);self.region_list.addItem(text)
                 item=self.region_list.item(self.region_list.count()-1);item.setToolTip(text)
-                swatch=QPixmap(16,16);swatch.fill(style_preset_color(region['preset']));item.setIcon(QIcon(swatch))
+                swatch=QPixmap(16,16);swatch.fill(style_preset_color(region.get('technique',region['preset'])));item.setIcon(QIcon(swatch))
             if 0<=current<len(self.style_regions):self.region_list.setCurrentRow(current)
         finally:self.region_list.blockSignals(blocked)
         self.region_summary.setText(_tr('已添加 {0} 个时间片段；最多 128 个。',len(self.style_regions)) if self.style_regions else _tr('尚未添加时间片段。'))
@@ -1111,7 +1158,7 @@ class TuningPage(QWidget):
         busy=self.processing_active
         has_project=self._style_timeline_data is not None and bool(self.rows)
         selection=self._style_selection_range()
-        style=self.performance_style.currentData() in ('gentle','sad','bold')
+        style=self._has_style_layer()
         row=self.region_list.currentRow()
         has_row=0<=row<len(self.style_regions)
         self.style_mode.setEnabled(not busy)
@@ -1144,6 +1191,9 @@ class TuningPage(QWidget):
             set_combo_strength(self.style_strength,region['strength'])
             for key,amount in region['detail'].items():self.style_detail[key].set_percent(amount*100.)
             self.style_pitch.setChecked(region['pitch'] is True)
+            self.style_technique.setCurrentIndex(self.style_technique.findData(region.get('technique','none')))
+            set_combo_strength(self.technique_strength,region.get('technique_strength',.6))
+            self.technique_pitch.setChecked(region.get('technique_pitch',True))
             self._style_migration_source=None
         finally:self._restoring_preferences=restoring
         self._refresh_style_hint();self._sync_choices();self._update_region_controls()
@@ -1300,8 +1350,10 @@ class TuningPage(QWidget):
 
     def _refresh_style_hint(self):
         current=self.performance_style.currentData()
-        if hasattr(self,'style_timeline'):self.style_timeline.set_selection_style(current)
+        technique=self.style_technique.currentData()=='chinese_opera'
+        if hasattr(self,'style_timeline'):self.style_timeline.set_selection_style('chinese_opera' if technique else current)
         text=style_card_description(current)
+        if technique:text+='\n'+_tr('字头倚滑、音间衔接、长音展开与收腔；可与所选风格组合，保留原有颤音。')
         source=getattr(self,'_style_migration_source',None)
         if isinstance(source,str) and ui_merged_preset(source)==current:
             old_label=style_card_label(source)
@@ -1321,9 +1373,9 @@ class TuningPage(QWidget):
             requested_style=values.get('performance_style',self.performance_style.currentData())
             if not isinstance(requested_style,str) or not _style_is_selectable(requested_style):requested_style=self.performance_style.currentData()
             visible_style=ui_merged_preset(requested_style)
-            for name in ('dynamics_strength','expression_density','performance_style','style_strength','style_scope'):
+            for name in ('dynamics_strength','expression_density','performance_style','style_strength','style_scope','style_technique','technique_strength'):
                 field=getattr(self,name);value=visible_style if name=='performance_style' else values.get(name,field.currentData())
-                if name in ('dynamics_strength','style_strength'):
+                if name in ('dynamics_strength','style_strength','technique_strength'):
                     if normalized_strength(value) is not None:set_combo_strength(field,value)
                 elif field.findData(value)>=0:field.setCurrentIndex(field.findData(value))
             if 'performance_style' in values:
@@ -1333,6 +1385,7 @@ class TuningPage(QWidget):
             for name in ('reference_dynamics','reference_tension','reference_breathiness','reference_voicing','style_pitch'):
                 default=style_pitch_default(requested_style) if name=='style_pitch' else False
                 getattr(self,name).setChecked(values.get(name,default) is True)
+            self.technique_pitch.setChecked(values.get('technique_pitch',self.technique_pitch.isChecked()) is True)
         finally:
             self._restoring_preferences=restoring
         self._refresh_style_hint()
@@ -1345,12 +1398,12 @@ class TuningPage(QWidget):
 
     def preferences(self):
         from style_presets import detail_settings
-        names=('dynamics_strength','expression_density','performance_style','style_strength','style_scope')
+        names=('dynamics_strength','expression_density','performance_style','style_strength','style_scope','style_technique','technique_strength')
         values={name:getattr(self,name).currentData() for name in names}
         # Scope is a shortcut for new inputs. Explicit track_indices own a
         # custom selection in the execution/session contract.
         if values['style_scope']=='custom':values['style_scope']='lead'
-        values.update({name:getattr(self,name).isChecked() for name in ('reference_dynamics','reference_tension','reference_breathiness','reference_voicing','style_pitch')})
+        values.update({name:getattr(self,name).isChecked() for name in ('reference_dynamics','reference_tension','reference_breathiness','reference_voicing','style_pitch','technique_pitch')})
         values['style_detail']=detail_settings({key:float(editor.value())/100. for key,editor in self.style_detail.items()})
         return values
 
@@ -1375,7 +1428,13 @@ class TuningPage(QWidget):
         if mapped and self.tracks.columnWidth(0)<300:self.tracks.setColumnWidth(0,300)
         style=self.performance_style.currentData()!='none'
         self.style_strength.setEnabled(style);self.style_pitch.setEnabled(style);self.style_scope.setEnabled(True)
-        detail_enabled=style and not self.processing_active
+        technique=self.style_technique.currentData()!='none'
+        self.style_technique.setEnabled(not self.processing_active)
+        self.technique_strength.setEnabled(technique and not self.processing_active)
+        self.technique_pitch.setEnabled(technique and not self.processing_active)
+        self.region_technique_pitch.setEnabled(technique and not self.processing_active)
+        self.technique_hint.setVisible(technique)
+        detail_enabled=(style or technique) and not self.processing_active
         self.style_detail_toggle.setEnabled(detail_enabled);self.style_detail_panel.setEnabled(detail_enabled)
         for editor in self.style_detail.values():editor.setEnabled(detail_enabled)
         self.style_region_panel.setVisible(self.style_mode.currentData()=='regions')
@@ -1603,7 +1662,9 @@ class TuningPage(QWidget):
             self.set_input(inspect_project(path.parent/spec['input_file']),job=spec.get('job'),display_path=spec['source']);self.session=path;self.result=None;self._update_session_context();self._reset_result_panel()
             options=path.parent/'last-options.json'
             if options.is_file():
-                values=json.loads(options.read_text(encoding='utf-8'));self.apply_preferences(values)
+                values=json.loads(options.read_text(encoding='utf-8'))
+                from style_presets import technique_settings
+                values.update(technique_settings(values));self.apply_preferences(values)
                 self.mode.setCurrentIndex(self.mode.findData(values['expression_mode']));self.calibration_file.setText(values.get('reference_calibration') or '')
                 retained=values.get('retained_sources',[])
                 self.retained_project.setText(values.get('retained_project') or (retained[0]['project'] if retained else ''))
@@ -1654,7 +1715,8 @@ class TuningPage(QWidget):
             self._run_outcome='running';self.run_state.setText(_tr('正在生成调音工程'));self.run_stage.setText(_tr('正在准备工程…'))
             self.progress_detail.setText(_tr('正在准备工程…'));self.status.setText(_tr('正在生成独立调音工程…'));self._set_progress('running')
             style_regions=options.get('style_regions') or []
-            if not style_regions and (options.get('performance_style')=='none' or options.get('style_strength',0)<=0):self._set_stage('style','skipped')
+            if not style_regions and (options.get('performance_style')=='none' or options.get('style_strength',0)<=0) and (
+                    options['style_technique']=='none' or options['technique_strength']<=0):self._set_stage('style','skipped')
             self._sync_choices();self.open_button.setEnabled(False);self.register_button.setEnabled(False);self.stop_button.setEnabled(True)
             self.worker=TuningWorker(self.session,options,self);self.worker.message.connect(self._worker_message)
             self.worker.succeeded.connect(self.completed);self.worker.failed.connect(self._failed);self.worker.finished.connect(self.finished);self.worker.start()

@@ -124,7 +124,7 @@ with tempfile.TemporaryDirectory(prefix='style-presets-',dir=APP/'work') as fold
 
 # Canonical cards use note-local envelopes. Old IDs still execute their
 # original recipes; only the explicit UI mapping changes.
-assert styles.VERSION==5
+assert styles.VERSION==6
 assert styles.visible_presets()==('none','gentle','sad','bold')
 assert styles.PRESETS['gentle']['note_envelope']=={'onset':.14,'release':.22,'sustain_arc':{'loudness':.65,'tension':.04,'breathiness':-.015}}
 assert styles.PRESETS['gentle']['controls']=={'loudness':(-3.2,-.8,-2.4),'tension':(-.36,-.10,-.26),'breathiness':(.20,.03,.20),'voicing':(-.04,0.,-.08)}
@@ -144,6 +144,34 @@ assert styles.detail_settings({'onset':.625})=={'onset':.625,'sustain':1.,'conne
 for invalid in ([],False,{'unknown':.5},{'onset':True},{'sustain':float('nan')},{'release':1.01}):
     try:styles.detail_settings(invalid);raise AssertionError(invalid)
     except ValueError:pass
+
+# Technique settings and regions remain explicit, while an old region keeps its
+# original six-field receipt verbatim.
+assert styles.technique_settings({})=={'style_technique':'none','technique_strength':.6,'technique_pitch':True}
+assert styles.technique_settings({'style_technique':'chinese_opera','technique_strength':.35,'technique_pitch':False})=={
+    'style_technique':'chinese_opera','technique_strength':.35,'technique_pitch':False}
+assert styles.region_settings([{'start':.2,'end':.7,'preset':'gentle'}])[0]=={
+    'start':.2,'end':.7,'preset':'gentle','strength':.6,'detail':dict(styles.DETAIL_DEFAULTS),'pitch':True}
+assert styles.region_settings([{'start':.2,'end':.7,'preset':'none','technique':'chinese_opera',
+    'technique_strength':.35,'technique_pitch':False}])[0]=={
+    'start':.2,'end':.7,'preset':'none','strength':.6,'detail':dict(styles.DETAIL_DEFAULTS),'pitch':False,
+    'technique':'chinese_opera','technique_strength':.35,'technique_pitch':False}
+for invalid in ({'style_technique':None},{'style_technique':'unknown'},{'technique_strength':None},{'technique_strength':True},{'technique_strength':float('nan')},
+                {'technique_strength':-0.01},{'technique_strength':1.01},{'technique_pitch':None},{'technique_pitch':1}):
+    try:styles.technique_settings(invalid);raise AssertionError(invalid)
+    except ValueError:pass
+try:
+    styles.region_settings([{'start':.2,'end':.7,'preset':'none'}]);raise AssertionError('Technique-free none region accepted')
+except ValueError:pass
+source=project();frozen_technique=copy.deepcopy(source)
+solo,technique_receipt=styles.apply_style(source,'chinese_opera',strength=.45,track_indices=[0],
+    pitch_enabled=False,density_mode='original')
+assert source==frozen_technique
+assert technique_receipt['category']=='singing_technique' and technique_receipt['preset']=='chinese_opera'
+assert technique_receipt['status']=='applied' and not technique_receipt['pitch_changed']
+assert solo['tracks'][0]['mainGroup']['parameters']['pitchDelta']==source['tracks'][0]['mainGroup']['parameters']['pitchDelta']
+assert solo['tracks'][0]['mainGroup']['notes']==source['tracks'][0]['mainGroup']['notes']
+assert solo['tracks'][1:]==source['tracks'][1:]
 
 for preset in ('gentle','sad','bold'):
     out,r=styles.apply_style(original,preset,track_indices=[0],density_mode='original',pitch_enabled=False)

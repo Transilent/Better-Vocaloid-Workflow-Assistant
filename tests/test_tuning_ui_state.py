@@ -320,6 +320,7 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
     expected={
         'start':.05,'end':.35,'preset':'sad','strength':.625,
         'detail':detail,'pitch':False}
+    assert set(expected)=={'start','end','preset','strength','detail','pitch'}
     with patch.multiple(tuning_ui,ROOT=draft_root,workspace_state=draft_state), \
             patch.dict(os.environ,{'VWA_TESTING':'','BVWA_TESTING':''}):
         first=TuningPage(window)
@@ -331,27 +332,37 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
                                  'style_pitch':False,'style_detail':detail})
         first.stage_style_selection((expected['start'],expected['end']))
         assert first.style_regions==[expected] and first.region_list.currentRow()==0
+        assert first._region_tool_intent=='new'
+        first.style_technique.setCurrentIndex(first.style_technique.findData('chinese_opera'))
+        first.technique_strength_choice.spin.setValue(70)
+        first.technique_pitch.setChecked(True)
+        assert first.style_regions==[expected]
         first._flush_style_autosave()
         source_sha=first._style_input_sha256
         draft_path=draft_root/'cache/style-region-drafts'/(source_sha+'.json')
         assert draft_path.is_file()
         payload=json.loads(draft_path.read_text(encoding='utf-8'))
+        full_payload=draft_path.read_bytes()
         assert set(payload)=={'schema_version','input_sha256','style_regions','mode',
                               'selection','selected_index','tool','track_indices','editor_intent','next_tool'}
         assert payload['schema_version']==1 and payload['input_sha256']==source_sha
         assert payload['style_regions']==[expected] and payload['mode']=='regions'
         assert payload['track_indices']==[0,1,2] and payload['selected_index']==0
         assert payload['selection']==[expected['start'],expected['end']]
-        assert payload['tool']['performance_style']=='sad'
-        assert payload['tool']['style_strength']==.625
-        assert payload['tool']['style_pitch'] is False
-        assert payload['tool']['style_detail']==detail
-        assert payload['editor_intent']=='new' and payload['next_tool']==payload['tool']
+        saved_tool={'performance_style':'sad','style_strength':.625,'style_pitch':False,
+                    'style_detail':detail,'style_technique':'chinese_opera',
+                    'technique_strength':.7,'technique_pitch':True}
+        assert payload['tool']==saved_tool
+        assert payload['editor_intent']=='new' and payload['next_tool']==saved_tool
 
         # Version-one drafts predating the explicit next-tool fields remain
         # readable and start in new-segment intent without rewriting a region.
         legacy_payload=copy.deepcopy(payload)
         legacy_payload.pop('editor_intent');legacy_payload.pop('next_tool')
+        for key in ('style_technique','technique_strength','technique_pitch'):
+            legacy_payload['tool'].pop(key)
+        legacy_tool={**saved_tool,'style_technique':'none',
+                     'technique_strength':.6,'technique_pitch':True}
         atomic_json(draft_path,legacy_payload)
 
         # Reopening the same input restores all draft-owned state, including
@@ -367,12 +378,19 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
         assert not second.style_pitch.isChecked()
         assert second.preferences()['style_detail']==expected['detail']
         assert second._region_undo==[] and second._region_redo==[]
-        assert second._region_tool_intent=='new' and second._new_region_tool==payload['tool']
+        assert second._region_tool_intent=='new' and second._new_region_tool==legacy_tool
+        assert (second.style_technique.currentData(),second.technique_strength.currentData(),
+                second.technique_pitch.isChecked())==('none',.6,True)
+        assert second.style_regions==[expected]
         second._flush_style_autosave()
+        normalized=json.loads(draft_path.read_text(encoding='utf-8'))
+        assert normalized['tool']==legacy_tool and normalized['next_tool']==legacy_tool
+        draft_path.write_bytes(full_payload)
+        assert second._restore_style_draft() and second._new_region_tool==saved_tool
 
         # A different project gets a different SHA and starts clean without
         # replacing the first project's draft.
-        original_payload=draft_path.read_bytes()
+        original_payload=full_payload
         assert second.load_project(draft_other)
         assert second._selected_track_indices()==[0]
         assert second.style_mode.currentData()=='regions' and second.style_regions==[]
@@ -401,6 +419,21 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
         # and its available history.
         third._restore_style_draft()
         assert third.style_regions==[expected]
+        assert third._new_region_tool==saved_tool
+        assert (third.style_technique.currentData(),third.technique_strength.currentData(),
+                third.technique_pitch.isChecked())==('chinese_opera',.7,True)
+        # An ordinary six-field region owns the editor while selected. The next
+        # tool keeps the opera settings and restores them through the explicit
+        # new-region action.
+        third.select_style_region(0)
+        assert third._region_tool_intent=='edit'
+        assert (third.style_technique.currentData(),third.technique_strength.currentData(),
+                third.technique_pitch.isChecked())==('none',.6,True)
+        assert third.style_regions==[expected]
+        third.new_region_button.click();application.processEvents()
+        assert third._region_tool_intent=='new'
+        assert (third.style_technique.currentData(),third.technique_strength.currentData(),
+                third.technique_pitch.isChecked())==('chinese_opera',.7,True)
         third.select_style_region(0)
         third.performance_style.setCurrentIndex(third.performance_style.findData('bold'))
         third.style_strength_spin.setValue(74)
@@ -411,6 +444,7 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
         QTest.qWait(220);application.processEvents()
         assert not third._region_autosave_timer.isActive()
         changed=third.style_regions[0]
+        assert set(changed)=={'start','end','preset','strength','detail','pitch'}
         assert changed['preset']=='bold' and abs(changed['strength']-.74)<1e-12
         assert changed['detail']['sustain']==.41
         third._flush_style_autosave()
@@ -476,4 +510,4 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
 
     page_root_patch.stop()
 window.close();application.processEvents()
-print('PASS: project-specific style drafts restore same-SHA regions/tracks/tool, isolate projects, ignore corrupt cache, autosave with undo and flush on close')
+print('PASS: project-specific drafts restore opera tool state, default missing technique fields, close opera for ordinary regions and isolate projects, ignore corrupt cache, autosave with undo and flush on close')

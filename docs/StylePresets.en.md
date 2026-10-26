@@ -239,3 +239,34 @@ application's numeric recipes.
 Option and numeric inputs ignore wheel changes, even while focused. The wheel
 still scrolls pages and browses combo lists without committing a selection;
 mouse clicks and keyboard selection remain available.
+
+## Chinese opera first version
+
+**Singing technique** is independent of the **Gentle**, **Sad**, and **Bright &
+Cheerful** styles. It can be combined with any of those styles or selected on its
+own. In time-segment mode, a segment can use a style, a singing technique, or
+both; an opera-only segment is valid and can be drawn directly.
+
+**Technique strength** sets the size of this layer separately from style
+strength. The added-pitch switch for **Opera slides and phrase endings** is also
+independent: when on, it adds local pitch ornaments along with the Chinese opera
+timbre; when off, only the timbre direction remains. Both the whole-track choice
+and each time segment keep their own technique, strength, and pitch settings.
+
+Segment drafts are stored separately for each input SVP and restored when that
+input is reopened. Drafting and saving preserve complete-note boundaries, reject
+empty selections, and keep segments non-overlapping. Existing protection also
+remains for selected actual target tracks, short notes, rap/BR material, silence,
+overlapping notes, existing control points, populated nonlinear curves and
+channel headroom. Saving a draft does not change the source SVP; settings apply
+only when a new candidate is generated.
+
+The first version adds bounded onset slides, note connections, sustained-tone
+expansion, and phrase endings. It adds no new vibrato and does not rewrite
+`vibratoEnv`, note vibrato attributes, or existing vibrato. It neither selects
+nor guesses a native voicebank Vocal Mode, and it does not rewrite pronunciation
+or lyrics. The recipes are hand-authored audition candidates. They have not been
+synthesized or auditioned in this release, and structural protection or a
+successful report does not establish listening quality. Audition the result with
+the chosen voicebank. This feature does not promise faithful reproduction of a
+specific opera genre, region, role, or performer.

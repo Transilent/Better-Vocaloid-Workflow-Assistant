@@ -311,6 +311,126 @@ class TuningEngineTests(unittest.TestCase):
         self.assertEqual(lead['retakes'], original['retakes'])
         self.assertEqual(lead['mainGroup']['parameters']['unknownVendor'], original['mainGroup']['parameters']['unknownVendor'])
         self.assertEqual(output['tracks'][1:], frozen['tracks'][1:])
+        self.assertNotIn('technique_id', report['style'])
+        self.assertNotIn('emotion', report['style'])
+        self.assertNotIn('technique', report['style'])
+
+    def test_chinese_opera_composes_with_emotion_and_merges_receipt(self):
+        data = base_project()
+        frozen = copy.deepcopy(data)
+        options = {
+            'expression_mode': 'preserve', 'track_indices': [0],
+            'performance_style': 'gentle', 'style_strength': .7,
+            'style_pitch': False, 'style_technique': 'chinese_opera',
+            'technique_strength': .4, 'technique_pitch': False,
+            'expression_density': 'dense',
+        }
+        with patch('calibration_refinement.finalize_expression',
+                   wraps=calibration_refinement.finalize_expression) as finalizer:
+            output, report = process_project(data, options)
+        self.assertEqual(finalizer.call_count, 1)
+        self.assertEqual(report['stages'], ['primary', 'style', 'density'])
+        self.assertEqual(report['final_density_passes'], 1)
+        self.assertEqual(data, frozen)
+        style = report['style']
+        self.assertEqual(style['preset'], 'gentle')
+        self.assertEqual(style['emotion']['preset'], 'gentle')
+        self.assertEqual(style['technique_id'], 'chinese_opera')
+        self.assertEqual(style['technique']['preset'], 'chinese_opera')
+        self.assertFalse(style['technique']['pitch']['enabled'])
+        parts = (style['emotion'], style['technique'])
+        self.assertEqual(style['applied_controls'], sum(p['applied_controls'] for p in parts))
+        self.assertEqual(style['skipped_controls'], sum(p['skipped_controls'] for p in parts))
+        self.assertEqual(style['pitch_changed'], any(p['pitch_changed'] for p in parts))
+        applied = any(p['status'] in ('applied', 'partial') for p in parts)
+        incomplete = any(p['status'] in ('partial', 'skipped') for p in parts)
+        merged_status = ('partial' if applied and incomplete else 'applied' if applied
+                         else 'skipped' if incomplete else 'not_selected')
+        self.assertEqual(style['status'], merged_status)
+        self.assertFalse(report['pitch_changed'])
+        lead, original = output['tracks'][0], frozen['tracks'][0]
+        self.assertEqual(lead['mainGroup']['parameters']['pitchDelta'],
+                         original['mainGroup']['parameters']['pitchDelta'])
+        self.assertEqual(lead['mainGroup']['notes'], original['mainGroup']['notes'])
+        self.assertEqual(lead['mainGroup']['parameters']['unknownVendor'],
+                         original['mainGroup']['parameters']['unknownVendor'])
+        self.assertEqual(lead['mainRef'], original['mainRef'])
+        self.assertEqual(lead['retakes'], original['retakes'])
+        self.assertEqual(output['tracks'][1:], frozen['tracks'][1:])
+
+    def test_chinese_opera_only_zero_strength_skips_layer_and_defaults_are_compatible(self):
+        data = base_project()
+        frozen = copy.deepcopy(data)
+        defaults = settings({})
+        self.assertEqual((defaults['style_technique'], defaults['technique_strength'],
+                          defaults['technique_pitch']), ('none', .6, True))
+        selected = settings({'style_technique': 'chinese_opera', 'technique_strength': .35,
+                             'technique_pitch': False})
+        self.assertEqual((selected['style_technique'], selected['technique_strength'],
+                          selected['technique_pitch']), ('chinese_opera', .35, False))
+        zero = {'track_indices': [0], 'performance_style': 'none',
+                'style_technique': 'chinese_opera', 'technique_strength': 0.,
+                'technique_pitch': False, 'expression_density': 'original'}
+        with (patch('style_presets.apply_style', side_effect=AssertionError('zero technique invoked')),
+              patch('calibration_refinement.finalize_expression',
+                    wraps=calibration_refinement.finalize_expression) as finalizer):
+            output, report = process_project(data, zero)
+        self.assertEqual(finalizer.call_count, 1)
+        self.assertEqual(data, frozen)
+        self.assertEqual(output, frozen)
+        self.assertEqual(report['style']['status'], 'not_selected')
+        self.assertNotIn('technique_id', report['style'])
+        output, report = process_project(data, {
+            'track_indices': [0], 'performance_style': 'none',
+            'style_technique': 'chinese_opera', 'technique_strength': .4,
+            'technique_pitch': False, 'expression_density': 'original'})
+        self.assertEqual(data, frozen)
+        style = report['style']
+        self.assertEqual(style['preset'], 'none')
+        self.assertEqual(style['technique_id'], 'chinese_opera')
+        self.assertEqual(style['technique']['preset'], 'chinese_opera')
+        self.assertFalse(style['technique']['pitch']['enabled'])
+        self.assertNotEqual(output['tracks'][0]['mainGroup']['parameters']['loudness'],
+                            frozen['tracks'][0]['mainGroup']['parameters']['loudness'])
+
+    def test_chinese_opera_region_receipt_is_local_and_keeps_unknowns(self):
+        import numpy as np
+        from vocal_expression import TempoMap
+        data = base_project()
+        frozen = copy.deepcopy(data)
+        bounds = (.2, .7)
+        output, report = process_project(data, {
+            'track_indices': [0], 'style_regions': [{
+                'start': bounds[0], 'end': bounds[1], 'preset': 'none',
+                'technique': 'chinese_opera', 'technique_strength': .35,
+                'technique_pitch': False}],
+            'expression_density': 'original'})
+        self.assertEqual(data, frozen)
+        self.assertEqual(report['style']['mode'], 'regions')
+        row = report['style']['regions'][0]
+        self.assertEqual(row['preset'], 'none')
+        self.assertEqual(row['technique_id'], 'chinese_opera')
+        self.assertEqual(row['technique']['preset'], 'chinese_opera')
+        self.assertNotIn('technique_id', row['technique'])
+        technique_row = row['technique']['tracks'][0]
+        clock = TempoMap(data['time']['tempo'])
+        offset = data['tracks'][0]['mainRef']['blickOffset']
+        for name, state in technique_row['controls'].items():
+            self.assertEqual(state['status'], 'applied')
+            from style_presets import CONTROLS
+            old = frozen['tracks'][0]['mainGroup']['parameters'].get(name,{'points':[0,CONTROLS[name][2]]})['points']
+            new = output['tracks'][0]['mainGroup']['parameters'][name]['points']
+            xs = np.asarray(new[::2])
+            times = np.array([clock.to_seconds(float(position) + offset) for position in xs])
+            difference = np.asarray(new[1::2]) - np.interp(xs, old[::2], old[1::2])
+            outside = (times <= bounds[0] + 1e-10) | (times >= bounds[1] - 1e-10)
+            self.assertLess(np.max(abs(difference[outside]), initial=0.), 1e-9)
+            self.assertGreater(np.max(abs(difference), initial=0.), 0.)
+        lead, original = output['tracks'][0], frozen['tracks'][0]
+        self.assertEqual(lead['mainGroup']['notes'], original['mainGroup']['notes'])
+        self.assertEqual(lead['mainGroup']['parameters']['unknownVendor'],
+                         original['mainGroup']['parameters']['unknownVendor'])
+        self.assertEqual(output['tracks'][1:], frozen['tracks'][1:])
 
     def test_emotion_defaults_jointly_process_pitch_and_timbre_with_one_density_pass(self):
         for preset in ('sad','melancholy','bright_joy','fragile_tender'):

@@ -9,12 +9,13 @@ import workflow
 
 
 TONAL_KEYS=('reference_dynamics','dynamics_strength','reference_tension','reference_breathiness',
-            'reference_voicing','expression_density','performance_style','style_strength','style_scope','style_pitch','style_detail')
+            'reference_voicing','expression_density','performance_style','style_strength','style_scope','style_pitch','style_detail',
+            'style_technique','technique_strength','technique_pitch')
 
 
 def _owner_tuning_preferences(owner):
     from workflow import DEFAULT_OPTIONS
-    from style_presets import PRESETS,detail_settings
+    from style_presets import PRESETS,detail_settings,technique_settings
     result={key:DEFAULT_OPTIONS[key] for key in TONAL_KEYS}
     for key in ('reference_dynamics','reference_tension','reference_breathiness','reference_voicing','style_pitch'):
         field=getattr(owner,key,None)
@@ -33,6 +34,7 @@ def _owner_tuning_preferences(owner):
         result[key]=min(1.,max(0.,value))
     tuning=getattr(owner,'tuning',None)
     result['style_detail']=detail_settings(tuning.preferences().get('style_detail') if tuning is not None else None)
+    result.update(technique_settings(tuning.preferences() if tuning is not None else {}))
     return result
 
 
