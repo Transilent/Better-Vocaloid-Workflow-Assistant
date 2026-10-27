@@ -1,12 +1,24 @@
 # VWA 本机 Agent / MCP 接口
 
-本文按当前 `workspace/vwa` 工作树中的 `src/agent_mcp.py`、`agent_control.py`、`agent_workflow.py` 及其他已落盘模块，说明 **55 个 stdio 工具**。工具总数由 `agent_control.TOOLS` 和 MCP 注册表共同核对；实际可用工具、代码身份和格式能力仍以 `vwa_system_capabilities().data.tools`、`code_revision` 及真实业务回执为准。
+本文按当前 `workspace/vwa` 工作树中的 `src/agent_mcp.py`、`agent_control.py`、`agent_workflow.py` 及其他已落盘模块，说明 **59 个 stdio 工具**。工具总数由 `agent_control.TOOLS` 和 MCP 注册表共同核对；实际可用工具、代码身份和格式能力仍以 `vwa_system_capabilities().data.tools`、`code_revision` 及真实业务回执为准。
 
 `vwa_assets_import` 也可导入授权目录内的伴奏 WAV，支持整数 PCM 与浮点 WAV，按流式摘要生成独立快照；其 artifact 可用于 `instrumental_artifact_id`。`vwa_reference_import(kind="audio")` 用于整数 PCM 参考测量与摘录，不能用它替代浮点伴奏导入。伴奏首版上限为 2 GiB。
 
 逐段风格汇总遵守现有引擎的全局目标轨语义：一次生成可为一个演唱轨逐段设置风格，其余演唱轨逐段选择保留原表现。不同轨道的独立分段风格不会被静默合并到所有轨道；这种请求返回 `segmented_multi_track_style`，应拆成独立生成轮次。
 
-本文是接口契约，不是整套功能的验收报告。2026-10-27《牵丝戏》真实歌曲复盘建立在历史 45 工具版本上，暴露了跨音高短重叠、导出后无法换入修正 MIDI、风格相邻边界误判、长任务轮询、返回载荷过大、伴奏缺失和交付无统一清单等问题。本文纳入当前源码中对应的接口；这些新增路径是否已在新版本中完成真实整曲复跑，必须以新的绑定回执为准。本文不声称当前 55 工具已经通过完整真实歌曲试测，也不包含声库适配、合成、试听或声学发音验收。
+本文是接口契约，不是整套功能的验收报告。2026-10-27《牵丝戏》真实歌曲复盘建立在历史 45 工具版本上，暴露了跨音高短重叠、导出后无法换入修正 MIDI、风格相邻边界误判、长任务轮询、返回载荷过大、伴奏缺失和交付无统一清单等问题。新版本各路径以对应源码身份的回执为准；复用已修正 MIDI 的生成与交付验证不等于重新完成整曲转写、声库适配、合成、试听或声学发音验收。
+
+## 带时间轴歌词作为校准参考
+
+`vwa_lyric_timeline_search(query, limit=10, offset=0)` 搜索网易云的歌曲元数据；先核对歌手、原唱／翻唱、专辑与时长，再用 `vwa_lyric_timeline_fetch(song_id_or_url)` 取得独立快照。只访问固定网易云域名，不需账号。返回摘要包含 `granularity`、行／词元数量、来源与警告，不向 Agent 默认返回全曲歌词。版权署名行不当成演唱歌词。
+
+也可通过 `vwa_lyric_timeline_import(path)` 导入授权目录内的 LRC、YRC 或网易云原始 JSON（最多 4 MiB）。原文快照与规范时间轴分别保留摘要。YRC 保留真正的词元起止和多字词元；LRC 只提供行起点，行末由下一行推算并标为 estimated，末句句尾未知。不会平均分配每字时间。LRC offset 保留为元数据及警告，由 Agent 记录并显式选择 `lyrics_time_origin`；不猜偏移方向。
+
+将 `lyrics_artifact_id`、`lyrics_time_origin` 和 `lyric_version_note` 传给 `vwa_workflow_references_set`，同时写清 `rationale`。映射是 `MIDI秒 = 歌词源秒 + lyrics_time_origin`；版本说明必填，未核实项应明确说明。更换参考会清除旧的分段核对决策。之后 `vwa_workflow_review` 自动给当前段加 `reference_evidence.lyrics_timeline`；独立 `vwa_lyric_timeline_review` 必须显式提供最多 30 秒的 start/end 窗口。
+
+唯一同文 YRC 词元可给出音符起点差值，但它是候选证据，不能把歌词词时长直接当音符时长。重复字、同文重叠音符、延音标记保留歧义，LRC 不生成逐字偏移；所有比较均为 `automatic_patch=false`。Agent 结合 F0、音频、发音和上下文后，只通过当前段的正常修改与再读确认流程修正。
+
+2026-10-27 实际查询歌曲 `30352891`（银临／Aki阿杰，《牵丝戏》，239.302 秒），取得 30 行 LRC，未取得 YRC。来源视频音频为 241.045 秒，不能仅按时长差推算整体偏移。逐字功能另用自制 YRC 验证，不能报告该真实歌曲已有逐字时间。接口可用性和逐字覆盖随来源变化；失败时可使用离线文件导入。
 
 MCP 是可选运行环境；VWA GUI 和推理 Python 不需要安装 MCP SDK。服务不提供发布、账号导出、任意命令执行或平台投稿能力。
 

@@ -37,6 +37,7 @@ TOOLS = (
     'vwa_workflow_rebind_score','vwa_workflow_close','vwa_workflow_archive','vwa_workflow_clone',
     'vwa_workflow_delivery',
     'vwa_workflow_style_review','vwa_workflow_style_decide',
+    'vwa_lyric_timeline_search','vwa_lyric_timeline_fetch','vwa_lyric_timeline_import','vwa_lyric_timeline_review',
 )
 TERMINAL = ('succeeded', 'failed', 'cancelled', 'interrupted')
 CODE_FILES = ('agent_control.py', 'agent_worker.py', 'agent_score.py', 'agent_style.py',
@@ -44,6 +45,7 @@ CODE_FILES = ('agent_control.py', 'agent_worker.py', 'agent_score.py', 'agent_st
               'style_drafts.py','agent_drafts.py','agent_pronunciation.py','agent_refinement.py',
               'agent_errors.py','agent_monophony.py','agent_media.py','agent_views.py','agent_delivery.py',
               'agent_segments.py','agent_segment_workflow.py',
+              'agent_lyric_timeline.py','lyrics_sources.py','subtitles.py',
               'pitch_accuracy.py',
               'agent_preparation.py', 'agent_lyrics.py', 'agent_exports.py', 'agent_workflow.py',
               'pipeline.py', 'project_exports.py', 'midi_merge.py', 'task_contract.py',
@@ -239,6 +241,8 @@ class Control:
                 'score_patch_formats': ['midi'], 'lyric_patch_formats': ['midi'], 'style_formats': ['svp'],
                 'note_structure_operations':['insert','delete'],
                 'reference_inputs':['existing_pitch_npz','pcm_wav'],
+                'lyric_timeline_inputs':['netease_lrc','netease_yrc_if_available','local_lrc_yrc_json'],
+                'lyric_timeline_validation':'external_reference_only_not_note_duration_truth',
                 'reference_inference':False,'post_export_review_required':True,
                 'independent_export_seconds_audit':True,
                 'pronunciation_read_formats':['midi','svp','vsqx'],
@@ -507,7 +511,8 @@ class Control:
                           'export_plan', 'review_bundle', 'structure_plan', 'reference_validate',
                           'reference_pitch_review', 'reference_audio_read', 'pronunciation_read',
                           'pronunciation_plan','draft_read','draft_publish','draft_plan',
-                          'preparation_reuse_plan','preparation_reuse_create','segment_plan','style_segment_context','media_validate'):
+                          'preparation_reuse_plan','preparation_reuse_create','segment_plan','style_segment_context','media_validate',
+                          'lyric_timeline_search','lyric_timeline_fetch','lyric_timeline_parse','lyric_timeline_review'):
             raise ControlError('unsupported_action', '不支持该业务调用。')
         directory = safe_path(self.state / 'calls' / uuid.uuid4().hex)
         directory.mkdir()
@@ -639,6 +644,60 @@ class Control:
         if artifact['bytes']>MAX_SCORE:
             raise ControlError('too_large','工程超过32MiB音素读取限制。')
         return self.call_worker('pronunciation_read',{'path':artifact['path'],'limit':limit,'offset':offset})
+
+    def lyric_timeline_search(self,query,limit=10,offset=0):
+        if not isinstance(query,str) or not query.strip() or len(query)>120:
+            raise ControlError('invalid_query','歌词来源搜索需1–120字符。')
+        if type(limit) is not int or not 1<=limit<=20 or type(offset) is not int or offset<0:
+            raise ControlError('invalid_page','搜索limit为1–20，offset非负。')
+        return self.call_worker('lyric_timeline_search',{'query':query,'limit':limit,'offset':offset})
+
+    def _store_lyric_timeline(self,result):
+        raw=result['raw'].encode('utf-8');raw_sha=hashlib.sha256(raw).hexdigest()
+        source=safe_path(self.state/'inputs'/(raw_sha+'.'+result['raw_format']))
+        with file_lock(self.state/'locks'/'imports.lock'):
+            if io_path(source).exists():
+                if file_hash(source)!=raw_sha:raise ControlError('snapshot_conflict','原始歌词快照已改变。')
+            else:
+                temporary=source.with_name('.lyrics-'+uuid.uuid4().hex+'.tmp')
+                try:
+                    io_path(temporary).write_bytes(raw);os.replace(io_path(temporary),io_path(source))
+                finally:io_path(temporary).unlink(missing_ok=True)
+        trace=self.register_artifact(source,kind='lyric_source',origin=result.get('origin'))
+        document=result['timeline']
+        if len(json.dumps(document,ensure_ascii=False,indent=2).encode('utf-8'))>4*1024**2:
+            raise ControlError('too_large','规范歌词时间轴超过4MiB，请按片段拆分来源。')
+        normalized_sha=digest(document)
+        target=safe_path(self.state/'inputs'/(normalized_sha+'.timeline.json'))
+        self._immutable(target,document)
+        artifact=self.register_artifact(target,kind='reference_lyric_timeline',
+            origin={**result.get('origin',{}),'raw_artifact_id':trace['id'],'raw_sha256':raw_sha})
+        lines=document.get('lines',[])
+        return {**artifact,'summary':{'granularity':document.get('granularity'),'line_count':len(lines),
+            'word_count':sum(len(line.get('words',[])) for line in lines),'origin':document.get('origin'),
+            'warnings':document.get('warnings',[]),'raw_artifact_id':trace['id'],
+            'automatic_patch':False,'reference_only':True}}
+
+    def lyric_timeline_import(self,path):
+        source=safe_path(path,[*self.assets,*self.jobs])
+        if source.suffix.lower() not in ('.lrc','.yrc','.json') or not io_path(source).is_file():
+            raise ControlError('unsupported_lyric_timeline','时间轴来源需为LRC、YRC或网易云JSON。')
+        if io_path(source).stat().st_size>4*1024**2:raise ControlError('too_large','歌词时间轴来源最多4MiB。')
+        result=self.call_worker('lyric_timeline_parse',{'path':str(source)})
+        return self._store_lyric_timeline(result)
+
+    def lyric_timeline_fetch(self,song_id_or_url):
+        return self._store_lyric_timeline(self.call_worker('lyric_timeline_fetch',{'song':song_id_or_url}))
+
+    def lyric_timeline_review(self,score_artifact_id,timeline_artifact_id,time_origin=0.,start=None,end=None,
+                              track_indices=None,limit=20,offset=0):
+        score=self.artifact(score_artifact_id);reference=self.artifact(timeline_artifact_id)
+        if score['bytes']>MAX_SCORE:
+            raise ControlError('too_large','MIDI超过32MiB歌词时间轴复核限制。')
+        if reference['kind']!='reference_lyric_timeline':
+            raise ControlError('wrong_reference_kind','此产物不是歌词时间轴。')
+        return self.call_worker('lyric_timeline_review',{'path':score['path'],'timeline_path':reference['path'],
+            'time_origin':time_origin,'start':start,'end':end,'track_indices':track_indices,'limit':limit,'offset':offset})
 
     def _draft_target(self, artifact_id):
         if self.shared_drafts is None:

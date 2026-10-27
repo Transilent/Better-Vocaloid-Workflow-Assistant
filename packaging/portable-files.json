@@ -588,6 +588,10 @@
     {
       "file": "agent_segment_workflow.py",
       "source": "src/agent_segment_workflow.py"
+    },
+    {
+      "file": "agent_lyric_timeline.py",
+      "source": "src/agent_lyric_timeline.py"
     }
   ]
 }

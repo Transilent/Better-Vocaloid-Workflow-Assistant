@@ -125,6 +125,8 @@ class PronunciationTarget(StrictModel):
 
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+NETWORK_READ=ToolAnnotations(readOnlyHint=True,destructiveHint=False,idempotentHint=False,openWorldHint=True)
+NETWORK_WRITE=ToolAnnotations(readOnlyHint=False,destructiveHint=False,idempotentHint=False,openWorldHint=True)
 
 
 def build_server(config_path):
@@ -139,6 +141,9 @@ def build_server(config_path):
         '用 workflow_apply_review 提交修改或有理由的保留决策；没有实际核对不得跳过。'
         'reference_import 可导入已有F0 NPZ和PCM WAV；workflow_references_set绑定显式对齐秒数，'
         '随后review包含条件性音高证据和音频摘录入口。参考来源未经声学验证，不能视为真值。'
+        '网易云可lyric_timeline_search核对版本，再fetch快照；本地LRC/YRC可import。'
+        'workflow_references_set可绑定lyrics_artifact_id与显式时间偏移，review只给当前段对照。'
+        'LRC只有句级时间时不得伪造逐字时间；YRC存在时才比较逐字，歌词时长不是音符时长。'
         '结构修改可显式插入音符或删除并指定歌词归属策略；未知读音及一字多音仍需判断。'
         'project_ready 时先读 export_summary，按真实秒数/歌词/音符核对结果提交 export_review；'
         'pronunciation_read读取原字及实际写入的音素；unknown/写入事实不表示发音正确。'
@@ -331,6 +336,29 @@ def build_server(config_path):
         """读取 MIDI 歌词与音符/时间关系，保留歧义、孤立歌词和未知读音。"""
         return await invoke(control.lyrics_read, artifact_id, language=language)
 
+    @mcp.tool(annotations=NETWORK_READ)
+    async def vwa_lyric_timeline_search(query: str,limit: int = 10,offset: int = 0) -> Result:
+        """固定网易云来源搜索版本与时长，只返回歌曲元数据；需Agent核对歌曲版本。"""
+        return await invoke(control.lyric_timeline_search,query,limit,offset)
+
+    @mcp.tool(annotations=NETWORK_WRITE)
+    async def vwa_lyric_timeline_fetch(song_id_or_url: str) -> Result:
+        """显式获取网易云歌词时间轴快照，优先保留YRC，缺失则保留LRC句级时间；不回传全曲正文。"""
+        return await invoke(control.lyric_timeline_fetch,song_id_or_url)
+
+    @mcp.tool(annotations=WRITE)
+    async def vwa_lyric_timeline_import(path: str) -> Result:
+        """从授权目录离线导入LRC/YRC/网易云JSON，保留原文摘要和实际时间粒度。"""
+        return await invoke(control.lyric_timeline_import,path)
+
+    @mcp.tool(annotations=READ)
+    async def vwa_lyric_timeline_review(score_artifact_id: str,timeline_artifact_id: str,
+            start: float,end: float,time_origin: float = 0.,track_indices: list[int] | None = None,
+            limit: int = 20,offset: int = 0) -> Result:
+        """仅当前<=30秒窗对照MIDI与外部行/字时间，重复/错版保留歧义，提示不自动修改工程。"""
+        return await invoke(control.lyric_timeline_review,score_artifact_id,timeline_artifact_id,time_origin,
+            start,end,track_indices,limit,offset)
+
     @mcp.tool(annotations=READ)
     async def vwa_lyrics_review(artifact_id: str, reference_text: str | None = None,
                                 language: Literal['zh','ja'] = 'zh') -> Result:
@@ -505,10 +533,12 @@ def build_server(config_path):
     async def vwa_workflow_references_set(workflow_id: str, expected_revision: int, rationale: str,
             pitch_artifact_id: str | None = None, audio_artifact_id: str | None = None,
             track_indices: list[int] | None = None, time_origin: float = 0.0,
-            audio_time_origin: float = 0.0) -> Result:
+            audio_time_origin: float = 0.0,lyrics_artifact_id: str | None = None,
+            lyrics_time_origin: float = 0.,lyric_version_note: str = '') -> Result:
         """替换核对参考及对齐来源；新增证据使已有核对失效，两个ID留空则清除参考。"""
         return await invoke_workflow(workflow().references_set,workflow_id,expected_revision,pitch_artifact_id,
-                            audio_artifact_id,track_indices,time_origin,audio_time_origin,rationale)
+                            audio_artifact_id,track_indices,time_origin,audio_time_origin,rationale,
+                            lyrics_artifact_id,lyrics_time_origin,lyric_version_note)
 
     @mcp.tool(annotations=WRITE)
     async def vwa_workflow_apply_review(workflow_id: str, expected_revision: int, rationale: str,

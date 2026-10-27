@@ -388,6 +388,22 @@ class Workflow:
                         'arguments':{'artifact_id':references['audio_artifact_id'],
                                      'start':start,'end':end,'make_excerpt':True}}
         available = self.control.discover_references(value['job_id']) if value.get('job_id') else []
+        if references.get('lyrics_artifact_id') and page:
+            starts=[row['onset_seconds'] for row in page if row.get('onset_seconds') is not None]
+            ends=[row['end_seconds'] for row in page if row.get('end_seconds') is not None]
+            first=min(starts) if starts else 0.;last=min(max(ends),first+30.) if ends else first
+            if last>first:
+                reference_evidence['lyrics_timeline']=self.control.lyric_timeline_review(artifact['id'],
+                    references['lyrics_artifact_id'],references.get('lyrics_time_origin',0.),first,last,
+                    references.get('track_indices') or ([segment['track_index']] if segment else None),limit,0)
+                reference_evidence['lyrics_timeline']['version_note']=references.get('lyric_version_note','')
+                if detail!='full' and not include_raw_evidence:
+                    timeline=reference_evidence['lyrics_timeline']
+                    timeline.pop('notes',None)
+                    timeline['note_records_in']='evidence.score.notes'
+                    for hint in timeline.get('hints',[]):
+                        for key in ('note_text','note_onset_seconds','automatic_patch','reason'):
+                            hint.pop(key,None)
         result={'workflow_id': identifier, 'revision': value['revision'],
                 'artifact_id': artifact['id'], 'evidence': bundle, 'total_notes': len(notes),
                 'references':references,'reference_evidence':reference_evidence,
@@ -408,10 +424,13 @@ class Workflow:
         return result
 
     def references_set(self, identifier, revision, pitch_artifact_id=None, audio_artifact_id=None,
-                       track_indices=None, time_origin=0.0, audio_time_origin=0.0, rationale=''):
+                       track_indices=None, time_origin=0.0, audio_time_origin=0.0, rationale='',
+                       lyrics_artifact_id=None,lyrics_time_origin=0.,lyric_version_note=''):
         if not isinstance(rationale,str) or not rationale.strip() or len(rationale)>8000:
             raise ControlError('reference_rationale_required','请记录参考来源、对齐依据或清除理由。')
-        for origin in (time_origin,audio_time_origin):
+        if not isinstance(lyric_version_note,str):
+            raise ControlError('lyric_version_note_required','歌词版本核对说明需为文本。')
+        for origin in (time_origin,audio_time_origin,lyrics_time_origin):
             if isinstance(origin,bool) or not isinstance(origin,(int,float)) or not math.isfinite(origin) or abs(origin)>86400:
                 raise ControlError('invalid_time_origin','参考第0帧在MIDI时间中的位置必须是有限秒数。')
         if track_indices is not None and (not isinstance(track_indices,list) or not track_indices
@@ -424,11 +443,18 @@ class Workflow:
             for reference,kind in ((pitch_artifact_id,'reference_pitch'),(audio_artifact_id,'reference_audio')):
                 if reference and self.control.artifact(reference)['kind']!=kind:
                     raise ControlError('wrong_reference_kind','参考产物类型不匹配。')
+            if lyrics_artifact_id:
+                if self.control.artifact(lyrics_artifact_id)['kind']!='reference_lyric_timeline':
+                    raise ControlError('wrong_reference_kind','歌词来源需为已登记的歌词时间轴。')
+                if not isinstance(lyric_version_note,str) or not lyric_version_note.strip() or len(lyric_version_note)>4000:
+                    raise ControlError('lyric_version_note_required','请记录原唱/版本核对和时间偏移依据，未确认的部分应明确说明。')
             if pitch_artifact_id:
                 # Validate scope/alignment against this exact MIDI before accepting the binding.
                 self.control.reference_pitch_review(value['score_artifact_id'],pitch_artifact_id,
                     track_indices,time_origin,1,0)
             references={'pitch_artifact_id':pitch_artifact_id,'audio_artifact_id':audio_artifact_id,
+                'lyrics_artifact_id':lyrics_artifact_id,'lyrics_time_origin':float(lyrics_time_origin),
+                'lyric_version_note':lyric_version_note.strip(),
                 'track_indices':track_indices,'time_origin':float(time_origin),
                 'audio_time_origin':float(audio_time_origin),'rationale':rationale.strip(),
                 'provenance':'caller_supplied_unverified','inference_performed':False}

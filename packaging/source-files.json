@@ -1898,6 +1898,9 @@
     "src/agent_segments.py",
     "src/agent_segment_workflow.py",
     "tests/test_agent_segments.py",
-    "tests/test_agent_segment_workflow.py"
+    "tests/test_agent_segment_workflow.py",
+    "src/agent_lyric_timeline.py",
+    "tests/test_agent_lyric_timeline.py",
+    "tests/test_agent_timeline_integration.py"
   ]
 }
