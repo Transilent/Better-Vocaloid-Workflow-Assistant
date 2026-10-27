@@ -52,7 +52,7 @@ class ControlFixtureTests(unittest.TestCase):
     def _install_fixture_app(self):
         for name in agent_control.CODE_FILES:
             destination = self.app / name
-            if name in ('agent_control.py', 'agent_worker.py'):
+            if name in ('agent_control.py', 'agent_worker.py','agent_errors.py'):
                 shutil.copy2(SRC / name, destination)
             elif name == 'agent_score.py':
                 destination.write_text(
@@ -61,7 +61,7 @@ class ControlFixtureTests(unittest.TestCase):
                     "    return {'fixture': True, 'path': str(path), 'notes': []}\n"
                     "def review_score(path):\n"
                     "    return {'fixture': True, 'path': str(path), 'hints': []}\n"
-                    "def plan_patch(path, expected_sha256, edits):\n"
+                    "def plan_patch(path, expected_sha256, edits, **kwargs):\n"
                     "    return {'fixture': True, 'path': str(path),\n"
                     "            'source_sha256': expected_sha256, 'edits': edits,\n"
                     "            'plan_sha256': '0' * 64}\n",
@@ -69,12 +69,14 @@ class ControlFixtureTests(unittest.TestCase):
             elif name == 'agent_style.py':
                 destination.write_text(
                     "from pathlib import Path\n"
-                    "def read_context(path, track_indices=None):\n"
+                    "def read_context(path, track_indices=None, **kwargs):\n"
                     "    return {'fixture': True, 'path': str(path),\n"
                     "            'track_indices': track_indices}\n"
                     "def plan_style(path, proposal):\n"
                     "    return {'fixture': True, 'path': str(path), 'proposal': proposal}\n",
                     encoding='utf-8')
+            elif name=='agent_preparation.py':
+                destination.write_text('def source_summary(job):\n    return {"fixture":True}\n',encoding='utf-8')
             else:
                 destination.write_text('"""Private control-test fixture."""\n', encoding='utf-8')
         # The worker imports this extra fixture module for genuinely read-only jobs.

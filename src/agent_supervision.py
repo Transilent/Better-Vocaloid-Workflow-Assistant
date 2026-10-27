@@ -135,6 +135,8 @@ def summarize_export(result, source_sha256, operation_id):
             'output_tempo':copy.deepcopy(row.get('output_tempo')),'loss_codes':list(codes)})
         candidate_reports[-1]['pronunciation']=pronunciation.pop((row['format'],row['candidate_sha256']),
             {'status':'unknown','reason':'native_phonemes_not_read','acoustic_verification':False})
+        candidate_reports[-1].update(instrumental_included=row.get('instrumental_included',False),
+            instrumental_reason=row.get('instrumental_reason','not_requested'),media=copy.deepcopy(row.get('media',{})))
         if candidate_reports[-1]['pronunciation'].get('evidence_available') is False:
             warnings.append({'code':'native_phonemes_unavailable','format':row['format'],
                 'message':'此工程的原生读音结构未展开；保留unknown，不能视为读音通过。'})

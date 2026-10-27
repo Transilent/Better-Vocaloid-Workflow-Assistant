@@ -8,7 +8,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
+import tempfile
 from agent_control import ControlError,atomic_json,file_hash,io_path,safe_path
 from agent_exports import candidate_path_for,_publish_exclusive,_existing_file,_digest
 from agent_export_audit import audit_export
@@ -76,6 +78,21 @@ def refine_export(source_path,previous,changes,output_root,*,export_runtime,canc
             if hashlib.sha256(raw).hexdigest()!=receipt['candidate_sha256']:
                 raise ControlError('candidate_mismatch','音素候选摘要不一致。')
             patch_receipts.append(receipt)
+        temporary_media_project=None
+        if old['format']=='svp' and (old.get('instrumental_included') is True or
+                (isinstance(old.get('media'),dict) and old['media'].get('included') is True)):
+            from agent_media import relocate_svp_media
+            descriptor,name=tempfile.mkstemp(prefix='.vwa-refine-',suffix='.svp',dir=io_path(root))
+            temporary_media_project=safe_path(root/Path(name).name,[root])
+            try:
+                with os.fdopen(descriptor,'wb') as stream:
+                    stream.write(raw);stream.flush();os.fsync(stream.fileno())
+                relocate_svp_media(original,temporary_media_project,
+                    allowed_roots=[root,original.parent,Path(document['output_root']).resolve()])
+                raw=io_path(temporary_media_project).read_bytes()
+            finally:
+                try:temporary_media_project.unlink(missing_ok=True)
+                except OSError:pass
         sha=hashlib.sha256(raw).hexdigest()
         target=candidate_path_for(root,document['plan_sha256'],old['format'],sha)
         safe_path(target,[root])
@@ -84,6 +101,19 @@ def refine_export(source_path,previous,changes,output_root,*,export_runtime,canc
             raise ControlError('candidate_collision','重核对候选发生内容碰撞。')
         if existing is None:_publish_exclusive(target,raw)
         row={**old,'candidate_path':str(target),'candidate_sha256':sha,'bytes':len(raw)}
+        if old['format']=='svp':
+            from agent_media import inspect_svp_media
+            included=bool((old.get('media') or {}).get('included')) if isinstance(old.get('media'),dict) else old.get('instrumental_included') is True
+            media=inspect_svp_media(target,allowed_roots=[root],require_relative=True,
+                expected=(old.get('media') if included and isinstance(old.get('media'),dict) else {'included':included}))
+            media['post_publish_readback_verified']=True
+            if media.get('included') and media.get('relative_paths'):
+                media['path']=str(target.parent/media['relative_paths'][0])
+            row.update(instrumental_included=bool(media.get('included')),media=media,
+                instrumental_reason=('included_in_svp_portable_package' if media.get('included') else 'not_requested'))
+        else:
+            row.update(instrumental_included=False,media=None,
+                instrumental_reason=old.get('instrumental_reason','format_not_supported' if document.get('instrumental',{}).get('requested') else 'not_requested'))
         if request:row['loss_codes']=sorted(set(row.get('loss_codes',[])+['explicit_phonemes_unverified']))
         candidates.append(row)
     cancel()

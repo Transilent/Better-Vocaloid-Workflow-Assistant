@@ -33,11 +33,17 @@ TOOLS = (
     'vwa_reference_pitch_review', 'vwa_reference_audio_read', 'vwa_workflow_references_set',
     'vwa_pronunciation_read', 'vwa_pronunciation_patch_plan', 'vwa_pronunciation_patch_apply',
     'vwa_workflow_pronunciation_apply', 'vwa_drafts_get', 'vwa_drafts_publish', 'vwa_drafts_plan',
+    'vwa_operations_wait','vwa_preparation_reuse_plan','vwa_workflows_list',
+    'vwa_workflow_rebind_score','vwa_workflow_close','vwa_workflow_archive','vwa_workflow_clone',
+    'vwa_workflow_delivery',
+    'vwa_workflow_style_review','vwa_workflow_style_decide',
 )
 TERMINAL = ('succeeded', 'failed', 'cancelled', 'interrupted')
 CODE_FILES = ('agent_control.py', 'agent_worker.py', 'agent_score.py', 'agent_style.py',
               'agent_supervision.py', 'agent_export_audit.py', 'agent_reference.py', 'agent_structure.py',
               'style_drafts.py','agent_drafts.py','agent_pronunciation.py','agent_refinement.py',
+              'agent_errors.py','agent_monophony.py','agent_media.py','agent_views.py','agent_delivery.py',
+              'agent_segments.py','agent_segment_workflow.py',
               'pitch_accuracy.py',
               'agent_preparation.py', 'agent_lyrics.py', 'agent_exports.py', 'agent_workflow.py',
               'pipeline.py', 'project_exports.py', 'midi_merge.py', 'task_contract.py',
@@ -46,9 +52,10 @@ CODE_FILES = ('agent_control.py', 'agent_worker.py', 'agent_score.py', 'agent_st
 
 
 class ControlError(ValueError):
-    def __init__(self, code, message):
+    def __init__(self, code, message, details=None):
         super().__init__(message)
         self.code = code
+        if details is not None:self.details=details
 
 
 def io_path(path):
@@ -178,9 +185,9 @@ class Control:
         value = read_json(self.config_path)
         expected = {'schema', 'application_root', 'worker_python', 'state_root',
                     'allowed_asset_roots', 'allowed_job_roots', 'source_commit', 'export_runtime',
-                    'shared_draft_root'}
+                    'shared_draft_root','allowed_delivery_roots'}
         if (value.get('schema') != SCHEMA or set(value) - expected
-                or (expected - {'source_commit', 'export_runtime','shared_draft_root'}) - set(value)):
+                or (expected - {'source_commit', 'export_runtime','shared_draft_root','allowed_delivery_roots'}) - set(value)):
             raise ControlError('invalid_config', 'MCP 配置版本或字段不受支持。')
         if (not isinstance(value['allowed_asset_roots'], list)
                 or not isinstance(value['allowed_job_roots'], list)
@@ -197,6 +204,14 @@ class Control:
         self.state = safe_path(value['state_root'])
         self.assets = [safe_path(p) for p in value['allowed_asset_roots']]
         self.jobs = [safe_path(p) for p in value['allowed_job_roots']]
+        delivery=value.get('allowed_delivery_roots',[])
+        if not isinstance(delivery,list) or any(not isinstance(p,str) or not p for p in delivery):
+            raise ControlError('invalid_config','交付授权目录需为路径列表。')
+        for p in delivery:
+            target=safe_path(p)
+            if not io_path(target).is_dir():raise ControlError('invalid_roots','交付授权目录必须存在。')
+            if target==self.app or target.is_relative_to(self.app) or self.app.is_relative_to(target):
+                raise ControlError('invalid_roots','交付目录不能覆盖应用目录。')
         self.shared_drafts = safe_path(value['shared_draft_root']) if value.get('shared_draft_root') else None
         if self.shared_drafts is not None:
             if io_path(self.shared_drafts).exists() and not io_path(self.shared_drafts).is_dir():
@@ -230,6 +245,12 @@ class Control:
                 'pronunciation_patch_formats':['svp','vsqx'],
                 'pronunciation_validation':'written_evidence_only_not_acoustic',
                 'shared_gui_drafts':self.shared_drafts is not None,'shared_draft_cas':True,
+                'bounded_wait_ms':60000,'workflow_lifecycle':['list','rebind_score','clone','close','archive'],
+                'default_review_mode':'segments','review_segment_limits':{'max_notes':16,'window_seconds':10.,
+                    'split_at_silence_seconds':.65,'complete_long_notes_preserved':True},
+                'instrumental_export_formats':['svp'],'portable_delivery':True,
+                'supports_duet_singer_separation':False,
+                'voice_modes':{'single':'混合人声＋伴奏','dual':'主唱＋和声／伴奏人声；不是按歌手音色分离'},
                 'preparation_sources': ['bilibili_bv_url', 'approved_local_audio'],
                 'supervision': 'caller_agent_reviews_notes_and_lyrics_before_export',
                 'workflow_entry': 'vwa_workflow_create', 'workflow_next_steps': True,
@@ -292,6 +313,7 @@ class Control:
 
     def import_asset(self, path):
         path = safe_path(path, [*self.assets, *self.jobs])
+        if path.suffix.lower()=='.wav':return self.import_instrumental(path)
         if not io_path(path).is_file() or path.suffix.lower() not in ('.mid', '.midi', '.svp'):
             raise ControlError('unsupported_asset', '首版仅导入 MIDI 和 SVP 工程。')
         if io_path(path).stat().st_size > MAX_SCORE:
@@ -332,6 +354,27 @@ class Control:
                 os.replace(io_path(temporary), io_path(destination))
         return self.register_artifact(destination, kind='input',
                     origin={'path': str(path), 'sha256': source_sha, 'media_references': media})
+
+    def import_instrumental(self,path):
+        path=safe_path(path,[*self.assets,*self.jobs])
+        if not io_path(path).is_file() or not 0<io_path(path).stat().st_size<=2*1024**3:
+            raise ControlError('too_large','伴奏需为不超过2GiB的普通WAV文件。')
+        metadata=self.call_worker('media_validate',{'path':str(path)})
+        sha=file_hash(path);target=safe_path(self.state/'inputs'/(sha+'.wav'))
+        with file_lock(self.state/'locks'/'imports.lock'):
+            if io_path(target).exists():
+                if file_hash(target)!=sha:raise ControlError('snapshot_conflict','伴奏快照内容不匹配。')
+            else:
+                temporary=target.with_name('.import-'+uuid.uuid4().hex+'.wav')
+                try:
+                    with io_path(path).open('rb') as source,io_path(temporary).open('xb') as out:
+                        while block:=source.read(1024*1024):out.write(block)
+                        out.flush();os.fsync(out.fileno())
+                    if file_hash(temporary)!=sha or file_hash(path)!=sha:
+                        raise ControlError('stale_artifact','伴奏在导入期间改变。')
+                    os.replace(io_path(temporary),io_path(target))
+                finally:io_path(temporary).unlink(missing_ok=True)
+        return self.register_artifact(target,kind='instrumental',origin={'path':str(path),'sha256':sha,'audio':metadata})
 
     def _job_paths(self):
         found = {}
@@ -379,12 +422,24 @@ class Control:
         return {'jobs': rows, 'next_offset': offset + limit if offset + limit < len(items) else None,
                 'total': len(items)}
 
-    def job_get(self, identifier):
+    def job_get(self, identifier, wait_ms=0, after_cursor=None):
+        self._wait_timeout(wait_ms)
         path = self.job_path(identifier)
         # Validate all files consumed by snapshot before the legacy helper runs.
         for name in ('request.json', 'status.json', 'progress.json', 'run.lock'):
             safe_path(path / name, [path])
-        return self.call_worker('job_snapshot', {'path': str(path), 'job_id': identifier})
+        deadline=time.monotonic()+wait_ms/1000
+        baseline=after_cursor
+        while True:
+            result=self.call_worker('job_snapshot', {'path': str(path), 'job_id': identifier})
+            cursor=digest({k:result.get(k) for k in ('status','stages','completed','current','event')})
+            result.update(poll_cursor=cursor,progress_source='job_progress_snapshot')
+            baseline=cursor if baseline is None else baseline
+            if not wait_ms or cursor!=baseline or result.get('status',{}).get('state') in ('done','failed','cancelled','interrupted'):
+                return {**result,'timed_out':False}
+            remaining=deadline-time.monotonic()
+            if remaining<=0:return {**result,'timed_out':True}
+            time.sleep(min(.75,remaining))
 
     def artifacts_list(self, job_id=None):
         if job_id:
@@ -437,11 +492,12 @@ class Control:
             return {'artifacts': rows, 'index_present': index_path.is_file(), 'job_id': job_id}
         return {'artifacts': [read_json(p) for p in sorted((self.state / 'artifacts').glob('art_*.json'))]}
 
-    def inspect_artifact(self, artifact_id, verify=False):
+    def inspect_artifact(self, artifact_id, verify=False, wait_ms=0):
+        self._wait_timeout(wait_ms)
         record = self.artifact(artifact_id, verify=False)
         if verify:
-            return self.start_operation('verify_artifact', {'artifact_id': artifact_id},
-                                        'verify-' + artifact_id)
+            result=self.start_operation('verify_artifact', {'artifact_id': artifact_id},'verify-' + artifact_id)
+            return self.operation_wait(result['id'],wait_ms) if wait_ms else result
         return {**record, 'verification': 'not_checked', 'exists': True}
 
     def call_worker(self, action, arguments):
@@ -450,7 +506,8 @@ class Control:
                           'preparation_create', 'lyrics_read', 'lyrics_review', 'lyrics_plan',
                           'export_plan', 'review_bundle', 'structure_plan', 'reference_validate',
                           'reference_pitch_review', 'reference_audio_read', 'pronunciation_read',
-                          'pronunciation_plan','draft_read','draft_publish','draft_plan'):
+                          'pronunciation_plan','draft_read','draft_publish','draft_plan',
+                          'preparation_reuse_plan','preparation_reuse_create','segment_plan','style_segment_context','media_validate'):
             raise ControlError('unsupported_action', '不支持该业务调用。')
         directory = safe_path(self.state / 'calls' / uuid.uuid4().hex)
         directory.mkdir()
@@ -470,6 +527,8 @@ class Control:
         if not value.get('ok'):
             error=ControlError(value.get('code', 'business_error'), value.get('message', '业务调用失败。'))
             if isinstance(value.get('details'),dict):error.details=value['details']
+            for key in ('component','retryable','remediation'):
+                if key in value:setattr(error,key,value[key])
             raise error
         return value['data']
 
@@ -487,11 +546,44 @@ class Control:
             raise ControlError('too_large', '工程超过 32 MiB 业务读取限制。')
         return self.call_worker('score_review' if review else 'score_read', {'path': record['path']})
 
-    def context_read(self, artifact_id, track_indices=None):
+    def context_read(self, artifact_id, track_indices=None, limit=None, offset=0, detail='full', include_note_ids=True):
         record = self.artifact(artifact_id)
         if record['bytes'] > MAX_SCORE:
             raise ControlError('too_large', '工程超过 32 MiB 业务读取限制。')
-        return self.call_worker('context_read', {'path': record['path'], 'track_indices': track_indices})
+        return self.call_worker('context_read', {'path': record['path'], 'track_indices': track_indices,
+            'limit':limit,'offset':offset,'detail':detail,'include_note_ids':include_note_ids})
+
+    def export_options(self, options=None, source_job_id=None):
+        """Resolve public media IDs into verified local paths before the worker."""
+        options=dict(options or {})
+        if 'instrumental_path' in options:
+            raise ControlError('unsafe_media_path','请使用instrumental_artifact_id或instrumental_source_job_id，不传原始媒体路径。')
+        artifact_id=options.pop('instrumental_artifact_id',None)
+        job_id=options.pop('instrumental_source_job_id',None) or source_job_id
+        if artifact_id and job_id and source_job_id!=job_id:
+            raise ControlError('conflicting_instrumental_source','伴奏artifact和来源任务只能选一个。')
+        explicit=options.get('include_instrumental')
+        if explicit is not None and type(explicit) is not bool:
+            raise ControlError('invalid_options','include_instrumental必须为布尔值。')
+        if explicit is False:
+            if artifact_id:raise ControlError('conflicting_instrumental_source','关闭伴奏时不能同时指定伴奏artifact。')
+            return options
+        media=None
+        if artifact_id:
+            media=self.artifact(artifact_id)
+        elif job_id:
+            job=self.job_path(job_id)
+            target=safe_path(job/'audio/instrumental.wav',[job])
+            if io_path(target).is_file():
+                media=self.register_artifact(target,kind='instrumental',job_id=job_id)
+                self.artifact(media['id'])
+        if media:
+            if Path(media['path']).suffix.lower()!='.wav':
+                raise ControlError('unsupported_instrumental','伴奏目前要求PCM WAV。')
+            options.update(include_instrumental=True,instrumental_path=media['path'])
+        elif explicit is True or artifact_id:
+            raise ControlError('instrumental_missing','所选输入没有可用伴奏，请指定WAV产物或关闭伴奏。')
+        return options
 
     def make_plan(self, kind, artifact_id, **arguments):
         artifact = self.artifact(artifact_id)
@@ -504,6 +596,7 @@ class Control:
                   'pronunciation':'pronunciation_plan'}.get(kind)
         if action is None:
             raise ControlError('invalid_plan', '方案类型无效。')
+        if kind=='export':arguments['options']=self.export_options(arguments.get('options'))
         plan = self.call_worker(action, {'path': artifact['path'], **arguments})
         return self.save_plan(kind, artifact_id, plan)
 
@@ -681,12 +774,13 @@ class Control:
 
     def preparation_create(self, plan_id):
         record = self.plan_get(plan_id)
-        if record['kind'] != 'preparation' or record['code_revision'] != self.code_revision:
+        if record['kind'] not in ('preparation','preparation_reuse') or record['code_revision'] != self.code_revision:
             raise ControlError('stale_plan', '准备方案已过期或类型不符。')
         if not self.jobs:
             raise ControlError('missing_job_root', '配置没有可创建任务的独立任务目录。')
         with file_lock(self.state / 'locks' / (plan_id + '.create.lock')):
-            result = self.call_worker('preparation_create', {'plan': record['plan'], 'parent': str(self.jobs[0])})
+            result = self.call_worker('preparation_reuse_create' if record['kind']=='preparation_reuse' else 'preparation_create',
+                {'plan': record['plan'], 'parent': str(self.jobs[0])})
             job = safe_path(result['job_path'], self.jobs)
             request_sha = file_hash(job / 'request.json')
             identifier = 'job_' + digest(str(job))[:32]
@@ -694,6 +788,12 @@ class Control:
                      'plan_id': plan_id, 'code_revision': self.code_revision}
             self._immutable(self._record_path('preparations', identifier, 'job'), owned)
         return {**result, 'job_id': identifier, 'request_sha256': request_sha}
+
+    def preparation_reuse_plan(self,source_job_id,options=None,reuse_stages=None):
+        job=self.job_path(source_job_id)
+        plan=self.call_worker('preparation_reuse_plan',{'source_job':str(job),
+            'options':options or {},'reuse_stages':reuse_stages})
+        return self.save_plan('preparation_reuse',None,plan)
 
     def preparation_start(self, job_id, until=None, idempotency_key='prepare'):
         owned = self._record('preparations', job_id, 'job')
@@ -775,6 +875,36 @@ class Control:
             atomic_json(self.state / 'operations' / operation_id / 'cancel.request',
                         {'requested': time.time(), 'operation_id': operation_id})
         return self.operation_get(operation_id)
+
+    @staticmethod
+    def _wait_timeout(timeout_ms):
+        if type(timeout_ms) is not int or not 0<=timeout_ms<=60000:
+            raise ControlError('invalid_wait','等待时长需为0–60000毫秒；超时返回当前状态。')
+
+    def operation_wait(self,operation_id,timeout_ms=30000,after_cursor=None,return_on='terminal',detail='summary'):
+        self._wait_timeout(timeout_ms)
+        if return_on not in ('terminal','change') or detail not in ('summary','full'):
+            raise ControlError('invalid_wait','return_on为terminal/change，detail为summary/full。')
+        deadline=time.monotonic()+timeout_ms/1000;baseline=after_cursor
+        while True:
+            value=self.operation_get(operation_id)
+            cursor=digest({k:value.get(k) for k in ('state','updated','progress','cancel_requested','error')})
+            baseline=cursor if baseline is None else baseline
+            terminal=value['state'] in TERMINAL
+            changed=cursor!=baseline
+            remaining=deadline-time.monotonic()
+            if terminal or (return_on=='change' and changed) or remaining<=0:
+                if detail=='summary':
+                    raw=value
+                    value={k:raw[k] for k in ('id','state','progress','error','created','updated','cancel_requested') if k in raw}
+                    value['request']={'action':raw.get('request',{}).get('action')}
+                    value['result_available']=bool(raw.get('result'))
+                    value['details_tool']={'tool':'vwa_operations_get','arguments':{'operation_id':operation_id}}
+                return {**value,'poll_cursor':cursor,'changed':changed,
+                    'timed_out':not terminal and not (return_on=='change' and changed) and remaining<=0,
+                    'progress_source':'operation_record','heartbeat_at':value.get('updated'),
+                    'elapsed_seconds':max(0.,round(time.time()-value.get('created',time.time()),3))}
+            time.sleep(min(.25,remaining))
 
     def run_operation(self, operation_id):
         self._record_path('operations', operation_id, 'op')
@@ -873,12 +1003,15 @@ class Control:
                         elif action == 'style_render':
                             from agent_style import render_style
                             result = render_style(artifact['path'], plan_record['plan'], output,
-                                                  progress=progress, cancel=cancel)
+                                                  progress=progress, cancel=cancel,
+                                                  allowed_media_roots=[self.state,*self.assets,*self.jobs])
                         elif action == 'lyrics_apply':
                             from agent_lyrics import apply_lyrics_patch
                             result = apply_lyrics_patch(artifact['path'], plan_record['plan'], output)
                         elif action == 'export_apply':
                             from agent_exports import apply_export
+                            media_path=plan_record['plan'].get('options',{}).get('instrumental_path')
+                            if media_path:safe_path(media_path,[self.state,*self.assets,*self.jobs])
                             runtime = self.config.get('export_runtime', str(self.app / 'dependencies/export'))
                             runtime = safe_path(runtime)
                             result = apply_export(artifact['path'], plan_record['plan'], output,
@@ -915,5 +1048,6 @@ class Control:
                 return self.update_operation(operation_id, state='cancelled',
                     error={'code': 'cancelled', 'message': str(error)})
             except Exception as error:
+                from agent_errors import error_payload
                 return self.update_operation(operation_id, state='failed',
-                    error={'code': getattr(error, 'code', 'business_error'), 'message': str(error)})
+                    error=error_payload(error))

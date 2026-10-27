@@ -80,6 +80,24 @@ def write_review_fixture(path):
     return Path(path)
 
 
+def write_cross_pitch_overlap_fixture(path):
+    # At 480 PPQ and 120 BPM, 15 ticks is exactly 15.625 ms.
+    midi = mido.MidiFile(type=1, ticks_per_beat=480, charset="utf8")
+    midi.tracks.append(mido.MidiTrack([
+        mido.MetaMessage("set_tempo", tempo=500_000, time=0),
+        mido.MetaMessage("end_of_track", time=480),
+    ]))
+    midi.tracks.append(mido.MidiTrack([
+        mido.Message("note_on", channel=0, note=60, velocity=80, time=0),
+        mido.Message("note_on", channel=0, note=64, velocity=75, time=465),
+        mido.Message("note_off", channel=0, note=60, velocity=0, time=15),
+        mido.Message("note_off", channel=0, note=64, velocity=0, time=0),
+        mido.MetaMessage("end_of_track", time=0),
+    ]))
+    midi.save(str(path))
+    return Path(path)
+
+
 def write_overlap_fixture(path):
     midi = mido.MidiFile(type=1, ticks_per_beat=480, charset="utf8")
     midi.tracks.append(mido.MidiTrack([mido.MetaMessage("set_tempo", tempo=500_000, time=0)]))
@@ -176,6 +194,28 @@ class AgentScoreReadReviewTests(unittest.TestCase):
             self.assertTrue(all("note_ids" in hint and hint["note_ids"] for hint in result["hints"]))
             self.assertTrue(all(hint["severity"] in {"info", "warning"} for hint in result["hints"]))
             self.assertIn("不代表已经证实", result["disclaimer"])
+
+    def test_review_locates_cross_pitch_fifteen_point_six_two_five_ms_overlap(self):
+        with self.temporary("agent-score-monophonic-") as temporary:
+            source = write_cross_pitch_overlap_fixture(Path(temporary) / "overlap.mid")
+            result = review_score(source)
+            conflicts = [
+                hint for hint in result["hints"]
+                if hint["code"] == "monophonic_overlap"
+            ]
+            self.assertEqual(len(conflicts), 1)
+            conflict = conflicts[0]
+            self.assertEqual(conflict["voice_key"], {"track_index": 1, "channel": 0})
+            self.assertEqual(conflict["pitches"], [60, 64])
+            self.assertEqual(conflict["overlap_ticks"], 15)
+            self.assertEqual(conflict["overlap_milliseconds"], 15.625)
+            self.assertEqual(len(conflict["note_ids"]), 2)
+            score = read_score(source)
+            self.assertEqual(
+                set(conflict["note_ids"]),
+                {note["note_id"] for note in score["notes"]},
+            )
+            json_ready(result)
 
     def test_svp_is_explicitly_read_only(self):
         with self.temporary("agent-score-svp-") as temporary:
@@ -378,6 +418,84 @@ class AgentScorePatchTests(unittest.TestCase):
             self.assertEqual(repeated, receipt)
             self.assertEqual(candidate.read_bytes(), Path(native_path(receipt["candidate_path"])).read_bytes())
             self.assertEqual(source.read_bytes(), original)
+
+    def test_explicit_move_attached_lyrics_preserves_unique_association_by_default_noop(self):
+        with self.temporary("agent-score-move-lyrics-") as temporary:
+            root = Path(temporary)
+            source = write_main_fixture(root / "input.mid")
+            score = read_score(source)
+            first = note_by_pitch(score, 60)
+            edits = [{
+                "note_id": first["note_id"],
+                "onset_tick": 120,
+                "duration_tick": 300,
+            }]
+
+            default_plan = plan_patch(source, score["source_sha256"], edits)
+            self.assertNotIn("move_attached_lyrics", default_plan)
+            self.assertNotIn(
+                "moved_attached_lyrics",
+                default_plan["structural_changes"],
+            )
+            default_receipt = apply_patch(source, default_plan, root / "default")
+            default_score = read_score(default_receipt["candidate_path"])
+            self.assertIsNone(note_by_pitch(default_score, 60)["lyric"])
+
+            moved_plan = plan_patch(
+                source,
+                score["source_sha256"],
+                edits,
+                move_attached_lyrics=True,
+            )
+            self.assertTrue(moved_plan["move_attached_lyrics"])
+            moved = moved_plan["structural_changes"]["moved_attached_lyrics"]
+            self.assertEqual(len(moved), 1)
+            self.assertEqual(moved[0]["text"], "你")
+            self.assertEqual((moved[0]["before_tick"], moved[0]["after_tick"]), (0, 120))
+            self.assertEqual(moved[0]["association"], "unique")
+
+            receipt = apply_patch(source, moved_plan, root / "moved")
+            candidate = read_score(receipt["candidate_path"])
+            first_after = note_by_pitch(candidate, 60)
+            self.assertEqual(first_after["onset_tick"], 120)
+            self.assertEqual(first_after["lyric"], "你")
+            self.assertEqual(note_by_pitch(candidate, 64)["lyric"], "好")
+            lyric_events = candidate["tracks"][1]["lyric_events"]
+            self.assertEqual([(row["tick"], row["text"]) for row in lyric_events], [(120, "你"), (480, "好")])
+            with self.assertRaisesRegex(ValueError, "布尔值"):
+                plan_patch(
+                    source,
+                    score["source_sha256"],
+                    edits,
+                    move_attached_lyrics=1,
+                )
+
+    def test_explicit_lyric_move_rejects_ambiguous_onset_ownership(self):
+        with self.temporary("agent-score-move-ambiguous-") as temporary:
+            root = Path(temporary)
+            source = root / "ambiguous-lyric.mid"
+            midi = mido.MidiFile(type=1, ticks_per_beat=480, charset="utf8")
+            midi.tracks.append(mido.MidiTrack([
+                mido.MetaMessage("set_tempo", tempo=500_000, time=0),
+            ]))
+            midi.tracks.append(mido.MidiTrack([
+                mido.MetaMessage("lyrics", text="双", time=0),
+                mido.Message("note_on", channel=0, note=60, velocity=80, time=0),
+                mido.Message("note_on", channel=0, note=64, velocity=75, time=0),
+                mido.Message("note_off", channel=0, note=60, velocity=0, time=240),
+                mido.Message("note_off", channel=0, note=64, velocity=0, time=0),
+            ]))
+            midi.save(str(source))
+            score = read_score(source)
+            target = note_by_pitch(score, 60)
+            self.assertIsNone(target["lyric"])
+            with self.assertRaisesRegex(ValueError, "歌词归属不唯一"):
+                plan_patch(
+                    source,
+                    score["source_sha256"],
+                    [{"note_id": target["note_id"], "onset_tick": 120}],
+                    move_attached_lyrics=True,
+                )
 
     def test_stale_source_and_tampered_plan_are_rejected(self):
         with self.temporary("agent-score-stale-") as temporary:

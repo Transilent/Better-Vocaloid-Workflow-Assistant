@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import shutil
 import os
 from pathlib import Path
 import subprocess
@@ -27,7 +28,7 @@ def write_json(path, value):
 
 
 def read_json(path):
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    return json.loads(Path(common.native_path(path)).read_text(encoding="utf-8"))
 
 
 class PreparationPlanTests(unittest.TestCase):
@@ -99,6 +100,59 @@ class PreparationPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "bpm"):
             self.plan("BV1xx411c7mD", {"bpm": float("nan")})
 
+    def test_source_summary_is_current_video_bounded_and_omits_collection(self):
+        job = self.root / "source-job"
+        write_json(job / "request.json", {
+            "source_kind": "bilibili", "bv": "BV1ZL411i7YQ", "voice_mode": "single",
+        })
+        info = {
+            "bvid": "BV1ZL411i7YQ", "title": "牵丝戏测试", "duration": 242,
+            "owner": {"name": "JLRS-LeoFM", "face": "https://example.invalid/face.jpg"},
+            "desc": "说明文字 " * 200,
+            "pic": "https://i1.hdslb.com/cover.jpg",
+            "rights": {"download": 1, "no_reprint": 0, "nested": {"secret": "x"}},
+            "videos": 2,
+            "pages": [
+                {"page": 1, "part": "第一部分", "duration": 120},
+                {"page": 2, "part": "第二部分", "duration": 122},
+            ],
+            "ugc_season": {"title": "不应返回合集", "sections": [{"items": ["x"] * 50000}]},
+        }
+        write_json(job / "source-info.json", info)
+        summary = agent_preparation.source_summary(job)
+        encoded = json.dumps(summary, ensure_ascii=False)
+        self.assertLess(len(encoded.encode("utf-8")), 4 * 1024)
+        self.assertEqual(summary["bvid"], "BV1ZL411i7YQ")
+        self.assertEqual(summary["owner"], "JLRS-LeoFM")
+        self.assertEqual(summary["duration_seconds"], 242)
+        self.assertEqual(summary["page_count"], 2)
+        self.assertEqual(summary["current_page"]["title"], "第一部分")
+        self.assertEqual(summary["rights_flags"], {"download": True, "no_reprint": False})
+        self.assertFalse(summary["collection_payload_returned"])
+        self.assertNotIn("不应返回合集", encoded)
+        self.assertNotIn("sections", encoded)
+        self.assertEqual(summary["voice_plan"]["roles"][0]["role"], "mixed_vocal")
+        self.assertEqual(summary["raw_evidence"]["path"], str((job / "source-info.json").resolve()))
+
+    def test_preflight_missing_tifa_has_executable_hfa_alternative(self):
+        options = agent_preparation._normalise_options({
+            "midi_backend": "v2", "alignment_engine": "tifa", "voice_mode": "dual"})
+        with (patch.object(agent_preparation, "_tool_evidence", return_value={
+                  "config_sha256": None, "required": []}),
+              patch.object(agent_preparation, "_dependency_evidence", return_value={
+                  "features": [], "ready": True, "missing_count": 0,
+                  "missing": [], "missing_truncated": False}),
+              patch.object(agent_preparation, "ROOT", self.root)):
+            report = agent_preparation._preflight(
+                options, list(agent_preparation.PREPARATION_STAGES),
+                {"kind": "bilibili", "bv": "BV1xx411c7mD"})
+        self.assertFalse(report["ready"])
+        self.assertEqual(report["suggested_options"], {"alignment_engine": "hfa"})
+        self.assertIn("alignment_engine", report["missing_required"][0]["remediation"])
+        self.assertFalse(report["voice_plan"]["singer_diarization"])
+        self.assertEqual([row["role"] for row in report["voice_plan"]["roles"][:-1]],
+                         ["lead_vocal", "backing_or_harmony"])
+
     def test_tampered_plan_and_changed_local_source_are_rejected_before_creation(self):
         source = self.source_file("changed.wav", b"first-content")
         plan = self.plan(str(source))
@@ -112,6 +166,162 @@ class PreparationPlanTests(unittest.TestCase):
         with self.assertRaises(agent_preparation.PreparationError) as raised:
             agent_preparation.create_preparation(plan, self.root)
         self.assertEqual(raised.exception.code, "source_changed")
+
+
+class PreparationReuseTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(dir=APP / "work", prefix="agent-prep-reuse-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        def cleanup_native():
+            target=self.root.resolve();boundary=(APP/'work').resolve()
+            assert target.is_relative_to(boundary) and target!=boundary
+            if Path(common.native_path(target)).exists():shutil.rmtree(common.native_path(target))
+        self.addCleanup(cleanup_native)
+        self.local = self.root / "source.wav"
+        self.local.write_bytes(b"local-audio-fixture")
+        self.source_job = self.root / "source-job"
+        self.request = {
+            "version": 3, "source_kind": "local", "source_audio": str(self.local.resolve()),
+            "input_file": "input/source.wav", "source_title": "复用测试",
+            "language": "zh", "lyrics": "旧歌词", "backing_lyrics": "",
+            "recognize_lyrics": True, "voice_mode": "single", "midi_steps": 16,
+            "midi_backend": "v2", "alignment_engine": "hfa", "bpm": None,
+            "prepare_only": True, "project_formats": [], "audio_formats": [], "export_pitch": False,
+            "tools": {"vocal2midi": "dependencies/vocal2midi2", "separation_device": "dml",
+                      "midi_device": "dml", "dml_adapter": "auto", "cpu_threads": 0},
+        }
+        write_json(self.source_job / "request.json", self.request)
+        files = {
+            "metadata": ["source-info.json", "upstream-info.json", "发布简介草稿.txt", "参考歌词.txt"],
+            "download": ["input/source.wav", "import-report.json"],
+            "audio": ["audio/source.wav", "audio-info.json"],
+            "separation": ["audio/vocals.wav", "audio/instrumental.wav", "separation-report.json"],
+            "midi": ["midi/vocals.mid", "midi/report.json"],
+        }
+        for stage, names in files.items():
+            for name in names:
+                path = self.source_job / Path(name)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes((stage + ":" + name).encode("utf-8"))
+        write_json(self.source_job / "import-report.json", {
+            "sha256": hashlib.sha256((self.source_job / "input/source.wav").read_bytes()).hexdigest(),
+        })
+        status = {"state": "done", "steps": {}}
+        for stage in ("metadata", "download", "audio", "separation"):
+            status["steps"][stage] = {
+                "state": "done",
+                "receipt": {"signature": self.signature(stage, self.request), "sha256": {}},
+            }
+        status["steps"]["midi"] = {"state": "done"}
+        write_json(self.source_job / "status.json", status)
+
+    def signature(self, stage, request):
+        if stage == "download":
+            return "download:" + str(request.get("source_audio"))
+        if stage == "audio":
+            return "audio:44100/stereo/float32"
+        if stage == "separation":
+            return "separation:" + str(request.get("voice_mode")) + ":" + str(
+                (request.get("tools") or {}).get("separation_device"))
+        return stage
+
+    def completed_voice(self, job, request, voice):
+        return request.get("lyrics") == self.request["lyrics"] and voice == "vocals"
+
+    def validator_patches(self):
+        return (
+            patch.object(agent_preparation, "_preflight", return_value={
+                "ready": True, "missing_required": [], "unverified": [],
+                "tools": {"config_sha256": None, "required": []},
+                "dependencies": {"features": [], "ready": True, "missing_count": 0,
+                                 "missing": [], "missing_truncated": False}}),
+            patch("artifact_cache.valid_receipt", return_value=True),
+            patch("artifact_cache.receipt", side_effect=lambda job, request, stage, files: {
+                "signature": self.signature(stage, request), "sha256": {}}),
+            patch("artifact_cache.stage_signature",
+                  side_effect=lambda job, request, stage: self.signature(stage, request)),
+            patch.object(common, "completed_voice", side_effect=self.completed_voice),
+        )
+
+    def plan(self, options=None, reuse_stages=None):
+        patches = self.validator_patches()
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            return agent_preparation.plan_preparation_reuse(
+                self.source_job, options, reuse_stages)
+
+    def test_lyrics_change_reuses_audio_separation_and_invalidates_midi(self):
+        plan = self.plan({"lyrics": "新的歌词"})
+        self.assertEqual(plan["kind"], "preparation_reuse")
+        self.assertEqual(plan["source_job"], str(self.source_job.resolve()))
+        self.assertEqual(plan["reuse"]["reuse_stages"],
+                         ["metadata", "download", "audio", "separation"])
+        self.assertEqual(plan["reuse"]["run_stages"], ["midi"])
+        midi = next(row for row in plan["reuse"]["stages"] if row["stage"] == "midi")
+        self.assertEqual(midi["reason"], "midi_options_or_lyrics_changed")
+        unsigned = {key: value for key, value in plan.items() if key != "plan_sha256"}
+        self.assertEqual(plan["plan_sha256"], agent_preparation._digest(unsigned))
+
+    def test_voice_mode_change_blocks_mismatched_separation(self):
+        plan = self.plan({"voice_mode": "dual"}, ["separation"])
+        self.assertEqual(plan["reuse"]["reuse_stages"], ["metadata", "download", "audio"])
+        separation = next(row for row in plan["reuse"]["stages"]
+                          if row["stage"] == "separation")
+        self.assertEqual(separation["reason"], "voice_mode_changed")
+        self.assertIn("separation", plan["reuse"]["run_stages"])
+
+    def test_incomplete_source_stage_is_never_reported_as_completed(self):
+        status = read_json(self.source_job / "status.json")
+        status["steps"]["separation"]["state"] = "running"
+        write_json(self.source_job / "status.json", status)
+        plan = self.plan()
+        self.assertEqual(plan["reuse"]["reuse_stages"], ["metadata", "download", "audio"])
+        stage = next(row for row in plan["reuse"]["stages"]
+                     if row["stage"] == "separation")
+        self.assertFalse(stage["source_complete"])
+        self.assertEqual(stage["source_state"], "running")
+        self.assertEqual(stage["action"], "run")
+        self.assertNotIn("separation", plan["reuse"]["reuse_stages"])
+
+    def test_create_copies_only_verified_stages_without_touching_source(self):
+        plan = self.plan({"lyrics": "新的歌词"}, ["separation"])
+        before = {path.relative_to(self.source_job).as_posix(): path.read_bytes()
+                  for path in self.source_job.rglob("*") if path.is_file()}
+
+        def create_job(**kwargs):
+            job = Path(kwargs["parent"]) / "Local_reuse_fixture"
+            job.mkdir(parents=True)
+            options = agent_preparation._normalise_options({
+                name: kwargs[name] for name in agent_preparation.ALLOWED_OPTIONS
+                if name in kwargs})
+            write_json(job / "request.json", agent_preparation._target_request(self.request, options))
+            return job.resolve()
+
+        targets = self.root / "targets"
+        targets.mkdir()
+        patches = self.validator_patches()
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patch.object(
+                pipeline, "create_job", side_effect=create_job), patch.object(
+                common, "ROOT", APP), patch.object(pipeline, "ROOT", APP):
+            first = agent_preparation.create_preparation_reuse(plan, targets)
+            second = agent_preparation.create_preparation_reuse(plan, targets)
+        self.assertTrue(second["replay"])
+        self.assertEqual(first["job_path"], second["job_path"])
+        self.assertEqual(first["reused_stages"],
+                         ["metadata", "download", "audio", "separation"])
+        self.assertEqual(first["run_stages"], ["midi"])
+        target = Path(common.native_path(first["job_path"]))
+        self.assertTrue((target / "audio/source.wav").is_file())
+        self.assertFalse((target / "midi/vocals.mid").exists())
+        status = read_json(target / "status.json")
+        self.assertEqual(status["state"], "partial")
+        self.assertEqual(list(status["steps"]), ["metadata", "download", "audio", "separation"])
+        receipt = read_json(first["reuse_receipt"])
+        self.assertEqual(receipt["receipt_sha256"], first["reuse_receipt_sha256"])
+        self.assertEqual((target / "参考歌词.txt").read_text(encoding="utf-8"), "新的歌词")
+        after = {path.relative_to(self.source_job).as_posix(): path.read_bytes()
+                 for path in self.source_job.rglob("*") if path.is_file()}
+        self.assertEqual(before, after)
 
 
 class PreparationCreationTests(unittest.TestCase):

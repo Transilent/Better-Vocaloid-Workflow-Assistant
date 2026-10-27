@@ -16,7 +16,7 @@ import math
 import os
 from pathlib import Path
 from typing import Any, Callable
-from common import native_path
+from common import atomic_json, native_path
 
 
 def _io_path(path):
@@ -39,9 +39,42 @@ REQUIRED_REGION_KEYS = frozenset({
 PROPOSAL_KEYS = frozenset({"track_indices", "brief", "regions"})
 _EPSILON = 1e-9
 _MIN_REGION_SECONDS = 0.025
+_MAX_CONTEXT_PAGE = 500
+# Public style contexts print seconds with six decimals.  A boundary may be
+# rounded by at most half a microsecond before it reaches this module.  Snap
+# only to real note edges inside that bounded window so [a,b) + [b,c) remains
+# adjacent without weakening the complete-note ownership check below.
+_SECONDS_DISPLAY_PRECISION = 6
+_DISPLAY_ROUNDING_TOLERANCE = 0.5 * 10 ** (-_SECONDS_DISPLAY_PRECISION) + _EPSILON
 _DEFAULT_TECHNIQUE_STRENGTH = 0.6
 _DEFAULT_TECHNIQUE_PITCH = True
 _SV_QUARTER = 705600000
+
+
+class StyleRegionOverlap(ValueError):
+    """A complete-note style range overlaps another real style range."""
+
+    code = "style_region_overlap"
+    component = "agent_style"
+    retryable = False
+    remediation = ["vwa_context_read", "vwa_style_plan"]
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        shared_note_ids: list[str],
+        previous_interval: dict[str, float],
+        current_interval: dict[str, float],
+        overlap_seconds: float,
+    ) -> None:
+        super().__init__(message)
+        self.details = {
+            "shared_note_ids": list(shared_note_ids),
+            "previous_interval": dict(previous_interval),
+            "current_interval": dict(current_interval),
+            "overlap_seconds": float(overlap_seconds),
+        }
 
 
 def _canonical(value: Any) -> str:
@@ -470,8 +503,136 @@ def _selected_context(context: dict[str, Any], indices: list[int]) -> dict[str, 
     return result
 
 
-def read_context(path: Any, track_indices: list[int] | None = None) -> dict[str, Any]:
-    """Read revision-bound SVP note/lyric/timing evidence without inference."""
+def _validate_context_projection(
+    limit: Any, offset: Any, detail: Any, include_note_ids: Any,
+) -> None:
+    if limit is not None and (
+        type(limit) is not int or not 1 <= limit <= _MAX_CONTEXT_PAGE
+    ):
+        raise ValueError(
+            "limit 必须是 1 到 " + str(_MAX_CONTEXT_PAGE) + " 的整数或 null。"
+        )
+    if type(offset) is not int or offset < 0:
+        raise ValueError("offset 必须是大于等于 0 的整数。")
+    if detail not in ("summary", "notes", "full"):
+        raise ValueError("detail 必须是 summary、notes 或 full。")
+    if type(include_note_ids) is not bool:
+        raise ValueError("include_note_ids 必须是布尔值。")
+
+
+def _context_note_summary(context: dict[str, Any]) -> dict[str, Any]:
+    notes = context["notes"]
+    grouped = {track["track_index"]: [] for track in context["tracks"]}
+    for note in notes:
+        grouped[note["track_index"]].append(note)
+    by_track = []
+    for track in context["tracks"]:
+        rows = grouped[track["track_index"]]
+        starts = [float(row["start_seconds"]) for row in rows]
+        ends = [float(row["end_seconds"]) for row in rows]
+        by_track.append({
+            "track_index": track["track_index"],
+            "name": track.get("name"),
+            "eligible_for_style": bool(track.get("eligible_for_style")),
+            "total": len(rows),
+            "singing": sum(bool(row.get("singing")) for row in rows),
+            "lyric_known": sum(bool(row.get("lyric_known")) for row in rows),
+            "pitch_known": sum(bool(row.get("pitch_known")) for row in rows),
+            "first_start_seconds": min(starts) if starts else None,
+            "last_end_seconds": max(ends) if ends else None,
+        })
+    return {
+        "total": len(notes),
+        "singing": sum(bool(row.get("singing")) for row in notes),
+        "lyric_known": sum(bool(row.get("lyric_known")) for row in notes),
+        "pitch_known": sum(bool(row.get("pitch_known")) for row in notes),
+        "unknown_count": len(context["unknowns"]),
+        "by_track": by_track,
+    }
+
+
+def _project_context(
+    context: dict[str, Any], *, limit: int | None, offset: int,
+    detail: str, include_note_ids: bool,
+) -> dict[str, Any]:
+    """Project an already-built context without changing its source facts."""
+    all_notes = context["notes"]
+    total = len(all_notes)
+    page_limit = total if limit is None else limit
+    page = copy.deepcopy(all_notes[offset:offset + page_limit])
+    # Current-page note IDs are edit/evidence handles, not a whole-track ID list.
+    next_offset = offset + len(page) if offset + len(page) < total else None
+    pagination = {
+        "limit": page_limit,
+        "offset": offset,
+        "total": total,
+        "returned": len(page),
+        "has_more": next_offset is not None,
+        "next_offset": next_offset,
+    }
+
+    if detail == "summary":
+        result = copy.deepcopy(context)
+        result["detail"] = "summary"
+        result["note_summary"] = _context_note_summary(context)
+        result["tracks"] = [
+            {
+                "track_id": row.get("track_id"),
+                "track_index": row["track_index"],
+                "name": row.get("name"),
+                "vocal": row.get("vocal"),
+                "instrumental": row.get("instrumental"),
+                "note_count_raw": row.get("note_count_raw"),
+                "note_count_parsed": row.get("note_count_parsed"),
+                "eligible_for_style": row.get("eligible_for_style"),
+                "ineligibility_reasons": copy.deepcopy(row.get("ineligibility_reasons", [])),
+            }
+            for row in context["tracks"]
+        ]
+        result["unknown_summary"] = {
+            "count": len(context["unknowns"]),
+            "codes": sorted({row.get("code") for row in context["unknowns"] if row.get("code")}),
+        }
+        result["unknowns"] = []
+        result["notes_included"] = False
+        result["notes"] = []
+        result["pagination"] = {
+            **pagination,
+            "returned": 0,
+            "has_more": False,
+            "next_offset": None,
+        }
+        result["notes_tool"] = {
+            "detail": "notes",
+            "limit": limit or 20,
+            "offset": offset,
+            "include_note_ids": include_note_ids,
+        }
+        return result
+
+    result = copy.deepcopy(context)
+    result["detail"] = detail
+    result["notes"] = page
+    result["notes_included"] = True
+    result["pagination"] = pagination
+    return result
+
+
+def read_context(
+    path: Any,
+    track_indices: list[int] | None = None,
+    *,
+    limit: int | None = None,
+    offset: int = 0,
+    detail: str = "full",
+    include_note_ids: bool = True,
+) -> dict[str, Any]:
+    """Read revision-bound SVP evidence, optionally with a bounded projection.
+
+    Calls that omit the projection keywords retain the original complete
+    context shape.  MCP callers explicitly request ``notes`` pages so a single
+    page can never be mistaken for the whole song.
+    """
     source, raw = _read_source(path)
     context = _build_context(source, raw)
     indices = _indices(track_indices, len(context["tracks"]), allow_none=True)
@@ -481,7 +642,13 @@ def read_context(path: Any, track_indices: list[int] | None = None) -> dict[str,
         selected["scope"] = "all_tracks"
     else:
         selected = _selected_context(context, indices)
-    return selected
+    _validate_context_projection(limit, offset, detail, include_note_ids)
+    if limit is None and offset == 0 and detail == "full" and include_note_ids:
+        return selected
+    return _project_context(
+        selected, limit=limit, offset=offset,
+        detail=detail, include_note_ids=include_note_ids,
+    )
 
 
 def _track_error(row: dict[str, Any]) -> str:
@@ -633,17 +800,37 @@ def _components(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return components
 
 
+def _snap_display_boundary(value: float, boundaries: list[float]) -> float:
+    """Map a six-decimal display value back to a nearby real note edge."""
+    if not boundaries:
+        return value
+    nearest = min(boundaries, key=lambda candidate: (abs(candidate - value), candidate))
+    if abs(nearest - value) <= _DISPLAY_ROUNDING_TOLERANCE:
+        return nearest
+    return value
+
+
 def _align_regions(
     regions: list[dict[str, Any]], selected_context: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     components = _components(selected_context["notes"])
+    boundaries = sorted({
+        float(component[edge])
+        for component in components
+        for edge in ("start", "end")
+    })
     aligned: list[dict[str, Any]] = []
     for row in regions:
-        first, last = float(row["start"]), float(row["end"])
+        # Public seconds are rounded to six decimals.  Restore an exact edge
+        # only when the displayed value is within half a display unit; this
+        # preserves [a,b) adjacency without widening arbitrary overlaps.
+        first = _snap_display_boundary(float(row["start"]), boundaries)
+        last = _snap_display_boundary(float(row["end"]), boundaries)
+        if last <= first:
+            raise ValueError("六位秒数回映到整音符边界后不再是有效时间片段。")
         touched = [
             component for component in components
-            if component["start"] < last - _EPSILON
-            and component["end"] > first + _EPSILON
+            if component["start"] < last and component["end"] > first
         ]
         if not touched:
             raise ValueError(
@@ -675,11 +862,38 @@ def _align_regions(
 
     aligned.sort(key=lambda row: (row["start"], row["end"]))
     for previous, current in zip(aligned, aligned[1:]):
+        shared_note_ids = sorted(
+            set(previous["aligned_note_ids"]) & set(current["aligned_note_ids"])
+        )
+        previous_interval = {
+            "start": float(previous["start"]),
+            "end": float(previous["end"]),
+        }
+        current_interval = {
+            "start": float(current["start"]),
+            "end": float(current["end"]),
+        }
+        overlap_seconds = max(0.0, previous_interval["end"] - current_interval["start"])
+        if shared_note_ids:
+            raise StyleRegionOverlap(
+                "整音符对齐后风格片段重叠并共用完整音符："
+                + f"{previous['start']:.6f}-{previous['end']:.6f}s 与 "
+                + f"{current['start']:.6f}-{current['end']:.6f}s；"
+                + "共有 " + str(len(shared_note_ids)) + " 个音符。",
+                shared_note_ids=shared_note_ids,
+                previous_interval=previous_interval,
+                current_interval=current_interval,
+                overlap_seconds=overlap_seconds,
+            )
         if current["start"] < previous["end"]:
-            raise ValueError(
+            raise StyleRegionOverlap(
                 "整音符对齐后风格片段发生重叠："
                 + f"{previous['start']:.6f}-{previous['end']:.6f}s 与 "
-                + f"{current['start']:.6f}-{current['end']:.6f}s。"
+                + f"{current['start']:.6f}-{current['end']:.6f}s。",
+                shared_note_ids=[],
+                previous_interval=previous_interval,
+                current_interval=current_interval,
+                overlap_seconds=overlap_seconds,
             )
 
     semantic = []
@@ -915,12 +1129,90 @@ def _progress_callback(progress: Callable[[str], Any] | None):
     return progress
 
 
+_PARTIAL_REASON_ADVICE = {
+    "short_note_preserved": "短音符已按原值保留；可缩短选区边界，或避免对其强制应用音高与包络控制。",
+    "protected_note_preserved": "受保护或校准的音符未被改写；如确需调整，请先核对保护规则，再显式允许变化。",
+    "overlapping_notes": "音高或包络目标存在重叠；请检查同一轨道的单声部冲突后再生成风格候选。",
+    "non_singing_or_rap": "气口、静音或说唱音符未套用演唱风格；请在需要表现的目标音符上重新划定片段。",
+    "unsupported_nonlinear_controls": "部分原有非线性控制无法自动加密；已保留原曲线，试听后再决定是否重建控制点。",
+    "unsupported_fractional_time_controls": "部分控制点使用非整数时间，未自动加密；请保留原曲线或在 GUI 中显式重采样。",
+}
+
+
+def _partial_evidence(report: Any) -> tuple[dict[str, int], list[dict[str, Any]], list[str]]:
+    """Count actionable partial reasons from the immutable tuning report."""
+    counts: dict[str, int] = {}
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            reason = value.get("reason")
+            if isinstance(reason, str) and reason and reason not in ("disabled", "zero_strength"):
+                counts[reason] = counts.get(reason, 0) + 1
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(report)
+    reason_counts = dict(sorted(counts.items()))
+    rows = []
+    advice = []
+    for reason, count in reason_counts.items():
+        action = _PARTIAL_REASON_ADVICE.get(
+            reason,
+            "请核对 report 中该原因对应的跳过明细；修复输入条件后再生成候选。",
+        )
+        rows.append({"reason": reason, "count": count, "action": action})
+        advice.append(reason + "（" + str(count) + "）：" + action)
+    return reason_counts, rows, advice
+
+
+def _relocate_candidate_media(
+    source: Path, candidate: Path, *, allowed_roots: list[Path],
+) -> dict[str, Any]:
+    """Copy supported source media and rewrite candidate paths in place."""
+    from agent_media import relocate_svp_media
+
+    evidence = relocate_svp_media(
+        source,
+        candidate,
+        allowed_roots=[str(path) for path in allowed_roots],
+    )
+    if not isinstance(evidence, dict):
+        raise ValueError("agent_media.relocate_svp_media 必须返回证据对象。")
+    return copy.deepcopy(evidence)
+
+
+def _allowed_media_roots(
+    values: Any, source: Path, output_root: Path,
+) -> list[Path]:
+    """Combine caller-authorized media roots with the two intrinsic roots."""
+    if values is None:
+        explicit: list[Any] = []
+    elif isinstance(values, (list, tuple)):
+        explicit = list(values)
+    else:
+        raise ValueError("allowed_media_roots 必须是路径列表或 null。")
+    roots: list[Path] = [source.parent.resolve(), output_root.resolve()]
+    for value in explicit:
+        if not isinstance(value, (str, bytes, os.PathLike)):
+            raise ValueError("allowed_media_roots 只能包含路径。")
+        try:
+            roots.append(Path(value).expanduser().resolve())
+        except (OSError, TypeError, ValueError) as error:
+            raise ValueError("allowed_media_roots 包含无效路径。") from error
+    return sorted(set(roots))
+
+
 def render_style(
     path: Any,
     plan: dict[str, Any],
     output_root: Any,
     progress: Callable[[str], Any] | None = None,
     cancel: Callable[[], Any] | None = None,
+    *,
+    allowed_media_roots: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Render a real independent SVP candidate through tuning_workflow."""
     check_cancel = _cancel_checker(cancel)
@@ -953,6 +1245,7 @@ def render_style(
         _io_path(root).mkdir(parents=True, exist_ok=True)
     except OSError as error:
         raise ValueError("无法创建输出目录：" + str(root)) from error
+    media_roots = _allowed_media_roots(allowed_media_roots, source, root)
 
     import tuning_workflow
     from tuning_engine import settings as engine_settings
@@ -999,8 +1292,8 @@ def render_style(
     candidate = Path(candidate_value).resolve()
     if not _io_path(candidate).is_file():
         raise ValueError("调音工作流返回的候选工程不存在：" + str(candidate))
-    candidate_sha = _file_sha256(candidate)
-    if candidate_sha != result.get("output_sha256"):
+    tuning_candidate_sha = _file_sha256(candidate)
+    if tuning_candidate_sha != result.get("output_sha256"):
         raise ValueError("候选 SVP 哈希与调音回执不一致。")
     if candidate == source:
         raise ValueError("候选 SVP 不得覆盖源工程。")
@@ -1020,10 +1313,57 @@ def render_style(
         raise ValueError("调音回执无法读取。") from error
     if (
         not isinstance(receipt_document, dict)
-        or receipt_document.get("output_sha256") != candidate_sha
+        or receipt_document.get("output_sha256") != tuning_candidate_sha
         or receipt_document.get("source_sha256") != current_sha
     ):
         raise ValueError("调音回执与候选或源工程身份不一致。")
+
+    check_cancel()
+    progress_callback("保留源工程伴奏并改写候选中的相对媒体引用")
+    media_relocation = _relocate_candidate_media(
+        source, candidate, allowed_roots=media_roots,
+    )
+    if not _io_path(candidate).is_file():
+        raise ValueError("媒体迁移后候选工程不存在：" + str(candidate))
+    if candidate == source:
+        raise ValueError("媒体迁移不得把候选覆盖为源工程。")
+    if _file_sha256(source) != current_sha:
+        raise ValueError("媒体迁移期间源 SVP 发生变化；候选已保留，请核对后重试。")
+    candidate_raw = _io_path(candidate).read_bytes()
+    candidate_project = _project(candidate_raw)
+    # The final identity must cover the rewritten media paths and copied
+    # accompaniment, not merely the pre-relocation tuning output.
+    candidate_sha = _sha256_bytes(candidate_raw)
+    candidate_bytes = len(candidate_raw)
+    serialized_content_sha = _digest(candidate_project)
+    original_tuning_sha = receipt_document.get("tuning_output_sha256", tuning_candidate_sha)
+    receipt_document.update({
+        "tuning_output_sha256": original_tuning_sha,
+        "output_sha256": candidate_sha,
+        "output_bytes": candidate_bytes,
+        "serialized_content_sha256": serialized_content_sha,
+        "media_references": copy.deepcopy(media_relocation.get("tracks", [])),
+        "media_relocation": copy.deepcopy(media_relocation),
+    })
+    try:
+        atomic_json(receipt, receipt_document)
+    except (OSError, TypeError, ValueError) as error:
+        raise ValueError("媒体迁移后无法更新候选调音回执；候选已保留。") from error
+    receipt_sha = _file_sha256(receipt)
+    partial_reason_counts, partial_remediation, partial_advice = _partial_evidence(result.get("report"))
+    report = copy.deepcopy(result.get("report"))
+    if isinstance(report, dict):
+        report["partial_reason_counts"] = copy.deepcopy(partial_reason_counts)
+        report["partial_remediation"] = copy.deepcopy(partial_remediation)
+    tuning_result = copy.deepcopy(result)
+    tuning_result.update({
+        "tuning_output_sha256": original_tuning_sha,
+        "output_sha256": candidate_sha,
+        "output_bytes": candidate_bytes,
+        "serialized_content_sha256": serialized_content_sha,
+        "media_references": copy.deepcopy(media_relocation.get("tracks", [])),
+        "media_relocation": copy.deepcopy(media_relocation),
+    })
 
     return {
         "schema": SCHEMA_VERSION,
@@ -1037,7 +1377,13 @@ def render_style(
         "options_sha256": _digest(saved["engine_options"]),
         "candidate_path": str(candidate),
         "candidate_sha256": candidate_sha,
-        "candidate_bytes": _io_path(candidate).stat().st_size,
+        "candidate_bytes": candidate_bytes,
+        "tuning_candidate_sha256": original_tuning_sha,
+        "receipt_matches_final_candidate": True,
+        "media_relocation": media_relocation,
+        "partial_reason_counts": partial_reason_counts,
+        "partial_remediation": partial_remediation,
+        "partial_advice": partial_advice,
         # Preserve existing tuning-result field names as aliases.
         "output": str(candidate),
         "output_sha256": candidate_sha,
@@ -1047,9 +1393,9 @@ def render_style(
         "status": result.get("status"),
         "cached": bool(result.get("cached")),
         "receipt_verified": result.get("receipt_verified"),
-        "report": copy.deepcopy(result.get("report")),
+        "report": report,
         "semantic_model_used": False,
         "synthesized": False,
         "listened": False,
-        "tuning_result": copy.deepcopy(result),
+        "tuning_result": tuning_result,
     }

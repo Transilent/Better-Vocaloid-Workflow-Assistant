@@ -8,7 +8,9 @@ import math
 import os
 import sys
 import tempfile
+import types
 import unittest
+import wave
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,7 +20,8 @@ sys.path.insert(0, str(APP / "src"))
 import mido
 
 import agent_exports
-from agent_exports import apply_export, plan_export
+from agent_export_audit import audit_export
+from agent_exports import ExportError, apply_export, plan_export
 from common import native_path
 
 
@@ -397,6 +400,154 @@ class AgentExportPublicationTests(unittest.TestCase):
                     source, plan, root / "outputs",
                     export_runtime=root / "missing-runtime",
                 )
+
+
+def write_instrumental(path, *, seconds=0.1):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as stream:
+        stream.setnchannels(2)
+        stream.setsampwidth(2)
+        stream.setframerate(44100)
+        stream.writeframes(b"\0\0\0\0" * int(44100 * seconds))
+    return path
+
+
+class AgentExportMediaOptionTests(unittest.TestCase):
+    def test_default_and_non_svp_reasons_are_explicit(self):
+        with tempfile.TemporaryDirectory(prefix="agent-export-media-plan-", dir=APP / "work") as temporary:
+            root = Path(temporary)
+            source = write_fixture(root / "source.mid")
+            default = plan_export(source)
+            self.assertFalse(default["instrumental"]["requested"])
+            self.assertEqual(default["instrumental"]["reason"], "not_requested")
+            audio = write_instrumental(root / "伴奏.wav")
+            plan = plan_export(source, ["ustx"], {
+                "include_instrumental": True,
+                "instrumental_path": str(audio),
+            })
+            self.assertTrue(plan["instrumental"]["requested"])
+            self.assertFalse(plan["instrumental"]["included"])
+            self.assertEqual(plan["instrumental"]["reason"], "format_not_supported")
+            self.assertEqual(plan["instrumental"]["unsupported_formats"], ["ustx"])
+            self.assertEqual(plan["instrumental"]["sha256"], digest(audio))
+            self.assertAlmostEqual(plan["instrumental"]["duration_seconds"], 0.1, places=12)
+
+    def test_real_cross_pitch_overlap_is_rejected_before_export(self):
+        with tempfile.TemporaryDirectory(prefix="agent-export-overlap-", dir=APP / "work") as temporary:
+            source = Path(temporary) / "overlap.mid"
+            midi = mido.MidiFile(type=1, ticks_per_beat=480, charset="utf8")
+            midi.tracks.append(mido.MidiTrack([
+                mido.MetaMessage("set_tempo", tempo=500_000, time=0),
+                mido.Message("note_on", channel=0, note=60, velocity=80, time=0),
+                mido.Message("note_on", channel=0, note=64, velocity=80, time=470),
+                mido.Message("note_off", channel=0, note=60, velocity=0, time=10),
+                mido.Message("note_off", channel=0, note=64, velocity=0, time=470),
+            ]))
+            midi.save(str(source))
+            with self.assertRaises(ExportError) as raised:
+                plan_export(source)
+            self.assertEqual(raised.exception.code, "monophonic_overlap")
+            self.assertEqual(raised.exception.details["conflict_count"], 1)
+            conflict = raised.exception.details["conflicts"][0]
+            self.assertTrue(conflict["cross_pitch"])
+            self.assertEqual(conflict["overlap_ticks"], 10)
+
+    def test_monophony_preflight_has_stable_code_and_bounded_details(self):
+        with tempfile.TemporaryDirectory(prefix="agent-export-monophony-", dir=APP / "work") as temporary:
+            source = write_fixture(Path(temporary) / "source.mid")
+            module = types.ModuleType("agent_monophony")
+            module.monophonic_conflicts = lambda score, limit=100: {
+                "code": "monophonic_overlap",
+                "details": {"conflicts": [{"track_index": 1, "channel": 0, "pitch": 60,
+                                            "onset_tick": 10, "overlap_tick": 15}],
+                            "conflict_count": 1},
+            }
+            with patch.dict(sys.modules, {"agent_monophony": module}):
+                with self.assertRaises(ExportError) as raised:
+                    plan_export(source)
+            self.assertEqual(raised.exception.code, "monophonic_overlap")
+            self.assertEqual(raised.exception.details["conflict_count"], 1)
+            self.assertEqual(raised.exception.details["limit"], 100)
+
+
+@unittest.skipUnless(EXPORT_RUNTIME, "optional LibreSVIP export runtime is unavailable")
+class AgentExportInstrumentalTests(unittest.TestCase):
+    def test_svp_portable_package_metadata_and_audit(self):
+        work = APP / "work"
+        work.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="agent-export-instrumental-", dir=work) as temporary:
+            root = Path(temporary)
+            source = write_fixture(root / "source.mid")
+            audio = write_instrumental(root / "source-audio" / "伴奏.wav", seconds=0.2)
+            plan = plan_export(source, ["svp"], {
+                "include_instrumental": True,
+                "instrumental_path": str(audio),
+                "track_names": ["主唱"],
+                "project_name": "移动试听包",
+            })
+            result = apply_export(source, plan, root / "output", export_runtime=EXPORT_RUNTIME)
+            candidate = result["candidates"][0]
+            self.assertTrue(candidate["instrumental_included"])
+            self.assertEqual(candidate["instrumental_reason"], "included_in_svp_portable_package")
+            self.assertEqual(candidate["media"]["count"], 1)
+            self.assertTrue(candidate["media"]["post_publish_readback_verified"])
+            self.assertTrue(Path(candidate["media"]["path"]).is_file())
+            self.assertEqual(candidate["media"]["sha256"], digest(audio))
+            project = json.loads(Path(candidate["candidate_path"]).read_bytes().rstrip(b"\0"))
+            self.assertEqual(project["tracks"][0]["name"], "主唱")
+            self.assertEqual(project["tracks"][1]["name"], "Instrumental")
+            self.assertTrue(project["tracks"][1]["mainRef"]["isInstrumental"])
+            self.assertFalse(Path(project["tracks"][1]["mainRef"]["audio"]["filename"]).is_absolute())
+            self.assertEqual(project["renderConfig"]["filename"], "移动试听包")
+            audit = audit_export(source, result, export_runtime=EXPORT_RUNTIME,
+                                 output_root=root / "audit")
+            self.assertEqual(audit["blockers"], [])
+            self.assertEqual(audit["candidates"][0]["instrumental"]["count"], 1)
+            replay = apply_export(source, plan, root / "output", export_runtime=EXPORT_RUNTIME)
+            self.assertTrue(replay["replay"])
+            self.assertEqual(replay["candidates"][0]["media"]["sha256"], digest(audio))
+
+    def test_audit_rejects_changed_portable_media(self):
+        work = APP / "work"
+        work.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="agent-export-media-tamper-", dir=work) as temporary:
+            root = Path(temporary)
+            source = write_fixture(root / "source.mid")
+            audio = write_instrumental(root / "伴奏.wav")
+            plan = plan_export(source, ["svp"], {
+                "include_instrumental": True, "instrumental_path": str(audio),
+            })
+            result = apply_export(source, plan, root / "output", export_runtime=EXPORT_RUNTIME)
+            media_path = Path(result["candidates"][0]["media"]["path"])
+            media_path.write_bytes(media_path.read_bytes() + b"changed")
+            audit = audit_export(source, result, export_runtime=EXPORT_RUNTIME,
+                                 output_root=root / "audit")
+            codes = {issue["code"] for issue in
+audit["candidates"][0]["blockers"]}
+            self.assertIn("media_sha256_mismatch", codes)
+
+    def test_other_formats_explicitly_do_not_include_media(self):
+        work = APP / "work"
+        work.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="agent-export-no-media-", dir=work) as temporary:
+            root = Path(temporary)
+            source = write_fixture(root / "source.mid")
+            audio = write_instrumental(root / "伴奏.wav")
+            plan = plan_export(source, ["ustx", "vsqx"], {
+                "include_instrumental": True, "instrumental_path": str(audio),
+            })
+            result = apply_export(source, plan, root / "output", export_runtime=EXPORT_RUNTIME)
+            self.assertTrue(all(not row["instrumental_included"] for row in result["candidates"]))
+            self.assertTrue(all(row["instrumental_reason"] == "format_not_supported"
+                                for row in result["candidates"]))
+            self.assertTrue(all(row["media"] is None for row in result["candidates"]))
+            audit = audit_export(source, result, export_runtime=EXPORT_RUNTIME,
+                                 output_root=root / "audit")
+            self.assertEqual(audit["blockers"], [])
+            self.assertTrue(all("instrumental_not_included_in_format" in
+                                {issue["code"] for issue in row["warnings"]}
+                                for row in audit["candidates"]))
 
 
 if __name__ == "__main__":

@@ -31,6 +31,20 @@ import mido
 from common import native_path
 
 
+class ExportError(ValueError):
+    component = "agent_exports"
+    retryable = False
+    remediation = ["vwa_score_review", "vwa_score_patch_plan"]
+
+    def __init__(self, code: str, message: str, *, details: Any = None,
+                 retryable: bool | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details
+        if retryable is not None:
+            self.retryable = retryable
+
+
 def _io_path(path: Any) -> Path:
     return Path(native_path(path))
 
@@ -63,7 +77,10 @@ _FORMATS = {
         "editable": True,
     },
 }
-_OPTION_KEYS = frozenset({"language", "default_bpm", "svp_version"})
+_OPTION_KEYS = frozenset({
+    "language", "default_bpm", "svp_version", "include_instrumental",
+    "instrumental_path", "track_names", "project_name",
+})
 _LANGUAGES = frozenset({"zh", "ja"})
 _SVP_VERSIONS = {"1.9": 100, "1.11": 135, "2.0": 182}
 
@@ -129,6 +146,17 @@ def _normalise_formats(formats: Any) -> list[str]:
     return result
 
 
+def _normalise_metadata_text(value: Any, label: str, *, allow_empty: bool = False) -> str:
+    if not isinstance(value, str):
+        raise ExportError("export_metadata_invalid", label + "必须是字符串。")
+    text = _normalise_text(value).strip()
+    if (not text and not allow_empty) or len(text) > 256 or "\x00" in text:
+        raise ExportError("export_metadata_invalid", label + "必须是非空的短文本。")
+    if any(char in text for char in "\r\n"):
+        raise ExportError("export_metadata_invalid", label + "不能包含换行。")
+    return text
+
+
 def _normalise_options(options: Any) -> dict[str, Any]:
     if options is None:
         options = {}
@@ -147,11 +175,50 @@ def _normalise_options(options: Any) -> dict[str, Any]:
     svp_version = options.get("svp_version", "1.9")
     if not isinstance(svp_version, str) or svp_version not in _SVP_VERSIONS:
         raise ValueError("options.svp_version 必须是 1.9、1.11 或 2.0。")
-    return {
+    result: dict[str, Any] = {
         "language": language,
         "default_bpm": default_bpm,
         "svp_version": svp_version,
     }
+    # Preserve the original option object shape for callers that do not use the
+    # accompaniment/metadata extension. Public control adds this switch only
+    # after resolving an authorized artifact or source job.
+    if not any(key in options for key in (
+            "include_instrumental", "instrumental_path", "track_names", "project_name")):
+        return result
+    include_instrumental = options.get("include_instrumental", False)
+    if type(include_instrumental) is not bool:
+        raise ExportError("export_option_invalid", "options.include_instrumental 必须是布尔值。")
+    instrumental_path = options.get("instrumental_path")
+    if include_instrumental and (
+            not isinstance(instrumental_path, str) or not instrumental_path.strip()
+            or not Path(instrumental_path).is_absolute()):
+        raise ExportError(
+            "instrumental_path_required",
+            "include_instrumental=true 需要控制层解析后的内部 instrumental_path。",
+            details={"public_fields": ["instrumental_artifact_id", "source_job_id"]},
+        )
+    if not include_instrumental and instrumental_path is not None:
+        raise ExportError("instrumental_option_conflict",
+                          "instrumental_path 只能在 include_instrumental=true 时传入。")
+    track_names = options.get("track_names")
+    if track_names is not None:
+        if not isinstance(track_names, (list, tuple)) or not track_names:
+            raise ExportError("export_metadata_invalid", "options.track_names 必须是非空字符串列表。")
+        track_names = [_normalise_metadata_text(value, "options.track_names[]") for value in track_names]
+    project_name = options.get("project_name")
+    if project_name is not None:
+        project_name = _normalise_metadata_text(project_name, "options.project_name")
+        if "/" in project_name or "\\" in project_name:
+            raise ExportError("export_metadata_invalid", "options.project_name 不能包含路径分隔符。")
+    result["include_instrumental"] = include_instrumental
+    if instrumental_path is not None:
+        result["instrumental_path"] = instrumental_path
+    if track_names is not None:
+        result["track_names"] = track_names
+    if project_name is not None:
+        result["project_name"] = project_name
+    return result
 
 
 def _source_path(path: Any) -> Path:
@@ -449,6 +516,105 @@ def _conversion_losses(evidence: dict[str, Any], formats: list[str]) -> list[dic
     return losses
 
 
+
+def _instrumental_plan(options: Mapping[str, Any], formats: list[str]) -> dict[str, Any]:
+    include = options.get("include_instrumental", False) is True
+    if not include:
+        return {
+            "requested": False,
+            "included": False,
+            "reason": "not_requested",
+            "supported_formats": ["svp"],
+            "unsupported_formats": [fmt for fmt in formats if fmt != "svp"],
+        }
+    value = options.get("instrumental_path")
+    if not isinstance(value, str) or not value:
+        raise ExportError("instrumental_path_required", "伴奏导出缺少内部 instrumental_path。")
+    try:
+        from agent_media import audio_info, file_sha256
+        path = Path(value).expanduser().resolve()
+        if not _io_path(path).is_file() or _io_path(path).is_symlink():
+            raise ExportError("instrumental_missing", "控制层解析的伴奏文件不存在。",
+                              details={"path": str(path)})
+        identity = file_sha256(path)
+        media = audio_info(path)
+    except ExportError:
+        raise
+    except (ValueError, OSError) as error:
+        code = getattr(error, "code", "instrumental_unreadable")
+        raise ExportError(code, str(error), details=getattr(error, "details", None)) from error
+    return {
+        "requested": True,
+        "included": "svp" in formats,
+        "reason": "included_in_svp" if "svp" in formats else "format_not_supported",
+        "source_path": str(path),
+        "sha256": identity["sha256"],
+        "bytes": identity["bytes"],
+        "duration_seconds": media["duration_seconds"],
+        "sample_rate": media["sample_rate"],
+        "channels": media["channels"],
+        "format": media["format"],
+        "supported_formats": ["svp"],
+        "unsupported_formats": [fmt for fmt in formats if fmt != "svp"],
+    }
+
+
+def _monophonic_conflicts(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if isinstance(value, Mapping):
+        details = value.get("details")
+        if isinstance(details, Mapping) and value.get("code") == "monophonic_overlap":
+            rows = details.get("conflicts", [])
+            return [dict(row) for row in rows if isinstance(row, Mapping)][:100]
+        rows = value.get("conflicts")
+        if rows is None and value.get("has_conflicts"):
+            rows = [value]
+        if rows is None:
+            return []
+    else:
+        rows = value
+    if not isinstance(rows, (list, tuple)):
+        raise ExportError("monophonic_preflight_invalid", "monophonic_conflicts 返回了未识别结构。")
+    return [dict(row) if isinstance(row, Mapping) else {"detail": row} for row in rows[:100]]
+
+
+def _monophonic_preflight(source: Path) -> dict[str, Any]:
+    try:
+        from agent_monophony import monophonic_conflicts
+    except ModuleNotFoundError:
+        # This module is owned by a separate worker. Once present, every plan
+        # uses its target-track/channel rules and blocks before conversion.
+        return {
+            "status": "unavailable",
+            "code": "monophonic_preflight_unavailable",
+            "message": "单声部预检模块尚未接入；当前计划不能证明跨音高重叠已排除。",
+            "limit": 100,
+        }
+    from agent_score import read_score
+    score = read_score(source)
+    try:
+        result = monophonic_conflicts(score, limit=100)
+        conflicts = _monophonic_conflicts(result)
+    except ExportError:
+        raise
+    except ValueError as error:
+        if getattr(error, "code", None) == "monophonic_overlap":
+            raise ExportError(
+                "monophonic_overlap", str(error),
+                details=getattr(error, "details", {"conflicts": []}),
+            ) from error
+        raise ExportError("monophonic_preflight_failed", str(error)) from error
+    if conflicts:
+        details = {"code": "monophonic_overlap", "conflicts": conflicts,
+                   "conflict_count": len(conflicts), "limit": 100}
+        raise ExportError(
+            "monophonic_overlap",
+            "导出前发现目标轨道或声部内存在重叠音符；请先修订乐谱。",
+            details=details,
+        )
+    return {"status": "passed", "conflict_count": 0, "limit": 100}
+
 def plan_export(path: Any, formats: Any = None, options: Any = None) -> dict[str, Any]:
     """Validate corrected MIDI and return a stable, read-only export plan."""
     source = _source_path(path)
@@ -457,6 +623,8 @@ def plan_export(path: Any, formats: Any = None, options: Any = None) -> dict[str
     raw, source_sha = _read_stable(source)
     midi = _load_midi(raw)
     evidence = _parse_evidence(raw, midi.ticks_per_beat)
+    monophonic = _monophonic_preflight(source)
+    instrumental = _instrumental_plan(normal_options, normal_formats)
     payload = {
         "schema_version": _SCHEMA_VERSION,
         "kind": _PLAN_KIND,
@@ -470,6 +638,8 @@ def plan_export(path: Any, formats: Any = None, options: Any = None) -> dict[str
         "timeline_adapter": "vwa-native-clock-v1",
         "targets": _format_targets(normal_formats),
         "expected": evidence,
+        "monophonic_preflight": monophonic,
+        "instrumental": instrumental,
         "conversion_losses": _conversion_losses(evidence, normal_formats),
         "runtime_requirements": {
             "environment": _RUNTIME_ENV,
@@ -926,6 +1096,18 @@ def _verify_receipt(path: Path, plan: dict[str, Any], root: Path) -> dict[str, A
         current = _existing_file(candidate, "候选工程")
         if current is None or _sha256(current) != candidate_sha:
             raise ValueError("候选工程缺失或哈希已改变，拒绝信任已有 receipt。")
+        requested = bool(plan.get("instrumental", {}).get("requested"))
+        if row["format"] == "svp" and requested:
+            from agent_media import inspect_svp_media
+            media = row.get("media")
+            if not isinstance(media, Mapping) or media.get("included") is not True:
+                raise ValueError("已有含伴奏 receipt 缺少可验证的 SVP 媒体证据。")
+            inspect_svp_media(candidate, allowed_roots=[root], require_relative=True,
+                              expected=media)
+            if row.get("instrumental_included") is not True:
+                raise ValueError("已有含伴奏 SVP receipt 未声明 instrumental_included=true。")
+        elif row["format"] != "svp" and row.get("instrumental_included") is True:
+            raise ValueError("非 SVP 候选不能声明内嵌伴奏。")
     if seen_formats != plan["formats"]:
         raise ValueError("已有 export receipt 的格式顺序不匹配。")
     return document
@@ -1002,18 +1184,55 @@ def apply_export(
                 report("exporting " + fmt)
                 temporary = _new_temp_path(root, fmt)
                 pending_paths.append(temporary)
+                instrumental_requested = bool(saved.get("instrumental", {}).get("requested"))
+                candidate_project = _converter_project(project, fmt)
+                if fmt == "svp" and instrumental_requested:
+                    from libresvip.model.base import InstrumentalTrack
+                    candidate_project.track_list.append(InstrumentalTrack(
+                        title="Instrumental",
+                        audio_file_path=str(saved["options"]["instrumental_path"]),
+                        offset=0,
+                    ))
                 try:
                     converters[fmt].dump(
-                        _io_path(temporary), _converter_project(project,fmt), _output_options(fmt, saved)
+                        _io_path(temporary), candidate_project, _output_options(fmt, saved)
                     )
                     if fmt == "vsqx":
                         _restore_vsqx_lyrics(temporary, project)
+                    media = None
+                    metadata = None
+                    if fmt == "svp":
+                        from agent_media import apply_svp_metadata, attach_instrumental
+                        metadata = apply_svp_metadata(
+                            temporary,
+                            track_names=saved["options"].get("track_names"),
+                            project_name=saved["options"].get("project_name"),
+                        )
+                        if instrumental_requested:
+                            media = attach_instrumental(
+                                temporary,
+                                saved["options"]["instrumental_path"],
+                                allowed_roots=[
+                                    Path(saved["options"]["instrumental_path"]).resolve().parent,
+                                    root,
+                                ],
+                                cancel=cancel,
+                            )
+                    elif any(key in saved["options"] for key in ("track_names", "project_name")):
+                        metadata = {
+                            "requested": True, "applied": False,
+                            "reason": "metadata_not_supported_for_format",
+                            "track_names": saved["options"].get("track_names"),
+                            "project_name": saved["options"].get("project_name"),
+                        }
                     check_cancel()
                     loaded = converters[fmt].load(
                         _io_path(temporary),
                         {"import_pitch": False, "import_instrumental_track": False},
                     )
                 except Exception as error:
+                    if isinstance(error, (ValueError, OSError, InterruptedError)) and hasattr(error, "code"):
+                        raise
                     raise ValueError(f"{fmt.upper()} 转换或回读失败：{error}") from error
                 actual = _project_notes(loaded)
                 if actual != expected:
@@ -1042,11 +1261,33 @@ def apply_export(
                 published = _existing_file(final, "候选工程")
                 if published != raw_bytes:
                     raise ValueError("候选发布后校验失败。")
+                if fmt == "svp" and instrumental_requested:
+                    from agent_media import inspect_svp_media
+                    media_readback = inspect_svp_media(
+                        final, allowed_roots=[root], require_relative=True,
+                        expected=media,
+                    )
+                    media = {**media, **media_readback}
+                    media["path"] = str(final.parent / media["relative_paths"][0])
+                    media["post_publish_readback_verified"] = True
+                if instrumental_requested and fmt == "svp":
+                    instrumental_included = True
+                    instrumental_reason = "included_in_svp_portable_package"
+                elif instrumental_requested:
+                    instrumental_included = False
+                    instrumental_reason = "format_not_supported"
+                else:
+                    instrumental_included = False
+                    instrumental_reason = "not_requested"
                 candidates.append({
                     "format": fmt,
                     "candidate_path": str(final),
                     "candidate_sha256": candidate_sha,
                     "bytes": len(raw_bytes),
+                    "instrumental_included": instrumental_included,
+                    "instrumental_reason": instrumental_reason,
+                    "media": media,
+                    "metadata": metadata,
                     "verified_notes": len(actual),
                     "verified_lyrics": sum(1 for row in actual if row[3] != ""),
                     "tempo_verified": tempo_verified,
@@ -1092,6 +1333,9 @@ def apply_export(
                 "tempo": input_tempo,
                 "time_signatures": input_timesig,
             },
+            "instrumental": copy.deepcopy(saved.get("instrumental", {
+                "requested": False, "included": False, "reason": "not_requested"
+            })),
             "conversion_losses": copy.deepcopy(saved["conversion_losses"]),
             "semantic_model_used": False,
             "synthesized": False,
@@ -1125,4 +1369,4 @@ def apply_export(
                 pass
 
 
-__all__ = ["plan_export", "apply_export"]
+__all__ = ["ExportError", "plan_export", "apply_export"]

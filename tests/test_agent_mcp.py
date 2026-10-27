@@ -375,7 +375,7 @@ async def workflow_contract(configuration):
         artifact = await call(client,'vwa_assets_import',{'path':str(original)})
         flow = await call(client,'vwa_workflow_create',{'score_artifact_id':artifact['id'],
             'options':{'language':'zh'},'brief':'首句克制思乡，少量戏腔。','reference_lyrics':'山河',
-            'idempotency_key':'supervised-demo'})
+            'idempotency_key':'supervised-demo','review_mode':'legacy'})
         pitch = await call(client,'vwa_reference_import',
             {'path':str(configuration.parent/'exchange/reference.npz'),'kind':'pitch'})
         audio = await call(client,'vwa_reference_import',

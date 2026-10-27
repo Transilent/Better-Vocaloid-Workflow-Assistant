@@ -242,6 +242,10 @@ class AgentStructureTests(unittest.TestCase):
                 [row["lyric_created"] for row in plan["diff"]["inserted_notes"]],
                 [True, False],
             )
+            self.assertEqual(
+                plan["structural_changes"]["monophonic_conflicts"],
+                [],
+            )
 
             output = root / "outputs"
             receipt = apply_structure_patch(source, plan, output)
@@ -344,6 +348,10 @@ class AgentStructureTests(unittest.TestCase):
                 "velocity": 70,
             }]
             plan = plan_structure_patch(source, base, allowed)
+            self.assertEqual(
+                plan["structural_changes"]["monophonic_conflicts"],
+                [],
+            )
             receipt = apply_structure_patch(source, plan, root / "poly-output")
             candidate = read_score(receipt["candidate_path"])
             self.assertTrue(any(
@@ -352,6 +360,22 @@ class AgentStructureTests(unittest.TestCase):
                 and note["onset_tick"] == 0
                 for note in candidate["notes"]
             ))
+
+            cross_pitch = [{
+                "operation": "insert",
+                "track_index": 1,
+                "channel": 0,
+                "pitch": 67,
+                "onset_tick": 0,
+                "duration_tick": 120,
+                "velocity": 70,
+            }]
+            cross_pitch_plan = plan_structure_patch(source, base, cross_pitch)
+            cross_pitch_conflicts = cross_pitch_plan["structural_changes"]["monophonic_conflicts"]
+            self.assertEqual(len(cross_pitch_conflicts), 1)
+            self.assertEqual(cross_pitch_conflicts[0]["code"], "monophonic_overlap")
+            self.assertTrue(cross_pitch_conflicts[0]["cross_pitch"])
+            self.assertTrue(any("单声部" in warning for warning in cross_pitch_plan["warnings"]))
 
             adjacent = [
                 {

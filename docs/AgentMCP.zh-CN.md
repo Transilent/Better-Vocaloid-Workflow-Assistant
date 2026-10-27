@@ -1,106 +1,143 @@
 # VWA 本机 Agent / MCP 接口
 
-本文按当前本地工作树源码描述 45 个 stdio 工具，覆盖歌曲准备、MIDI 核对与修正、已有 F0/WAV 参考、工程导出与监督、SVP/VSQX 显式音素候选、GUI 共享片段草稿和持久一体化工作流。MCP 是可选运行环境；VWA 的 GUI 和推理 Python 不需要安装 SDK。
+本文按当前 `workspace/vwa` 工作树中的 `src/agent_mcp.py`、`agent_control.py`、`agent_workflow.py` 及其他已落盘模块，说明 **55 个 stdio 工具**。工具总数由 `agent_control.TOOLS` 和 MCP 注册表共同核对；实际可用工具、代码身份和格式能力仍以 `vwa_system_capabilities().data.tools`、`code_revision` 及真实业务回执为准。
 
-实际可用工具和代码身份以 `vwa_system_capabilities().data.tools`、`code_revision` 及实际调用回执为准。本文说明接口契约，不证明整曲准备、读音候选、GUI 草稿同步、导出或任何一次操作已经验收。文中的 JSON 是字段示意；`..._PLACEHOLDER` 必须替换成当前调用返回值。服务没有发布、账号导出或任意命令执行能力。
+`vwa_assets_import` 也可导入授权目录内的伴奏 WAV，支持整数 PCM 与浮点 WAV，按流式摘要生成独立快照；其 artifact 可用于 `instrumental_artifact_id`。`vwa_reference_import(kind="audio")` 用于整数 PCM 参考测量与摘录，不能用它替代浮点伴奏导入。伴奏首版上限为 2 GiB。
+
+逐段风格汇总遵守现有引擎的全局目标轨语义：一次生成可为一个演唱轨逐段设置风格，其余演唱轨逐段选择保留原表现。不同轨道的独立分段风格不会被静默合并到所有轨道；这种请求返回 `segmented_multi_track_style`，应拆成独立生成轮次。
+
+本文是接口契约，不是整套功能的验收报告。2026-10-27《牵丝戏》真实歌曲复盘建立在历史 45 工具版本上，暴露了跨音高短重叠、导出后无法换入修正 MIDI、风格相邻边界误判、长任务轮询、返回载荷过大、伴奏缺失和交付无统一清单等问题。本文纳入当前源码中对应的接口；这些新增路径是否已在新版本中完成真实整曲复跑，必须以新的绑定回执为准。本文不声称当前 55 工具已经通过完整真实歌曲试测，也不包含声库适配、合成、试听或声学发音验收。
+
+MCP 是可选运行环境；VWA GUI 和推理 Python 不需要安装 MCP SDK。服务不提供发布、账号导出、任意命令执行或平台投稿能力。
 
 ## 推荐的一体化流程
 
-新安装默认使用一体化入口，把准备、核对、工程导出、可选音素修正和可选风格串成持久工作流。已有 MIDI 先由 `vwa_assets_import` 导入，再用 `score_artifact_id` 创建；Bilibili 的含 BV 号链接或允许目录内音乐可直接作为 `source`。`source` 与 `score_artifact_id` 必须二选一。
+首选 `vwa_workflow_create`：歌曲链接/本地音乐、已有 MIDI、已有受管准备任务三者必须且只能选择一个。创建后连续读取 `vwa_workflow_get().next`，按其中的工具、参数、`expected_revision` 和提示推进。
 
 ```json
 {
-  "source": "BV_PLACEHOLDER",
-  "options": {"language": "zh", "voice_mode": "dual"},
-  "brief": "用户提供的创作背景",
+  "source": "BV1XXXXXXXXX",
+  "options": {
+    "language": "zh",
+    "voice_mode": "dual"
+  },
+  "brief": "用户提供的创作背景与风格要求",
   "reference_lyrics": "已获准使用的参考歌词",
-  "formats": ["svp", "vsqx"]
+  "formats": ["svp"],
+  "review_mode": "segments"
 }
 ```
 
-`formats` 省略时默认为 `["svp"]`。显式格式可包含不重复的 `svp`、`ustx`、`vsqx`；有非空 `brief` 时必须同时包含 `svp`。当前链接准备入口只适配 Bilibili。
+已有 MIDI 时，先 `vwa_assets_import` 导入独立快照，再以 `score_artifact_id` 创建工作流。已有受管准备任务时，只传 `preparation_job_id`，不要再传 `source` 或 `score_artifact_id`。
 
-工作流经以下阶段。`project_ready` 只表示可检查的导出工程已生成，不表示导出已经认可：
+```json
+{
+  "preparation_job_id": "job_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "options": {"language": "zh", "voice_mode": "dual"},
+  "brief": "沿已完成的准备阶段继续核对与导出。",
+  "reference_lyrics": "与准备任务一致的参考歌词",
+  "formats": ["svp"],
+  "review_mode": "segments"
+}
+```
+
+`formats` 省略时为 `["svp"]`。可显式包含不重复的 `svp`、`ustx`、`vsqx`；有非空 `brief` 时必须包含 `svp`，因为调用方风格语义只写入 SVP 风格链路。`review_mode` 省略时默认为 `segments` 逐段验收；旧客户端必须显式提交 `"legacy"` 才能走兼容路径。
+
+工作流的业务阶段为：
 
 ```text
 created -> preparing -> review -> reviewing -> reviewed
         -> exporting -> project_ready -> styling（可选）-> ready
 
-project_ready -- 显式音素修正 --> refining --> project_ready（新的监督报告）
-
+project_ready -- 显式音素修正 --> refining --> project_ready
 project_ready -- export_review=needs_revision --> review
+project_ready -- finish=true 或不要求风格 --> ready
 ```
 
-建议调用顺序：
+`reviewed` 仅在 segments 模式下所有 MIDI 段均已 checked 后成立。`ready` / `completed=true` 只表示当前工作流选定的可编辑工程候选已生成。它不代表声库已加载、歌曲已合成、发音已试听或平台已发布。
 
-1. 先读 `vwa_system_capabilities`，确认工具清单、`code_revision`、格式能力和 `shared_gui_drafts` 状态。
-2. 用 `vwa_workflow_create` 创建；之后按 `vwa_workflow_get().next` 返回的工具、参数、`expected_revision` 和 `after_seconds` 推进。不要自行猜阶段 ID、报告 SHA 或修订。
-3. 在 `review` 用 `vwa_workflow_review` 分页读取音符和歌词。`limit` 为 1–200，按 `next_offset` 读完；规则提示只是待审线索。
-4. 用 `vwa_workflow_apply_review` 提交结构、歌词或音高/时值修改，或在确有理由时提交空修改表示保留。只有成功的核对操作被消费，且 MIDI SHA 仍一致，才进入 `reviewed`。
-5. 导出后读取 `export_summary`。先核对候选的音符、歌词、实际秒数、转换损失和 SVP/VSQX 原生读音事实，再按当前 `report_sha256` 提交 `export_review`。
-6. 若必须改写显式音素，在 `project_ready` 调用 `vwa_workflow_pronunciation_apply`。流程进入 `refining`，成功后回到 `project_ready`，生成新的导出监督报告并清除旧 `export_review`；必须重新监督。
-7. 导出已认可后，可提交显式 `style_proposal`，或提交由共享草稿生成的 `style_plan_id`。两者互斥。没有风格需求且导出已认可时可用 `finish=true`。
-8. `completed=true` 只表示可编辑工程已就绪。声库合成、试听、混音、视频装配和平台投稿仍是外部步骤。
+推荐调用顺序：
 
-所有修改都要携带当前工作流 `revision` 或当前文件 SHA。出现 `workflow_conflict`、`stale_plan`、`stale_artifact`、`stale_draft_plan`、`export_review_conflict`、`review_edit_conflict` 或 `ambiguous_note_mapping` 时，重新读取当前状态；不得猜 ID、复用过期报告或静默覆盖。
+1. 读取 `vwa_system_capabilities`，确认 55 工具、`code_revision`、`bounded_wait_ms=60000`、`instrumental_export_formats=["svp"]` 和共享草稿状态。
+2. 创建或取得工作流，读取 `vwa_workflow_get` 的 `stage`、`revision`、`operation` 和 `next`。
+3. 运行中优先用 `vwa_operations_wait(after_cursor=上一次 poll_cursor)` 有界等待；准备任务也可用 `vwa_jobs_get(wait_ms<=60000, after_cursor=上一次 poll_cursor)`。不要无界忙等。
+4. 在 `review` 按 `review_progress.current` 逐段调用 `vwa_workflow_review(segment_id=...)`，核对本段音符、歌词和参考证据。不要用一份全曲摘要代替逐段检查。
+5. 用 `vwa_workflow_apply_review(segment_id=...)` 提交本段结构、歌词、音高/时值修改，或提交有依据的空修改表示保留；edit 只能引用本段 ID。发生实际修改后先重读本段，全部段 checked 后才进入 `reviewed`。
+6. 开始导出前，用 `vwa_workflow_advance(export_options=...)` 设置 SVP 版本、轨道名、工程名和伴奏来源。导出后按当前 `report_sha256` 检查 `export_summary`。
+7. 导出监督只接受无 blocker、全部必需损失代码均已逐项认可、源 MIDI 与候选 SHA 仍一致的报告。硬差异提交 `needs_revision`，回到逐段 `review`。
+8. 有风格要求时，用 `vwa_workflow_style_review` 和 `vwa_workflow_style_decide` 逐段保留原表现或提交该段风格；全部完成后 `workflow_advance` 自动汇总并进入 `styling -> ready`。全部保留时不启动风格运算。
+9. `ready` 后调用 `vwa_workflow_delivery` 生成可移动交付包。交付前仍需检查包内 `manifest.json`、`SHA256SUMS`、伴奏相对引用和 `not_run`。
+10. 声库合成、听感、混音、视频装配及投稿都是外部步骤。
 
-## 45 个公开工具
+所有修改携带当前工作流 `revision` 或文件 SHA。遇到 `workflow_conflict`、`stale_plan`、`stale_artifact`、`stale_draft_plan`、`export_review_conflict`、`review_edit_conflict`、`ambiguous_note_mapping` 或 `monophonic_overlap` 时，先重新读取当前状态；不得猜 ID、复用过期报告或静默覆盖。
 
-当前 `agent_control.TOOLS` 与 MCP 注册表合计 45 个名称。下表逐项列出；工具是否可调用仍以 `vwa_system_capabilities` 和实际业务回执为准。
+## 55 个公开工具
 
-| 工具 | 用途 |
-|---|---|
-| `vwa_system_capabilities` | 工具清单、能力、代码身份、外部交接与限制 |
-| `vwa_system_health` | 业务 Python、关键依赖身份；不运行推理或合成 |
-| `vwa_jobs_list` | 分页查看允许任务目录中的准备任务 |
-| `vwa_jobs_get` | 读取准备任务真实阶段、子步骤和中断状态 |
-| `vwa_artifacts_list` | 列出登记产物或读取指定任务产物索引 |
-| `vwa_artifacts_inspect` | 读取产物信息；`verify=true` 启动 SHA 核验操作 |
-| `vwa_operations_get` | 读取持久操作状态、结果、失败或中断 |
-| `vwa_operations_cancel` | 请求协作取消；`cancel_requested` 不等于已取消 |
-| `vwa_assets_import` | 导入允许目录中的 MIDI/SVP 独立快照 |
-| `vwa_score_read` | 读取 MIDI 音符、时间与稳定 ID |
-| `vwa_score_review` | 返回可定位到音符的规则核对提示 |
-| `vwa_score_patch_plan` | 校验 MIDI 音高/绝对 tick 时值修改方案 |
-| `vwa_score_patch_apply` | 执行已保存方案并生成独立 MIDI 候选 |
-| `vwa_context_read` | 读取 SVP 歌词、音符、时间、轨道与预设证据 |
-| `vwa_style_plan` | 校验调用方风格语义、整音符范围、理由和分段时间 |
-| `vwa_plans_get` | 执行前重读不可变方案、diff 和理由 |
-| `vwa_tuning_start` | 从风格方案生成独立 SVP 候选操作 |
-| `vwa_tuning_result` | 读取风格候选操作及外部合成交接 |
-| `vwa_preparation_plan` | 校验 Bilibili/本地音乐准备方案 |
-| `vwa_preparation_create` | 从准备方案创建隔离准备任务 |
-| `vwa_preparation_start` | 启动或续跑准备任务，保留真实阶段回执 |
-| `vwa_lyrics_read` | 读取 MIDI 歌词、音符关系和未知项 |
-| `vwa_lyrics_review` | 核对漏词、重复、错位和参考歌词覆盖 |
-| `vwa_lyrics_patch_plan` | 规划音符级歌词替换或插入 |
-| `vwa_lyrics_patch_apply` | 生成独立歌词修正 MIDI 与回执 |
-| `vwa_structure_patch_plan` | 规划 MIDI 音符插入/删除及歌词归属策略 |
-| `vwa_structure_patch_apply` | 生成独立结构修正 MIDI 并复核事件 |
-| `vwa_reference_import` | 导入已有 F0 NPZ 或整数 PCM WAV 快照 |
-| `vwa_reference_pitch_review` | 用显式时间原点条件性比较 MIDI 与已有 F0 |
-| `vwa_reference_audio_read` | 读取 WAV 头、测量局部 PCM 或生成试听摘录 |
-| `vwa_pronunciation_read` | 分页读取 MIDI/SVP/VSQX 原字和原生音素事实 |
-| `vwa_pronunciation_patch_plan` | 规划 SVP/VSQX 明确音素替换；公开上限 512 项编辑 |
-| `vwa_pronunciation_patch_apply` | 生成只改指定音素的独立工程候选 |
-| `vwa_drafts_get` | 读取与指定 GUI 实例共用的片段草稿和字节修订 |
-| `vwa_drafts_publish` | 把已校验风格方案按 CAS 发布到共享草稿 |
-| `vwa_drafts_plan` | 从指定 revision 的 GUI 片段草稿生成绑定方案 |
-| `vwa_exports_plan` | 规划 MIDI 到 SVP/USTX/VSQX 的工程导出 |
-| `vwa_exports_start` | 执行导出、回读候选并保留独立审计 |
-| `vwa_workflow_create` | 一体化创建链接/本地音乐或已有 MIDI 工作流 |
-| `vwa_workflow_get` | 读取工作流修订、阶段、操作和下一步 |
-| `vwa_workflow_review` | 分页读取工作流音符、歌词、参考证据和提示 |
-| `vwa_workflow_references_set` | 绑定或清除本次工作流的 F0/WAV 参考与秒数 |
-| `vwa_workflow_apply_review` | 提交结构、歌词、音高/时值修改或保留理由 |
-| `vwa_workflow_pronunciation_apply` | 批量修正当前导出工程的明确音素并重新审计 |
-| `vwa_workflow_advance` | 推进阶段、提交导出决策、使用风格方案或结束 |
+成功响应为 `structured_content = {schema_version: 1, data: {...}}`。业务失败为 MCP `isError=true`，错误正文是可解析 JSON：`{code, message, component, retryable, remediation, details?}`。异步对象的 `id` 用作 `operation_id`。
 
-成功响应为 `structured_content = {schema_version: 1, data: {...}}`。业务失败为 MCP `isError=true`，错误正文是可解析的 `{code, message, details?}` JSON。异步对象的 `id` 用作后续 `operation_id`。资源 `vwa://capabilities` 与 `vwa://workflow` 提供能力清单和简要指南。
+| # | 工具 | 用途 |
+|---:|---|---|
+| 1 | `vwa_system_capabilities` | 工具清单、能力、代码身份、外部交接与限制 |
+| 2 | `vwa_system_health` | 业务 Python、关键依赖身份；不运行推理或合成 |
+| 3 | `vwa_jobs_list` | 分页查看允许任务目录中的准备任务，`limit=1..100` |
+| 4 | `vwa_jobs_get` | 读取真实阶段与当前视频 `source_summary`；`wait_ms<=60000` |
+| 5 | `vwa_artifacts_list` | 列出登记产物或读取指定任务产物索引 |
+| 6 | `vwa_artifacts_inspect` | 读取产物信息；`verify=true` 启动可取消的 SHA 核验操作 |
+| 7 | `vwa_operations_get` | 读取持久操作状态、完整结果、失败或中断 |
+| 8 | `vwa_operations_cancel` | 请求协作取消；`cancel_requested` 不等于已取消 |
+| 9 | `vwa_assets_import` | 从允许素材目录导入 MIDI/SVP 独立快照 |
+| 10 | `vwa_score_read` | 读取 MIDI 音符、tick、秒数、歌词关系和稳定 ID |
+| 11 | `vwa_score_review` | 返回可定位到音符的核对提示，包括单声部重叠预检 |
+| 12 | `vwa_score_patch_plan` | 校验音高/绝对 tick 时值修改；可显式移动唯一所属歌词 |
+| 13 | `vwa_score_patch_apply` | 执行已保存方案并生成独立 MIDI 候选 |
+| 14 | `vwa_context_read` | 分页读取 SVP 歌词、音符、轨道、预设与风格证据 |
+| 15 | `vwa_style_plan` | 保存调用方提供的风格语义、完整音符范围和理由 |
+| 16 | `vwa_plans_get` | 执行前重读不可变方案、完整 ID、diff 和理由 |
+| 17 | `vwa_tuning_start` | 从风格方案生成独立 SVP 候选操作 |
+| 18 | `vwa_tuning_result` | 读取风格候选、partial 原因及外部合成交接 |
+| 19 | `vwa_preparation_plan` | 校验 Bilibili/本地音乐准备方案 |
+| 20 | `vwa_preparation_create` | 从准备或复用方案创建新的隔离准备任务 |
+| 21 | `vwa_preparation_start` | 运行或续跑受管准备任务，保留阶段回执 |
+| 22 | `vwa_lyrics_read` | 读取 MIDI 歌词、音符关系、未知项与歧义 |
+| 23 | `vwa_lyrics_review` | 核对漏词、重复、错位和参考歌词覆盖 |
+| 24 | `vwa_lyrics_patch_plan` | 规划音符级歌词替换或插入 |
+| 25 | `vwa_lyrics_patch_apply` | 生成独立歌词修正 MIDI 与回执 |
+| 26 | `vwa_exports_plan` | 规划 MIDI 到 SVP/USTX/VSQX，预检重叠并解析伴奏 |
+| 27 | `vwa_exports_start` | 执行导出、回读候选并保留独立审计 |
+| 28 | `vwa_workflow_create` | 一体化创建工作流；`review_mode` 默认 `segments`，显式 `legacy` 兼容旧路径 |
+| 29 | `vwa_workflow_get` | 读取阶段、修订、操作和下一步；默认 summary |
+| 30 | `vwa_workflow_review` | 分页读取当前段或旧模式当前页的音符、歌词、参考证据和提示 |
+| 31 | `vwa_workflow_apply_review` | 提交当前段结构、歌词、音高/时值修改或保留理由 |
+| 32 | `vwa_workflow_advance` | 推进阶段、设置导出选项、提交导出决策、风格或结束 |
+| 33 | `vwa_structure_patch_plan` | 规划 MIDI 音符插入/删除及歌词归属策略 |
+| 34 | `vwa_structure_patch_apply` | 生成独立结构修正 MIDI 并复核事件 |
+| 35 | `vwa_reference_import` | 导入已有 F0 NPZ 或整数 PCM WAV 快照 |
+| 36 | `vwa_reference_pitch_review` | 用显式时间原点条件性比较 MIDI 与已有 F0 |
+| 37 | `vwa_reference_audio_read` | 读取 WAV 头、局部 PCM 测量或生成试听摘录 |
+| 38 | `vwa_workflow_references_set` | 绑定或清除工作流 F0/WAV 参考与秒数 |
+| 39 | `vwa_pronunciation_read` | 分页读取 MIDI/SVP/VSQX 原字和原生音素事实 |
+| 40 | `vwa_pronunciation_patch_plan` | 规划 SVP/VSQX 明确音素替换，单次最多 512 项 |
+| 41 | `vwa_pronunciation_patch_apply` | 生成只改指定音素的独立工程候选 |
+| 42 | `vwa_workflow_pronunciation_apply` | 在工作流内批量改音素并重建监督报告 |
+| 43 | `vwa_drafts_get` | 读取指定 GUI 实例的共享片段草稿和字节 revision |
+| 44 | `vwa_drafts_publish` | 把已校验风格方案按 CAS 发布到共享草稿 |
+| 45 | `vwa_drafts_plan` | 从指定 revision 的 GUI 草稿生成绑定方案 |
+| 46 | `vwa_operations_wait` | 有界等待操作完成或实际变化，单次最长 60 秒 |
+| 47 | `vwa_preparation_reuse_plan` | 规划复用已完成准备阶段；源任务只读 |
+| 48 | `vwa_workflows_list` | 分页检索工作流阶段、生命周期和标识 |
+| 49 | `vwa_workflow_rebind_score` | 同一活跃工作流换入修正 MIDI 并回到 `review` |
+| 50 | `vwa_workflow_close` | 关闭活跃性并保留证据，不删除任务或工程 |
+| 51 | `vwa_workflow_archive` | 归档并保留证据、回执和检索入口 |
+| 52 | `vwa_workflow_clone` | 从保留 MIDI 或原输入克隆为新的可继续工作流 |
+| 53 | `vwa_workflow_delivery` | 生成受验证的工程、相对伴奏、回执、README 与 SHA 清单 |
+| 54 | `vwa_workflow_style_review` | 读取当前待查风格片段、当前段音符与相邻只读上下文 |
+| 55 | `vwa_workflow_style_decide` | 逐段提交风格或保留决策；全部完成后供 workflow 自动汇总 |
 
-## 安装、配置与共享草稿目录
+资源 `vwa://capabilities` 与 `vwa://workflow` 提供能力清单和简要指南。工具是否可调用仍以当前 capabilities 和业务回执为准。
 
-Windows x64、CPython 3.12。SDK 固定为 `mcp==2.3.0`，传递依赖和此平台 wheel 摘要固定在 `packaging/requirements-mcp.lock.txt`。按项目方法生成根 Python 文件后运行：
+## 安装、配置与授权根
+
+Windows x64、CPython 3.12。SDK 固定为 `mcp==2.3.0`，传递依赖和平台 wheel 摘要固定在 `packaging/requirements-mcp.lock.txt`。按项目方法生成根 Python 文件后运行：
 
 ```powershell
 ./tools/Prepare-Source.ps1
@@ -111,244 +148,684 @@ Windows x64、CPython 3.12。SDK 固定为 `mcp==2.3.0`，传递依赖和此平�
   -ControlDirectory 'C:/VWA-Agent'
 ```
 
-`BootstrapPython` 创建独立 SDK 环境；`WorkerPython` 是现有 VWA 业务 Python。复用已建环境时增加 `-RuntimeDirectory`。setup 不注册 MCP 宿主，不复制模型或账号，也不修改已有 `config.json`。
+`BootstrapPython` 创建独立 SDK 环境；`WorkerPython` 是现有 VWA 业务 Python。复用环境时增加 `-RuntimeDirectory`。setup 不注册 MCP 宿主，不复制模型或账号，也不修改已有 `config.json`。
 
-新安装首次生成配置时，`shared_draft_root` 默认为 `ApplicationRoot/cache/style-region-drafts`。打包示例 `packaging/agent-mcp.example.json` 也包含同一字段；这样指定 GUI 实例的片段草稿默认与 MCP 可见目录一致：
+控制配置的路径字段都是绝对路径。`shared_draft_root` 与 `allowed_delivery_roots` 可省略，但不能猜测或自动扩大：
 
 ```json
 {
   "schema": 1,
   "application_root": "C:/VWA/application",
-  "worker_python": "C:/VWA/application/dependencies/vocal2midi/python/python.exe",
+  "worker_python": "C:/VWA/dependencies/vocal2midi/python/python.exe",
   "state_root": "C:/VWA-Agent/state",
-  "allowed_asset_roots": ["C:/VWA-Agent/exchange"],
-  "allowed_job_roots": ["C:/VWA-Agent/jobs"],
-  "shared_draft_root": "C:/VWA/application/cache/style-region-drafts"
+  "allowed_asset_roots": ["C:/VWA/assets"],
+  "allowed_job_roots": ["C:/VWA/jobs"],
+  "shared_draft_root": "C:/VWA/application/cache/style-region-drafts",
+  "allowed_delivery_roots": ["D:/VWA-Deliveries"]
 }
 ```
 
-已有配置若缺少 `shared_draft_root` 或该值为 `null`，Control 仍兼容该旧配置，但不会自动启用或猜测一个目录；`vwa_system_capabilities().data.shared_gui_drafts` 为 `false`，三个草稿工具返回 `shared_drafts_disabled`。要启用时，操作者必须手工加入与目标 GUI 实例相同的绝对目录，并重新启动 MCP 服务。旧配置不会被 setup 自动改写。本机主助手接入时只启用独立试用根下的 cache，不能把原安装或其他版本的草稿目录擅自当成共享根。
+`shared_draft_root` 必须位于指定 GUI 实例的 `cache/style-region-drafts`，并与 MCP state、素材根、任务根分离。省略或 `null` 时共享草稿工具返回 `shared_drafts_disabled`。
 
-`shared_draft_root` 必须是绝对路径，不能是文件、可写 junction/symlink 或含重解析点的祖先，并且必须与 MCP `state_root`、素材根、任务根分开。共享的是同一 GUI 安装实例的 `cache/style-region-drafts`，不是用户全局偏好。不同 `ApplicationRoot` 或不同版本的 GUI 可能看到不同草稿；跨实例前应显式核对 `drafts_get().path` 和 `input_sha256`。
+`allowed_delivery_roots` 是外部交付的唯一授权目录列表。每个目录必须已存在，不能与应用目录重叠；不能包含 junction/symlink 或重解析点。未配置时只能写入 MCP `state_root/outputs/deliveries` 下的默认交付目录。`destination` 若不在授权根内，返回 `outside_delivery_roots`。
 
-操作者仍应审阅 `allowed_asset_roots`、`allowed_job_roots` 和 `state_root`。`state_root` 必须位于 GUI 安装和用户任务目录之外；允许根必须已存在。宿主应启动 `Start-VWA-MCP.cmd` 或等价的独立 Python `agent_mcp.py --config 绝对路径`；stdio stdout 只承载 SDK JSON-RPC。协议由固定官方 SDK 处理，业务长任务使用 operation ID，不要求宿主实现 Tasks 扩展。
+## 等待、紧凑读取与分页
 
-## 读音事实与显式音素候选
+### 等待最长 60 秒
 
-### 先读事实，再决定是否写入
-
-`vwa_pronunciation_read({artifact_id, limit, offset})` 分页读取当前登记工程，默认 `limit=100`，允许 1–500；公开工具的工程读取上限为 32 MiB。返回工程 `source_sha256`、`format`、`format_version`、时间基准、轨道、`note_count`、音符页、`phoneme_summary`、`write_supported` 和告警。分页状态在 `pagination` 中，使用 `pagination.next_offset` 继续读取；不能把首屏或导出的前 50 个音符当成整曲。 读取结果还明确返回 `inference_performed=false`、`g2p_performed=false`、`provider_access_performed=false` 和 `acoustic_pronunciation_verified=false`。
-
-每个音符在源版本内使用稳定 `note_ref`，并提供 `track_index`/`track_name`、`group`/`group_name`、`pitch`、`onset`/`duration`、秒数、`lyric` 以及 `phonemes`、`phoneme_state`、`phoneme_override`、`phoneme_locked`、`phoneme_source` 和 `editable`。MIDI 的 `note_ref` 是现有 `note_id`。
-
-`phoneme_state` 的当前值是：
-
-- `unknown`：源工程没有可证明的音素事实，不能自动填一个读音；MIDI 未存音素就是未知。
-- `derived_unverified`：存在音素文本，但来自未锁定的派生/未确认事实，不能等同于显式写入值。
-- `explicit`：源工程明确写入；这仍只证明文件中写了什么，不证明读音正确，更不证明声库会按该写法发音。
-
-公开能力声明读取 `midi`、`svp`、`vsqx`；USTX 在当前实现中明确不支持。MIDI/SVP 可通过 `vwa_assets_import` 形成快照；VSQX 可由工作流导出登记。SVP 使用非空 `library`、任一轨道的非空 `groups`，或无法可靠展开的引用会被明确拒绝，不能伪造“已展开”的音符；当前只展开受支持轨道的 `mainGroup.notes`。VSQX v3/v4 只在受支持的 UTF-8/BOM 结构边界内读取；DTD/ENTITY、非 UTF-8、重叠复调和无法保持语义的工程会拒绝。
-
-导出流程遇到暂不支持展开的原生读音结构时，保留已独立核对的音乐工程，将读音证据标成 `unknown`，并要求监督调用方明确确认 `native_phonemes_unavailable`。这不代表读音通过；工程摘要不匹配仍会中止。
-
-读取页中的 `tracks[].note_refs` 仅包含本页音符，`note_refs_total` 保留各轨总数。`timing.tempo_events` 最多展示 1024 项，`tempo_events_total` 与 `tempo_events_truncated` 明确是否省略；音符秒数计算仍使用完整时间线。
-
-### 低层候选：计划与应用分离
-
-`vwa_pronunciation_patch_plan({artifact_id, expected_sha256, edits})` 只规划 SVP/VSQX 的明确音素替换；公开工具的工程读取上限为 32 MiB。每项必须严格为：
-
-```json
-{"note_ref": "NOTE_REF_PLACEHOLDER", "phonemes": "PHONEMES_PLACEHOLDER"}
-```
-
-公开工具的编辑上限是 **512 项**，每个 `phonemes` 字符串上限是 **256 字符**。这不是无限批处理。未知字段、重复或未知 `note_ref`、过期来源 SHA、控制字符、过长值和不支持的工程结构会被拒绝。
-
-- SVP：空字符串表示清除对应的显式音素 override。
-- VSQX：拒绝空字符串；非空字符串设置对应音素，并把相应 phoneme lock 设为 `1`。方案会列明 lock 变化。
-
-检查 `vwa_plans_get` 和 `vwa_pronunciation_patch_plan` 返回的 `diff`、`lock_changes`、`expected_candidate_sha256` 与校验标志后，才调用 `vwa_pronunciation_patch_apply({plan_id, idempotency_key})`。应用返回独立 `candidate_path`、`candidate_sha256`、`receipt_path`、`receipt_sha256`、`source_unchanged` 和明确音素差异；原工程保持不变。候选会重新解析并检查音符音高、时序、原字、速度、曲线及非音素 metadata；如出现计划篡改、来源变化、摘要碰撞或结构化差异，操作失败。用 `vwa_operations_get` 读取最终状态。
-
-### 工作流内重审与失效规则
-
-`vwa_workflow_pronunciation_apply` 只接受当前 `project_ready` 的现有导出工程，调用参数包含 `workflow_id`、当前 `expected_revision`、理由和 `changes`。每个 change 为：
+`vwa_operations_wait` 的 `timeout_ms` 严格为 `0..60000`，默认 30000 ms。它是有界等待，不是后台任务续命：
 
 ```json
 {
-  "artifact_id": "ARTIFACT_ID_PLACEHOLDER",
-  "expected_sha256": "CANDIDATE_SHA256_PLACEHOLDER",
-  "edits": [
-    {"note_ref": "NOTE_REF_PLACEHOLDER", "phonemes": "PHONEMES_PLACEHOLDER"}
-  ]
+  "operation_id": "op_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "timeout_ms": 60000,
+  "after_cursor": "上一次响应中的 poll_cursor",
+  "return_on": "terminal",
+  "detail": "summary"
 }
 ```
 
-公开上限为一次 **1–3 个工程**，每个 target **1–256 项编辑**，每个音素串 **256 字符**；目标必须无重复，且每个 SHA 等于当前候选。USTX 不能作为音素写入目标。
+- `return_on="terminal"`：成功、失败、取消或中断时返回，或到超时返回当前状态。
+- `return_on="change"`：状态、进度、错误或取消标志实际变化时返回。第二次及以后应把上次 `poll_cursor` 放进 `after_cursor`。
+- `detail="summary"`：默认只返回状态、进度、错误、时间、`result_available` 和 `poll_cursor`；完整结果用 `vwa_operations_get(operation_id)`。
+- `detail="full"`：本次响应允许携带完整操作记录。
+- `timed_out=true` 表示尚未终结，不等于失败。保留 `poll_cursor` 后再次有界等待，或先 `operations_get` 查看细节。
 
-该调用启动本服务拥有的持久 `workflow_pronunciation` 操作，阶段进入 `refining`。成功消费后：
+`vwa_jobs_get` 的 `wait_ms` 同样限制在 60000 ms，并使用返回的 `poll_cursor` 作为下一次 `after_cursor`。准备任务运行中仍应遵守各阶段真实状态，不要因一次 `timed_out` 重开任务。
 
-- 生成新的独立 SVP/VSQX 候选，原导出候选仍保留且摘要不变。
-- 从源 MIDI 与候选重新核对音符、歌词、实际秒数和结构；只允许明确音素及 VSQX lock 的预期变化。
-- 用新操作和当前候选生成新的 `export_summary`，旧 `export_review` 被清除，旧报告不能继续使用。
-- 转换损失中包含 `explicit_phonemes_unverified`，即使写入和结构核对成功，也不代表声学读音正确。
-- 回到 `project_ready` 后重新读取新报告，按新 `report_sha256` 再提交 `export_review`。
+工作流自己的 `next` 是控制面的下一步建议。导出、准备、风格等操作正在运行时，优先等待其 `operation_id`，再按 `workflow_get.next` 推进。
 
-## GUI 共享片段草稿
+### `summary` / `notes` / `full`
 
-### 修订与 CAS
+| 工具 | 默认 | 可选层级 | 分页与完整性 |
+|---|---|---|---|
+| `vwa_workflow_get` | `summary` | `summary/full` | summary 保留继续所需 ID、revision、stage、candidate、`next`、操作状态、报告 SHA 和损失要求；`include_details=true` 或 `detail="full"` 读取完整回执 |
+| `vwa_workflow_review` | `notes` | `summary/notes/full` | 音符默认 `limit=20`，服务限制 `1..200`；按 `next_offset` 读完。summary 不含音符页；notes 是当前段/当前页可验收证据；full 保留当前段/当前页完整原始证据，仍不扩大范围 |
+| `vwa_context_read` | `notes` | `summary/notes/full` | 默认 `limit=20`，服务限制 `1..500`；按 `offset/next_offset` 分页。full 保留当前页完整证据 |
+| `vwa_style_plan` | `summary` | `summary/full` | summary 把各层 `*note_ids` 替换为对应 `_count`；完整 aligned IDs 用 `vwa_plans_get` 或 `detail="full"` |
+| `vwa_operations_wait` | `summary` | `summary/full` | summary 不重复完整结果；full 仅用于需要审计的等待 |
 
-`vwa_drafts_get({artifact_id})` 只接受当前登记 SVP，返回 `exists`、`input_sha256`、`revision`、`data`、`path`、`legacy`、`artifact_sha256` 和 `source_key_basis`。`revision` 是草稿文件**实际原始字节的 SHA-256**，不是草稿内自报的版本号；手动修改旧格式文件也会改变其 revision。`source_key_basis` 为 `candidate_sha256` 时使用候选 SHA；带原工程来源的导入输入为 `original_file_sha256`，用原文件 SHA 与 GUI 对齐，同时另行报告快照 `artifact_sha256`。
+`include_note_ids=false` 是默认值：阅读仍保留定位所需的标量与说明，但会压缩重复的 ID 数组。需要提交精确 note edit 时，不能凭空补 ID；应先读取当前页、在确认分页范围内后显式请求 ID，或读取相应专门工具。
 
-`vwa_drafts_publish` 只能发布当前代码版本的已校验 `style` plan，并会重新校验计划与当前 SVP。`expected_revision=null` 只用于目标尚不存在的新建；更新必须提交刚读到的准确 revision。写入使用跨进程锁、严格 compare-and-swap 和原子替换。已有同步元数据时，相同 payload 且期望仍匹配可复用当前 revision；旧格式首次写入会补上 `_sync`。
+`vwa_workflow_review` 的 `detail="notes"` 在 segments 模式只返回当前未查段，在 legacy 模式返回当前页；`evidence.score.notes` 不包含范围外 ID。`detail="full"` 只保留当前段/当前页完整证据，不替代逐段决策，也不表示一次返回整曲。
 
-CAS 不匹配返回 `draft_conflict`，详情包含 `expected_revision`、`current_revision` 和 `recovery_path`。主草稿文件保持原样，恢复文件保存当前数据、待写数据和双方 revision。调用方应重新读取并明确决定；不要只把 expected 改成 current 后盲重试，也不要把恢复文件静默当作已合并结果。
+`workflow_view.summary_target_bytes=16384` 是紧凑视图的设计目标，不是对任意内容都成立的硬上限。实际大小取决于当页错误、候选数量和人工理由；必须读取 `view.raw_evidence_omitted`、`details_tool` 和 `next_offset`，不能把摘要当作验收证据。
 
-### 从 GUI 草稿回到工作流
+## 默认逐段核对：MIDI 与风格
 
-`vwa_drafts_plan({artifact_id, expected_revision, brief})` 读取指定精确 revision，要求草稿处于 `mode=regions`，有非空片段和目标轨道，并由完整 SVP 音符重新校验每个片段。片段边缘落在音符内部会报 `incomplete_note_boundary`；缺轨道、空草稿或旧 revision 分别明确失败。生成的保存方案带 `shared_draft` 绑定，至少含 `input_sha256` 和 `revision`。
+`vwa_workflow_create.review_mode` 默认为 **`segments`**。Agent 必须按当前段读取证据、提交该段判断，再处理下一段；不能以一次全曲摘要或首屏证据代替逐段验收。`review_mode="legacy"` 仅作为旧客户端的显式兼容路径，必须主动传入；`detail="full"` 仍保留为显式读取兼容，但在 segments 模式中只表示当前段的完整证据，不会跳过或汇总其他段。
 
-推荐闭环：
+分段由纯本地、确定性、只用标准库的 `agent_segments.py` 生成，无模型或语义推断：
 
-```text
-GUI/API drafts_get
-  -> drafts_plan(expected_revision)
-  -> plans_get 审阅
-  -> workflow_advance(style_plan_id=...)
-  -> start_plan 启动前重验草稿 revision
-  -> styling -> ready
-```
+- 按 `(track_index, channel)` 分声部；伴奏轨不进入 Agent 核对段。
+- 每个固定 10 秒窗口从项目秒 0 锚定，窗口内最多 16 个音符。
+- 同一声部相邻音符间隔达到或超过 0.65 秒时另起一段。
+- 完整音符不拆分；单个音符本身超过 10 秒时独占一段，并标记 `reason="unbreakable_long_note_exceeds_max_seconds"`。
+- 每段有确定性 `id`、`fingerprint`、`index`、声部、秒/tick 范围、`note_count` 和 `note_ids`。计划或音符内容变化后旧段会变成 `stale_segment`。
 
-`vwa_workflow_advance` 的 `style_plan_id` 与 `style_proposal` 互斥。`style_plan_id` 必须是当前版本的 `style` plan，且 `plan.artifact_id` 必须精确等于工作流的 `flow.project_artifact_id`，否则报 `wrong_style_source`。启动操作时会再次调用草稿绑定检查；草稿在计划和启动之间发生任何字节修订，会报 `stale_draft_plan`，应重新 `drafts_get` 和 `drafts_plan`。这条路径把 GUI 草稿、MCP 风格方案和当前工作流串成一个闭环，不再需要另起孤立调音结果。
-
-没有工作流时，仍可把该草稿方案交给 `vwa_tuning_start`；启动前同样会重验绑定。若只是读取方案而不执行，`vwa_plans_get` 不生成候选。
-
-### GUI 外部更新与冲突
-
-GUI 会周期性或显式读取共享 revision。发现其他 writer 更新时只提示“共享草稿已更新；可载入最新草稿”，不会在用户拖动、输入或编辑片段时静默替换当前内容。
-
-- “载入最新草稿”显式采用共享版本，并把撤销记录重置到该版本。
-- “以当前保存新修订”是显式覆盖意图；若有冲突，先确保恢复文件已保留共享版本和当前版本，然后再做一次 CAS。保存期间若又发生竞争，继续保留当前 UI 与恢复记录并报告冲突。
-- 正常没有冲突时，原有自动暂存体验保持不变。旧 `schema_version=1` 扁平草稿仍可恢复；`legacy=true` 仅说明文件尚无同步元数据。
-- GUI 本地从未保存且外部先创建草稿的竞争，也应保留双方，不能覆盖后声称已同步。
-
-第一版可协同使用的是**按输入工程隔离的时间片段**。草稿文件为兼容 GUI 仍会保存模式、选区、目标轨道、当前/下一段工具设置和四阶段细分参数等状态，但这些字段不等于共享全局偏好；MCP 草稿规划只接受 `mode=regions` 的完整时间片段。旧 GUI 全局偏好不会被 MCP 自动改写。多个 GUI 窗口、不同版本或不同 `ApplicationRoot` 不保证共用同一集合，必须按实际 `shared_draft_root` 判断。
-
-草稿文件上限 1 MiB，片段上限 128 个；数值必须有限，轨道必须是不重复的非负整数。JSON 不得含 NaN/Infinity，路径不得通过链接或重解析点逃逸。
-
-## 风格区域与四阶段细分
-
-`vwa_style_plan` 接受调用方给出的 `track_indices`、`brief` 和 `regions`。每个 `StyleRegion` 包含秒数 `start`/`end`、`preset`（`none/gentle/sad/bold`）、`strength`、`style_pitch`、理由和可选证据引用；唱腔层可选 `none/chinese_opera` 及独立强度和音高开关。
-
-`StyleRegion.detail` 是可选的四阶段强度对象，新增但保持 GUI 现有细分参数：
+工作流 summary 中的 `review_progress` 是逐段进度，不是全曲验收：
 
 ```json
 {
-  "detail": {
-    "onset": 1.0,
-    "sustain": 1.0,
-    "connection": 1.0,
-    "release": 1.0
+  "mode": "segments",
+  "kind": "midi",
+  "checked": 3,
+  "total": 18,
+  "complete": false,
+  "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "current": {
+    "id": "segment-aaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbbbbbb",
+    "fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "index": 3,
+    "track_index": 0,
+    "channel": 0,
+    "start_seconds": 30.0,
+    "end_seconds": 40.0,
+    "note_count": 14
   }
 }
 ```
 
-`onset`、`sustain`、`connection`、`release` 各自可在 `0..1`，省略或整体为 `null` 时按 `1.0` 处理；对象中也可只给出部分阶段。它们是对应阶段乘数，与整体 `strength` 分开，不改变调用方语义理由。GUI 的“起音/持续/衔接/收尾”百分比会原样进入草稿、草稿生成的风格方案和最终引擎选项；MCP 可读可写同一字段。数值效果仍需实际工程与试听判断，不能据参数值声称听感达标。
+### MIDI 逐段复核
 
-实际风格规划仍要求片段不重叠、目标轨道可用于风格、片段在项目秒时间轴上且能对齐完整音符。`StyleProposal` 模型可承载较多行，但当前工作室实际限制最多 128 个片段，应按 128 处理。`none` 风格只有在唱腔不为 `none` 时可用。服务不调用语义模型；`brief`、理由和证据由调用方提供。
+推荐循环：
 
-## MIDI、参考与导出
+```text
+workflow_get
+  -> workflow_review(segment_id=current.id 或省略以取下一待查段)
+  -> 核对本段音符、歌词、参考与 hints
+  -> workflow_apply_review(segment_id=同一段, ...)
+  -> operations_wait / workflow_advance -> workflow_get
+  -> checked / total 增加后读取下一段
+```
 
-### MIDI 编辑
+`vwa_workflow_review` 新增可选 `segment_id`。segments 模式只应读取下一条尚未完成的 MIDI 段；省略时自动选择该段，显式值仅用于重读当前段，不能提前跳到其他段。返回的 `evidence.score.notes`、lyrics 关系和 hints 只限当前段，`segment` 不重复展开全部 note IDs，`review_progress` 给出 `checked/total/current/complete`。`limit/offset` 仍可对当前段内证据分页，默认 `limit=20` 可覆盖常规最大 16 音符段，但不代表可以跳过页内逐项检查；单音超过 10 秒时仍作为完整单段返回。`detail="full"` 只展开当前段完整证据。
 
-音高/时值从 `vwa_score_read` 当前版本生成方案。每项 `ScoreEdit` 可按需包含 `pitch`、`onset_tick`、`duration_tick`；时间使用绝对 MIDI tick，不是秒。检查 diff 后执行方案，候选不覆盖源。
+```json
+{
+  "workflow_id": "flow_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "segment_id": "segment-aaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbbbbbb",
+  "detail": "notes",
+  "limit": 10,
+  "offset": 0
+}
+```
 
-结构工具只写标准 MIDI，当前不提供 SVP/VSQX 的音符插入、删除或歌词结构改写。删除必须指定 `lyric_policy=preserve|delete_owned`；插入必须给出轨道、通道、音高、tick 时值、力度和可选歌词。归属不唯一、同形音符歧义、复调或重叠冲突会拒绝。
+`vwa_workflow_apply_review` 新增可选 `segment_id`。省略时提交给下一条待查段；显式时必须先读取该段并按同一段提交。规则如下：
 
-工作流 `vwa_workflow_apply_review` 的顺序固定为：
+- `note_edits`、`lyric_edits` 和删除操作的 `note_id` 必须属于该段 `note_ids`。相邻段或“看似相似”的全曲音符都会报 `segment_edit_outside_scope`。
+- 插入音符必须位于该段声部的 `[start_tick, end_tick)`，且 `track_index/channel` 与段一致；无法用插入掩盖另一段的问题。
+- 仅阅读并保留原结果时，提交有依据的 `rationale` 和空 edit；操作成功后该段记为 `checked`。
+- 提交实际修改时，本段不会被直接记完成。必须重新读取该段、确认新 MIDI 中的本段结果，再提交保留/确认；`operation.result.last_segment_result.requires_reread=true` 表示这一要求。
+- 新 MIDI 会重建分段。仍有效的已完成段决策按稳定指纹保留；受当前 `monophonic_overlap` 影响的段会撤销 `checked`，必须修复并重读。
+- 只有所有段都 checked 且当前候选无阻断时，工作流才进入 `reviewed`；否则保持 `review`。`checked` 是逐段提交结果，不是声学验收。
+
+```json
+{
+  "workflow_id": "flow_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "expected_revision": 6,
+  "segment_id": "segment-aaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbbbbbb",
+  "rationale": "逐音核对本段歌词、音高与时值；仅修正该段的错字和短重叠。",
+  "note_edits": [
+    {
+      "note_id": "note_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "onset_tick": 1920
+    }
+  ],
+  "move_attached_lyrics": true
+}
+```
+
+### 风格逐段决定
+
+导出监督已接受且 `brief` 非空时，segments 模式会从选定 SVP 生成 `style_segments`。调用方必须对每段明确选择“保留原表现”或“应用该段风格”。
+
+`vwa_workflow_style_review(workflow_id, segment_id=None)`：
+
+- 省略 `segment_id` 时读取下一未决定段；显式值必须属于当前 `style_segments` 计划。
+- 返回该段 `segment`、当前段完整音符 `context.notes`、最多各两个相邻音符的只读 `adjacent_context`、preset/technique 清单和 `progress.checked/total`。
+- `scope="current_segment_only"`；相邻上下文只用于衔接判断，不能作为本段编辑目标。
+
+```json
+{
+  "workflow_id": "flow_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "segment_id": "segment-dddddddddddddddd-eeeeeeeeeeeeeeeeeeee"
+}
+```
+
+`vwa_workflow_style_decide` 必须带当前 revision、段 ID 和 1–4000 字符理由：
+
+- 不传 `proposal` 表示 `keep_original`，记录为本段保留原表现。
+- 传 `proposal` 表示 `apply_style`。其 `track_indices` 必须恰好是 `[segment.track_index]`，`regions` 必须对齐为完整音符，且所有实际选中的 note ID 必须属于该段；越界报 `segment_style_outside_scope`。
+- 每次决定都会增加工作流 revision 和 `checked`，必须重新读取当前状态，不能复用旧 revision。
+
+```json
+{
+  "workflow_id": "flow_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "expected_revision": 10,
+  "segment_id": "segment-dddddddddddddddd-eeeeeeeeeeeeeeeeeeee",
+  "rationale": "本段歌词与音高稳定，保留原表现。",
+  "proposal": null
+}
+```
+
+需要应用风格时，`proposal` 使用前面完整 StyleProposal JSON 的同形结构，只把 `track_indices` 和 time regions 限制在当前段。全部风格段完成后：
+
+- `review_progress.kind` 为 `style` 且 `complete=true`。
+- `workflow_get().next` 指向 `workflow_advance`；该步骤自动汇总各段 proposal。
+- 若所有段都 `keep_original`，工作流不启动风格运算，直接进入 `ready`。
+- 若至少一段应用风格，服务合并 track indices 与按时间排序的 regions，自动生成风格方案并进入 `styling`。
+
+segments 模式在全部风格段完成前不接受另一份整曲 `style_proposal`、`style_plan_id` 或 `finish=true`：这些输入分别报 `segmented_style_required` 或 `style_segments_incomplete`。全部完成后由工作流自动汇总，不要求再手工拼一份整曲 JSON。
+
+旧客户端可显式创建 `review_mode="legacy"` 工作流，继续旧的分页全曲核对和整份风格提交路径。legacy 是兼容入口，不是默认路径；无论 `detail="full"` 还是旧的摘要读取，都不能把未逐段完成的 segments 工作流直接标为 `reviewed`。
+
+## 风格方案、完整 JSON 与半开区间
+
+`vwa_style_plan` 只保存调用方明确提供的音乐语义，不推断情绪，不调用模型。它要求目标轨道可用于风格，区域落在完整音符上，片段最多 128 个。最终字段名固定为 **`style_technique`**；输入模型兼容旧别名 **`technique`**，但输出、保存方案和执行回执都规范为 `style_technique`。新调用应始终使用正式字段，不要同时写两个别名。
+
+下面的 JSON 可直接作为 `vwa_style_plan` 参数；替换占位 ID、秒数、理由和证据即可。两个示例区域在 `20.000000` 处首尾相接，表示半开区间相邻。
+
+```json
+{
+  "artifact_id": "art_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "detail": "summary",
+  "proposal": {
+    "track_indices": [0],
+    "brief": "主歌克制、副歌增强戏腔，但保持原音高和原歌词。",
+    "regions": [
+      {
+        "start": 12.500000,
+        "end": 20.000000,
+        "preset": "gentle",
+        "strength": 0.45,
+        "style_pitch": true,
+        "detail": {
+          "onset": 0.85,
+          "sustain": 1.0,
+          "connection": 0.9,
+          "release": 0.8
+        },
+        "style_technique": "none",
+        "technique_strength": 0.0,
+        "technique_pitch": false,
+        "rationale": "主歌使用温和表达，避免盖过原唱气口。",
+        "evidence_refs": []
+      },
+      {
+        "start": 20.000000,
+        "end": 28.250000,
+        "preset": "bold",
+        "strength": 0.62,
+        "style_pitch": true,
+        "detail": {
+          "onset": 1.0,
+          "sustain": 0.9,
+          "connection": 1.0,
+          "release": 0.85
+        },
+        "style_technique": "chinese_opera",
+        "technique_strength": 0.55,
+        "technique_pitch": true,
+        "rationale": "副歌增加戏腔色彩，强度低于原声主体。",
+        "evidence_refs": ["track_aaaaaaaaaaaaaaaaaaaaaaaa"]
+      }
+    ]
+  }
+}
+```
+
+字段契约：
+
+| 字段 | 约束 |
+|---|---|
+| `track_indices` | 非空、不重复的非负索引；目标轨道必须 `eligible_for_style=true` |
+| `brief` | 非空调用方说明，服务不以它推断风格 |
+| `start`, `end` | 项目秒；`0 <= start < end` |
+| `preset` | `none/gentle/sad/bold` |
+| `strength` | `0..1` |
+| `style_pitch` | 布尔值 |
+| `detail` | 可选，四阶段乘数；`onset/sustain/connection/release` 各自 `0..1` |
+| `style_technique` | `none/chinese_opera`；兼容输入别名 `technique` |
+| `technique_strength` | `0..1` |
+| `technique_pitch` | 布尔值 |
+| `rationale` | 非空、最多 2000 字符 |
+| `evidence_refs` | 当前源和所选轨道中真实存在的 note/track ID 数组，不得重复 |
+
+区域使用半开区间 **`[start, end)`**。`[a,b)` 与 `[b,c)` 合法相邻；真正的正长度交集，或整音符对齐后共用完整音符，仍会拒绝。公开秒数保留 6 位小数，规划器只在距真实音符边界不超过 `0.0000005` 秒的有界窗口内把显示值回映到真实边界；这不是扩大重叠的容差，也不会把任意接近的片段自动合并。
+
+请求区域会对齐到被触及的完整音符，因此实际 `regions[].start/end` 可能扩展到完整音符范围。`requested_start/requested_end` 保留请求值，`aligned_note_ids` 给出实际归属。不得用人为留空音符来绕开真正重叠；应回到 `vwa_context_read` 核对秒数和音符边界。
+
+默认 `detail="summary"` 会把所有层级的 `*note_ids` 数组压缩为 `<字段>_count`，包括 `aligned_ranges[].note_ids`，并返回：
+
+```json
+{
+  "details_tool": {
+    "tool": "vwa_plans_get",
+    "arguments": {"plan_id": "plan_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+  },
+  "view": {
+    "detail": "summary",
+    "note_ids_omitted": true
+  }
+}
+```
+
+执行前需要完整 aligned IDs、原始 proposal、引擎片段或 diff 时，调用 `vwa_plans_get(plan_id)`；也可在 `vwa_style_plan` 首次调用时传 `detail="full"`。执行本身仍会重新校验方案摘要、源 SVP SHA、完整音符归属和共享草稿 revision。
+
+`vwa_tuning_start` 的成功操作只表示本地 SVP 候选已生成。结果中的 `status=partial` 不是通过；应读取 `partial_reason_counts`、`partial_remediation`、`partial_advice`、`applied_controls`、`skipped_controls` 和 `protected_note_count`，逐项处理原因。`awaiting_external_synthesis` 仍表示声库合成在外部进行。
+
+## 歌曲摘要与准备阶段复用
+
+`vwa_jobs_get` 的 `source_summary` 只面向当前视频和选中分 P：包含 `source_kind`、`bvid`、标题、作者、时长、分 P 数/当前页、封面 URL、描述短摘要、受限权利标志、是否含合集、voice plan 和 `raw_evidence` 路径。合集完整数据、字幕全文、正文和分 P 全表不内联返回；原始 `source-info.json` 仅在 `raw_evidence.path` 指向只读证据。
+
+`voice_mode` 必须按真实含义使用：
+
+- `single`：混合人声＋伴奏。
+- `dual`：主唱＋和声/伴奏人声。
+
+两者都不是按歌手音色拆分对唱；`supports_duet_singer_separation=false`。未知或串音内容仍需在 review 中人工处理。
+
+已有准备任务的只读复用链：
+
+```text
+vwa_preparation_reuse_plan(source_job_id, options, reuse_stages)
+  -> vwa_preparation_create(plan_id)
+  -> 得到新 job_id
+  -> vwa_workflow_create(preparation_job_id=新 job_id, ...)
+  -> vwa_workflow_advance / next
+```
+
+| 步骤 | 输入 | 结果 |
+|---|---|---|
+| `vwa_preparation_reuse_plan` | 源 `job_id`、目标 options、可选 `metadata/download/audio/separation` | 不可变复用计划；列出来源 SHA、兼容性、`reuse_stages` 与 `run_stages` |
+| `vwa_preparation_create` | 上述 `plan_id` | 新建受管任务；只复制已重新校验的阶段文件，不改写源任务 |
+| `vwa_workflow_create` | 新 `preparation_job_id`，以及 `options`、`brief`、`reference_lyrics`、`formats` | 工作流采用已有受管任务；不要同时传 `source` 或 `score_artifact_id` |
+
+示例：
+
+```json
+{
+  "source_job_id": "job_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "options": {
+    "language": "zh",
+    "lyrics": "修订后的参考歌词",
+    "recognize_lyrics": true,
+    "voice_mode": "dual",
+    "alignment_engine": "hfa",
+    "midi_steps": 16
+  },
+  "reuse_stages": ["metadata", "download", "audio", "separation"]
+}
+```
+
+复用规则：
+
+- 源任务严格只读，不写回源 `request.json/status.json` 或阶段产物。
+- 计划绑定源请求、源状态、目标 options 和候选文件 SHA；计划生成后源内容变化返回 `reuse_plan_stale`。
+- 复用阶段按依赖前缀计算；只可选 `metadata`、`download`、`audio`、`separation`。请求较后阶段时会核对其依赖，不保证任意阶段单独复用。
+- 变更歌词、模型或 MIDI 后段选项，不应让已完成音频阶段无理由重做；但必须使用新计划，不能复用过期回执。
+- `voice_mode` 变化导致分离依赖不匹配时，不再复用该分离阶段，返回 `voice_mode_changed` 并使用 `run_stages` 重跑所需部分。
+- 新任务只复制当前任务的必要阶段文件，不使用 junction；目标已有内容必须 SHA 相同，否则 `reuse_collision`，绝不覆盖。
+- 新建任务后要把**新 job_id**交给工作流。源 job_id 只用于计划和证据。
+
+## MIDI 编辑、歌词联动与单声部预检
+
+音高/时值从 `vwa_score_read` 的当前 SHA 生成方案。每项 `ScoreEdit` 可按需包含 `pitch`、`onset_tick`、`duration_tick`；时间使用绝对 MIDI tick，`duration_tick` 大于 0。
+
+若只改音符时值，默认 `move_attached_lyrics=false`，旧歌词事件不会被隐含移动。需要歌词随音符 onset 移动时，必须显式：
+
+```json
+{
+  "artifact_id": "art_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "expected_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "move_attached_lyrics": true,
+  "edits": [
+    {
+      "note_id": "note_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "onset_tick": 1920,
+      "duration_tick": 480
+    }
+  ]
+}
+```
+
+只有原本唯一关联到该音符的 lyrics 事件会按 onset 位移同步移动；关联缺失、同一事件竞争多个音符或其他歧义会拒绝计划。计划/回执和候选回读会验证新歌词关联。`vwa_workflow_apply_review` 同样有显式 `move_attached_lyrics`，默认为 `false`。
+
+结构工具只写标准 MIDI。删除必须指定 `lyric_policy="preserve|delete_owned"`；插入必须给 `track_index`、`channel`、音高、onset、duration、velocity 和可选歌词。工作流修改顺序固定为：
 
 ```text
 structure -> lyrics -> pitch/time
 ```
 
-每生成新 MIDI 后，未变音符按轨道、通道、音高、起音和时长重映射稳定 ID。删除目标同时出现在其他 edit、或同形音符不能唯一匹配时，分别报 `review_edit_conflict`、`ambiguous_note_mapping`。
+每生成新候选，未变音符按 `(track_index, channel, pitch, onset_tick, duration_tick)` 重映射稳定 ID。删除目标又出现在其他 edit，报 `review_edit_conflict`；同形音符无法唯一映射，报 `ambiguous_note_mapping`。
 
-### F0 与 PCM WAV
+单声部预检按目标声部 **`(track_index, channel)`** 分组：
 
-`vwa_reference_import` 只导入允许目录中的既有文件，不执行音高提取、转写、推理或合成。F0 NPZ 必须是 schema 1，含 `midi_pitch.npy`、`voiced_mask.npy`、`time_step.npy` 和 `schema.npy`；导入上限 32 MiB。PCM WAV 只接受未压缩 RIFF/WAVE PCM 整数采样，导入上限 256 MiB。
+- 音符区间为半开 `[onset_tick, end_tick)`；首尾相接不算重叠。
+- 只有同一组内的正长度交集产生 `code="monophonic_overlap"`。
+- 不同轨道或不同 channel 可合法并行；导出器可能把它们变成不同目标声部，不能仅为了“全局单声部”而误删合法复调。
+- 冲突行含 `voice_key`、双方 `note_ids`、音高、overlap tick/秒和 `cross_pitch`，最多返回 100 行。
+- `vwa_score_review` 把冲突列为确定性线索；`vwa_exports_plan` 在转换前预检并在存在冲突时拒绝计划，返回结构化 `details.conflicts`。
+- 工作流 `apply_review` 在提交修正 MIDI 前再次预检；当前候选有冲突时不会直接进入 `reviewed`。这不是自动删音。
 
-`vwa_reference_pitch_review` 通过显式 `time_origin` 把 F0 第 0 帧放到 MIDI 秒时间轴，再按 tempo map 使用音符半开区间 `[onset, end)`。单路 F0 不能可靠拆和弦或复调；重叠显示 `ambiguous_polyphonic_overlap`，`automatic_patch=false`。它是条件性线索，不是真值。
+从历史真实复盘看，15 ms 的跨音高重叠就可能让 LibreSVIP 在后期导入失败。遇到 `monophonic_overlap`，应停止重试原导出计划，读取双方位置并生成新的 MIDI，再用 `vwa_workflow_rebind_score` 换入同一工作流。
 
-`vwa_reference_audio_read` 未给范围时只读 WAV 头。指定 `start`/`end` 用 WAV 秒数，单次最多 30 秒，边界按 PCM 帧向外对齐，返回信号测量而 `semantic_interpretation=null`。`make_excerpt=true` 必须同时给不超过 30 秒的范围，生成逐帧复制的 PCM 摘录，不重采样、不改音高、不覆盖源。
+## 导出选项与可移动伴奏包
 
-工作流可在 `review` 或 `reviewed` 用 `vwa_workflow_references_set` 绑定参考；任何新增或改变都会把阶段退回 `review`，使旧核对失效。`time_origin` 与 `audio_time_origin` 都必须由调用方给出依据，服务不会自动发现对齐。
-
-### 导出监督与读音预览
-
-真实导出操作完成后，一体化工作流生成 `export_summary`。`summary.candidates[]` 中每个 SVP/VSQX 候选默认带有 `pronunciation` 原生读音预览，最多前 50 个 note；该预览的报告 `source_sha256` 必须等于候选 SHA。空读取、旧 fixture 或旧操作没有该证据时明确为 `unknown`，原因可包含 `native_phonemes_not_read`，不能把缺失当成“无音素”或“读音通过”。
-
-前 50 个 note 只供导出监督快速检查。后续必须用 `vwa_pronunciation_read(artifact_id, limit, offset)` 按 `next_offset` 读取完整事实。`refining` 产生的新工程组也应带同样的候选绑定预览；缺少预览时仍明确 `unknown`。
-
-`export_summary` 的关键字段：
-
-| 字段 | 含义 |
-|---|---|
-| `report_sha256` | 当前不可变监督报告 SHA；决策必须携带 |
-| `source_sha256` | 本次源 MIDI SHA |
-| `candidates[]` | artifact、格式、候选 SHA、音符/歌词计数、tick/tempo/拍号核验 |
-| `candidates[].pronunciation` | 绑定候选 SHA 的 SVP/VSQX 前 50 note 原生读音事实或 `unknown` |
-| `blockers` / `can_accept` | 硬差异与是否仍可接受 |
-| `required_loss_codes` | 本次必须逐项认可的转换损失/未知项代码 |
-| `warnings` / `information` | 需认可告警与仅信息项 |
-| `independent_audit` | 独立回读候选的音符/歌词/实际秒数比较 |
-
-`export_review` 必须按当前 `report_sha256` 提交。`accept` 只有在无 blocker、`accepted_loss_codes` 恰好覆盖当前 `required_loss_codes`、源 MIDI 和全部候选 SHA 仍一致时成立。硬差异使用 `needs_revision`，工作流退回 `review` 并保留旧摘要作历史；不会自动修改 MIDI。`finish=true` 不能跳过未接受的报告。
+`vwa_exports_plan` 和 `vwa_exports_start` 支持低层显式导出；一体化工作流应在 `review` 或 `reviewed` 通过 `vwa_workflow_advance(export_options=...)` 设置，并在导出开始前重读 revision。
 
 ```json
 {
-  "workflow_id": "WORKFLOW_ID_PLACEHOLDER",
-  "expected_revision": 7,
-  "export_review": {
-    "report_sha256": "REPORT_SHA256_PLACEHOLDER",
-    "decision": "accept",
-    "rationale": "已核对候选音符、歌词、实际秒数、读音写入事实和逐项损失。",
-    "accepted_loss_codes": ["LOSS_CODE_PLACEHOLDER"]
+  "workflow_id": "flow_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "expected_revision": 5,
+  "export_options": {
+    "language": "zh",
+    "default_bpm": 120.0,
+    "svp_version": "1.9",
+    "include_instrumental": true,
+    "instrumental_source_job_id": "job_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "track_names": ["主唱", "和声"],
+    "project_name": "牵丝戏-试测"
   }
 }
 ```
 
-接受记录 `caller_reviewed=true`、`acoustic_validation=false`。它不证明声库听感、发音语义或主观质量。候选格式转换、读音预览或结构核验任一改变后，必须重读报告。
+`.svp` 专属选项：
 
-低层 `vwa_exports_start` 没有替工作流建立 `export_review` 门槛；其结果仍需检查 `independent_audit` 和候选摘要。不要因为低层操作成功就直接 `finish=true`。
+| 字段 | 契约 |
+|---|---|
+| `include_instrumental` | 布尔值。显式 `false` 强制关闭；低层没有来源时默认关闭；一体化工作流会把当前 `job_id` 作为伴奏发现来源 |
+| `instrumental_artifact_id` | 使用已登记 WAV 产物作为伴奏；与 `instrumental_source_job_id` 二选一 |
+| `instrumental_source_job_id` | 从受管任务的 `audio/instrumental.wav` 解析伴奏；源任务只读 |
+| `instrumental_path` | 只供控制层解析后的 worker 内部字段；公开调用传它会报 `unsafe_media_path` |
+| `track_names` | 非空短文本数组；数量必须等于 SVP 演唱轨数，不能把伴奏轨算入 |
+| `project_name` | 写入 SVP `renderConfig.filename` 的短文本；不能含路径分隔符、换行或 NUL |
 
-## tick、秒数与状态
+约束：
+
+- `include_instrumental=true` 时，必须能由 `instrumental_artifact_id` 或 `instrumental_source_job_id` 解析出存在的 PCM WAV；否则 `instrumental_missing`。
+- 同时指定 artifact 和不同来源任务会报 `conflicting_instrumental_source`；关闭伴奏时不能同时给伴奏 artifact。
+- 从带准备任务的工作流导出时，若未指定新伴奏来源，工作流会把当前 `job_id` 作为 `instrumental_source_job_id` 默认发现来源；找不到 WAV 不会伪造伴奏。
+- 首版只在 **SVP** 中生成可移动的相对伴奏包。伴奏复制到 SVP 同目录，引用写为相对文件名；回读验证伴奏轨数量、SHA、音频时长、文件存在和演唱轨未变。
+- 若 `formats` 同时含 SVP 与其他格式，只有 SVP 声明 `instrumental_included=true`；USTX/VSQX 明确返回 `format_not_supported`，不会被说成已经包含伴奏。
+- `track_names` 与 `project_name` 首版只写入 SVP；其他格式返回 `metadata_not_supported_for_format`。仍会导出工程，但元数据未应用。
+- 渲染器回读后，候选中的 `instrumental_included`、`instrumental_reason`、`media.relative_paths`、`media.sha256` 和 `media.duration_seconds` 是核对依据。MCP 成功不等于用户已经试听。
+
+`svp_version` 支持字符串 `"1.9"`、`"1.11"`、`"2.0"`；`default_bpm` 为 `1..1000`。只演唱 SVP 时省略伴奏或显式传 `include_instrumental=false`，结果应明确说明未包含伴奏，而不是静默当作便携试听包。
+
+## 导出监督
+
+导出完成后，先用 `vwa_workflow_get` 的紧凑 summary 检查：
+
+| 字段 | 含义 |
+|---|---|
+| `export_summary.report_sha256` | 当前不可变监督报告 SHA；决策必须携带 |
+| `source_sha256` | 本次源 MIDI SHA |
+| `candidates[]` | artifact、格式、候选 SHA、音符/歌词计数、伴奏是否包含及媒体证据 |
+| `candidates[].pronunciation` | 绑定候选 SHA 的 SVP/VSQX 前 50 note 原生读音事实或 `unknown` |
+| `blockers` / `can_accept` | 硬差异与是否仍可审计接受 |
+| `required_loss_codes` | 本次必须逐项认可的转换损失/未知项代码 |
+| `warnings` / `information` | 告警与信息项 |
+| `independent_audit` | 独立回读候选的音符、歌词和实际秒数比较 |
+
+需要完整候选和操作原始证据时，用 `vwa_workflow_get(include_details=true)` 或读取对应 `vwa_operations_get`。默认 summary 保留接续所需的报告 SHA、损失要求和候选摘要，但不重复全部原生 notes。
+
+```json
+{
+  "workflow_id": "flow_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "expected_revision": 8,
+  "export_review": {
+    "report_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "decision": "accept",
+    "rationale": "已核对候选音符、歌词、实际秒数、伴奏相对引用和逐项损失。",
+    "accepted_loss_codes": ["tempo_table_normalized"]
+  }
+}
+```
+
+`accept` 只有在无 blocker、`accepted_loss_codes` 恰好覆盖当前 `required_loss_codes`、源 MIDI 与全部候选 SHA 仍一致时成立。硬差异提交 `decision="needs_revision"`，工作流回到 `review`，旧摘要保存在 `previous_export_summary`。`finish=true` 不能跳过未接受的报告。
+
+`tick_roundtrip_verified=true` 只证明 tick 往返；实际播放秒数由双方 tempo map 独立比较。有效时间线相同但速度表结构重排可能是需认可损失，`tempo_content_mismatch` 是硬差异。
+
+## 工作流生命周期与失败恢复
+
+业务阶段和生命周期是两个维度：
+
+- `stage`：`created/preparing/review/reviewing/reviewed/exporting/project_ready/styling/refining/ready`。
+- `lifecycle`：`active/closed/archived`。
+- `operation.state`：`queued/running/succeeded/failed/cancelled/interrupted`。
+
+`vwa_workflows_list(limit=1..100, offset, status, query)` 可按阶段、生命周期或实际操作状态过滤，并检索工作流 ID、来源、brief、job ID、MIDI/project/final artifact ID。它保留旧修订证据的检索入口。
+
+### 换入修正 MIDI：`rebind_score`
+
+工作流重试使用 `vwa_workflow_advance(retry=true)`。它只重新执行当前阶段保存的同一方案：
+
+- `preparing`：重跑当前准备计划。
+- `exporting`：重跑当前 `active_plan_id`。
+- `styling`：重跑当前风格计划。
+- `reviewing`：回到 `review` 重新提交核对决定。
+- `refining`：重跑当前音素操作。
+
+若已生成修正 MIDI，应调用 `vwa_workflow_rebind_score`：
+
+```json
+{
+  "workflow_id": "flow_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "expected_revision": 9,
+  "score_artifact_id": "art_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "reason": "按 monophonic_overlap 冲突修正短重叠后重新核对。"
+}
+```
+
+前置与结果：
+
+- 工作流必须 `active`，操作不能是 `queued/running`；先取消并等待结束，否则 `workflow_busy`。
+- 新输入必须是 MIDI；非服务输出快照会先导入为独立素材。
+- 当前修订及失败操作、旧报告和旧候选保留，`recovery_history` 记录保留证据路径及 SHA。
+- 阶段回到 `review`；清空旧核对认可、导出摘要/决策、工程候选和最终候选；segments 模式会为新 MIDI 重建分段并清空逐段 checked。
+- 必须重新 review、重新导出并按新 `report_sha256` 认可。旧 `accept` 不会继承。
+
+### 关闭、归档与克隆
+
+`vwa_workflow_close` 与 `vwa_workflow_archive` 都要求当前 revision 和非空理由；运行中操作必须先取消并等待终结。它们不删除任务、artifact、操作或修订证据。关闭/归档后普通业务修改返回 `workflow_closed`，`vwa_workflow_get().next` 指向 clone。
+
+`vwa_workflow_clone`：
+
+- 从保留 MIDI 克隆（`score_artifact_id` 可覆盖）或按旧请求重新创建。
+- 支持旧代码版本工作流继续处理。
+- 生成新的工作流 ID 和新的 revision 历史。
+- 不继承旧 review/export acceptance；必须重新 review 和 export。
+- 使用新的 `idempotency_key`，避免请求冲突。
+
+### 错误恢复表
+
+| 错误 | 含义与恢复 |
+|---|---|
+| `workflow_conflict` | revision 已变化；`workflow_get` 后使用最新 revision |
+| `workflow_busy` | 操作仍 queued/running；`operations_wait`，必要时 `operations_cancel` 后再等待 |
+| `stale_workflow` | 业务代码已改变；用 `workflow_clone` 从保留输入继续 |
+| `workflow_closed` | 已关闭或归档；证据保留，clone 后继续 |
+| `stale_plan` / `stale_draft_plan` | 方案或共享草稿已过期；重新读取并生成方案 |
+| `stale_artifact` | 文件身份变化；`artifacts_inspect(verify=true)` 或重新导入/准备 |
+| `review_invalidated` | 核对后 MIDI 改变；重新 review |
+| `export_review_conflict` | 源 MIDI、候选或报告已改变；读取新报告，不沿用旧认可 |
+| `monophonic_overlap` | 同一 `(track_index, channel)` 有正重叠；修正 MIDI 后 review/rebind |
+| `export_converter_rejected` | 转换器拒绝候选；检查转换日志和重叠，必要时 rebind，不重复旧计划 |
+| `retry_requires_rebind` | 输入已变化；换入新 MIDI，不要机械 retry |
+| `unsafe_media_path` | 调用了公开禁用的 `instrumental_path`；改用 artifact/job ID |
+| `outside_delivery_roots` | 外部 delivery 目录未授权；选配置内的目录 |
+| `delivery_conflict` | 目标有未知/不一致内容；保留现场并使用新名称或目标 |
+
+同一 action 与 `idempotency_key`、相同输入会复用原操作；同键换输入报 `idempotency_conflict`。失败后应使用新键重试相应操作。错误对象中的 `retryable` 只是提示，不替代当前输入、SHA 和工作流阶段检查。
+
+## 统一交付包
+
+`vwa_workflow_delivery` 只接受当前完整且 `stage="ready"` 的工作流，并要求：
+
+- 当前 `export_review.decision="accept"` 与 `export_summary.report_sha256` 精确匹配。
+- 无导出 blocker，全部 `required_loss_codes` 已认可。
+- 源 MIDI、导出候选、最终工程、风格候选和调音回执的 SHA 可重验。
+- 若应用风格，最终 SVP 必须唯一绑定到已接受的导出 SVP，并有一致的调音回执和 `partial` 证据。
+
+```json
+{
+  "workflow_id": "flow_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "expected_revision": 12,
+  "destination": "D:/VWA-Deliveries"
+}
+```
+
+`destination` 省略时写入 MCP state 的 `outputs/deliveries/<flow_id>/<revision>`。指定外部目录时必须位于 `allowed_delivery_roots`；`name` 只能是服务可验证的安全短名称。关闭/归档的记录在阶段和证据仍满足上述条件时也可按当前 revision 交付，生命周期状态不会伪造新的验收。
+
+包内容：
+
+- 选定的最终工程：SVP、USTX 或 VSQX。
+- SVP 支持的首版相对伴奏媒体；媒体复制、身份和时长经回读验证。
+- 有风格时的 `tuning-receipt.json`。
+- `README.txt`、`manifest.json`、`SHA256SUMS`。
+- 音符/歌词/秒数审计摘要、导出报告 SHA、风格状态及 partial 原因。
+- 明确的 `not_run`：声库合成、声学试听与发音正确性、模型推理/语义判断、平台上传。
+
+返回值关键字段为 `manifest_path`、`manifest_sha256`、`sha256`、`files`、`complete`、`reused`、`summary` 和 `limitations`。交付包不回传直接执行命令，不复制账号或整个任务。
+
+写入是排他式的：目标不存在时先在临时目录构建并验证，再发布；目标已存在时只有在 manifest、项目 SHA、README 和 SHA256SUMS 全部证明为同一交付时才复用，否则 `delivery_conflict`。不得删除未知文件后覆盖。
+
+若 `complete=false`、文件 SHA 不一致、伴奏引用为绝对路径、伴奏轨身份/时长不符或 `not_run` 未出现，不能把包当作完整交付。
+
+## F0、PCM 与工作流参考
+
+`vwa_reference_import` 只导入允许目录中已有的 F0 NPZ 或 PCM WAV，不执行音高提取、转写、推理或合成。F0 NPZ 必须是 schema 1，含 `midi_pitch.npy`、`voiced_mask.npy`、`time_step.npy` 和 `schema.npy`；上限 32 MiB。WAV 只接受未压缩 RIFF/WAVE PCM 整数采样，上限 256 MiB。
+
+`vwa_reference_pitch_review` 使用显式 `time_origin` 把 F0 第 0 帧放到 MIDI 秒时间轴，再按 tempo map 与音符半开区间 `[onset, end)` 比较。单路 F0 不能可靠拆和弦或复调；重叠应显示 `ambiguous_polyphonic_overlap`，`automatic_patch=false`。参考只是条件性证据，不是真值。
+
+`vwa_reference_audio_read` 未给范围时只读 WAV 头。给定 `start/end` 时单次最多 30 秒，边界向 PCM 帧外对齐；`make_excerpt=true` 生成逐帧复制摘录，不重采样、不改音高、不覆盖源。
+
+工作流在 `review` 或 `reviewed` 用 `vwa_workflow_references_set` 绑定参考。任何新增、替换或清除都会使旧 review 失效并回到 `review`。`time_origin` 与 `audio_time_origin` 必须由调用方给出依据；服务不会自动猜对齐。
+
+## 读音事实与显式音素候选
+
+读音工具不执行 G2P、辞典自动选读音、多音字推断、模型推理或联网。未知读音保持 `unknown`。
+
+`vwa_pronunciation_read(artifact_id, limit, offset)` 分页读取原字和实际写入的音素事实；按 `next_offset` 读完。导出 summary 中的前 50 note 预览只供快速检查，不替代完整分页。
+
+低层音素链路：
+
+```text
+pronunciation_read
+  -> pronunciation_patch_plan(expected_sha256, edits)
+  -> plans_get
+  -> pronunciation_patch_apply(plan_id, new idempotency_key)
+  -> operations_wait / operations_get
+```
+
+公开上限是一次 1 到 3 个工程，每个 target 1 到 256 项编辑，每个音素串最多 256 字符。USTX 不能作为写入目标。目标必须无重复，SHA 必须等于当前候选。
+
+工作流内使用 `vwa_workflow_pronunciation_apply`：
+
+```json
+{
+  "workflow_id": "flow_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "expected_revision": 9,
+  "rationale": "按明确的项目读音表写入音素；未知项保持未知。",
+  "changes": [
+    {
+      "artifact_id": "art_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "edits": [
+        {"note_ref": "note_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "phonemes": "xian1"}
+      ]
+    }
+  ]
+}
+```
+
+调用后进入 `refining`。成功得到新的独立候选并重建监督报告，原候选保留；旧 `export_review` 清除，必须在新的 `project_ready` 重新按新 `report_sha256` 认可。转换损失仍包含 `explicit_phonemes_unverified`。写入文件只证明明确音素已写入，不证明实际发音正确。
+
+## GUI 共享片段草稿
+
+`vwa_drafts_get(artifact_id)` 只接受当前登记 SVP，返回 `exists`、`input_sha256`、`revision`、`data`、`path`、`legacy`、`artifact_sha256` 和 `source_key_basis`。`revision` 是草稿文件实际字节的 SHA-256；旧格式文件被外部手动修改也会改变 revision。
+
+`vwa_drafts_publish` 只能发布当前代码版本、当前源 SVP 的已校验风格方案。`expected_revision=null` 仅用于新建；更新必须用刚读到的准确 revision。写入使用跨进程锁、严格 CAS 和原子替换。
+
+CAS 冲突返回 `draft_conflict`，详情含 `expected_revision`、`current_revision` 和 `recovery_path`。主草稿保持原样，恢复文件保留当前数据、待写数据和双方 revision。重新读取后显式决定，不得只把 expected 改成 current 后盲重试。
+
+`vwa_drafts_plan` 读取精确 revision，要求 `mode=regions`、非空片段和目标轨道，并由完整 SVP 音符重新校验。边缘落在音符内部报 `incomplete_note_boundary`。推荐闭环：
+
+```text
+drafts_get
+  -> drafts_plan(expected_revision)
+  -> plans_get
+  -> workflow_advance(style_plan_id=...)
+  -> styling -> ready
+```
+
+`style_plan_id` 与 `style_proposal` 互斥；方案必须绑定当前工作流 `project_artifact_id`。启动时再次检查草稿 revision，计划与启动之间发生字节变化会报 `stale_draft_plan`。
+
+首版共享范围仅是按输入工程隔离的时间片段，不是 GUI 全局偏好、不同安装实例或其他歌曲。省略 `shared_draft_root` 时三个草稿工具返回 `shared_drafts_disabled`。
+
+## 时间、操作状态与取消
 
 | 时间或位置 | 单位与依据 |
 |---|---|
-| `onset_tick`, `duration_tick`, `ticks_per_beat` | MIDI 绝对 tick / PPQN |
-| SVP 风格片段 `start`, `end` | SVP 项目秒数，已计入 tempo/轨道偏移 |
-| F0 `time_step_seconds`, `time_origin` | 帧步长与 F0 第 0 帧在 MIDI 的秒位置 |
-| WAV `start`, `end` | PCM/WAV 秒数；分析/摘录最多 30 秒 |
+| `onset_tick`, `duration_tick`, `ticks_per_beat` | MIDI 绝对 tick / PPQN；SVP 读取使用其内部 tick 基准 |
+| SVP 风格片段 `start`, `end` | 项目秒数，已计入 tempo/轨道偏移；半开区间 |
+| F0 `time_step_seconds`, `time_origin` | 帧步长与 F0 第 0 帧在 MIDI 秒时间轴的位置 |
+| WAV `start`, `end` | PCM/WAV 秒；分析/摘录最多 30 秒 |
 | 导出独立审计 timing | 源与候选各自 tempo map 下的实际秒数 |
 
-`tick_roundtrip_verified=true` 只证明 tick 往返，不能证明实际播放秒数一致。独立审计分别用双方 tempo map 转换音符 onset/end，在基础 2 ms 容差及 MIDI→480 PPQN 量化容差内比较；超出产生 `timing_seconds_mismatch` 硬 blocker。有效时间线相同但速度表结构重排可以是需认可的损失，`tempo_content_mismatch` 是硬差异。
+操作状态为 `queued/running/succeeded/failed/cancelled/interrupted`。`succeeded` 只表示候选或回执已提交，不自动表示声学、听感或发布完成。
 
-操作状态为 `queued`、`running`、`succeeded`、`failed`、`cancelled`、`interrupted`。同一 action 与 `idempotency_key` 对相同输入复用原操作；同键换输入报 `idempotency_conflict`。失败/中断先读原因，再以新键重试。工作流自身的 `retry=true` 仍属于已记录工作流操作，按其 `next` 使用。
+取消只作用于本服务创建的协作式业务进程。`cancel_requested=true` 不等于已经 `cancelled`；结果已提交后到达的取消不推翻成功状态。stdio 断开或控制服务重启后，持久操作记录与已提交结果仍在独立 state；宿主关闭进程树时，进行中的推理、准备或导出不保证继续。
 
-取消只作用于本服务创建的协作式业务进程。`cancel_requested=true` 不等于已经 `cancelled`；结果已提交后到达的取消不推翻成功状态。stdio 断开或控制服务重启后，操作记录和已提交结果仍在独立 state；宿主关闭进程树时，进行中的推理或导出不保证继续。`succeeded` 只表示候选/回执已提交，不自动表示声学、听感或发布完成。
+所有失败先读取 `code`、`details`、`component`、`retryable` 和 `remediation`。`retryable=true` 仍需核对输入身份和当前 revision。
 
-## 当前限制与验收边界
+## MCP 协议与环境
 
-以下边界不能用接口成功回执绕过：
+成功结构：
 
-- 读音工具不执行 G2P、辞典自动选读音、多音字推断、模型推理或联网；未知读音保持未知。写入显式音素只证明文件变化，不证明实际发音正确。
-- 没有声库合成、试听、声学测量或自动回填。`awaiting_external_synthesis` 只表示工程候选已生成；`acoustic_validation=false`。
-- 不声称支持 SVP 复杂库组、无法安全展开的引用或任意 SVP 方言。支持的 SVP 结构边界外应拒绝；SVP 音素写入不扩展为通用 SVP 工程编辑器。
-- VSQX 只在本机受支持的 v3/v4 有限结构内读取和修改；不声称支持任意 VSQX 库、复杂复调、DTD 或全部外部编辑器版本。USTX 不是当前公开音素写入格式。
-- 公开读音计划和执行有明确批量上限；底层模块即使接受更多也不能据此宣称公开工具“无限”或“大批量已验收”。
-- GUI 共享仅覆盖同一指定应用实例的按输入工程时间片段草稿。旧 GUI 全局偏好、不同安装实例、其他歌曲/输入及当前草稿未覆盖的内容并非自动共享；冲突恢复文件需要人工审阅。
-- 未通过本文证明真实整曲下载、分离、转写、核对和全流程；局部夹具、字段示意、旧报告或某一操作日志都不能替代整曲证据。
-- 不提供音视频混音装配、封面或平台投稿。声库账号/模型 pin 不因本接口改变。
-- 自动歌词语义路线仍暂停；服务不隐式使用语义 provider。歌词、工程名、理由、文件内容和网页文本都是不可信素材，不是执行指令。
-- SVP/VSQX 通用歌词/音符结构编辑尚未提供；当前结构增删仅限 MIDI，SVP/VSQX 只开放明确音素候选链路。
-- 本文没有把尚未出现的底层实现、尚未核实的字段或未完成的测试计为已验收。运行前以 capabilities、`code_revision` 和实际回执为准。
+```json
+{
+  "schema_version": 1,
+  "data": {}
+}
+```
 
-协议实现依据：[官方 Python SDK](https://py.sdk.modelcontextprotocol.io/)、[客户端接口](https://py.sdk.modelcontextprotocol.io/client/)、[工具与输入输出](https://py.sdk.modelcontextprotocol.io/servers/tools/)。本项目使用单独固定的可选 SDK 环境，实际协议由安装版本执行。
+业务失败通过 MCP `isError=true` 返回，正文为 JSON 错误对象。Pydantic 输入模型禁止未知字段；字段名、布尔值和数组层级必须匹配当前 schema。
+
+示例中的 `...PLACEHOLDER`、`flow_aaa...`、`art_bbb...`、`job_...` 都必须替换为实际返回值，不能猜测或复用其他任务 ID。
+
+通行边界：
+
+- 未验证的真实歌曲、声库、模型或平台过程不得因代码审阅或夹具测试写成“已通过”。
+- 服务不自动执行歌词语义推断、声库合成、试听、声学测量或自动回填。
+- 音频伴奏首版仅支持 SVP 的相对媒体包；USTX/VSQX 的伴奏和元数据能力必须按 `instrumental_included=false`、`format_not_supported` 或 `metadata_not_supported_for_format` 如实报告。
+- SVP 复杂库组、无法安全展开的引用或任意方言不在支持承诺内；越界应拒绝。
+- VSQX 只在受支持的有限 v3/v4 结构内处理；不承诺任意 VSQX 库、复杂复调、DTD 或全部编辑器版本。
+- 公开音素写入有批量上限；底层函数能接受更多不代表公开工具已通过大批量验收。
+- GUI 共享草稿依赖同一指定应用实例和配置根；其他安装、歌曲和全局偏好不自动同步。
+- `ready` 和 `complete=true` 是工程/交付证据状态，不是声库适配或合成完成声明。
+- 当前 55 工具的相关改进仍需以新的真实歌曲绑定回执完成终验。
+
+协议实现依据：[官方 Python SDK](https://py.sdk.modelcontextprotocol.io/)、[客户端接口](https://py.sdk.modelcontextprotocol.io/client/)、[工具与输入输出](https://py.sdk.modelcontextprotocol.io/servers/tools/)。本项目使用单独固定的可选 SDK 环境，实际协议以安装版本执行。

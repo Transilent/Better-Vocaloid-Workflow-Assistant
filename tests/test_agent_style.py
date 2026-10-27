@@ -4,7 +4,9 @@ import hashlib
 import json
 import sys
 import tempfile
+import types
 import unittest
+import wave
 from pathlib import Path
 from unittest.mock import patch
 
@@ -110,6 +112,17 @@ def write_svp(path, data=None, *, nul=True):
     return path
 
 
+def write_wav(path, *, seconds=0.25, rate=8000):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(rate)
+        stream.writeframes(b"\x00\x00" * int(rate * seconds))
+    return path
+
+
 def region(start=0.6, end=0.7, *, preset="gentle", technique="none"):
     return {
         "start": start,
@@ -131,6 +144,18 @@ def proposal(regions=None, tracks=None):
         "brief": "把调用方指定的语义落实到完整音符",
         "regions": [region()] if regions is None else regions,
     }
+
+
+def fake_media_module(relocate=None):
+    module = types.ModuleType("agent_media")
+    module.relocate_svp_media = relocate or (
+        lambda source, candidate, allowed_roots=None: {
+            "included": False,
+            "reason": "test_has_no_supported_media",
+            "moved": [],
+        }
+    )
+    return module
 
 
 class StyleContextTests(unittest.TestCase):
@@ -194,8 +219,79 @@ class StyleContextTests(unittest.TestCase):
             self.assertIn("lyric.unknown", codes)
             self.assertIn("pitch.unknown", codes)
 
+    def test_pagination_and_summary_preserve_the_legacy_default_shape(self):
+        with tempfile.TemporaryDirectory(prefix="agent-style-pages-", dir=APP) as temp:
+            source = write_svp(Path(temp) / "source.svp")
+            legacy = agent_style.read_context(source, [0])
+            explicit_defaults = agent_style.read_context(
+                source, [0], limit=None, offset=0,
+                detail="full", include_note_ids=True,
+            )
+            self.assertEqual(explicit_defaults, legacy)
+
+            page = agent_style.read_context(
+                source, [0], limit=1, offset=1,
+                detail="notes", include_note_ids=False,
+            )
+            self.assertEqual(len(page["notes"]), 1)
+            self.assertEqual(page["notes"][0]["lyric"], "风")
+            self.assertIn("note_id", page["notes"][0])
+            self.assertEqual(page["pagination"], {
+                "limit": 1,
+                "offset": 1,
+                "total": 2,
+                "returned": 1,
+                "has_more": False,
+                "next_offset": None,
+            })
+
+            summary = agent_style.read_context(
+                source, [0], limit=1, offset=0,
+                detail="summary", include_note_ids=False,
+            )
+            self.assertEqual(summary["detail"], "summary")
+            self.assertFalse(summary["notes_included"])
+            self.assertEqual(summary["notes"], [])
+            self.assertEqual(summary["note_summary"]["total"], 2)
+            self.assertEqual(summary["note_summary"]["by_track"][0]["lyric_known"], 2)
+
+            with self.assertRaisesRegex(ValueError, "limit"):
+                agent_style.read_context(source, [0], limit=0)
+            with self.assertRaisesRegex(ValueError, "detail"):
+                agent_style.read_context(source, [0], detail="unknown")
+
 
 class StylePlanTests(unittest.TestCase):
+    def test_six_decimal_rounded_boundary_keeps_adjacent_regions_separate(self):
+        with tempfile.TemporaryDirectory(prefix="agent-style-rounding-", dir=APP) as temp:
+            data = project()
+            data["tracks"][0]["mainRef"]["blickOffset"] = 0
+            # After the one-second tempo change to 60 BPM this tick is exactly
+            # 178.8697916667s, which the public six-decimal form rounds to
+            # 178.869792s.
+            boundary_tick = int(round((178.8697916667 + 1.0) * Q))
+            start_tick = int(round((136.8 + 1.0) * Q))
+            end_tick = 203 * Q
+            data["tracks"][0]["mainGroup"]["notes"] = [
+                note(start_tick, boundary_tick - start_tick, 60, "前"),
+                note(boundary_tick, end_tick - boundary_tick, 64, "后"),
+            ]
+            source = write_svp(Path(temp) / "rounded-boundary.svp", data)
+            payload = proposal([
+                region(136.800000, 178.869792),
+                region(178.869792, 202.000000),
+            ])
+
+            plan = agent_style.plan_style(source, payload)
+            first, second = plan["regions"]
+            self.assertEqual(len(first["aligned_note_ids"]), 1)
+            self.assertEqual(len(second["aligned_note_ids"]), 1)
+            self.assertFalse(
+                set(first["aligned_note_ids"]) & set(second["aligned_note_ids"])
+            )
+            self.assertAlmostEqual(first["end"], 178.86979166666666, places=12)
+            self.assertAlmostEqual(second["start"], first["end"], places=12)
+
     def test_plan_expands_to_complete_notes_and_emits_legacy_engine_region(self):
         with tempfile.TemporaryDirectory(prefix="agent-style-plan-", dir=APP) as temp:
             source = write_svp(Path(temp) / "source.svp")
@@ -279,7 +375,7 @@ class StylePlanTests(unittest.TestCase):
                 region(0.55, 0.60),
                 region(0.70, 0.80),
             ])
-            with self.assertRaisesRegex(ValueError, "重叠"):
+            with self.assertRaisesRegex(ValueError, "重叠并共用完整音符"):
                 agent_style.plan_style(source, overlap)
 
             negative = proposal([region(-0.1, 0.1)])
@@ -303,6 +399,13 @@ class StylePlanTests(unittest.TestCase):
 
 
 class StyleRenderTests(unittest.TestCase):
+    def setUp(self):
+        self.media_calls = []
+        self.media_module = fake_media_module()
+        self.media_patch = patch.dict(sys.modules, {"agent_media": self.media_module})
+        self.media_patch.start()
+        self.addCleanup(self.media_patch.stop)
+
     def make_plan(self, source):
         context = agent_style.read_context(source, [0])
         payload = proposal()
@@ -358,6 +461,9 @@ class StyleRenderTests(unittest.TestCase):
             receipt_document = json.loads(receipt.read_text(encoding="utf-8"))
             self.assertEqual(receipt_document["output_sha256"], result["candidate_sha256"])
             self.assertEqual(receipt_document["source_sha256"], result["source_sha256"])
+            self.assertIsInstance(result["partial_reason_counts"], dict)
+            self.assertIsInstance(result["partial_remediation"], list)
+            self.assertIn("partial_reason_counts", result["report"])
             self.assertEqual(source.read_bytes(), source_bytes)
             json.loads(json.dumps(result, ensure_ascii=False, allow_nan=False))
 
@@ -385,6 +491,109 @@ class StyleRenderTests(unittest.TestCase):
             self.assertEqual(retried["candidate_sha256"], result["candidate_sha256"])
             self.assertEqual(source.read_bytes(), source_bytes)
 
+    def test_media_relocation_precedes_candidate_sha_and_receipt_update(self):
+        with tempfile.TemporaryDirectory(prefix="agent-style-media-", dir=APP) as temp:
+            root = Path(temp)
+            source = write_svp(root / "source.svp")
+            plan = self.make_plan(source)
+
+            def relocate(source_path, candidate_path, allowed_roots=None):
+                self.media_calls.append((Path(source_path), Path(candidate_path), allowed_roots))
+                candidate_path = Path(candidate_path)
+                value = json.loads(candidate_path.read_text(encoding="utf-8").rstrip("\x00"))
+                value["tracks"][2]["mainRef"]["audio"]["filename"] = "accompaniment.wav"
+                candidate_path.write_text(
+                    json.dumps(value, ensure_ascii=False, separators=(",", ":")),
+                    encoding="utf-8",
+                )
+                return {
+                    "included": True,
+                    "moved": [{"relative_path": "accompaniment.wav"}],
+                }
+
+            self.media_module.relocate_svp_media = relocate
+            result = agent_style.render_style(source, plan, root / "output")
+            candidate = Path(native_path(result["candidate_path"]))
+            final_sha = hashlib.sha256(candidate.read_bytes()).hexdigest()
+            self.assertEqual(result["candidate_sha256"], final_sha)
+            self.assertNotEqual(result["candidate_sha256"], result["tuning_candidate_sha256"])
+            self.assertTrue(result["receipt_matches_final_candidate"])
+            self.assertTrue(result["media_relocation"]["included"])
+            self.assertEqual(len(self.media_calls), 1)
+            self.assertEqual(self.media_calls[0][0], source.resolve())
+            self.assertEqual(
+                Path(native_path(self.media_calls[0][1])),
+                Path(native_path(candidate)),
+            )
+            self.assertIn(str(source.parent), self.media_calls[0][2])
+
+            receipt = Path(native_path(result["receipt"]))
+            receipt_document = json.loads(receipt.read_text(encoding="utf-8"))
+            self.assertEqual(receipt_document["output_sha256"], result["candidate_sha256"])
+            self.assertEqual(
+                receipt_document["tuning_output_sha256"],
+                result["tuning_candidate_sha256"],
+            )
+            self.assertEqual(receipt_document["media_relocation"], result["media_relocation"])
+            self.assertEqual(result["tuning_result"]["output_sha256"], result["candidate_sha256"])
+            self.assertEqual(
+                result["tuning_result"]["serialized_content_sha256"],
+                receipt_document["serialized_content_sha256"],
+            )
+
+            retried = agent_style.render_style(source, plan, root / "output")
+            self.assertTrue(retried["cached"])
+            self.assertEqual(retried["candidate_sha256"], result["candidate_sha256"])
+            self.assertEqual(retried["tuning_candidate_sha256"], result["tuning_candidate_sha256"])
+            self.assertEqual(len(self.media_calls), 2)
+
+    def test_partial_reason_projection_is_actionable(self):
+        report = {
+            "status": "partial",
+            "style": {
+                "regions": [{
+                    "status": "partial",
+                    "tracks": [{
+                        "skipped_notes": [
+                            {"reason": "short_note_preserved"},
+                            {"reason": "short_note_preserved"},
+                            {"reason": "protected_note_preserved"},
+                        ],
+                    }],
+                }],
+            },
+        }
+        counts, remediation, advice = agent_style._partial_evidence(report)
+        self.assertEqual(counts, {
+            "protected_note_preserved": 1,
+            "short_note_preserved": 2,
+        })
+        self.assertEqual([row["reason"] for row in remediation], [
+            "protected_note_preserved", "short_note_preserved",
+        ])
+        self.assertTrue(all(row["action"] for row in remediation))
+        self.assertEqual(len(advice), 2)
+
+    def test_render_exposes_partial_reason_counts_from_the_tuning_report(self):
+        with tempfile.TemporaryDirectory(prefix="agent-style-partial-", dir=APP) as temp:
+            root = Path(temp)
+            data = project()
+            data["tracks"][0]["mainGroup"]["notes"][1]["duration"] = Q // 10
+            source = write_svp(root / "source.svp", data)
+            context = agent_style.read_context(source, [0])
+            payload = proposal([region(0.55, 1.25)])
+            payload["regions"][0]["evidence_refs"] = [
+                context["notes"][0]["note_id"], context["notes"][1]["note_id"],
+            ]
+            plan = agent_style.plan_style(source, payload)
+
+            result = agent_style.render_style(source, plan, root / "output")
+            self.assertEqual(result["report"]["status"], "partial")
+            self.assertEqual(result["partial_reason_counts"], {"short_note_preserved": 1})
+            self.assertEqual(result["report"]["partial_reason_counts"], result["partial_reason_counts"])
+            self.assertEqual(result["partial_remediation"][0]["reason"], "short_note_preserved")
+            self.assertTrue(result["partial_advice"])
+
     def test_cancel_is_propagated_before_writing_output(self):
         with tempfile.TemporaryDirectory(prefix="agent-style-cancel-", dir=APP) as temp:
             root = Path(temp)
@@ -402,6 +611,87 @@ class StyleRenderTests(unittest.TestCase):
             with self.assertRaisesRegex(InterruptedError, "已取消"):
                 agent_style.render_style(source, plan, output, cancel=lambda: True)
             self.assertFalse(output.exists())
+
+
+class StyleMediaAuthorizationTests(unittest.TestCase):
+    @staticmethod
+    def make_plan(source):
+        context = agent_style.read_context(source, [0])
+        payload = proposal()
+        payload["regions"][0]["evidence_refs"] = [context["notes"][0]["note_id"]]
+        return agent_style.plan_style(source, payload)
+
+    def fixture(self, root):
+        exchange = root / "exchange"
+        inputs = root / "state" / "inputs"
+        media = write_wav(exchange / "reference.wav")
+        data = project()
+        data["tracks"][2]["mainRef"]["audio"]["filename"] = str(media.resolve())
+        source = write_svp(inputs / "snapshot.svp", data)
+        return source, media
+
+    def test_explicit_exchange_root_allows_imported_absolute_media(self):
+        with tempfile.TemporaryDirectory(prefix="agent-style-external-media-", dir=APP) as temp:
+            root = Path(temp)
+            source, media = self.fixture(root)
+            source_bytes = source.read_bytes()
+            media_bytes = media.read_bytes()
+            plan = self.make_plan(source)
+
+            result = agent_style.render_style(
+                source, plan, root / "output", allowed_media_roots=[root / "exchange"],
+            )
+            candidate = Path(native_path(result["candidate_path"]))
+            produced = json.loads(candidate.read_text(encoding="utf-8").rstrip("\x00"))
+            copied_name = produced["tracks"][2]["mainRef"]["audio"]["filename"]
+            copied = candidate.parent / copied_name
+            self.assertEqual(copied_name, "reference.wav")
+            self.assertTrue(copied.is_file())
+            self.assertEqual(copied.read_bytes(), media_bytes)
+            self.assertTrue(result["media_relocation"]["included"])
+            self.assertEqual(result["candidate_sha256"], hashlib.sha256(candidate.read_bytes()).hexdigest())
+            self.assertEqual(source.read_bytes(), source_bytes)
+            self.assertEqual(media.read_bytes(), media_bytes)
+
+            receipt = json.loads(Path(native_path(result["receipt"])).read_text(encoding="utf-8"))
+            self.assertEqual(receipt["output_sha256"], result["candidate_sha256"])
+            self.assertEqual(receipt["tuning_output_sha256"], result["tuning_candidate_sha256"])
+
+            import tuning_workflow
+            session = Path(native_path(result["session"]))
+            self.assertEqual(tuning_workflow.read_session(session)["id"], result["session_id"])
+            status = json.loads((session.parent / "status.json").read_text(encoding="utf-8"))
+            self.assertEqual(status["state"], "done")
+            self.assertEqual(Path(native_path(status["output"])), candidate)
+
+            retried = agent_style.render_style(
+                source, plan, root / "output", allowed_media_roots=[root / "exchange"],
+            )
+            self.assertTrue(retried["cached"])
+            self.assertEqual(retried["candidate_sha256"], result["candidate_sha256"])
+
+    def test_absolute_media_outside_explicit_roots_is_rejected_before_rewrite(self):
+        with tempfile.TemporaryDirectory(prefix="agent-style-media-denied-", dir=APP) as temp:
+            root = Path(temp)
+            source, media = self.fixture(root)
+            source_bytes = source.read_bytes()
+            media_bytes = media.read_bytes()
+            plan = self.make_plan(source)
+
+            with self.assertRaises(ValueError) as raised:
+                agent_style.render_style(source, plan, root / "output")
+            self.assertEqual(getattr(raised.exception, "code", None), "media_path_outside_roots")
+            self.assertEqual(source.read_bytes(), source_bytes)
+            self.assertEqual(media.read_bytes(), media_bytes)
+
+            candidates = list((root / "output").rglob("tuned-*.svp"))
+            self.assertEqual(len(candidates), 1)
+            candidate = json.loads(candidates[0].read_text(encoding="utf-8").rstrip("\x00"))
+            self.assertEqual(
+                candidate["tracks"][2]["mainRef"]["audio"]["filename"],
+                str(media.resolve()),
+            )
+            self.assertFalse((candidates[0].parent / "reference.wav").exists())
 
 
 if __name__ == "__main__":

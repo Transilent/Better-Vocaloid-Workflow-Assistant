@@ -560,6 +560,34 @@
     {
       "file": "agent_refinement.py",
       "source": "src/agent_refinement.py"
+    },
+    {
+      "file": "agent_errors.py",
+      "source": "src/agent_errors.py"
+    },
+    {
+      "file": "agent_monophony.py",
+      "source": "src/agent_monophony.py"
+    },
+    {
+      "file": "agent_media.py",
+      "source": "src/agent_media.py"
+    },
+    {
+      "file": "agent_views.py",
+      "source": "src/agent_views.py"
+    },
+    {
+      "file": "agent_delivery.py",
+      "source": "src/agent_delivery.py"
+    },
+    {
+      "file": "agent_segments.py",
+      "source": "src/agent_segments.py"
+    },
+    {
+      "file": "agent_segment_workflow.py",
+      "source": "src/agent_segment_workflow.py"
     }
   ]
 }

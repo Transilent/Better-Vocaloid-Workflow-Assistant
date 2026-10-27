@@ -36,18 +36,133 @@ class Workflow:
         atomic_json(self.control._record_path('workflows', value['id'], 'flow'), value)
         return value
 
-    def _expected(self, identifier, revision):
+    def _expected(self, identifier, revision, *, allow_closed=False, allow_stale=False):
         value = self._read(identifier)
         if type(revision) is not int or revision != value['revision']:
             raise ControlError('workflow_conflict', '工作流版本已改变，请重新读取当前状态。')
-        if value['code_revision'] != self.control.code_revision:
-            raise ControlError('stale_workflow', '业务代码已更新，请从已保留的当前 MIDI 新建工作流。')
+        if value['code_revision'] != self.control.code_revision and not allow_stale:
+            raise ControlError('stale_workflow', '业务代码已更新，可克隆当前工作流并重新核对保留的 MIDI。')
+        if value.get('lifecycle','active')!='active' and not allow_closed:
+            raise ControlError('workflow_closed','工作流已关闭或归档；证据保留，可克隆后继续。')
         return value
 
+    def _retain_revision(self,value,reason):
+        path=safe_path(self.control.state/'workflow-evidence'/value['id']/('revision-'+str(value['revision'])+'.json'),
+                       [self.control.state])
+        if io_path(path).exists():
+            from agent_control import read_json
+            if read_json(path)!=value:
+                raise ControlError('workflow_evidence_conflict','旧修订证据路径已有不同内容。')
+        else:atomic_json(path,value)
+        return {'revision':value['revision'],'stage':value['stage'],'reason':reason,
+                'path':str(path),'sha256':file_hash(path),'score_artifact_id':value.get('score_artifact_id'),
+                'operation_id':value.get('operation_id')}
+
+    def rebind_score(self,identifier,revision,score_artifact_id,reason):
+        """Return to review in the same flow; never discard failed export evidence."""
+        if not isinstance(reason,str) or not reason.strip() or len(reason)>8000:
+            raise ControlError('rebind_reason_required','请说明替换 MIDI 并重新核对的原因。')
+        with self._lock(identifier):
+            value=self._expected(identifier,revision)
+            if value.get('operation_id'):
+                operation=self.control.operation_get(value['operation_id'])
+                if operation['state'] in ('queued','running'):
+                    raise ControlError('workflow_busy','先取消并等待当前操作结束，再替换 MIDI。')
+            artifact=self.control.artifact(score_artifact_id)
+            if Path(artifact['path']).suffix.lower() not in ('.mid','.midi'):
+                raise ControlError('unsupported_source','换入的输入必须是 MIDI。')
+            if artifact['kind']!='input' and not safe_path(artifact['path']).is_relative_to(self.control.state/'outputs'):
+                artifact=self.control.import_asset(artifact['path'])
+            retained=self._retain_revision(value,reason.strip())
+            from agent_segment_workflow import enabled,make_segments
+            segment_changes=({'midi_segments':make_segments(self.control,artifact['id'],'midi'),
+                'midi_segment_decisions':{},'style_segments':None,'style_segment_decisions':{}}
+                if enabled(value) else {})
+            clean={key:None for key in ('operation_id','active_plan_id','review_receipt','reviewed_sha256',
+                'export_summary','export_review','previous_export_summary','project_artifact_id',
+                'stage_error','unusable_operation_id')}
+            self._write(value,'score_rebound',**clean,stage='review',score_artifact_id=artifact['id'],
+                project_artifacts=[],final_artifacts=[],pronunciation_receipts=[],
+                recovery_history=[*value.get('recovery_history',[]),retained],rebind_reason=reason.strip(),**segment_changes)
+        return self.get(identifier)
+
+    def close(self,identifier,revision,reason,archive=False):
+        if not isinstance(reason,str) or not reason.strip() or len(reason)>2000:
+            raise ControlError('close_reason_required','关闭或归档需要说明原因。')
+        with self._lock(identifier):
+            value=self._expected(identifier,revision,allow_closed=True,allow_stale=True)
+            if value.get('operation_id'):
+                operation=self.control.operation_get(value['operation_id'])
+                if operation['state'] in ('queued','running'):
+                    raise ControlError('workflow_busy','操作仍在运行；先取消并等待结束再关闭。')
+            self._retain_revision(value,reason.strip())
+            self._write(value,'archived' if archive else 'closed',
+                lifecycle='archived' if archive else 'closed',close_reason=reason.strip(),closed_at=time.time())
+        return self.get(identifier)
+
+    def list(self,limit=20,offset=0,status=None,query=''):
+        from agent_control import read_json
+        if type(limit) is not int or not 1<=limit<=100 or type(offset) is not int or offset<0:
+            raise ControlError('invalid_page','工作流列表 limit 为1–100，offset非负。')
+        if not isinstance(query,str) or len(query)>1000:
+            raise ControlError('invalid_query','查询词需为最多1000字符的文本。')
+        wanted=set(status.split(',')) if isinstance(status,str) and status else set()
+        rows=[]
+        for path in (self.control.state/'workflows').glob('flow_*.json'):
+            path=safe_path(path,[self.control.state/'workflows'])
+            value=read_json(path);stage=value['stage'];lifecycle=value.get('lifecycle','active')
+            operation=self.control.operation_get(value['operation_id']) if value.get('operation_id') else None
+            actual=operation.get('state') if operation else stage
+            if wanted and not wanted.intersection((stage,lifecycle,actual)):continue
+            request=value.get('request',{})
+            text=' '.join(str(item) for item in (value['id'],request.get('source',''),request.get('brief',''),
+                value.get('job_id',''),value.get('score_artifact_id',''),value.get('project_artifact_id',''),
+                *[a.get('id','') for a in value.get('final_artifacts',[])]))
+            if query.casefold() not in text.casefold():continue
+            rows.append({'id':value['id'],'revision':value['revision'],'stage':stage,'lifecycle':lifecycle,
+                'operation_state':actual,'source':request.get('source','')[:1000],
+                'brief':request.get('brief','')[:300],'score_artifact_id':value.get('score_artifact_id'),
+                'project_artifact_id':value.get('project_artifact_id'),'updated':value.get('updated',0),
+                'current_code':value['code_revision']==self.control.code_revision})
+        rows.sort(key=lambda row:(row['updated'],row['id']),reverse=True)
+        return {'workflows':rows[offset:offset+limit],'total':len(rows),
+            'has_more':offset+limit<len(rows),'next_offset':offset+limit if offset+limit<len(rows) else None}
+
+    def clone(self,identifier,revision,score_artifact_id=None,reason='',idempotency_key=None,review_mode=None):
+        if not isinstance(reason,str) or not reason.strip() or len(reason)>2000:
+            raise ControlError('clone_reason_required','请说明克隆原因。')
+        with self._lock(identifier):
+            value=self._read(identifier)
+            if value['revision']!=revision:
+                raise ControlError('workflow_conflict','工作流版本已改变，请重新读取。')
+            score=score_artifact_id or value.get('score_artifact_id')
+            request=value['request']
+            key=idempotency_key or digest({'clone_of':identifier,'revision':revision,'score':score,'reason':reason})
+            if 'flow_'+digest(key)[:32]==identifier:
+                raise ControlError('invalid_idempotency_key','克隆需使用新的工作流重试键。')
+            result=self.create(source='' if score else request.get('source',''),options=request.get('options',{}),
+                brief=request.get('brief',''),reference_lyrics=request.get('reference_lyrics',''),
+                score_artifact_id=score,formats=request.get('formats'),idempotency_key=key,
+                review_mode=review_mode or request.get('review_mode','legacy'))
+        child=result['id']
+        with self._lock(child):
+            created=self._read(child)
+            if not created.get('cloned_from'):
+                self._write(created,'cloned',cloned_from={'workflow_id':identifier,'revision':revision,'reason':reason.strip()})
+        return self.get(child)
+
+    def delivery(self,identifier,revision,destination=None,name=None):
+        with self._lock(identifier):
+            value=self._expected(identifier,revision,allow_closed=True,allow_stale=True)
+            from agent_delivery import build_delivery
+            return build_delivery(self.control,value,destination,name)
+
     def create(self, source='', options=None, brief='', reference_lyrics='',
-               score_artifact_id=None, formats=None, idempotency_key=None):
-        if bool(source) == bool(score_artifact_id):
-            raise ControlError('invalid_source', '请选择歌曲链接/本地音乐，或一个已导入的 MIDI，二者选一。')
+               score_artifact_id=None, formats=None, idempotency_key=None, preparation_job_id=None,review_mode='legacy'):
+        if review_mode not in ('legacy','segments'):
+            raise ControlError('invalid_review_mode','核对模式为segments或显式兼容legacy。')
+        if sum(bool(item) for item in (source,score_artifact_id,preparation_job_id))!=1:
+            raise ControlError('invalid_source', '请选择歌曲来源、已导入MIDI或已有受管准备任务之一。')
         if not isinstance(brief, str) or not isinstance(reference_lyrics, str):
             raise ControlError('invalid_context', '创作背景和参考歌词必须是文本。')
         formats = ['svp'] if formats is None else formats
@@ -60,6 +175,8 @@ class Workflow:
         request = {'source': source, 'options': options or {}, 'brief': brief,
                    'reference_lyrics': reference_lyrics, 'score_artifact_id': score_artifact_id,
                    'formats': formats}
+        if preparation_job_id:request['preparation_job_id']=preparation_job_id
+        if review_mode=='segments':request['review_mode']='segments'
         key = idempotency_key or digest(request)
         if not isinstance(key, str) or not 1 <= len(key) <= 128:
             raise ControlError('invalid_idempotency_key', '工作流重试键需为 1–128 字符。')
@@ -79,6 +196,10 @@ class Workflow:
                     score_artifact_id = self.control.import_asset(artifact['path'])['id']
                 plan = None
                 stage = 'review'
+            elif preparation_job_id:
+                self.control._record('preparations',preparation_job_id,'job')
+                self.control.job_path(preparation_job_id)
+                plan=None;stage='created'
             else:
                 plan = self.control.preparation_plan(source, options or {})
                 stage = 'created'
@@ -87,10 +208,14 @@ class Workflow:
                      'preparation_plan_id': plan['id'] if plan else None,
                      'score_artifact_id': score_artifact_id, 'created': time.time(),
                      'updated': time.time(), 'attempt': 0, 'history': []}
+            if preparation_job_id:value['job_id']=preparation_job_id
+            if review_mode=='segments' and score_artifact_id:
+                from agent_segment_workflow import make_segments
+                value['midi_segments']=make_segments(self.control,score_artifact_id,'midi')
             atomic_json(path, value)
         return self.get(identifier)
 
-    def get(self, identifier, include_details=False):
+    def get(self, identifier, include_details=False, detail=None, include_note_ids=False, include_raw_evidence=False):
         value = self._read(identifier)
         stage = value['stage']
         arguments = {'workflow_id': identifier, 'expected_revision': value['revision']}
@@ -129,7 +254,29 @@ class Workflow:
                          'external_handoff': 'voice_synthesis_if_requested'}
         else:
             next_step = {'tool': 'vwa_workflow_advance', 'arguments': arguments, 'reason': stage}
-        if not include_details:
+        if value.get('lifecycle','active')!='active':
+            next_step={'tool':'vwa_workflow_clone','arguments':{**arguments,'reason':'从保留证据新建可编辑工作流'},
+                       'reason':'workflow_'+value['lifecycle']}
+        elif operation and operation['state'] in ('failed','cancelled','interrupted') and value.get('score_artifact_id'):
+            next_step['alternatives']=[{'tool':'vwa_workflow_rebind_score',
+                'required_arguments':{**arguments,'score_artifact_id':'art_corrected','reason':'修正后重新核对'},
+                'reason':'retry_repeats_the_saved_plan_rebind_uses_a_new_score'}]
+        from agent_segment_workflow import enabled,progress
+        if enabled(value):
+            kind='style' if value.get('style_segments') and stage in ('project_ready','styling','ready') else 'midi'
+            value={**value,'review_progress':progress(value,kind)}
+            if stage=='review' and value['review_progress']['current']:
+                next_step['arguments']['segment_id']=value['review_progress']['current']['id']
+            if stage=='project_ready' and self._export_accepted(value) and value['request']['brief']:
+                p=progress(value,'style')
+                next_step=({'tool':'vwa_workflow_advance','arguments':arguments,'reason':'all_style_segments_checked'}
+                    if p['complete'] else {'tool':'vwa_workflow_style_review',
+                        'arguments':{'workflow_id':identifier},'reason':'review_next_style_segment'})
+            if not include_details and detail!='full':
+                value=copy.deepcopy(value)
+                for key in ('midi_segments','style_segments','midi_segment_decisions','style_segment_decisions'):
+                    value.pop(key,None)
+        if not include_details and detail!='full':
             value = copy.deepcopy(value)
             if value.get('review_receipt'):
                 receipt = value['review_receipt']
@@ -143,8 +290,12 @@ class Workflow:
                 operation['request'] = {'action':raw.get('request',{}).get('action')}
                 operation['details_tool'] = {'tool':'vwa_operations_get',
                                             'arguments':{'operation_id':operation['id']}}
-        return {**value, 'operation': operation, 'next': next_step,
+        result={**value, 'operation': operation, 'next': next_step,
                 'completed': stage == 'ready', 'semantic_provider': 'caller_supplied_plan'}
+        if detail is not None:
+            from agent_views import workflow_view
+            result=workflow_view(result,'full' if include_details else detail,include_note_ids,include_raw_evidence)
+        return result
 
     @staticmethod
     def _export_accepted(value):
@@ -153,7 +304,7 @@ class Workflow:
         return bool(summary.get('report_sha256') and decision.get('decision')=='accept'
                     and decision.get('report_sha256')==summary['report_sha256'])
 
-    def review(self, identifier, limit=100, offset=0):
+    def review(self, identifier, limit=100, offset=0, detail=None, include_note_ids=False, include_raw_evidence=False,segment_id=None):
         value = self._read(identifier)
         if value['stage'] not in ('review', 'reviewed'):
             raise ControlError('wrong_stage', '先等待准备任务完成并推进到核对阶段。')
@@ -163,7 +314,24 @@ class Workflow:
         language = value['request']['options'].get('language', 'zh')
         bundle = self.control.call_worker('review_bundle', {'path': artifact['path'],
             'language': language, 'reference_text': value['request']['reference_lyrics'] or None})
-        notes = bundle['score']['notes']
+        all_notes=bundle['score']['notes']
+        notes=all_notes
+        from agent_segment_workflow import enabled,select,progress
+        segment=select(value,'midi',segment_id) if enabled(value) else None
+        if segment:
+            allowed=set(segment['note_ids']);notes=[row for row in all_notes if row['note_id'] in allowed]
+            first_tick,last_tick=segment.get('start_tick',0),segment.get('end_tick',0)
+            for section in ('score_review','lyric_review'):
+                bundle[section]['hints']=[row for row in bundle[section].get('hints',[])
+                    if (not row.get('note_ids') and not row.get('note_id')) or row.get('note_id') in allowed
+                    or bool(set(row.get('note_ids',[]))&allowed)]
+            def scoped_events(rows):
+                return [row for row in rows if first_tick<=row.get('tick',row.get('onset_tick',-1))<last_tick
+                    and row.get('track_index',segment['track_index'])==segment['track_index']]
+            for key in ('lyric_events','orphan_lyric_events','ambiguous_lyric_events'):
+                bundle['lyrics'][key]=scoped_events(bundle['lyrics'].get(key,[]))
+            for track in bundle['lyrics'].get('tracks',[]):
+                track['lyric_events']=scoped_events(track.get('lyric_events',[]))
         page = notes[offset:offset+limit]
         page_ids = {row['note_id'] for row in page}
         total_rows = len(notes)
@@ -202,7 +370,8 @@ class Workflow:
         if references.get('pitch_artifact_id'):
             reference_evidence['pitch'] = self.control.reference_pitch_review(artifact['id'],
                 references['pitch_artifact_id'], references.get('track_indices'),
-                references.get('time_origin', 0.0), limit, offset)
+                references.get('time_origin', 0.0),len(page) or limit,
+                all_notes.index(page[0]) if segment and page else offset)
         if references.get('audio_artifact_id'):
             audio = self.control.reference_audio_read(references['audio_artifact_id'])
             reference_evidence['audio'] = audio
@@ -219,7 +388,7 @@ class Workflow:
                         'arguments':{'artifact_id':references['audio_artifact_id'],
                                      'start':start,'end':end,'make_excerpt':True}}
         available = self.control.discover_references(value['job_id']) if value.get('job_id') else []
-        return {'workflow_id': identifier, 'revision': value['revision'],
+        result={'workflow_id': identifier, 'revision': value['revision'],
                 'artifact_id': artifact['id'], 'evidence': bundle, 'total_notes': len(notes),
                 'references':references,'reference_evidence':reference_evidence,
                 'available_references':available,
@@ -228,6 +397,15 @@ class Workflow:
                 'full_evidence_tools':['vwa_score_read','vwa_score_review','vwa_lyrics_read','vwa_lyrics_review'],
                 'decision_tool': 'vwa_workflow_apply_review',
                 'instructions': '先核对音符与歌词；以具体修改或保留理由提交决策。提示不是已证实错误。'}
+        if detail is not None:
+            from agent_views import review_view
+            result=review_view(result,detail,include_note_ids,include_raw_evidence)
+        if segment:
+            result.update(segment={k:v for k,v in segment.items() if k!='note_ids'},
+                segment_note_count=len(notes),total_notes=len(all_notes),review_progress=progress(value,'midi'),
+                decision_arguments={'workflow_id':identifier,'expected_revision':value['revision'],
+                    'segment_id':segment['id'],'rationale':'请填写本段的具体核对结论。'})
+        return result
 
     def references_set(self, identifier, revision, pitch_artifact_id=None, audio_artifact_id=None,
                        track_indices=None, time_origin=0.0, audio_time_origin=0.0, rationale=''):
@@ -254,11 +432,15 @@ class Workflow:
                 'track_indices':track_indices,'time_origin':float(time_origin),
                 'audio_time_origin':float(audio_time_origin),'rationale':rationale.strip(),
                 'provenance':'caller_supplied_unverified','inference_performed':False}
-            self._write(value,'references_set',references=references,stage='review')
+            from agent_segment_workflow import enabled
+            extra={'midi_segment_decisions':{}} if enabled(value) else {}
+            self._write(value,'references_set',references=references,stage='review',**extra)
         return self.get(identifier)
 
     def apply_review(self, identifier, revision, rationale, note_edits=None, lyric_edits=None,
-                     structure_edits=None):
+                     structure_edits=None, move_attached_lyrics=False,segment_id=None):
+        if type(move_attached_lyrics) is not bool:
+            raise ControlError('invalid_options','move_attached_lyrics需为布尔值。')
         if not isinstance(rationale, str) or not rationale.strip() or len(rationale) > 8000:
             raise ControlError('review_rationale_required', '需要记录核对结论与修改/保留理由。')
         with self._lock(identifier):
@@ -269,20 +451,30 @@ class Workflow:
                          'rationale': rationale, 'note_edits': note_edits or [],
                          'lyric_edits': lyric_edits or [], 'structure_edits':structure_edits or [],
                          'artifact_id': value['score_artifact_id']}
+            if move_attached_lyrics:arguments['move_attached_lyrics']=True
+            from agent_segment_workflow import enabled,select,authorize_edits
+            if enabled(value):
+                segment=select(value,'midi',segment_id)
+                authorize_edits(segment,note_edits or [],lyric_edits or [],structure_edits or [])
+                arguments['segment']=segment
             operation = self.control.start_operation('workflow_review', arguments,
                                                      identifier + '-review-' + str(revision))
             self._write(value, 'review_started', stage='reviewing', operation_id=operation['id'])
         return self.get(identifier)
 
     def advance(self, identifier, revision, style_proposal=None, retry=False, finish=False,
-                export_review=None,style_plan_id=None):
+                export_review=None,style_plan_id=None,export_options=None):
         if style_plan_id is not None and style_proposal is not None:
             raise ControlError('conflicting_style_input','风格方案ID和新proposal只能选一个。')
         with self._lock(identifier):
             value = self._expected(identifier, revision)
             stage = value['stage']
+            if export_options is not None:
+                if not isinstance(export_options,dict) or stage not in ('created','review','reviewed'):
+                    raise ControlError('wrong_stage','导出选项需在开始导出前设置。')
+                value=self._write(value,'export_options_set',export_options=copy.deepcopy(export_options))
             if stage == 'created':
-                created = self.control.preparation_create(value['preparation_plan_id'])
+                created = {'job_id':value['job_id']} if value.get('job_id') else self.control.preparation_create(value['preparation_plan_id'])
                 operation = self.control.preparation_start(created['job_id'], None, identifier+'-prepare-0')
                 self._write(value, 'preparation_started', stage='preparing', job_id=created['job_id'],
                             operation_id=operation['id'])
@@ -320,13 +512,18 @@ class Workflow:
                     if file_hash(row['path']) != row['sha256']:
                         raise ControlError('stale_artifact', '准备输出已经改变，需重新核对准备任务。')
                     imported = self.control.import_asset(row['path'])
-                    self._write(value, 'prepared_midi_imported', stage='review', score_artifact_id=imported['id'])
+                    extra={}
+                    from agent_segment_workflow import enabled,make_segments
+                    if enabled(value):extra['midi_segments']=make_segments(self.control,imported['id'],'midi')
+                    self._write(value, 'prepared_midi_imported', stage='review', score_artifact_id=imported['id'],**extra)
                 elif stage == 'reviewing':
                     result = operation['result']
                     if not isinstance(result, dict) or not result.get('artifact_id') or not result.get('source_sha256'):
                         self._bad_result(value, 'missing_review_result', '核对操作缺少已核验的 MIDI 身份。')
-                    self._write(value, 'review_accepted', stage='reviewed', score_artifact_id=result['artifact_id'],
-                                review_receipt=result, reviewed_sha256=result['source_sha256'])
+                    from agent_segment_workflow import enabled,consume_midi
+                    changes=consume_midi(value,result) if enabled(value) else {'stage':'reviewed'}
+                    self._write(value, 'review_accepted', score_artifact_id=result['artifact_id'],
+                                review_receipt=result, reviewed_sha256=result['source_sha256'],**changes)
                 elif stage in ('exporting','refining'):
                     result = operation['result']
                     projects = result['artifacts']
@@ -340,10 +537,14 @@ class Workflow:
                     except (SupervisionError, ControlError) as error:
                         self._bad_result(value, error.code, str(error))
                     selected = next((row for row in projects if Path(row['path']).suffix.lower()=='.svp'), projects[0])
+                    from agent_segment_workflow import enabled,make_segments
+                    extra={}
+                    if enabled(value) and value['request']['brief']:
+                        extra={'style_segments':make_segments(self.control,selected['id'],'style'),'style_segment_decisions':{}}
                     self._write(value, 'project_exported', stage='project_ready',
                                 project_artifact_id=selected['id'], project_artifacts=projects,
                                 export_summary=summary, export_review=None,
-                                pronunciation_receipts=result.get('receipt',{}).get('pronunciation_receipts',[]))
+                                pronunciation_receipts=result.get('receipt',{}).get('pronunciation_receipts',[]),**extra)
                 else:
                     if not operation.get('result',{}).get('artifacts'):
                         self._bad_result(value, 'missing_styled_project', '风格操作没有返回可验证工程。')
@@ -356,8 +557,10 @@ class Workflow:
                 artifact = self.control.artifact(value['score_artifact_id'])
                 if artifact['sha256'] != value['reviewed_sha256']:
                     raise ControlError('review_invalidated', '核对后 MIDI 已改变，请重新核对。')
-                plan = self.control.make_plan('export', artifact['id'], formats=value['request']['formats'],
-                    options={'language':value['request']['options'].get('language','zh')})
+                options={'language':value['request']['options'].get('language','zh'),**value.get('export_options',{})}
+                if value.get('job_id') and not any(k in options for k in ('instrumental_artifact_id','instrumental_source_job_id')):
+                    options['instrumental_source_job_id']=value['job_id']
+                plan = self.control.make_plan('export', artifact['id'], formats=value['request']['formats'],options=options)
                 operation = self.control.start_plan(plan['id'], 'export', identifier+'-export-'+str(revision))
                 self._write(value, 'export_started', stage='exporting', active_plan_id=plan['id'], operation_id=operation['id'])
             elif stage == 'project_ready':
@@ -378,6 +581,15 @@ class Workflow:
                             previous_export_summary=copy.deepcopy(value['export_summary']))
                         return self.get(identifier)
                     value = self._write(value, 'export_review_accepted', export_review=decision)
+                from agent_segment_workflow import enabled,combined_style,progress
+                if enabled(value) and value['request']['brief']:
+                    if style_proposal is not None or style_plan_id is not None:
+                        raise ControlError('segmented_style_required','逐段模式需先用workflow_style_review/decide完成各段判断，再自动汇总。')
+                    if not progress(value,'style')['complete']:
+                        if finish:raise ControlError('style_segments_incomplete','风格片段尚未逐段检查完成。')
+                        return self.get(identifier)
+                    style_proposal=combined_style(value)
+                    if style_proposal is None:finish=True
                 if style_proposal is not None or style_plan_id is not None:
                     if style_plan_id is None:
                         plan = self.control.make_plan('style', value['project_artifact_id'], proposal=style_proposal)
@@ -521,17 +733,33 @@ class Workflow:
         cancel()
         if note_edits:
             progress('核验并修正 MIDI 音符')
-            plan = plan_patch(current['path'], current['sha256'], note_edits)
+            plan = plan_patch(current['path'], current['sha256'], note_edits,
+                              move_attached_lyrics=arguments.get('move_attached_lyrics',False))
             receipt = apply_patch(current['path'], plan, output / 'notes')
             current = self.control.register_artifact(receipt['candidate_path'])
             receipts.append(receipt)
         cancel()
         from agent_lyrics import review_lyrics
+        from agent_monophony import monophonic_conflicts
+        conflicts=monophonic_conflicts(read_score(current['path']))
+        segment=arguments.get('segment')
+        scoped_conflicts=conflicts
+        if segment:
+            scoped_conflicts=[row for row in conflicts if row.get('start_seconds') is not None
+                and row['start_seconds']<segment['end_seconds'] and row['end_seconds']>segment['start_seconds']]
+        if scoped_conflicts:
+            raise ControlError('monophonic_overlap','MIDI含目标声部内的重叠音符，请按冲突双方位置修正后重新核对。',
+                {'conflicts':scoped_conflicts,'artifact_id':current['id'],'source_sha256':current['sha256']})
         language = value['request']['options'].get('language','zh')
         result = {'artifact_id':current['id'], 'source_sha256':current['sha256'],
                   'original_artifact_id':original['id'], 'rationale':arguments['rationale'],
                   'receipts':receipts, 'lyric_review':review_lyrics(current['path'],
                       value['request']['reference_lyrics'] or None, language),
                   'caller_reviewed':True, 'semantic_model_used':False}
+        if segment:
+            from agent_segments import plan_segments
+            result.update(segment_plan=plan_segments(read_score(current['path'])),monophonic_conflicts=conflicts,
+                segment_completion={'segment_id':segment['id'],'fingerprint':segment['fingerprint'],
+                    'edited':bool(note_edits or lyric_edits or structure_edits)})
         atomic_json(output / 'review-receipt.json', result)
         return result

@@ -25,7 +25,8 @@ def dispatch(control, action, arguments):
         for name in ('request.json', 'status.json', 'progress.json', 'run.lock'):
             safe_path(path / name, [path])
         from progress_state import snapshot
-        return {'id': arguments['job_id'], 'path': str(path), **snapshot(path)}
+        from agent_preparation import source_summary
+        return {'id': arguments['job_id'], 'path': str(path), **snapshot(path),'source_summary':source_summary(path)}
     if action == 'preparation_plan':
         from agent_preparation import plan_preparation
         source = arguments['source']
@@ -36,18 +37,55 @@ def dispatch(control, action, arguments):
         from agent_preparation import create_preparation
         parent = safe_path(arguments['parent'], control.jobs)
         return create_preparation(arguments['plan'], parent)
+    if action=='preparation_reuse_plan':
+        from agent_preparation import plan_preparation_reuse
+        job=safe_path(arguments['source_job'],control.jobs)
+        return plan_preparation_reuse(job,arguments.get('options'),arguments.get('reuse_stages'))
+    if action=='preparation_reuse_create':
+        from agent_preparation import create_preparation_reuse
+        plan=arguments['plan']
+        safe_path(plan['source_job'],control.jobs)
+        return create_preparation_reuse(plan,safe_path(arguments['parent'],control.jobs))
     path = safe_path(arguments['path'], [control.state, *control.assets, *control.jobs])
+    if action=='media_validate':
+        from agent_media import audio_info
+        return audio_info(path)
+    if action=='segment_plan':
+        from agent_segments import plan_segments
+        if arguments.get('kind')=='style':
+            from agent_style import read_context
+            score=read_context(path)
+        else:
+            from agent_score import read_score
+            score=read_score(path)
+        return plan_segments(score)
+    if action=='style_segment_context':
+        from agent_style import read_context
+        from agent_segments import segment_notes,adjacent_context
+        context=read_context(path);segment=arguments['segment']
+        if segment['id'] not in {row['id'] for row in __import__('agent_segments').plan_segments(context)['segments']}:
+            raise ControlError('stale_segment','工程片段身份已改变，请重新读取。')
+        notes=segment_notes(context,segment)
+        tracks=[{k:row[k] for k in ('track_index','name','instrumental','eligible','ineligibility_reasons') if k in row}
+                for row in context.get('tracks',[]) if row.get('track_index')==segment['track_index']]
+        return {'source_sha256':context['source_sha256'],'notes':notes,'tracks':tracks,
+            'adjacent_context':adjacent_context(context,segment),'presets':context.get('presets',[]),
+            'techniques':context.get('techniques',[]),'scope':'current_segment_only',
+            'whole_song_note_count':len(context['notes'])}
     if action in ('score_read', 'score_review', 'score_plan'):
         from agent_score import read_score, review_score, plan_patch
         if action == 'score_read':
             return read_score(path)
         if action == 'score_review':
             return review_score(path)
-        return plan_patch(path, arguments['expected_sha256'], arguments['edits'])
+        return plan_patch(path, arguments['expected_sha256'], arguments['edits'],
+                          move_attached_lyrics=arguments.get('move_attached_lyrics',False))
     if action in ('context_read', 'style_plan'):
         from agent_style import read_context, plan_style
         if action == 'context_read':
-            return read_context(path, arguments.get('track_indices'))
+            return read_context(path, arguments.get('track_indices'),limit=arguments.get('limit'),
+                offset=arguments.get('offset',0),detail=arguments.get('detail','full'),
+                include_note_ids=arguments.get('include_note_ids',True))
         return plan_style(path, arguments['proposal'])
     if action in ('lyrics_read', 'lyrics_review', 'lyrics_plan'):
         from agent_lyrics import read_lyrics, review_lyrics, plan_lyrics_patch
@@ -58,6 +96,8 @@ def dispatch(control, action, arguments):
         return plan_lyrics_patch(path, arguments['expected_sha256'], arguments['edits'])
     if action == 'export_plan':
         from agent_exports import plan_export
+        if arguments.get('options',{}).get('instrumental_path'):
+            safe_path(arguments['options']['instrumental_path'],[control.state,*control.jobs,*control.assets])
         return plan_export(path, arguments.get('formats'), arguments.get('options'))
     if action in ('pronunciation_read','pronunciation_plan'):
         from agent_pronunciation import read_pronunciation,plan_pronunciation_patch
@@ -122,8 +162,8 @@ def main():
         data = dispatch(control, request['action'], request['arguments'])
         value = {'ok': True, 'data': data}
     except Exception as error:
-        value = {'ok': False, 'code': getattr(error, 'code', 'business_error'), 'message': str(error)}
-        if isinstance(getattr(error,'details',None),dict):value['details']=error.details
+        from agent_errors import error_payload
+        value = {'ok': False, **error_payload(error)}
     atomic_json(response_path, value)
 
 

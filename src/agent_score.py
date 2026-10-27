@@ -21,6 +21,8 @@ import tempfile
 from typing import Any
 
 import mido
+
+from agent_monophony import monophonic_conflicts
 from common import native_path
 
 
@@ -37,7 +39,7 @@ _MAX_TICK = 0x0FFFFFFF
 _SVP_UNITS_PER_QUARTER = 705_600_000
 _EDIT_FIELDS = ("pitch", "onset_tick", "duration_tick")
 _EDIT_KEYS = {"note_id", *_EDIT_FIELDS}
-_PLAN_KEYS = {
+_PLAN_REQUIRED_KEYS = {
     "schema_version",
     "kind",
     "source_sha256",
@@ -51,6 +53,8 @@ _PLAN_KEYS = {
     "warnings",
     "plan_sha256",
 }
+_PLAN_OPTIONAL_KEYS = {"move_attached_lyrics"}
+_PLAN_KEYS = _PLAN_REQUIRED_KEYS | _PLAN_OPTIONAL_KEYS
 _RECEIPT_KEYS = {
     "schema_version",
     "kind",
@@ -716,6 +720,14 @@ def review_score(path) -> dict:
                 })
             previous = note
 
+    # Same-track/different-channel and multi-track overlaps are legal
+    # separate target voices. Only a positive overlap inside the exact
+    # exporter scope (track_index, channel) is actionable here.
+    for conflict in monophonic_conflicts(score):
+        hint = dict(conflict)
+        hint["reason"] = hint.pop("message")
+        hints.append(hint)
+
     unique: dict[tuple, dict[str, Any]] = {}
     for hint in hints:
         key = (hint["code"], tuple(hint["note_ids"]))
@@ -808,7 +820,14 @@ def _event_fingerprint(message: Any) -> str:
         raise ValueError(f"MIDI 事件无法稳定序列化：{exc}") from exc
 
 
-def _build_patch(parsed: _ParsedMidi, edits: Any) -> tuple[dict[str, Any], bytes]:
+def _build_patch(
+    parsed: _ParsedMidi,
+    edits: Any,
+    *,
+    move_attached_lyrics: bool = False,
+) -> tuple[dict[str, Any], bytes]:
+    if type(move_attached_lyrics) is not bool:
+        raise ValueError("move_attached_lyrics 必须是布尔值；布尔值不能由字符串或数字代替。")
     if parsed.integrity_issues:
         first = parsed.integrity_issues[0]
         raise ValueError(f"MIDI 结构不安全，不能规划补丁：{first['message']}")
@@ -861,6 +880,61 @@ def _build_patch(parsed: _ParsedMidi, edits: Any) -> tuple[dict[str, Any], bytes
             previous_id = note_id
 
     event_updates: dict[tuple[int, int], tuple[int, Any]] = {}
+    moved_lyrics: list[dict[str, Any]] = []
+    if move_attached_lyrics:
+        for edit in normalized:
+            if "onset_tick" not in edit:
+                continue
+            note = notes[edit["note_id"]]
+            track = parsed.tracks[note.track_index]
+            new_onset = new_values[note.note_id]["onset_tick"]
+            if note.lyric_event_index is not None:
+                owners = [
+                    candidate
+                    for candidate in notes.values()
+                    if candidate.track_index == note.track_index
+                    and candidate.lyric_event_index == note.lyric_event_index
+                ]
+                if len(owners) != 1 or owners[0].note_id != note.note_id:
+                    raise ValueError(
+                        f"音符 {note.note_id} 的歌词归属不唯一；拒绝猜测并移动歌词。"
+                    )
+                lyric_event = track.events[note.lyric_event_index]
+                if lyric_event.message.type != "lyrics":
+                    raise ValueError(
+                        f"音符 {note.note_id} 关联事件不是唯一 lyrics 事件；拒绝移动歌词。"
+                    )
+                event_updates[(track.index, note.lyric_event_index)] = (
+                    new_onset,
+                    lyric_event.message,
+                )
+                moved_lyrics.append({
+                    "note_id": note.note_id,
+                    "track_index": note.track_index,
+                    "channel": note.channel,
+                    "lyric_event_index": note.lyric_event_index,
+                    "text": lyric_event.message.text,
+                    "before_tick": lyric_event.tick,
+                    "after_tick": new_onset,
+                    "association": "unique",
+                })
+            else:
+                following_onsets = sorted(
+                    candidate.onset_tick
+                    for candidate in notes.values()
+                    if candidate.track_index == note.track_index
+                    and candidate.onset_tick > note.onset_tick
+                )
+                following = following_onsets[0] if following_onsets else track.end_tick + 1
+                nearby = [
+                    row for row in track.lyrics
+                    if note.onset_tick <= int(row["tick"]) < following
+                ]
+                if nearby:
+                    raise ValueError(
+                        f"音符 {note.note_id} 的歌词归属不唯一；拒绝猜测并移动歌词。"
+                    )
+
     for edit in normalized:
         note = notes[edit["note_id"]]
         track = parsed.tracks[note.track_index]
@@ -953,10 +1027,53 @@ def _build_patch(parsed: _ParsedMidi, edits: Any) -> tuple[dict[str, Any], bytes
                 values["onset_tick"],
                 values["end_tick"],
             ))
-    for note in _notes_by_id(candidate_parsed).values():
+    candidate_notes_by_id = _notes_by_id(candidate_parsed)
+    for note in candidate_notes_by_id.values():
         actual_notes.append((note.track_index, note.channel, note.pitch, note.onset_tick, note.end_tick))
     if sorted(expected_notes) != sorted(actual_notes):
         raise ValueError("候选 MIDI 的音符语义与计划不一致，已拒绝生成计划。")
+
+    if move_attached_lyrics:
+        candidate_by_identity = {
+            (note.track_index, note.ordinal): note
+            for note in candidate_notes_by_id.values()
+        }
+        for note in notes.values():
+            candidate_note = candidate_by_identity.get((note.track_index, note.ordinal))
+            if candidate_note is None:
+                raise ValueError(
+                    f"候选 MIDI 无法定位音符 {note.note_id}，拒绝验证歌词移动。"
+                )
+            if note.lyric_event_index is None:
+                if candidate_note.lyric_event_index is not None:
+                    raise ValueError(
+                        "候选 MIDI 把原本非唯一的歌词重新关联到音符；拒绝不安全归属。"
+                    )
+                continue
+            source_event = parsed.tracks[note.track_index].events[note.lyric_event_index]
+            expected_onset = new_values.get(
+                note.note_id,
+                {"onset_tick": note.onset_tick},
+            )["onset_tick"]
+            if (
+                candidate_note.onset_tick != expected_onset
+                or candidate_note.lyric_event_index is None
+                or candidate_note.lyric != source_event.message.text
+            ):
+                raise ValueError(
+                    f"音符 {note.note_id} 的歌词在候选中未保持唯一归属；拒绝生成计划。"
+                )
+            candidate_event = candidate_parsed.tracks[
+                candidate_note.track_index
+            ].events[candidate_note.lyric_event_index]
+            if (
+                candidate_event.tick != expected_onset
+                or candidate_event.message.type != "lyrics"
+                or candidate_event.message.text != source_event.message.text
+            ):
+                raise ValueError(
+                    f"音符 {note.note_id} 的歌词事件未移动到目标 onset；拒绝生成计划。"
+                )
 
     operations = []
     computed_changes = []
@@ -986,11 +1103,19 @@ def _build_patch(parsed: _ParsedMidi, edits: Any) -> tuple[dict[str, Any], bytes
                 "after_end_tick": new_values[note.note_id]["end_tick"],
             })
 
-    warnings = [
-        "本计划只修改列出的音符事件；tempo、轨道、通道、力度、歌词和其余 meta/事件保持原值。",
-    ]
+    if move_attached_lyrics:
+        warnings = [
+            "本计划修改列出的音符事件；仅在显式启用时移动已证明唯一归属的歌词事件，其余音频与 meta/事件保持原值。",
+        ]
+    else:
+        warnings = [
+            "本计划只修改列出的音符事件；tempo、轨道、通道、力度、歌词和其余 meta/事件保持原值。",
+        ]
     if any("onset_tick" in edit or "duration_tick" in edit for edit in normalized):
-        warnings.append("时间编辑不会移动歌词或其他 meta 事件；读取结果中的歌词关联提示可能随音符重排而变化。")
+        if move_attached_lyrics:
+            warnings.append("歌词移动仅限原本唯一关联到时间被编辑音符的 lyrics 事件；歧义会拒绝计划。")
+        else:
+            warnings.append("时间编辑不会移动歌词或其他 meta 事件；读取结果中的歌词关联提示可能随音符重排而变化。")
     if eot_changes:
         warnings.append("为容纳延长的音符，end_of_track 的绝对位置随之顺延；其 meta 内容不变。")
     structural_changes = {
@@ -998,6 +1123,8 @@ def _build_patch(parsed: _ParsedMidi, edits: Any) -> tuple[dict[str, Any], bytes
         "reordered_tracks": reordered_tracks,
         "computed_note_changes": computed_changes,
     }
+    if move_attached_lyrics:
+        structural_changes["moved_attached_lyrics"] = moved_lyrics
     plan_payload = {
         "schema_version": _SCHEMA_VERSION,
         "kind": _PLAN_KIND,
@@ -1015,6 +1142,8 @@ def _build_patch(parsed: _ParsedMidi, edits: Any) -> tuple[dict[str, Any], bytes
         "structural_changes": structural_changes,
         "warnings": warnings,
     }
+    if move_attached_lyrics:
+        plan_payload["move_attached_lyrics"] = True
     plan = dict(plan_payload)
     plan["plan_sha256"] = _canonical_digest(plan_payload)
     return plan, candidate_bytes
@@ -1026,8 +1155,15 @@ def _normalise_sha(value: Any, field_name: str) -> str:
     return value.lower()
 
 
-def plan_patch(path, expected_sha256, edits) -> dict:
-    """Plan strict note pitch/timing edits without changing the source file."""
+def plan_patch(
+    path,
+    expected_sha256,
+    edits,
+    move_attached_lyrics=False,
+) -> dict:
+    """Plan strict note edits; attached lyrics move only when explicitly requested."""
+    if type(move_attached_lyrics) is not bool:
+        raise ValueError("move_attached_lyrics 必须是布尔值。")
     source, raw, source_sha = _read_input(path)
     if _file_kind(source) != "midi":
         raise ValueError("Score worker 只支持写入标准 MIDI；SVP 写入不受支持。")
@@ -1037,7 +1173,11 @@ def plan_patch(path, expected_sha256, edits) -> dict:
     parsed = _parse_midi(raw, str(source))
     if parsed.source_sha256 != source_sha:
         raise ValueError("源文件在规划期间发生变化，请重试。")
-    plan, _candidate_bytes = _build_patch(parsed, edits)
+    plan, _candidate_bytes = _build_patch(
+        parsed,
+        edits,
+        move_attached_lyrics=move_attached_lyrics,
+    )
     return plan
 
 
@@ -1105,10 +1245,16 @@ def apply_patch(path, plan, output_directory) -> dict:
     if not isinstance(plan, Mapping):
         raise ValueError("plan 必须是对象。")
     supplied_plan = dict(plan)
-    if set(supplied_plan) != _PLAN_KEYS:
-        missing = sorted(_PLAN_KEYS - set(supplied_plan))
-        extra = sorted(set(supplied_plan) - _PLAN_KEYS)
+    supplied_keys = set(supplied_plan)
+    missing = sorted(_PLAN_REQUIRED_KEYS - supplied_keys)
+    extra = sorted(supplied_keys - _PLAN_KEYS)
+    if missing or extra:
         raise ValueError(f"plan 字段不完整或不支持；缺少={missing}，额外={extra}。")
+    move_attached_lyrics = supplied_plan.get("move_attached_lyrics", False)
+    if type(move_attached_lyrics) is not bool:
+        raise ValueError("plan.move_attached_lyrics 必须是布尔值。")
+    if "move_attached_lyrics" in supplied_plan and move_attached_lyrics is not True:
+        raise ValueError("显式提供的 plan.move_attached_lyrics 只能为 true。")
     if (type(supplied_plan.get("schema_version")) is not int
             or supplied_plan.get("schema_version") != _SCHEMA_VERSION
             or supplied_plan.get("kind") != _PLAN_KIND):
@@ -1130,7 +1276,11 @@ def apply_patch(path, plan, output_directory) -> dict:
     if current_sha != source_sha:
         raise ValueError("当前源文件 SHA-256 与计划不一致；请重新 read_score 和 plan_patch。")
     parsed = _parse_midi(raw, str(source))
-    regenerated, candidate_bytes = _build_patch(parsed, supplied_plan["edits"])
+    regenerated, candidate_bytes = _build_patch(
+        parsed,
+        supplied_plan["edits"],
+        move_attached_lyrics=move_attached_lyrics,
+    )
     if regenerated != supplied_plan:
         raise ValueError("计划与当前源文件重新计算的结果不一致；请拒绝该计划。")
 

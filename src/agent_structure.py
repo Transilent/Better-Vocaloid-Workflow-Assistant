@@ -18,6 +18,7 @@ from typing import Any
 import mido
 
 import agent_score as _score
+from agent_monophony import monophonic_conflicts
 from common import native_path
 
 
@@ -699,9 +700,19 @@ def _build_plan(parsed: Any, edits: Any) -> tuple[dict[str, Any], bytes]:
         )
     if any(row["operation"] == "insert" and "lyric" not in row for row in public_edits):
         warnings.append("插入音符未提供歌词；未创建或推断任何歌词。")
+    final_monophonic_conflicts = monophonic_conflicts(
+        _score._midi_score(candidate_parsed)
+    )
+    if final_monophonic_conflicts:
+        warnings.append(
+            f"最终状态检测到 {len(final_monophonic_conflicts)} 个同轨同通道单声部冲突"
+            "（列表最多 100 项）；合法多轨或不同 channel 的复调不会被阻止，"
+            "但导出到单声部目标前必须按实际声部边界处理。"
+        )
     structural_changes = {
         "end_of_track": eot_changes,
         "reordered_tracks": sorted(set(reordered_tracks)),
+        "monophonic_conflicts": final_monophonic_conflicts,
     }
     plan_payload = {
         "schema_version": _SCHEMA_VERSION,

@@ -33,6 +33,7 @@ import unicodedata
 import mido
 
 import agent_exports as _exports
+import agent_media
 from common import native_path
 
 
@@ -1014,6 +1015,51 @@ def _audit_candidate(format_name: str, row: Any, source: dict[str, Any],
             actual_sha256=actual_sha,
         ))
         return result
+
+    declared_media = row.get("media")
+    instrumental_declared = row.get("instrumental_included")
+    if format_name == "svp":
+        expected_media = None
+        if isinstance(declared_media, Mapping):
+            expected_media = dict(declared_media)
+        elif instrumental_declared is True:
+            expected_media = {"included": True}
+        elif instrumental_declared is False:
+            expected_media = {"included": False}
+        try:
+            media_result = agent_media.inspect_svp_media(
+                canonical_path, allowed_roots=[receipt_root], require_relative=True,
+                expected=expected_media,
+            )
+            result["instrumental"] = media_result
+            if instrumental_declared is True and media_result.get("included") is not True:
+                blockers.append(_issue(
+                    "instrumental_missing", "候选声明含伴奏，但独立回读未发现伴奏轨。",
+                    format_name,
+                ))
+            elif instrumental_declared is False and media_result.get("included") is True:
+                blockers.append(_issue(
+                    "instrumental_unexpected", "候选声明未含伴奏，但独立回读发现了伴奏轨。",
+                    format_name,
+                ))
+        except (ValueError, OSError) as error:
+            blockers.append(_issue(
+                getattr(error, "code", "instrumental_audit_failed"),
+                "SVP 伴奏独立回读失败：" + str(error), format_name,
+                details=getattr(error, "details", None),
+            ))
+    else:
+        result["instrumental"] = {"included": False, "reason": row.get("instrumental_reason")}
+        if instrumental_declared is True:
+            blockers.append(_issue(
+                "instrumental_unsupported", "非 SVP 候选不能包含伴奏。", format_name,
+            ))
+        elif row.get("instrumental_reason") == "format_not_supported":
+            warnings.append(_issue(
+                "instrumental_not_included_in_format",
+                "该工程格式不包含伴奏；SVP 可生成可移动试听包。",
+                format_name,
+            ))
 
     converter = converters.get(format_name)
     if converter is None:

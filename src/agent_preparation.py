@@ -14,23 +14,29 @@ import hashlib
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
+import shutil
 import stat
 import threading
 import time
 from urllib.parse import urlsplit
 
-from common import ROOT, atomic_json, file_hash, load_config, native_path, resolve_tools
+import common
+from common import ROOT, app_path, atomic_json, clean_lyrics, file_hash, load_config, native_path, resolve_tools
 import pipeline
 
 PLAN_SCHEMA = 1
 RECEIPT_SCHEMA = 1
+SOURCE_SUMMARY_SCHEMA = 1
+REUSE_SCHEMA = 1
 SESSION_PREFIX = "agent-preparation-"
 RECEIPT_NAME = "creation.json"
+REUSE_RECEIPT_NAME = "preparation-reuse.json"
 LOCK_NAME = "creation.lock"
 MAX_JSON_BYTES = 16 * 1024 * 1024
 MAX_LYRICS_CHARS = 1024 * 1024
+SUMMARY_TEXT_CHARS = 240
 SHA256_RE = re.compile(r"[a-f0-9]{64}")
 BV_RE = re.compile(r"BV1[A-Za-z0-9]{9}")
 ALLOWED_OPTIONS = frozenset({
@@ -56,16 +62,33 @@ DEFAULT_OPTIONS = {
 }
 PREPARATION_STAGES = ("metadata", "download", "audio", "separation", "midi")
 SCORE_SUFFIXES = {".mid", ".midi", ".ustx", ".svp", ".vsqx"}
+METADATA_AUXILIARY_FILES = ("原视频简介.txt", "歌词候选_需核对.txt")
 _RUN_PATCH_LOCK = threading.Lock()
+
+# A preparation prefix is intentionally conservative. Running an earlier stage
+# invalidates later status entries in pipeline._run, so reusing a later stage
+# without its complete physical prefix would only hide work that would rerun.
+STAGE_DEPENDENCIES = {
+    "metadata": (),
+    "download": ("metadata",),
+    "audio": ("download",),
+    "separation": ("audio",),
+    "midi": ("separation",),
+}
 
 
 class PreparationError(RuntimeError):
     """A preparation failure with machine-readable context."""
 
-    def __init__(self, code: str, message: str, **details):
+    def __init__(self, code: str, message: str, *, component="agent_preparation",
+                 retryable=None, remediation=None, **details):
         super().__init__(message)
         self.code = code
         self.details = details
+        self.component = component
+        self.retryable = (code in {"session_busy", "reuse_plan_stale", "reuse_target_busy"}
+                          if retryable is None else bool(retryable))
+        self.remediation = remediation
 
 
 def _canonical_bytes(value):
@@ -167,6 +190,153 @@ def _bounded_text(value, name, default=""):
     if len(value) > MAX_LYRICS_CHARS:
         raise ValueError(f"{name} 超出长度限制。")
     return value
+
+
+def _summary_text(value, limit=SUMMARY_TEXT_CHARS):
+    """Return bounded human-facing metadata without leaking collection data."""
+    if not isinstance(value, str):
+        return ""
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+", " ", value)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text if len(text) <= limit else text[:max(0, limit - 1)].rstrip() + "…"
+
+
+def _duration_value(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    return int(number) if number.is_integer() else round(number, 3)
+
+
+def _voice_role_summary(mode):
+    """Describe musical roles; voice_mode is not singer diarization."""
+    if mode == "single":
+        roles = [{"name": "vocals", "role": "mixed_vocal",
+                  "description": "一条混合人声轨；主唱与和声保留在同一轨。"}]
+        description = "single 是单条混合人声轨，不是按歌手音色或人数拆分。"
+    elif mode == "dual":
+        roles = [
+            {"name": "lead", "role": "lead_vocal", "description": "主唱/前景人声轨。"},
+            {"name": "backing", "role": "backing_or_harmony",
+             "description": "和声、伴唱或残留人声；可能含串音，不代表第二位歌手。"},
+        ]
+        description = "dual 是主唱 + 和声/伴唱分离，不是双歌手 diarization。"
+    else:
+        roles = [{"name": "original_vocal", "role": "original_vocal",
+                  "description": "所选分离组件返回的人声角色，不推断歌手身份。"}]
+        description = "分离依据模型与设置，不推断歌手身份。"
+    roles.append({"name": "instrumental", "role": "accompaniment",
+                  "description": "伴奏/非人声轨。"})
+    return {"voice_mode": mode, "roles": roles, "singer_diarization": False,
+            "duet_singer_separation": False, "description": description}
+
+
+def _job_path(job):
+    if not isinstance(job, (str, os.PathLike)):
+        raise ValueError("job 必须是已授权的任务目录。")
+    try:
+        path = _resolved(job)
+        _assert_real_path(path)
+    except FileNotFoundError as error:
+        raise PreparationError("invalid_job", "任务目录不存在。", path=str(job)) from error
+    if not Path(native_path(path)).is_dir():
+        raise PreparationError("invalid_job", "任务路径不是目录。", path=str(path))
+    return path
+
+
+def source_summary(job) -> dict:
+    """Return a small summary of this job's current video metadata.
+
+    The complete source-info JSON remains an on-demand evidence file. Collection,
+    subtitle, description body, and page lists are deliberately not returned.
+    """
+    job = _job_path(job)
+    request = _read_json(job / "request.json", required=True)
+    evidence_path = job / "source-info.json"
+    info = {}
+    metadata_error = None
+    if Path(native_path(evidence_path)).is_file():
+        try:
+            info = _read_json(evidence_path, required=True)
+        except (OSError, PreparationError, ValueError) as error:
+            metadata_error = _summary_text(str(error), 300)
+
+    owner_data = info.get("owner")
+    if isinstance(owner_data, dict):
+        owner = _summary_text(owner_data.get("name"), 200)
+    else:
+        owner = _summary_text(owner_data, 200)
+    if not owner:
+        owner = _summary_text(request.get("owner_name"), 200)
+
+    pages = info.get("pages")
+    pages = pages if isinstance(pages, list) else []
+    page_count = info.get("videos")
+    if type(page_count) is not int or page_count < 0:
+        page_count = len(pages)
+    selected_number = request.get("page", request.get("p", request.get("page_number", 1)))
+    if type(selected_number) is not int or selected_number < 1:
+        selected_number = 1
+    selected_page = None
+    for page in pages:
+        if isinstance(page, dict) and page.get("page") == selected_number:
+            selected_page = {
+                "number": selected_number,
+                "title": _summary_text(page.get("part"), 300),
+                "duration_seconds": _duration_value(page.get("duration")),
+            }
+            break
+
+    rights = info.get("rights") if isinstance(info.get("rights"), dict) else {}
+    rights_flags = {
+        str(key): bool(value) for key, value in rights.items()
+        if type(value) is bool or (type(value) is int and value in (0, 1))
+    }
+    if len(rights_flags) > 32:
+        rights_flags = dict(sorted(rights_flags.items())[:32])
+
+    bvid = request.get("bv") or info.get("bvid")
+    source_kind = request.get("source_kind") or info.get("kind") or (
+        "bilibili" if bvid else "local")
+    title = (_summary_text(info.get("title"), 500) or
+             _summary_text(request.get("source_title"), 500) or "待读取")
+    duration = _duration_value(info.get("duration"))
+    if duration is None and selected_page:
+        duration = selected_page.get("duration_seconds")
+    evidence = None
+    if Path(native_path(evidence_path)).is_file():
+        stat_info = _lstat(evidence_path)
+        evidence = {"path": str(_normal_path(evidence_path)), "bytes": stat_info.st_size,
+                    "format": "json", "returned": False, "read": "on_demand"}
+
+    summary = {
+        "schema_version": SOURCE_SUMMARY_SCHEMA,
+        "kind": "source_summary",
+        "job_path": str(job),
+        "source_kind": source_kind,
+        "bvid": _summary_text(bvid, 64) or None,
+        "title": title,
+        "owner": owner,
+        "duration_seconds": duration,
+        "page_count": max(0, page_count),
+        "current_page": selected_page or ({"number": selected_number,
+                                            "title": title,
+                                            "duration_seconds": duration}
+                                           if page_count > 1 else None),
+        "cover_url": _summary_text(info.get("pic"), 800) or None,
+        "description_summary": _summary_text(info.get("desc")),
+        "rights_flags": rights_flags,
+        "collection_present": bool(info.get("ugc_season")),
+        "collection_payload_returned": False,
+        "voice_plan": _voice_role_summary(request.get("voice_mode", "single")),
+        "raw_evidence": evidence,
+    }
+    if metadata_error:
+        summary["metadata_error"] = metadata_error
+    return summary
 
 
 def _normalise_options(options):
@@ -347,16 +517,49 @@ def _preflight(options, stage_names, source):
         unverified.append({"kind": "network", "evidence": "视频存在性、登录要求、简介与媒体内容", "verified": False})
     else:
         unverified.append({"kind": "inference_input", "evidence": "实际音频解码、声部质量与歌词可辨识度", "verified": False})
+
+    alternatives = []
+    for row in missing:
+        if row.get("kind") == "model" and row.get("name") == "tifa-1.0-onnx":
+            remediation = ("将 alignment_engine 改为 hfa 后重新生成准备计划；"
+                           "HubertFA 不依赖 TiFA 模型目录。")
+            row["remediation"] = remediation
+            row["alternative_options"] = {"alignment_engine": "hfa"}
+            alternatives.append({"reason": "tifa_missing", "action": "switch_engine",
+                                 "options": {"alignment_engine": "hfa"},
+                                 "instructions": remediation})
+        elif row.get("kind") == "optional_component" and row.get("name") == "bs-roformer":
+            remediation = "改用 voice_mode=single 或 dual 后重新生成准备计划。"
+            row["remediation"] = remediation
+            row["alternative_options"] = {"voice_mode": "single"}
+            alternatives.append({"reason": "roformer_missing", "action": "switch_voice_mode",
+                                 "options": {"voice_mode": "single"},
+                                 "instructions": remediation})
+        else:
+            row.setdefault("retryable", False)
+            row.setdefault("remediation", "在“模型与组件”中修复此处列出的具体文件，然后重新执行 preflight。")
+
+    suggested = alternatives[0]["options"] if len(alternatives) == 1 else {}
     return {
         "ready": not missing,
         "missing_required": missing,
+        "alternatives": alternatives,
+        "suggested_options": suggested,
+        "readiness_summary": {
+            "tools_ready": not any(row.get("kind") in ("tool", "tool_evidence") for row in missing),
+            "dependencies_ready": bool(dependencies.get("ready")) and not any(
+                row.get("kind") in ("dependency", "dependency_evidence") for row in missing),
+            "preparation_ready": not missing,
+            "note": "dependencies.ready 只描述依赖清单；preparation_ready 还包含工具和模型检查。",
+        },
+        "voice_plan": _voice_role_summary(options["voice_mode"]),
         "unverified": unverified,
         "tools": tools,
         "dependencies": dependencies,
     }
 
 
-def _validate_plan(plan):
+def _validate_plan(plan, *, allow_reuse=False):
     if type(plan) is not dict:
         raise ValueError("准备计划必须是对象。")
     supplied = plan.get("plan_sha256")
@@ -365,8 +568,17 @@ def _validate_plan(plan):
     unsigned = {key: copy.deepcopy(value) for key, value in plan.items() if key != "plan_sha256"}
     if _digest(unsigned) != supplied:
         raise PreparationError("plan_tampered", "准备计划摘要不匹配；计划已损坏或被篡改。")
-    if plan.get("schema_version") != PLAN_SCHEMA or plan.get("kind") != "preparation_plan":
+    kind = plan.get("kind")
+    allowed_kinds = {"preparation_plan", "preparation_reuse"} if allow_reuse else {"preparation_plan"}
+    if plan.get("schema_version") != PLAN_SCHEMA or kind not in allowed_kinds:
         raise ValueError("不支持的准备计划版本。")
+    if kind == "preparation_reuse":
+        source_job = plan.get("source_job")
+        reuse = plan.get("reuse")
+        if not isinstance(source_job, str) or not Path(source_job).is_absolute():
+            raise ValueError("复用计划必须包含绝对 source_job 路径。")
+        if type(reuse) is not dict or reuse.get("schema_version") != REUSE_SCHEMA:
+            raise ValueError("复用计划的 reuse 证据无效。")
     options = _normalise_options(plan.get("options"))
     if options != plan.get("options"):
         raise PreparationError("plan_tampered", "准备计划参数不是规范形式。")
@@ -423,6 +635,8 @@ def plan_preparation(source, options=None) -> dict:
             "semantic_model": False,
             "performed": False,
         },
+        "voice_plan": _voice_role_summary(normal["voice_mode"]),
+        "separation_roles": _voice_role_summary(normal["voice_mode"])["roles"],
         "preflight": preflight,
         "expected_handoff": "score_review",
         "semantic_model_used": False,
@@ -520,9 +734,9 @@ def _receipt_for(container, job, plan_sha, replay):
     return receipt
 
 
-def create_preparation(plan, parent) -> dict:
+def create_preparation(plan, parent, *, _allow_reuse=False) -> dict:
     """Create or replay the deterministic preparation session and job."""
-    options, source = _validate_plan(plan)
+    options, source = _validate_plan(plan, allow_reuse=_allow_reuse)
     plan_sha = plan["plan_sha256"]
     if not isinstance(parent, (str, os.PathLike)):
         raise ValueError("parent 必须是控制层已授权的绝对目录。")
@@ -587,6 +801,541 @@ def create_preparation(plan, parent) -> dict:
                 "request_sha256": receipt["request_sha256"], "plan_sha256": plan_sha,
                 "replay": replay, "creation_receipt": str(_resolved(receipt_path)),
                 "receipt_sha256": receipt["receipt_sha256"]}
+
+
+def _source_options(request):
+    tools = request.get("tools") if isinstance(request.get("tools"), dict) else {}
+    backend = request.get("midi_backend")
+    if backend not in ("v1", "v2"):
+        backend = "v2" if str(tools.get("vocal2midi", "")).replace("\\", "/").rstrip("/").endswith(
+            "vocal2midi2") else "v1"
+    return _normalise_options({
+        "language": request.get("language", "zh"),
+        "lyrics": request.get("lyrics", ""),
+        "backing_lyrics": request.get("backing_lyrics", ""),
+        "recognize_lyrics": request.get("recognize_lyrics", True),
+        "voice_mode": request.get("voice_mode", "single"),
+        "midi_backend": backend,
+        "alignment_engine": request.get("alignment_engine", "hfa"),
+        "midi_steps": request.get("midi_steps", 16),
+        "separation_device": request.get("separation_device", tools.get("separation_device", "dml")),
+        "midi_device": request.get("midi_device", tools.get("midi_device", "dml")),
+        "dml_adapter": request.get("dml_adapter", tools.get("dml_adapter", "auto")),
+        "cpu_threads": request.get("cpu_threads", tools.get("cpu_threads", 0)),
+        "roformer_device": request.get("roformer_device", "auto"),
+        "bpm": request.get("bpm"),
+    })
+
+
+def _merged_reuse_options(request, options):
+    if options is not None and type(options) is not dict:
+        raise ValueError("options 必须是对象。")
+    if options:
+        unknown = sorted(set(options) - ALLOWED_OPTIONS)
+        if unknown:
+            raise ValueError("复用选项包含未授权字段：" + ", ".join(unknown))
+    merged = _source_options(request)
+    if options:
+        merged.update(copy.deepcopy(options))
+    return _normalise_options(merged)
+
+
+def _source_argument(job, request):
+    if request.get("source_kind") == "local":
+        candidates = []
+        if request.get("source_audio"):
+            try:
+                candidates.append(app_path(request["source_audio"]))
+            except (OSError, ValueError):
+                pass
+        if request.get("input_file"):
+            candidates.append(job / request["input_file"])
+        for candidate in candidates:
+            if Path(native_path(candidate)).is_file() and candidate.stat().st_size > 0:
+                return str(_resolved(candidate))
+        raise PreparationError("source_missing", "源任务没有可核验的本地音乐快照。",
+                               path=str(job))
+    bvid = request.get("bv")
+    if isinstance(bvid, str) and BV_RE.fullmatch(bvid):
+        return bvid
+    raise PreparationError("source_missing", "源任务没有受支持的 Bilibili 视频身份。",
+                           path=str(job))
+
+
+def _target_request(source_request, options):
+    request = copy.deepcopy(source_request)
+    request.update({
+        "language": options["language"],
+        "lyrics": clean_lyrics(options["lyrics"]),
+        "lyric_lines": clean_lyrics(options["lyrics"], preserve_lines=True).splitlines(),
+        "backing_lyrics": clean_lyrics(options["backing_lyrics"]),
+        "backing_lyric_lines": clean_lyrics(options["backing_lyrics"],
+                                            preserve_lines=True).splitlines(),
+        "recognize_lyrics": options["recognize_lyrics"],
+        "voice_mode": options["voice_mode"],
+        "midi_steps": options["midi_steps"],
+        "bpm": options["bpm"],
+        "alignment_engine": options["alignment_engine"],
+        "prepare_only": True,
+        "project_formats": [],
+        "audio_formats": [],
+        "export_pitch": False,
+    })
+    try:
+        tools = load_config(resolve_paths=False)
+    except (OSError, ValueError, KeyError):
+        tools = copy.deepcopy(source_request.get("tools") or {})
+    tools = dict(tools)
+    tools["vocal2midi"] = ("dependencies/vocal2midi2"
+                            if options["midi_backend"] == "v2" else "dependencies/vocal2midi")
+    tools["separation_device"] = options["separation_device"]
+    tools["midi_device"] = options["midi_device"]
+    tools["dml_adapter"] = options["dml_adapter"]
+    tools["cpu_threads"] = options["cpu_threads"]
+    request["tools"] = tools
+    if options["midi_backend"]:
+        request["midi_backend"] = options["midi_backend"]
+    if options["voice_mode"] == "roformer":
+        request["roformer_device"] = options["roformer_device"]
+    return request
+
+
+def _relative_stage_name(value):
+    name = str(value).replace("\\", "/")
+    relative = PurePosixPath(name)
+    if (not name or relative.is_absolute() or ".." in relative.parts or ":" in name
+            or name in (".", "")):
+        raise PreparationError("unsafe_reuse_path", "阶段产物相对路径无效。", path=name)
+    return relative.as_posix()
+
+
+def _stage_files(job, request, stage):
+    files = list(pipeline.requirements(stage, request))
+    if stage == "metadata":
+        for name in METADATA_AUXILIARY_FILES:
+            path = job / name
+            if Path(native_path(path)).is_file() and not _is_reparse(path):
+                files.append(name)
+    return sorted({_relative_stage_name(name) for name in files})
+
+
+def _local_download_content_ok(job, request):
+    if request.get("source_kind") != "local":
+        return True
+    try:
+        report = _read_json(job / "import-report.json", required=True)
+        snapshot = job / request["input_file"]
+        expected = report.get("sha256")
+        return (isinstance(expected, str) and SHA256_RE.fullmatch(expected) is not None
+                and expected == _hash_file(snapshot))
+    except (OSError, KeyError, PreparationError, ValueError):
+        return False
+
+
+def _source_stage_probe(job, request, status, stage):
+    step = (status.get("steps") or {}).get(stage)
+    step = step if isinstance(step, dict) else {}
+    row = {"stage": stage, "source_state": step.get("state", "missing"),
+           "source_complete": False, "source_reason": None,
+           "source_receipt_sha256": None, "files": {}}
+    if step.get("state") != "done":
+        row["source_reason"] = "source_not_completed"
+        return row, None
+    files = _stage_files(job, request, stage)
+    try:
+        file_hashes = {}
+        required_names = {_relative_stage_name(name)
+                          for name in pipeline.requirements(stage, request)}
+        for name in files:
+            path = _assert_real_path(job / PurePosixPath(name), boundary=job, leaf_file=True)
+            if name in required_names and path.stat().st_size <= 0:
+                raise PreparationError("empty_stage_file", "阶段产物为空。", path=str(path))
+            file_hashes[name] = _hash_file(path)
+        if stage == "download" and not _local_download_content_ok(job, request):
+            raise PreparationError("source_changed", "本地导入快照摘要不匹配。", path=str(job))
+        from artifact_cache import receipt, valid_receipt
+        required = list(pipeline.requirements(stage, request))
+        if stage == "midi":
+            voices = ("vocals",) if request.get("voice_mode") == "single" else ("lead", "backing")
+            if not all(common.completed_voice(job, request, voice) for voice in voices):
+                raise PreparationError("stage_unverified", "MIDI 的输入签名或产物摘要不匹配。",
+                                       stage=stage)
+            if len(voices) == 2:
+                merged = _read_json(job / "midi/report.json", required=True)
+                if merged.get("merged_sha256") != _hash_file(job / "midi/voices.mid"):
+                    raise PreparationError("stage_unverified", "合并 MIDI 摘要不匹配。",
+                                           stage=stage)
+            receipt_value = None
+        else:
+            saved = step.get("receipt")
+            if saved is None:
+                receipt_value = receipt(job, request, stage, required)
+            elif not isinstance(saved, dict) or not valid_receipt(
+                    job, request, stage, required, saved):
+                raise PreparationError("stage_unverified", "阶段回执或内容 SHA 不匹配。",
+                                       stage=stage)
+            else:
+                receipt_value = copy.deepcopy(saved)
+    except (OSError, KeyError, PreparationError, TypeError, ValueError) as error:
+        row["source_reason"] = getattr(error, "code", "stage_unverified")
+        row["source_error"] = _summary_text(str(error), 300)
+        return row, None
+    row["source_complete"] = True
+    row["files"] = file_hashes
+    if receipt_value is not None:
+        row["source_receipt_sha256"] = _digest(receipt_value)
+    return row, receipt_value
+
+
+def _target_stage_compatible(job, source_request, target_request, stage, receipt_value):
+    if stage == "metadata":
+        return True, "metadata_reused_with_request_lyrics"
+    try:
+        if stage in ("download", "audio", "separation"):
+            from artifact_cache import stage_signature
+            target_signature = stage_signature(job, target_request, stage)
+            source_signature = (receipt_value or {}).get("signature")
+            if source_signature != target_signature:
+                if (stage == "separation"
+                        and source_request.get("voice_mode") != target_request.get("voice_mode")):
+                    return False, "voice_mode_changed"
+                return False, "dependency_options_changed"
+            return True, "content_and_dependencies_match"
+        if stage == "midi":
+            voices = ("vocals",) if target_request.get("voice_mode") == "single" else (
+                "lead", "backing")
+            if all(common.completed_voice(job, target_request, voice) for voice in voices):
+                return True, "midi_inputs_and_outputs_match"
+            if source_request.get("voice_mode") != target_request.get("voice_mode"):
+                return False, "voice_mode_changed"
+            return False, "midi_options_or_lyrics_changed"
+    except (OSError, KeyError, TypeError, ValueError, RuntimeError) as error:
+        return False, "dependency_unverified:" + _summary_text(str(error), 120)
+    return False, "unknown_stage"
+
+
+def _canonical_reuse_stages(reuse_stages):
+    if reuse_stages is None:
+        return list(PREPARATION_STAGES)
+    if not isinstance(reuse_stages, (list, tuple)) or isinstance(reuse_stages, (str, bytes)):
+        raise ValueError("reuse_stages 必须是阶段名称数组。")
+    requested = []
+    for stage in reuse_stages:
+        if stage not in PREPARATION_STAGES:
+            raise ValueError("未知复用阶段：" + str(stage))
+        if stage in requested:
+            raise ValueError("reuse_stages 不能重复：" + str(stage))
+        requested.append(stage)
+    return [stage for stage in PREPARATION_STAGES if stage in requested]
+
+
+def _build_reuse_evidence(source_job, request, status, options, reuse_stages):
+    target_request = _target_request(request, options)
+    requested = _canonical_reuse_stages(reuse_stages)
+    closure = set()
+    for stage in requested:
+        index = PREPARATION_STAGES.index(stage)
+        closure.update(PREPARATION_STAGES[:index + 1])
+
+    stages = []
+    probes = {}
+    reused = []
+    for stage in PREPARATION_STAGES:
+        row, receipt_value = _source_stage_probe(source_job, request, status, stage)
+        probes[stage] = (row, receipt_value)
+    for stage in PREPARATION_STAGES:
+        row, receipt_value = probes[stage]
+        required_by_request = stage in closure
+        compatible = False
+        compatibility_reason = "not_in_reuse_prefix"
+        if row["source_complete"] and required_by_request:
+            compatible, compatibility_reason = _target_stage_compatible(
+                source_job, request, target_request, stage, receipt_value)
+        dependencies_ready = all(name in reused for name in STAGE_DEPENDENCIES[stage])
+        reuse = bool(required_by_request and row["source_complete"] and compatible
+                     and dependencies_ready)
+        if reuse:
+            reused.append(stage)
+            action = "reuse"
+            reason = "verified_complete_and_dependency_compatible"
+        elif not required_by_request:
+            action = "not_requested"
+            reason = "not_in_reuse_prefix"
+        elif not row["source_complete"]:
+            action = "run"
+            reason = row["source_reason"] or "source_not_completed"
+        elif not compatible:
+            action = "run"
+            reason = compatibility_reason
+        elif not dependencies_ready:
+            action = "run"
+            reason = "dependency_not_reusable"
+        else:
+            action = "run"
+            reason = "not_reusable"
+        stages.append({
+            "stage": stage,
+            "explicitly_requested": stage in requested,
+            "required_by_reuse_prefix": required_by_request,
+            "source_state": row["source_state"],
+            "source_complete": row["source_complete"],
+            "source_receipt_sha256": row["source_receipt_sha256"],
+            "files": copy.deepcopy(row["files"]),
+            "compatible": compatible,
+            "compatibility_reason": compatibility_reason,
+            "action": action,
+            "reason": reason,
+        })
+    run = [stage for stage in PREPARATION_STAGES if stage not in reused]
+    return {
+        "schema_version": REUSE_SCHEMA,
+        "kind": "preparation_reuse",
+        "source_job": str(source_job),
+        "source_request_sha256": _hash_file(source_job / "request.json"),
+        "source_status_sha256": _hash_file(source_job / "status.json"),
+        "target_options_sha256": _digest(options),
+        "requested_stages": requested,
+        "reuse_stages": reused,
+        "run_stages": run,
+        "dependency_stages": list(STAGE_DEPENDENCIES),
+        "voice_before": request.get("voice_mode", "single"),
+        "voice_after": options["voice_mode"],
+        "stages": stages,
+    }
+
+
+def plan_preparation_reuse(source_job, options=None, reuse_stages=None) -> dict:
+    """Plan a new preparation job while source_job remains strictly read-only."""
+    source_job = _job_path(source_job)
+    request = _read_json(source_job / "request.json", required=True)
+    status = _read_json(source_job / "status.json", required=True)
+    target_options = _merged_reuse_options(request, options)
+    source = _source_argument(source_job, request)
+    plan = plan_preparation(source, target_options)
+    plan["kind"] = "preparation_reuse"
+    plan["source_job"] = str(source_job)
+    plan["reuse"] = _build_reuse_evidence(
+        source_job, request, status, target_options, reuse_stages)
+    plan["plan_sha256"] = _digest({
+        key: value for key, value in plan.items() if key != "plan_sha256"})
+    return plan
+
+
+def _validate_reuse_plan(plan):
+    options, source = _validate_plan(plan, allow_reuse=True)
+    if plan.get("kind") != "preparation_reuse":
+        raise ValueError("不是准备复用计划。")
+    source_job = _job_path(plan.get("source_job"))
+    reuse = plan.get("reuse")
+    if type(reuse) is not dict or reuse.get("kind") != "preparation_reuse":
+        raise PreparationError("plan_tampered", "复用计划证据无效。")
+    if reuse.get("source_job") != str(source_job):
+        raise PreparationError("plan_tampered", "复用计划的源任务路径不一致。")
+    for name in ("source_request_sha256", "source_status_sha256", "target_options_sha256"):
+        value = reuse.get(name)
+        if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
+            raise PreparationError("plan_tampered", "复用计划缺少内容摘要。", field=name)
+    if reuse.get("target_options_sha256") != _digest(options):
+        raise PreparationError("plan_tampered", "复用计划目标选项摘要不一致。")
+    requested = reuse.get("requested_stages")
+    reusable = reuse.get("reuse_stages")
+    run = reuse.get("run_stages")
+    if (not isinstance(requested, list) or not isinstance(reusable, list)
+            or not isinstance(run, list)
+            or any(stage not in PREPARATION_STAGES for stage in requested + reusable + run)
+            or len(set(requested)) != len(requested)
+            or len(set(reusable)) != len(reusable) or len(set(run)) != len(run)
+            or set(reusable).intersection(run)
+            or set(reusable).union(run) != set(PREPARATION_STAGES)):
+        raise PreparationError("plan_tampered", "复用阶段列表无效。")
+    return options, source, source_job, reuse
+
+
+def _atomic_text(path, text):
+    import tempfile
+    path = Path(path)
+    Path(native_path(path.parent)).mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=native_path(path.parent),
+                                         prefix=path.name + ".", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(native_path(temporary), native_path(path))
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _copy_reuse_file(target_job, source_job, name, expected_sha256):
+    name = _relative_stage_name(name)
+    source = _assert_real_path(source_job / PurePosixPath(name), boundary=source_job,
+                               leaf_file=True)
+    current_sha = _hash_file(source)
+    if not isinstance(expected_sha256, str) or current_sha != expected_sha256:
+        raise PreparationError("reuse_stale_source", "源阶段文件在计划后发生变化。",
+                               path=str(source), stage_file=name)
+    destination = _resolved(target_job / PurePosixPath(name), strict=False)
+    _assert_real_path(destination.parent, boundary=target_job)
+    Path(native_path(destination.parent)).mkdir(parents=True, exist_ok=True)
+    _assert_real_path(destination.parent, boundary=target_job)
+    if Path(native_path(destination)).exists():
+        if _is_reparse(destination) or not Path(native_path(destination)).is_file():
+            raise PreparationError("reuse_collision", "目标复用路径不是普通文件。",
+                                   path=str(destination))
+        if _hash_file(destination) != expected_sha256:
+            raise PreparationError("reuse_collision", "目标文件与源阶段 SHA 不一致，未覆盖。",
+                                   path=str(destination))
+        return destination
+    shutil.copy2(native_path(source), native_path(destination))
+    if _hash_file(destination) != expected_sha256:
+        raise PreparationError("reuse_copy_failed", "复制后的阶段文件 SHA 不一致。",
+                               path=str(destination))
+    return destination
+
+
+def _target_stage_receipt(job, request, stage):
+    if stage == "midi":
+        voices = ("vocals",) if request.get("voice_mode") == "single" else ("lead", "backing")
+        if not all(common.completed_voice(job, request, voice) for voice in voices):
+            raise PreparationError("reuse_target_unverified", "新任务的 MIDI 输入签名不匹配。",
+                                   stage=stage)
+        if len(voices) == 2:
+            report = _read_json(job / "midi/report.json", required=True)
+            if report.get("merged_sha256") != _hash_file(job / "midi/voices.mid"):
+                raise PreparationError("reuse_target_unverified", "新任务的合并 MIDI 摘要不匹配。",
+                                       stage=stage)
+        return None
+    from artifact_cache import receipt
+    return receipt(job, request, stage, list(pipeline.requirements(stage, request)))
+
+
+def _reuse_receipt_sha(receipt):
+    return _digest({key: value for key, value in receipt.items() if key != "receipt_sha256"})
+
+
+def _validate_reuse_receipt(receipt, plan_sha256):
+    if (receipt.get("schema_version") != REUSE_SCHEMA
+            or receipt.get("kind") != "preparation_reuse"
+            or receipt.get("plan_sha256") != plan_sha256
+            or receipt.get("receipt_sha256") != _reuse_receipt_sha(receipt)):
+        raise PreparationError("reuse_receipt_invalid", "准备复用回执无效。")
+    return receipt
+
+
+def _replay_reuse_receipt(path, job, plan_sha256):
+    receipt = _validate_reuse_receipt(_read_json(path, required=True), plan_sha256)
+    if receipt.get("job_path") != str(_resolved(job)):
+        raise PreparationError("reuse_receipt_invalid", "复用回执的任务路径不一致。")
+    for stage, files in (receipt.get("files") or {}).items():
+        if stage not in PREPARATION_STAGES or not isinstance(files, dict):
+            raise PreparationError("reuse_receipt_invalid", "复用回执的阶段文件无效。")
+        for name, expected in files.items():
+            target = job / PurePosixPath(_relative_stage_name(name))
+            if not Path(native_path(target)).is_file() or _hash_file(target) != expected:
+                raise PreparationError("reuse_receipt_stale", "复用回执登记的文件已变化。",
+                                       path=str(target))
+    return receipt
+
+
+def create_preparation_reuse(plan, parent) -> dict:
+    """Create a new managed job and copy only revalidated reused stages."""
+    options, source, source_job, reuse = _validate_reuse_plan(plan)
+    source_request = _read_json(source_job / "request.json", required=True)
+    source_status = _read_json(source_job / "status.json", required=True)
+    current = _build_reuse_evidence(
+        source_job, source_request, source_status, options,
+        copy.deepcopy(reuse.get("requested_stages")))
+    if _digest(current) != _digest(reuse):
+        raise PreparationError(
+            "reuse_plan_stale",
+            "源任务、阶段回执或模型依赖已变化；请重新生成复用计划。",
+            source_job=str(source_job))
+
+    created = create_preparation(plan, parent, _allow_reuse=True)
+    job = _job_path(created["job_path"])
+    container = _resolved(Path(created["creation_receipt"]).parent)
+    with _directory_lock(container):
+        receipt_path = job / REUSE_RECEIPT_NAME
+        if Path(native_path(receipt_path)).is_file():
+            saved_receipt = _replay_reuse_receipt(receipt_path, job, plan["plan_sha256"])
+            return {**created, "reuse_receipt": str(_resolved(receipt_path)),
+                    "reuse_receipt_sha256": saved_receipt["receipt_sha256"],
+                    "source_job": str(source_job),
+                    "reused_stages": copy.deepcopy(saved_receipt["reused_stages"]),
+                    "run_stages": copy.deepcopy(saved_receipt["run_stages"]),
+                    "replay": True}
+
+        status_path = job / "status.json"
+        old_status = _read_json(status_path, required=False)
+        if old_status.get("current_step") or any(
+                isinstance(row, dict) and row.get("state") == "running"
+                for row in (old_status.get("steps") or {}).values()):
+            raise PreparationError("reuse_target_busy", "新准备任务已开始运行，未覆盖其状态。",
+                                   path=str(job))
+
+        target_request = _read_json(job / "request.json", required=True)
+        rows = {row["stage"]: row for row in reuse.get("stages") or []
+                if isinstance(row, dict) and row.get("stage") in PREPARATION_STAGES}
+        steps = {}
+        copied = {}
+        for stage in reuse["reuse_stages"]:
+            row = rows.get(stage)
+            if not row or row.get("action") != "reuse" or not isinstance(row.get("files"), dict):
+                raise PreparationError("reuse_target_unverified", "计划中的复用阶段证据缺失。",
+                                       stage=stage)
+            for name, expected in row["files"].items():
+                _copy_reuse_file(job, source_job, name, expected)
+            if stage == "metadata":
+                _atomic_text(job / "参考歌词.txt", target_request.get("lyrics", ""))
+            stage_receipt = _target_stage_receipt(job, target_request, stage)
+            steps[stage] = {
+                "state": "done",
+                "seconds": 0,
+                "reused_from": str(source_job),
+                "source_request_sha256": reuse["source_request_sha256"],
+                "source_receipt_sha256": row.get("source_receipt_sha256"),
+            }
+            if stage_receipt is not None:
+                steps[stage]["receipt"] = stage_receipt
+            copied[stage] = {name: _hash_file(job / PurePosixPath(name))
+                             for name in row["files"]}
+
+        if _hash_file(source_job / "request.json") != reuse["source_request_sha256"]:
+            raise PreparationError("reuse_stale_source", "复制期间源任务 request.json 发生变化。",
+                                   path=str(source_job))
+        if _hash_file(source_job / "status.json") != reuse["source_status_sha256"]:
+            raise PreparationError("reuse_stale_source", "复制期间源任务 status.json 发生变化。",
+                                   path=str(source_job))
+
+        status = {"schema": 1, "steps": steps,
+                  "state": "done" if all(stage in steps for stage in PREPARATION_STAGES) else "partial",
+                  "source_job": str(source_job), "reuse_plan_sha256": plan["plan_sha256"],
+                  "reused_stages": list(steps), "run_stages": copy.deepcopy(reuse["run_stages"])}
+        atomic_json(status_path, status)
+        reuse_receipt = {
+            "schema_version": REUSE_SCHEMA,
+            "kind": "preparation_reuse",
+            "plan_sha256": plan["plan_sha256"],
+            "job_path": str(job),
+            "source_job": str(source_job),
+            "source_request_sha256": reuse["source_request_sha256"],
+            "source_status_sha256": reuse["source_status_sha256"],
+            "reused_stages": copy.deepcopy(reuse["reuse_stages"]),
+            "run_stages": copy.deepcopy(reuse["run_stages"]),
+            "files": copied,
+            "voice_before": reuse["voice_before"],
+            "voice_after": reuse["voice_after"],
+        }
+        reuse_receipt["receipt_sha256"] = _reuse_receipt_sha(reuse_receipt)
+        atomic_json(receipt_path, reuse_receipt)
+        return {**created, "reuse_receipt": str(_resolved(receipt_path)),
+                "reuse_receipt_sha256": reuse_receipt["receipt_sha256"],
+                "source_job": str(source_job),
+                "reused_stages": copy.deepcopy(reuse["reuse_stages"]),
+                "run_stages": copy.deepcopy(reuse["run_stages"])}
 
 
 def _cancel_requested(cancel):

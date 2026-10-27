@@ -1884,6 +1884,20 @@
     "tests/test_agent_drafts.py",
     "tests/test_agent_pronunciation.py",
     "tests/test_agent_refinement.py",
-    "tests/test_tuning_shared_drafts.py"
+    "tests/test_tuning_shared_drafts.py",
+    "src/agent_errors.py",
+    "src/agent_monophony.py",
+    "src/agent_media.py",
+    "src/agent_views.py",
+    "src/agent_delivery.py",
+    "tests/test_agent_monophony.py",
+    "tests/test_agent_media.py",
+    "tests/test_agent_views.py",
+    "tests/test_agent_delivery.py",
+    "tests/test_agent_song_feedback.py",
+    "src/agent_segments.py",
+    "src/agent_segment_workflow.py",
+    "tests/test_agent_segments.py",
+    "tests/test_agent_segment_workflow.py"
   ]
 }

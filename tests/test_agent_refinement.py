@@ -14,6 +14,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import wave
 from importlib.util import find_spec
 from pathlib import Path
 
@@ -517,6 +518,58 @@ class AgentRefinementTests(unittest.TestCase):
         self.assertEqual(observed["stage"], "project_ready")
         self.assertEqual(observed["revision"], refined["revision"])
         self.assertFalse(observed["export_review"])
+
+
+    @unittest.skipUnless(
+        PRONUNCIATION_AVAILABLE,
+        "agent_pronunciation peer contract is not available yet",
+    )
+    def test_refine_moves_media_beside_new_svp_and_keeps_old_package(self):
+        audio = self.root / "assets" / "伴奏.wav"
+        with wave.open(str(audio), "wb") as stream:
+            stream.setnchannels(2)
+            stream.setsampwidth(2)
+            stream.setframerate(44100)
+            stream.writeframes(b"\0\0\0\0" * 8820)
+        plan = plan_export(self.source, ["svp"], {
+            "include_instrumental": True,
+            "instrumental_path": str(audio),
+        })
+        receipt = apply_export(self.source, plan, self.root / "bundle-with-media",
+                               export_runtime=EXPORT_RUNTIME)
+        candidate = receipt["candidates"][0]
+        old_path = Path(candidate["candidate_path"])
+        old_media = Path(candidate["media"]["path"])
+        old_bytes = old_path.read_bytes()
+        old_media_bytes = old_media.read_bytes()
+        snapshot = read_pronunciation(old_path, limit=10, offset=0,
+                                      export_runtime=str(EXPORT_RUNTIME))
+        note = snapshot["notes"][0]
+        artifact = {
+            "id": "art_media_svp", "path": str(old_path),
+            "sha256": candidate["candidate_sha256"], "format": "svp",
+        }
+        previous = {"receipt": receipt, "artifacts": [artifact]}
+        changes = [{
+            "artifact_id": artifact["id"],
+            "expected_sha256": artifact["sha256"],
+            "edits": [{"note_ref": note["note_ref"], "phonemes": "ni"}],
+        }]
+        refined = refine_export(
+            self.source, previous, changes, self.root / "bundle-refined",
+            export_runtime=EXPORT_RUNTIME, rationale="明确写入音素并保留伴奏。",
+        )
+        new_candidate = refined["candidates"][0]
+        self.assertTrue(new_candidate["instrumental_included"])
+        self.assertTrue(new_candidate["media"]["post_publish_readback_verified"])
+        new_path = Path(new_candidate["candidate_path"])
+        new_media = Path(new_candidate["media"]["path"])
+        self.assertNotEqual(new_path, old_path)
+        self.assertTrue(new_media.is_file())
+        self.assertEqual(new_media.read_bytes(), old_media_bytes)
+        self.assertEqual(new_candidate["media"]["sha256"], candidate["media"]["sha256"])
+        self.assertEqual(old_path.read_bytes(), old_bytes)
+        self.assertEqual(old_media.read_bytes(), old_media_bytes)
 
 
 if __name__ == "__main__":
