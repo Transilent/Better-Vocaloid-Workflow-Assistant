@@ -89,6 +89,20 @@ def summarize_export(result, source_sha256, operation_id):
             warnings.append(row)
     candidate_reports = []
     used = set()
+    pronunciation={}
+    native_rows=outer.get('pronunciation_evidence',[])
+    if not isinstance(native_rows,list) or len(native_rows)>3:
+        raise SupervisionError('invalid_export_report','读音证据清单无效。')
+    for evidence in native_rows:
+        if (not isinstance(evidence,dict) or not isinstance(evidence.get('report'),dict)
+                or evidence.get('format') not in ('svp','vsqx')
+                or not isinstance(evidence.get('source_sha256'),str)
+                or evidence['report'].get('source_sha256')!=evidence.get('source_sha256')):
+            raise SupervisionError('export_report_mismatch','读音证据与候选摘要不一致。')
+        key=(evidence.get('format'),evidence.get('source_sha256'))
+        if key in pronunciation:
+            raise SupervisionError('export_report_mismatch','读音证据重复。')
+        pronunciation[key]=copy.deepcopy(evidence['report'])
     for row in rows:
         if not isinstance(row, dict) or row.get('format') not in ('svp','ustx','vsqx'):
             raise SupervisionError('invalid_export_report', '候选工程格式无效。')
@@ -119,8 +133,15 @@ def summarize_export(result, source_sha256, operation_id):
             'tempo_table_equal':row['tempo_verified'],'time_signature_equal':row['time_signature_verified'],
             'expected_tempo':copy.deepcopy(row.get('expected_tempo')),
             'output_tempo':copy.deepcopy(row.get('output_tempo')),'loss_codes':list(codes)})
+        candidate_reports[-1]['pronunciation']=pronunciation.pop((row['format'],row['candidate_sha256']),
+            {'status':'unknown','reason':'native_phonemes_not_read','acoustic_verification':False})
+        if candidate_reports[-1]['pronunciation'].get('evidence_available') is False:
+            warnings.append({'code':'native_phonemes_unavailable','format':row['format'],
+                'message':'此工程的原生读音结构未展开；保留unknown，不能视为读音通过。'})
     if used != set(index):
         raise SupervisionError('export_report_mismatch', '存在未纳入导出回执的产物。')
+    if pronunciation:
+        raise SupervisionError('export_report_mismatch','读音证据包含当前清单之外的工程。')
     audit = outer.get('independent_audit')
     if isinstance(audit, dict):
         if audit.get('source_sha256') != source_sha256:
@@ -153,7 +174,9 @@ def summarize_export(result, source_sha256, operation_id):
         'required_loss_codes':sorted({row['code'] for row in warnings}),
         'review_required':True,'can_accept':not blockers,'inference_performed':False,
         'instructions':'确认实际音符、歌词和秒数差异；格式损失须逐项认可。未知读音与听感不算通过。'}
-    report['report_sha256'] = _digest(report)
+    try:report['report_sha256'] = _digest(report)
+    except (TypeError,ValueError) as error:
+        raise SupervisionError('invalid_export_report','监督报告含无效或非有限JSON数据。') from error
     return report
 
 

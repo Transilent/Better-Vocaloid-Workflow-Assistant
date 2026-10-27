@@ -56,6 +56,7 @@ if (!(Test-Path -LiteralPath $configuration)) {
         state_root=(Join-Path $control 'state')
         allowed_asset_roots=@((Join-Path $control 'exchange'))
         allowed_job_roots=@((Join-Path $control 'jobs'))
+        shared_draft_root=(Join-Path $app 'cache/style-region-drafts')
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configuration -Encoding UTF8
 }
 [ordered]@{ mcpServers = [ordered]@{ vwa = [ordered]@{

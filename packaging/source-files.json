@@ -1875,6 +1875,15 @@
     "tests/test_agent_supervision.py",
     "tests/test_agent_export_audit.py",
     "tests/test_agent_reference.py",
-    "tests/test_agent_structure.py"
+    "tests/test_agent_structure.py",
+    "src/style_drafts.py",
+    "src/agent_drafts.py",
+    "src/agent_pronunciation.py",
+    "src/agent_refinement.py",
+    "tests/test_style_drafts.py",
+    "tests/test_agent_drafts.py",
+    "tests/test_agent_pronunciation.py",
+    "tests/test_agent_refinement.py",
+    "tests/test_tuning_shared_drafts.py"
   ]
 }

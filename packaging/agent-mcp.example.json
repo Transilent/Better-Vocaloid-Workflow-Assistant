@@ -4,5 +4,6 @@
   "worker_python": "C:/VWA/application/dependencies/vocal2midi/python/python.exe",
   "state_root": "C:/VWA-Agent/state",
   "allowed_asset_roots": ["C:/VWA-Agent/exchange"],
-  "allowed_job_roots": ["C:/VWA-Agent/jobs"]
+  "allowed_job_roots": ["C:/VWA-Agent/jobs"],
+  "shared_draft_root": "C:/VWA/application/cache/style-region-drafts"
 }

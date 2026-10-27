@@ -415,6 +415,20 @@ class ControlFixtureTests(unittest.TestCase):
         write_json(broken, value)
         self.assert_error('invalid_config', self.new_control, broken)
 
+    def test_shared_draft_root_is_explicit_typed_and_separate(self):
+        self.assertIsNone(self.control.shared_drafts)
+        for invalid in (False,True,3,''):
+            self.write_config(shared_draft_root=invalid)
+            self.assert_error('invalid_config',self.new_control)
+        for root in (self.state,self.assets,self.jobs,self.root):
+            self.write_config(shared_draft_root=str(root))
+            self.assert_error('invalid_draft_root',self.new_control)
+        target=self.root/'shared-drafts'
+        self.write_config(shared_draft_root=str(target))
+        configured=self.new_control()
+        self.assertEqual(configured.shared_drafts,target)
+        self.assertFalse(target.exists(),'capability discovery does not create shared drafts')
+
     def test_unowned_job_cannot_execute_arbitrary_request_tools(self):
         job = self.jobs / 'unowned'
         write_json(job/'request.json', {'language':'zh','tools':{'python':'C:/untrusted/python.exe'}})

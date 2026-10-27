@@ -31,7 +31,7 @@ TECHNIQUE_IDS = ("none", "chinese_opera")
 REGION_KEYS = frozenset({
     "start", "end", "preset", "strength", "style_pitch",
     "style_technique", "technique_strength", "technique_pitch",
-    "rationale", "evidence_refs",
+    "rationale", "evidence_refs", "detail",
 })
 REQUIRED_REGION_KEYS = frozenset({
     "start", "end", "preset", "strength", "style_pitch", "rationale",
@@ -562,7 +562,7 @@ def _validate_proposal(
             raise ValueError(label + ".style_pitch 必须是布尔值。")
         rationale = _text(raw_region["rationale"], label + ".rationale")
 
-        from style_presets import technique_settings
+        from style_presets import technique_settings,detail_settings
 
         try:
             technique = technique_settings({
@@ -574,6 +574,7 @@ def _validate_proposal(
                     "technique_pitch", _DEFAULT_TECHNIQUE_PITCH,
                 ),
             })
+            detail=detail_settings(raw_region.get('detail'))
         except ValueError as error:
             raise ValueError(label + " 的唱腔设置无效：" + str(error)) from error
         if preset == "none" and technique["style_technique"] == "none":
@@ -596,6 +597,7 @@ def _validate_proposal(
             "preset": preset,
             "strength": strength,
             "style_pitch": style_pitch,
+            "detail": detail,
             "style_technique": technique["style_technique"],
             "technique_strength": technique["technique_strength"],
             "technique_pitch": technique["technique_pitch"],
@@ -663,6 +665,7 @@ def _align_regions(
             "preset": row["preset"],
             "strength": row["strength"],
             "style_pitch": row["style_pitch"],
+            "detail": copy.deepcopy(row['detail']),
             "style_technique": row["style_technique"],
             "technique_strength": row["technique_strength"],
             "technique_pitch": row["technique_pitch"],
@@ -691,6 +694,7 @@ def _align_regions(
             "preset": row["preset"],
             "strength": row["strength"],
             "style_pitch": row["style_pitch"],
+            "detail": copy.deepcopy(row['detail']),
             "style_technique": row["style_technique"],
             "technique_strength": row["technique_strength"],
             "technique_pitch": row["technique_pitch"],
@@ -703,12 +707,7 @@ def _align_regions(
             "end": row["end"],
             "preset": row["preset"],
             "strength": row["strength"],
-            "detail": {
-                "onset": 1.0,
-                "sustain": 1.0,
-                "connection": 1.0,
-                "release": 1.0,
-            },
+            "detail": copy.deepcopy(row['detail']),
             "pitch": row["style_pitch"],
         }
         # The public semantic region always carries the complete technique
@@ -825,6 +824,7 @@ def plan_style(path: Any, proposal: dict[str, Any]) -> dict[str, Any]:
                 "preset": row["preset"],
                 "strength": row["strength"],
                 "style_pitch": row["style_pitch"],
+                "detail": copy.deepcopy(row['detail']),
                 "style_technique": row["style_technique"],
                 "technique_strength": row["technique_strength"],
                 "technique_pitch": row["technique_pitch"],

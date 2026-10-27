@@ -102,5 +102,34 @@ class ExportSupervisionTests(unittest.TestCase):
         altered=copy.deepcopy(report);altered['blockers'].append({'code':'late'})
         self.assert_code('export_report_mismatch',validate_export_review,altered,self.decision(report))
 
+    def test_written_pronunciation_evidence_is_visible_and_candidate_bound(self):
+        result=self.fixture()
+        native={'source_sha256':'b'*64,'format':'svp','notes':[
+            {'note_ref':'written-fixture','phonemes':'sh an','acoustic_verification':False}]}
+        result['receipt']['pronunciation_evidence']=[{'format':'svp','source_sha256':'b'*64,'report':native}]
+        report=self.summary(result)
+        self.assertEqual(report['candidates'][0]['pronunciation'],native)
+        result['receipt']['pronunciation_evidence'][0]['source_sha256']='0'*64
+        self.assert_code('export_report_mismatch',self.summary,result)
+
+    def test_malformed_or_nonfinite_pronunciation_report_is_rejected(self):
+        result=self.fixture();result['receipt']['pronunciation_evidence']=None
+        self.assert_code('invalid_export_report',self.summary,result)
+        result=self.fixture();result['receipt']['pronunciation_evidence']=[
+            {'format':'svp','source_sha256':'b'*64,'report':{'source_sha256':'b'*64,'invalid':float('nan')}}]
+        self.assert_code('invalid_export_report',self.summary,result)
+
+    def test_unavailable_native_phonemes_require_explicit_acknowledgement(self):
+        result=self.fixture()
+        result['receipt']['pronunciation_evidence']=[{'format':'svp','source_sha256':'b'*64,
+            'report':{'source_sha256':'b'*64,'format':'svp','status':'unknown',
+                      'evidence_available':False,'notes':[],'reason':'unsupported overlap'}}]
+        report=self.summary(result)
+        self.assertEqual(report['candidates'][0]['pronunciation']['status'],'unknown')
+        self.assertIn('native_phonemes_unavailable',report['required_loss_codes'])
+        self.assert_code('export_losses_unacknowledged',validate_export_review,report,
+            self.decision(report,accepted_loss_codes=[c for c in report['required_loss_codes']
+                                                     if c!='native_phonemes_unavailable']))
+
 
 if __name__=='__main__':unittest.main()

@@ -95,7 +95,7 @@ class Workflow:
         stage = value['stage']
         arguments = {'workflow_id': identifier, 'expected_revision': value['revision']}
         operation = None
-        if stage in ('preparing', 'reviewing', 'exporting', 'styling'):
+        if stage in ('preparing', 'reviewing', 'exporting', 'styling','refining'):
             operation = self.control.operation_get(value['operation_id'])
             if operation['state'] in ('queued', 'running'):
                 next_step = {'tool': 'vwa_workflow_get', 'arguments': {'workflow_id': identifier},
@@ -115,6 +115,8 @@ class Workflow:
             next_step = {'tool':'vwa_workflow_advance','arguments':arguments,
                 'reason':'review_export_report' if summary.get('can_accept') else 'resolve_export_blockers',
                 'report_sha256':summary.get('report_sha256'),
+                'pronunciation_reads':[{'tool':'vwa_pronunciation_read','arguments':{'artifact_id':row['artifact_id']}}
+                    for row in summary.get('candidates',[]) if row['format'] in ('svp','vsqx')],
                 'required_input':{'export_review':{'decision':['accept','needs_revision'],
                     'rationale':'核对导出后的音符、歌词与实际时间后填写理由。',
                     'accepted_loss_codes':summary.get('required_loss_codes',[])}}}
@@ -273,7 +275,9 @@ class Workflow:
         return self.get(identifier)
 
     def advance(self, identifier, revision, style_proposal=None, retry=False, finish=False,
-                export_review=None):
+                export_review=None,style_plan_id=None):
+        if style_plan_id is not None and style_proposal is not None:
+            raise ControlError('conflicting_style_input','风格方案ID和新proposal只能选一个。')
         with self._lock(identifier):
             value = self._expected(identifier, revision)
             stage = value['stage']
@@ -282,7 +286,7 @@ class Workflow:
                 operation = self.control.preparation_start(created['job_id'], None, identifier+'-prepare-0')
                 self._write(value, 'preparation_started', stage='preparing', job_id=created['job_id'],
                             operation_id=operation['id'])
-            elif stage in ('preparing', 'reviewing', 'exporting', 'styling'):
+            elif stage in ('preparing', 'reviewing', 'exporting', 'styling','refining'):
                 operation = self.control.operation_get(value['operation_id'])
                 if operation['state'] in ('queued', 'running'):
                     return self.get(identifier)
@@ -297,6 +301,9 @@ class Workflow:
                         attempt = value['attempt'] + 1
                         if stage == 'preparing':
                             new = self.control.preparation_start(value['job_id'], None, identifier+'-prepare-'+str(attempt))
+                        elif stage=='refining':
+                            new=self.control.start_operation('workflow_pronunciation',operation['request']['arguments'],
+                                                             identifier+'-refine-'+str(attempt)+'-'+str(revision))
                         else:
                             new = self.control.start_plan(value['active_plan_id'],
                                 'export' if stage == 'exporting' else 'style', identifier+'-'+stage+'-'+str(attempt))
@@ -320,7 +327,7 @@ class Workflow:
                         self._bad_result(value, 'missing_review_result', '核对操作缺少已核验的 MIDI 身份。')
                     self._write(value, 'review_accepted', stage='reviewed', score_artifact_id=result['artifact_id'],
                                 review_receipt=result, reviewed_sha256=result['source_sha256'])
-                elif stage == 'exporting':
+                elif stage in ('exporting','refining'):
                     result = operation['result']
                     projects = result['artifacts']
                     if not projects:
@@ -335,7 +342,8 @@ class Workflow:
                     selected = next((row for row in projects if Path(row['path']).suffix.lower()=='.svp'), projects[0])
                     self._write(value, 'project_exported', stage='project_ready',
                                 project_artifact_id=selected['id'], project_artifacts=projects,
-                                export_summary=summary, export_review=None)
+                                export_summary=summary, export_review=None,
+                                pronunciation_receipts=result.get('receipt',{}).get('pronunciation_receipts',[]))
                 else:
                     if not operation.get('result',{}).get('artifacts'):
                         self._bad_result(value, 'missing_styled_project', '风格操作没有返回可验证工程。')
@@ -370,8 +378,13 @@ class Workflow:
                             previous_export_summary=copy.deepcopy(value['export_summary']))
                         return self.get(identifier)
                     value = self._write(value, 'export_review_accepted', export_review=decision)
-                if style_proposal is not None:
-                    plan = self.control.make_plan('style', value['project_artifact_id'], proposal=style_proposal)
+                if style_proposal is not None or style_plan_id is not None:
+                    if style_plan_id is None:
+                        plan = self.control.make_plan('style', value['project_artifact_id'], proposal=style_proposal)
+                    else:
+                        plan=self.control.plan_get(style_plan_id)
+                        if plan['kind']!='style' or plan['artifact_id']!=value['project_artifact_id']:
+                            raise ControlError('wrong_style_source','风格方案必须绑定当前工作流的SVP工程。')
                     operation = self.control.start_plan(plan['id'], 'style', identifier+'-style-'+str(value['revision']))
                     self._write(value, 'style_started', stage='styling', active_plan_id=plan['id'], operation_id=operation['id'])
                 elif finish or not value['request']['brief']:
@@ -380,6 +393,68 @@ class Workflow:
             elif stage != 'ready':
                 raise ControlError('wrong_stage', '无法识别工作流阶段。')
         return self.get(identifier)
+
+    def pronunciation_apply(self,identifier,revision,changes,rationale):
+        if not isinstance(rationale,str) or not rationale.strip() or len(rationale)>8000:
+            raise ControlError('review_rationale_required','请记录明确修改音素的来源和理由。')
+        if not isinstance(changes,list) or not 1<=len(changes)<=3:
+            raise ControlError('invalid_pronunciation_targets','一次可修改1–3个当前工程。')
+        if any(not isinstance(row,dict) or set(row)!={'artifact_id','expected_sha256','edits'}
+               or not isinstance(row['artifact_id'],str) or not isinstance(row['expected_sha256'],str)
+               or len(row['expected_sha256'])!=64 or any(c not in '0123456789abcdef' for c in row['expected_sha256'])
+               or not isinstance(row['edits'],list) or not 1<=len(row['edits'])<=256 for row in changes):
+            raise ControlError('invalid_pronunciation_targets','音素目标需明确artifact、预期SHA和非空编辑列表。')
+        if len({row['artifact_id'] for row in changes})!=len(changes):
+            raise ControlError('invalid_pronunciation_targets','不能重复提交同一工程。')
+        with self._lock(identifier):
+            value=self._expected(identifier,revision)
+            if value['stage']!='project_ready':
+                raise ControlError('wrong_stage','请先完成工程导出，再核对并修改其中的显式音素。')
+            current={row['id'] for row in value['project_artifacts']}
+            for change in changes:
+                if change['artifact_id'] not in current:
+                    raise ControlError('invalid_pronunciation_targets','只能修改当前工作流导出的工程。')
+                artifact=self.control.artifact(change['artifact_id'])
+                if Path(artifact['path']).suffix.lower() not in ('.svp','.vsqx'):
+                    raise ControlError('unsupported_pronunciation_patch','显式音素修正支持SVP和VSQX。')
+                if artifact['sha256']!=change['expected_sha256']:
+                    raise ControlError('stale_artifact','工程已改变，请重新读取音素证据。')
+            args={'workflow_id':identifier,'score_artifact_id':value['score_artifact_id'],
+                'export_operation_id':value['export_summary']['operation_id'],
+                'export_report_sha256':value['export_summary']['report_sha256'],
+                'changes':copy.deepcopy(changes),'rationale':rationale.strip()}
+            operation=self.control.start_operation('workflow_pronunciation',args,identifier+'-pronunciation-'+str(revision))
+            self._write(value,'pronunciation_started',stage='refining',operation_id=operation['id'],export_review=None)
+        return self.get(identifier)
+
+    def execute_pronunciation(self,operation_id,arguments,output,cancel,progress):
+        with self._lock(arguments['workflow_id']):
+            value=self._read(arguments['workflow_id'])
+            if value['stage']!='refining' or value.get('operation_id')!=operation_id:
+                raise ControlError('workflow_conflict','当前音素操作不再属于此工作流。')
+            if value['export_summary']['report_sha256']!=arguments['export_report_sha256']:
+                raise ControlError('export_review_conflict','导出报告已改变，请重新核对。')
+        source=self.control.artifact(arguments['score_artifact_id'])
+        original=self.control.operation_get(arguments['export_operation_id'])
+        if original['state']!='succeeded':
+            raise ControlError('invalid_export_result','缺少成功的当前工程操作。')
+        previous=original['result']
+        for row in previous['artifacts']:self.control.artifact(row['id'])
+        summary=summarize_export(previous,source['sha256'],arguments['export_operation_id'])
+        if summary['report_sha256']!=arguments['export_report_sha256']:
+            raise ControlError('export_review_conflict','当前工程清单与报告不一致。')
+        from agent_refinement import refine_export
+        runtime=self.control.config.get('export_runtime',str(self.control.app/'dependencies/export'))
+        result=refine_export(source['path'],previous,arguments['changes'],output,export_runtime=runtime,
+                             cancel=cancel,progress=progress,rationale=arguments['rationale'])
+        artifacts=[]
+        for row in result['candidates']:
+            candidate=safe_path(row['candidate_path'],[output])
+            if file_hash(candidate)!=row['candidate_sha256']:
+                raise ControlError('candidate_mismatch','新工程摘要与音素回执不一致。')
+            artifacts.append(self.control.register_artifact(candidate))
+        return {'receipt':result,'artifacts':artifacts,'handoff':'awaiting_export_review',
+                'acoustic_verification':False}
 
     def _bad_result(self, value, code, message):
         self._write(value, 'operation_result_rejected', unusable_operation_id=value['operation_id'],

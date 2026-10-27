@@ -16,7 +16,7 @@ from PyQt5.QtGui import QDesktopServices,QKeySequence,QIcon,QPixmap
 from PyQt5.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QLineEdit,QComboBox,QCheckBox,
     QSpinBox,QFileDialog,QTableWidget,QHeaderView,QPlainTextEdit,QProgressBar,QScrollArea,QFrame,QSizePolicy,
     QDialog,QListWidget,QDoubleSpinBox,QShortcut,QApplication)
-from common import ROOT,atomic_json,workspace_state
+from common import ROOT,atomic_json,native_path,workspace_state
 from desktop_theme import page,card,label,button,scroll_content,fold
 from ui_components import AdaptiveColumns,ChoiceGroup,FlowLayout,StyleTimeline,choice,style_preset_color
 from strength_control import PercentStrengthControl,StrengthControl,normalized_strength,percent_text,set_combo_strength,strength_choices
@@ -226,10 +226,18 @@ class TuningPage(QWidget):
         self._syncing_region_time=False;self._restoring_region_state=False
         self._region_time_invalid=False;self._region_dialog=None
         self._loading_style_draft=False;self._staging_style_region=False;self._last_style_draft=None
+        self._style_draft_revision=None;self._style_draft_remote_revision=None
+        self._style_draft_remote_exists=False;self._style_draft_conflict=False
+        self._style_draft_recovery_paths={};self._style_draft_observed_revision=None
+        self._style_draft_last_conflict=None
+        self._style_draft_store_instance=None;self._style_draft_store_root=None
         self._pending_region_style=None;self._region_dialog_status=None
         self._region_tool_intent='new';self._new_region_tool=None
         self._region_autosave_timer=QTimer(self);self._region_autosave_timer.setSingleShot(True)
         self._region_autosave_timer.setInterval(150);self._region_autosave_timer.timeout.connect(self._auto_update_selected_region)
+        self._style_draft_poll_timer=QTimer(self);self._style_draft_poll_timer.setInterval(1200)
+        self._style_draft_poll_timer.timeout.connect(self.check_shared_style_draft)
+        self._style_draft_poll_timer.start()
         QApplication.instance().aboutToQuit.connect(self._flush_style_autosave)
         self._progress_clock=TuningVisualProgress();self._stage_cursor=-1;self._stage_states={};self._observed_stages=set()
         self._progress_timer=QTimer(self);self._progress_timer.setInterval(160);self._progress_timer.setTimerType(Qt.CoarseTimer)
@@ -322,6 +330,19 @@ class TuningPage(QWidget):
         style_mode_label=label(_tr('风格应用方式'),'muted');style_area.addWidget(style_mode_label)
         self.style_mode=combo([(_tr('整轨'),'whole'),(_tr('时间片段'),'regions')])
         self.style_mode_choice=choice(self.style_mode,columns=2,compact=True);style_area.addWidget(self.style_mode_choice)
+        self.shared_draft_prompt=QWidget();shared_layout=QVBoxLayout(self.shared_draft_prompt)
+        shared_layout.setContentsMargins(0,4,0,4);shared_layout.setSpacing(6)
+        self.shared_draft_status=label(_tr('共享草稿已更新，可载入最新草稿。'),'muted')
+        shared_layout.addWidget(self.shared_draft_status)
+        shared_actions=FlowLayout(spacing=8)
+        self.shared_draft_load_button=button(_tr('载入最新草稿'),self.load_latest_style_draft)
+        self.shared_draft_load_button.setToolTip(_tr('用共享草稿中的最新内容替换当前片段，并重置撤销记录。'))
+        shared_actions.addWidget(self.shared_draft_load_button)
+        self.shared_draft_save_button=button(_tr('以当前保存新修订'),self.save_current_as_shared_revision)
+        self.shared_draft_save_button.setToolTip(_tr('把当前界面中的片段保存为新的共享版本；已有他人版本会保留为恢复记录。'))
+        shared_actions.addWidget(self.shared_draft_save_button)
+        shared_layout.addLayout(shared_actions)
+        style_area.addWidget(self.shared_draft_prompt);self.shared_draft_prompt.hide()
         self.region_editor_entry=QWidget();entry_layout=QVBoxLayout(self.region_editor_entry)
         entry_layout.setContentsMargins(0,4,0,4);entry_layout.setSpacing(8)
         self.start_style_editor_button=button(_tr('开始编辑'),self.open_style_editor,'primary')
@@ -349,6 +370,16 @@ class TuningPage(QWidget):
         self.region_draft_status=label(_tr('松开鼠标即暂存'),'success')
         self.region_draft_status.setToolTip(_tr('暂存编辑设置；生成独立工程后可在 SV 中打开。'))
         region_layout.addWidget(self.region_draft_status)
+        region_draft_actions=FlowLayout(spacing=8)
+        self.region_load_latest_draft_button=button(_tr('载入最新草稿'),self.load_latest_style_draft)
+        self.region_load_latest_draft_button.setToolTip(_tr('用共享草稿中的最新内容替换当前片段，并重置撤销记录。'))
+        region_draft_actions.addWidget(self.region_load_latest_draft_button)
+        self.region_save_new_revision_button=button(_tr('以当前保存新修订'),self.save_current_as_shared_revision)
+        self.region_save_new_revision_button.setToolTip(_tr('把当前界面中的片段保存为新的共享版本；已有他人版本会保留为恢复记录。'))
+        region_draft_actions.addWidget(self.region_save_new_revision_button)
+        region_layout.addLayout(region_draft_actions)
+        self.load_latest_draft_button=self.shared_draft_load_button
+        self.save_new_revision_button=self.shared_draft_save_button
         time_row=FlowLayout(spacing=8)
         time_row.addWidget(label(_tr('时间（秒）'),'muted'))
         time_row.addWidget(label(_tr('开始'),'muted'))
@@ -747,35 +778,105 @@ class TuningPage(QWidget):
 
     def _set_region_draft_status(self,text,error=False):
         if hasattr(self,'region_draft_status'):self._set_message(self.region_draft_status,text,error)
+        if hasattr(self,'shared_draft_status'):self._set_message(self.shared_draft_status,text,error)
         if self._region_dialog_status is not None:self._set_message(self._region_dialog_status,text,error)
 
-    def _save_style_draft(self):
+    def _style_draft_store(self):
+        root=ROOT/'cache/style-region-drafts'
+        if self._style_draft_store_instance is None or self._style_draft_store_root!=root:
+            from style_drafts import DraftStore
+            self._style_draft_store_instance=DraftStore(root,lock_timeout=.2)
+            self._style_draft_store_root=root
+        return self._style_draft_store_instance
+
+    def _style_draft_data(self):
+        values=self.preferences()
+        return {'schema_version':1,'input_sha256':self._style_input_sha256,
+                'style_regions':deepcopy(self.style_regions),'mode':self.style_mode.currentData(),
+                'selection':self.style_timeline.selection(),'selected_index':self.region_list.currentRow(),
+                'track_indices':self._selected_track_indices(),
+                'tool':{key:values[key] for key in _REGION_TOOL_FIELDS},
+                'editor_intent':self._region_tool_intent,
+                'next_tool':deepcopy(self._new_region_tool or self._region_tool_values())}
+
+    @staticmethod
+    def _style_draft_identity(input_sha256,data):
+        value={key:item for key,item in data.items() if key!='_sync'} if isinstance(data,dict) else data
+        return input_sha256,json.dumps(value,ensure_ascii=False,sort_keys=True)
+
+    def _record_style_draft_snapshot(self,snapshot,data=None):
+        self._style_draft_revision=snapshot.get('revision')
+        self._style_draft_remote_revision=snapshot.get('revision')
+        self._style_draft_observed_revision=snapshot.get('revision')
+        self._style_draft_remote_exists=bool(snapshot.get('exists'))
+        self._style_draft_conflict=False
+        if data is not None:self._last_style_draft=self._style_draft_identity(self._style_input_sha256,data)
+
+    def _record_style_draft_conflict(self,error):
+        details=getattr(error,'details',{}) or {}
+        current=details.get('current_revision');recovery=details.get('recovery_path')
+        self._style_draft_conflict=True
+        self._style_draft_remote_exists=current is not None
+        self._style_draft_remote_revision=current
+        self._style_draft_last_conflict={'expected_revision':details.get('expected_revision'),
+            'current_revision':current,'recovery_path':recovery}
+        if recovery:
+            self._style_draft_recovery_paths[current]=recovery
+            self.log.appendPlainText(_tr('草稿冲突恢复记录：')+str(recovery))
+        return details
+
+    @staticmethod
+    def _style_draft_recovery_ready(revision,recovery):
+        if not recovery:return False
+        try:
+            data=json.loads(Path(native_path(recovery)).read_text(encoding='utf-8'))
+        except (OSError,ValueError):return False
+        return (isinstance(data,dict) and data.get('kind')=='style_draft_conflict'
+                and data.get('current_revision')==revision
+                and 'expected_revision' in data and 'current_data' in data
+                and isinstance(data.get('incoming_data'),dict))
+
+    def _save_style_draft(self,*,force=False):
         if self.loading or self._loading_style_draft or self._restoring_region_state or self._style_timeline_data is None:return False
         path=self._style_draft_path()
         if path is None:return False
-        values=self.preferences()
-        data={'schema_version':1,'input_sha256':self._style_input_sha256,
-              'style_regions':deepcopy(self.style_regions),'mode':self.style_mode.currentData(),
-              'selection':self.style_timeline.selection(),'selected_index':self.region_list.currentRow(),
-              'track_indices':self._selected_track_indices(),
-              'tool':{key:values[key] for key in _REGION_TOOL_FIELDS},
-              'editor_intent':self._region_tool_intent,'next_tool':deepcopy(self._new_region_tool or self._region_tool_values())}
-        identity=(self._style_input_sha256,json.dumps(data,ensure_ascii=False,sort_keys=True))
+        data=self._style_draft_data()
+        identity=self._style_draft_identity(self._style_input_sha256,data)
+        if not force and identity==self._last_style_draft and path.is_file():return True
+        if not force and self._style_draft_conflict:
+            self._set_region_draft_status(_tr('草稿有冲突，当前修改已保留。'),True)
+            self._update_region_controls()
+            return False
         try:
-            if identity!=self._last_style_draft or not path.is_file():atomic_json(path,data)
-            self._last_style_draft=identity
-            self._set_region_draft_status(_tr('已自动暂存'));return True
-        except (OSError,ValueError) as error:
+            snapshot=self._style_draft_store().write(
+                self._style_input_sha256,self._style_draft_revision,data,writer='tuning-ui')
+            self._style_draft_revision=snapshot.get('revision')
+            self._style_draft_remote_revision=self._style_draft_revision
+            self._style_draft_observed_revision=self._style_draft_revision
+            self._style_draft_remote_exists=bool(snapshot.get('exists'))
+            self._style_draft_conflict=False
+            self._last_style_draft=self._style_draft_identity(self._style_input_sha256,data)
+            self._set_region_draft_status(_tr('已自动暂存'))
+            self._update_region_controls();return True
+        except Exception as error:
+            from style_drafts import DraftConflict
+            if isinstance(error,DraftConflict):
+                self._record_style_draft_conflict(error)
+                self._set_region_draft_status(_tr('草稿有冲突，当前修改已保留。'),True)
+                self._update_region_controls()
+                return False
             self._set_region_draft_status(_tr('暂存失败，请检查保存目录。'),True)
             self.log.appendPlainText(str(error));return False
 
-    def _restore_style_draft(self):
-        path=self._style_draft_path()
-        if path is None or not path.is_file():return False
+    def _read_style_draft(self):
+        if self._style_draft_path() is None:return None
+        return self._style_draft_store().read(self._style_input_sha256)
+
+    def _apply_style_draft(self,snapshot,*,status=None):
+        data=snapshot.get('data') if isinstance(snapshot,dict) else None
+        if not isinstance(data,dict) or data.get('schema_version')!=1 or data.get('input_sha256')!=self._style_input_sha256:
+            raise ValueError('Invalid style draft identity')
         try:
-            if path.stat().st_size>1024*1024:raise ValueError('Oversized style draft')
-            data=json.loads(path.read_text(encoding='utf-8-sig'))
-            if not isinstance(data,dict) or data.get('schema_version')!=1 or data.get('input_sha256')!=self._style_input_sha256:return False
             from style_presets import region_settings,time_range_settings,detail_settings,technique_settings
             regions=region_settings(data.get('style_regions',[]))
             mode=data.get('mode');row=data.get('selected_index',-1);selection=data.get('selection')
@@ -785,21 +886,19 @@ class TuningPage(QWidget):
             tool=data.get('tool',{})
             if not isinstance(tool,dict) or tool.get('performance_style') not in ('none','gentle','sad','bold'):raise ValueError('Invalid draft tool')
             if normalized_strength(tool.get('style_strength')) is None or type(tool.get('style_pitch')) is not bool:raise ValueError('Invalid draft strength')
-            detail_settings(tool.get('style_detail'))
-            tool.update(technique_settings(tool))
+            detail_settings(tool.get('style_detail'));tool.update(technique_settings(tool))
             next_tool=data.get('next_tool',tool);intent=data.get('editor_intent','new')
             if intent not in ('new','edit') or not isinstance(next_tool,dict):raise ValueError('Invalid draft intent')
             if next_tool.get('performance_style') not in ('none','gentle','sad','bold') or normalized_strength(next_tool.get('style_strength')) is None:
                 raise ValueError('Invalid next style tool')
             if type(next_tool.get('style_pitch')) is not bool:raise ValueError('Invalid next style pitch')
-            detail_settings(next_tool.get('style_detail'))
-            next_tool.update(technique_settings(next_tool))
+            detail_settings(next_tool.get('style_detail'));next_tool.update(technique_settings(next_tool))
             tracks=data.get('track_indices',self._selected_track_indices())
             allowed={item['track_index'] for item in self.rows}
             if not isinstance(tracks,list) or any(type(i) is not int or i not in allowed for i in tracks) or len(tracks)!=len(set(tracks)):
                 raise ValueError('Invalid draft tracks')
-        except (OSError,ValueError,TypeError):
-            self._set_region_draft_status(_tr('上次草稿无法恢复；可重新绘制。'),True);return False
+        except (KeyError,ValueError,TypeError) as error:
+            raise ValueError('Invalid style draft') from error
         self._loading_style_draft=True
         try:
             for item in self.rows:item['check'].setChecked(item['track_index'] in tracks)
@@ -813,12 +912,116 @@ class TuningPage(QWidget):
             if selection is not None:self.style_timeline.set_selection(*selection)
             else:self.style_timeline.clear_selection()
         finally:self._loading_style_draft=False
+        self._record_style_draft_snapshot(snapshot,data)
         self._refresh_region_tool_context()
-        self._set_region_draft_status(_tr('已恢复上次片段草稿。'))
+        self._set_region_draft_status(_tr(status or '已恢复共享草稿。'))
+        self._update_region_controls()
         if regions:
             try:self._validate_complete_style_regions()
             except ValueError:self._set_region_draft_status(_tr('片段边界位于音符内部，请拖动边缘重新对齐。'),True)
         return True
+
+    def _restore_style_draft(self):
+        try:
+            snapshot=self._read_style_draft()
+            if not snapshot or not snapshot.get('exists'):return False
+            return self._apply_style_draft(snapshot)
+        except Exception as error:
+            self._set_region_draft_status(_tr('上次草稿无法恢复；可重新绘制。'),True)
+            if hasattr(self,'log'):self.log.appendPlainText(str(error))
+            return False
+
+    def _style_draft_has_local_changes(self):
+        if self._style_timeline_data is None or self._style_input_sha256 is None:return False
+        return self._style_draft_identity(self._style_input_sha256,self._style_draft_data())!=self._last_style_draft
+
+    def _safe_style_draft_data(self):
+        try:return self._style_draft_data()
+        except Exception:return None
+
+    def _reset_style_draft_sync(self):
+        self._style_draft_revision=None;self._style_draft_remote_revision=None
+        self._style_draft_remote_exists=False;self._style_draft_conflict=False
+        self._style_draft_recovery_paths={};self._style_draft_observed_revision=None
+        self._style_draft_last_conflict=None
+        self._last_style_draft=None
+
+    def check_shared_style_draft(self):
+        if self.loading or self._loading_style_draft or self._style_input_sha256 is None:return
+        try:
+            snapshot=self._read_style_draft()
+        except Exception as error:
+            self.log.appendPlainText(str(error));return
+        if not snapshot:return
+        observed=snapshot.get('revision') if snapshot.get('exists') else None
+        self._style_draft_observed_revision=observed
+        self._style_draft_remote_exists=bool(snapshot.get('exists'))
+        self._style_draft_remote_revision=observed
+        if observed!=self._style_draft_revision and not self._style_draft_conflict:
+            self._set_region_draft_status(_tr('共享草稿已更新；可载入最新草稿。'))
+        self._update_region_controls()
+
+    def load_latest_style_draft(self):
+        if self.processing_active or self._loading_style_draft or self._style_input_sha256 is None:return False
+        self._region_autosave_timer.stop()
+        if self._style_draft_has_local_changes():self._flush_style_autosave()
+        try:
+            snapshot=self._read_style_draft()
+            if not snapshot or not snapshot.get('exists'):
+                self._set_region_draft_status(_tr('暂无共享草稿可载入。'),True);return False
+            return self._apply_style_draft(snapshot,status='已载入最新草稿。')
+        except Exception as error:
+            self._set_region_draft_status(_tr('共享草稿无法载入；当前修改已保留。'),True)
+            self.log.appendPlainText(str(error));return False
+
+    def save_current_as_shared_revision(self):
+        if self.processing_active or self._loading_style_draft or self._style_input_sha256 is None:return False
+        self._region_autosave_timer.stop()
+        if self._pending_region_style is not None:self._auto_update_selected_region()
+        try:
+            current=self._read_style_draft()
+            if not current:return False
+            current_revision=current.get('revision') if current.get('exists') else None
+            recovery=self._style_draft_recovery_paths.get(current_revision)
+            recovery_ready=self._style_draft_recovery_ready(current_revision,recovery)
+            if current_revision==self._style_draft_revision:
+                self._style_draft_last_conflict=None
+                if self._save_style_draft(force=True):
+                    self._set_region_draft_status(_tr('已以当前内容保存新的共享草稿。'))
+                    return True
+                conflict=self._style_draft_last_conflict
+                if not conflict:return False
+                current_revision=conflict.get('current_revision');recovery=conflict.get('recovery_path')
+                recovery_ready=self._style_draft_recovery_ready(current_revision,recovery)
+            if not recovery_ready:
+                # A stale expected revision deliberately creates a recovery
+                # containing the actual current draft and this UI's draft.
+                self._style_draft_last_conflict=None
+                if self._save_style_draft(force=True):return True
+                conflict=self._style_draft_last_conflict
+                if not conflict:return False
+                current_revision=conflict.get('current_revision')
+                recovery=conflict.get('recovery_path')
+                if not self._style_draft_recovery_ready(current_revision,recovery):
+                    self._set_region_draft_status(_tr('当前草稿尚未安全保留，暂未覆盖共享版本。'),True)
+                    return False
+            snapshot=self._style_draft_store().write(
+                self._style_input_sha256,current_revision,self._style_draft_data(),writer='tuning-ui')
+            self._record_style_draft_snapshot(snapshot,self._safe_style_draft_data())
+            self._style_draft_conflict=False
+            self._style_draft_recovery_paths={}
+            self._style_draft_last_conflict=None
+            self._set_region_draft_status(_tr('已以当前内容保存新的共享草稿。'))
+            self._update_region_controls();return True
+        except Exception as error:
+            from style_drafts import DraftConflict
+            if isinstance(error,DraftConflict):
+                self._record_style_draft_conflict(error)
+                self._set_region_draft_status(_tr('共享草稿又发生更新；当前修改已保留。'),True)
+                self._update_region_controls()
+            else:
+                self._set_region_draft_status(_tr('新修订保存失败；当前修改已保留。'),True)
+            self.log.appendPlainText(str(error));return False
 
     def _schedule_style_autosave(self):
         if self.loading or self._loading_style_draft or self._restoring_region_state or self._staging_style_region or getattr(self,'_restoring_preferences',False):return
@@ -1172,6 +1375,16 @@ class TuningPage(QWidget):
         self.region_end_editor.setEnabled(regions_mode and not busy and has_project)
         self.fullscreen_region_button.setEnabled(regions_mode and not busy and has_project)
         self.new_region_button.setEnabled(regions_mode and not busy and has_project)
+        draft_available=has_project and not busy
+        remote_changed=self._style_draft_remote_exists and self._style_draft_remote_revision!=self._style_draft_revision
+        prompt_needed=draft_available and (remote_changed or self._style_draft_conflict)
+        for control in (self.load_latest_draft_button,self.shared_draft_load_button,
+                        self.region_load_latest_draft_button):
+            control.setEnabled(draft_available and self._style_draft_remote_exists)
+        for control in (self.save_new_revision_button,self.shared_draft_save_button,
+                        self.region_save_new_revision_button):
+            control.setEnabled(draft_available)
+        self.shared_draft_prompt.setVisible(prompt_needed)
         self._fullscreen_shortcut.setEnabled(regions_mode and not busy and has_project)
         can_undo=regions_mode and not busy and bool(self._region_undo)
         can_redo=regions_mode and not busy and bool(self._region_redo)
@@ -1527,13 +1740,17 @@ class TuningPage(QWidget):
         requested_mode=self.style_mode.currentData()
         self._flush_style_autosave();self._region_autosave_timer.stop();self._pending_region_style=None
         if self._region_dialog is not None:self._region_dialog.close()
-        self._loading_style_draft=True;self._last_style_draft=None
+        self._loading_style_draft=True;self._reset_style_draft_sync()
         try:self._set_input_contents(info,job=job,display_path=display_path)
         finally:self._loading_style_draft=False
         self._set_region_draft_status(_tr('松开鼠标即暂存'))
-        self._restore_style_draft()
+        restored=self._restore_style_draft()
         if requested_mode=='regions':self._style_mode_selected('regions')
         self._sync_choices();self._update_region_controls()
+        path=self._style_draft_path()
+        if not restored and path is not None and not path.is_file():
+            self._last_style_draft=self._style_draft_identity(
+                self._style_input_sha256,self._safe_style_draft_data())
 
     def _set_input_contents(self,info,*,job=None,display_path=None):
         self.input_path=Path(display_path or info['path']);self.job=Path(job) if job else None;self.project.setText(str(self.input_path))
@@ -1793,7 +2010,7 @@ class TuningPage(QWidget):
             detail='正在停止，请稍候。';self.progress_detail.setText(detail);self.run_stage.setText(detail)
 
     def closeEvent(self,event):
-        self._flush_style_autosave();self._region_autosave_timer.stop()
+        self._flush_style_autosave();self._region_autosave_timer.stop();self._style_draft_poll_timer.stop()
         self._progress_timer.stop();self._progress_clock.pause();super().closeEvent(event)
 
     def open_result(self):

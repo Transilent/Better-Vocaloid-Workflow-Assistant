@@ -46,6 +46,7 @@ names = ('test_name_migration.py',) + names
 names = ('test_agent_control.py', 'test_agent_score.py', 'test_agent_style.py', 'test_agent_mcp.py') + names
 names = ('test_agent_preparation.py', 'test_agent_lyrics.py', 'test_agent_exports.py', 'test_agent_workflow.py') + names
 names = ('test_agent_supervision.py', 'test_agent_export_audit.py', 'test_agent_reference.py', 'test_agent_structure.py') + names
+names = ('test_style_drafts.py', 'test_agent_drafts.py', 'test_agent_pronunciation.py', 'test_agent_refinement.py', 'test_tuning_shared_drafts.py') + names
 if selected - set(names):
     raise ValueError('Unknown selected tests: ' + ', '.join(sorted(selected - set(names))))
 print('Preparing isolated application; installed user state will not be changed.', flush=True)

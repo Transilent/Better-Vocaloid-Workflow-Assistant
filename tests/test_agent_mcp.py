@@ -68,7 +68,9 @@ def fixtures(directory):
             'mainGroup': {'uuid': 'agent-notes', 'notes': [
                 {'onset': 0, 'duration': q, 'pitch': 60, 'lyrics': '山', 'attributes': {}},
                 {'onset': q, 'duration': q, 'pitch': 64, 'lyrics': '河', 'attributes': {}}],
-                'parameters': {}}, 'groups': []}]}
+                'parameters': {}}, 'groups': []},
+            {'name':'Reference','mainRef':{'isInstrumental':True,'blickOffset':0,
+                'audio':{'filename':'reference.wav'}},'groups':[]}]}
     (exchange / '中文.svp').write_bytes(json.dumps(project, ensure_ascii=False).encode() + b'\0')
     job = directory / 'jobs' / 'fixture-job'
     job.mkdir()
@@ -78,7 +80,8 @@ def fixtures(directory):
     config.write_text(json.dumps({'schema': 1, 'application_root': str(app),
         'worker_python': os.environ.get('VWA_MCP_WORKER_PYTHON', sys.executable),
         'state_root': str(directory / 'state'), 'allowed_asset_roots': [str(exchange)],
-        'allowed_job_roots': [str(directory / 'jobs')]}, ensure_ascii=False), encoding='utf-8')
+        'allowed_job_roots': [str(directory / 'jobs')],
+        'shared_draft_root':str(app/'cache/style-region-drafts')}, ensure_ascii=False), encoding='utf-8')
     return config
 
 
@@ -185,10 +188,29 @@ async def client_contract(configuration):
         proposal = {'track_indices': [0], 'brief': '思念故乡，字头略带戏腔，首句保持克制。', 'regions': [{
             'start': .1, 'end': .3, 'preset': 'sad', 'strength': .5, 'style_pitch': True,
             'style_technique': 'chinese_opera', 'technique_strength': .4, 'technique_pitch': True,
-            'rationale': '调用方结合用户要求为首音选择克制的悲伤和少量戏腔。', 'evidence_refs': []}]}
+            'rationale': '调用方结合用户要求为首音选择克制的悲伤和少量戏腔。', 'evidence_refs': [],
+            'detail':{'onset':.3,'sustain':.8,'connection':.9,'release':.4}}]}
         style = await call(client, 'vwa_style_plan', {'artifact_id': svp['id'], 'proposal': proposal})
         await call(client, 'vwa_style_plan', {'artifact_id': svp['id'],
             'proposal': {**proposal, 'regions': [{**proposal['regions'][0], 'start': 2.0, 'end': 2.1}]}}, error=True)
+        draft=await call(client,'vwa_drafts_get',{'artifact_id':svp['id']})
+        expected_key=hashlib.sha256((configuration.parent/'exchange/中文.svp').read_bytes()).hexdigest()
+        check(not draft['exists'] and draft['revision'] is None and draft['input_sha256']==expected_key
+              and draft['artifact_sha256']!=expected_key,'draft_uses_original_key_after_media_snapshot')
+        published=await call(client,'vwa_drafts_publish',{'plan_id':style['id'],'expected_revision':None})
+        check(published['data']['style_regions'][0]['detail']['onset']==.3,'shared_draft_preserves_detail')
+        from_draft=await call(client,'vwa_drafts_plan',{'artifact_id':svp['id'],
+            'expected_revision':published['revision'],'brief':'按GUI共享草稿生成，保留细分强度。'})
+        check(from_draft['shared_draft']['revision']==published['revision'],'style_plan_binds_draft_revision')
+        changed_proposal={**proposal,'regions':[{**proposal['regions'][0],'strength':.4}]}
+        changed_style=await call(client,'vwa_style_plan',{'artifact_id':svp['id'],'proposal':changed_proposal})
+        newer=await call(client,'vwa_drafts_publish',{'plan_id':changed_style['id'],
+            'expected_revision':published['revision']})
+        check(newer['revision']!=published['revision'],'shared_revision_changes_with_content')
+        await call(client,'vwa_drafts_publish',{'plan_id':style['id'],'expected_revision':published['revision']},error=True)
+        await call(client,'vwa_tuning_start',{'plan_id':from_draft['id'],'idempotency_key':'stale-draft'},error=True)
+        style=await call(client,'vwa_drafts_plan',{'artifact_id':svp['id'],
+            'expected_revision':newer['revision'],'brief':'按已更新共享草稿生成独立候选。'})
         style_op = await call(client, 'vwa_tuning_start', {'plan_id': style['id'], 'idempotency_key': 'style-1'})
         # Close this real stdio client while the owned business worker may still run.
     async with Client(params, read_timeout_seconds=70) as client:
@@ -408,6 +430,29 @@ async def workflow_contract(configuration):
         unchanged=await call(client,'vwa_workflow_advance',version(flow,finish=True))
         check(unchanged['stage']=='project_ready' and unchanged['revision']==flow['revision'],
               'cannot_finish_without_export_review')
+        original_report=summary['report_sha256']
+        original_project=flow['project_artifacts'][0]
+        pronunciation=await call(client,'vwa_pronunciation_read',{'artifact_id':original_project['id'],'limit':1})
+        check(pronunciation['source_sha256']==original_project['sha256'] and len(pronunciation['notes'])==1,
+              'native_pronunciation_read_paginates')
+        flow=await call(client,'vwa_workflow_pronunciation_apply',version(flow,
+            rationale='自制夹具明确指定山字音素，仅验证写入、原字与音符保留，不声称声学正确。',
+            changes=[{'artifact_id':original_project['id'],'expected_sha256':original_project['sha256'],
+                'edits':[{'note_ref':pronunciation['notes'][0]['note_ref'],'phonemes':'sh an'}]}]))
+        check(flow['stage']=='refining','pronunciation_uses_owned_persistent_operation')
+        flow=await wait(client,flow)
+        flow=await call(client,'vwa_workflow_advance',version(flow))
+        summary=flow['export_summary']
+        check(summary['report_sha256']!=original_report and flow['export_review'] is None,
+              'pronunciation_invalidates_previous_export_report')
+        check(summary['independent_audit']['status']=='verified' and
+              'explicit_phonemes_unverified' in summary['required_loss_codes'],
+              'pronunciation_reaudits_notes_lyrics_seconds_and_retains_unknown_acoustics')
+        edited_pronunciation=await call(client,'vwa_pronunciation_read',{'artifact_id':flow['project_artifact_id']})
+        check('sh an' in json.dumps(edited_pronunciation,ensure_ascii=False),'explicit_phonemes_written')
+        old_file=Path(original_project['path'])
+        check(hashlib.sha256(io_path(old_file).read_bytes()).hexdigest()==original_project['sha256'],
+              'previous_export_candidate_preserved')
         review={'report_sha256':summary['report_sha256'],'decision':'accept',
             'rationale':'自制谱的音符、歌词和实际秒数回读一致；明确认可列明格式损失。',
             'accepted_loss_codes':summary['required_loss_codes']}
@@ -420,7 +465,11 @@ async def workflow_contract(configuration):
             'preset':'sad','strength':.5,'style_pitch':True,'style_technique':'chinese_opera',
             'technique_strength':.3,'technique_pitch':True,'rationale':'按创作背景保留山字的完整时值并轻收起音。',
             'evidence_refs':[first['note_id']]}]}
-        flow = await call(client,'vwa_workflow_advance',version(flow,style_proposal=proposal,export_review=review))
+        style=await call(client,'vwa_style_plan',{'artifact_id':flow['project_artifact_id'],'proposal':proposal})
+        published=await call(client,'vwa_drafts_publish',{'plan_id':style['id'],'expected_revision':None})
+        bound=await call(client,'vwa_drafts_plan',{'artifact_id':flow['project_artifact_id'],
+            'expected_revision':published['revision'],'brief':'按已共享到GUI的片段草稿生成。'})
+        flow = await call(client,'vwa_workflow_advance',version(flow,style_plan_id=bound['id'],export_review=review))
         flow = await wait(client,flow)
         flow = await call(client,'vwa_workflow_advance',version(flow))
         check(flow['completed'] and flow['stage']=='ready','editable_styled_project_ready')
@@ -428,6 +477,7 @@ async def workflow_contract(configuration):
         data = json.loads(io_path(final['path']).read_text(encoding='utf-8-sig').rstrip('\0'))
         notes = [note for track in data['tracks'] for note in track.get('mainGroup',{}).get('notes',[])]
         check([note['lyrics'] for note in notes]==['山','河'] and notes[0]['pitch']==61,'exported_project_keeps_corrected_score_and_lyrics')
+        check(notes[0].get('phonemes')=='sh an','style_generation_preserves_explicit_phonemes')
         check(flow['next']['external_handoff']=='voice_synthesis_if_requested','project_completion_is_not_voice_synthesis')
     return {'project_ready':True,'checks':checks,'calls':calls,'workflow_id':flow['id'],
             'final_artifacts':flow['final_artifacts'],'model_inference':False,'synthesis':False}

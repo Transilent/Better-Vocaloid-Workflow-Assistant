@@ -544,6 +544,22 @@
     {
       "file": "agent_structure.py",
       "source": "src/agent_structure.py"
+    },
+    {
+      "file": "style_drafts.py",
+      "source": "src/style_drafts.py"
+    },
+    {
+      "file": "agent_drafts.py",
+      "source": "src/agent_drafts.py"
+    },
+    {
+      "file": "agent_pronunciation.py",
+      "source": "src/agent_pronunciation.py"
+    },
+    {
+      "file": "agent_refinement.py",
+      "source": "src/agent_refinement.py"
     }
   ]
 }

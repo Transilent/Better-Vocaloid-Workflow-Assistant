@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import QApplication
 from app import Window
 from common import atomic_json
 from tuning_ui import TuningPage
+from style_drafts import DraftStore
 import tuning_ui
 
 application=QApplication([])
@@ -340,11 +341,12 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
         first._flush_style_autosave()
         source_sha=first._style_input_sha256
         draft_path=draft_root/'cache/style-region-drafts'/(source_sha+'.json')
-        assert draft_path.is_file()
+        assert draft_path.is_file(), (first.region_draft_status.text(), first.log.toPlainText())
         payload=json.loads(draft_path.read_text(encoding='utf-8'))
         full_payload=draft_path.read_bytes()
         assert set(payload)=={'schema_version','input_sha256','style_regions','mode',
-                              'selection','selected_index','tool','track_indices','editor_intent','next_tool'}
+                              'selection','selected_index','tool','track_indices','editor_intent','next_tool','_sync'}
+        assert payload['_sync']['writer']=='tuning-ui' and type(payload['_sync']['seq']) is int
         assert payload['schema_version']==1 and payload['input_sha256']==source_sha
         assert payload['style_regions']==[expected] and payload['mode']=='regions'
         assert payload['track_indices']==[0,1,2] and payload['selected_index']==0
@@ -358,6 +360,7 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
         # Version-one drafts predating the explicit next-tool fields remain
         # readable and start in new-segment intent without rewriting a region.
         legacy_payload=copy.deepcopy(payload)
+        legacy_payload.pop('_sync')
         legacy_payload.pop('editor_intent');legacy_payload.pop('next_tool')
         for key in ('style_technique','technique_strength','technique_pitch'):
             legacy_payload['tool'].pop(key)
@@ -391,11 +394,15 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
         # A different project gets a different SHA and starts clean without
         # replacing the first project's draft.
         original_payload=full_payload
+        previous_revision=second._style_draft_revision
         assert second.load_project(draft_other)
         assert second._selected_track_indices()==[0]
         assert second.style_mode.currentData()=='regions' and second.style_regions==[]
         other_draft=second._style_draft_path()
         assert other_draft!=draft_path and other_draft.is_file()
+        other_snapshot=DraftStore(draft_root/'cache/style-region-drafts',lock_timeout=.2).read(
+            second._style_input_sha256)
+        assert second._style_draft_revision==other_snapshot['revision']!=previous_revision
         second.style_mode.setCurrentIndex(second.style_mode.findData('regions'))
         second.apply_preferences({'performance_style':'gentle','style_strength':.5,
                                  'style_pitch':True,'style_detail':detail})
@@ -504,6 +511,37 @@ with tempfile.TemporaryDirectory(prefix='tuning-state-',dir=APP/'work') as folde
         fourth.undo_style_regions()
         assert len(fourth.style_regions)==128
         fourth._flush_style_autosave()
+
+        # An external Agent updates the shared draft. The GUI keeps the local
+        # editor intact until explicit load, and loading restores undo to that
+        # exact revision.
+        assert fourth.load_project(source)
+        fourth.style_mode.setCurrentIndex(fourth.style_mode.findData('regions'))
+        fourth.apply_preferences({'performance_style':'gentle','style_strength':.4,
+                                  'style_pitch':True,'style_detail':detail})
+        fourth.stage_style_selection((.1,.4))
+        fourth._append_region_history(fourth._region_undo,fourth._region_state())
+        assert fourth._region_undo
+        local_regions=copy.deepcopy(fourth.style_regions)
+        local_revision=fourth._style_draft_revision
+        external=DraftStore(draft_root/'cache/style-region-drafts',lock_timeout=.2)
+        outside=external.read(source_sha)['data']
+        outside['style_regions']=[{'start':.5,'end':.8,'preset':'bold','strength':.7,
+            'detail':{'onset':1.,'sustain':.8,'connection':.6,'release':.4},'pitch':False}]
+        outside['mode']='regions';outside['selection']=[.5,.8];outside['selected_index']=0
+        outside_snapshot=external.write(source_sha,local_revision,outside,writer='external')
+        fourth.check_shared_style_draft()
+        assert fourth.style_regions==local_regions
+        assert fourth._style_draft_revision==local_revision
+        assert '共享草稿已更新' in fourth.region_draft_status.text()
+        assert fourth.load_latest_draft_button.isEnabled()
+        assert fourth.load_latest_draft_button.text()=='载入最新草稿'
+        assert fourth.save_new_revision_button.text()=='以当前保存新修订'
+        assert fourth.load_latest_style_draft()
+        assert fourth.style_regions==outside_snapshot['data']['style_regions']
+        assert fourth._style_draft_revision==outside_snapshot['revision']
+        assert fourth._region_undo==[] and fourth._region_redo==[]
+        assert '已载入最新草稿' in fourth.region_draft_status.text()
 
         for item in (first,second,third,fourth):item.deleteLater()
         application.processEvents()

@@ -34,12 +34,20 @@ class ScoreEdit(StrictModel):
     duration_tick: Annotated[int, Field(gt=0)] | None = None
 
 
+class StyleDetail(StrictModel):
+    onset: float = Field(default=1.,ge=0,le=1)
+    sustain: float = Field(default=1.,ge=0,le=1)
+    connection: float = Field(default=1.,ge=0,le=1)
+    release: float = Field(default=1.,ge=0,le=1)
+
+
 class StyleRegion(StrictModel):
     start: float = Field(ge=0)
     end: float = Field(gt=0)
     preset: Literal['none', 'gentle', 'sad', 'bold']
     strength: float = Field(ge=0, le=1)
     style_pitch: bool = True
+    detail: StyleDetail | None = None
     style_technique: Literal['none', 'chinese_opera'] = 'none'
     technique_strength: float = Field(default=.6, ge=0, le=1)
     technique_pitch: bool = True
@@ -101,13 +109,24 @@ class InsertNote(StrictModel):
 StructureEdit = Annotated[DeleteNote | InsertNote,Field(discriminator='operation')]
 
 
+class PronunciationEdit(StrictModel):
+    note_ref: str = Field(min_length=1,max_length=256)
+    phonemes: str = Field(max_length=256)
+
+
+class PronunciationTarget(StrictModel):
+    artifact_id: str = Field(min_length=1,max_length=80)
+    expected_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    edits: list[PronunciationEdit] = Field(min_length=1,max_length=256)
+
+
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 
 
 def build_server(config_path):
     control = Control(config_path)
-    mcp = MCPServer('VWA Agent', version='0.3.0', log_level='WARNING', instructions=(
+    mcp = MCPServer('VWA Agent', version='0.4.0', log_level='WARNING', instructions=(
         '先读取 vwa_system_capabilities。首选一体化 vwa_workflow_create：传歌曲链接/本地音乐，'
         '或 score_artifact_id。之后读取工作流 next 字段，按工具和当前 revision 连续推进，'
         '运行中按 after_seconds 查询。到 review 时使用 workflow_review 核对音符和歌词，'
@@ -116,6 +135,9 @@ def build_server(config_path):
         '随后review包含条件性音高证据和音频摘录入口。参考来源未经声学验证，不能视为真值。'
         '结构修改可显式插入音符或删除并指定歌词归属策略；未知读音及一字多音仍需判断。'
         'project_ready 时先读 export_summary，按真实秒数/歌词/音符核对结果提交 export_review；'
+        'pronunciation_read读取原字及实际写入的音素；unknown/写入事实不表示发音正确。'
+        '需要改音素时用workflow_pronunciation_apply提交显式音素及理由，新报告必须重新复核。'
+        'drafts_get/publish/plan与GUI共用时间片段草稿；按实际revision操作，冲突先读取，不盲覆盖。'
         '认可损失须逐项列 accepted_loss_codes，硬差异必须 needs_revision，不能直接 finish。'
         '创作背景非空时，再从导出 SVP 的 context_read 填写显式 style_proposal。'
         '最终 completed=true 表示得到工程；合成/投稿另有交接。'
@@ -134,8 +156,9 @@ def build_server(config_path):
             return Result(data=data)
         except (ControlError, ValueError, OSError, TypeError, KeyError) as error:
             logging.getLogger('vwa.mcp').warning('%s: %s', type(error).__name__, error)
-            raise ToolError(json.dumps({'code': getattr(error, 'code', 'invalid_request'),
-                                         'message': str(error)}, ensure_ascii=False)) from error
+            payload={'code':getattr(error,'code','invalid_request'),'message':str(error)}
+            if isinstance(getattr(error,'details',None),dict):payload['details']=error.details
+            raise ToolError(json.dumps(payload,ensure_ascii=False)) from error
 
     @mcp.tool(annotations=READ)
     async def vwa_system_capabilities() -> Result:
@@ -306,6 +329,38 @@ def build_server(config_path):
         """默认只读WAV头；指定<=30秒范围可测量PCM，make_excerpt生成可试听的逐帧摘录操作。"""
         return await invoke(control.reference_audio_read,artifact_id,start,end,make_excerpt)
 
+    @mcp.tool(annotations=READ)
+    async def vwa_pronunciation_read(artifact_id: str, limit: int = 100, offset: int = 0) -> Result:
+        """分页读取MIDI/SVP/VSQX原字与实际音素事实；未知读音和写入事实不等于声学验收。"""
+        return await invoke(control.pronunciation_read,artifact_id,limit,offset)
+
+    @mcp.tool(annotations=WRITE)
+    async def vwa_pronunciation_patch_plan(artifact_id: str, expected_sha256: str,
+            edits: Annotated[list[PronunciationEdit],Field(min_length=1,max_length=512)]) -> Result:
+        """明确规划SVP/VSQX音素替换；不自动猜多音字，计划列出精确修改。"""
+        return await invoke(control.make_plan,'pronunciation',artifact_id,expected_sha256=expected_sha256,
+                            edits=[edit.model_dump() for edit in edits])
+
+    @mcp.tool(annotations=WRITE)
+    async def vwa_pronunciation_patch_apply(plan_id: str, idempotency_key: str) -> Result:
+        """生成仅改变指定音素的独立候选，保留原音符、歌词、速度与曲线。"""
+        return await invoke(control.start_plan,plan_id,'pronunciation',idempotency_key)
+
+    @mcp.tool(annotations=READ)
+    async def vwa_drafts_get(artifact_id: str) -> Result:
+        """读取与GUI共用的工程片段草稿及精确修订；需配置shared_draft_root。"""
+        return await invoke(control.drafts_get,artifact_id)
+
+    @mcp.tool(annotations=WRITE)
+    async def vwa_drafts_publish(plan_id: str, expected_revision: str | None = None) -> Result:
+        """把已校验的整音符风格方案发布到GUI共享草稿；CAS冲突保留双方并返回恢复位置。"""
+        return await invoke(control.drafts_publish,plan_id,expected_revision)
+
+    @mcp.tool(annotations=WRITE)
+    async def vwa_drafts_plan(artifact_id: str, expected_revision: str, brief: str) -> Result:
+        """由当前GUI时间片段草稿生成绑定修订的风格方案，保留分段强度细节并重验音符。"""
+        return await invoke(control.drafts_plan,artifact_id,expected_revision,brief)
+
     @mcp.tool(annotations=WRITE)
     async def vwa_exports_plan(artifact_id: str, formats: list[Literal['svp','ustx','vsqx']] | None = None,
                                options: dict[str, Any] | None = None) -> Result:
@@ -361,13 +416,20 @@ def build_server(config_path):
             [edit.model_dump(exclude_none=True) for edit in structure_edits] if structure_edits else [])
 
     @mcp.tool(annotations=WRITE)
+    async def vwa_workflow_pronunciation_apply(workflow_id: str, expected_revision: int, rationale: str,
+            changes: list[PronunciationTarget]) -> Result:
+        """对当前导出的SVP/VSQX批量修正明确音素，重建工程包、独立复核并使旧认可失效。"""
+        return await invoke(workflow().pronunciation_apply,workflow_id,expected_revision,
+                            [row.model_dump() for row in changes],rationale)
+
+    @mcp.tool(annotations=WRITE)
     async def vwa_workflow_advance(workflow_id: str, expected_revision: int,
             style_proposal: StyleProposal | None = None, retry: bool = False, finish: bool = False,
-            export_review: ExportReview | None = None) -> Result:
+            export_review: ExportReview | None = None,style_plan_id: str | None = None) -> Result:
         """推进流程；工程导出后须按报告SHA核对并认可损失，硬差异应退回修改。"""
         return await invoke(workflow().advance, workflow_id, expected_revision,
             style_proposal.model_dump() if style_proposal else None, retry, finish,
-            export_review.model_dump() if export_review else None)
+            export_review.model_dump() if export_review else None,style_plan_id)
 
     @mcp.resource('vwa://capabilities')
     def capabilities_resource() -> str:

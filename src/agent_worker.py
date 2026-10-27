@@ -59,6 +59,23 @@ def dispatch(control, action, arguments):
     if action == 'export_plan':
         from agent_exports import plan_export
         return plan_export(path, arguments.get('formats'), arguments.get('options'))
+    if action in ('pronunciation_read','pronunciation_plan'):
+        from agent_pronunciation import read_pronunciation,plan_pronunciation_patch
+        runtime=control.config.get('export_runtime',str(control.app/'dependencies/export'))
+        if action=='pronunciation_read':
+            return read_pronunciation(path,limit=arguments.get('limit',100),offset=arguments.get('offset',0),
+                                      export_runtime=runtime)
+        return plan_pronunciation_patch(path,arguments['expected_sha256'],arguments['edits'],export_runtime=runtime)
+    if action in ('draft_read','draft_publish','draft_plan'):
+        if control.shared_drafts is None:
+            raise ControlError('shared_drafts_disabled','没有配置共享草稿目录。')
+        from agent_drafts import read_draft,publish_draft,plan_from_draft
+        key=arguments['input_sha256']
+        if action=='draft_read':return read_draft(path,control.shared_drafts,key)
+        if action=='draft_publish':
+            return publish_draft(path,control.shared_drafts,key,arguments['plan'],
+                                 arguments.get('expected_revision'),arguments['writer'])
+        return plan_from_draft(path,control.shared_drafts,key,arguments['expected_revision'],arguments['brief'])
     if action == 'structure_plan':
         from agent_structure import plan_structure_patch
         return plan_structure_patch(path,arguments['expected_sha256'],arguments['edits'])
@@ -106,6 +123,7 @@ def main():
         value = {'ok': True, 'data': data}
     except Exception as error:
         value = {'ok': False, 'code': getattr(error, 'code', 'business_error'), 'message': str(error)}
+        if isinstance(getattr(error,'details',None),dict):value['details']=error.details
     atomic_json(response_path, value)
 
 
