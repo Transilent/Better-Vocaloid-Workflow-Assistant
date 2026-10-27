@@ -148,7 +148,9 @@ class Workflow:
         with self._lock(child):
             created=self._read(child)
             if not created.get('cloned_from'):
-                self._write(created,'cloned',cloned_from={'workflow_id':identifier,'revision':revision,'reason':reason.strip()})
+                self._write(created,'cloned',cloned_from={'workflow_id':identifier,'revision':revision,'reason':reason.strip()},
+                            pitch_source_job_id=value.get('job_id') or value.get('pitch_source_job_id'),
+                            export_options=copy.deepcopy(value.get('export_options', {})))
         return self.get(child)
 
     def delivery(self,identifier,revision,destination=None,name=None):
@@ -158,9 +160,9 @@ class Workflow:
             return build_delivery(self.control,value,destination,name)
 
     def create(self, source='', options=None, brief='', reference_lyrics='',
-               score_artifact_id=None, formats=None, idempotency_key=None, preparation_job_id=None,review_mode='legacy'):
-        if review_mode not in ('legacy','segments'):
-            raise ControlError('invalid_review_mode','核对模式为segments或显式兼容legacy。')
+               score_artifact_id=None, formats=None, idempotency_key=None, preparation_job_id=None,review_mode='full'):
+        if review_mode not in ('full','legacy','segments'):
+            raise ControlError('invalid_review_mode','核对模式为full整曲、segments逐段或兼容legacy。')
         if sum(bool(item) for item in (source,score_artifact_id,preparation_job_id))!=1:
             raise ControlError('invalid_source', '请选择歌曲来源、已导入MIDI或已有受管准备任务之一。')
         if not isinstance(brief, str) or not isinstance(reference_lyrics, str):
@@ -176,7 +178,7 @@ class Workflow:
                    'reference_lyrics': reference_lyrics, 'score_artifact_id': score_artifact_id,
                    'formats': formats}
         if preparation_job_id:request['preparation_job_id']=preparation_job_id
-        if review_mode=='segments':request['review_mode']='segments'
+        request['review_mode'] = review_mode
         key = idempotency_key or digest(request)
         if not isinstance(key, str) or not 1 <= len(key) <= 128:
             raise ControlError('invalid_idempotency_key', '工作流重试键需为 1–128 字符。')
@@ -586,6 +588,9 @@ class Workflow:
                 options={'language':value['request']['options'].get('language','zh'),**value.get('export_options',{})}
                 if value.get('job_id') and not any(k in options for k in ('instrumental_artifact_id','instrumental_source_job_id')):
                     options['instrumental_source_job_id']=value['job_id']
+                pitch_job = value.get('job_id') or value.get('pitch_source_job_id')
+                if pitch_job and options.get('preserve_pitch', True) and not any(k in options for k in ('pitch_bindings','pitch_artifact_id','pitch_source_job_id')):
+                    options['pitch_source_job_id'] = pitch_job
                 plan = self.control.make_plan('export', artifact['id'], formats=value['request']['formats'],options=options)
                 operation = self.control.start_plan(plan['id'], 'export', identifier+'-export-'+str(revision))
                 self._write(value, 'export_started', stage='exporting', active_plan_id=plan['id'], operation_id=operation['id'])

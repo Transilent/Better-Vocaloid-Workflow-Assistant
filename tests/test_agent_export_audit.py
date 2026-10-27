@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 APP = Path(__file__).resolve().parents[1]
@@ -452,9 +453,13 @@ class ExportAuditTests(unittest.TestCase):
         repeat = audit_result(self.source, self.receipt, self.root)
         self.assertEqual(repeat["audit_sha256"], self.audit["audit_sha256"])
         self.assertEqual(repeat["candidates"], self.audit["candidates"])
-        discovered = audit_export(
-            self.source, self.receipt, output_root=self.root / "discovered-cache"
-        )
+        # The isolated app also contains a copy of the export runtime. Pin
+        # automatic discovery to the runtime already loaded explicitly above;
+        # mixing two distinct package roots is correctly rejected.
+        with patch.dict(os.environ, {"VWA_MCP_EXPORT_RUNTIME": str(EXPORT_RUNTIME)}):
+            discovered = audit_export(
+                self.source, self.receipt, output_root=self.root / "discovered-cache"
+            )
         self.assertEqual(discovered["audit_sha256"], repeat["audit_sha256"])
         changed = copy.deepcopy(receipt_body(self.receipt))
         changed["plan_sha256"] = "1" * 64

@@ -314,6 +314,10 @@ def compact_export_summary(summary):
         if key in summary:
             result[key] = _copy(summary[key])
     result["instructions"] = _text(summary.get("instructions", ""), 1024)
+    pitch = summary.get("continuous_pitch")
+    if isinstance(pitch, Mapping):
+        result["continuous_pitch"] = {key: _copy(pitch[key]) for key in
+            ("status", "policy", "reason") if key in pitch}
 
     raw_candidates = summary.get("candidates")
     candidates = []
@@ -336,6 +340,10 @@ def compact_export_summary(summary):
             compact["media"] = _compact_media(row.get("media"))
             compact["pronunciation"] = _compact_pronunciation(
                 row.get("pronunciation") or {"status": "unknown", "reason": "not_reported"})
+            if isinstance(row.get("continuous_pitch"), Mapping):
+                detail = row["continuous_pitch"]
+                compact["continuous_pitch"] = {"status": detail.get("status"),
+                    "readback": _bounded(detail.get("readback"), max_items=24, text_limit=_MAX_SHORT_TEXT)}
             candidates.append(compact)
     result["candidates"] = candidates
 

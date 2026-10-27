@@ -5,7 +5,7 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-from common import ROOT, app_path, atomic_json, dependency_manifest, file_hash, resolve_tools
+from common import ROOT, app_path, atomic_json, dependency_manifest, file_hash, native_path, resolve_tools
 CODE_ROOT = Path(__file__).resolve().parent
 
 
@@ -155,13 +155,13 @@ def audio_valid(job, key, files, scan=False):
     import numpy as np
     job = Path(job)
     paths = [job / name for name in files if name.endswith('.wav')]
-    source = sf.info(str(job / 'audio/source.wav'))
+    source = sf.info(str(native_path(job / 'audio/source.wav')))
     for path in paths:
-        info = sf.info(str(path))
+        info = sf.info(str(native_path(path)))
         if info.frames <= 0 or info.channels != 2 or info.samplerate != 44100 or info.frames != source.frames:
             return False
         if scan:
-            for block in sf.blocks(str(path),blocksize=65536,dtype='float32',always_2d=True):
+            for block in sf.blocks(str(native_path(path)),blocksize=65536,dtype='float32',always_2d=True):
                 if not np.isfinite(block).all(): return False
     return source.frames > 0
 

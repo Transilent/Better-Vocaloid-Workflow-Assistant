@@ -592,6 +592,14 @@
     {
       "file": "agent_lyric_timeline.py",
       "source": "src/agent_lyric_timeline.py"
+    },
+    {
+      "file": "agent_pitch.py",
+      "source": "src/agent_pitch.py"
+    },
+    {
+      "file": "agent_separation_repair.py",
+      "source": "src/agent_separation_repair.py"
     }
   ]
 }

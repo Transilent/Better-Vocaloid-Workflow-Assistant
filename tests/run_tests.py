@@ -49,6 +49,7 @@ names = ('test_agent_supervision.py', 'test_agent_export_audit.py', 'test_agent_
 names = ('test_style_drafts.py', 'test_agent_drafts.py', 'test_agent_pronunciation.py', 'test_agent_refinement.py', 'test_tuning_shared_drafts.py') + names
 names = ('test_agent_lyric_timeline.py', 'test_agent_timeline_integration.py') + names
 names = ('test_agent_monophony.py', 'test_agent_media.py', 'test_agent_views.py', 'test_agent_delivery.py', 'test_agent_song_feedback.py', 'test_agent_segments.py', 'test_agent_segment_workflow.py') + names
+names = ('test_agent_pitch.py', 'test_agent_separation_repair.py', 'test_agent_signal_workflow.py') + names
 if selected - set(names):
     raise ValueError('Unknown selected tests: ' + ', '.join(sorted(selected - set(names))))
 print('Preparing isolated application; installed user state will not be changed.', flush=True)

@@ -133,6 +133,8 @@ def summarize_export(result, source_sha256, operation_id):
             'tempo_table_equal':row['tempo_verified'],'time_signature_equal':row['time_signature_verified'],
             'expected_tempo':copy.deepcopy(row.get('expected_tempo')),
             'output_tempo':copy.deepcopy(row.get('output_tempo')),'loss_codes':list(codes)})
+        candidate_reports[-1]['continuous_pitch'] = copy.deepcopy(row.get('pitch', {
+            'status': 'unknown', 'reason': 'legacy_receipt_without_contour_evidence'}))
         candidate_reports[-1]['pronunciation']=pronunciation.pop((row['format'],row['candidate_sha256']),
             {'status':'unknown','reason':'native_phonemes_not_read','acoustic_verification':False})
         candidate_reports[-1].update(instrumental_included=row.get('instrumental_included',False),
@@ -173,9 +175,10 @@ def summarize_export(result, source_sha256, operation_id):
         'source_sha256':source_sha256,'plan_sha256':receipt['plan_sha256'],
         'receipt_sha256':receipt_sha,'candidates':candidate_reports,'warnings':warnings,
         'information':info,'blockers':blockers,'independent_audit':copy.deepcopy(audit),
+        'continuous_pitch':copy.deepcopy(receipt.get('pitch', {'status':'unknown'})),
         'required_loss_codes':sorted({row['code'] for row in warnings}),
         'review_required':True,'can_accept':not blockers,'inference_performed':False,
-        'instructions':'确认实际音符、歌词和秒数差异；格式损失须逐项认可。未知读音与听感不算通过。'}
+        'instructions':'确认实际音符、歌词、秒数与原唱连续音高回读；无连续音高或显式省略必须明确披露。格式损失须逐项认可，未知读音与听感不算通过。'}
     try:report['report_sha256'] = _digest(report)
     except (TypeError,ValueError) as error:
         raise SupervisionError('invalid_export_report','监督报告含无效或非有限JSON数据。') from error

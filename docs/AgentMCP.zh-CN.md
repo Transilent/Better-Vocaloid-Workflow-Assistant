@@ -1,6 +1,6 @@
 # VWA 本机 Agent / MCP 接口
 
-本文按当前 `workspace/vwa` 工作树中的 `src/agent_mcp.py`、`agent_control.py`、`agent_workflow.py` 及其他已落盘模块，说明 **59 个 stdio 工具**。工具总数由 `agent_control.TOOLS` 和 MCP 注册表共同核对；实际可用工具、代码身份和格式能力仍以 `vwa_system_capabilities().data.tools`、`code_revision` 及真实业务回执为准。
+本文按当前 `workspace/vwa` 工作树中的 `src/agent_mcp.py`、`agent_control.py`、`agent_workflow.py` 及其他已落盘模块，说明 **61 个 stdio 工具**。工具总数由 `agent_control.TOOLS` 和 MCP 注册表共同核对；实际可用工具、代码身份和格式能力仍以 `vwa_system_capabilities().data.tools`、`code_revision` 及真实业务回执为准。
 
 `vwa_assets_import` 也可导入授权目录内的伴奏 WAV，支持整数 PCM 与浮点 WAV，按流式摘要生成独立快照；其 artifact 可用于 `instrumental_artifact_id`。`vwa_reference_import(kind="audio")` 用于整数 PCM 参考测量与摘录，不能用它替代浮点伴奏导入。伴奏首版上限为 2 GiB。
 
@@ -8,15 +8,34 @@
 
 本文是接口契约，不是整套功能的验收报告。2026-10-27《牵丝戏》真实歌曲复盘建立在历史 45 工具版本上，暴露了跨音高短重叠、导出后无法换入修正 MIDI、风格相邻边界误判、长任务轮询、返回载荷过大、伴奏缺失和交付无统一清单等问题。新版本各路径以对应源码身份的回执为准；复用已修正 MIDI 的生成与交付验证不等于重新完成整曲转写、声库适配、合成、试听或声学发音验收。
 
+## 原唱连续音高必须独立保留
+
+修正后的 MIDI 定义音符和歌词；原唱连续 F0 定义滑音、颤音和音内偏移。仅把 MIDI 转为 SVP 不能保留这些表现，风格生成的少量音高增量也不能代替原唱曲线。
+
+工作流来自完成的准备任务时，默认绑定该任务经回执 SHA 验证的 `*.pitch.npz`。导出以当前修正 MIDI 的音符半开时间门控原始绝对 F0；修改音符、时值或歌词不会自动把连续 F0 改写成新旋律，删除、插入、移动音符后的支持范围按当前时间重新计算。无声、没有参考的片段不会伪造 F0。克隆工作流保留音高来源任务；声部结构变化或未知声部映射要求显式绑定。
+
+已有 MIDI 可在导出选项指定 `pitch_source_job_id`，或先用 `vwa_reference_import(kind="pitch")` 导入 NPZ，再传 `pitch_bindings=[{pitch_artifact_id, vocal_track_index, time_origin_seconds}]`。vocal_track_index 是演唱轨的零基序号，排除伴奏轨；MIDI秒 = F0秒 + time_origin_seconds。公开接口不接受内部 pitch_sources 或任意 NPZ 路径。外部参考必须先核对版本和对齐，不能混用其他录音的 F0。
+
+默认 `preserve_pitch=true`。纯 MIDI 没有连续音高时，报告 `continuous_pitch_unavailable` 并要求在导出决策中明确认可该损失；只有显式传入 `preserve_pitch=false` 才报告 `continuous_pitch_omitted`，表示有意放弃原始连续 F0。来源任务未完成 MIDI 报 `pitch_source_incomplete`；任务已声明 F0 但文件缺失或哈希改变，分别报 `pitch_source_missing` 或 `pitch_source_unverified` 并阻断，不能静默生成中性曲线。
+
+导出会按当前修正 MIDI 的时间门控重新读取实际曲线，比较有声采样、断点与固定 5 c 误差阈值；独立导出审计再次核对，默认监督摘要、交付清单和 README 保留连续音高状态。风格在有原唱表现的候选上做显式增量；关闭局部风格音高仅关闭该增量。
+原生 SVP 实际基线 `pitchDelta` 重建已覆盖 1.9(100)、1.11(135)、2.0(182)；2.0 用统一 delta 层替换转换器由同一 F0 生成的 `pitchControls`，避免重复叠加。当前 12 个 pitch tests 覆盖 3/4、4/4 等拍号、变速、相邻移调 MIDI、取消及非 pitch 字段保留。2026-10-27 两首真实歌曲（332、336）整曲 F0 回读均 ≤0.5 c；该回读不等于模型、声库合成或试听验收。本轮真实整曲验收覆盖 SVP；USTX/VSQX 仍逐文件硬核验，不能笼统宣称三格式整曲保真，未通过时改用已通过的 SVP。
+
+## 修复已经生成的主唱与和声
+
+`vwa_preparation_repair_plan(source_job_id)` 检查现有声部及前序回执，返回可审阅的输入身份和修复方案。`vwa_preparation_repair_start(plan_id, idempotency_key)` 异步在新受管任务副本重核、修复现成声部，保留原失败任务。它不运行分离模型，也不执行 MIDI；完成后返回新 job_id 和显式续跑入口。
+
+串音检查保留相干度、相位和互补性门槛；接近静音的浮点舍入负功率采用数值稳定处理。真正的 NaN/Inf、长度不符或不互补仍拒绝，错误给出文件、通道、样本范围与修复建议。不能用全局归零、归一化或静默丢弃和声掩盖坏输入。
+
 ## 带时间轴歌词作为校准参考
 
 `vwa_lyric_timeline_search(query, limit=10, offset=0)` 搜索网易云的歌曲元数据；先核对歌手、原唱／翻唱、专辑与时长，再用 `vwa_lyric_timeline_fetch(song_id_or_url)` 取得独立快照。只访问固定网易云域名，不需账号。返回摘要包含 `granularity`、行／词元数量、来源与警告，不向 Agent 默认返回全曲歌词。版权署名行不当成演唱歌词。
 
 也可通过 `vwa_lyric_timeline_import(path)` 导入授权目录内的 LRC、YRC 或网易云原始 JSON（最多 4 MiB）。原文快照与规范时间轴分别保留摘要。YRC 保留真正的词元起止和多字词元；LRC 只提供行起点，行末由下一行推算并标为 estimated，末句句尾未知。不会平均分配每字时间。LRC offset 保留为元数据及警告，由 Agent 记录并显式选择 `lyrics_time_origin`；不猜偏移方向。
 
-将 `lyrics_artifact_id`、`lyrics_time_origin` 和 `lyric_version_note` 传给 `vwa_workflow_references_set`，同时写清 `rationale`。映射是 `MIDI秒 = 歌词源秒 + lyrics_time_origin`；版本说明必填，未核实项应明确说明。更换参考会清除旧的分段核对决策。之后 `vwa_workflow_review` 自动给当前段加 `reference_evidence.lyrics_timeline`；独立 `vwa_lyric_timeline_review` 必须显式提供最多 30 秒的 start/end 窗口。
+将 `lyrics_artifact_id`、`lyrics_time_origin` 和 `lyric_version_note` 传给 `vwa_workflow_references_set`，同时写清 `rationale`。映射是 `MIDI秒 = 歌词源秒 + lyrics_time_origin`；版本说明必填，未核实项应明确说明。更换参考会清除旧的分段核对决策。之后 `vwa_workflow_review` 在 full 模式按分页提供歌词参考证据，在显式 segments 模式只给当前段加 `reference_evidence.lyrics_timeline`；独立 `vwa_lyric_timeline_review` 必须显式提供最多 30 秒的 start/end 窗口。
 
-唯一同文 YRC 词元可给出音符起点差值，但它是候选证据，不能把歌词词时长直接当音符时长。重复字、同文重叠音符、延音标记保留歧义，LRC 不生成逐字偏移；所有比较均为 `automatic_patch=false`。Agent 结合 F0、音频、发音和上下文后，只通过当前段的正常修改与再读确认流程修正。
+唯一同文 YRC 词元可给出音符起点差值，但它是候选证据，不能把歌词词时长直接当音符时长。重复字、同文重叠音符、延音标记保留歧义，LRC 不生成逐字偏移；所有比较均为 `automatic_patch=false`。Agent 结合 F0、音频、发音和上下文后，在 full 模式汇总完整分页后提交整曲决定；在显式 segments 模式只通过当前段的正常修改与再读确认流程修正。
 
 2026-10-27 实际查询歌曲 `30352891`（银临／Aki阿杰，《牵丝戏》，239.302 秒），取得 30 行 LRC，未取得 YRC。来源视频音频为 241.045 秒，不能仅按时长差推算整体偏移。逐字功能另用自制 YRC 验证，不能报告该真实歌曲已有逐字时间。接口可用性和逐字覆盖随来源变化；失败时可使用离线文件导入。
 
@@ -36,7 +55,7 @@ MCP 是可选运行环境；VWA GUI 和推理 Python 不需要安装 MCP SDK。�
   "brief": "用户提供的创作背景与风格要求",
   "reference_lyrics": "已获准使用的参考歌词",
   "formats": ["svp"],
-  "review_mode": "segments"
+  "review_mode": "full"
 }
 ```
 
@@ -49,11 +68,11 @@ MCP 是可选运行环境；VWA GUI 和推理 Python 不需要安装 MCP SDK。�
   "brief": "沿已完成的准备阶段继续核对与导出。",
   "reference_lyrics": "与准备任务一致的参考歌词",
   "formats": ["svp"],
-  "review_mode": "segments"
+  "review_mode": "full"
 }
 ```
 
-`formats` 省略时为 `["svp"]`。可显式包含不重复的 `svp`、`ustx`、`vsqx`；有非空 `brief` 时必须包含 `svp`，因为调用方风格语义只写入 SVP 风格链路。`review_mode` 省略时默认为 `segments` 逐段验收；旧客户端必须显式提交 `"legacy"` 才能走兼容路径。
+`formats` 省略时为 `["svp"]`。可显式包含不重复的 `svp`、`ustx`、`vsqx`；有非空 `brief` 时必须包含 `svp`，因为调用方风格语义只写入 SVP 风格链路。`review_mode` 省略时默认为 `full` 整曲审批；读取支持分页和紧凑摘要，Agent 应读完所需谱面及疑点后提交一次有依据的整曲决定。显式 `segments` 保留逐段核验与修改后重读，`legacy` 保持旧客户端兼容。整曲审批不表示自动接受未知读音或转换损失。
 
 工作流的业务阶段为：
 
@@ -66,24 +85,24 @@ project_ready -- export_review=needs_revision --> review
 project_ready -- finish=true 或不要求风格 --> ready
 ```
 
-`reviewed` 仅在 segments 模式下所有 MIDI 段均已 checked 后成立。`ready` / `completed=true` 只表示当前工作流选定的可编辑工程候选已生成。它不代表声库已加载、歌曲已合成、发音已试听或平台已发布。
+full 模式下 `reviewed` 由一次明确的整曲审批产生；显式 segments 模式下，只有所有 MIDI 段均已 checked 后才成立。`ready` / `completed=true` 只表示当前工作流选定的可编辑工程候选已生成。它不代表声库已加载、歌曲已合成、发音已试听或平台已发布。
 
 推荐调用顺序：
 
-1. 读取 `vwa_system_capabilities`，确认 55 工具、`code_revision`、`bounded_wait_ms=60000`、`instrumental_export_formats=["svp"]` 和共享草稿状态。
+1. 读取 `vwa_system_capabilities`，确认 61 工具、`code_revision`、`bounded_wait_ms=60000`、`instrumental_export_formats=["svp"]` 和共享草稿状态。
 2. 创建或取得工作流，读取 `vwa_workflow_get` 的 `stage`、`revision`、`operation` 和 `next`。
 3. 运行中优先用 `vwa_operations_wait(after_cursor=上一次 poll_cursor)` 有界等待；准备任务也可用 `vwa_jobs_get(wait_ms<=60000, after_cursor=上一次 poll_cursor)`。不要无界忙等。
-4. 在 `review` 按 `review_progress.current` 逐段调用 `vwa_workflow_review(segment_id=...)`，核对本段音符、歌词和参考证据。不要用一份全曲摘要代替逐段检查。
-5. 用 `vwa_workflow_apply_review(segment_id=...)` 提交本段结构、歌词、音高/时值修改，或提交有依据的空修改表示保留；edit 只能引用本段 ID。发生实际修改后先重读本段，全部段 checked 后才进入 `reviewed`。
+4. 在 `review` 读取 `vwa_workflow_review`。默认 `full` 模式按 `next_offset` 读完所需整曲分页和疑点后提交一次整曲判断；显式 `segments` 模式按 `review_progress.current` 逐段读取并核对，不能用首屏或一份摘要代替相应范围。
+5. 用 `vwa_workflow_apply_review` 提交有依据的空修改表示保留，或提交当前范围内的结构、歌词、音高/时值修改：`full` 模式一次覆盖整曲，`segments` 模式只覆盖当前 `segment_id`；实际修改后按当前模式重新读取受影响内容。
 6. 开始导出前，用 `vwa_workflow_advance(export_options=...)` 设置 SVP 版本、轨道名、工程名和伴奏来源。导出后按当前 `report_sha256` 检查 `export_summary`。
-7. 导出监督只接受无 blocker、全部必需损失代码均已逐项认可、源 MIDI 与候选 SHA 仍一致的报告。硬差异提交 `needs_revision`，回到逐段 `review`。
-8. 有风格要求时，用 `vwa_workflow_style_review` 和 `vwa_workflow_style_decide` 逐段保留原表现或提交该段风格；全部完成后 `workflow_advance` 自动汇总并进入 `styling -> ready`。全部保留时不启动风格运算。
+7. 导出监督只接受无 blocker、全部必需损失代码均已逐项认可、源 MIDI 与候选 SHA 仍一致的报告。硬差异提交 `needs_revision`，回到 `review`（`segments` 模式回到对应段）。
+8. 有风格要求时：`full` 模式在监督接受后用 `context_read` 与 `workflow_advance(style_proposal=...)` 提交整曲方案；`segments` 模式用 `vwa_workflow_style_review` 和 `vwa_workflow_style_decide` 逐段保留原表现或提交该段风格；全部完成后 `workflow_advance` 自动汇总并进入 `styling -> ready`。全部保留时不启动风格运算。
 9. `ready` 后调用 `vwa_workflow_delivery` 生成可移动交付包。交付前仍需检查包内 `manifest.json`、`SHA256SUMS`、伴奏相对引用和 `not_run`。
 10. 声库合成、听感、混音、视频装配及投稿都是外部步骤。
 
 所有修改携带当前工作流 `revision` 或文件 SHA。遇到 `workflow_conflict`、`stale_plan`、`stale_artifact`、`stale_draft_plan`、`export_review_conflict`、`review_edit_conflict`、`ambiguous_note_mapping` 或 `monophonic_overlap` 时，先重新读取当前状态；不得猜 ID、复用过期报告或静默覆盖。
 
-## 55 个公开工具
+## 61 个公开工具
 
 成功响应为 `structured_content = {schema_version: 1, data: {...}}`。业务失败为 MCP `isError=true`，错误正文是可解析 JSON：`{code, message, component, retryable, remediation, details?}`。异步对象的 `id` 用作 `operation_id`。
 
@@ -116,10 +135,10 @@ project_ready -- finish=true 或不要求风格 --> ready
 | 25 | `vwa_lyrics_patch_apply` | 生成独立歌词修正 MIDI 与回执 |
 | 26 | `vwa_exports_plan` | 规划 MIDI 到 SVP/USTX/VSQX，预检重叠并解析伴奏 |
 | 27 | `vwa_exports_start` | 执行导出、回读候选并保留独立审计 |
-| 28 | `vwa_workflow_create` | 一体化创建工作流；`review_mode` 默认 `segments`，显式 `legacy` 兼容旧路径 |
+| 28 | `vwa_workflow_create` | 一体化创建工作流；`review_mode` 默认 `full`，可选 `segments`，`legacy` 兼容旧路径 |
 | 29 | `vwa_workflow_get` | 读取阶段、修订、操作和下一步；默认 summary |
-| 30 | `vwa_workflow_review` | 分页读取当前段或旧模式当前页的音符、歌词、参考证据和提示 |
-| 31 | `vwa_workflow_apply_review` | 提交当前段结构、歌词、音高/时值修改或保留理由 |
+| 30 | `vwa_workflow_review` | 分页读取 full 模式当前页或 segments 模式当前段的音符、歌词、参考证据和提示 |
+| 31 | `vwa_workflow_apply_review` | 提交 full 模式的整曲决定或 segments 模式的当前段结构、歌词、音高/时值修改或保留理由 |
 | 32 | `vwa_workflow_advance` | 推进阶段、设置导出选项、提交导出决策、风格或结束 |
 | 33 | `vwa_structure_patch_plan` | 规划 MIDI 音符插入/删除及歌词归属策略 |
 | 34 | `vwa_structure_patch_apply` | 生成独立结构修正 MIDI 并复核事件 |
@@ -140,11 +159,18 @@ project_ready -- finish=true 或不要求风格 --> ready
 | 49 | `vwa_workflow_rebind_score` | 同一活跃工作流换入修正 MIDI 并回到 `review` |
 | 50 | `vwa_workflow_close` | 关闭活跃性并保留证据，不删除任务或工程 |
 | 51 | `vwa_workflow_archive` | 归档并保留证据、回执和检索入口 |
-| 52 | `vwa_workflow_clone` | 从保留 MIDI 或原输入克隆为新的可继续工作流 |
+| 52 | `vwa_workflow_clone` | 从保留 MIDI 或原输入克隆为新的可继续工作流；默认 `full`，可选 `segments`／`legacy` |
 | 53 | `vwa_workflow_delivery` | 生成受验证的工程、相对伴奏、回执、README 与 SHA 清单 |
 | 54 | `vwa_workflow_style_review` | 读取当前待查风格片段、当前段音符与相邻只读上下文 |
 | 55 | `vwa_workflow_style_decide` | 逐段提交风格或保留决策；全部完成后供 workflow 自动汇总 |
+| 56 | `vwa_lyric_timeline_search` | 搜索网易云歌曲元数据并核对版本 |
+| 57 | `vwa_lyric_timeline_fetch` | 获取带时间轴歌词的独立来源快照 |
+| 58 | `vwa_lyric_timeline_import` | 导入授权目录内的 LRC/YRC/原始 JSON |
+| 59 | `vwa_lyric_timeline_review` | 按显式时间窗比较歌词参考与谱面 |
+| 60 | `vwa_preparation_repair_plan` | 核对现成声部和回执，规划不跑模型的修复 |
+| 61 | `vwa_preparation_repair_start` | 在新的受管任务执行声部修复并返回续跑入口 |
 
+准备设备边界：`separation_device` 和 `midi_device` 的公开 MCP 枚举严格为 `cpu|dml`；RoFormer 后端单独使用 `roformer_device=auto|cpu|cuda`，不能把 `auto` 或 `cuda` 填入前两者。当前公开 `PreparationOptions` 的 `voice_mode` 仍为 `single|dual`，RoFormer 专用设备字段不作为普通准备参数暴露。
 资源 `vwa://capabilities` 与 `vwa://workflow` 提供能力清单和简要指南。工具是否可调用仍以当前 capabilities 和业务回执为准。
 
 ## 安装、配置与授权根
@@ -223,9 +249,9 @@ Windows x64、CPython 3.12。SDK 固定为 `mcp==2.3.0`，传递依赖和平台 
 
 `workflow_view.summary_target_bytes=16384` 是紧凑视图的设计目标，不是对任意内容都成立的硬上限。实际大小取决于当页错误、候选数量和人工理由；必须读取 `view.raw_evidence_omitted`、`details_tool` 和 `next_offset`，不能把摘要当作验收证据。
 
-## 默认逐段核对：MIDI 与风格
+## 可选逐段核对：MIDI 与风格
 
-`vwa_workflow_create.review_mode` 默认为 **`segments`**。Agent 必须按当前段读取证据、提交该段判断，再处理下一段；不能以一次全曲摘要或首屏证据代替逐段验收。`review_mode="legacy"` 仅作为旧客户端的显式兼容路径，必须主动传入；`detail="full"` 仍保留为显式读取兼容，但在 segments 模式中只表示当前段的完整证据，不会跳过或汇总其他段。
+`vwa_workflow_create.review_mode` 默认为 **`full`** 整曲审批；显式选择 **`segments`** 时，Agent 必须按当前段读取证据、提交该段判断，再处理下一段，不能以一次全曲摘要或首屏证据代替逐段验收。`review_mode="legacy"` 保留旧客户端兼容；`detail="full"` 在 segments 模式中只表示当前段的完整证据，不会跳过或汇总其他段。
 
 分段由纯本地、确定性、只用标准库的 `agent_segments.py` 生成，无模型或语义推断：
 
@@ -235,7 +261,7 @@ Windows x64、CPython 3.12。SDK 固定为 `mcp==2.3.0`，传递依赖和平台 
 - 完整音符不拆分；单个音符本身超过 10 秒时独占一段，并标记 `reason="unbreakable_long_note_exceeds_max_seconds"`。
 - 每段有确定性 `id`、`fingerprint`、`index`、声部、秒/tick 范围、`note_count` 和 `note_ids`。计划或音符内容变化后旧段会变成 `stale_segment`。
 
-工作流 summary 中的 `review_progress` 是逐段进度，不是全曲验收：
+显式 segments 模式下，工作流 summary 中的 `review_progress` 是逐段进度，不是全曲验收：
 
 ```json
 {
@@ -350,7 +376,7 @@ workflow_get
 
 segments 模式在全部风格段完成前不接受另一份整曲 `style_proposal`、`style_plan_id` 或 `finish=true`：这些输入分别报 `segmented_style_required` 或 `style_segments_incomplete`。全部完成后由工作流自动汇总，不要求再手工拼一份整曲 JSON。
 
-旧客户端可显式创建 `review_mode="legacy"` 工作流，继续旧的分页全曲核对和整份风格提交路径。legacy 是兼容入口，不是默认路径；无论 `detail="full"` 还是旧的摘要读取，都不能把未逐段完成的 segments 工作流直接标为 `reviewed`。
+`full` 是默认的整曲一次明确审批；旧客户端可显式创建 `review_mode="legacy"` 工作流，继续旧的分页全曲核对和整份风格提交路径。legacy 是兼容入口，不是默认路径；无论 `detail="full"` 还是旧的摘要读取，都不能把未逐段完成的 segments 工作流直接标为 `reviewed`。
 
 ## 风格方案、完整 JSON 与半开区间
 
@@ -838,6 +864,6 @@ drafts_get
 - 公开音素写入有批量上限；底层函数能接受更多不代表公开工具已通过大批量验收。
 - GUI 共享草稿依赖同一指定应用实例和配置根；其他安装、歌曲和全局偏好不自动同步。
 - `ready` 和 `complete=true` 是工程/交付证据状态，不是声库适配或合成完成声明。
-- 当前 55 工具的相关改进仍需以新的真实歌曲绑定回执完成终验。
+- 当前 61 工具的相关改进仍需以新的真实歌曲绑定回执完成终验。
 
 协议实现依据：[官方 Python SDK](https://py.sdk.modelcontextprotocol.io/)、[客户端接口](https://py.sdk.modelcontextprotocol.io/client/)、[工具与输入输出](https://py.sdk.modelcontextprotocol.io/servers/tools/)。本项目使用单独固定的可选 SDK 环境，实际协议以安装版本执行。

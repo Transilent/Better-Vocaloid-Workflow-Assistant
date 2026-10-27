@@ -411,7 +411,8 @@ def _export_summary(summary):
                'information': len(summary.get('information', [])),
                'required_loss_codes': copy.deepcopy(summary.get('required_loss_codes', [])),
                'report_sha256': summary.get('report_sha256'),
-               'verified': copy.deepcopy(summary.get('verified', {}))}
+               'verified': copy.deepcopy(summary.get('verified', {})),
+               'continuous_pitch': copy.deepcopy(summary.get('continuous_pitch', {'status':'unknown'}))}
     if isinstance(audit, dict):
         compact['independent'] = {
             'kind': audit.get('kind'), 'status': audit.get('status'),
@@ -630,6 +631,7 @@ def _readme(manifest):
                   '音符：' + str(manifest['audit']['score']['note_count']),
                   '歌词：' + str(manifest['audit']['score']['lyric_count']),
                   '风格状态：' + str(style.get('status')),
+                  '原唱连续音高：' + str(manifest['audit']['export'].get('continuous_pitch', {}).get('status', 'unknown')),
                   '局部完成：' + ('是' if style.get('partial') else '否'), '',
                   '## 未运行项', ''])
     lines.extend('- ' + item for item in manifest['not_run'])

@@ -1,10 +1,10 @@
 """Plan and materialize editable vocal projects from corrected MIDI.
 
 This worker has no MCP, Qt, semantic-model, network, synthesis, or publishing
-dependency. MIDI is the source of truth. LibreSVIP converts an imported MIDI
-project into independent SVP/USTX/VSQX candidates, which are reloaded and
-checked before publication. Ordinary MIDI controllers are never presented as
-editor automation.
+dependency. Corrected MIDI defines notes and lyrics; separately bound measured
+F0 defines the original continuous singing pitch. LibreSVIP converts these into
+independent SVP/USTX/VSQX candidates, which are reloaded and checked before
+publication. Ordinary MIDI controllers are never presented as editor automation.
 """
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ _FORMATS = {
 }
 _OPTION_KEYS = frozenset({
     "language", "default_bpm", "svp_version", "include_instrumental",
-    "instrumental_path", "track_names", "project_name",
+    "instrumental_path", "track_names", "project_name", "preserve_pitch", "pitch_sources",
 })
 _LANGUAGES = frozenset({"zh", "ja"})
 _SVP_VERSIONS = {"1.9": 100, "1.11": 135, "2.0": 182}
@@ -180,6 +180,17 @@ def _normalise_options(options: Any) -> dict[str, Any]:
         "default_bpm": default_bpm,
         "svp_version": svp_version,
     }
+    if "preserve_pitch" in options:
+        if type(options["preserve_pitch"]) is not bool:
+            raise ExportError("export_option_invalid", "preserve_pitch 必须为布尔值。")
+        result["preserve_pitch"] = options["preserve_pitch"]
+    if "pitch_sources" in options:
+        if not options.get("preserve_pitch", True):
+            raise ExportError("pitch_option_conflict", "关闭连续音高时不能绑定音高来源。")
+        sources = options["pitch_sources"]
+        if not isinstance(sources, list) or not sources or len(sources) > 128:
+            raise ExportError("pitch_sources_invalid", "连续音高来源需为非空列表，最多128轨。")
+        result["pitch_sources"] = copy.deepcopy(sources)
     # Preserve the original option object shape for callers that do not use the
     # accompaniment/metadata extension. Public control adds this switch only
     # after resolving an authorized artifact or source job.
@@ -625,6 +636,21 @@ def plan_export(path: Any, formats: Any = None, options: Any = None) -> dict[str
     evidence = _parse_evidence(raw, midi.ticks_per_beat)
     monophonic = _monophonic_preflight(source)
     instrumental = _instrumental_plan(normal_options, normal_formats)
+    if normal_options.get("pitch_sources"):
+        from agent_pitch import build_pitch_plan
+        pitch = {"status": "planned", "policy": "preserve_absolute",
+                 "plan": build_pitch_plan(normal_options["pitch_sources"])}
+    else:
+        pitch = {"status": "unavailable" if normal_options.get("preserve_pitch", True) else "omitted",
+                 "policy": "preserve_absolute", "plan": None,
+                 "reason": "no_continuous_pitch_source" if normal_options.get("preserve_pitch", True)
+                           else "explicit_note_only"}
+    losses = _conversion_losses(evidence, normal_formats)
+    if pitch["status"] in ("unavailable", "omitted"):
+        losses.append({"code": "continuous_pitch_" + pitch["status"], "count": 1,
+                       "message": "未绑定原唱连续音高；当前候选只有音符骨架及显式后续风格。"
+                                  if pitch["status"] == "unavailable" else
+                                  "调用方显式关闭原唱连续音高，生成仅音符候选。"})
     payload = {
         "schema_version": _SCHEMA_VERSION,
         "kind": _PLAN_KIND,
@@ -640,7 +666,8 @@ def plan_export(path: Any, formats: Any = None, options: Any = None) -> dict[str
         "expected": evidence,
         "monophonic_preflight": monophonic,
         "instrumental": instrumental,
-        "conversion_losses": _conversion_losses(evidence, normal_formats),
+        "pitch": pitch,
+        "conversion_losses": losses,
         "runtime_requirements": {
             "environment": _RUNTIME_ENV,
             "argument": "export_runtime",
@@ -1178,6 +1205,10 @@ def apply_export(
             input_tempo = _source_tempo(saved)
             project.song_tempo_list=[SongTempo(position=position,bpm=bpm) for position,bpm in input_tempo]
             input_timesig = _project_timesig(project)
+            pitch_application = None
+            if saved.get("pitch", {}).get("status") == "planned":
+                from agent_pitch import apply_pitch_plan
+                pitch_application = apply_pitch_plan(project, saved["pitch"]["plan"], cancel=cancel)
 
             for candidate_index, fmt in enumerate(saved["formats"]):
                 check_cancel()
@@ -1197,6 +1228,12 @@ def apply_export(
                     converters[fmt].dump(
                         _io_path(temporary), candidate_project, _output_options(fmt, saved)
                     )
+                    pitch_native = None
+                    if pitch_application is not None:
+                        from agent_pitch import restore_native_pitch
+                        pitch_native = restore_native_pitch(
+                            _io_path(temporary), fmt, project, saved["pitch"]["plan"], cancel=cancel
+                        )
                     if fmt == "vsqx":
                         _restore_vsqx_lyrics(temporary, project)
                     media = None
@@ -1226,11 +1263,17 @@ def apply_export(
                             "project_name": saved["options"].get("project_name"),
                         }
                     check_cancel()
-                    loaded = converters[fmt].load(
-                        _io_path(temporary),
-                        {"import_pitch": False, "import_instrumental_track": False},
-                    )
+                    if pitch_application is not None:
+                        from agent_pitch import load_pitch_project
+                        loaded = load_pitch_project(_io_path(temporary), fmt, converters)
+                    else:
+                        loaded = converters[fmt].load(
+                            _io_path(temporary),
+                            {"import_pitch": False, "import_instrumental_track": False},
+                        )
                 except Exception as error:
+                    if isinstance(error, InterruptedError):
+                        raise
                     if isinstance(error, (ValueError, OSError, InterruptedError)) and hasattr(error, "code"):
                         raise
                     raise ValueError(f"{fmt.upper()} 转换或回读失败：{error}") from error
@@ -1242,6 +1285,15 @@ def apply_export(
                     )
                 output_tempo,output_timesig = _loaded_clock(loaded,fmt)
                 tempo_verified = output_tempo == input_tempo
+                pitch_readback = None
+                if pitch_application is not None:
+                    from agent_pitch import verify_pitch_plan
+                    loaded.song_tempo_list = [SongTempo(position=position, bpm=bpm)
+                                              for position,bpm in output_tempo]
+                    pitch_readback = verify_pitch_plan(loaded, saved["pitch"]["plan"], cancel=cancel)
+                    if not pitch_readback.get("verified", False):
+                        raise ExportError("continuous_pitch_not_preserved", "导出回读未保留原唱连续音高。",
+                                          details={"format": fmt, "pitch": pitch_readback})
                 raw_bytes = _io_path(temporary).read_bytes()
                 if not raw_bytes:
                     raise ValueError(f"{fmt.upper()} 转换产生空文件。")
@@ -1288,6 +1340,9 @@ def apply_export(
                     "instrumental_reason": instrumental_reason,
                     "media": media,
                     "metadata": metadata,
+                    "pitch": {"status": "preserved" if pitch_readback else saved["pitch"]["status"],
+                              "application": pitch_application, "native_encoding": pitch_native,
+                              "readback": pitch_readback},
                     "verified_notes": len(actual),
                     "verified_lyrics": sum(1 for row in actual if row[3] != ""),
                     "tempo_verified": tempo_verified,
@@ -1336,6 +1391,9 @@ def apply_export(
             "instrumental": copy.deepcopy(saved.get("instrumental", {
                 "requested": False, "included": False, "reason": "not_requested"
             })),
+            "pitch": {**copy.deepcopy(saved["pitch"]),
+                      "status": "preserved" if pitch_application is not None else saved["pitch"]["status"],
+                      "application": copy.deepcopy(pitch_application)},
             "conversion_losses": copy.deepcopy(saved["conversion_losses"]),
             "semantic_model_used": False,
             "synthesized": False,

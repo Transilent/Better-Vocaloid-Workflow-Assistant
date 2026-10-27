@@ -159,7 +159,7 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
         raise ValueError('保存位置是文件，请选择用于存放任务的文件夹。')
     job = destination / f"{bv or 'Local'}_{timestamp}"
     try:
-        job.mkdir(parents=True)
+        Path(native_path(job)).mkdir(parents=True)
     except OSError as exc:
         raise ValueError('无法在所选目录创建任务文件夹，请检查目录权限和磁盘状态。') from exc
     atomic_json(job / "request.json", {
@@ -901,6 +901,7 @@ def _run(job, until):
                 break
         status["state"] = "done" if until == target else "partial"
         status.pop("error", None)
+        status.pop("error_details", None)
         status.pop("current_step", None)
         atomic_json(status_file, status)
         reconcile(job)
@@ -908,9 +909,14 @@ def _run(job, until):
     except BaseException as exc:
         status["state"] = "cancelled" if isinstance(exc, InterruptedError) else "failed"
         status["error"] = str(exc)
+        if isinstance(exc, Exception):
+            from agent_errors import error_payload
+            status['error_details'] = error_payload(exc)
         current = status.get('current_step')
         if current:
             status['steps'][current].update(state=status['state'], error=str(exc))
+            if 'error_details' in status:
+                status['steps'][current]['error_details'] = status['error_details']
         atomic_json(status_file, status)
         if current:
             try:

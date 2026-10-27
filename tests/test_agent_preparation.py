@@ -100,6 +100,46 @@ class PreparationPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "bpm"):
             self.plan("BV1xx411c7mD", {"bpm": float("nan")})
 
+    def test_option_boundaries_are_canonical_and_enforced(self):
+        self.assertEqual(agent_preparation.PREPARATION_DEVICE_VALUES, ("cpu", "dml"))
+        self.assertEqual(agent_preparation.ROFORMER_DEVICE_VALUES,
+                         ("auto", "cpu", "cuda"))
+        self.assertEqual(agent_preparation.PREPARATION_CPU_THREADS_RANGE, (0, 64))
+        self.assertEqual(agent_preparation.PREPARATION_BPM_RANGE, (20.0, 400.0))
+
+        for device in agent_preparation.PREPARATION_DEVICE_VALUES:
+            options = agent_preparation._normalise_options({
+                "separation_device": device, "midi_device": device,
+                "cpu_threads": 0, "bpm": 20,
+            })
+            self.assertEqual(options["separation_device"], device)
+            self.assertEqual(options["midi_device"], device)
+        for thread_count in (0, 64):
+            options = agent_preparation._normalise_options({"cpu_threads": thread_count})
+            self.assertEqual(options["cpu_threads"], thread_count)
+        for tempo in (20, 400):
+            options = agent_preparation._normalise_options({"bpm": tempo})
+            self.assertEqual(options["bpm"], float(tempo))
+        for device in agent_preparation.ROFORMER_DEVICE_VALUES:
+            self.assertEqual(agent_preparation._normalise_options(
+                {"roformer_device": device})["roformer_device"], device)
+
+        for name in ("separation_device", "midi_device"):
+            for unsupported in ("auto", "cuda"):
+                with self.subTest(option=name, value=unsupported):
+                    with self.assertRaisesRegex(ValueError, "cpu.*dml"):
+                        agent_preparation._normalise_options({name: unsupported})
+        for invalid in (-1, 65):
+            with self.subTest(cpu_threads=invalid):
+                with self.assertRaisesRegex(ValueError, "cpu_threads"):
+                    agent_preparation._normalise_options({"cpu_threads": invalid})
+        for invalid in (19.999, 400.001):
+            with self.subTest(bpm=invalid):
+                with self.assertRaisesRegex(ValueError, "bpm"):
+                    agent_preparation._normalise_options({"bpm": invalid})
+        with self.assertRaisesRegex(ValueError, "roformer_device"):
+            agent_preparation._normalise_options({"roformer_device": "dml"})
+
     def test_source_summary_is_current_video_bounded_and_omits_collection(self):
         job = self.root / "source-job"
         write_json(job / "request.json", {
@@ -524,6 +564,8 @@ class PreparationRunTests(unittest.TestCase):
             self.assertEqual(pipeline._run, fail)
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["error"]["type"], "FileNotFoundError")
+        self.assertIsNone(result["error"]["code"])
+        self.assertNotIn("remediation", result["error"])
         self.assertEqual(result["next_step"], "retry_preparation")
         self.assertNotEqual(result["status"], "completed")
 
@@ -536,6 +578,54 @@ class PreparationRunTests(unittest.TestCase):
         self.assertEqual(empty["status"], "failed")
         self.assertEqual(empty["error"]["code"], "missing_score_output")
         self.assertEqual(empty["files"], [])
+
+    def test_recorded_pipeline_error_is_structured_and_bounded(self):
+        very_long = "失败详情 " * 5000
+
+        def fail(job, until):
+            write_json(self.job / "status.json", {
+                "state": "failed", "current_step": "separation",
+                "error": "outer pipeline message",
+                "error_details": {
+                    "code": "model_missing",
+                    "message": "需安装真实分离模型。",
+                    "component": "pipeline.separation",
+                    "retryable": True,
+                    "remediation": ["vwa_preparation_plan"] + ["vwa_jobs_get"] * 40,
+                    "details": {
+                        "stage": "separation",
+                        "nested": {"payload": very_long, "items": list(range(80))},
+                    },
+                },
+            })
+            raise KeyError("outer pipeline message")
+
+        with patch.object(pipeline, "_run", new=fail):
+            result = agent_preparation.run_preparation(self.job)
+        error = result["error"]
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(error["type"], "KeyError")
+        self.assertEqual(error["code"], "model_missing")
+        self.assertEqual(error["message"], "需安装真实分离模型。")
+        self.assertEqual(error["component"], "pipeline.separation")
+        self.assertIs(error["retryable"], True)
+        self.assertEqual(error["remediation"][0], "vwa_preparation_plan")
+        self.assertLessEqual(len(error["remediation"]),
+                             agent_preparation.ERROR_REMEDIATION_ITEMS)
+        self.assertEqual(error["details"]["stage"], "separation")
+        self.assertLessEqual(
+            len(agent_preparation._canonical_bytes(error["details"])),
+            agent_preparation.ERROR_DETAILS_MAX_BYTES)
+        encoded = json.dumps(error, ensure_ascii=False, allow_nan=False)
+        self.assertNotIn(very_long, encoded)
+        overflow = agent_preparation._bounded_error_details({
+            "rows": [very_long] * 20,
+            "nested": {str(index): very_long for index in range(40)},
+        })
+        self.assertIs(overflow["truncated"], True)
+        self.assertLessEqual(
+            len(agent_preparation._canonical_bytes(overflow)),
+            agent_preparation.ERROR_DETAILS_MAX_BYTES)
 
     def test_early_until_is_reported_partial(self):
         def partial(job, until):

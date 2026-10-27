@@ -13,6 +13,11 @@ REMEDIATION={
     'stale_workflow':['vwa_workflow_clone'],
     'workflow_conflict':['vwa_workflow_get'],
     'workflow_closed':['vwa_workflow_clone'],
+    'pitch_source_missing':['vwa_jobs_get','vwa_preparation_reuse_plan','vwa_reference_import'],
+    'pitch_source_unverified':['vwa_artifacts_inspect','vwa_reference_import'],
+    'pitch_source_incomplete':['vwa_jobs_get','vwa_preparation_start'],
+    'pitch_track_mapping_required':['vwa_score_read','vwa_reference_import','vwa_exports_plan'],
+    'continuous_pitch_not_preserved':['vwa_exports_plan','vwa_workflow_get'],
 }
 
 def error_payload(error):

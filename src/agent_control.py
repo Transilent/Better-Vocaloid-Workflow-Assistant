@@ -38,6 +38,7 @@ TOOLS = (
     'vwa_workflow_delivery',
     'vwa_workflow_style_review','vwa_workflow_style_decide',
     'vwa_lyric_timeline_search','vwa_lyric_timeline_fetch','vwa_lyric_timeline_import','vwa_lyric_timeline_review',
+    'vwa_preparation_repair_plan','vwa_preparation_repair_start',
 )
 TERMINAL = ('succeeded', 'failed', 'cancelled', 'interrupted')
 CODE_FILES = ('agent_control.py', 'agent_worker.py', 'agent_score.py', 'agent_style.py',
@@ -46,9 +47,9 @@ CODE_FILES = ('agent_control.py', 'agent_worker.py', 'agent_score.py', 'agent_st
               'agent_errors.py','agent_monophony.py','agent_media.py','agent_views.py','agent_delivery.py',
               'agent_segments.py','agent_segment_workflow.py',
               'agent_lyric_timeline.py','lyrics_sources.py','subtitles.py',
-              'pitch_accuracy.py',
+              'pitch_accuracy.py', 'agent_pitch.py', 'agent_separation_repair.py', 'vocal_partition.py',
               'agent_preparation.py', 'agent_lyrics.py', 'agent_exports.py', 'agent_workflow.py',
-              'pipeline.py', 'project_exports.py', 'midi_merge.py', 'task_contract.py',
+              'pipeline.py', 'project_exports.py', 'midi_merge.py', 'task_contract.py', 'artifact_cache.py',
               'tuning_workflow.py', 'tuning_engine.py', 'style_presets.py', 'style_pitch.py',
               'common.py', 'vocal_expression.py', 'vocal_timbre.py')
 
@@ -250,7 +251,12 @@ class Control:
                 'pronunciation_validation':'written_evidence_only_not_acoustic',
                 'shared_gui_drafts':self.shared_drafts is not None,'shared_draft_cas':True,
                 'bounded_wait_ms':60000,'workflow_lifecycle':['list','rebind_score','clone','close','archive'],
-                'default_review_mode':'segments','review_segment_limits':{'max_notes':16,'window_seconds':10.,
+                'default_review_mode':'full','review_modes':['full','segments','legacy'],
+                'continuous_pitch_export':True,'continuous_pitch_policy':'preserve_absolute',
+                'continuous_pitch_sources':['preparation_job','reference_pitch_artifact'],
+                'continuous_pitch_readback_required':True,
+                'separation_repair_without_model':True,
+                'review_segment_limits':{'max_notes':16,'window_seconds':10.,
                     'split_at_silence_seconds':.65,'complete_long_notes_preserved':True},
                 'instrumental_export_formats':['svp'],'portable_delivery':True,
                 'supports_duet_singer_separation':False,
@@ -512,7 +518,8 @@ class Control:
                           'reference_pitch_review', 'reference_audio_read', 'pronunciation_read',
                           'pronunciation_plan','draft_read','draft_publish','draft_plan',
                           'preparation_reuse_plan','preparation_reuse_create','segment_plan','style_segment_context','media_validate',
-                          'lyric_timeline_search','lyric_timeline_fetch','lyric_timeline_parse','lyric_timeline_review'):
+                          'lyric_timeline_search','lyric_timeline_fetch','lyric_timeline_parse','lyric_timeline_review',
+                          'preparation_repair_plan'):
             raise ControlError('unsupported_action', '不支持该业务调用。')
         directory = safe_path(self.state / 'calls' / uuid.uuid4().hex)
         directory.mkdir()
@@ -558,9 +565,90 @@ class Control:
         return self.call_worker('context_read', {'path': record['path'], 'track_indices': track_indices,
             'limit':limit,'offset':offset,'detail':detail,'include_note_ids':include_note_ids})
 
-    def export_options(self, options=None, source_job_id=None):
+    def _job_pitch_sources(self, job_id):
+        """Bind measured F0 only to a completed, hash-verified preparation."""
+        job = self.job_path(job_id)
+        status = read_json(safe_path(job/'status.json', [job]))
+        if status.get('steps', {}).get('midi', {}).get('state') != 'done':
+            raise ControlError('pitch_source_incomplete', '音高来源任务的 MIDI 阶段尚未完成。',
+                               {'job_id': job_id, 'remediation': '只续跑缺失的 MIDI 阶段，不必重做已完成的分离。'})
+        request = read_json(safe_path(job/'request.json', [job]))
+        voices = ('vocals',) if request.get('voice_mode') == 'single' else ('lead','backing')
+        sources = []
+        for index, voice in enumerate(voices):
+            folder = job/'midi' if voice == 'vocals' else job/'midi'/voice
+            path = safe_path(folder/(voice+'.pitch.npz'), [job])
+            report_path = safe_path(folder/'report.json', [job])
+            report = read_json(report_path) if io_path(report_path).is_file() else {}
+            expected = report.get('output_sha256', {}).get('pitch.npz')
+            if not io_path(path).is_file():
+                if expected or report.get('pitch_source') == 'absolute_rmvpe':
+                    raise ControlError('pitch_source_missing', '任务声明的原唱连续音高已缺失，拒绝退化为仅音符工程。',
+                                       {'job_id': job_id, 'voice': voice})
+                continue
+            if not expected or file_hash(path) != expected:
+                raise ControlError('pitch_source_unverified', '原唱连续音高与准备回执不一致，请重新导入或重提取 MIDI。',
+                                   {'job_id': job_id, 'voice': voice, 'path': str(path)})
+            sources.append({'vocal_track_index': index, 'path': str(path), 'time_origin_seconds': 0.0})
+        return sources
+
+    def _pitch_export_options(self, options, source_job_id=None, score_artifact_id=None):
+        if 'pitch_sources' in options:
+            raise ControlError('unsafe_pitch_path', '请使用 pitch_bindings 或 pitch_source_job_id，不传内部音高路径。')
+        preserve = options.get('preserve_pitch', True)
+        if type(preserve) is not bool:
+            raise ControlError('invalid_options', 'preserve_pitch 必须为布尔值。')
+        bindings = options.pop('pitch_bindings', None)
+        single = options.pop('pitch_artifact_id', None)
+        job_id = options.pop('pitch_source_job_id', None) or source_job_id
+        if single is not None:
+            if bindings is not None:
+                raise ControlError('conflicting_pitch_source', 'pitch_bindings 与 pitch_artifact_id 只能选一个。')
+            bindings = [{'pitch_artifact_id': single, 'vocal_track_index': 0, 'time_origin_seconds': 0.0}]
+        if not preserve:
+            if bindings is not None or job_id:
+                raise ControlError('conflicting_pitch_source', '关闭连续音高时不能同时绑定音高来源。')
+            return options
+        if bindings is not None and job_id:
+            raise ControlError('conflicting_pitch_source', '显式音高产物与来源任务只能选一个。')
+        sources = []
+        if bindings is not None:
+            if not isinstance(bindings, list) or not bindings or len(bindings) > 128:
+                raise ControlError('invalid_pitch_bindings', 'pitch_bindings 需为非空列表，最多128轨。')
+            indices = set()
+            for row in bindings:
+                if (not isinstance(row, dict) or set(row)-{'pitch_artifact_id','vocal_track_index','time_origin_seconds'}
+                        or not isinstance(row.get('pitch_artifact_id'), str)):
+                    raise ControlError('invalid_pitch_bindings', '每条绑定需有音高 artifact、演唱轨序号和可选秒偏移。')
+                index = row.get('vocal_track_index', 0)
+                origin = row.get('time_origin_seconds', 0.0)
+                if type(index) is not int or index < 0 or index in indices:
+                    raise ControlError('invalid_pitch_bindings', '演唱轨序号需为不重复的非负整数。')
+                import math
+                if type(origin) not in (int,float) or not math.isfinite(origin) or abs(origin) > 86400:
+                    raise ControlError('invalid_pitch_bindings', '音高时间偏移需为一天以内的有限秒数。')
+                record = self.artifact(row['pitch_artifact_id'])
+                if record['kind'] != 'reference_pitch':
+                    raise ControlError('wrong_pitch_source', '请先通过 reference_import(kind=pitch) 导入连续音高。')
+                indices.add(index)
+                sources.append({'vocal_track_index': index, 'path': record['path'], 'time_origin_seconds': float(origin)})
+        elif job_id:
+            sources = self._job_pitch_sources(job_id)
+            if sources and score_artifact_id:
+                record = self.artifact(score_artifact_id)
+                score = self.call_worker('score_read', {'path': record['path']})
+                groups = {(note['track_index'], note['channel']) for note in score['notes']}
+                if len(groups) != len(sources) or {r['vocal_track_index'] for r in sources} != set(range(len(groups))):
+                    raise ControlError('pitch_track_mapping_required', '修正后声部结构与来源任务不同，请用 pitch_bindings 明确映射。',
+                                       {'job_id': job_id, 'source_tracks': len(sources), 'score_tracks': len(groups)})
+        if sources:
+            options['pitch_sources'] = sources
+        return options
+
+    def export_options(self, options=None, source_job_id=None, score_artifact_id=None):
         """Resolve public media IDs into verified local paths before the worker."""
         options=dict(options or {})
+        options=self._pitch_export_options(options, source_job_id, score_artifact_id)
         if 'instrumental_path' in options:
             raise ControlError('unsafe_media_path','请使用instrumental_artifact_id或instrumental_source_job_id，不传原始媒体路径。')
         artifact_id=options.pop('instrumental_artifact_id',None)
@@ -601,7 +689,7 @@ class Control:
                   'pronunciation':'pronunciation_plan'}.get(kind)
         if action is None:
             raise ControlError('invalid_plan', '方案类型无效。')
-        if kind=='export':arguments['options']=self.export_options(arguments.get('options'))
+        if kind=='export':arguments['options']=self.export_options(arguments.get('options'), score_artifact_id=artifact_id)
         plan = self.call_worker(action, {'path': artifact['path'], **arguments})
         return self.save_plan(kind, artifact_id, plan)
 
@@ -823,6 +911,20 @@ class Control:
                         'import_tool':{'tool':'vwa_reference_import','arguments':{'path':str(path),'kind':kind}}})
         return rows
 
+    def preparation_repair_plan(self, source_job_id):
+        job = self.job_path(source_job_id)
+        plan = self.call_worker('preparation_repair_plan', {'source_job': str(job)})
+        return self.save_plan('separation_repair', None, plan)
+
+    def preparation_repair_start(self, plan_id, idempotency_key):
+        plan = self.plan_get(plan_id)
+        if plan['kind'] != 'separation_repair' or plan['code_revision'] != self.code_revision:
+            raise ControlError('stale_plan', '声部修复方案已过期，请重新核对源任务。')
+        if not self.jobs:
+            raise ControlError('missing_job_root', '未配置独立任务目录。')
+        safe_path(plan['plan']['source_job'], self.jobs)
+        return self.start_operation('separation_repair', {'plan_id': plan_id}, idempotency_key)
+
     def preparation_plan(self, source, options=None):
         if not isinstance(source, str) or not source.strip():
             raise ControlError('invalid_source', '需要歌曲链接、BV 号或本地音乐路径。')
@@ -870,7 +972,7 @@ class Control:
             raise ControlError('invalid_idempotency_key', '重试键需为 1–128 字符。')
         if action not in ('score_apply', 'style_render', 'verify_artifact', 'lyrics_apply',
                           'export_apply', 'preparation_run', 'workflow_review','structure_apply','reference_excerpt',
-                          'pronunciation_apply','workflow_pronunciation'):
+                          'pronunciation_apply','workflow_pronunciation','separation_repair'):
             raise ControlError('unsupported_action', '不支持该操作。')
         request = {'action': action, 'arguments': arguments, 'code_revision': self.code_revision}
         key = digest({'action': action, 'idempotency_key': idempotency_key})
@@ -996,6 +1098,29 @@ class Control:
                               'actual_sha256': actual, 'verified': actual == artifact['sha256']}
                     if not result['verified']:
                         raise ControlError('receipt_mismatch', '产物摘要与登记不一致。')
+                elif action == 'separation_repair':
+                    plan_id = request['arguments']['plan_id']
+                    plan = self.plan_get(plan_id)
+                    if plan['kind'] != 'separation_repair' or plan['code_revision'] != self.code_revision:
+                        raise ControlError('stale_plan', '声部修复方案或代码已改变。')
+                    safe_path(plan['plan']['source_job'], self.jobs)
+                    from agent_separation_repair import apply_separation_repair
+                    with file_lock(self.state/'locks'/(plan_id+'.create.lock'), cancel=cancel):
+                        def repair_progress(done, total):
+                            progress({'stage': 'separation', 'detail': '检查声部串音',
+                                      'done': int(done), 'total': int(total)})
+                        receipt = apply_separation_repair(plan['plan'], self.jobs[0],
+                                                         cancel=cancel, progress=repair_progress)
+                        job = safe_path(receipt['job_path'], self.jobs)
+                        identifier = 'job_' + digest(str(job))[:32]
+                        request_sha = file_hash(job/'request.json')
+                        owned = {'schema':1, 'id':identifier, 'path':str(job), 'request_sha256':request_sha,
+                                 'plan_id':plan_id, 'code_revision':self.code_revision}
+                        self._immutable(self._record_path('preparations',identifier,'job'), owned)
+                    result = {'receipt':receipt, 'job_id':identifier, 'job_path':str(job),
+                              'model_execution':False, 'handoff':'ready_for_midi',
+                              'next':{'tool':'vwa_preparation_start', 'arguments':{'job_id':identifier, 'until':'midi',
+                                      'idempotency_key':'repair-'+plan_id+'-midi'}}}
                 elif action == 'preparation_run':
                     arguments = request['arguments']
                     owned = self._record('preparations', arguments['job_id'], 'job')
@@ -1012,8 +1137,12 @@ class Control:
                         raise InterruptedError((receipt.get('error') or {}).get('message','准备任务已取消。'))
                     if receipt.get('status') in ('failed','interrupted'):
                         error = receipt.get('error') or {}
-                        raise ControlError(error.get('code') or 'preparation_failed',
-                                           error.get('message','准备任务未成功完成。'))
+                        failure = ControlError(error.get('code') or 'preparation_failed',
+                            error.get('message','准备任务未成功完成。'), error.get('details'))
+                        failure.remediation = error.get('remediation') or ['vwa_jobs_get','vwa_preparation_reuse_plan']
+                        failure.retryable = bool(error.get('retryable', False))
+                        failure.component = error.get('component') or 'preparation'
+                        raise failure
                     if arguments['until'] in (None,'midi') and receipt.get('status') != 'done':
                         raise ControlError('incomplete_preparation', '准备流水线尚未完成到 MIDI，不能进入核对。')
                     has_midi = any(Path(row['path']).suffix.lower() in ('.mid','.midi') for row in receipt.get('files',[]))
@@ -1071,6 +1200,8 @@ class Control:
                             from agent_exports import apply_export
                             media_path=plan_record['plan'].get('options',{}).get('instrumental_path')
                             if media_path:safe_path(media_path,[self.state,*self.assets,*self.jobs])
+                            for source in plan_record['plan'].get('options', {}).get('pitch_sources', []):
+                                safe_path(source['path'], [self.state,*self.assets,*self.jobs])
                             runtime = self.config.get('export_runtime', str(self.app / 'dependencies/export'))
                             runtime = safe_path(runtime)
                             result = apply_export(artifact['path'], plan_record['plan'], output,

@@ -28,6 +28,15 @@ ROOT_FILES = {'style_presets.py', 'context_project.py', 'context_reading.py', 'c
               'publish-selectors.json', 'version.json', 'README.md', 'README.zh-CN.md',
               'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.zh-CN.md'}
 ROOT_FILES.update({'style_pitch.py','ui_input.py'})
+ROOT_FILES.update({'agent_pitch.py','agent_separation_repair.py'})
+# Current program payloads include the optional MCP boundary. Historical
+# first-hop fixtures retain their own fixed three-file allowlist.
+ROOT_FILES.update({'agent_control.py','agent_worker.py','agent_mcp.py','agent_score.py','agent_style.py',
+    'agent_preparation.py','agent_lyrics.py','agent_exports.py','agent_workflow.py','agent_supervision.py',
+    'agent_export_audit.py','agent_reference.py','agent_structure.py','style_drafts.py','agent_drafts.py',
+    'agent_pronunciation.py','agent_refinement.py','agent_errors.py','agent_monophony.py','agent_media.py',
+    'agent_views.py','agent_delivery.py','agent_segments.py','agent_segment_workflow.py','agent_lyric_timeline.py',
+    'docs/AgentMCP.zh-CN.md','packaging/agent-mcp.example.json','packaging/requirements-mcp.lock.txt'})
 ROOT_FILES.update({'tuning_engine.py','tuning_workflow.py','tuning_ui.py'})
 # VWA presentation modules; internal update/lock identifiers remain compatible.
 ROOT_FILES.update({'media_preview.py', 'ui_preferences.py', 'ui_components.py', 'ui_materials.py'})
@@ -37,6 +46,7 @@ ROOT_FILES.update({'docs/InterfaceLanguages.en.md', 'docs/InterfaceLanguages.zh-
 TOOL_FILES = {'tools/update_apply.py', 'tools/Start-Diagnostics.bat',
               'tools/Check-Dependencies.bat', 'tools/Use-CPU.bat', 'tools/Use-GPU.bat',
               'tools/Install-Runtime.ps1', 'tools/set_device.py'}
+TOOL_FILES.add('tools/Setup-AgentMCP.ps1')
 RUNTIME_UPDATE_NAME = 'VWA-Runtime-Upgrade.zip'
 MAX_RUNTIME_BYTES = 256 * 1024**2
 MAX_PROGRAM_BYTES = 64 * 1024**2

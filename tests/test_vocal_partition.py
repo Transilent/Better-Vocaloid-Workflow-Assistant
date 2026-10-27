@@ -8,7 +8,8 @@ import numpy as np
 import soundfile as sf
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from vocal_partition import coherent_transfer,repair
+from vocal_partition import VocalPartitionError,coherent_transfer,repair,_checked_nonnegative_power
+from agent_errors import error_payload
 from common import atomic_json,file_hash,load_config
 from artifact_cache import stage_signature
 import pipeline
@@ -25,8 +26,23 @@ harmony=np.repeat(harmony,2,axis=1).astype('float32')
 
 def energy(x):return float(np.sum(x.astype('float64')**2))
 
-pure=coherent_transfer(main,harmony,sr)
+diagnostics={}
+pure=coherent_transfer(main,harmony,sr,diagnostics=diagnostics)
 assert energy(pure)<energy(harmony)*.003
+assert diagnostics['spectral_dtype']=='complex128' and diagnostics['power_dtype']=='float64'
+# Subtractive floating point can make a mathematically nonnegative moving
+# power a few ulps negative. Clamp only that roundoff; NaN and material
+# negative values remain hard failures rather than being silently replaced.
+roundoff,guard=_checked_nonnegative_power(np.array([[-1e-25,1e-12]],dtype=np.float64),'fixture')
+assert guard['negative_power_values_clamped']==1 and roundoff[0,0]==0
+for invalid_power,code in ((np.array([[np.nan]]),'invalid_spectral_power'),(np.array([[-1e-8]]),'negative_spectral_power')):
+    try:_checked_nonnegative_power(invalid_power,'fixture')
+    except VocalPartitionError as exc:
+        assert exc.code==code and 'first_index' in exc.details
+        payload=error_payload(exc)
+        assert payload['component']=='vocal_partition' and payload['retryable'] is False
+        assert payload['remediation']==['vwa_jobs_get'] and payload['details']==exc.details
+    else:raise AssertionError('Invalid spectral power accepted')
 assert not coherent_transfer(main*0,harmony,sr).any()
 assert not coherent_transfer(main,harmony*0,sr).any()
 # Opposite phase does not justify moving cancellation artifacts into the lead.
@@ -53,6 +69,7 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work',prefix='partition-') as temp:
     b,_=sf.read(audio/'backing.wav',dtype='float32',always_2d=True)
     assert events[-1]==(len(t),len(t)) and report['status']=='applied'
     assert report['sum_max_error']<5e-7 and np.max(abs(a+b-total))<5e-7
+    assert report['input_sum_tolerance']==1e-4
     assert file_hash(audio/'vocals.wav')==original_total
     assert a.shape==lead.shape and b.shape==backing.shape
     # Note deduplication needs fine f0 agreement, positive waveform agreement
@@ -93,10 +110,33 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work',prefix='partition-') as temp:
     else:raise AssertionError('Cancellation ignored')
     assert before=={n:file_hash(audio/(n+'.wav')) for n in before}
     assert not list(audio.glob('*.pending.wav'))
-    bad=lead.copy();bad[500]=np.nan
+    # The two output files publish as one transaction. If the second pending
+    # file cannot be committed, restore both originals and clear our staging.
+    write();before_tx={n:file_hash(audio/(n+'.wav')) for n in ('lead','backing')}
+    original_replace=Path.replace
+    def fail_second_pending(source,target):
+        if source.name=='backing.partition.pending.wav':raise OSError('fixture commit failure')
+        return original_replace(source,target)
+    with patch.object(Path,'replace',new=fail_second_pending):
+        try:repair(audio)
+        except OSError:pass
+        else:raise AssertionError('Second-file commit failure ignored')
+    assert before_tx=={n:file_hash(audio/(n+'.wav')) for n in before_tx}
+    assert not list(audio.glob('*.pending.wav'))
+    assert not list(audio.glob('*.partition.previous.wav'))
+    bad=lead.copy();bad[500,1]=np.nan
     sf.write(audio/'lead.wav',bad,sr,subtype='FLOAT')
     try:repair(audio)
-    except ValueError:pass
+    except VocalPartitionError as exc:
+        assert exc.code=='nonfinite_input_samples'
+        detail=exc.details['files'][0]
+        assert detail['file'].endswith('lead.wav') and detail['channels']==[1]
+        assert detail['sample_range']==[500,501] and detail['nonfinite_count']==1
+        assert exc.details['repair_hint']
+        payload=error_payload(exc)
+        assert payload['component']=='vocal_partition' and payload['retryable'] is True
+        assert payload['remediation']==['vwa_jobs_get','vwa_preparation_start']
+        assert payload['details']['files'][0]['sample_range']==[500,501]
     else:raise AssertionError('Nonfinite input accepted')
     assert not list(audio.glob('*.pending.wav'))
     write();sf.write(audio/'lead.wav',lead[:-1],sr,subtype='FLOAT')

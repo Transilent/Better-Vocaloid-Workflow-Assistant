@@ -37,6 +37,15 @@ LOCK_NAME = "creation.lock"
 MAX_JSON_BYTES = 16 * 1024 * 1024
 MAX_LYRICS_CHARS = 1024 * 1024
 SUMMARY_TEXT_CHARS = 240
+ERROR_CODE_CHARS = 120
+ERROR_MESSAGE_CHARS = 4000
+ERROR_COMPONENT_CHARS = 120
+ERROR_REMEDIATION_ITEMS = 16
+ERROR_REMEDIATION_CHARS = 240
+ERROR_DETAILS_DEPTH = 4
+ERROR_DETAILS_ITEMS = 32
+ERROR_DETAILS_TEXT_CHARS = 1000
+ERROR_DETAILS_MAX_BYTES = 8 * 1024
 SHA256_RE = re.compile(r"[a-f0-9]{64}")
 BV_RE = re.compile(r"BV1[A-Za-z0-9]{9}")
 ALLOWED_OPTIONS = frozenset({
@@ -61,6 +70,13 @@ DEFAULT_OPTIONS = {
     "bpm": None,
 }
 PREPARATION_STAGES = ("metadata", "download", "audio", "separation", "midi")
+# MDX/Vocal2MIDI execution device and BS-RoFormer device are different
+# option surfaces. Keep their accepted values canonical beside the backend
+# validation so the MCP schema cannot silently widen execution support.
+PREPARATION_DEVICE_VALUES = ("cpu", "dml")
+ROFORMER_DEVICE_VALUES = ("auto", "cpu", "cuda")
+PREPARATION_CPU_THREADS_RANGE = (0, 64)
+PREPARATION_BPM_RANGE = (20.0, 400.0)
 SCORE_SUFFIXES = {".mid", ".midi", ".ustx", ".svp", ".vsqx"}
 METADATA_AUXILIARY_FILES = ("原视频简介.txt", "歌词候选_需核对.txt")
 _RUN_PATCH_LOCK = threading.Lock()
@@ -199,6 +215,93 @@ def _summary_text(value, limit=SUMMARY_TEXT_CHARS):
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+", " ", value)
     text = re.sub(r"\s+", " ", text).strip()
     return text if len(text) <= limit else text[:max(0, limit - 1)].rstrip() + "…"
+
+
+def _bounded_error_json(value, depth=0):
+    """Return JSON-safe error context with bounded depth, count, and text."""
+    if value is None or type(value) is bool:
+        return value
+    if type(value) is int:
+        return value if abs(value) <= 10**18 else _summary_text(str(value), 64)
+    if type(value) is float:
+        return value if math.isfinite(value) else None
+    if isinstance(value, str):
+        return _summary_text(value, ERROR_DETAILS_TEXT_CHARS)
+    if depth >= ERROR_DETAILS_DEPTH:
+        return {"truncated": True, "type": type(value).__name__}
+    if isinstance(value, (list, tuple)):
+        rows = [_bounded_error_json(row, depth + 1)
+                for row in value[:ERROR_DETAILS_ITEMS]]
+        if len(value) > ERROR_DETAILS_ITEMS:
+            rows.append({"truncated": True, "omitted_items": len(value) - ERROR_DETAILS_ITEMS})
+        return rows
+    if isinstance(value, dict):
+        rows = {}
+        items = list(value.items())
+        for key, row in items[:ERROR_DETAILS_ITEMS]:
+            safe_key = _summary_text(key if isinstance(key, str) else str(key), 120)
+            if safe_key:
+                rows[safe_key] = _bounded_error_json(row, depth + 1)
+        if len(items) > ERROR_DETAILS_ITEMS:
+            rows["__truncated__"] = {
+                "omitted_items": len(items) - ERROR_DETAILS_ITEMS,
+            }
+        return rows
+    return _summary_text(str(value), ERROR_DETAILS_TEXT_CHARS)
+
+
+def _bounded_error_details(value):
+    if not isinstance(value, dict) or not value:
+        return None
+    cleaned = _bounded_error_json(value)
+    if len(_canonical_bytes(cleaned)) <= ERROR_DETAILS_MAX_BYTES:
+        return cleaned
+    preview = _canonical_bytes(cleaned)[:ERROR_DETAILS_MAX_BYTES // 2].decode(
+        "utf-8", errors="ignore")
+    wrapper = {"truncated": True, "preview": preview}
+    while preview and len(_canonical_bytes(wrapper)) > ERROR_DETAILS_MAX_BYTES:
+        preview = preview[:-64]
+        wrapper["preview"] = preview
+    return wrapper
+
+
+def _recorded_error_details(status):
+    """Read pipeline error_details as bounded evidence; never execute its text."""
+    recorded = status.get("error_details") if isinstance(status, dict) else None
+    if not isinstance(recorded, dict):
+        return None
+    result = {}
+    for name, limit in (("code", ERROR_CODE_CHARS),
+                        ("message", ERROR_MESSAGE_CHARS),
+                        ("component", ERROR_COMPONENT_CHARS)):
+        if isinstance(recorded.get(name), str):
+            value = _summary_text(recorded[name], limit)
+            if value:
+                result[name] = value
+    if type(recorded.get("retryable")) is bool:
+        result["retryable"] = recorded["retryable"]
+    remediation = recorded.get("remediation")
+    if isinstance(remediation, list):
+        result["remediation"] = [
+            text for row in remediation[:ERROR_REMEDIATION_ITEMS]
+            if (text := _summary_text(row, ERROR_REMEDIATION_CHARS) if isinstance(row, str) else "")
+        ]
+    if isinstance(recorded.get("details"), dict):
+        details = _bounded_error_details(recorded["details"])
+        if details is not None:
+            result["details"] = details
+    return result or None
+
+
+def _merge_recorded_error(error_row, recorded):
+    if error_row is None or not recorded:
+        return error_row
+    if recorded.get("code"):
+        error_row["code"] = recorded["code"]
+    for name in ("message", "component", "retryable", "remediation", "details"):
+        if name in recorded:
+            error_row[name] = copy.deepcopy(recorded[name])
+    return error_row
 
 
 def _duration_value(value):
@@ -367,18 +470,20 @@ def _normalise_options(options):
     if type(result["midi_steps"]) is not int or result["midi_steps"] not in (8, 16, 32):
         raise ValueError("midi_steps 只能是 8、16 或 32。")
     for name in ("separation_device", "midi_device"):
-        if result[name] not in ("cpu", "dml"):
-            raise ValueError(f"{name} 只能是 cpu 或 dml。")
-    if result["roformer_device"] not in ("auto", "cpu", "cuda"):
+        if result[name] not in PREPARATION_DEVICE_VALUES:
+            raise ValueError(f"{name} 只能是 {' 或 '.join(PREPARATION_DEVICE_VALUES)}。")
+    if result["roformer_device"] not in ROFORMER_DEVICE_VALUES:
         raise ValueError("roformer_device 只能是 auto、cpu 或 cuda。")
     adapter = result["dml_adapter"]
     if adapter != "auto" and (type(adapter) is not int or adapter < 0):
         raise ValueError("dml_adapter 只能是 auto 或非负整数。")
-    if type(result["cpu_threads"]) is not int or not 0 <= result["cpu_threads"] <= 64:
-        raise ValueError("cpu_threads 必须是 0–64 的整数。")
+    cpu_min, cpu_max = PREPARATION_CPU_THREADS_RANGE
+    if type(result["cpu_threads"]) is not int or not cpu_min <= result["cpu_threads"] <= cpu_max:
+        raise ValueError(f"cpu_threads 必须是 {cpu_min}–{cpu_max} 的整数。")
     if result["bpm"] is not None:
-        if type(result["bpm"]) not in (int, float) or not math.isfinite(result["bpm"]) or not 20 <= result["bpm"] <= 400:
-            raise ValueError("bpm 必须是 20–400 之间的有限数值或 null。")
+        bpm_min, bpm_max = PREPARATION_BPM_RANGE
+        if type(result["bpm"]) not in (int, float) or not math.isfinite(result["bpm"]) or not bpm_min <= result["bpm"] <= bpm_max:
+            raise ValueError(f"bpm 必须是 {bpm_min:g}–{bpm_max:g} 之间的有限数值或 null。")
         result["bpm"] = float(result["bpm"])
     return result
 
@@ -1506,12 +1611,16 @@ def run_preparation(job, until=None, cancel=None, progress=None) -> dict:
                 pipeline._run = original_stage_run
     except InterruptedError as error:
         pipeline_error = error
-    except (OSError, ValueError, RuntimeError, FileNotFoundError) as error:
+    except Exception as error:
+        # pipeline.write status.error_details for every ordinary exception.
+        # Keep that structured failure at this boundary instead of allowing
+        # an unexpected implementation exception to escape as an RPC error.
         pipeline_error = error
     finally:
         _RUN_PATCH_LOCK.release()
 
     status = _read_status(job)
+    recorded_error = _recorded_error_details(status)
     pipeline_state = status.get("state", "failed" if pipeline_error else "unknown")
     try:
         files, file_errors = _score_manifest(job)
@@ -1538,6 +1647,8 @@ def run_preparation(job, until=None, cancel=None, progress=None) -> dict:
                      "code": pipeline_state}
     elif pipeline_state == "partial":
         result_status = "partial"
+    if result_status == "failed":
+        error_row = _merge_recorded_error(error_row, recorded_error)
     if file_errors and result_status == "done":
         result_status = "failed"
         error_row = {"type": "PreparationError", "message": "部分 score 产物无法安全核验。",

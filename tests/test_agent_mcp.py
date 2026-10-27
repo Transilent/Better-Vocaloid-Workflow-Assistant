@@ -128,8 +128,73 @@ async def client_contract(configuration):
                  for p in configuration.parent.rglob('*') if p.is_file()}
     async with Client(params, read_timeout_seconds=70) as client:
         listed = await client.list_tools()
-        check({t.name for t in listed.tools} == set(TOOLS), 'all_tools_discovered')
-        check(all(t.input_schema and t.output_schema for t in listed.tools), 'input_and_output_schemas')
+        tools = {tool.name: tool for tool in listed.tools}
+        check(set(tools) == set(TOOLS), 'all_tools_discovered')
+        repair_tools = {'vwa_preparation_repair_plan', 'vwa_preparation_repair_start'}
+        check(repair_tools <= set(TOOLS), 'preparation_repair_tools_registered')
+        check(all(tool.input_schema and tool.output_schema for tool in listed.tools),
+              'input_and_output_schemas')
+        repair_plan_schema = tools['vwa_preparation_repair_plan']
+        repair_start_schema = tools['vwa_preparation_repair_start']
+        check(repair_plan_schema.annotations.read_only_hint is True,
+              'preparation_repair_plan_read_only')
+        check(repair_start_schema.annotations.read_only_hint is False and
+              repair_start_schema.annotations.destructive_hint is False and
+              repair_start_schema.annotations.idempotent_hint is True,
+              'preparation_repair_start_write_async')
+        check(repair_plan_schema.input_schema['properties']['source_job_id']['maxLength'] == 180 and
+              repair_start_schema.input_schema['properties']['plan_id']['maxLength'] == 180 and
+              repair_start_schema.input_schema['properties']['idempotency_key']['maxLength'] == 128,
+              'preparation_repair_parameters_bounded')
+        check('不运行模型' in (repair_plan_schema.description or '') and
+              '不覆盖源任务' in (repair_start_schema.description or ''),
+              'preparation_repair_safety_documented')
+
+        def resolved_schema(tool, property_name):
+            schema = tools[tool].input_schema
+            node = schema['properties'][property_name]
+            def resolve(value):
+                if '$ref' in value:
+                    target = schema
+                    for part in value['$ref'].removeprefix('#/').split('/'):
+                        target = target[part]
+                    return resolve(target)
+                if 'anyOf' in value:
+                    choices = [row for row in value['anyOf'] if row.get('type') != 'null']
+                    if len(choices) == 1:
+                        return resolve(choices[0])
+                return value
+            return resolve(node)
+
+        preparation = resolved_schema('vwa_preparation_plan', 'options')
+        preparation_fields = preparation['properties']
+        for name in ('separation_device', 'midi_device'):
+            device = resolved_schema('vwa_preparation_plan', 'options')
+            device = device['properties'][name]
+            if 'anyOf' in device:
+                device = next(row for row in device['anyOf'] if row.get('type') != 'null')
+            check(device['enum'] == ['cpu', 'dml'], 'preparation_%s_execution_contract' % name)
+        check(preparation_fields['bpm']['anyOf'][0]['minimum'] == 20.0 and
+              preparation_fields['bpm']['anyOf'][0]['maximum'] == 400.0,
+              'preparation_bpm_schema_bounds')
+        check(preparation_fields['cpu_threads']['anyOf'][0]['minimum'] == 0 and
+              preparation_fields['cpu_threads']['anyOf'][0]['maximum'] == 64,
+              'preparation_cpu_threads_schema_bounds')
+        for tool_name in ('vwa_workflow_create', 'vwa_workflow_clone'):
+            mode = resolved_schema(tool_name, 'review_mode')
+            check(mode.get('default') == 'full' and
+                  set(mode.get('enum', [])) == {'full', 'segments', 'legacy'},
+                  tool_name + '_review_modes')
+        export_description = tools['vwa_exports_plan'].description or ''
+        check(all(term in export_description for term in (
+            'preserve_pitch', 'pitch_source_job_id', 'pitch_bindings',
+            'vocal_track_index', 'time_origin_seconds')),
+            'export_pitch_preservation_description')
+        check('review_mode=full' in (client.instructions or '') and
+              '不会自动审核' in (client.instructions or '') and
+              '分页' in (client.instructions or ''),
+              'full_review_service_instructions')
+
         caps = await call(client, 'vwa_system_capabilities')
         check(caps['semantic_provider'] == 'caller_supplied_plan' and caps['candidate_only'], 'honest_capabilities')
         health = await call(client, 'vwa_system_health')
@@ -287,6 +352,57 @@ class MCPContract(unittest.TestCase):
         self.assertNotIn('import agent_mcp', (APP / 'app.py').read_text(encoding='utf-8'))
 
     @unittest.skipUnless(os.environ.get('VWA_MCP_SDK_PYTHON'), 'Dedicated optional SDK not configured')
+    def test_preparation_schema_matches_backend_boundaries(self):
+        script = r'''
+import json
+import sys
+sys.path.insert(0, sys.argv[1])
+from pydantic import ValidationError
+import agent_mcp
+import agent_preparation as preparation
+
+schema = agent_mcp.PreparationOptions.model_json_schema()
+fields = schema['properties']
+
+def non_null(name):
+    if 'anyOf' in fields[name]:
+        return next(row for row in fields[name]['anyOf'] if row.get('type') != 'null')
+    return fields[name]
+
+assert non_null('bpm')['minimum'] == preparation.PREPARATION_BPM_RANGE[0]
+assert non_null('bpm')['maximum'] == preparation.PREPARATION_BPM_RANGE[1]
+assert non_null('cpu_threads')['minimum'] == preparation.PREPARATION_CPU_THREADS_RANGE[0]
+assert non_null('cpu_threads')['maximum'] == preparation.PREPARATION_CPU_THREADS_RANGE[1]
+for name in ('separation_device', 'midi_device'):
+    assert tuple(non_null(name)['enum']) == preparation.PREPARATION_DEVICE_VALUES
+    assert set(non_null(name)['enum']).isdisjoint(
+        set(preparation.ROFORMER_DEVICE_VALUES) - {'cpu'})
+
+for options in (
+    {'bpm': 20, 'cpu_threads': 0, 'separation_device': 'cpu', 'midi_device': 'dml'},
+    {'bpm': 400, 'cpu_threads': 64, 'separation_device': 'dml', 'midi_device': 'cpu'},
+):
+    agent_mcp.PreparationOptions(**options)
+for options in (
+    {'bpm': 19.999}, {'bpm': 400.001}, {'cpu_threads': -1}, {'cpu_threads': 65},
+    {'separation_device': 'auto'}, {'separation_device': 'cuda'},
+    {'midi_device': 'auto'}, {'midi_device': 'cuda'},
+):
+    try:
+        agent_mcp.PreparationOptions(**options)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError('schema accepted execution-unsupported options: %r' % options)
+print(json.dumps({'schema': True, 'boundaries': True}))
+'''
+        result = subprocess.run(
+            [os.environ['VWA_MCP_SDK_PYTHON'], '-B', '-c', script, str(APP / 'src')],
+            cwd=APP, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout), {'schema': True, 'boundaries': True})
+
+    @unittest.skipUnless(os.environ.get('VWA_MCP_SDK_PYTHON'), 'Dedicated optional SDK not configured')
     def test_real_stdio_workflow(self):
         parent = APP / 'work/mcp-protocol'
         parent.mkdir(parents=True, exist_ok=True)
@@ -371,6 +487,27 @@ async def workflow_contract(configuration):
         link_plan = await call(client,'vwa_preparation_plan',{'source':'https://www.bilibili.com/video/BV1xx411c7mD/',
             'options':{'language':'zh','voice_mode':'single','lyrics':'山河'}})
         check(link_plan['kind']=='preparation','real_link_preparation_plan')
+        boundary_plan = await call(client,'vwa_preparation_plan',{
+            'source':'https://www.bilibili.com/video/BV1xx411c7mD/',
+            'options':{'bpm':20,'cpu_threads':0,'separation_device':'cpu','midi_device':'dml'}})
+        check(boundary_plan['plan']['options']['bpm']==20.0 and
+              boundary_plan['plan']['options']['cpu_threads']==0 and
+              boundary_plan['plan']['options']['separation_device']=='cpu' and
+              boundary_plan['plan']['options']['midi_device']=='dml',
+              'preparation_minimum_boundaries_execute')
+        boundary_plan = await call(client,'vwa_preparation_plan',{
+            'source':'https://www.bilibili.com/video/BV1xx411c7mD/',
+            'options':{'bpm':400,'cpu_threads':64,'separation_device':'dml','midi_device':'cpu'}})
+        check(boundary_plan['plan']['options']['bpm']==400.0 and
+              boundary_plan['plan']['options']['cpu_threads']==64,
+              'preparation_maximum_boundaries_execute')
+        for invalid_options in (
+                {'bpm':19.999}, {'bpm':400.001}, {'cpu_threads':-1}, {'cpu_threads':65},
+                {'separation_device':'auto'}, {'separation_device':'cuda'},
+                {'midi_device':'auto'}, {'midi_device':'cuda'}):
+            await call(client,'vwa_preparation_plan',{
+                'source':'https://www.bilibili.com/video/BV1xx411c7mD/',
+                'options':invalid_options},error=True)
         await call(client,'vwa_preparation_plan',{'source':'https://example.com/a-song'},error=True)
         artifact = await call(client,'vwa_assets_import',{'path':str(original)})
         flow = await call(client,'vwa_workflow_create',{'score_artifact_id':artifact['id'],

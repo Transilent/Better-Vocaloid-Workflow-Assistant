@@ -966,7 +966,7 @@ def _merge_issues(candidates: list[dict[str, Any]], key: str) -> list[dict[str, 
 
 def _audit_candidate(format_name: str, row: Any, source: dict[str, Any],
                      source_sha: str, receipt_root: Path, plan_sha: str,
-                     converters: Mapping[str, Any]) -> dict[str, Any]:
+                     converters: Mapping[str, Any], pitch=None, cancel=None) -> dict[str, Any]:
     result = _skeleton_candidate(format_name, row, source_sha)
     warnings: list[dict[str, Any]] = result["warnings"]
     blockers: list[dict[str, Any]] = result["blockers"]
@@ -1066,11 +1066,23 @@ def _audit_candidate(format_name: str, row: Any, source: dict[str, Any],
         blockers.append(_issue("candidate_parser_unavailable", "运行库未提供格式解析器。", format_name))
         return result
     try:
-        project = converter.load(
-            _io_path(canonical_path),
-            {"import_pitch": False, "import_instrumental_track": False},
-        )
+        if pitch and pitch.get("status") in ("planned", "preserved"):
+            from agent_pitch import load_pitch_project
+            project = load_pitch_project(_io_path(canonical_path), format_name, converters)
+        else:
+            project = converter.load(_io_path(canonical_path),
+                {"import_pitch": False, "import_instrumental_track": False})
         parsed = _parse_project(project, format_name)
+        if pitch and pitch.get("status") in ("planned", "preserved"):
+            from agent_pitch import verify_pitch_plan
+            from libresvip.model.base import SongTempo
+            tempos, _ = _exports._loaded_clock(project, format_name)
+            project.song_tempo_list = [SongTempo(position=position, bpm=bpm) for position,bpm in tempos]
+            result["continuous_pitch"] = verify_pitch_plan(project, pitch["plan"], cancel=cancel)
+            if not result["continuous_pitch"].get("verified", False):
+                blockers.append(_issue("continuous_pitch_not_preserved",
+                    "独立回读发现原唱连续音高未保留。", format_name,
+                    pitch=result["continuous_pitch"]))
         after_sha = _stable_sha(canonical_path, label=format_name.upper() + " 候选")
     except Exception as error:
         blockers.append(_issue("candidate_parse_failed", "候选工程实际解析失败：" + str(error), format_name))
@@ -1397,7 +1409,7 @@ def audit_export(source_path: Any, receipt: Any, export_runtime: Any = None,
                     check_cancel()
                     candidates.append(_audit_candidate(
                         fmt, rows[index], parsed_source, source_sha, receipt_root,
-                        plan_sha, converters,
+                        plan_sha, converters, saved.get("pitch"), check_cancel,
                     ))
                 check_cancel()
         except (FileNotFoundError, ValueError, ImportError, OSError) as error:

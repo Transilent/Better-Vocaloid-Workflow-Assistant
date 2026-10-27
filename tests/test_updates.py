@@ -35,6 +35,26 @@ for entry in inventory:
         continue
     source = APP / entry['source']
     validate_file({'file': entry['file'], 'bytes': source.stat().st_size, 'sha256': file_hash(source)})
+# The MCP boundary adds files outside the installation root. Keep their
+# update allowlist exact instead of treating the containing folders as trusted.
+mcp_sources = {
+    'docs/AgentMCP.zh-CN.md': 'docs/AgentMCP.zh-CN.md',
+    'packaging/agent-mcp.example.json': 'packaging/agent-mcp.example.json',
+    'packaging/requirements-mcp.lock.txt': 'packaging/requirements-mcp.lock.txt',
+    'tools/Setup-AgentMCP.ps1': 'tools/Setup-AgentMCP.ps1',
+}
+for name, source_name in mcp_sources.items():
+    source = APP / source_name
+    validate_file({'file': name, 'bytes': source.stat().st_size, 'sha256': file_hash(source)})
+for forbidden in ('docs', 'docs/', 'docs/AgentMCP.zh-CN.md.bak', 'docs/Other.md',
+                  'packaging', 'packaging/', 'packaging/agent-mcp.example.json.bak',
+                  'tools', 'tools/', 'tools/Setup-AgentMCP.ps1.bak',
+                  'assets/agent-mcp/evil.svg'):
+    try:
+        validate_file({'file': forbidden, 'bytes': 1, 'sha256': '0' * 64})
+        raise AssertionError('Directory-wide or unlisted MCP update destination accepted: ' + forbidden)
+    except ValueError:
+        pass
 for script, name in (('build_app_update.py', 'BVWA-App-Update.zip'), ('build_portable.py', 'gate-test.zip')):
     target = APP / 'work' / name
     assert not target.exists()

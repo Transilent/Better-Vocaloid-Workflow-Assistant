@@ -16,6 +16,11 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from agent_control import Control, ControlError
+from agent_preparation import (
+    PREPARATION_BPM_RANGE,
+    PREPARATION_CPU_THREADS_RANGE,
+    PREPARATION_DEVICE_VALUES,
+)
 
 
 class StrictModel(BaseModel):
@@ -63,6 +68,11 @@ class StyleProposal(StrictModel):
     regions: list[StyleRegion] = Field(min_length=1, max_length=256)
 
 
+PreparationExecutionDevice = Literal[*PREPARATION_DEVICE_VALUES]
+WorkflowReviewMode = Annotated[Literal['full','segments','legacy'], Field(
+    description='full=整曲一次明确审批（默认）；segments=逐段审批；legacy=兼容旧流程。')]
+
+
 class PreparationOptions(StrictModel):
     language: Literal['zh','ja'] = 'zh'
     lyrics: str = Field(default='', max_length=100000)
@@ -73,10 +83,14 @@ class PreparationOptions(StrictModel):
     midi_backend: Literal['v1','v2'] | None = None
     alignment_engine: Literal['hfa','tifa'] = 'hfa'
     midi_steps: Literal[8,16,32] = 16
-    bpm: float | None = Field(default=None, gt=0, le=1000)
-    separation_device: Literal['cpu','cuda','auto','dml'] | None = None
-    midi_device: Literal['cpu','cuda','auto','dml'] | None = None
-    cpu_threads: int | None = Field(default=None, ge=1, le=128)
+    bpm: float | None = Field(default=None, ge=PREPARATION_BPM_RANGE[0],
+        le=PREPARATION_BPM_RANGE[1])
+    separation_device: PreparationExecutionDevice | None = Field(default=None,
+        description='MDX/声部分离执行设备，仅支持 cpu 或 dml；RoFormer 设备是独立设置。')
+    midi_device: PreparationExecutionDevice | None = Field(default=None,
+        description='Vocal2MIDI 执行设备，仅支持 cpu 或 dml；RoFormer 设备是独立设置。')
+    cpu_threads: int | None = Field(default=None, ge=PREPARATION_CPU_THREADS_RANGE[0],
+        le=PREPARATION_CPU_THREADS_RANGE[1], description='0 表示自动；最大 64。')
 
 
 class LyricEdit(StrictModel):
@@ -134,11 +148,13 @@ def build_server(config_path):
     mcp = MCPServer('VWA Agent', version='0.5.0', log_level='WARNING', instructions=(
         '先读取 vwa_system_capabilities。首选一体化 vwa_workflow_create：传歌曲链接/本地音乐，'
         '或 score_artifact_id。之后读取工作流 next 字段，按工具和当前 revision 连续推进，'
-        '默认segments逐段核对MIDI和风格，每段最多16音符/10秒锚定窗口，停顿另切。'
-        '先读当前段再提交该段决策，不得用全曲判断代替逐段检查；相邻上下文只读。'
-        'MIDI修改后需回读确认本段；风格用workflow_style_review/decide逐段保留或设定，再汇总。'
-        '运行中按 after_seconds 查询。到 review 时使用 workflow_review 核对音符和歌词，'
-        '用 workflow_apply_review 提交修改或有理由的保留决策；没有实际核对不得跳过。'
+        '默认review_mode=full：整曲只提交一次明确审批，但服务不会自动审核。'
+        '使用workflow_review分页/紧凑读取并覆盖所需音符与歌词，未实际读取的分页不得声称已核对；'
+        '汇总核对后以workflow_apply_review提交一次整曲决定。显式segments仍逐段读取并审批，'
+        '每段最多16音符/10秒锚定窗口，停顿另切；legacy仅兼容旧流程。'
+        'MIDI修改后需回读确认对应音符；风格按模式逐段或整曲处理。'
+        '运行中按 after_seconds 查询。review时使用workflow_review核对音符和歌词，'
+        '用workflow_apply_review提交修改或有理由的保留决策；没有实际核对不得跳过。'
         'reference_import 可导入已有F0 NPZ和PCM WAV；workflow_references_set绑定显式对齐秒数，'
         '随后review包含条件性音高证据和音频摘录入口。参考来源未经声学验证，不能视为真值。'
         '网易云可lyric_timeline_search核对版本，再fetch快照；本地LRC/YRC可import。'
@@ -162,6 +178,8 @@ def build_server(config_path):
         '导出失败可workflow_rebind_score在同一流程换入修正MIDI，retry只重做已保存计划。'
         '读取默认紧凑，审计完整证据用detail=full；分页context/review不能只看首屏。'
         'workflow_delivery输出包含SHA和回执的可移目录交付包；准备任务默认发现可用伴奏。'
+        '已有声部只需复核修复时，先用preparation_repair_plan只读定位，再以preparation_repair_start'
+        '异步生成受管候选；修复不重跑模型、不覆盖源任务。'
         'succeeded 仅表示候选已生成；awaiting_external_synthesis 仍需外部编辑器合成。'
         '不提供任意命令执行、账号导出或平台发布。'))
 
@@ -332,6 +350,19 @@ def build_server(config_path):
         return await invoke(control.preparation_start, job_id, until, idempotency_key)
 
     @mcp.tool(annotations=READ)
+    async def vwa_preparation_repair_plan(
+            source_job_id: Annotated[str, Field(min_length=1, max_length=180)]) -> Result:
+        """只读分析现有准备任务的声部分离产物，定位可复核缺口；不运行模型、不修改源任务。"""
+        return await invoke(control.preparation_repair_plan, source_job_id)
+
+    @mcp.tool(annotations=WRITE)
+    async def vwa_preparation_repair_start(
+            plan_id: Annotated[str, Field(min_length=1, max_length=180)],
+            idempotency_key: Annotated[str, Field(min_length=1, max_length=128)]) -> Result:
+        """异步创建受管修复候选并复核已有声部；不运行模型、不覆盖源任务，可安全重试。"""
+        return await invoke(control.preparation_repair_start, plan_id, idempotency_key)
+
+    @mcp.tool(annotations=READ)
     async def vwa_lyrics_read(artifact_id: str, language: Literal['zh','ja'] = 'zh') -> Result:
         """读取 MIDI 歌词与音符/时间关系，保留歧义、孤立歌词和未知读音。"""
         return await invoke(control.lyrics_read, artifact_id, language=language)
@@ -443,7 +474,10 @@ def build_server(config_path):
     @mcp.tool(annotations=WRITE)
     async def vwa_exports_plan(artifact_id: str, formats: list[Literal['svp','ustx','vsqx']] | None = None,
                                options: dict[str, Any] | None = None) -> Result:
-        """规划导出并预检单声部重叠；options含include_instrumental、instrumental_artifact_id或instrumental_source_job_id。"""
+        """规划导出并预检单声部重叠。options仍为dict；既有 include_instrumental、
+        instrumental_artifact_id、instrumental_source_job_id 保留。音高保真字段为
+        preserve_pitch（默认true）、pitch_source_job_id，以及
+        pitch_bindings[{pitch_artifact_id,vocal_track_index,time_origin_seconds}]。"""
         return await invoke(control.make_plan, 'export', artifact_id, formats=formats, options=options)
 
     @mcp.tool(annotations=WRITE)
@@ -460,8 +494,9 @@ def build_server(config_path):
             brief: str = '', reference_lyrics: str = '', score_artifact_id: str | None = None,
             formats: list[Literal['svp','ustx','vsqx']] | None = None,
             idempotency_key: str | None = None, preparation_job_id: str | None = None,
-            review_mode: Literal['segments','legacy'] = 'segments') -> Result:
-        """一体化入口：歌曲链接/音乐，或已有 MIDI → 核对歌词与音符 → 工程 → 可选风格。"""
+            review_mode: WorkflowReviewMode = 'full') -> Result:
+        """一体化入口：歌曲链接/音乐，或已有 MIDI → 核对歌词与音符 → 工程 → 可选风格。
+        默认full为整曲一次明确审批；可选segments逐段审批、legacy兼容流程。分页读取不等于自动审核。"""
         return await invoke_workflow(workflow().create, source,
             options.model_dump(exclude_unset=True, exclude_none=True) if options else {},
             brief, reference_lyrics, score_artifact_id, formats, idempotency_key,preparation_job_id,review_mode)
@@ -519,8 +554,9 @@ def build_server(config_path):
     @mcp.tool(annotations=WRITE)
     async def vwa_workflow_clone(workflow_id: str, expected_revision: int, reason: str,
             score_artifact_id: str | None = None,idempotency_key: str | None = None,
-            review_mode: Literal['segments','legacy'] = 'segments') -> Result:
-        """从保留MIDI克隆可继续流程，也支持旧代码结果；必须重新review/export，不继承旧认可。"""
+            review_mode: WorkflowReviewMode = 'full') -> Result:
+        """从保留MIDI克隆可继续流程，也支持旧代码结果；默认full整曲一次审批，
+        segments/legacy仍可选；必须重新分页review/export，不继承旧认可。"""
         return await invoke_workflow(workflow().clone,workflow_id,expected_revision,score_artifact_id,reason,idempotency_key,review_mode)
 
     @mcp.tool(annotations=WRITE)
@@ -577,8 +613,10 @@ def build_server(config_path):
         return ('歌曲到工程：优先 vwa_workflow_create(source=含BV号的B站链接，brief=用户背景，'
                 'reference_lyrics=已获准参考歌词)。已有 MIDI 先 assets_import，再以 score_artifact_id 创建。'
                 '连续按 next.tool/arguments 操作；运行中遵守 after_seconds，冲突先 get 重读 revision。'
-                'review 时获取分页证据，综合音符和歌词作决定，再 apply_review。缺词/重复/错位是线索，'
-                '延音、一字多音和读音未知应保留歧义；缺依据不编歌词。可一次提交音符与歌词修改。'
+                '默认 review_mode=full 是整曲一次明确审批，不表示自动审核；必须分页/紧凑读取全部所需证据，'
+                '综合音符和歌词后再 apply_review。显式 segments 仍逐段审批，legacy 仅兼容旧流程。'
+                '缺词/重复/错位是线索，延音、一字多音和读音未知应保留歧义；缺依据不编歌词。'
+                '可一次提交音符与歌词修改。'
                 '已有F0/WAV可reference_import后用workflow_references_set绑定，review中按next摘录音频。'
                 '导出后先检查export_summary的实际秒数、歌词与损失，以export_review逐项认可或退回。'
                 '然后结合背景和 context_read 提供 style_proposal；无风格需求可 finish。'

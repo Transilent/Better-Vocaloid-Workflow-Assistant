@@ -64,6 +64,9 @@ def dispatch(control, action, arguments):
         from agent_preparation import plan_preparation_reuse
         job=safe_path(arguments['source_job'],control.jobs)
         return plan_preparation_reuse(job,arguments.get('options'),arguments.get('reuse_stages'))
+    if action == 'preparation_repair_plan':
+        from agent_separation_repair import plan_separation_repair
+        return plan_separation_repair(safe_path(arguments['source_job'], control.jobs))
     if action=='preparation_reuse_create':
         from agent_preparation import create_preparation_reuse
         plan=arguments['plan']
@@ -144,6 +147,8 @@ def dispatch(control, action, arguments):
         from agent_exports import plan_export
         if arguments.get('options',{}).get('instrumental_path'):
             safe_path(arguments['options']['instrumental_path'],[control.state,*control.jobs,*control.assets])
+        for source in arguments.get('options', {}).get('pitch_sources', []):
+            safe_path(source['path'], [control.state,*control.jobs,*control.assets])
         return plan_export(path, arguments.get('formats'), arguments.get('options'))
     if action in ('pronunciation_read','pronunciation_plan'):
         from agent_pronunciation import read_pronunciation,plan_pronunciation_patch

@@ -1901,6 +1901,11 @@
     "tests/test_agent_segment_workflow.py",
     "src/agent_lyric_timeline.py",
     "tests/test_agent_lyric_timeline.py",
-    "tests/test_agent_timeline_integration.py"
+    "tests/test_agent_timeline_integration.py",
+    "src/agent_pitch.py",
+    "src/agent_separation_repair.py",
+    "tests/test_agent_pitch.py",
+    "tests/test_agent_separation_repair.py",
+    "tests/test_agent_signal_workflow.py"
   ]
 }
