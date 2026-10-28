@@ -7,12 +7,14 @@ where stable note-ID remapping must be proven.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import copy
 import hashlib
 import json
 import shutil
 import sys
 import tempfile
+import threading
 import unittest
 import wave
 from pathlib import Path
@@ -465,6 +467,254 @@ class WorkflowCreateGetTests(WorkflowTestBase):
             self.create_midi_flow(brief="不同请求")
         self.assertEqual(raised.exception.code, "idempotency_conflict")
         self.assertEqual(len(list(io_path(self.control.state / "workflows").glob("flow_*.json"))), 1)
+
+    def test_create_without_initial_export_options_preserves_legacy_shape(self):
+        created = self.create_source_flow(key="legacy-shape")
+        record = self.workflow._read(created["id"])
+        self.assertEqual(record["request"], {
+            "source": "BV1xx411c7mD",
+            "options": {"language": "zh"},
+            "brief": "",
+            "reference_lyrics": "",
+            "score_artifact_id": None,
+            "formats": ["svp"],
+            "review_mode": "full",
+        })
+        self.assertNotIn("initial_export_options", record)
+        self.assertNotIn("export_options", record)
+        self.assertEqual(record["history"], [])
+        self.assertEqual(self.control.preparation_starts, [])
+        self.assertEqual(self.control.plan_calls, [])
+        self.assertEqual(self.control.plan_starts, [])
+        self.assertEqual(self.control.worker_calls, [])
+        self.assertEqual([row[0] for row in self.control.preparation_calls],
+                         ["BV1xx411c7mD"])
+
+    def test_initial_export_options_are_stored_without_resolving_bindings(self):
+        bindings = {
+            "language": "ja",
+            "default_bpm": 123.5,
+            "svp_version": "2.0",
+            "track_names": ["主唱", "和声"],
+            "project_name": "导出试验",
+            "preserve_pitch": True,
+            "pitch_bindings": [{
+                "pitch_artifact_id": "art_reference_pitch",
+                "vocal_track_index": 0,
+                "time_origin_seconds": 1.25,
+            }],
+            "include_instrumental": True,
+            "instrumental_artifact_id": "art_instrumental",
+        }
+        original = copy.deepcopy(bindings)
+        created, artifact = self.create_midi_flow(
+            key="initial-export-options", initial_export_options=bindings)
+        self.assertEqual(bindings, original)
+        record = self.workflow._read(created["id"])
+        self.assertEqual(record["initial_export_options"], original)
+        self.assertEqual(record["export_options"], original)
+        self.assertNotIn("initial_export_options", record["request"])
+        self.assertEqual(self.control.preparation_starts, [])
+        self.assertEqual(self.control.plan_calls, [])
+        self.assertEqual(self.control.plan_starts, [])
+        self.assertEqual(self.control.worker_calls, [])
+
+        reviewed = self.complete_review(created)
+        exporting = self.workflow.advance(reviewed["id"], reviewed["revision"])
+        self.assertEqual(exporting["stage"], "exporting")
+        export_call = next(row for row in self.control.plan_calls if row[0] == "export")
+        export_options = export_call[2]["options"]
+        self.assertEqual(export_options["pitch_bindings"], original["pitch_bindings"])
+        self.assertEqual(export_options["instrumental_artifact_id"],
+                         original["instrumental_artifact_id"])
+        self.assertEqual(export_options["include_instrumental"], True)
+        self.assertNotIn("instrumental_path", export_options)
+        self.assertNotIn("pitch_sources", export_options)
+
+    def test_initial_export_options_retry_binding_and_key_isolation(self):
+        first_options = {"pitch_source_job_id": "job_pitch_first", "include_instrumental": False}
+        first, artifact = self.create_midi_flow(
+            key="bound-export-options", initial_export_options=first_options)
+        path = self.control.state / "workflows" / (first["id"] + ".json")
+        before = io_path(path).read_bytes()
+        second, artifact_again = self.create_midi_flow(
+            key="bound-export-options", initial_export_options=copy.deepcopy(first_options))
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(first["revision"], second["revision"])
+        self.assertEqual(artifact["id"], artifact_again["id"])
+        self.assertEqual(io_path(path).read_bytes(), before)
+
+        with self.assertRaises(ControlError) as raised:
+            self.create_midi_flow(
+                key="bound-export-options",
+                initial_export_options={"pitch_source_job_id": "job_pitch_other"})
+        self.assertEqual(raised.exception.code, "idempotency_conflict")
+        self.assertEqual(io_path(path).read_bytes(), before)
+
+        third, _ = self.create_midi_flow(
+            key="different-export-options-key", initial_export_options=first_options)
+        self.assertNotEqual(third["id"], first["id"])
+        self.assertEqual(len(list(io_path(self.control.state / "workflows").glob("flow_*.json"))), 2)
+
+    def test_initial_export_options_reject_paths_and_invalid_json_before_write(self):
+        artifact = self.control.import_asset(self.midi)
+        cases = [
+            ({"instrumental_path": "C:/private/instrumental.wav"}, "unsafe_media_path"),
+            ({"pitch_sources": [{"path": "C:/private/pitch.npz"}]}, "unsafe_pitch_path"),
+            ({"pitch_bindings": [{
+                "pitch_artifact_id": "art_pitch", "path": "C:/private/pitch.npz"
+            }]}, "unsafe_export_path"),
+            ({"pitch_bindings": [{
+                "pitch_artifact_id": "art_pitch", "time_origin_seconds": float("nan")
+            }]}, "invalid_export_options"),
+            ({"pitch_bindings": object()}, "invalid_export_options"),
+            ([], "invalid_export_options"),
+            ({"unknown_option": True}, "invalid_export_options"),
+            ({"language": "en"}, "invalid_export_options"),
+            ({"default_bpm": True}, "invalid_export_options"),
+            ({"svp_version": "3.0"}, "invalid_export_options"),
+            ({"include_instrumental": "yes"}, "invalid_options"),
+            ({"pitch_source_job_id": ""}, "invalid_export_options"),
+            ({"pitch_source_job_id": None}, "invalid_export_options"),
+            ({"pitch_artifact_id": None}, "invalid_export_options"),
+            ({"instrumental_source_job_id": None}, "invalid_export_options"),
+            ({"instrumental_artifact_id": None}, "invalid_export_options"),
+            ({"pitch_bindings": []}, "invalid_pitch_bindings"),
+            ({"pitch_bindings": [
+                {"pitch_artifact_id": "art_one", "vocal_track_index": 0},
+                {"pitch_artifact_id": "art_two", "vocal_track_index": 0},
+            ]}, "invalid_pitch_bindings"),
+            ({"pitch_bindings": [{"pitch_artifact_id": "art_one"}],
+              "pitch_artifact_id": "art_two"}, "conflicting_pitch_source"),
+            ({"preserve_pitch": False,
+              "pitch_source_job_id": "job_not_created_yet"}, "conflicting_pitch_source"),
+            ({"instrumental_artifact_id": "art_inst",
+              "instrumental_source_job_id": "job_inst"}, "conflicting_instrumental_source"),
+            ({"include_instrumental": False,
+              "instrumental_source_job_id": "job_inst"}, "conflicting_instrumental_source"),
+            ({"project_name": "bad/name"}, "invalid_export_options"),
+        ]
+        for index, (options, code) in enumerate(cases):
+            with self.subTest(code=code, index=index):
+                with self.assertRaises(ControlError) as raised:
+                    self.workflow.create(
+                        score_artifact_id=artifact["id"],
+                        idempotency_key="invalid-export-" + str(index),
+                        initial_export_options=options,
+                    )
+                self.assertEqual(raised.exception.code, code)
+                self.assertTrue(any(0x4e00 <= ord(char) <= 0x9fff
+                                    for char in str(raised.exception)))
+                self.assertEqual(list(io_path(self.control.state / "workflows").glob("*")), [])
+        self.assertEqual(self.control.preparation_calls, [])
+        self.assertEqual(self.control.preparation_starts, [])
+        self.assertEqual(self.control.plan_calls, [])
+        self.assertEqual(self.control.plan_starts, [])
+        self.assertEqual(self.control.worker_calls, [])
+
+    def test_concurrent_same_export_intent_is_one_atomic_creation(self):
+        bindings = {"pitch_source_job_id": "job_pitch_concurrent",
+                    "instrumental_artifact_id": "art_instrumental_concurrent"}
+        workers = 6
+        barrier = threading.Barrier(workers)
+
+        def create():
+            barrier.wait()
+            return self.workflow.create(
+                source="BV1xx411c7mD",
+                options={"language": "zh"},
+                idempotency_key="concurrent-export-intent",
+                initial_export_options=copy.deepcopy(bindings),
+            )
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(create) for _ in range(workers)]
+            results = [future.result() for future in futures]
+        self.assertEqual(len({row["id"] for row in results}), 1)
+        self.assertEqual(len(list(io_path(self.control.state / "workflows").glob("flow_*.json"))), 1)
+        self.assertEqual(len(self.control.preparation_calls), 1)
+        self.assertEqual(self.control.preparation_starts, [])
+        record = self.workflow._read(results[0]["id"])
+        self.assertEqual(record["initial_export_options"], bindings)
+        self.assertEqual(record["export_options"], bindings)
+
+    def test_concurrent_same_key_different_options_has_one_winner(self):
+        workers = 5
+        barrier = threading.Barrier(workers)
+
+        def create(index):
+            barrier.wait()
+            return self.workflow.create(
+                source="BV1xx411c7mD",
+                options={"language": "zh"},
+                idempotency_key="concurrent-export-conflict",
+                initial_export_options={"pitch_source_job_id": "job_pitch_" + str(index)},
+            )
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(create, index) for index in range(workers)]
+        values = []
+        errors = []
+        for future in futures:
+            try:
+                values.append(future.result())
+            except ControlError as error:
+                errors.append(error)
+        self.assertEqual(len(values), 1)
+        self.assertEqual(len(errors), workers - 1)
+        self.assertTrue(all(error.code == "idempotency_conflict" for error in errors))
+        self.assertEqual(len(self.control.preparation_calls), 1)
+        self.assertEqual(len(list(io_path(self.control.state / "workflows").glob("flow_*.json"))), 1)
+
+    def test_generated_key_is_stable_without_options_and_distinguishes_options(self):
+        artifact = self.control.import_asset(self.midi)
+        request = {
+            "source": "",
+            "options": {},
+            "brief": "",
+            "reference_lyrics": "",
+            "score_artifact_id": artifact["id"],
+            "formats": ["svp"],
+            "review_mode": "full",
+        }
+        legacy = self.workflow.create(score_artifact_id=artifact["id"])
+        self.assertEqual(legacy["id"], "flow_" + digest(digest(request))[:32])
+        empty = self.workflow.create(
+            score_artifact_id=artifact["id"], initial_export_options={})
+        self.assertEqual(empty["id"], legacy["id"])
+
+        first_options = {"pitch_source_job_id": "job_future_pitch_a"}
+        second_options = {"pitch_source_job_id": "job_future_pitch_b"}
+        first = self.workflow.create(
+            score_artifact_id=artifact["id"], initial_export_options=first_options)
+        expected = digest({"request": request,
+                           "initial_export_options": first_options})
+        self.assertEqual(first["id"], "flow_" + digest(expected)[:32])
+        first_again = self.workflow.create(
+            score_artifact_id=artifact["id"],
+            initial_export_options=copy.deepcopy(first_options))
+        self.assertEqual(first_again["id"], first["id"])
+        second = self.workflow.create(
+            score_artifact_id=artifact["id"], initial_export_options=second_options)
+        self.assertNotEqual(second["id"], first["id"])
+        self.assertEqual(len(list(io_path(self.control.state / "workflows").glob("flow_*.json"))), 3)
+
+    def test_code_revision_change_preserves_old_workflow_before_clone(self):
+        created = self.create_source_flow(key="legacy-code-revision")
+        path = self.control.state / "workflows" / (created["id"] + ".json")
+        before = io_path(path).read_bytes()
+        self.control.code_revision = "code-rev-next"
+        with self.assertRaises(ControlError) as raised:
+            self.workflow.advance(created["id"], created["revision"])
+        self.assertEqual(raised.exception.code, "stale_workflow")
+        self.assertEqual(io_path(path).read_bytes(), before)
+
+        cloned = self.workflow.clone(
+            created["id"], created["revision"], reason="Continue under current code")
+        self.assertNotEqual(cloned["id"], created["id"])
+        self.assertEqual(io_path(path).read_bytes(), before)
+        self.assertEqual(self.workflow._read(cloned["id"])["code_revision"], "code-rev-next")
+        self.assertEqual(self.control.preparation_starts, [])
 
     def test_source_create_validates_and_get_exposes_revision_and_next_step(self):
         created = self.create_source_flow(options={"language": "ja"},

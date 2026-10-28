@@ -7,6 +7,7 @@ that an unknown lyric is correct or silently invokes a semantic provider.
 from __future__ import annotations
 
 import copy
+import json
 import math
 from pathlib import Path
 import time
@@ -159,8 +160,137 @@ class Workflow:
             from agent_delivery import build_delivery
             return build_delivery(self.control,value,destination,name)
 
+    _PUBLIC_INITIAL_EXPORT_KEYS = frozenset({
+        'language', 'default_bpm', 'svp_version', 'include_instrumental',
+        'track_names', 'project_name', 'preserve_pitch', 'pitch_bindings',
+        'pitch_artifact_id', 'pitch_source_job_id', 'instrumental_artifact_id',
+        'instrumental_source_job_id',
+    })
+
+    @staticmethod
+    def _normalize_initial_export_options(value):
+        """Validate public export intent without resolving or mutating it."""
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ControlError('invalid_export_options', '初始导出选项必须是 JSON 对象。')
+        try:
+            normalized = json.loads(json.dumps(value, ensure_ascii=False, allow_nan=False))
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ControlError('invalid_export_options', '初始导出选项只能包含有限的 JSON 数据。') from error
+
+        def reject_internal_paths(current):
+            if isinstance(current, dict):
+                for key, item in current.items():
+                    if key == 'instrumental_path':
+                        raise ControlError('unsafe_media_path', '请使用伴奏 artifact 或来源任务 ID，不传内部媒体路径。')
+                    if key == 'pitch_sources':
+                        raise ControlError('unsafe_pitch_path', '请使用 pitch_bindings 或 pitch_source_job_id，不传内部连续音高路径。')
+                    if key == 'path' or key.endswith('_path'):
+                        raise ControlError('unsafe_export_path', '导出选项必须保留公开的 artifact 或任务 ID，不能包含内部路径。')
+                    reject_internal_paths(item)
+            elif isinstance(current, list):
+                for item in current:
+                    reject_internal_paths(item)
+
+        reject_internal_paths(normalized)
+        unknown = set(normalized) - Workflow._PUBLIC_INITIAL_EXPORT_KEYS
+        if unknown:
+            raise ControlError('invalid_export_options', '导出选项含有未支持字段：' + ', '.join(sorted(unknown)))
+
+        def finite_number(name, item, minimum, maximum):
+            try:
+                finite = type(item) in (int, float) and math.isfinite(float(item))
+            except OverflowError:
+                finite = False
+            if not finite or not minimum <= float(item) <= maximum:
+                raise ControlError('invalid_export_options', name + ' 必须是范围内的有限数值。')
+
+        def public_identifier(name, item):
+            if (not isinstance(item, str) or not item or item != item.strip()
+                    or len(item) > 256 or '\x00' in item
+                    or '/' in item or '\\' in item or Path(item).is_absolute()):
+                raise ControlError('invalid_export_options', name + ' 必须是公开的 artifact 或任务 ID，不能是路径。')
+
+        if 'language' in normalized and normalized['language'] not in ('zh', 'ja'):
+            raise ControlError('invalid_export_options', '导出选项 language 必须是 zh 或 ja。')
+        if 'default_bpm' in normalized:
+            finite_number('导出选项 default_bpm', normalized['default_bpm'], 1.0, 1000.0)
+        if 'svp_version' in normalized and normalized['svp_version'] not in ('1.9', '1.11', '2.0'):
+            raise ControlError('invalid_export_options', '导出选项 svp_version 必须是 1.9、1.11 或 2.0。')
+        for name in ('preserve_pitch', 'include_instrumental'):
+            if name in normalized and type(normalized[name]) is not bool:
+                raise ControlError('invalid_options', '导出选项 ' + name + ' 必须是布尔值。')
+
+        bindings_present = 'pitch_bindings' in normalized
+        bindings = normalized.get('pitch_bindings')
+        single_pitch_present = 'pitch_artifact_id' in normalized
+        single_pitch = normalized.get('pitch_artifact_id')
+        pitch_job_present = 'pitch_source_job_id' in normalized
+        pitch_job = normalized.get('pitch_source_job_id')
+        if single_pitch_present:
+            public_identifier('pitch_artifact_id', single_pitch)
+        if pitch_job_present:
+            public_identifier('pitch_source_job_id', pitch_job)
+        if bindings_present and single_pitch_present:
+            raise ControlError('conflicting_pitch_source', 'pitch_bindings 与 pitch_artifact_id 只能选一个。')
+        if bindings_present and pitch_job_present:
+            raise ControlError('conflicting_pitch_source', '显式音高绑定与 pitch_source_job_id 只能选一个。')
+        if single_pitch_present and pitch_job_present:
+            raise ControlError('conflicting_pitch_source', '音高 artifact 与来源任务只能选一个。')
+        if normalized.get('preserve_pitch', True) is False and any(
+                key in normalized for key in ('pitch_bindings', 'pitch_artifact_id', 'pitch_source_job_id')):
+            raise ControlError('conflicting_pitch_source', '关闭连续音高时不能同时绑定音高来源。')
+        if bindings_present:
+            if not isinstance(bindings, list) or not bindings or len(bindings) > 128:
+                raise ControlError('invalid_pitch_bindings', 'pitch_bindings 必须是非空列表，最多 128 轨。')
+            indices = set()
+            for row in bindings:
+                if (not isinstance(row, dict)
+                        or set(row) - {'pitch_artifact_id', 'vocal_track_index', 'time_origin_seconds'}):
+                    raise ControlError('invalid_pitch_bindings', '每条音高绑定只能包含 artifact、演唱轨序号和可选秒偏移。')
+                public_identifier('pitch_bindings[].pitch_artifact_id', row.get('pitch_artifact_id'))
+                index = row.get('vocal_track_index', 0)
+                if type(index) is not int or index < 0 or index in indices:
+                    raise ControlError('invalid_pitch_bindings', '演唱轨序号必须是不重复的非负整数。')
+                finite_number('pitch_bindings[].time_origin_seconds',
+                              row.get('time_origin_seconds', 0.0), -86400.0, 86400.0)
+                indices.add(index)
+
+        instrumental_artifact_present = 'instrumental_artifact_id' in normalized
+        instrumental_artifact = normalized.get('instrumental_artifact_id')
+        instrumental_job_present = 'instrumental_source_job_id' in normalized
+        instrumental_job = normalized.get('instrumental_source_job_id')
+        if instrumental_artifact_present:
+            public_identifier('instrumental_artifact_id', instrumental_artifact)
+        if instrumental_job_present:
+            public_identifier('instrumental_source_job_id', instrumental_job)
+        if instrumental_artifact_present and instrumental_job_present:
+            raise ControlError('conflicting_instrumental_source', '伴奏 artifact 与来源任务只能选一个。')
+        if normalized.get('include_instrumental') is False and (
+                instrumental_artifact_present or instrumental_job_present):
+            raise ControlError('conflicting_instrumental_source', '关闭伴奏时不能同时指定伴奏来源。')
+
+        if 'track_names' in normalized:
+            track_names = normalized['track_names']
+            if not isinstance(track_names, list) or not track_names:
+                raise ControlError('invalid_export_options', '导出选项 track_names 必须是非空字符串列表。')
+            for name in track_names:
+                if (not isinstance(name, str) or not name.strip() or len(name) > 256
+                        or '\x00' in name or '\r' in name or '\n' in name):
+                    raise ControlError('invalid_export_options', 'track_names 中的名称必须是非空短文本，且不能包含换行。')
+        if 'project_name' in normalized:
+            project_name = normalized['project_name']
+            if (not isinstance(project_name, str) or not project_name.strip() or len(project_name) > 256
+                    or '\x00' in project_name or '\r' in project_name or '\n' in project_name
+                    or '/' in project_name or '\\' in project_name):
+                raise ControlError('invalid_export_options', '导出选项 project_name 必须是不含路径分隔符的非空短文本。')
+        return normalized
+
     def create(self, source='', options=None, brief='', reference_lyrics='',
-               score_artifact_id=None, formats=None, idempotency_key=None, preparation_job_id=None,review_mode='full'):
+               score_artifact_id=None, formats=None, idempotency_key=None, preparation_job_id=None,review_mode='full',
+               initial_export_options=None):
+        initial_export_options = self._normalize_initial_export_options(initial_export_options)
         if review_mode not in ('full','legacy','segments'):
             raise ControlError('invalid_review_mode','核对模式为full整曲、segments逐段或兼容legacy。')
         if sum(bool(item) for item in (source,score_artifact_id,preparation_job_id))!=1:
@@ -179,7 +309,11 @@ class Workflow:
                    'formats': formats}
         if preparation_job_id:request['preparation_job_id']=preparation_job_id
         request['review_mode'] = review_mode
-        key = idempotency_key or digest(request)
+        if idempotency_key is None and initial_export_options:
+            derived = {'request': request, 'initial_export_options': initial_export_options}
+        else:
+            derived = request
+        key = idempotency_key or digest(derived)
         if not isinstance(key, str) or not 1 <= len(key) <= 128:
             raise ControlError('invalid_idempotency_key', '工作流重试键需为 1–128 字符。')
         identifier = 'flow_' + digest(key)[:32]
@@ -189,6 +323,8 @@ class Workflow:
                 previous = self._read(identifier)
                 if previous['request'] != request:
                     raise ControlError('idempotency_conflict', '工作流重试键已用于不同请求。')
+                if previous.get('initial_export_options', {}) != (initial_export_options or {}):
+                    raise ControlError('idempotency_conflict', '工作流重试键已绑定不同的初始导出选项。')
                 return self.get(identifier)
             if score_artifact_id:
                 artifact = self.control.artifact(score_artifact_id)
@@ -211,6 +347,9 @@ class Workflow:
                      'score_artifact_id': score_artifact_id, 'created': time.time(),
                      'updated': time.time(), 'attempt': 0, 'history': []}
             if preparation_job_id:value['job_id']=preparation_job_id
+            if initial_export_options is not None:
+                value['initial_export_options'] = copy.deepcopy(initial_export_options)
+                value['export_options'] = copy.deepcopy(initial_export_options)
             if review_mode=='segments' and score_artifact_id:
                 from agent_segment_workflow import make_segments
                 value['midi_segments']=make_segments(self.control,score_artifact_id,'midi')

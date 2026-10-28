@@ -14,128 +14,16 @@ import anyio
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import Field
 from agent_control import Control, ControlError
-from agent_preparation import (
-    PREPARATION_BPM_RANGE,
-    PREPARATION_CPU_THREADS_RANGE,
-    PREPARATION_DEVICE_VALUES,
+from agent_mcp_standard_routing import STANDARD_INSTRUCTIONS, interface_identity, standardize
+
+
+from agent_mcp_models import (
+    StrictModel, Result, ScoreEdit, StyleDetail, StyleRegion, StyleProposal,
+    PreparationExecutionDevice, WorkflowReviewMode, PreparationOptions, LyricEdit,
+    ExportReview, DeleteNote, InsertNote, StructureEdit, PronunciationEdit, PronunciationTarget,
 )
-
-
-class StrictModel(BaseModel):
-    model_config = ConfigDict(extra='forbid', strict=True, allow_inf_nan=False)
-
-
-class Result(StrictModel):
-    schema_version: Literal[1] = 1
-    data: dict[str, Any]
-
-
-class ScoreEdit(StrictModel):
-    note_id: str = Field(min_length=1, max_length=180)
-    pitch: Annotated[int, Field(ge=0, le=127)] | None = None
-    onset_tick: Annotated[int, Field(ge=0)] | None = None
-    duration_tick: Annotated[int, Field(gt=0)] | None = None
-
-
-class StyleDetail(StrictModel):
-    onset: float = Field(default=1.,ge=0,le=1)
-    sustain: float = Field(default=1.,ge=0,le=1)
-    connection: float = Field(default=1.,ge=0,le=1)
-    release: float = Field(default=1.,ge=0,le=1)
-
-
-class StyleRegion(StrictModel):
-    start: float = Field(ge=0)
-    end: float = Field(gt=0)
-    preset: Literal['none', 'gentle', 'sad', 'bold']
-    strength: float = Field(ge=0, le=1)
-    style_pitch: bool = True
-    detail: StyleDetail | None = None
-    style_technique: Literal['none', 'chinese_opera'] = Field(default='none',
-        validation_alias=AliasChoices('style_technique','technique'),
-        description='唱腔字段style_technique；兼容输入别名technique，保存时规范为style_technique。')
-    technique_strength: float = Field(default=.6, ge=0, le=1)
-    technique_pitch: bool = True
-    rationale: str = Field(min_length=1, max_length=2000)
-    evidence_refs: list[str] = Field(default_factory=list, max_length=128)
-
-
-class StyleProposal(StrictModel):
-    track_indices: list[Annotated[int, Field(ge=0)]] = Field(min_length=1, max_length=128)
-    brief: str = Field(min_length=1, max_length=8000)
-    regions: list[StyleRegion] = Field(min_length=1, max_length=256)
-
-
-PreparationExecutionDevice = Literal[*PREPARATION_DEVICE_VALUES]
-WorkflowReviewMode = Annotated[Literal['full','segments','legacy'], Field(
-    description='full=整曲一次明确审批（默认）；segments=逐段审批；legacy=兼容旧流程。')]
-
-
-class PreparationOptions(StrictModel):
-    language: Literal['zh','ja'] = 'zh'
-    lyrics: str = Field(default='', max_length=100000)
-    backing_lyrics: str = Field(default='', max_length=100000)
-    recognize_lyrics: bool = True
-    voice_mode: Literal['single','dual'] = Field(default='dual',
-        description='single=混合人声；dual=主唱＋和声/伴奏人声。两者都不是按歌手音色拆分对唱。')
-    midi_backend: Literal['v1','v2'] | None = None
-    alignment_engine: Literal['hfa','tifa'] = 'hfa'
-    midi_steps: Literal[8,16,32] = 16
-    bpm: float | None = Field(default=None, ge=PREPARATION_BPM_RANGE[0],
-        le=PREPARATION_BPM_RANGE[1])
-    separation_device: PreparationExecutionDevice | None = Field(default=None,
-        description='MDX/声部分离执行设备，仅支持 cpu 或 dml；RoFormer 设备是独立设置。')
-    midi_device: PreparationExecutionDevice | None = Field(default=None,
-        description='Vocal2MIDI 执行设备，仅支持 cpu 或 dml；RoFormer 设备是独立设置。')
-    cpu_threads: int | None = Field(default=None, ge=PREPARATION_CPU_THREADS_RANGE[0],
-        le=PREPARATION_CPU_THREADS_RANGE[1], description='0 表示自动；最大 64。')
-
-
-class LyricEdit(StrictModel):
-    note_id: str = Field(min_length=1, max_length=180)
-    lyric: str = Field(max_length=256)
-    operation: Literal['replace','insert']
-
-
-class ExportReview(StrictModel):
-    report_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
-    decision: Literal['accept','needs_revision']
-    rationale: str = Field(min_length=1, max_length=8000)
-    accepted_loss_codes: list[str] = Field(default_factory=list, max_length=128)
-
-
-class DeleteNote(StrictModel):
-    operation: Literal['delete']
-    note_id: str = Field(min_length=1,max_length=180)
-    lyric_policy: Literal['preserve','delete_owned']
-
-
-class InsertNote(StrictModel):
-    operation: Literal['insert']
-    track_index: int = Field(ge=0)
-    channel: int = Field(ge=0,le=15)
-    pitch: int = Field(ge=0,le=127)
-    onset_tick: int = Field(ge=0)
-    duration_tick: int = Field(gt=0)
-    velocity: int = Field(ge=1,le=127)
-    lyric: str | None = Field(default=None,max_length=256)
-
-
-StructureEdit = Annotated[DeleteNote | InsertNote,Field(discriminator='operation')]
-
-
-class PronunciationEdit(StrictModel):
-    note_ref: str = Field(min_length=1,max_length=256)
-    phonemes: str = Field(max_length=256)
-
-
-class PronunciationTarget(StrictModel):
-    artifact_id: str = Field(min_length=1,max_length=80)
-    expected_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
-    edits: list[PronunciationEdit] = Field(min_length=1,max_length=256)
-
 
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
@@ -143,9 +31,42 @@ NETWORK_READ=ToolAnnotations(readOnlyHint=True,destructiveHint=False,idempotentH
 NETWORK_WRITE=ToolAnnotations(readOnlyHint=False,destructiveHint=False,idempotentHint=False,openWorldHint=True)
 
 
-def build_server(config_path):
+class StandardMCPServer(MCPServer):
+    """Reject unknown top-level fields in this server's standard profile.
+
+    MCPServer builds an argument model from each tool signature. Its default
+    model ignores extra keys, including keys outside a strict nested request.
+    Keep the stricter contract local to this server and publish the same rule
+    in its catalogue; legacy connections retain their existing behaviour.
+    """
+
+    async def list_tools(self):
+        listed = await super().list_tools()
+        for tool in listed:
+            tool.input_schema = {**tool.input_schema, 'additionalProperties': False}
+        return listed
+
+    async def call_tool(self, name, arguments, context=None):
+        listed = await super().list_tools()
+        tool = next((item for item in listed if item.name == name), None)
+        if tool is not None and isinstance(arguments, dict):
+            extra = sorted(set(arguments) - set(tool.input_schema.get('properties', {})))
+            if extra:
+                raise ToolError(json.dumps({
+                    'code': 'invalid_arguments',
+                    'message': 'Unexpected top-level arguments',
+                    'extra_fields': extra,
+                }, ensure_ascii=False))
+        return await super().call_tool(name, arguments, context)
+
+
+def build_server(config_path, profile='standard'):
+    if profile not in ('standard', 'legacy'):
+        raise ValueError('Unsupported MCP profile')
     control = Control(config_path)
-    mcp = MCPServer('VWA Agent', version='0.5.0', log_level='WARNING', instructions=(
+    interface_revision = interface_identity(control.app)
+    server_type = StandardMCPServer if profile == 'standard' else MCPServer
+    mcp = server_type('VWA Agent', version='0.5.0', log_level='WARNING', instructions=(STANDARD_INSTRUCTIONS if profile == 'standard' else (
         '先读取 vwa_system_capabilities。首选一体化 vwa_workflow_create：传歌曲链接/本地音乐，'
         '或 score_artifact_id。之后读取工作流 next 字段，按工具和当前 revision 连续推进，'
         '默认review_mode=full：整曲只提交一次明确审批，但服务不会自动审核。'
@@ -181,22 +102,60 @@ def build_server(config_path):
         '已有声部只需复核修复时，先用preparation_repair_plan只读定位，再以preparation_repair_start'
         '异步生成受管候选；修复不重跑模型、不覆盖源任务。'
         'succeeded 仅表示候选已生成；awaiting_external_synthesis 仍需外部编辑器合成。'
-        '不提供任意命令执行、账号导出或平台发布。'))
+        '不提供任意命令执行、账号导出或平台发布。')))
 
     async def invoke(function, *args, **kwargs):
         try:
             data = await anyio.to_thread.run_sync(partial(function, *args, **kwargs))
-            return Result(data=data)
+            if isinstance(data, dict) and data.get('server') == 'VWA Agent MCP':
+                data = {**data, 'interface_profile': profile, 'interface_revision': interface_revision}
+            if profile == 'standard' and isinstance(data, dict):
+                owner = getattr(function, '__self__', None)
+                name = getattr(function, '__name__', '')
+                mutations = {'create', 'advance', 'apply_review', 'references_set',
+                             'pronunciation_apply', 'clone', 'rebind_score', 'close'}
+                if ((owner is not None and owner.__class__.__name__ == 'Workflow' and name in mutations)
+                        or (getattr(function, '__module__', '') == 'agent_segment_workflow'
+                            and name == 'style_decide')):
+                    from agent_views import workflow_view
+                    data = workflow_view(data)
+            return Result(data=standardize(data) if profile == 'standard' else data)
         except (ControlError, ValueError, OSError, TypeError, KeyError) as error:
             logging.getLogger('vwa.mcp').warning('%s: %s', type(error).__name__, error)
             from agent_errors import error_payload
             payload=error_payload(error)
+            if profile == 'standard':payload=standardize(payload)
             raise ToolError(json.dumps(payload,ensure_ascii=False)) from error
 
     async def invoke_workflow(function,*args,**kwargs):
         value=await invoke(function,*args,**kwargs)
         from agent_views import workflow_view
         return Result(data=workflow_view(value.data))
+
+    if profile == 'standard':
+        from agent_workflow import Workflow
+        from agent_mcp_standard_read import register as register_read
+        from agent_mcp_standard_assets import register as register_assets
+        from agent_mcp_standard_decide import register as register_decide
+        from agent_mcp_standard_flow import register as register_flow
+
+        workflow = Workflow(control)
+        for register in (register_read, register_assets, register_decide, register_flow):
+            register(mcp, control, workflow, invoke)
+
+        @mcp.resource('vwa://capabilities')
+        def standard_capabilities_resource() -> str:
+            capabilities = {**control.capabilities(), 'interface_profile': profile,
+                            'interface_revision': interface_revision}
+            return json.dumps(standardize(capabilities), ensure_ascii=False, indent=2)
+
+        @mcp.resource('vwa://workflow')
+        def standard_workflow_resource() -> str:
+            return (STANDARD_INSTRUCTIONS +
+                    ' 工作流操作按工具的有类型request.action选择；各工具说明包含所需参数。'
+                    ' 旧脚本可在新连接选择--profile legacy。')
+
+        return mcp
 
     async def invoke_style_plan(artifact_id,proposal,detail):
         value=await invoke(control.make_plan,'style',artifact_id,proposal=proposal)
@@ -235,7 +194,7 @@ def build_server(config_path):
         """查看真实进度及当前视频source_summary；wait_ms最多60000，变化或超时返回。"""
         return await invoke(control.job_get, job_id, wait_ms, after_cursor)
 
-    @mcp.tool(annotations=READ)
+    @mcp.tool(annotations=WRITE)
     async def vwa_artifacts_list(job_id: str | None = None) -> Result:
         """列出服务登记产物，或读取指定任务的产物回执；无清单时明确返回。"""
         return await invoke(control.artifacts_list, job_id)
@@ -245,12 +204,12 @@ def build_server(config_path):
         """读取产物信息；verify=true 启动可取消的摘要核验操作。"""
         return await invoke(control.inspect_artifact, artifact_id, verify, wait_ms)
 
-    @mcp.tool(annotations=READ)
+    @mcp.tool(annotations=WRITE)
     async def vwa_operations_get(operation_id: str) -> Result:
         """读取持久操作状态、实际结果或失败；断开客户端后仍可查询。"""
         return await invoke(control.operation_get, operation_id)
 
-    @mcp.tool(annotations=READ)
+    @mcp.tool(annotations=WRITE)
     async def vwa_operations_wait(operation_id: str, timeout_ms: int = 30000,
             after_cursor: str | None = None, return_on: Literal['terminal','change'] = 'terminal',
             detail: Literal['summary','full'] = 'summary') -> Result:
@@ -343,16 +302,16 @@ def build_server(config_path):
         return await invoke(control.preparation_reuse_plan,source_job_id,
             options.model_dump(exclude_unset=True,exclude_none=True) if options else {},reuse_stages)
 
-    @mcp.tool(annotations=WRITE)
+    @mcp.tool(annotations=NETWORK_WRITE)
     async def vwa_preparation_start(job_id: str, idempotency_key: str,
             until: Literal['metadata','download','audio','separation','midi'] | None = None) -> Result:
         """运行/续跑本服务创建的准备任务，复用真实阶段回执；包含下载和模型步骤。"""
         return await invoke(control.preparation_start, job_id, until, idempotency_key)
 
-    @mcp.tool(annotations=READ)
+    @mcp.tool(annotations=WRITE)
     async def vwa_preparation_repair_plan(
             source_job_id: Annotated[str, Field(min_length=1, max_length=180)]) -> Result:
-        """只读分析现有准备任务的声部分离产物，定位可复核缺口；不运行模型、不修改源任务。"""
+        """分析现有准备任务的声部分离产物并保存方案；不运行模型、不修改源任务。"""
         return await invoke(control.preparation_repair_plan, source_job_id)
 
     @mcp.tool(annotations=WRITE)
@@ -501,7 +460,7 @@ def build_server(config_path):
             options.model_dump(exclude_unset=True, exclude_none=True) if options else {},
             brief, reference_lyrics, score_artifact_id, formats, idempotency_key,preparation_job_id,review_mode)
 
-    @mcp.tool(annotations=READ)
+    @mcp.tool(annotations=WRITE)
     async def vwa_workflow_get(workflow_id: str, include_details: bool = False,
             detail: Literal['summary','full'] = 'summary', include_note_ids: bool = False,
             include_raw_evidence: bool = False) -> Result:
@@ -529,7 +488,7 @@ def build_server(config_path):
         return await invoke_workflow(style_decide,workflow(),workflow_id,expected_revision,segment_id,rationale,
             proposal.model_dump() if proposal else None)
 
-    @mcp.tool(annotations=READ)
+    @mcp.tool(annotations=WRITE)
     async def vwa_workflows_list(limit: int = 20, offset: int = 0,
             status: str | None = None, query: str = '') -> Result:
         """分页搜索工作流：状态/关闭/归档、BVID、工程ID；旧修订证据仍可查询。"""
@@ -594,7 +553,7 @@ def build_server(config_path):
         return await invoke_workflow(workflow().pronunciation_apply,workflow_id,expected_revision,
                             [row.model_dump() for row in changes],rationale)
 
-    @mcp.tool(annotations=WRITE)
+    @mcp.tool(annotations=NETWORK_WRITE)
     async def vwa_workflow_advance(workflow_id: str, expected_revision: int,
             style_proposal: StyleProposal | None = None, retry: bool = False, finish: bool = False,
             export_review: ExportReview | None = None,style_plan_id: str | None = None,
@@ -606,7 +565,9 @@ def build_server(config_path):
 
     @mcp.resource('vwa://capabilities')
     def capabilities_resource() -> str:
-        return json.dumps(control.capabilities(), ensure_ascii=False, indent=2)
+        capabilities = {**control.capabilities(), 'interface_profile': profile,
+                        'interface_revision': interface_revision}
+        return json.dumps(capabilities, ensure_ascii=False, indent=2)
 
     @mcp.resource('vwa://workflow')
     def workflow_resource() -> str:
@@ -628,9 +589,11 @@ def build_server(config_path):
 def main():
     parser = argparse.ArgumentParser(description='VWA optional stdio MCP server')
     parser.add_argument('--config', required=True, help='Absolute path to reviewed local MCP config')
+    parser.add_argument('--profile', choices=('standard', 'legacy'), default='standard',
+                        help='standard: 12 task tools (default); legacy: original 61 tools')
     args = parser.parse_args()
     logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
-    build_server(args.config).run(transport='stdio')
+    build_server(args.config, args.profile).run(transport='stdio')
 
 
 if __name__ == '__main__':

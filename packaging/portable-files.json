@@ -490,6 +490,30 @@
       "source": "src/agent_mcp.py"
     },
     {
+      "file": "agent_mcp_models.py",
+      "source": "src/agent_mcp_models.py"
+    },
+    {
+      "file": "agent_mcp_standard_routing.py",
+      "source": "src/agent_mcp_standard_routing.py"
+    },
+    {
+      "file": "agent_mcp_standard_read.py",
+      "source": "src/agent_mcp_standard_read.py"
+    },
+    {
+      "file": "agent_mcp_standard_assets.py",
+      "source": "src/agent_mcp_standard_assets.py"
+    },
+    {
+      "file": "agent_mcp_standard_decide.py",
+      "source": "src/agent_mcp_standard_decide.py"
+    },
+    {
+      "file": "agent_mcp_standard_flow.py",
+      "source": "src/agent_mcp_standard_flow.py"
+    },
+    {
       "file": "agent_score.py",
       "source": "src/agent_score.py"
     },
@@ -504,6 +528,10 @@
     {
       "file": "docs/AgentMCP.zh-CN.md",
       "source": "docs/AgentMCP.zh-CN.md"
+    },
+    {
+      "file": "docs/AgentMCPStandard.zh-CN.md",
+      "source": "docs/AgentMCPStandard.zh-CN.md"
     },
     {
       "file": "packaging/agent-mcp.example.json",

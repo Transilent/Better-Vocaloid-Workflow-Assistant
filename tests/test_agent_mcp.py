@@ -93,7 +93,7 @@ async def client_contract(configuration):
     from agent_control import TOOLS, io_path
     config = json.loads(configuration.read_text(encoding='utf-8'))
     params = StdioServerParameters(command=sys.executable,
-        args=['-B', '-u', str(Path(config['application_root']) / 'agent_mcp.py'), '--config', str(configuration)],
+        args=['-B', '-u', str(Path(config['application_root']) / 'agent_mcp.py'), '--config', str(configuration), '--profile', 'legacy'],
         env={'PYTHONUTF8': '1', 'PYTHONDONTWRITEBYTECODE': '1'})
     checks = []
     calls = []
@@ -136,8 +136,14 @@ async def client_contract(configuration):
               'input_and_output_schemas')
         repair_plan_schema = tools['vwa_preparation_repair_plan']
         repair_start_schema = tools['vwa_preparation_repair_start']
-        check(repair_plan_schema.annotations.read_only_hint is True,
-              'preparation_repair_plan_read_only')
+        check(repair_plan_schema.annotations.read_only_hint is False,
+              'preparation_repair_plan_saves_plan')
+        check(tools['vwa_preparation_start'].annotations.open_world_hint is True and
+              tools['vwa_workflow_advance'].annotations.open_world_hint is True,
+              'preparation_and_workflow_network_is_declared')
+        check(tools['vwa_artifacts_list'].annotations.read_only_hint is False and
+              tools['vwa_operations_get'].annotations.read_only_hint is False,
+              'conditional_index_and_interruption_writes_are_declared')
         check(repair_start_schema.annotations.read_only_hint is False and
               repair_start_schema.annotations.destructive_hint is False and
               repair_start_schema.annotations.idempotent_hint is True,
@@ -452,7 +458,7 @@ async def workflow_contract(configuration):
     from agent_control import io_path
     config = json.loads(configuration.read_text(encoding='utf-8'))
     params = StdioServerParameters(command=sys.executable,
-        args=['-B','-u',str(Path(config['application_root'])/'agent_mcp.py'),'--config',str(configuration)],
+        args=['-B','-u',str(Path(config['application_root'])/'agent_mcp.py'),'--config',str(configuration),'--profile','legacy'],
         env={'PYTHONUTF8':'1','PYTHONDONTWRITEBYTECODE':'1'})
     checks = []; calls = []
     def check(condition, label):

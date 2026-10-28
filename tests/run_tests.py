@@ -43,6 +43,7 @@ names = ('test_i18n.py', 'test_strength_control.py', 'test_download_sources.py',
 names = ('test_portable_variants.py',) + names
 names = ('test_name_migration.py',) + names
 # Optional local Agent/MCP boundary contracts.
+names = ('test_agent_mcp_standard_routing.py', 'test_agent_mcp_standard_read.py', 'test_agent_mcp_standard_assets.py', 'test_agent_mcp_standard_decide.py', 'test_agent_mcp_standard_flow.py', 'test_agent_mcp_standard_integration.py',) + names
 names = ('test_agent_control.py', 'test_agent_score.py', 'test_agent_style.py', 'test_agent_mcp.py') + names
 names = ('test_agent_preparation.py', 'test_agent_lyrics.py', 'test_agent_exports.py', 'test_agent_workflow.py') + names
 names = ('test_agent_supervision.py', 'test_agent_export_audit.py', 'test_agent_reference.py', 'test_agent_structure.py') + names

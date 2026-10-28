@@ -1,6 +1,8 @@
 # VWA 本机 Agent / MCP 接口
 
-本文按当前 `workspace/vwa` 工作树中的 `src/agent_mcp.py`、`agent_control.py`、`agent_workflow.py` 及其他已落盘模块，说明 **61 个 stdio 工具**。工具总数由 `agent_control.TOOLS` 和 MCP 注册表共同核对；实际可用工具、代码身份和格式能力仍以 `vwa_system_capabilities().data.tools`、`code_revision` 及真实业务回执为准。
+本文保留 **legacy 兼容模式的 61 个 stdio 工具**及其详细业务契约；启动服务时显式选择 `--profile legacy`。新的默认 standard 模式及其 12 个入口见 [精简接口说明](AgentMCPStandard.zh-CN.md)。两个模式复用同一业务层，但工具名称不同；切换模式后应重新连接并核对服务返回的实际工具目录。旧工作流、MIDI、F0 来源和原有审核规则不会因接口改名而被删除。
+
+以下工具名、示例和 `vwa_system_capabilities` 均属于 legacy 模式。标准模式的能力从 `vwa_status` 查询；实际能力、业务代码身份、接口身份和格式保真以当前连接的回执为准。
 
 `vwa_assets_import` 也可导入授权目录内的伴奏 WAV，支持整数 PCM 与浮点 WAV，按流式摘要生成独立快照；其 artifact 可用于 `instrumental_artifact_id`。`vwa_reference_import(kind="audio")` 用于整数 PCM 参考测量与摘录，不能用它替代浮点伴奏导入。伴奏首版上限为 2 GiB。
 
