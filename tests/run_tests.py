@@ -48,7 +48,7 @@ names = ('test_agent_control.py', 'test_agent_score.py', 'test_agent_style.py', 
 names = ('test_agent_preparation.py', 'test_agent_lyrics.py', 'test_agent_exports.py', 'test_agent_workflow.py') + names
 names = ('test_agent_supervision.py', 'test_agent_export_audit.py', 'test_agent_reference.py', 'test_agent_structure.py') + names
 names = ('test_style_drafts.py', 'test_agent_drafts.py', 'test_agent_pronunciation.py', 'test_agent_refinement.py', 'test_tuning_shared_drafts.py') + names
-names = ('test_agent_lyric_timeline.py', 'test_agent_timeline_integration.py') + names
+names = ('test_agent_workflow_dry_run_mcp.py', 'test_agent_lyric_reconcile.py', 'test_agent_lyric_timeline.py', 'test_agent_timeline_integration.py') + names
 names = ('test_agent_monophony.py', 'test_agent_media.py', 'test_agent_views.py', 'test_agent_delivery.py', 'test_agent_song_feedback.py', 'test_agent_segments.py', 'test_agent_segment_workflow.py') + names
 names = ('test_agent_pitch.py', 'test_agent_separation_repair.py', 'test_agent_signal_workflow.py') + names
 if selected - set(names):

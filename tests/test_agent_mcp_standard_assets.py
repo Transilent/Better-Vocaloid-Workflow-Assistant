@@ -214,6 +214,18 @@ def invocation_contract(source_directory):
 
         input_schema = tools['vwa_input'].input_schema
         input_mapping = input_schema['properties']['request']['discriminator']['mapping']
+        assets_schema = input_schema['$defs'][
+            input_mapping['assets_import'].rsplit('/', 1)[-1]
+        ]
+        assets_description = assets_schema['properties']['path']['description']
+        check('allowed_asset_roots' in assets_description,
+              'assets_import_exposes_root_policy')
+        check('不会从外部根自动复制' in assets_description,
+              'assets_import_rejects_implicit_copy')
+        check('独立不可变快照' in assets_description,
+              'assets_import_marks_immutable_snapshot')
+        check(assets_schema['properties']['path']['maxLength'] == 4096,
+              'assets_import_path_is_bounded')
         fetch_schema = input_schema['$defs'][
             input_mapping['lyric_timeline_fetch'].rsplit('/', 1)[-1]
         ]

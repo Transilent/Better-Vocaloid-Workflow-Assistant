@@ -103,6 +103,45 @@ class SegmentWorkflowTests(unittest.TestCase):
             current=style_decide(self.workflow,current['id'],current['revision'],view['segment']['id'],'本段保留原表现。')
         self.assertIsNone(combined_style(self.workflow._read(current['id'])))
 
+    def test_ready_and_styling_style_review_have_explicit_stage_semantics(self):
+        document={'version':153,'library':[],'time':{'tempo':[{'position':0,'bpm':120}],'meter':[]},
+            'tracks':[{'name':'Lead','mainRef':{'blickOffset':0,'isInstrumental':False,'database':{}},
+                'groups':[],'mainGroup':{'uuid':'fixture','parameters':{},'notes':[
+                    {'onset':i*705600000,'duration':352800000,'pitch':60+i%3,'lyrics':'la'} for i in range(8)]}}]}
+        target=self.root/'assets/style-result.svp';target.write_text(json.dumps(document),encoding='utf-8')
+        artifact=self.control.import_asset(target)
+        operation=self.control.start_plan('plan_style_result','style','segment-style-result')
+        styling=self.workflow._write(self.workflow._read(self.flow['id']),'style_started',
+            stage='styling',operation_id=operation['id'])
+        in_progress=style_review(self.workflow,styling['id'])
+        self.assertEqual(in_progress['review_phase'],'apply_in_progress')
+        self.assertFalse(in_progress['available'])
+        self.assertEqual(in_progress['next']['tool'],'vwa_wait')
+
+        receipt={'candidate_path':artifact['path'],'candidate_sha256':artifact['sha256'],
+            'output_sha256':artifact['sha256'],'source_sha256':'a'*64,'source_unchanged':True,
+            'receipt':str(self.root/'assets/tuning-receipt.json'),'receipt_sha256':'b'*64,
+            'status':'partial','partial_reason_counts':{'short_note_preserved':2},
+            'partial_remediation':[{'reason':'short_note_preserved','message':'保留短音'}],
+            'partial_advice':['短音保持原表现。'],
+            'report':{'status':'partial','style':{'status':'partial','applied_controls':63,
+                'skipped_controls':2,'regions':[{'start':0.0,'end':1.0}]}}}
+        self.control.set_operation(operation['id'],'succeeded',
+            result={'receipt':receipt,'artifacts':[artifact]})
+        ready=self.workflow._write(styling,'styled_project_ready',stage='ready',
+            project_artifact_id=artifact['id'],final_artifacts=[artifact])
+        errors_before=len(self.control.worker_calls)
+        result=style_review(self.workflow,ready['id'])
+        self.assertEqual(len(self.control.worker_calls),errors_before)
+        self.assertEqual(result['review_phase'],'result')
+        self.assertTrue(result['available'])
+        self.assertTrue(result['applied'])
+        self.assertEqual(result['result_status'],'partial')
+        self.assertEqual(result['partial_reason_counts'],{'short_note_preserved':2})
+        self.assertEqual(result['region_count'],1)
+        self.assertFalse(result['segment_context_applicable'])
+        self.assertIn('回读',result['stage_semantics'])
+
     def test_distinct_track_styles_cannot_be_merged_into_global_targeting(self):
         value={'request':{'brief':'two voices'},'style_segments':{'segments':[
             {'fingerprint':'left'},{'fingerprint':'right'}]},'style_segment_decisions':{

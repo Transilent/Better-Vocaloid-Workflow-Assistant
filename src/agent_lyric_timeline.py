@@ -584,6 +584,12 @@ def read_timeline(timeline_path: Any, *, limit: int = 100, offset: int = 0,
         "provider": provider,
         "version_verified": verified_value is True,
         "version_verification_status": verification_status,
+        "version_mismatch_risk": verified_value is not True,
+        "version_warning": (
+            "该歌词来源的演唱版本尚未核实；唱词、段落和时间可能与当前音频不同。"
+            "请核对演唱者、版本和偏移，不能仅凭来源或覆盖率认定一致。"
+            if verified_value is not True else None
+        ),
         "reference_only": True,
         "reference_status": {
             "role": "reference_not_ground_truth",

@@ -29,9 +29,37 @@ class Workflow:
     def _read(self, identifier):
         return self.control._record('workflows', identifier, 'flow')
 
+    @staticmethod
+    def _retire_last_error(value, retired_by, *, projected=False):
+        """Move a superseded error out of the current-status field."""
+        error = value.get('last_error')
+        if error is None:
+            return
+        history = value.get('error_history')
+        history = copy.deepcopy(history) if isinstance(history, list) else []
+        entry = {
+            'error': copy.deepcopy(error),
+            'revision': value.get('revision'),
+            'retired_by': retired_by,
+        }
+        if projected:
+            entry['projected'] = True
+        else:
+            entry['retired_at'] = time.time()
+        history.append(entry)
+        value['error_history'] = history[-32:]
+        value.pop('last_error', None)
+
     def _write(self, value, action, **changes):
         value = copy.deepcopy(value)
+        if (('last_error' in changes and changes['last_error'] != value.get('last_error')) or action in {
+                'review_started', 'operation_retried', 'export_repaired',
+                'review_accepted', 'prepared_midi_imported', 'project_exported',
+                'styled_project_ready', 'project_ready'}):
+            self._retire_last_error(value, action)
         value.update(changes, revision=value['revision'] + 1, updated=time.time())
+        if value.get('last_error') is None:
+            value.pop('last_error', None)
         value.setdefault('history', []).append({'action': action, 'revision': value['revision'],
                                                 'at': value['updated']})
         if len(value['history']) > 512:
@@ -438,7 +466,7 @@ class Workflow:
 
     @staticmethod
     def _preparation_reference_lyrics_evidence(job, owned, preparation_job_id,
-                                                reference_lyrics):
+                                                reference_lyrics, request_snapshot=None):
         """Compare the supplied lyrics with the immutable preparation request.
 
         This only proves whether the request contained the same reference text.
@@ -497,8 +525,11 @@ class Workflow:
 
         request_path = safe_path(Path(job) / 'request.json', [job])
         try:
-            with io_path(request_path).open('rb') as stream:
-                request_bytes = stream.read(MAX_JSON + 1)
+            if request_snapshot is None:
+                with io_path(request_path).open('rb') as stream:
+                    request_bytes = stream.read(MAX_JSON + 1)
+            else:
+                request_bytes = request_snapshot
             if len(request_bytes) > MAX_JSON:
                 raise ControlError('too_large', 'JSON 记录超出读取限制。')
             request_digest = hashlib.sha256(request_bytes).hexdigest()
@@ -612,7 +643,7 @@ class Workflow:
 
     def create(self, source='', options=None, brief='', reference_lyrics='',
                score_artifact_id=None, formats=None, idempotency_key=None, preparation_job_id=None,review_mode='full',
-               initial_export_options=None):
+               initial_export_options=None, source_url=None):
         initial_export_options = self._normalize_initial_export_options(initial_export_options)
         if review_mode not in ('full','legacy','segments'):
             raise ControlError('invalid_review_mode','核对模式为full整曲、segments逐段或兼容legacy。')
@@ -632,6 +663,53 @@ class Workflow:
                    'formats': formats}
         if preparation_job_id:request['preparation_job_id']=preparation_job_id
         request['review_mode'] = review_mode
+        source_evidence = None
+        request_snapshot = None
+        if source_url is not None:
+            from agent_preparation import normalize_source_url
+            source_url = normalize_source_url(source_url)
+            if score_artifact_id:
+                raise ControlError('invalid_source', '来源声明仅适用于本地音频准备任务。')
+        if preparation_job_id:
+            owned = self.control._record('preparations', preparation_job_id, 'job')
+            job = self.control.job_path(preparation_job_id)
+            request_path = safe_path(job / 'request.json', [job])
+            job_request = {}
+            try:
+                with io_path(request_path).open('rb') as stream:
+                    request_snapshot = stream.read(MAX_JSON + 1)
+                if len(request_snapshot) <= MAX_JSON:
+                    matches = hashlib.sha256(request_snapshot).hexdigest() == owned.get('request_sha256')
+                    if not matches and (source_url is not None or owned.get('request_sha256')):
+                        raise ControlError('stale_job_request', '准备请求已改变。')
+                    candidate = json.loads(request_snapshot.decode('utf-8-sig'))
+                    if matches and isinstance(candidate, dict):
+                        job_request = candidate
+                elif source_url is not None or owned.get('request_sha256'):
+                    raise ControlError('stale_job_request', '准备请求已改变。')
+            except ControlError:
+                raise
+            except (OSError, UnicodeError, ValueError):
+                pass
+            provenance = job_request.get('source_provenance')
+            if source_url is not None and (not provenance or provenance.get('url') != source_url):
+                raise ControlError('invalid_source', '来源声明必须与准备任务中已保存的声明一致。')
+            if provenance:
+                from agent_preparation import normalize_source_url
+                audio_sha = job_request.get('local_audio_sha256')
+                if (job_request.get('source_kind') != 'local' or not isinstance(provenance, dict)
+                        or set(provenance) != {'kind', 'url'}
+                        or provenance.get('kind') != 'caller_supplied_unverified'
+                        or normalize_source_url(provenance.get('url')) != provenance.get('url')
+                        or not isinstance(audio_sha, str) or len(audio_sha) != 64
+                        or any(c not in '0123456789abcdef' for c in audio_sha)):
+                    raise ControlError('invalid_source', '准备任务的来源声明或音频摘要无效。')
+                source_evidence = {'source_provenance': copy.deepcopy(provenance),
+                                   'local_audio_sha256': audio_sha,
+                                   'preparation_request_sha256': owned['request_sha256']}
+                request['source_evidence'] = copy.deepcopy(source_evidence)
+        elif source_url is not None:
+            request['source_url'] = source_url
         if idempotency_key is None and initial_export_options:
             derived = {'request': request, 'initial_export_options': initial_export_options}
         else:
@@ -662,16 +740,24 @@ class Workflow:
                 owned = self.control._record('preparations',preparation_job_id,'job')
                 job = self.control.job_path(preparation_job_id)
                 preparation_lyrics_evidence = self._preparation_reference_lyrics_evidence(
-                    job, owned, preparation_job_id, reference_lyrics)
+                    job, owned, preparation_job_id, reference_lyrics, request_snapshot)
                 plan=None;stage='created'
             else:
-                plan = self.control.preparation_plan(source, options or {})
+                plan = (self.control.preparation_plan(source, options or {}, source_url)
+                        if source_url is not None else self.control.preparation_plan(source, options or {}))
+                if source_url is not None:
+                    planned = plan['plan']
+                    source_evidence = {'source_provenance': copy.deepcopy(planned['source_provenance']),
+                                       'local_audio_sha256': planned['source']['sha256'],
+                                       'preparation_plan_sha256': planned['plan_sha256']}
                 stage = 'created'
             value = {'schema': 1, 'id': identifier, 'revision': 0, 'stage': stage,
                      'code_revision': self.control.code_revision, 'request': request,
                      'preparation_plan_id': plan['id'] if plan else None,
                      'score_artifact_id': score_artifact_id, 'created': time.time(),
                      'updated': time.time(), 'attempt': 0, 'history': []}
+            if source_evidence:
+                value['source_evidence'] = source_evidence
             if preparation_job_id:
                 value['job_id']=preparation_job_id
                 if preparation_lyrics_evidence:
@@ -691,6 +777,12 @@ class Workflow:
 
     def get(self, identifier, include_details=False, detail=None, include_note_ids=False, include_raw_evidence=False):
         value = self._read(identifier)
+        if value['stage'] in ('reviewed', 'project_ready', 'ready') and value.get('last_error') is not None:
+            # Legacy successful records may still contain a review error on
+            # disk. The status contract exposes only errors that still block
+            # the current stage; keep the old value in bounded history.
+            value = copy.deepcopy(value)
+            self._retire_last_error(value, 'successful_status_' + value['stage'], projected=True)
         stage = value['stage']
         arguments = {'workflow_id': identifier, 'expected_revision': value['revision']}
         operation = None
@@ -955,11 +1047,17 @@ class Workflow:
         return self.get(identifier)
 
     def apply_review(self, identifier, revision, rationale, note_edits=None, lyric_edits=None,
-                     structure_edits=None, move_attached_lyrics=False,segment_id=None):
+                     structure_edits=None, move_attached_lyrics=False,segment_id=None, dry_run=False):
         if type(move_attached_lyrics) is not bool:
             raise ControlError('invalid_options','move_attached_lyrics需为布尔值。')
+        if type(dry_run) is not bool:
+            raise ControlError('invalid_options','dry_run需为布尔值。')
         if not isinstance(rationale, str) or not rationale.strip() or len(rationale) > 8000:
             raise ControlError('review_rationale_required', '需要记录核对结论与修改/保留理由。')
+        if any(isinstance(edit, dict) and edit.get('operation') in ('move_event', 'delete_event')
+               for edit in (lyric_edits or [])):
+            raise ControlError('workflow_lyrics_event_edit_unsupported',
+                '工作流联合审核暂不支持歌词事件移动或删除；请通过独立歌词方案处理并回读。')
         with self._lock(identifier):
             value = self._expected(identifier, revision)
             if value['stage'] not in ('review', 'reviewed'):
@@ -974,6 +1072,15 @@ class Workflow:
                 segment=select(value,'midi',segment_id)
                 authorize_edits(segment,note_edits or [],lyric_edits or [],structure_edits or [])
                 arguments['segment']=segment
+            if dry_run:
+                original = self.control.artifact(value['score_artifact_id'])
+                result = self.control.call_worker('workflow_review_dry_run', {
+                    'path': original['path'], 'artifact_id': original['id'],
+                    'source_sha256': original['sha256'], 'arguments': arguments,
+                    'request': value['request'],
+                })
+                self.control.artifact(value['score_artifact_id'])
+                return result
             operation = self.control.start_operation('workflow_review', arguments,
                                                      identifier + '-review-' + str(revision))
             self._write(value, 'review_started', stage='reviewing', operation_id=operation['id'])
@@ -1214,6 +1321,10 @@ class Workflow:
             if value['stage'] != 'reviewing' or value.get('operation_id') != operation_id:
                 raise ControlError('workflow_conflict', '此核对操作不再属于当前工作流。')
         original = self.control.artifact(arguments['artifact_id'])
+        return self._execute_review_candidate(value, original, arguments, output, cancel, progress)
+
+    def _execute_review_candidate(self, value, original, arguments, output, cancel, progress, *, dry_run=False):
+        """Run the same ordered candidate pipeline for both review and preflight."""
         current = original
         from agent_score import read_score, plan_patch, apply_patch
         before = read_score(original['path'])
@@ -1221,6 +1332,14 @@ class Workflow:
         lyric_edits = copy.deepcopy(arguments['lyric_edits'])
         structure_edits = arguments.get('structure_edits',[])
         receipts = []
+        def candidate(receipt):
+            if not dry_run:
+                return self.control.register_artifact(receipt['candidate_path'])
+            path = Path(receipt['candidate_path'])
+            actual = file_hash(path)
+            if actual != receipt['candidate_sha256']:
+                raise ControlError('candidate_mismatch', '临时候选摘要与回执不一致。')
+            return {'path': str(path), 'sha256': actual}
         def remap(edits, previous, following):
             if not edits:
                 return
@@ -1247,7 +1366,7 @@ class Workflow:
             progress('核验并修正音符结构及歌词归属')
             plan=plan_structure_patch(current['path'],current['sha256'],structure_edits)
             receipt=apply_structure_patch(current['path'],plan,output/'structure')
-            current=self.control.register_artifact(receipt['candidate_path'])
+            current=candidate(receipt)
             receipts.append(receipt)
             after=read_score(current['path'])
             remap(note_edits,before,after)
@@ -1259,7 +1378,7 @@ class Workflow:
             progress('核验并修正 MIDI 歌词')
             plan = plan_lyrics_patch(current['path'], current['sha256'], lyric_edits)
             receipt = apply_lyrics_patch(current['path'], plan, output / 'lyrics')
-            current = self.control.register_artifact(receipt['candidate_path'])
+            current = candidate(receipt)
             receipts.append(receipt)
             if note_edits:
                 after = read_score(current['path'])
@@ -1270,7 +1389,7 @@ class Workflow:
             plan = plan_patch(current['path'], current['sha256'], note_edits,
                               move_attached_lyrics=arguments.get('move_attached_lyrics',False))
             receipt = apply_patch(current['path'], plan, output / 'notes')
-            current = self.control.register_artifact(receipt['candidate_path'])
+            current = candidate(receipt)
             receipts.append(receipt)
         cancel()
         from agent_lyrics import review_lyrics
@@ -1283,8 +1402,24 @@ class Workflow:
                 and row['start_seconds']<segment['end_seconds'] and row['end_seconds']>segment['start_seconds']]
         if scoped_conflicts:
             raise ControlError('monophonic_overlap','MIDI含目标声部内的重叠音符，请按冲突双方位置修正后重新核对。',
-                {'conflicts':scoped_conflicts,'artifact_id':current['id'],'source_sha256':current['sha256']})
+                {'conflicts':scoped_conflicts,'source_sha256':current['sha256'],
+                 **({'artifact_id':current['id']} if 'id' in current else {})})
         language = value['request']['options'].get('language','zh')
+        if dry_run:
+            if file_hash(original['path']) != original['sha256']:
+                raise ControlError('stale_artifact', '试运行期间源 MIDI 已改变。')
+            return {'dry_run': True, 'approved': False, 'workflow_id': arguments['workflow_id'],
+                    'revision': arguments['expected_revision'], 'source_sha256': original['sha256'],
+                    'candidate_sha256': current['sha256'], 'steps': [
+                        {'kind': kind, **{key: copy.deepcopy(receipt[key]) for key in
+                            ('source_sha256', 'candidate_sha256', 'diff', 'structural_changes',
+                             'validation', 'warnings') if key in receipt}}
+                        for kind, receipt in zip(
+                            [kind for kind, edits in [('structure', structure_edits),
+                             ('lyrics', lyric_edits), ('notes', note_edits)] if edits], receipts)],
+                    'lyric_review': review_lyrics(current['path'],
+                        value['request']['reference_lyrics'] or None, language),
+                    'semantic_model_used': False}
         result = {'artifact_id':current['id'], 'source_sha256':current['sha256'],
                   'original_artifact_id':original['id'], 'rationale':arguments['rationale'],
                   'receipts':receipts, 'lyric_review':review_lyrics(current['path'],

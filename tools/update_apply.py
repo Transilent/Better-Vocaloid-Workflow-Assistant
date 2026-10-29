@@ -35,7 +35,7 @@ ROOT_FILES.update({'agent_control.py','agent_worker.py','agent_mcp.py','agent_sc
     'agent_preparation.py','agent_lyrics.py','agent_exports.py','agent_workflow.py','agent_supervision.py',
     'agent_export_audit.py','agent_reference.py','agent_structure.py','style_drafts.py','agent_drafts.py',
     'agent_pronunciation.py','agent_refinement.py','agent_errors.py','agent_monophony.py','agent_media.py',
-    'agent_views.py','agent_delivery.py','agent_segments.py','agent_segment_workflow.py','agent_lyric_timeline.py',
+    'agent_views.py','agent_delivery.py','agent_segments.py','agent_segment_workflow.py','agent_lyric_timeline.py','agent_lyric_reconcile.py',
     'docs/AgentMCP.zh-CN.md','packaging/agent-mcp.example.json','packaging/requirements-mcp.lock.txt'})
 ROOT_FILES.update({'tuning_engine.py','tuning_workflow.py','tuning_ui.py'})
 # VWA presentation modules; internal update/lock identifiers remain compatible.

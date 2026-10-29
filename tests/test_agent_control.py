@@ -168,11 +168,56 @@ class ControlFixtureTests(unittest.TestCase):
                           'relative/score.mid', [self.assets])
         outside = self.root / 'outside.mid'
         outside.write_bytes(b'outside')
-        self.assert_error('outside_roots', agent_control.safe_path,
-                          str(outside), [self.assets])
+        error = self.assert_error('outside_roots', agent_control.safe_path,
+                                  str(outside), [self.assets])
+        self.assertEqual(error.details['path'], str(outside.resolve()))
+        self.assertEqual(error.details['allowed_roots'], [str(self.assets.resolve())])
+        guidance = error.details['import_guidance']
+        self.assertFalse(guidance['copy_from_outside_roots'])
+        self.assertEqual(guidance['managed_snapshot'],
+                         {'tool': 'vwa_input', 'action': 'assets_import'})
+        self.assertIn('再用新绝对路径重试', guidance['instruction'])
         inside = self.assets / 'inside.mid'
         inside.write_bytes(b'inside')
         self.assertEqual(agent_control.safe_path(str(inside), [self.assets]), inside)
+
+    def test_capabilities_exposes_local_asset_roots_and_import_policy(self):
+        capabilities = self.control.capabilities()
+        self.assertEqual(capabilities['allowed_asset_roots'],
+                         [str(self.assets.resolve())])
+        policy = capabilities['local_asset_import']
+        self.assertEqual(policy['path_policy'], 'absolute_under_allowed_asset_roots')
+        self.assertFalse(policy['copy_from_outside_roots'])
+        self.assertIn('.wav', policy['assets_import_formats'])
+        self.assertTrue(policy['snapshot_on_assets_import'])
+
+    def test_outside_local_import_reports_roots_without_copying_or_writing_state(self):
+        audio = self.root / 'outside-reference.wav'
+        original = b'RIFF-fixture-outside-audio'
+        audio.write_bytes(original)
+        state_before = self.tree_snapshot(self.state)
+        assets_before = self.tree_snapshot(self.assets)
+        jobs_before = self.tree_snapshot(self.jobs)
+
+        plan_error = self.assert_error(
+            'outside_roots', self.control.preparation_plan, str(audio))
+        self.assertEqual(plan_error.details['allowed_roots'],
+                         [str(self.assets.resolve())])
+        import_error = self.assert_error(
+            'outside_roots', self.control.import_asset, str(audio))
+        self.assertEqual(import_error.details['allowed_roots'],
+                         [str(self.assets.resolve()), str(self.jobs.resolve())])
+        from agent_errors import error_payload
+        for error in (plan_error, import_error):
+            self.assertEqual(error.details['path'], str(audio.resolve()))
+            self.assertFalse(error.details['import_guidance']['copy_from_outside_roots'])
+            self.assertIn('不会自动复制', error.details['import_guidance']['instruction'])
+            self.assertEqual(error_payload(error)['details'], error.details)
+
+        self.assertEqual(audio.read_bytes(), original)
+        self.assertEqual(self.tree_snapshot(self.state), state_before)
+        self.assertEqual(self.tree_snapshot(self.assets), assets_before)
+        self.assertEqual(self.tree_snapshot(self.jobs), jobs_before)
 
     def test_safe_path_rejects_symlink_and_windows_junction_reparse_attributes(self):
         target = self.assets / 'target'

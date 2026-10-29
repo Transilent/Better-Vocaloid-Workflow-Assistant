@@ -21,7 +21,7 @@ EXPECTED_ACTIONS = {
     },
     'vwa_evidence': {
         'score_read', 'score_review', 'context_read', 'lyrics_read',
-        'lyric_timeline_read', 'lyric_timeline_review', 'lyrics_review',
+        'lyric_timeline_read', 'lyric_timeline_review', 'lyrics_review', 'lyrics_reconcile_preview',
         'reference_pitch_review', 'pitch_offset_review',
         'reference_audio_read', 'pronunciation_read', 'workflow_review',
         'workflow_style_review',
@@ -47,6 +47,7 @@ ACTION_CLASSES = {
     'LyricTimelineRead': 'vwa_evidence',
     'LyricTimelineReview': 'vwa_evidence',
     'LyricsReview': 'vwa_evidence',
+    'LyricsReconcilePreview': 'vwa_evidence',
     'ReferencePitchReview': 'vwa_evidence',
     'PitchOffsetReview': 'vwa_evidence',
     'ReferenceAudioRead': 'vwa_evidence',
@@ -459,6 +460,37 @@ def invocation_contract(source_directory):
             else:
                 check(result['kwargs'] == {}, request['action'] + ':positional_only')
 
+        original_lyrics_read = control.lyrics_read
+        try:
+            control.lyrics_read = lambda *args, **kwargs: {
+                'source_sha256': 'a' * 64, 'language': 'zh',
+                'tracks': [{'track_index': 0, 'track_name': 'Lead'}],
+                'notes': [{'note_id': 'note-1', 'track_index': 0,
+                           'onset_seconds': 0.0, 'end_seconds': 0.4,
+                           'onset_tick': 0, 'end_tick': 384, 'channel': 0,
+                           'pitch': 60, 'lyric': '', 'lyric_event_id': 'event-1',
+                           'lyric_alignment': 'aligned'}],
+            }
+            preview_request = {
+                'action': 'lyrics_reconcile_preview', 'artifact_id': artifact,
+                'expected_sha256': 'a' * 64, 'track_index': 0,
+                'lines': [{'start': 0.0, 'end': 1.0, 'text': '戏'}],
+            }
+            preview = await call_request(server, 'vwa_evidence', preview_request)
+            check(preview['result']['edits'] == [
+                {'note_id': 'note-1', 'lyric': '戏', 'operation': 'replace'}],
+                'reconcile_preview_exposes_actionable_opening_edit')
+            check(preview['result']['applied'] is False, 'reconcile_is_preview_only')
+            await rejected(server, 'vwa_evidence', {'request': {
+                **preview_request, 'expected_sha256': 'b' * 64}},
+                'reconcile_rejects_stale_sha', 'stale_source')
+        finally:
+            control.lyrics_read = original_lyrics_read
+
+        description = server._tool_manager._tools['vwa_evidence'].description
+        check('ready 后只回读已应用的风格结果' in description,
+              'workflow_style_review_documents_ready_result_semantics')
+
         original_style_review = segment_workflow.style_review
         try:
             def fake_style_review(workflow_object, identifier, segment_id=None):
@@ -584,7 +616,7 @@ class StandardReadSDKContract(unittest.TestCase):
         self.assertEqual(receipt['actions'], {
             name: sorted(values) for name, values in sorted(EXPECTED_ACTIONS.items())
         })
-        self.assertEqual(receipt['call_count'], 33)
+        self.assertEqual(receipt['call_count'], 34)
         self.assertNotIn('advance', receipt['callbacks'])
         self.assertFalse(receipt['model_inference'])
         self.assertFalse(receipt['network_requested'])

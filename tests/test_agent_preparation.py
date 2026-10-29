@@ -375,6 +375,20 @@ class PreparationReuseTests(unittest.TestCase):
         unsigned = {key: value for key, value in plan.items() if key != "plan_sha256"}
         self.assertEqual(plan["plan_sha256"], agent_preparation._digest(unsigned))
 
+    def test_declared_source_reuse_keeps_original_audio_identity(self):
+        snapshot = self.source_job / 'input/source.wav'
+        expected = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+        self.request['source_provenance'] = {'kind': 'caller_supplied_unverified',
+            'url': 'https://www.bilibili.com/video/BV1xx411c7mD/'}
+        self.request['local_audio_sha256'] = expected
+        write_json(self.source_job / 'request.json', self.request)
+        plan = self.plan()
+        self.assertEqual(plan['source']['sha256'], expected)
+        self.assertEqual(plan['source_provenance'], self.request['source_provenance'])
+        snapshot.write_bytes(b'changed')
+        with self.assertRaises(agent_preparation.PreparationError):
+            self.plan()
+
     def test_voice_mode_change_blocks_mismatched_separation(self):
         plan = self.plan({"voice_mode": "dual"}, ["separation"])
         self.assertEqual(plan["reuse"]["reuse_stages"], ["metadata", "download", "audio"])
@@ -442,6 +456,13 @@ class PreparationCreationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(dir=APP / "work", prefix="agent-prep-create-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        def cleanup_native():
+            target = self.root.resolve()
+            boundary = (APP / 'work').resolve()
+            assert target.is_relative_to(boundary) and target != boundary
+            if Path(common.native_path(target)).exists():
+                shutil.rmtree(common.native_path(target))
+        self.addCleanup(cleanup_native)
         self.source = self.root / "音源.wav"
         self.source.write_bytes(b"tiny-local-source-no-decode")
 
@@ -454,6 +475,77 @@ class PreparationCreationTests(unittest.TestCase):
     def plan(self):
         with patch.object(agent_preparation, "_preflight", side_effect=self.preflight):
             return agent_preparation.plan_preparation(str(self.source))
+
+    def test_local_declared_url_plan_job_snapshot_and_changed_audio(self):
+        url = 'https://www.bilibili.com/video/BV1xx411c7mD/?token=secret'
+        with patch.object(agent_preparation, '_preflight', side_effect=self.preflight):
+            plan = agent_preparation.plan_preparation(str(self.source), source_url=url)
+            canonical = agent_preparation.plan_preparation(str(self.source), source_url=url.split('?')[0])
+        self.assertEqual(plan['plan_sha256'], canonical['plan_sha256'])
+        self.assertFalse(plan['network']['required'])
+        self.assertNotIn('secret', json.dumps(plan))
+        self.assertEqual(plan['source_provenance'], {'kind': 'caller_supplied_unverified',
+                          'url': url.split('?')[0]})
+        self.assertNotEqual(plan['plan_sha256'], self.plan()['plan_sha256'])
+        with patch.object(common, 'ROOT', APP), patch.object(pipeline, 'ROOT', APP):
+            created = agent_preparation.create_preparation(plan, self.root)
+            job = Path(created['job_path'])
+            request = read_json(job / 'request.json')
+            self.assertEqual(request['source_provenance'], plan['source_provenance'])
+            self.assertEqual(request['local_audio_sha256'], plan['source']['sha256'])
+            self.assertIsNone(request['url'])
+            pipeline.prepare_metadata(job, request)
+            self.assertEqual(read_json(job / 'source-info.json')['source_provenance'], plan['source_provenance'])
+            pipeline.download(job, request)
+            self.assertEqual(read_json(job / 'import-report.json')['sha256'], plan['source']['sha256'])
+            flag = Path(common.native_path(job / 'cancel.flag'))
+            flag.write_text('{}', encoding='utf-8')
+            with self.assertRaises(InterruptedError):
+                common.cancelled(job)
+            flag.unlink()
+            self.source.write_bytes(b'changed after creation')
+            with self.assertRaisesRegex(ValueError, '摘要'):
+                pipeline.download(job, request)
+            self.assertEqual(read_json(job / 'import-report.json')['sha256'], plan['source']['sha256'])
+        self.assertEqual(agent_preparation.source_summary(job)['source_provenance'], plan['source_provenance'])
+
+    def test_declared_url_rejects_ambiguous_or_untrusted_locations(self):
+        base = 'https://www.bilibili.com/video/BV1xx411c7mD/'
+        for url in ('http://www.bilibili.com/video/BV1xx411c7mD/',
+                    'https://user@www.bilibili.com/video/BV1xx411c7mD/',
+                    'https://www.bilibili.com.evil.test/video/BV1xx411c7mD/',
+                    base + '?p=2', base + '#fragment', base + '\n'):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                agent_preparation.normalize_source_url(url)
+        with patch.object(agent_preparation, '_preflight', side_effect=self.preflight):
+            with self.assertRaises(ValueError):
+                agent_preparation.plan_preparation('BV1xx411c7mD', source_url=base)
+
+    def test_worker_enforces_allowed_root_for_declared_local_audio(self):
+        from agent_worker import dispatch
+        class Control:
+            assets = [self.root / 'allowed']
+        Control.assets[0].mkdir()
+        allowed = Control.assets[0] / 'fixture.wav'
+        allowed.write_bytes(b'fixture')
+        url = 'https://www.bilibili.com/video/BV1xx411c7mD/'
+        with patch.object(agent_preparation, '_preflight', side_effect=self.preflight):
+            result = dispatch(Control(), 'preparation_plan', {'source': str(allowed), 'source_url': url})
+            self.assertEqual(result['source_provenance']['url'], url)
+            with self.assertRaises(ValueError):
+                dispatch(Control(), 'preparation_plan', {'source': str(self.source), 'source_url': url})
+
+    def test_control_strips_credentials_before_persisted_worker_call(self):
+        from agent_control import Control
+        from types import SimpleNamespace
+        captured = []
+        fake = SimpleNamespace(assets=[self.root],
+            call_worker=lambda action, args: captured.append((action, args)) or {},
+            save_plan=lambda kind, artifact, plan: plan)
+        Control.preparation_plan(fake, str(self.source), source_url=(
+            'https://www.bilibili.com/video/BV1xx411c7mD/?token=secret'))
+        self.assertEqual(captured[0][1]['source_url'], 'https://www.bilibili.com/video/BV1xx411c7mD/')
+        self.assertNotIn('secret', json.dumps(captured))
 
     def test_real_create_is_deterministic_replayable_and_does_not_remember_job(self):
         plan = self.plan()

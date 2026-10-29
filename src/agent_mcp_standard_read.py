@@ -211,6 +211,21 @@ class LyricsReview(StrictModel):
     language: Literal['zh', 'ja'] = 'zh'
 
 
+class LyricReconcileLine(StrictModel):
+    start: float
+    end: float
+    text: Annotated[str, Field(min_length=1, max_length=1000)]
+
+
+class LyricsReconcilePreview(StrictModel):
+    action: Literal['lyrics_reconcile_preview']
+    artifact_id: str
+    expected_sha256: Annotated[str, Field(pattern=r'^[0-9a-fA-F]{64}$')]
+    track_index: int = Field(ge=0, description='明确选择一个 MIDI 轨道，避免混合声部。')
+    lines: Annotated[list[LyricReconcileLine], Field(min_length=1, max_length=200)]
+    language: Literal['zh', 'ja'] = 'zh'
+
+
 class ReferencePitchReview(StrictModel):
     action: Literal['reference_pitch_review']
     score_artifact_id: str
@@ -273,6 +288,7 @@ EvidenceRequest = Annotated[
     | LyricTimelineRead
     | LyricTimelineReview
     | LyricsReview
+    | LyricsReconcilePreview
     | ReferencePitchReview
     | PitchOffsetReview
     | ReferenceAudioRead
@@ -406,14 +422,18 @@ def register(mcp, control, workflow, invoke):
 
         action 为动作名（沿用原工具名去掉 vwa_；lyric_timeline_read 是新增
         标准只读动作）：score_read, score_review, context_read, lyrics_read,
-        lyric_timeline_read, lyric_timeline_review, lyrics_review,
+        lyric_timeline_read, lyric_timeline_review, lyrics_review, lyrics_reconcile_preview,
         reference_pitch_review, pitch_offset_review, reference_audio_read, pronunciation_read,
-        workflow_review, workflow_style_review。读取经原 Control/Workflow
+        workflow_review, workflow_style_review。workflow_style_review 在
+        project_ready 读取下一逐段风格上下文，在 styling 返回操作进行中状态，
+        ready 后只回读已应用的风格结果。读取经原 Control/Workflow
         分页、SHA 和阶段校验，并保留 worker 调用记录；参考证据不是真值。
         lyric_timeline_read 返回 line_index、起止秒、text、estimated、provider
         和版本核验状态；读取不会绑定工作流、
         自动重排或改写歌词。新歌曲若已有核对后的正式歌词，应优先在准备阶段
         随 options.lyrics 输入；外部搜索、抓取和读取都不是必须步骤。
+        lyrics_reconcile_preview 根据已核对歌词行和所选轨道提出候选，按完整源 SHA
+        绑定，不自动修改、拆分或确认；缺字及多音节须人工处理。
         reference_audio_read(make_excerpt=true) 会创建摘录操作，须改走 vwa_run。
         """
         if isinstance(request, ScoreRead):
@@ -464,6 +484,22 @@ def register(mcp, control, workflow, invoke):
                 request.language,
                 True,
             )
+        if isinstance(request, LyricsReconcilePreview):
+            def preview_reconciliation():
+                from agent_lyric_reconcile import reconcile_lyrics
+                read = control.lyrics_read(request.artifact_id, language=request.language)
+                if read['source_sha256'].lower() != request.expected_sha256.lower():
+                    raise ControlError('stale_source', 'MIDI SHA 已变化，请重新读取歌词后再预览。')
+                preview = reconcile_lyrics(read, [line.model_dump() for line in request.lines],
+                                           request.track_index)
+                preview['artifact_id'] = request.artifact_id
+                preview['next_instruction'] = (
+                    '逐行核对文字、时间窗和音符归属；确认后使用 vwa_decide 的 '
+                    'lyrics_patch_plan，并传入本预览的 artifact_id、source_sha256 和 edits。'
+                    '候选补丁需另行显式 apply 并回读；未覆盖、延音及拆分问题须人工决定。'
+                )
+                return preview
+            return await invoke(preview_reconciliation)
         if isinstance(request, ReferencePitchReview):
             return await invoke(
                 control.reference_pitch_review,

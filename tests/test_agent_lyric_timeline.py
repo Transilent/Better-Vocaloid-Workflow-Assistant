@@ -190,6 +190,8 @@ class ReadTimelineTests(unittest.TestCase):
         self.assertEqual(result["provider"], "file")
         self.assertFalse(result["version_verified"])
         self.assertEqual(result["version_verification_status"], "unverified")
+        self.assertTrue(result["version_mismatch_risk"])
+        self.assertIn("唱词、段落和时间", result["version_warning"])
         self.assertTrue(result["reference_only"])
         self.assertEqual(result["reference_status"], {
             "role": "reference_not_ground_truth",
@@ -220,6 +222,7 @@ class ReadTimelineTests(unittest.TestCase):
         self.assertIsNone(result["lines"][-1]["end_seconds"])
         self.assertNotIn("words", result["lines"][0])
         self.assertEqual(result["reference_status"]["version_verification_status"], "not_provided")
+        self.assertTrue(result["version_mismatch_risk"])
         self.assertIsNone(result["pagination"]["next_offset"])
 
 

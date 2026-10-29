@@ -245,7 +245,7 @@ def _write_json(path, data):
 
 
 def cancelled(job):
-    if (Path(job) / "cancel.flag").exists():
+    if Path(native_path(Path(job) / "cancel.flag")).exists():
         raise InterruptedError("已取消任务；已完成的步骤可以继续使用。")
 
 

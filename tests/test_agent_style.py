@@ -139,6 +139,15 @@ def region(start=0.6, end=0.7, *, preset="gentle", technique="none"):
     }
 
 
+def note_region(start_note_id, end_note_id, *, preset="gentle", technique="none"):
+    value = region(preset=preset, technique=technique)
+    value.pop("start")
+    value.pop("end")
+    value["start_note_id"] = start_note_id
+    value["end_note_id"] = end_note_id
+    return value
+
+
 def proposal(regions=None, tracks=None):
     return {
         "track_indices": [0] if tracks is None else tracks,
@@ -313,6 +322,7 @@ class StylePlanTests(unittest.TestCase):
             self.assertAlmostEqual(semantic["start"], 0.5, places=12)
             self.assertAlmostEqual(semantic["end"], 1.0, places=12)
             self.assertIn(evidence, semantic["aligned_note_ids"])
+            self.assertEqual(semantic["aligned_note_count"], 1)
             self.assertEqual(semantic["style_technique"], "none")
             self.assertEqual(semantic["technique_strength"], 0.6)
             self.assertIs(semantic["technique_pitch"], True)
@@ -327,6 +337,158 @@ class StylePlanTests(unittest.TestCase):
                 "onset": 1.0, "sustain": 1.0, "connection": 1.0, "release": 1.0,
             })
             self.assertEqual(plan, agent_style.plan_style(source, payload))
+            coverage = plan["coverage"]
+            self.assertEqual(coverage["covered_notes"], "1/2")
+            self.assertEqual(coverage["selected_note_count"], 2)
+            self.assertEqual(coverage["covered_note_count"], 1)
+            self.assertEqual(coverage["uncovered_note_count"], 1)
+            self.assertFalse(coverage["fully_covered"])
+            self.assertEqual(coverage["uncovered_note_ids"], [context["notes"][1]["note_id"]])
+            self.assertEqual(coverage["uncovered_gap_count"], 1)
+            self.assertEqual(coverage["uncovered_gaps"][0]["note_count"], 1)
+
+    def test_note_id_boundaries_include_complete_endpoints_and_current_identity(self):
+        with tempfile.TemporaryDirectory(prefix="agent-style-note-ids-", dir=APP) as temp:
+            source = write_svp(Path(temp) / "source.svp")
+            context = agent_style.read_context(source, [0])
+            first, second = context["notes"]
+            payload = proposal([
+                note_region(first["note_id"], second["note_id"]),
+            ])
+
+            plan = agent_style.plan_style(source, payload)
+            semantic = plan["regions"][0]
+            normalized = plan["proposal"]["regions"][0]
+            aligned = plan["aligned_ranges"][0]
+            self.assertEqual(plan["source_sha256"], context["source_sha256"])
+            self.assertEqual(semantic["range_mode"], "note_ids")
+            self.assertEqual(semantic["start_note_id"], first["note_id"])
+            self.assertEqual(semantic["end_note_id"], second["note_id"])
+            self.assertAlmostEqual(semantic["start"], 0.5, places=12)
+            self.assertAlmostEqual(semantic["end"], 2.0, places=12)
+            self.assertEqual(semantic["aligned_note_count"], 2)
+            self.assertEqual(
+                set(semantic["aligned_note_ids"]), {first["note_id"], second["note_id"]}
+            )
+            self.assertEqual(normalized["start_note_id"], first["note_id"])
+            self.assertEqual(normalized["end_note_id"], second["note_id"])
+            self.assertNotIn("start", normalized)
+            self.assertNotIn("end", normalized)
+            self.assertEqual(aligned["range_mode"], "note_ids")
+            self.assertEqual(aligned["note_count"], 2)
+            engine_region = plan["style_regions"][0]
+            self.assertAlmostEqual(engine_region["start"], 0.5, places=12)
+            self.assertAlmostEqual(engine_region["end"], 2.0, places=12)
+            self.assertNotIn("start_note_id", engine_region)
+            self.assertEqual(plan["coverage"]["covered_notes"], "2/2")
+            self.assertTrue(plan["coverage"]["fully_covered"])
+            self.assertEqual(plan["coverage"]["uncovered_gaps"], [])
+            self.assertEqual(plan["plan_sha256"], agent_style.plan_style(source, payload)["plan_sha256"])
+
+    def test_note_id_boundaries_reject_stale_cross_track_and_reversed_ids(self):
+        with tempfile.TemporaryDirectory(prefix="agent-style-note-errors-", dir=APP) as temp:
+            source = write_svp(Path(temp) / "source.svp")
+            context = agent_style.read_context(source, [0, 1])
+            by_lyric = {row["lyric"]: row for row in context["notes"]}
+
+            stale_id = by_lyric["春"]["note_id"]
+            revised = project()
+            revised["tracks"][0]["mainGroup"]["notes"][0]["pitch"] = 61
+            revised_source = write_svp(Path(temp) / "revised.svp", revised)
+            with self.assertRaises(agent_style.StyleNoteBoundaryError) as stale:
+                agent_style.plan_style(
+                    revised_source,
+                    proposal([note_region(stale_id, stale_id)]),
+                )
+            self.assertEqual(stale.exception.code, "style_note_boundary_stale")
+            self.assertEqual(
+                stale.exception.details["current_source_sha256"],
+                agent_style.read_context(revised_source, [0])["source_sha256"],
+            )
+            self.assertEqual(stale.exception.details["unresolved_note_ids"], [stale_id])
+            self.assertFalse(stale.exception.details["changes_applied"])
+            stale_payload = error_payload(stale.exception)
+            self.assertEqual(stale_payload["code"], "style_note_boundary_stale")
+            self.assertFalse(stale_payload["retryable"])
+            self.assertIn("vwa_context_read", stale_payload["remediation"])
+            self.assertEqual(
+                stale_payload["details"]["current_source_sha256"],
+                stale.exception.details["current_source_sha256"],
+            )
+
+            cross_track = proposal([
+                note_region(by_lyric["春"]["note_id"], by_lyric["花"]["note_id"]),
+            ], tracks=[0, 1])
+            with self.assertRaises(agent_style.StyleNoteBoundaryError) as crossed:
+                agent_style.plan_style(source, cross_track)
+            self.assertEqual(crossed.exception.code, "style_note_boundary_cross_track")
+            self.assertEqual(crossed.exception.details["start_note"]["track_index"], 0)
+            self.assertEqual(crossed.exception.details["end_note"]["track_index"], 1)
+            self.assertEqual(
+                error_payload(crossed.exception)["code"],
+                "style_note_boundary_cross_track",
+            )
+
+            reversed_ids = proposal([
+                note_region(by_lyric["风"]["note_id"], by_lyric["春"]["note_id"]),
+            ])
+            with self.assertRaises(agent_style.StyleNoteBoundaryError) as reversed_error:
+                agent_style.plan_style(source, reversed_ids)
+            self.assertEqual(reversed_error.exception.code, "style_note_boundary_order")
+
+            unselected = proposal([
+                note_region(by_lyric["花"]["note_id"], by_lyric["花"]["note_id"]),
+            ])
+            with self.assertRaises(agent_style.StyleNoteBoundaryError) as not_selected:
+                agent_style.plan_style(source, unselected)
+            self.assertEqual(
+                not_selected.exception.code,
+                "style_note_boundary_track_not_selected",
+            )
+
+    def test_note_id_regions_still_detect_a_shared_complete_note(self):
+        with tempfile.TemporaryDirectory(prefix="agent-style-note-overlap-", dir=APP) as temp:
+            data = project()
+            data["tracks"][0]["mainRef"]["blickOffset"] = 0
+            data["tracks"][0]["mainGroup"]["notes"] = [
+                note(0, Q, 60, "甲"),
+                note(Q, Q, 62, "乙"),
+                note(2 * Q, Q, 64, "丙"),
+            ]
+            source = write_svp(Path(temp) / "note-overlap.svp", data)
+            context = agent_style.read_context(source, [0])
+            note_ids = {row["lyric"]: row["note_id"] for row in context["notes"]}
+            payload = proposal([
+                note_region(note_ids["甲"], note_ids["乙"]),
+                note_region(note_ids["乙"], note_ids["丙"]),
+            ])
+
+            with self.assertRaises(agent_style.StyleRegionOverlap) as raised:
+                agent_style.plan_style(source, payload)
+
+            details = raised.exception.details
+            self.assertEqual(details["shared_note_ids"], [note_ids["乙"]])
+            self.assertEqual(details["region_note_ids_totals"], {
+                "previous": 2,
+                "current": 2,
+            })
+            self.assertEqual(details["source_sha256"], context["source_sha256"])
+
+    def test_note_id_boundary_modes_are_strict(self):
+        with tempfile.TemporaryDirectory(prefix="agent-style-note-mode-", dir=APP) as temp:
+            source = write_svp(Path(temp) / "source.svp")
+            first = agent_style.read_context(source, [0])["notes"][0]["note_id"]
+
+            mixed = proposal([note_region(first, first)])
+            mixed["regions"][0]["start"] = 0.6
+            mixed["regions"][0]["end"] = 0.7
+            with self.assertRaisesRegex(ValueError, "只能选择一种边界模式"):
+                agent_style.plan_style(source, mixed)
+
+            incomplete = proposal([note_region(first, first)])
+            incomplete["regions"][0].pop("end_note_id")
+            with self.assertRaisesRegex(ValueError, "必须同时提供"):
+                agent_style.plan_style(source, incomplete)
 
     def test_chinese_technique_is_independent_and_passes_engine_fields(self):
         with tempfile.TemporaryDirectory(prefix="agent-style-opera-", dir=APP) as temp:

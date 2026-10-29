@@ -72,7 +72,7 @@ GROUPED_REQUIRED_ACTIONS = {
     )),
     'vwa_evidence': frozenset((
         'score_read', 'score_review', 'context_read', 'lyrics_read',
-        'lyric_timeline_read', 'lyric_timeline_review', 'lyrics_review',
+        'lyric_timeline_read', 'lyric_timeline_review', 'lyrics_review', 'lyrics_reconcile_preview',
         'reference_pitch_review', 'pitch_offset_review',
         'reference_audio_read', 'pronunciation_read', 'workflow_review',
         'workflow_style_review',
@@ -1490,12 +1490,12 @@ class StandardMCPIntegration(unittest.TestCase):
         self.assertEqual(len(HISTORICAL_TOOL_NAMES), 61)
         self.assertEqual(len(set(HISTORICAL_TOOL_NAMES)), 61)
         self.assertTrue(set(STANDARD_TOOLS).isdisjoint(HISTORICAL_TOOL_NAMES))
-        self.assertEqual(len(ALL_MAPPED_ACTIONS), 60)
+        self.assertEqual(len(ALL_MAPPED_ACTIONS), 61)
         historical_actions = {
             name.removeprefix('vwa_') for name in HISTORICAL_TOOL_NAMES
         }
         self.assertEqual(
-            (historical_actions - FLAT_ACTION_NAMES) | {'lyric_timeline_read', 'pitch_offset_review'},
+            (historical_actions - FLAT_ACTION_NAMES) | {'lyric_timeline_read', 'pitch_offset_review', 'lyrics_reconcile_preview'},
             ALL_MAPPED_ACTIONS,
         )
 
@@ -1546,7 +1546,7 @@ class StandardMCPIntegration(unittest.TestCase):
             self.assertGreaterEqual(len(receipt['calls']), 60)
             self.assertEqual(receipt['standard_tools'], list(STANDARD_TOOLS))
             self.assertEqual(receipt['historical_tool_count'], 61)
-            self.assertEqual(receipt['standard_action_count'], 60)
+            self.assertEqual(receipt['standard_action_count'], 61)
             self.assertEqual(receipt['wait_state'], 'succeeded')
             self.assertEqual(
                 set(receipt['recover_actions']),

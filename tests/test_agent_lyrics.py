@@ -204,6 +204,47 @@ class LyricsReadReviewTests(unittest.TestCase):
         work.mkdir(parents=True, exist_ok=True)
         return tempfile.TemporaryDirectory(prefix=prefix, dir=work)
 
+    def test_empty_opening_event_is_not_a_semantically_complete_lyric(self):
+        with self.temporary("lyrics-empty-opening-") as temporary:
+            midi = mido.MidiFile(type=1, ticks_per_beat=480, charset="utf8")
+            midi.tracks.append(mido.MidiTrack([
+                mido.MetaMessage("lyrics", text="", time=0),
+                mido.Message("note_on", note=60, velocity=80, time=0),
+                mido.Message("note_off", note=60, time=480),
+                mido.MetaMessage("lyrics", text="-", time=0),
+                mido.Message("note_on", note=62, velocity=80, time=0),
+                mido.Message("note_off", note=62, time=480),
+                mido.MetaMessage("end_of_track", time=0),
+            ]))
+            source = Path(temporary) / "opening.mid"
+            save_midi(midi, source)
+            review = review_lyrics(source)
+            self.assertEqual(review["coverage"]["ratio_aligned_notes"], 1.0)
+            self.assertEqual(review["coverage"]["empty_aligned_note_count"], 1)
+            self.assertEqual(review["coverage"]["placeholder_aligned_note_count"], 0)
+            self.assertTrue(any(h["code"] == "empty_lyric" and h["onset_seconds"] == 0
+                                for h in review["hints"]))
+            self.assertTrue(any(h["code"] == "opening_lyric_unresolved"
+                                and len(h["note_ids"]) == 2 for h in review["hints"]))
+            self.assertTrue(any(h["code"] == "continuation_mark_ambiguous"
+                                for h in review["hints"]))
+
+    def test_reconcile_uses_actual_midi_evidence_and_planner_without_writing(self):
+        from agent_lyric_reconcile import reconcile_lyrics
+        with self.temporary("lyrics-reconcile-mapping-") as temporary:
+            source = write_review_fixture(Path(temporary) / "source.mid")
+            before = source.read_bytes()
+            evidence = read_lyrics(source)
+            track_notes = [n for n in evidence["notes"] if n["track_index"] == 1]
+            first, second = track_notes[:2]
+            preview = reconcile_lyrics(evidence, [{"start": first["onset_seconds"],
+                                                   "end": second["onset_seconds"],
+                                                   "text": "新"}], 1)
+            self.assertEqual(len(preview["edits"]), 1)
+            plan = plan_lyrics_patch(source, evidence["source_sha256"], preview["edits"])
+            self.assertEqual(plan["edits"][0]["note_id"], first["note_id"])
+            self.assertEqual(source.read_bytes(), before)
+
     def test_unicode_read_binds_source_and_reports_unknown_orphan_and_ambiguity(self):
         with self.temporary("lyrics-read-") as temporary:
             source = write_review_fixture(Path(temporary) / "入力 歌詞.mid")
@@ -239,6 +280,9 @@ class LyricsReadReviewTests(unittest.TestCase):
             self.assertEqual(first["coverage"]["ambiguous_note_count"], 2)
             self.assertEqual(first["coverage"]["orphan_event_count"], 1)
             self.assertEqual(first["coverage"]["ambiguous_event_count"], 1)
+            self.assertEqual(first["coverage"]["empty_aligned_note_count"], 1)
+            self.assertEqual(first["coverage"]["placeholder_aligned_note_count"], 1)
+            self.assertIn("不能证明有词", first["coverage"]["interpretation"])
             self.assertEqual(first["orphan_lyric_events"][0]["text"], "旧")
             self.assertEqual(first["ambiguous_lyric_events"][0]["text"], "同")
             self.assertTrue(first["meta_evidence"][0]["meta_events"])

@@ -29,12 +29,12 @@ RENDER_KIND = "vwa.style-result"
 PRESET_IDS = ("none", "gentle", "sad", "bold")
 TECHNIQUE_IDS = ("none", "chinese_opera")
 REGION_KEYS = frozenset({
-    "start", "end", "preset", "strength", "style_pitch",
+    "start", "end", "start_note_id", "end_note_id", "preset", "strength", "style_pitch",
     "style_technique", "technique_strength", "technique_pitch",
     "rationale", "evidence_refs", "detail",
 })
 REQUIRED_REGION_KEYS = frozenset({
-    "start", "end", "preset", "strength", "style_pitch", "rationale",
+    "preset", "strength", "style_pitch", "rationale",
 })
 PROPOSAL_KEYS = frozenset({"track_indices", "brief", "regions"})
 _EPSILON = 1e-9
@@ -110,6 +110,21 @@ class StyleRegionOverlap(ValueError):
             "source_sha256": source_sha256,
             "changes_applied": False,
         }
+
+
+class StyleNoteBoundaryError(ValueError):
+    """An explicit note-ID boundary is not safe for the current SVP snapshot."""
+
+    component = "agent_style"
+    retryable = False
+    remediation = ["vwa_context_read", "vwa_style_plan"]
+
+    def __init__(
+        self, code: str, message: str, *, details: dict[str, Any],
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = {**copy.deepcopy(details), "changes_applied": False}
 
 def _canonical(value: Any) -> str:
     try:
@@ -705,6 +720,128 @@ def _track_error(row: dict[str, Any]) -> str:
     )
 
 
+def _note_boundary_snapshot(row: dict[str, Any]) -> dict[str, Any]:
+    note_id, note_id_truncated = _bounded_error_identifier(row["note_id"])
+    track_id, track_id_truncated = _bounded_error_identifier(row["track_id"])
+    lyric, lyric_truncated = _bounded_error_text(row["lyric"])
+    return {
+        "note_id": note_id,
+        "note_id_truncated": note_id_truncated,
+        "track_id": track_id,
+        "track_id_truncated": track_id_truncated,
+        "track_index": row["track_index"],
+        "note_index": row["note_index"],
+        "onset_tick": row["onset_tick"],
+        "duration_tick": row["duration_tick"],
+        "project_onset_tick": row["project_onset_tick"],
+        "start_seconds": float(row["start_seconds"]),
+        "end_seconds": float(row["end_seconds"]),
+        "pitch": row["pitch"],
+        "lyric": lyric,
+        "lyric_truncated": lyric_truncated,
+    }
+
+
+def _resolve_note_boundary_ids(
+    raw_region: dict[str, Any],
+    label: str,
+    context: dict[str, Any],
+    selected: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Resolve same-track note-ID anchors against this exact SVP snapshot."""
+    raw_start = raw_region.get("start_note_id")
+    raw_end = raw_region.get("end_note_id")
+    if raw_start is None and raw_end is None:
+        return None
+    if raw_start is None or raw_end is None:
+        raise ValueError(
+            label + " 必须同时提供 start_note_id 与 end_note_id。"
+        )
+
+    def checked(value: Any, field: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(label + "." + field + " 必须是非空字符串。")
+        if value != value.strip():
+            raise ValueError(label + "." + field + " 不能包含首尾空白。")
+        if len(value) > 180:
+            raise ValueError(label + "." + field + " 不能超过 180 个字符。")
+        return value
+
+    start_note_id = checked(raw_start, "start_note_id")
+    end_note_id = checked(raw_end, "end_note_id")
+    all_notes = {row["note_id"]: row for row in context["notes"]}
+    selected_notes = {row["note_id"]: row for row in selected["notes"]}
+    unresolved_ids = sorted({
+        note_id for note_id in (start_note_id, end_note_id) if note_id not in all_notes
+    })
+    if unresolved_ids:
+        safe_ids = [_bounded_error_identifier(value)[0] for value in unresolved_ids]
+        raise StyleNoteBoundaryError(
+            "style_note_boundary_stale",
+            "start_note_id/end_note_id 不属于当前 SVP 工程快照；音符 ID 已过期或来自其他工程。"
+            "请重新读取当前 artifact 的 context_read，并使用同一 source_sha256 下的 ID。",
+            details={
+                "requested_note_ids": [start_note_id, end_note_id],
+                "unresolved_note_ids": safe_ids,
+                "unresolved_note_ids_total": len(safe_ids),
+                "current_source_sha256": context["source_sha256"],
+                "identity_rule": "稳定 note_id 按当前 SVP source_sha256 与轨道/音符身份生成",
+                "possible_causes": [
+                    "stale_note_id_from_previous_project",
+                    "note_id_from_another_artifact",
+                    "unknown_note_id",
+                ],
+            },
+        )
+
+    start_note = all_notes[start_note_id]
+    end_note = all_notes[end_note_id]
+    if start_note["track_id"] != end_note["track_id"]:
+        raise StyleNoteBoundaryError(
+            "style_note_boundary_cross_track",
+            "start_note_id 与 end_note_id 位于不同轨道；音符 ID 边界必须锚定同一条演唱轨。",
+            details={
+                "current_source_sha256": context["source_sha256"],
+                "start_note": _note_boundary_snapshot(start_note),
+                "end_note": _note_boundary_snapshot(end_note),
+            },
+        )
+    if start_note_id not in selected_notes or end_note_id not in selected_notes:
+        raise StyleNoteBoundaryError(
+            "style_note_boundary_track_not_selected",
+            "音符 ID 边界的轨道不在本次 track_indices 中；请选择该音符所在轨道或改用同轨边界。",
+            details={
+                "current_source_sha256": context["source_sha256"],
+                "boundary_track_index": start_note["track_index"],
+                "selected_track_indices": list(selected["track_indices"]),
+                "start_note": _note_boundary_snapshot(start_note),
+                "end_note": _note_boundary_snapshot(end_note),
+            },
+        )
+    if (
+        end_note["project_onset_tick"], end_note["note_index"]
+    ) < (
+        start_note["project_onset_tick"], start_note["note_index"]
+    ):
+        raise StyleNoteBoundaryError(
+            "style_note_boundary_order",
+            "end_note_id 早于 start_note_id；请按当前 SVP 工程的时间顺序交换音符 ID。",
+            details={
+                "current_source_sha256": context["source_sha256"],
+                "start_note": _note_boundary_snapshot(start_note),
+                "end_note": _note_boundary_snapshot(end_note),
+            },
+        )
+
+    return {
+        "range_mode": "note_ids",
+        "start": min(float(start_note["start_seconds"]), float(end_note["start_seconds"])),
+        "end": max(float(start_note["end_seconds"]), float(end_note["end_seconds"])),
+        "start_note_id": start_note_id,
+        "end_note_id": end_note_id,
+    }
+
+
 def _validate_proposal(
     proposal: Any, context: dict[str, Any],
 ) -> tuple[list[int], str, list[dict[str, Any]], dict[str, Any]]:
@@ -746,12 +883,42 @@ def _validate_proposal(
             raise ValueError(label + " 包含不支持的字段：" + ",".join(sorted(map(str, extra))))
         if absent:
             raise ValueError(label + " 缺少字段：" + ",".join(sorted(absent)))
-        start = _finite(raw_region["start"], label + ".start")
-        end = _finite(raw_region["end"], label + ".end")
-        if start < 0:
-            raise ValueError(label + ".start 不能为负数。")
-        if end <= start:
-            raise ValueError(label + ".end 必须大于 start。")
+        start_value = raw_region.get("start")
+        end_value = raw_region.get("end")
+        has_seconds = start_value is not None or end_value is not None
+        has_note_ids = (
+            raw_region.get("start_note_id") is not None
+            or raw_region.get("end_note_id") is not None
+        )
+        if has_seconds and has_note_ids:
+            raise ValueError(
+                label + " 的 start/end 与 start_note_id/end_note_id 只能选择一种边界模式。"
+            )
+        if has_seconds:
+            if start_value is None or end_value is None:
+                raise ValueError(label + " 的 start 与 end 必须同时提供。")
+            start = _finite(start_value, label + ".start")
+            end = _finite(end_value, label + ".end")
+            if start < 0:
+                raise ValueError(label + ".start 不能为负数。")
+            if end <= start:
+                raise ValueError(label + ".end 必须大于 start。")
+            range_mode = "seconds"
+            start_note_id = None
+            end_note_id = None
+        else:
+            resolved_boundary = _resolve_note_boundary_ids(
+                raw_region, label, context, selected,
+            )
+            if resolved_boundary is None:
+                raise ValueError(
+                    label + " 必须提供 start/end，或同时提供 start_note_id/end_note_id。"
+                )
+            start = resolved_boundary["start"]
+            end = resolved_boundary["end"]
+            range_mode = resolved_boundary["range_mode"]
+            start_note_id = resolved_boundary["start_note_id"]
+            end_note_id = resolved_boundary["end_note_id"]
         preset = raw_region["preset"]
         if not isinstance(preset, str) or preset not in PRESET_IDS:
             raise ValueError(label + ".preset 必须是 none/gentle/sad/bold。")
@@ -793,8 +960,11 @@ def _validate_proposal(
                 raise ValueError(label + " 引用了当前源和所选轨道中不存在的证据：" + ref)
 
         normalized.append({
+            "range_mode": range_mode,
             "start": start,
             "end": end,
+            "start_note_id": start_note_id,
+            "end_note_id": end_note_id,
             "preset": preset,
             "strength": strength,
             "style_pitch": style_pitch,
@@ -1199,8 +1369,12 @@ def _align_regions(
         # Public seconds are rounded to six decimals.  Restore an exact edge
         # only when the displayed value is within half a display unit; this
         # preserves [a,b) adjacency without widening arbitrary overlaps.
-        first = _snap_display_boundary(float(row["start"]), boundaries)
-        last = _snap_display_boundary(float(row["end"]), boundaries)
+        if row["range_mode"] == "seconds":
+            first = _snap_display_boundary(float(row["start"]), boundaries)
+            last = _snap_display_boundary(float(row["end"]), boundaries)
+        else:
+            first = float(row["start"])
+            last = float(row["end"])
         if last <= first:
             raise ValueError("六位秒数回映到整音符边界后不再是有效时间片段。")
         touched = [
@@ -1218,7 +1392,8 @@ def _align_regions(
         note_ids = sorted({
             note_id for component in touched for note_id in component["note_ids"]
         })
-        aligned.append({
+        aligned_row = {
+            "range_mode": row["range_mode"],
             "start": start,
             "end": end,
             "requested_start": first,
@@ -1233,7 +1408,13 @@ def _align_regions(
             "technique_pitch": row["technique_pitch"],
             "rationale": row["rationale"],
             "evidence_refs": list(row["evidence_refs"]),
-        })
+        }
+        if row["range_mode"] == "note_ids":
+            aligned_row.update({
+                "start_note_id": row["start_note_id"],
+                "end_note_id": row["end_note_id"],
+            })
+        aligned.append(aligned_row)
 
     aligned.sort(key=lambda row: (row["start"], row["end"]))
     for previous, current in zip(aligned, aligned[1:]):
@@ -1248,7 +1429,7 @@ def _align_regions(
     semantic = []
     engine_regions = []
     for index, row in enumerate(aligned):
-        semantic.append({
+        semantic_row = {
             "region_index": index,
             "start": row["start"],
             "end": row["end"],
@@ -1264,7 +1445,15 @@ def _align_regions(
             "rationale": row["rationale"],
             "evidence_refs": row["evidence_refs"],
             "aligned_note_ids": row["aligned_note_ids"],
-        })
+            "aligned_note_count": len(row["aligned_note_ids"]),
+        }
+        if row["range_mode"] == "note_ids":
+            semantic_row.update({
+                "range_mode": "note_ids",
+                "start_note_id": row["start_note_id"],
+                "end_note_id": row["end_note_id"],
+            })
+        semantic.append(semantic_row)
         engine = {
             "start": row["start"],
             "end": row["end"],
@@ -1283,17 +1472,25 @@ def _align_regions(
             })
         engine_regions.append(engine)
 
-    return semantic, engine_regions, [
-        {
+    ranges = []
+    for row in semantic:
+        aligned_range = {
             "region_index": row["region_index"],
             "start": row["start"],
             "end": row["end"],
             "requested_start": row["requested_start"],
             "requested_end": row["requested_end"],
             "note_ids": row["aligned_note_ids"],
+            "note_count": row["aligned_note_count"],
         }
-        for row in semantic
-    ]
+        if row.get("range_mode") == "note_ids":
+            aligned_range.update({
+                "range_mode": "note_ids",
+                "start_note_id": row["start_note_id"],
+                "end_note_id": row["end_note_id"],
+            })
+        ranges.append(aligned_range)
+    return semantic, engine_regions, ranges
 
 
 def _resolved_evidence(
@@ -1327,6 +1524,80 @@ def _resolved_evidence(
                 "database": copy.deepcopy(track["database"]),
             })
     return evidence
+
+
+def _coverage_summary(
+    semantic_regions: list[dict[str, Any]], selected_context: dict[str, Any],
+) -> dict[str, Any]:
+    """Summarize unique-note coverage over every note in the selected tracks."""
+    notes = selected_context["notes"]
+    notes_by_id = {row["note_id"]: row for row in notes}
+    covered_ids = {
+        note_id
+        for region in semantic_regions
+        for note_id in region["aligned_note_ids"]
+        if note_id in notes_by_id
+    }
+    uncovered = sorted(
+        (row for row in notes if row["note_id"] not in covered_ids),
+        key=lambda row: (
+            row["start_seconds"], row["end_seconds"],
+            row["track_index"], row["note_index"], row["note_id"],
+        ),
+    )
+    by_track = []
+    for track_index in selected_context["track_indices"]:
+        track_notes = [row for row in notes if row["track_index"] == track_index]
+        track_covered = sum(row["note_id"] in covered_ids for row in track_notes)
+        by_track.append({
+            "track_index": int(track_index),
+            "selected_note_count": len(track_notes),
+            "covered_note_count": track_covered,
+            "uncovered_note_count": len(track_notes) - track_covered,
+        })
+
+    uncovered_id_sample, uncovered_id_total, uncovered_id_truncated = _bounded_error_list(
+        [row["note_id"] for row in uncovered]
+    )
+    gap_rows = []
+    for component in _components(uncovered):
+        component_ids = list(component["note_ids"])
+        sample, total, truncated = _bounded_error_list(component_ids)
+        gap_rows.append({
+            "start": float(component["start"]),
+            "end": float(component["end"]),
+            "note_count": total,
+            "note_ids": sample,
+            "note_ids_total": total,
+            "note_ids_truncated": truncated,
+            "track_indices": sorted({
+                int(notes_by_id[note_id]["track_index"])
+                for note_id in component_ids
+            }),
+        })
+    gap_sample, gap_total, gap_truncated = _bounded_error_list(gap_rows)
+    selected_count = len(notes)
+    covered_count = len(covered_ids)
+    return {
+        "source_sha256": selected_context["source_sha256"],
+        "selected_track_indices": list(selected_context["track_indices"]),
+        "selected_note_count": selected_count,
+        "covered_note_count": covered_count,
+        "uncovered_note_count": selected_count - covered_count,
+        "covered_notes": str(covered_count) + "/" + str(selected_count),
+        "fully_covered": covered_count == selected_count,
+        "coverage_ratio": (
+            round(covered_count / selected_count, 12) if selected_count else None
+        ),
+        "by_track": by_track,
+        "uncovered_note_ids": uncovered_id_sample,
+        "uncovered_note_ids_total": uncovered_id_total,
+        "uncovered_note_ids_truncated": uncovered_id_truncated,
+        "uncovered_gap_count": gap_total,
+        "uncovered_gaps_total": gap_total,
+        "uncovered_gaps_truncated": gap_truncated,
+        "uncovered_gaps": gap_sample,
+    }
 
 
 def _engine_options(
@@ -1382,8 +1653,17 @@ def plan_style(path: Any, proposal: dict[str, Any]) -> dict[str, Any]:
         "brief": brief,
         "regions": [
             {
-                "start": row["requested_start"],
-                "end": row["requested_end"],
+                **(
+                    {
+                        "start": row["requested_start"],
+                        "end": row["requested_end"],
+                    }
+                    if row.get("range_mode") != "note_ids"
+                    else {
+                        "start_note_id": row["start_note_id"],
+                        "end_note_id": row["end_note_id"],
+                    }
+                ),
                 "preset": row["preset"],
                 "strength": row["strength"],
                 "style_pitch": row["style_pitch"],
@@ -1407,6 +1687,7 @@ def plan_style(path: Any, proposal: dict[str, Any]) -> dict[str, Any]:
         "proposal": normalized_proposal,
         "regions": semantic,
         "aligned_ranges": aligned_ranges,
+        "coverage": _coverage_summary(semantic, selected),
         "rationale": [
             {
                 "region_index": row["region_index"],
@@ -1422,6 +1703,8 @@ def plan_style(path: Any, proposal: dict[str, Any]) -> dict[str, Any]:
             "expression_mode": "preserve",
             "expression_density": "original",
             "note_boundary_alignment": "complete_note_range",
+            "region_boundary_modes": ["seconds", "note_ids"],
+            "note_identity_binding": "current_source_sha256",
             "target_scope": "global_track_indices",
         },
         "context_unknowns": copy.deepcopy(selected["unknowns"]),
@@ -1430,6 +1713,7 @@ def plan_style(path: Any, proposal: dict[str, Any]) -> dict[str, Any]:
             "仅支持未裁剪、未链接库组的 SVP 演唱 mainGroup。",
             "只生成真实调音工程候选；不进行声库合成、试听或网络验证。",
             "风格目标由全局 track_indices 决定，region 不接受单独 target 覆盖。",
+            "start_note_id/end_note_id 必须来自当前 SVP source_sha256 下的同轨上下文；过期或跨轨 ID 会被拒绝。",
         ],
         "semantic_model_used": False,
         "local_only": True,

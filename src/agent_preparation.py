@@ -438,6 +438,9 @@ def source_summary(job) -> dict:
         "voice_plan": _voice_role_summary(request.get("voice_mode", "single")),
         "raw_evidence": evidence,
     }
+    if request.get("source_provenance"):
+        summary["source_provenance"] = copy.deepcopy(request["source_provenance"])
+        summary["local_audio_sha256"] = request.get("local_audio_sha256")
     if metadata_error:
         summary["metadata_error"] = metadata_error
     return summary
@@ -503,6 +506,27 @@ def _bilibili_query_pairs(query):
             "BV/URL；只有确认目标就是默认分 P 时，才可移除这些参数后重试。"
         )
     return pairs
+
+
+def normalize_source_url(value):
+    """Canonicalize a caller declaration without accessing the network."""
+    if (not isinstance(value, str) or not value or len(value) > 2048
+            or value != value.strip() or any(ord(char) < 32 or ord(char) == 127 for char in value)):
+        raise ValueError("source_url 必须是有效的 Bilibili HTTPS 视频链接。")
+    parts = urlsplit(value)
+    try:
+        port = parts.port
+    except ValueError as error:
+        raise ValueError("source_url 端口无效。") from error
+    if (parts.scheme.lower() != 'https' or (parts.hostname or '').lower() not in
+            ('bilibili.com', 'www.bilibili.com') or parts.username is not None
+            or parts.password is not None or port not in (None, 443) or parts.fragment):
+        raise ValueError("source_url 仅支持 Bilibili HTTPS 视频链接。")
+    _bilibili_query_pairs(parts.query)
+    match = re.fullmatch(r'/video/(BV1[A-Za-z0-9]{9})/?', parts.path)
+    if not match:
+        raise ValueError("source_url 必须指向 /video/BV… 视频。")
+    return 'https://www.bilibili.com/video/' + match.group(1) + '/'
 
 
 def _source_info(source):
@@ -725,6 +749,13 @@ def _validate_plan(plan, *, allow_reuse=False):
     source = plan.get("source")
     if type(source) is not dict:
         raise ValueError("准备计划来源无效。")
+    provenance = plan.get("source_provenance")
+    if provenance is not None:
+        if (source.get("kind") != "local" or type(provenance) is not dict
+                or set(provenance) != {"kind", "url"}
+                or provenance.get("kind") != "caller_supplied_unverified"
+                or normalize_source_url(provenance.get("url")) != provenance.get("url")):
+            raise PreparationError("plan_tampered", "来源声明无效。")
     if source.get("kind") == "bilibili":
         bv = source.get("bv")
         if not isinstance(bv, str) or not BV_RE.fullmatch(bv):
@@ -740,7 +771,7 @@ def _validate_plan(plan, *, allow_reuse=False):
     return options, source
 
 
-def plan_preparation(source, options=None) -> dict:
+def plan_preparation(source, options=None, source_url=None) -> dict:
     """Build a deterministic, read-only preparation plan.
 
     Planning only stats/reads explicit inputs and local dependency evidence.
@@ -749,6 +780,11 @@ def plan_preparation(source, options=None) -> dict:
     """
     normal = _normalise_options(options)
     source_info = _source_info(source)
+    provenance = None
+    if source_url is not None:
+        if source_info["kind"] != "local":
+            raise ValueError("source_url 只能作为本地音频的独立来源声明。")
+        provenance = {"kind": "caller_supplied_unverified", "url": normalize_source_url(source_url)}
     stages = _required_stages(source_info["kind"])
     stage_names = [row["name"] for row in stages]
     preflight = _preflight(normal, stage_names, source_info)
@@ -780,6 +816,8 @@ def plan_preparation(source, options=None) -> dict:
         "semantic_model_used": False,
         "synthesis_performed": False,
     }
+    if provenance is not None:
+        plan["source_provenance"] = provenance
     plan["plan_sha256"] = _digest(plan)
     return plan
 
@@ -927,6 +965,9 @@ def create_preparation(plan, parent, *, _allow_reuse=False) -> dict:
                 "project_formats": [],
                 "audio_formats": [],
             })
+            if plan.get("source_provenance"):
+                kwargs["source_provenance"] = copy.deepcopy(plan["source_provenance"])
+                kwargs["local_audio_sha256"] = source["sha256"]
             job = _resolved(pipeline.create_job(**kwargs))
         job = _assert_real_path(job, boundary=container, leaf_file=False)
         if job == _resolved(container):
@@ -990,6 +1031,8 @@ def _source_argument(job, request):
             candidates.append(job / request["input_file"])
         for candidate in candidates:
             if Path(native_path(candidate)).is_file() and candidate.stat().st_size > 0:
+                if request.get('source_provenance') and _hash_file(candidate) != request.get('local_audio_sha256'):
+                    continue
                 return str(_resolved(candidate))
         raise PreparationError("source_missing", "源任务没有可核验的本地音乐快照。",
                                path=str(job))
@@ -1249,7 +1292,8 @@ def plan_preparation_reuse(source_job, options=None, reuse_stages=None) -> dict:
     status = _read_json(source_job / "status.json", required=True)
     target_options = _merged_reuse_options(request, options)
     source = _source_argument(source_job, request)
-    plan = plan_preparation(source, target_options)
+    provenance = request.get("source_provenance")
+    plan = plan_preparation(source, target_options, provenance.get("url") if provenance else None)
     plan["kind"] = "preparation_reuse"
     plan["source_job"] = str(source_job)
     plan["reuse"] = _build_reuse_evidence(

@@ -689,11 +689,28 @@ def build_delivery(control, workflow_value, destination=None, name=None):
                                 '最终工程没有通过样式操作重新验证。')
     score = _score_summary(control, workflow_value, summary)
     parent, target, scope = _destination(control, workflow_value, destination, name)
-    signature = _digest_text({'workflow': identifier, 'revision': revision,
+    signature_input = {'workflow': identifier, 'revision': revision,
                               'report_sha256': summary['report_sha256'],
                               'project_artifact_id': selected['id'],
                               'project_sha256': selected['sha256'],
-                              'target': str(target)})
+                              'target': str(target)}
+    source_evidence = workflow_value.get('source_evidence')
+    if source_evidence:
+        from agent_preparation import normalize_source_url
+        provenance = source_evidence.get('source_provenance', {}) if isinstance(source_evidence, dict) else {}
+        audio_sha = source_evidence.get('local_audio_sha256') if isinstance(source_evidence, dict) else None
+        if (not isinstance(source_evidence, dict)
+                or set(source_evidence) - {'source_provenance', 'local_audio_sha256', 'preparation_request_sha256', 'preparation_plan_sha256'}
+                or not isinstance(provenance, dict) or set(provenance) != {'kind', 'url'} or provenance.get('kind') != 'caller_supplied_unverified'
+                or normalize_source_url(provenance.get('url')) != provenance.get('url')
+                or not isinstance(audio_sha, str) or len(audio_sha) != 64
+                or any(c not in '0123456789abcdef' for c in audio_sha)
+                or any(not isinstance(source_evidence[k], str) or len(source_evidence[k]) != 64
+                       or any(c not in '0123456789abcdef' for c in source_evidence[k])
+                       for k in ('preparation_request_sha256', 'preparation_plan_sha256') if k in source_evidence)):
+            raise DeliveryError('delivery_source_invalid', '来源声明或本地音频摘要无效。')
+        signature_input['source_evidence'] = source_evidence
+    signature = _digest_text(signature_input)
     if io_path(target).exists():
         if not io_path(target).is_dir():
             raise DeliveryError('delivery_conflict', '同名交付目标已存在且不是目录。',
@@ -782,6 +799,9 @@ def build_delivery(control, workflow_value, destination=None, name=None):
                             '本清单不包含直接执行命令。'],
             'created_at': _iso(workflow_value.get('updated')),
             'source': 'workflow_value'}
+        if source_evidence:
+            manifest['source_evidence'] = copy.deepcopy(source_evidence)
+            manifest['limitations'].append('来源链接由调用方提供，未验证其与本地音频同源。')
         manifest['manifest_sha256'] = _digest_text(manifest)
         sums = ''.join(row['sha256'] + '  ' + row['name'] + '\n'
                        for row in files).encode('utf-8')

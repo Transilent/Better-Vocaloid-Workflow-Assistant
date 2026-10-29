@@ -63,14 +63,131 @@ def consume_midi(value,result):
         'last_segment_result':{'edited':completion['edited'],'requires_reread':completion['edited'],
             'segment_id':completion['segment_id']}}
 
+def _style_result_read(workflow, value, segment_id=None):
+    """Read the already-applied style result without inventing a review gate."""
+    from pathlib import Path
+    base = {
+        'schema': 'vwa-workflow-style-result-v1',
+        'workflow_id': value['id'],
+        'revision': value['revision'],
+        'stage': value['stage'],
+        'review_phase': 'result',
+        'stage_semantics': 'ready 阶段只回读已应用的风格结果，不再进行逐段决策。',
+        'segment_context_applicable': False,
+        'requested_segment_id': segment_id,
+    }
+    applied = any(isinstance(row, dict) and row.get('action') == 'styled_project_ready'
+                  for row in value.get('history', []))
+    if not applied:
+        return {**base, 'available': False, 'applied': False,
+                'reason': 'workflow_ready_without_style_apply',
+                'instructions': '当前工作流在未应用风格的情况下已完成；没有风格结果可回读。'}
+    operation_id = value.get('operation_id')
+    if not isinstance(operation_id, str) or not operation_id:
+        return {**base, 'available': False, 'applied': True,
+                'reason': 'style_operation_id_missing',
+                'instructions': '工作流标记了风格完成，但缺少可核对的风格操作身份。'}
+    try:
+        operation = workflow.control.operation_get(operation_id)
+    except (ControlError, KeyError):
+        return {**base, 'available': False, 'applied': True,
+                'operation_id': operation_id, 'reason': 'style_operation_evidence_missing',
+                'instructions': '风格结果状态存在，但操作证据已不可读；请结合交付回执核对。'}
+    operation_request = operation.get('request') if isinstance(operation.get('request'), dict) else {}
+    result = operation.get('result') if isinstance(operation.get('result'), dict) else {}
+    rendered = result.get('receipt')
+    summary = {**base, 'available': False, 'applied': True,
+               'operation_id': operation_id, 'operation_state': operation.get('state')}
+    if operation_request.get('action') != 'style_render' or operation.get('state') != 'succeeded':
+        return {**summary, 'reason': 'style_operation_not_successful',
+                'instructions': '仅完成并由工作流消费的风格操作可回读；当前操作证据未成功。'}
+    if not isinstance(rendered, dict):
+        return {**summary, 'reason': 'style_render_receipt_missing',
+                'instructions': '风格操作缺少渲染回执，不能声称结果已核验。'}
+    try:
+        selected = workflow.control.artifact(value['project_artifact_id'])
+    except (ControlError, KeyError):
+        return {**summary, 'reason': 'style_result_artifact_missing',
+                'instructions': '当前工作流的最终工程已不可读。'}
+    candidate_path = rendered.get('candidate_path') or rendered.get('output')
+    candidate_sha = rendered.get('candidate_sha256') or rendered.get('output_sha256')
+    path_matches = isinstance(candidate_path, str) and candidate_path and (
+        Path(candidate_path).resolve() == Path(selected['path']).resolve())
+    if not path_matches or candidate_sha != selected.get('sha256'):
+        return {**summary, 'reason': 'style_result_identity_mismatch',
+                'artifact_id': selected.get('id'), 'expected_sha256': selected.get('sha256'),
+                'candidate_sha256': candidate_sha,
+                'instructions': '风格回执与当前最终工程不一致，请重新读取工作流或交付证据。'}
+    report = rendered.get('report')
+    if not isinstance(report, dict):
+        tuning = rendered.get('tuning_result')
+        report = tuning.get('report') if isinstance(tuning, dict) else None
+    report = report if isinstance(report, dict) else {}
+    style_report = report.get('style') if isinstance(report.get('style'), dict) else {}
+    regions = style_report.get('regions') or report.get('style_regions')
+    reason_counts = rendered.get('partial_reason_counts')
+    if not isinstance(reason_counts, dict):
+        reason_counts = report.get('partial_reason_counts') if isinstance(report.get('partial_reason_counts'), dict) else {}
+    partial_status = report.get('status') or rendered.get('status')
+    style_status = style_report.get('status') or partial_status
+    return {
+        **base,
+        'available': True,
+        'applied': True,
+        'operation_id': operation_id,
+        'operation_state': operation.get('state'),
+        'artifact_id': selected.get('id'),
+        'result_status': partial_status,
+        'style_status': style_status,
+        'partial': partial_status == 'partial',
+        'style_partial': style_status == 'partial',
+        'reason': report.get('reason') or style_report.get('reason'),
+        'partial_reason_counts': copy.deepcopy(reason_counts),
+        'partial_remediation': copy.deepcopy(rendered.get('partial_remediation', [])),
+        'partial_advice': copy.deepcopy(rendered.get('partial_advice', [])),
+        'applied_controls': style_report.get('applied_controls', report.get('applied_controls', 0)),
+        'skipped_controls': style_report.get('skipped_controls', report.get('skipped_controls', 0)),
+        'protected_note_count': report.get('protected_note_count', style_report.get('protected_note_count', 0)),
+        'region_count': len(regions) if isinstance(regions, list) else None,
+        'source_sha256': rendered.get('source_sha256'),
+        'candidate_sha256': candidate_sha,
+        'source_unchanged': rendered.get('source_unchanged') is True,
+        'receipt': {'path': rendered.get('receipt'), 'sha256': rendered.get('receipt_sha256')},
+        'semantic_model_used': False,
+        'synthesized': False,
+        'listened': False,
+        'instructions': '只回读已应用结果；如需修改，请从当前最终工程建立新的显式风格方案。',
+    }
+
+
 def style_review(workflow,identifier,segment_id=None):
     value=workflow._read(identifier)
-    if value['stage']!='project_ready' or not workflow._export_accepted(value):
-        raise ControlError('wrong_stage','先完成工程导出监督，再逐段核对风格。')
+    if value['stage']=='ready':
+        return _style_result_read(workflow,value,segment_id)
+    if value['stage']=='styling':
+        operation_id=value.get('operation_id')
+        operation=workflow.control.operation_get(operation_id) if operation_id else {}
+        return {'schema':'vwa-workflow-style-result-v1','workflow_id':identifier,
+            'revision':value['revision'],'stage':'styling','review_phase':'apply_in_progress',
+            'stage_semantics':'风格操作正在执行；此阶段没有逐段上下文可提交。',
+            'available':False,'applied':False,'operation_id':operation_id,
+            'operation_state':operation.get('state'),
+            'next':{'tool':'vwa_wait','arguments':{'operation_id':operation_id},
+                    'reason':'style_render_running'}}
+    if value['stage']!='project_ready':
+        raise ControlError('wrong_stage',
+            'workflow_style_review 用于 project_ready 的逐段检查，或 ready 后回读风格结果；当前阶段为 '+value['stage']+'。')
+    if not workflow._export_accepted(value):
+        raise ControlError('wrong_stage','工程已生成，但导出监督尚未完成；先核对并接受导出报告。')
+    if not enabled(value):
+        raise ControlError('style_segment_review_not_applicable',
+            '逐段风格上下文仅在 review_mode=segments 的 project_ready 工作流中可用。')
     segment=select(value,'style',segment_id)
     artifact=workflow.control.artifact(value['project_artifact_id'])
     result=workflow.control.call_worker('style_segment_context',{'path':artifact['path'],'segment':segment})
     return {'workflow_id':identifier,'revision':value['revision'],'artifact_id':artifact['id'],
+        'stage':'project_ready','review_phase':'segment_checks',
+        'stage_semantics':'仅逐段检查下一段；所有段完成后回到 workflow_advance 汇总并生成风格。',
         'segment':{k:v for k,v in segment.items() if k!='note_ids'},'context':result,
         'progress':progress(value,'style'),'decision_tool':'vwa_workflow_style_decide',
         'instructions':'只判断本段：保留原表现，或给本段完整音符的风格。相邻上下文不属于可编辑范围。'}

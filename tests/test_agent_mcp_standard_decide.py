@@ -43,7 +43,7 @@ EXPECTED_FIELDS = {
     'workflow_apply_review': {
         'action', 'workflow_id', 'expected_revision', 'rationale', 'note_edits',
         'lyric_edits', 'structure_edits', 'move_attached_lyrics', 'segment_id',
-        'run_until_gate', 'wait_ms',
+        'dry_run', 'run_until_gate', 'wait_ms',
     },
     'workflow_pronunciation_apply': {
         'action', 'workflow_id', 'expected_revision', 'rationale', 'changes',
@@ -138,6 +138,12 @@ class StandardDecideStaticContract(unittest.TestCase):
                          {'event_id', 'target_note_id', 'operation'})
         self.assertEqual(model_classes['DeleteLyricEvent'],
                          {'event_id', 'operation'})
+        self.assertEqual(model_classes['StyleRegion'], {
+            'start', 'end', 'start_note_id', 'end_note_id', 'preset',
+            'strength', 'style_pitch', 'detail', 'style_technique',
+            'technique_strength', 'technique_pitch', 'rationale',
+            'evidence_refs',
+        })
         self.assertTrue(any(
             isinstance(node, ast.Assign)
             and any(isinstance(target, ast.Name) and target.id == 'LyricsEdit'
@@ -162,7 +168,7 @@ def invocation_contract(source_directory):
     import agent_segment_workflow as segment_workflow
     import agent_mcp_standard_decide as decide
     import agent_mcp_standard_flow as standard_flow
-    from agent_mcp_models import Result
+    from agent_mcp_models import Result, StyleRegion
     from agent_control import ControlError
     from agent_errors import error_payload
     from agent_mcp_standard_routing import standardize
@@ -389,6 +395,25 @@ def invocation_contract(source_directory):
               ['properties']['changes'], 'workflow_change_limit_left_to_backend')
         check(definitions['workflow_apply_review']['properties']['expected_revision']['type']
               == 'integer', 'workflow_revision_is_integer')
+        style_region_schema = schema['$defs']['StyleRegion']
+        style_region_fields = set(style_region_schema['properties'])
+        check({'start', 'end', 'start_note_id', 'end_note_id'} <= style_region_fields,
+              'style_region:both_boundary_modes_in_schema')
+        check(not {'start', 'end', 'start_note_id', 'end_note_id'}
+              & set(style_region_schema['required']),
+              'style_region:boundary_mode_enforced_by_model_validator')
+        seconds_model = StyleRegion(
+            start=0.1, end=0.3, preset='sad', strength=0.5,
+            style_pitch=True, rationale='旧秒范围兼容。',
+        ).model_dump()
+        note_model = StyleRegion(
+            start_note_id='n1', end_note_id='n2', preset='sad', strength=0.5,
+            style_pitch=True, rationale='当前 MIDI 音符 ID 边界。',
+        ).model_dump()
+        check('start_note_id' not in seconds_model and 'end_note_id' not in seconds_model,
+              'style_region:seconds_payload_omits_note_ids')
+        check('start' not in note_model and 'end' not in note_model,
+              'style_region:note_payload_omits_seconds')
 
         sha = 'a' * 64
         draft_revision = 'b' * 64
@@ -409,6 +434,19 @@ def invocation_contract(source_directory):
                 'evidence_refs': ['n1'],
                 'detail': {'onset': 0.8, 'sustain': 0.7,
                            'connection': 0.9, 'release': 0.4},
+            }],
+        }
+        note_proposal = {
+            'track_indices': [0],
+            'brief': '用当前 MIDI 音符 ID 指定完整边界。',
+            'regions': [{
+                'start_note_id': 'n1',
+                'end_note_id': 'n2',
+                'preset': 'gentle',
+                'strength': 0.6,
+                'style_pitch': True,
+                'rationale': '首末音符全包含。',
+                'evidence_refs': ['n1', 'n2'],
             }],
         }
         score_edit = {'note_id': 'n1', 'pitch': 61}
@@ -449,6 +487,17 @@ def invocation_contract(source_directory):
                 'proposal': {**proposal, 'regions': [{
                     **proposal['regions'][0],
                     'detail': {**proposal['regions'][0]['detail']},
+                }]},
+            }),
+            ({
+                'action': 'style_plan', 'artifact_id': 'art_svp',
+                'proposal': note_proposal,
+            }, 'control', 'make_plan', ('style', 'art_svp'), {
+                'proposal': {**note_proposal, 'regions': [{
+                    **note_proposal['regions'][0],
+                    'style_technique': 'none',
+                    'technique_strength': 0.6,
+                    'technique_pitch': True,
                 }]},
             }),
             ({
@@ -1028,6 +1077,20 @@ def invocation_contract(source_directory):
               'expected_sha256': sha, 'edits': []}, 'empty_score_edits'),
             ({'action': 'pronunciation_patch_plan', 'artifact_id': 'art_project',
               'expected_sha256': sha, 'edits': []}, 'empty_pronunciation_edits'),
+            ({'action': 'style_plan', 'artifact_id': 'art_svp', 'proposal': {
+                **proposal,
+                'regions': [{
+                    **proposal['regions'][0],
+                    'start_note_id': 'n1', 'end_note_id': 'n2',
+                }],
+            }}, 'style_mixed_boundary_modes'),
+            ({'action': 'style_plan', 'artifact_id': 'art_svp', 'proposal': {
+                **note_proposal,
+                'regions': [{
+                    **note_proposal['regions'][0],
+                    'end_note_id': None,
+                }],
+            }}, 'style_incomplete_note_boundary'),
         ]
         for request, name in rejected_cases:
             await rejected(server, request, name)
@@ -1087,7 +1150,7 @@ class StandardDecideSDKContract(unittest.TestCase):
         self.assertEqual(result.returncode, 0, (result.stdout + result.stderr)[-12000:])
         receipt = json.loads(result.stdout)
         self.assertEqual(receipt['actions'], sorted(EXPECTED_ACTIONS))
-        self.assertEqual(receipt['call_count'], 21)
+        self.assertEqual(receipt['call_count'], 22)
         self.assertEqual(receipt['driver_call_count'], 3)
         self.assertNotIn('advance', receipt['callbacks'])
         self.assertFalse(receipt['workflow_advance_called'])

@@ -46,7 +46,14 @@ MANAGE_ANNOTATIONS = ToolAnnotations(
 
 class AssetsImport(StrictModel):
     action: Literal['assets_import']
-    path: str
+    path: Annotated[str, Field(
+        min_length=1, max_length=4096,
+        description=('文件必须已是绝对路径，并位于 vwa_status(system_capabilities) 返回的 '
+                     'allowed_asset_roots 或已配置受管任务根内；支持 MIDI、SVP 和 WAV。'
+                     'outside_roots 错误会返回实际 allowed_roots 与手工导入指引。'
+                     '服务不会从外部根自动复制；请先由用户或调用方把文件复制或移动到允许目录，'
+                     '再用新绝对路径调用。成功后会创建独立不可变快照。'),
+    )]
 
 
 class LyricTimelineFetch(StrictModel):

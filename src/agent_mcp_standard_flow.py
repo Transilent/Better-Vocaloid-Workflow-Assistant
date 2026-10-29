@@ -65,6 +65,7 @@ class WorkflowCreate(StrictModel):
 
     action: Literal['workflow_create']
     source: str = ''
+    source_url: Annotated[str, Field(min_length=1, max_length=2048, description='本地音频对应的调用方声明，未经同源验证；不联网。')] | None = None
     options: PreparationOptions | None = None
     brief: str = ''
     reference_lyrics: str = ''
@@ -90,6 +91,7 @@ class WorkflowCreate(StrictModel):
 class PreparationPlan(StrictModel):
     action: Literal['preparation_plan']
     source: str
+    source_url: Annotated[str, Field(min_length=1, max_length=2048, description='本地音频的 Bilibili BV HTTPS 来源声明，未经验证；不联网。')] | None = None
     options: PreparationOptions | None = None
 
 
@@ -241,6 +243,9 @@ def _create_workflow(control, workflow, request):
         preparation_job_id,
         request.review_mode,
     )
+    if request.source_url is not None:
+        return workflow.create(*arguments, initial_export_options=request.export_options,
+                               source_url=request.source_url)
     if request.export_options is None:
         return workflow.create(*arguments)
     return workflow.create(*arguments, initial_export_options=request.export_options)
@@ -792,6 +797,9 @@ def register(mcp, control, workflow, invoke):
         请求原子保存；实际导出时重新校验 F0/伴奏来源和音轨映射。"""
 
         if isinstance(request, PreparationPlan):
+            if request.source_url is not None:
+                return await invoke(control.preparation_plan, request.source,
+                                    _options(request.options), request.source_url)
             return await invoke(
                 control.preparation_plan,
                 request.source,

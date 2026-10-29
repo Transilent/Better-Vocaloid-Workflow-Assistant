@@ -30,7 +30,7 @@ CODE_FILES = ('agent_control.py', 'agent_worker.py', 'agent_score.py', 'agent_st
               'style_drafts.py','agent_drafts.py','agent_pronunciation.py','agent_refinement.py',
               'agent_errors.py','agent_monophony.py','agent_media.py','agent_views.py','agent_delivery.py',
               'agent_segments.py','agent_segment_workflow.py',
-              'agent_lyric_timeline.py','lyrics_sources.py','subtitles.py',
+              'agent_lyric_timeline.py','agent_lyric_reconcile.py','lyrics_sources.py','subtitles.py',
               'pitch_accuracy.py', 'agent_pitch.py', 'agent_separation_repair.py', 'vocal_partition.py',
               'agent_preparation.py', 'agent_lyrics.py', 'agent_exports.py', 'agent_workflow.py',
               'pipeline.py', 'project_exports.py', 'midi_merge.py', 'task_contract.py', 'artifact_cache.py',
@@ -72,7 +72,23 @@ def safe_path(value, roots=None):
             raise ControlError('unsafe_path', '路径包含链接或重解析点。')
     path = path.resolve()
     if roots is not None and not any(path.is_relative_to(root) for root in roots):
-        raise ControlError('outside_roots', '路径不在此服务配置允许的目录中。')
+        allowed_roots = [os.path.abspath(os.fspath(root)) for root in roots]
+        raise ControlError(
+            'outside_roots',
+            '路径不在此服务配置允许的目录中。',
+            details={
+                'path': str(path),
+                'allowed_roots': allowed_roots,
+                'import_guidance': {
+                    'copy_from_outside_roots': False,
+                    'instruction': ('请由用户或调用方把文件复制或移动到任一 allowed_roots 内，'
+                                    '再用新绝对路径重试。服务不会自动复制或扩大允许目录。'
+                                    '本地音频准备应直接使用允许素材目录内的新路径；'
+                                    'assets_import 仅用于其支持的素材和允许根。'),
+                    'managed_snapshot': {'tool': 'vwa_input', 'action': 'assets_import'},
+                },
+            },
+        )
     return path
 
 
@@ -124,9 +140,6 @@ def file_lock(path, *, blocking=True, cancel=lambda: None):
     handle = io_path(path).open('a+b')
     acquired = False
     try:
-        if handle.seek(0, 2) == 0:
-            handle.write(b'0')
-            handle.flush()
         while True:
             handle.seek(0)
             try:
@@ -143,6 +156,12 @@ def file_lock(path, *, blocking=True, cancel=lambda: None):
                     raise ControlError('busy', '该操作正在执行。')
                 cancel()
                 time.sleep(.05)
+        # Initialize only after locking. On Windows two first-time contenders
+        # can otherwise both observe an empty file, and one flush can collide
+        # with the other process's byte-range lock.
+        if handle.seek(0, 2) == 0:
+            handle.write(b'0')
+            handle.flush()
         yield
     finally:
         if acquired:
@@ -246,6 +265,14 @@ class Control:
                 'supports_duet_singer_separation':False,
                 'voice_modes':{'single':'混合人声＋伴奏','dual':'主唱＋和声／伴奏人声；不是按歌手音色分离'},
                 'preparation_sources': ['bilibili_bv_url', 'approved_local_audio'],
+                'allowed_asset_roots': [str(path) for path in self.assets],
+                'local_asset_import': {
+                    'path_policy': 'absolute_under_allowed_asset_roots',
+                    'copy_from_outside_roots': False,
+                    'assets_import_formats': ['.mid', '.midi', '.svp', '.wav'],
+                    'preparation_local_audio_formats': ['.wav'],
+                    'snapshot_on_assets_import': True,
+                },
                 'supervision': 'caller_agent_reviews_notes_and_lyrics_before_export',
                 'workflow_entry': 'vwa_start', 'workflow_next_steps': True,
                 'semantic_provider': 'caller_supplied_plan', 'candidate_only': True,
@@ -529,10 +556,13 @@ class Control:
                           'pronunciation_plan','draft_read','draft_publish','draft_plan',
                           'preparation_reuse_plan','preparation_reuse_create','segment_plan','style_segment_context','media_validate',
                           'lyric_timeline_search','lyric_timeline_fetch','lyric_timeline_parse',
-                          'lyric_timeline_read','lyric_timeline_review','preparation_repair_plan'):
+                          'lyric_timeline_read','lyric_timeline_review','preparation_repair_plan',
+                          'workflow_review_dry_run'):
             raise ControlError('unsupported_action', '不支持该业务调用。')
         directory = safe_path(self.state / 'calls' / uuid.uuid4().hex)
         directory.mkdir()
+        if action == 'workflow_review_dry_run':
+            arguments = {**arguments, 'temporary_root': str(directory)}
         request = directory / 'request.json'
         response = directory / 'response.json'
         atomic_json(request, {'action': action, 'arguments': arguments, 'code_revision': self.code_revision})
@@ -543,6 +573,12 @@ class Control:
                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), timeout=60)
             except subprocess.TimeoutExpired as error:
                 raise ControlError('worker_timeout', '业务读取超时，日志已保留。') from error
+            finally:
+                if action == 'workflow_review_dry_run':
+                    import shutil
+                    temporary = directory / 'review-candidates'
+                    if temporary.exists():
+                        shutil.rmtree(io_path(temporary))
         if not response.is_file():
             raise ControlError('worker_failed', '业务进程未返回结构化结果，退出码 ' + str(result.returncode))
         value = read_json(response)
@@ -978,12 +1014,18 @@ class Control:
         safe_path(plan['plan']['source_job'], self.jobs)
         return self.start_operation('separation_repair', {'plan_id': plan_id}, idempotency_key)
 
-    def preparation_plan(self, source, options=None):
+    def preparation_plan(self, source, options=None, source_url=None):
         if not isinstance(source, str) or not source.strip():
             raise ControlError('invalid_source', '需要歌曲链接、BV 号或本地音乐路径。')
         if Path(source).is_absolute():
             safe_path(source, self.assets)
-        plan = self.call_worker('preparation_plan', {'source': source, 'options': options or {}})
+        arguments = {'source': source, 'options': options or {}}
+        if source_url is not None:
+            # Worker call requests are persisted; discard query credentials before
+            # crossing that boundary, not only when the worker builds its plan.
+            from agent_preparation import normalize_source_url
+            arguments['source_url'] = normalize_source_url(source_url)
+        plan = self.call_worker('preparation_plan', arguments)
         return self.save_plan('preparation', None, plan)
 
     def preparation_create(self, plan_id):
@@ -1180,6 +1222,12 @@ class Control:
                     job = self.job_path(arguments['job_id'])
                     if file_hash(job / 'request.json') != arguments['request_sha256'] or owned['request_sha256'] != arguments['request_sha256']:
                         raise ControlError('stale_job_request', '准备请求已改变，未运行。')
+                    saved_request = read_json(job / 'request.json')
+                    if saved_request.get('source_provenance'):
+                        from common import ROOT
+                        source_audio = saved_request['source_audio']
+                        source_path = ROOT / source_audio[2:] if source_audio.startswith('@/') else Path(source_audio)
+                        safe_path(source_path, [*self.assets, *self.jobs])
                     for folder, directories, files in os.walk(job, followlinks=False):
                         for name in directories + files:
                             safe_path(Path(folder) / name, [job])

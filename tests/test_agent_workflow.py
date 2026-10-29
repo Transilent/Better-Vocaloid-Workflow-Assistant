@@ -535,6 +535,50 @@ class WorkflowTestBase(unittest.TestCase):
 
 
 class WorkflowCreateGetTests(WorkflowTestBase):
+    def test_direct_local_declaration_is_canonical_and_idempotent(self):
+        import agent_preparation
+        audio = self.root / 'assets' / 'fixture.wav'
+        audio.write_bytes(b'local-fixture')
+        url = 'https://www.bilibili.com/video/BV1xx411c7mD/'
+        def make_plan(source, options, source_url):
+            with patch.object(agent_preparation, '_preflight', return_value={}):
+                plan = agent_preparation.plan_preparation(source, options, source_url)
+            return {'id': 'plan_fixture', 'plan': plan}
+        with patch.object(self.control, 'preparation_plan', side_effect=make_plan):
+            first = self.workflow.create(source=str(audio), source_url=url + '?token=discard',
+                                         idempotency_key='direct-declared')
+            same = self.workflow.create(source=str(audio), source_url=url,
+                                        idempotency_key='direct-declared')
+            self.assertEqual(first['id'], same['id'])
+            self.assertEqual(first['source_evidence']['local_audio_sha256'], sha256_file(audio))
+            self.assertNotIn('token', json.dumps(first))
+            with self.assertRaises(ControlError):
+                self.workflow.create(source=str(audio), source_url=url.replace('BV1xx411c7mD', 'BV1r668YbEyp'),
+                                     idempotency_key='direct-declared')
+
+    def test_job_source_declaration_is_bound_and_replayed(self):
+        url = 'https://www.bilibili.com/video/BV1xx411c7mD/'
+        request = {'source_kind': 'local', 'local_audio_sha256': 'a' * 64,
+                   'source_provenance': {'kind': 'caller_supplied_unverified', 'url': url}}
+        job_id = self.control.register_preparation_job(request, 'provenance-job')
+        first = self.workflow.create(preparation_job_id=job_id, idempotency_key='source-evidence')
+        evidence = first['source_evidence']
+        self.assertEqual(evidence['local_audio_sha256'], 'a' * 64)
+        self.assertEqual(evidence['source_provenance'], request['source_provenance'])
+        self.assertEqual(evidence['preparation_request_sha256'],
+                         self.control._record('preparations', job_id, 'job')['request_sha256'])
+        replay = self.workflow.create(preparation_job_id=job_id, idempotency_key='source-evidence',
+                                      source_url=url + '?token=discarded')
+        self.assertEqual(replay['id'], first['id'])
+        with self.assertRaises(ControlError):
+            self.workflow.create(preparation_job_id=job_id, source_url=url.replace('BV1xx411c7mD', 'BV1r668YbEyp'))
+        request['local_audio_sha256'] = 'c' * 64
+        io_path(self.control.job_path(job_id) / 'request.json').write_text(
+            json.dumps(request), encoding='utf-8')
+        with self.assertRaises(ControlError) as error:
+            self.workflow.create(preparation_job_id=job_id, idempotency_key='tampered-job')
+        self.assertEqual(error.exception.code, 'stale_job_request')
+
     def test_create_same_key_replays_and_different_request_conflicts(self):
         first, artifact = self.create_midi_flow()
         second, artifact_again = self.create_midi_flow()
@@ -1107,6 +1151,184 @@ class WorkflowReviewTests(WorkflowTestBase):
         retryable = self.workflow.advance(inspected["id"], inspected["revision"], retry=True)
         self.assertEqual(retryable["stage"], "review")
         self.assertFalse(retryable["completed"])
+
+    def test_review_retry_error_is_current_only_and_success_archives_it(self):
+        created, _ = self.create_midi_flow(key="current review error")
+        pending = self.apply_review(created)
+        error = {
+            "code": "business_error",
+            "message": "最终状态在轨道 0、通道 0、音高 56 发生重叠；事件配对会歧义。",
+        }
+        self.control.set_operation(pending["operation_id"], "failed", error=error)
+        retryable = self.workflow.advance(
+            pending["id"], pending["revision"], retry=True)
+        self.assertEqual(retryable["stage"], "review")
+        self.assertEqual(retryable["last_error"], error)
+
+        retried = self.apply_review(retryable, rationale="修正后重新核对全部音符。")
+        self.assertNotIn("last_error", retried)
+        succeeded = self.succeed(
+            retried, self.control.review_success(retried["id"], retried["score_artifact_id"]))
+        reviewed = self.workflow.advance(succeeded["id"], succeeded["revision"])
+        self.assertEqual(reviewed["stage"], "reviewed")
+        self.assertNotIn("last_error", reviewed)
+        self.assertEqual(reviewed["error_history"][-1]["error"]["code"], "business_error")
+        self.assertEqual(reviewed["error_history"][-1]["retired_by"], "review_started")
+
+    def test_ready_status_retires_legacy_last_error_without_rewriting_record(self):
+        created, _ = self.create_midi_flow(key="legacy stale review error")
+        error = {"code": "business_error", "message": "旧的核对错误"}
+        raw = self.workflow._write(
+            self.workflow._read(created["id"]), "legacy_ready",
+            stage="ready", last_error=error)
+        self.assertEqual(self.workflow._read(raw["id"])["last_error"], error)
+
+        observed = self.workflow.get(raw["id"])
+
+        self.assertNotIn("last_error", observed)
+        self.assertEqual(observed["error_history"][-1]["error"], error)
+        self.assertEqual(
+            observed["error_history"][-1]["retired_by"], "successful_status_ready")
+        self.assertTrue(observed["error_history"][-1]["projected"])
+        self.assertNotIn("retired_at", observed["error_history"][-1])
+        self.assertEqual(observed["error_history"], self.workflow.get(raw["id"])["error_history"])
+        self.assertEqual(self.workflow._read(raw["id"])["last_error"], error)
+
+    def test_unrelated_write_preserves_error_and_new_error_supersedes_it(self):
+        created, _ = self.create_midi_flow(key="unrelated error")
+        error = {"code": "review_failure", "message": "待修复"}
+        raw = self.workflow._write(self.workflow._read(created["id"]),
+                                   "review_retry_required", last_error=error)
+        pitch = self.control.register_artifact(write_pitch_npz(self.root / "assets" / "retry-pitch.npz"),
+                                               kind="reference_pitch")
+        self.workflow.references_set(raw["id"], raw["revision"], pitch_artifact_id=pitch["id"],
+                                     track_indices=[1], time_origin=0.0, rationale="核对参考。")
+        updated = self.workflow._read(raw["id"])
+        self.assertEqual(updated["last_error"], error)
+        self.assertNotIn("error_history", updated)
+        replacement = {"code": "new_failure", "message": "新错误"}
+        updated = self.workflow._write(updated, "review_retry_required", last_error=replacement)
+        self.assertEqual(updated["last_error"], replacement)
+        self.assertEqual(updated["error_history"][-1]["error"], error)
+
+    def dry_run_worker(self, action, arguments):
+        from agent_worker import dispatch
+        self.assertEqual(action, "workflow_review_dry_run")
+        calls = self.control.state / "calls"
+        calls.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=str(calls)) as directory:
+            try:
+                return dispatch(self.control, action, {**arguments, "temporary_root": directory})
+            finally:
+                self.assertEqual(list((Path(directory) / "review-candidates").iterdir()), [])
+
+    def test_dry_run_combined_edits_matches_apply_without_side_effects(self):
+        created, _ = self.create_midi_flow(key="dry run combined")
+        notes = {n["pitch"]: n for n in read_score(self.midi)["notes"]}
+        deleted, lyric, pitch = notes[62], notes[60], notes[64]
+        edits = dict(
+            structure_edits=[
+                {"operation": "delete", "note_id": deleted["note_id"], "lyric_policy": "delete_owned"},
+                {"operation": "insert", "track_index": deleted["track_index"], "channel": deleted["channel"],
+                 "pitch": 67, "onset_tick": 1440, "duration_tick": 480, "velocity": 77, "lyric": "新"}],
+            lyric_edits=[{"note_id": lyric["note_id"], "lyric": "晴", "operation": "replace"}],
+            note_edits=[{"note_id": pitch["note_id"], "pitch": 65}])
+        raw_before = self.workflow._read(created["id"])
+        artifacts_before = copy.deepcopy(self.control.records["artifacts"])
+        with patch.object(self.control, "call_worker", side_effect=self.dry_run_worker):
+            preview = self.apply_review(created, dry_run=True, **edits)
+        self.assertTrue(preview["dry_run"])
+        self.assertFalse(preview["approved"])
+        self.assertEqual([s["kind"] for s in preview["steps"]], ["structure", "lyrics", "notes"])
+        self.assertIn('"lyric_removed": true', json.dumps(preview["steps"][0], ensure_ascii=False))
+        self.assertEqual(self.workflow._read(created["id"]), raw_before)
+        self.assertEqual(self.control.records["artifacts"], artifacts_before)
+        self.assertEqual(self.control.records["operations"], {})
+        pending = self.apply_review(created, **edits)
+        actual = self.execute_review_worker(pending, "dry-run-parity")
+        self.assertEqual(preview["candidate_sha256"], actual["source_sha256"])
+
+    def test_dry_run_rejects_overlap_after_prior_candidate_and_cleans_it(self):
+        created, _ = self.create_midi_flow(key="dry run overlap")
+        notes = read_score(self.midi)["notes"]
+        with patch.object(self.control, "call_worker", side_effect=self.dry_run_worker):
+            with self.assertRaises((ControlError, ValueError)) as raised:
+                self.apply_review(created, dry_run=True,
+                    lyric_edits=[{"operation": "replace", "note_id": notes[0]["note_id"], "lyric": "云"}],
+                    note_edits=[{"note_id": notes[0]["note_id"], "duration_tick": 720}])
+        self.assertTrue("重叠" in str(raised.exception) or getattr(raised.exception, "code", "") == "monophonic_overlap")
+        self.assertEqual(self.workflow._read(created["id"])["revision"], created["revision"])
+        self.assertEqual(self.control.records["operations"], {})
+
+    def test_dry_run_checks_segment_scope_before_worker(self):
+        from agent_segments import plan_segments
+        original_worker = self.control.call_worker
+        def segment_worker(action, arguments):
+            if action == "segment_plan":
+                return plan_segments(read_score(arguments["path"]))
+            return original_worker(action, arguments)
+        with patch.object(self.control, "call_worker", side_effect=segment_worker):
+            created, _ = self.create_midi_flow(key="dry run segment", review_mode="segments")
+        raw = self.workflow._read(created["id"])
+        segment = raw["midi_segments"]["segments"][0]
+        with patch.object(self.control, "call_worker", side_effect=self.dry_run_worker) as worker:
+            with self.assertRaises(ControlError) as raised:
+                self.apply_review(created, dry_run=True, segment_id=segment["id"],
+                                  note_edits=[{"note_id": "not-in-segment", "pitch": 61}])
+            self.assertEqual(raised.exception.code, "segment_edit_outside_scope")
+            worker.assert_not_called()
+            preview = self.apply_review(created, dry_run=True, segment_id=segment["id"])
+        self.assertFalse(preview["approved"])
+        self.assertEqual(self.workflow._read(created["id"]), raw)
+
+    def test_dry_run_rejects_conflict_and_preserves_state(self):
+        created, _ = self.create_midi_flow(key="dry run conflict")
+        target = read_score(self.midi)["notes"][1]["note_id"]
+        before = self.workflow._read(created["id"])
+        with patch.object(self.control, "call_worker", side_effect=self.dry_run_worker):
+            with self.assertRaises(ControlError) as raised:
+                self.apply_review(created, dry_run=True,
+                    structure_edits=[{"operation": "delete", "note_id": target, "lyric_policy": "delete_owned"}],
+                    lyric_edits=[{"operation": "replace", "note_id": target, "lyric": "改"}])
+        self.assertEqual(raised.exception.code, "review_edit_conflict")
+        self.assertEqual(self.workflow._read(created["id"]), before)
+        self.assertEqual(self.control.records["operations"], {})
+
+    def test_dry_run_checks_revision_stage_and_source_sha(self):
+        created, _ = self.create_midi_flow(key="dry run checks")
+        with self.assertRaises(ControlError) as raised:
+            self.workflow.apply_review(created["id"], created["revision"] + 1, "检查", dry_run=True)
+        self.assertEqual(raised.exception.code, "workflow_conflict")
+        with patch.object(self.control, "call_worker", side_effect=self.dry_run_worker):
+            io_path(self.midi).write_bytes(io_path(self.midi).read_bytes() + b"x")
+            with self.assertRaises(ControlError) as raised:
+                self.apply_review(created, dry_run=True)
+        self.assertEqual(raised.exception.code, "stale_artifact")
+        raw = self.workflow._write(self.workflow._read(created["id"]), "fixture", stage="ready")
+        with self.assertRaises(ControlError) as raised:
+            self.workflow.apply_review(raw["id"], raw["revision"], "检查", dry_run=True)
+        self.assertEqual(raised.exception.code, "wrong_stage")
+
+    def test_dry_run_runs_in_real_worker_and_removes_candidates(self):
+        from agent_control import Control, SCHEMA
+        config = self.root / "real-control.json"
+        config.write_text(json.dumps({"schema": SCHEMA, "application_root": str(SRC),
+            "worker_python": sys.executable, "state_root": str(self.root / "real-state"),
+            "allowed_asset_roots": [str(self.root / "assets")],
+            "allowed_job_roots": [str(self.root / "jobs")]}), encoding="utf-8")
+        control = Control(config)
+        workflow = Workflow(control)
+        artifact = control.import_asset(self.midi)
+        flow = workflow.create(score_artifact_id=artifact["id"], idempotency_key="dry-real")
+        note = read_score(artifact["path"])["notes"][0]
+        before = workflow._read(flow["id"])
+        preview = workflow.apply_review(flow["id"], flow["revision"], "试算",
+                                        note_edits=[{"note_id": note["note_id"], "pitch": 61}],
+                                        dry_run=True)
+        self.assertTrue(preview["dry_run"])
+        self.assertEqual(workflow._read(flow["id"]), before)
+        self.assertEqual(list((control.state / "operations").iterdir()), [])
+        self.assertEqual(list((control.state / "calls").glob("*/review-candidates")), [])
 
     def test_changed_reviewed_midi_blocks_export(self):
         created, _ = self.create_midi_flow()

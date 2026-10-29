@@ -530,6 +530,21 @@ def invocation_contract(source_directory):
             'formats': ['svp'], 'options': {'preserve_pitch': True},
         }, 'export_plan_options_preserved')
 
+        declared_url = 'https://www.bilibili.com/video/BV1xx411c7mD/?token=discard'
+        before = len(calls)
+        await call(server, 'vwa_start', {'action': 'preparation_plan',
+                   'source': 'C:/managed/source.wav', 'source_url': declared_url})
+        prep_call = next(row for row in calls[before:] if row['callback'] == 'preparation_plan')
+        check(prep_call['args'] == ['C:/managed/source.wav', {}, declared_url],
+              'preparation_source_declaration_forwarded')
+        before = len(calls)
+        await call(server, 'vwa_start', {'action': 'workflow_create',
+                   'source': 'C:/managed/source.wav', 'source_url': declared_url,
+                   'idempotency_key': 'declared-source'})
+        flow_call = next(row for row in calls[before:] if row['callback'] == 'create')
+        check(flow_call['kwargs']['source_url'] == declared_url,
+              'workflow_source_declaration_forwarded')
+
         # One local MIDI path produces one import and one create.
         before = len(calls)
         started = await call(server, 'vwa_start', {

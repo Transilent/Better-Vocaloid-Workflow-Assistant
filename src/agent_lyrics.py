@@ -392,6 +392,16 @@ def read_lyrics(path, language="zh") -> dict:
         "orphan_event_count": event_counts["orphan"],
         "ambiguous_event_count": event_counts["ambiguous"],
         "ratio_aligned_notes": round(note_counts["aligned"] / note_count, 9) if note_count else 1.0,
+        "empty_aligned_note_count": sum(
+            1 for row in note_rows if row["lyric_alignment"] == "aligned"
+            and isinstance(row.get("lyric"), str) and not row["lyric"].strip()
+        ),
+        "placeholder_aligned_note_count": sum(
+            1 for row in note_rows if row["lyric_alignment"] == "aligned"
+            and isinstance(row.get("lyric"), str)
+            and _PLACEHOLDER_RE.fullmatch(row["lyric"].strip())
+        ),
+        "interpretation": "关联率只统计事件与音符的机械关联，不能证明有词、唱词正确或版本一致。",
     }
 
     result = {
@@ -599,6 +609,27 @@ def review_lyrics(path, reference_text=None, language="zh") -> dict:
     ordered_notes = sorted(
         read["notes"], key=lambda row: (row["track_index"], row["onset_tick"], row["note_id"]),
     )
+    by_track: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for note in ordered_notes:
+        by_track[note["track_index"]].append(note)
+    for track_index, track_notes in by_track.items():
+        opening = []
+        for note in track_notes:
+            lyric = note.get("lyric")
+            if (note["lyric_alignment"] == "aligned" and isinstance(lyric, str)
+                    and lyric.strip() and not _is_continuation_or_punctuation(lyric)
+                    and not _PLACEHOLDER_RE.fullmatch(lyric.strip())):
+                break
+            opening.append(note)
+        if opening:
+            first = opening[0]
+            hints.append(_hint(
+                "opening_lyric_unresolved", "warning",
+                "轨道开头存在无词、占位或延音事件；请结合原音与版本歌词确认起唱，不能自动断定漏词。",
+                note_ids=[note["note_id"] for note in opening], track_index=track_index,
+                tick=first["onset_tick"],
+                seconds=first["onset_seconds"],
+            ))
     for note in ordered_notes:
         lyric = note.get("lyric")
         if not isinstance(lyric, str) or not lyric.strip() or _is_continuation_or_punctuation(lyric):

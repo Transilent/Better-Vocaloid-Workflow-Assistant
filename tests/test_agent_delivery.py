@@ -15,6 +15,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 import wave
 
@@ -211,6 +212,53 @@ class DeliveryTestBase(unittest.TestCase):
 
 
 class DeliveryIntegrityTests(DeliveryTestBase):
+    def test_preparation_job_workflow_and_manifest_share_source_identity(self):
+        import agent_preparation
+        import common
+        import pipeline
+        from agent_workflow import Workflow
+        sys.path.insert(0, str(APP / 'tests'))
+        from test_agent_workflow import FakeControl as WorkflowControl
+        control = WorkflowControl(self.root / 'workflow-fixture')
+        audio = self.control.assets[0] / 'audio.wav'
+        io_path(audio).write_bytes(b'local-audio-fixture')
+        url = 'https://www.bilibili.com/video/BV1xx411c7mD/'
+        with patch.object(agent_preparation, '_preflight', return_value={}), \
+             patch.object(common, 'ROOT', APP), patch.object(pipeline, 'ROOT', APP):
+            plan = agent_preparation.plan_preparation(str(audio), source_url=url + '?signature=discard')
+            created = agent_preparation.create_preparation(plan, control.jobs[0])
+        job = Path(created['job_path'])
+        identifier = 'job_' + 'f' * 32
+        record = {'id': identifier, 'path': str(job), 'request_sha256': created['request_sha256']}
+        io_path(control._record_path('preparations', identifier, 'job')).write_text(
+            json.dumps(record), encoding='utf-8')
+        with patch.object(control, 'job_path', return_value=job):
+            workflow = Workflow(control).create(preparation_job_id=identifier, idempotency_key='fixture')
+        ready = self.make_workflow()
+        ready['source_evidence'] = workflow['source_evidence']
+        result = build_delivery(self.control, ready)
+        manifest = json.loads(io_path(Path(result['manifest_path'])).read_text(encoding='utf-8'))
+        self.assertEqual(manifest['source_evidence']['local_audio_sha256'], plan['source']['sha256'])
+        self.assertEqual(manifest['source_evidence']['source_provenance'], plan['source_provenance'])
+        self.assertEqual(manifest['source_evidence']['preparation_request_sha256'], created['request_sha256'])
+        self.assertNotIn('signature=discard', json.dumps(manifest))
+
+    def test_declared_source_is_in_manifest_and_delivery_identity(self):
+        workflow = self.make_workflow()
+        workflow['source_evidence'] = {
+            'source_provenance': {'kind': 'caller_supplied_unverified',
+                                  'url': 'https://www.bilibili.com/video/BV1xx411c7mD/'},
+            'local_audio_sha256': 'a' * 64, 'preparation_request_sha256': 'b' * 64}
+        result = build_delivery(self.control, workflow)
+        manifest = json.loads(io_path(Path(result['manifest_path'])).read_text(encoding='utf-8'))
+        self.assertEqual(manifest['source_evidence'], workflow['source_evidence'])
+        self.assertIn('未验证', manifest['limitations'][-1])
+        self.assertTrue(build_delivery(self.control, workflow)['reused'])
+        changed = copy.deepcopy(workflow)
+        changed['source_evidence']['local_audio_sha256'] = 'c' * 64
+        with self.assertRaises(DeliveryError):
+            build_delivery(self.control, changed)
+
     def assert_delivery_error(self, code, *args, **kwargs):
         with self.assertRaises(DeliveryError) as raised:
             build_delivery(self.control, *args, **kwargs)

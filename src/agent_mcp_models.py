@@ -2,7 +2,14 @@
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    model_serializer,
+    model_validator,
+)
 from agent_preparation import PREPARATION_BPM_RANGE, PREPARATION_CPU_THREADS_RANGE, PREPARATION_DEVICE_VALUES
 
 class StrictModel(BaseModel):
@@ -29,8 +36,28 @@ class StyleDetail(StrictModel):
 
 
 class StyleRegion(StrictModel):
-    start: float = Field(ge=0)
-    end: float = Field(gt=0)
+    start: float | None = Field(
+        default=None,
+        ge=0,
+        description='旧秒范围起点；与 end 成对使用，不能和音符 ID 边界混用。',
+    )
+    end: float | None = Field(
+        default=None,
+        gt=0,
+        description='旧秒范围终点；须大于 start，最终仍扩展到完整音符。',
+    )
+    start_note_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=180,
+        description='当前 SVP 工程 context_read 中首音符的 ID；区间从该音符起点开始并全包含。',
+    )
+    end_note_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=180,
+        description='当前 SVP 工程 context_read 中末音符的 ID；区间包含该音符完整时值。',
+    )
     preset: Literal['none', 'gentle', 'sad', 'bold']
     strength: float = Field(ge=0, le=1)
     style_pitch: bool = True
@@ -42,6 +69,31 @@ class StyleRegion(StrictModel):
     technique_pitch: bool = True
     rationale: str = Field(min_length=1, max_length=2000)
     evidence_refs: list[str] = Field(default_factory=list, max_length=128)
+
+    @model_validator(mode='after')
+    def validate_exclusive_range(self):
+        has_seconds = self.start is not None or self.end is not None
+        has_note_ids = (
+            self.start_note_id is not None or self.end_note_id is not None
+        )
+        if has_seconds and has_note_ids:
+            raise ValueError('start/end 与 start_note_id/end_note_id 只能选择一种边界模式。')
+        if has_seconds:
+            if self.start is None or self.end is None:
+                raise ValueError('start 与 end 必须同时提供。')
+            if self.end <= self.start:
+                raise ValueError('end 必须大于 start。')
+            return self
+        if self.start_note_id is None or self.end_note_id is None:
+            raise ValueError(
+                '必须提供 start/end，或同时提供 start_note_id/end_note_id。'
+            )
+        return self
+
+    @model_serializer(mode='wrap')
+    def omit_inactive_range_fields(self, handler):
+        """Keep the old seconds payload shape while allowing either range mode."""
+        return {key: value for key, value in handler(self).items() if value is not None}
 
 
 class StyleProposal(StrictModel):

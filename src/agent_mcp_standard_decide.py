@@ -134,6 +134,7 @@ class WorkflowApplyReview(StrictModel):
     structure_edits: list[StructureEdit] | None = None
     move_attached_lyrics: bool = False
     segment_id: str | None = None
+    dry_run: bool = False
     run_until_gate: bool = False
     wait_ms: Annotated[int, Field(ge=0, le=MAX_WAIT_MS)] = 0
 
@@ -429,7 +430,7 @@ def register(mcp, control, workflow, invoke):
         drafts_plan/drafts_publish、workflow_style_decide、
         workflow_apply_review 和 workflow_pronunciation_apply。计划不会自动执行，
         审核不会自动认可未读内容；变更后按返回 readback 回读方案、操作候选、
-        工作流 revision 或共享草稿 revision。workflow_apply_review 默认只提交决定；显式 run_until_gate=true 时可在 wait_ms<=60000 内复用流程驱动器，但编辑候选仍在复核结果处停止并要求再次明确审核。SHA、CAS、幂等键与原参数验证仍由 Control/Workflow 执行；本工具不推理、不合成。"""
+        工作流 revision 或共享草稿 revision。workflow_apply_review 的 dry_run=true 按结构、歌词、音符顺序试算临时候选并销毁，不提交决定或批准；不能与 run_until_gate 或 wait_ms 同用。默认只提交决定；显式 run_until_gate=true 时可在 wait_ms<=60000 内复用流程驱动器，但编辑候选仍在复核结果处停止并要求再次明确审核。SHA、CAS、幂等键与原参数验证仍由 Control/Workflow 执行；本工具不推理、不合成。"""
         if isinstance(request, ScorePatchPlan):
             result = await invoke(
                 control.make_plan,
@@ -605,6 +606,10 @@ def register(mcp, control, workflow, invoke):
                 after_terminal='继续按工作流 next 读取证据，不自动认可未读片段。',
             )
         if isinstance(request, WorkflowApplyReview):
+            if request.dry_run and (request.run_until_gate or request.wait_ms):
+                def reject_dry_run_drive():
+                    raise ControlError('invalid_options', 'dry_run 不提交审核，不能驱动工作流或等待操作。')
+                return await invoke(reject_dry_run_drive)
             if any(edit.operation in {'move_event', 'delete_event'}
                    for edit in (request.lyric_edits or [])):
                 def reject_workflow_event_edit():
@@ -643,7 +648,10 @@ def register(mcp, control, workflow, invoke):
                  if request.structure_edits else []),
                 request.move_attached_lyrics,
                 request.segment_id,
+                *([True] if request.dry_run else []),
             )
+            if request.dry_run:
+                return result
             has_edits = bool(
                 request.note_edits or request.lyric_edits or request.structure_edits)
             if request.run_until_gate:

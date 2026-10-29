@@ -1,5 +1,6 @@
 """Resumable BV -> video/WAV -> vocals/instrumental -> MIDI workflow."""
 import argparse
+import copy
 import datetime as dt
 import json
 import os
@@ -50,7 +51,8 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
                reference_tension=False, reference_breathiness=False, reference_voicing=False,
                separation_flow='cascade', reference_calibration=None, bpm=None, expression_density='dense',
                project_export_enabled=None, audio_export_enabled=None, export_preferences=None,
-               performance_style='none', style_strength=.6, style_scope='lead',style_pitch=False,prepare_only=False,style_detail=None):
+               performance_style='none', style_strength=.6, style_scope='lead',style_pitch=False,prepare_only=False,style_detail=None,
+               source_provenance=None, local_audio_sha256=None):
     if type(prepare_only) is not bool:raise ValueError('准备工作流开关必须为布尔值。')
     if prepare_only:
         reference_dynamics=reference_tension=reference_breathiness=reference_voicing=False
@@ -131,6 +133,15 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
     if local_music is not None and not str(local_music).strip().strip('"'):
         raise ValueError("请选择本地音乐文件。")
     local = app_path(local_music) if local_music is not None else None
+    if source_provenance is not None:
+        from agent_preparation import normalize_source_url
+        if (local is None or not isinstance(source_provenance, dict)
+                or set(source_provenance) != {'kind', 'url'}
+                or source_provenance.get('kind') != 'caller_supplied_unverified'
+                or normalize_source_url(source_provenance.get('url')) != source_provenance.get('url')
+                or not isinstance(local_audio_sha256, str)
+                or not re.fullmatch(r'[0-9a-f]{64}', local_audio_sha256)):
+            raise ValueError('本地音频来源声明或摘要无效。')
     if local is not None and (not local.is_file() or local.stat().st_size == 0):
         raise ValueError("请选择存在且非空的本地音乐文件。")
     bv = None if local is not None else extract_bv(source)
@@ -165,6 +176,8 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
     atomic_json(job / "request.json", {
         "version": 3, "bv": bv, "url": f"https://www.bilibili.com/video/{bv}/" if bv else None,
         "source_kind": "local" if local is not None else "bilibili",
+        **({'source_provenance': source_provenance, 'local_audio_sha256': local_audio_sha256}
+           if source_provenance is not None else {}),
         "output_directory": saved_path(destination),
         **({"source_audio": saved_path(local), "source_title": local.stem,
             "input_file": "input/source" + local.suffix.lower()} if local is not None else {}),
@@ -376,7 +389,10 @@ def prepare_metadata(job, request):
     if request.get("source_kind") == "local":
         title = request["source_title"]
         atomic_json(job / "source-info.json", {"kind": "local", "bvid": None,
-                    "title": title, "desc": "", "owner": {"name": ""}})
+                    "title": title, "desc": "", "owner": {"name": ""},
+                    **({'source_provenance': request['source_provenance'],
+                        'local_audio_sha256': request['local_audio_sha256']}
+                       if request.get('source_provenance') else {})})
         atomic_json(job / "upstream-info.json", [])
         (job / "发布简介草稿.txt").write_text(
             f"本家：待填写（本地音乐导入）\n歌曲：{title}\n原作者 / 歌姬：待填写\nSTAFF：待填写", encoding="utf-8")
@@ -420,13 +436,292 @@ def prepare_metadata(job, request):
     print("简介未标出歌词；使用本地自动识别。" if not request["lyrics"] and not candidate else "已保存参考歌词或歌词候选。", flush=True)
 
 
+class BilibiliDownloadError(RuntimeError):
+    """Bilibili CDN failure with safe, machine-readable recovery guidance."""
+
+    def __init__(self, attempts, cause):
+        message = (
+            f'B站媒体下载失败：已尝试 {len(attempts)} 条官方或备用 CDN 路由。'
+            '请先重试准备阶段；若仍失败，请取得同一视频的 WAV 音频后改用本地音频导入。')
+        super().__init__(message)
+        self.code = 'bilibili_download_failed'
+        self.component = 'download'
+        retryable = _download_error_is_retryable(cause)
+        self.retryable = retryable
+        self.remediation = [
+            '重新运行准备任务；下载器会刷新播放链接并再次尝试官方和备用 CDN。',
+            '若提示登录、会员或地区限制，请刷新 B站登录，并确认视频能在浏览器中直接播放。',
+            '若网络持续失败，请将同一视频的 WAV 音频放入 allowed_asset_roots，再改用本地音频准备；可用 source_url 保留未经验证的来源声明。',
+        ]
+        self.details = {
+            'attempted_routes': attempts,
+            'fallback_exhausted': True,
+            'next_action': 'retry_preparation',
+            'local_import': {
+                'supported': True,
+                'instructions': [
+                    '在“音乐来源”选择存在且非空的本地音频文件。',
+                    '通过 source_url 保存调用方声明的原视频链接；系统不会自动验证音频同源。',
+                ],
+            },
+            'last_error': _download_error_summary(cause),
+        }
+
+
+_URL_IN_ERROR = re.compile(r'https?://[^\s]+', re.I)
+_SECRET_URL_FIELD = re.compile(r'(?i)\b(token|upsig|deadline|oi|os|sig)=([^&\s]+)')
+
+
+def _download_error_summary(error):
+    """Keep diagnostics useful without exposing signed CDN URLs or query secrets."""
+    text = _URL_IN_ERROR.sub('<redacted-url>', str(error).strip())
+    text = _SECRET_URL_FIELD.sub(r'\1=<redacted>', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text[:320]
+
+
+def _download_error_is_retryable(error):
+    text = str(error).casefold()
+    permanent = (
+        'unsupported url', 'requested format is not available', 'video unavailable',
+        'video does not exist', 'deleted video', 'private video', 'copyright',
+    )
+    return not any(marker in text for marker in permanent)
+
+
+def _bilibili_cid(job, request):
+    try:
+        info = json.loads((job / 'source-info.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError) as error:
+        raise RuntimeError('B站媒体元数据缺少视频分P信息。') from error
+    page_number = 1
+    try:
+        page_number = int(urllib.parse.parse_qs(urllib.parse.urlsplit(request.get('url') or '').query).get('p', ['1'])[-1])
+    except (TypeError, ValueError):
+        page_number = 1
+    pages = info.get('pages') if isinstance(info, dict) else None
+    cid = info.get('cid') if isinstance(info, dict) else None
+    if isinstance(pages, list) and 0 < page_number <= len(pages):
+        page = pages[page_number - 1]
+        if isinstance(page, dict):
+            cid = page.get('cid') or cid
+    try:
+        cid = int(cid)
+    except (TypeError, ValueError):
+        cid = 0
+    if cid <= 0:
+        raise RuntimeError('B站媒体元数据缺少有效的 cid。')
+    try:
+        bvid = extract_bv(request.get('bv') or request.get('url') or '')
+    except ValueError as error:
+        raise RuntimeError('B站媒体地址缺少有效的 BV 号。') from error
+    return bvid, cid
+
+
+def _bilibili_retry_media(downloader, job, request):
+    """Fetch fresh playback URLs, including every backupUrl, through yt-dlp."""
+    from yt_dlp.extractor.bilibili import BiliBiliIE
+    bvid, cid = _bilibili_cid(job, request)
+    extractor = BiliBiliIE(downloader)
+    play_info = extractor._download_playinfo(
+        bvid, cid, headers={'Referer': request.get('url') or 'https://www.bilibili.com/'},
+        query={'try_look': 1}, fatal=False)
+    if not isinstance(play_info, dict) or not (play_info.get('dash') or play_info.get('durl')):
+        raise RuntimeError('B站播放接口没有返回可下载媒体。')
+    formats = [fmt for fmt in extractor.extract_formats(play_info)
+               if isinstance(fmt, dict) and (fmt.get('url') or fmt.get('fragments'))]
+    if not formats:
+        raise RuntimeError('B站播放接口没有返回可用格式。')
+    return play_info, formats
+
+
+def _download_urls(value):
+    result = []
+    pending = list(value) if isinstance(value, (list, tuple)) else [value]
+    while pending:
+        raw = pending.pop(0)
+        if isinstance(raw, (list, tuple)):
+            pending[:0] = raw
+            continue
+        if not isinstance(raw, str) or any(char in raw for char in '\r\n\x00'):
+            continue
+        url = 'https:' + raw if raw.startswith('//') else raw
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme not in ('http', 'https') or not parsed.hostname:
+            continue
+        if url not in result:
+            result.append(url)
+    return result
+
+
+def _bilibili_mirror_variants(formats, play_info):
+    """Return base and corresponding backupUrl variants without changing yt-dlp."""
+    lookup = {}
+    streams = []
+    dash = play_info.get('dash') if isinstance(play_info, dict) else None
+    if isinstance(dash, dict):
+        for group in ('audio', 'video'):
+            rows = dash.get(group)
+            if isinstance(rows, list):
+                streams.extend(row for row in rows if isinstance(row, dict))
+    durl = play_info.get('durl') if isinstance(play_info, dict) else None
+    if isinstance(durl, list):
+        streams.extend(row for row in durl if isinstance(row, dict))
+    for row in streams:
+        urls = _download_urls([row.get('baseUrl'), row.get('base_url'), row.get('url'),
+                               row.get('backupUrl'), row.get('backup_url'), row.get('backup_urls')])
+        if not urls:
+            continue
+        for base in (row.get('baseUrl'), row.get('base_url'), row.get('url')):
+            base_urls = _download_urls(base)
+            if base_urls:
+                lookup[base_urls[0]] = urls
+    if not lookup:
+        return [copy.deepcopy(formats)]
+    route_count = 1
+    for fmt in formats:
+        route_count = max(route_count, len(lookup.get(fmt.get('url'), [])))
+    variants, seen = [], set()
+    for index in range(route_count):
+        variant = []
+        for fmt in formats:
+            item = copy.deepcopy(fmt)
+            candidates = lookup.get(fmt.get('url'), _download_urls(fmt.get('url')))
+            if candidates:
+                # Different streams may have different backup counts. Keep
+                # the last available mirror instead of returning to a known
+                # broken primary while trying another stream's later mirror.
+                item['url'] = candidates[index] if index < len(candidates) else candidates[-1]
+            fragments = item.get('fragments')
+            if isinstance(fragments, list):
+                for fragment in fragments:
+                    if not isinstance(fragment, dict):
+                        continue
+                    fragment_candidates = lookup.get(fragment.get('url'), _download_urls(fragment.get('url')))
+                    if fragment_candidates:
+                        fragment['url'] = (fragment_candidates[index]
+                                           if index < len(fragment_candidates) else fragment_candidates[-1])
+            variant.append(item)
+        signature = tuple((item.get('url'), tuple(fragment.get('url') for fragment in item.get('fragments') or []))
+                          for item in variant)
+        if signature not in seen:
+            variants.append(variant)
+            seen.add(signature)
+    return variants
+
+
+def _bilibili_route_info(info, request, formats):
+    """Build a fresh yt-dlp video result for one verified URL/format route."""
+    source_url = request.get('url') or f"https://www.bilibili.com/video/{request.get('bv')}/"
+    headers = copy.deepcopy(info.get('http_headers') or {})
+    headers.setdefault('Referer', source_url)
+    result = {
+        '_type': 'video',
+        'id': info.get('id') or request.get('bv'),
+        'display_id': info.get('display_id') or info.get('id') or request.get('bv'),
+        'title': info.get('title'),
+        'duration': info.get('duration'),
+        'webpage_url': info.get('webpage_url') or source_url,
+        'original_url': info.get('original_url') or source_url,
+        'extractor': info.get('extractor') or 'BiliBili',
+        'extractor_key': info.get('extractor_key') or 'BiliBili',
+        'http_headers': headers,
+        'formats': copy.deepcopy(formats),
+    }
+    return {key: value for key, value in result.items() if value is not None}
+
+
+def _download_attempt(index, transport, formats=None, error=None):
+    hosts = set()
+    for fmt in formats or []:
+        if isinstance(fmt, dict) and fmt.get('url'):
+            host = urllib.parse.urlsplit(fmt['url']).hostname
+            if host:
+                hosts.add(host)
+    row = {
+        'route': 'baseUrl' if index == 0 else f'backupUrl[{index}]',
+        'transport': transport,
+        # These are candidates in the format set; yt-dlp may select only some.
+        'candidate_servers': sorted(hosts),
+        'result': 'failed' if error is not None else 'success',
+    }
+    if error is not None:
+        row['error_type'] = type(error).__name__
+        row['error'] = _download_error_summary(error)
+    return row
+
+
+def _bilibili_download_with_fallback(job, request, options, cookies, source, first_error):
+    """Refresh Bilibili formats and retry base/backup CDNs without accepting bad output."""
+    import yt_dlp
+    from bilibili_session import configure_downloader
+    attempts = [_download_attempt(0, 'standard', error=first_error)]
+    source_url = request['url']
+    metadata = None
+    play_info = None
+    formats = None
+    try:
+        with yt_dlp.YoutubeDL(options) as downloader:
+            if cookies:
+                configure_downloader(downloader, cookies)
+            metadata = downloader.extract_info(source_url, download=False)
+            if isinstance(metadata, dict) and metadata.get('_type') not in (None, 'video'):
+                entries = metadata.get('entries') or []
+                if len(entries) == 1 and isinstance(entries[0], dict):
+                    metadata = entries[0]
+            try:
+                play_info, formats = _bilibili_retry_media(downloader, job, request)
+            except InterruptedError:
+                raise
+            except Exception as error:
+                attempts.append(_download_attempt(0, 'playback-refresh', error=error))
+    except InterruptedError:
+        raise
+    except Exception as error:
+        attempts.append(_download_attempt(0, 'metadata-refresh', error=error))
+    if not isinstance(metadata, dict):
+        metadata = {'id': request.get('bv'), 'title': request.get('bv'), 'http_headers': {}}
+    if not formats:
+        formats = [fmt for fmt in metadata.get('formats', []) if isinstance(fmt, dict)]
+    if not formats:
+        raise BilibiliDownloadError(attempts, first_error)
+    variants = _bilibili_mirror_variants(formats, play_info or {})
+    last_error = first_error
+    for transport in ('standard', 'chunked'):
+        for index, route_formats in enumerate(variants):
+            cancelled(job)
+            source.unlink(missing_ok=True)
+            retry_options = dict(options)
+            if transport == 'chunked':
+                retry_options['http_chunk_size'] = 4 * 1024**2
+                retry_options['http_headers'] = {'Connection': 'close'}
+            try:
+                with yt_dlp.YoutubeDL(retry_options) as downloader:
+                    if cookies:
+                        configure_downloader(downloader, cookies)
+                    info = downloader.process_ie_result(
+                        _bilibili_route_info(metadata, request, route_formats), download=True)
+                if not source.is_file() or source.stat().st_size < 1024:
+                    source.unlink(missing_ok=True)
+                    raise RuntimeError('没有得到完整的 source.mp4。')
+                attempts.append(_download_attempt(index, transport, route_formats))
+                print(f'B站媒体已通过 {attempts[-1]["route"]}（{transport}）下载。', flush=True)
+                return info, attempts
+            except InterruptedError:
+                raise
+            except Exception as error:
+                last_error = error
+                attempts.append(_download_attempt(index, transport, route_formats, error))
+    raise BilibiliDownloadError(attempts, last_error)
+
+
 def download(job, request):
     if request.get("source_kind") == "local":
         import hashlib
-        source = app_path(request["source_audio"])
+        source = Path(native_path(app_path(request["source_audio"])))
         if not source.is_file():
             raise FileNotFoundError("本地音乐文件已移动，请重新选择文件。")
-        target = job / request["input_file"]
+        target = Path(native_path(job / request["input_file"]))
         target.parent.mkdir(exist_ok=True)
         temporary = target.with_name(target.name + ".part")
         before = source.stat()
@@ -440,6 +735,8 @@ def download(job, request):
             after = source.stat()
             if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns) or temporary.stat().st_size != before.st_size:
                 raise ValueError("音乐文件在导入时发生变化，请重新导入。")
+            if request.get('local_audio_sha256') and digest.hexdigest() != request['local_audio_sha256']:
+                raise ValueError('本地音乐与计划摘要不一致，请重新生成准备计划。')
             temporary.replace(target)
         except BaseException:
             temporary.unlink(missing_ok=True)
@@ -495,17 +792,30 @@ def download(job, request):
         "proxy": "",
     }
     (job / "video").mkdir(exist_ok=True)
-    with yt_dlp.YoutubeDL(options) as downloader:
-        if cookies:
-            configure_downloader(downloader, cookies)
-        info = downloader.extract_info(request["url"], download=True)
+    attempts = []
+    used_fallback = False
+    try:
+        with yt_dlp.YoutubeDL(options) as downloader:
+            if cookies:
+                configure_downloader(downloader, cookies)
+            info = downloader.extract_info(request["url"], download=True)
+        attempts.append(_download_attempt(0, 'standard',
+                                          info.get('requested_formats') or [info]))
+    except InterruptedError:
+        raise
+    except Exception as first_error:
+        print('官方 CDN 下载失败，正在刷新播放信息并切换备用 CDN。', flush=True)
+        info, attempts = _bilibili_download_with_fallback(
+            job, request, options, cookies, source, first_error)
+        used_fallback = True
     selected = [{k: item.get(k) for k in ("format_id", "width", "height", "vcodec", "acodec", "abr")}
                 for item in info.get("requested_formats", [info])]
     if not source.is_file() or source.stat().st_size < 1024:
         raise RuntimeError("没有得到完整的 source.mp4。")
     atomic_json(report_path, {"title": info.get("title"), "duration": info.get("duration"),
                              "formats": selected, 'sha256':file_hash(source),
-                             'authenticated': bool(cookies)})
+                             'authenticated': bool(cookies), 'used_fallback': used_fallback,
+                             'download_attempts': attempts})
     print("原视频下载完成。", flush=True)
 
 

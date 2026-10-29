@@ -25,6 +25,8 @@ MCP 服务固定提供 12 个工具，不再提供 `--profile legacy` 或独立�
 
 以下为单次工具调用参数，实际 artifact ID、工作流 ID、revision、operation ID 和文件路径来自前一步结果。路径必须处于配置允许的素材目录。
 
+`system_capabilities` 的 `allowed_asset_roots` 给出当前实际授权的素材根；`local_asset_import` 同时声明绝对路径要求、支持格式、成功后创建快照，以及 `copy_from_outside_roots=false`。若绝对路径越界，`outside_roots` 错误会在 `details` 返回 `path`、实际 `allowed_roots` 和 `import_guidance`。服务不会读取或复制授权根之外的文件，也不会自动扩大白名单。请由用户或调用方先把文件复制或移动到任一允许根，再用新绝对路径重试；`assets_import` 成功后才把允许根内的源文件复制为 MCP 状态目录中的独立不可变快照。
+
 1. 查询能力：`vwa_status`。
 
    ```json
@@ -71,9 +73,17 @@ MCP 服务固定提供 12 个工具，不再提供 `--profile legacy` 或独立�
 
 新歌曲开始准备前，若已有经过人工核对的正式歌词，应优先把它传入准备计划的 `options.lyrics`；已有准备任务的恢复计划也可以在明确确认后传入该项并重跑所需阶段。工作流创建还接受 `reference_lyrics` 作为当前 MIDI 的歌词核对文本。歌词不是必填项，没有可靠来源时仍可自动识别；不因缺少歌词而阻断流程。
 
+在线下载受阻后，可以把本地 WAV 放入允许的素材目录，用 `vwa_start` 的 `preparation_plan` 提供本地 `source`，并可额外提供 Bilibili 视频 `source_url`；直接用本地音频创建 workflow 也支持该字段。URL 仅是调用方声明，不触发联网或证明同源。计划、准备任务、工作流及交付清单保留声明与本地音频 SHA。已有准备任务创建工作流时自动继承其来源声明；不能通过创建工作流追补或替换旧任务的声明。仅支持普通 Bilibili 视频 URL，子页参数须另行核实，其他查询参数会在持久化前移除。
+
 外部时间轴是可选参考。`vwa_search` 只检索版本，`vwa_input` 的 `lyric_timeline_fetch`／`lyric_timeline_import` 只保存带摘要的快照，`vwa_evidence` 的 `lyric_timeline_read` 只分页读取行、时间和来源状态。这三步都不会绑定工作流、重排歌词或改写 MIDI。需要把时间轴作为核对参考时，调用方须先明确核对原唱／翻唱、时长、版本和偏移，再以带 `expected_revision`、`rationale` 的 `workflow_references_set` 显式绑定；绑定歌词时 `lyric_version_note` 仍为必填。`lyrics_read` 只读 MIDI 歌词事件，传入时间轴 artifact 会提示改用 `lyric_timeline_read`。
 
+已核对的歌词行可交给 `vwa_evidence` 的 `lyrics_reconcile_preview`：填写 `artifact_id`、`expected_sha256`、`track_index` 和 `lines`（每行 `start`、`end`、`text`，时间为 MIDI 秒）。预览按起音所在的半开时间窗匹配，不跨轨借用音符，返回逐行差异、候选 `edits`、未覆盖项目与人工决策。已有 `-` 延音的条件候选在每行 `conditional_suggestion` 中单列，不进入普通 `edits`；延音可能掩盖漏字，须逐音符核对。确认后可把选定建议交给 `lyrics_patch_plan`，回读后再显式应用，最后重新读取候选。歌词事件的机械关联率不证明有可见文字或文字正确；空文本和占位符另行统计。
+
 歌词事件归属有歧义时，可先用 `lyrics_read` 取得绑定完整源 SHA 的 `event_id`，再通过 `lyrics_patch_plan` 明确提交 `move_event` 或 `delete_event`，回读差异后使用 `lyrics_patch_apply` 并重新读取候选。目标音符必须在同轨且归属唯一；事件 ID 不可跨候选版本使用。事件级操作暂不支持直接放入 `workflow_apply_review`：先独立修补并回读，再绑定或创建工作流。普通歌词文本和音符编辑中的未变化项会单独计数，不会阻断同批有效修改。
+
+联合修改前可在 `vwa_decide` 的 `workflow_apply_review` 中设置 `dry_run=true`。服务按正式审核的结构、歌词、音符顺序在临时目录试算并返回差异、警告和候选 SHA，检查工作流 revision、源文件、分段范围和冲突后清理临时候选；它不提交审核、启动 operation 或登记候选。试运行不能与 `run_until_gate` 或 `wait_ms` 同用。确认后仍需显式提交并回读实际候选；歌词事件移动／删除仍需独立方案。
+
+风格区域除秒范围外可用 `start_note_id/end_note_id` 指定首末完整音符；先读取当前 SVP 工程的 `context_read` 取得其音符 ID，不能使用旧 MIDI 或旧工程的 ID。两个边界必须同轨且在选择的轨道内，末音符也被包含；区域仍按所选轨道及时间范围作用，不能让同一音符落入不同区域。风格计划的 `coverage` 汇总覆盖数与未覆盖范围。
 
 ## 原唱连续 F0 和导出
 

@@ -41,7 +41,7 @@ _ACTION_GROUPS = {
     )),
     'vwa_evidence': frozenset((
         'score_read', 'score_review', 'context_read', 'lyrics_read',
-        'lyric_timeline_read', 'lyric_timeline_review', 'lyrics_review',
+        'lyric_timeline_read', 'lyric_timeline_review', 'lyrics_review', 'lyrics_reconcile_preview',
         'reference_pitch_review', 'pitch_offset_review', 'reference_audio_read', 'pronunciation_read',
         'workflow_review', 'workflow_style_review',
     )),
