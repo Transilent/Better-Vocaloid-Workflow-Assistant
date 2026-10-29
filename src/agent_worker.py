@@ -184,6 +184,12 @@ def dispatch(control, action, arguments):
         pitch=safe_path(arguments['pitch_path'],[control.state])
         return review_reference_pitch(path,pitch,arguments.get('track_indices'),
             arguments.get('time_origin',0.0),arguments.get('limit',100),arguments.get('offset',0))
+    if action == 'pitch_offset_review':
+        from agent_reference import pitch_offset_review
+        pitch=safe_path(arguments['pitch_path'],[control.state])
+        return pitch_offset_review(path,pitch,arguments['track_index'],
+            arguments['time_origin'],arguments['category'],arguments.get('limit',20),
+            arguments.get('offset',0),arguments.get('expected_revision'))
     if action == 'reference_audio_read':
         from agent_reference import inspect_reference_audio
         return inspect_reference_audio(path,arguments.get('start'),arguments.get('end'))

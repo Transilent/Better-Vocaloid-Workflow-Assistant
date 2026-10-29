@@ -85,6 +85,10 @@ class JobsGet(StrictModel):
 class ArtifactsList(StrictModel):
     action: Literal['artifacts_list']
     job_id: str | None = None
+    limit: int = Field(default=20, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
+    kind: str | None = Field(default=None, description='按产物类型精确过滤；任务索引中对应 role。')
+    expected_revision: str | None = Field(default=None, description='offset 非零时必须传上一页 listing_revision；列表变化须从头读取。')
 
 
 class ArtifactsInspect(StrictModel):
@@ -217,6 +221,18 @@ class ReferencePitchReview(StrictModel):
     offset: int = 0
 
 
+class PitchOffsetReview(StrictModel):
+    action: Literal['pitch_offset_review']
+    score_artifact_id: str
+    pitch_artifact_id: str
+    track_index: int = Field(ge=0, description='MIDI 轨道索引，须与参考 F0 所属声部对应。')
+    time_origin: float = 0.0
+    category: Literal['warning', 'unevaluated', 'ambiguous']
+    limit: int = Field(default=20, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
+    expected_revision: str | None = Field(default=None, description='offset 非零时必须使用上一页的 revision。')
+
+
 class ReferenceAudioRead(StrictModel):
     action: Literal['reference_audio_read']
     artifact_id: str
@@ -258,6 +274,7 @@ EvidenceRequest = Annotated[
     | LyricTimelineReview
     | LyricsReview
     | ReferencePitchReview
+    | PitchOffsetReview
     | ReferenceAudioRead
     | PronunciationRead
     | WorkflowReview
@@ -299,7 +316,7 @@ def register(mcp, control, workflow, invoke):
         action 为原工具名去掉 vwa_：system_capabilities, system_health,
         jobs_list, jobs_get, artifacts_list, artifacts_inspect, operations_get,
         plans_get, tuning_result, drafts_get, workflow_get, workflows_list。
-        artifacts_list(job_id) 会登记并校验任务产物；operations_get 和
+        artifacts_list 支持 kind 过滤和分页；续页使用 next_request，任务索引的当前页会登记并校验产物；operations_get 和
         workflow 状态查询可能把失联操作标为 interrupted，因此本工具不标纯只读。
         artifacts_inspect(verify=true) 会启动核验操作，须改走 vwa_run。
         """
@@ -317,7 +334,8 @@ def register(mcp, control, workflow, invoke):
                 request.after_cursor,
             )
         if isinstance(request, ArtifactsList):
-            return await invoke(control.artifacts_list, request.job_id)
+            return await invoke(control.artifacts_list, request.job_id, request.limit, request.offset,
+                                request.kind, request.expected_revision)
         if isinstance(request, ArtifactsInspect):
             if request.verify:
                 remediation, message = write_redirect(
@@ -389,7 +407,7 @@ def register(mcp, control, workflow, invoke):
         action 为动作名（沿用原工具名去掉 vwa_；lyric_timeline_read 是新增
         标准只读动作）：score_read, score_review, context_read, lyrics_read,
         lyric_timeline_read, lyric_timeline_review, lyrics_review,
-        reference_pitch_review, reference_audio_read, pronunciation_read,
+        reference_pitch_review, pitch_offset_review, reference_audio_read, pronunciation_read,
         workflow_review, workflow_style_review。读取经原 Control/Workflow
         分页、SHA 和阶段校验，并保留 worker 调用记录；参考证据不是真值。
         lyric_timeline_read 返回 line_index、起止秒、text、estimated、provider
@@ -456,6 +474,11 @@ def register(mcp, control, workflow, invoke):
                 request.limit,
                 request.offset,
             )
+        if isinstance(request, PitchOffsetReview):
+            return await invoke(control.pitch_offset_review, request.score_artifact_id,
+                                request.pitch_artifact_id, request.track_index,
+                                request.time_origin, request.category, request.limit,
+                                request.offset, request.expected_revision)
         if isinstance(request, ReferenceAudioRead):
             if request.make_excerpt:
                 remediation, message = write_redirect(

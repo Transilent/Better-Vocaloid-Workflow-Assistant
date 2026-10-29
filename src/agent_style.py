@@ -40,6 +40,9 @@ PROPOSAL_KEYS = frozenset({"track_indices", "brief", "regions"})
 _EPSILON = 1e-9
 _MIN_REGION_SECONDS = 0.025
 _MAX_CONTEXT_PAGE = 500
+_MAX_STYLE_ERROR_ITEMS = 20
+_MAX_STYLE_ERROR_TEXT = 256
+_MAX_STYLE_ERROR_IDENTIFIER = 96
 # Public style contexts print seconds with six decimals.  A boundary may be
 # rounded by at most half a microsecond before it reaches this module.  Snap
 # only to real note edges inside that bounded window so [a,b) + [b,c) remains
@@ -64,18 +67,49 @@ class StyleRegionOverlap(ValueError):
         message: str,
         *,
         shared_note_ids: list[str],
+        shared_note_ids_total: int,
+        shared_note_ids_truncated: bool,
+        shared_notes: list[dict[str, Any]],
+        shared_notes_total: int,
+        shared_notes_truncated: bool,
+        shared_note_span_seconds: dict[str, float] | None,
         previous_interval: dict[str, float],
         current_interval: dict[str, float],
+        requested_intervals: dict[str, dict[str, float]],
+        conflict: dict[str, float],
+        region_note_ids: dict[str, list[str]],
+        region_note_ids_totals: dict[str, int],
+        region_note_ids_truncated: dict[str, bool],
+        boundary_candidates: dict[str, dict[str, Any]],
+        context_read: dict[str, Any],
         overlap_seconds: float,
+        source_sha256: str,
     ) -> None:
         super().__init__(message)
         self.details = {
+            "note_evidence_limit": _MAX_STYLE_ERROR_ITEMS,
+            "note_evidence_text_limit": _MAX_STYLE_ERROR_TEXT,
+            "note_evidence_identifier_limit": _MAX_STYLE_ERROR_IDENTIFIER,
             "shared_note_ids": list(shared_note_ids),
-            "previous_interval": dict(previous_interval),
-            "current_interval": dict(current_interval),
+            "shared_note_ids_total": int(shared_note_ids_total),
+            "shared_note_ids_truncated": bool(shared_note_ids_truncated),
+            "shared_notes": copy.deepcopy(shared_notes),
+            "shared_notes_total": int(shared_notes_total),
+            "shared_notes_truncated": bool(shared_notes_truncated),
+            "shared_note_span_seconds": copy.deepcopy(shared_note_span_seconds),
+            "previous_interval": copy.deepcopy(previous_interval),
+            "current_interval": copy.deepcopy(current_interval),
+            "requested_intervals": copy.deepcopy(requested_intervals),
+            "conflict": copy.deepcopy(conflict),
+            "region_note_ids": copy.deepcopy(region_note_ids),
+            "region_note_ids_totals": copy.deepcopy(region_note_ids_totals),
+            "region_note_ids_truncated": copy.deepcopy(region_note_ids_truncated),
+            "boundary_candidates": copy.deepcopy(boundary_candidates),
+            "context_read": copy.deepcopy(context_read),
             "overlap_seconds": float(overlap_seconds),
+            "source_sha256": source_sha256,
+            "changes_applied": False,
         }
-
 
 def _canonical(value: Any) -> str:
     try:
@@ -810,6 +844,347 @@ def _snap_display_boundary(value: float, boundaries: list[float]) -> float:
     return value
 
 
+def _bounded_error_text(value: Any) -> tuple[Any, bool]:
+    """Bound an evidence string while leaving non-string scalar types intact."""
+    if not isinstance(value, str):
+        return value, False
+    truncated = len(value) > _MAX_STYLE_ERROR_TEXT
+    return value[:_MAX_STYLE_ERROR_TEXT], truncated
+
+
+def _bounded_error_identifier(value: Any) -> tuple[str, bool]:
+    """Bound identifiers defensively; context IDs normally use 24-hex stable IDs."""
+    text = str(value)
+    truncated = len(text) > _MAX_STYLE_ERROR_IDENTIFIER
+    return text[:_MAX_STYLE_ERROR_IDENTIFIER], truncated
+
+
+def _bounded_error_list(values: Any) -> tuple[list[Any], int, bool]:
+    """Return a stable bounded sample plus the original size and truncation flag."""
+    ordered = list(values)
+    sample = ordered[:_MAX_STYLE_ERROR_ITEMS]
+    return sample, len(ordered), len(ordered) > len(sample)
+
+
+def _candidate_selection(
+    components: list[dict[str, Any]], first: float, last: float,
+) -> dict[str, Any] | None:
+    """Resolve an exact interval to complete-note components, or reject it."""
+    if last <= first:
+        return None
+    touched = [
+        component for component in components
+        if component["start"] < last and component["end"] > first
+    ]
+    if not touched:
+        return None
+    start = min(first, touched[0]["start"])
+    end = max(last, touched[-1]["end"])
+    if end - start < _MIN_REGION_SECONDS - _EPSILON:
+        return None
+    return {
+        "start": float(start),
+        "end": float(end),
+        "note_ids": sorted({
+            note_id for component in touched for note_id in component["note_ids"]
+        }),
+    }
+
+
+def _style_boundary_candidate(
+    components: list[dict[str, Any]],
+    previous: dict[str, Any],
+    current: dict[str, Any],
+    *,
+    edited_region: str,
+    field: str,
+    target: float,
+    shared_note_ids: list[str],
+) -> dict[str, Any]:
+    """Describe one non-mutating endpoint edit and verify its full-note coverage."""
+    if edited_region == "previous":
+        edited, unchanged = previous, current
+        unchanged_region = "current"
+    elif edited_region == "current":
+        edited, unchanged = current, previous
+        unchanged_region = "previous"
+    else:
+        raise AssertionError("unknown edited style region")
+
+    first = float(target) if field == "start" else float(edited["start"])
+    last = float(target) if field == "end" else float(edited["end"])
+    selection = _candidate_selection(components, first, last)
+    selected_note_ids = set() if selection is None else set(selection["note_ids"])
+    original_edited_note_ids = set(edited["aligned_note_ids"])
+    unchanged_note_ids = set(unchanged["aligned_note_ids"])
+    original_union = original_edited_note_ids | unchanged_note_ids
+    candidate_union = selected_note_ids | unchanged_note_ids
+    removed_note_ids = original_edited_note_ids - selected_note_ids
+    lost_note_ids = original_union - candidate_union
+
+    resolves_overlap = False
+    if selection is not None:
+        if edited_region == "previous":
+            resolves_overlap = float(selection["end"]) <= float(unchanged["start"])
+        else:
+            resolves_overlap = float(unchanged["end"]) <= float(selection["start"])
+
+    retained, retained_total, retained_truncated = _bounded_error_list(
+        sorted(selected_note_ids)
+    )
+    removed, removed_total, removed_truncated = _bounded_error_list(
+        sorted(removed_note_ids)
+    )
+    moved, moved_total, moved_truncated = _bounded_error_list(
+        sorted(set(shared_note_ids) & removed_note_ids)
+    )
+    lost, lost_total, lost_truncated = _bounded_error_list(sorted(lost_note_ids))
+    interval = None
+    if selection is not None:
+        interval_ids, interval_total, interval_truncated = _bounded_error_list(
+            selection["note_ids"]
+        )
+        interval = {
+            "start": float(selection["start"]),
+            "end": float(selection["end"]),
+            "note_ids": interval_ids,
+            "note_ids_total": interval_total,
+            "note_ids_truncated": interval_truncated,
+        }
+
+    return {
+        "edit": {
+            "region": edited_region,
+            "field": field,
+            "from": float(edited[field]),
+            "to": float(target),
+        },
+        "candidate_interval": interval,
+        "selects_complete_notes": selection is not None,
+        "shared_note_owner": unchanged_region,
+        "retained_note_ids": retained,
+        "retained_note_ids_total": retained_total,
+        "retained_note_ids_truncated": retained_truncated,
+        "removed_from_edited_region": removed,
+        "removed_from_edited_region_total": removed_total,
+        "removed_from_edited_region_truncated": removed_truncated,
+        "shared_note_ids_moved_to_unchanged_region": moved,
+        "shared_note_ids_moved_to_unchanged_region_total": moved_total,
+        "shared_note_ids_moved_to_unchanged_region_truncated": moved_truncated,
+        "lost_note_ids": lost,
+        "lost_note_ids_total": lost_total,
+        "lost_note_ids_truncated": lost_truncated,
+        "preserves_original_note_coverage": not lost_note_ids,
+        "resolves_overlap": bool(resolves_overlap),
+        "usable": bool(selection is not None and resolves_overlap and not lost_note_ids),
+    }
+
+
+def _style_overlap_error(
+    selected_context: dict[str, Any],
+    components: list[dict[str, Any]],
+    previous: dict[str, Any],
+    current: dict[str, Any],
+    shared_note_ids: list[str],
+) -> StyleRegionOverlap:
+    """Build an overlap error with bounded evidence and non-mutating candidates."""
+    notes_by_id = {row["note_id"]: row for row in selected_context["notes"]}
+    shared_notes = []
+    for note_id in shared_note_ids:
+        row = notes_by_id[note_id]
+        lyric, lyric_truncated = _bounded_error_text(row["lyric"])
+        safe_note_id, note_id_truncated = _bounded_error_identifier(note_id)
+        safe_track_id, track_id_truncated = _bounded_error_identifier(row["track_id"])
+        shared_notes.append({
+            "note_id": safe_note_id,
+            "note_id_truncated": note_id_truncated,
+            "track_id": safe_track_id,
+            "track_id_truncated": track_id_truncated,
+            "track_index": row["track_index"],
+            "note_index": row["note_index"],
+            "onset_tick": row["onset_tick"],
+            "duration_tick": row["duration_tick"],
+            "project_onset_tick": row["project_onset_tick"],
+            "track_offset_tick": row["track_offset_tick"],
+            "start_seconds": float(row["start_seconds"]),
+            "end_seconds": float(row["end_seconds"]),
+            "pitch": row["pitch"],
+            "lyric": lyric,
+            "lyric_truncated": lyric_truncated,
+        })
+    shared_notes.sort(key=lambda row: (
+        row["start_seconds"], row["end_seconds"],
+        row["track_index"], row["note_index"], row["note_id"],
+    ))
+    chronological_shared_ids = [row["note_id"] for row in shared_notes]
+    shared_note_span_seconds = None
+    if shared_notes:
+        shared_note_span_seconds = {
+            "start": min(row["start_seconds"] for row in shared_notes),
+            "end": max(row["end_seconds"] for row in shared_notes),
+        }
+
+    previous_interval = {
+        "start": float(previous["start"]),
+        "end": float(previous["end"]),
+    }
+    current_interval = {
+        "start": float(current["start"]),
+        "end": float(current["end"]),
+    }
+    conflict_start = max(previous_interval["start"], current_interval["start"])
+    conflict_end = min(previous_interval["end"], current_interval["end"])
+    overlap_seconds = max(0.0, conflict_end - conflict_start)
+    conflict = {
+        "start": float(conflict_start),
+        "end": float(conflict_end),
+        "seconds": float(overlap_seconds),
+    }
+    requested_intervals = {
+        "previous": {
+            "start": float(previous["requested_start"]),
+            "end": float(previous["requested_end"]),
+        },
+        "current": {
+            "start": float(current["requested_start"]),
+            "end": float(current["requested_end"]),
+        },
+    }
+
+    previous_candidate = _style_boundary_candidate(
+        components, previous, current,
+        edited_region="previous",
+        field="end",
+        target=float(current["start"]),
+        shared_note_ids=chronological_shared_ids,
+    )
+    current_candidate = _style_boundary_candidate(
+        components, previous, current,
+        edited_region="current",
+        field="start",
+        target=float(previous["end"]),
+        shared_note_ids=chronological_shared_ids,
+    )
+    boundary_candidates = {
+        "previous": previous_candidate,
+        "current": current_candidate,
+    }
+
+    if chronological_shared_ids:
+        headline = (
+            "整音符对齐后风格片段重叠并共用完整音符："
+            + f"{previous['start']:.6f}-{previous['end']:.6f}s 与 "
+            + f"{current['start']:.6f}-{current['end']:.6f}s；"
+            + "共有 " + str(len(chronological_shared_ids)) + " 个完整音符。"
+        )
+    else:
+        headline = (
+            "整音符对齐后风格片段发生重叠："
+            + f"{previous['start']:.6f}-{previous['end']:.6f}s 与 "
+            + f"{current['start']:.6f}-{current['end']:.6f}s。"
+        )
+
+    usable = []
+    if previous_candidate["usable"]:
+        retained = "将共享音符保留在后一片段" if chronological_shared_ids else "将重叠区音符保留在后一片段"
+        usable.append(
+            "前一片段 end 改为 "
+            + f"{previous_candidate['edit']['to']:.6f}s，{retained}"
+        )
+    if current_candidate["usable"]:
+        retained = "将共享音符保留在前一片段" if chronological_shared_ids else "将重叠区音符保留在前一片段"
+        usable.append(
+            "后一片段 start 改为 "
+            + f"{current_candidate['edit']['to']:.6f}s，{retained}"
+        )
+    if usable:
+        advice = (
+            "可核对并重新调用 vwa_style_plan 的单侧边界候选："
+            + "；或 ".join(usable)
+            + "。候选的可覆盖性和丢音检查见 details.boundary_candidates；"
+        )
+    else:
+        advice = (
+            "两个单侧边界候选均不安全（可能使片段为空/过短、仍重叠或丢失"
+            "未覆盖音符），请依据 details 中的完整音符重新组合重叠区；"
+        )
+
+    message = (
+        headline
+        + f"实际冲突 {conflict_start:.6f}-{conflict_end:.6f}s"
+        + f"（{overlap_seconds:.6f}s）。"
+        + advice
+        + "详情仅含每类最多 " + str(_MAX_STYLE_ERROR_ITEMS)
+        + " 个音符样本；完整音符请按 details.context_read 分页读取。"
+        + "本次未修改任何片段或音符。"
+    )
+
+    shared_id_sample, shared_id_total, shared_id_truncated = _bounded_error_list(
+        chronological_shared_ids
+    )
+    shared_note_sample, shared_note_total, shared_note_truncated = _bounded_error_list(
+        shared_notes
+    )
+    region_note_ids = {}
+    region_note_ids_totals = {}
+    region_note_ids_truncated = {}
+    for name, row in (("previous", previous), ("current", current)):
+        sample, total, truncated = _bounded_error_list(row["aligned_note_ids"])
+        region_note_ids[name] = sample
+        region_note_ids_totals[name] = total
+        region_note_ids_truncated[name] = truncated
+
+    track_indices = [int(index) for index in selected_context["track_indices"]]
+    context_read = {
+        "tool": "vwa_evidence",
+        "arguments": {
+            "request": {
+                "action": "context_read",
+                "artifact_id": "<本次 vwa_style_plan 使用的 artifact_id>",
+                "track_indices": track_indices,
+                "limit": _MAX_CONTEXT_PAGE,
+                "offset": 0,
+                "detail": "notes",
+                "include_note_ids": True,
+            },
+        },
+        "continuation": {
+            "request": {
+                "action": "context_read",
+                "artifact_id": "<本次 vwa_style_plan 使用的 artifact_id>",
+                "track_indices": track_indices,
+                "limit": _MAX_CONTEXT_PAGE,
+                "offset": "<当前 context_read 响应的 pagination.next_offset>",
+                "detail": "notes",
+                "include_note_ids": True,
+            },
+            "until": "pagination.has_more 为 false",
+        },
+        "verification": "拼接各页 notes 后先核对 source_sha256，再重新调用 vwa_style_plan。",
+    }
+    return StyleRegionOverlap(
+        message,
+        shared_note_ids=shared_id_sample,
+        shared_note_ids_total=shared_id_total,
+        shared_note_ids_truncated=shared_id_truncated,
+        shared_notes=shared_note_sample,
+        shared_notes_total=shared_note_total,
+        shared_notes_truncated=shared_note_truncated,
+        shared_note_span_seconds=shared_note_span_seconds,
+        previous_interval=previous_interval,
+        current_interval=current_interval,
+        requested_intervals=requested_intervals,
+        conflict=conflict,
+        region_note_ids=region_note_ids,
+        region_note_ids_totals=region_note_ids_totals,
+        region_note_ids_truncated=region_note_ids_truncated,
+        boundary_candidates=boundary_candidates,
+        context_read=context_read,
+        overlap_seconds=overlap_seconds,
+        source_sha256=selected_context["source_sha256"],
+    )
+
+
 def _align_regions(
     regions: list[dict[str, Any]], selected_context: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
@@ -865,35 +1240,9 @@ def _align_regions(
         shared_note_ids = sorted(
             set(previous["aligned_note_ids"]) & set(current["aligned_note_ids"])
         )
-        previous_interval = {
-            "start": float(previous["start"]),
-            "end": float(previous["end"]),
-        }
-        current_interval = {
-            "start": float(current["start"]),
-            "end": float(current["end"]),
-        }
-        overlap_seconds = max(0.0, previous_interval["end"] - current_interval["start"])
-        if shared_note_ids:
-            raise StyleRegionOverlap(
-                "整音符对齐后风格片段重叠并共用完整音符："
-                + f"{previous['start']:.6f}-{previous['end']:.6f}s 与 "
-                + f"{current['start']:.6f}-{current['end']:.6f}s；"
-                + "共有 " + str(len(shared_note_ids)) + " 个音符。",
-                shared_note_ids=shared_note_ids,
-                previous_interval=previous_interval,
-                current_interval=current_interval,
-                overlap_seconds=overlap_seconds,
-            )
-        if current["start"] < previous["end"]:
-            raise StyleRegionOverlap(
-                "整音符对齐后风格片段发生重叠："
-                + f"{previous['start']:.6f}-{previous['end']:.6f}s 与 "
-                + f"{current['start']:.6f}-{current['end']:.6f}s。",
-                shared_note_ids=[],
-                previous_interval=previous_interval,
-                current_interval=current_interval,
-                overlap_seconds=overlap_seconds,
+        if shared_note_ids or current["start"] < previous["end"]:
+            raise _style_overlap_error(
+                selected_context, components, previous, current, shared_note_ids,
             )
 
     semantic = []

@@ -1172,3 +1172,339 @@ def review_reference_pitch(
     }
     result["review_sha256"] = _canonical_digest(result)
     return result
+
+SUSTAINED_OFFSET_CATEGORIES = {
+    "warning": "warnings",
+    "unevaluated": "unevaluated_notes",
+    "ambiguous": "not_assessed_intervals",
+}
+MAX_SUSTAINED_OFFSET_PAGE_SIZE = 100
+MAX_SUSTAINED_RELATED_NOTES = 20
+MAX_SUSTAINED_TEMPO_EVENTS = 32
+MAX_SUSTAINED_TEXT = 256
+
+
+def _bounded_optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text if len(text) <= MAX_SUSTAINED_TEXT else text[:MAX_SUSTAINED_TEXT]
+
+
+def _sustained_revision(
+    score_sha256: str,
+    pitch_sha256: str,
+    track_index: int,
+    time_origin: float,
+    analysis: dict[str, Any],
+    code_revision: str,
+) -> str:
+    identity = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "vwa-sustained-pitch-offset-revision",
+        "code_revision": code_revision,
+        "score_sha256": score_sha256,
+        "pitch_sha256": pitch_sha256,
+        "track_index": track_index,
+        "time_origin": float(time_origin),
+        "algorithm": analysis.get("algorithm"),
+        "threshold_cents": analysis.get("threshold_cents"),
+        "minimum_duration_seconds": analysis.get("minimum_duration_seconds"),
+        "minimum_frames": analysis.get("minimum_frames"),
+        "edge_guard_seconds": analysis.get("edge_guard_seconds"),
+        "warning_count": analysis.get("warning_count"),
+        "unevaluated_count": analysis.get("unevaluated_count"),
+        "ambiguous_interval_count": analysis.get("not_assessed_interval_count"),
+    }
+    return "posrev-" + _canonical_digest(identity)
+
+
+def _sustained_page_items(
+    items: list[dict[str, Any]],
+    category: str,
+    descriptors: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows = []
+    for item in items:
+        row = dict(item)
+        row["category"] = category
+        note = row.get("note")
+        if isinstance(note, dict):
+            bounded_note = dict(note)
+            note_index = bounded_note.get("note_index")
+            descriptor = (descriptors[note_index]
+                          if type(note_index) is int and 0 <= note_index < len(descriptors)
+                          else None)
+            if descriptor is not None and descriptor["note_id"] == bounded_note.get("note_id"):
+                for field in (
+                    "channel", "velocity", "duration_tick", "lyric_event_index",
+                    "pairing_ambiguous",
+                ):
+                    bounded_note[field] = descriptor.get(field)
+                full_lyric = descriptor.get("lyric")
+                bounded_note["lyric"] = _bounded_optional_text(full_lyric)
+                bounded_note["lyric_truncated"] = (
+                    full_lyric is not None and len(str(full_lyric)) > MAX_SUSTAINED_TEXT
+                )
+            else:
+                bounded_note["lyric"] = _bounded_optional_text(bounded_note.get("lyric"))
+            row["note"] = bounded_note
+            row["note_id"] = bounded_note.get("note_id")
+        elif category == "ambiguous":
+            indices = row.pop("note_indices", [])
+            indices = indices if isinstance(indices, list) else []
+            safe_indices = [index for index in indices if type(index) is int]
+            related = []
+            for index in safe_indices[:MAX_SUSTAINED_RELATED_NOTES]:
+                if 0 <= index < len(descriptors):
+                    descriptor = descriptors[index]
+                    related.append({
+                        "note_id": descriptor["note_id"],
+                        "track_index": descriptor["vocal_track_index"],
+                        "note_index": descriptor["note_index"],
+                        "channel": descriptor.get("channel"),
+                        "pitch": descriptor["center_midi"],
+                        "start_tick": descriptor["start_tick"],
+                        "end_tick": descriptor["end_tick"],
+                        "lyric": _bounded_optional_text(descriptor.get("lyric")),
+                        "lyric_event_index": descriptor.get("lyric_event_index"),
+                        "pairing_ambiguous": descriptor.get("pairing_ambiguous"),
+                    })
+            row["note_indices"] = safe_indices[:MAX_SUSTAINED_RELATED_NOTES]
+            row["note_ids"] = [note["note_id"] for note in related]
+            row["notes"] = related
+            row["related_notes_truncated"] = len(safe_indices) > len(related)
+        rows.append(row)
+    return rows
+
+
+def pitch_offset_review(
+    score_path,
+    pitch_path,
+    track_index,
+    time_origin,
+    category,
+    limit=20,
+    offset=0,
+    expected_revision=None,
+) -> dict:
+    """Read one bounded page of sustained pitch-offset evidence.
+
+    The caller explicitly maps one MIDI track to the measured F0 sidecar.  The
+    shared pitch-accuracy implementation computes note ownership and diagnostic
+    pages.  This adapter only validates sources, supplies complete editable MIDI
+    note IDs, and reports stable revision metadata; it never edits a score or
+    decides whether the note or measured F0 curve is true.
+    """
+    from pitch_accuracy import analyze_sustained_pitch_offsets, assign_note_owners
+
+    code_root = Path(__file__).resolve().parent
+    code_files = ('agent_reference.py', 'pitch_accuracy.py', 'agent_score.py')
+    code_revision = _canonical_digest({name: _sha256_file(code_root / name) for name in code_files})
+    score_source = _resolve_file(score_path, "乐谱")
+    pitch_source = _resolve_file(pitch_path, "pitch NPZ")
+    score = read_score(score_source)
+    if score.get("format") != "midi":
+        raise ValueError("pitch offset review 只接受 MIDI 乐谱。")
+    if any(issue.get("code") == "conflicting_tempo_at_tick"
+           for issue in score["integrity_issues"]):
+        raise ValueError("MIDI 在同一 tick 存在冲突 tempo，秒数映射有歧义，拒绝音高偏移核查。")
+
+    pitch_data = _read_pitch(pitch_source)
+    selected_track_index = _strict_int(track_index, "track_index", minimum=0)
+    origin = _finite_number(time_origin, "time_origin")
+    if abs(origin) > 1_000_000_000:
+        raise ValueError("time_origin 超出支持范围。")
+    if not isinstance(category, str) or category not in SUSTAINED_OFFSET_CATEGORIES:
+        raise ValueError("category 必须是 warning、unevaluated 或 ambiguous。")
+    page_limit = _strict_int(
+        limit, "limit", minimum=1, maximum=MAX_SUSTAINED_OFFSET_PAGE_SIZE
+    )
+    page_offset = _strict_int(offset, "offset", minimum=0, maximum=10_000_000)
+    if expected_revision is not None:
+        if (not isinstance(expected_revision, str) or not expected_revision
+                or len(expected_revision) > MAX_SUSTAINED_TEXT):
+            raise ValueError("expected_revision 必须是非空短字符串或 null。")
+    if page_offset and expected_revision is None:
+        raise ValueError("非零 offset 需要上一页的 expected_revision，请从第 0 页读取。")
+
+    tracks = [
+        track for track in score["tracks"]
+        if int(track["track_index"]) == selected_track_index
+    ]
+    if not tracks:
+        raise ValueError(f"MIDI 中不存在 track_index={selected_track_index}。")
+    track = tracks[0]
+    selected_notes = [
+        note for note in score["notes"]
+        if int(note["track_index"]) == selected_track_index
+    ]
+    if not selected_notes or int(track.get("note_count", 0)) <= 0:
+        raise ValueError(f"MIDI 轨道 {selected_track_index} 没有可核查音符。")
+    selected_notes.sort(key=lambda note: (
+        int(note["onset_tick"]), int(note["pitch"]), str(note["note_id"])
+    ))
+
+    intervals = []
+    descriptors = []
+    for note_index, note in enumerate(selected_notes):
+        onset = note.get("onset_seconds")
+        end = note.get("end_seconds")
+        center = note.get("pitch")
+        if (type(onset) not in (int, float) or type(end) not in (int, float)
+                or type(center) not in (int, float) or end <= onset):
+            raise ValueError(
+                f"轨道 {selected_track_index} 的音符时轴或音高无效，拒绝生成不完整证据。"
+            )
+        note_id = note.get("note_id")
+        if not isinstance(note_id, str) or not note_id:
+            raise ValueError("MIDI 音符缺少可用于编辑的完整 note_id。")
+        intervals.append((float(onset), float(end)))
+        descriptors.append({
+            "vocal_track_index": selected_track_index,
+            "note_index": note_index,
+            "note_id": note_id,
+            "start_tick": note.get("onset_tick"),
+            "end_tick": note.get("end_tick"),
+            "start_seconds": float(onset),
+            "end_seconds": float(end),
+            "center_midi": float(center),
+            "center_cents": int(round(float(center) * 100.0)),
+            "channel": note.get("channel"),
+            "velocity": note.get("velocity"),
+            "duration_tick": note.get("duration_tick"),
+            "lyric": note.get("lyric"),
+            "lyric_event_index": note.get("lyric_event_index"),
+            "pairing_ambiguous": bool(note.get("pairing_ambiguous")),
+        })
+
+    step = float(pitch_data["time_step_seconds"])
+    times = np.arange(int(pitch_data["frame_count"]), dtype=np.float64) * step + origin
+    owner = assign_note_owners(times, intervals)
+    selected_property = SUSTAINED_OFFSET_CATEGORIES[category]
+    pagination = {
+        "warnings": {"offset": 0, "limit": 1},
+        "unevaluated_notes": {"offset": 0, "limit": 1},
+        "not_assessed_intervals": {"offset": 0, "limit": 1},
+    }
+    pagination[selected_property] = {"offset": page_offset, "limit": page_limit}
+    analysis = analyze_sustained_pitch_offsets(
+        pitch_data["pitch"],
+        pitch_data["voiced_mask"],
+        owner,
+        step,
+        intervals,
+        descriptors,
+        origin,
+        source_sha256=pitch_data["source_sha256"],
+        vocal_track_index=selected_track_index,
+        diagnostic_pagination=pagination,
+    )
+
+    score_sha256 = str(score["source_sha256"])
+    pitch_sha256 = str(pitch_data["source_sha256"])
+    if _sha256_file(score_source) != score_sha256:
+        raise ValueError("MIDI 源在音高偏移核查期间发生变化，请重新读取。")
+    if _sha256_file(pitch_source) != pitch_sha256:
+        raise ValueError("pitch NPZ 源在音高偏移核查期间发生变化，请重新读取。")
+
+    if code_revision != _canonical_digest({name: _sha256_file(code_root / name) for name in code_files}):
+        raise ValueError("音高诊断代码在核查期间发生变化，请重新读取。")
+    revision = _sustained_revision(
+        score_sha256, pitch_sha256, selected_track_index, origin, analysis, code_revision
+    )
+    if expected_revision is not None and expected_revision != revision:
+        raise ValueError("音高偏移证据已变化；请从 offset 0 重新读取，并使用新的 revision。")
+
+    page_metadata = analysis["diagnostic_pagination"][selected_property]
+    items = _sustained_page_items(
+        list(analysis.get(selected_property, [])), category, descriptors
+    )
+    if len(items) != page_metadata["returned"]:
+        raise ValueError("共享音高偏移分页返回了不一致的条目数量。")
+
+    tempo_events = list((score.get("timing") or {}).get("tempo_events") or [])
+    bounded_tempos = [dict(row) for row in tempo_events[:MAX_SUSTAINED_TEMPO_EVENTS]]
+    track_name = _bounded_optional_text(track.get("name"))
+    instrument_name = _bounded_optional_text(track.get("instrument_name"))
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "vwa-sustained-pitch-offset-review",
+        "status": analysis["status"],
+        "category": category,
+        "items": items,
+        "score_sha256": score_sha256,
+        "pitch_sha256": pitch_sha256,
+        "revision": revision,
+        "code_revision": code_revision,
+        "next_offset": page_metadata["next_offset"],
+        "score": {
+            "path": str(score_source),
+            "sha256": score_sha256,
+            "format": "midi",
+            "ticks_per_beat": score["ticks_per_beat"],
+            "tempo_event_count": len(tempo_events),
+            "tempo_events": bounded_tempos,
+            "tempo_events_truncated": len(tempo_events) > len(bounded_tempos),
+        },
+        "pitch": {
+            "path": str(pitch_source),
+            "sha256": pitch_sha256,
+            "schema_version": 1,
+            "time_step_seconds": step,
+            "frame_count": pitch_data["frame_count"],
+            "voiced_frame_count": pitch_data["voiced_frame_count"],
+            "provenance": {
+                "status": "unverified_source",
+                "mapping_status": "caller_supplied_single_track",
+            },
+        },
+        "track": {
+            "track_index": selected_track_index,
+            "name": track_name,
+            "instrument_name": instrument_name,
+            "note_count": len(selected_notes),
+            "note_id_scheme": "agent_score.full_source_note_id",
+            "ownership": "selected_track_only; overlap_within_track_is_ambiguous",
+        },
+        "time_mapping": {
+            "frame_zero_seconds_in_score": _round(origin),
+            "frame_seconds": step,
+            "selection": "half-open [onset, end)",
+            "score_seconds_basis": "actual MIDI set_tempo playback map",
+        },
+        "summary": {
+            "warning_count": int(analysis["warning_count"]),
+            "unevaluated_count": int(analysis["unevaluated_count"]),
+            "ambiguous_interval_count": int(
+                analysis.get("not_assessed_interval_count", 0)
+            ),
+            "evaluated_notes": int(analysis["evaluated_notes"]),
+            "clear_notes": int(analysis["clear_notes"]),
+            "ambiguous_note_frames": int(analysis["ambiguous_note_frames"]),
+            "edge_guard_suppressed_frames": int(analysis["edge_guard_suppressed_frames"]),
+            "short_offset_candidates": int(analysis["short_offset_candidates"]),
+            "threshold_cents": analysis["threshold_cents"],
+            "minimum_duration_seconds": analysis["minimum_duration_seconds"],
+            "minimum_frames": analysis["minimum_frames"],
+            "edge_guard_seconds": analysis["edge_guard_seconds"],
+        },
+        "pagination": {
+            "category": category,
+            **page_metadata,
+        },
+        "truth_determined": False,
+        "automatic_change": False,
+        "patch_applied": False,
+        "inference_performed": False,
+        "synthesis_performed": False,
+        "transcription_performed": False,
+        "provider_access_performed": False,
+        "warnings": [
+            "这是只读复核证据；持续偏离可能来自音符中心或 F0 曲线，不能由本接口判定真值。",
+            "调用方声明的 MIDI track_index 是唯一轨道映射；pitch NPZ 来源仍未验证。",
+            "重叠区间只返回歧义证据；完整 note_id 可在确认后用于既有 MIDI 编辑计划。",
+        ],
+    }
+    result["review_sha256"] = _canonical_digest(result)
+    return result

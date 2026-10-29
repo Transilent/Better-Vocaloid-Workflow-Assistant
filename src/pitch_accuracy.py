@@ -118,6 +118,78 @@ ABSOLUTE_F0_SUSTAINED_OFFSET_MIN_FRAMES = 3
 ABSOLUTE_F0_MAX_OFFSET_WARNINGS = 32
 ABSOLUTE_F0_MAX_OFFSET_UNEVALUATED = 32
 ABSOLUTE_F0_MAX_AMBIGUOUS_INTERVALS = 32
+ABSOLUTE_F0_MAX_DIAGNOSTIC_PAGE_SIZE = 100
+
+
+_DIAGNOSTIC_PAGE_LIMITS = {
+    'warnings': ABSOLUTE_F0_MAX_OFFSET_WARNINGS,
+    'unevaluated_notes': ABSOLUTE_F0_MAX_OFFSET_UNEVALUATED,
+    'not_assessed_intervals': ABSOLUTE_F0_MAX_AMBIGUOUS_INTERVALS,
+}
+
+
+def _normalized_diagnostic_pagination(value):
+    """Validate per-category offsets while retaining the legacy first page."""
+    from collections.abc import Mapping
+    if value is None:
+        value = {}
+    if not isinstance(value, Mapping):
+        raise ValueError('diagnostic_pagination 必须是以诊断类别为键的对象。')
+    unknown = set(value) - set(_DIAGNOSTIC_PAGE_LIMITS)
+    if unknown:
+        raise ValueError('未知的音高诊断分页类别：' + '、'.join(sorted(unknown)))
+    pages = {}
+    for category, default_limit in _DIAGNOSTIC_PAGE_LIMITS.items():
+        raw = value.get(category, {})
+        if raw is None:
+            raw = {}
+        if not isinstance(raw, Mapping):
+            raise ValueError(f'{category} 分页参数必须是对象。')
+        unknown_fields = set(raw) - {'offset', 'limit'}
+        if unknown_fields:
+            raise ValueError(
+                f'{category} 分页参数含未知字段：'
+                + '、'.join(sorted(unknown_fields)))
+        offset = raw.get('offset', 0)
+        limit = raw.get('limit', default_limit)
+        if type(offset) is not int or offset < 0:
+            raise ValueError(f'{category}.offset 必须是非负整数。')
+        if (type(limit) is not int
+                or not 1 <= limit <= ABSOLUTE_F0_MAX_DIAGNOSTIC_PAGE_SIZE):
+            raise ValueError(
+                f'{category}.limit 必须是 1 到 '
+                f'{ABSOLUTE_F0_MAX_DIAGNOSTIC_PAGE_SIZE} 的整数。')
+        pages[category] = {'offset': offset, 'limit': limit}
+    return pages
+
+
+def _diagnostic_page_truncated(settings, metadata):
+    # A positive offset omits earlier items even when no later page remains.
+    return settings['offset'] > 0 or metadata['has_more']
+
+
+def _diagnostic_page_metadata(settings, total, returned, *, pageable=True):
+    if not pageable:
+        return {
+            'offset': settings['offset'],
+            'limit': settings['limit'],
+            'returned': returned,
+            'total': total,
+            'has_more': False,
+            'next_offset': None,
+            'available': False,
+            'unavailable_reason': 'note_centers_unavailable',
+        }
+    page_end = settings['offset'] + returned
+    has_more = page_end < total
+    return {
+        'offset': settings['offset'],
+        'limit': settings['limit'],
+        'returned': returned,
+        'total': total,
+        'has_more': has_more,
+        'next_offset': page_end if has_more else None,
+    }
 
 
 def _pitch_runs(mask):
@@ -263,7 +335,8 @@ def _normalized_source_sha256(value):
 def analyze_sustained_pitch_offsets(pitch, voiced_mask, owner, time_step_seconds,
                                     note_intervals, note_descriptors=(),
                                     time_origin_seconds=0., *, source_sha256=None,
-                                    vocal_track_index=None):
+                                    vocal_track_index=None,
+                                    diagnostic_pagination=None):
     """Describe sustained F0 offsets from written note centers without edits.
 
     Slow drift is detected by comparing every frame directly with the note's
@@ -271,6 +344,12 @@ def analyze_sustained_pitch_offsets(pitch, voiced_mask, owner, time_step_seconds
     contiguous same-note voiced interval of at least 160 ms and three frames.
     Chinese-opera head/tail guards and concurrent-note ambiguity are excluded
     from attribution. The result is evidence for review, not a truth decision.
+
+    diagnostic_pagination may independently page warnings, unevaluated_notes
+    and not_assessed_intervals with an offset and limit object. Each category
+    defaults to offset 0 and limit 32; an explicit limit may be 1 through 100.
+    Counts always describe the complete source, while lists contain only the
+    requested page.
     """
     import numpy as np
     values = np.asarray(pitch, dtype=np.float64)
@@ -286,6 +365,7 @@ def analyze_sustained_pitch_offsets(pitch, voiced_mask, owner, time_step_seconds
                                           or vocal_track_index < 0):
         raise ValueError('vocal_track_index 必须是非负整数或 None。')
     source_sha256 = _normalized_source_sha256(source_sha256)
+    page_settings = _normalized_diagnostic_pagination(diagnostic_pagination)
     intervals = []
     for interval in note_intervals:
         try:
@@ -326,6 +406,10 @@ def analyze_sustained_pitch_offsets(pitch, voiced_mask, owner, time_step_seconds
     clear_notes = 0
     short_candidates = 0
     edge_guard_suppressed = 0
+    unevaluated_observed = 0
+    warnings_page = page_settings['warnings']
+    unevaluated_page = page_settings['unevaluated_notes']
+    not_assessed_page = page_settings['not_assessed_intervals']
 
     ambiguous = owners == -2
     ambiguous_frames = int(np.count_nonzero(ambiguous))
@@ -333,11 +417,14 @@ def analyze_sustained_pitch_offsets(pitch, voiced_mask, owner, time_step_seconds
     ambiguous_interval_count = 0
     for left, right in _pitch_runs(ambiguous):
         ambiguous_interval_count += 1
-        start = float(times[left])
-        end = float(times[right - 1] + step)
-        covered_notes = [index for index, (note_start, note_end) in enumerate(intervals)
-                         if note_start < end - 1e-12 and note_end > start + 1e-12]
-        if len(not_assessed_intervals) < ABSOLUTE_F0_MAX_AMBIGUOUS_INTERVALS:
+        interval_index = ambiguous_interval_count - 1
+        page_start = not_assessed_page['offset']
+        if page_start <= interval_index < page_start + not_assessed_page['limit']:
+            start = float(times[left])
+            end = float(times[right - 1] + step)
+            covered_notes = [
+                index for index, (note_start, note_end) in enumerate(intervals)
+                if note_start < end - 1e-12 and note_end > start + 1e-12]
             not_assessed_intervals.append({
                 'status': 'not_assessed',
                 'reason': 'concurrent_note_ownership_ambiguous',
@@ -350,6 +437,16 @@ def analyze_sustained_pitch_offsets(pitch, voiced_mask, owner, time_step_seconds
             })
 
     if not descriptors:
+        unavailable_unevaluated_count = len(intervals)
+        page_metadata = {
+            'warnings': _diagnostic_page_metadata(warnings_page, 0, 0),
+            'unevaluated_notes': _diagnostic_page_metadata(
+                unevaluated_page, unavailable_unevaluated_count, 0,
+                pageable=False),
+            'not_assessed_intervals': _diagnostic_page_metadata(
+                not_assessed_page, ambiguous_interval_count,
+                len(not_assessed_intervals)),
+        }
         return {
             'algorithm': 'sustained-note-center-offset-v1',
             'status': 'unavailable',
@@ -362,10 +459,17 @@ def analyze_sustained_pitch_offsets(pitch, voiced_mask, owner, time_step_seconds
             'source_sha256': source_sha256,
             'warning_count': 0,
             'warnings': [],
-            'warnings_truncated': False,
-            'unevaluated_count': len(intervals),
+            'warnings_truncated': _diagnostic_page_truncated(
+                warnings_page, page_metadata['warnings']),
+            'unevaluated_count': unavailable_unevaluated_count,
             'unevaluated_notes': [],
+            'unevaluated_truncated': _diagnostic_page_truncated(
+                unevaluated_page, page_metadata['unevaluated_notes']),
+            'not_assessed_interval_count': ambiguous_interval_count,
             'not_assessed_intervals': not_assessed_intervals,
+            'not_assessed_intervals_truncated': _diagnostic_page_truncated(
+                not_assessed_page, page_metadata['not_assessed_intervals']),
+            'diagnostic_pagination': page_metadata,
             'ambiguous_note_frames': ambiguous_frames,
             'edge_guard_suppressed_frames': 0,
             'short_offset_candidates': 0,
@@ -414,7 +518,10 @@ def analyze_sustained_pitch_offsets(pitch, voiced_mask, owner, time_step_seconds
                                   - local_times[int(eligible_indices[0])] + step)
                             if eligible_indices.size else 0.)
         if eligible_indices.size < minimum_frames or evidence_seconds < minimum_seconds:
-            if len(unevaluated) < ABSOLUTE_F0_MAX_OFFSET_UNEVALUATED:
+            item_index = unevaluated_observed
+            unevaluated_observed += 1
+            page_start = unevaluated_page['offset']
+            if page_start <= item_index < page_start + unevaluated_page['limit']:
                 unevaluated.append({
                     'status': 'not_assessed',
                     'reason': ('no_unambiguous_voiced_frames' if not eligible_indices.size
@@ -442,10 +549,12 @@ def analyze_sustained_pitch_offsets(pitch, voiced_mask, owner, time_step_seconds
                 continue
             warning_count += 1
             note_warning_count += 1
-            local = offsets[local_left:local_right]
-            direction = ('sharp' if np.all(local > 0) else
-                         'flat' if np.all(local < 0) else 'mixed')
-            if len(warnings) < ABSOLUTE_F0_MAX_OFFSET_WARNINGS:
+            item_index = warning_count - 1
+            page_start = warnings_page['offset']
+            if page_start <= item_index < page_start + warnings_page['limit']:
+                local = offsets[local_left:local_right]
+                direction = ('sharp' if np.all(local > 0) else
+                             'flat' if np.all(local < 0) else 'mixed')
                 limitations = [
                     'continuous_offset_does_not_identify_note_or_f0_ground_truth',
                     'normal_vibrato_or_intentional_expression_may_explain_crossing',
@@ -482,9 +591,19 @@ def analyze_sustained_pitch_offsets(pitch, voiced_mask, owner, time_step_seconds
         if not note_warning_count:
             clear_notes += 1
 
+    unevaluated_total = len(intervals) - evaluated_notes
+    page_metadata = {
+        'warnings': _diagnostic_page_metadata(
+            warnings_page, warning_count, len(warnings)),
+        'unevaluated_notes': _diagnostic_page_metadata(
+            unevaluated_page, unevaluated_total, len(unevaluated)),
+        'not_assessed_intervals': _diagnostic_page_metadata(
+            not_assessed_page, ambiguous_interval_count,
+            len(not_assessed_intervals)),
+    }
     if warning_count:
         status = 'review_required'
-    elif unevaluated or ambiguous_frames:
+    elif unevaluated_total or ambiguous_interval_count:
         status = 'insufficient_evidence'
     else:
         status = 'no_sustained_offset_observed'
@@ -507,13 +626,17 @@ def analyze_sustained_pitch_offsets(pitch, voiced_mask, owner, time_step_seconds
         'source_sha256': source_sha256,
         'warning_count': warning_count,
         'warnings': warnings,
-        'warnings_truncated': warning_count > len(warnings),
-        'unevaluated_count': len(intervals) - evaluated_notes,
+        'warnings_truncated': _diagnostic_page_truncated(
+            warnings_page, page_metadata['warnings']),
+        'unevaluated_count': unevaluated_total,
         'unevaluated_notes': unevaluated,
-        'unevaluated_truncated': len(intervals) - evaluated_notes > len(unevaluated),
+        'unevaluated_truncated': _diagnostic_page_truncated(
+            unevaluated_page, page_metadata['unevaluated_notes']),
+        'not_assessed_interval_count': ambiguous_interval_count,
         'not_assessed_intervals': not_assessed_intervals,
-        'not_assessed_intervals_truncated': (
-            ambiguous_interval_count > len(not_assessed_intervals)),
+        'not_assessed_intervals_truncated': _diagnostic_page_truncated(
+            not_assessed_page, page_metadata['not_assessed_intervals']),
+        'diagnostic_pagination': page_metadata,
         'ambiguous_note_frames': ambiguous_frames,
         'edge_guard_suppressed_frames': edge_guard_suppressed,
         'short_offset_candidates': short_candidates,
@@ -687,7 +810,8 @@ def build_absolute_f0_curve(pitch, voiced_mask, time_step_seconds, note_interval
                             guard_before_ticks=ABSOLUTE_F0_ENDPOINT_GUARD_BEFORE_TICKS,
                             guard_after_ticks=ABSOLUTE_F0_ENDPOINT_GUARD_AFTER_TICKS,
                             bridge_evidence_intervals=(), note_descriptors=(),
-                            source_sha256=None, vocal_track_index=None, cancel=None):
+                            source_sha256=None, vocal_track_index=None,
+                            diagnostic_pagination=None, cancel=None):
     """Build one absolute-F0 curve representation for GUI and MCP export.
 
     Source-active frames are emitted verbatim except for an isolated same-note
@@ -748,6 +872,7 @@ def build_absolute_f0_curve(pitch, voiced_mask, time_step_seconds, note_interval
         values, mask, owner, step, intervals, note_descriptors,
         origin, source_sha256=source_sha256,
         vocal_track_index=vocal_track_index,
+        diagnostic_pagination=diagnostic_pagination,
     )
     # Overlapping notes are ambiguous for edits, but their measured F0 is
     # still valid evidence and must not disappear from the exported curve.

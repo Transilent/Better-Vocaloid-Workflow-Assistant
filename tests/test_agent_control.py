@@ -490,6 +490,44 @@ class ControlFixtureTests(unittest.TestCase):
         write_json(job / 'artifacts.json', {'entries': {'bad': ['not', 'a', 'mapping']}})
         self.assert_error('invalid_record', self.control.artifacts_list, job_id)
 
+    def test_artifact_listing_pages_filter_and_reject_changed_snapshot(self):
+        job = self.jobs / 'paged-artifacts'
+        job.mkdir()
+        write_json(job / 'request.json', {'language': 'zh'})
+        job_id = self.control.jobs_list()['jobs'][0]['id']
+        entries = {}
+        for number in range(6):
+            name = f'item-{number}.mid'
+            data = bytes([number])
+            (job / name).write_bytes(data)
+            entries[name] = {'role': 'midi' if number % 2 == 0 else 'report',
+                             'location': {'kind': 'task', 'path': name},
+                             'sha256': agent_control.file_hash(job / name), 'bytes': len(data)}
+        entries['inactive.mid'] = {**entries['item-0.mid'], 'active': False}
+        write_json(job / 'artifacts.json', {'entries': entries})
+        first = self.control.artifacts_list(job_id, 2, 0, 'midi')
+        self.assertEqual(first['total'], 3)
+        self.assertEqual(len(first['artifacts']), 2)
+        self.assertEqual(first['next_offset'], 2)
+        self.assert_error('listing_revision_required', self.control.artifacts_list,
+                          job_id, 2, 2, 'midi')
+        self.assertEqual(len(list((self.state / 'artifacts').glob('art_*.json'))), 2)
+        second = self.control.artifacts_list(job_id, 2, 2, 'midi', first['listing_revision'])
+        self.assertEqual(len(second['artifacts']), 1)
+        self.assertIsNone(second['next_request'])
+        self.assertEqual(len({r['id'] for r in first['artifacts'] + second['artifacts']}), 3)
+        entries['item-0.mid']['role'] = 'report'
+        write_json(job / 'artifacts.json', {'entries': entries})
+        self.assert_error('listing_changed', self.control.artifacts_list,
+                          job_id, 2, 2, 'midi', first['listing_revision'])
+
+        global_page = self.control.artifacts_list(None, 2, 0, 'midi')
+        self.assertEqual(global_page['total'], 3)
+        self.control.register_artifact(job / 'item-1.mid', kind='midi', job_id=job_id)
+        self.assert_error('listing_changed', self.control.artifacts_list,
+                          None, 2, 2, 'midi', global_page['listing_revision'])
+        self.assert_error('invalid_page', self.control.artifacts_list, None, 101)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -22,10 +22,13 @@ import mido
 import numpy as np
 
 import agent_reference
+import agent_worker
+import pitch_accuracy
 from agent_reference import (
     create_audio_excerpt,
     inspect_reference_audio,
     inspect_reference_pitch,
+    pitch_offset_review,
     review_reference_pitch,
 )
 from common import native_path
@@ -128,6 +131,37 @@ def tempo_change_score(path):
         mido.Message("note_off", channel=0, note=64, velocity=0, time=480),
         mido.MetaMessage("end_of_track", time=0),
     ]))
+    midi.save(str(path))
+    return Path(path)
+
+
+def multi_track_score(path, tracks, ticks_per_beat=480):
+    midi = mido.MidiFile(type=1, ticks_per_beat=ticks_per_beat, charset="utf8")
+    midi.tracks.append(mido.MidiTrack([
+        mido.MetaMessage("time_signature", numerator=4, denominator=4, time=0),
+        mido.MetaMessage("set_tempo", tempo=500_000, time=0),
+        mido.MetaMessage("end_of_track", time=0),
+    ]))
+    for notes in tracks:
+        events = []
+        for item in notes:
+            pitch, onset, duration, *rest = item
+            events.append((onset, 1, mido.Message(
+                "note_on", channel=0, note=pitch, velocity=90
+            )))
+            events.append((onset + duration, 0, mido.Message(
+                "note_off", channel=0, note=pitch, velocity=0
+            )))
+            if rest and rest[0] is not None:
+                events.append((onset, 2, mido.MetaMessage("lyrics", text=rest[0])))
+        messages = []
+        previous = 0
+        for tick, _, message in sorted(
+                events, key=lambda row: (row[0], row[1], getattr(row[2], "note", -1))):
+            messages.append(message.copy(time=tick - previous))
+            previous = tick
+        messages.append(mido.MetaMessage("end_of_track", time=0))
+        midi.tracks.append(mido.MidiTrack(messages))
     midi.save(str(path))
     return Path(path)
 
@@ -463,6 +497,260 @@ class AgentReferencePitchTests(unittest.TestCase):
             conflicting.save(str(conflict_path))
             with self.assertRaisesRegex(ValueError, "tempo"):
                 review_reference_pitch(conflict_path, sidecar)
+
+
+    def test_sustained_offset_paginates_34_unevaluated_notes_with_lyrics(self):
+        with self.temporary("sustained-offset-unevaluated-") as temporary:
+            root = Path(temporary)
+            notes = [
+                (60 + index % 12, index * 480, 480, f"句{index:02d}")
+                for index in range(34)
+            ]
+            score = multi_track_score(root / "many.mid", [notes])
+            pitch = np.full(1700, 60.0, dtype=np.float32)
+            mask = np.zeros(1700, dtype=np.bool_)
+            sidecar = save_pitch(root / "many.pitch.npz", pitch, mask)
+            score_sha = digest(score)
+            pitch_sha = digest(sidecar)
+
+            first = pitch_offset_review(
+                score, sidecar, 1, 0.0, "unevaluated", limit=10, offset=0
+            )
+            json_ready(first)
+            self.assertEqual(first["score_sha256"], score_sha)
+            self.assertEqual(first["pitch_sha256"], pitch_sha)
+            self.assertEqual(first["next_offset"], 10)
+            self.assertEqual(first["pagination"], {
+                "category": "unevaluated",
+                "offset": 0,
+                "limit": 10,
+                "returned": 10,
+                "total": 34,
+                "has_more": True,
+                "next_offset": 10,
+            })
+            self.assertEqual(first["summary"]["unevaluated_count"], 34)
+            expected_prefix = f"note-{score_sha[:16]}-t1-"
+            self.assertTrue(all(
+                item["note_id"].startswith(expected_prefix) for item in first["items"]
+            ))
+            self.assertEqual(first["items"][0]["note"]["lyric"], "句00")
+            self.assertIsInstance(first["items"][0]["note"]["lyric_event_index"], int)
+            self.assertFalse(first["items"][0]["note"]["pairing_ambiguous"])
+
+            second = pitch_offset_review(
+                score, sidecar, 1, 0.0, "unevaluated", limit=10, offset=10,
+                expected_revision=first["revision"],
+            )
+            with self.assertRaisesRegex(ValueError, "expected_revision"):
+                pitch_offset_review(score, sidecar, 1, 0.0, "unevaluated", limit=10, offset=10)
+            middle = pitch_offset_review(
+                score, sidecar, 1, 0.0, "unevaluated", limit=10, offset=20,
+                expected_revision=first["revision"],
+            )
+            last = pitch_offset_review(
+                score, sidecar, 1, 0.0, "unevaluated", limit=10, offset=30,
+                expected_revision=first["revision"],
+            )
+            empty = pitch_offset_review(
+                score, sidecar, 1, 0.0, "unevaluated", limit=10, offset=40,
+                expected_revision=first["revision"],
+            )
+            self.assertEqual(first["revision"], second["revision"])
+            self.assertEqual(first["revision"], last["revision"])
+            self.assertEqual(second["next_offset"], 20)
+            self.assertEqual(middle["next_offset"], 30)
+            self.assertEqual(len(last["items"]), 4)
+            self.assertIsNone(last["next_offset"])
+            self.assertEqual(empty["items"], [])
+            self.assertIsNone(empty["next_offset"])
+            page_ids = [
+                item["note_id"]
+                for page in (first, second, middle, last)
+                for item in page["items"]
+            ]
+            self.assertEqual(len(page_ids), 34)
+            self.assertEqual(len(set(page_ids)), 34)
+            from agent_score import read_score
+            editable = {
+                note["note_id"] for note in read_score(score)["notes"]
+                if note["track_index"] == 1
+            }
+            self.assertEqual(set(page_ids), editable)
+            self.assertEqual(digest(score), score_sha)
+            self.assertEqual(digest(sidecar), pitch_sha)
+            for value in (0, 101, True, 1.5, "10"):
+                with self.subTest(limit=value), self.assertRaises(ValueError):
+                    pitch_offset_review(
+                        score, sidecar, 1, 0.0, "unevaluated", limit=value
+                    )
+            for value in (None, [], "unknown", 1, True):
+                with self.subTest(category=value), self.assertRaises(ValueError):
+                    pitch_offset_review(
+                        score, sidecar, 1, 0.0, value, limit=1
+                    )
+
+    def test_sustained_offset_track_mapping_tempo_and_inputs_are_strict(self):
+        with self.temporary("sustained-offset-track-") as temporary:
+            root = Path(temporary)
+            score = multi_track_score(root / "tracks.mid", [
+                [(60, 0, 480, "lead")],
+                [(72, 0, 480, "backing")],
+            ])
+            pitch = np.full(100, 67.0, dtype=np.float32)
+            mask = np.zeros(100, dtype=np.bool_)
+            sidecar = save_pitch(root / "silent.pitch.npz", pitch, mask)
+            report = pitch_offset_review(
+                score, sidecar, 2, 0.0, "unevaluated", limit=2
+            )
+            self.assertEqual(report["track"]["track_index"], 2)
+            self.assertEqual(report["track"]["note_count"], 1)
+            self.assertEqual(report["pagination"]["total"], 1)
+            self.assertIn("-t2-", report["items"][0]["note_id"])
+            self.assertEqual(report["items"][0]["note"]["lyric"], "backing")
+            self.assertEqual(report["items"][0]["note"]["vocal_track_index"], 2)
+
+            for track_index in (0, 99, -1, True, 1.5, "2"):
+                with self.subTest(track_index=track_index), self.assertRaises(ValueError):
+                    pitch_offset_review(
+                        score, sidecar, track_index, 0.0, "unevaluated"
+                    )
+
+            conflicting = mido.MidiFile(type=1, ticks_per_beat=480, charset="utf8")
+            conflicting.tracks.append(mido.MidiTrack([
+                mido.MetaMessage("set_tempo", tempo=500_000, time=0),
+                mido.MetaMessage("set_tempo", tempo=600_000, time=0),
+                mido.MetaMessage("end_of_track", time=0),
+            ]))
+            conflicting.tracks.append(mido.MidiTrack([
+                mido.Message("note_on", channel=0, note=60, velocity=90, time=0),
+                mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+                mido.MetaMessage("end_of_track", time=0),
+            ]))
+            conflict_path = root / "conflicting.mid"
+            conflicting.save(str(conflict_path))
+            with self.assertRaisesRegex(ValueError, "tempo"):
+                pitch_offset_review(
+                    conflict_path, sidecar, 1, 0.0, "unevaluated"
+                )
+
+    def test_sustained_offset_ambiguous_page_restores_full_note_ids(self):
+        with self.temporary("sustained-offset-ambiguous-") as temporary:
+            root = Path(temporary)
+            score = multi_track_score(root / "chord.mid", [[
+                (60, 0, 480, None),
+                (64, 0, 480, None),
+            ]])
+            pitch = np.full(50, 60.0, dtype=np.float32)
+            mask = np.ones(50, dtype=np.bool_)
+            sidecar = save_pitch(root / "chord.pitch.npz", pitch, mask)
+            report = pitch_offset_review(
+                score, sidecar, 1, 0.0, "ambiguous", limit=1
+            )
+            self.assertEqual(report["pagination"]["total"], 1)
+            item = report["items"][0]
+            self.assertEqual(len(item["note_ids"]), 2)
+            self.assertEqual(len(set(item["note_ids"])), 2)
+            self.assertTrue(all("-t1-" in note_id for note_id in item["note_ids"]))
+            self.assertEqual(
+                item["note_ids"],
+                [note["note_id"] for note in item["notes"]],
+            )
+            from agent_score import read_score
+            expected = {
+                note["note_id"] for note in read_score(score)["notes"]
+                if note["track_index"] == 1
+            }
+            self.assertEqual(set(item["note_ids"]), expected)
+            self.assertFalse(report["truth_determined"])
+            self.assertFalse(report["automatic_change"])
+
+    def test_sustained_offset_rejects_source_changes_and_exact_revision(self):
+        with self.temporary("sustained-offset-source-") as temporary:
+            root = Path(temporary)
+            score = multi_track_score(root / "one.mid", [[(60, 0, 480, "字")]])
+            pitch = np.full(100, 60.0, dtype=np.float32)
+            mask = np.ones(100, dtype=np.bool_)
+            sidecar = save_pitch(root / "one.pitch.npz", pitch, mask)
+            first = pitch_offset_review(score, sidecar, 1, 0.1, "warning")
+            repeat = pitch_offset_review(score, sidecar, 1, 0.1, "warning")
+            self.assertEqual(first["revision"], repeat["revision"])
+            with self.assertRaisesRegex(ValueError, "revision"):
+                pitch_offset_review(
+                    score, sidecar, 1, 0.1, "warning",
+                    expected_revision="posrev-stale",
+                )
+
+            nudged = math.nextafter(0.1, 1.0)
+            self.assertNotEqual(
+                first["revision"],
+                pitch_offset_review(score, sidecar, 1, nudged, "warning")["revision"],
+            )
+            original_sha = agent_reference._sha256_file
+            def changed_code(path):
+                return '0' * 64 if Path(path).name == 'pitch_accuracy.py' else original_sha(path)
+            with patch.object(agent_reference, '_sha256_file', side_effect=changed_code):
+                with self.assertRaisesRegex(ValueError, 'revision'):
+                    pitch_offset_review(score, sidecar, 1, 0.1, 'warning',
+                                        expected_revision=first['revision'])
+
+            original = pitch_accuracy.analyze_sustained_pitch_offsets
+
+            def mutate_after_analysis(*args, **kwargs):
+                result = original(*args, **kwargs)
+                save_pitch(
+                    sidecar,
+                    np.full(100, 61.0, dtype=np.float32),
+                    np.ones(100, dtype=np.bool_),
+                )
+                return result
+
+            with patch.object(
+                pitch_accuracy,
+                "analyze_sustained_pitch_offsets",
+                side_effect=mutate_after_analysis,
+            ):
+                with self.assertRaisesRegex(ValueError, "pitch NPZ 源.*变化"):
+                    pitch_offset_review(score, sidecar, 1, 0.1, "warning")
+
+    def test_pitch_offset_review_real_worker_path_returns_source_summary(self):
+        with self.temporary("sustained-offset-worker-") as temporary:
+            root = Path(temporary)
+            score = multi_track_score(root / "worker.mid", [[
+                (60, 0, 480, "甲"),
+                (62, 480, 480, "乙"),
+            ]])
+            pitch = np.zeros(100, dtype=np.float32)
+            mask = np.zeros(100, dtype=np.bool_)
+            sidecar = save_pitch(root / "worker.pitch.npz", pitch, mask)
+
+            class ControlStub:
+                state = root
+                assets = [root]
+                jobs = [root]
+
+            arguments = {
+                "path": str(score),
+                "pitch_path": str(sidecar),
+                "track_index": 1,
+                "time_origin": 0.0,
+                "category": "unevaluated",
+                "limit": 1,
+                "offset": 0,
+                "expected_revision": None,
+            }
+            result = agent_worker.dispatch(
+                ControlStub(), "pitch_offset_review", arguments
+            )
+            json_ready(result)
+            self.assertEqual(result["score_sha256"], digest(score))
+            self.assertEqual(result["pitch_sha256"], digest(sidecar))
+            self.assertEqual(result["next_offset"], 1)
+            self.assertEqual(result["revision"], result["revision"].strip())
+            self.assertEqual(len(result["items"]), 1)
+            self.assertIn("-t1-", result["items"][0]["note_id"])
+            self.assertEqual(result["items"][0]["note"]["lyric"], "甲")
+            self.assertFalse(result["patch_applied"])
 
 
 if __name__ == "__main__":

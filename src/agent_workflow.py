@@ -7,13 +7,15 @@ that an unknown lyric is correct or silently invokes a semantic provider.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 from pathlib import Path
 import time
-from agent_control import (ControlError, atomic_json, digest, file_lock, file_hash,
-                           io_path, safe_path)
+from agent_control import (ControlError, MAX_JSON, atomic_json, digest, file_lock,
+                           file_hash, io_path, safe_path)
 from agent_supervision import summarize_export, validate_export_review, SupervisionError
+from common import clean_lyrics
 
 
 class Workflow:
@@ -434,6 +436,180 @@ class Workflow:
                 copy.deepcopy(value.get('export_attempt_history', [])) + [previous])[-32:]
         self._write(value, 'export_started' if not retry else 'export_repaired', **changes)
 
+    @staticmethod
+    def _preparation_reference_lyrics_evidence(job, owned, preparation_job_id,
+                                                reference_lyrics):
+        """Compare the supplied lyrics with the immutable preparation request.
+
+        This only proves whether the request contained the same reference text.
+        It deliberately does not infer that MIDI lyric alignment succeeded.
+        """
+        if not reference_lyrics:
+            return None
+        base = {
+            'source_job_id': preparation_job_id,
+            'supplied_reference_lyrics': True,
+            'alignment': {
+                'status': 'unknown',
+                'reason': 'workflow_create_does_not_verify_midi_alignment',
+            },
+        }
+
+        def result(status, basis, message, *, request_binding,
+                   request_sha256_verified):
+            value = {
+                **base,
+                'status': status,
+                'basis': basis,
+                'message': message,
+                'request_binding': request_binding,
+                'request_sha256_verified': request_sha256_verified,
+            }
+            if status == 'not_used':
+                value['recovery'] = {
+                    'tool': 'vwa_recover',
+                    'arguments': {
+                        'request': {
+                            'action': 'preparation_reuse_plan',
+                            'source_job_id': preparation_job_id,
+                        },
+                    },
+                    'argument_bindings': {
+                        'request.options.lyrics': 'workflow.request.reference_lyrics',
+                    },
+                    'instruction': (
+                        '先把 workflow.request.reference_lyrics 填入 '
+                        'request.options.lyrics，再规划并回读 preparation_reuse_plan，'
+                        '核验并保留仍适用的阶段后重跑 MIDI；完成后再用新的 '
+                        'preparation_job_id 创建工作流。'
+                    ),
+                }
+            return value
+
+        expected_sha256 = owned.get('request_sha256')
+        if not isinstance(expected_sha256, str) or not expected_sha256:
+            return result(
+                'unknown', 'request_binding_missing',
+                '原准备记录缺少 request.json 摘要，无法确认参考歌词是否用于该次准备；'
+                '对齐结果未知，不能推断歌词已对齐。',
+                request_binding='unknown', request_sha256_verified=False,
+            )
+
+        request_path = safe_path(Path(job) / 'request.json', [job])
+        try:
+            with io_path(request_path).open('rb') as stream:
+                request_bytes = stream.read(MAX_JSON + 1)
+            if len(request_bytes) > MAX_JSON:
+                raise ControlError('too_large', 'JSON 记录超出读取限制。')
+            request_digest = hashlib.sha256(request_bytes).hexdigest()
+            request = json.loads(request_bytes.decode('utf-8-sig'))
+            if not isinstance(request, dict):
+                raise ControlError('invalid_record', '记录必须是 JSON 对象。')
+        except (ControlError, OSError, UnicodeError, ValueError):
+            return result(
+                'unknown', 'preparation_request_unreadable',
+                '无法读取或验证原准备任务的 request.json，参考歌词是否用于该次准备未知；'
+                '不能推断歌词已对齐。',
+                request_binding='unknown', request_sha256_verified=False,
+            )
+        if request_digest != expected_sha256:
+            return result(
+                'unknown', 'preparation_request_changed',
+                '原准备任务的 request.json 与登记摘要不一致，参考歌词是否用于该次准备未知；'
+                '不能推断歌词已对齐。',
+                request_binding='unknown', request_sha256_verified=False,
+            )
+        if 'lyrics' not in request:
+            return result(
+                'unknown', 'lyrics_field_missing',
+                '原准备任务的 request.json 未提供 lyrics 字段，参考歌词是否用于该次准备未知；'
+                '不能推断歌词已对齐。',
+                request_binding='verified', request_sha256_verified=True,
+            )
+        preparation_lyrics = request.get('lyrics')
+        if not isinstance(preparation_lyrics, str):
+            return result(
+                'unknown', 'lyrics_field_invalid',
+                '原准备任务的 request.json 中 lyrics 字段不是文本，参考歌词是否用于该次准备未知；'
+                '不能推断歌词已对齐。',
+                request_binding='verified', request_sha256_verified=True,
+            )
+
+        supplied = clean_lyrics(reference_lyrics)
+        prepared = clean_lyrics(preparation_lyrics)
+        if not prepared:
+            return result(
+                'not_used', 'lyrics_field_empty',
+                '原准备任务的 request.json 中 lyrics 为空，因此当前工作流提供的 '
+                'reference_lyrics 未用于该次准备；这不表示歌词对齐成功。建议先通过 '
+                'vwa_recover 的 preparation_reuse_plan 核验并保留适用阶段后重跑 MIDI。',
+                request_binding='verified', request_sha256_verified=True,
+            )
+        if prepared != supplied:
+            return result(
+                'not_used', 'lyrics_field_different',
+                '原准备任务的 request.json 中 lyrics 与当前 reference_lyrics 不同，'
+                '因此当前参考歌词未用于该次准备；这不表示歌词对齐成功。建议先通过 '
+                'vwa_recover 的 preparation_reuse_plan 核验并保留适用阶段后重跑 MIDI。',
+                request_binding='verified', request_sha256_verified=True,
+            )
+        if 'lyric_lines' not in request:
+            return result(
+                'unknown', 'lyric_lines_missing',
+                '原准备任务的 request.json 缺少 lyric_lines 分行信息（旧版记录）；'
+                '即使 lyrics 相同也无法确认分行一致，参考歌词是否用于该次准备未知，'
+                '不能推断歌词已对齐。',
+                request_binding='verified', request_sha256_verified=True,
+            )
+        lyric_lines = request.get('lyric_lines')
+        if not isinstance(lyric_lines, list) or not all(
+                isinstance(line, str) for line in lyric_lines):
+            return result(
+                'unknown', 'lyric_lines_invalid',
+                '原准备任务的 request.json 中 lyric_lines 不是文本行数组，'
+                '参考歌词是否用于该次准备未知；不能推断歌词已对齐。',
+                request_binding='verified', request_sha256_verified=True,
+            )
+        if ''.join(lyric_lines) != prepared:
+            return result(
+                'unknown', 'lyrics_fields_inconsistent',
+                '原准备任务的 request.json 中 lyrics 与 lyric_lines 内容不一致，'
+                '参考歌词是否用于该次准备未知；不能推断歌词已对齐。',
+                request_binding='verified', request_sha256_verified=True,
+            )
+        supplied_lines = clean_lyrics(
+            reference_lyrics, preserve_lines=True).splitlines()
+        if lyric_lines != supplied_lines:
+            return result(
+                'not_used', 'lyric_lines_different',
+                '原准备任务的 request.json 中 lyric_lines 与当前 reference_lyrics '
+                '的规范化分行不同，因此当前参考歌词未用于该次准备；同字但分行不同不能视为一致。'
+                '这不表示歌词对齐成功。建议先通过 vwa_recover 的 '
+                'preparation_reuse_plan 核验并保留适用阶段后重跑 MIDI。',
+                request_binding='verified', request_sha256_verified=True,
+            )
+        return result(
+            'present_in_request', 'lyrics_match',
+            '原准备任务的 request.json 已包含与当前 reference_lyrics 正文和分行一致的'
+            '参考歌词；这只证明歌词进入了准备请求，实际 MIDI 对齐结果仍未核验。',
+            request_binding='verified', request_sha256_verified=True,
+        )
+
+    @staticmethod
+    def _preparation_reference_lyrics_warning(evidence):
+        if not evidence or evidence.get('status') == 'present_in_request':
+            return None
+        warning = {
+            'code': ('preparation_reference_lyrics_not_used'
+                     if evidence.get('status') == 'not_used'
+                     else 'preparation_reference_lyrics_unknown'),
+            'severity': 'warning',
+            'details_ref': 'preparation_reference_lyrics',
+        }
+        if evidence.get('recovery'):
+            warning.update(tool='vwa_recover', action='preparation_reuse_plan')
+        return warning
+
     def create(self, source='', options=None, brief='', reference_lyrics='',
                score_artifact_id=None, formats=None, idempotency_key=None, preparation_job_id=None,review_mode='full',
                initial_export_options=None):
@@ -473,6 +649,7 @@ class Workflow:
                 if previous.get('initial_export_options', {}) != (initial_export_options or {}):
                     raise ControlError('idempotency_conflict', '工作流重试键已绑定不同的初始导出选项。')
                 return self.get(identifier)
+            preparation_lyrics_evidence = None
             if score_artifact_id:
                 artifact = self.control.artifact(score_artifact_id)
                 if Path(artifact['path']).suffix.lower() not in ('.mid', '.midi'):
@@ -482,8 +659,10 @@ class Workflow:
                 plan = None
                 stage = 'review'
             elif preparation_job_id:
-                self.control._record('preparations',preparation_job_id,'job')
-                self.control.job_path(preparation_job_id)
+                owned = self.control._record('preparations',preparation_job_id,'job')
+                job = self.control.job_path(preparation_job_id)
+                preparation_lyrics_evidence = self._preparation_reference_lyrics_evidence(
+                    job, owned, preparation_job_id, reference_lyrics)
                 plan=None;stage='created'
             else:
                 plan = self.control.preparation_plan(source, options or {})
@@ -493,7 +672,14 @@ class Workflow:
                      'preparation_plan_id': plan['id'] if plan else None,
                      'score_artifact_id': score_artifact_id, 'created': time.time(),
                      'updated': time.time(), 'attempt': 0, 'history': []}
-            if preparation_job_id:value['job_id']=preparation_job_id
+            if preparation_job_id:
+                value['job_id']=preparation_job_id
+                if preparation_lyrics_evidence:
+                    value['preparation_reference_lyrics'] = preparation_lyrics_evidence
+                    warning = self._preparation_reference_lyrics_warning(
+                        preparation_lyrics_evidence)
+                    if warning:
+                        value['warnings'] = [warning]
             if initial_export_options is not None:
                 value['initial_export_options'] = copy.deepcopy(initial_export_options)
                 value['export_options'] = copy.deepcopy(initial_export_options)
@@ -542,6 +728,10 @@ class Workflow:
                          'external_handoff': 'voice_synthesis_if_requested'}
         else:
             next_step = {'tool': 'vwa_workflow_advance', 'arguments': arguments, 'reason': stage}
+            warning = self._preparation_reference_lyrics_warning(
+                value.get('preparation_reference_lyrics'))
+            if warning:
+                next_step['warning'] = warning
         if value.get('lifecycle','active')!='active':
             next_step={'tool':'vwa_workflow_clone','arguments':{**arguments,'reason':'从保留证据新建可编辑工作流'},
                        'reason':'workflow_'+value['lifecycle']}

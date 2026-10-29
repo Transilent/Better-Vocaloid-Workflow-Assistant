@@ -65,6 +65,8 @@ def fixtures(directory):
     np.savez(exchange/'reference.npz',schema=np.int64(1),time_step=np.float64(.01),
         midi_pitch=np.array([72.0]*50+[64.0]*60,dtype=np.float32),
         voiced_mask=np.ones(110,dtype=np.bool_))
+    np.savez(exchange/'reference-unvoiced.npz',schema=np.int64(1),time_step=np.float64(.01),
+        midi_pitch=np.zeros(110,dtype=np.float32), voiced_mask=np.zeros(110,dtype=np.bool_))
     with wave.open(str(exchange/'reference.wav'),'wb') as stream:
         stream.setnchannels(1);stream.setsampwidth(2);stream.setframerate(8000)
         stream.writeframes(struct.pack('<h',1000)*16000)
@@ -246,6 +248,30 @@ async def client_contract(configuration):
         score = await action(client, 'vwa_evidence', 'score_read', artifact_id=midi['id'])
         review = await action(client, 'vwa_evidence', 'score_review', artifact_id=midi['id'])
         check(len(score['notes']) == 2 and isinstance(review, dict), 'real_midi_notes')
+        unvoiced = await action(client, 'vwa_input', 'reference_import',
+            path=str(configuration.parent / 'exchange/reference-unvoiced.npz'), kind='pitch')
+        offsets = await action(client, 'vwa_evidence', 'pitch_offset_review',
+            score_artifact_id=midi['id'], pitch_artifact_id=unvoiced['id'],
+            track_index=1, category='unevaluated', limit=1)
+        check(offsets['pagination']['total'] == 2 and offsets['next_request'],
+              'pitch_offset_page_has_followup')
+        body = {key: value for key, value in offsets.items() if key != 'review_sha256'}
+        expected_review_sha = hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True,
+            separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+        check(offsets['review_sha256'] == expected_review_sha,
+              'pitch_offset_digest_covers_followup')
+        next_offsets = await call(client, offsets['next_request']['tool'],
+                                  offsets['next_request']['arguments'])
+        check(next_offsets['revision'] == offsets['revision'] and
+              next_offsets['items'][0]['note_id'] != offsets['items'][0]['note_id'] and
+              next_offsets['next_request'] is None, 'pitch_offset_followup_is_distinct')
+        await action(client, 'vwa_evidence', 'pitch_offset_review',
+            score_artifact_id=midi['id'], pitch_artifact_id=unvoiced['id'],
+            track_index=1, category='unevaluated', limit=1, offset=1,
+            expected_revision='stale-revision', error=True)
+        await action(client, 'vwa_evidence', 'pitch_offset_review',
+            score_artifact_id=midi['id'], pitch_artifact_id=unvoiced['id'],
+            track_index=1, category='unevaluated', limit=1, offset=1, error=True)
         note = score['notes'][0]
         structure = await action(client, 'vwa_decide', 'structure_patch_plan',
             artifact_id=midi['id'], expected_sha256=score['source_sha256'], edits=[
@@ -261,6 +287,14 @@ async def client_contract(configuration):
         check([item['pitch'] for item in structured_score['notes']] == [60, 65] and
               structured_score['notes'][1]['lyric'] == '海',
               'structure_candidate_verified')
+        page = await action(client, 'vwa_status', 'artifacts_list', limit=1)
+        check(page['total'] >= 2 and page['next_request'] is not None,
+              'artifact_page_has_followup')
+        followup = page['next_request']
+        next_page = await call(client, followup['tool'], followup['arguments'])
+        check(next_page['listing_revision'] == page['listing_revision'] and
+              next_page['artifacts'][0]['id'] != page['artifacts'][0]['id'],
+              'artifact_followup_reads_next_distinct_entry')
         await action(client, 'vwa_decide', 'structure_patch_plan',
             artifact_id=midi['id'], expected_sha256=score['source_sha256'],
             edits=[{'operation': 'delete', 'note_id': note['note_id']}], error=True)
@@ -732,6 +766,14 @@ async def workflow_contract(configuration):
         pitch = await action(client, 'vwa_input', 'reference_import',
             path=str(configuration.parent / 'exchange/reference.npz'),
             kind='pitch')
+        offset_review = await action(client, 'vwa_evidence', 'pitch_offset_review',
+            score_artifact_id=artifact['id'], pitch_artifact_id=pitch['id'],
+            track_index=1, category='warning', limit=1)
+        check(offset_review['summary']['warning_count'] >= 1 and
+              offset_review['items'][0]['note_id'] and
+              offset_review['pitch_sha256'] == pitch['sha256'] and
+              offset_review['truth_determined'] is False,
+              'pitch_offset_review_real_stdio')
         audio = await action(client, 'vwa_input', 'reference_import',
             path=str(configuration.parent / 'exchange/reference.wav'),
             kind='audio')

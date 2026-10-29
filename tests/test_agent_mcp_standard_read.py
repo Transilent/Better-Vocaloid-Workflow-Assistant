@@ -22,7 +22,7 @@ EXPECTED_ACTIONS = {
     'vwa_evidence': {
         'score_read', 'score_review', 'context_read', 'lyrics_read',
         'lyric_timeline_read', 'lyric_timeline_review', 'lyrics_review',
-        'reference_pitch_review',
+        'reference_pitch_review', 'pitch_offset_review',
         'reference_audio_read', 'pronunciation_read', 'workflow_review',
         'workflow_style_review',
     },
@@ -48,6 +48,7 @@ ACTION_CLASSES = {
     'LyricTimelineReview': 'vwa_evidence',
     'LyricsReview': 'vwa_evidence',
     'ReferencePitchReview': 'vwa_evidence',
+    'PitchOffsetReview': 'vwa_evidence',
     'ReferenceAudioRead': 'vwa_evidence',
     'PronunciationRead': 'vwa_evidence',
     'WorkflowReview': 'vwa_evidence',
@@ -186,6 +187,9 @@ def invocation_contract(source_directory):
 
         def reference_pitch_review(self, *args, **kwargs):
             return {'pitch': True}
+
+        def pitch_offset_review(self, *args, **kwargs):
+            return {'offsets': True}
 
         def reference_audio_read(self, *args, **kwargs):
             return {'audio': True}
@@ -345,9 +349,12 @@ def invocation_contract(source_directory):
              'jobs_list', (5, 2)),
             ({'action': 'jobs_get', 'job_id': job_id, 'wait_ms': 1500,
               'after_cursor': 'cursor-a'}, 'job_get', (job_id, 1500, 'cursor-a')),
-            ({'action': 'artifacts_list'}, 'artifacts_list', (None,)),
+            ({'action': 'artifacts_list'}, 'artifacts_list', (None, 20, 0, None, None)),
             ({'action': 'artifacts_list', 'job_id': job_id},
-             'artifacts_list', (job_id,)),
+             'artifacts_list', (job_id, 20, 0, None, None)),
+            ({'action': 'artifacts_list', 'job_id': job_id, 'limit': 2, 'offset': 2,
+              'kind': 'midi', 'expected_revision': 'snapshot'},
+             'artifacts_list', (job_id, 2, 2, 'midi', 'snapshot')),
             ({'action': 'artifacts_inspect', 'artifact_id': artifact,
               'verify': False, 'wait_ms': 0},
              'inspect_artifact', (artifact, False, 0)),
@@ -423,6 +430,11 @@ def invocation_contract(source_directory):
               'offset': 10},
              'reference_pitch_review',
              ('score-art', 'pitch-art', [1], 0.25, 50, 10)),
+            ({'action': 'pitch_offset_review', 'score_artifact_id': 'score-art',
+              'pitch_artifact_id': 'pitch-art', 'track_index': 1, 'time_origin': 0.25,
+              'category': 'unevaluated', 'limit': 10, 'offset': 20,
+              'expected_revision': 'snapshot'}, 'pitch_offset_review',
+             ('score-art', 'pitch-art', 1, 0.25, 'unevaluated', 10, 20, 'snapshot')),
             ({'action': 'reference_audio_read', 'artifact_id': 'audio-art',
               'start': 0.5, 'end': 2.5, 'make_excerpt': False},
              'reference_audio_read', ('audio-art', 0.5, 2.5, False)),
@@ -572,7 +584,7 @@ class StandardReadSDKContract(unittest.TestCase):
         self.assertEqual(receipt['actions'], {
             name: sorted(values) for name, values in sorted(EXPECTED_ACTIONS.items())
         })
-        self.assertEqual(receipt['call_count'], 31)
+        self.assertEqual(receipt['call_count'], 33)
         self.assertNotIn('advance', receipt['callbacks'])
         self.assertFalse(receipt['model_inference'])
         self.assertFalse(receipt['network_requested'])

@@ -73,7 +73,7 @@ GROUPED_REQUIRED_ACTIONS = {
     'vwa_evidence': frozenset((
         'score_read', 'score_review', 'context_read', 'lyrics_read',
         'lyric_timeline_read', 'lyric_timeline_review', 'lyrics_review',
-        'reference_pitch_review',
+        'reference_pitch_review', 'pitch_offset_review',
         'reference_audio_read', 'pronunciation_read', 'workflow_review',
         'workflow_style_review',
     )),
@@ -209,7 +209,7 @@ def validate_standard_schema(tools, checks):
             _require(rationale.get('type') == 'string', 'apply_review:rationale_string')
     union = frozenset().union(*actions_by_tool.values())
     _require(union == ALL_MAPPED_ACTIONS, 'standard_action_union_mismatch')
-    checks.append('standard_actions_59_mapped')
+    checks.append('standard_actions_60_mapped')
     checks.append('standard_request_objects_strict')
     return actions_by_tool
 
@@ -1490,12 +1490,12 @@ class StandardMCPIntegration(unittest.TestCase):
         self.assertEqual(len(HISTORICAL_TOOL_NAMES), 61)
         self.assertEqual(len(set(HISTORICAL_TOOL_NAMES)), 61)
         self.assertTrue(set(STANDARD_TOOLS).isdisjoint(HISTORICAL_TOOL_NAMES))
-        self.assertEqual(len(ALL_MAPPED_ACTIONS), 59)
+        self.assertEqual(len(ALL_MAPPED_ACTIONS), 60)
         historical_actions = {
             name.removeprefix('vwa_') for name in HISTORICAL_TOOL_NAMES
         }
         self.assertEqual(
-            (historical_actions - FLAT_ACTION_NAMES) | {'lyric_timeline_read'},
+            (historical_actions - FLAT_ACTION_NAMES) | {'lyric_timeline_read', 'pitch_offset_review'},
             ALL_MAPPED_ACTIONS,
         )
 
@@ -1546,7 +1546,7 @@ class StandardMCPIntegration(unittest.TestCase):
             self.assertGreaterEqual(len(receipt['calls']), 60)
             self.assertEqual(receipt['standard_tools'], list(STANDARD_TOOLS))
             self.assertEqual(receipt['historical_tool_count'], 61)
-            self.assertEqual(receipt['standard_action_count'], 59)
+            self.assertEqual(receipt['standard_action_count'], 60)
             self.assertEqual(receipt['wait_state'], 'succeeded')
             self.assertEqual(
                 set(receipt['recover_actions']),

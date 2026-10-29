@@ -15,6 +15,7 @@ sys.path.insert(0, str(APP))
 sys.path.insert(0, str(APP / "src"))
 
 import agent_style
+from agent_errors import error_payload
 from common import native_path
 
 Q = 705600000
@@ -354,6 +355,234 @@ class StylePlanTests(unittest.TestCase):
             self.assertEqual(engine_region["technique_strength"], 0.6)
             self.assertIs(engine_region["technique_pitch"], True)
 
+    def test_shared_note_overlap_reports_verified_actionable_boundaries(self):
+        with tempfile.TemporaryDirectory(prefix="agent-style-overlap-", dir=APP) as temp:
+            data = project()
+            data["tracks"][0]["mainRef"]["blickOffset"] = 0
+            data["tracks"][0]["mainGroup"]["notes"] = [
+                note(0, Q, 60, "甲"),
+                note(Q, Q, 62, "乙"),
+                note(2 * Q, 2 * Q, 64, "丙"),
+            ]
+            source = write_svp(Path(temp) / "overlap.svp", data)
+            context = agent_style.read_context(source, [0])
+            note_ids = {row["lyric"]: row["note_id"] for row in context["notes"]}
+            payload = proposal([
+                region(0.1, 0.7),
+                region(0.6, 2.9),
+            ])
+            original = copy.deepcopy(payload)
+
+            with self.assertRaises(agent_style.StyleRegionOverlap) as raised:
+                agent_style.plan_style(source, payload)
+
+            error = raised.exception
+            details = error.details
+            self.assertEqual(payload, original)
+            self.assertFalse(details["changes_applied"])
+            self.assertEqual(details["source_sha256"], context["source_sha256"])
+            self.assertEqual(details["shared_note_ids"], [note_ids["乙"]])
+            self.assertAlmostEqual(details["conflict"]["seconds"], 0.5, places=12)
+            self.assertEqual(
+                set(details["region_note_ids"]["previous"]),
+                {note_ids["甲"], note_ids["乙"]},
+            )
+            self.assertEqual(
+                set(details["region_note_ids"]["current"]),
+                {note_ids["乙"], note_ids["丙"]},
+            )
+            shared = details["shared_notes"][0]
+            self.assertEqual(shared["note_id"], note_ids["乙"])
+            self.assertAlmostEqual(shared["start_seconds"], 0.5, places=12)
+            self.assertAlmostEqual(shared["end_seconds"], 1.0, places=12)
+            self.assertEqual(shared["lyric"], "乙")
+            self.assertEqual(details["shared_note_span_seconds"], {
+                "start": 0.5, "end": 1.0,
+            })
+
+            previous = details["boundary_candidates"]["previous"]
+            current = details["boundary_candidates"]["current"]
+            self.assertEqual(previous["edit"], {
+                "region": "previous", "field": "end", "from": 1.0, "to": 0.5,
+            })
+            self.assertEqual(current["edit"], {
+                "region": "current", "field": "start", "from": 0.5, "to": 1.0,
+            })
+            for candidate in (previous, current):
+                self.assertTrue(candidate["selects_complete_notes"])
+                self.assertTrue(candidate["resolves_overlap"])
+                self.assertTrue(candidate["preserves_original_note_coverage"])
+                self.assertTrue(candidate["usable"])
+                self.assertEqual(candidate["lost_note_ids"], [])
+            self.assertEqual(
+                set(previous["retained_note_ids"]), {note_ids["甲"]},
+            )
+            self.assertEqual(
+                set(current["retained_note_ids"]), {note_ids["丙"]},
+            )
+            self.assertIn("前一片段 end 改为 0.500000s", str(error))
+            self.assertIn("后一片段 start 改为 1.000000s", str(error))
+            self.assertIn("本次未修改任何片段或音符", str(error))
+            reported = error_payload(error)
+            self.assertEqual(reported["code"], "style_region_overlap")
+            self.assertEqual(
+                reported["details"]["boundary_candidates"], details["boundary_candidates"],
+            )
+            json.dumps(reported, ensure_ascii=False, allow_nan=False)
+
+            keep_in_current = agent_style.plan_style(source, proposal([
+                region(0.1, previous["edit"]["to"]),
+                region(0.6, 2.9),
+            ]))
+            keep_in_previous = agent_style.plan_style(source, proposal([
+                region(0.1, 0.7),
+                region(current["edit"]["to"], 2.9),
+            ]))
+            all_ids = set(note_ids.values())
+            for plan in (keep_in_current, keep_in_previous):
+                first, second = [set(row["aligned_note_ids"]) for row in plan["regions"]]
+                self.assertFalse(first & second)
+                self.assertEqual(first | second, all_ids)
+
+    def test_overlap_candidate_that_drops_a_real_note_is_not_usable(self):
+        with tempfile.TemporaryDirectory(prefix="agent-style-overlap-loss-", dir=APP) as temp:
+            data = project()
+            data["tracks"][0]["mainRef"]["blickOffset"] = 0
+            data["tracks"][0]["mainGroup"]["notes"] = [
+                note(0, Q, 60, "甲"),
+                note(Q, Q, 62, "乙"),
+                note(3 * Q, Q, 64, "丙"),
+            ]
+            source = write_svp(Path(temp) / "overlap-loss.svp", data)
+            context = agent_style.read_context(source, [0])
+            note_ids = {row["lyric"]: row["note_id"] for row in context["notes"]}
+            payload = proposal([
+                region(0.1, 2.5),
+                region(0.6, 1.2),
+            ])
+
+            with self.assertRaises(agent_style.StyleRegionOverlap) as raised:
+                agent_style.plan_style(source, payload)
+
+            details = raised.exception.details
+            previous = details["boundary_candidates"]["previous"]
+            current = details["boundary_candidates"]["current"]
+            self.assertFalse(previous["usable"])
+            self.assertFalse(previous["preserves_original_note_coverage"])
+            self.assertEqual(previous["lost_note_ids"], [note_ids["丙"]])
+            self.assertFalse(current["usable"])
+            self.assertIn("两个单侧边界候选均不安全", str(raised.exception))
+            self.assertEqual(details["shared_note_ids"], [note_ids["乙"]])
+
+    def test_5000_note_overlap_bounds_each_response_list_without_changing_candidates(self):
+        with tempfile.TemporaryDirectory(prefix="agent-style-overlap-5000-", dir=APP) as temp:
+            data = project()
+            data["tracks"][0]["mainRef"]["blickOffset"] = 0
+            data["time"]["tempo"] = [{"position": 0, "bpm": 120}]
+            track_notes = [
+                note(index * Q, Q, 60, "音") for index in range(5000)
+            ]
+            track_notes[1000]["lyrics"] = "长" * 4096
+            data["tracks"][0]["mainGroup"]["notes"] = track_notes
+            source = write_svp(Path(temp) / "overlap-5000.svp", data)
+            payload = proposal([
+                region(0.1, 2499.6),
+                region(500.1, 1000.1),
+            ])
+
+            with self.assertRaises(agent_style.StyleRegionOverlap) as raised:
+                agent_style.plan_style(source, payload)
+
+            details = raised.exception.details
+            limit = agent_style._MAX_STYLE_ERROR_ITEMS
+            self.assertEqual(details["note_evidence_limit"], limit)
+            self.assertEqual(details["shared_note_ids_total"], 1001)
+            self.assertTrue(details["shared_note_ids_truncated"])
+            self.assertEqual(details["shared_notes_total"], 1001)
+            self.assertTrue(details["shared_notes_truncated"])
+            self.assertEqual(len(details["shared_note_ids"]), limit)
+            self.assertEqual(len(details["shared_notes"]), limit)
+            self.assertEqual(details["region_note_ids_totals"], {
+                "previous": 5000,
+                "current": 1001,
+            })
+            self.assertEqual(details["region_note_ids_truncated"], {
+                "previous": True,
+                "current": True,
+            })
+            self.assertTrue(all(
+                len(details["region_note_ids"][name]) <= limit
+                for name in ("previous", "current")
+            ))
+            first_shared = details["shared_notes"][0]
+            self.assertEqual(first_shared["track_index"], 0)
+            self.assertAlmostEqual(first_shared["start_seconds"], 500.0, places=12)
+            self.assertAlmostEqual(first_shared["end_seconds"], 500.5, places=12)
+            self.assertEqual(
+                len(first_shared["lyric"]), agent_style._MAX_STYLE_ERROR_TEXT,
+            )
+            self.assertTrue(first_shared["lyric_truncated"])
+            self.assertLessEqual(
+                len(first_shared["note_id"]),
+                agent_style._MAX_STYLE_ERROR_IDENTIFIER,
+            )
+            self.assertFalse(first_shared["note_id_truncated"])
+            reported = error_payload(raised.exception)
+            self.assertLess(
+                len(json.dumps(reported, ensure_ascii=False)),
+                65536,
+            )
+
+            previous = details["boundary_candidates"]["previous"]
+            current = details["boundary_candidates"]["current"]
+            self.assertFalse(previous["usable"])
+            self.assertFalse(previous["preserves_original_note_coverage"])
+            self.assertEqual(previous["lost_note_ids_total"], 2999)
+            self.assertTrue(previous["lost_note_ids_truncated"])
+            self.assertEqual(len(previous["lost_note_ids"]), limit)
+            self.assertEqual(previous["candidate_interval"]["note_ids_total"], 1000)
+            self.assertTrue(previous["candidate_interval"]["note_ids_truncated"])
+            self.assertFalse(current["selects_complete_notes"])
+            self.assertFalse(current["usable"])
+            candidate_lists = (
+                "retained_note_ids",
+                "removed_from_edited_region",
+                "shared_note_ids_moved_to_unchanged_region",
+                "lost_note_ids",
+            )
+            for candidate in (previous, current):
+                for field in candidate_lists:
+                    self.assertLessEqual(len(candidate[field]), limit)
+                    self.assertIn(field + "_total", candidate)
+                    self.assertIn(field + "_truncated", candidate)
+                self.assertLessEqual(
+                    len(candidate["candidate_interval"]["note_ids"])
+                    if candidate["candidate_interval"] else 0,
+                    limit,
+                )
+
+            paging = details["context_read"]
+            self.assertEqual(paging["tool"], "vwa_evidence")
+            request = paging["arguments"]["request"]
+            self.assertEqual(request["action"], "context_read")
+            self.assertEqual(request["track_indices"], [0])
+            self.assertEqual(request["detail"], "notes")
+            self.assertEqual(request["limit"], agent_style._MAX_CONTEXT_PAGE)
+            self.assertEqual(request["offset"], 0)
+            self.assertEqual(
+                set(paging),
+                {"tool", "arguments", "continuation", "verification"},
+            )
+            continuation = paging["continuation"]
+            self.assertEqual(continuation["request"]["action"], "context_read")
+            self.assertEqual(continuation["request"]["track_indices"], [0])
+            self.assertEqual(continuation["request"]["detail"], "notes")
+            self.assertEqual(continuation["request"]["limit"], agent_style._MAX_CONTEXT_PAGE)
+            self.assertEqual(continuation["request"]["offset"], "<当前 context_read 响应的 pagination.next_offset>")
+            self.assertEqual(continuation["until"], "pagination.has_more 为 false")
+            self.assertIn("details.context_read", str(raised.exception))
+            json.dumps(reported, ensure_ascii=False, allow_nan=False)
+
     def test_silence_instrumental_overlap_and_strict_keys_are_rejected(self):
         with tempfile.TemporaryDirectory(prefix="agent-style-invalid-", dir=APP) as temp:
             source = write_svp(Path(temp) / "source.svp")
@@ -375,8 +604,13 @@ class StylePlanTests(unittest.TestCase):
                 region(0.55, 0.60),
                 region(0.70, 0.80),
             ])
-            with self.assertRaisesRegex(ValueError, "重叠并共用完整音符"):
+            with self.assertRaises(agent_style.StyleRegionOverlap) as raised:
                 agent_style.plan_style(source, overlap)
+            candidates = raised.exception.details["boundary_candidates"]
+            self.assertFalse(candidates["previous"]["usable"])
+            self.assertFalse(candidates["current"]["usable"])
+            self.assertIn("均不安全", str(raised.exception))
+            self.assertIn("本次未修改任何片段或音符", str(raised.exception))
 
             negative = proposal([region(-0.1, 0.1)])
             with self.assertRaisesRegex(ValueError, "不能为负数"):

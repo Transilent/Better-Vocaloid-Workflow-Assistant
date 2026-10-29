@@ -77,6 +77,79 @@ class PreparationPlanTests(unittest.TestCase):
         self.assertEqual(plan["plan_sha256"], agent_preparation._digest(unsigned))
         json.dumps(plan, ensure_ascii=False, allow_nan=False)
 
+    def test_bilibili_festival_bvid_is_normalised_to_video(self):
+        source = ("https://www.bilibili.com/festival/2023bnj/"
+                  "?spm_id_from=333.1&bvid=BV1xx411c7mD&from_spmid=test")
+        plan = self.plan(source)
+        self.assertEqual(plan["source"]["kind"], "bilibili")
+        self.assertEqual(plan["source"]["bv"], "BV1xx411c7mD")
+        self.assertEqual(plan["source"]["url"],
+                         "https://www.bilibili.com/video/BV1xx411c7mD/")
+        self.assertEqual(plan["source"]["input"], source)
+
+        video = self.plan(
+            "https://www.bilibili.com/video/BV1xx411c7mD/?spm_id_from=333.1")
+        plain = self.plan("https://www.bilibili.com/video/BV1xx411c7mD/")
+        bare = self.plan("BV1xx411c7mD")
+        for result in (video, plain, bare):
+            self.assertEqual(result["source"]["bv"], "BV1xx411c7mD")
+            self.assertEqual(result["source"]["url"],
+                             "https://www.bilibili.com/video/BV1xx411c7mD/")
+
+    def test_bilibili_subpage_parameters_are_rejected_for_both_url_forms(self):
+        video = "https://www.bilibili.com/video/BV1xx411c7mD/"
+        festival = ("https://www.bilibili.com/festival/2023bnj/"
+                    "?bvid=BV1xx411c7mD")
+        cases = (
+            video + "?p=1",
+            video + "?p=",
+            video + "?page=2",
+            video + "?Page=2",
+            video + "?cid=123",
+            video + "?%70=1",
+            festival + "&p=1",
+            festival + "&page=2",
+            festival + "&cid=123",
+            festival + "&CID=123",
+            festival + "&cid=",
+        )
+        for source in cases:
+            with self.subTest(source=source):
+                with self.assertRaises(ValueError) as raised:
+                    self.plan(source)
+                message = str(raised.exception)
+                self.assertIn("子页参数", message)
+                self.assertIn("独立视频 BV/URL", message)
+                self.assertIn("移除这些参数", message)
+
+    def test_bilibili_festival_requires_one_complete_bvid(self):
+        base = "https://www.bilibili.com/festival/2023bnj/"
+        cases = {
+            base + "?from=test": "bvid",
+            base + "?bvid=": "bvid",
+            base + "?bvid=not-a-bv": "BV",
+            base + "?bvid=BV1xx411c7mD&bvid=BV1xx411c7mD": "bvid",
+            base + "?bvid=BV1xx411c7mD&bvid=BV1ZL411i7YQ": "bvid",
+        }
+        for source, message in cases.items():
+            with self.subTest(source=source):
+                with self.assertRaisesRegex(ValueError, message):
+                    self.plan(source)
+
+    def test_bilibili_festival_rejects_untrusted_authority(self):
+        invalid = (
+            "https://bilibili.com.evil.example/festival/2023bnj?bvid=BV1xx411c7mD",
+            "https://www.bilibili.com.evil.example/festival/2023bnj?bvid=BV1xx411c7mD",
+            "https://www.bilibili.com@evil.example/festival/2023bnj?bvid=BV1xx411c7mD",
+            "https://user@www.bilibili.com/festival/2023bnj?bvid=BV1xx411c7mD",
+            "https://www.bilibili.com:444/festival/2023bnj?bvid=BV1xx411c7mD",
+            "https://b23.tv/BV1xx411c7mD",
+        )
+        for source in invalid:
+            with self.subTest(source=source):
+                with self.assertRaisesRegex(ValueError, "其他站点|不受支持"):
+                    self.plan(source)
+
     def test_local_plan_hashes_source_and_uses_ordinary_identity_path(self):
         source = self.source_file()
         plan = self.plan(str(source), {"language": "zh", "voice_mode": "single"})

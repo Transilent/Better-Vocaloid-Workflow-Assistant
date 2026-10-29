@@ -435,7 +435,22 @@ class Control:
             if remaining<=0:return {**result,'timed_out':True}
             time.sleep(min(.75,remaining))
 
-    def artifacts_list(self, job_id=None):
+    def artifacts_list(self, job_id=None, limit=20, offset=0, kind=None, expected_revision=None):
+        if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int or offset < 0:
+            raise ControlError('invalid_page', 'limit 需为 1–100，offset 需为非负整数。')
+        if kind is not None and (not isinstance(kind, str) or not kind.strip() or len(kind) > 128):
+            raise ControlError('invalid_filter', 'kind 必须是 1–128 字符的非空产物类型。')
+        if offset and not expected_revision:
+            raise ControlError('listing_revision_required', '续页需要上一页的 listing_revision，请使用 next_request。')
+        def page_info(revision, total):
+            if expected_revision is not None and expected_revision != revision:
+                raise ControlError('listing_changed', '产物列表已变化，请从 offset 0 重新读取。')
+            next_offset = offset + limit if offset + limit < total else None
+            request = {'action': 'artifacts_list', 'job_id': job_id, 'limit': limit,
+                       'offset': next_offset, 'kind': kind, 'expected_revision': revision}
+            return {'total': total, 'offset': offset, 'limit': limit, 'next_offset': next_offset,
+                    'listing_revision': revision,
+                    'next_request': {'tool': 'vwa_status', 'arguments': {'request': request}} if next_offset is not None else None}
         if job_id:
             job = self.job_path(job_id)
             index_path = safe_path(job / 'artifacts.json', [job])
@@ -443,8 +458,16 @@ class Control:
             entries = index.get('entries', {})
             if not isinstance(entries, dict) or len(entries) > 4096:
                 raise ControlError('invalid_record', '任务产物索引无效。')
+            if any(not isinstance(key, str) for key in entries):
+                raise ControlError('invalid_record', '任务产物索引键无效。')
+            ordered = [entries[key] for key in sorted(entries)]
+            if any(not isinstance(entry, dict) for entry in ordered):
+                raise ControlError('invalid_record', '任务产物条目无效。')
+            selected = [entry for entry in ordered if entry.get('active', True)
+                        and (kind is None or entry.get('role') == kind)]
+            info = page_info(digest({'job_id': job_id, 'kind': kind, 'entries': entries}), len(selected))
             rows = []
-            for entry in entries.values():
+            for entry in selected[offset:offset + limit]:
                 if not isinstance(entry, dict) or not isinstance(entry.get('location'), dict):
                     raise ControlError('invalid_record', '任务产物条目或位置无效。')
                 loc = entry.get('location', {})
@@ -483,8 +506,11 @@ class Control:
                 record = self.register_artifact(path, kind=entry.get('role', 'job_artifact'), job_id=job_id,
                                                 declared_sha256=entry.get('sha256'))
                 rows.append({**record, 'available': True, 'verification': 'not_checked'})
-            return {'artifacts': rows, 'index_present': index_path.is_file(), 'job_id': job_id}
-        return {'artifacts': [read_json(p) for p in sorted((self.state / 'artifacts').glob('art_*.json'))]}
+            return {'artifacts': rows, 'index_present': index_path.is_file(), 'job_id': job_id, **info}
+        records = [read_json(p) for p in sorted((self.state / 'artifacts').glob('art_*.json'))]
+        selected = [row for row in records if kind is None or row.get('kind') == kind]
+        info = page_info(digest({'kind': kind, 'records': records}), len(selected))
+        return {'artifacts': selected[offset:offset + limit], **info}
 
     def inspect_artifact(self, artifact_id, verify=False, wait_ms=0):
         self._wait_timeout(wait_ms)
@@ -499,7 +525,7 @@ class Control:
                           'score_plan', 'context_read', 'style_plan', 'preparation_plan',
                           'preparation_create', 'lyrics_read', 'lyrics_review', 'lyrics_plan',
                           'export_plan', 'review_bundle', 'structure_plan', 'reference_validate',
-                          'reference_pitch_review', 'reference_audio_read', 'pronunciation_read',
+                          'reference_pitch_review', 'pitch_offset_review', 'reference_audio_read', 'pronunciation_read',
                           'pronunciation_plan','draft_read','draft_publish','draft_plan',
                           'preparation_reuse_plan','preparation_reuse_create','segment_plan','style_segment_context','media_validate',
                           'lyric_timeline_search','lyric_timeline_fetch','lyric_timeline_parse',
@@ -886,6 +912,31 @@ class Control:
             raise ControlError('wrong_reference_kind', '需要已导入的 pitch 参考。')
         return self.call_worker('reference_pitch_review',{'path':score['path'],'pitch_path':pitch['path'],
             'track_indices':track_indices,'time_origin':time_origin,'limit':limit,'offset':offset})
+
+    def pitch_offset_review(self, score_artifact_id, pitch_artifact_id, track_index,
+                            time_origin, category, limit=20, offset=0, expected_revision=None):
+        score = self.artifact(score_artifact_id)
+        pitch = self.artifact(pitch_artifact_id)
+        if pitch['kind'] != 'reference_pitch':
+            raise ControlError('wrong_reference_kind', '需要已导入的 pitch 参考。')
+        result = self.call_worker('pitch_offset_review', {
+            'path': score['path'], 'pitch_path': pitch['path'], 'track_index': track_index,
+            'time_origin': time_origin, 'category': category, 'limit': limit, 'offset': offset,
+            'expected_revision': expected_revision})
+        if result.get('score_sha256') != score['sha256'] or result.get('pitch_sha256') != pitch['sha256']:
+            raise ControlError('stale_artifact', '音符或音高来源在核查期间发生变化，请重新导入。')
+        next_offset = result.get('next_offset')
+        if next_offset is not None:
+            result['next_request'] = {'tool': 'vwa_evidence', 'arguments': {'request': {
+                'action': 'pitch_offset_review', 'score_artifact_id': score_artifact_id,
+                'pitch_artifact_id': pitch_artifact_id, 'track_index': track_index,
+                'time_origin': time_origin, 'category': category, 'limit': limit,
+                'offset': next_offset, 'expected_revision': result['revision']}}}
+        else:
+            result['next_request'] = None
+        result['review_sha256'] = digest({key: value for key, value in result.items()
+                                          if key != 'review_sha256'})
+        return result
 
     def reference_audio_read(self, artifact_id, start=None, end=None, make_excerpt=False):
         audio = self.artifact(artifact_id)

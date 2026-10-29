@@ -20,7 +20,7 @@ import shutil
 import stat
 import threading
 import time
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 import common
 from common import ROOT, app_path, atomic_json, clean_lyrics, file_hash, load_config, native_path, resolve_tools
@@ -48,6 +48,7 @@ ERROR_DETAILS_TEXT_CHARS = 1000
 ERROR_DETAILS_MAX_BYTES = 8 * 1024
 SHA256_RE = re.compile(r"[a-f0-9]{64}")
 BV_RE = re.compile(r"BV1[A-Za-z0-9]{9}")
+_BILIBILI_SUBPAGE_QUERY_KEYS = frozenset({"cid", "p", "page"})
 ALLOWED_OPTIONS = frozenset({
     "language", "lyrics", "backing_lyrics", "recognize_lyrics", "voice_mode",
     "midi_backend", "alignment_engine", "midi_steps", "separation_device",
@@ -488,6 +489,22 @@ def _normalise_options(options):
     return result
 
 
+def _bilibili_query_pairs(query):
+    pairs = parse_qsl(query, keep_blank_values=True)
+    subpage_keys = sorted({
+        key.casefold() for key, _ in pairs
+        if key.casefold() in _BILIBILI_SUBPAGE_QUERY_KEYS
+    })
+    if subpage_keys:
+        names = "、".join(subpage_keys)
+        raise ValueError(
+            f"Bilibili 链接包含子页参数（{names}）；当前准备管线只保存 BV "
+            "默认分 P，无法保留并核验目标子页。请提供指向目标内容的独立视频 "
+            "BV/URL；只有确认目标就是默认分 P 时，才可移除这些参数后重试。"
+        )
+    return pairs
+
+
 def _source_info(source):
     if not isinstance(source, str):
         raise ValueError("source 必须是 BV、Bilibili 视频链接或本地音乐绝对路径。")
@@ -495,23 +512,39 @@ def _source_info(source):
     if not text or len(text) > 32768 or "\x00" in text:
         raise ValueError("source 不能为空且长度必须有效。")
 
-    if re.fullmatch(r"BV1[A-Za-z0-9]{9}", text) and not re.match(r"^[A-Za-z]:[\\/]", text):
+    if BV_RE.fullmatch(text) and not re.match(r"^[A-Za-z]:[\\/]", text):
         return {"kind": "bilibili", "bv": text,
                 "url": f"https://www.bilibili.com/video/{text}/", "input": source}
 
     if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", text):
         parts = urlsplit(text)
+        scheme = parts.scheme.lower()
         host = (parts.hostname or "").lower().rstrip(".")
-        if parts.scheme.lower() not in ("http", "https") or not (host == "bilibili.com" or host.endswith(".bilibili.com")):
+        try:
+            port = parts.port
+        except ValueError as error:
+            raise ValueError("Bilibili 链接端口不受支持。") from error
+        if scheme not in ("http", "https") or not (host == "bilibili.com" or host.endswith(".bilibili.com")):
             raise ValueError("仅支持 Bilibili 视频链接或本地音乐文件，其他站点链接不受支持。")
-        if parts.username or parts.password or parts.port not in (None, 80, 443):
+        if parts.username is not None or parts.password is not None or port not in (None, 80, 443):
             raise ValueError("Bilibili 链接格式不受支持。")
+        query = _bilibili_query_pairs(parts.query)
         match = re.fullmatch(r"/video/(BV1[A-Za-z0-9]{9})/?", parts.path)
-        if not match:
-            raise ValueError("Bilibili 链接必须指向一个 /video/BV… 视频。")
-        bv = match.group(1)
-        return {"kind": "bilibili", "bv": bv,
-                "url": f"https://www.bilibili.com/video/{bv}/", "input": source}
+        if match:
+            bv = match.group(1)
+            return {"kind": "bilibili", "bv": bv,
+                    "url": f"https://www.bilibili.com/video/{bv}/", "input": source}
+        festival_name = parts.path[len("/festival/"):] if parts.path.startswith("/festival/") else ""
+        if festival_name.strip("/"):
+            bvid_values = [value for key, value in query if key == "bvid"]
+            if len(bvid_values) != 1:
+                raise ValueError("Bilibili festival 链接必须包含且只能包含一个 bvid。")
+            bv = bvid_values[0]
+            if not BV_RE.fullmatch(bv):
+                raise ValueError("Bilibili festival 链接的 bvid 必须是完整的 BV… 视频编号。")
+            return {"kind": "bilibili", "bv": bv,
+                    "url": f"https://www.bilibili.com/video/{bv}/", "input": source}
+        raise ValueError("Bilibili 链接必须指向一个 /video/BV… 视频，或包含 bvid 的 /festival/… 页面。")
 
     path = Path(text).expanduser()
     if not path.is_absolute():

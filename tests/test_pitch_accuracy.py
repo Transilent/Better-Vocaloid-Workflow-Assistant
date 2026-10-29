@@ -17,9 +17,9 @@ configure(Path(os.environ.get(
 from inference.API.rmvpe_api import RmvpeResult, RmvpeTranscriber
 from inference.API import ustx_api
 from pitch_accuracy import (
-    assign_note_owners, build_absolute_f0_curve, exclude_unvoiced_pitch,
-    install, pitd_curve, pitch_note_descriptors, prepare_audio,
-    stabilize_isolated_pitch_spikes, supported_pitch,
+    analyze_sustained_pitch_offsets, assign_note_owners, build_absolute_f0_curve,
+    exclude_unvoiced_pitch, install, pitd_curve, pitch_note_descriptors,
+    prepare_audio, stabilize_isolated_pitch_spikes, supported_pitch,
 )
 
 t = np.arange(16000) / 16000
@@ -121,6 +121,206 @@ brief_curve=build_absolute_f0_curve(
 brief_audit=brief_curve['pitch_offset_diagnostics']
 assert brief_audit['warning_count']==0
 assert brief_audit['short_offset_candidates']>=1
+
+# Explicit diagnostic pagination must cross the legacy 32-item summary cap
+# without changing the default response or the measured F0 input.
+pagination_note_count=65
+pagination_frames_per_note=50
+pagination_intervals=[(index*.5,(index+1)*.5)
+                      for index in range(pagination_note_count)]
+pagination_descriptors=[{
+    'vocal_track_index':0,'note_index':index,
+    'note_id':f'pagination-note-{index}',
+    'start_tick':index*480,'end_tick':(index+1)*480,
+    'start_seconds':start,'end_seconds':end,
+    'center_midi':60.,'center_cents':6000,'lyric':'a',
+} for index,(start,end) in enumerate(pagination_intervals)]
+pagination_times=(np.arange(pagination_note_count*pagination_frames_per_note)*.01)
+pagination_owner=assign_note_owners(pagination_times,pagination_intervals)
+pagination_pitch=np.full(pagination_times.size,66.,dtype=np.float32)
+pagination_mask=np.ones(pagination_times.size,dtype=bool)
+pagination_pitch_copy=pagination_pitch.copy()
+pagination_mask_copy=pagination_mask.copy()
+pagination_kwargs=dict(
+    pitch=pagination_pitch,voiced_mask=pagination_mask,owner=pagination_owner,
+    time_step_seconds=.01,note_intervals=pagination_intervals,
+    note_descriptors=pagination_descriptors,source_sha256='d'*64,
+    vocal_track_index=0)
+warning_default=analyze_sustained_pitch_offsets(**pagination_kwargs)
+assert warning_default['warning_count']==pagination_note_count
+assert len(warning_default['warnings'])==32
+assert warning_default['warnings_truncated'] is True
+assert warning_default['diagnostic_pagination']['warnings']=={
+    'offset':0,'limit':32,'returned':32,'total':65,
+    'has_more':True,'next_offset':32}
+assert warning_default['diagnostic_pagination']['unevaluated_notes']['returned']==0
+assert warning_default['diagnostic_pagination']['unevaluated_notes']['total']==0
+assert warning_default['diagnostic_pagination']['not_assessed_intervals']['total']==0
+assert warning_default['edge_guard_suppressed_frames']>0
+for warning in warning_default['warnings']:
+    note_start=warning['note']['start_seconds']
+    note_end=warning['note']['end_seconds']
+    assert warning['interval']['start_seconds']>=note_start+.08-1e-9
+    assert warning['interval']['end_seconds']<=note_end+1e-9
+    assert warning['interval']['duration_seconds']>=.16
+    assert warning['source_sha256']=='d'*64
+    assert warning['truth_determined'] is False
+    assert warning['automatic_change'] is False
+warning_indices=[]
+for offset in (0,32,64,96):
+    page=analyze_sustained_pitch_offsets(
+        **pagination_kwargs,
+        diagnostic_pagination={'warnings':{'offset':offset,'limit':32}})
+    rows=page['warnings']
+    returned=max(0,min(32,pagination_note_count-offset))
+    has_more=offset+returned<pagination_note_count
+    assert len(rows)==returned
+    assert page['warning_count']==pagination_note_count
+    assert page['warnings_truncated'] is (offset>0 or has_more)
+    assert page['diagnostic_pagination']['warnings']=={
+        'offset':offset,'limit':32,'returned':returned,
+        'total':pagination_note_count,'has_more':has_more,
+        'next_offset':offset+returned if has_more else None}
+    assert page['status']=='review_required'
+    warning_indices.extend(row['note']['note_index'] for row in rows)
+assert warning_indices==list(range(pagination_note_count))
+full_warning_page=analyze_sustained_pitch_offsets(
+    **pagination_kwargs,
+    diagnostic_pagination={'warnings':{'offset':0,'limit':100}})
+assert len(full_warning_page['warnings'])==pagination_note_count
+assert full_warning_page['diagnostic_pagination']['warnings']['has_more'] is False
+assert full_warning_page['diagnostic_pagination']['warnings']['next_offset'] is None
+assert full_warning_page['warnings_truncated'] is False
+
+# The same source can independently page notes with no eligible voiced frames.
+unevaluated_default=analyze_sustained_pitch_offsets(
+    pagination_pitch,np.zeros_like(pagination_mask),pagination_owner,.01,
+    pagination_intervals,pagination_descriptors,source_sha256='d'*64,
+    vocal_track_index=0)
+assert unevaluated_default['status']=='insufficient_evidence'
+assert unevaluated_default['unevaluated_count']==pagination_note_count
+assert len(unevaluated_default['unevaluated_notes'])==32
+assert unevaluated_default['unevaluated_truncated'] is True
+unevaluated_indices=[]
+for offset in (0,32,64,96):
+    page=analyze_sustained_pitch_offsets(
+        pagination_pitch,np.zeros_like(pagination_mask),pagination_owner,.01,
+        pagination_intervals,pagination_descriptors,source_sha256='d'*64,
+        vocal_track_index=0,
+        diagnostic_pagination={'unevaluated_notes':{'offset':offset,'limit':32}})
+    rows=page['unevaluated_notes']
+    returned=max(0,min(32,pagination_note_count-offset))
+    has_more=offset+returned<pagination_note_count
+    assert len(rows)==returned
+    assert page['unevaluated_count']==pagination_note_count
+    assert page['unevaluated_truncated'] is (offset>0 or has_more)
+    assert page['status']=='insufficient_evidence'
+    assert page['diagnostic_pagination']['unevaluated_notes']=={
+        'offset':offset,'limit':32,'returned':returned,
+        'total':pagination_note_count,'has_more':has_more,
+        'next_offset':offset+returned if has_more else None}
+    assert all(row['source_sha256']=='d'*64 for row in rows)
+    assert all(row['truth_determined'] is False for row in rows)
+    unevaluated_indices.extend(row['note']['note_index'] for row in rows)
+assert unevaluated_indices==list(range(pagination_note_count))
+
+# Ambiguous ownership is a separate diagnostic type with its own independent
+# offset. Sixty-five narrow runs exercise first, middle, partial-last and empty
+# pages while their complete count remains available.
+ambiguous_count=65
+ambiguous_owner=np.full(ambiguous_count*4,-1,dtype=np.int64)
+for index in range(ambiguous_count):
+    ambiguous_owner[index*4:index*4+3]=-2
+ambiguous_pitch=np.full(ambiguous_owner.size,60.,dtype=np.float32)
+ambiguous_mask=np.ones(ambiguous_owner.size,dtype=bool)
+ambiguous_interval=(0.,ambiguous_owner.size*.01)
+ambiguous_descriptor={
+    'vocal_track_index':0,'note_index':0,'note_id':'ambiguous-note',
+    'start_tick':0,'end_tick':round(ambiguous_interval[1]*960),
+    'start_seconds':ambiguous_interval[0],
+    'end_seconds':ambiguous_interval[1],
+    'center_midi':60.,'center_cents':6000,'lyric':'合'}
+ambiguous_pitch_copy=ambiguous_pitch.copy()
+ambiguous_default=analyze_sustained_pitch_offsets(
+    ambiguous_pitch,ambiguous_mask,ambiguous_owner,.01,[ambiguous_interval],
+    [ambiguous_descriptor],source_sha256='e'*64,vocal_track_index=0)
+assert ambiguous_default['status']=='insufficient_evidence'
+assert ambiguous_default['not_assessed_interval_count']==ambiguous_count
+assert len(ambiguous_default['not_assessed_intervals'])==32
+assert ambiguous_default['not_assessed_intervals_truncated'] is True
+assert ambiguous_default['ambiguous_note_frames']==ambiguous_count*3
+ambiguous_starts=[]
+for offset in (0,32,64,96):
+    page=analyze_sustained_pitch_offsets(
+        ambiguous_pitch,ambiguous_mask,ambiguous_owner,.01,[ambiguous_interval],
+        [ambiguous_descriptor],source_sha256='e'*64,vocal_track_index=0,
+        diagnostic_pagination={
+            'not_assessed_intervals':{'offset':offset,'limit':32}})
+    rows=page['not_assessed_intervals']
+    returned=max(0,min(32,ambiguous_count-offset))
+    has_more=offset+returned<ambiguous_count
+    assert len(rows)==returned
+    assert page['not_assessed_interval_count']==ambiguous_count
+    assert page['not_assessed_intervals_truncated'] is (offset>0 or has_more)
+    assert page['status']=='insufficient_evidence'
+    assert page['diagnostic_pagination']['not_assessed_intervals']=={
+        'offset':offset,'limit':32,'returned':returned,
+        'total':ambiguous_count,'has_more':has_more,
+        'next_offset':offset+returned if has_more else None}
+    assert all(row['note_indices']==[0] for row in rows)
+    assert all(row['source_sha256']=='e'*64 for row in rows)
+    assert all(row['truth_determined'] is False for row in rows)
+    ambiguous_starts.extend(row['start_seconds'] for row in rows)
+assert len(set(ambiguous_starts))==ambiguous_count
+assert ambiguous_starts==sorted(ambiguous_starts)
+
+# Pagination settings are strict and bounded, but the shared curve builder
+# forwards the same contract for MCP callers.
+for invalid in (
+        {'warnings':{'offset':-1}},
+        {'warnings':{'offset':True}},
+        {'warnings':{'limit':0}},
+        {'warnings':{'limit':101}},
+        {'warnings':{'extra':1}},
+        {'unknown':{}},
+        []):
+    try:
+        analyze_sustained_pitch_offsets(
+            **pagination_kwargs,diagnostic_pagination=invalid)
+        raise AssertionError(f'Invalid diagnostic pagination accepted: {invalid!r}')
+    except ValueError:
+        pass
+# Without descriptors the notes cannot be materialized. Keep the complete
+# count but explicitly mark the category unavailable and terminate pagination
+# instead of returning a next_offset equal to the current offset forever.
+unavailable=analyze_sustained_pitch_offsets(
+    pagination_pitch,pagination_mask,pagination_owner,.01,pagination_intervals,
+    note_descriptors=(),source_sha256='d'*64,vocal_track_index=0,
+    diagnostic_pagination={'unevaluated_notes':{'offset':0,'limit':32}})
+assert unavailable['status']=='unavailable'
+assert unavailable['unevaluated_count']==pagination_note_count
+assert unavailable['unevaluated_notes']==[]
+assert unavailable['unevaluated_truncated'] is False
+unavailable_page=unavailable['diagnostic_pagination']['unevaluated_notes']
+assert unavailable_page['returned']==0
+assert unavailable_page['total']==pagination_note_count
+assert unavailable_page['has_more'] is False
+assert unavailable_page['next_offset'] is None
+assert unavailable_page['available'] is False
+assert unavailable_page['unavailable_reason']=='note_centers_unavailable'
+curve_page=build_absolute_f0_curve(
+    pagination_pitch,pagination_mask,.01,pagination_intervals,clock,inverse_clock,
+    note_descriptors=pagination_descriptors,source_sha256='d'*64,
+    vocal_track_index=0,
+    diagnostic_pagination={'warnings':{'offset':64,'limit':100}})
+assert [row['note']['note_index']
+        for row in curve_page['pitch_offset_diagnostics']['warnings']]==[64]
+assert curve_page['pitch_offset_diagnostics']['warning_count']==pagination_note_count
+assert np.array_equal(pagination_pitch,pagination_pitch_copy)
+assert np.array_equal(pagination_mask,pagination_mask_copy)
+assert np.array_equal(ambiguous_pitch,ambiguous_pitch_copy)
+assert warning_default['truth_determined'] is False
+assert warning_default['automatic_change'] is False
 
 pitch = 60 + .5 * np.sin(np.arange(300) * .01 * 2 * np.pi * 5.5)
 pitch = pitch.astype('float32')

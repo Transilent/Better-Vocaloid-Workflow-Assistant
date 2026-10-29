@@ -11,6 +11,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import copy
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -31,7 +32,7 @@ sys.path.insert(0, str(SRC))
 import mido
 import numpy as np
 
-from agent_control import ControlError, digest, io_path, read_json
+from agent_control import ControlError, digest, io_path, read_json, safe_path
 from agent_lyrics import read_lyrics
 from agent_score import read_score
 from agent_supervision import SupervisionError, _digest as supervision_digest
@@ -155,7 +156,7 @@ class FakeControl:
         self.jobs = [self.root / "jobs"]
         for path in (self.state, *self.assets, *self.jobs):
             io_path(path).mkdir(parents=True, exist_ok=True)
-        for name in ("workflows", "operations", "locks", "artifacts", "plans"):
+        for name in ("workflows", "operations", "locks", "artifacts", "plans", "preparations"):
             io_path(self.state / name).mkdir(parents=True, exist_ok=True)
         self.records = {"workflows": {}, "operations": {}, "artifacts": {}, "plans": {}}
         self.next_operation = 0
@@ -175,6 +176,31 @@ class FakeControl:
         if not io_path(path).is_file():
             raise ControlError("not_found", "private fixture record not found")
         return read_json(path)
+
+    def job_path(self, identifier):
+        record = self._record("preparations", identifier, "job")
+        path = Path(record["path"]).resolve()
+        roots = [Path(native_path(root)).resolve() for root in self.jobs]
+        if not any(path.is_relative_to(root) for root in roots):
+            raise ControlError("outside_roots", "fixture job escaped authorized roots")
+        if not io_path(path / "request.json").is_file():
+            raise ControlError("not_found", "fixture job request not found")
+        return path
+
+    def register_preparation_job(self, request, name):
+        job = Path(self.root / "jobs" / name).resolve()
+        io_path(job).mkdir(parents=True, exist_ok=True)
+        request_path = job / "request.json"
+        io_path(request_path).write_text(
+            json.dumps(request, ensure_ascii=False), encoding="utf-8")
+        sha = sha256_file(request_path)
+        identifier = "job_" + digest(str(job))[:32]
+        record = {"schema": 1, "id": identifier, "path": str(job),
+                  "request_sha256": sha}
+        record_path = self.state / "preparations" / (identifier + ".json")
+        io_path(record_path).write_text(
+            json.dumps(record, ensure_ascii=False), encoding="utf-8")
+        return identifier
 
     def artifact(self, identifier):
         try:
@@ -785,6 +811,231 @@ class WorkflowCreateGetTests(WorkflowTestBase):
         with self.assertRaises(ControlError) as raised:
             self.create_source_flow(brief="needs svp", formats=["ustx"])
         self.assertEqual(raised.exception.code, "style_requires_svp")
+
+    def test_preparation_job_without_reference_lyrics_returns_recovery_hint(self):
+        reference = "风雪落在旧檐"
+        job_id = self.control.register_preparation_job(
+            {"language": "zh", "lyrics": "", "recognize_lyrics": True},
+            "preparation-empty-lyrics",
+        )
+        job_path = self.control.job_path(job_id)
+        with patch("agent_workflow.safe_path", wraps=safe_path) as guarded:
+            created = self.workflow.create(
+                preparation_job_id=job_id,
+                reference_lyrics=reference,
+                idempotency_key="preparation-empty-lyrics-flow",
+            )
+        guarded.assert_any_call(job_path / "request.json", [job_path])
+
+        self.assertEqual(created["stage"], "created")
+        self.assertEqual(created["job_id"], job_id)
+        evidence = created["preparation_reference_lyrics"]
+        self.assertEqual(evidence["status"], "not_used")
+        self.assertEqual(evidence["basis"], "lyrics_field_empty")
+        self.assertEqual(evidence["request_binding"], "verified")
+        self.assertTrue(evidence["request_sha256_verified"])
+        self.assertEqual(evidence["alignment"], {
+            "status": "unknown",
+            "reason": "workflow_create_does_not_verify_midi_alignment",
+        })
+        recovery = evidence["recovery"]
+        self.assertEqual(recovery["tool"], "vwa_recover")
+        request = recovery["arguments"]["request"]
+        self.assertEqual(request["action"], "preparation_reuse_plan")
+        self.assertEqual(request["source_job_id"], job_id)
+        self.assertNotIn("options", request)
+        self.assertNotIn("reuse_stages", request)
+        self.assertEqual(
+            recovery["argument_bindings"],
+            {"request.options.lyrics": "workflow.request.reference_lyrics"},
+        )
+        self.assertIn("重跑 MIDI", recovery["instruction"])
+        self.assertEqual(json.dumps(created, ensure_ascii=False).count(reference), 1)
+        summary = self.workflow.get(created["id"], detail="summary")
+        self.assertEqual(json.dumps(summary, ensure_ascii=False).count(reference), 1)
+
+        warning = created["next"]["warning"]
+        self.assertEqual(warning, {
+            "code": "preparation_reference_lyrics_not_used",
+            "severity": "warning",
+            "details_ref": "preparation_reference_lyrics",
+            "tool": "vwa_recover",
+            "action": "preparation_reuse_plan",
+        })
+        self.assertEqual(created["warnings"], [warning])
+        self.assertEqual(self.control.preparation_calls, [])
+        self.assertEqual(self.control.preparation_starts, [])
+        self.assertEqual(self.control.plan_calls, [])
+        self.assertEqual(self.control.plan_starts, [])
+        self.assertEqual(self.control.worker_calls, [])
+
+        reread = self.workflow.get(created["id"])
+        self.assertEqual(reread["preparation_reference_lyrics"], evidence)
+        self.assertEqual(reread["next"]["warning"], warning)
+
+    def test_different_preparation_reference_lyrics_is_not_treated_as_used(self):
+        reference = "新提供歌词"
+        job_id = self.control.register_preparation_job(
+            {"language": "zh", "lyrics": "另一份歌词"},
+            "preparation-different-lyrics",
+        )
+        created = self.workflow.create(
+            preparation_job_id=job_id,
+            reference_lyrics=reference,
+            idempotency_key="preparation-different-lyrics-flow",
+        )
+
+        evidence = created["preparation_reference_lyrics"]
+        self.assertEqual(evidence["status"], "not_used")
+        self.assertEqual(evidence["basis"], "lyrics_field_different")
+        self.assertEqual(evidence["alignment"]["status"], "unknown")
+        self.assertEqual(
+            evidence["recovery"]["argument_bindings"],
+            {"request.options.lyrics": "workflow.request.reference_lyrics"},
+        )
+        self.assertEqual(json.dumps(created, ensure_ascii=False).count(reference), 1)
+        self.assertEqual(self.control.preparation_starts, [])
+
+    def test_missing_preparation_lyrics_data_is_unknown_without_guessing(self):
+        job_id = self.control.register_preparation_job(
+            {"language": "zh", "recognize_lyrics": True},
+            "preparation-missing-lyrics-field",
+        )
+        created = self.workflow.create(
+            preparation_job_id=job_id,
+            reference_lyrics="待核对的参考歌词",
+            idempotency_key="preparation-missing-lyrics-field-flow",
+        )
+
+        evidence = created["preparation_reference_lyrics"]
+        self.assertEqual(evidence["status"], "unknown")
+        self.assertEqual(evidence["basis"], "lyrics_field_missing")
+        self.assertEqual(evidence["alignment"]["status"], "unknown")
+        self.assertTrue(evidence["request_sha256_verified"])
+        self.assertNotIn("recovery", evidence)
+        self.assertIn("未知", evidence["message"])
+        warning = created["next"]["warning"]
+        self.assertEqual(warning, {
+            "code": "preparation_reference_lyrics_unknown",
+            "severity": "warning",
+            "details_ref": "preparation_reference_lyrics",
+        })
+        self.assertEqual(self.control.preparation_starts, [])
+
+    def test_matching_preparation_reference_lyrics_and_lines_do_not_claim_alignment(self):
+        job_id = self.control.register_preparation_job(
+            {"language": "zh", "lyrics": "风雪落旧檐",
+             "lyric_lines": ["风雪落", "旧檐"]},
+            "preparation-matching-lyrics",
+        )
+        created = self.workflow.create(
+            preparation_job_id=job_id,
+            reference_lyrics="风、雪落\r\n旧檐！",
+            idempotency_key="preparation-matching-lyrics-flow",
+        )
+
+        evidence = created["preparation_reference_lyrics"]
+        self.assertEqual(evidence["status"], "present_in_request")
+        self.assertEqual(evidence["basis"], "lyrics_match")
+        self.assertEqual(evidence["alignment"]["status"], "unknown")
+        self.assertNotIn("recovery", evidence)
+        self.assertNotIn("warning", created["next"])
+        self.assertNotIn("warnings", created)
+        self.assertEqual(self.control.preparation_starts, [])
+
+    def test_same_lyrics_with_different_lines_are_not_treated_as_used(self):
+        job_id = self.control.register_preparation_job(
+            {"language": "zh", "lyrics": "风雪落",
+             "lyric_lines": ["风雪", "落"]},
+            "preparation-different-lyric-lines",
+        )
+        created = self.workflow.create(
+            preparation_job_id=job_id,
+            reference_lyrics="风雪落",
+            idempotency_key="preparation-different-lyric-lines-flow",
+        )
+
+        evidence = created["preparation_reference_lyrics"]
+        self.assertEqual(evidence["status"], "not_used")
+        self.assertEqual(evidence["basis"], "lyric_lines_different")
+        self.assertIn("分行不同", evidence["message"])
+        self.assertIn("recovery", evidence)
+        self.assertEqual(self.control.preparation_starts, [])
+
+    def test_legacy_lyrics_without_line_information_is_unknown(self):
+        job_id = self.control.register_preparation_job(
+            {"language": "zh", "lyrics": "风雪落"},
+            "preparation-legacy-lyrics-without-lines",
+        )
+        created = self.workflow.create(
+            preparation_job_id=job_id,
+            reference_lyrics="风雪落",
+            idempotency_key="preparation-legacy-lyrics-without-lines-flow",
+        )
+
+        evidence = created["preparation_reference_lyrics"]
+        self.assertEqual(evidence["status"], "unknown")
+        self.assertEqual(evidence["basis"], "lyric_lines_missing")
+        self.assertIn("旧版记录", evidence["message"])
+        self.assertTrue(evidence["request_sha256_verified"])
+        self.assertEqual(evidence["alignment"]["status"], "unknown")
+        self.assertNotIn("recovery", evidence)
+        self.assertEqual(created["next"]["warning"]["code"],
+                         "preparation_reference_lyrics_unknown")
+        self.assertEqual(self.control.preparation_starts, [])
+
+    def test_preparation_request_digest_and_parse_share_one_snapshot(self):
+        stable = {"language": "zh", "lyrics": "风雪落",
+                  "lyric_lines": ["风雪落"]}
+        replacement = {"language": "zh", "lyrics": "另一份歌词",
+                       "lyric_lines": ["另一份歌词"]}
+        job_id = self.control.register_preparation_job(
+            stable, "preparation-request-race")
+        stable_bytes = json.dumps(stable, ensure_ascii=False).encode("utf-8")
+        replacement_text = json.dumps(replacement, ensure_ascii=False)
+        request_modes = []
+        real_open = Path.open
+
+        def racing_open(path, mode="r", buffering=-1, encoding=None,
+                        errors=None, newline=None):
+            if path.name == "request.json":
+                request_modes.append(mode)
+                if "b" in mode:
+                    return io.BytesIO(stable_bytes)
+                return io.StringIO(replacement_text)
+            return real_open(path, mode, buffering, encoding, errors, newline)
+
+        with patch.object(Path, "open", new=racing_open):
+            created = self.workflow.create(
+                preparation_job_id=job_id,
+                reference_lyrics="风雪落",
+                idempotency_key="preparation-request-race-flow",
+            )
+
+        self.assertEqual(request_modes, ["rb"])
+        evidence = created["preparation_reference_lyrics"]
+        self.assertEqual(evidence["status"], "present_in_request")
+        self.assertEqual(evidence["basis"], "lyrics_match")
+        self.assertTrue(evidence["request_sha256_verified"])
+
+    def test_inconsistent_preparation_lyrics_fields_are_unknown(self):
+        job_id = self.control.register_preparation_job(
+            {"language": "zh", "lyrics": "风雪落",
+             "lyric_lines": ["风雪", "停"]},
+            "preparation-inconsistent-lyrics-fields",
+        )
+        created = self.workflow.create(
+            preparation_job_id=job_id,
+            reference_lyrics="风雪落",
+            idempotency_key="preparation-inconsistent-lyrics-fields-flow",
+        )
+
+        evidence = created["preparation_reference_lyrics"]
+        self.assertEqual(evidence["status"], "unknown")
+        self.assertEqual(evidence["basis"], "lyrics_fields_inconsistent")
+        self.assertEqual(evidence["alignment"]["status"], "unknown")
+        self.assertNotIn("recovery", evidence)
+        self.assertEqual(self.control.preparation_starts, [])
 
     def test_bad_revision_and_code_revision_are_distinct(self):
         created = self.create_source_flow()
