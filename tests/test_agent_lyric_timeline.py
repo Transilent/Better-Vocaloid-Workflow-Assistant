@@ -15,7 +15,7 @@ sys.path.insert(0, str(APP / "src"))
 
 import mido
 
-from agent_lyric_timeline import normalize_timeline, review_timeline
+from agent_lyric_timeline import normalize_timeline, read_timeline, review_timeline
 from common import native_path
 
 
@@ -152,6 +152,75 @@ class NormalizeTimelineTests(unittest.TestCase):
             normalize_timeline(too_many, format_hint="yrc")
 
 
+
+
+class ReadTimelineTests(unittest.TestCase):
+    def test_bounded_word_reference_read_is_explicitly_unbound(self):
+        yrc = (
+            "[1000,500](1000,200,0)风(1200,300,7)雨\n"
+            "[2000,400](2000,400,0)同\n"
+            "[3000,500](3000,250,0)行(3250,250,0)歌"
+        )
+        timeline = normalize_timeline(
+            yrc, format_hint="yrc",
+            origin={"provider": "file", "version_verified": False},
+        )
+        with tempfile.TemporaryDirectory(prefix="lyric-read-", dir=APP / "work") as temporary:
+            source = write_json(Path(temporary) / "timeline.json", timeline)
+            source_sha = digest(source)
+            result = read_timeline(source, limit=1, offset=1, include_words=True)
+
+        self.assertEqual(result["schema"], "vwa-lyric-timeline-read-v1")
+        self.assertEqual(result["kind"], "lyric-timeline-read")
+        self.assertEqual(result["timeline_sha256"], source_sha)
+        self.assertEqual(result["granularity"], "word")
+        self.assertEqual(result["summary"], {
+            "total_lines": 3,
+            "returned_lines": 1,
+            "word_count": 5,
+            "estimated_line_count": 0,
+        })
+        self.assertEqual(result["pagination"]["next_offset"], 2)
+        line = result["lines"][0]
+        self.assertEqual(line["line_index"], 1)
+        self.assertEqual(line["text"], "同")
+        self.assertEqual(line["word_count"], 1)
+        self.assertEqual(line["words"][0]["id"], "word-1-0")
+        self.assertFalse(line["estimated"])
+        self.assertEqual(result["provider"], "file")
+        self.assertFalse(result["version_verified"])
+        self.assertEqual(result["version_verification_status"], "unverified")
+        self.assertTrue(result["reference_only"])
+        self.assertEqual(result["reference_status"], {
+            "role": "reference_not_ground_truth",
+            "provider": "file",
+            "version_verified": False,
+            "version_verification_status": "unverified",
+        })
+        self.assertFalse(result["automatic_patch"])
+        self.assertEqual(result["binding"], {
+            "performed": False,
+            "explicit_confirmation_required": True,
+            "action": "workflow_references_set",
+        })
+
+    def test_line_reference_reports_estimated_ends_and_unknown_verification(self):
+        timeline = normalize_timeline("[00:01.00]一句\n[00:03.00]下一句")
+        with tempfile.TemporaryDirectory(prefix="lyric-read-lrc-", dir=APP / "work") as temporary:
+            source = write_json(Path(temporary) / "line.json", timeline)
+            result = read_timeline(source, limit=2, offset=0)
+            with self.assertRaisesRegex(ValueError, "include_words"):
+                read_timeline(source, include_words="yes")
+            with self.assertRaisesRegex(ValueError, "JSON artifact"):
+                read_timeline(Path(temporary) / "line.lrc")
+
+        self.assertEqual(result["summary"]["estimated_line_count"], 2)
+        self.assertEqual(result["lines"][0]["end_seconds"], 3.0)
+        self.assertTrue(result["lines"][0]["estimated"])
+        self.assertIsNone(result["lines"][-1]["end_seconds"])
+        self.assertNotIn("words", result["lines"][0])
+        self.assertEqual(result["reference_status"]["version_verification_status"], "not_provided")
+        self.assertIsNone(result["pagination"]["next_offset"])
 
 
 class ReviewTimelineTests(unittest.TestCase):

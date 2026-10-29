@@ -1,4 +1,4 @@
-"""Contracts for profile-specific, non-destructive continuation routing."""
+"""Contracts for the 12-tool catalogue and continuation routing."""
 import copy
 from pathlib import Path
 import sys
@@ -6,58 +6,84 @@ import unittest
 from unittest.mock import patch
 
 APP = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(APP / 'src'))
 sys.path.insert(0, str(APP))
+sys.path.insert(0, str(APP / 'src'))
 
 from agent_control import TOOLS
 from agent_errors import REMEDIATION
 from agent_mcp_standard_routing import (
     INTERFACE_FILES,
-    LEGACY_TO_STANDARD,
     STANDARD_TOOLS,
+    _ACTION_GROUPS,
+    _ACTION_TO_TOOL,
+    _FLAT_ACTION_ROUTES,
     interface_identity,
     standardize,
 )
 
 
-FLAT_LEGACY = frozenset((
+FLAT_HISTORICAL = frozenset((
     'vwa_operations_wait', 'vwa_operations_cancel', 'vwa_lyric_timeline_search',
 ))
 
 
 class StandardRoutingTest(unittest.TestCase):
-    def test_catalog_and_legacy_mapping_are_complete(self):
+    def test_repair_operation_result_routes_only_its_typed_next(self):
+        step = {'tool': 'vwa_preparation_start',
+                'arguments': {'job_id': 'job_1', 'until': 'midi', 'idempotency_key': 'key'}}
+        value = {'id': 'op_1', 'state': 'succeeded',
+                 'request': {'action': 'separation_repair'},
+                 'result': {'handoff': 'ready_for_midi', 'next': step,
+                            'receipt': {'kind': 'separation_repair', 'handoff': 'ready_for_midi',
+                                        'next': step}, 'lyrics': {'next': step}}}
+        routed = standardize(value)
+        self.assertEqual(routed['result']['next']['tool'], 'vwa_run')
+        self.assertEqual(routed['result']['next']['arguments']['request'],
+                         {'action': 'preparation_start', **step['arguments']})
+        self.assertEqual(routed['result']['receipt']['next']['tool'], 'vwa_run')
+        self.assertEqual(routed['result']['lyrics']['next'], step)
+        unrelated = copy.deepcopy(value)
+        unrelated['request']['action'] = 'other_operation'
+        self.assertEqual(standardize(unrelated)['result']['next'], step)
+
+    def test_catalog_and_action_groups_are_complete(self):
+        self.assertEqual(TOOLS, STANDARD_TOOLS)
         self.assertEqual(len(STANDARD_TOOLS), 12)
         self.assertEqual(len(set(STANDARD_TOOLS)), 12)
-        self.assertEqual(len(TOOLS), 61)
-        self.assertEqual(set(LEGACY_TO_STANDARD), set(TOOLS))
-        self.assertEqual(len(LEGACY_TO_STANDARD), 61)
-        self.assertEqual(set(LEGACY_TO_STANDARD.values()), set(STANDARD_TOOLS))
+        self.assertEqual(set(_ACTION_GROUPS), set(STANDARD_TOOLS) - {'vwa_wait', 'vwa_cancel', 'vwa_search'})
+        self.assertEqual(len(_ACTION_TO_TOOL), 59)
+        self.assertEqual(set(_ACTION_TO_TOOL.values()), set(_ACTION_GROUPS))
+        self.assertEqual(set(_FLAT_ACTION_ROUTES.values()), {'vwa_wait', 'vwa_cancel', 'vwa_search'})
 
-    def test_every_legacy_action_routes_to_a_12_tool_request_shape(self):
-        for name, target in LEGACY_TO_STANDARD.items():
-            with self.subTest(action=name):
+    def test_every_current_action_routes_to_its_grouped_tool(self):
+        for action, target in _ACTION_TO_TOOL.items():
+            with self.subTest(action=action):
+                name = 'vwa_' + action
                 arguments = {'workflow_id': 'flow_1', 'artifact_id': 'art_1'}
-                if name == 'vwa_operations_wait':
-                    arguments = {'operation_id': 'op_1', 'timeout_ms': 25}
-                elif name == 'vwa_operations_cancel':
-                    arguments = {'operation_id': 'op_1'}
-                elif name == 'vwa_lyric_timeline_search':
-                    arguments = {'query': 'song', 'limit': 5, 'offset': 0}
                 source = {'next': {'tool': name, 'arguments': copy.deepcopy(arguments),
                                    'reason': 'test'}}
                 step = standardize(source)['next']
                 self.assertEqual(step['tool'], target)
                 self.assertIn(step['tool'], STANDARD_TOOLS)
-                if name in FLAT_LEGACY:
-                    self.assertEqual(step['arguments'], arguments)
-                    self.assertNotIn('request', step['arguments'])
-                else:
-                    request = step['arguments']['request']
-                    self.assertEqual(request['action'], name.removeprefix('vwa_'))
-                    for key, value in arguments.items():
-                        self.assertEqual(request[key], value)
+                request = step['arguments']['request']
+                self.assertEqual(request['action'], action)
+                for key, value in arguments.items():
+                    self.assertEqual(request[key], value)
                 self.assertEqual(source['next']['tool'], name)
+
+        arguments_by_action = {
+            'operations_wait': {'operation_id': 'op_1', 'timeout_ms': 25},
+            'operations_cancel': {'operation_id': 'op_1'},
+            'lyric_timeline_search': {'query': 'song', 'limit': 5, 'offset': 0},
+        }
+        for action, target in _FLAT_ACTION_ROUTES.items():
+            with self.subTest(action=action):
+                arguments = arguments_by_action[action]
+                step = standardize({'next': {
+                    'tool': 'vwa_' + action,
+                    'arguments': copy.deepcopy(arguments),
+                }})['next']
+                self.assertEqual(step, {'tool': target, 'arguments': arguments})
 
     def test_conditional_write_and_flat_wait_routes(self):
         cases = [
@@ -236,30 +262,92 @@ class StandardRoutingTest(unittest.TestCase):
             for name in names:
                 with self.subTest(code=code, tool=name):
                     routed = standardize({'remediation': [name]})['remediation'][0]
-                    self.assertEqual(routed['tool'], LEGACY_TO_STANDARD[name])
-                    if name not in FLAT_LEGACY:
+                    self.assertEqual(routed['tool'], _ACTION_TO_TOOL[name.removeprefix('vwa_')])
+                    if name not in FLAT_HISTORICAL:
                         self.assertEqual(routed['arguments']['request']['action'],
                                          name.removeprefix('vwa_'))
 
-    def test_capabilities_report_actual_profile_and_are_idempotent(self):
+    def test_error_suggestion_tools_route_without_rewriting_user_content(self):
+        source = {
+            'code': 'rawstem_missing',
+            'message': 'vwa_operations_get 只是错误说明文本。',
+            'remediation': ['vwa_preparation_plan'],
+            'details': {
+                'role': 'lead',
+                'action_suggestions': [
+                    {'action': 'rerun_separation',
+                     'instruction': '先检查 vwa_preparation_start 的输入。'},
+                    {'action': 'new_single_job', 'tool': 'vwa_preparation_plan',
+                     'arguments': {'source': 'song.mp3'},
+                     'instruction': '保留这段 vwa_lyrics_read 文本。'},
+                ],
+                'lyrics': [
+                    {'text': 'vwa_workflow_review', 'tool': 'vwa_lyrics_read'},
+                ],
+            },
+            'suggestions': [
+                {'code': 'regenerate_plan', 'tool': 'vwa_preparation_repair_plan',
+                 'arguments': {'source_job_id': 'job_1'},
+                 'message': '调用 vwa_operations_wait 的说明不变。'},
+                {'code': 'inspect', 'tool': 'vwa_operations_get',
+                 'arguments': {'operation_id': 'op_1'}},
+                {'code': 'free_text', 'message': 'vwa_workflow_advance 不是工具字段。'},
+            ],
+        }
+        before = copy.deepcopy(source)
+        result = standardize(source)
+        self.assertEqual(source, before)
+
+        first, second = result['details']['action_suggestions']
+        self.assertEqual(first, before['details']['action_suggestions'][0])
+        self.assertEqual(second['tool'], 'vwa_start')
+        self.assertEqual(second['arguments']['request'], {
+            'action': 'preparation_plan', 'source': 'song.mp3',
+        })
+        self.assertEqual(second['instruction'],
+                         before['details']['action_suggestions'][1]['instruction'])
+        self.assertEqual(result['details']['lyrics'], before['details']['lyrics'])
+
+        regenerate, inspect, free_text = result['suggestions']
+        self.assertEqual(regenerate['tool'], 'vwa_recover')
+        self.assertEqual(regenerate['arguments']['request'], {
+            'action': 'preparation_repair_plan', 'source_job_id': 'job_1',
+        })
+        self.assertEqual(regenerate['message'], before['suggestions'][0]['message'])
+        self.assertEqual(inspect['tool'], 'vwa_status')
+        self.assertEqual(inspect['arguments']['request'], {
+            'action': 'operations_get', 'operation_id': 'op_1',
+        })
+        self.assertEqual(free_text, before['suggestions'][2])
+        self.assertEqual(result['message'], before['message'])
+        self.assertEqual(standardize(result), result)
+
+        nested = standardize({'error': source})['error']
+        self.assertEqual(nested['details']['action_suggestions'][1]['tool'], 'vwa_start')
+        self.assertEqual(nested['suggestions'][0]['tool'], 'vwa_recover')
+        self.assertEqual(nested['details']['lyrics'], before['details']['lyrics'])
+
+    def test_capabilities_report_only_current_tools_and_are_idempotent(self):
         source = {
             'schema': 1,
             'server': 'VWA Agent MCP',
-            'tools': list(TOOLS),
+            'tools': ['vwa_system_capabilities', 'vwa_workflow_create'],
             'workflow_entry': 'vwa_workflow_create',
+            'interface_profile': 'legacy',
+            'legacy_tool_count': 61,
             'code_revision': 'business-revision',
             'interface_revision': 'interface-revision',
             'source_commit': 'source-commit',
         }
         result = standardize(source)
         self.assertEqual(result['tools'], list(STANDARD_TOOLS))
-        self.assertEqual(result['legacy_tool_count'], 61)
+        self.assertNotIn('legacy_tool_count', result)
         self.assertEqual(result['workflow_entry'], 'vwa_start')
         self.assertEqual(result['interface_profile'], 'standard')
         self.assertEqual(result['code_revision'], 'business-revision')
         self.assertEqual(result['interface_revision'], 'interface-revision')
         self.assertEqual(result['source_commit'], 'source-commit')
-        self.assertEqual(source['tools'], list(TOOLS))
+        self.assertEqual(source['tools'], ['vwa_system_capabilities', 'vwa_workflow_create'])
         self.assertEqual(standardize(result), result)
 
     def test_interface_identity_tracks_interface_files_only(self):

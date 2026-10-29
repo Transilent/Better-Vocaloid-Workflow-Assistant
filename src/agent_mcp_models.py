@@ -57,8 +57,11 @@ WorkflowReviewMode = Annotated[Literal['full','segments','legacy'], Field(
 
 class PreparationOptions(StrictModel):
     language: Literal['zh','ja'] = 'zh'
-    lyrics: str = Field(default='', max_length=100000)
-    backing_lyrics: str = Field(default='', max_length=100000)
+    lyrics: str = Field(default='', max_length=100000, description=(
+        '已核对的主唱歌词；新歌曲开始准备或扒谱前优先填写，以便参与歌词对齐。'
+        '没有可靠歌词时可留空，外部搜索结果须先核实版本。'))
+    backing_lyrics: str = Field(default='', max_length=100000, description=(
+        '已核对的和声歌词；不确定时留空，勿猜测声部文字。'))
     recognize_lyrics: bool = True
     voice_mode: Literal['single','dual'] = Field(default='dual',
         description='single=混合人声；dual=主唱＋和声/伴奏人声。两者都不是按歌手音色拆分对唱。')
@@ -76,9 +79,29 @@ class PreparationOptions(StrictModel):
 
 
 class LyricEdit(StrictModel):
+    """Note-owned text edit kept for the legacy note-level lyrics tool."""
     note_id: str = Field(min_length=1, max_length=180)
     lyric: str = Field(max_length=256)
     operation: Literal['replace','insert']
+
+
+class MoveLyricEvent(StrictModel):
+    """Move one exact source lyric event to a uniquely-owned note onset."""
+    event_id: str = Field(min_length=1, max_length=180)
+    target_note_id: str = Field(min_length=1, max_length=180)
+    operation: Literal['move_event']
+
+
+class DeleteLyricEvent(StrictModel):
+    """Delete one exact source lyric event without guessing an owner."""
+    event_id: str = Field(min_length=1, max_length=180)
+    operation: Literal['delete_event']
+
+
+LyricsEdit = Annotated[
+    LyricEdit | MoveLyricEvent | DeleteLyricEvent,
+    Field(discriminator='operation'),
+]
 
 
 class ExportReview(StrictModel):

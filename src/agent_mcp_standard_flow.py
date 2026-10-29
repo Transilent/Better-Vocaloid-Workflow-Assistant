@@ -72,7 +72,9 @@ class WorkflowCreate(StrictModel):
     formats: list[Literal['svp', 'ustx', 'vsqx']] | None = None
     # Workflow.create persists this intent together with the workflow record.
     # Actual source identities and track mappings are revalidated at export.
-    export_options: dict[str, Any] | None = None
+    export_options: dict[str, Any] | None = Field(default=None, description=(
+        '导出意图；track_names 仅按顺序命名演唱轨，不包含伴奏。'
+        '伴奏使用 instrumental_artifact_id 或 instrumental_source_job_id 单独指定。'))
     idempotency_key: str | None = None
     preparation_job_id: str | None = None
     review_mode: WorkflowReviewMode = 'full'
@@ -115,7 +117,9 @@ class WorkflowAdvance(StrictModel):
     style_plan_id: str | None = None
     # Kept as an open local option mapping because the existing Control layer
     # resolves public artifact/job bindings and applies the export whitelist.
-    export_options: dict[str, Any] | None = None
+    export_options: dict[str, Any] | None = Field(default=None, description=(
+        '导出选项；track_names 仅包含演唱轨，不含伴奏。导出失败后修正选项须显式 retry=true，'
+        '仍需重新验证已审核 MIDI 及来源并审核导出报告。'))
     # Explicitly enables deterministic preparation/export/style continuation.
     run_until_gate: bool = False
     wait_ms: Annotated[int, Field(ge=0, le=MAX_WAIT_MS)] = 0

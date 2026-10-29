@@ -5,7 +5,9 @@ operation explicit. It never approves evidence, starts an operation that was
 not selected by the caller, renders a style, advances beyond a review/report
 gate, or synthesizes audio. Backends remain responsible for caller identity,
 artifact roots, SHAs, workflow revisions, shared-draft CAS, idempotency keys,
-and operation receipts.
+and operation receipts. Exact lyric-event move/delete edits are exposed only
+through the standalone lyrics plan/apply actions until workflow event
+authorization and identity rebinding are implemented.
 """
 from __future__ import annotations
 
@@ -16,7 +18,7 @@ from pydantic import Field
 
 from agent_control import ControlError
 from agent_mcp_models import (
-    LyricEdit,
+    LyricsEdit,
     PronunciationEdit,
     PronunciationTarget,
     Result,
@@ -65,7 +67,7 @@ class LyricsPatchPlan(StrictModel):
     action: Literal['lyrics_patch_plan']
     artifact_id: str
     expected_sha256: str
-    edits: Annotated[list[LyricEdit], Field(min_length=1, max_length=4096)]
+    edits: Annotated[list[LyricsEdit], Field(min_length=1, max_length=4096)]
 
 
 class LyricsPatchApply(StrictModel):
@@ -128,7 +130,7 @@ class WorkflowApplyReview(StrictModel):
     expected_revision: int
     rationale: str
     note_edits: list[ScoreEdit] | None = None
-    lyric_edits: list[LyricEdit] | None = None
+    lyric_edits: list[LyricsEdit] | None = None
     structure_edits: list[StructureEdit] | None = None
     move_attached_lyrics: bool = False
     segment_id: str | None = None
@@ -232,13 +234,14 @@ def _workflow_readback(result: Result, *, purpose: str, instruction: str,
                        after_terminal: str | None = None,
                        readback_required: bool = True,
                        operation_wait_required: bool | None = None,
-                       approval_required: bool = False) -> Result:
+                       approval_required: bool = False,
+                       include_operation_step: bool = True) -> Result:
     workflow_id = result.data.get('workflow_id') or result.data.get('id')
     operation = result.data.get('operation')
     operation_id = (operation.get('id') if isinstance(operation, dict)
                     else result.data.get('operation_id'))
     steps = []
-    if isinstance(operation_id, str) and operation_id:
+    if include_operation_step and isinstance(operation_id, str) and operation_id:
         steps.append(_status_step('operations_get', operation_id=operation_id))
     if isinstance(workflow_id, str) and workflow_id:
         steps.append(_status_step('workflow_get', workflow_id=workflow_id))
@@ -263,6 +266,11 @@ def _review_operation(value):
     operation_id = (operation.get('id') if isinstance(operation, dict)
                     else value.get('operation_id'))
     state = operation.get('state') if isinstance(operation, dict) else None
+    if state is None and value.get('stage') == 'reviewed':
+        # Workflow.get omits the operation object after its result has been
+        # consumed into a reviewed candidate. Entering reviewed is proof that
+        # the owned review operation succeeded, so do not report it unknown.
+        state = 'succeeded'
     return (operation_id if isinstance(operation_id, str) and operation_id else None), state
 
 
@@ -366,6 +374,7 @@ def _edited_review_readback(result: Result, *, wait_ms: int) -> Result:
         next_step = (_status_step('workflow_get', workflow_id=workflow_id)
                      if isinstance(workflow_id, str) and workflow_id else None)
 
+    operation_consumed = stage == 'reviewed' and candidate_ready
     readback_result = _workflow_readback(
         result,
         purpose='verify_review_candidate',
@@ -374,6 +383,7 @@ def _edited_review_readback(result: Result, *, wait_ms: int) -> Result:
         readback_required=True,
         operation_wait_required=pending,
         approval_required=True,
+        include_operation_step=not operation_consumed,
     )
     output = dict(readback_result.data)
     output['readback']['operation_wait_required'] = bool(pending)
@@ -468,12 +478,13 @@ def register(mcp, control, workflow, invoke):
                 'lyrics',
                 request.artifact_id,
                 expected_sha256=request.expected_sha256,
-                edits=[edit.model_dump() for edit in request.edits],
+                edits=[edit.model_dump(exclude_none=True) for edit in request.edits],
             )
             return _plan_readback(
                 result,
                 purpose='review_lyrics_plan',
-                instruction='回读歌词编辑 diff；确认替换/插入范围明确后再显式 apply。',
+                instruction=('回读歌词编辑 diff；替换/插入须核对 note_id，move_event 须核对完整源 SHA、'
+                             'event_id、目标 note 的同轨唯一 onset，delete_event 须核对事件身份后再显式 apply。'),
             )
         if isinstance(request, LyricsPatchApply):
             result = await invoke(
@@ -485,7 +496,8 @@ def register(mcp, control, workflow, invoke):
             return _operation_readback(
                 result,
                 purpose='verify_lyrics_candidate',
-                instruction='等待操作结束后回读候选 MIDI 的歌词与对应音符；写入成功不等于语义或时间已获认可。',
+                instruction=('等待操作结束后回读候选 MIDI 的新 event_id、歌词归属和剩余歧义；'
+                             '写入成功不等于语义或时间已获认可。'),
                 candidate_action='lyrics_read',
                 after_terminal='对成功回执中的候选 artifact_id 执行 vwa_evidence lyrics_read。',
             )
@@ -593,6 +605,24 @@ def register(mcp, control, workflow, invoke):
                 after_terminal='继续按工作流 next 读取证据，不自动认可未读片段。',
             )
         if isinstance(request, WorkflowApplyReview):
+            if any(edit.operation in {'move_event', 'delete_event'}
+                   for edit in (request.lyric_edits or [])):
+                def reject_workflow_event_edit():
+                    raise ControlError(
+                        'workflow_lyrics_event_edit_unsupported',
+                        '本轮暂不支持 workflow_apply_review 内的 move_event/delete_event：'
+                        '工作流分段授权与结构修改重映射目前只理解 note_id，候选事件身份可能失效。'
+                        '请先通过独立 lyrics_patch_plan/apply 完成事件修补并回读候选，再绑定或创建新的工作流。',
+                        {
+                            'supported_actions': ['lyrics_patch_plan', 'lyrics_patch_apply'],
+                            'workflow_wiring_required': [
+                                'segment authorization for event track/tick scope',
+                                'event identity validation before and after structure edits',
+                                'candidate event identity rebinding and reread',
+                            ],
+                        },
+                    )
+                return await invoke(reject_workflow_event_edit)
             if request.wait_ms and not request.run_until_gate:
                 def reject_invalid_wait():
                     raise ControlError(

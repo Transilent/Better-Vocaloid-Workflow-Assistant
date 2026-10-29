@@ -24,9 +24,9 @@ class TimelineIntegrationTests(unittest.TestCase):
         self.assets=self.root/'assets';io_path(self.assets).mkdir()
         self.jobs=self.root/'jobs';io_path(self.jobs).mkdir()
         app=self.root/'app';io_path(app).mkdir()
-        for source in APP.glob('*.py'):
+        for source in (APP/'src').glob('*.py'):
             shutil.copy2(io_path(source),io_path(app/source.name))
-        shutil.copy2(io_path(APP/'config.example.json'),io_path(app/'config.json'))
+        shutil.copy2(io_path(APP/'packaging'/'config.example.json'),io_path(app/'config.json'))
         config=self.root/'config.json'
         io_path(config).write_text(json.dumps({'schema':1,'application_root':str(app),
             'worker_python':sys.executable,'state_root':str(self.root/'state'),
@@ -54,6 +54,34 @@ class TimelineIntegrationTests(unittest.TestCase):
         self.assertTrue(all(row['delta_seconds']==0 for row in result['hints']))
         self.assertFalse(result['automatic_patch'])
         self.assertEqual(before,hashlib.sha256(io_path(self.midi).read_bytes()).hexdigest())
+
+    def test_read_timeline_action_is_bounded_and_does_not_bind(self):
+        source='[0,500](0,250,0)风(250,250,0)雨\n[1000,500](1000,250,0)同(1250,250,1)行'
+        artifact=self.source('read.yrc',source)
+        before=hashlib.sha256(io_path(self.midi).read_bytes()).hexdigest()
+        result=self.control.lyric_timeline_read(artifact['id'],limit=1,offset=0,include_words=True)
+        self.assertEqual(result['artifact_id'],artifact['id'])
+        self.assertEqual(result['artifact_sha256'],artifact['sha256'])
+        self.assertEqual(result['schema'],'vwa-lyric-timeline-read-v1')
+        self.assertEqual(result['summary']['total_lines'],2)
+        self.assertEqual(result['summary']['returned_lines'],1)
+        self.assertEqual(result['pagination']['next_offset'],1)
+        self.assertEqual(result['reference_status']['provider'],'file')
+        self.assertEqual(result['reference_status']['version_verification_status'],'unverified')
+        self.assertFalse(result['binding']['performed'])
+        self.assertTrue(result['binding']['explicit_confirmation_required'])
+        self.assertFalse(result['automatic_patch'])
+        self.assertEqual(before,hashlib.sha256(io_path(self.midi).read_bytes()).hexdigest())
+        with self.assertRaises(ControlError) as raised:
+            self.control.lyrics_read(artifact['id'])
+        self.assertEqual(raised.exception.code,'lyric_timeline_read_action_required')
+        self.assertEqual(raised.exception.details['suggested_action'],'lyric_timeline_read')
+        with self.assertRaises(ControlError) as raised:
+            self.control.lyric_timeline_read(self.score['id'])
+        self.assertEqual(raised.exception.code,'wrong_reference_kind')
+        with self.assertRaises(ControlError) as raised:
+            self.control.lyric_timeline_read(artifact['id'],limit=201)
+        self.assertEqual(raised.exception.code,'invalid_page')
 
     def test_workflow_only_binds_explicit_version_and_current_window(self):
         artifact=self.source('line.lrc','[00:00.00]风雨\n[00:20.00]远处歌词')

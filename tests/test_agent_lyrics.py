@@ -148,6 +148,42 @@ def write_same_onset_fixture(path):
     return Path(path)
 
 
+def write_event_ambiguity_fixture(path):
+    midi = mido.MidiFile(type=1, ticks_per_beat=480, charset="utf8")
+    midi.tracks.append(mido.MidiTrack([
+        mido.MetaMessage("track_name", name="Tempo", time=0),
+        mido.MetaMessage("set_tempo", tempo=500_000, time=0),
+        mido.MetaMessage("marker", text="keep-event-meta", time=0),
+        mido.MetaMessage("end_of_track", time=1920),
+    ]))
+    midi.tracks.append(mido.MidiTrack([
+        mido.MetaMessage("track_name", name="Lead 事件", time=0),
+        mido.MetaMessage("lyrics", text="甲", time=0),
+        mido.MetaMessage("lyrics", text="乙", time=0),
+        mido.Message("note_on", channel=0, note=60, velocity=90, time=0),
+        mido.Message("note_off", channel=0, note=60, velocity=0, time=480),
+        mido.Message("note_on", channel=0, note=62, velocity=88, time=0),
+        mido.Message("note_off", channel=0, note=62, velocity=0, time=480),
+        mido.Message("note_on", channel=0, note=65, velocity=86, time=0),
+        mido.Message("note_on", channel=0, note=67, velocity=84, time=0),
+        mido.Message("note_off", channel=0, note=65, velocity=0, time=480),
+        mido.Message("note_off", channel=0, note=67, velocity=0, time=0),
+        mido.MetaMessage("lyrics", text="丁", time=0),
+        mido.Message("note_on", channel=0, note=69, velocity=82, time=0),
+        mido.Message("note_off", channel=0, note=69, velocity=0, time=480),
+        mido.MetaMessage("marker", text="tail", time=0),
+        mido.MetaMessage("end_of_track", time=0),
+    ]))
+    midi.tracks.append(mido.MidiTrack([
+        mido.MetaMessage("track_name", name="Other", time=0),
+        mido.Message("note_on", channel=1, note=70, velocity=80, time=0),
+        mido.Message("note_off", channel=1, note=70, velocity=0, time=480),
+        mido.MetaMessage("end_of_track", time=0),
+    ]))
+    save_midi(midi, path)
+    return Path(path)
+
+
 def event_semantics_without_lyrics(path):
     midi = load_midi(path)
     rows = []
@@ -274,6 +310,251 @@ class LyricsReadReviewTests(unittest.TestCase):
 
 
 class LyricsPatchTests(unittest.TestCase):
+    def test_event_ids_are_complete_stable_and_reviewable(self):
+        with self.temporary("lyrics-event-read-") as temporary:
+            source = write_event_ambiguity_fixture(Path(temporary) / "events.mid")
+            first = read_lyrics(source)
+            second = read_lyrics(source)
+            self.assertEqual(first, second)
+            sha = first["source_sha256"]
+            self.assertEqual(
+                first["mapping_contract"]["lyric_event_id_basis"],
+                "lyr-{complete_source_sha}-t{track_index}-e{event_index}",
+            )
+            self.assertTrue(first["lyric_events"])
+            for event in first["lyric_events"]:
+                self.assertEqual(
+                    event["event_id"],
+                    f"lyr-{sha}-t{event['track_index']}-e{event['event_index']}",
+                )
+            by_pitch = {note["pitch"]: note for note in first["notes"]}
+            ambiguous = by_pitch[60]
+            self.assertEqual(ambiguous["lyric_alignment"], "ambiguous")
+            self.assertEqual(len(ambiguous["competing_lyric_event_ids"]), 2)
+            self.assertTrue(all(sha in event_id
+                                for event_id in ambiguous["competing_lyric_event_ids"]))
+            review = review_lyrics(source)
+            self.assertTrue(review["lyric_events"])
+            hint = next(row for row in review["hints"]
+                        if row["code"] == "ambiguous_lyric_alignment")
+            self.assertEqual(set(hint["event_ids"]),
+                             set(ambiguous["competing_lyric_event_ids"]))
+
+    def test_move_and_delete_event_apply_is_sha_bound_and_preserves_music(self):
+        with self.temporary("lyrics-event-patch-") as temporary:
+            root = Path(temporary)
+            source = write_event_ambiguity_fixture(root / "events.mid")
+            original = source.read_bytes()
+            original_non_lyrics = event_semantics_without_lyrics(source)
+            read = read_lyrics(source)
+            by_pitch = {note["pitch"]: note for note in read["notes"]}
+            source_event = next(row for row in read["lyric_events"] if row["text"] == "乙")
+            target = by_pitch[62]
+            no_op = {
+                "note_id": by_pitch[69]["note_id"],
+                "lyric": "丁",
+                "operation": "replace",
+            }
+            move_edit = {
+                "event_id": source_event["event_id"],
+                "target_note_id": target["note_id"],
+                "operation": "move_event",
+            }
+            plan = plan_lyrics_patch(source, read["source_sha256"], [no_op, move_edit])
+            json_ready(plan)
+            self.assertEqual(plan["source_sha256"], read["source_sha256"])
+            self.assertEqual(plan["validation"]["move_event_count"], 1)
+            self.assertEqual(plan["validation"]["delete_event_count"], 0)
+            self.assertEqual(plan["validation"]["moved_count"], 1)
+            self.assertEqual(plan["validation"]["deleted_count"], 0)
+            self.assertEqual(plan["validation"]["changed_event_count"], 1)
+            self.assertEqual(plan["validation"]["ambiguous_groups_before"], 2)
+            self.assertEqual(plan["validation"]["ambiguous_groups_resolved"], 1)
+            self.assertEqual(plan["validation"]["remaining_ambiguous_groups"], 1)
+            self.assertEqual(plan["validation"]["unchanged_count"], 1)
+            self.assertEqual(plan["validation"]["unchanged_note_ids"], [no_op["note_id"]])
+            self.assertEqual(len(plan["plan_sha256"]), 64)
+            self.assertIn(move_edit, plan["edits"])
+            self.assertIn(no_op, plan["edits"])
+            move = next(row for row in plan["diff"]["operations"]
+                        if row["operation"] == "move_event")
+            self.assertEqual(move["source_event_id"], source_event["event_id"])
+            self.assertEqual(move["target_note_id"], target["note_id"])
+            self.assertEqual(move["alignment_before"], "ambiguous")
+            self.assertEqual(move["alignment_after"], "aligned")
+            self.assertEqual(move["before_tick"], source_event["tick"])
+            self.assertEqual(move["after_tick"], target["onset_tick"])
+            self.assertTrue(move["candidate_event_id"].startswith(
+                f"lyr-{plan['expected_candidate_sha256']}-t{target['track_index']}-e"))
+            self.assertEqual(source.read_bytes(), original)
+
+            receipt = apply_lyrics_patch(source, plan, root / "move")
+            self.assertEqual(source.read_bytes(), original)
+            self.assertEqual(receipt["source_sha256"], read["source_sha256"])
+            self.assertEqual(receipt["candidate_sha256"], plan["expected_candidate_sha256"])
+            self.assertEqual(event_semantics_without_lyrics(receipt["candidate_path"]),
+                             original_non_lyrics)
+            candidate = read_lyrics(receipt["candidate_path"])
+            self.assertEqual(candidate["source_sha256"], receipt["candidate_sha256"])
+            candidate_by_pitch = {note["pitch"]: note for note in candidate["notes"]}
+            self.assertEqual(candidate_by_pitch[60]["lyric"], "甲")
+            self.assertEqual(candidate_by_pitch[60]["lyric_alignment"], "aligned")
+            self.assertEqual(candidate_by_pitch[62]["lyric"], "乙")
+            self.assertEqual(candidate_by_pitch[62]["lyric_alignment"], "aligned")
+            self.assertTrue(candidate_by_pitch[62]["lyric_event_id"].startswith(
+                f"lyr-{candidate['source_sha256']}-t1-e"))
+            self.assertNotIn(source_event["event_id"],
+                             {row["event_id"] for row in candidate["lyric_events"]})
+
+            delete = {
+                "event_id": source_event["event_id"],
+                "operation": "delete_event",
+            }
+            delete_plan = plan_lyrics_patch(source, read["source_sha256"], [delete])
+            self.assertEqual(delete_plan["validation"]["delete_event_count"], 1)
+            self.assertEqual(delete_plan["validation"]["deleted_count"], 1)
+            delete_operation = delete_plan["diff"]["operations"][0]
+            self.assertIsNone(delete_operation["candidate_event_id"])
+            self.assertEqual(delete_operation["before_tick"], source_event["tick"])
+            delete_receipt = apply_lyrics_patch(source, delete_plan, root / "delete")
+            self.assertEqual(source.read_bytes(), original)
+            deleted = read_lyrics(delete_receipt["candidate_path"])
+            deleted_by_pitch = {note["pitch"]: note for note in deleted["notes"]}
+            self.assertEqual(deleted_by_pitch[60]["lyric"], "甲")
+            self.assertEqual(deleted_by_pitch[60]["lyric_alignment"], "aligned")
+            self.assertEqual(deleted["coverage"]["lyric_event_count"],
+                             read["coverage"]["lyric_event_count"] - 1)
+            self.assertEqual(event_semantics_without_lyrics(delete_receipt["candidate_path"]),
+                             original_non_lyrics)
+
+    def test_event_move_rejects_stale_cross_track_onset_and_ownership_conflicts(self):
+        with self.temporary("lyrics-event-conflict-") as temporary:
+            root = Path(temporary)
+            source = write_event_ambiguity_fixture(root / "events.mid")
+            original = source.read_bytes()
+            read = read_lyrics(source)
+            by_pitch = {note["pitch"]: note for note in read["notes"]}
+            source_event = next(row for row in read["lyric_events"] if row["text"] == "乙")
+            other_event = next(row for row in read["lyric_events"] if row["text"] == "甲")
+
+            cross_track = [{
+                "event_id": source_event["event_id"],
+                "target_note_id": by_pitch[70]["note_id"],
+                "operation": "move_event",
+            }]
+            with self.assertRaisesRegex(ValueError, "同一轨道"):
+                plan_lyrics_patch(source, read["source_sha256"], cross_track)
+
+            same_onset = [{
+                "event_id": source_event["event_id"],
+                "target_note_id": by_pitch[65]["note_id"],
+                "operation": "move_event",
+            }]
+            with self.assertRaisesRegex(ValueError, "多个音符"):
+                plan_lyrics_patch(source, read["source_sha256"], same_onset)
+
+            occupied = [{
+                "event_id": source_event["event_id"],
+                "target_note_id": by_pitch[69]["note_id"],
+                "operation": "move_event",
+            }]
+            with self.assertRaisesRegex(ValueError, "区间已有"):
+                plan_lyrics_patch(source, read["source_sha256"], occupied)
+
+            duplicate_target = [
+                {
+                    "event_id": source_event["event_id"],
+                    "target_note_id": by_pitch[62]["note_id"],
+                    "operation": "move_event",
+                },
+                {
+                    "event_id": other_event["event_id"],
+                    "target_note_id": by_pitch[62]["note_id"],
+                    "operation": "move_event",
+                },
+            ]
+            with self.assertRaisesRegex(ValueError, "重复的移动目标"):
+                plan_lyrics_patch(source, read["source_sha256"], duplicate_target)
+
+            with self.assertRaisesRegex(ValueError, "不能与 note 级"):
+                plan_lyrics_patch(source, read["source_sha256"], [
+                    {
+                        "event_id": source_event["event_id"],
+                        "target_note_id": by_pitch[62]["note_id"],
+                        "operation": "move_event",
+                    },
+                    {
+                        "note_id": by_pitch[69]["note_id"],
+                        "lyric": "改",
+                        "operation": "replace",
+                    },
+                ])
+
+            changed = load_midi(source)
+            changed.tracks[0].insert(3, mido.MetaMessage("text", text="new identity", time=0))
+            save_midi(changed, source)
+            changed_read = read_lyrics(source)
+            changed_by_pitch = {note["pitch"]: note for note in changed_read["notes"]}
+            with self.assertRaisesRegex(ValueError, "另一份源 SHA"):
+                plan_lyrics_patch(source, changed_read["source_sha256"], [{
+                    "event_id": source_event["event_id"],
+                    "target_note_id": changed_by_pitch[62]["note_id"],
+                    "operation": "move_event",
+                }])
+            self.assertNotEqual(source.read_bytes(), original)
+
+    def test_event_plan_hash_and_source_guard_prevent_partial_output(self):
+        with self.temporary("lyrics-event-hash-") as temporary:
+            root = Path(temporary)
+            source = write_event_ambiguity_fixture(root / "events.mid")
+            original = source.read_bytes()
+            read = read_lyrics(source)
+            by_pitch = {note["pitch"]: note for note in read["notes"]}
+            source_event = next(row for row in read["lyric_events"] if row["text"] == "乙")
+            plan = plan_lyrics_patch(source, read["source_sha256"], [{
+                "event_id": source_event["event_id"],
+                "target_note_id": by_pitch[62]["note_id"],
+                "operation": "move_event",
+            }])
+            tampered = json.loads(json.dumps(plan))
+            tampered["diff"]["operations"][0]["target_note_id"] = by_pitch[69]["note_id"]
+            output = root / "tampered"
+            with self.assertRaisesRegex(ValueError, "plan_sha256"):
+                apply_lyrics_patch(source, tampered, output)
+            self.assertFalse(output.exists())
+            self.assertEqual(source.read_bytes(), original)
+
+            changed = load_midi(source)
+            changed.tracks[0].insert(3, mido.MetaMessage("text", text="stale", time=0))
+            save_midi(changed, source)
+            with self.assertRaisesRegex(ValueError, "SHA-256 与计划不一致"):
+                apply_lyrics_patch(source, plan, root / "stale")
+            self.assertFalse((root / "stale").exists())
+
+    def test_mixed_and_all_unchanged_lyrics_are_reported_without_losing_changes(self):
+        with self.temporary("lyrics-noop-") as temporary:
+            root = Path(temporary)
+            source = write_patch_fixture(root / "source.mid")
+            original = source.read_bytes()
+            read = read_lyrics(source)
+            by_pitch = {note["pitch"]: note for note in read["notes"]}
+            noop = {"note_id": by_pitch[60]["note_id"], "lyric": "君", "operation": "replace"}
+            mixed = plan_lyrics_patch(source, read["source_sha256"], self.edits(read) + [noop])
+            self.assertEqual(mixed["validation"]["changed_count"], 2)
+            self.assertEqual(mixed["validation"]["unchanged_count"], 1)
+            self.assertEqual(mixed["validation"]["unchanged_note_ids"], [noop["note_id"]])
+            self.assertEqual(len(mixed["diff"]["operations"]), 2)
+            receipt = apply_lyrics_patch(source, mixed, root / "mixed")
+            after = {n["pitch"]: n["lyric"] for n in read_score(receipt["candidate_path"])["notes"]}
+            self.assertEqual((after[60], after[62], after[64]), ("君", "歌", "世界"))
+            only_noop = plan_lyrics_patch(source, read["source_sha256"], [noop])
+            self.assertEqual(only_noop["validation"]["changed_count"], 0)
+            self.assertEqual(only_noop["validation"]["unchanged_count"], 1)
+            self.assertEqual(only_noop["diff"]["operations"], [])
+            unchanged_receipt = apply_lyrics_patch(source, only_noop, root / "unchanged")
+            self.assertEqual(Path(native_path(unchanged_receipt["candidate_path"])).read_bytes(), original)
+            self.assertEqual(source.read_bytes(), original)
+
     def temporary(self, prefix):
         work = APP / "work"
         work.mkdir(parents=True, exist_ok=True)

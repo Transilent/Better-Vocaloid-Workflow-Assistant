@@ -51,12 +51,20 @@ class AssetsImport(StrictModel):
 
 class LyricTimelineFetch(StrictModel):
     action: Literal['lyric_timeline_fetch']
-    song_id_or_url: str
+    song_id_or_url: Annotated[str, Field(
+        min_length=1, max_length=2048,
+        description=('按显式请求保存外部参考快照；先核对原唱、版本和时长。'
+                     '不会自动绑定到准备或工作流。'),
+    )]
 
 
 class LyricTimelineImport(StrictModel):
     action: Literal['lyric_timeline_import']
-    path: str
+    path: Annotated[str, Field(
+        min_length=1, max_length=4096,
+        description=('导入本地 LRC/YRC/JSON 为只读参考；读取前仍须由调用方核对版本。'
+                     '不会自动绑定或改写歌词。'),
+    )]
 
 
 class ReferenceImport(StrictModel):
@@ -69,15 +77,28 @@ class WorkflowReferencesSet(StrictModel):
     action: Literal['workflow_references_set']
     workflow_id: str
     expected_revision: int
-    rationale: str
+    rationale: Annotated[str, Field(
+        min_length=1, max_length=8000,
+        description='说明参考来源、对齐依据或清除理由；确认未证的来源时要明确写出。',
+    )]
     pitch_artifact_id: str | None = None
     audio_artifact_id: str | None = None
     track_indices: list[int] | None = None
     time_origin: float = 0.0
     audio_time_origin: float = 0.0
-    lyrics_artifact_id: str | None = None
-    lyrics_time_origin: float = 0.0
-    lyric_version_note: str = ''
+    lyrics_artifact_id: str | None = Field(
+        default=None,
+        description=('只有调用方已读取参考并明确确认使用、版本和时间偏移时才填写；'
+                     '必须来自歌词时间轴 artifact。不提供歌词参考不受强制。'),
+    )
+    lyrics_time_origin: Annotated[float, Field(
+        description='显式时间偏移：MIDI 秒 = 参考秒 + lyrics_time_origin。',
+    )] = 0.0
+    lyric_version_note: Annotated[str, Field(
+        default='', max_length=4000,
+        description=('显式绑定歌词参考时填写原唱/翻唱、版本核对和时间偏移依据；'
+                     '未绑定歌词时可留空。'),
+    )]
 
 
 InputRequest = Annotated[
@@ -92,9 +113,19 @@ InputRequest = Annotated[
 
 class PreparationReusePlan(StrictModel):
     action: Literal['preparation_reuse_plan']
-    source_job_id: str
-    options: PreparationOptions | None = None
-    reuse_stages: list[Literal['metadata', 'download', 'audio', 'separation']] | None = None
+    source_job_id: Annotated[str, Field(
+        min_length=1, max_length=180,
+        description='已完成或部分完成的原受管准备任务。',
+    )]
+    options: PreparationOptions | None = Field(
+        default=None,
+        description=('可选覆盖准备参数。若原任务未使用正式歌词，可在调用方确认后通过 '
+                     'options.lyrics 重跑所需阶段；这是显式恢复，不会自动重对齐。'),
+    )
+    reuse_stages: list[Literal['metadata', 'download', 'audio', 'separation']] | None = Field(
+        default=None,
+        description='明确列出复用阶段；未复用阶段可按 options 重跑。',
+    )
 
 
 class PreparationRepairPlan(StrictModel):
@@ -164,7 +195,15 @@ def register(mcp, control, workflow, invoke):
         """导入/绑定输入。action: assets_import, lyric_timeline_fetch,
         lyric_timeline_import, reference_import, workflow_references_set。
         路径由Control原有授权根校验；fetch联网并写快照；绑定使用原revision、
-        时间偏移和歌词版本说明，不执行推理或合成。"""
+        时间偏移和歌词版本说明，不执行推理或合成。
+
+        歌词先输入：新歌曲若已有并核对正式歌词，优先在准备计划的 options.lyrics
+        或工作流创建的 reference_lyrics 中随任务输入，再开始 MIDI。歌词不是必填项；
+        没有正式来源时可继续自动识别。搜索、抓取、导入和 lyric_timeline_read 只生成
+        参考证据，不会自动绑定、重排或改写歌词。只有调用方明确确认版本和
+        时间偏移后，才用 workflow_references_set 显式绑定时间轴。已有准备若
+        需要补歌词，可先提出 preparation_reuse_plan 并让调用方决定是否重跑。
+        """
         if isinstance(request, AssetsImport):
             return await invoke(control.import_asset, request.path)
         if isinstance(request, LyricTimelineFetch):
@@ -195,7 +234,9 @@ def register(mcp, control, workflow, invoke):
         """规划或启动受管恢复。action: preparation_reuse_plan,
         preparation_repair_plan, preparation_repair_start。复用核验原任务SHA与
         选项；修复只复核既有声部并生成新候选，不自动降级双声部、不跑模型、
-        不覆盖源任务。返回计划或修复操作身份供后续显式选择。"""
+        不覆盖源任务。返回计划或修复操作身份供后续显式选择。已有准备若未使用
+        正式歌词，可显式传入 options.lyrics 并选择复用阶段；该工具只生成计划，
+        不会因发现外部歌词而自动重对齐，也不会强制要求歌词。"""
         if isinstance(request, PreparationReusePlan):
             options = (request.options.model_dump(exclude_unset=True, exclude_none=True)
                        if request.options is not None else {})

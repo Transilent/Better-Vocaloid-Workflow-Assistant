@@ -162,7 +162,10 @@ def review_fixture():
         "pairing_ambiguous": False,
     } for index, note_id in enumerate(page_ids)]
     lyric_notes = [dict(row, lyric_alignment="aligned",
-                        competing_lyric_event_indexes=[]) for row in score_notes]
+                        lyric_event_id=f"lyr-{'1' * 64}-t0-e{index}",
+                        competing_lyric_event_indexes=[],
+                        competing_lyric_event_ids=[])
+                   for index, row in enumerate(score_notes)]
     return {
         "workflow_id": "flow_fixture",
         "revision": 4,
@@ -198,7 +201,8 @@ def review_fixture():
                 "tracks": [{"track_index": 0, "name": "唱", "channels": [0],
                             "note_count": 300, "lyric_count": 300,
                             "note_ids": all_ids,
-                            "lyric_events": [{"event_index": index, "text": "字",
+                            "lyric_events": [{"event_id": f"lyr-{'1' * 64}-t0-e{index}",
+                                              "event_index": index, "text": "字",
                                               "note_ids": all_ids[index:index + 1]}
                                              for index in range(300)]}],
                 "notes": score_notes,
@@ -225,7 +229,8 @@ def review_fixture():
                 "language": "zh",
                 "notes": lyric_notes,
                 "coverage": {"note_count": 300, "aligned_note_count": 300},
-                "lyric_events": [{"event_index": index, "text": "字",
+                "lyric_events": [{"event_id": f"lyr-{'1' * 64}-t0-e{index}",
+                                  "event_index": index, "text": "字",
                                   "note_ids": [page_ids[index % len(page_ids)]]}
                                  for index in range(10)],
                 "lyric_events_total": 300,
@@ -234,7 +239,9 @@ def review_fixture():
                 "meta_evidence": [{"track_index": 0,
                                    "meta_events": [{"type": "marker"}] * 50}],
                 "tracks": [{"track_index": 0, "note_ids": all_ids,
-                            "lyric_events": [{"event_index": index} for index in range(300)]}],
+                            "lyric_events": [{
+                                "event_id": f"lyr-{'1' * 64}-t0-e{index}",
+                                "event_index": index} for index in range(300)]}],
                 "unknown_notes": [{"note_id": all_ids[-1], "lyric_alignment": "missing"}],
                 "ambiguous_notes": [],
             },
@@ -244,7 +251,10 @@ def review_fixture():
                 "lyric_event_count": 300,
                 "hint_count": 1,
                 "hints": [{"code": "duplicate_adjacent_lyric", "severity": "info",
-                           "note_ids": page_ids[:2], "message": "相邻重复"}],
+                           "note_ids": page_ids[:2],
+                           "event_ids": [f"lyr-{'1' * 64}-t0-e0",
+                                         f"lyr-{'1' * 64}-t0-e1"],
+                           "message": "相邻重复"}],
             },
         },
     }
@@ -329,7 +339,7 @@ class WorkflowViewTests(unittest.TestCase):
 
 
 class ReviewViewTests(unittest.TestCase):
-    def test_summary_has_counts_but_no_note_ids(self):
+    def test_summary_has_counts_and_diff_context_but_no_note_table(self):
         value = review_fixture()
         before = copy.deepcopy(value)
         view = review_view(value, detail="summary")
@@ -343,11 +353,16 @@ class ReviewViewTests(unittest.TestCase):
         self.assertEqual(view["note_page"]["available_in_page"], 10)
         self.assertEqual(view["counts"]["total_notes"], 300)
         self.assertFalse(view["review_complete"])
-        self.assertNotIn("note-fixture-t0", json.dumps(view, ensure_ascii=False))
+        self.assertEqual(view["diff_context"]["scope"], "current_page_hints")
+        self.assertEqual(view["diff_context"]["page_hint_count"], 3)
+        self.assertTrue(view["diff_context"]["preview"])
+        self.assertIn(all_note_id(299), json.dumps(view["diff_context"], ensure_ascii=False))
+        self.assertFalse(view["continuation"]["review_complete"])
+        self.assertFalse(view["continuation"]["acceptance_evidence_complete"])
         self.assertNotIn("notes", view["evidence"]["score"])
         self.assertNotIn("hints", view["evidence"]["score_review"])
 
-    def test_notes_page_is_bounded_and_hides_note_id_arrays_by_default(self):
+    def test_notes_page_is_bounded_and_hides_evidence_note_id_arrays_by_default(self):
         value = review_fixture()
         view = review_view(value)
         self.assertLess(projection_size(view), SUMMARY_TARGET_BYTES)
@@ -357,7 +372,9 @@ class ReviewViewTests(unittest.TestCase):
         self.assertEqual(view["counts"]["total_notes"], 300)
         self.assertNotIn("note_ids", view["evidence"]["score"]["tracks"][0])
         self.assertTrue(all("note_ids" not in hint for hint in view["evidence"]["score_review"]["hints"]))
-        self.assertNotIn(all_note_id(299), json.dumps(view, ensure_ascii=False))
+        self.assertIn(all_note_id(299), json.dumps(view["diff_context"], ensure_ascii=False))
+        self.assertTrue(view["continuation"]["has_more"])
+        self.assertFalse(view["continuation"]["acceptance_evidence_complete"])
         self.assertIn("reference_evidence", view)
         self.assertEqual(view["reference_evidence"]["pitch"]["summary"]["notes_selected"], 2)
         self.assertFalse(view["reference_evidence"]["audio"]["frame_analysis_performed"])
@@ -378,6 +395,96 @@ class ReviewViewTests(unittest.TestCase):
         self.assertEqual(view["evidence"]["score_review"]["hints"][1]["second_note_id"], all_note_id(1))
         self.assertTrue(all(set(event.get("note_ids", [])) <= page
                             for event in view["evidence"]["lyrics"]["lyric_events"]))
+
+    def test_summary_prioritizes_actionable_diffs_with_bounded_note_ids(self):
+        value = review_fixture()
+        all_ids = [all_note_id(index) for index in range(300)]
+        hints = [{
+            "hint_id": f"review-lyrics-{index:02d}",
+            "code": "reference_mismatch",
+            "severity": "warning",
+            "track_index": 0,
+            "tick": index * 480,
+            "onset_seconds": index * 0.5,
+            "expected": "雪",
+            "actual": "血",
+            "message": "m" * 400,
+            "note_ids": all_ids if index == 0 else [all_note_id(index % 10)],
+        } for index in range(25)]
+        value["evidence"]["lyric_review"]["hints"] = hints
+        value["evidence"]["lyric_review"]["hint_count"] = len(hints)
+        value["evidence"]["score_review"]["hints"] = []
+        value["evidence"]["score_review"]["hint_count"] = 0
+
+        view = review_view(value, detail="summary")
+        context = view["diff_context"]
+        self.assertEqual(context["page_hint_count"], 25)
+        self.assertEqual(context["total_hint_count"], 25)
+        self.assertEqual(len(context["preview"]), 10)
+        self.assertEqual(context["preview_omitted_in_page"], 15)
+        self.assertEqual(context["preview"][0]["expected"], "雪")
+        self.assertEqual(context["preview"][0]["actual"], "血")
+        self.assertIn(all_note_id(0), context["preview"][0]["note_ids"])
+        self.assertIn(all_note_id(299), context["preview"][0]["note_ids"])
+        self.assertEqual(context["preview"][0]["note_ids_total"], 300)
+        self.assertGreater(context["preview"][0]["note_ids_omitted"], 0)
+        self.assertLess(projection_size(view), SUMMARY_TARGET_BYTES)
+        self.assertFalse(view["continuation"]["review_complete"])
+        self.assertFalse(view["continuation"]["acceptance_evidence_complete"])
+
+    def test_notes_page_retains_every_page_hint_and_expands_diff_context(self):
+        value = review_fixture()
+        hints = [{
+            "hint_id": f"review-page-{index:03d}",
+            "code": "reference_mismatch" if index < 20 else "reference_extra",
+            "severity": "warning" if index < 20 else "info",
+            "track_index": 0,
+            "tick": index * 30,
+            "onset_seconds": index * 0.03,
+            "expected": "雪",
+            "actual": "血" if index < 20 else "雪血",
+            "message": "page-local diff",
+            "note_ids": [all_note_id(index % 10)],
+        } for index in range(150)]
+        value["evidence"]["lyric_review"]["hints"] = hints
+        value["evidence"]["lyric_review"]["hint_count"] = len(hints)
+
+        view = review_view(value)
+        section = view["evidence"]["lyric_review"]
+        self.assertEqual(len(section["hints"]), 150)
+        self.assertEqual(section["hints_returned"], 150)
+        self.assertEqual(section["hints_total"], 150)
+        self.assertEqual(section["hints_omitted_in_page"], 0)
+        self.assertEqual(len(view["diff_context"]["preview"]), 10)
+        self.assertEqual(view["diff_context"]["preview"][0]["section"], "lyric_review")
+        self.assertEqual(view["diff_context"]["preview"][0]["expected"], "雪")
+        self.assertTrue(view["diff_context"]["preview"][0]["note_context"])
+        encoded = json.dumps(view, ensure_ascii=False)
+        self.assertLess(encoded.index('"diff_context"'), encoded.index('"evidence"'))
+        self.assertEqual(view["next_offset"], 10)
+        self.assertFalse(view["continuation"]["acceptance_evidence_complete"])
+
+        last_page = review_fixture()
+        last_page["next_offset"] = None
+        last_view = review_view(last_page)
+        self.assertFalse(last_view["continuation"]["has_more"])
+        self.assertEqual(last_view["continuation"]["next_action"], "review_returned_pages")
+        self.assertFalse(last_view["view"]["acceptance_evidence_complete"])
+        self.assertFalse(last_view["view"]["review_complete"])
+
+    def test_compact_review_keeps_lyric_event_identity(self):
+        value = review_fixture()
+        view = review_view(value)
+        lyrics = view["evidence"]["lyrics"]
+        event_id = f"lyr-{'1' * 64}-t0-e0"
+        self.assertEqual(lyrics["lyric_events"][0]["event_id"], event_id)
+        self.assertEqual(lyrics["notes"][0]["lyric_event_id"], event_id)
+        hint = view["evidence"]["lyric_review"]["hints"][0]
+        self.assertEqual(hint["event_ids"], [event_id, f"lyr-{'1' * 64}-t0-e1"])
+        preview = next(row for row in view["diff_context"]["preview"]
+                       if row["section"] == "lyric_review")
+        self.assertEqual(preview["event_ids_total"], 2)
+        self.assertIn(event_id, preview["event_ids"])
 
     def test_full_keeps_current_page_and_filters_outside_ids(self):
         value = review_fixture()

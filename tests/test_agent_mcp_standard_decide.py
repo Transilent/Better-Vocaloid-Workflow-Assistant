@@ -13,6 +13,7 @@ import unittest
 
 APP = Path(__file__).resolve().parents[1]
 SOURCE = APP / 'src' / 'agent_mcp_standard_decide.py'
+MODELS = APP / 'src' / 'agent_mcp_models.py'
 SDK_PYTHON = os.environ.get('VWA_MCP_SDK_PYTHON')
 EXPECTED_ACTIONS = {
     'score_patch_plan', 'score_patch_apply', 'style_plan',
@@ -119,6 +120,29 @@ class StandardDecideStaticContract(unittest.TestCase):
         self.assertNotIn('workflow.advance', text)
         self.assertNotIn("'tuning_start'", text)
         self.assertNotIn("'exports_start'", text)
+        self.assertIn('LyricsEdit', text)
+        self.assertIn("'move_event', 'delete_event'", text)
+
+        model_tree = ast.parse(MODELS.read_text(encoding='utf-8'))
+        model_classes = {
+            node.name: {
+                item.target.id for item in node.body
+                if isinstance(item, ast.AnnAssign)
+                and isinstance(item.target, ast.Name)
+            }
+            for node in model_tree.body if isinstance(node, ast.ClassDef)
+        }
+        self.assertEqual(model_classes['LyricEdit'],
+                         {'note_id', 'lyric', 'operation'})
+        self.assertEqual(model_classes['MoveLyricEvent'],
+                         {'event_id', 'target_note_id', 'operation'})
+        self.assertEqual(model_classes['DeleteLyricEvent'],
+                         {'event_id', 'operation'})
+        self.assertTrue(any(
+            isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == 'LyricsEdit'
+                    for target in node.targets)
+            for node in model_tree.body))
 
     def test_register_is_the_only_public_function(self):
         tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
@@ -342,9 +366,17 @@ def invocation_contract(source_directory):
               'score_edit_limit')
         check(definitions['lyrics_patch_plan']['properties']['edits']['maxItems'] == 4096,
               'lyric_edit_limit')
+        lyric_items = definitions['lyrics_patch_plan']['properties']['edits']['items']
+        check(set(lyric_items['discriminator']['mapping']) == {
+            'replace', 'insert', 'move_event', 'delete_event',
+        }, 'lyrics_patch_plan:event_operation_union')
+        review_properties = definitions['workflow_apply_review']['properties']
+        workflow_lyrics = review_properties['lyric_edits']['anyOf'][0]['items']
+        check(set(workflow_lyrics['discriminator']['mapping']) == {
+            'replace', 'insert', 'move_event', 'delete_event',
+        }, 'workflow_apply_review:event_operation_union')
         check(definitions['pronunciation_patch_plan']['properties']['edits']['maxItems'] == 512,
               'pronunciation_edit_limit')
-        review_properties = definitions['workflow_apply_review']['properties']
         check(review_properties['run_until_gate']['default'] is False,
               'workflow_apply_review:run_until_gate_default_off')
         check(review_properties['wait_ms']['default'] == 0,
@@ -381,6 +413,11 @@ def invocation_contract(source_directory):
         }
         score_edit = {'note_id': 'n1', 'pitch': 61}
         lyric_edit = {'note_id': 'n1', 'lyric': '山', 'operation': 'replace'}
+        event_edit = {
+            'event_id': f"lyr-{sha}-t0-e3",
+            'target_note_id': 'n2',
+            'operation': 'move_event',
+        }
         structure_edits = [
             {'operation': 'delete', 'note_id': 'n2', 'lyric_policy': 'preserve'},
             {'operation': 'insert', 'track_index': 0, 'channel': 0, 'pitch': 65,
@@ -419,6 +456,12 @@ def invocation_contract(source_directory):
                 'expected_sha256': sha, 'edits': [lyric_edit],
             }, 'control', 'make_plan', ('lyrics', 'art_score'), {
                 'expected_sha256': sha, 'edits': [lyric_edit],
+            }),
+            ({
+                'action': 'lyrics_patch_plan', 'artifact_id': 'art_score',
+                'expected_sha256': sha, 'edits': [event_edit],
+            }, 'control', 'make_plan', ('lyrics', 'art_score'), {
+                'expected_sha256': sha, 'edits': [event_edit],
             }),
             ({
                 'action': 'lyrics_patch_apply', 'plan_id': 'plan_lyrics',
@@ -502,6 +545,9 @@ def invocation_contract(source_directory):
             if request['action'].endswith('_patch_apply'):
                 check(data['readback']['steps'][0]['arguments']['request']['action']
                       == 'operations_get', request['action'] + ':operation_readback')
+                if request['action'] == 'lyrics_patch_apply':
+                    check('action=lyrics_read' in data['readback']['after_terminal'],
+                          'lyrics_patch_apply:candidate_reread')
             if request['action'].startswith('workflow_'):
                 check(any(step['arguments']['request']['action'] == 'workflow_get'
                           for step in data['readback'].get('steps', [])),
@@ -796,8 +842,15 @@ def invocation_contract(source_directory):
                     'score_artifact_id': 'art_source',
                     'history': [],
                 }
-                if self.operation is not None:
+                if (self.operation is not None
+                        and self.stage in ('preparing', 'reviewing', 'exporting',
+                                           'styling', 'refining')):
                     value['operation'] = copy.deepcopy(self.operation)
+                    value['operation_id'] = self.operation['id']
+                elif self.operation is not None:
+                    # Workflow.get only re-reads an operation while its owning
+                    # stage is active. A consumed review keeps its id in the
+                    # durable record but no longer returns an operation object.
                     value['operation_id'] = self.operation['id']
                 if self.receipt is not None:
                     value['review_receipt'] = copy.deepcopy(self.receipt)
@@ -879,8 +932,20 @@ def invocation_contract(source_directory):
               'real_driver_edit:candidate_ready_for_reread')
         check(actual_edited['readback']['operation_state'] == 'succeeded',
               'real_driver_edit:operation_state_succeeded')
+        check([row['arguments']['request']['action']
+               for row in actual_edited['readback']['steps']] == ['workflow_get'],
+              'real_driver_edit:consumed_operation_not_reread')
         check(actual_edited['next']['tool'] == 'vwa_evidence',
               'real_driver_edit:next_evidence')
+        consumed_summary = decide._edited_review_readback(Result(data={
+            'id': 'flow_consumed_summary', 'revision': 6, 'stage': 'reviewed',
+            'operation_id': 'op_review',
+        }), wait_ms=0).data
+        check(consumed_summary['readback']['operation_state'] == 'succeeded',
+              'consumed_summary:operation_state_succeeded')
+        check([row['arguments']['request']['action']
+               for row in consumed_summary['readback']['steps']] == ['workflow_get'],
+              'consumed_summary:no_operation_reread')
         check(not any(call_[0] == 'advance' and call_[2] == 'exporting'
                       for call_ in real_calls),
               'real_driver_edit:no_export_advance')
@@ -966,6 +1031,19 @@ def invocation_contract(source_directory):
         ]
         for request, name in rejected_cases:
             await rejected(server, request, name)
+        workflow_event_error = await rejected(server, {
+            'action': 'workflow_apply_review', 'workflow_id': workflow_id,
+            'expected_revision': 8, 'rationale': '事件编辑暂不支持组合。',
+            'lyric_edits': [event_edit],
+            'note_edits': [score_edit],
+        }, 'workflow_event_edit_unsupported')
+        workflow_event_payload = tool_error_payload(workflow_event_error)
+        check(workflow_event_payload.get('code') ==
+              'workflow_lyrics_event_edit_unsupported',
+              'workflow_event_edit:structured_code')
+        check('独立 lyrics_patch_plan/apply' in
+              workflow_event_payload.get('message', ''),
+              'workflow_event_edit:remediation')
         wait_error = await rejected(server, {
             'action': 'workflow_apply_review', 'workflow_id': workflow_id,
             'expected_revision': 8, 'rationale': 'strict', 'wait_ms': 1,
@@ -1009,7 +1087,7 @@ class StandardDecideSDKContract(unittest.TestCase):
         self.assertEqual(result.returncode, 0, (result.stdout + result.stderr)[-12000:])
         receipt = json.loads(result.stdout)
         self.assertEqual(receipt['actions'], sorted(EXPECTED_ACTIONS))
-        self.assertEqual(receipt['call_count'], 20)
+        self.assertEqual(receipt['call_count'], 21)
         self.assertEqual(receipt['driver_call_count'], 3)
         self.assertNotIn('advance', receipt['callbacks'])
         self.assertFalse(receipt['workflow_advance_called'])

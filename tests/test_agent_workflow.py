@@ -1,9 +1,10 @@
 """Contract tests for the supervised Agent workflow coordinator.
 
 The tests use synthetic operation results and tiny local MIDI fixtures. They do
-not launch the MCP worker, call a model, touch the network, or use a real user
-job. One combined lyric/note test uses the real MIDI workers because that is
-where stable note-ID remapping must be proven.
+not call a model, touch the network, or modify a real user job. Focused tests use
+the real MIDI worker where stable note identity must be proven; one optional
+test launches the dedicated SDK stdio server, and one reads an existing reviewed
+song artifact without writing it.
 """
 from __future__ import annotations
 
@@ -11,16 +12,20 @@ from concurrent.futures import ThreadPoolExecutor
 import copy
 import hashlib
 import json
+import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import wave
 from pathlib import Path
 
 APP = Path(__file__).resolve().parents[1]
 SRC = APP / "src"
+SDK_PYTHON = os.environ.get("VWA_MCP_SDK_PYTHON")
 sys.path.insert(0, str(SRC))
 
 import mido
@@ -96,6 +101,48 @@ def write_midi(path):
     return path
 
 
+def write_track_layout_midi(path):
+    """MIDI fixture with metadata-only tracks and nonnumeric channel order."""
+    path = Path(path)
+    io_path(path.parent).mkdir(parents=True, exist_ok=True)
+    midi = mido.MidiFile(type=1, ticks_per_beat=480, charset="utf8")
+    midi.tracks.append(mido.MidiTrack([
+        mido.MetaMessage("track_name", name="Tempo", time=0),
+        mido.MetaMessage("set_tempo", tempo=500_000, time=0),
+        mido.MetaMessage("end_of_track", time=0),
+    ]))
+    midi.tracks.append(mido.MidiTrack([
+        mido.MetaMessage("track_name", name="Metadata only", time=0),
+        mido.Message("program_change", channel=6, program=1, time=0),
+        mido.MetaMessage("marker", text="not a vocal track", time=0),
+        mido.MetaMessage("end_of_track", time=0),
+    ]))
+    midi.tracks.append(mido.MidiTrack([
+        mido.MetaMessage("track_name", name="First-seen channels", time=0),
+        mido.Message("note_on", channel=5, note=60, velocity=90, time=0),
+        mido.Message("note_off", channel=5, note=60, velocity=0, time=240),
+        mido.Message("note_on", channel=2, note=62, velocity=90, time=0),
+        mido.Message("note_off", channel=2, note=62, velocity=0, time=240),
+        mido.MetaMessage("end_of_track", time=0),
+    ]))
+    midi.tracks.append(mido.MidiTrack([
+        mido.MetaMessage("track_name", name="Orphan changes bucket order", time=0),
+        mido.Message("note_off", channel=4, note=64, velocity=0, time=0),
+        mido.Message("note_on", channel=3, note=65, velocity=90, time=0),
+        mido.Message("note_off", channel=3, note=65, velocity=0, time=240),
+        mido.Message("note_on", channel=4, note=67, velocity=90, time=0),
+        mido.Message("note_off", channel=4, note=67, velocity=0, time=240),
+        mido.MetaMessage("end_of_track", time=0),
+    ]))
+    midi.tracks.append(mido.MidiTrack([
+        mido.MetaMessage("track_name", name="Trailing metadata", time=0),
+        mido.MetaMessage("end_of_track", time=0),
+    ]))
+    with open(native_path(path), "wb") as stream:
+        midi.save(file=stream)
+    return path
+
+
 class FakeControl:
     """Private control double; records are still JSON-copy safe and ordered."""
 
@@ -140,6 +187,12 @@ class FakeControl:
 
     def import_asset(self, path):
         return self.register_artifact(path, kind="input")
+
+    def score_read(self, identifier, review=False):
+        artifact = self.artifact(identifier)
+        result = self.call_worker("score_review" if review else "score_read",
+                                  {"path": artifact["path"]})
+        return result if review else result["score"]
 
     def register_artifact(self, path, *, kind="candidate", job_id=None, origin=None):
         path = Path(path).resolve()
@@ -491,15 +544,18 @@ class WorkflowCreateGetTests(WorkflowTestBase):
                          ["BV1xx411c7mD"])
 
     def test_initial_export_options_are_stored_without_resolving_bindings(self):
+        pitch = self.control.register_artifact(
+            write_pitch_npz(self.root / "assets" / "fixture.pitch.npz"),
+            kind="reference_pitch")
         bindings = {
             "language": "ja",
             "default_bpm": 123.5,
             "svp_version": "2.0",
-            "track_names": ["主唱", "和声"],
+            "track_names": ["主唱"],
             "project_name": "导出试验",
             "preserve_pitch": True,
             "pitch_bindings": [{
-                "pitch_artifact_id": "art_reference_pitch",
+                "pitch_artifact_id": pitch["id"],
                 "vocal_track_index": 0,
                 "time_origin_seconds": 1.25,
             }],
@@ -1008,6 +1064,348 @@ class WorkflowExportStyleTests(WorkflowTestBase):
         interrupted = self.workflow.get(retried["id"])
         self.assertFalse(interrupted["completed"])
         self.assertIn("worker_interrupted", interrupted["next"]["error"]["code"])
+
+    def test_export_preflight_rejects_stored_track_names_before_plan(self):
+        invalid = {"track_names": ["主唱", "和声", "伴奏"]}
+        created, _ = self.create_midi_flow(initial_export_options=invalid)
+        reviewed = self.complete_review(created)
+        plan_starts = len(self.control.plan_starts)
+        operations = len(self.control.records["operations"])
+        before = self.workflow.get(reviewed["id"])
+
+        with self.assertRaises(ControlError) as raised:
+            self.workflow.advance(reviewed["id"], reviewed["revision"])
+
+        self.assertEqual(raised.exception.code, "track_names_mismatch")
+        self.assertEqual(raised.exception.details["expected"], 1)
+        self.assertEqual(raised.exception.details["actual"], 3)
+        self.assertEqual(raised.exception.details["midi_track_scopes"][0]["note_count"], 3)
+        self.assertEqual(raised.exception.details["track_count_source"],
+                         "control.score_read")
+        self.assertFalse(raised.exception.details["order_verified_by_preflight"])
+        self.assertIn("伴奏", str(raised.exception))
+        observed = self.workflow.get(reviewed["id"])
+        self.assertEqual(observed["revision"], before["revision"])
+        self.assertEqual(observed["stage"], "reviewed")
+        self.assertEqual(self.workflow._read(reviewed["id"])["export_options"], invalid)
+        self.assertEqual(len(self.control.plan_starts), plan_starts)
+        self.assertEqual(len(self.control.records["operations"]), operations)
+        self.assertIn("score_read", [row[0] for row in self.control.worker_calls])
+
+    def test_track_name_count_is_not_blocked_without_svp_output(self):
+        created, _ = self.create_midi_flow(formats=["ustx"])
+        reviewed = self.complete_review(created)
+
+        exporting = self.workflow.advance(
+            reviewed["id"], reviewed["revision"],
+            export_options={"track_names": ["不会写入 USTX 一", "不会写入 USTX 二"]})
+
+        self.assertEqual(exporting["stage"], "exporting")
+        self.assertEqual(exporting["export_options"]["track_names"],
+                         ["不会写入 USTX 一", "不会写入 USTX 二"])
+
+    def test_worker_track_count_and_libresvip_channel_order_ignore_meta_tracks(self):
+        path = write_track_layout_midi(self.root / "assets" / "track-layout.mid")
+        score = read_score(path)
+
+        tracks, count_verified = Workflow._score_vocal_tracks(score)
+
+        self.assertTrue(count_verified)
+        self.assertEqual(
+            [(row["midi_track_index"], row["channel"], row["note_count"])
+             for row in tracks],
+            [(2, 2, 1), (2, 5, 1), (3, 3, 1), (3, 4, 1)],
+        )
+        runtime = Path(
+            r"C:\Users\DevWind\Documents\Codex\2026-10-08\or-1-2-3-midi4-midi"
+            r"\outputs\Better-Vocaloid-Workflow-Assistant\dependencies\export")
+        if not (runtime / "libresvip/plugins/mid/midi_converter.py").is_file():
+            self.skipTest("optional LibreSVIP runtime is unavailable")
+        old_path = list(sys.path)
+        try:
+            sys.path.insert(0, str(runtime))
+            from libresvip.plugins.mid.midi_converter import MidiConverter
+            project = MidiConverter.load(path, {
+                "import_lyrics": True, "lyric_encoding": "utf-8",
+                "import_time_signatures": True, "multi_channel": "split",
+                "import_pitch": False, "import_volume": False,
+                "default_bpm": 120,
+            })
+        finally:
+            sys.path[:] = old_path
+        actual = [(str(track.title), len(track.note_list)) for track in project.track_list]
+        self.assertEqual(
+            actual,
+            [("Track 3 (5)", 1), ("Track 3 (2)", 1),
+             ("Track 4 (4)", 1), ("Track 4 (3)", 1)],
+        )
+        from agent_exports import apply_export, plan_export
+        names = ["首见五", "首见二", "先见四", "后见三"]
+        plan = plan_export(path, ["svp"], {"track_names": names, "language": "zh"})
+        exported = apply_export(
+            path, plan, self.root / "track-layout-output", export_runtime=runtime)
+        candidate = Path(exported["candidates"][0]["candidate_path"])
+        project = json.loads(io_path(candidate).read_bytes().removesuffix(b"\0"))
+        self.assertEqual([track.get("name") for track in project["tracks"]], names)
+        self.assertEqual([len(track["mainGroup"]["notes"]) for track in project["tracks"]],
+                         [1, 1, 1, 1])
+        self.assertFalse(exported["semantic_model_used"])
+        self.assertFalse(exported["synthesized"])
+
+    def test_real_reviewed_song_track_layout_matches_libresvip(self):
+        real = Path(
+            r"C:\Users\DevWind\Documents\Codex\2026-10-23\new-chat-2"
+            r"\workspace\mcp\state-v0.2\outputs"
+            r"\op_68d4fd43f0840e74c30410c58a174ccb\notes"
+            r"\vwa-score-553a81457c538467096a2c657d1ee693bc46e9a5b981fc27fb23d4b8cb5aeb72.mid")
+        runtime = Path(
+            r"C:\Users\DevWind\Documents\Codex\2026-10-08\or-1-2-3-midi4-midi"
+            r"\outputs\Better-Vocaloid-Workflow-Assistant\dependencies\export")
+        if not real.is_file() or not (runtime / "libresvip/plugins/mid/midi_converter.py").is_file():
+            self.skipTest("existing read-only real-song project and LibreSVIP runtime are unavailable")
+        score = read_score(real)
+
+        tracks, count_verified = Workflow._score_vocal_tracks(score)
+
+        self.assertTrue(count_verified)
+        self.assertEqual(
+            [(row["midi_track_index"], row["channel"], row["note_count"])
+             for row in tracks],
+            [(1, 0, 503), (2, 1, 72)],
+        )
+        old_path = list(sys.path)
+        try:
+            sys.path.insert(0, str(runtime))
+            from libresvip.plugins.mid.midi_converter import MidiConverter
+            project = MidiConverter.load(real, {
+                "import_lyrics": True, "lyric_encoding": "utf-8",
+                "import_time_signatures": True, "multi_channel": "split",
+                "import_pitch": False, "import_volume": False,
+                "default_bpm": 120,
+            })
+        finally:
+            sys.path[:] = old_path
+        actual = [(str(track.title), len(track.note_list)) for track in project.track_list]
+        self.assertEqual(actual, [("Track 2 (0)", 503), ("Track 3 (1)", 72)])
+
+    @unittest.skipUnless(SDK_PYTHON, "dedicated optional SDK is not configured")
+    def test_real_sdk_stdio_export_preflight_stays_on_worker_boundary(self):
+        root = self.root / "stdio-preflight"
+        exchange = root / "assets"
+        jobs = root / "jobs"
+        state = root / "state"
+        drafts = root / "drafts"
+        for path in (exchange, jobs, state, drafts):
+            io_path(path).mkdir(parents=True, exist_ok=True)
+        source = write_midi(exchange / "stdio.mid")
+        config = root / "config.json"
+        config.write_text(json.dumps({
+            "schema": 1,
+            "application_root": str(SRC),
+            "worker_python": sys.executable,
+            "state_root": str(state),
+            "allowed_asset_roots": [str(exchange)],
+            "allowed_job_roots": [str(jobs)],
+            "source_commit": "stdio-preflight",
+            "shared_draft_root": str(drafts),
+        }, ensure_ascii=False), encoding="utf-8")
+        client = root / "client.py"
+        client.write_text(r'''from __future__ import annotations
+import asyncio, importlib.util, json, os, sys
+from pathlib import Path
+from mcp import Client
+from mcp.client.stdio import StdioServerParameters
+
+config = Path(sys.argv[1])
+server = Path(sys.argv[2])
+
+def text(result):
+    return "\n".join(getattr(item, "text", "") for item in (result.content or []))
+
+async def main():
+    params = StdioServerParameters(
+        command=sys.executable,
+        args=["-B", "-u", str(server), "--config", str(config)],
+        env={key: os.environ[key] for key in
+             ("SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP") if key in os.environ}
+            | {"PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    async def ok(call):
+        result = await call
+        if result.is_error:
+            raise AssertionError(text(result))
+        return result.structured_content["data"]
+    async with Client(params, read_timeout_seconds=90) as client:
+        artifact = await ok(client.call_tool("vwa_input", {"request": {
+            "action": "assets_import", "path": str(Path(config).parent / "assets/stdio.mid")}}))
+        flow = await ok(client.call_tool("vwa_start", {"request": {
+            "action": "workflow_create", "score_artifact_id": artifact["id"],
+            "idempotency_key": "stdio-export-preflight"}}))
+        decided = await ok(client.call_tool("vwa_decide", {"request": {
+            "action": "workflow_apply_review", "workflow_id": flow["id"],
+            "expected_revision": flow["revision"],
+            "rationale": "stdio fixture reviewed without edits"}}))
+        waited = await ok(client.call_tool("vwa_wait", {
+            "operation_id": decided["operation"]["id"], "timeout_ms": 60000}))
+        if waited["state"] != "succeeded":
+            raise AssertionError(json.dumps(waited, ensure_ascii=False))
+        reviewed = await ok(client.call_tool("vwa_run", {"request": {
+            "action": "workflow_advance", "workflow_id": flow["id"],
+            "expected_revision": decided["revision"]}}))
+        if reviewed["stage"] != "reviewed":
+            raise AssertionError(json.dumps(reviewed, ensure_ascii=False))
+        rejected = await client.call_tool("vwa_run", {"request": {
+            "action": "workflow_advance", "workflow_id": flow["id"],
+            "expected_revision": reviewed["revision"],
+            "export_options": {"track_names": ["one", "two"]}}})
+        body = text(rejected)
+        if not rejected.is_error or "track_names_mismatch" not in body or '"expected": 1' not in body:
+            raise AssertionError(body)
+        return {"sdk_without_mido": importlib.util.find_spec("mido") is None,
+                "stage": reviewed["stage"], "error": body}
+
+print(json.dumps(asyncio.run(main()), ensure_ascii=False))
+''', encoding="utf-8")
+        result = subprocess.run(
+            [SDK_PYTHON, "-B", str(client), str(config), str(SRC / "agent_mcp.py")],
+            cwd=str(APP), capture_output=True, text=True, encoding="utf-8",
+            env=dict(os.environ, PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1"),
+            timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + "\n" + result.stderr)
+        receipt = json.loads(result.stdout)
+        self.assertTrue(receipt["sdk_without_mido"])
+        self.assertEqual(receipt["stage"], "reviewed")
+        self.assertIn("track_names_mismatch", receipt["error"])
+        self.assertIn('"expected": 1', receipt["error"])
+
+    def test_unverifiable_track_count_does_not_false_block_export(self):
+        created, _ = self.create_midi_flow()
+        reviewed = self.complete_review(created)
+
+        with patch.object(Workflow, "_score_vocal_tracks", return_value=([], False)):
+            exporting = self.workflow.advance(
+                reviewed["id"], reviewed["revision"],
+                export_options={"track_names": ["暂不据此拦截", "待实际导出核对", "第三轨"]})
+
+        self.assertEqual(exporting["stage"], "exporting")
+        self.assertEqual(
+            exporting["export_options"]["track_names"],
+            ["暂不据此拦截", "待实际导出核对", "第三轨"])
+        self.assertFalse(exporting["export_preflight"]["track_count_verified"])
+        self.assertEqual(exporting["export_preflight"]["midi_track_scopes"], [])
+        self.assertFalse(exporting["export_preflight"]["order_verified_by_preflight"])
+
+    def test_failed_export_repairs_options_without_re_review_or_auto_approval(self):
+        created, _ = self.create_midi_flow()
+        reviewed = self.complete_review(created)
+        exporting = self.workflow.advance(
+            reviewed["id"], reviewed["revision"],
+            export_options={"track_names": ["主唱"]})
+        self.control.set_operation(
+            exporting["operation_id"], "failed",
+            error={"code": "track_names_mismatch", "message": "fixture"})
+        failed = self.workflow.get(exporting["id"])
+        self.assertEqual(failed["next"]["repair"]["reason"],
+                         "reuse_reviewed_source_with_corrected_export_options")
+        self.assertTrue(failed["next"]["repair"]["required_arguments"]["retry"])
+        review_operations = sum(
+            row["request"]["action"] == "workflow_review"
+            for row in self.control.records["operations"].values())
+        old_plan = failed["active_plan_id"]
+        old_operation = failed["operation_id"]
+
+        with self.assertRaises(ControlError) as raised:
+            self.workflow.advance(
+                failed["id"], failed["revision"],
+                export_options={"track_names": ["修正后的主唱"]})
+        self.assertEqual(raised.exception.code, "retry_required")
+        self.assertEqual(self.workflow.get(failed["id"])["revision"], failed["revision"])
+
+        repaired = self.workflow.advance(
+            failed["id"], failed["revision"], retry=True,
+            export_options={"track_names": ["修正后的主唱"]})
+        self.assertEqual(repaired["stage"], "exporting")
+        self.assertEqual(repaired["export_options"], {"track_names": ["修正后的主唱"]})
+        self.assertNotEqual(repaired["active_plan_id"], old_plan)
+        self.assertNotEqual(repaired["operation_id"], old_operation)
+        self.assertEqual(repaired["reviewed_sha256"], reviewed["reviewed_sha256"])
+        self.assertEqual(repaired["review_receipt"], reviewed["review_receipt"])
+        self.assertEqual(repaired["export_attempt_history"][-1]["operation_id"], old_operation)
+        self.assertEqual(repaired["export_attempt_history"][-1]["state"], "failed")
+        self.assertEqual(repaired["export_attempt_history"][-1]["error"]["code"],
+                         "track_names_mismatch")
+        self.assertEqual(
+            sum(row["request"]["action"] == "workflow_review"
+                for row in self.control.records["operations"].values()),
+            review_operations)
+        self.assertEqual(self.control.plan_calls[-1][0], "export")
+        self.assertEqual(self.control.plan_calls[-1][2]["options"]["track_names"],
+                         ["修正后的主唱"])
+
+        candidate = self.export_candidate("repaired.svp")
+        self.control.set_operation(
+            repaired["operation_id"], "succeeded",
+            result=self.build_export_result(repaired, [candidate]))
+        project = self.workflow.advance(repaired["id"], repaired["revision"])
+        self.assertEqual(project["stage"], "project_ready")
+        self.assertIsNone(project["export_review"])
+        self.assertFalse(project["completed"])
+        self.assertEqual(project["next"]["reason"], "review_export_report")
+
+    def test_failed_export_repair_rejects_changed_reviewed_midi(self):
+        created, artifact = self.create_midi_flow()
+        reviewed = self.complete_review(created)
+        exporting = self.workflow.advance(reviewed["id"], reviewed["revision"])
+        self.control.set_operation(
+            exporting["operation_id"], "failed",
+            error={"code": "converter_unavailable", "message": "fixture"})
+        failed = self.workflow.get(exporting["id"])
+        path = Path(artifact["path"])
+        io_path(path).write_bytes(io_path(path).read_bytes() + b"\0")
+        changed = self.control.records["artifacts"][artifact["id"]]
+        changed["sha256"] = sha256_file(path)
+        changed["bytes"] = io_path(path).stat().st_size
+        plan_starts = len(self.control.plan_starts)
+        operations = len(self.control.records["operations"])
+
+        with self.assertRaises(ControlError) as raised:
+            self.workflow.advance(
+                failed["id"], failed["revision"], retry=True,
+                export_options={"track_names": ["主唱"]})
+
+        self.assertEqual(raised.exception.code, "review_invalidated")
+        observed = self.workflow.get(failed["id"])
+        self.assertEqual(observed["revision"], failed["revision"])
+        self.assertEqual(observed["stage"], "exporting")
+        self.assertEqual(len(self.control.plan_starts), plan_starts)
+        self.assertEqual(len(self.control.records["operations"]), operations)
+
+    def test_export_preflight_requires_verified_pitch_and_matching_track(self):
+        created, _ = self.create_midi_flow()
+        reviewed = self.complete_review(created)
+        pitch_path = write_pitch_npz(self.root / "assets" / "lead.pitch.npz")
+        pitch = self.control.register_artifact(pitch_path, kind="reference_pitch")
+        wrong_kind = self.control.import_asset(pitch_path)
+        plan_starts = len(self.control.plan_starts)
+
+        cases = [
+            ({"pitch_bindings": [{"pitch_artifact_id": wrong_kind["id"],
+                                   "vocal_track_index": 0}]},
+             "wrong_pitch_source"),
+            ({"pitch_bindings": [{"pitch_artifact_id": pitch["id"],
+                                   "vocal_track_index": 1}]},
+             "invalid_pitch_bindings"),
+        ]
+        for options, code in cases:
+            with self.subTest(code=code):
+                with self.assertRaises(ControlError) as raised:
+                    self.workflow.advance(
+                        reviewed["id"], reviewed["revision"], export_options=options)
+                self.assertEqual(raised.exception.code, code)
+
+        self.assertEqual(self.workflow.get(reviewed["id"])["stage"], "reviewed")
+        self.assertEqual(len(self.control.plan_starts), plan_starts)
 
     def test_successful_style_is_consumed_before_project_completion(self):
         created, _ = self.create_midi_flow(brief="明亮但克制")

@@ -20,25 +20,9 @@ SCHEMA = 1
 MAX_JSON = 16 * 1024**2
 MAX_SCORE = 32 * 1024**2
 TOOLS = (
-    'vwa_system_capabilities', 'vwa_system_health', 'vwa_jobs_list', 'vwa_jobs_get',
-    'vwa_artifacts_list', 'vwa_artifacts_inspect', 'vwa_operations_get',
-    'vwa_operations_cancel', 'vwa_assets_import', 'vwa_score_read', 'vwa_score_review',
-    'vwa_score_patch_plan', 'vwa_score_patch_apply', 'vwa_context_read',
-    'vwa_style_plan', 'vwa_plans_get', 'vwa_tuning_start', 'vwa_tuning_result',
-    'vwa_preparation_plan', 'vwa_preparation_create', 'vwa_preparation_start',
-    'vwa_lyrics_read', 'vwa_lyrics_review', 'vwa_lyrics_patch_plan', 'vwa_lyrics_patch_apply',
-    'vwa_exports_plan', 'vwa_exports_start', 'vwa_workflow_create', 'vwa_workflow_get',
-    'vwa_workflow_review', 'vwa_workflow_apply_review', 'vwa_workflow_advance',
-    'vwa_structure_patch_plan', 'vwa_structure_patch_apply', 'vwa_reference_import',
-    'vwa_reference_pitch_review', 'vwa_reference_audio_read', 'vwa_workflow_references_set',
-    'vwa_pronunciation_read', 'vwa_pronunciation_patch_plan', 'vwa_pronunciation_patch_apply',
-    'vwa_workflow_pronunciation_apply', 'vwa_drafts_get', 'vwa_drafts_publish', 'vwa_drafts_plan',
-    'vwa_operations_wait','vwa_preparation_reuse_plan','vwa_workflows_list',
-    'vwa_workflow_rebind_score','vwa_workflow_close','vwa_workflow_archive','vwa_workflow_clone',
-    'vwa_workflow_delivery',
-    'vwa_workflow_style_review','vwa_workflow_style_decide',
-    'vwa_lyric_timeline_search','vwa_lyric_timeline_fetch','vwa_lyric_timeline_import','vwa_lyric_timeline_review',
-    'vwa_preparation_repair_plan','vwa_preparation_repair_start',
+    'vwa_start', 'vwa_status', 'vwa_evidence', 'vwa_decide',
+    'vwa_run', 'vwa_wait', 'vwa_cancel', 'vwa_input',
+    'vwa_search', 'vwa_recover', 'vwa_delivery', 'vwa_manage',
 )
 TERMINAL = ('succeeded', 'failed', 'cancelled', 'interrupted')
 CODE_FILES = ('agent_control.py', 'agent_worker.py', 'agent_score.py', 'agent_style.py',
@@ -263,7 +247,7 @@ class Control:
                 'voice_modes':{'single':'混合人声＋伴奏','dual':'主唱＋和声／伴奏人声；不是按歌手音色分离'},
                 'preparation_sources': ['bilibili_bv_url', 'approved_local_audio'],
                 'supervision': 'caller_agent_reviews_notes_and_lyrics_before_export',
-                'workflow_entry': 'vwa_workflow_create', 'workflow_next_steps': True,
+                'workflow_entry': 'vwa_start', 'workflow_next_steps': True,
                 'semantic_provider': 'caller_supplied_plan', 'candidate_only': True,
                 'operation_polling': True, 'protocol_tasks_extension': False,
                 'operation_records_survive_disconnect': True,
@@ -518,8 +502,8 @@ class Control:
                           'reference_pitch_review', 'reference_audio_read', 'pronunciation_read',
                           'pronunciation_plan','draft_read','draft_publish','draft_plan',
                           'preparation_reuse_plan','preparation_reuse_create','segment_plan','style_segment_context','media_validate',
-                          'lyric_timeline_search','lyric_timeline_fetch','lyric_timeline_parse','lyric_timeline_review',
-                          'preparation_repair_plan'):
+                          'lyric_timeline_search','lyric_timeline_fetch','lyric_timeline_parse',
+                          'lyric_timeline_read','lyric_timeline_review','preparation_repair_plan'):
             raise ControlError('unsupported_action', '不支持该业务调用。')
         directory = safe_path(self.state / 'calls' / uuid.uuid4().hex)
         directory.mkdir()
@@ -722,6 +706,10 @@ class Control:
 
     def lyrics_read(self, artifact_id, reference_text=None, language='zh', review=False):
         artifact = self.artifact(artifact_id)
+        if artifact['kind'] == 'reference_lyric_timeline':
+            raise ControlError('lyric_timeline_read_action_required',
+                '歌词时间轴请使用 vwa_evidence 的 lyric_timeline_read；lyrics_read 只读取 MIDI 歌词事件。',
+                {'suggested_action': 'lyric_timeline_read', 'artifact_id': artifact_id})
         arguments = {'path': artifact['path'], 'language': language}
         if review:
             arguments['reference_text'] = reference_text
@@ -776,6 +764,20 @@ class Control:
 
     def lyric_timeline_fetch(self,song_id_or_url):
         return self._store_lyric_timeline(self.call_worker('lyric_timeline_fetch',{'song':song_id_or_url}))
+
+    def lyric_timeline_read(self,timeline_artifact_id,limit=100,offset=0,include_words=False):
+        reference=self.artifact(timeline_artifact_id)
+        if reference['kind']!='reference_lyric_timeline':
+            raise ControlError('wrong_reference_kind','此产物不是歌词时间轴。')
+        if reference['bytes']>4*1024**2:
+            raise ControlError('too_large','歌词时间轴超过4MiB读取限制。')
+        if type(limit) is not int or not 1<=limit<=200 or type(offset) is not int or offset<0:
+            raise ControlError('invalid_page','时间轴读取 limit 为 1–200，offset 为非负整数。')
+        if type(include_words) is not bool:
+            raise ControlError('invalid_options','include_words 必须为布尔值。')
+        result=self.call_worker('lyric_timeline_read',{'path':reference['path'],'limit':limit,
+            'offset':offset,'include_words':include_words})
+        return {**result,'artifact_id':timeline_artifact_id,'artifact_sha256':reference['sha256']}
 
     def lyric_timeline_review(self,score_artifact_id,timeline_artifact_id,time_origin=0.,start=None,end=None,
                               track_indices=None,limit=20,offset=0):

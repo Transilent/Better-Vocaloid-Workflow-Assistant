@@ -1,5 +1,7 @@
 """Voicing masks, isolated octave errors and safe pitch model input/export."""
+import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -10,10 +12,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import numpy as np
 from v2m_runtime import configure
-configure(ROOT / 'dependencies/vocal2midi2')
+configure(Path(os.environ.get(
+    'VWA_PITCH_TEST_RUNTIME', ROOT / 'dependencies/vocal2midi2')))
 from inference.API.rmvpe_api import RmvpeResult, RmvpeTranscriber
 from inference.API import ustx_api
-from pitch_accuracy import prepare_audio, supported_pitch, pitd_curve, install, exclude_unvoiced_pitch
+from pitch_accuracy import (
+    assign_note_owners, build_absolute_f0_curve, exclude_unvoiced_pitch,
+    install, pitd_curve, pitch_note_descriptors, prepare_audio,
+    stabilize_isolated_pitch_spikes, supported_pitch,
+)
 
 t = np.arange(16000) / 16000
 wave = np.sin(t * 2 * np.pi * 220).astype('float32') * 1.8
@@ -28,6 +35,92 @@ for invalid in (np.array([np.nan]), np.array([np.inf]), np.zeros((5, 2, 2))):
         raise AssertionError('Invalid pitch audio accepted')
     except ValueError:
         pass
+
+# Owner ambiguity is sticky: a third overlapping note must not reclaim a frame
+# already marked -2 by the first overlap.
+clock=lambda seconds: round(seconds*960)
+inverse_clock=lambda ticks: ticks/960.
+owner_times=np.arange(0.,1.01,.01)
+owner=assign_note_owners(owner_times,[(.1,.8),(.2,.7),(.3,.6)])
+assert np.all(owner[(owner_times>=.3)&(owner_times<.6)]==-2)
+
+# A voiced marker with an invalid F0 is rejected before spike smoothing. A
+# false marker may still carry an arbitrary sentinel because it is not audio.
+valid_owner=assign_note_owners(np.arange(60)*.01,[(0.,.6)])
+for bad in (np.nan,np.inf,-1.,128.):
+    invalid_pitch=np.full(60,60.,dtype=np.float32);invalid_pitch[30]=bad
+    try:
+        stabilize_isolated_pitch_spikes(
+            invalid_pitch,np.ones(60,dtype=bool),valid_owner,.01)
+        raise AssertionError('Invalid voiced F0 reached spike smoothing')
+    except ValueError as error:
+        assert '有声 F0' in str(error)
+
+# The shared builder may create a declared derived correction, but it must
+# never mutate the measured input arrays.
+source_pitch=np.full(120,60.,dtype=np.float32);source_pitch[60]=65.
+source_mask=np.ones(120,dtype=bool)
+source_copy=source_pitch.copy();mask_copy=source_mask.copy()
+curve=build_absolute_f0_curve(
+    source_pitch,source_mask,.01,[(0.,1.2)],clock,inverse_clock)
+assert np.array_equal(source_pitch,source_copy) and np.array_equal(source_mask,mask_copy)
+assert curve['isolated_spike_policy']['corrected_frames']==1
+assert dict(curve['points'])[clock(.60)+1920]==6000
+
+# Sustained note-center review is independent of adjacent-frame jumps. The
+# drift below rises only ~3 cents/frame, but remains >300 cents from the
+# written note center for well over 160 ms. It must stay in the exported F0 and
+# produce a read-only warning tied to the source SHA and note identity.
+review_note=SimpleNamespace(start_pos=0,end_pos=2400,length=2400,key_number=60,lyric='戏')
+review_intervals,review_descriptors=pitch_note_descriptors(
+    [review_note],inverse_clock,vocal_track_index=0)
+drift=np.full(250,60.,dtype=np.float32)
+drift_mask=np.ones(250,dtype=bool)
+drift[:8]=66.       # Head evidence stays inside the Chinese-opera guard.
+drift[8:140]=np.linspace(60.,64.,132)
+drift[140:242]=64.
+drift[242:]=54.     # Tail evidence stays inside the Chinese-opera guard.
+drift_copy=drift.copy()
+assert np.max(np.abs(np.diff(drift[8:140])))*100<300
+review_curve=build_absolute_f0_curve(
+    drift,drift_mask,.01,review_intervals,clock,inverse_clock,
+    note_descriptors=review_descriptors,source_sha256='a'*64,
+    vocal_track_index=0)
+offset_audit=review_curve['pitch_offset_diagnostics']
+assert offset_audit['status']=='review_required'
+assert offset_audit['warning_count']==1
+assert offset_audit['warnings'][0]['note']['note_id'].startswith('vocal-0:note-0:')
+assert offset_audit['warnings'][0]['review_target']=='note_pitch_or_f0_curve'
+assert offset_audit['warnings'][0]['interval']['duration_seconds']>=.16
+assert offset_audit['warnings'][0]['source_sha256']=='a'*64
+assert offset_audit['edge_guard_suppressed_frames']>=8
+assert offset_audit['truth_determined'] is False
+assert offset_audit['automatic_change'] is False
+assert dict(review_curve['points'])[clock(1.5)+1920]==6400
+assert np.array_equal(drift,drift_copy)
+
+# A normal sub-300-cent vibrato does not become a sustained-offset warning.
+vibrato_note=SimpleNamespace(start_pos=0,end_pos=1200,length=1200,key_number=60,lyric='啊')
+vibrato_intervals,vibrato_descriptors=pitch_note_descriptors(
+    [vibrato_note],inverse_clock,vocal_track_index=0)
+vibrato_pitch=(60+.2*np.sin(np.arange(120)*.45)).astype(np.float32)
+vibrato_curve=build_absolute_f0_curve(
+    vibrato_pitch,np.ones(120,dtype=bool),.01,vibrato_intervals,clock,inverse_clock,
+    note_descriptors=vibrato_descriptors,source_sha256='b'*64,vocal_track_index=0)
+assert vibrato_curve['pitch_offset_diagnostics']['warning_count']==0
+assert vibrato_curve['pitch_offset_diagnostics']['truth_determined'] is False
+
+# A brief expressive excursion can cross 300 cents without becoming a
+# sustained-offset warning. This keeps fast ornaments and transition details
+# in review evidence rather than treating them as errors by threshold alone.
+brief_pitch=np.full(120,60.,dtype=np.float32)
+brief_pitch[50:53]=63.5
+brief_curve=build_absolute_f0_curve(
+    brief_pitch,np.ones(120,dtype=bool),.01,vibrato_intervals,clock,inverse_clock,
+    note_descriptors=vibrato_descriptors,source_sha256='c'*64,vocal_track_index=0)
+brief_audit=brief_curve['pitch_offset_diagnostics']
+assert brief_audit['warning_count']==0
+assert brief_audit['short_offset_candidates']>=1
 
 pitch = 60 + .5 * np.sin(np.arange(300) * .01 * 2 * np.pi * 5.5)
 pitch = pitch.astype('float32')
@@ -120,19 +213,32 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work',prefix='absolute-pitch-') as fo
     folder=Path(folder)
     f0=np.full(500,np.nan,dtype='float32')
     f0[100:200]=60+.25*np.sin(np.arange(100)*.3)
+    f0[150]=65.
     f0[300:400]=72+.2*np.sin(np.arange(100)*.3)
     f0[340:365]=np.nan
+    raw_f0=f0.copy()
     reference=RmvpeResult(.01,f0,np.isfinite(f0))
     cache=folder/'voice.pitch.npz';save_pitch(cache,reference);restored=load_pitch(cache)
     assert np.array_equal(restored.midi_pitch,reference.midi_pitch,equal_nan=True)
+    assert restored.source_sha256==hashlib.sha256(cache.read_bytes()).hexdigest()
     score=Project(song_tempo_list=[SongTempo(position=0,bpm=120)],
         time_signature_list=[TimeSignature(bar_index=0,numerator=4,denominator=4)],
         track_list=[SingingTrack(title='Lead',note_list=[Note(start_pos=960,length=960,key_number=60,lyric='你'),
                                                      Note(start_pos=2880,length=960,key_number=72,lyric='好')])])
     report=absolute_curve(score.track_list[0],score,restored)
+    assert report['algorithm']=='absolute-f0-v2'
     assert report['points']==175 and report['runs']==3
+    assert np.array_equal(f0,raw_f0,equal_nan=True)
+    assert report['isolated_spike_policy']['corrected_frames']==1
+    assert report['isolated_spike_policy']['corrections'][0]['frame']==150
     points=score.track_list[0].edited_params.pitch.points.root
-    assert all(p.y==-100 or 2880<=p.x<3840 or 4800<=p.x<5760 for p in points)
+    # Source points stay inside each note. The bounded two-tick head guard and
+    # four-tick tail guard belong to the immediately adjacent edge only; they
+    # must never fill the long rest between the phrases.
+    near_edges = all(p.y==-100 or 2878<=p.x<3844 or 4798<=p.x<5764 for p in points)
+    assert near_edges, [(p.x,p.y) for p in points if not (p.y==-100 or 2878<=p.x<3844 or 4798<=p.x<5764)]
+    assert not any(p.y!=-100 and 3844<=p.x<4798 for p in points)
+    assert not any(p.y!=-100 and p.x<2878 for p in points)
     destination=folder/'voice.svp';converters['svp'].dump(destination,score,{'down_sample':0,'language_override':'mandarin'})
     data=json.loads(destination.read_bytes().removesuffix(b'\0'))
     rows=np.asarray(data['tracks'][0]['mainGroup']['parameters']['pitchDelta']['points']).reshape(-1,2)

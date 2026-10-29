@@ -19,6 +19,8 @@ from common import native_path
 
 _SCHEMA = "vwa-lyric-timeline-v1"
 _KIND = "lyric-timeline"
+_READ_SCHEMA = "vwa-lyric-timeline-read-v1"
+_READ_KIND = "lyric-timeline-read"
 _REVIEW_SCHEMA = "vwa-lyric-timeline-review-v1"
 _REVIEW_KIND = "lyric-timeline-review"
 _MAX_BYTES = 4 * 1024 * 1024
@@ -521,6 +523,92 @@ def _page(rows: list[dict[str, Any]], limit: int,
         "returned": len(page),
         "has_more": next_offset is not None,
         "next_offset": next_offset,
+    }
+
+
+def read_timeline(timeline_path: Any, *, limit: int = 100, offset: int = 0,
+                  include_words: bool = False) -> dict[str, Any]:
+    """Read a bounded page from a saved lyric-timeline reference.
+
+    This is a read-only evidence operation. It never binds the timeline to a
+    workflow, changes a score, or treats the external source as note truth.
+    """
+    page_limit = _position(limit, "limit")
+    if not 1 <= page_limit <= _MAX_LIMIT:
+        raise ValueError(f"limit 必须在 1..{_MAX_LIMIT}。")
+    page_offset = _position(offset, "offset")
+    if type(include_words) is not bool:
+        raise ValueError("include_words 必须是布尔值。")
+
+    try:
+        timeline_file = Path(timeline_path)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("歌词时间轴 JSON 路径无效。") from exc
+    if timeline_file.suffix.lower() != ".json":
+        raise ValueError("歌词时间轴读取只接受已保存的 JSON artifact。")
+
+    timeline, timeline_sha = _strict_json(timeline_file)
+    lines = _validate_timeline(timeline)
+    origin = timeline.get("origin")
+    origin_value = origin if isinstance(origin, Mapping) else {}
+    provider = origin_value.get("provider") if isinstance(origin_value.get("provider"), str) else None
+    verified_value = origin_value.get("version_verified")
+    if verified_value is True:
+        verification_status = "verified"
+    elif verified_value is False:
+        verification_status = "unverified"
+    else:
+        verification_status = "not_provided"
+
+    indexed_lines: list[dict[str, Any]] = []
+    for line_index, row in enumerate(lines):
+        line_view = {key: value for key, value in row.items() if key != "words"}
+        line_view["line_index"] = line_index
+        line_view["estimated"] = row.get("estimated") is True
+        line_view["start_estimated"] = row.get("start_estimated") is True
+        line_view["end_estimated"] = row.get("end_estimated") is True
+        line_view["word_count"] = len(row["words"])
+        if include_words:
+            line_view["words"] = [dict(word) for word in row["words"]]
+        indexed_lines.append(line_view)
+
+    page, pagination = _page(indexed_lines, page_limit, page_offset)
+    estimated_line_count = sum(1 for row in lines if row.get("estimated") is True)
+    word_count = sum(len(row["words"]) for row in lines)
+    return {
+        "schema": _READ_SCHEMA,
+        "kind": _READ_KIND,
+        "timeline_sha256": timeline_sha,
+        "granularity": timeline["granularity"],
+        "time_basis": timeline.get("time_basis"),
+        "provider": provider,
+        "version_verified": verified_value is True,
+        "version_verification_status": verification_status,
+        "reference_only": True,
+        "reference_status": {
+            "role": "reference_not_ground_truth",
+            "provider": provider,
+            "version_verified": verified_value is True,
+            "version_verification_status": verification_status,
+        },
+        "pagination": pagination,
+        "lines": page,
+        "summary": {
+            "total_lines": len(lines),
+            "returned_lines": len(page),
+            "word_count": word_count,
+            "estimated_line_count": estimated_line_count,
+        },
+        "metadata": timeline.get("metadata"),
+        "origin": origin,
+        "warnings": timeline.get("warnings", []),
+        "automatic_patch": False,
+        "binding": {
+            "performed": False,
+            "explicit_confirmation_required": True,
+            "action": "workflow_references_set",
+        },
+        "disclaimer": "歌词时间轴仅作参考证据；读取不会绑定工作流、重排或改写歌词。",
     }
 
 

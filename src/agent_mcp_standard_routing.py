@@ -1,5 +1,6 @@
-"""Static standard-profile tool catalogue and safe continuation routing."""
+"""Current 12-tool catalogue and internal continuation routing."""
 from __future__ import annotations
+
 import copy
 
 STANDARD_TOOLS = (
@@ -14,6 +15,7 @@ INTERFACE_FILES = (
 )
 STANDARD_INSTRUCTIONS = (
     '先用vwa_status读取能力。vwa_start创建工作流，按返回next继续；'
+    '新歌曲先核实可用歌词并在准备options.lyrics填入，缺可靠歌词可留空；'
     '默认full整曲审核需实际分页核对音符与歌词，segments逐段审阅；不可自动批准。'
     '修改MIDI后回读对应内容；参考F0/WAV未经声学验证，不等于真值。'
     '保留原唱F0及伴奏来源，导出后核对报告SHA与逐项损失；硬差异须修正。'
@@ -24,19 +26,68 @@ STANDARD_INSTRUCTIONS = (
     '可编辑工程就绪不代表声库合成或试听。'
 )
 
-# Fixed at startup; preserve all legacy action identities in a typed group.
-LEGACY_TO_STANDARD = {'vwa_system_capabilities': 'vwa_status', 'vwa_system_health': 'vwa_status', 'vwa_jobs_list': 'vwa_status', 'vwa_jobs_get': 'vwa_status', 'vwa_artifacts_list': 'vwa_status', 'vwa_artifacts_inspect': 'vwa_status', 'vwa_operations_get': 'vwa_status', 'vwa_operations_wait': 'vwa_wait', 'vwa_operations_cancel': 'vwa_cancel', 'vwa_assets_import': 'vwa_input', 'vwa_score_read': 'vwa_evidence', 'vwa_score_review': 'vwa_evidence', 'vwa_score_patch_plan': 'vwa_decide', 'vwa_score_patch_apply': 'vwa_decide', 'vwa_context_read': 'vwa_evidence', 'vwa_style_plan': 'vwa_decide', 'vwa_plans_get': 'vwa_status', 'vwa_tuning_start': 'vwa_run', 'vwa_tuning_result': 'vwa_status', 'vwa_preparation_plan': 'vwa_start', 'vwa_preparation_create': 'vwa_start', 'vwa_preparation_reuse_plan': 'vwa_recover', 'vwa_preparation_start': 'vwa_run', 'vwa_preparation_repair_plan': 'vwa_recover', 'vwa_preparation_repair_start': 'vwa_recover', 'vwa_lyrics_read': 'vwa_evidence', 'vwa_lyric_timeline_search': 'vwa_search', 'vwa_lyric_timeline_fetch': 'vwa_input', 'vwa_lyric_timeline_import': 'vwa_input', 'vwa_lyric_timeline_review': 'vwa_evidence', 'vwa_lyrics_review': 'vwa_evidence', 'vwa_lyrics_patch_plan': 'vwa_decide', 'vwa_lyrics_patch_apply': 'vwa_decide', 'vwa_structure_patch_plan': 'vwa_decide', 'vwa_structure_patch_apply': 'vwa_decide', 'vwa_reference_import': 'vwa_input', 'vwa_reference_pitch_review': 'vwa_evidence', 'vwa_reference_audio_read': 'vwa_evidence', 'vwa_pronunciation_read': 'vwa_evidence', 'vwa_pronunciation_patch_plan': 'vwa_decide', 'vwa_pronunciation_patch_apply': 'vwa_decide', 'vwa_drafts_get': 'vwa_status', 'vwa_drafts_publish': 'vwa_decide', 'vwa_drafts_plan': 'vwa_decide', 'vwa_exports_plan': 'vwa_run', 'vwa_exports_start': 'vwa_run', 'vwa_workflow_create': 'vwa_start', 'vwa_workflow_get': 'vwa_status', 'vwa_workflow_review': 'vwa_evidence', 'vwa_workflow_style_review': 'vwa_evidence', 'vwa_workflow_style_decide': 'vwa_decide', 'vwa_workflows_list': 'vwa_status', 'vwa_workflow_rebind_score': 'vwa_manage', 'vwa_workflow_close': 'vwa_manage', 'vwa_workflow_archive': 'vwa_manage', 'vwa_workflow_clone': 'vwa_manage', 'vwa_workflow_delivery': 'vwa_delivery', 'vwa_workflow_references_set': 'vwa_input', 'vwa_workflow_apply_review': 'vwa_decide', 'vwa_workflow_pronunciation_apply': 'vwa_decide', 'vwa_workflow_advance': 'vwa_run'}
+# Mirrors the discriminated request groups registered by the four standard
+# modules. Runtime routing derives its reverse index from these current actions;
+# old workflow records are normalized to an action before selecting a tool.
+_ACTION_GROUPS = {
+    'vwa_status': frozenset((
+        'system_capabilities', 'system_health', 'jobs_list', 'jobs_get',
+        'artifacts_list', 'artifacts_inspect', 'operations_get', 'plans_get',
+        'tuning_result', 'drafts_get', 'workflow_get', 'workflows_list',
+    )),
+    'vwa_input': frozenset((
+        'assets_import', 'lyric_timeline_fetch', 'lyric_timeline_import',
+        'reference_import', 'workflow_references_set',
+    )),
+    'vwa_evidence': frozenset((
+        'score_read', 'score_review', 'context_read', 'lyrics_read',
+        'lyric_timeline_read', 'lyric_timeline_review', 'lyrics_review',
+        'reference_pitch_review', 'reference_audio_read', 'pronunciation_read',
+        'workflow_review', 'workflow_style_review',
+    )),
+    'vwa_decide': frozenset((
+        'score_patch_plan', 'score_patch_apply', 'style_plan', 'drafts_publish',
+        'drafts_plan', 'workflow_style_decide', 'workflow_apply_review',
+        'workflow_pronunciation_apply', 'lyrics_patch_plan', 'lyrics_patch_apply',
+        'structure_patch_plan', 'structure_patch_apply',
+        'pronunciation_patch_plan', 'pronunciation_patch_apply',
+    )),
+    'vwa_run': frozenset((
+        'tuning_start', 'preparation_start', 'exports_plan', 'exports_start',
+        'workflow_advance',
+    )),
+    'vwa_start': frozenset((
+        'preparation_plan', 'preparation_create', 'workflow_create',
+    )),
+    'vwa_recover': frozenset((
+        'preparation_reuse_plan', 'preparation_repair_plan',
+        'preparation_repair_start',
+    )),
+    'vwa_delivery': frozenset(('workflow_delivery',)),
+    'vwa_manage': frozenset((
+        'workflow_rebind_score', 'workflow_close', 'workflow_archive',
+        'workflow_clone',
+    )),
+}
+_ACTION_TO_TOOL = {
+    action: tool
+    for tool, actions in _ACTION_GROUPS.items()
+    for action in actions
+}
+_FLAT_ACTION_ROUTES = {
+    'operations_wait': 'vwa_wait',
+    'operations_cancel': 'vwa_cancel',
+    'lyric_timeline_search': 'vwa_search',
+}
 
-_FLAT = frozenset((
-    'vwa_operations_wait', 'vwa_operations_cancel', 'vwa_lyric_timeline_search',
-))
 _STEP_KEYS = frozenset((
     'next', 'details_tool', 'import_tool', 'audio_excerpt_next', 'full_entry',
 ))
 _STEP_LIST_KEYS = frozenset(('alternatives', 'pronunciation_reads'))
 _NESTED_STEP_KEYS = frozenset(('after_wait', 'then'))
 # Descend only through envelopes emitted by the service. Arbitrary result fields,
-# including request, plans, notes, lyrics, details and raw evidence, stay opaque.
+# including request, plans, notes, lyrics and raw evidence, stay opaque; details
+# expose only its typed action_suggestions field.
 _PROTOCOL_CONTAINERS = frozenset((
     'operation', 'last_operation', 'view', 'reference_evidence',
     'available_references', 'error', 'stage_error', 'last_error', 'errors',
@@ -48,14 +99,25 @@ _DATA_KEYS = frozenset((
 ))
 
 
+def _action_name(tool_name):
+    if isinstance(tool_name, str) and tool_name.startswith('vwa_'):
+        return tool_name.removeprefix('vwa_')
+    return None
+
+
 def _route(name, arguments):
     if not isinstance(arguments, dict):
         arguments = {}
-    if name == 'vwa_artifacts_inspect' and arguments.get('verify') is True:
+    action = _action_name(name)
+    if action == 'artifacts_inspect' and arguments.get('verify') is True:
         return 'vwa_run'
-    if name == 'vwa_reference_audio_read' and arguments.get('make_excerpt') is True:
+    if action == 'reference_audio_read' and arguments.get('make_excerpt') is True:
         return 'vwa_run'
-    return LEGACY_TO_STANDARD.get(name)
+    return _ACTION_TO_TOOL.get(action)
+
+
+def _is_flat_action(name):
+    return _action_name(name) in _FLAT_ACTION_ROUTES
 
 
 def _route_arguments(value):
@@ -82,12 +144,13 @@ def interface_identity(app):
 
 
 def _suggestion(name):
-    target = LEGACY_TO_STANDARD.get(name)
+    action = _action_name(name)
+    if action in _FLAT_ACTION_ROUTES:
+        return {'tool': _FLAT_ACTION_ROUTES[action], 'arguments': {}}
+    target = _ACTION_TO_TOOL.get(action)
     if not target:
         return None
-    if name in _FLAT:
-        return {'tool': target, 'arguments': {}}
-    return {'tool': target, 'arguments': {'request': {'action': name.removeprefix('vwa_')}}}
+    return {'tool': target, 'arguments': {'request': {'action': action}}}
 
 
 def _remediation(value):
@@ -108,14 +171,54 @@ def _remediation(value):
     return copy.deepcopy(value)
 
 
+def _suggestion_rows(value):
+    """Route protocol suggestion tools without descending into user payloads."""
+    if isinstance(value, list):
+        return [_suggestion_rows(item) for item in value]
+    if not isinstance(value, dict):
+        return copy.deepcopy(value)
+    result = copy.deepcopy(value)
+    name = value.get('tool')
+    action = _action_name(name)
+    if action not in _ACTION_TO_TOOL and action not in _FLAT_ACTION_ROUTES:
+        return result
+    result['tool'] = (_FLAT_ACTION_ROUTES.get(action) or
+                      _route(name, _route_arguments(value)))
+    has_argument_field = False
+    for field in ('arguments', 'required_arguments'):
+        arguments = value.get(field)
+        if isinstance(arguments, dict):
+            has_argument_field = True
+            if action in _FLAT_ACTION_ROUTES:
+                result[field] = copy.deepcopy(arguments)
+            else:
+                result[field] = _wrap_arguments(arguments, action)
+    if not has_argument_field and action not in _FLAT_ACTION_ROUTES:
+        result['arguments'] = {'request': {'action': action}}
+    return result
+
+
+def _error_details(value):
+    """Rewrite only the typed action-suggestion field inside opaque details."""
+    if not isinstance(value, dict):
+        return copy.deepcopy(value)
+    result = {}
+    for key, item in value.items():
+        if key == 'action_suggestions':
+            result[key] = _suggestion_rows(item)
+        else:
+            result[key] = copy.deepcopy(item)
+    return result
+
+
 def _full_evidence(value):
     """Turn tool-name hints into standard references without inventing arguments."""
     names = value if isinstance(value, list) else []
     tools = []
     actions = []
     for name in names:
-        if isinstance(name, str) and name in LEGACY_TO_STANDARD:
-            action = _suggestion(name)
+        action = _suggestion(name)
+        if action:
             actions.append(action)
             target = action['tool']
             if target not in tools:
@@ -129,17 +232,12 @@ def _capabilities(value, result):
     tools = value.get('tools')
     if value.get('server') != 'VWA Agent MCP' or not isinstance(tools, list):
         return
-    already_standard = (
-        value.get('interface_profile') == 'standard'
-        or tools == list(STANDARD_TOOLS)
-    )
-    legacy_count = value.get('legacy_tool_count')
-    if type(legacy_count) is not int:
-        legacy_count = len(LEGACY_TO_STANDARD) if already_standard else len(tools)
     result['tools'] = list(STANDARD_TOOLS)
-    result['interface_profile'] = 'standard'
-    result['legacy_tool_count'] = legacy_count
     result['workflow_entry'] = 'vwa_start'
+    # Old capability records may retain a private count; never republish it.
+    result.pop('legacy_tool_count', None)
+    if 'interface_profile' in result:
+        result['interface_profile'] = 'standard'
 
 
 def _receipt_requires_reread(value):
@@ -237,7 +335,11 @@ def _walk(value, *, step, top):
 
     result = {}
     for key, item in value.items():
-        if key in _DATA_KEYS:
+        if key == 'details':
+            result[key] = _error_details(item)
+        elif key in ('suggestions', 'action_suggestions'):
+            result[key] = _suggestion_rows(item)
+        elif key in _DATA_KEYS:
             result[key] = copy.deepcopy(item)
         elif key in _STEP_KEYS:
             result[key] = _walk(item, step=True, top=False)
@@ -252,29 +354,54 @@ def _walk(value, *, step, top):
         else:
             result[key] = copy.deepcopy(item)
 
+    # A successful separation repair produces a typed continuation inside the
+    # operation result. Do not traverse arbitrary result payloads: they may
+    # contain user text or fabricated tool-shaped objects.
+    request = value.get('request')
+    operation_result = value.get('result')
+    if (isinstance(value.get('id'), str) and value['id'].startswith('op_')
+            and value.get('state') == 'succeeded'
+            and isinstance(request, dict) and request.get('action') == 'separation_repair'
+            and isinstance(operation_result, dict)
+            and operation_result.get('handoff') == 'ready_for_midi'
+            and isinstance(operation_result.get('next'), dict)
+            and operation_result['next'].get('tool') == 'vwa_preparation_start'):
+        result['result']['next'] = _walk(operation_result['next'], step=True, top=False)
+        receipt = operation_result.get('receipt')
+        if (isinstance(receipt, dict) and receipt.get('kind') == 'separation_repair'
+                and receipt.get('handoff') == 'ready_for_midi'
+                and isinstance(receipt.get('next'), dict)
+                and receipt['next'].get('tool') == 'vwa_preparation_start'):
+            result['result']['receipt']['next'] = _walk(
+                receipt['next'], step=True, top=False)
+
     name = value.get('tool')
-    if step and isinstance(name, str) and name in LEGACY_TO_STANDARD:
+    action = _action_name(name)
+    if step and action in _ACTION_TO_TOOL:
         target = _route(name, _route_arguments(value))
-        action = name.removeprefix('vwa_')
         result['tool'] = target
         has_argument_field = False
         for field in ('arguments', 'required_arguments'):
             arguments = value.get(field)
             if isinstance(arguments, dict):
                 has_argument_field = True
-                if name in _FLAT:
-                    result[field] = copy.deepcopy(arguments)
-                else:
-                    result[field] = _wrap_arguments(arguments, action)
-        if not has_argument_field and name not in _FLAT:
+                result[field] = _wrap_arguments(arguments, action)
+        if not has_argument_field:
             result['arguments'] = {'request': {'action': action}}
-        if name == 'vwa_context_read' and isinstance(result.get('then'), str):
-            result['then'] = '调用 vwa_run，request.action=workflow_advance；提交明确风格方案或 finish=true。'
+        if action == 'context_read' and isinstance(result.get('then'), str):
+            result['then'] = (
+                '调用 vwa_run，request.action=workflow_advance；'
+                '提交明确风格方案或 finish=true。'
+            )
+    elif step and action in _FLAT_ACTION_ROUTES:
+        result['tool'] = _FLAT_ACTION_ROUTES[action]
 
     decision_name = value.get('decision_tool')
-    if isinstance(decision_name, str) and decision_name in LEGACY_TO_STANDARD:
-        result['decision_tool'] = LEGACY_TO_STANDARD[decision_name]
-        result['decision_action'] = decision_name.removeprefix('vwa_')
+    decision_action = _action_name(decision_name)
+    decision_target = _ACTION_TO_TOOL.get(decision_action)
+    if decision_target:
+        result['decision_tool'] = decision_target
+        result['decision_action'] = decision_action
 
     if isinstance(value.get('full_evidence_tools'), list):
         tools, actions = _full_evidence(value['full_evidence_tools'])
@@ -289,7 +416,7 @@ def _walk(value, *, step, top):
 
 
 def standardize(value, _step=False):
-    """Translate documented continuation references without rewriting user data.
+    """Translate historical continuation references without rewriting user data.
 
     Tool-call objects are interpreted only below known service envelopes. Caller
     arguments and arbitrary result payloads are copied verbatim, so a nested key

@@ -16,6 +16,17 @@ from typing import Any, Callable, Mapping, Sequence
 import numpy as np
 
 from agent_reference import _read_pitch, _sha256_file
+from pitch_accuracy import (
+    ABSOLUTE_F0_ALGORITHM, ABSOLUTE_F0_BRIDGE_GAP_SECONDS,
+    ABSOLUTE_F0_ENDPOINT_GUARD_AFTER_TICKS, ABSOLUTE_F0_ENDPOINT_GUARD_BEFORE_TICKS,
+    ABSOLUTE_F0_MIN_VOICED_RUN_FRAMES, ABSOLUTE_F0_PITCH_AXIS_OFFSET_TICKS,
+    ABSOLUTE_F0_SPIKE_EDGE_GUARD_SECONDS, ABSOLUTE_F0_SPIKE_NEIGHBOR_SPAN_CENTS,
+    ABSOLUTE_F0_SPIKE_THRESHOLD_CENTS, ABSOLUTE_F0_SUSTAINED_OFFSET_MIN_DURATION_SECONDS,
+    ABSOLUTE_F0_SUSTAINED_OFFSET_MIN_FRAMES,
+    ABSOLUTE_F0_SUSTAINED_OFFSET_THRESHOLD_CENTS,
+    analyze_sustained_pitch_offsets, assign_note_owners, build_absolute_f0_curve,
+    pitch_note_descriptors, stabilize_isolated_pitch_spikes,
+)
 
 
 SCHEMA_VERSION = 1
@@ -24,13 +35,14 @@ APPLY_KIND = "vwa-agent-pitch-apply"
 VERIFY_KIND = "vwa-agent-pitch-verify"
 SAMPLE_COMPARE_KIND = "vwa-agent-pitch-sample-compare"
 POLICY = "preserve_absolute"
-ALGORITHM = "absolute-f0-v1"
+ALGORITHM = ABSOLUTE_F0_ALGORITHM
 TRACK_INDEX_BASIS = "libresvip_singing_track_ordinal"
-PITCH_AXIS_OFFSET_TICKS = 1920
+PITCH_AXIS_OFFSET_TICKS = ABSOLUTE_F0_PITCH_AXIS_OFFSET_TICKS
 NATIVE_PITCH_SAMPLE_INTERVAL_TICKS = 5
-ENDPOINT_GUARD_BEFORE_TICKS = 2
-ENDPOINT_GUARD_AFTER_TICKS = 4
-MIN_VOICED_RUN_FRAMES = 3
+ENDPOINT_GUARD_BEFORE_TICKS = ABSOLUTE_F0_ENDPOINT_GUARD_BEFORE_TICKS
+ENDPOINT_GUARD_AFTER_TICKS = ABSOLUTE_F0_ENDPOINT_GUARD_AFTER_TICKS
+MIN_VOICED_RUN_FRAMES = ABSOLUTE_F0_MIN_VOICED_RUN_FRAMES
+BRIDGE_GAP_SECONDS = ABSOLUTE_F0_BRIDGE_GAP_SECONDS
 DEFAULT_TOLERANCE_CENTS = 5.0
 _MAX_TIME_ORIGIN_SECONDS = 1_000_000_000.0
 _MAX_AUDIT_SAMPLES = 32
@@ -184,6 +196,20 @@ def build_pitch_plan(sources: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "native_pitch_sample_interval_ticks": NATIVE_PITCH_SAMPLE_INTERVAL_TICKS,
             "endpoint_guard_before_ticks": ENDPOINT_GUARD_BEFORE_TICKS,
             "endpoint_guard_after_ticks": ENDPOINT_GUARD_AFTER_TICKS,
+            "short_gap_bridge_seconds": BRIDGE_GAP_SECONDS,
+            "bridge_curve": "bounded_cubic_hermite_endpoint_trend_requires_explicit_evidence",
+            "bridge_evidence": "same note and explicit time interval covering the entire voiced_mask=false gap",
+            "unvoiced_gap_default": "retain silence break",
+            "endpoint_guard_curve": "bounded_local_trend",
+            "isolated_spike_threshold_cents": ABSOLUTE_F0_SPIKE_THRESHOLD_CENTS,
+            "isolated_spike_neighbour_span_cents": ABSOLUTE_F0_SPIKE_NEIGHBOR_SPAN_CENTS,
+            "isolated_spike_edge_guard_seconds": ABSOLUTE_F0_SPIKE_EDGE_GUARD_SECONDS,
+            "isolated_spike_policy": "interpolate only one same-note voiced frame; retain sustained offsets for review",
+            "sustained_offset_threshold_cents": ABSOLUTE_F0_SUSTAINED_OFFSET_THRESHOLD_CENTS,
+            "sustained_offset_min_duration_seconds": ABSOLUTE_F0_SUSTAINED_OFFSET_MIN_DURATION_SECONDS,
+            "sustained_offset_min_frames": ABSOLUTE_F0_SUSTAINED_OFFSET_MIN_FRAMES,
+            "sustained_offset_policy": "read_only_note_center_review; never auto-correct",
+            "sustained_offset_truth_determined": False,
             "curve_value": "absolute MIDI pitch * 100 cents",
             "silence_break_value": -100,
         },
@@ -221,10 +247,33 @@ def _validated_plan(plan: Any) -> dict[str, Any]:
         "native_pitch_sample_interval_ticks": NATIVE_PITCH_SAMPLE_INTERVAL_TICKS,
         "endpoint_guard_before_ticks": ENDPOINT_GUARD_BEFORE_TICKS,
         "endpoint_guard_after_ticks": ENDPOINT_GUARD_AFTER_TICKS,
+        "short_gap_bridge_seconds": BRIDGE_GAP_SECONDS,
+        "bridge_curve": "bounded_cubic_hermite_endpoint_trend_requires_explicit_evidence",
+        "bridge_evidence": "same note and explicit time interval covering the entire voiced_mask=false gap",
+        "unvoiced_gap_default": "retain silence break",
+        "endpoint_guard_curve": "bounded_local_trend",
+        "isolated_spike_threshold_cents": ABSOLUTE_F0_SPIKE_THRESHOLD_CENTS,
+        "isolated_spike_neighbour_span_cents": ABSOLUTE_F0_SPIKE_NEIGHBOR_SPAN_CENTS,
+        "isolated_spike_edge_guard_seconds": ABSOLUTE_F0_SPIKE_EDGE_GUARD_SECONDS,
+        "isolated_spike_policy": "interpolate only one same-note voiced frame; retain sustained offsets for review",
         "silence_break_value": -100,
     }
     for key, expected in required_algorithm.items():
         if algorithm.get(key) != expected:
+            raise ValueError(f"pitch plan 算法字段 {key} 不受支持。")
+    # These review-only fields are optional so plans created before the
+    # sustained-offset audit remain readable. New plans must still declare
+    # them accurately; changing them cannot alter behavior because the core
+    # constants above are authoritative.
+    optional_review_algorithm = {
+        "sustained_offset_threshold_cents": ABSOLUTE_F0_SUSTAINED_OFFSET_THRESHOLD_CENTS,
+        "sustained_offset_min_duration_seconds": ABSOLUTE_F0_SUSTAINED_OFFSET_MIN_DURATION_SECONDS,
+        "sustained_offset_min_frames": ABSOLUTE_F0_SUSTAINED_OFFSET_MIN_FRAMES,
+        "sustained_offset_policy": "read_only_note_center_review; never auto-correct",
+        "sustained_offset_truth_determined": False,
+    }
+    for key, expected in optional_review_algorithm.items():
+        if key in algorithm and algorithm[key] != expected:
             raise ValueError(f"pitch plan 算法字段 {key} 不受支持。")
     sources = value.get("sources")
     if not isinstance(sources, list) or not sources:
@@ -284,6 +333,13 @@ def _vocal_tracks(project: Any) -> list[Any]:
             if hasattr(track, "note_list") and hasattr(track, "edited_params")]
 
 
+def _vocal_track_index(project: Any, track: Any) -> int:
+    for index, candidate in enumerate(_vocal_tracks(project)):
+        if candidate is track:
+            return index
+    raise ValueError("目标演唱轨不在当前工程的可导出演唱轨中。")
+
+
 def _load_planned_source(row: Mapping[str, Any]) -> dict[str, Any]:
     path = _source_path(row["path"])
     data = _read_pitch(path)
@@ -304,6 +360,22 @@ def _time_sync(tempo_list: Any) -> Any:
     from libresvip.core.time_sync import TimeSynchronizer
     return TimeSynchronizer(tempo_list)
 
+
+def _note_intervals(notes: Sequence[Any], clock: Any) -> list[tuple[float, float]]:
+    intervals = []
+    for note in notes:
+        try:
+            start_tick, end_tick = int(note.start_pos), int(note.end_pos)
+        except (AttributeError, TypeError, ValueError) as error:
+            raise ValueError("当前工程含无效音符时间。") from error
+        if end_tick <= start_tick:
+            raise ValueError("当前工程含零长或倒置音符。")
+        start = float(clock.get_actual_secs_from_ticks(start_tick))
+        end = float(clock.get_actual_secs_from_ticks(end_tick))
+        if not math.isfinite(start) or not math.isfinite(end) or end <= start:
+            raise ValueError("当前工程音符的播放时间无效。")
+        intervals.append((start, end))
+    return intervals
 
 def _gate_notes(times: np.ndarray, notes: Sequence[Any], clock: Any) -> np.ndarray:
     inside = np.zeros(times.size, dtype=np.bool_)
@@ -389,128 +461,139 @@ def _install_track_pitch(track: Any, project: Any, data: Mapping[str, Any],
 
     pitch = np.asarray(data["pitch"], dtype=np.float64)
     voiced_mask = np.asarray(data["voiced_mask"], dtype=np.bool_)
-    step = float(data["time_step_seconds"])
-    times = np.arange(pitch.size, dtype=np.float64) * step + origin_seconds
     clock = _time_sync(project.song_tempo_list)
-    inside = _gate_notes(times, track.note_list, clock)
-    active = voiced_mask & np.isfinite(pitch) & inside
-    written_mask = np.zeros(pitch.size, dtype=np.bool_)
-    short_runs = 0
-    duplicate_frames = 0
-    errors: list[float] = []
-    curve_values: list[float] = []
-    source_curve_points = 0
-    runs_data: list[dict[str, Any]] = []
-    for run_index, (left, right) in enumerate(_active_runs(active)):
-        if run_index % 256 == 0:
-            check_cancel()
-        if right - left < MIN_VOICED_RUN_FRAMES:
-            short_runs += 1
-            continue
-        current: dict[int, int] = {}
-        expected_by_tick: dict[int, list[float]] = {}
-        for frame in range(left, right):
-            if frame % 4096 == 0:
-                check_cancel()
-            tick = round(clock.get_actual_ticks_from_secs(float(times[frame]))) + PITCH_AXIS_OFFSET_TICKS
-            cents = int(round(float(pitch[frame]) * 100))
-            current[tick] = cents
-            expected_by_tick.setdefault(tick, []).append(float(pitch[frame]) * 100)
-        if not current:
-            continue
-        ordered = sorted(current.items())
-        source_curve_points += len(ordered)
-        written_mask[left:right] = True
-        for tick, values in expected_by_tick.items():
-            actual = float(current[tick])
-            errors.extend(abs(actual - value) for value in values)
-            curve_values.append(actual)
-            duplicate_frames += max(0, len(values) - 1)
-        runs_data.append({
-            "left": left,
-            "right": right,
-            "ordered": ordered,
-            "first_tick": ordered[0][0],
-            "last_tick": ordered[-1][0],
-            "first_value": ordered[0][1],
-            "last_value": ordered[-1][1],
-        })
-
-    points: list[Any] = [Point.start_point()]
-    guard_before = 0
-    guard_after = 0
-    max_guard_seconds = 0.0
-    for run_index, run in enumerate(runs_data):
-        previous_last = runs_data[run_index - 1]["last_tick"] if run_index else None
-        next_first = runs_data[run_index + 1]["first_tick"] if run_index + 1 < len(runs_data) else None
-        first_tick = int(run["first_tick"])
-        last_tick = int(run["last_tick"])
-        start_guard = first_tick - ENDPOINT_GUARD_BEFORE_TICKS
-        if previous_last is not None:
-            start_guard = max(start_guard, int(previous_last) + 2)
-        if start_guard >= first_tick:
-            start_guard = first_tick
-        end_guard = last_tick + ENDPOINT_GUARD_AFTER_TICKS
-        if next_first is not None:
-            end_guard = min(end_guard, int(next_first) - 2)
-        if end_guard <= last_tick:
-            end_guard = last_tick
-        points.append(Point(start_guard - 1, -100))
-        if start_guard < first_tick:
-            points.append(Point(start_guard, int(run["first_value"])))
-            guard_before += 1
-            max_guard_seconds = max(
-                max_guard_seconds,
-                abs(float(clock.get_actual_secs_from_ticks(first_tick))
-                    - float(clock.get_actual_secs_from_ticks(start_guard))),
-            )
-        points.extend(Point(tick, value) for tick, value in run["ordered"])
-        if end_guard > last_tick:
-            points.append(Point(end_guard, int(run["last_value"])))
-            guard_after += 1
-            max_guard_seconds = max(
-                max_guard_seconds,
-                abs(float(clock.get_actual_secs_from_ticks(end_guard))
-                    - float(clock.get_actual_secs_from_ticks(last_tick))),
-            )
-        points.append(Point(end_guard + 1, -100))
-    points.append(Point.end_point())
-
+    vocal_track_index = _vocal_track_index(project, track)
+    intervals, descriptors = pitch_note_descriptors(
+        track.note_list, clock, vocal_track_index=vocal_track_index)
+    check_cancel()
+    curve = build_absolute_f0_curve(
+        pitch, voiced_mask, float(data["time_step_seconds"]), intervals,
+        clock.get_actual_ticks_from_secs, clock.get_actual_secs_from_ticks,
+        time_origin_seconds=origin_seconds,
+        axis_offset_ticks=PITCH_AXIS_OFFSET_TICKS,
+        min_voiced_run_frames=MIN_VOICED_RUN_FRAMES,
+        bridge_gap_seconds=BRIDGE_GAP_SECONDS,
+        guard_before_ticks=ENDPOINT_GUARD_BEFORE_TICKS,
+        guard_after_ticks=ENDPOINT_GUARD_AFTER_TICKS,
+        note_descriptors=descriptors,
+        source_sha256=data.get("source_sha256"),
+        vocal_track_index=vocal_track_index,
+        cancel=check_cancel,
+    )
+    check_cancel()
+    active = curve["active_mask"]
+    written_mask = curve["written_mask"]
     note_samples, missing_notes = _note_rows(
-        track.note_list, clock, times, voiced_mask, active, written_mask)
+        track.note_list, clock, curve["times"], voiced_mask, active, written_mask)
+    points = [Point.start_point()]
+    points.extend(Point(tick, value) for tick, value in curve["points"])
+    points.append(Point.end_point())
     old_curve = track.edited_params.pitch
+    errors = curve["errors"]
     report = {
         "vocal_track_index": None,
         "title": str(getattr(track, "title", "")),
+        "algorithm": curve["algorithm"],
         "notes_total": len(track.note_list),
         "notes_missing_local_reference": missing_notes,
         "local_missing_samples": note_samples[:_MAX_AUDIT_SAMPLES],
         "local_missing_truncated": len(note_samples) > _MAX_AUDIT_SAMPLES,
         "voiced_frames": int(np.count_nonzero(voiced_mask & np.isfinite(pitch))),
-        "gated_voiced_frames": int(np.count_nonzero(active)),
-        "written_frames": int(np.count_nonzero(written_mask)),
-        "curve_points": source_curve_points,
+        "gated_voiced_frames": int(curve["gated_frames"]),
+        "written_frames": int(curve["written_frames"]),
+        "curve_points": int(curve["source_points"]),
         "object_points": len(points),
-        "native_guard_points": guard_before + guard_after,
-        "native_guard_before_runs": guard_before,
-        "native_guard_after_runs": guard_after,
-        "native_guard_extension_seconds_max": _round(max_guard_seconds, 9),
+        "native_guard_points": int(curve["native_guard_points"]),
+        "native_guard_before_runs": int(curve["native_guard_before_points"]),
+        "native_guard_after_runs": int(curve["native_guard_after_points"]),
+        "native_guard_extension_seconds_max": _round(
+            curve["native_guard_extension_seconds_max"], 9),
         "native_guard_policy": (
-            f"reuse endpoint F0 for at most {ENDPOINT_GUARD_BEFORE_TICKS} ticks before "
-            f"and {ENDPOINT_GUARD_AFTER_TICKS} ticks after each voiced run; preserve -100 break"
+            "bridge only same-note voiced_mask=false gaps covered by explicit "
+            f"continuous-pitch evidence, up to {BRIDGE_GAP_SECONDS:.3f}s, with cubic Hermite; "
+            "otherwise preserve an explicit -100 break; bounded endpoint guards "
+            "continue the local measured F0 trend"
         ),
-        "runs": len(runs_data),
-        "short_runs_dropped": short_runs,
-        "duplicate_frame_collisions": duplicate_frames,
+        "runs": len(curve["raw_runs"]),
+        "curve_segments": len(curve["segments"]),
+        "bridged_gaps": int(curve["bridged_gaps"]),
+        "bridged_seconds": _round(curve["bridged_seconds"], 9),
+        "bridge_points": int(curve["bridge_points"]),
+        "short_runs_dropped": int(curve["short_runs_dropped"]),
+        "duplicate_frame_collisions": int(curve["duplicate_frame_collisions"]),
         "max_error_cents": _round(max(errors) if errors else None, 6),
         "mean_error_cents": _round(float(np.mean(errors)) if errors else None, 6),
-        "curve_pitch_span_cents": _round(float(max(curve_values) - min(curve_values))
-                                        if curve_values else None, 6),
+        "curve_pitch_span_cents": _round(curve["curve_pitch_span_cents"], 6),
+        "isolated_spike_policy": curve["isolated_spike_policy"],
+        "pitch_offset_diagnostics": curve["pitch_offset_diagnostics"],
+        "source_sha256": curve["pitch_offset_diagnostics"]["source_sha256"],
+        "gaps_retained_silent": int(curve["gaps_retained_silent"]),
+        "retained_gap_samples": curve["retained_gap_samples"],
+        "bridge_policy": curve["bridge_policy"],
         "coverage_of_voiced_frames": _round(
-            float(np.count_nonzero(written_mask))
+            float(curve["written_frames"])
             / max(1, int(np.count_nonzero(voiced_mask & np.isfinite(pitch)))), 9),
     }
     return ParamCurve(points=points), {"old_curve": old_curve, "report": report}
+
+
+def _aggregate_pitch_offset_diagnostics(
+        diagnostics: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    values = list(diagnostics)
+    warnings: list[Any] = []
+    unevaluated: list[Any] = []
+    intervals: list[Any] = []
+    for row in values:
+        warnings.extend(row.get("warnings") or ())
+        unevaluated.extend(row.get("unevaluated_notes") or ())
+        intervals.extend(row.get("not_assessed_intervals") or ())
+    warning_count = sum(int(row.get("warning_count", 0)) for row in values)
+    unevaluated_count = sum(int(row.get("unevaluated_count", 0)) for row in values)
+    ambiguous_frames = sum(int(row.get("ambiguous_note_frames", 0)) for row in values)
+    if any(row.get("status") == "review_required" for row in values):
+        status = "review_required"
+    elif not values or all(row.get("status") == "unavailable" for row in values):
+        status = "unavailable"
+    elif any(row.get("status") == "insufficient_evidence" for row in values):
+        status = "insufficient_evidence"
+    else:
+        status = "no_sustained_offset_observed"
+    source_hashes = sorted({str(row["source_sha256"]) for row in values
+                            if row.get("source_sha256")})
+    return {
+        "algorithm": "sustained-note-center-offset-v1",
+        "status": status,
+        "threshold_cents": ABSOLUTE_F0_SUSTAINED_OFFSET_THRESHOLD_CENTS,
+        "minimum_duration_seconds": ABSOLUTE_F0_SUSTAINED_OFFSET_MIN_DURATION_SECONDS,
+        "minimum_frames": ABSOLUTE_F0_SUSTAINED_OFFSET_MIN_FRAMES,
+        "source_sha256s": source_hashes,
+        "warning_count": warning_count,
+        "warnings": warnings,
+        "warnings_truncated": any(bool(row.get("warnings_truncated")) for row in values),
+        "unevaluated_count": unevaluated_count,
+        "unevaluated_notes": unevaluated,
+        "unevaluated_truncated": any(bool(row.get("unevaluated_truncated")) for row in values),
+        "not_assessed_intervals": intervals,
+        "not_assessed_intervals_truncated": any(
+            bool(row.get("not_assessed_intervals_truncated")) for row in values),
+        "ambiguous_note_frames": ambiguous_frames,
+        "edge_guard_suppressed_frames": sum(
+            int(row.get("edge_guard_suppressed_frames", 0)) for row in values),
+        "short_offset_candidates": sum(
+            int(row.get("short_offset_candidates", 0)) for row in values),
+        "truth_determined": False,
+        "automatic_change": False,
+        "statement": (
+            "持续偏移告警仅供复核音符中心或原唱 F0 线；未判断真值、未自动改音高，"
+            "也不把正常颤音、过渡或戏腔首尾无条件认定为错误。"
+        ),
+        "evidence_limits": [
+            "continuous_offset_cannot_identify_ground_truth",
+            "vibrato_or_expression_may_explain_threshold_crossing",
+            "edge_and_overlap_intervals_are_not_attributed",
+        ],
+    }
+
 
 def apply_pitch_plan(project: Any, plan: Mapping[str, Any], *,
                      cancel: Callable[[], Any] | None = None) -> dict[str, Any]:
@@ -560,9 +643,22 @@ def apply_pitch_plan(project: Any, plan: Mapping[str, Any], *,
             track.edited_params.pitch = old_curve
         raise
     track_reports = [state["report"] for _track, _curve, state, _row in prepared]
+    offset_diagnostics = _aggregate_pitch_offset_diagnostics(
+        [row["pitch_offset_diagnostics"] for row in track_reports])
+    offset_diagnostics["plan_sha256"] = checked["plan_sha256"]
     total_voiced = sum(row["voiced_frames"] for row in track_reports)
     total_written = sum(row["written_frames"] for row in track_reports)
     total_points = sum(row["curve_points"] for row in track_reports)
+    total_corrected = sum(row["isolated_spike_policy"]["corrected_frames"]
+                          for row in track_reports)
+    total_boundary_protected = sum(
+        row["isolated_spike_policy"].get("boundary_protected_frames", 0)
+        for row in track_reports)
+    total_bridge_points = sum(row["bridge_points"] for row in track_reports)
+    total_guard_points = sum(row["native_guard_points"] for row in track_reports)
+    source_files_unchanged = all(
+        before == after == row["source_sha256"]
+        for (row, _data), before, after in zip(loaded, before_hashes, after_hashes))
     result = {
         "schema_version": SCHEMA_VERSION,
         "kind": APPLY_KIND,
@@ -572,6 +668,7 @@ def apply_pitch_plan(project: Any, plan: Mapping[str, Any], *,
         "time_mapping": checked["algorithm"]["time_mapping"],
         "pitch_axis_offset_ticks": PITCH_AXIS_OFFSET_TICKS,
         "tracks": track_reports,
+        "pitch_offset_diagnostics": offset_diagnostics,
         "totals": {
             "tracks_modified": len(track_reports),
             "voiced_frames": total_voiced,
@@ -580,6 +677,12 @@ def apply_pitch_plan(project: Any, plan: Mapping[str, Any], *,
             "notes_missing_local_reference": sum(
                 row["notes_missing_local_reference"] for row in track_reports),
             "coverage_of_voiced_frames": _round(total_written / max(1, total_voiced)),
+            "isolated_spike_corrected_frames": total_corrected,
+            "boundary_protected_candidates": total_boundary_protected,
+            "sustained_offset_warnings": offset_diagnostics["warning_count"],
+            "sustained_offset_unevaluated_notes": offset_diagnostics["unevaluated_count"],
+            "bridge_points": total_bridge_points,
+            "native_guard_points": total_guard_points,
         },
         "source_verification": [
             {"vocal_track_index": int(row["vocal_track_index"]),
@@ -587,6 +690,21 @@ def apply_pitch_plan(project: Any, plan: Mapping[str, Any], *,
              "unchanged": before == after == row["source_sha256"]}
             for (row, _data), before, after in zip(loaded, before_hashes, after_hashes)
         ],
+        "fidelity": {
+            "source_npz_sha_unchanged": source_files_unchanged,
+            "raw_f0_pointwise_preserved": total_corrected == 0,
+            "rendered_curve_pointwise_lossless": False,
+            "isolated_spike_corrected_frames": total_corrected,
+            "boundary_protected_candidates": total_boundary_protected,
+            "sustained_offset_warnings": offset_diagnostics["warning_count"],
+            "sustained_offsets_auto_corrected": 0,
+            "pitch_offset_truth_determined": False,
+            "bridge_points": total_bridge_points,
+            "native_guard_points": total_guard_points,
+            "statement": (
+                "源 NPZ 未改写；导出曲线含声明过的 F0 修正、时间量化及必要的端点/桥接点，不能表述为逐帧无损。"
+            ),
+        },
         "project_tempo": [[int(tempo.position), _round(float(tempo.bpm), 9)]
                           for tempo in project.song_tempo_list],
         "inference_performed": False,
@@ -680,10 +798,22 @@ def _evaluate_verify_candidate(
         pitch = np.asarray(data["pitch"], dtype=np.float64)
         mask = np.asarray(data["voiced_mask"], dtype=np.bool_)
         origin = float(row["time_origin_seconds"])
-        times = np.arange(pitch.size, dtype=np.float64) * float(data["time_step_seconds"]) + origin
+        step = float(data["time_step_seconds"])
+        times = np.arange(pitch.size, dtype=np.float64) * step + origin
         clock = candidate["clock"]
-        inside = _gate_notes(times, track.note_list, clock)
-        active = mask & np.isfinite(pitch) & inside
+        vocal_track_index = _vocal_track_index(project, track)
+        intervals, descriptors = pitch_note_descriptors(
+            track.note_list, clock, vocal_track_index=vocal_track_index)
+        owner = assign_note_owners(times, intervals)
+        offset_diagnostics = analyze_sustained_pitch_offsets(
+            pitch, mask, owner, step, intervals, descriptors, origin,
+            source_sha256=data.get("source_sha256"),
+            vocal_track_index=vocal_track_index,
+        )
+        pitch, isolated_spike_policy = stabilize_isolated_pitch_spikes(
+            pitch, mask, owner, step, origin, note_intervals=intervals)
+        inside = owner >= 0
+        active = mask & np.isfinite(pitch) & (pitch >= 0) & (pitch <= 127) & inside
         eligible = np.zeros(pitch.size, dtype=np.bool_)
         boundary = np.zeros(pitch.size, dtype=np.bool_)
         short_runs = 0
@@ -739,8 +869,13 @@ def _evaluate_verify_candidate(
             "curve_runs": len(segments),
             "expected_runs": runs,
             "short_runs_not_required": short_runs,
+            "ambiguous_note_frames": int(np.count_nonzero(owner == -2)),
+            "isolated_spike_policy": isolated_spike_policy,
+            "pitch_offset_diagnostics": offset_diagnostics,
         })
         source_results.append(source_summary)
+    offset_diagnostics = _aggregate_pitch_offset_diagnostics(
+        [row["pitch_offset_diagnostics"] for row in source_results])
     summary = _error_summary(all_errors)
     summary.update({
         "interior": _error_summary(interior_errors),
@@ -756,6 +891,16 @@ def _evaluate_verify_candidate(
         "boundary_within_tolerance": sum(
             row["boundary_within_tolerance"] for row in source_results),
         "curve_points": sum(row["curve_points"] for row in source_results),
+        "ambiguous_note_frames": sum(
+            row["ambiguous_note_frames"] for row in source_results),
+        "isolated_spike_corrected_frames": sum(
+            row["isolated_spike_policy"]["corrected_frames"]
+            for row in source_results),
+        "boundary_protected_candidates": sum(
+            row["isolated_spike_policy"].get("boundary_protected_frames", 0)
+            for row in source_results),
+        "sustained_offset_warnings": offset_diagnostics["warning_count"],
+        "sustained_offset_unevaluated_notes": offset_diagnostics["unevaluated_count"],
     })
     return {
         "skip_ticks": 0,
@@ -763,6 +908,7 @@ def _evaluate_verify_candidate(
                   for row in candidate["tempos"]],
         "summary": summary,
         "sources": source_results,
+        "pitch_offset_diagnostics": offset_diagnostics,
     }
 
 def verify_pitch_plan(project: Any, plan: Mapping[str, Any], *,
@@ -843,6 +989,11 @@ def verify_pitch_plan(project: Any, plan: Mapping[str, Any], *,
         if current != row["source_sha256"]:
             raise ValueError("pitch NPZ 在核验期间发生变化。")
         hashes_after.append(current)
+    corrected_frames = int(best["summary"]["isolated_spike_corrected_frames"])
+    boundary_protected = int(best["summary"]["boundary_protected_candidates"])
+    ambiguous_frames = int(best["summary"]["ambiguous_note_frames"])
+    offset_diagnostics = best["pitch_offset_diagnostics"]
+    offset_diagnostics["plan_sha256"] = checked["plan_sha256"]
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": VERIFY_KIND,
@@ -861,6 +1012,7 @@ def verify_pitch_plan(project: Any, plan: Mapping[str, Any], *,
         },
         "summary": best["summary"],
         "sources": best["sources"],
+        "pitch_offset_diagnostics": offset_diagnostics,
         "time_mapping": {
             "automatic_prefix_search": False,
             "explicit_playback_tempo_required": True,
@@ -871,10 +1023,75 @@ def verify_pitch_plan(project: Any, plan: Mapping[str, Any], *,
              "unchanged": before == after == row["source_sha256"]}
             for row, before, after in zip(sources, hashes_before, hashes_after)
         ],
+        "fidelity": {
+            "source_npz_sha_unchanged": all(
+                before == after == row["source_sha256"]
+                for row, before, after in zip(sources, hashes_before, hashes_after)),
+            "raw_f0_pointwise_preserved": corrected_frames == 0,
+            "rendered_curve_pointwise_lossless": False,
+            "isolated_spike_corrected_frames": corrected_frames,
+            "boundary_protected_candidates": boundary_protected,
+            "ambiguous_note_frames": ambiguous_frames,
+            "sustained_offset_warnings": offset_diagnostics["warning_count"],
+            "sustained_offsets_auto_corrected": 0,
+            "pitch_offset_truth_determined": False,
+            "statement": (
+                "回读按声明的有效 F0（含单帧尖峰修正）核验；源 NPZ SHA 不变，但导出曲线本身不能称为逐帧无损。"
+            ),
+        },
         "inference_performed": False,
         "synthesis_performed": False,
         "provider_access_performed": False,
     }
+
+def bridge_evidence_by_pitch_runs(data: Mapping[str, Any], notes: Sequence[Any], clock: Any,
+                                  *, min_frames: int = 3) -> list[tuple[float, float]]:
+    """Return only gaps with independent voiced evidence inside one note.
+
+    A caller can use this helper after upstream pitch inference or a bounded
+    acoustic check supplies a second, trustworthy pitch track. A raw NPZ's
+    ``voiced_mask=false`` remains silence and is never evidence by itself.
+    """
+    evidence = data.get("bridge_evidence")
+    if evidence is None:
+        return []
+    if not isinstance(evidence, Mapping):
+        raise ValueError("bridge_evidence 必须是按声部索引的对象。")
+    by_voice = evidence.get("by_vocal_track_index")
+    if not isinstance(by_voice, Mapping):
+        return []
+    index = data["vocal_track_index"]
+    item = by_voice.get(str(index), by_voice.get(index))
+    if item is None:
+        return []
+    if not isinstance(item, Mapping):
+        raise ValueError("bridge_evidence 声部项必须是对象。")
+    pitch = np.asarray(item.get("midi_pitch"), dtype=np.float64)
+    mask = np.asarray(item.get("voiced_mask"), dtype=np.bool_)
+    step = float(item.get("time_step_seconds"))
+    origin = float(item.get("time_origin_seconds", 0.))
+    if pitch.ndim != 1 or mask.shape != pitch.shape or not math.isfinite(step) or not 0 < step <= .1:
+        raise ValueError("bridge_evidence 音高数组或时间步长无效。")
+    if not math.isfinite(origin):
+        raise ValueError("bridge_evidence 时间偏移无效。")
+    times = np.arange(pitch.size, dtype=np.float64) * step + origin
+    owner = assign_note_owners(times, _note_intervals(notes, clock))
+    supported = mask & np.isfinite(pitch) & (owner >= 0)
+    runs = []
+    indices = np.flatnonzero(supported)
+    if indices.size:
+        boundaries = np.flatnonzero((np.diff(indices) != 1)
+                                    | (owner[indices[1:]] != owner[indices[:-1]])) + 1
+        runs = [group for group in np.split(indices, boundaries) if group.size >= min_frames]
+    output = []
+    for left, right in zip(runs, runs[1:]):
+        if owner[left[0]] != owner[right[0]]:
+            continue
+        start = float(times[int(left[-1]) + 1])
+        end = float(times[int(right[0])])
+        if end > start:
+            output.append((start, end))
+    return output
 
 def restore_native_pitch(path: Any, fmt: str, project: Any, plan: Any, *,
                          cancel: Callable[[], Any] | None = None) -> dict[str, Any]:
@@ -977,7 +1194,13 @@ def restore_native_pitch(path: Any, fmt: str, project: Any, plan: Any, *,
                        for value in (tick * TICK_RATE, delta)],
         }
         rows.append({"vocal_track_index": index, "points": len(points), "runs": len(runs),
-                     "replaced_generated_pitch_controls": replaced_controls})
+                     "replaced_generated_pitch_controls": replaced_controls,
+                     "baseline_source": "native_svp_note_pitch_and_transition_model",
+                     "target_curve": "measured_absolute_f0",
+                     "delta_encoding": "target_curve_minus_recomputed_native_baseline",
+                     "note_pitch_edits_covered_by": (
+                         "note identity and native baseline are rebuilt from the current project"
+                     )})
     for source in saved["sources"]:
         if _sha256_file(Path(source["path"])) != source["source_sha256"]:
             raise ValueError("pitch NPZ 在原生音高重建期间发生变化。")

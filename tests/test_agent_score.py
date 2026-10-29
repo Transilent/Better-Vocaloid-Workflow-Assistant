@@ -311,6 +311,30 @@ class AgentScorePatchTests(unittest.TestCase):
             {"note_id": second["note_id"], "duration_tick": 360},
         ]
 
+    def test_noop_fields_do_not_block_valid_note_changes(self):
+        with self.temporary("agent-score-noop-") as temporary:
+            root = Path(temporary)
+            source = write_main_fixture(root / "input.mid")
+            original = source.read_bytes()
+            score = read_score(source)
+            first = note_by_pitch(score, 60)
+            edit = {"note_id": first["note_id"], "pitch": 62,
+                    "onset_tick": first["onset_tick"]}
+            plan = plan_patch(source, score["source_sha256"], [edit])
+            self.assertEqual(plan["diff"]["changed_count"], 1)
+            self.assertEqual(plan["diff"]["unchanged_count"], 1)
+            self.assertEqual(plan["diff"]["unchanged_fields"],
+                             [{"note_id": first["note_id"], "field": "onset_tick"}])
+            receipt = apply_patch(source, plan, root / "mixed")
+            self.assertEqual(note_by_pitch(read_score(receipt["candidate_path"]), 62)["onset_tick"], first["onset_tick"])
+            unchanged = plan_patch(source, score["source_sha256"],
+                                   [{"note_id": first["note_id"], "pitch": first["pitch"]}])
+            self.assertEqual(unchanged["diff"]["changed_count"], 0)
+            self.assertEqual(unchanged["diff"]["unchanged_count"], 1)
+            receipt = apply_patch(source, unchanged, root / "unchanged")
+            self.assertEqual(Path(native_path(receipt["candidate_path"])).read_bytes(), original)
+            self.assertEqual(source.read_bytes(), original)
+
     def test_plan_and_apply_preserve_all_unedited_events_and_source(self):
         with self.temporary("agent-score-apply-") as temporary:
             root = Path(temporary)

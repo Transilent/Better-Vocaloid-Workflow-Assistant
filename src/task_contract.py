@@ -13,7 +13,7 @@ import re
 import threading
 import time
 
-from common import app_path, atomic_json, file_hash, saved_path
+from common import app_path, atomic_json, file_hash, native_path, saved_path
 
 SCHEMA = 1
 MAX_BYTES = 8 * 1024**2
@@ -36,14 +36,15 @@ class ContractError(ValueError):
 
 def _json(path, default=None):
     path = Path(path)
-    if not path.exists():
+    io_path = Path(native_path(path))
+    if not io_path.exists():
         return copy.deepcopy(default if default is not None else {})
-    if path.is_symlink() or getattr(path.lstat(), 'st_file_attributes', 0) & 1024:
+    if io_path.is_symlink() or getattr(io_path.lstat(), 'st_file_attributes', 0) & 1024:
         raise ContractError('任务记录不能是链接：' + path.name)
-    if path.stat().st_size > MAX_BYTES:
+    if io_path.stat().st_size > MAX_BYTES:
         raise ContractError('任务记录超出大小限制：' + path.name)
     try:
-        value = json.loads(path.read_text(encoding='utf-8'))
+        value = json.loads(io_path.read_text(encoding='utf-8'))
         if not isinstance(value, dict):
             raise ValueError()
         return value
@@ -63,7 +64,8 @@ def _sha(value):
 def _safe(path, boundary=None):
     path = Path(path).absolute()
     for part in (path, *path.parents):
-        if part.is_symlink() or (part.exists() and getattr(part.lstat(), 'st_file_attributes', 0) & 1024):
+        io_part = Path(native_path(part))
+        if io_part.is_symlink() or (io_part.exists() and getattr(io_part.lstat(), 'st_file_attributes', 0) & 1024):
             raise ContractError('文件路径包含链接或重解析点：' + str(path))
         if boundary and part == boundary:
             break
@@ -157,7 +159,7 @@ def _locked(job):
     job = Path(job).resolve()
     with _LOCK:
         lock_path = _safe(job / 'contract.lock', job)
-        with lock_path.open('a+b') as stream:
+        with open(native_path(lock_path), 'a+b') as stream:
             deadline = time.monotonic() + 20
             while True:
                 stream.seek(0)

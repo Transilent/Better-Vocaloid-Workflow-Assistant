@@ -38,7 +38,13 @@ _RECEIPT_KIND = "vwa-lyrics-patch-receipt"
 _DIFF_SCHEMA = "vwa-lyrics-diff-v1"
 _SCORE_MAPPING = "agent_score-midi-v1"
 _MAX_TICK = 0x0FFFFFFF
-_EDIT_KEYS = {"note_id", "lyric", "operation"}
+_TEXT_EDIT_KEYS = frozenset({"note_id", "lyric", "operation"})
+_MOVE_EVENT_KEYS = frozenset({"event_id", "target_note_id", "operation"})
+_DELETE_EVENT_KEYS = frozenset({"event_id", "operation"})
+_EVENT_EDIT_OPERATIONS = frozenset({"move_event", "delete_event"})
+_LYRIC_EVENT_ID_RE = re.compile(
+    r"^lyr-([0-9a-f]{64})-t(0|[1-9][0-9]*)-e(0|[1-9][0-9]*)$"
+)
 _PLAN_KEYS = {
     "schema_version", "kind", "source_path", "source_sha256", "format", "midi_type",
     "ticks_per_beat", "edits", "diff", "expected_candidate_sha256",
@@ -150,6 +156,66 @@ def _event_fingerprint(message: Any) -> str:
         raise ValueError(f"MIDI 事件无法稳定序列化：{exc}") from exc
 
 
+def _lyric_event_id(source_sha256: str, track_index: int, event_index: int) -> str:
+    """Return a readable identity bound to the complete source SHA and event."""
+    source_sha = _normalise_sha(source_sha256, "source_sha256")
+    if type(track_index) is not int or track_index < 0:
+        raise ValueError("track_index 必须是非负整数。")
+    if type(event_index) is not int or event_index < 0:
+        raise ValueError("event_index 必须是非负整数。")
+    return f"lyr-{source_sha}-t{track_index}-e{event_index}"
+
+
+def _resolve_lyric_event_id(parsed: Any, event_id: Any) -> tuple[Any, Any]:
+    if not isinstance(event_id, str) or not event_id:
+        raise ValueError("event_id 必须是非空字符串。")
+    if len(event_id) > 180:
+        raise ValueError("event_id 超过 180 字符上限。")
+    match = _LYRIC_EVENT_ID_RE.fullmatch(event_id)
+    if match is None:
+        raise ValueError("event_id 格式无效；必须使用 lyrics_read 返回的完整 event_id。")
+    source_sha, track_text, event_text = match.groups()
+    if source_sha != parsed.source_sha256:
+        raise ValueError("event_id 属于另一份源 SHA；当前事件身份已过期，请重新 lyrics_read。")
+    track_index, event_index = int(track_text), int(event_text)
+    if track_index >= len(parsed.tracks):
+        raise ValueError(f"event_id 的轨道 {track_index} 不存在。")
+    track = parsed.tracks[track_index]
+    if event_index >= len(track.events):
+        raise ValueError(f"event_id 的事件序号 {event_index} 在轨道 {track_index} 不存在。")
+    event = track.events[event_index]
+    if event.message.type != "lyrics":
+        raise ValueError("event_id 指向的不是 lyrics meta 事件。")
+    if _lyric_event_id(source_sha, track_index, event_index) != event_id:
+        raise ValueError("event_id 不是规范化的歌词事件身份。")
+    return track, event
+
+
+def _event_payload(
+    source_sha256: str,
+    track_index: int,
+    event_index: int,
+    tick: int,
+    message: Any,
+    *,
+    alignment: str | None = None,
+    note_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    row = {
+        "event_id": _lyric_event_id(source_sha256, track_index, event_index),
+        "event_index": event_index,
+        "track_index": track_index,
+        "tick": tick,
+        "type": message.type,
+        "text": message.text,
+    }
+    if alignment is not None:
+        row["alignment"] = alignment
+    if note_ids is not None:
+        row["note_ids"] = list(note_ids)
+    return row
+
+
 def _meta_payload(message: Any, *, tick: int, event_index: int) -> dict[str, Any]:
     row: dict[str, Any] = {
         "event_index": event_index, "tick": tick, "type": message.type,
@@ -231,6 +297,22 @@ def _alignment_counts(statuses: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def _ambiguous_group_keys(parsed: Any) -> set[tuple[int, int]]:
+    """Return track/onset groups that still have competing notes or events."""
+    groups: set[tuple[int, int]] = set()
+    for track in parsed.tracks:
+        by_onset: dict[int, list[Any]] = defaultdict(list)
+        for note in track.notes:
+            by_onset[note.onset_tick].append(note)
+        onsets = sorted(by_onset)
+        for index, onset in enumerate(onsets):
+            following = onsets[index + 1] if index + 1 < len(onsets) else track.end_tick + 1
+            events = [row for row in track.lyrics if onset <= row["tick"] < following]
+            if len(by_onset[onset]) > 1 or len(events) > 1:
+                groups.add((track.index, onset))
+    return groups
+
+
 def read_lyrics(path, language="zh") -> dict:
     """Read MIDI lyric evidence without changing the source file."""
     language = _validate_language(language)
@@ -245,6 +327,14 @@ def read_lyrics(path, language="zh") -> dict:
         evidence = alignment[row["track_index"]]["notes"][row["note_id"]]
         value["lyric_alignment"] = evidence["status"]
         value["competing_lyric_event_indexes"] = list(evidence["event_indexes"])
+        value["competing_lyric_event_ids"] = [
+            _lyric_event_id(source_sha, row["track_index"], event_index)
+            for event_index in evidence["event_indexes"]
+        ]
+        value["lyric_event_id"] = (
+            _lyric_event_id(source_sha, row["track_index"], row["lyric_event_index"])
+            if row.get("lyric_event_index") is not None else None
+        )
         note_rows.append(value)
 
     track_rows: list[dict[str, Any]] = []
@@ -255,6 +345,9 @@ def read_lyrics(path, language="zh") -> dict:
         for lyric in track.lyrics:
             status = evidence["events"][lyric["event_index"]]
             row = {
+                "event_id": _lyric_event_id(
+                    source_sha, track.index, lyric["event_index"],
+                ),
                 "track_index": track.index, "track_name": track.name,
                 "event_index": lyric["event_index"], "tick": lyric["tick"],
                 "seconds": lyric["seconds"], "text": lyric["text"],
@@ -316,6 +409,7 @@ def read_lyrics(path, language="zh") -> dict:
             "mapping": _SCORE_MAPPING,
             "schema_version": score["schema_version"],
             "note_id_basis": "note-{source_sha[:16]}-t{track_index}-n{ordinal}",
+            "lyric_event_id_basis": "lyr-{complete_source_sha}-t{track_index}-e{event_index}",
             "association": "one lyric meta event and one note onset in the same track interval",
         },
         "notes": note_rows,
@@ -356,6 +450,7 @@ def _comparison_tokens(text: str) -> list[str]:
 
 def _hint(
     code: str, severity: str, message: str, *, note_ids: list[str] | None = None,
+    event_ids: list[str] | None = None,
     track_index: int | None = None, tick: int | None = None,
     seconds: float | None = None, lyric: str | None = None,
     expected: str | None = None, actual: str | None = None,
@@ -364,6 +459,8 @@ def _hint(
         "code": code, "severity": severity, "message": message,
         "note_ids": list(note_ids or []),
     }
+    if event_ids:
+        row["event_ids"] = list(dict.fromkeys(event_ids))
     if track_index is not None:
         row["track_index"] = track_index
     if tick is not None:
@@ -465,7 +562,9 @@ def review_lyrics(path, reference_text=None, language="zh") -> dict:
             hints.append(_hint(
                 "ambiguous_lyric_alignment", "info",
                 "该音符与歌词事件存在同 onset 多音符或多事件竞争，不能自动归属。",
-                note_ids=[note["note_id"]], track_index=note["track_index"],
+                note_ids=[note["note_id"]],
+                event_ids=note.get("competing_lyric_event_ids", []),
+                track_index=note["track_index"],
                 tick=note["onset_tick"], seconds=note["onset_seconds"],
             ))
             continue
@@ -474,7 +573,8 @@ def review_lyrics(path, reference_text=None, language="zh") -> dict:
         if not lyric.strip():
             hints.append(_hint(
                 "empty_lyric", "warning", "已关联歌词事件没有可见文本。",
-                note_ids=[note["note_id"]], track_index=note["track_index"],
+                note_ids=[note["note_id"]], event_ids=[note["lyric_event_id"]],
+                track_index=note["track_index"],
                 tick=note["onset_tick"], seconds=note["onset_seconds"], lyric=lyric,
             ))
             continue
@@ -482,14 +582,16 @@ def review_lyrics(path, reference_text=None, language="zh") -> dict:
             hints.append(_hint(
                 "placeholder_lyric", "warning",
                 "歌词文本形似占位符，请由调用方结合上下文确认。",
-                note_ids=[note["note_id"]], track_index=note["track_index"],
+                note_ids=[note["note_id"]], event_ids=[note["lyric_event_id"]],
+                track_index=note["track_index"],
                 tick=note["onset_tick"], seconds=note["onset_seconds"], lyric=lyric,
             ))
         if _is_continuation_or_punctuation(lyric):
             hints.append(_hint(
                 "continuation_mark_ambiguous", "info",
                 "该事件仅含标点或延音标记，可能表示跨音符延续；不会自动判错。",
-                note_ids=[note["note_id"]], track_index=note["track_index"],
+                note_ids=[note["note_id"]], event_ids=[note["lyric_event_id"]],
+                track_index=note["track_index"],
                 tick=note["onset_tick"], seconds=note["onset_seconds"], lyric=lyric,
             ))
 
@@ -516,14 +618,16 @@ def review_lyrics(path, reference_text=None, language="zh") -> dict:
     for event in read["orphan_lyric_events"]:
         hints.append(_hint(
             "orphan_lyric_event", "warning", "歌词事件没有可唯一关联的音符 onset。",
-            note_ids=[], track_index=event["track_index"], tick=event["tick"],
+            note_ids=[], event_ids=[event["event_id"]],
+            track_index=event["track_index"], tick=event["tick"],
             seconds=event["seconds"], lyric=event["text"],
         ))
     for event in read["ambiguous_lyric_events"]:
         hints.append(_hint(
             "ambiguous_lyric_event", "info",
             "歌词事件与同 onset 的多个音符竞争，未被自动归属。",
-            note_ids=event["note_ids"], track_index=event["track_index"],
+            note_ids=event["note_ids"], event_ids=[event["event_id"]],
+            track_index=event["track_index"],
             tick=event["tick"], seconds=event["seconds"], lyric=event["text"],
         ))
 
@@ -562,6 +666,7 @@ def review_lyrics(path, reference_text=None, language="zh") -> dict:
 
     hints.sort(key=lambda row: (
         row.get("track_index", -1), row.get("tick", -1), row["code"],
+        tuple(row.get("event_ids", [])),
         tuple(row.get("note_ids", [])), row.get("message", ""),
     ))
     return {
@@ -573,6 +678,7 @@ def review_lyrics(path, reference_text=None, language="zh") -> dict:
         "note_count": len(read["notes"]),
         "lyric_event_count": len(read["lyric_events"]),
         "coverage": read["coverage"],
+        "lyric_events": [dict(row) for row in read["lyric_events"]],
         "reference": reference_evidence,
         "hint_count": len(hints),
         "hints": hints,
@@ -583,30 +689,97 @@ def review_lyrics(path, reference_text=None, language="zh") -> dict:
     }
 
 
-def _normalise_edits(parsed: Any, alignment: dict[int, dict[str, Any]], edits: Any) -> list[dict[str, str]]:
+def _normalise_edits(
+    parsed: Any, alignment: dict[int, dict[str, Any]], edits: Any,
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     if not isinstance(edits, list) or not edits:
         raise ValueError("edits 必须是非空数组。")
     notes = _score._notes_by_id(parsed)
-    seen: set[str] = set()
+    seen_notes: set[str] = set()
+    seen_events: set[str] = set()
+    seen_targets: set[str] = set()
     rows: list[dict[str, str]] = []
+    event_rows: list[dict[str, str]] = []
     for index, edit in enumerate(edits):
         if not isinstance(edit, Mapping):
             raise ValueError(f"edits[{index}] 必须是对象。")
         keys = set(edit)
-        if keys != _EDIT_KEYS:
-            missing = sorted(_EDIT_KEYS - keys)
-            extra = sorted(keys - _EDIT_KEYS)
+        operation = edit.get("operation")
+        if operation in _EVENT_EDIT_OPERATIONS:
+            expected_keys = (_MOVE_EVENT_KEYS if operation == "move_event"
+                             else _DELETE_EVENT_KEYS)
+            if keys != expected_keys:
+                missing = sorted(expected_keys - keys)
+                extra = sorted(keys - expected_keys)
+                raise ValueError(
+                    f"edits[{index}] {operation} 字段不匹配；缺少={missing}，额外={extra}。"
+                )
+            event_id = edit.get("event_id")
+            track, source_event = _resolve_lyric_event_id(parsed, event_id)
+            if event_id in seen_events:
+                raise ValueError(f"重复的 event_id：{event_id}。")
+            seen_events.add(event_id)
+            if operation == "delete_event":
+                event_rows.append({"event_id": event_id, "operation": "delete_event"})
+                continue
+            target_note_id = edit.get("target_note_id")
+            if not isinstance(target_note_id, str) or not target_note_id:
+                raise ValueError(f"edits[{index}].target_note_id 必须是非空字符串。")
+            if target_note_id in seen_targets:
+                raise ValueError(f"重复的移动目标 note_id：{target_note_id}。")
+            seen_targets.add(target_note_id)
+            target = notes.get(target_note_id)
+            if target is None:
+                raise ValueError(f"未知或过期 target_note_id：{target_note_id}。")
+            if target.track_index != track.index:
+                raise ValueError("move_event 只能在同一轨道内移动，不能跨音轨改变归属。")
+            if target.end_tick is None or target.off_event_index is None:
+                raise ValueError(f"目标音符 {target_note_id} 没有唯一关闭事件。")
+            notes_at_onset = [
+                note for note in notes.values()
+                if note.track_index == track.index
+                and note.onset_tick == target.onset_tick
+            ]
+            if len(notes_at_onset) != 1:
+                raise ValueError(
+                    f"目标音符 {target_note_id} 的 onset 有多个音符，移动归属会歧义。"
+                )
+            following_onsets = sorted({
+                note.onset_tick for note in notes.values()
+                if note.track_index == track.index
+                and note.onset_tick > target.onset_tick
+            })
+            interval_end = (following_onsets[0]
+                            if following_onsets else track.end_tick + 1)
+            events = [
+                row for row in track.lyrics
+                if target.onset_tick <= row["tick"] < interval_end
+                and row["event_index"] != source_event.event_index
+            ]
+            if events:
+                raise ValueError(
+                    f"目标音符 {target_note_id} 的 onset 区间已有其他歌词事件；"
+                    "请先通过独立 plan 清理竞争事件。"
+                )
+            event_rows.append({
+                "event_id": event_id,
+                "target_note_id": target_note_id,
+                "operation": "move_event",
+            })
+            continue
+        if keys != _TEXT_EDIT_KEYS:
+            missing = sorted(_TEXT_EDIT_KEYS - keys)
+            extra = sorted(keys - _TEXT_EDIT_KEYS)
             raise ValueError(
                 f"edits[{index}] 字段必须恰为 note_id/lyric/operation；缺少={missing}，额外={extra}。"
             )
         note_id = edit.get("note_id")
         lyric = edit.get("lyric")
-        operation = edit.get("operation")
         if not isinstance(note_id, str) or not note_id:
             raise ValueError(f"edits[{index}].note_id 必须是非空字符串。")
-        if note_id in seen:
+        if note_id in seen_notes:
             raise ValueError(f"重复的 note_id：{note_id}。")
-        seen.add(note_id)
+        seen_notes.add(note_id)
         if not isinstance(lyric, str):
             raise ValueError(f"edits[{index}].lyric 必须是字符串。")
         if "\x00" in lyric:
@@ -626,8 +799,6 @@ def _normalise_edits(parsed: Any, alignment: dict[int, dict[str, Any]], edits: A
             message = track.events[note.lyric_event_index].message
             if message.type != "lyrics":
                 raise ValueError(f"音符 {note_id} 关联事件不是 lyrics。")
-            if note.lyric == lyric:
-                raise ValueError(f"音符 {note_id} 的歌词没有实际变化。")
         else:
             if evidence["status"] != "missing" or note.lyric is not None:
                 raise ValueError(
@@ -646,8 +817,33 @@ def _normalise_edits(parsed: Any, alignment: dict[int, dict[str, Any]], edits: A
             "lyric": lyric,
             "operation": str(operation),
         })
+    touched_event_keys = {
+        (track.index, event.event_index)
+        for edit in event_rows
+        for track, event in [_resolve_lyric_event_id(parsed, edit["event_id"])]
+    }
+    text_event_keys = {
+        (notes[edit["note_id"]].track_index, notes[edit["note_id"]].lyric_event_index)
+        for edit in rows
+        if edit["operation"] == "replace"
+    }
+    if touched_event_keys & text_event_keys:
+        raise ValueError(
+            "同一歌词事件不能同时由 note 级 replace 与 move_event/delete_event 修改；"
+            "请明确选择事件身份操作或文本操作。"
+        )
+    changed_text = [
+        edit for edit in rows
+        if edit["operation"] == "insert" or notes[edit["note_id"]].lyric != edit["lyric"]
+    ]
+    if event_rows and changed_text:
+        raise ValueError(
+            "move_event/delete_event 不能与 note 级 replace/insert 同批提交；"
+            "请先生成事件修补 plan，回读候选后再修改歌词文本。"
+        )
     rows.sort(key=lambda row: row["note_id"])
-    return rows
+    event_rows.sort(key=lambda row: (row["operation"], row["event_id"]))
+    return rows, event_rows
 
 
 def _build_lyrics_patch(parsed: Any, edits: Any) -> tuple[dict[str, Any], bytes]:
@@ -662,11 +858,39 @@ def _build_lyrics_patch(parsed: Any, edits: Any) -> tuple[dict[str, Any], bytes]
             raise ValueError(f"音符 {note.note_id} 没有唯一关闭事件，无法安全应用歌词补丁。")
 
     alignment = _alignment_by_track(parsed)
-    normalized = _normalise_edits(parsed, alignment, edits)
+    normalized, event_edits = _normalise_edits(parsed, alignment, edits)
+    unchanged = [
+        edit for edit in normalized
+        if edit["operation"] == "replace"
+        and notes[edit["note_id"]].lyric == edit["lyric"]
+    ]
+    unchanged_ids = {edit["note_id"] for edit in unchanged}
+    changed = [edit for edit in normalized if edit["note_id"] not in unchanged_ids]
+    unchanged_events = [
+        edit for edit in event_edits
+        if edit["operation"] == "move_event"
+        and _resolve_lyric_event_id(parsed, edit["event_id"])[1].tick
+        == notes[edit["target_note_id"]].onset_tick
+    ]
+    unchanged_event_ids = {edit["event_id"] for edit in unchanged_events}
+    changed_events = [
+        edit for edit in event_edits
+        if edit["event_id"] not in unchanged_event_ids
+    ]
     event_updates: dict[tuple[int, int], tuple[int, Any]] = {}
+    event_removals: set[tuple[int, int]] = set()
     insertions: dict[int, list[tuple[int, int, Any]]] = defaultdict(list)
 
-    for edit in normalized:
+    for edit in changed_events:
+        track, source_event = _resolve_lyric_event_id(parsed, edit["event_id"])
+        key = (track.index, source_event.event_index)
+        if edit["operation"] == "delete_event":
+            event_removals.add(key)
+            continue
+        target = notes[edit["target_note_id"]]
+        event_updates[key] = (target.onset_tick, source_event.message)
+
+    for edit in changed:
         note = notes[edit["note_id"]]
         track = parsed.tracks[note.track_index]
         if edit["operation"] == "replace":
@@ -688,6 +912,8 @@ def _build_lyrics_patch(parsed: Any, edits: Any) -> tuple[dict[str, Any], bytes]
     for track in parsed.tracks:
         items: list[tuple[int, int, Any]] = []
         for event in track.events:
+            if (track.index, event.event_index) in event_removals:
+                continue
             tick, message = event_updates.get(
                 (track.index, event.event_index),
                 (event.tick, event.message),
@@ -717,6 +943,14 @@ def _build_lyrics_patch(parsed: Any, edits: Any) -> tuple[dict[str, Any], bytes]
     except (OSError, ValueError, UnicodeError) as exc:
         raise ValueError(f"生成歌词候选 MIDI 失败：{exc}") from exc
     candidate_bytes = buffer.getvalue()
+    effective_changes = len(changed) + len(changed_events)
+    if effective_changes == 0:
+        # Keep a byte-identical candidate when all requested edits are no-ops.
+        # Re-read under the same source SHA guard used by planning and apply.
+        _, original_bytes, current_sha = _score._read_input(Path(parsed.path_text))
+        if current_sha != parsed.source_sha256:
+            raise ValueError("MIDI 源文件 SHA-256 已变化；请重新读取歌词。")
+        candidate_bytes = original_bytes
     candidate_parsed = _score._parse_midi(candidate_bytes, "<lyrics-candidate>")
     if candidate_parsed.integrity_issues:
         raise ValueError("歌词候选未通过 MIDI 结构验证，已拒绝生成计划。")
@@ -758,16 +992,68 @@ def _build_lyrics_patch(parsed: Any, edits: Any) -> tuple[dict[str, Any], bytes]
     desired_lyrics = {note_id: note.lyric for note_id, note in notes.items()}
     for edit in normalized:
         desired_lyrics[edit["note_id"]] = edit["lyric"]
+    candidate_alignment = _alignment_by_track(candidate_parsed)
+    ambiguous_groups_before = _ambiguous_group_keys(parsed)
+    ambiguous_groups_after = _ambiguous_group_keys(candidate_parsed)
+    new_ambiguous_groups = ambiguous_groups_after - ambiguous_groups_before
+    if new_ambiguous_groups:
+        rendered = ', '.join(f't{track}@{tick}' for track, tick in sorted(new_ambiguous_groups))
+        raise ValueError(f"歌词候选产生新的 onset 归属歧义组：{rendered}。")
+    expected_event_texts: dict[tuple[int, int], str] = {}
+    for edit in changed_events:
+        if edit["operation"] == "delete_event":
+            continue
+        track, source_event = _resolve_lyric_event_id(parsed, edit["event_id"])
+        target = notes[edit["target_note_id"]]
+        expected_event_texts[(track.index, target.onset_tick)] = source_event.message.text
+    for edit in changed_events:
+        _, source_event = _resolve_lyric_event_id(parsed, edit["event_id"])
+        if edit["operation"] == "delete_event":
+            continue
+        target = notes[edit["target_note_id"]]
+        candidate_events = [
+            row for row in candidate_parsed.tracks[target.track_index].lyrics
+            if row["tick"] == target.onset_tick
+        ]
+        if (len(candidate_events) != 1
+                or candidate_events[0]["text"] != source_event.message.text):
+            raise ValueError(
+                f"移动后目标音符 {target.note_id} 的 onset 含有零个或多个歌词事件。"
+            )
+        candidate_note = candidate_notes[(target.track_index, target.ordinal)]
+        aligned_event = candidate_alignment[target.track_index]["events"][
+            candidate_events[0]["event_index"]]
+        if (aligned_event["status"] != "aligned"
+                or aligned_event["note_ids"] != [candidate_note.note_id]):
+            raise ValueError(f"移动后事件未唯一归属目标音符 {target.note_id}。")
+        if candidate_note.lyric != source_event.message.text:
+            raise ValueError(
+                f"移动后目标音符 {target.note_id} 没有唯一歌词事件，或文本不符。"
+            )
+    for track_index, tick in expected_event_texts:
+        events = [row for row in candidate_parsed.tracks[track_index].lyrics
+                  if row["tick"] == tick]
+        if len(events) != 1:
+            raise ValueError(f"轨道 {track_index} 的移动目标 onset {tick} 必须恰有一个歌词事件。")
+    affected_note_ids = set()
+    for edit in changed_events:
+        track, source_event = _resolve_lyric_event_id(parsed, edit["event_id"])
+        affected_note_ids.update(
+            alignment[track.index]["events"][source_event.event_index]["note_ids"])
+        if edit["operation"] == "move_event":
+            affected_note_ids.add(edit["target_note_id"])
     for note in notes.values():
         candidate_note = candidate_notes[(note.track_index, note.ordinal)]
-        if candidate_note.lyric != desired_lyrics[note.note_id]:
+        if note.note_id not in affected_note_ids and candidate_note.lyric != desired_lyrics[note.note_id]:
             raise ValueError(f"候选 MIDI 中音符 {note.note_id} 的确定性歌词关联不符合计划。")
 
     source_lyric_count = sum(len(track.lyrics) for track in parsed.tracks)
     candidate_lyric_count = sum(len(track.lyrics) for track in candidate_parsed.tracks)
-    insert_count = sum(1 for edit in normalized if edit["operation"] == "insert")
-    replace_count = sum(1 for edit in normalized if edit["operation"] == "replace")
-    if candidate_lyric_count != source_lyric_count + insert_count:
+    insert_count = sum(1 for edit in changed if edit["operation"] == "insert")
+    replace_count = sum(1 for edit in changed if edit["operation"] == "replace")
+    if candidate_lyric_count != (
+            source_lyric_count + insert_count
+            - sum(1 for edit in event_edits if edit["operation"] == "delete_event")):
         raise ValueError("候选 MIDI 歌词事件数量与计划不一致。")
 
     positions, points = _score._tempo_timeline(
@@ -775,7 +1061,7 @@ def _build_lyrics_patch(parsed: Any, edits: Any) -> tuple[dict[str, Any], bytes]
         parsed.midi.ticks_per_beat,
     )
     operations: list[dict[str, Any]] = []
-    for edit in normalized:
+    for edit in changed:
         note = notes[edit["note_id"]]
         candidate_note = candidate_notes[(note.track_index, note.ordinal)]
         note_track = parsed.tracks[note.track_index]
@@ -784,6 +1070,9 @@ def _build_lyrics_patch(parsed: Any, edits: Any) -> tuple[dict[str, Any], bytes]
         if note.lyric_event_index is not None:
             source_event = note_track.events[note.lyric_event_index]
             before_event = {
+                "event_id": _lyric_event_id(
+                    parsed.source_sha256, note.track_index, note.lyric_event_index,
+                ),
                 "event_index": note.lyric_event_index,
                 "tick": source_event.tick,
                 "text": source_event.message.text,
@@ -792,6 +1081,11 @@ def _build_lyrics_patch(parsed: Any, edits: Any) -> tuple[dict[str, Any], bytes]
         if candidate_note.lyric_event_index is not None:
             event = candidate_track.events[candidate_note.lyric_event_index]
             after_event = {
+                "event_id": _lyric_event_id(
+                    candidate_parsed.source_sha256,
+                    note.track_index,
+                    candidate_note.lyric_event_index,
+                ),
                 "event_index": candidate_note.lyric_event_index,
                 "tick": event.tick,
                 "text": event.message.text,
@@ -802,6 +1096,14 @@ def _build_lyrics_patch(parsed: Any, edits: Any) -> tuple[dict[str, Any], bytes]
             "path": f"/tracks/{note.track_index}/notes/{note.note_id}/lyric",
             "note_id": note.note_id,
             "track_index": note.track_index,
+            "target_note_id": note.note_id,
+            "source_event_id": before_event.get("event_id") if before_event else None,
+            "candidate_event_id": after_event.get("event_id") if after_event else None,
+            "before_tick": before_event.get("tick") if before_event else None,
+            "after_tick": after_event.get("tick") if after_event else None,
+            "alignment_before": alignment[note.track_index]["notes"][note.note_id]["status"],
+            "alignment_after": candidate_alignment[note.track_index]["notes"][
+                candidate_note.note_id]["status"],
             "tick": note.onset_tick,
             "onset_seconds": round(_score._seconds_at(
                 note.onset_tick,
@@ -809,6 +1111,65 @@ def _build_lyrics_patch(parsed: Any, edits: Any) -> tuple[dict[str, Any], bytes]
                 points,
                 parsed.midi.ticks_per_beat,
             ), 9),
+            "before": before_event,
+            "after": after_event,
+        })
+
+    for edit in changed_events:
+        track, source_event = _resolve_lyric_event_id(parsed, edit["event_id"])
+        event_index = source_event.event_index
+        source_status = alignment[track.index]["events"][event_index]
+        before_event = {
+            "event_id": edit["event_id"],
+            "event_index": event_index,
+            "tick": source_event.tick,
+            "text": source_event.message.text,
+            "alignment": source_status["status"],
+            "note_ids": list(source_status["note_ids"]),
+        }
+        after_event = None
+        target_note_id = edit.get("target_note_id")
+        candidate_event_id = None
+        after_tick = None
+        alignment_after = None
+        if edit["operation"] == "move_event":
+            target = notes[target_note_id]
+            candidate_event = next(
+                row for row in candidate_parsed.tracks[target.track_index].lyrics
+                if row["tick"] == target.onset_tick
+            )
+            candidate_event_id = _lyric_event_id(
+                candidate_parsed.source_sha256,
+                target.track_index,
+                candidate_event["event_index"],
+            )
+            after_tick = candidate_event["tick"]
+            candidate_note = candidate_notes[(target.track_index, target.ordinal)]
+            alignment_after = candidate_alignment[target.track_index]["events"][
+                candidate_event["event_index"]]["status"]
+            after_event = _event_payload(
+                candidate_parsed.source_sha256,
+                target.track_index,
+                candidate_event["event_index"],
+                candidate_event["tick"],
+                candidate_parsed.tracks[target.track_index].events[
+                    candidate_event["event_index"]].message,
+                alignment=alignment_after,
+                note_ids=[candidate_note.note_id],
+            )
+        operations.append({
+            "op": edit["operation"],
+            "operation": edit["operation"],
+            "path": f"/tracks/{track.index}/lyric-events/{edit['event_id']}",
+            "event_id": edit["event_id"],
+            "source_event_id": edit["event_id"],
+            "candidate_event_id": candidate_event_id,
+            "track_index": track.index,
+            "target_note_id": target_note_id,
+            "before_tick": source_event.tick,
+            "after_tick": after_tick,
+            "alignment_before": source_status["status"],
+            "alignment_after": alignment_after,
             "before": before_event,
             "after": after_event,
         })
@@ -823,12 +1184,37 @@ def _build_lyrics_patch(parsed: Any, edits: Any) -> tuple[dict[str, Any], bytes]
         "lyric_event_count_after": candidate_lyric_count,
         "replace_count": replace_count,
         "insert_count": insert_count,
-        "unchanged_lyric_event_count": source_lyric_count - replace_count,
+        "move_event_count": sum(1 for edit in event_edits if edit["operation"] == "move_event"),
+        "delete_event_count": sum(1 for edit in event_edits if edit["operation"] == "delete_event"),
+        "moved_count": sum(1 for edit in event_edits if edit["operation"] == "move_event"),
+        "deleted_count": sum(1 for edit in event_edits if edit["operation"] == "delete_event"),
+        "changed_event_count": len(changed_events),
+        "unchanged_event_count": len(unchanged_events),
+        "unchanged_event_ids": sorted(unchanged_event_ids),
+        "destination_onset_count": len(expected_event_texts),
+        "candidate_sha256": _sha256(candidate_bytes),
+        "ambiguous_event_count_before": sum(
+            status["status"] == "ambiguous"
+            for track in alignment.values() for status in track["events"].values()),
+        "ambiguous_event_count_after": sum(
+            status["status"] == "ambiguous"
+            for track in candidate_alignment.values() for status in track["events"].values()),
+        "ambiguous_groups_before": len(ambiguous_groups_before),
+        "ambiguous_groups_resolved": len(
+            ambiguous_groups_before - ambiguous_groups_after),
+        "remaining_ambiguous_groups": len(ambiguous_groups_after),
+        "changed_count": len(changed),
+        "unchanged_count": len(unchanged),
+        "unchanged_note_ids": sorted(unchanged_ids),
+        "unchanged_lyric_event_count": (
+            source_lyric_count - replace_count
+            - sum(1 for edit in event_edits if edit["operation"] == "delete_event")),
     }
     warnings = [
         "补丁只修改列出的 lyrics meta 事件；音符 timing、pitch、channel、velocity、tempo、其他 meta 和控制事件均保持语义不变。",
         "源文件不会被覆盖；候选是独立文件并绑定完整计划哈希。",
-        "候选源 SHA 会变化，因此 agent_score note ID 也会按当前修订规则变化；后续操作应重新读取候选。",
+        "move_event 只移动到同轨、目标 onset 唯一且原 onset 无其他歌词事件的音符；候选生成后仍会重新验证唯一归属。",
+        "有实际修改时候选源 SHA 和 agent_score note ID 可能变化；后续操作应重新读取候选。",
     ]
     plan_payload = {
         "schema_version": _SCHEMA_VERSION,
@@ -838,7 +1224,7 @@ def _build_lyrics_patch(parsed: Any, edits: Any) -> tuple[dict[str, Any], bytes]
         "format": "midi",
         "midi_type": parsed.midi.type,
         "ticks_per_beat": parsed.midi.ticks_per_beat,
-        "edits": normalized,
+        "edits": [*normalized, *event_edits],
         "diff": {"schema": _DIFF_SCHEMA, "operations": operations},
         "expected_candidate_sha256": _sha256(candidate_bytes),
         "validation": validation,
@@ -850,7 +1236,7 @@ def _build_lyrics_patch(parsed: Any, edits: Any) -> tuple[dict[str, Any], bytes]
 
 
 def plan_lyrics_patch(path, expected_sha256, edits) -> dict:
-    """Plan strict lyrics meta-event replacements/insertions on a MIDI file."""
+    """Plan note text edits and exact lyric-event moves/deletions on a MIDI file."""
     source, _raw, source_sha, parsed = _load_midi_source(path)
     expected = _normalise_sha(expected_sha256, "expected_sha256")
     if source_sha != expected:

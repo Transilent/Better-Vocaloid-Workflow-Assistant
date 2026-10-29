@@ -236,4 +236,15 @@ with tempfile.TemporaryDirectory(dir=APP/'work', prefix='task-contract-') as tem
     assert any(path==render_folder for path,_,_ in contract.protected_references([job]))
     with patch.object(storage,'job_directories',return_value=[job]):
         assert job/'temp' not in [r['path'] for r in storage.candidates()]
+    # Deep Windows workspace paths must still lock and read their own task
+    # index, without bypassing path/reparse checks or changing its identity.
+    deep_root = root / ('long-path-' + 'a' * 95)
+    deep_job = deep_root / ('b' * 95) / 'job'
+    Path(common.native_path(deep_job)).mkdir(parents=True)
+    assert len(str(deep_job / 'contract.lock')) > 260
+    with contract._locked(deep_job):
+        contract._write(deep_job, {'schema': contract.SCHEMA, 'entries': {}, 'stages': {}})
+    assert contract.read(deep_job)['entries'] == {}
+    assert deep_root.resolve().parent == root.resolve()
+    shutil.rmtree(common.native_path(deep_root))
 print('PASS: producer receipts, partial commits, manual revision tracking, state transitions, cleanup references, bounds and concurrent commits')

@@ -789,18 +789,12 @@ def _normalise_edits(edits: Any, notes: dict[str, _NoteRecord]) -> list[dict[str
         row: dict[str, Any] = {"note_id": note_id}
         if "pitch" in changes:
             pitch = _strict_edit_int(edit["pitch"], "pitch", minimum=0, maximum=127)
-            if pitch == note.pitch:
-                raise ValueError(f"音符 {note_id} 的 pitch 没有实际变化。")
             row["pitch"] = pitch
         if "onset_tick" in changes:
             onset = _strict_edit_int(edit["onset_tick"], "onset_tick", minimum=0, maximum=_MAX_TICK)
-            if onset == note.onset_tick:
-                raise ValueError(f"音符 {note_id} 的 onset_tick 没有实际变化。")
             row["onset_tick"] = onset
         if "duration_tick" in changes:
             duration = _strict_edit_int(edit["duration_tick"], "duration_tick", minimum=1, maximum=_MAX_TICK)
-            if duration == note.duration_tick:
-                raise ValueError(f"音符 {note_id} 的 duration_tick 没有实际变化。")
             row["duration_tick"] = duration
         new_onset = row.get("onset_tick", note.onset_tick)
         new_duration = row.get("duration_tick", note.duration_tick)
@@ -838,9 +832,22 @@ def _build_patch(
         if note.end_tick is not None and note.end_tick <= note.onset_tick:
             raise ValueError(f"音符 {note.note_id} 时长不为正，无法规划补丁。")
     normalized = _normalise_edits(edits, notes)
+    effective = []
+    unchanged_fields = []
+    for edit in normalized:
+        note = notes[edit["note_id"]]
+        row = {"note_id": edit["note_id"]}
+        for field in _EDIT_FIELDS:
+            if field in edit:
+                if edit[field] == getattr(note, field):
+                    unchanged_fields.append({"note_id": note.note_id, "field": field})
+                else:
+                    row[field] = edit[field]
+        if len(row) > 1:
+            effective.append(row)
 
     new_values: dict[str, dict[str, Any]] = {}
-    for edit in normalized:
+    for edit in effective:
         note = notes[edit["note_id"]]
         new_values[note.note_id] = {
             "pitch": edit.get("pitch", note.pitch),
@@ -882,7 +889,7 @@ def _build_patch(
     event_updates: dict[tuple[int, int], tuple[int, Any]] = {}
     moved_lyrics: list[dict[str, Any]] = []
     if move_attached_lyrics:
-        for edit in normalized:
+        for edit in effective:
             if "onset_tick" not in edit:
                 continue
             note = notes[edit["note_id"]]
@@ -935,7 +942,7 @@ def _build_patch(
                         f"音符 {note.note_id} 的歌词归属不唯一；拒绝猜测并移动歌词。"
                     )
 
-    for edit in normalized:
+    for edit in effective:
         note = notes[edit["note_id"]]
         track = parsed.tracks[note.track_index]
         values = new_values[note.note_id]
@@ -1001,6 +1008,11 @@ def _build_patch(
     except (OSError, ValueError, UnicodeError) as exc:
         raise ValueError(f"生成候选 MIDI 失败：{exc}") from exc
     candidate_bytes = buffer.getvalue()
+    if not effective:
+        _, original_bytes, current_sha = _read_input(Path(parsed.path_text))
+        if current_sha != parsed.source_sha256:
+            raise ValueError("源文件 SHA-256 已变化；请重新 read_score 后再规划补丁。")
+        candidate_bytes = original_bytes
     candidate_parsed = _parse_midi(candidate_bytes, "<candidate>")
     if candidate_parsed.integrity_issues:
         raise ValueError("候选 MIDI 未通过结构验证，已拒绝生成计划。")
@@ -1077,7 +1089,7 @@ def _build_patch(
 
     operations = []
     computed_changes = []
-    for edit in normalized:
+    for edit in effective:
         note = notes[edit["note_id"]]
         before = {
             "pitch": note.pitch,
@@ -1111,7 +1123,7 @@ def _build_patch(
         warnings = [
             "本计划只修改列出的音符事件；tempo、轨道、通道、力度、歌词和其余 meta/事件保持原值。",
         ]
-    if any("onset_tick" in edit or "duration_tick" in edit for edit in normalized):
+    if any("onset_tick" in edit or "duration_tick" in edit for edit in effective):
         if move_attached_lyrics:
             warnings.append("歌词移动仅限原本唯一关联到时间被编辑音符的 lyrics 事件；歧义会拒绝计划。")
         else:
@@ -1137,6 +1149,9 @@ def _build_patch(
             "schema": _DIFF_SCHEMA,
             "operations": operations,
             "computed_changes": computed_changes,
+            "changed_count": len(operations),
+            "unchanged_count": len(unchanged_fields),
+            "unchanged_fields": unchanged_fields,
         },
         "expected_candidate_sha256": _sha256(candidate_bytes),
         "structural_changes": structural_changes,

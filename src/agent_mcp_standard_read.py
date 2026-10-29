@@ -174,6 +174,20 @@ class LyricsRead(StrictModel):
     language: Literal['zh', 'ja'] = 'zh'
 
 
+class LyricTimelineRead(StrictModel):
+    action: Literal['lyric_timeline_read']
+    artifact_id: Annotated[str, Field(
+        min_length=1, max_length=80,
+        description='由 lyric_timeline_fetch/import 登记的歌词时间轴 artifact。',
+    )]
+    limit: Annotated[int, Field(ge=1, le=200)] = 100
+    offset: Annotated[int, Field(ge=0)] = 0
+    include_words: bool = Field(
+        default=False,
+        description='YRC 等逐词时间轴是否在本页附带 words；默认只返回词元数量。',
+    )
+
+
 class LyricTimelineReview(StrictModel):
     action: Literal['lyric_timeline_review']
     score_artifact_id: str
@@ -240,6 +254,7 @@ EvidenceRequest = Annotated[
     | ScoreReview
     | ContextRead
     | LyricsRead
+    | LyricTimelineRead
     | LyricTimelineReview
     | LyricsReview
     | ReferencePitchReview
@@ -371,11 +386,16 @@ def register(mcp, control, workflow, invoke):
     async def vwa_evidence(request: EvidenceRequest) -> Result:
         """读取 MIDI、歌词、参考与工作流的有界核对证据。
 
-        action 为原工具名去掉 vwa_：score_read, score_review, context_read,
-        lyrics_read, lyric_timeline_review, lyrics_review,
+        action 为动作名（沿用原工具名去掉 vwa_；lyric_timeline_read 是新增
+        标准只读动作）：score_read, score_review, context_read, lyrics_read,
+        lyric_timeline_read, lyric_timeline_review, lyrics_review,
         reference_pitch_review, reference_audio_read, pronunciation_read,
         workflow_review, workflow_style_review。读取经原 Control/Workflow
         分页、SHA 和阶段校验，并保留 worker 调用记录；参考证据不是真值。
+        lyric_timeline_read 返回 line_index、起止秒、text、estimated、provider
+        和版本核验状态；读取不会绑定工作流、
+        自动重排或改写歌词。新歌曲若已有核对后的正式歌词，应优先在准备阶段
+        随 options.lyrics 输入；外部搜索、抓取和读取都不是必须步骤。
         reference_audio_read(make_excerpt=true) 会创建摘录操作，须改走 vwa_run。
         """
         if isinstance(request, ScoreRead):
@@ -397,6 +417,14 @@ def register(mcp, control, workflow, invoke):
                 control.lyrics_read,
                 request.artifact_id,
                 language=request.language,
+            )
+        if isinstance(request, LyricTimelineRead):
+            return await invoke(
+                control.lyric_timeline_read,
+                request.artifact_id,
+                request.limit,
+                request.offset,
+                request.include_words,
             )
         if isinstance(request, LyricTimelineReview):
             return await invoke(

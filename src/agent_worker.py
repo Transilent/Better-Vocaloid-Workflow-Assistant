@@ -90,6 +90,10 @@ def dispatch(control, action, arguments):
         result=normalize_timeline(value,format_hint=path.suffix[1:] if path.suffix.lower()!='.json' else None,origin=origin)
         if file_hash(path)!=before:raise ControlError('stale_artifact','歌词来源在读取时改变。')
         return {'timeline':result,'raw':text,'raw_format':path.suffix[1:],'origin':origin}
+    if action=='lyric_timeline_read':
+        from agent_lyric_timeline import read_timeline
+        return read_timeline(path,limit=arguments.get('limit',100),offset=arguments.get('offset',0),
+            include_words=arguments.get('include_words',False))
     if action=='lyric_timeline_review':
         from agent_lyric_timeline import review_timeline
         reference=safe_path(arguments['timeline_path'],[control.state])

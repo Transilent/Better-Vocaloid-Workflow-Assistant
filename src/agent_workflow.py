@@ -287,6 +287,153 @@ class Workflow:
                 raise ControlError('invalid_export_options', '导出选项 project_name 必须是不含路径分隔符的非空短文本。')
         return normalized
 
+    @staticmethod
+    def _score_vocal_tracks(score):
+        """Count worker-verified scopes; the SDK server has no mido/agent_score import."""
+        tracks = {}
+        pairing_unverified = False
+        for note in score.get('notes', []):
+            pairing_unverified = pairing_unverified or bool(note.get('pairing_ambiguous'))
+            if note.get('end_tick') is None or int(note.get('duration_tick') or 0) <= 0:
+                continue
+            key = (note['track_index'], note.get('channel', 0))
+            tracks[key] = tracks.get(key, 0) + 1
+        return [
+            {'midi_track_index': track_index, 'channel': channel, 'note_count': note_count}
+            for (track_index, channel), note_count in sorted(tracks.items())
+        ], not pairing_unverified
+
+    def _preflight_export_options(self, value, options, *, require_reviewed=False):
+        """Check public options against the exact reviewed score before rendering."""
+        options = self._normalize_initial_export_options(options) or {}
+        artifact_id = value.get('score_artifact_id')
+        if not artifact_id:
+            return options, [], False
+        artifact = self.control.artifact(artifact_id)
+        if require_reviewed:
+            reviewed_sha256 = value.get('reviewed_sha256')
+            receipt = value.get('review_receipt')
+            if not reviewed_sha256 or not isinstance(receipt, dict):
+                raise ControlError('review_required', '导出前必须完成并保存当前 MIDI 的核对结果。')
+            if (receipt.get('artifact_id') != artifact_id
+                    or receipt.get('source_sha256') != reviewed_sha256
+                    or receipt.get('caller_reviewed') is not True):
+                raise ControlError('review_receipt_invalid',
+                                   '核对回执与当前 MIDI 或工作流版本不一致，请重新核对。')
+        if value.get('reviewed_sha256') and artifact['sha256'] != value['reviewed_sha256']:
+            raise ControlError('review_invalidated', '核对后 MIDI 已改变，请重新核对。')
+
+        track_names = options.get('track_names')
+        track_count_requested = (
+            (track_names is not None and 'svp' in value['request']['formats'])
+            or 'pitch_artifact_id' in options
+            or bool(options.get('pitch_bindings')))
+        if track_count_requested:
+            score = self.control.score_read(artifact_id)
+            if score.get('source_sha256') != artifact['sha256']:
+                raise ControlError('stale_artifact', '乐谱在参数预检期间改变，请重新读取工作流。')
+            tracks, track_count_verified = self._score_vocal_tracks(score)
+        else:
+            tracks, track_count_verified = [], None
+        if (track_count_verified and 'svp' in value['request']['formats']
+                and track_names is not None and len(track_names) != len(tracks)):
+            raise ControlError(
+                'track_names_mismatch',
+                'track_names 只对应演唱轨；伴奏需通过 instrumental_artifact_id 或 '
+                'instrumental_source_job_id 单独指定。',
+                {'expected': len(tracks), 'actual': len(track_names),
+                 'midi_track_scopes': copy.deepcopy(tracks),
+                 'track_count_source': 'control.score_read',
+                 'order_verified_by_preflight': False,
+                 'remediation': '按 LibreSVIP 实际演唱轨顺序提供等量名称；'
+                                '本预检只核验数量，伴奏名称不写入 track_names。'},
+            )
+
+        requested_pitch = []
+        if 'pitch_artifact_id' in options:
+            requested_pitch.append((0, options['pitch_artifact_id']))
+        for row in options.get('pitch_bindings', []):
+            index = row.get('vocal_track_index', 0)
+            if track_count_verified and index >= len(tracks):
+                raise ControlError(
+                    'invalid_pitch_bindings',
+                    'pitch_bindings 的 vocal_track_index 超出当前 MIDI 演唱轨范围。',
+                    {'expected_max': len(tracks) - 1, 'actual': index,
+                     'midi_track_scopes': copy.deepcopy(tracks),
+                     'track_count_source': 'control.score_read'},
+                )
+            requested_pitch.append((index, row['pitch_artifact_id']))
+        for index, pitch_artifact_id in requested_pitch:
+            try:
+                pitch = self.control.artifact(pitch_artifact_id)
+            except ControlError as error:
+                raise ControlError(
+                    'wrong_pitch_source',
+                    '连续音高来源不存在或已改变；请重新导入并核对参考音高。',
+                    {'artifact_id': pitch_artifact_id, 'vocal_track_index': index,
+                     'cause': error.code},
+                ) from error
+            if pitch.get('kind') != 'reference_pitch':
+                raise ControlError(
+                    'wrong_pitch_source',
+                    'pitch_artifact_id 与 pitch_bindings 只能引用已校验的参考音高产物。',
+                    {'artifact_id': pitch_artifact_id,
+                     'vocal_track_index': index, 'actual_kind': pitch.get('kind')},
+                )
+        return options, tracks, track_count_verified
+
+    def _start_export(self, value, export_options=None, *, operation=None, retry=False):
+        """Create a fresh plan from reviewed source; callers still own export review."""
+        public_options = (export_options if export_options is not None
+                          else value.get('export_options', {}))
+        public_options, tracks, track_count_verified = self._preflight_export_options(
+            value, public_options, require_reviewed=True)
+        options = {'language': value['request']['options'].get('language', 'zh'),
+                   **public_options}
+        if (value.get('job_id') and options.get('include_instrumental', True) is not False
+                and not any(key in options for key in
+                            ('instrumental_artifact_id', 'instrumental_source_job_id'))):
+            options['instrumental_source_job_id'] = value['job_id']
+        pitch_job = value.get('job_id') or value.get('pitch_source_job_id')
+        if (pitch_job and options.get('preserve_pitch', True)
+                and not any(key in options for key in
+                            ('pitch_bindings', 'pitch_artifact_id', 'pitch_source_job_id'))):
+            options['pitch_source_job_id'] = pitch_job
+
+        artifact = self.control.artifact(value['score_artifact_id'])
+        plan = self.control.make_plan('export', artifact['id'],
+                                      formats=value['request']['formats'], options=options)
+        previous_operation = operation
+        attempt = int(value.get('attempt', 0)) + (1 if retry else 0)
+        operation = self.control.start_plan(
+            plan['id'], 'export',
+            value['id'] + '-export-' + str(attempt) + '-' + str(value['revision']))
+        changes = {'stage': 'exporting', 'active_plan_id': plan['id'],
+                   'operation_id': operation['id'], 'attempt': attempt,
+                   'export_source_sha256': artifact['sha256'],
+                   'export_preflight': {
+                       'track_count_verified': track_count_verified,
+                       'midi_track_scopes': copy.deepcopy(tracks),
+                       'order_verified_by_preflight': False,
+                   },
+                   'unusable_operation_id': None, 'stage_error': None}
+        if export_options is not None:
+            changes['export_options'] = public_options
+        if retry and previous_operation is not None:
+            previous = {
+                'attempt': value.get('attempt', 0),
+                'revision': value['revision'],
+                'plan_id': value.get('active_plan_id'),
+                'operation_id': value.get('operation_id'),
+                'state': previous_operation.get('state'),
+                'error': copy.deepcopy(previous_operation.get('error')),
+                'stage_error': copy.deepcopy(value.get('stage_error')),
+                'export_options': copy.deepcopy(value.get('export_options', {})),
+            }
+            changes['export_attempt_history'] = (
+                copy.deepcopy(value.get('export_attempt_history', [])) + [previous])[-32:]
+        self._write(value, 'export_started' if not retry else 'export_repaired', **changes)
+
     def create(self, source='', options=None, brief='', reference_lyrics='',
                score_artifact_id=None, formats=None, idempotency_key=None, preparation_job_id=None,review_mode='full',
                initial_export_options=None):
@@ -399,6 +546,19 @@ class Workflow:
             next_step={'tool':'vwa_workflow_clone','arguments':{**arguments,'reason':'从保留证据新建可编辑工作流'},
                        'reason':'workflow_'+value['lifecycle']}
         elif operation and operation['state'] in ('failed','cancelled','interrupted') and value.get('score_artifact_id'):
+            error = value.get('stage_error') or operation.get('error')
+            error_code = error.get('code') if isinstance(error, dict) else None
+            if stage == 'exporting' and error_code in (
+                    'track_names_mismatch','invalid_pitch_bindings','wrong_pitch_source'):
+                next_step['repair'] = {
+                    'tool': 'vwa_workflow_advance',
+                    'required_arguments': {
+                        **arguments, 'retry': True,
+                        'export_options': copy.deepcopy(value.get('export_options', {})),
+                    },
+                    'reason': 'reuse_reviewed_source_with_corrected_export_options',
+                    'instruction': '修正当前导出参数后显式重试；无需重新核对音符和歌词。',
+                }
             next_step['alternatives']=[{'tool':'vwa_workflow_rebind_score',
                 'required_arguments':{**arguments,'score_artifact_id':'art_corrected','reason':'修正后重新核对'},
                 'reason':'retry_repeats_the_saved_plan_rebind_uses_a_new_score'}]
@@ -636,10 +796,18 @@ class Workflow:
         with self._lock(identifier):
             value = self._expected(identifier, revision)
             stage = value['stage']
+            prepared_options = None
             if export_options is not None:
-                if not isinstance(export_options,dict) or stage not in ('created','review','reviewed'):
-                    raise ControlError('wrong_stage','导出选项需在开始导出前设置。')
-                value=self._write(value,'export_options_set',export_options=copy.deepcopy(export_options))
+                if stage not in ('created','review','reviewed','exporting'):
+                    raise ControlError('wrong_stage','导出选项只能在开始导出、已核对或失败导出处设置。')
+                prepared_options = self._normalize_initial_export_options(export_options)
+                if stage == 'review' and value.get('score_artifact_id'):
+                    self._preflight_export_options(
+                        value, prepared_options,
+                        require_reviewed=prepared_options.get('track_names') is not None
+                        and 'svp' in value['request']['formats'])
+                if stage in ('created','review'):
+                    value=self._write(value,'export_options_set',export_options=prepared_options)
             if stage == 'created':
                 created = {'job_id':value['job_id']} if value.get('job_id') else self.control.preparation_create(value['preparation_plan_id'])
                 operation = self.control.preparation_start(created['job_id'], None, identifier+'-prepare-0')
@@ -649,6 +817,22 @@ class Workflow:
                 operation = self.control.operation_get(value['operation_id'])
                 if operation['state'] in ('queued', 'running'):
                     return self.get(identifier)
+                if stage == 'exporting':
+                    retryable = (operation['state'] != 'succeeded'
+                                 or value.get('unusable_operation_id') == operation['id'])
+                    if retryable:
+                        if not retry:
+                            if export_options is not None:
+                                raise ControlError(
+                                    'retry_required',
+                                    '失败导出修正参数后需同时明确传入 retry=true。')
+                            return self.get(identifier)
+                        self._start_export(value, prepared_options, operation=operation, retry=True)
+                        return self.get(identifier)
+                    if export_options is not None:
+                        raise ControlError(
+                            'operation_result_consumption_required',
+                            '当前导出操作已成功，请先消费结果；不能直接重建计划。')
                 if operation['state'] != 'succeeded' or value.get('unusable_operation_id') == operation['id']:
                     if not retry:
                         return self.get(identifier)
@@ -666,8 +850,9 @@ class Workflow:
                         else:
                             new = self.control.start_plan(value['active_plan_id'],
                                 'export' if stage == 'exporting' else 'style', identifier+'-'+stage+'-'+str(attempt))
-                        self._write(value, 'operation_retried', operation_id=new['id'], attempt=attempt,
-                                    unusable_operation_id=None, stage_error=None)
+                        changes = {'operation_id':new['id'], 'attempt':attempt,
+                                   'unusable_operation_id':None, 'stage_error':None}
+                        self._write(value, 'operation_retried', **changes)
                 elif stage == 'preparing':
                     result = operation['result']
                     files = result['receipt'].get('files', [])
@@ -721,18 +906,7 @@ class Workflow:
             elif stage == 'review':
                 return self.get(identifier)
             elif stage == 'reviewed':
-                artifact = self.control.artifact(value['score_artifact_id'])
-                if artifact['sha256'] != value['reviewed_sha256']:
-                    raise ControlError('review_invalidated', '核对后 MIDI 已改变，请重新核对。')
-                options={'language':value['request']['options'].get('language','zh'),**value.get('export_options',{})}
-                if value.get('job_id') and not any(k in options for k in ('instrumental_artifact_id','instrumental_source_job_id')):
-                    options['instrumental_source_job_id']=value['job_id']
-                pitch_job = value.get('job_id') or value.get('pitch_source_job_id')
-                if pitch_job and options.get('preserve_pitch', True) and not any(k in options for k in ('pitch_bindings','pitch_artifact_id','pitch_source_job_id')):
-                    options['pitch_source_job_id'] = pitch_job
-                plan = self.control.make_plan('export', artifact['id'], formats=value['request']['formats'],options=options)
-                operation = self.control.start_plan(plan['id'], 'export', identifier+'-export-'+str(revision))
-                self._write(value, 'export_started', stage='exporting', active_plan_id=plan['id'], operation_id=operation['id'])
+                self._start_export(value, prepared_options)
             elif stage == 'project_ready':
                 if not self._export_accepted(value):
                     if export_review is None:

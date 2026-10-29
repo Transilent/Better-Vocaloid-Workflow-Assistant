@@ -1,8 +1,8 @@
-# VWA 本机 Agent / MCP 接口
+# VWA 本机 Agent / MCP 历史接口与动作映射
 
-本文保留 **legacy 兼容模式的 61 个 stdio 工具**及其详细业务契约；启动服务时显式选择 `--profile legacy`。新的默认 standard 模式及其 12 个入口见 [精简接口说明](AgentMCPStandard.zh-CN.md)。两个模式复用同一业务层，但工具名称不同；切换模式后应重新连接并核对服务返回的实际工具目录。旧工作流、MIDI、F0 来源和原有审核规则不会因接口改名而被删除。
+本文保留原 **61 个 stdio 工具名称及其详细业务契约**，用于核对历史记录和迁移旧调用。当前服务固定注册 [12 个任务入口](AgentMCPStandard.zh-CN.md)，不再接受 `--profile legacy`，也不会把 61 个名称作为公开工具再次提供。旧工作流、MIDI、F0 来源、任务、账号和原有审核规则不会因接口收敛而被删除。
 
-以下工具名、示例和 `vwa_system_capabilities` 均属于 legacy 模式。标准模式的能力从 `vwa_status` 查询；实际能力、业务代码身份、接口身份和格式保真以当前连接的回执为准。
+下表和历史示例中的工具名不再是可直接调用的目录项，而是当前 `request.action` 的动作来源。服务处理历史工作流或底层 `next` 时，会先把旧名称归一为动作，再按当前动作分组生成对应的 12 工具请求；只转换协议字段，不改写歌词、标题、理由或任意用户载荷。能力应从 `vwa_status(request.action="system_capabilities")` 查询，并以当前实际回执为准。
 
 `vwa_assets_import` 也可导入授权目录内的伴奏 WAV，支持整数 PCM 与浮点 WAV，按流式摘要生成独立快照；其 artifact 可用于 `instrumental_artifact_id`。`vwa_reference_import(kind="audio")` 用于整数 PCM 参考测量与摘录，不能用它替代浮点伴奏导入。伴奏首版上限为 2 GiB。
 
@@ -74,7 +74,7 @@ MCP 是可选运行环境；VWA GUI 和推理 Python 不需要安装 MCP SDK。�
 }
 ```
 
-`formats` 省略时为 `["svp"]`。可显式包含不重复的 `svp`、`ustx`、`vsqx`；有非空 `brief` 时必须包含 `svp`，因为调用方风格语义只写入 SVP 风格链路。`review_mode` 省略时默认为 `full` 整曲审批；读取支持分页和紧凑摘要，Agent 应读完所需谱面及疑点后提交一次有依据的整曲决定。显式 `segments` 保留逐段核验与修改后重读，`legacy` 保持旧客户端兼容。整曲审批不表示自动接受未知读音或转换损失。
+`formats` 省略时为 `["svp"]`。可显式包含不重复的 `svp`、`ustx`、`vsqx`；有非空 `brief` 时必须包含 `svp`，因为调用方风格语义只写入 SVP 风格链路。`review_mode` 省略时默认为 `full` 整曲审批；读取支持分页和紧凑摘要，Agent 应读完所需谱面及疑点后提交一次有依据的整曲决定。显式 `segments` 保留逐段核验与修改后重读，`review_mode="legacy"` 保留历史工作流语义。整曲审批不表示自动接受未知读音或转换损失。
 
 工作流的业务阶段为：
 
@@ -91,7 +91,7 @@ full 模式下 `reviewed` 由一次明确的整曲审批产生；显式 segments
 
 推荐调用顺序：
 
-1. 读取 `vwa_system_capabilities`，确认 61 工具、`code_revision`、`bounded_wait_ms=60000`、`instrumental_export_formats=["svp"]` 和共享草稿状态。
+1. 读取 `vwa_status` 的 `system_capabilities` 动作，确认当前 12 工具、`workflow_entry="vwa_start"`、`code_revision`、`bounded_wait_ms=60000`、`instrumental_export_formats=["svp"]` 和共享草稿状态。下文旧名称只说明原动作对应关系。
 2. 创建或取得工作流，读取 `vwa_workflow_get` 的 `stage`、`revision`、`operation` 和 `next`。
 3. 运行中优先用 `vwa_operations_wait(after_cursor=上一次 poll_cursor)` 有界等待；准备任务也可用 `vwa_jobs_get(wait_ms<=60000, after_cursor=上一次 poll_cursor)`。不要无界忙等。
 4. 在 `review` 读取 `vwa_workflow_review`。默认 `full` 模式按 `next_offset` 读完所需整曲分页和疑点后提交一次整曲判断；显式 `segments` 模式按 `review_progress.current` 逐段读取并核对，不能用首屏或一份摘要代替相应范围。
@@ -104,7 +104,7 @@ full 模式下 `reviewed` 由一次明确的整曲审批产生；显式 segments
 
 所有修改携带当前工作流 `revision` 或文件 SHA。遇到 `workflow_conflict`、`stale_plan`、`stale_artifact`、`stale_draft_plan`、`export_review_conflict`、`review_edit_conflict`、`ambiguous_note_mapping` 或 `monophonic_overlap` 时，先重新读取当前状态；不得猜 ID、复用过期报告或静默覆盖。
 
-## 61 个公开工具
+## 历史 61 个工具名与动作
 
 成功响应为 `structured_content = {schema_version: 1, data: {...}}`。业务失败为 MCP `isError=true`，错误正文是可解析 JSON：`{code, message, component, retryable, remediation, details?}`。异步对象的 `id` 用作 `operation_id`。
 
@@ -137,7 +137,7 @@ full 模式下 `reviewed` 由一次明确的整曲审批产生；显式 segments
 | 25 | `vwa_lyrics_patch_apply` | 生成独立歌词修正 MIDI 与回执 |
 | 26 | `vwa_exports_plan` | 规划 MIDI 到 SVP/USTX/VSQX，预检重叠并解析伴奏 |
 | 27 | `vwa_exports_start` | 执行导出、回读候选并保留独立审计 |
-| 28 | `vwa_workflow_create` | 一体化创建工作流；`review_mode` 默认 `full`，可选 `segments`，`legacy` 兼容旧路径 |
+| 28 | `vwa_workflow_create` | 历史名称；当前为 `vwa_start` 的 `workflow_create`。`review_mode` 默认 `full`，可选 `segments`，`legacy` 保留历史工作流语义 |
 | 29 | `vwa_workflow_get` | 读取阶段、修订、操作和下一步；默认 summary |
 | 30 | `vwa_workflow_review` | 分页读取 full 模式当前页或 segments 模式当前段的音符、歌词、参考证据和提示 |
 | 31 | `vwa_workflow_apply_review` | 提交 full 模式的整曲决定或 segments 模式的当前段结构、歌词、音高/时值修改或保留理由 |
@@ -161,7 +161,7 @@ full 模式下 `reviewed` 由一次明确的整曲审批产生；显式 segments
 | 49 | `vwa_workflow_rebind_score` | 同一活跃工作流换入修正 MIDI 并回到 `review` |
 | 50 | `vwa_workflow_close` | 关闭活跃性并保留证据，不删除任务或工程 |
 | 51 | `vwa_workflow_archive` | 归档并保留证据、回执和检索入口 |
-| 52 | `vwa_workflow_clone` | 从保留 MIDI 或原输入克隆为新的可继续工作流；默认 `full`，可选 `segments`／`legacy` |
+| 52 | `vwa_workflow_clone` | 历史名称；当前为 `vwa_manage` 的 `workflow_clone`。默认 `full`，可选 `segments`／`legacy` 历史工作流语义 |
 | 53 | `vwa_workflow_delivery` | 生成受验证的工程、相对伴奏、回执、README 与 SHA 清单 |
 | 54 | `vwa_workflow_style_review` | 读取当前待查风格片段、当前段音符与相邻只读上下文 |
 | 55 | `vwa_workflow_style_decide` | 逐段提交风格或保留决策；全部完成后供 workflow 自动汇总 |
@@ -247,13 +247,13 @@ Windows x64、CPython 3.12。SDK 固定为 `mcp==2.3.0`，传递依赖和平台 
 
 `include_note_ids=false` 是默认值：阅读仍保留定位所需的标量与说明，但会压缩重复的 ID 数组。需要提交精确 note edit 时，不能凭空补 ID；应先读取当前页、在确认分页范围内后显式请求 ID，或读取相应专门工具。
 
-`vwa_workflow_review` 的 `detail="notes"` 在 segments 模式只返回当前未查段，在 legacy 模式返回当前页；`evidence.score.notes` 不包含范围外 ID。`detail="full"` 只保留当前段/当前页完整证据，不替代逐段决策，也不表示一次返回整曲。
+`vwa_workflow_review` 的 `detail="notes"` 在 segments 模式只返回当前未查段，在 `review_mode="legacy"` 时返回当前页；`evidence.score.notes` 不包含范围外 ID。`detail="full"` 只保留当前段/当前页完整证据，不替代逐段决策，也不表示一次返回整曲。
 
 `workflow_view.summary_target_bytes=16384` 是紧凑视图的设计目标，不是对任意内容都成立的硬上限。实际大小取决于当页错误、候选数量和人工理由；必须读取 `view.raw_evidence_omitted`、`details_tool` 和 `next_offset`，不能把摘要当作验收证据。
 
 ## 可选逐段核对：MIDI 与风格
 
-`vwa_workflow_create.review_mode` 默认为 **`full`** 整曲审批；显式选择 **`segments`** 时，Agent 必须按当前段读取证据、提交该段判断，再处理下一段，不能以一次全曲摘要或首屏证据代替逐段验收。`review_mode="legacy"` 保留旧客户端兼容；`detail="full"` 在 segments 模式中只表示当前段的完整证据，不会跳过或汇总其他段。
+`vwa_workflow_create.review_mode` 默认为 **`full`** 整曲审批；显式选择 **`segments`** 时，Agent 必须按当前段读取证据、提交该段判断，再处理下一段，不能以一次全曲摘要或首屏证据代替逐段验收。`review_mode="legacy"` 保留历史工作流语义；`detail="full"` 在 segments 模式中只表示当前段的完整证据，不会跳过或汇总其他段。
 
 分段由纯本地、确定性、只用标准库的 `agent_segments.py` 生成，无模型或语义推断：
 
@@ -378,7 +378,7 @@ workflow_get
 
 segments 模式在全部风格段完成前不接受另一份整曲 `style_proposal`、`style_plan_id` 或 `finish=true`：这些输入分别报 `segmented_style_required` 或 `style_segments_incomplete`。全部完成后由工作流自动汇总，不要求再手工拼一份整曲 JSON。
 
-`full` 是默认的整曲一次明确审批；旧客户端可显式创建 `review_mode="legacy"` 工作流，继续旧的分页全曲核对和整份风格提交路径。legacy 是兼容入口，不是默认路径；无论 `detail="full"` 还是旧的摘要读取，都不能把未逐段完成的 segments 工作流直接标为 `reviewed`。
+`full` 是默认的整曲一次明确审批；历史工作流可继续使用 `review_mode="legacy"` 的分页全曲核对和整份风格提交语义。该值属于工作流审核模式，不是 MCP 工具目录或客户端 profile；无论 `detail="full"` 还是旧的摘要读取，都不能把未逐段完成的 segments 工作流直接标为 `reviewed`。
 
 ## 风格方案、完整 JSON 与半开区间
 
@@ -866,6 +866,6 @@ drafts_get
 - 公开音素写入有批量上限；底层函数能接受更多不代表公开工具已通过大批量验收。
 - GUI 共享草稿依赖同一指定应用实例和配置根；其他安装、歌曲和全局偏好不自动同步。
 - `ready` 和 `complete=true` 是工程/交付证据状态，不是声库适配或合成完成声明。
-- 当前 61 工具的相关改进仍需以新的真实歌曲绑定回执完成终验。
+- 原 61 工具名的能力映射以本轮 schema 对照、真实 stdio 流程和历史工作流回执为准；本文是迁移参考，不代表旧目录仍被注册。
 
 协议实现依据：[官方 Python SDK](https://py.sdk.modelcontextprotocol.io/)、[客户端接口](https://py.sdk.modelcontextprotocol.io/client/)、[工具与输入输出](https://py.sdk.modelcontextprotocol.io/servers/tools/)。本项目使用单独固定的可选 SDK 环境，实际协议以安装版本执行。

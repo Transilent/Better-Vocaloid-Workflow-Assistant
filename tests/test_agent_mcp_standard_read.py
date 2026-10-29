@@ -21,7 +21,8 @@ EXPECTED_ACTIONS = {
     },
     'vwa_evidence': {
         'score_read', 'score_review', 'context_read', 'lyrics_read',
-        'lyric_timeline_review', 'lyrics_review', 'reference_pitch_review',
+        'lyric_timeline_read', 'lyric_timeline_review', 'lyrics_review',
+        'reference_pitch_review',
         'reference_audio_read', 'pronunciation_read', 'workflow_review',
         'workflow_style_review',
     },
@@ -43,6 +44,7 @@ ACTION_CLASSES = {
     'ScoreReview': 'vwa_evidence',
     'ContextRead': 'vwa_evidence',
     'LyricsRead': 'vwa_evidence',
+    'LyricTimelineRead': 'vwa_evidence',
     'LyricTimelineReview': 'vwa_evidence',
     'LyricsReview': 'vwa_evidence',
     'ReferencePitchReview': 'vwa_evidence',
@@ -176,6 +178,9 @@ def invocation_contract(source_directory):
         def lyrics_read(self, *args, **kwargs):
             return {'lyrics': True}
 
+        def lyric_timeline_read(self, *args, **kwargs):
+            return {'timeline_read': True}
+
         def lyric_timeline_review(self, *args, **kwargs):
             return {'timeline': True}
 
@@ -302,6 +307,21 @@ def invocation_contract(source_directory):
                       action + ':const_action')
                 check('action' in target['required'], action + ':action_required')
         check(schema_actions == EXPECTED_ACTIONS, 'all_legacy_actions_mapped')
+        evidence_schema = tools['vwa_evidence'].input_schema
+        evidence_mapping = evidence_schema['properties']['request']['discriminator']['mapping']
+        timeline_read_schema = evidence_schema['$defs'][
+            evidence_mapping['lyric_timeline_read'].rsplit('/', 1)[-1]
+        ]
+        check('歌词时间轴' in timeline_read_schema['properties']['artifact_id']['description'],
+              'timeline_read_names_managed_artifact')
+        check(timeline_read_schema['properties']['limit']['maximum'] == 200,
+              'timeline_read_is_bounded')
+        check(timeline_read_schema['properties']['include_words']['default'] is False,
+              'timeline_read_words_opt_in')
+        check('不会绑定工作流' in tools['vwa_evidence'].description,
+              'timeline_read_has_no_implicit_binding')
+        check('不是必须步骤' in tools['vwa_evidence'].description,
+              'lyrics_reference_is_optional')
 
         wait_schema = tools['vwa_wait'].input_schema
         check({'operation_id', 'job_id', 'timeout_ms', 'after_cursor',
@@ -385,6 +405,9 @@ def invocation_contract(source_directory):
              'context_read', (artifact, [0, 2], 15, 5, 'full', True)),
             ({'action': 'lyrics_read', 'artifact_id': artifact,
               'language': 'ja'}, 'lyrics_read', (artifact,)),
+            ({'action': 'lyric_timeline_read', 'artifact_id': 'line-art',
+              'limit': 8, 'offset': 3, 'include_words': True},
+             'lyric_timeline_read', ('line-art', 8, 3, True)),
             ({'action': 'lyric_timeline_review',
               'score_artifact_id': 'score-art', 'timeline_artifact_id': 'line-art',
               'start': 0.5, 'end': 3.5, 'time_origin': 1.25,
@@ -549,7 +572,7 @@ class StandardReadSDKContract(unittest.TestCase):
         self.assertEqual(receipt['actions'], {
             name: sorted(values) for name, values in sorted(EXPECTED_ACTIONS.items())
         })
-        self.assertEqual(receipt['call_count'], 30)
+        self.assertEqual(receipt['call_count'], 31)
         self.assertNotIn('advance', receipt['callbacks'])
         self.assertFalse(receipt['model_inference'])
         self.assertFalse(receipt['network_requested'])

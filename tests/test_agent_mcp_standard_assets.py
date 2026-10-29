@@ -86,6 +86,9 @@ class StandardAssetsStaticContract(unittest.TestCase):
         self.assertNotIn('dict[str, Any]', text)
         for forbidden in ('subprocess', 'os.system', 'start_operation', 'call_worker'):
             self.assertNotIn(forbidden, text)
+        self.assertIn('歌词先输入', text)
+        self.assertIn('不会自动绑定', text)
+        self.assertIn('歌词不是必填项', text)
 
 
 def invocation_contract(source_directory):
@@ -208,6 +211,36 @@ def invocation_contract(source_directory):
                 check(target['properties']['action']['const'] == action, action + ':const_action')
                 check('action' in target['required'], action + ':action_required')
         check(schema_actions == EXPECTED_ACTIONS, 'all_legacy_actions_mapped')
+
+        input_schema = tools['vwa_input'].input_schema
+        input_mapping = input_schema['properties']['request']['discriminator']['mapping']
+        fetch_schema = input_schema['$defs'][
+            input_mapping['lyric_timeline_fetch'].rsplit('/', 1)[-1]
+        ]
+        import_schema = input_schema['$defs'][
+            input_mapping['lyric_timeline_import'].rsplit('/', 1)[-1]
+        ]
+        references_schema = input_schema['$defs'][
+            input_mapping['workflow_references_set'].rsplit('/', 1)[-1]
+        ]
+        check('不会自动绑定' in fetch_schema['properties']['song_id_or_url']['description'],
+              'fetch_is_reference_only')
+        check('不会自动绑定' in import_schema['properties']['path']['description'],
+              'import_is_reference_only')
+        check('明确确认' in references_schema['properties']['lyrics_artifact_id']['description'],
+              'timeline_binding_requires_explicit_confirmation')
+        check(references_schema['properties']['lyrics_artifact_id']['default'] is None,
+              'lyrics_binding_is_optional')
+        check('MIDI 秒 = 参考秒' in references_schema['properties']['lyrics_time_origin']['description'],
+              'timeline_offset_mapping_is_explicit')
+        check('参考来源' in references_schema['properties']['rationale']['description'],
+              'timeline_binding_requires_rationale')
+        check('歌词先输入' in tools['vwa_input'].description,
+              'input_describes_lyrics_first')
+        check('歌词不是必填项' in tools['vwa_input'].description,
+              'lyrics_are_not_forced')
+        check('不会因发现外部歌词而自动重对齐' in tools['vwa_recover'].description,
+              'reuse_reports_no_automatic_realign')
 
         path = 'C:/allowed/review.mid'
         wav = 'C:/allowed/reference.wav'

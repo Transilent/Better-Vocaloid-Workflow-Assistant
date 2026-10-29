@@ -21,6 +21,11 @@ _MAX_TEXT = 2048
 _MAX_SHORT_TEXT = 512
 _MAX_ISSUES = 32
 _MAX_HISTORY = 8
+_DIFF_PREVIEW_LIMIT = 10
+_MAX_DIFF_NOTE_IDS = 8
+_MAX_DIFF_EVENT_IDS = 8
+_MAX_DIFF_NOTE_CONTEXTS = 4
+_DIFF_TEXT_LIMIT = 256
 _RAW_KEYS = frozenset({
     "raw", "raw_evidence", "raw_report", "native_notes", "notes_raw",
     "binary", "bytes_data",
@@ -233,6 +238,15 @@ def _compact_issue(row, *, include_note_ids=False, allowed=None):
     result = {}
     for key, value in row.items():
         name = str(key)
+        if (name == "event_ids" or name.endswith("_event_ids")) and isinstance(
+                value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            unique = _unique_strings(value)
+            result[name] = _bounded_event_ids(unique)
+            result[f"{name}_total"] = len(unique)
+            omitted = len(unique) - len(result[name])
+            if omitted:
+                result[f"{name}_omitted"] = omitted
+            continue
         if name in {"note_ids", "aligned_note_ids", "notes", "raw", "raw_evidence"}:
             if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
                 filtered = [ref for ref in value if isinstance(ref, str) and ref in allowed]
@@ -250,8 +264,137 @@ def _compact_issue(row, *, include_note_ids=False, allowed=None):
 def _compact_issues(rows, limit=_MAX_ISSUES, *, include_note_ids=False, allowed=None):
     if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes, bytearray)):
         return []
+    selected = list(rows) if limit is None else list(rows)[:limit]
     return [_compact_issue(row, include_note_ids=include_note_ids, allowed=allowed)
-            for row in list(rows)[:limit]]
+            for row in selected]
+
+
+def _unique_strings(values):
+    result = []
+    seen = set()
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
+        return result
+    for value in values:
+        if isinstance(value, str) and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def _bounded_note_ids(values, limit=_MAX_DIFF_NOTE_IDS):
+    """Keep both ends of an oversized ID list so page boundaries stay locatable."""
+    unique = _unique_strings(values)
+    if len(unique) <= limit:
+        return unique
+    head = max(1, (limit + 1) // 2)
+    tail = max(0, limit - head)
+    return unique[:head] + (unique[-tail:] if tail else [])
+
+
+def _bounded_event_ids(values, limit=_MAX_DIFF_EVENT_IDS):
+    """Keep complete event identities while bounding an unusually large list."""
+    unique = _unique_strings(values)
+    if len(unique) <= limit:
+        return unique
+    head = max(1, (limit + 1) // 2)
+    tail = max(0, limit - head)
+    return unique[:head] + (unique[-tail:] if tail else [])
+
+
+def _issue_note_ids(row):
+    if not isinstance(row, Mapping):
+        return []
+    result = []
+    for key, value in row.items():
+        name = str(key)
+        if name == "note_ids" or name.endswith("_note_ids"):
+            result.extend(_unique_strings(value))
+        elif name.endswith("_note_id") and isinstance(value, str):
+            result.append(value)
+    return _unique_strings(result)
+
+
+def _note_context(row, notes_by_id):
+    if not isinstance(row, Mapping):
+        return []
+    result = []
+    for note_id in _issue_note_ids(row)[:_MAX_DIFF_NOTE_CONTEXTS]:
+        note = notes_by_id.get(note_id)
+        if not isinstance(note, Mapping):
+            continue
+        result.append({
+            key: _bounded(note[key], max_items=8, text_limit=_DIFF_TEXT_LIMIT) for key in
+            ("note_id", "track_index", "channel", "pitch", "onset_tick", "duration_tick",
+             "onset_seconds", "duration_seconds", "end_seconds", "lyric")
+            if key in note
+        })
+    return result
+
+
+def _compact_diff_issue(row, *, allowed=None, notes_by_id=None):
+    """Keep action-critical values and bounded identities for a diff preview."""
+    if not isinstance(row, Mapping):
+        return {"code": "unknown", "message": _text(str(row), _DIFF_TEXT_LIMIT)}
+    allowed = set(allowed or ())
+    notes_by_id = notes_by_id if isinstance(notes_by_id, Mapping) else {}
+    result = {}
+    preferred = (
+        "hint_id", "code", "severity", "track_index", "channel", "tick", "onset_tick",
+        "onset_seconds", "seconds", "duration_seconds", "observed_seconds", "pitch_delta",
+        "expected", "actual", "lyric", "reason", "message", "event_id",
+        "source_event_id", "candidate_event_id", "target_note_id",
+        "alignment_before", "alignment_after",
+    )
+    for name in preferred:
+        if name not in row:
+            continue
+        value = row[name]
+        result[name] = _bounded(value, max_items=8, text_limit=_DIFF_TEXT_LIMIT)
+
+    for key, value in row.items():
+        name = str(key)
+        if name in result or name in _RAW_KEYS:
+            continue
+        if name == "note_ids" or name.endswith("_note_ids"):
+            unique = _unique_strings(value)
+            result[name] = _bounded_note_ids(unique)
+            result[f"{name}_total"] = len(unique)
+            omitted = len(unique) - len(result[name])
+            if omitted:
+                result[f"{name}_omitted"] = omitted
+            continue
+        if name.endswith("_note_id") and isinstance(value, str):
+            result[name] = value
+            continue
+        if (name == "event_ids" or name.endswith("_event_ids")) and isinstance(
+                value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            unique = _unique_strings(value)
+            result[name] = _bounded_event_ids(unique)
+            result[f"{name}_total"] = len(unique)
+            omitted = len(unique) - len(result[name])
+            if omitted:
+                result[f"{name}_omitted"] = omitted
+            continue
+        if name.endswith("_event_id") and isinstance(value, str):
+            result[name] = value
+            continue
+        if isinstance(value, Mapping):
+            result[f"{name}_summary"] = _generic_summary(value)
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            result[f"{name}_count"] = len(value)
+        else:
+            result[name] = _bounded(value, max_items=8, text_limit=_DIFF_TEXT_LIMIT)
+
+    refs = _issue_note_ids(row)
+    if refs:
+        linked = [ref for ref in refs if ref in allowed]
+        result["linked_to_page"] = bool(linked)
+        result["page_note_ref_count"] = len(linked)
+        result["outside_page_note_ref_count"] = len(refs) - len(linked)
+        contexts = _note_context(row, notes_by_id)
+        if contexts:
+            result["note_context"] = contexts
+    return result
 
 
 def _compact_pronunciation(value):
@@ -673,6 +816,142 @@ def _hint_counts(rows):
     return dict(sorted(counts.items()))
 
 
+def _numeric_range(rows, *keys):
+    values = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        for key in keys:
+            value = row.get(key)
+            if type(value) in (int, float):
+                values.append(value)
+                break
+    return [min(values), max(values)] if values else None
+
+
+def _severity_rank(value):
+    return {"error": 0, "warning": 1, "info": 2, "notice": 3}.get(
+        str(value or "").strip().lower(), 4)
+
+
+def _diff_rank(candidate):
+    row = candidate["row"]
+    refs = _issue_note_ids(row)
+    code = str(row.get("code", "unknown"))
+    explicit = 0 if row.get("expected") not in (None, "") or row.get("actual") not in (None, "") else 1
+    actionable = 0 if any(token in code for token in (
+        "mismatch", "missing", "extra", "conflict", "ambiguous", "orphan",
+        "incomplete", "empty", "placeholder")) else 1
+    linked = 0 if any(ref in candidate["allowed"] for ref in refs) else 1
+    return (explicit, _severity_rank(row.get("severity")), actionable, linked,
+            candidate["ordinal"])
+
+
+def _diff_context(evidence, page_notes):
+    """Return a small, current-page diff index that survives client truncation."""
+    page_notes = [row for row in page_notes if isinstance(row, Mapping)]
+    notes_by_id = {
+        row["note_id"]: row for row in page_notes if isinstance(row.get("note_id"), str)
+    }
+    allowed = set(notes_by_id)
+    section_stats = {}
+    candidates = []
+    ordinal = 0
+    for section in ("lyric_review", "score_review"):
+        data = evidence.get(section) if isinstance(evidence, Mapping) else None
+        data = data if isinstance(data, Mapping) else {}
+        rows = data.get("hints", [])
+        rows = list(rows) if isinstance(rows, Sequence) and not isinstance(
+            rows, (str, bytes, bytearray)) else []
+        try:
+            total_hints = int(data.get("hint_count", len(rows)))
+        except (TypeError, ValueError):
+            total_hints = len(rows)
+        severity_counts = Counter(
+            str(row.get("severity", "unknown")) for row in rows if isinstance(row, Mapping))
+        track_indices = sorted({
+            row.get("track_index") for row in rows
+            if isinstance(row, Mapping) and type(row.get("track_index")) is int
+        })
+        linked_count = sum(
+            1 for row in rows
+            if isinstance(row, Mapping) and any(ref in allowed for ref in _issue_note_ids(row)))
+        stats = {
+            "page_hints": len(rows),
+            "total_hints": total_hints,
+            "severity_counts": dict(sorted(severity_counts.items())),
+            "code_counts": _hint_counts(rows),
+            "linked_to_page": linked_count,
+            "track_indices": track_indices,
+            "tick_range": _numeric_range(rows, "tick", "onset_tick"),
+            "seconds_range": _numeric_range(rows, "onset_seconds", "seconds"),
+        }
+        section_stats[section] = stats
+        for row in rows:
+            if isinstance(row, Mapping):
+                candidates.append({
+                    "row": row, "section": section, "ordinal": ordinal, "allowed": allowed,
+                })
+                ordinal += 1
+
+    ranked = sorted(candidates, key=_diff_rank)
+    preview_rows = ranked[:_DIFF_PREVIEW_LIMIT]
+    preview = []
+    preview_section_counts = Counter()
+    for candidate in preview_rows:
+        row = _compact_diff_issue(candidate["row"], allowed=allowed, notes_by_id=notes_by_id)
+        row["section"] = candidate["section"]
+        preview.append(row)
+        preview_section_counts[candidate["section"]] += 1
+    for section, stats in section_stats.items():
+        retained = preview_section_counts[section]
+        stats["preview_returned"] = retained
+        stats["preview_omitted_in_page"] = max(0, stats["page_hints"] - retained)
+
+    return {
+        "schema": "vwa-review-diff-context-v1",
+        "scope": "current_page_hints",
+        "selection": "expected_actual_then_severity_then_page_link",
+        "preview_limit": _DIFF_PREVIEW_LIMIT,
+        "page_hint_count": sum(stats["page_hints"] for stats in section_stats.values()),
+        "total_hint_count": sum(stats["total_hints"] for stats in section_stats.values()),
+        "preview": preview,
+        "preview_omitted_in_page": max(0, len(candidates) - len(preview)),
+        "sections": section_stats,
+    }
+
+
+def _review_continuation(raw, notes, total_notes):
+    next_offset = raw.get("next_offset")
+    return {
+        "scope": "supplied_page_only",
+        "returned_notes": len(notes),
+        "total_notes": total_notes,
+        "total_evidence_rows": raw.get("total_evidence_rows"),
+        "next_offset": next_offset,
+        "has_more": next_offset is not None,
+        "next_action": "request_next_page" if next_offset is not None else "review_returned_pages",
+        "review_complete": False,
+        "acceptance_evidence_complete": False,
+    }
+
+
+def _ordered_review_projection(out, *, diff_context, continuation):
+    """Put compact decision context before potentially large evidence tables."""
+    ordered = {}
+    for key in ("schema", "workflow_id", "revision", "artifact_id", "segment",
+                "segment_note_count", "total_notes"):
+        if key in out:
+            ordered[key] = out[key]
+    ordered["diff_context"] = diff_context
+    ordered["continuation"] = continuation
+    for key, value in out.items():
+        if key in ordered or key in {"diff_context", "continuation"}:
+            continue
+        ordered[key] = value
+    return ordered
+
+
 def _summary_evidence(evidence):
     if not isinstance(evidence, Mapping):
         return {}
@@ -711,7 +990,11 @@ def _summary_evidence(evidence):
             else:
                 compact[key] = _bounded(item, max_items=16, text_limit=_MAX_SHORT_TEXT)
         if section in {"score_review", "lyric_review"}:
-            compact["hint_code_counts"] = _hint_counts(data.get("hints", []))
+            hints = data.get("hints", [])
+            compact["hint_code_counts"] = _hint_counts(hints)
+            compact["hint_code_counts_in_page"] = _hint_counts(hints)
+            compact["hints_in_page"] = len(hints) if isinstance(
+                hints, Sequence) and not isinstance(hints, (str, bytes, bytearray)) else 0
         result[section] = compact
     return result
 
@@ -719,9 +1002,11 @@ def _summary_evidence(evidence):
 def review_view(value, detail="notes", include_note_ids=False, include_raw_evidence=False):
     """Project an already-paged ``Workflow.review`` bundle.
 
-    All embedded note-ID arrays are restricted to IDs present in the supplied
-    note page. Summary mode removes the note table entirely. Full mode keeps the
-    complete supplied page without exposing IDs that are not on that page.
+    Evidence note-ID arrays are restricted to IDs present in the supplied page.
+    The explicitly scoped diff preview retains a bounded first/last sample of
+    relevant IDs so an offset boundary does not hide the decisive note. Summary
+    mode removes the note table; neither summary nor notes mode claims that the
+    supplied page, or a final page, proves the whole review was accepted.
     """
     raw = _mapping(value, "review bundle")
     selected = _detail(detail, {"summary", "notes", "full"}, "notes")
@@ -743,6 +1028,8 @@ def review_view(value, detail="notes", include_note_ids=False, include_raw_evide
         out = _filter_rows_by_note(raw, allowed)
         return _filter_note_id_lists(out, allowed, keep_ids=True)
 
+    diff_context = _diff_context(evidence, notes)
+    continuation = _review_continuation(raw, notes, total_notes)
     out = _copy(raw)
     if selected == "summary":
         compact_evidence = _summary_evidence(evidence)
@@ -757,14 +1044,20 @@ def review_view(value, detail="notes", include_note_ids=False, include_raw_evide
         out["counts"] = _review_counts(evidence, len(notes), total_notes, next_offset)
         out["has_more"] = next_offset is not None
         out["review_complete"] = False
-        out["instructions"] = "摘要仅用于定位；验收音符、歌词并提交修改前，请请求 detail='notes'（必要时用 full）。"
+        out["instructions"] = (
+            "摘要和差异预览仅用于定位；验收音符、歌词并提交修改前，请逐页请求 detail='notes'（必要时用 full）。"
+        )
         out.pop("reference_evidence", None)
         if isinstance(out.get("references"), Mapping):
             out["references"] = _compact_references(out["references"])
         out["view"] = {"detail": "summary", "contains_note_page": False,
+                       "current_page_only": True,
+                       "review_complete": False,
                        "acceptance_evidence_complete": False,
                        "summary_target_bytes": SUMMARY_TARGET_BYTES}
-        return _filter_note_id_lists(out, set(), keep_ids=False)
+        filtered = _filter_note_id_lists(out, set(), keep_ids=False)
+        return _ordered_review_projection(
+            filtered, diff_context=diff_context, continuation=continuation)
 
     score = out.get("evidence", {}).get("score") if isinstance(out.get("evidence"), Mapping) else None
     lyrics = out.get("evidence", {}).get("lyrics") if isinstance(out.get("evidence"), Mapping) else None
@@ -776,8 +1069,11 @@ def review_view(value, detail="notes", include_note_ids=False, include_raw_evide
     for row in score_notes:
         lyric = lyric_by_id.get(row.get("note_id"))
         if isinstance(lyric, Mapping):
-            for key in ("lyric_alignment", "competing_lyric_event_indexes"):
-                if key=='competing_lyric_event_indexes' and lyric.get('lyric_alignment')=='aligned':continue
+            for key in ("lyric_alignment", "lyric_event_id",
+                        "competing_lyric_event_indexes", "competing_lyric_event_ids"):
+                if (key in {"competing_lyric_event_indexes", "competing_lyric_event_ids"}
+                        and lyric.get('lyric_alignment') == 'aligned'):
+                    continue
                 if key in lyric:
                     row.setdefault(key, _copy(lyric[key]))
     if isinstance(score, Mapping):
@@ -819,23 +1115,41 @@ def review_view(value, detail="notes", include_note_ids=False, include_raw_evide
                 row["lyric_events_count"] = len(track.get("lyric_events", [])) if isinstance(track.get("lyric_events"), Sequence) else 0
                 compact_lyrics["tracks"].append(row)
         compact_lyrics["notes"] = [
-            {key: _copy(row[key]) for key in (("note_id","lyric_alignment") if row.get('lyric_alignment')=='aligned' else ("note_id", "track_index", "lyric", "lyric_alignment",
-                                               "competing_lyric_event_indexes", "pairing_ambiguous")
-                                           )
+            {key: _copy(row[key]) for key in (
+                ("note_id", "lyric_alignment", "lyric_event_id")
+                if row.get('lyric_alignment') == 'aligned'
+                else ("note_id", "track_index", "lyric", "lyric_alignment",
+                      "lyric_event_id", "competing_lyric_event_indexes",
+                      "competing_lyric_event_ids", "pairing_ambiguous")
+            )
              if key in row}
             for row in lyric_by_id.values()
         ]
         if not include_raw_evidence:
             compact_lyrics['lyric_events']=[{key:_copy(row[key]) for key in
-                ('track_index','event_index','tick','text','note_ids') if key in row}
+                ('event_id','track_index','event_index','tick','seconds',
+                 'text','alignment','note_ids') if key in row}
                 for row in compact_lyrics.get('lyric_events',[])]
         out["evidence"]["lyrics"] = compact_lyrics
     for section in ("score_review", "lyric_review"):
         item = out.get("evidence", {}).get(section) if isinstance(out.get("evidence"), Mapping) else None
         if isinstance(item, Mapping):
             compact = _copy(item)
-            compact["hints"] = _compact_issues(item.get("hints", []), limit=64, include_note_ids=include_note_ids, allowed=allowed)
-            compact["hint_code_counts"] = _hint_counts(item.get("hints", []))
+            hint_rows = item.get("hints", [])
+            hint_rows = list(hint_rows) if isinstance(hint_rows, Sequence) and not isinstance(
+                hint_rows, (str, bytes, bytearray)) else []
+            compact["hints"] = _compact_issues(
+                hint_rows, limit=len(hint_rows), include_note_ids=include_note_ids,
+                allowed=allowed)
+            compact["hint_code_counts"] = _hint_counts(hint_rows)
+            compact["hint_code_counts_in_page"] = _hint_counts(hint_rows)
+            compact["hints_returned"] = len(hint_rows)
+            compact["hints_in_page"] = len(hint_rows)
+            try:
+                compact["hints_total"] = int(item.get("hint_count", len(hint_rows)))
+            except (TypeError, ValueError):
+                compact["hints_total"] = len(hint_rows)
+            compact["hints_omitted_in_page"] = 0
             out["evidence"][section] = compact
     if not include_raw_evidence:
         ev = out.get("evidence")
@@ -854,13 +1168,18 @@ def review_view(value, detail="notes", include_note_ids=False, include_raw_evide
     out["note_page"] = {"returned": len(score_notes), "total": total_notes,
                         "next_offset": next_offset, "has_more": next_offset is not None}
     out["counts"] = _review_counts(evidence, len(score_notes), total_notes, next_offset)
+    out["review_complete"] = False
     out["view"] = {"detail": "notes", "contains_note_page": True,
-                   "acceptance_evidence_complete": True,
+                   "current_page_only": True,
+                   "review_complete": False,
+                   "acceptance_evidence_complete": False,
                    "include_note_ids": include_note_ids,
                    "include_raw_evidence": include_raw_evidence,
                    "summary_target_bytes": SUMMARY_TARGET_BYTES}
     out = _filter_rows_by_note(out, allowed)
-    return _filter_note_id_lists(out, allowed, keep_ids=include_note_ids)
+    filtered = _filter_note_id_lists(out, allowed, keep_ids=include_note_ids)
+    return _ordered_review_projection(
+        filtered, diff_context=diff_context, continuation=continuation)
 
 
 _REMEDIATION = {
