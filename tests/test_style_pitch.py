@@ -23,13 +23,13 @@ def project():
                     'meter':[{'index':0,'numerator':4,'denominator':4}]},
             'tracks':[track,backing],'library':[{'private':'keep'}],'other':[1,2,3]}
 
-assert pitches.VERSION==5
+assert pitches.VERSION==6
 assert pitches.RECIPES['gentle']=={'entry':(-20.,.11),'connection':(1.8,16.,.07),'release':(-12.,.09),'vibrato':None}
 assert pitches.RECIPES['sad']=={'entry':(-12.,.18),'connection':(4.,32.,.13),'release':(-58.,.30),'vibrato':None}
 assert pitches.RECIPES['melancholy']=={'entry':(-16.,.13),'connection':(1.5,10.,.09),'release':(-24.,.20),'vibrato':None}
 assert pitches.RECIPES['fragile_tender']=={'entry':(6.,.08),'connection':(1.,8.,.06),'release':(24.,.16),'vibrato':None}
 assert pitches.RECIPES['bright_joy']=={'entry':(12.,.06),'connection':(1.7,11.,.055),'release':(-7.,.08),'vibrato':None}
-assert pitches.RECIPES['chinese_opera']=={'entry':(-88.,.20),'connection':(9.,85.,.18),'release':(52.,.26),'vibrato':None}
+assert pitches.RECIPES['chinese_opera']=={'entry':(-220.,.24),'connection':(20.,180.,.20),'release':(160.,.30),'vibrato':(48.,5.3,.30)}
 
 # The technique recipe adds structural gestures while existing vibrato, notes,
 # and the caller's project object remain untouched. Its pitch switch is explicit.
@@ -47,6 +47,76 @@ voice_only,voice_report=styles.apply_style(source,'chinese_opera',strength=.55,t
 assert not voice_report['pitch_changed']
 assert voice_only['tracks'][0]['mainGroup']['parameters']['pitchDelta']==source['tracks'][0]['mainGroup']['parameters']['pitchDelta']
 assert voice_only['tracks'][0]['mainGroup']['parameters']['vibratoEnv']==source['tracks'][0]['mainGroup']['parameters']['vibratoEnv']
+
+# Opera: changes follow the observed transition direction without copying the
+# X Studio sample's extreme excursions. Protect authored slides and keep
+# short intervening notes from being misidentified as adjacent.
+opera=project();opera['tracks'][0]['mainGroup']['notes']=[
+    {'onset':i*Q,'duration':Q,'pitch':p,'lyrics':'字'}
+    for i,p in enumerate((60,62,55,55))]
+opera['tracks'][0]['mainGroup']['parameters']['pitchDelta']={'mode':'linear','points':[0,0.,4*Q,0.]}
+before=copy.deepcopy(opera)
+out,audit=styles.apply_style(opera,'chinese_opera',strength=1.,track_indices=[0],
+                             pitch_enabled=True,density_mode='original')
+gestures=audit['pitch']['tracks'][0]['gestures']
+connections=[g for g in gestures if g['kind']=='interval_connection']
+assert [g['note_index'] for g in connections]==[1,2,3]
+assert connections[0]['cents_at_full_strength']>0>connections[1]['cents_at_full_strength']
+assert connections[2]['cents_at_full_strength']<0
+assert connections[1]['start']<1.5<connections[1]['end']
+assert np.isclose(connections[1]['start']+(connections[1]['end']-connections[1]['start'])*
+                  connections[1]['peak_fraction'],1.5)
+curve=out['tracks'][0]['mainGroup']['parameters']['pitchDelta']['points']
+transition=np.asarray(curve[::2]); values=np.asarray(curve[1::2])
+assert np.interp(2*Q,transition,values)<-100
+assert abs(np.interp(2*Q-1000,transition,values)-np.interp(2*Q+1000,transition,values))<1
+assert audit['pitch']['tracks'][0]['maximum_applied_delta_cents']<300
+assert opera==before and out['tracks'][0]['mainGroup']['notes']==before['tracks'][0]['mainGroup']['notes']
+
+protected=copy.deepcopy(opera)
+protected['tracks'][0]['mainGroup']['notes'].insert(1,
+    {'onset':Q,'duration':Q//10,'pitch':61,'lyrics':'短'})
+protected['tracks'][0]['mainGroup']['notes'][2]['onset']=Q+Q//10
+protected['tracks'][0]['mainGroup']['notes'][2]['duration']=Q-Q//10
+_,guard=styles.apply_style(protected,'chinese_opera',strength=1.,track_indices=[0],
+                           pitch_enabled=True,density_mode='original')
+assert not any(g['kind']=='interval_connection' and g['note_index']==2
+               for g in guard['pitch']['tracks'][0]['gestures'])
+
+sliding=copy.deepcopy(opera)
+sliding['tracks'][0]['mainGroup']['parameters']['pitchDelta']['points']=[
+    0,0.,Q,0.,Q+Q//6,150.,2*Q,0.,4*Q,0.]
+_,guard=styles.apply_style(sliding,'chinese_opera',strength=1.,track_indices=[0],
+                           pitch_enabled=True,density_mode='original')
+assert any(g['reason']=='authored_transition_preserved'
+           for g in guard['pitch']['tracks'][0]['omitted_gestures'])
+
+joy=copy.deepcopy(opera)
+joy['tracks'][0]['mainGroup']['notes'][1]['pitch']=60
+_,joy_receipt=styles.apply_style(joy,'bold',strength=1.,track_indices=[0],
+                                 pitch_enabled=True,density_mode='original')
+joy_row=joy_receipt['pitch']['tracks'][0]
+assert any(g['kind']=='interval_connection' and g['note_index']==1 and
+           0<g['cents_at_full_strength']<=10 for g in joy_row['gestures'])
+assert not any(g['kind']=='delayed_vibrato' for g in joy_row['gestures'])
+
+long_note=copy.deepcopy(opera)
+long_note['tracks'][0]['mainGroup']['notes']=[{'onset':0,'duration':3*Q,'pitch':60,'lyrics':'啊'}]
+long_params=long_note['tracks'][0]['mainGroup']['parameters']
+long_params.pop('vibratoEnv')
+long_params['pitchDelta']['points']=[0,0.,4*Q,0.]
+long_before=copy.deepcopy(long_note)
+long_out,long_receipt=styles.apply_style(long_note,'chinese_opera',strength=1.,track_indices=[0],
+                                         pitch_enabled=True,density_mode='original')
+long_row=long_receipt['pitch']['tracks'][0]
+assert any(g['kind']=='delayed_vibrato' and g['cents_at_full_strength']==48.
+           for g in long_row['gestures'])
+assert long_row['maximum_applied_delta_cents']<300 and long_note==long_before
+assert long_out['tracks'][0]['mainGroup']['notes']==long_before['tracks'][0]['mainGroup']['notes']
+long_note['tracks'][0]['mainGroup']['notes'][0]['attributes']={'dF0Vbr':.4}
+_,existing=styles.apply_style(long_note,'chinese_opera',strength=1.,track_indices=[0],
+                               pitch_enabled=True,density_mode='original')
+assert not any(g['kind']=='delayed_vibrato' for g in existing['pitch']['tracks'][0]['gestures'])
 for preset in ('soft_ballad','intimate_narration','power_pop'):
     source=project();frozen=copy.deepcopy(source)
     voice,rv=styles.apply_style(source,preset,strength=.6,track_indices=[0],pitch_enabled=False)

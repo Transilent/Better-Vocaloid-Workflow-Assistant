@@ -20,7 +20,7 @@ import json
 import math
 from pathlib import Path
 
-VERSION = 6
+VERSION = 7
 PRESETS = {
     'none': {'label': '保留原表现', 'controls': {}},
     'gentle': {'label': '柔和〔实验〕', 'pitch_default': True,
@@ -37,17 +37,30 @@ PRESETS = {
                      'breathiness': (.04, 0., .18), 'voicing': (-.015, 0., -.08)}},
     'bold': {'label': '明亮欢快〔实验〕', 'pitch_default': True,
         'description': '轻快起音、清晰衔接与明亮的持续段；可分别调整各段表现。',
-        'note_envelope': {'onset': .055, 'release': .09,
-                          'sustain_arc': {'loudness': .40, 'tension': .025, 'breathiness': -.015}},
-        'controls': {'loudness': (3.6, 1.4, .4), 'tension': (.34, .20, .04),
-                     'breathiness': (-.12, -.05, -.01)}},
-    # A separate technique layer; never offered as an emotion card. The
-    # handwritten ornament candidate retains native/baked vibrato and score.
+        # The bounded phrase arc is a manual audition shape over eligible
+        # singing notes. The XStudio same-score pop/opera F0/energy comparison
+        # neither labels happiness nor supplies a conversion from energy to dB.
+        'phrase_envelope': {
+            'loudness': {'opening': .32, 'body': .55, 'closing': .08},
+            'tension': {'opening': .025, 'body': .040, 'closing': .005},
+            'breathiness': {'opening': -.018, 'body': -.028, 'closing': -.004}},
+        'note_envelope': {'onset': .045, 'release': .075,
+                          'sustain_arc': {'loudness': .28, 'tension': .018, 'breathiness': -.010}},
+        'controls': {'loudness': (3.0, 1.15, .52), 'tension': (.30, .16, .045),
+                     'breathiness': (-.105, -.045, -.005)}},
+    # A separate technique layer; authored modulation is retained and flat
+    # long notes may receive an additional experimental pitch ornament.
     'chinese_opera': {'label': '中文戏腔〔实验〕', 'category': 'singing_technique', 'pitch_default': True,
-        'description': '字头倚滑、音间衔接、长音展开与收腔；可与所选风格组合，保留原有颤音。',
-        'note_envelope': {'onset': .16, 'release': .26,
-                          'sustain_arc': {'loudness': 1.1, 'tension': .09, 'breathiness': -.025}},
-        'controls': {'loudness': (.7, .5, -1.4), 'tension': (.13, .16, -.06),
+        'description': '字头倚滑、音间衔接、长音颤音与收腔；保留已检测到的原有颤音。',
+        # Phrase dynamics are independent of the X Studio energy scale: its
+        # captured energy is uncalibrated, not a SynthV loudness or tension.
+        'phrase_envelope': {
+            'loudness': {'opening': .24, 'body': .62, 'closing': -.18},
+            'tension': {'opening': .045, 'body': .11, 'closing': -.025},
+            'breathiness': {'opening': -.012, 'body': -.035, 'closing': .012}},
+        'note_envelope': {'onset': .14, 'release': .26,
+                          'sustain_arc': {'loudness': 1.35, 'tension': .16, 'breathiness': -.025}},
+        'controls': {'loudness': (1.4, .9, -.9), 'tension': (.23, .28, -.04),
                      'breathiness': (-.10, -.08, .04)}},
     # Stored task/CLI IDs retain their original recipes. Only canonical IDs
     # are offered for new selections; loading an old UI choice is explicit.
@@ -326,11 +339,29 @@ def _range_gate(times, time_range):
     return u*u*(3.-2.*u)
 
 
-def _note_weights(times, spans, values, recipe, detail, channel):
-    """Smooth note-local phase blend; a single broad arc is not vibrato."""
+def _phrase_weights(times, phrase, channel, recipe, detail):
+    """Return a bounded opening/body/closing arc over one complete phrase."""
+    import numpy as np
+    values = recipe.get(channel)
+    if not values:
+        return np.zeros(len(times), dtype=float)
+    a, b = phrase
+    duration = b-a
+    opening = min(.18, duration*.22)
+    closing = min(.24, duration*.28)
+    anchors = [0., opening, max(opening, duration-closing), duration]
+    shape = [values['opening']*detail['onset'], values['body']*detail['sustain'],
+             values['body']*detail['sustain'], values['closing']*detail['release']]
+    return np.interp(times-a, anchors, shape)
+
+
+def _note_weights(times, spans, phrases, values, recipe, phrase_recipe, detail, channel):
+    """Blend guarded note phases with an optional phrase-phase arc."""
     import numpy as np
     weights = np.zeros(len(times), dtype=float)
     smooth = lambda x: (lambda u: u*u*(3-2*u))(np.clip(x, 0., 1.))
+    phrase_recipe = phrase_recipe or {}
+    phrase_starts = [a for a, _ in phrases]
     for a, b in spans:
         first, last = np.searchsorted(times, [a, b], side='left')
         if first == last:
@@ -348,6 +379,12 @@ def _note_weights(times, spans, values, recipe, detail, channel):
         if duration >= .65 and arc:
             u = np.clip((t-onset)/(duration-onset-release), 0., 1.)
             local += arc*detail['sustain']*np.sin(np.pi*u)**2
+        if phrase_recipe.get(channel) and phrases:
+            phrase_index = bisect.bisect_right(phrase_starts, a+1e-9)-1
+            if phrase_index >= 0:
+                phrase = phrases[phrase_index]
+                if phrase[0]-1e-9 <= a and b <= phrase[1]+1e-9:
+                    local += _phrase_weights(times[first:last], phrase, channel, phrase_recipe, detail)
         edge = min(.025, duration*.1)
         weights[first:last] = local*smooth(t/edge)*smooth((duration-t)/edge)
     return weights
@@ -392,6 +429,7 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
     for index in selected:
         cancel();track=project['tracks'][index];phrases,offset=_phrases(track,clock)
         note_recipe = PRESETS[preset].get('note_envelope')
+        phrase_recipe = PRESETS[preset].get('phrase_envelope')
         segments, skipped_notes = _note_spans(track,clock,offset) if note_recipe else (phrases, [])
         edit_segments = ([(max(a,time_range[0]),min(b,time_range[1])) for a,b in segments
                           if min(b,time_range[1])-max(a,time_range[0]) >= .025]
@@ -400,7 +438,7 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
             skipped_notes=[r for r in skipped_notes if r['start']<time_range[1] and r['end']>time_range[0]]
         controls={};row={'track_index':index,'name':track.get('name',''),
             'phrases':[{'start':a,'end':b} for a,b in phrases],'controls':controls,
-            'envelope_scope':'note' if note_recipe else 'phrase',
+            'envelope_scope':'phrase+note' if phrase_recipe else 'note' if note_recipe else 'phrase',
             'segments':[{'start':a,'end':b} for a,b in edit_segments],'skipped_notes':skipped_notes}
         rows.append(row)
         if not edit_segments:row['status']='no_eligible_singing_notes';continue
@@ -426,6 +464,8 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
         for name,values in PRESETS[preset]['controls'].items():
             cancel();original=parameters.get(name)
             state={'status':'skipped','recipe_start_core_release':list(values)};controls[name]=state
+            if phrase_recipe and phrase_recipe.get(name):
+                state['phrase_opening_body_closing']=copy.deepcopy(phrase_recipe[name])
             try:xs,ys=_curve(original,track_index=index,channel=name)
             except ValueError as error:
                 if str(error)!='preserved_nonlinear':raise
@@ -441,7 +481,7 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
             # The duplicated core anchor makes long sustained notes retain shape.
             definition=[values[0]*detail['onset'],values[1]*detail['sustain'],
                         values[1]*detail['sustain'],values[2]*detail['release']]
-            delta=(_note_weights(times,segments,values,note_recipe,detail,name) if note_recipe
+            delta=(_note_weights(times,segments,phrases,values,note_recipe,phrase_recipe,detail,name) if note_recipe
                    else _weights(times,phrases,definition))*strength
             delta *= _range_gate(times,time_range)
             active=np.abs(delta)>1e-12

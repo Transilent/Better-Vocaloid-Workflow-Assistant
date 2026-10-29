@@ -25,6 +25,15 @@ def project():
 
 
 original=project();frozen=copy.deepcopy(original);clock=TempoMap(original['time']['tempo'])
+
+def curve_value(data,name,seconds):
+    curve=data['tracks'][0]['mainGroup']['parameters'][name]['points']
+    position=clock.to_position(seconds)-Q
+    return float(np.interp(position,curve[::2],curve[1::2]))
+
+def delta_at(data,name,seconds,source=original):
+    return curve_value(data,name,seconds)-curve_value(source,name,seconds)
+
 outputs={}
 for preset in ('soft_ballad','intimate_narration','power_pop'):
     out,receipt=styles.apply_style(original,preset,strength=.6,track_indices=[0],density_mode='dense')
@@ -124,12 +133,21 @@ with tempfile.TemporaryDirectory(prefix='style-presets-',dir=APP/'work') as fold
 
 # Canonical cards use note-local envelopes. Old IDs still execute their
 # original recipes; only the explicit UI mapping changes.
-assert styles.VERSION==6
+assert styles.VERSION==7
 assert styles.visible_presets()==('none','gentle','sad','bold')
 assert styles.PRESETS['gentle']['note_envelope']=={'onset':.14,'release':.22,'sustain_arc':{'loudness':.65,'tension':.04,'breathiness':-.015}}
 assert styles.PRESETS['gentle']['controls']=={'loudness':(-3.2,-.8,-2.4),'tension':(-.36,-.10,-.26),'breathiness':(.20,.03,.20),'voicing':(-.04,0.,-.08)}
 assert styles.PRESETS['sad']['note_envelope']=={'onset':.19,'release':.30,'sustain_arc':{'loudness':-.75,'tension':-.06,'breathiness':.035}}
 assert styles.PRESETS['sad']['controls']=={'loudness':(-.8,-.15,-3.0),'tension':(-.06,-.03,-.25),'breathiness':(.04,0.,.18),'voicing':(-.015,0.,-.08)}
+assert styles.PRESETS['bold']['phrase_envelope']=={
+    'loudness':{'opening':.32,'body':.55,'closing':.08},
+    'tension':{'opening':.025,'body':.040,'closing':.005},
+    'breathiness':{'opening':-.018,'body':-.028,'closing':-.004}}
+assert styles.PRESETS['bold']['note_envelope']=={'onset':.045,'release':.075,
+    'sustain_arc':{'loudness':.28,'tension':.018,'breathiness':-.010}}
+assert styles.PRESETS['bold']['controls']=={
+    'loudness':(3.0,1.15,.52),'tension':(.30,.16,.045),'breathiness':(-.105,-.045,-.005)}
+assert [name for name,spec in styles.PRESETS.items() if spec.get('phrase_envelope')]==['bold','chinese_opera']
 
 assert {styles.merged_preset(p) for p in ('soft_ballad','intimate_narration')}=={'gentle'}
 assert {styles.merged_preset(p) for p in ('melancholy','fragile_tender')}=={'sad'}
@@ -172,11 +190,14 @@ assert technique_receipt['status']=='applied' and not technique_receipt['pitch_c
 assert solo['tracks'][0]['mainGroup']['parameters']['pitchDelta']==source['tracks'][0]['mainGroup']['parameters']['pitchDelta']
 assert solo['tracks'][0]['mainGroup']['notes']==source['tracks'][0]['mainGroup']['notes']
 assert solo['tracks'][1:]==source['tracks'][1:]
+assert technique_receipt['tracks'][0]['envelope_scope']=='phrase+note'
+assert technique_receipt['tracks'][0]['controls']['tension']['maximum_applied_delta']>.1
+assert technique_receipt['tracks'][0]['controls']['loudness']['maximum_applied_delta']>0
 
 for preset in ('gentle','sad','bold'):
     out,r=styles.apply_style(original,preset,track_indices=[0],density_mode='original',pitch_enabled=False)
     assert original==frozen and out['tracks'][1:]==original['tracks'][1:]
-    assert r['tracks'][0]['envelope_scope']=='note' and r['notes_unchanged']
+    assert r['tracks'][0]['envelope_scope']==('phrase+note' if preset=='bold' else 'note') and r['notes_unchanged']
     assert r['tracks'][0]['controls']['loudness']['maximum_applied_delta']>0
     disabled,rd=styles.apply_style(original,preset,track_indices=[0],detail=dict.fromkeys(styles.DETAIL_DEFAULTS,0.))
     assert disabled==original and rd['status']=='not_selected'
@@ -186,6 +207,43 @@ for preset in ('gentle','sad','bold'):
         after=out['tracks'][0]['mainGroup']['parameters'][channel]
         assert set(before['points'][::2])<=set(after['points'][::2])
         assert after.get('custom')==before.get('custom')
+
+# Canonical bold joins note-local phases to one bounded phrase arc. Both
+# eligible notes in the close pair change, while exact note and phrase edges
+# remain at the authored curve. Strength scales the actual applied data.
+bold_source=project()
+bold_source['tracks'][0]['mainGroup']['notes']=[
+    {'onset':0,'duration':Q,'pitch':60,'lyrics':'一'},
+    {'onset':Q+Q//4,'duration':Q,'pitch':62,'lyrics':'二'}]
+bold_frozen=copy.deepcopy(bold_source)
+bold_full,rbf=styles.apply_style(bold_source,'bold',strength=.6,track_indices=[0],pitch_enabled=False,density_mode='original')
+bold_weak,rbw=styles.apply_style(bold_source,'bold',strength=.3,track_indices=[0],pitch_enabled=False,density_mode='original')
+bold_off,rbo=styles.apply_style(bold_source,'bold',strength=0.,track_indices=[0],pitch_enabled=False)
+assert bold_source==bold_frozen and bold_full!=bold_weak!=bold_source
+assert bold_off==bold_source and rbo['status']=='not_selected'
+assert rbf['status']==rbw['status']=='applied'
+assert rbf['tracks'][0]['envelope_scope']=='phrase+note'
+assert rbf['tracks'][0]['controls']['loudness']['phrase_opening_body_closing']=={
+    'opening':.32,'body':.55,'closing':.08}
+for channel in ('loudness','tension','breathiness'):
+    assert rbf['tracks'][0]['controls'][channel]['maximum_applied_delta']>0
+    assert bold_full['tracks'][0]['mainGroup']['parameters'][channel]!=bold_source['tracks'][0]['mainGroup']['parameters'][channel]
+first_a=clock.to_seconds(Q);first_b=clock.to_seconds(2*Q)
+second_a=clock.to_seconds(2*Q+Q//4);second_b=clock.to_seconds(3*Q+Q//4)
+first_core=(first_a+first_b)/2;second_core=(second_a+second_b)/2
+first_phase=first_a+.08;second_phase=second_a+.08
+assert abs(delta_at(bold_full,'loudness',first_a,bold_source))<1e-10
+assert abs(delta_at(bold_full,'loudness',first_b,bold_source))<1e-10
+assert abs(delta_at(bold_full,'loudness',second_a,bold_source))<1e-10
+assert delta_at(bold_full,'loudness',first_a+.03,bold_source)>delta_at(bold_full,'loudness',first_core,bold_source)>.5
+assert delta_at(bold_full,'tension',first_a+.03,bold_source)>0
+assert delta_at(bold_full,'breathiness',first_a+.03,bold_source)<0
+assert delta_at(bold_full,'loudness',second_phase,bold_source)>delta_at(bold_full,'loudness',first_phase,bold_source)+.05
+assert delta_at(bold_full,'loudness',second_b-.06,bold_source)>0
+assert delta_at(bold_full,'loudness',second_b,bold_source)==0
+full_max=rbf['tracks'][0]['controls']['loudness']['maximum_applied_delta']
+weak_max=rbw['tracks'][0]['controls']['loudness']['maximum_applied_delta']
+assert np.isclose(weak_max,full_max/2,rtol=1e-10,atol=1e-10) and full_max>1.
 
 protected=project()
 protected['tracks'][0]['mainGroup']['notes']=[
@@ -198,6 +256,30 @@ protected['tracks'][0]['mainGroup']['notes']=[
 for preset in ('gentle','sad','bold'):
     out,r=styles.apply_style(protected,preset,track_indices=[0])
     assert out==protected and r['status']=='skipped' and r['protected_notes']==6
+
+# A mixed phrase proves the phrase layer still follows the same eligible-note
+# mask: one normal singing note changes, while short, silence, rap, muted and
+# overlapping neighbours retain their authored curve values.
+mixed=project()
+mixed_notes=[
+    {'onset':0,'duration':Q,'pitch':60,'lyrics':'唱'},
+    {'onset':2*Q,'duration':Q//8,'pitch':60,'lyrics':'快'},
+    {'onset':3*Q,'duration':Q//2,'pitch':60,'lyrics':'sil'},
+    {'onset':5*Q,'duration':Q//2,'pitch':60,'lyrics':'啊','musicalType':'rap'},
+    {'onset':7*Q,'duration':Q//2,'pitch':60,'lyrics':'啊','attributes':{'muted':True}},
+    {'onset':8*Q,'duration':Q,'pitch':60,'lyrics':'叠'},
+    {'onset':8*Q+Q//2,'duration':Q,'pitch':64,'lyrics':'叠'}]
+mixed['tracks'][0]['mainGroup']['notes']=mixed_notes
+mixed_frozen=copy.deepcopy(mixed)
+mixed_out,mixed_receipt=styles.apply_style(mixed,'bold',track_indices=[0],pitch_enabled=False,density_mode='original')
+assert mixed==mixed_frozen and mixed_out['tracks'][1:]==mixed['tracks'][1:]
+assert mixed_out['tracks'][0]['mainGroup']['notes']==mixed['tracks'][0]['mainGroup']['notes']
+assert mixed_out['tracks'][0]['mainGroup']['parameters']['pitchDelta']==mixed['tracks'][0]['mainGroup']['parameters']['pitchDelta']
+assert mixed_receipt['status']=='partial' and mixed_receipt['protected_notes']==6
+assert delta_at(mixed_out,'loudness',clock.to_seconds(Q)+(clock.to_seconds(2*Q)-clock.to_seconds(Q))/2,mixed)>.5
+for note in mixed_notes[1:]:
+    start=clock.to_seconds(note['onset']+Q);end=clock.to_seconds(note['onset']+note['duration']+Q)
+    assert abs(delta_at(mixed_out,'loudness',(start+end)/2,mixed))<1e-10
 
 # A time window cuts the original envelope rather than inventing a new note
 # onset at its left edge. Outside the window the original linear function is
@@ -233,10 +315,6 @@ assert gentle_out!=sad_out
 full,rf=styles.apply_style(source,'bold',strength=.625,track_indices=[0],pitch_enabled=False,density_mode='original')
 less,rl=styles.apply_style(source,'bold',strength=.625,detail={'onset':0.},track_indices=[0],pitch_enabled=False,density_mode='original')
 assert rf['strength']==rl['strength']==.625
-def delta_at(data,name,seconds):
-    curve=data['tracks'][0]['mainGroup']['parameters'][name]['points']
-    pos=clock.to_position(seconds)-Q
-    return np.interp(pos,curve[::2],curve[1::2])
 assert delta_at(less,'loudness',.52)<delta_at(full,'loudness',.52)
 assert abs(delta_at(less,'loudness',2.)-delta_at(full,'loudness',2.))<1e-10
-print('PASS: canonical cards, legacy recipes/mapping/defaults, sad region recipe, phase/range guards, protected notes, headroom, independent I/O, no stacking and cancellation')
+print('PASS: canonical cards, bold phrase/note dynamics, strength/off/range guards, protected notes, headroom, independent I/O, no stacking and cancellation')

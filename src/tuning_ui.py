@@ -454,7 +454,7 @@ class TuningPage(QWidget):
         self.style_technique=combo([(_tr('原唱法'),'none'),(_tr('中文戏腔〔实验〕'),'chinese_opera')])
         self.style_technique.setProperty('stylePresetChoices',True)
         self.technique_choice=choice(self.style_technique,columns=2,compact=True);technique_area.addWidget(self.technique_choice)
-        self.technique_hint=label(_tr('字头倚滑、音间衔接、长音展开与收腔；可与所选风格组合，保留原有颤音。'),'muted')
+        self.technique_hint=label(_tr('字头倚滑、音间衔接、长音颤音与收腔；保留已检测到的原有颤音。'),'muted')
         technique_area.addWidget(self.technique_hint)
         technique_area.addWidget(label(_tr('唱腔强度'),'muted'))
         self.technique_strength=combo(strength_choices((.3,.6,.85,1.)))
@@ -1566,7 +1566,7 @@ class TuningPage(QWidget):
         technique=self.style_technique.currentData()=='chinese_opera'
         if hasattr(self,'style_timeline'):self.style_timeline.set_selection_style('chinese_opera' if technique else current)
         text=style_card_description(current)
-        if technique:text+='\n'+_tr('字头倚滑、音间衔接、长音展开与收腔；可与所选风格组合，保留原有颤音。')
+        if technique:text+='\n'+_tr('字头倚滑、音间衔接、长音颤音与收腔；保留已检测到的原有颤音。')
         source=getattr(self,'_style_migration_source',None)
         if isinstance(source,str) and ui_merged_preset(source)==current:
             old_label=style_card_label(source)

@@ -65,9 +65,9 @@ retakes, accompaniment, unknown controls and unselected tracks are preserved.
 Original control-point positions remain. Existing populated nonlinear curves
 stay unchanged, with skipped or partial application recorded. If proposed values
 could exceed available channel headroom, the proposed increments are reduced in
-one shared proportion instead of flattening individual peaks. Style processing
-adds or rewrites no vibrato and does not modify `vibratoEnv`, note vibrato
-attributes or existing vibrato states.
+one shared proportion instead of flattening individual peaks. Existing
+`vibratoEnv` and note vibrato attributes remain unchanged. The Chinese opera
+pitch layer can add delayed vibrato to eligible long, flat notes.
 
 All values remain manually authored audition drafts. Structural protection,
 reproducibility and a successful report do not establish better listening,
@@ -261,12 +261,12 @@ overlapping notes, existing control points, populated nonlinear curves and
 channel headroom. Saving a draft does not change the source SVP; settings apply
 only when a new candidate is generated.
 
-The first version adds bounded onset slides, note connections, sustained-tone
-expansion, and phrase endings. It adds no new vibrato and does not rewrite
-`vibratoEnv`, note vibrato attributes, or existing vibrato. It neither selects
-nor guesses a native voicebank Vocal Mode, and it does not rewrite pronunciation
-or lyrics. The recipes are hand-authored audition candidates. They have not been
-synthesized or auditioned in this release, and structural protection or a
-successful report does not establish listening quality. Audition the result with
-the chosen voicebank. This feature does not promise faithful reproduction of a
-specific opera genre, region, role, or performer.
+The current version adds onset slides, note connections, sustained-tone
+expansion and phrase endings. With opera pitch enabled, it may add delayed
+vibrato to eligible long, flat notes while retaining detected existing pitch
+modulation, `vibratoEnv` and note vibrato attributes. A voicebank may generate
+vibrato that is not visible in the project curves, so audition for unwanted
+layering. The feature neither selects nor guesses a native voicebank Vocal Mode,
+and does not rewrite pronunciation or lyrics. These are experimental audition
+candidates; they have not been synthesized or auditioned in this release and
+are not a verified reproduction of a specific opera genre, role or performer.

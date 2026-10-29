@@ -6,7 +6,7 @@ used. Nonlinear curves retain their original interpolation and are skipped.
 import copy
 import math
 
-VERSION=5
+VERSION=6
 GRID_SECONDS=.005
 MAX_POINTS=2_000_000
 # Entry cents/seconds, interval lag cents per semitone / limit / seconds,
@@ -14,8 +14,8 @@ MAX_POINTS=2_000_000
 RECIPES={
     'gentle':{'entry':(-20.,.11),'connection':(1.8,16.,.07),'release':(-12.,.09),'vibrato':None},
     'sad':{'entry':(-12.,.18),'connection':(4.,32.,.13),'release':(-58.,.30),'vibrato':None},
-    'bold':{'entry':(28.,.055),'connection':(1.5,16.,.055),'release':(-18.,.09),'vibrato':None},
-    'chinese_opera':{'entry':(-88.,.20),'connection':(9.,85.,.18),'release':(52.,.26),'vibrato':None},
+    'bold':{'entry':(14.,.065),'connection':(2.,16.,.06),'release':(-10.,.10),'vibrato':None},
+    'chinese_opera':{'entry':(-220.,.24),'connection':(20.,180.,.20),'release':(160.,.30),'vibrato':(48.,5.3,.30)},
     'soft_ballad':{'entry':(-24.,.16),'connection':(3.,18.,.10),'release':(-28.,.22),'vibrato':(7.,5.,.45)},
     'intimate_narration':{'entry':(-12.,.08),'connection':(1.5,9.,.06),'release':(-20.,.14),'vibrato':None},
     'power_pop':{'entry':(18.,.07),'connection':(2.5,18.,.075),'release':(-14.,.12),'vibrato':(10.,5.5,.38)},
@@ -56,11 +56,18 @@ def apply_pitch(data,preset,*,strength,track_indices,detail=None,time_range=None
             'sample_seconds':GRID_SECONDS,'detail':detail,'time_range_seconds':time_range,
             'tracks':[],'note_attributes_unchanged':True,
             'vibratoEnv_unchanged':True,'original_knot_positions_preserved':True}
+    if preset=='chinese_opera':
+        report['vibrato_policy']='add_only_on_long_flat_notes_without_explicit_vibrato; native_default_is_not_verified'
     changed=set()
     for index in track_indices:
         cancel();track=data['tracks'][index];_,offset=_phrases(track,clock)
         allowed = set(_note_spans(track,clock,offset)[0]) if PRESETS[preset].get('note_envelope') else None
         group=track['mainGroup'];params=group.get('parameters',{});original=params.get('pitchDelta')
+        # Preserve the true score adjacency even when an intervening short,
+        # muted, overlapping or non-singing note is omitted from editing.
+        physical = sorted(range(len(group['notes'])), key=lambda i: (
+            group['notes'][i]['onset'], group['notes'][i]['duration'], i))
+        physical_index = {ni: position for position, ni in enumerate(physical)}
         row={'track_index':index,'status':'skipped','gestures':[],'skipped_notes':[]}
         report['tracks'].append(row)
         try:xs,ys=_curve(original,float_positions=True)
@@ -97,24 +104,55 @@ def apply_pitch(data,preset,*,strength,track_indices,detail=None,time_range=None
                 skipped.append({'note_index':ni,'reason':'overlapping_notes'});continue
             if duration<.16:
                 skipped.append({'note_index':ni,'reason':'short_note_preserved'});continue
+            if preset in ('chinese_opera','bold'):
+                position=physical_index[ni]
+                if previous and (position==0 or physical[position-1]!=previous[3]):previous=None
+                if following and (position+1>=len(physical) or physical[position+1]!=following[3]):following=None
             entry=previous is None or a-previous[1]>PHRASE_GAP
             ending=following is None or following[0]-b>PHRASE_GAP
             if entry:
                 amount,seconds=recipe['entry']
-                add('phrase_entry',a,a+min(seconds,duration*.36),amount,ni)
-            elif a-previous[1]<=.09 and abs(pitch-previous[2])>=1.:
+                add('phrase_entry',a,a+min(seconds,duration*.36),amount,ni,
+                    peak=.10 if preset=='chinese_opera' else .22)
+            elif a-previous[1]<=.09 and (abs(pitch-previous[2])>=1. or preset in ('chinese_opera','bold')):
                 per_semitone,limit,seconds=recipe['connection']
-                amount=-math.copysign(min(limit,abs(pitch-previous[2])*per_semitone),pitch-previous[2])
-                add('interval_connection',a,a+min(seconds,duration*.32),amount,ni)
+                interval=pitch-previous[2]
+                if preset=='chinese_opera':
+                    # Observed in a single same-score control pair: rising
+                    # changes can overshoot upward; large descents anticipate
+                    # and continue downward. It is a bounded audition rule,
+                    # not a claim that all opera singing has this contour.
+                    amount=(-32. if abs(interval)<1. else
+                            math.copysign(min(limit,abs(interval)*per_semitone),interval))
+                elif preset=='bold' and abs(interval)<1.:
+                    amount=6.
+                else:
+                    amount=-math.copysign(min(limit,abs(interval)*per_semitone),interval)
+                end=a+min(seconds,duration*.32)
+                if (preset=='chinese_opera' and interval<=-4. and
+                        abs(a-previous[1])<=1e-8):
+                    start=previous[1]-min(.11,(previous[1]-previous[0])*.25)
+                    # One continuous residual across a real adjoining boundary.
+                    # Never bridge a rest or a protected intervening note.
+                    add('interval_connection',start,end,amount,ni,peak=(a-start)/(end-start))
+                else:
+                    add('interval_connection',a,end,amount,ni)
             if ending:
                 amount,seconds=recipe['release']
                 add('phrase_release',b-min(seconds,duration*.35),b,amount,ni,peak=.72)
-            # Add delayed vibrato only to long, locally flat pitch with an
-            # explicit zero depth. Unknown/default or existing vibrato stays.
+            # Opera may add a delayed pitch ornament on a long, locally flat
+            # note when no explicit native vibrato is present. Existing curves,
+            # explicit depth and already-modulated source pitch remain intact;
+            # an omitted native depth is still not proof of acoustic absence.
             if recipe['vibrato'] and duration>=.85:
                 depth=note.get('attributes',{}).get('dF0Vbr')
-                if depth!=0 or type(depth) not in (int,float):
+                opera=preset=='chinese_opera'
+                if (depth is not None and (type(depth) not in (int,float) or depth!=0)) or (not opera and depth is None):
                     skipped.append({'note_index':ni,'reason':'existing_or_unknown_vibrato_preserved'});continue
+                if opera:
+                    env=params.get('vibratoEnv')
+                    if isinstance(env,dict) and env.get('points'):
+                        skipped.append({'note_index':ni,'reason':'authored_vibrato_envelope_preserved'});continue
                 amplitude,frequency,delay=recipe['vibrato'];left=a+delay;right=b-min(.18,duration*.2)
                 if right-left<.25:continue
                 probe=np.arange(left,right+.00001,.01)
@@ -149,6 +187,11 @@ def apply_pitch(data,preset,*,strength,track_indices,detail=None,time_range=None
             local=shape*gesture['cents_at_full_strength']*strength
             local*=_range_gate(t,time_range)
             active_local=abs(local)>1e-10;source=base[left:right]
+            if (preset in ('chinese_opera','bold') and
+                    gesture['kind']=='interval_connection' and
+                    active_local.any() and
+                    (np.ptp(source[active_local])>50. or np.max(np.abs(source[active_local]))>200.)):
+                omitted.append({**gesture,'reason':'authored_transition_preserved'});continue
             if np.any(abs(source[active_local])>1200.):
                 omitted.append({**gesture,'reason':'source_outside_nominal_range_preserved'});continue
             local_scale=1.;pos=local>1e-10;neg=local<-1e-10
