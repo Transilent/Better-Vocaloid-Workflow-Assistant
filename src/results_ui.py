@@ -219,6 +219,14 @@ def active_task_operations(owner, job):
         return ()
     job = Path(job).resolve()
     active = []
+    mixer_page = getattr(owner, 'audio_mixdown', None)
+    if _page_busy(mixer_page):
+        mixer = getattr(mixer_page, 'mixer', None)
+        fields = getattr(mixer, 'fields', {})
+        references = [getattr(mixer, 'job', None)]
+        references.extend(field.text() for field in fields.values() if callable(getattr(field, 'text', None)))
+        if any(_path_within(value, job) for value in references):
+            active.append('简易混音')
     video = getattr(owner, 'video_mixdown', None)
     preview_busy = getattr(video, 'preview_busy', None)
     if callable(preview_busy) and preview_busy():

@@ -124,6 +124,7 @@ class StoragePage(QWidget):
         if callable(live) and live():
             active.append('登录或上传浏览器')
         for page, name in ((getattr(owner, 'video_mixdown', None), '视频合成'),
+                           (getattr(owner, 'audio_mixdown', None), '简易混音'),
                            (getattr(owner, 'calibration_dialog', None), '校准')):
             busy = getattr(page, 'busy', None)
             if callable(busy) and busy():

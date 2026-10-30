@@ -4,16 +4,19 @@ The public entry point is :func:`render`. Audio is decoded to temporary
 streaming float32 files with the application FFmpeg binary, processed in
 bounded blocks with Pedalboard 0.9.26, and published as a new PCM24 WAV.
 
-The instrumental sample rate is the project rate. Mono+mono produces mono;
-any stereo source produces stereo. Positive vocal offsets delay the vocal,
-while negative offsets trim its head without seeking processor state. Preview
-requests rerun the same chain from sample zero and select the requested sample
-interval from the resulting full-program waveform. Sample peaks are protected
-at -1 dBFS; this is not a loudness-normalization or true-peak calibrated stage.
+The backing sample rate is the project rate. Mono+mono produces mono; any
+stereo source produces stereo. One to three vocals are shifted, gained and
+summed before the shared vocal effects process their bus. Positive per-vocal
+offsets delay a vocal, while negative offsets trim its head without seeking
+processor state. Preview requests rerun the same chain from sample zero and
+select the requested sample interval from the resulting full-program waveform.
+Sample peaks are protected at -1 dBFS; this is not a loudness-normalization or
+true-peak calibrated stage.
 """
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import dataclass
 import hashlib
 import json
@@ -41,7 +44,9 @@ LIMITER_GUARD_SECONDS = 0.25
 MAX_SOURCE_SECONDS = 6 * 60 * 60.0
 MAX_OFFSET_SECONDS = 6 * 60 * 60.0
 MAX_OUTPUT_BYTES = 16 * 1024 ** 3
+MAX_VOCALS = 3
 SILENCE_DBFS = -144.0
+REPORT_SCHEMA = "vwa.audio_mixdown.render/v2"
 
 
 class MixdownError(RuntimeError):
@@ -65,13 +70,18 @@ class _AudioInfo:
 
 
 @dataclass(frozen=True)
+class _VocalTrack:
+    path: Path
+    gain_db: float
+    offset_seconds: float
+
+
+@dataclass(frozen=True)
 class _Settings:
-    vocal_path: Path
+    vocals: tuple[_VocalTrack, ...]
     instrumental_path: Path
     output_path: Path
-    vocal_db: float
     instrumental_db: float
-    offset_seconds: float
     eq_low_cut_hz: float
     eq_presence_db: float
     compression_strength: float
@@ -215,18 +225,19 @@ def _load_pedalboard() -> Any:
 
 
 def _finite_number(request: Mapping[str, Any], name: str, minimum: float,
-                   maximum: float) -> float:
+                   maximum: float, *, label: str | None = None) -> float:
+    shown = label or name
     if name not in request:
-        raise ValueError(f"混音参数缺少 {name}。")
+        raise ValueError(f"混音参数缺少 {shown}。")
     value = request[name]
     if isinstance(value, bool):
-        raise ValueError(f"{name} 必须是有限数字。")
+        raise ValueError(f"{shown} 必须是有限数字。")
     try:
         number = float(value)
     except (TypeError, ValueError):
-        raise ValueError(f"{name} 必须是有限数字。") from None
+        raise ValueError(f"{shown} 必须是有限数字。") from None
     if not math.isfinite(number) or not minimum <= number <= maximum:
-        raise ValueError(f"{name} 应在 {minimum:g} 到 {maximum:g} 之间，且不能是 NaN 或无穷大。")
+        raise ValueError(f"{shown} 应在 {minimum:g} 到 {maximum:g} 之间，且不能是 NaN 或无穷大。")
     return number
 
 
@@ -246,16 +257,18 @@ def _optional_seconds(request: Mapping[str, Any], name: str, *, positive: bool) 
     return number
 
 
-def _path_value(request: Mapping[str, Any], name: str) -> Path:
+def _path_value(request: Mapping[str, Any], name: str, *,
+                label: str | None = None) -> Path:
+    shown = label or name
     value = request.get(name)
     if value is None or isinstance(value, bool):
-        raise ValueError(f"混音参数缺少有效路径：{name}。")
+        raise ValueError(f"混音参数缺少有效路径：{shown}。")
     try:
         raw = os.fspath(value)
     except TypeError:
-        raise ValueError(f"混音参数缺少有效路径：{name}。") from None
+        raise ValueError(f"混音参数缺少有效路径：{shown}。") from None
     if not isinstance(raw, str) or not raw.strip() or "\x00" in raw:
-        raise ValueError(f"混音参数缺少有效路径：{name}。")
+        raise ValueError(f"混音参数缺少有效路径：{shown}。")
     path = Path(raw).expanduser()
     if not path.is_absolute():
         path = Path.cwd() / path
@@ -270,27 +283,68 @@ def _normal_path(path: Path) -> str:
     return unicodedata.normalize("NFC", value)
 
 
+def _vocal_tracks(request: Mapping[str, Any]) -> tuple[_VocalTrack, ...]:
+    legacy_names = ("vocal_path", "vocal_db", "offset_seconds")
+    if "vocals" in request:
+        if any(name in request for name in legacy_names):
+            raise ValueError(
+                "vocals 不能与旧版 vocal_path、vocal_db 或 offset_seconds 同时提供。"
+            )
+        value = request["vocals"]
+        if not isinstance(value, list):
+            raise ValueError("vocals 必须是包含 1–3 个歌声轨对象的列表。")
+        if not 1 <= len(value) <= MAX_VOCALS:
+            raise ValueError(f"vocals 必须包含 1–{MAX_VOCALS} 个歌声轨。")
+        tracks = []
+        for index, item in enumerate(value):
+            prefix = f"vocals[{index}]"
+            if not isinstance(item, Mapping):
+                raise ValueError(f"{prefix} 必须是对象。")
+            tracks.append(_VocalTrack(
+                path=_path_value(item, "path", label=f"{prefix}.path"),
+                gain_db=_finite_number(
+                    item, "gain_db", -120.0, 24.0, label=f"{prefix}.gain_db"
+                ),
+                offset_seconds=_finite_number(
+                    item, "offset_seconds", -MAX_OFFSET_SECONDS, MAX_OFFSET_SECONDS,
+                    label=f"{prefix}.offset_seconds",
+                ),
+            ))
+        return tuple(tracks)
+
+    return (_VocalTrack(
+        path=_path_value(request, "vocal_path"),
+        gain_db=_finite_number(request, "vocal_db", -120.0, 24.0),
+        offset_seconds=_finite_number(
+            request, "offset_seconds", -MAX_OFFSET_SECONDS, MAX_OFFSET_SECONDS
+        ),
+    ),)
+
+
 def _settings(request: Mapping[str, Any]) -> _Settings:
     if not isinstance(request, Mapping):
         raise TypeError("render 的 request 必须是字典。")
 
-    vocal_path = _path_value(request, "vocal_path")
+    vocals = _vocal_tracks(request)
     instrumental_path = _path_value(request, "instrumental_path")
     output_path = _path_value(request, "output_path")
 
     if output_path.suffix.lower() != ".wav":
         raise ValueError("混音输出必须使用 .wav 文件名。")
-    for source, label in ((vocal_path, "干声"), (instrumental_path, "伴奏")):
+    sources = [
+        (track.path, f"歌声轨 {index + 1}")
+        for index, track in enumerate(vocals)
+    ]
+    sources.append((instrumental_path, "伴奏"))
+    for source, label in sources:
         if not source.is_file():
             raise FileNotFoundError(f"找不到{label}文件：{source}")
         if _normal_path(output_path) == _normal_path(source):
-            raise ValueError("混音输出不能与干声或伴奏源文件重叠。")
+            raise ValueError("混音输出不能与任一人声或伴奏源文件重叠。")
     if os.path.lexists(output_path):
         raise FileExistsError(f"输出文件已经存在，为避免覆盖已拒绝：{output_path}")
 
-    vocal_db = _finite_number(request, "vocal_db", -120.0, 24.0)
     instrumental_db = _finite_number(request, "instrumental_db", -120.0, 24.0)
-    offset = _finite_number(request, "offset_seconds", -MAX_OFFSET_SECONDS, MAX_OFFSET_SECONDS)
     low_cut = _finite_number(request, "eq_low_cut_hz", 0.0, 20000.0)
     if 0.0 < low_cut < 10.0:
         raise ValueError("eq_low_cut_hz 必须为 0（旁通）或不小于 10 Hz。")
@@ -304,12 +358,10 @@ def _settings(request: Mapping[str, Any]) -> _Settings:
     preview_duration = _optional_seconds(request, "preview_duration_seconds", positive=True)
 
     return _Settings(
-        vocal_path=vocal_path,
+        vocals=vocals,
         instrumental_path=instrumental_path,
         output_path=output_path,
-        vocal_db=vocal_db,
         instrumental_db=instrumental_db,
-        offset_seconds=offset,
         eq_low_cut_hz=low_cut,
         eq_presence_db=presence,
         compression_strength=compression,
@@ -557,16 +609,24 @@ def _install_new_file(staged: Path, destination: Path) -> None:
         pass
 
 
-def _render_mix(settings: _Settings, vocal_path: Path, instrumental_path: Path,
-                sample_rate: int, channels: int, vocal_frames: int,
+def _render_mix(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
+                instrumental_path: Path, sample_rate: int, channels: int,
                 instrumental_frames: int, mix_path: Path, pedalboard: Any,
                 numpy: Any, soundfile: Any, cancel: Callable[[], Any] | None
                 ) -> tuple[int, int, int | None, int | None]:
-    offset_samples = int(round(settings.offset_seconds * sample_rate))
-    vocal_end = max(0, vocal_frames + offset_samples)
-    base_frames = max(instrumental_frames, vocal_end)
+    if len(vocal_inputs) != len(settings.vocals):
+        raise MixdownError("内部歌声轨数量不一致，已停止混音。")
+    offsets = [
+        int(round(track.offset_seconds * sample_rate))
+        for track in settings.vocals
+    ]
+    vocal_ends = [
+        max(0, frames + offset)
+        for (_, frames), offset in zip(vocal_inputs, offsets)
+    ]
+    base_frames = max([instrumental_frames, *vocal_ends])
     if base_frames <= 0:
-        raise ValueError("两路音频均没有可混音内容。")
+        raise ValueError("伴奏和歌声轨均没有可混音内容。")
 
     tail_limit = int(round(MAX_REVERB_TAIL_SECONDS * sample_rate)) if settings.reverb_mix > 0 else 0
     maximum_frames = base_frames + tail_limit
@@ -598,30 +658,53 @@ def _render_mix(settings: _Settings, vocal_path: Path, instrumental_path: Path,
         dry_chain, reverb = _make_vocal_processors(pedalboard, settings, sample_rate)
     except Exception as error:
         raise MixdownError("无法创建 Pedalboard 人声处理链。") from error
-    vocal_gain = 10.0 ** (settings.vocal_db / 20.0)
+    vocal_gains = [10.0 ** (track.gain_db / 20.0) for track in settings.vocals]
     instrumental_gain = 10.0 ** (settings.instrumental_db / 20.0)
     tail_threshold = 10.0 ** (TAIL_FLOOR_DBFS / 20.0)
     last_tail_frame: int | None = None
     first = True
 
     try:
-        with soundfile.SoundFile(str(vocal_path), "r") as vocal, \
-                soundfile.SoundFile(str(instrumental_path), "r") as instrumental, \
-                soundfile.SoundFile(str(mix_path), "w", samplerate=sample_rate,
-                                    channels=channels, format="WAV", subtype="FLOAT") as output:
+        with ExitStack() as stack:
+            vocals = [
+                stack.enter_context(soundfile.SoundFile(str(source), "r"))
+                for source, _ in vocal_inputs
+            ]
+            instrumental = stack.enter_context(
+                soundfile.SoundFile(str(instrumental_path), "r")
+            )
+            output = stack.enter_context(soundfile.SoundFile(
+                str(mix_path), "w", samplerate=sample_rate, channels=channels,
+                format="WAV", subtype="FLOAT",
+            ))
             for start in range(0, render_frames, CHUNK_FRAMES):
                 _check_cancel(cancel)
                 count = min(CHUNK_FRAMES, render_frames - start)
                 vocal_block = numpy.zeros((count, channels), dtype=numpy.float32)
                 instrumental_block = numpy.zeros((count, channels), dtype=numpy.float32)
 
-                source_start = start - offset_samples
-                destination_start = max(0, -source_start)
-                source_index = max(0, source_start)
-                vocal_count = min(count - destination_start, vocal_frames - source_index)
-                if vocal_count > 0:
-                    vocal_data = _read_frames(vocal, source_index, vocal_count, channels, numpy)
-                    vocal_block[destination_start:destination_start + vocal_count] = vocal_data
+                for handle, (_, vocal_frames), offset_samples, gain in zip(
+                        vocals, vocal_inputs, offsets, vocal_gains):
+                    source_start = start - offset_samples
+                    destination_start = max(0, -source_start)
+                    source_index = max(0, source_start)
+                    vocal_count = min(
+                        count - destination_start, vocal_frames - source_index
+                    )
+                    track_block = numpy.zeros((count, channels), dtype=numpy.float32)
+                    if vocal_count > 0:
+                        track_block[
+                            destination_start:destination_start + vocal_count
+                        ] = _read_frames(
+                            handle, source_index, vocal_count, channels, numpy
+                        )
+                    track_block *= numpy.float32(gain)
+                    vocal_block = numpy.add(
+                        vocal_block, track_block, dtype=numpy.float32
+                    )
+
+                if not numpy.isfinite(vocal_block).all():
+                    raise ValueError("人声增益或偏移求和产生了 NaN 或无穷大采样。")
 
                 if start < instrumental_frames:
                     instrumental_count = min(count, instrumental_frames - start)
@@ -630,16 +713,19 @@ def _render_mix(settings: _Settings, vocal_path: Path, instrumental_path: Path,
                     )
 
                 if dry_chain is not None:
-                    vocal_block = _pedalboard_process(dry_chain, vocal_block, sample_rate, first, numpy)
-                if reverb is not None:
-                    wet = _pedalboard_process(reverb, vocal_block, sample_rate, first, numpy)
-                    mix_value = settings.reverb_mix
-                    vocal_block = (vocal_block * (1.0 - mix_value) + wet * mix_value).astype(
-                        numpy.float32, copy=False
+                    vocal_block = _pedalboard_process(
+                        dry_chain, vocal_block, sample_rate, first, numpy
                     )
+                if reverb is not None:
+                    wet = _pedalboard_process(
+                        reverb, vocal_block, sample_rate, first, numpy
+                    )
+                    mix_value = settings.reverb_mix
+                    vocal_block = (
+                        vocal_block * (1.0 - mix_value) + wet * mix_value
+                    ).astype(numpy.float32, copy=False)
                 first = False
 
-                vocal_block *= numpy.float32(vocal_gain)
                 instrumental_block *= numpy.float32(instrumental_gain)
                 mixed = numpy.add(vocal_block, instrumental_block, dtype=numpy.float32)
                 if not numpy.isfinite(mixed).all():
@@ -729,12 +815,16 @@ def _inspect_final(path: Path, sample_rate: int, channels: int,
 
 
 def render(request: Mapping[str, Any], cancel: Callable[[], Any] | None = None) -> dict[str, Any]:
-    """Render a dry vocal and instrumental to a new PCM24 WAV.
+    """Render one to three vocals and one required backing to a new PCM24 WAV.
 
-    ``offset_seconds`` is rounded to the nearest output sample.  Positive
-    values delay the vocal; negative values trim its beginning.  Preview
-    rendering runs the same processor chain from the start of the song and
-    returns a sample-aligned excerpt of the full render.
+    New callers provide ``vocals`` as a list of ``{path, gain_db,
+    offset_seconds}`` objects. The legacy single-vocal fields
+    ``vocal_path``/``vocal_db``/``offset_seconds`` remain accepted when
+    ``vocals`` is absent. Per-vocal offsets are rounded to output samples.
+    Positive values delay a vocal; negative values trim its beginning. Each
+    vocal gain and offset is applied before the vocal bus is summed and passed
+    once through the shared effects chain. Preview rendering runs that same
+    chain from the start of the song and returns a sample-aligned excerpt.
     """
 
     if cancel is not None and not callable(cancel):
@@ -751,29 +841,46 @@ def render(request: Mapping[str, Any], cancel: Callable[[], Any] | None = None) 
     except OSError as error:
         raise MixdownError(f"无法在输出目录建立临时工作区：{output.parent}。") from error
     try:
+        source_paths = [track.path for track in settings.vocals]
+        source_paths.append(settings.instrumental_path)
         source_fingerprints = {
-            settings.vocal_path: _source_fingerprint(settings.vocal_path),
-            settings.instrumental_path: _source_fingerprint(settings.instrumental_path),
+            path: _source_fingerprint(path)
+            for path in source_paths
         }
-        source_hashes = {str(path): _file_sha256(path, cancel) for path in source_fingerprints}
-        vocal_probe = _probe_audio(
-            settings.vocal_path, ffmpeg, temp_root / "probe-vocal.log", cancel
-        )
+        source_hashes = {
+            str(path): _file_sha256(path, cancel)
+            for path in source_fingerprints
+        }
+
+        vocal_probes = []
+        for index, track in enumerate(settings.vocals):
+            vocal_probes.append(_probe_audio(
+                track.path, ffmpeg,
+                temp_root / f"probe-vocal-{index + 1}.log", cancel,
+            ))
         instrumental_probe = _probe_audio(
-            settings.instrumental_path, ffmpeg, temp_root / "probe-instrumental.log", cancel
+            settings.instrumental_path, ffmpeg,
+            temp_root / "probe-instrumental.log", cancel,
         )
         sample_rate = instrumental_probe.sample_rate
-        channels = 2 if max(vocal_probe.channels, instrumental_probe.channels) == 2 else 1
+        source_channels = [
+            instrumental_probe.channels,
+            *(probe.channels for probe in vocal_probes),
+        ]
+        channels = 2 if max(source_channels) == 2 else 1
 
-        vocal_float = temp_root / "vocal-f32.wav"
+        vocal_inputs: list[tuple[Path, int]] = []
+        for index, track in enumerate(settings.vocals):
+            vocal_float = temp_root / f"vocal-{index + 1}-f32.wav"
+            vocal_info = _decode_to_float_wav(
+                track.path, vocal_float, sample_rate, channels, ffmpeg,
+                temp_root / f"decode-vocal-{index + 1}.log", cancel,
+            )
+            vocal_inputs.append((vocal_float, vocal_info.frames))
         instrumental_float = temp_root / "instrumental-f32.wav"
-        vocal_info = _decode_to_float_wav(
-            settings.vocal_path, vocal_float, sample_rate, channels, ffmpeg,
-            temp_root / "decode-vocal.log", cancel,
-        )
         instrumental_info = _decode_to_float_wav(
-            settings.instrumental_path, instrumental_float, sample_rate, channels, ffmpeg,
-            temp_root / "decode-instrumental.log", cancel,
+            settings.instrumental_path, instrumental_float, sample_rate, channels,
+            ffmpeg, temp_root / "decode-instrumental.log", cancel,
         )
 
         try:
@@ -784,9 +891,8 @@ def render(request: Mapping[str, Any], cancel: Callable[[], Any] | None = None) 
 
         premix = temp_root / "premix-f32.wav"
         base_frames, full_frames, preview_start, preview_duration = _render_mix(
-            settings, vocal_float, instrumental_float, sample_rate, channels,
-            vocal_info.frames, instrumental_info.frames, premix, pedalboard,
-            numpy, soundfile, cancel,
+            settings, vocal_inputs, instrumental_float, sample_rate, channels,
+            instrumental_info.frames, premix, pedalboard, numpy, soundfile, cancel,
         )
 
         if preview_start is None:
@@ -821,14 +927,40 @@ def render(request: Mapping[str, Any], cancel: Callable[[], Any] | None = None) 
                     or _file_sha256(path, cancel) != source_hashes[str(path)]):
                 raise MixdownError(f"渲染期间源音频发生变化，已停止输出：{path.name}")
         output_sha256 = _file_sha256(staged, cancel)
+        _check_cancel(cancel)
         if os.path.lexists(output):
             raise FileExistsError(f"输出文件已经存在，为避免覆盖已拒绝：{output}")
         _install_new_file(staged, output)
 
+        tracks = []
+        for index, track in enumerate(settings.vocals):
+            tracks.append({
+                "role": "vocal",
+                "index": index,
+                "path": str(track.path),
+                "gain_db": track.gain_db,
+                "offset_seconds": track.offset_seconds,
+                "input_sha256": source_hashes[str(track.path)],
+                "output_sha256": output_sha256,
+            })
+        tracks.append({
+            "role": "backing",
+            "index": 0,
+            "path": str(settings.instrumental_path),
+            "gain_db": settings.instrumental_db,
+            "offset_seconds": 0.0,
+            "input_sha256": source_hashes[str(settings.instrumental_path)],
+            "output_sha256": output_sha256,
+        })
+
         return {
+            "schema": REPORT_SCHEMA,
             "output_path": str(output),
             "duration_seconds": expected_frames / float(sample_rate),
             "peak_dbfs": float(peak_dbfs),
+            "sample_rate": sample_rate,
+            "channels": channels,
+            "tracks": tracks,
             "source_sha256": source_hashes,
             "output_sha256": output_sha256,
         }

@@ -171,7 +171,7 @@ def apply_theme(window, mode=None):
     from ui_materials import apply_material
     apply_material(window,mode,preferences)
     from ui_materials import navigation_icon
-    for index in (0,9,8,3,1,2,4):
+    for index in (0,9,10,8,3,1,2,4):
         controls=getattr(window,'nav_buttons',[])
         if index<len(controls) and controls[index] is not None:
             controls[index].setIcon(navigation_icon(index,COLORS[mode]['selected_text']))

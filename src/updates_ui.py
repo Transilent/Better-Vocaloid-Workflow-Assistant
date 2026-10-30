@@ -300,6 +300,7 @@ class UpdatesPage(QWidget):
                 or bool(callable(storage_busy) and storage_busy())
                 or bool(callable(preview_busy) and preview_busy())
                 or bool(getattr(owner, 'video_mixdown', None) and owner.video_mixdown.busy())
+                or bool(getattr(owner, 'audio_mixdown', None) and owner.audio_mixdown.busy())
                 or bool(getattr(owner,'calibration_dialog',None) and owner.calibration_dialog.busy()))
 
     def maybe_auto_restart(self):

@@ -7,7 +7,7 @@ from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit,
                             QTextEdit, QComboBox, QCheckBox, QProgressBar, QStackedWidget,
-                            QButtonGroup, QTreeWidget, QTreeWidgetItem, QHeaderView, QScrollArea, QFrame)
+                            QButtonGroup, QTreeWidget, QTreeWidgetItem, QHeaderView, QScrollArea, QFrame, QDialog)
 from common import ROOT, app_path, load_config, output_directory, job_directories
 from desktop_theme import apply_theme, button, card, fold, label, page, scroll_content
 from results_ui import ResultsPage
@@ -131,6 +131,64 @@ class WorkspaceChrome(QObject):
         return False
 
 
+class AudioMixdownPage(QWidget):
+    """Independent mixer with an optional task association."""
+    def __init__(self, owner):
+        super().__init__()
+        self.owner = owner
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        context = QWidget()
+        row = QHBoxLayout(context)
+        row.setContentsMargins(22, 12, 22, 0)
+        self.context = label(_tr('独立文件 · 无需先创建任务'), 'muted')
+        row.addWidget(self.context, 1)
+        self.choose_task = button(_tr('关联任务…'), self.pick_job)
+        row.addWidget(self.choose_task)
+        self.clear_task = button(_tr('取消关联'), self.unlink_job)
+        self.clear_task.hide()
+        row.addWidget(self.clear_task)
+        outer.addWidget(context)
+        from audio_mixdown_ui import AudioMixdownDialog
+        self.mixer = AudioMixdownDialog(owner, None, self, embedded=True)
+        outer.addWidget(self.mixer, 1)
+
+    def pick_job(self):
+        if self.mixer.busy():
+            self.mixer.status.setText(_tr('请等待当前处理结束后再更换关联任务。'))
+            return
+        from results_ui import TaskPickerDialog
+        dialog = TaskPickerDialog(self.owner, self, title=_tr('关联混音任务'), selected=self.mixer.job)
+        try:
+            if dialog.exec_() == QDialog.Accepted:
+                selected = dialog.selection()
+                if selected:
+                    self.set_job(selected['value'])
+        finally:
+            dialog.deleteLater()
+
+    def set_job(self, job):
+        if self.mixer.busy():
+            return False
+        from results_ui import task_caption
+        self.mixer.set_job(job)
+        self.context.setText(_tr('关联任务：') + task_caption(self.owner, self.mixer.job) if job
+                             else _tr('独立文件 · 无需先创建任务'))
+        self.context.setToolTip(str(self.mixer.job or ''))
+        self.clear_task.setVisible(bool(job))
+        return True
+
+    def unlink_job(self):
+        if not self.set_job(None):
+            self.mixer.status.setText(_tr('请等待当前处理结束后再取消关联任务。'))
+
+    def busy(self):
+        return self.mixer.busy()
+
+    def cancel(self):
+        self.mixer.cancel()
+
+
 def build_window(window):
     apply_theme(window)
     screen = QApplication.primaryScreen().availableGeometry()
@@ -166,9 +224,9 @@ def build_window(window):
     nav.addWidget(full_name)
     nav.addSpacing(16)
     window.nav_group = QButtonGroup(window)
-    titles = ('准备工作流', '模型与组件', '任务与结果', '发布', '设置与更新', '工作流', '缓存与磁盘', '歌词转字幕', '合成视频', '调音工作流')
+    titles = ('准备工作流', '模型与组件', '任务与结果', '发布', '设置与更新', '工作流', '缓存与磁盘', '歌词转字幕', '合成视频', '调音工作流', '简易混音')
     window.nav_buttons = [None] * len(titles)
-    for index in (0, 9, 8, 3, 1, 2, 4):
+    for index in (0, 9, 10, 8, 3, 1, 2, 4):
         if index==1:
             nav.addSpacing(16)
         title = titles[index]
@@ -228,6 +286,8 @@ def build_window(window):
     window.video_mixdown = VideoMixdownPage(window)
     window.pages.addWidget(window.video_mixdown)
     window.pages.addWidget(window.tuning)
+    window.audio_mixdown = AudioMixdownPage(window)
+    window.pages.addWidget(window.audio_mixdown)
     window.results.rows_changed.connect(window.tuning.refresh_task_context)
     window.results.rows_changed.connect(lambda rows:window.publishing.refresh_review())
     window.results.rows_changed.connect(lambda rows:window.video_mixdown._set_context())

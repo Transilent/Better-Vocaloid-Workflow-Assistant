@@ -1,5 +1,6 @@
 """Simple vocal/instrumental mixdown dialog with cancellable background renders."""
 from datetime import datetime
+import hashlib
 import importlib
 import json
 import math
@@ -26,6 +27,7 @@ from ui_components import AdaptiveColumns, FlowLayout
 
 _PREVIEW_PREFIX = 'vwa-audio-mixdown-'
 _OPTIONAL_PACKAGES = None
+_MAX_VOCAL_TRACKS = 3
 _VOCAL_FILTER = _tr('歌声干声 WAV (*.wav)')
 _INSTRUMENTAL_FILTER = _tr('音频 (*.wav *.flac *.mp3 *.ogg *.m4a *.aac)')
 _WAV_FILTER = _tr('WAV 音频 (*.wav)')
@@ -36,20 +38,34 @@ CONTROL_NAMES = {
     'support_panel': 'mixdownSupportPanel',
     'support_state': 'mixdownSupportState',
     'install_dependency': 'mixdownInstallDependency',
+    'vocal_tracks': 'mixdownVocalTracks',
+    'add_vocal_track': 'mixdownAddVocalTrack',
     'vocal_path': 'mixdownVocalPath',
+    'vocal_2_path': 'mixdownVocal2Path',
+    'vocal_3_path': 'mixdownVocal3Path',
     'instrumental_path': 'mixdownInstrumentalPath',
     'output_path': 'mixdownOutputPath',
     'browse_vocal': 'mixdownBrowseVocal',
+    'browse_vocal_2': 'mixdownBrowseVocal2',
+    'browse_vocal_3': 'mixdownBrowseVocal3',
     'browse_instrumental': 'mixdownBrowseInstrumental',
     'browse_output': 'mixdownBrowseOutput',
     'vocal_state': 'mixdownVocalState',
+    'vocal_2_state': 'mixdownVocal2State',
+    'vocal_3_state': 'mixdownVocal3State',
     'instrumental_state': 'mixdownInstrumentalState',
     'output_state': 'mixdownOutputState',
     'vocal_db': 'mixdownVocalDb',
+    'vocal_2_db': 'mixdownVocal2Db',
+    'vocal_3_db': 'mixdownVocal3Db',
     'instrumental_db': 'mixdownInstrumentalDb',
     'vocal_slider': 'mixdownVocalLevelSlider',
+    'vocal_2_slider': 'mixdownVocal2LevelSlider',
+    'vocal_3_slider': 'mixdownVocal3LevelSlider',
     'instrumental_slider': 'mixdownInstrumentalLevelSlider',
     'offset': 'mixdownOffset',
+    'offset_2': 'mixdownOffset2',
+    'offset_3': 'mixdownOffset3',
     'eq_enabled': 'mixdownEqEnabled',
     'compression_enabled': 'mixdownCompressionEnabled',
     'reverb_enabled': 'mixdownReverbEnabled',
@@ -389,6 +405,39 @@ def _source_signature(path):
     return info.st_size, info.st_mtime_ns
 
 
+def _file_sha256(path, check=None):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        while True:
+            _check_cancel(check)
+            block = stream.read(1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _normal_path_key(path):
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
+def _validate_render_source_hashes(report, sources):
+    """Require the backend to identify every input it actually consumed."""
+    hashes = report.get('source_sha256')
+    if not isinstance(hashes, dict):
+        raise ValueError('混音后端没有返回源音频 SHA-256 指纹。')
+    normalized = {_normal_path_key(path): value for path, value in hashes.items()}
+    for source in sources:
+        value = normalized.get(_normal_path_key(source))
+        if not isinstance(value, str) or len(value) != 64:
+            raise ValueError('混音后端没有返回完整源音频指纹：' + Path(source).name)
+        try:
+            int(value, 16)
+        except ValueError:
+            raise ValueError('混音后端返回的源音频指纹无效：' + Path(source).name) from None
+    return normalized
+
+
 def _validate_render(report, output):
     output = Path(output).resolve()
     if not output.is_file() or output.stat().st_size <= 0:
@@ -489,12 +538,19 @@ def _report_detail(report):
 
 
 class AudioMixdownDialog(QDialog):
-    """Mix a dry vocal WAV and accompaniment without replacing source files."""
+    """Mix up to three dry vocal WAVs and one backing without replacing sources."""
 
-    def __init__(self, owner, job, parent=None):
-        super().__init__(parent)
+    def __init__(self, owner, job, parent=None, embedded=False):
+        if embedded:
+            super().__init__(parent, Qt.Widget)
+            self.setWindowFlags(Qt.Widget)
+        else:
+            super().__init__(parent)
         self.owner = owner
-        self.job = Path(job).resolve() if job else None
+        self.embedded = bool(embedded)
+        self._job = Path(job).resolve() if job else None
+        self._ui_ready = False
+        self._auto_instrumental = None
         self.worker = None
         self._busy_kind = None
         self._close_pending = False
@@ -507,6 +563,7 @@ class AudioMixdownDialog(QDialog):
         self._preview_directory = None
         self._preview_result = None
         self.navigate_requested = False
+        self.video_requested = False
         self.registered = False
         self._support_ready = False
         self._support_error = ''
@@ -517,10 +574,10 @@ class AudioMixdownDialog(QDialog):
 
         self.setObjectName(CONTROL_NAMES['dialog'])
         self.setWindowTitle(_tr('制作简易混音'))
-        self.setModal(True)
+        self.setModal(not self.embedded)
         self.setMinimumSize(640, 560)
         self.resize(920, 840)
-        self.setSizeGripEnabled(True)
+        self.setSizeGripEnabled(not self.embedded)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -543,7 +600,7 @@ class AudioMixdownDialog(QDialog):
         steps_widget = QWidget()
         steps = FlowLayout(steps_widget, spacing=8)
         for index, title in enumerate((
-                _tr('选择素材'), _tr('平衡'), _tr('人声处理 / 空间'),
+                _tr('选择 1–3 路歌声'), _tr('逐路平衡'), _tr('人声处理'),
                 _tr('试听'), _tr('导出登记'))):
             if index:
                 steps.addWidget(label('›', 'muted'))
@@ -577,56 +634,175 @@ class AudioMixdownDialog(QDialog):
 
         source_card, source_body = card(
             _tr('选择素材'),
-            _tr('歌声干声请选择声库或编辑器实际导出的 WAV；伴奏可复用当前任务的 instrumental.wav。原唱分离不会被自动当成声库干声。'),
+            _tr('可选择 1–3 路声库或编辑器导出的歌声 WAV，再选择一个伴奏。未填写的可选歌声不会参与混音；原唱分离不会被自动当成声库干声。'),
             '1')
-        source_grid = QGridLayout()
-        source_grid.setContentsMargins(0, 0, 0, 0)
-        source_grid.setHorizontalSpacing(10)
-        source_grid.setVerticalSpacing(8)
-        source_grid.setColumnStretch(1, 1)
         self.fields = {}
         self._choose_buttons = {}
         self.source_states = {}
-        for row, (key, title, hint, object_name) in enumerate((
-                ('vocal', _tr('歌声干声'), _tr('声库或编辑器导出的 WAV'),
-                 CONTROL_NAMES['vocal_path']),
-                ('instrumental', _tr('伴奏'), _tr('WAV、FLAC、MP3、M4A 等常见音频'),
-                 CONTROL_NAMES['instrumental_path']))):
+        self.vocal_tracks = []
+        vocal_host = QWidget()
+        vocal_host.setObjectName(CONTROL_NAMES['vocal_tracks'])
+        vocal_layout = QVBoxLayout(vocal_host)
+        vocal_layout.setContentsMargins(0, 0, 0, 0)
+        vocal_layout.setSpacing(9)
+        for index in range(_MAX_VOCAL_TRACKS):
+            number = index + 1
+            suffix = '' if index == 0 else '_' + str(number)
+            field_key = 'vocal' if index == 0 else 'vocal_' + str(number)
+            title = _tr('歌声 {0}').format(number)
+            panel = QWidget()
+            panel.setObjectName('step-surface')
+            panel_layout = QVBoxLayout(panel)
+            panel_layout.setContentsMargins(14, 12, 14, 12)
+            panel_layout.setSpacing(7)
+            heading_row = QHBoxLayout()
+            heading = label(title, 'muted')
+            heading.setStyleSheet('font-weight: 600;')
+            heading_row.addWidget(heading, 1)
+            remove = button(_tr('移除此路'), lambda checked=False, index=index:
+                            self.remove_vocal_track(index))
+            remove.setObjectName('mixdownRemoveVocal' + str(number))
+            remove.setAccessibleName(_tr('移除第 {0} 路歌声').format(number))
+            remove.hide()
+            heading_row.addWidget(remove)
+            panel_layout.addLayout(heading_row)
+
+            path_row = QHBoxLayout()
             field = QLineEdit()
-            field.setObjectName(object_name)
-            field.setAccessibleName(title)
-            field.setPlaceholderText(hint)
+            field.setObjectName(CONTROL_NAMES.get(
+                'vocal_path' + suffix, 'mixdownVocal' + str(number) + 'Path'))
+            field.setAccessibleName(_tr('第 {0} 路歌声干声').format(number))
+            field.setPlaceholderText(
+                _tr('声库或编辑器导出的 WAV') if index == 0
+                else _tr('可选：另一路歌声 WAV'))
             field.setClearButtonEnabled(True)
             choose = button(_tr('选择…'),
-                            lambda checked=False, key=key: self._choose_path(key))
-            choose.setObjectName(CONTROL_NAMES['browse_vocal'] if key == 'vocal'
-                                 else CONTROL_NAMES['browse_instrumental'])
-            choose.setAccessibleName(_tr('选择') + title)
+                            lambda checked=False, key=field_key: self._choose_path(key))
+            choose.setObjectName(CONTROL_NAMES.get(
+                'browse_vocal' + suffix, 'mixdownBrowseVocal' + str(number)))
+            choose.setAccessibleName(_tr('选择第 {0} 路歌声').format(number))
             state = label(_tr('尚未选择'), 'muted')
-            state.setObjectName(CONTROL_NAMES['vocal_state'] if key == 'vocal'
-                                else CONTROL_NAMES['instrumental_state'])
-            self.fields[key] = field
-            self._choose_buttons[key] = choose
-            self.source_states[key] = state
-            source_grid.addWidget(label(title), row * 2, 0)
-            source_grid.addWidget(field, row * 2, 1)
-            source_grid.addWidget(choose, row * 2, 2)
-            source_grid.addWidget(state, row * 2 + 1, 1, 1, 2)
-        source_body.addLayout(source_grid)
+            state.setObjectName(CONTROL_NAMES.get(
+                'vocal_state' + suffix, 'mixdownVocal' + str(number) + 'State'))
+            path_row.addWidget(field, 1)
+            path_row.addWidget(choose)
+            panel_layout.addLayout(path_row)
+            panel_layout.addWidget(state)
+            vocal_layout.addWidget(panel)
+            self.fields[field_key] = field
+            self._choose_buttons[field_key] = choose
+            self.source_states[field_key] = state
+            self.vocal_tracks.append({
+                'index': index, 'field_key': field_key, 'panel': panel,
+                'path': field, 'choose': choose, 'state': state,
+                'remove': remove, 'gain_db': None, 'slider': None,
+                'offset': None, 'level_panel': None,
+            })
+        source_body.addWidget(vocal_host)
+        self.add_vocal_button = button(_tr('添加第 2 路歌声'), self.add_vocal_track)
+        self.add_vocal_button.setObjectName(CONTROL_NAMES['add_vocal_track'])
+        self.add_vocal_button.setAccessibleName(_tr('添加另一路歌声'))
+        source_body.addWidget(self.add_vocal_button)
+
+        backing_panel = QWidget()
+        backing_panel.setObjectName('step-surface')
+        backing_grid = QGridLayout(backing_panel)
+        backing_grid.setContentsMargins(14, 12, 14, 12)
+        backing_grid.setHorizontalSpacing(10)
+        backing_grid.setVerticalSpacing(7)
+        backing_grid.setColumnStretch(1, 1)
+        backing_title = _tr('伴奏')
+        backing_field = QLineEdit()
+        backing_field.setObjectName(CONTROL_NAMES['instrumental_path'])
+        backing_field.setAccessibleName(backing_title)
+        backing_field.setPlaceholderText(_tr('WAV、FLAC、MP3、M4A 等常见音频'))
+        backing_field.setClearButtonEnabled(True)
+        backing_choose = button(_tr('选择…'),
+                                lambda checked=False: self._choose_path('instrumental'))
+        backing_choose.setObjectName(CONTROL_NAMES['browse_instrumental'])
+        backing_choose.setAccessibleName(_tr('选择伴奏'))
+        backing_state = label(_tr('尚未选择'), 'muted')
+        backing_state.setObjectName(CONTROL_NAMES['instrumental_state'])
+        backing_grid.addWidget(label(backing_title), 0, 0)
+        backing_grid.addWidget(backing_field, 0, 1)
+        backing_grid.addWidget(backing_choose, 0, 2)
+        backing_grid.addWidget(backing_state, 1, 1, 1, 2)
+        source_body.addWidget(backing_panel)
+        self.fields['instrumental'] = backing_field
+        self._choose_buttons['instrumental'] = backing_choose
+        self.source_states['instrumental'] = backing_state
         body.addWidget(source_card)
 
         balance_card, balance_body = card(
             _tr('平衡音量与位置'),
-            _tr('调整歌声与伴奏，既听清歌词也保留伴奏层次。滑块向右更响；“人声位置”只处理拍点前后。'),
+            _tr('每一路歌声都可独立调音量与拍点位置；EQ、压缩和混响仍统一作用于全部歌声，伴奏保持独立。'),
             '2')
-        self.vocal_db = QDoubleSpinBox()
-        self.vocal_db.setObjectName(CONTROL_NAMES['vocal_db'])
-        self.vocal_db.setAccessibleName(_tr('歌声干声音量'))
-        self.vocal_db.setRange(-24.0, 12.0)
-        self.vocal_db.setDecimals(1)
-        self.vocal_db.setSingleStep(0.5)
-        self.vocal_db.setSuffix(' dB')
-        self.vocal_db.setValue(0.0)
+
+        def pair_level(slider, spin):
+            slider.valueChanged.connect(lambda value, spin=spin: spin.setValue(value / 10.0))
+            spin.valueChanged.connect(lambda value, slider=slider: slider.setValue(int(round(value * 10.0))))
+
+        def vocal_level_panel(track):
+            number = track['index'] + 1
+            panel = QWidget()
+            panel.setObjectName('step-surface')
+            panel.setProperty('mixdown-role', 'vocal-' + str(number))
+            row = QVBoxLayout(panel)
+            row.setContentsMargins(16, 14, 16, 14)
+            row.setSpacing(7)
+            row.addWidget(label(_tr('歌声 {0}').format(number), 'card-title'))
+            row.addWidget(label(
+                _tr('主唱与咬字') if number == 1 else _tr('和声或叠唱；音量、位置独立'),
+                'muted'))
+            row.addWidget(track['slider'])
+            level_row = QHBoxLayout()
+            level_row.addWidget(label(_tr('小声'), 'muted'))
+            level_row.addStretch(1)
+            level_row.addWidget(track['gain_db'])
+            row.addLayout(level_row)
+            offset_row = QHBoxLayout()
+            offset_row.addWidget(label(_tr('拍点位置')), 1)
+            offset_row.addWidget(track['offset'], 2)
+            row.addLayout(offset_row)
+            return panel
+
+        for track in self.vocal_tracks:
+            number = track['index'] + 1
+            suffix = '' if track['index'] == 0 else '_' + str(number)
+            gain = QDoubleSpinBox()
+            gain.setObjectName(CONTROL_NAMES.get(
+                'vocal_db' + suffix, 'mixdownVocal' + str(number) + 'Db'))
+            gain.setAccessibleName(_tr('第 {0} 路歌声干声音量').format(number))
+            gain.setRange(-24.0, 12.0)
+            gain.setDecimals(1)
+            gain.setSingleStep(0.5)
+            gain.setSuffix(' dB')
+            gain.setValue(0.0)
+            slider = QSlider(Qt.Horizontal)
+            slider.setObjectName(CONTROL_NAMES.get(
+                'vocal_slider' + suffix, 'mixdownVocal' + str(number) + 'LevelSlider'))
+            slider.setAccessibleName(_tr('第 {0} 路歌声音量滑块').format(number))
+            slider.setRange(-240, 120)
+            slider.setTickPosition(QSlider.TicksBelow)
+            slider.setTickInterval(50)
+            slider.setMinimumWidth(120)
+            offset = QDoubleSpinBox()
+            offset.setObjectName(CONTROL_NAMES.get(
+                'offset' + suffix, 'mixdownOffset' + str(number)))
+            offset.setAccessibleName(_tr('第 {0} 路歌声位置偏移秒数').format(number))
+            offset.setRange(-30.0, 30.0)
+            offset.setDecimals(3)
+            offset.setSingleStep(0.01)
+            offset.setSuffix(' 秒')
+            offset.setValue(0.0)
+            pair_level(slider, gain)
+            track.update({'gain_db': gain, 'slider': slider, 'offset': offset})
+            track['level_panel'] = vocal_level_panel(track)
+            if track['index'] == 0:
+                self.vocal_db = gain
+                self.vocal_slider = slider
+                self.offset = offset
+
         self.instrumental_db = QDoubleSpinBox()
         self.instrumental_db.setObjectName(CONTROL_NAMES['instrumental_db'])
         self.instrumental_db.setAccessibleName(_tr('伴奏音量'))
@@ -635,23 +811,15 @@ class AudioMixdownDialog(QDialog):
         self.instrumental_db.setSingleStep(0.5)
         self.instrumental_db.setSuffix(' dB')
         self.instrumental_db.setValue(0.0)
-        self.vocal_slider = QSlider(Qt.Horizontal)
-        self.vocal_slider.setObjectName(CONTROL_NAMES['vocal_slider'])
-        self.vocal_slider.setAccessibleName(_tr('歌声干声音量滑块'))
         self.instrumental_slider = QSlider(Qt.Horizontal)
         self.instrumental_slider.setObjectName(CONTROL_NAMES['instrumental_slider'])
         self.instrumental_slider.setAccessibleName(_tr('伴奏音量滑块'))
-        for slider in (self.vocal_slider, self.instrumental_slider):
+        for slider in (self.instrumental_slider,):
             slider.setRange(-240, 120)
             slider.setTickPosition(QSlider.TicksBelow)
             slider.setTickInterval(50)
             slider.setMinimumWidth(120)
 
-        def pair_level(slider, spin):
-            slider.valueChanged.connect(lambda value, spin=spin: spin.setValue(value / 10.0))
-            spin.valueChanged.connect(lambda value, slider=slider: slider.setValue(int(round(value * 10.0))))
-
-        pair_level(self.vocal_slider, self.vocal_db)
         pair_level(self.instrumental_slider, self.instrumental_db)
 
         def level_panel(title, hint, slider, spin, object_name):
@@ -672,25 +840,15 @@ class AudioMixdownDialog(QDialog):
             return panel
 
         levels = AdaptiveColumns(
-            level_panel(_tr('歌声干声'), _tr('主唱与咬字'), self.vocal_slider, self.vocal_db, 'vocal'),
+            self.vocal_tracks[0]['level_panel'],
             level_panel(_tr('伴奏'), _tr('音乐与节奏'), self.instrumental_slider,
                         self.instrumental_db, 'instrumental'),
             breakpoint=660, ratio=(1, 1))
         balance_body.addWidget(levels)
-        self.offset = QDoubleSpinBox()
-        self.offset.setObjectName(CONTROL_NAMES['offset'])
-        self.offset.setAccessibleName(_tr('人声位置偏移秒数'))
-        self.offset.setRange(-30.0, 30.0)
-        self.offset.setDecimals(3)
-        self.offset.setSingleStep(0.01)
-        self.offset.setSuffix(' 秒')
-        self.offset.setValue(0.0)
-        offset_row = QHBoxLayout()
-        offset_row.addWidget(label(_tr('人声位置')), 1)
-        offset_row.addWidget(self.offset, 2)
-        balance_body.addLayout(offset_row)
+        for track in self.vocal_tracks[1:]:
+            balance_body.addWidget(track['level_panel'])
         balance_body.addWidget(label(
-            _tr('人声太早：填正数延后；人声太晚：填负数提前。通常先保持 0.000 秒。'), 'muted'))
+            _tr('歌声太早：填正数延后；太晚：填负数提前。每一路的偏移会分别写入请求与回执。'), 'muted'))
         body.addWidget(balance_card)
 
         processing_card, processing_body = card(
@@ -922,7 +1080,7 @@ class AudioMixdownDialog(QDialog):
         self.register_button = button(_tr('只登记为任务 Mixdown'), lambda: self.register(False))
         self.register_button.setObjectName(CONTROL_NAMES['register'])
         self.register_button.setAccessibleName(_tr('登记本次导出为任务混音文件'))
-        self.to_video_button = button(_tr('登记并进入视频合成'), lambda: self.register(True), 'primary')
+        self.to_video_button = button(_tr('登记并进入视频合成'), self.continue_to_video, 'primary')
         self.to_video_button.setObjectName(CONTROL_NAMES['register_video'])
         self.to_video_button.setAccessibleName(_tr('登记本次导出并进入视频合成'))
         self.register_button.setEnabled(False)
@@ -950,13 +1108,16 @@ class AudioMixdownDialog(QDialog):
         footer_actions.addWidget(self.cancel_button)
         self.close_button = button(_tr('关闭'), self.accept)
         self.close_button.setObjectName(CONTROL_NAMES['close'])
+        self.close_button.setVisible(not self.embedded)
         footer_actions.addWidget(self.close_button)
         footer_layout.addLayout(footer_actions)
         outer.addWidget(footer)
 
+        track_controls = [control for track in self.vocal_tracks
+                          for control in (track['gain_db'], track['slider'], track['offset'])]
         self._editable_widgets = list(self.fields.values()) + list(self._choose_buttons.values()) + [
-            self.vocal_db, self.vocal_slider, self.instrumental_db, self.instrumental_slider,
-            self.offset, self.eq_enabled, self.low_cut, self.presence,
+            *track_controls, self.instrumental_db, self.instrumental_slider,
+            self.eq_enabled, self.low_cut, self.presence,
             self.compression_enabled, self.compression, self.reverb_enabled, self.reverb,
             self.reverb_profile,
             self.advanced_toggle, self.preview_start, self.preview_duration,
@@ -969,14 +1130,16 @@ class AudioMixdownDialog(QDialog):
             instrumental = _task_source(self.job, ('audio/instrumental.wav',))
             if instrumental:
                 self.fields['instrumental'].setText(str(instrumental))
-            self.fields['output'].setText(str(_suggested_output(self.job)))
+                self._auto_instrumental = instrumental
+            self._auto_output = str(_suggested_output(self.job))
+            self.fields['output'].setText(self._auto_output)
             self.fields['output'].setToolTip(_tr('导出前会再次检查；任何已存在文件都不会被覆盖。'))
         finally:
             self._syncing = False
 
         for key, field in self.fields.items():
             field.textChanged.connect(self.output_changed if key == 'output' else self.parameters_changed)
-        for control in (self.vocal_db, self.instrumental_db, self.offset, self.low_cut,
+        for control in (*track_controls, self.instrumental_db, self.low_cut,
                         self.presence, self.compression, self.reverb):
             control.valueChanged.connect(self.parameters_changed)
         for control in (self.preview_start, self.preview_duration):
@@ -984,11 +1147,118 @@ class AudioMixdownDialog(QDialog):
         for control in (self.eq_enabled, self.compression_enabled, self.reverb_enabled):
             control.toggled.connect(self.parameters_changed)
         self.reverb_profile.currentIndexChanged.connect(self.parameters_changed)
+        self._set_vocal_track_count(1, announce=False)
         self._update_source_states()
         self._update_output_state()
         self._refresh_component_support()
         self._sync_processing_controls()
+        self._ui_ready = True
         self._sync_controls()
+
+    @property
+    def job(self):
+        return self._job
+
+    @job.setter
+    def job(self, value):
+        self._job = Path(value).resolve() if value else None
+        if self._ui_ready:
+            self._job_context_changed()
+
+    def set_job(self, job):
+        """Associate or clear a task without changing editable mix inputs."""
+        if self.busy():
+            return False
+        self.job = job
+        return True
+
+    def _job_context_changed(self):
+        if not self._ui_ready:
+            return
+        input_changed = False
+        instrumental = _task_source(self.job, ('audio/instrumental.wav',))
+        if instrumental:
+            current = self._path('instrumental')
+            if current is None or _same_path(current, self._auto_instrumental):
+                self._syncing = True
+                try:
+                    input_changed = not _same_path(current, instrumental)
+                    self.fields['instrumental'].setText(str(instrumental))
+                    self._auto_instrumental = instrumental
+                finally:
+                    self._syncing = False
+        if input_changed:
+            self.parameters_changed()
+        if self._result is None and self.fields['output'].text() == self._auto_output:
+            replacement = _suggested_output(self.job)
+            self._syncing = True
+            try:
+                self.fields['output'].setText(str(replacement))
+                self._auto_output = str(replacement)
+            finally:
+                self._syncing = False
+        self.status.setText(
+            _tr('已关联任务；导出后可按需登记。') if self.job
+            else _tr('独立文件模式；无需任务也可导出并交给视频合成。'))
+        _set_role(self.status, 'muted')
+        self._update_source_states()
+        self._update_output_state()
+        self._sync_controls()
+
+    def active_vocal_tracks(self):
+        count = getattr(self, '_vocal_track_count', 1)
+        return list(self.vocal_tracks[:count])
+
+    def _set_vocal_track_count(self, count, announce=True):
+        count = max(1, min(_MAX_VOCAL_TRACKS, int(count)))
+        self._vocal_track_count = count
+        self._syncing = True
+        try:
+            for track in self.vocal_tracks:
+                active = track['index'] < count
+                track['panel'].setVisible(active)
+                track['level_panel'].setVisible(active)
+                track['remove'].setVisible(active and track['index'] > 0
+                                            and track['index'] == count - 1)
+                if not active:
+                    track['path'].clear()
+                    track['gain_db'].setValue(0.0)
+                    track['offset'].setValue(0.0)
+            next_count = count + 1
+            self.add_vocal_button.setVisible(next_count <= _MAX_VOCAL_TRACKS)
+            self.add_vocal_button.setText(
+                _tr('添加第 {0} 路歌声').format(next_count)
+                if next_count <= _MAX_VOCAL_TRACKS else _tr('最多 3 路歌声'))
+        finally:
+            self._syncing = False
+        if announce and self._ui_ready:
+            self.parameters_changed()
+
+    def add_vocal_track(self):
+        if self.busy():
+            return
+        count = getattr(self, '_vocal_track_count', 1)
+        if count >= _MAX_VOCAL_TRACKS:
+            return
+        self._set_vocal_track_count(count + 1)
+        self.status.setText(_tr('已增加一路可选歌声；未填写路径时不会参与混音。'))
+        _set_role(self.status, 'muted')
+
+    def remove_vocal_track(self, index=None):
+        if self.busy():
+            return
+        count = getattr(self, '_vocal_track_count', 1)
+        if index is None:
+            index = count - 1
+        if index <= 0 or index >= count:
+            return
+        if index != count - 1:
+            self.status.setText(_tr('请从最后一路歌声开始移除。'))
+            _set_role(self.status, 'error')
+            return
+        self._set_vocal_track_count(count - 1)
+        self.status.setText(_tr('已移除最后一路歌声；其路径、音量和偏移已清空。'))
+        _set_role(self.status, 'muted')
 
     def busy(self):
         return self.worker is not None
@@ -1054,35 +1324,60 @@ class AudioMixdownDialog(QDialog):
 
     def _source_ready(self, key):
         path = self._path(key)
-        return bool(path and path.is_file()
-                    and (key != 'vocal' or path.suffix.lower() == '.wav'))
+        optional_vocal = key.startswith('vocal_')
+        if path is None:
+            return optional_vocal
+        if not path.is_file():
+            return False
+        return key == 'instrumental' or path.suffix.lower() == '.wav'
 
     def _sources_ready(self):
-        return self._source_ready('vocal') and self._source_ready('instrumental')
+        try:
+            self._validated_sources()
+        except (OSError, ValueError):
+            return False
+        return True
+
+    def _active_source_paths(self):
+        paths = [self._path(track['field_key']) for track in self.active_vocal_tracks()]
+        paths.append(self._path('instrumental'))
+        return [path for path in paths if path is not None]
 
     def _output_ready(self):
         output = self._path('output')
         if not output or output.suffix.lower() != '.wav' or output.exists():
             return False
-        return not any(_same_path(output, self._path(key))
-                       for key in ('vocal', 'instrumental'))
+        return not any(_same_path(output, path) for path in self._active_source_paths())
 
     def _update_source_states(self):
-        for key, title in (('vocal', _tr('歌声干声')), ('instrumental', _tr('伴奏'))):
-            path = self._path(key)
-            state = self.source_states[key]
+        for track in self.active_vocal_tracks():
+            number = track['index'] + 1
+            path = self._path(track['field_key'])
+            state = track['state']
             if not path:
-                state.setText(_tr('尚未选择'))
+                state.setText(_tr('尚未选择') if number == 1
+                              else _tr('可选 · 未填写时不参与混音'))
                 _set_role(state, 'muted')
             elif not path.is_file():
                 state.setText(_tr('找不到文件，请重新选择'))
                 _set_role(state, 'error')
-            elif key == 'vocal' and path.suffix.lower() != '.wav':
+            elif path.suffix.lower() != '.wav':
                 state.setText(_tr('歌声干声需要 WAV 文件'))
                 _set_role(state, 'error')
             else:
                 state.setText(_tr('已找到：') + path.name)
                 _set_role(state, 'success')
+        path = self._path('instrumental')
+        state = self.source_states['instrumental']
+        if not path:
+            state.setText(_tr('尚未选择'))
+            _set_role(state, 'muted')
+        elif not path.is_file():
+            state.setText(_tr('找不到文件，请重新选择'))
+            _set_role(state, 'error')
+        else:
+            state.setText(_tr('已找到：') + path.name)
+            _set_role(state, 'success')
 
     def _update_output_state(self):
         output = self._path('output')
@@ -1092,7 +1387,7 @@ class AudioMixdownDialog(QDialog):
             message, role = _tr('请使用 .wav 扩展名'), 'error'
         elif output.exists():
             message, role = _tr('文件已存在；导出会拒绝覆盖'), 'error'
-        elif any(_same_path(output, self._path(key)) for key in ('vocal', 'instrumental')):
+        elif any(_same_path(output, path) for path in self._active_source_paths()):
             message, role = _tr('不能与源文件相同'), 'error'
         else:
             message, role = _tr('将创建新文件，不会覆盖已有输出'), 'success'
@@ -1119,9 +1414,16 @@ class AudioMixdownDialog(QDialog):
                 not active and not self._support_ready and bool(self._component_installer))
         self.progress.setVisible(active)
         self.progress.setRange(0, 0)
-        exported = bool(self._result and not active and self.job)
-        self.register_button.setEnabled(exported)
+        exported = bool(self._result and not active)
+        can_register = bool(exported and self.job and (self.job / 'request.json').is_file())
+        self.register_button.setVisible(bool(self.job))
+        self.register_button.setEnabled(can_register)
         self.to_video_button.setEnabled(exported)
+        self.to_video_button.setText(
+            _tr('登记并进入视频合成') if self.job else _tr('进入视频合成'))
+        self.add_vocal_button.setEnabled(not active and self._vocal_track_count < _MAX_VOCAL_TRACKS)
+        for track in self.active_vocal_tracks():
+            track['remove'].setEnabled(not active)
         # The close action stays available while busy so it can request cooperative
         # cancellation and wait for the owned thread to finish.
         self.close_button.setEnabled(True)
@@ -1185,9 +1487,10 @@ class AudioMixdownDialog(QDialog):
             if path and not path.lower().endswith('.wav'):
                 path += '.wav'
         else:
+            is_vocal = key == 'vocal' or key.startswith('vocal_')
             path, _ = QFileDialog.getOpenFileName(
                 self, _tr('选择') + self.fields[key].accessibleName(), current,
-                _VOCAL_FILTER if key == 'vocal' else _INSTRUMENTAL_FILTER)
+                _VOCAL_FILTER if is_vocal else _INSTRUMENTAL_FILTER)
         if path:
             self.fields[key].setText(str(Path(path).expanduser().resolve()))
 
@@ -1195,21 +1498,46 @@ class AudioMixdownDialog(QDialog):
         text = self.fields[key].text().strip().strip('"')
         return Path(text).expanduser().resolve() if text else None
 
+    def _vocal_specs(self):
+        specs = []
+        for track in self.active_vocal_tracks():
+            path = self._path(track['field_key'])
+            if path is None:
+                continue
+            specs.append({
+                'path': str(path),
+                'gain_db': float(track['gain_db'].value()),
+                'offset_seconds': float(track['offset'].value()),
+            })
+        return specs
+
     def _validated_sources(self):
-        vocal, instrumental = self._path('vocal'), self._path('instrumental')
-        if not vocal or not instrumental:
-            raise ValueError('请选择歌声干声 WAV 和伴奏 WAV。')
-        for name, path in (('歌声干声', vocal), ('伴奏', instrumental)):
+        vocals = self._vocal_specs()
+        instrumental = self._path('instrumental')
+        if not vocals:
+            raise ValueError('请至少选择一路歌声干声 WAV。')
+        if len(vocals) > _MAX_VOCAL_TRACKS:
+            raise ValueError('最多只能混入 3 路歌声。')
+        if not instrumental:
+            raise ValueError('请选择伴奏 WAV 或常见音频文件。')
+        for number, vocal in enumerate(vocals, 1):
+            path = Path(vocal['path'])
             if not path.is_file():
-                raise ValueError(name + '文件不存在或不可读取。')
-        if vocal.suffix.lower() != '.wav':
-            raise ValueError('歌声干声必须选择 WAV 文件。')
-        if _same_path(vocal, instrumental):
-            raise ValueError('歌声干声和伴奏必须选择不同文件。')
-        return vocal, instrumental
+                raise ValueError('第 {0} 路歌声文件不存在或不可读取。'.format(number))
+            if path.suffix.lower() != '.wav':
+                raise ValueError('第 {0} 路歌声必须选择 WAV 文件。'.format(number))
+        if not instrumental.is_file():
+            raise ValueError('伴奏文件不存在或不可读取。')
+        vocal_keys = [_normal_path_key(item['path']) for item in vocals]
+        if len(set(vocal_keys)) != len(vocal_keys):
+            raise ValueError('同一歌声文件不能重复添加。')
+        backing_key = _normal_path_key(instrumental)
+        if backing_key in vocal_keys:
+            raise ValueError('歌声与伴奏必须选择不同文件。')
+        return vocals, instrumental
 
     def _validated_paths(self):
-        vocal, instrumental = self._validated_sources()
+        vocals, instrumental = self._validated_sources()
         output = self._path('output')
         if not output:
             raise ValueError('请指定新的导出 WAV 文件名。')
@@ -1217,21 +1545,21 @@ class AudioMixdownDialog(QDialog):
             raise ValueError('导出文件必须使用 .wav 扩展名。')
         if output.exists():
             raise FileExistsError('导出目标已存在；请换一个文件名，现有文件不会被覆盖。')
-        if any(_same_path(output, path) for path in (vocal, instrumental)):
+        if any(_same_path(output, path) for path in
+               [item['path'] for item in vocals] + [instrumental]):
             raise ValueError('导出文件不能与任一源文件相同。')
-        return vocal, instrumental, output
+        return vocals, instrumental, output
 
     def _request(self, output, *, preview=False, bypass_processing=False):
         use_eq = self.eq_enabled.isChecked() and not bypass_processing
         use_compression = self.compression_enabled.isChecked() and not bypass_processing
         use_reverb = self.reverb_enabled.isChecked() and not bypass_processing
+        vocals = self._vocal_specs()
         request = {
-            'vocal_path': str(self._path('vocal')),
+            'vocals': vocals,
             'instrumental_path': str(self._path('instrumental')),
             'output_path': str(Path(output).resolve()),
-            'vocal_db': float(self.vocal_db.value()),
             'instrumental_db': float(self.instrumental_db.value()),
-            'offset_seconds': float(self.offset.value()),
             'eq_low_cut_hz': float(self.low_cut.value()) if use_eq else 0.0,
             'eq_presence_db': float(self.presence.value()) if use_eq else 0.0,
             'compression_strength': float(self.compression.value()) / 100.0 if use_compression else 0.0,
@@ -1267,20 +1595,26 @@ class AudioMixdownDialog(QDialog):
         if self.busy():
             return
         try:
-            vocal, instrumental, output = self._validated_paths()
+            vocals, instrumental, output = self._validated_paths()
+            source_paths = [Path(item['path']).resolve() for item in vocals] + [instrumental]
             temporary = output.with_name(
                 '.' + output.stem + '.' + uuid.uuid4().hex + '.part.wav')
-            if any(_same_path(temporary, path) for path in (vocal, instrumental, output)):
+            if any(_same_path(temporary, path) for path in (*source_paths, output)):
                 raise ValueError('临时导出路径与输入或目标冲突，已拒绝开始。')
             request = self._request(temporary)
             final_request = self._request(output)
-            expected = {vocal: _source_signature(vocal),
-                        instrumental: _source_signature(instrumental)}
+            expected = {path: _source_signature(path) for path in source_paths}
+            vocal_inputs = []
+            for vocal in vocals:
+                path = Path(vocal['path']).resolve()
+                vocal_inputs.append({
+                    'path': str(path), 'bytes': expected[path][0],
+                    'mtime_ns': expected[path][1],
+                })
             self._export_context = {
                 'parameters': final_request,
                 'inputs': {
-                    'vocal_path': {'path': str(vocal), 'bytes': expected[vocal][0],
-                                   'mtime_ns': expected[vocal][1]},
+                    'vocals': vocal_inputs,
                     'instrumental_path': {'path': str(instrumental),
                                           'bytes': expected[instrumental][0],
                                           'mtime_ns': expected[instrumental][1]},
@@ -1297,6 +1631,7 @@ class AudioMixdownDialog(QDialog):
             try:
                 report = _render_once(request, check)
                 _validate_render(report, temporary)
+                _validate_render_source_hashes(report, source_paths)
                 _check_cancel(check)
                 if not self._signatures_unchanged(expected):
                     raise ValueError('处理期间源 WAV 发生了变化；没有发布成品，请重新检查输入。')
@@ -1322,9 +1657,9 @@ class AudioMixdownDialog(QDialog):
         if self.busy():
             return
         try:
-            vocal, instrumental = self._validated_sources()
-            expected = {vocal: _source_signature(vocal),
-                        instrumental: _source_signature(instrumental)}
+            vocals, instrumental = self._validated_sources()
+            source_paths = [Path(item['path']).resolve() for item in vocals] + [instrumental]
+            expected = {path: _source_signature(path) for path in source_paths}
             if self.preview_duration.value() <= 0:
                 raise ValueError('试听片段时长必须大于 0。')
         except (OSError, ValueError) as error:
@@ -1342,9 +1677,11 @@ class AudioMixdownDialog(QDialog):
             try:
                 before_report = _render_once(before, check)
                 _validate_render(before_report, before_path)
+                _validate_render_source_hashes(before_report, source_paths)
                 _check_cancel(check)
                 after_report = _render_once(after, check)
                 _validate_render(after_report, after_path)
+                _validate_render_source_hashes(after_report, source_paths)
                 if not self._signatures_unchanged(expected):
                     raise ValueError('处理期间源 WAV 发生了变化，请重新选择后再试听。')
                 return {'before': before_report, 'after': after_report,
@@ -1369,16 +1706,23 @@ class AudioMixdownDialog(QDialog):
         parameters['output_path'] = str(output)
         inputs = dict(context.get('inputs') or {})
         hashes = report.get('source_sha256') or {}
-        for entry in inputs.values():
-            if isinstance(entry, dict) and entry.get('path') in hashes:
-                entry['sha256'] = hashes[entry['path']]
+        hashes = {_normal_path_key(path): value for path, value in hashes.items()}
+
+        def with_hash(entry):
+            saved = dict(entry)
+            saved['sha256'] = hashes.get(_normal_path_key(saved['path']))
+            return saved
+
+        vocals = [with_hash(entry) for entry in inputs.get('vocals', [])]
+        backing = with_hash(inputs['instrumental_path'])
+        saved_inputs = {'vocals': vocals, 'instrumental_path': backing}
         return {
-            'schema': 'vwa.audio_mixdown.receipt/v1',
+            'schema': 'vwa.audio_mixdown.receipt/v2',
             'created_at': datetime.now().astimezone().isoformat(timespec='seconds'),
             'backend': 'audio_mixdown.render',
             'registration': 'explicit_user_action',
             'dependencies': [],
-            'inputs': inputs,
+            'inputs': saved_inputs,
             'parameters': parameters,
             'output': {'path': str(output), 'bytes': info.st_size,
                        'mtime_ns': info.st_mtime_ns, 'sha256': report.get('output_sha256')},
@@ -1392,11 +1736,15 @@ class AudioMixdownDialog(QDialog):
         if kind == 'export':
             self._result = result
             self._export_receipt = self._build_export_receipt(result)
-            self.result_title.setText(_tr('导出完成；尚未登记到任务'))
+            self.result_title.setText(
+                _tr('导出完成；尚未登记到任务') if self.job
+                else _tr('导出完成；可直接进入视频合成'))
             self.result_text.setText(
                 _report_detail(result) + '\n' + _tr('文件：') + str(result.get('output_path', '')))
             _set_role(self.result_title, 'success')
-            self.status.setText(_tr('WAV 已安全导出。检查试听后，可显式登记为任务 Mixdown。'))
+            self.status.setText(
+                _tr('WAV 已安全导出。检查试听后，可显式登记为任务 Mixdown。')
+                if self.job else _tr('WAV 已安全导出；无需任务即可进入视频合成。'))
             _set_role(self.status, 'success')
             return
         if kind == 'preview':
@@ -1439,21 +1787,93 @@ class AudioMixdownDialog(QDialog):
             destination = Path(result).resolve()
             if self._pending_navigation:
                 try:
-                    video = getattr(self.owner, 'video_mixdown', None)
-                    navigate = getattr(self.owner, 'navigate', None)
-                    if video is None or not callable(getattr(video, 'use_source_job', None)):
-                        raise ValueError('当前窗口没有可用的视频合成页。')
-                    video.use_source_job(self.job, destination)
-                    if not callable(navigate):
-                        raise ValueError('当前窗口没有可用的页面导航。')
-                    navigate(8)
+                    handed_off = self._handoff_to_video(destination)
                 except (OSError, ValueError, TypeError) as error:
                     self.status.setText(_tr('已登记 Mixdown，但进入视频合成失败：') + str(error))
                     return
                 self.navigate_requested = True
+                if not handed_off:
+                    self.status.setText(
+                        _tr('已登记 Mixdown，但视频页已有其他 Mixdown；未覆盖当前编辑输入。'))
+                    _set_role(self.status, 'error')
+                    return
             self.status.setText(_tr('已显式登记任务 Mixdown；真实输入与参数回执已保存，未添加伪造上游。'))
             _set_role(self.status, 'success')
-            self._completion_action = 'accept'
+            if not self.embedded:
+                self._completion_action = 'accept'
+
+    def _handoff_to_video(self, mixdown):
+        video = getattr(self.owner, 'video_mixdown', None)
+        navigate = getattr(self.owner, 'navigate', None)
+        if video is None:
+            raise ValueError('当前窗口没有可用的视频合成页。')
+        busy = getattr(video, 'busy', None)
+        preview_busy = getattr(video, 'preview_busy', None)
+        if ((callable(busy) and busy())
+                or (callable(preview_busy) and preview_busy())):
+            raise ValueError('视频合成页正在处理或预览，请完成或取消后再传入 Mixdown。')
+        loaded = None
+        if self.job and callable(getattr(video, 'use_source_job', None)):
+            # Loading the task can fill its source video. If the task lacks a
+            # video, preserve any existing editable value and only seed an empty
+            # field so the user can still choose the video manually.
+            loaded = video.use_source_job(self.job, mixdown)
+        fields = getattr(video, 'fields', None)
+        mixdown_field = fields.get('mixdown') if isinstance(fields, dict) else None
+        if mixdown_field is None:
+            raise ValueError('视频合成页没有可写入的 Mixdown 字段。')
+        destination = str(Path(mixdown).resolve())
+        if loaded is not False:
+            mixdown_field.setText(destination)
+        elif not mixdown_field.text().strip():
+            mixdown_field.setText(destination)
+        elif not _same_path(mixdown_field.text(), destination):
+            return False
+        if not self.job or loaded is False:
+            # Existing video files may remain useful, but a previous task must
+            # not silently claim an independently exported mix as its own.
+            if hasattr(video, 'source_job'):
+                video.source_job = None
+            refresh_context = getattr(video, '_set_context', None)
+            if callable(refresh_context):
+                refresh_context()
+        if not callable(navigate):
+            raise ValueError('当前窗口没有可用的页面导航。')
+        page = getattr(self.owner, 'pages', None)
+        index = page.indexOf(video) if page is not None else -1
+        navigate(index if index >= 0 else 8)
+        self.video_requested = True
+        return True
+
+    def open_video(self):
+        """Send the current export to video composition without a task."""
+        if self.busy():
+            return False
+        if not self._result or not Path(self._result.get('output_path', '')).is_file():
+            self.status.setText(_tr('请先安全导出 WAV，再进入视频合成。'))
+            _set_role(self.status, 'error')
+            return False
+        try:
+            handed_off = self._handoff_to_video(self._result['output_path'])
+        except (OSError, ValueError, TypeError) as error:
+            self.status.setText(_tr('进入视频合成失败：') + str(error))
+            _set_role(self.status, 'error')
+            return False
+        self.navigate_requested = True
+        if not handed_off:
+            self.status.setText(_tr('已进入视频合成，但保留页面原有的 Mixdown；未覆盖正在编辑的输入。'))
+            _set_role(self.status, 'error')
+            return False
+        self.status.setText(_tr('已将本次 WAV 传给视频合成；任务关联是可选的。'))
+        _set_role(self.status, 'success')
+        return True
+
+    def continue_to_video(self):
+        if self.job:
+            self.register(True)
+            return self.busy()
+        else:
+            return self.open_video()
 
     def failed(self, kind, text):
         if kind == 'export':
@@ -1501,7 +1921,7 @@ class AudioMixdownDialog(QDialog):
         if worker is not None:
             worker.deleteLater()
         self._sync_controls()
-        if self._completion_action == 'accept':
+        if self._completion_action == 'accept' and not self.embedded:
             self._completion_action = None
             self.accept()
         elif self._close_pending:
@@ -1576,6 +1996,9 @@ class AudioMixdownDialog(QDialog):
             from task_store import locked
             if locked(job):
                 raise ValueError('任务在登记开始前进入运行状态；本次没有写入任务登记。')
+            expected_sha256 = (receipt.get('output') or {}).get('sha256')
+            if expected_sha256 and _file_sha256(destination, check) != expected_sha256:
+                raise ValueError('导出 WAV 在登记前发生变化；请重新导出后再登记。')
             from task_contract import bind, update_metadata
             # The external dry-vocal mixdown is not an automatic child of the
             # task's separated audio, MIDI or score. Keep provenance explicit.

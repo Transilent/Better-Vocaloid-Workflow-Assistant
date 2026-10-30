@@ -9,7 +9,9 @@ from app import Window
 from desktop_theme import apply_theme
 application=QApplication([]);window=Window();window.show();application.processEvents()
 out=APP/'work/test-results';out.mkdir(exist_ok=True,parents=True)
-names={0:'preparation',9:'tuning',8:'video',3:'publication',2:'tasks',1:'components',4:'settings'}
+names={0:'preparation',9:'tuning',10:'audio-mixdown',8:'video',3:'publication',2:'tasks',1:'components',4:'settings'}
+assert window.nav_buttons[10].parentWidget().layout().indexOf(window.nav_buttons[10]) < window.nav_buttons[8].parentWidget().layout().indexOf(window.nav_buttons[8])
+assert window.audio_mixdown.mixer.job is None
 measurements=[]
 def settle():
     for _ in range(4):application.processEvents()
@@ -40,6 +42,7 @@ for mode,material in ((m,s) for m in ('light','dark') for s in ('glass','solid')
                             viewport=window.step_area.parentWidget()
                             assert viewport.rect().contains(viewport.mapFromGlobal(point)),(important.text(),'below initial preparation viewport')
                 elif index==9:inside(window.tuning.apply_button)
+                elif index==10:inside(window.audio_mixdown.choose_task)
                 elif index==8:
                     inside(window.video_mixdown.start)
                     if scale==100 and size==(1600,1000):
@@ -56,4 +59,4 @@ for mode,material in ((m,s) for m in ('light','dark') for s in ('glass','solid')
                     assert window.grab().save(str(out/f'vwa-{name}-{size[0]}.png'))
 window.close();settle()
 (out/'frontend-layout-measurements.json').write_text(json.dumps(measurements,ensure_ascii=False,indent=2),encoding='utf-8')
-print('PASS: seven real pages, six normal/wide viewports, two themes/materials, 100/115/130% UI scale, no page horizontal overflow, reachable actions; offscreen only')
+print('PASS: eight real pages, six normal/wide viewports, two themes/materials, 100/115/130% UI scale, no page horizontal overflow, reachable actions; offscreen only')

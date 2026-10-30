@@ -135,7 +135,14 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='operation-interlocks-
     assert results_ui.active_task_operations(owner, other) == ('视频合成',)
     assert results_ui.active_task_operations(owner, job) == ()
 
+    # The independently navigable mixer protects all referenced task paths.
+    mixer = SimpleNamespace(job=None, fields={'vocal_2': Text(job / 'audio/harmony.wav')})
+    owner.audio_mixdown = SimpleNamespace(busy=busy(True), mixer=mixer)
     video.busy = busy(False)
+    assert results_ui.active_task_operations(owner, job) == ('简易混音',)
+    assert results_ui.active_task_operations(owner, other) == ()
+    owner.audio_mixdown.busy = busy(False)
+
     calibration.busy = busy(True)
     fixed_b = write_session(root / 'calibration-b.json', other / 'exports/voices.svp',
                             other / 'audio/lead.wav', other / 'renders')

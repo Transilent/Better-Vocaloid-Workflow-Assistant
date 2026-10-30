@@ -59,6 +59,7 @@ def blocking_reason(owner):
         (getattr(owner, 'updates', None), 'busy', '更新下载'),
         (getattr(owner, 'publishing', None), 'busy', '发布准备'),
         (getattr(owner, 'video_mixdown', None), 'busy', '视频合成'),
+        (getattr(owner, 'audio_mixdown', None), 'busy', '简易混音'),
         (getattr(owner, 'video_mixdown', None), 'preview_busy', '视频预览'),
         (getattr(owner, 'tuning', None), 'busy', '调音'),
         (getattr(owner, 'calibration_dialog', None), 'busy', '校准'),

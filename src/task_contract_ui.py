@@ -135,9 +135,9 @@ class TaskFilesDialog(QDialog):
         body.addLayout(bind_actions)
 
         mixdown_actions = FlowLayout(spacing=10)
-        self.mixdown_button = button(_tr('制作简易混音…'), self.open_mixdown)
+        self.mixdown_button = button(_tr('前往简易混音'), self.open_mixdown)
         self.mixdown_button.setObjectName('taskFilesMixdownButton')
-        self.mixdown_button.setAccessibleName(_tr('打开简易混音对话框'))
+        self.mixdown_button.setAccessibleName(_tr('打开简易混音页面'))
         mixdown_actions.addWidget(self.mixdown_button)
         mixdown_actions.addWidget(label(_tr('用歌声干声与伴奏生成新的 WAV，导出后再显式登记；源文件不会被覆盖。'), 'muted'))
         body.addLayout(mixdown_actions)
@@ -159,21 +159,12 @@ class TaskFilesDialog(QDialog):
                 or self.owner.publishing.busy()):
             self.status.setText(_tr('请等待任务处理、缓存管理或发布准备结束后再制作混音。'))
             return
-        from audio_mixdown_ui import MixdownDialog
-        dialog = MixdownDialog(self.owner, self.job, self)
-        self.mixdown_dialog = dialog
-        navigate = False
-        try:
-            dialog.exec_()
-            navigate = dialog.navigate_requested
-            registered = dialog.registered
-        finally:
-            self.mixdown_dialog = None
-            dialog.deleteLater()
-        if navigate:
-            self.accept()
-        elif registered:
-            self.start()
+        page = getattr(self.owner, 'audio_mixdown', None)
+        if page is None or not page.set_job(self.job):
+            self.status.setText(_tr('请等待当前混音处理结束后再切换任务。'))
+            return
+        self.owner.navigate(10)
+        self.accept()
 
     def busy(self):
         return bool(self.worker and self.worker.isRunning())

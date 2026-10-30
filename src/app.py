@@ -557,6 +557,11 @@ class Window(QWidget):
         os.startfile(str(destination))
 
     def closeEvent(self, event):
+        mixer = getattr(self, 'audio_mixdown', None)
+        if mixer and mixer.busy():
+            event.ignore()
+            mixer.cancel()
+            return
         if self.video_mixdown.preview_busy():
             event.ignore()
             self.video_mixdown.cancel_preview()
@@ -599,6 +604,8 @@ class Window(QWidget):
             if visual_timer is not None:visual_timer.stop()
             visual_clock=getattr(self.tuning,'_progress_clock',None)
             if visual_clock is not None:visual_clock.pause()
+            if mixer:
+                mixer.mixer._retire_preview()
             event.accept()
 
 
