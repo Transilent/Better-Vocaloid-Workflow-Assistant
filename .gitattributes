@@ -10,3 +10,5 @@
 # Frozen third-party files are hashed byte-for-byte in dependencies/manifest.json.
 /dependencies/** -text
 /vendor/** -text
+# Preserve the legacy update-compatibility fixture's tracked CRLF bytes.
+/tests/test_update_compatibility.py -text whitespace=cr-at-eol

@@ -1367,16 +1367,21 @@ class AudioMixdownDialog(QDialog):
         info = output.stat()
         parameters = dict(context.get('parameters') or {})
         parameters['output_path'] = str(output)
+        inputs = dict(context.get('inputs') or {})
+        hashes = report.get('source_sha256') or {}
+        for entry in inputs.values():
+            if isinstance(entry, dict) and entry.get('path') in hashes:
+                entry['sha256'] = hashes[entry['path']]
         return {
             'schema': 'vwa.audio_mixdown.receipt/v1',
             'created_at': datetime.now().astimezone().isoformat(timespec='seconds'),
             'backend': 'audio_mixdown.render',
             'registration': 'explicit_user_action',
             'dependencies': [],
-            'inputs': dict(context.get('inputs') or {}),
+            'inputs': inputs,
             'parameters': parameters,
             'output': {'path': str(output), 'bytes': info.st_size,
-                       'mtime_ns': info.st_mtime_ns},
+                       'mtime_ns': info.st_mtime_ns, 'sha256': report.get('output_sha256')},
             'render_result': {
                 'duration_seconds': report.get('duration_seconds'),
                 'peak_dbfs': report.get('peak_dbfs'),

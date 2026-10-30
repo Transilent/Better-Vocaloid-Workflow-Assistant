@@ -80,6 +80,8 @@ with tempfile.TemporaryDirectory(prefix='audio-mix-gui-', dir=APP / 'work') as t
     assert metadata['audio_mixdown']['parameters']['vocal_path'] == str(vocal.resolve())
     assert metadata['audio_mixdown']['parameters']['instrumental_path'] == str(backing.resolve())
     assert metadata['audio_mixdown']['parameters']['reverb_profile'] == 'wide'
+    assert all(len(entry['sha256']) == 64 for entry in metadata['audio_mixdown']['inputs'].values())
+    assert len(metadata['audio_mixdown']['output']['sha256']) == 64
     assert metadata['bindings']['mixdown']['entry']['dependencies'] == []
     dialog.close()
     app.processEvents()

@@ -15,6 +15,7 @@ at -1 dBFS; this is not a loudness-normalization or true-peak calibrated stage.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import math
 import os
@@ -508,6 +509,17 @@ def _source_fingerprint(path: Path) -> tuple[int, int, int, int]:
     )
 
 
+def _file_sha256(path: Path, cancel: Callable[[], Any] | None) -> str:
+    digest = hashlib.sha256()
+    with path.open('rb') as source:
+        while True:
+            _check_cancel(cancel)
+            block = source.read(1024 * 1024)
+            if not block:
+                return digest.hexdigest()
+            digest.update(block)
+
+
 def _install_new_file(staged: Path, destination: Path) -> None:
     """Atomically publish a completed file without replacing an existing path."""
 
@@ -743,6 +755,7 @@ def render(request: Mapping[str, Any], cancel: Callable[[], Any] | None = None) 
             settings.vocal_path: _source_fingerprint(settings.vocal_path),
             settings.instrumental_path: _source_fingerprint(settings.instrumental_path),
         }
+        source_hashes = {str(path): _file_sha256(path, cancel) for path in source_fingerprints}
         vocal_probe = _probe_audio(
             settings.vocal_path, ffmpeg, temp_root / "probe-vocal.log", cancel
         )
@@ -804,8 +817,10 @@ def render(request: Mapping[str, Any], cancel: Callable[[], Any] | None = None) 
         _check_cancel(cancel)
 
         for path, fingerprint in source_fingerprints.items():
-            if _source_fingerprint(path) != fingerprint:
+            if (_source_fingerprint(path) != fingerprint
+                    or _file_sha256(path, cancel) != source_hashes[str(path)]):
                 raise MixdownError(f"渲染期间源音频发生变化，已停止输出：{path.name}")
+        output_sha256 = _file_sha256(staged, cancel)
         if os.path.lexists(output):
             raise FileExistsError(f"输出文件已经存在，为避免覆盖已拒绝：{output}")
         _install_new_file(staged, output)
@@ -814,6 +829,8 @@ def render(request: Mapping[str, Any], cancel: Callable[[], Any] | None = None) 
             "output_path": str(output),
             "duration_seconds": expected_frames / float(sample_rate),
             "peak_dbfs": float(peak_dbfs),
+            "source_sha256": source_hashes,
+            "output_sha256": output_sha256,
         }
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
