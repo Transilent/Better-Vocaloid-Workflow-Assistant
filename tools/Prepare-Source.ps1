@@ -3,6 +3,19 @@ $ErrorActionPreference = 'Stop'
 $app = [IO.Path]::GetFullPath($AppRoot).TrimEnd('\')
 $catalog = Join-Path $app 'packaging/source-files.json'
 $files = (Get-Content -LiteralPath $catalog -Raw -Encoding UTF8 | ConvertFrom-Json).files
+if (($files | Select-Object -Unique).Count -ne $files.Count) { throw 'Source mapping contains duplicate paths.' }
+$sourceDirectory = Join-Path $app 'src'
+$cataloguedSources = @($files | Where-Object { $_ -match '^src/[A-Za-z0-9_]+\.py$' })
+$discoveredSources = @(Get-ChildItem -LiteralPath $sourceDirectory -File -Filter '*.py' |
+    ForEach-Object { 'src/' + $_.Name })
+$unregistered = @($discoveredSources | Where-Object { $cataloguedSources -notcontains $_ })
+$missing = @($cataloguedSources | Where-Object { $discoveredSources -notcontains $_ })
+if ($unregistered.Count -or $missing.Count) {
+    $details = @()
+    if ($unregistered.Count) { $details += 'unregistered: ' + ($unregistered -join ', ') }
+    if ($missing.Count) { $details += 'missing: ' + ($missing -join ', ') }
+    throw ('Source mapping is incomplete (' + ($details -join '; ') + ').')
+}
 $copies = @()
 foreach ($name in $files) {
     if ($name -notmatch '^src/[A-Za-z0-9_]+\.py$') { continue }

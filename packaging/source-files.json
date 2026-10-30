@@ -1922,6 +1922,19 @@
     "src/agent_separation_repair.py",
     "tests/test_agent_pitch.py",
     "tests/test_agent_separation_repair.py",
-    "tests/test_agent_signal_workflow.py"
+    "tests/test_agent_signal_workflow.py",
+    "components/pedalboard-LICENSE.txt",
+    "components/pedalboard-NOTICE.txt",
+    "components/pedalboard-THIRD_PARTY_NOTICES.md",
+    "components/pedalboard.json",
+    "docs/SimpleMixingComponent.en.md",
+    "docs/SimpleMixingComponent.zh-CN.md",
+    "packaging/requirements-pedalboard.lock.txt",
+    "src/audio_mixdown.py",
+    "src/audio_mixdown_ui.py",
+    "tests/test_audio_mixdown.py",
+    "tests/test_audio_mixdown_ui.py",
+    "tools/install_pedalboard_component.py",
+    "components/.gitattributes"
   ]
 }

@@ -12,6 +12,7 @@
 | 可选 Pymss、Pymss Core、PyTorch 及支持库 | 从冻结的上游 wheel 下载，包元数据及原声明保留于 `dependencies/optional/bs-roformer/current/packages` |
 | Python | 3.12.10，保留运行库的 `LICENSE.txt` |
 | Python 库 | 保留原 `LICENSE`、`COPYING`、包内许可及元数据 |
+| 可选简易混音效果（Pedalboard 0.9.26） | [PyPI](https://pypi.org/project/pedalboard/0.9.26/) 官方 CPython 3.12 Windows x64 wheel，GPL-3.0-only；JUCE 6.1.4、随附 VST3 SDK、Rubber Band、LAME ／ mpglib、libgsm、Xiph FLAC ／ Ogg Vorbis、dr_wav 与 pybind11 分别适用各自条款。准确修订与构建范围见 `components/pedalboard-THIRD_PARTY_NOTICES.md`，wheel 许可证与上游 NOTICE 一并保留。 |
 | 可选参考演唱分析器 | [PyWORLD](https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder)，MIT；其内置 [WORLD](https://github.com/mmorise/World) 使用 BSD-3-Clause。保留 wheel 元数据和 `components/world-LICENSE.txt` 声明 |
 | yt-dlp | [上游](https://github.com/yt-dlp/yt-dlp)，`vendor/` 内保留代码与许可 |
 | Playwright / Node.js | [上游](https://github.com/microsoft/playwright-python)，`vendor/` 内保留原声明 |
@@ -21,6 +22,8 @@
 Vocal2Midi 的上游资料保留 GAME、HubertFA、Qwen3-ASR、RMVPE、RomajiASR、llama.cpp、ONNX Runtime 的致谢。固定环境经过验证，不代表所有第三方文件具有相同许可证。
 
 侧栏、卡片和操作分组参考 [Pymss Studio](https://github.com/pymss-project/pymss-studio)。本助手的 Qt 布局与 SVG 控件为原创实现，未打包 Studio 的前端代码或素材。
+
+Pedalboard 是单独下载的可选组件，不随基础运行库分发。现有 v1.0.0 二进制早于该组件登记且未包含此 wheel；本说明不声称任何既有发行包已经合规。将来分发 Pedalboard 或含其代码的二进制时，必须为该确切构建保留适用声明、许可证文本与对应源码／书面要约。
 
 基础包不含可选 BS-RoFormer 运行库，也不含浏览器账号、会话、私人音视频、封面、MIDI 或发布草稿。二进制包中的第三方组件仍需遵守各自的再分发条款。
 

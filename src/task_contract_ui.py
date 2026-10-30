@@ -74,6 +74,7 @@ class TaskFilesDialog(QDialog):
     def __init__(self, owner, job):
         super().__init__(owner)
         self.owner, self.job, self.worker, self.rows = owner, Path(job).resolve(), None, []
+        self.setObjectName('taskFilesDialog')
         self.setWindowTitle(_tr('文件与下一步'))
         self.setMinimumSize(620, 520)
         self.resize(1080, 760)
@@ -133,6 +134,14 @@ class TaskFilesDialog(QDialog):
         bind_actions.addWidget(button(_tr('取消此项登记'), self.remove_binding))
         body.addLayout(bind_actions)
 
+        mixdown_actions = FlowLayout(spacing=10)
+        self.mixdown_button = button(_tr('制作简易混音…'), self.open_mixdown)
+        self.mixdown_button.setObjectName('taskFilesMixdownButton')
+        self.mixdown_button.setAccessibleName(_tr('打开简易混音对话框'))
+        mixdown_actions.addWidget(self.mixdown_button)
+        mixdown_actions.addWidget(label(_tr('用歌声干声与伴奏生成新的 WAV，导出后再显式登记；源文件不会被覆盖。'), 'muted'))
+        body.addLayout(mixdown_actions)
+
         next_actions = FlowLayout(spacing=10)
         next_actions.addWidget(button(_tr('进入视频合成'), self.to_video))
         next_actions.addWidget(button(_tr('进入发布工作流'), self.to_publication))
@@ -140,6 +149,31 @@ class TaskFilesDialog(QDialog):
         body.addLayout(next_actions)
         body.addWidget(label(_tr('双击文件可打开。登记或取消登记、重建清单前，会检查文件是否正被处理、缓存管理或发布流程使用。'), 'muted'))
         self.refresh()
+
+    def open_mixdown(self):
+        if self.busy():
+            self.status.setText(_tr('请等待当前文件检查结束后再制作混音。'))
+            return
+        from task_store import locked
+        if (locked(self.job) or self.owner.processing_active or self.owner.storage.busy()
+                or self.owner.publishing.busy()):
+            self.status.setText(_tr('请等待任务处理、缓存管理或发布准备结束后再制作混音。'))
+            return
+        from audio_mixdown_ui import MixdownDialog
+        dialog = MixdownDialog(self.owner, self.job, self)
+        self.mixdown_dialog = dialog
+        navigate = False
+        try:
+            dialog.exec_()
+            navigate = dialog.navigate_requested
+            registered = dialog.registered
+        finally:
+            self.mixdown_dialog = None
+            dialog.deleteLater()
+        if navigate:
+            self.accept()
+        elif registered:
+            self.start()
 
     def busy(self):
         return bool(self.worker and self.worker.isRunning())

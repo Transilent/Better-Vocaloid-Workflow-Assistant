@@ -632,6 +632,46 @@
     {
       "file": "agent_separation_repair.py",
       "source": "src/agent_separation_repair.py"
+    },
+    {
+      "file": "audio_mixdown.py",
+      "source": "src/audio_mixdown.py"
+    },
+    {
+      "file": "audio_mixdown_ui.py",
+      "source": "src/audio_mixdown_ui.py"
+    },
+    {
+      "file": "components/pedalboard.json",
+      "source": "components/pedalboard.json"
+    },
+    {
+      "file": "components/pedalboard-LICENSE.txt",
+      "source": "components/pedalboard-LICENSE.txt"
+    },
+    {
+      "file": "components/pedalboard-NOTICE.txt",
+      "source": "components/pedalboard-NOTICE.txt"
+    },
+    {
+      "file": "components/pedalboard-THIRD_PARTY_NOTICES.md",
+      "source": "components/pedalboard-THIRD_PARTY_NOTICES.md"
+    },
+    {
+      "file": "docs/SimpleMixingComponent.en.md",
+      "source": "docs/SimpleMixingComponent.en.md"
+    },
+    {
+      "file": "docs/SimpleMixingComponent.zh-CN.md",
+      "source": "docs/SimpleMixingComponent.zh-CN.md"
+    },
+    {
+      "file": "packaging/requirements-pedalboard.lock.txt",
+      "source": "packaging/requirements-pedalboard.lock.txt"
+    },
+    {
+      "file": "tools/install_pedalboard_component.py",
+      "source": "tools/install_pedalboard_component.py"
     }
   ]
 }

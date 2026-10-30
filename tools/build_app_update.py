@@ -51,7 +51,9 @@ def build(output):
     for entry in entries:
         if entry['file'] == 'config.json' or entry['file'].startswith(('dependencies/', 'models/', 'vendor/')):
             continue
-        if entry['file'].startswith('components/') and entry['file'] != 'components/world-LICENSE.txt':
+        if (entry['file'].startswith('components/')
+                and entry['file'] != 'components/world-LICENSE.txt'
+                and not entry['file'].startswith('components/pedalboard')):
             continue
         source = ROOT / entry['source']
         record = {'file': entry['file'], 'bytes': source.stat().st_size, 'sha256': file_hash(source)}

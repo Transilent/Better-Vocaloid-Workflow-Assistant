@@ -38,6 +38,15 @@ ROOT_FILES.update({'agent_control.py','agent_worker.py','agent_mcp.py','agent_sc
     'agent_views.py','agent_delivery.py','agent_segments.py','agent_segment_workflow.py','agent_lyric_timeline.py','agent_lyric_reconcile.py',
     'docs/AgentMCP.zh-CN.md','packaging/agent-mcp.example.json','packaging/requirements-mcp.lock.txt'})
 ROOT_FILES.update({'tuning_engine.py','tuning_workflow.py','tuning_ui.py'})
+ROOT_FILES.update({'audio_mixdown.py', 'audio_mixdown_ui.py'})
+ROOT_FILES.update({'agent_mcp_models.py', 'agent_mcp_standard_routing.py',
+                   'agent_mcp_standard_read.py', 'agent_mcp_standard_assets.py',
+                   'agent_mcp_standard_decide.py', 'agent_mcp_standard_flow.py',
+                   'docs/AgentMCPStandard.zh-CN.md'})
+ROOT_FILES.update({'components/pedalboard.json', 'components/pedalboard-LICENSE.txt',
+                   'components/pedalboard-NOTICE.txt', 'components/pedalboard-THIRD_PARTY_NOTICES.md',
+                   'docs/SimpleMixingComponent.en.md', 'docs/SimpleMixingComponent.zh-CN.md',
+                   'packaging/requirements-pedalboard.lock.txt'})
 # VWA presentation modules; internal update/lock identifiers remain compatible.
 ROOT_FILES.update({'media_preview.py', 'ui_preferences.py', 'ui_components.py', 'ui_materials.py'})
 ROOT_FILES.update({'i18n.py', 'strength_control.py', 'assets/i18n/en.json', 'assets/i18n/ja.json', 'assets/i18n/additions.json'})
@@ -47,10 +56,13 @@ TOOL_FILES = {'tools/update_apply.py', 'tools/Start-Diagnostics.bat',
               'tools/Check-Dependencies.bat', 'tools/Use-CPU.bat', 'tools/Use-GPU.bat',
               'tools/Install-Runtime.ps1', 'tools/set_device.py'}
 TOOL_FILES.add('tools/Setup-AgentMCP.ps1')
+TOOL_FILES.add('tools/install_pedalboard_component.py')
 RUNTIME_UPDATE_NAME = 'VWA-Runtime-Upgrade.zip'
 MAX_RUNTIME_BYTES = 256 * 1024**2
 MAX_PROGRAM_BYTES = 64 * 1024**2
-RUNTIME_PROGRAM_FILES = {'components/roformer.json', 'components/runtime-features.json', 'models/来源说明.md'}
+RUNTIME_PROGRAM_FILES = {'components/roformer.json', 'components/runtime-features.json', 'models/来源说明.md',
+                          'components/pedalboard.json', 'components/pedalboard-LICENSE.txt',
+                          'components/pedalboard-NOTICE.txt', 'components/pedalboard-THIRD_PARTY_NOTICES.md'}
 ROOT_FILES.add('VWA.exe')
 LAUNCHER_MIGRATION = {'from': 'BVWA.exe', 'to': 'VWA.exe', 'legacy_alias': True}
 FILE_ATTRIBUTE_HIDDEN = 0x2

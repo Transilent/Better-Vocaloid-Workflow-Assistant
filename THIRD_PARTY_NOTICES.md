@@ -12,6 +12,7 @@ The portable package includes third-party components and model weights. Their or
 | Optional Pymss, Pymss Core, PyTorch and supporting libraries | Downloaded from pinned upstream wheels; original package metadata and bundled notices are retained in `dependencies/optional/bs-roformer/current/packages` |
 | Python | Python 3.12.10; included `dependencies/vocal2midi/python/LICENSE.txt` |
 | Python libraries | Original `LICENSE`, `COPYING`, `.dist-info/licenses/` and package metadata retained in the portable runtime |
+| Optional simple-mixing effects (Pedalboard 0.9.26) | Official CPython 3.12 Windows x64 wheel from [PyPI](https://pypi.org/project/pedalboard/0.9.26/), GPL-3.0-only. JUCE 6.1.4, the bundled VST3 SDK, Rubber Band, LAME/mpglib, libgsm, Xiph FLAC/Ogg Vorbis, dr_wav and pybind11 have separate terms. Exact revisions and build scope are recorded in `components/pedalboard-THIRD_PARTY_NOTICES.md`; the wheel license and upstream NOTICE are retained beside it. |
 | Optional reference-expression analyzer | [PyWORLD](https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder), MIT, wrapping [WORLD](https://github.com/mmorise/World), BSD-3-Clause; wheel metadata is retained, and the WORLD notice is included in `components/world-LICENSE.txt` |
 | yt-dlp | Included source, license and metadata in `vendor/`; [upstream](https://github.com/yt-dlp/yt-dlp) |
 | Playwright and Node.js driver | Included upstream licenses and notices in `vendor/`; [upstream](https://github.com/microsoft/playwright-python) |
@@ -21,6 +22,8 @@ The portable package includes third-party components and model weights. Their or
 The original model directories and bundled libraries retain upstream materials. GAME, HubertFA, Qwen3-ASR, RMVPE, RomajiASR, llama.cpp and ONNX Runtime acknowledgements are included with Vocal2Midi. This snapshot was tested as one fixed environment; it does not imply that licenses for all third-party binaries are identical.
 
 The sidebar/card layout draws design inspiration from [Pymss Studio](https://github.com/pymss-project/pymss-studio). The assistant's Qt layout and SVG controls are original; Studio's frontend code and assets are not bundled.
+
+Pedalboard is an optional component downloaded separately and is not bundled in the base runtime. The existing v1.0.0 binaries predate this component entry and do not include this wheel; this notice does not claim that any existing release archive is compliant. A future package that redistributes Pedalboard or a binary containing it must preserve the applicable notices, license texts and corresponding-source offer for that exact build.
 
 The base archive excludes the optional BS-RoFormer payload as well as browser profiles, cookies, saved sessions, source songs, videos, covers, generated MIDI, and user publication drafts. Third-party redistribution terms apply to their corresponding components in the binary package.
 

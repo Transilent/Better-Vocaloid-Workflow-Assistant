@@ -1,0 +1,3 @@
+# Keep upstream licence artifacts byte-for-byte identical to the wheel.
+pedalboard-LICENSE.txt -text whitespace=cr-at-eol
+pedalboard-NOTICE.txt -text whitespace=cr-at-eol

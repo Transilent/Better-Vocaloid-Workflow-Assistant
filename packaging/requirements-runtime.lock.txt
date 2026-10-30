@@ -45,3 +45,7 @@ tqdm==4.67.3
 typing_extensions==4.15.0
 urllib3==2.7.0
 wheel==0.47.0
+# Optional simple-mixing component, installed only in an isolated trial or
+# component directory. Kept out of the base runtime:
+# pedalboard==0.9.26 --hash=sha256:816b7063d3befb00263bfee7656932ee5f51788c586d5184d4d61f7a85f61aea
+# Reproducible component lock: packaging/requirements-pedalboard.lock.txt

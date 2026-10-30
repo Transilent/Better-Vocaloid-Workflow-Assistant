@@ -1,0 +1,60 @@
+{
+  "format": 1,
+  "component": "pedalboard",
+  "version": "0.9.26",
+  "python_tag": "cp312",
+  "platform": "win_amd64",
+  "wheel": {
+    "name": "pedalboard-0.9.26-cp312-cp312-win_amd64.whl",
+    "url": "https://files.pythonhosted.org/packages/dd/55/eb95ca568bec01ae73a16fe47c56369f3b84a0d94778981bb7efd1c5e440/pedalboard-0.9.26-cp312-cp312-win_amd64.whl",
+    "sha256": "816b7063d3befb00263bfee7656932ee5f51788c586d5184d4d61f7a85f61aea",
+    "bytes": 3691266,
+    "installed_bytes": 9582994,
+    "requires": {
+      "numpy": "1.26.4"
+    },
+    "modules": [
+      "pedalboard",
+      "pedalboard_native"
+    ]
+  },
+  "install": {
+    "root": "dependencies/optional/pedalboard",
+    "current": "current",
+    "packages": "current/packages",
+    "receipt": "current/installed.json"
+  },
+  "source": {
+    "repository": "https://github.com/spotify/pedalboard",
+    "revision": "05e8f0b3c4851e77485d7e842dc0355b44106471",
+    "tag": "v0.9.26"
+  },
+  "license": {
+    "package": "GPL-3.0-only",
+    "license_file": "components/pedalboard-LICENSE.txt",
+    "notice_file": "components/pedalboard-NOTICE.txt",
+    "review_file": "components/pedalboard-THIRD_PARTY_NOTICES.md",
+    "hashes": {
+      "license_file": "230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809",
+      "notice_file": "922c2088eca7485bdae5dbdaf636c1ba91879abc6285ac5b0d602c24d199ce5b",
+      "review_file": "a34305a30937d19ceb4e1cd244aebb49ed223b7f18041cb413359d5848a31022"
+    }
+  },
+  "probe": {
+    "version": "0.9.26",
+    "sample_rate": 44100,
+    "required_modules": [
+      "Reverb",
+      "Compressor",
+      "Gain",
+      "HighpassFilter",
+      "LowpassFilter",
+      "Convolution",
+      "Delay",
+      "Limiter",
+      "LadderFilter",
+      "LowShelfFilter",
+      "PeakFilter"
+    ]
+  }
+}
