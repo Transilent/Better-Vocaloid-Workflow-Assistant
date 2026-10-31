@@ -7,11 +7,24 @@ APP=Path(__file__).resolve().parents[1];sys.path.insert(0,str(APP))
 assert os.environ.get('BVWA_TESTING')=='1' and APP.parent.name=='test-sandboxes','Use isolated runner'
 from PyQt5.QtWidgets import QApplication
 from app import Window
+from workspace_ui import AudioMixdownPage
 from results_ui import active_task_operations
 from storage_ui import StoragePage
 from updates_ui import UpdatesPage
 import storage
 application=QApplication([])
+# Embedded audition owns a persistent subprocess: window close waits until its
+# asynchronous shutdown has finished and then retires temporary files.
+mix=SimpleNamespace(busy=lambda:False, support_checking=lambda:False,
+    _preview_worker=None, _audition_cleanup_complete=False,
+    _stop_preview_player=Mock(), _shutdown_audition_service=Mock(),
+    _retire_preview=Mock())
+page=SimpleNamespace(mixer=mix)
+assert not AudioMixdownPage.shutdown(page)
+mix._shutdown_audition_service.assert_called_once()
+mix._audition_cleanup_complete=True
+assert AudioMixdownPage.shutdown(page)
+mix._retire_preview.assert_called_once()
 with tempfile.TemporaryDirectory(dir=APP/'work',prefix='preview-guards-') as folder:
     root=Path(folder);job=root/'jobs/a';job.mkdir(parents=True);other=root/'jobs/b';other.mkdir()
     video=SimpleNamespace(busy=lambda:False,preview_busy=lambda:True,

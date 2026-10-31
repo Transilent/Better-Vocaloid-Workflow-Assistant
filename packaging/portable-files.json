@@ -638,8 +638,40 @@
       "source": "src/audio_mixdown.py"
     },
     {
+      "file": "audio_mixdown_audition.py",
+      "source": "src/audio_mixdown_audition.py"
+    },
+    {
       "file": "audio_mixdown_ui.py",
       "source": "src/audio_mixdown_ui.py"
+    },
+    {
+      "file": "mixdown_audition_service.py",
+      "source": "src/mixdown_audition_service.py"
+    },
+    {
+      "file": "mixdown_control_panel.py",
+      "source": "src/mixdown_control_panel.py"
+    },
+    {
+      "file": "mixdown_eq_curve.py",
+      "source": "src/mixdown_eq_curve.py"
+    },
+    {
+      "file": "mixdown_live_meters.py",
+      "source": "src/mixdown_live_meters.py"
+    },
+    {
+      "file": "mixdown_presets.py",
+      "source": "src/mixdown_presets.py"
+    },
+    {
+      "file": "mixdown_player.py",
+      "source": "src/mixdown_player.py"
+    },
+    {
+      "file": "mixer_state.py",
+      "source": "src/mixer_state.py"
     },
     {
       "file": "components/pedalboard.json",

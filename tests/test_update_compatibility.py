@@ -38,7 +38,10 @@ old = module('bvwa_released_041_updater', APP / client['fixtures']['src/updater.
 old_helper = module('bvwa_released_041_installer', APP / client['fixtures']['tools/update_apply.py']['fixture'])
 assert set(client['ROOT_FILES']) == old_helper.ROOT_FILES
 assert set(client['TOOL_FILES']) == old_helper.TOOL_FILES
-new_names = ('pitch_accuracy.py', 'transcription_quality.py', 'vocal_timbre.py', 'components/world-LICENSE.txt')
+new_names = ('pitch_accuracy.py', 'transcription_quality.py', 'vocal_timbre.py', 'components/world-LICENSE.txt',
+             'audio_mixdown_audition.py', 'mixdown_audition_service.py',
+             'mixdown_control_panel.py', 'mixdown_eq_curve.py', 'mixdown_live_meters.py',
+             'mixdown_player.py', 'mixdown_presets.py', 'mixer_state.py')
 for name in new_names:
     try:
         require_compatible_clients([record(name, b'fixture')])

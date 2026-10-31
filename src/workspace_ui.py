@@ -183,10 +183,32 @@ class AudioMixdownPage(QWidget):
             self.mixer.status.setText(_tr('请等待当前处理结束后再取消关联任务。'))
 
     def busy(self):
-        return self.mixer.busy()
+        return self.mixer.busy() or self.mixer.preview_busy()
 
     def cancel(self):
         self.mixer.cancel()
+        self.mixer.cancel_preview()
+
+    def shutdown(self):
+        """Cooperatively finish owned workers before the application exits."""
+        mixer = self.mixer
+        if mixer.busy():
+            mixer.cancel()
+            return False
+        if mixer.support_checking():
+            if mixer._support_worker is not None:
+                mixer._support_worker.cancel()
+            return False
+        if mixer._preview_worker is not None:
+            mixer.cancel_preview()
+            return False
+        if not mixer._audition_cleanup_complete:
+            mixer._stop_preview_player()
+            mixer._shutdown_audition_service()
+            if not mixer._audition_cleanup_complete:
+                return False
+        mixer._retire_preview()
+        return True
 
 
 def build_window(window):

@@ -59,6 +59,7 @@ sys.path[:0] = [str(pedalboard_root), str(APP / 'src')]
 try:
     import pedalboard  # noqa: F401 - verifies the explicitly selected dependency without installing it
     import audio_mixdown
+    import audio_mixdown_audition
 except Exception as error:
     print('ERROR: cannot import the isolated mixing dependency: ' + type(error).__name__ + ': ' + str(error))
     raise SystemExit(1)
@@ -126,9 +127,11 @@ def _request(vocal, instrumental, output, *, offset=0., reverb=0., vocal_db=0.,
 def _verify_result(test, report, request, root):
     test.assertIsInstance(report, dict)
     for key in ('schema', 'output_path', 'duration_seconds', 'peak_dbfs',
+                'peak_after_effects_dbfs', 'gr_db_p95', 'uses_v3', 'warnings',
                 'sample_rate', 'channels', 'tracks', 'source_sha256', 'output_sha256'):
         test.assertIn(key, report)
-    test.assertEqual(report['schema'], 'vwa.audio_mixdown.render/v2')
+    test.assertEqual(report['schema'], 'vwa.audio_mixdown.render/v3' if report.get('uses_v3')
+                     else 'vwa.audio_mixdown.render/v2')
     output = Path(report['output_path']).resolve()
     test.assertEqual(output, Path(request['output_path']).resolve())
     test.assertTrue(output.is_file())
@@ -146,22 +149,27 @@ def _verify_result(test, report, request, root):
 
     if 'vocals' in request:
         expected = [
-            ('vocal', index, Path(item['path']), item['gain_db'], item['offset_seconds'])
+            ('vocal', index, Path(item['path']), item['gain_db'],
+             item['offset_seconds'], item.get('mute', False),
+             item.get('solo', False), item.get('pan', 0.0))
             for index, item in enumerate(request['vocals'])
         ]
     else:
         expected = [
             ('vocal', 0, Path(request['vocal_path']), request['vocal_db'],
-             request['offset_seconds'])
+             request['offset_seconds'], False, False, 0.0)
         ]
     expected.append(('backing', 0, Path(request['instrumental_path']),
-                     request['instrumental_db'], 0.))
+                     request['instrumental_db'], 0.,
+                     request.get('instrumental_mute', False),
+                     request.get('instrumental_solo', False),
+                     request.get('instrumental_pan', 0.0)))
     tracks = report['tracks']
     test.assertEqual(len(tracks), len(expected))
     output_hash = _digest(output)
     test.assertEqual(report['output_sha256'], output_hash)
     for expected_track, track in zip(expected, tracks):
-        role, index, source, gain_db, offset = expected_track
+        role, index, source, gain_db, offset, mute, solo, pan = expected_track
         source = source.resolve()
         test.assertTrue(source == root or source.is_relative_to(root))
         test.assertEqual(track['role'], role)
@@ -169,11 +177,26 @@ def _verify_result(test, report, request, root):
         test.assertEqual(Path(track['path']).resolve(), source)
         test.assertAlmostEqual(float(track['gain_db']), float(gain_db), delta=1e-9)
         test.assertAlmostEqual(float(track['offset_seconds']), float(offset), delta=1e-9)
+        test.assertEqual(track['mute'], mute)
+        test.assertEqual(track['solo'], solo)
+        test.assertAlmostEqual(float(track['pan']), float(pan), delta=1e-9)
+        test.assertIn(track['audible'], (True, False))
         test.assertEqual(track['input_sha256'], _digest(source))
         test.assertEqual(track['output_sha256'], output_hash)
+        test.assertIn('peak_dbfs', track)
+        test.assertTrue(math.isfinite(float(track['peak_dbfs'])))
         test.assertEqual(report['source_sha256'][str(source)], _digest(source))
     expected_sources = {str(track[2].resolve()) for track in expected}
     test.assertEqual(set(report['source_sha256']), expected_sources)
+    test.assertIn('meters', report)
+    meters = report['meters']['tracks']
+    test.assertEqual(len(meters), len(tracks))
+    for track, meter in zip(tracks, meters):
+        test.assertEqual(meter['role'], track['role'])
+        test.assertEqual(meter['index'], track['index'])
+        test.assertEqual(meter['audible'], track['audible'])
+        test.assertEqual(meter['peak_dbfs'], track['peak_dbfs'])
+    test.assertTrue(math.isfinite(float(report['meters']['bus_peak_dbfs'])))
     return audio, rate, output
 
 
@@ -210,6 +233,170 @@ class AudioMixdownContract(unittest.TestCase):
             audio_mixdown.render(_request(same_as_vocal, instrumental, same_as_vocal))
         self.assertEqual(_digest(same_as_vocal), same_source_hash)
         self.assertNotEqual(output.resolve(), vocal.resolve())
+
+    def test_silent_sources_report_finite_sentinel_for_every_meter(self):
+        rate = 16000
+        vocal = self.root / 'silent-vocal.wav'
+        instrumental = self.root / 'silent-backing.wav'
+        output = self.root / 'silent-mix.wav'
+        _write(vocal, np.zeros(rate // 10, dtype=np.float32), rate)
+        _write(instrumental, np.zeros(rate // 8, dtype=np.float32), rate)
+        report = audio_mixdown.render(_request(vocal, instrumental, output))
+        self.assertEqual(float(report['peak_dbfs']), audio_mixdown.SILENCE_DBFS)
+        self.assertEqual(len(report['meters']['tracks']), 2)
+        self.assertTrue(all(
+            float(row['peak_dbfs']) == audio_mixdown.SILENCE_DBFS
+            for row in report['meters']['tracks']
+        ))
+        self.assertEqual(
+            float(report['meters']['bus_peak_dbfs']), audio_mixdown.SILENCE_DBFS)
+
+    def test_mute_solo_and_pan_route_tracks_and_upgrade_to_stereo(self):
+        rate = 16000
+        vocal1 = self.root / 'route-vocal-1.wav'
+        vocal2 = self.root / 'route-vocal-2.wav'
+        backing = self.root / 'route-backing.wav'
+        _write(vocal1, _tone(.16, rate, 440, .055), rate)
+        _write(vocal2, _tone(.16, rate, 880, .055), rate)
+        _write(backing, _tone(.16, rate, 220, .03), rate)
+
+        for index, pan in enumerate((-1.0, 1.0)):
+            output = self.root / ('route-left.wav' if pan < 0 else 'route-right.wav')
+            vocals = [
+                {'path': str(vocal1), 'gain_db': 0., 'offset_seconds': 0.,
+                 'mute': True, 'solo': False, 'pan': 0.},
+                {'path': str(vocal2), 'gain_db': 0., 'offset_seconds': 0.,
+                 'mute': False, 'solo': True, 'pan': pan},
+            ]
+            request = _request(vocal1, backing, output, vocals=vocals)
+            report = audio_mixdown.render(request)
+            audio, actual_rate, _ = _verify_result(self, report, request, self.root)
+            self.assertEqual(actual_rate, rate)
+            self.assertEqual(audio.shape[1], 2)
+            left = float(np.sqrt(np.mean(np.square(audio[:, 0], dtype=np.float64))))
+            right = float(np.sqrt(np.mean(np.square(audio[:, 1], dtype=np.float64))))
+            if pan < 0:
+                self.assertGreater(left, .01)
+                self.assertEqual(right, 0.)
+                self.assertFalse(np.any(audio[:, 1]))
+            else:
+                self.assertEqual(left, 0.)
+                self.assertFalse(np.any(audio[:, 0]))
+                self.assertGreater(right, .01)
+            self.assertEqual([row['audible'] for row in report['tracks']], [False, True, False])
+            self.assertEqual(float(report['tracks'][0]['peak_dbfs']), audio_mixdown.SILENCE_DBFS)
+            self.assertAlmostEqual(float(report['tracks'][1]['pan']), pan, delta=1e-9)
+            self.assertFalse(report['meters']['tracks'][0]['audible'])
+            self.assertTrue(report['meters']['tracks'][1]['audible'])
+            self.assertFalse(report['meters']['tracks'][2]['audible'])
+            self.assertEqual(set(report['source_sha256']), {
+                str(vocal1.resolve()), str(vocal2.resolve()), str(backing.resolve())
+            })
+
+        silent_output = self.root / 'route-all-muted.wav'
+        silent_vocals = [
+            {'path': str(vocal1), 'gain_db': 0., 'offset_seconds': 0.,
+             'mute': True, 'solo': False, 'pan': 0.},
+            {'path': str(vocal2), 'gain_db': 0., 'offset_seconds': 0.,
+             'mute': True, 'solo': True, 'pan': 0.},
+        ]
+        silent_request = _request(
+            vocal1, backing, silent_output, vocals=silent_vocals,
+            instrumental_db=0., reverb=.8)
+        silent_request['instrumental_mute'] = True
+        silent_report = audio_mixdown.render(silent_request)
+        self.assertEqual(float(silent_report['peak_dbfs']), audio_mixdown.SILENCE_DBFS)
+        self.assertEqual([row['audible'] for row in silent_report['tracks']],
+                         [False, False, False])
+        self.assertTrue(all(float(row['peak_dbfs']) == audio_mixdown.SILENCE_DBFS
+                            for row in silent_report['meters']['tracks']))
+        silent_audio, silent_rate = _read(silent_output)
+        self.assertEqual(len(silent_audio), int(round(.16 * silent_rate)))
+
+    def test_legacy_three_key_request_matches_explicit_default_track(self):
+        rate = 16000
+        vocal = self.root / 'legacy-vocal.wav'
+        backing = self.root / 'legacy-backing.wav'
+        legacy_output = self.root / 'legacy-request.wav'
+        explicit_output = self.root / 'explicit-request.wav'
+        _write(vocal, _tone(.17, rate, 440, .05, start=.013), rate)
+        _write(backing, _tone(.24, rate, 220, .025), rate)
+        legacy_request = _request(
+            vocal, backing, legacy_output, offset=.031, vocal_db=-2.5, reverb=.2)
+        explicit_request = dict(legacy_request)
+        explicit_request['output_path'] = str(explicit_output)
+        for name in ('vocal_path', 'vocal_db', 'offset_seconds'):
+            explicit_request.pop(name)
+        explicit_request['vocals'] = [{
+            'path': str(vocal), 'gain_db': -2.5, 'offset_seconds': .031,
+        }]
+
+        legacy_report = audio_mixdown.render(legacy_request)
+        explicit_report = audio_mixdown.render(explicit_request)
+        legacy_audio, legacy_rate, _ = _verify_result(
+            self, legacy_report, legacy_request, self.root)
+        explicit_audio, explicit_rate, _ = _verify_result(
+            self, explicit_report, explicit_request, self.root)
+        self.assertEqual(legacy_rate, explicit_rate)
+        self.assertEqual(legacy_audio.shape, explicit_audio.shape)
+        self.assertTrue(np.array_equal(legacy_audio, explicit_audio))
+        self.assertEqual(legacy_report['tracks'][0]['mute'], False)
+        self.assertEqual(legacy_report['tracks'][0]['solo'], False)
+        self.assertEqual(legacy_report['tracks'][0]['pan'], 0.)
+        self.assertFalse(legacy_report['uses_v3'])
+        self.assertEqual(legacy_report['warnings'], [])
+
+    def test_mute_precedes_solo_and_backing_shares_the_solo_group(self):
+        rate = 16000
+        vocal1 = self.root / 'group-vocal-1.wav'
+        vocal2 = self.root / 'group-vocal-2.wav'
+        backing = self.root / 'group-backing.wav'
+        for path, frequency in ((vocal1, 440), (vocal2, 660), (backing, 220)):
+            _write(path, _tone(.12, rate, frequency, .025), rate)
+
+        first_vocals = [
+            {'path': str(vocal1), 'gain_db': 0., 'offset_seconds': 0.,
+             'mute': True, 'solo': True, 'pan': 1.},
+            {'path': str(vocal2), 'gain_db': 0., 'offset_seconds': 0.},
+        ]
+        first_output = self.root / 'muted-solo-does-not-suppress.wav'
+        first_request = _request(
+            vocal1, backing, first_output, vocals=first_vocals)
+        first_report = audio_mixdown.render(first_request)
+        first_audio, _, _ = _verify_result(
+            self, first_report, first_request, self.root)
+        self.assertEqual([row['audible'] for row in first_report['tracks']],
+                         [False, True, True])
+        self.assertEqual(first_audio.shape[1], 1)
+
+        second_vocals = [
+            {'path': str(vocal1), 'gain_db': 0., 'offset_seconds': 0.,
+             'solo': True},
+            {'path': str(vocal2), 'gain_db': 0., 'offset_seconds': 0.,
+             'mute': True, 'solo': True, 'pan': -1.},
+        ]
+        second_output = self.root / 'active-solo-mutes-muted-track.wav'
+        second_request = _request(
+            vocal1, backing, second_output, vocals=second_vocals)
+        second_report = audio_mixdown.render(second_request)
+        second_audio, _, _ = _verify_result(
+            self, second_report, second_request, self.root)
+        self.assertEqual([row['audible'] for row in second_report['tracks']],
+                         [True, False, False])
+        self.assertEqual(second_audio.shape[1], 1)
+
+        backing_solo_request = _request(
+            vocal1, backing, self.root / 'backing-solo.wav',
+            vocals=[
+                {'path': str(vocal1), 'gain_db': 0., 'offset_seconds': 0.},
+                {'path': str(vocal2), 'gain_db': 0., 'offset_seconds': 0.},
+            ])
+        backing_solo_request['instrumental_solo'] = True
+        backing_solo_report = audio_mixdown.render(backing_solo_request)
+        _verify_result(self, backing_solo_report, backing_solo_request, self.root)
+        self.assertEqual(
+            [row['audible'] for row in backing_solo_report['tracks']],
+            [False, False, True])
 
     def test_three_vocals_apply_each_gain_and_offset_before_summing(self):
         rate = 16000
@@ -410,6 +597,273 @@ class AudioMixdownContract(unittest.TestCase):
         difference = preview_audio[:count] - full_audio[expected_start:expected_start + count]
         self.assertLess(float(np.max(np.abs(difference), initial=0.)), .002)
 
+    def test_v3_eq_bands_validation_application_and_frequency_warning(self):
+        rate = 16000
+        vocal = self.root / 'eq-band-vocal.wav'
+        backing = self.root / 'eq-band-backing.wav'
+        _write(vocal, _tone(.35, rate, 440, .10), rate)
+        _write(backing, np.zeros(int(.45 * rate), dtype=np.float32), rate)
+        output = self.root / 'eq-band-output.wav'
+        no_eq_output = self.root / 'eq-band-none.wav'
+        base = _request(vocal, backing, output)
+        bands = [
+            {'type': 'highpass', 'freq_hz': 1000, 'gain_db': 0, 'q': .707,
+             'enabled': True},
+            {'type': 'lowshelf', 'freq_hz': 220, 'gain_db': 2, 'q': .707,
+             'enabled': False},
+            {'type': 'bell', 'freq_hz': 440, 'gain_db': 3, 'q': 1.0,
+             'enabled': True},
+            {'type': 'highshelf', 'freq_hz': 5000, 'gain_db': 1, 'q': .707,
+             'enabled': True},
+        ]
+        request = copy.deepcopy(base)
+        request['eq_bands'] = bands
+        report = audio_mixdown.render(request)
+        audio, actual_rate, _ = _verify_result(self, report, request, self.root)
+        self.assertTrue(report['uses_v3'])
+        self.assertEqual(report['warnings'], [])
+        self.assertEqual(actual_rate, rate)
+
+        no_eq_request = copy.deepcopy(base)
+        no_eq_request['output_path'] = str(no_eq_output)
+        no_eq_request['eq_bands'] = []
+        no_eq_report = audio_mixdown.render(no_eq_request)
+        no_eq_audio, _, _ = _verify_result(
+            self, no_eq_report, no_eq_request, self.root)
+        self.assertGreater(float(np.max(np.abs(audio - no_eq_audio))), .001)
+
+        # eq_bands is authoritative once present; the legacy two EQ values are
+        # not required and must not be silently re-applied.
+        minimal = copy.deepcopy(base)
+        minimal['output_path'] = str(self.root / 'eq-band-minimal.wav')
+        minimal.pop('eq_low_cut_hz')
+        minimal.pop('eq_presence_db')
+        minimal['eq_bands'] = [bands[2]]
+        minimal_report = audio_mixdown.render(minimal)
+        _verify_result(self, minimal_report, minimal, self.root)
+
+        clamped = copy.deepcopy(base)
+        clamped['output_path'] = str(self.root / 'eq-band-clamped.wav')
+        clamped['eq_bands'] = [{
+            'type': 'highshelf', 'freq_hz': 20000, 'gain_db': 1,
+            'q': .707, 'enabled': True,
+        }]
+        clamped_report = audio_mixdown.render(clamped)
+        _verify_result(self, clamped_report, clamped, self.root)
+        self.assertTrue(any('clamped' in warning
+                            for warning in clamped_report['warnings']))
+
+        invalid_bands = [
+            [dict(bands[0]), dict(bands[1]), dict(bands[2]), dict(bands[3]), dict(bands[0])],
+            [{'type': 'peak', 'freq_hz': 440, 'gain_db': 0, 'q': 1, 'enabled': True}],
+            [{'type': 'bell', 'freq_hz': 440, 'gain_db': 0, 'q': 1}],
+            [{'type': 'bell', 'freq_hz': 9, 'gain_db': 0, 'q': 1, 'enabled': True}],
+            [{'type': 'bell', 'freq_hz': 440, 'gain_db': 25, 'q': 1, 'enabled': True}],
+            [{'type': 'bell', 'freq_hz': 440, 'gain_db': 0, 'q': .09, 'enabled': True}],
+            [{'type': 'bell', 'freq_hz': 440, 'gain_db': 0, 'q': 1, 'enabled': 1}],
+        ]
+        for index, invalid in enumerate(invalid_bands):
+            with self.subTest(index=index):
+                bad = copy.deepcopy(base)
+                bad['output_path'] = str(self.root / f'invalid-eq-{index}.wav')
+                bad['eq_bands'] = invalid
+                with self.assertRaises((ValueError, TypeError)):
+                    audio_mixdown.render(bad)
+                self.assertFalse(Path(bad['output_path']).exists())
+
+    def test_v3_reverb_send_is_per_track_and_predelay_delays_return(self):
+        rate = 16000
+        vocal1 = self.root / 'send-vocal-1.wav'
+        vocal2 = self.root / 'send-vocal-2.wav'
+        backing = self.root / 'send-backing.wav'
+        _write(vocal1, _tone(.28, rate, 440, .09), rate)
+        _write(vocal2, _tone(.28, rate, 880, .09), rate)
+        _write(backing, np.zeros(int(1.20 * rate), dtype=np.float32), rate)
+        vocals = [
+            {'path': str(vocal1), 'gain_db': 0., 'offset_seconds': 0.,
+             'reverb_send': 1.0},
+            {'path': str(vocal2), 'gain_db': 0., 'offset_seconds': 0.,
+             'reverb_send': 0.0},
+        ]
+        request = _request(vocal1, backing, self.root / 'send-output.wav',
+                           vocals=vocals, reverb=.8)
+        request.update({'reverb_predelay_ms': 0, 'width': 1.0})
+        report = audio_mixdown.render(request)
+        audio, _, _ = _verify_result(self, report, request, self.root)
+        self.assertEqual(report['tracks'][0]['reverb_send'], 1.0)
+        self.assertEqual(report['tracks'][1]['reverb_send'], 0.0)
+        self.assertGreater(len(audio) / rate, 1.25)
+        tail = audio[int(1.23 * rate):]
+        self.assertGreater(_spectral_amplitude(tail, rate, 440),
+                           _spectral_amplitude(tail, rate, 880) * 1.2)
+
+        no_send_vocals = copy.deepcopy(vocals)
+        no_send_vocals[0]['reverb_send'] = 0.0
+        no_send_request = _request(
+            vocal1, backing, self.root / 'no-send-output.wav',
+            vocals=no_send_vocals, reverb=.8)
+        no_send_request.update({'reverb_predelay_ms': 0, 'width': 1.0})
+        no_send_report = audio_mixdown.render(no_send_request)
+        no_send_audio, _, _ = _verify_result(
+            self, no_send_report, no_send_request, self.root)
+        self.assertLessEqual(len(no_send_audio), int(round(1.20 * rate)))
+
+        delayed_request = _request(
+            vocal1, backing, self.root / 'predelay-output.wav',
+            vocals=[{
+                'path': str(vocal1), 'gain_db': 0., 'offset_seconds': 0.,
+                'reverb_send': 1.0,
+            }], reverb=1.0)
+        delayed_request.update({'reverb_predelay_ms': 80, 'width': 1.0})
+        delayed_report = audio_mixdown.render(delayed_request)
+        delayed_audio, _, _ = _verify_result(
+            self, delayed_report, delayed_request, self.root)
+        early = delayed_audio[:int(round(.04 * rate))]
+        self.assertLess(float(np.max(np.abs(early), initial=0.)), .002)
+
+    def test_v3_width_uses_mid_side_and_preserves_center_level(self):
+        rate = 16000
+        backing = self.root / 'width-backing.wav'
+        _write(backing, np.zeros(int(.30 * rate), dtype=np.float32), rate)
+        left = _tone(.22, rate, 440, .12)
+        right = _tone(.22, rate, 660, .12)
+        stereo = np.column_stack((left, right))
+        vocal = self.root / 'width-vocal.wav'
+        _write(vocal, stereo, rate)
+        outputs = {}
+        for width in (0., 1., 2.):
+            request = _request(
+                vocal, backing, self.root / f'width-{width:g}.wav', vocals=[{
+                    'path': str(vocal), 'gain_db': 0., 'offset_seconds': 0.,
+                }])
+            request['width'] = width
+            report = audio_mixdown.render(request)
+            audio, _, _ = _verify_result(self, report, request, self.root)
+            self.assertEqual(audio.shape[1], 2)
+            outputs[width] = audio
+        self.assertEqual(float(np.max(np.abs(outputs[0.][:, 0] - outputs[0.][:, 1]))), 0.)
+        self.assertGreater(
+            float(np.sqrt(np.mean(np.square(outputs[2.][:, 0] - outputs[2.][:, 1])))),
+            float(np.sqrt(np.mean(np.square(outputs[1.][:, 0] - outputs[1.][:, 1])))),
+        )
+        center_vocal = self.root / 'center-vocal.wav'
+        _write(center_vocal, np.column_stack((left, left)), rate)
+        center_outputs = []
+        for width in (0., 2.):
+            request = _request(
+                center_vocal, backing, self.root / f'center-{width:g}.wav',
+                vocals=[{'path': str(center_vocal), 'gain_db': 0.,
+                         'offset_seconds': 0.}])
+            request['width'] = width
+            report = audio_mixdown.render(request)
+            audio, _, _ = _verify_result(self, report, request, self.root)
+            center_outputs.append(audio)
+        self.assertLess(float(np.max(np.abs(center_outputs[0] - center_outputs[1]))), 1e-5)
+
+    def test_v3_compression_reports_block_gr_and_post_effect_peak(self):
+        rate = 16000
+        vocal = self.root / 'gr-vocal.wav'
+        backing = self.root / 'gr-backing.wav'
+        _write(vocal, _tone(.32, rate, 440, .55), rate)
+        _write(backing, np.zeros(int(.40 * rate), dtype=np.float32), rate)
+        request = _request(vocal, backing, self.root / 'gr-output.wav')
+        request.update({'compression_strength': 1.0, 'width': 1.0})
+        report = audio_mixdown.render(request)
+        _verify_result(self, report, request, self.root)
+        self.assertLess(float(report['gr_db_p95']), -1.0)
+        self.assertLess(float(report['tracks'][0]['gr_db_p95']), -1.0)
+        self.assertTrue(math.isfinite(float(report['peak_after_effects_dbfs'])))
+        self.assertGreaterEqual(float(report['peak_after_effects_dbfs']),
+                                float(report['peak_dbfs']))
+
+    def test_progress_is_blockwise_report_neutral_and_finalized(self):
+        rate = 8000
+        vocal = self.root / 'progress-vocal.wav'
+        backing = self.root / 'progress-backing.wav'
+        _write(vocal, _tone(5.0, rate, 330, .035), rate)
+        _write(backing, _tone(5.0, rate, 110, .02), rate)
+        first = _request(vocal, backing, self.root / 'progress-with.wav')
+        first.update({'width': 1.0, 'eq_bands': []})
+        events = []
+        first_report = audio_mixdown.render(first, progress=events.append)
+        _verify_result(self, first_report, first, self.root)
+        self.assertGreaterEqual(len(events), 2)
+        last = -1.0
+        for event in events:
+            self.assertEqual(event['phase'], 'mix')
+            self.assertGreaterEqual(float(event['fraction']), last)
+            last = float(event['fraction'])
+            self.assertLessEqual(float(event['fraction']), 1.0)
+            self.assertIn('frames_done', event)
+            self.assertIn('frames_total', event)
+            self.assertIsInstance(event['tracks'], list)
+            self.assertTrue(math.isfinite(float(event['bus_peak'])))
+        self.assertEqual(float(events[-1]['fraction']), 1.0)
+        self.assertEqual(events[-1]['frames_done'], events[-1]['frames_total'])
+
+        second = copy.deepcopy(first)
+        second['output_path'] = str(self.root / 'progress-without.wav')
+        second_report = audio_mixdown.render(second)
+        _verify_result(self, second_report, second, self.root)
+        self.assertEqual(first_report['output_sha256'], second_report['output_sha256'])
+        self.assertEqual(first_report['peak_dbfs'], second_report['peak_dbfs'])
+        self.assertEqual(first_report['peak_after_effects_dbfs'],
+                         second_report['peak_after_effects_dbfs'])
+        self.assertEqual(first_report['gr_db_p95'], second_report['gr_db_p95'])
+
+    def test_legacy_eq_low_cut_keeps_original_filter_semantics(self):
+        rate = 16000
+        vocal = self.root / 'legacy-eq-vocal.wav'
+        backing = self.root / 'legacy-eq-backing.wav'
+        _write(vocal, _tone(.30, rate, 80, .12), rate)
+        _write(backing, np.zeros(int(.38 * rate), dtype=np.float32), rate)
+        bypass = _request(vocal, backing, self.root / 'legacy-eq-bypass.wav')
+        cut_output = self.root / 'legacy-eq-cut.wav'
+        cut = _request(vocal, backing, cut_output)
+        cut['eq_low_cut_hz'] = 500
+        bypass_report = audio_mixdown.render(bypass)
+        bypass_audio, _, _ = _verify_result(self, bypass_report, bypass, self.root)
+        cut_audio, _, _ = _verify_result(
+            self, audio_mixdown.render(cut), cut, self.root)
+        self.assertLess(_spectral_amplitude(cut_audio, rate, 80),
+                        _spectral_amplitude(bypass_audio, rate, 80) * .6)
+
+    def test_v3_scalar_fields_are_strictly_validated(self):
+        rate = 16000
+        vocal = self.root / 'scalar-vocal.wav'
+        backing = self.root / 'scalar-backing.wav'
+        _write(vocal, _tone(.10, rate, 440, .05), rate)
+        _write(backing, _tone(.10, rate, 220, .03), rate)
+        output = self.root / 'scalar-output.wav'
+        base = _request(vocal, backing, output, vocals=[{
+            'path': str(vocal), 'gain_db': 0., 'offset_seconds': 0.,
+            'reverb_send': 0.5,
+        }])
+        base['eq_bands'] = []
+        invalid = [
+            {'reverb_send': -0.01},
+            {'reverb_send': 1.01},
+            {'reverb_send': True},
+            {'reverb_predelay_ms': -1},
+            {'reverb_predelay_ms': 121},
+            {'reverb_predelay_ms': True},
+            {'width': -0.01},
+            {'width': 2.01},
+            {'width': True},
+            {'width': '1.0'},
+        ]
+        for index, change in enumerate(invalid):
+            with self.subTest(change=change):
+                request = copy.deepcopy(base)
+                request['output_path'] = str(self.root / f'scalar-invalid-{index}.wav')
+                if 'reverb_send' in change:
+                    request['vocals'][0].update(change)
+                else:
+                    request.update(change)
+                with self.assertRaises((ValueError, TypeError)):
+                    audio_mixdown.render(request)
+                self.assertFalse(Path(request['output_path']).exists())
+
     def test_invalid_values_fail_before_publishing_output(self):
         vocal = self.root / 'invalid-vocal.wav'
         instrumental = self.root / 'invalid-instrumental.wav'
@@ -430,6 +884,12 @@ class AudioMixdownContract(unittest.TestCase):
             'non-finite instrumental gain': {'instrumental_db': math.inf},
             'negative preview start': {'preview_start_seconds': -.1},
             'zero preview duration': {'preview_duration_seconds': 0},
+            'non-bool instrumental mute': {'instrumental_mute': 1},
+            'non-bool instrumental solo': {'instrumental_solo': 'false'},
+            'non-finite instrumental pan': {'instrumental_pan': math.nan},
+            'instrumental pan above range': {'instrumental_pan': 1.01},
+            'bool instrumental pan': {'instrumental_pan': False},
+            'string instrumental pan': {'instrumental_pan': '0.5'},
         }
         for name, changes in invalid_cases.items():
             with self.subTest(name=name):
@@ -481,6 +941,30 @@ class AudioMixdownContract(unittest.TestCase):
             ]},
             'offset above limit': {'vocals': [
                 {'path': str(vocal1), 'gain_db': 0., 'offset_seconds': 21601.}
+            ]},
+            'non-bool mute': {'vocals': [
+                {'path': str(vocal1), 'gain_db': 0., 'offset_seconds': 0.,
+                 'mute': 'true'}
+            ]},
+            'non-bool solo': {'vocals': [
+                {'path': str(vocal1), 'gain_db': 0., 'offset_seconds': 0.,
+                 'solo': 1}
+            ]},
+            'non-finite pan': {'vocals': [
+                {'path': str(vocal1), 'gain_db': 0., 'offset_seconds': 0.,
+                 'pan': math.nan}
+            ]},
+            'pan above range': {'vocals': [
+                {'path': str(vocal1), 'gain_db': 0., 'offset_seconds': 0.,
+                 'pan': 1.01}
+            ]},
+            'bool pan': {'vocals': [
+                {'path': str(vocal1), 'gain_db': 0., 'offset_seconds': 0.,
+                 'pan': True}
+            ]},
+            'string pan': {'vocals': [
+                {'path': str(vocal1), 'gain_db': 0., 'offset_seconds': 0.,
+                 'pan': '0.5'}
             ]},
             'mixed request forms': {
                 'vocals': vocals,
@@ -565,6 +1049,108 @@ class AudioMixdownContract(unittest.TestCase):
         self.assertFalse(list(self.root.glob('.audio-mixdown-*')))
         self.assertFalse(list(self.root.glob('*.part')))
         self.assertFalse(list(self.root.glob('*.tmp')))
+
+
+
+class AuditionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='mix-audition-')
+        self.root = Path(self.temp.name)
+        self.rate = 16000
+        self.vocals = [self.root / ('audition-vocal-%d.wav' % index) for index in range(1, 4)]
+        for index, path in enumerate(self.vocals, 1):
+            _write(path, _tone(1.8, self.rate, 180 + 90 * index, .045), self.rate)
+        self.backing = self.root / 'audition-backing.wav'
+        _write(self.backing, _tone(1.8, self.rate, 95, .03), self.rate)
+        self.cache = self.root / 'audition-cache'
+        self.outputs = []
+        self.request = _request(
+            self.vocals[0], self.backing, self.root / 'audition-after-1.wav',
+            reverb=.18, vocals=[
+                {'path': str(self.vocals[0]), 'gain_db': -1.0, 'offset_seconds': .02,
+                 'mute': False, 'solo': False, 'pan': -.25},
+                {'path': str(self.vocals[1]), 'gain_db': -3.0, 'offset_seconds': .10,
+                 'mute': False, 'solo': True, 'pan': .30},
+                {'path': str(self.vocals[2]), 'gain_db': 2.0, 'offset_seconds': 0.0,
+                 'mute': True, 'solo': False, 'pan': .0},
+            ])
+        self.request.update({
+            'eq_low_cut_hz': 70,
+            'eq_presence_db': 1.5,
+            'compression_strength': .25,
+            'instrumental_db': -5.0,
+            'instrumental_pan': .15,
+            'preview_start_seconds': .45,
+            'preview_duration_seconds': .55,
+        })
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def _render(self, name):
+        before = self.root / ('audition-before-' + name + '.wav')
+        after = self.root / ('audition-after-' + name + '.wav')
+        request = copy.deepcopy(self.request)
+        request['output_path'] = str(after)
+        report = audio_mixdown_audition.render_audition_pair(
+            request, before, after, self.cache)
+        self.outputs.extend((before, after))
+        return report, before, after
+
+    def test_live_segment_uses_decode_cache_and_keeps_export_contract_separate(self):
+        source_hashes = {path: _digest(path) for path in (*self.vocals, self.backing)}
+        first, before1, after1 = self._render('1')
+        self.assertEqual({path: _digest(path) for path in source_hashes}, source_hashes)
+        self.assertFalse(first['cache_hit'])
+        self.assertEqual(first['schema'], 'vwa.audio_mixdown.audition/v1')
+        for path in (before1, after1):
+            audio, rate = _read(path)
+            self.assertEqual(rate, self.rate)
+            self.assertEqual(audio.shape[1], 2)
+            self.assertAlmostEqual(len(audio) / rate, .55, delta=.02)
+            self.assertLessEqual(float(np.max(np.abs(audio))), 10 ** (-1 / 20) + 1e-4)
+        self.assertEqual(first['after']['preview_start_seconds'], .45)
+        self.assertTrue(all(row['role'] in ('vocal', 'backing')
+                            for row in first['after']['meters']['tracks']))
+        audible = {row['role'] + ':' + str(row['index']): row['audible']
+                   for row in first['after']['tracks']}
+        self.assertFalse(audible['vocal:0'])
+        self.assertTrue(audible['vocal:1'])
+        self.assertFalse(audible['vocal:2'])
+        self.assertFalse(audible['backing:0'])
+        cache_files = sorted(path for path in first_cache_files(first, self.cache)
+                             if path.is_file())
+        self.assertGreaterEqual(len(cache_files), 4)
+        cache_mtimes = {path: path.stat().st_mtime_ns for path in cache_files}
+
+        self.request['vocals'][1]['gain_db'] = -7.5
+        second, before2, after2 = self._render('2')
+        self.assertTrue(second['cache_hit'])
+        self.assertTrue(before2.is_file() and after2.is_file())
+        self.assertEqual({path: path.stat().st_mtime_ns for path in cache_files},
+                         cache_mtimes)
+        self.assertAlmostEqual(second['after']['preview_start_seconds'], .45, places=4)
+        self.assertNotEqual(before1.read_bytes(), before2.read_bytes())
+
+    def test_source_change_invalidates_decode_cache(self):
+        first, _before, _after = self._render('1')
+        first_generation = first['cache_generation']
+        _write(self.vocals[1], _tone(1.8, self.rate, 880, .04), self.rate)
+        second, _before2, _after2 = self._render('2')
+        self.assertFalse(second['cache_hit'])
+        self.assertNotEqual(first_generation, second['cache_generation'])
+        self.assertTrue(all(path.is_file() for path in second_cache_files(second, self.cache)))
+
+
+def first_cache_files(report, cache_root):
+    generation = cache_root / report['cache_generation']
+    return sorted(generation.glob('*.wav'))
+
+
+def second_cache_files(report, cache_root):
+    return first_cache_files(report, cache_root)
+
+
 
 
 if __name__ == '__main__':

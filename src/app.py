@@ -558,9 +558,16 @@ class Window(QWidget):
 
     def closeEvent(self, event):
         mixer = getattr(self, 'audio_mixdown', None)
-        if mixer and mixer.busy():
+        if mixer and not mixer.shutdown():
             event.ignore()
-            mixer.cancel()
+            # Service and child workers terminate asynchronously; retry after
+            # Qt has processed their completion instead of requiring a second click.
+            if not getattr(self, '_mixdown_close_retry_scheduled', False):
+                self._mixdown_close_retry_scheduled = True
+                def retry_close():
+                    self._mixdown_close_retry_scheduled = False
+                    self.close()
+                QTimer.singleShot(100, retry_close)
             return
         if self.video_mixdown.preview_busy():
             event.ignore()
@@ -604,8 +611,6 @@ class Window(QWidget):
             if visual_timer is not None:visual_timer.stop()
             visual_clock=getattr(self.tuning,'_progress_clock',None)
             if visual_clock is not None:visual_clock.pause()
-            if mixer:
-                mixer.mixer._retire_preview()
             event.accept()
 
 

@@ -17,10 +17,11 @@ true-peak calibrated stage.
 from __future__ import annotations
 
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 import math
+from numbers import Real
 import os
 from pathlib import Path
 import re
@@ -38,6 +39,7 @@ PEDALBOARD_BUFFER_SIZE = 8192
 PEAK_CEILING_DBFS = -1.0
 PEAK_CEILING = 10.0 ** (PEAK_CEILING_DBFS / 20.0)
 TAIL_FLOOR_DBFS = -90.0
+# Reverb decay budget after the separately quantized pre-delay.
 MAX_REVERB_TAIL_SECONDS = 8.0
 TAIL_MARGIN_SECONDS = 0.12
 LIMITER_GUARD_SECONDS = 0.25
@@ -46,7 +48,10 @@ MAX_OFFSET_SECONDS = 6 * 60 * 60.0
 MAX_OUTPUT_BYTES = 16 * 1024 ** 3
 MAX_VOCALS = 3
 SILENCE_DBFS = -144.0
-REPORT_SCHEMA = "vwa.audio_mixdown.render/v2"
+REPORT_SCHEMA = "vwa.audio_mixdown.render/v3"
+REPORT_SCHEMA_V2 = "vwa.audio_mixdown.render/v2"
+EQ_BANDS_MAX = 4
+EQ_BAND_TYPES = frozenset(("highpass", "lowshelf", "bell", "highshelf"))
 
 
 class MixdownError(RuntimeError):
@@ -70,10 +75,23 @@ class _AudioInfo:
 
 
 @dataclass(frozen=True)
+class _EqBand:
+    kind: str
+    freq_hz: float
+    gain_db: float
+    q: float
+    enabled: bool
+
+
+@dataclass(frozen=True)
 class _VocalTrack:
     path: Path
     gain_db: float
     offset_seconds: float
+    mute: bool = False
+    solo: bool = False
+    pan: float = 0.0
+    reverb_send: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -82,6 +100,9 @@ class _Settings:
     instrumental_path: Path
     output_path: Path
     instrumental_db: float
+    instrumental_mute: bool
+    instrumental_solo: bool
+    instrumental_pan: float
     eq_low_cut_hz: float
     eq_presence_db: float
     compression_strength: float
@@ -89,6 +110,11 @@ class _Settings:
     reverb_profile: str
     preview_start_seconds: float | None
     preview_duration_seconds: float | None
+    eq_bands: tuple[_EqBand, ...] | None = None
+    reverb_predelay_ms: float = 0.0
+    width: float = 1.0
+    uses_v3: bool = False
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def has_preview(self) -> bool:
@@ -241,6 +267,99 @@ def _finite_number(request: Mapping[str, Any], name: str, minimum: float,
     return number
 
 
+def _boolean_value(request: Mapping[str, Any], name: str, default: bool = False,
+                    *, label: str | None = None) -> bool:
+    shown = label or name
+    if name not in request:
+        return default
+    value = request[name]
+    if type(value) is not bool:
+        raise ValueError(f"{shown} 必须是布尔值。")
+    return value
+
+
+def _optional_number(request: Mapping[str, Any], name: str, default: float,
+                     minimum: float, maximum: float, *,
+                     label: str | None = None) -> float:
+    shown = label or name
+    if name not in request:
+        return default
+    value = request[name]
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"{shown} 必须是有限数字。")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{shown} 必须是有限数字。") from None
+    if not math.isfinite(number) or not minimum <= number <= maximum:
+        raise ValueError(
+            f"{shown} 应在 {minimum:g} 到 {maximum:g} 之间，且不能是 NaN 或无穷大。")
+    return number
+
+
+def _strict_number(request: Mapping[str, Any], name: str, minimum: float,
+                   maximum: float, *, label: str | None = None) -> float:
+    shown = label or name
+    if name not in request:
+        raise ValueError(f"混音参数缺少 {shown}。")
+    value = request[name]
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"{shown} 必须是有限数字。")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{shown} 必须是有限数字。") from None
+    if not math.isfinite(number) or not minimum <= number <= maximum:
+        raise ValueError(
+            f"{shown} 应在 {minimum:g} 到 {maximum:g} 之间，且不能是 NaN 或无穷大。")
+    return number
+
+
+def _eq_bands_value(request: Mapping[str, Any]) -> tuple[_EqBand, ...] | None:
+    if "eq_bands" not in request:
+        return None
+    raw = request["eq_bands"]
+    if not isinstance(raw, list):
+        raise ValueError("eq_bands 必须是包含 0–4 个 EQ 段对象的列表。")
+    if len(raw) > EQ_BANDS_MAX:
+        raise ValueError(f"eq_bands 最多包含 {EQ_BANDS_MAX} 段。")
+    bands: list[_EqBand] = []
+    for index, item in enumerate(raw):
+        prefix = f"eq_bands[{index}]"
+        if not isinstance(item, Mapping):
+            raise ValueError(f"{prefix} 必须是对象。")
+        for field_name in ("type", "freq_hz", "gain_db", "q", "enabled"):
+            if field_name not in item:
+                raise ValueError(f"{prefix} 缺少 {field_name}。")
+        kind = item["type"]
+        if not isinstance(kind, str) or kind not in EQ_BAND_TYPES:
+            raise ValueError(
+                f"{prefix}.type 必须是 highpass、lowshelf、bell 或 highshelf。")
+        frequency = _strict_number(
+            item, "freq_hz", 10.0, 20000.0, label=f"{prefix}.freq_hz")
+        gain = _strict_number(
+            item, "gain_db", -24.0, 24.0, label=f"{prefix}.gain_db")
+        q = _strict_number(item, "q", 0.1, 18.0, label=f"{prefix}.q")
+        enabled = _boolean_value(item, "enabled", label=f"{prefix}.enabled")
+        bands.append(_EqBand(kind, frequency, gain, q, enabled))
+    return tuple(bands)
+
+
+def _uses_v3(request: Mapping[str, Any]) -> bool:
+    if any(name in request for name in (
+            "eq_bands", "reverb_predelay_ms", "width", "instrumental_mute",
+            "instrumental_solo", "instrumental_pan")):
+        return True
+    vocals_raw = request.get("vocals")
+    if isinstance(vocals_raw, list):
+        return any(
+            isinstance(item, Mapping)
+            and any(name in item for name in ("mute", "solo", "pan", "reverb_send"))
+            for item in vocals_raw
+        )
+    return False
+
+
 def _optional_seconds(request: Mapping[str, Any], name: str, *, positive: bool) -> float | None:
     value = request.get(name)
     if value is None or value == "":
@@ -309,6 +428,15 @@ def _vocal_tracks(request: Mapping[str, Any]) -> tuple[_VocalTrack, ...]:
                     item, "offset_seconds", -MAX_OFFSET_SECONDS, MAX_OFFSET_SECONDS,
                     label=f"{prefix}.offset_seconds",
                 ),
+                mute=_boolean_value(item, "mute", False, label=f"{prefix}.mute"),
+                solo=_boolean_value(item, "solo", False, label=f"{prefix}.solo"),
+                pan=_optional_number(
+                    item, "pan", 0.0, -1.0, 1.0, label=f"{prefix}.pan"
+                ),
+                reverb_send=_optional_number(
+                    item, "reverb_send", 1.0, 0.0, 1.0,
+                    label=f"{prefix}.reverb_send",
+                ),
             ))
         return tuple(tracks)
 
@@ -345,23 +473,42 @@ def _settings(request: Mapping[str, Any]) -> _Settings:
         raise FileExistsError(f"输出文件已经存在，为避免覆盖已拒绝：{output_path}")
 
     instrumental_db = _finite_number(request, "instrumental_db", -120.0, 24.0)
-    low_cut = _finite_number(request, "eq_low_cut_hz", 0.0, 20000.0)
+    instrumental_mute = _boolean_value(request, "instrumental_mute", False)
+    instrumental_solo = _boolean_value(request, "instrumental_solo", False)
+    instrumental_pan = _optional_number(
+        request, "instrumental_pan", 0.0, -1.0, 1.0
+    )
+    eq_bands = _eq_bands_value(request)
+    if eq_bands is None:
+        low_cut = _finite_number(request, "eq_low_cut_hz", 0.0, 20000.0)
+        presence = _finite_number(request, "eq_presence_db", -24.0, 24.0)
+    else:
+        # The old two-parameter EQ remains accepted and validated when supplied,
+        # but eq_bands is the authoritative chain once present.
+        low_cut = _optional_number(request, "eq_low_cut_hz", 0.0, 0.0, 20000.0)
+        presence = _optional_number(request, "eq_presence_db", 0.0, -24.0, 24.0)
     if 0.0 < low_cut < 10.0:
         raise ValueError("eq_low_cut_hz 必须为 0（旁通）或不小于 10 Hz。")
-    presence = _finite_number(request, "eq_presence_db", -24.0, 24.0)
     compression = _finite_number(request, "compression_strength", 0.0, 1.0)
     reverb = _finite_number(request, "reverb_mix", 0.0, 1.0)
+    reverb_predelay = _optional_number(
+        request, "reverb_predelay_ms", 0.0, 0.0, 120.0)
+    width = _optional_number(request, "width", 1.0, 0.0, 2.0)
     reverb_profile = request.get("reverb_profile", "natural")
     if reverb_profile not in ("small", "natural", "wide"):
         raise ValueError("混响空间类型无效。")
     preview_start = _optional_seconds(request, "preview_start_seconds", positive=False)
     preview_duration = _optional_seconds(request, "preview_duration_seconds", positive=True)
+    uses_v3 = _uses_v3(request)
 
     return _Settings(
         vocals=vocals,
         instrumental_path=instrumental_path,
         output_path=output_path,
         instrumental_db=instrumental_db,
+        instrumental_mute=instrumental_mute,
+        instrumental_solo=instrumental_solo,
+        instrumental_pan=instrumental_pan,
         eq_low_cut_hz=low_cut,
         eq_presence_db=presence,
         compression_strength=compression,
@@ -369,6 +516,10 @@ def _settings(request: Mapping[str, Any]) -> _Settings:
         reverb_profile=reverb_profile,
         preview_start_seconds=preview_start,
         preview_duration_seconds=preview_duration,
+        eq_bands=eq_bands,
+        reverb_predelay_ms=reverb_predelay,
+        width=width,
+        uses_v3=uses_v3,
     )
 
 
@@ -548,6 +699,212 @@ def _make_vocal_processors(pedalboard: Any, settings: _Settings, sample_rate: in
     return dry_chain, reverb
 
 
+def _amplitude_to_dbfs(value: float) -> float:
+    return (max(SILENCE_DBFS, 20.0 * math.log10(value))
+            if value > 0.0 else SILENCE_DBFS)
+
+
+def _rms(block: Any, numpy: Any) -> float:
+    if not block.size:
+        return 0.0
+    return float(numpy.sqrt(numpy.mean(numpy.square(block, dtype=numpy.float64))))
+
+
+def _gain_ratio_db(before: float, after: float) -> float:
+    if before <= 1e-12:
+        return 0.0
+    if after <= 1e-12:
+        return -30.0
+    value = 20.0 * math.log10(after / before)
+    return max(-30.0, min(0.0, float(value)))
+
+
+def _apply_width(block: Any, width: float, numpy: Any) -> Any:
+    """Apply mid/side width while leaving a centered signal unchanged."""
+    if width == 1.0 or block.shape[1] < 2:
+        return block
+    mid = (block[:, 0] + block[:, 1]) * 0.5
+    side = (block[:, 0] - block[:, 1]) * 0.5
+    result = numpy.empty_like(block)
+    result[:, 0] = mid + side * width
+    result[:, 1] = mid - side * width
+    return numpy.ascontiguousarray(result, dtype=numpy.float32)
+
+
+def _delay_block(block: Any, delay_frames: int, state: Any, numpy: Any) -> tuple[Any, Any]:
+    if delay_frames <= 0:
+        return block, state
+    if state is None:
+        state = numpy.zeros((delay_frames, block.shape[1]), dtype=numpy.float32)
+    combined = numpy.concatenate((state, block), axis=0)
+    output = numpy.ascontiguousarray(combined[:block.shape[0]], dtype=numpy.float32)
+    state = numpy.ascontiguousarray(combined[block.shape[0]:], dtype=numpy.float32)
+    return output, state
+
+
+def _predelay_frames(predelay_ms: float, sample_rate: int) -> int:
+    """Quantize pre-delay once so audition and export share one sample grid."""
+    frames = float(predelay_ms) * int(sample_rate) / 1000.0
+    return max(0, int(math.floor(frames + 0.5)))
+
+
+def _reverb_tail_budget_frames(predelay_ms: float, sample_rate: int) -> int:
+    """Maximum render extension: post-delay decay plus its pre-delay."""
+    return (int(round(MAX_REVERB_TAIL_SECONDS * sample_rate))
+            + _predelay_frames(predelay_ms, sample_rate))
+
+
+def _safe_warning(settings: _Settings, message: str) -> None:
+    if message not in settings.warnings:
+        settings.warnings.append(message)
+
+
+def _make_eq_chain(pedalboard: Any, settings: _Settings, sample_rate: int) -> Any | None:
+    plugins: list[Any] = []
+    nyquist = sample_rate / 2.0
+    if settings.eq_bands is None:
+        if settings.eq_low_cut_hz:
+            if settings.eq_low_cut_hz >= nyquist * 0.95:
+                raise ValueError("高通频率必须低于输出采样率的奈奎斯特频率。")
+            plugins.append(pedalboard.HighpassFilter(
+                cutoff_frequency_hz=float(settings.eq_low_cut_hz)
+            ))
+        if settings.eq_presence_db:
+            center = min(3200.0, nyquist * 0.65)
+            plugins.append(pedalboard.PeakFilter(
+                cutoff_frequency_hz=center,
+                gain_db=float(settings.eq_presence_db),
+                q=0.75,
+            ))
+        return pedalboard.Pedalboard(plugins) if plugins else None
+
+    max_frequency = min(20000.0, sample_rate * 0.45)
+    highpass_default_q = 0.707
+    for index, band in enumerate(settings.eq_bands):
+        if not band.enabled:
+            continue
+        frequency = band.freq_hz
+        if frequency > max_frequency:
+            clamped = max(10.0, max_frequency)
+            _safe_warning(
+                settings,
+                f"eq_bands[{index}].freq_hz {frequency:g} Hz was clamped to "
+                f"{clamped:g} Hz for the {sample_rate} Hz output rate.",
+            )
+            frequency = clamped
+        if band.kind == "highpass":
+            if abs(band.gain_db) > 1e-12:
+                _safe_warning(
+                    settings,
+                    f"eq_bands[{index}].gain_db is not used by the highpass "
+                    "filter; the requested gain was not applied.",
+                )
+            if abs(band.q - highpass_default_q) > 1e-6:
+                _safe_warning(
+                    settings,
+                    f"eq_bands[{index}].q is not adjustable for the highpass "
+                    "filter; the fixed default Q was used.",
+                )
+            plugins.append(pedalboard.HighpassFilter(
+                cutoff_frequency_hz=float(frequency)
+            ))
+            continue
+        if band.kind == "bell":
+            plugin_type = getattr(pedalboard, "PeakFilter", None)
+        elif band.kind == "lowshelf":
+            plugin_type = getattr(pedalboard, "LowShelfFilter", None)
+        else:
+            plugin_type = getattr(pedalboard, "HighShelfFilter", None)
+        if plugin_type is None:
+            _safe_warning(
+                settings,
+                f"eq_bands[{index}].type {band.kind} is unavailable in Pedalboard "
+                "0.9.26; a PeakFilter approximation was used.",
+            )
+            plugin_type = getattr(pedalboard, "PeakFilter", None)
+            if plugin_type is None:
+                raise ValueError(
+                    f"eq_bands[{index}] cannot be processed: no shelf or peak filter.")
+        plugins.append(plugin_type(
+            cutoff_frequency_hz=float(frequency),
+            gain_db=float(band.gain_db),
+            q=float(band.q),
+        ))
+    return pedalboard.Pedalboard(plugins) if plugins else None
+
+
+def _make_compressor(pedalboard: Any, settings: _Settings) -> Any | None:
+    if settings.compression_strength <= 0.0:
+        return None
+    strength = settings.compression_strength
+    return pedalboard.Compressor(
+        threshold_db=-8.0 - 12.0 * strength,
+        ratio=1.0 + 2.0 * strength,
+        attack_ms=25.0 - 10.0 * strength,
+        release_ms=120.0 + 80.0 * strength,
+    )
+
+
+def _make_reverb(pedalboard: Any, settings: _Settings) -> Any | None:
+    if settings.reverb_mix <= 0.0:
+        return None
+    room_size, damping = {
+        "small": (0.25, 0.65),
+        "natural": (0.58, 0.52),
+        "wide": (0.82, 0.42),
+    }[settings.reverb_profile]
+    return pedalboard.Reverb(
+        room_size=room_size,
+        damping=damping,
+        wet_level=1.0,
+        dry_level=0.0,
+        width=0.9,
+    )
+
+
+def _make_predelay(pedalboard: Any, settings: _Settings) -> None:
+    """Use the frame-driven local delay in _render_mix_v3.
+
+    Pedalboard 0.9.26 converts delay seconds through a float and truncates to
+    frames internally.  That can land one frame before the shared half-up
+    quantization at common 44.1 kHz settings, so both render paths use
+    _delay_block instead.
+    """
+    return None
+
+
+def _make_v3_processors(pedalboard: Any, settings: _Settings,
+                        sample_rate: int) -> tuple[Any | None, Any | None, Any | None, Any | None]:
+    eq_chain = _make_eq_chain(pedalboard, settings, sample_rate)
+    compressor = _make_compressor(pedalboard, settings)
+    reverb = _make_reverb(pedalboard, settings)
+    predelay = _make_predelay(pedalboard, settings)
+    return eq_chain, compressor, reverb, predelay
+
+
+def _emit_progress(callback: Callable[[dict[str, Any]], Any] | None, *,
+                   phase: str, frames_done: int, frames_total: int,
+                   tracks: list[dict[str, Any]], bus_peak: float,
+                   elapsed_ms: float) -> None:
+    if callback is None:
+        return
+    total = max(1, int(frames_total))
+    event = {
+        "phase": str(phase),
+        "fraction": max(0.0, min(1.0, float(frames_done) / total)),
+        "frames_done": int(frames_done),
+        "frames_total": int(frames_total),
+        "tracks": tracks,
+        "bus_peak": float(bus_peak),
+        "elapsed_ms": float(elapsed_ms),
+    }
+    try:
+        callback(event)
+    except Exception:
+        # Progress is observational. A UI/pipe failure must not abort a render.
+        pass
+
+
 def _source_fingerprint(path: Path) -> tuple[int, int, int, int]:
     try:
         stat = path.stat()
@@ -609,13 +966,49 @@ def _install_new_file(staged: Path, destination: Path) -> None:
         pass
 
 
+def _audibility(settings: _Settings) -> tuple[list[bool], bool]:
+    any_solo = (any(track.solo and not track.mute for track in settings.vocals)
+                or (settings.instrumental_solo and not settings.instrumental_mute))
+    vocal_audible = [
+        not track.mute and (not any_solo or track.solo)
+        for track in settings.vocals
+    ]
+    backing_audible = (
+        not settings.instrumental_mute
+        and (not any_solo or settings.instrumental_solo)
+    )
+    return vocal_audible, backing_audible
+
+
+def _output_channels(settings: _Settings, source_channels: list[int]) -> int:
+    """Choose the same bus layout for preview and final export."""
+    vocal_audible, backing_audible = _audibility(settings)
+    has_pan = ((backing_audible and settings.instrumental_pan != 0.0)
+               or any(audible and track.pan != 0.0
+                      for track, audible in zip(settings.vocals, vocal_audible)))
+    force_stereo = settings.uses_v3 and settings.width != 1.0
+    return 2 if max(source_channels) == 2 or has_pan or force_stereo else 1
+
+
 def _render_mix(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
                 instrumental_path: Path, sample_rate: int, channels: int,
                 instrumental_frames: int, mix_path: Path, pedalboard: Any,
-                numpy: Any, soundfile: Any, cancel: Callable[[], Any] | None
-                ) -> tuple[int, int, int | None, int | None]:
+                numpy: Any, soundfile: Any, cancel: Callable[[], Any] | None,
+                progress: Callable[[dict[str, Any]], Any] | None = None
+                ) -> tuple[int, int, int | None, int | None, list[float], float,
+                           float, list[float], float, float]:
     if len(vocal_inputs) != len(settings.vocals):
         raise MixdownError("内部歌声轨数量不一致，已停止混音。")
+    vocal_audible, backing_audible = _audibility(settings)
+    has_audible_vocal = any(vocal_audible)
+
+    def pan_gains(value):
+        if channels < 2 or value == 0.0:
+            return 1.0, 1.0
+        if value < 0.0:
+            return 1.0, 1.0 + value
+        return 1.0 - value, 1.0
+
     offsets = [
         int(round(track.offset_seconds * sample_rate))
         for track in settings.vocals
@@ -628,7 +1021,9 @@ def _render_mix(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
     if base_frames <= 0:
         raise ValueError("伴奏和歌声轨均没有可混音内容。")
 
-    tail_limit = int(round(MAX_REVERB_TAIL_SECONDS * sample_rate)) if settings.reverb_mix > 0 else 0
+    tail_limit = (_reverb_tail_budget_frames(
+                      settings.reverb_predelay_ms, sample_rate)
+                  if settings.reverb_mix > 0 and has_audible_vocal else 0)
     maximum_frames = base_frames + tail_limit
     guard = int(round(LIMITER_GUARD_SECONDS * sample_rate))
 
@@ -640,6 +1035,13 @@ def _render_mix(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
             raise ValueError("预览起点超过可渲染音频范围。")
         if settings.preview_duration_seconds is not None:
             preview_duration = max(1, int(round(settings.preview_duration_seconds * sample_rate)))
+
+    if settings.has_preview:
+        meter_start_frame = preview_start or 0
+        meter_end_frame = (meter_start_frame + preview_duration
+                           if preview_duration is not None else maximum_frames)
+    else:
+        meter_start_frame, meter_end_frame = 0, maximum_frames
 
     if not settings.has_preview:
         render_frames = maximum_frames
@@ -656,13 +1058,42 @@ def _render_mix(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
 
     try:
         dry_chain, reverb = _make_vocal_processors(pedalboard, settings, sample_rate)
+        if not has_audible_vocal:
+            reverb = None
     except Exception as error:
         raise MixdownError("无法创建 Pedalboard 人声处理链。") from error
     vocal_gains = [10.0 ** (track.gain_db / 20.0) for track in settings.vocals]
+    vocal_pans = [pan_gains(track.pan) for track in settings.vocals]
     instrumental_gain = 10.0 ** (settings.instrumental_db / 20.0)
+    instrumental_pans = pan_gains(settings.instrumental_pan)
     tail_threshold = 10.0 ** (TAIL_FLOOR_DBFS / 20.0)
     last_tail_frame: int | None = None
     first = True
+    vocal_peaks = [0.0 for _ in settings.vocals]
+    track_after_peaks = [0.0 for _ in settings.vocals]
+    instrumental_peak = 0.0
+    bus_peak = 0.0
+    bus_after_effects_peak = 0.0
+    gr_values: list[float] = []
+    started = time.monotonic()
+
+    def progress_tracks(gr_value: float | None) -> list[dict[str, Any]]:
+        result = [
+            {
+                "i": index,
+                "role": "vocal",
+                "peak": _amplitude_to_dbfs(vocal_peaks[index]),
+                "gr": gr_value,
+            }
+            for index in range(len(settings.vocals))
+        ]
+        result.append({
+            "i": len(settings.vocals),
+            "role": "backing",
+            "peak": _amplitude_to_dbfs(instrumental_peak),
+            "gr": None,
+        })
+        return result
 
     try:
         with ExitStack() as stack:
@@ -680,11 +1111,18 @@ def _render_mix(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
             for start in range(0, render_frames, CHUNK_FRAMES):
                 _check_cancel(cancel)
                 count = min(CHUNK_FRAMES, render_frames - start)
+                meter_lo = max(0, meter_start_frame - start)
+                meter_hi = min(count, meter_end_frame - start)
                 vocal_block = numpy.zeros((count, channels), dtype=numpy.float32)
                 instrumental_block = numpy.zeros((count, channels), dtype=numpy.float32)
+                block_track_peaks = [0.0 for _ in settings.vocals]
 
-                for handle, (_, vocal_frames), offset_samples, gain in zip(
-                        vocals, vocal_inputs, offsets, vocal_gains):
+                for track_index, (handle, (_, vocal_frames), offset_samples, gain,
+                                  track_audible, track_pan) in enumerate(zip(
+                        vocals, vocal_inputs, offsets, vocal_gains,
+                        vocal_audible, vocal_pans)):
+                    if not track_audible:
+                        continue
                     source_start = start - offset_samples
                     destination_start = max(0, -source_start)
                     source_index = max(0, source_start)
@@ -699,6 +1137,17 @@ def _render_mix(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
                             handle, source_index, vocal_count, channels, numpy
                         )
                     track_block *= numpy.float32(gain)
+                    if channels == 2:
+                        track_block[:, 0] *= numpy.float32(track_pan[0])
+                        track_block[:, 1] *= numpy.float32(track_pan[1])
+                    if meter_hi > meter_lo:
+                        measured = track_block[meter_lo:meter_hi]
+                        block_track_peaks[track_index] = float(
+                            numpy.max(numpy.abs(measured)))
+                        vocal_peaks[track_index] = max(
+                            vocal_peaks[track_index],
+                            block_track_peaks[track_index],
+                        )
                     vocal_block = numpy.add(
                         vocal_block, track_block, dtype=numpy.float32
                     )
@@ -706,16 +1155,30 @@ def _render_mix(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
                 if not numpy.isfinite(vocal_block).all():
                     raise ValueError("人声增益或偏移求和产生了 NaN 或无穷大采样。")
 
-                if start < instrumental_frames:
+                if backing_audible and start < instrumental_frames:
                     instrumental_count = min(count, instrumental_frames - start)
                     instrumental_block[:instrumental_count] = _read_frames(
                         instrumental, start, instrumental_count, channels, numpy
                     )
 
+                raw_vocal_rms = _rms(vocal_block, numpy)
                 if dry_chain is not None:
                     vocal_block = _pedalboard_process(
                         dry_chain, vocal_block, sample_rate, first, numpy
                     )
+                processed_vocal_rms = _rms(vocal_block, numpy)
+                ratio = (processed_vocal_rms / raw_vocal_rms
+                         if raw_vocal_rms > 1e-12 else 1.0)
+                bus_gr: float | None = None
+                if meter_hi > meter_lo:
+                    for track_index in range(len(settings.vocals)):
+                        track_after_peaks[track_index] = max(
+                            track_after_peaks[track_index],
+                            block_track_peaks[track_index] * ratio,
+                        )
+                    if settings.compression_strength > 0.0:
+                        bus_gr = _gain_ratio_db(raw_vocal_rms, processed_vocal_rms)
+                        gr_values.append(bus_gr)
                 if reverb is not None:
                     wet = _pedalboard_process(
                         reverb, vocal_block, sample_rate, first, numpy
@@ -726,18 +1189,42 @@ def _render_mix(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
                     ).astype(numpy.float32, copy=False)
                 first = False
 
-                instrumental_block *= numpy.float32(instrumental_gain)
+                if backing_audible:
+                    instrumental_block *= numpy.float32(instrumental_gain)
+                    if channels == 2:
+                        instrumental_block[:, 0] *= numpy.float32(instrumental_pans[0])
+                        instrumental_block[:, 1] *= numpy.float32(instrumental_pans[1])
+                if meter_hi > meter_lo:
+                    measured_backing = instrumental_block[meter_lo:meter_hi]
+                    instrumental_peak = max(
+                        instrumental_peak,
+                        float(numpy.max(numpy.abs(measured_backing))),
+                    )
                 mixed = numpy.add(vocal_block, instrumental_block, dtype=numpy.float32)
                 if not numpy.isfinite(mixed).all():
                     raise ValueError("混音产生了 NaN 或无穷大采样，已停止输出。")
+                if meter_hi > meter_lo:
+                    measured_bus = mixed[meter_lo:meter_hi]
+                    measured_peak = float(numpy.max(numpy.abs(measured_bus)))
+                    bus_peak = max(bus_peak, measured_peak)
+                    bus_after_effects_peak = max(bus_after_effects_peak, measured_peak)
 
                 output.write(mixed)
-                if settings.reverb_mix > 0.0 and start + count > base_frames:
+                if reverb is not None and start + count > base_frames:
                     tail_start = max(0, base_frames - start)
                     peak = numpy.max(numpy.abs(mixed[tail_start:]), axis=1)
                     audible = numpy.flatnonzero(peak > tail_threshold)
                     if audible.size:
                         last_tail_frame = start + tail_start + int(audible[-1])
+                _emit_progress(
+                    progress,
+                    phase="mix",
+                    frames_done=start + count,
+                    frames_total=render_frames,
+                    tracks=progress_tracks(bus_gr),
+                    bus_peak=_amplitude_to_dbfs(bus_peak),
+                    elapsed_ms=(time.monotonic() - started) * 1000.0,
+                )
     except MixdownError:
         raise
     except InterruptedError:
@@ -746,17 +1233,323 @@ def _render_mix(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
         raise MixdownError("混音处理失败，未生成目标文件。") from error
 
     full_frames = base_frames
-    if settings.reverb_mix > 0.0 and last_tail_frame is not None:
+    if reverb is not None and last_tail_frame is not None:
         margin = int(round(TAIL_MARGIN_SECONDS * sample_rate))
         full_frames = min(maximum_frames, max(base_frames, last_tail_frame + 1 + margin))
-    return base_frames, full_frames, preview_start, preview_duration
+    gr_db_p95 = 0.0
+    if gr_values:
+        gr_db_p95 = float(numpy.percentile(numpy.asarray(gr_values), 95))
+    return (base_frames, full_frames, preview_start, preview_duration,
+            vocal_peaks, instrumental_peak, bus_peak, track_after_peaks,
+            bus_after_effects_peak, gr_db_p95)
+
+
+def _render_mix_v3(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
+                   instrumental_path: Path, sample_rate: int, channels: int,
+                   instrumental_frames: int, mix_path: Path, pedalboard: Any,
+                   numpy: Any, soundfile: Any, cancel: Callable[[], Any] | None,
+                   progress: Callable[[dict[str, Any]], Any] | None = None
+                   ) -> tuple[int, int, int | None, int | None, list[float], float,
+                              float, list[float], float, float]:
+    """Render the v3 effects graph with a single send/return reverb instance."""
+    if len(vocal_inputs) != len(settings.vocals):
+        raise MixdownError("内部歌声轨数量不一致，已停止混音。")
+    vocal_audible, backing_audible = _audibility(settings)
+    has_audible_vocal = any(vocal_audible)
+
+    def pan_gains(value: float) -> tuple[float, float]:
+        if channels < 2 or value == 0.0:
+            return 1.0, 1.0
+        if value < 0.0:
+            return 1.0, 1.0 + value
+        return 1.0 - value, 1.0
+
+    offsets = [
+        int(round(track.offset_seconds * sample_rate))
+        for track in settings.vocals
+    ]
+    vocal_ends = [
+        max(0, frames + offset)
+        for (_, frames), offset in zip(vocal_inputs, offsets)
+    ]
+    base_frames = max([instrumental_frames, *vocal_ends])
+    if base_frames <= 0:
+        raise ValueError("伴奏和歌声轨均没有可混音内容。")
+
+    has_reverb_send = any(
+        audible and track.reverb_send > 0.0
+        for track, audible in zip(settings.vocals, vocal_audible)
+    )
+    tail_limit = (_reverb_tail_budget_frames(
+                      settings.reverb_predelay_ms, sample_rate)
+                  if settings.reverb_mix > 0 and has_audible_vocal
+                  and has_reverb_send else 0)
+    maximum_frames = base_frames + tail_limit
+    guard = int(round(LIMITER_GUARD_SECONDS * sample_rate))
+
+    preview_start = None
+    preview_duration = None
+    if settings.has_preview:
+        preview_start = int(round((settings.preview_start_seconds or 0.0) * sample_rate))
+        if preview_start >= maximum_frames:
+            raise ValueError("预览起点超过可渲染音频范围。")
+        if settings.preview_duration_seconds is not None:
+            preview_duration = max(
+                1, int(round(settings.preview_duration_seconds * sample_rate)))
+
+    if settings.has_preview:
+        meter_start_frame = preview_start or 0
+        meter_end_frame = (meter_start_frame + preview_duration
+                           if preview_duration is not None else maximum_frames)
+    else:
+        meter_start_frame, meter_end_frame = 0, maximum_frames
+
+    if not settings.has_preview:
+        render_frames = maximum_frames
+    elif preview_duration is None:
+        render_frames = maximum_frames
+    else:
+        requested_end = preview_start + preview_duration
+        if requested_end <= base_frames:
+            render_frames = min(maximum_frames, requested_end + guard)
+        else:
+            render_frames = maximum_frames
+
+    try:
+        eq_chain, compressor, reverb, predelay = _make_v3_processors(
+            pedalboard, settings, sample_rate)
+        if not has_audible_vocal or not has_reverb_send:
+            reverb = None
+            predelay = None
+    except Exception as error:
+        raise MixdownError("无法创建 Pedalboard 人声处理链。") from error
+
+    vocal_gains = [10.0 ** (track.gain_db / 20.0) for track in settings.vocals]
+    vocal_pans = [pan_gains(track.pan) for track in settings.vocals]
+    vocal_sends = [float(track.reverb_send) for track in settings.vocals]
+    instrumental_gain = 10.0 ** (settings.instrumental_db / 20.0)
+    instrumental_pans = pan_gains(settings.instrumental_pan)
+    tail_threshold = 10.0 ** (TAIL_FLOOR_DBFS / 20.0)
+    last_tail_frame: int | None = None
+    first = True
+    delay_state = None
+    delay_frames = _predelay_frames(settings.reverb_predelay_ms, sample_rate)
+    vocal_peaks = [0.0 for _ in settings.vocals]
+    track_after_peaks = [0.0 for _ in settings.vocals]
+    instrumental_peak = 0.0
+    bus_peak = 0.0
+    bus_after_effects_peak = 0.0
+    gr_values: list[float] = []
+    started = time.monotonic()
+
+    def progress_tracks(gr_value: float | None) -> list[dict[str, Any]]:
+        result = [
+            {
+                "i": index,
+                "role": "vocal",
+                "peak": _amplitude_to_dbfs(vocal_peaks[index]),
+                "gr": gr_value,
+            }
+            for index in range(len(settings.vocals))
+        ]
+        result.append({
+            "i": len(settings.vocals),
+            "role": "backing",
+            "peak": _amplitude_to_dbfs(instrumental_peak),
+            "gr": None,
+        })
+        return result
+
+    try:
+        with ExitStack() as stack:
+            vocals = [
+                stack.enter_context(soundfile.SoundFile(str(source), "r"))
+                for source, _ in vocal_inputs
+            ]
+            instrumental = stack.enter_context(
+                soundfile.SoundFile(str(instrumental_path), "r")
+            )
+            output = stack.enter_context(soundfile.SoundFile(
+                str(mix_path), "w", samplerate=sample_rate, channels=channels,
+                format="WAV", subtype="FLOAT",
+            ))
+            for start in range(0, render_frames, CHUNK_FRAMES):
+                _check_cancel(cancel)
+                count = min(CHUNK_FRAMES, render_frames - start)
+                meter_lo = max(0, meter_start_frame - start)
+                meter_hi = min(count, meter_end_frame - start)
+                vocal_block = numpy.zeros((count, channels), dtype=numpy.float32)
+                send_block = numpy.zeros((count, channels), dtype=numpy.float32)
+                block_track_peaks = [0.0 for _ in settings.vocals]
+                instrumental_block = numpy.zeros(
+                    (count, channels), dtype=numpy.float32)
+
+                for track_index, (handle, (_, vocal_frames), offset_samples, gain,
+                                  track_audible, track_pan, send) in enumerate(zip(
+                        vocals, vocal_inputs, offsets, vocal_gains,
+                        vocal_audible, vocal_pans, vocal_sends)):
+                    if not track_audible:
+                        continue
+                    source_start = start - offset_samples
+                    destination_start = max(0, -source_start)
+                    source_index = max(0, source_start)
+                    vocal_count = min(
+                        count - destination_start, vocal_frames - source_index
+                    )
+                    track_block = numpy.zeros(
+                        (count, channels), dtype=numpy.float32)
+                    if vocal_count > 0:
+                        track_block[
+                            destination_start:destination_start + vocal_count
+                        ] = _read_frames(
+                            handle, source_index, vocal_count, channels, numpy
+                        )
+                    track_block *= numpy.float32(gain)
+                    if channels == 2:
+                        track_block[:, 0] *= numpy.float32(track_pan[0])
+                        track_block[:, 1] *= numpy.float32(track_pan[1])
+                    if meter_hi > meter_lo:
+                        measured = track_block[meter_lo:meter_hi]
+                        block_track_peaks[track_index] = float(
+                            numpy.max(numpy.abs(measured)))
+                        vocal_peaks[track_index] = max(
+                            vocal_peaks[track_index], block_track_peaks[track_index])
+                    vocal_block = numpy.add(
+                        vocal_block, track_block, dtype=numpy.float32
+                    )
+                    if send > 0.0:
+                        send_block = numpy.add(
+                            send_block,
+                            track_block * numpy.float32(send),
+                            dtype=numpy.float32,
+                        )
+
+                if not numpy.isfinite(vocal_block).all():
+                    raise ValueError("人声增益或偏移求和产生了 NaN 或无穷大采样。")
+                if not numpy.isfinite(send_block).all():
+                    raise ValueError("混响发送产生了 NaN 或无穷大采样。")
+
+                if backing_audible and start < instrumental_frames:
+                    instrumental_count = min(count, instrumental_frames - start)
+                    instrumental_block[:instrumental_count] = _read_frames(
+                        instrumental, start, instrumental_count, channels, numpy
+                    )
+
+                raw_vocal = vocal_block
+                before_effect_rms = _rms(raw_vocal, numpy)
+                if eq_chain is not None:
+                    vocal_block = _pedalboard_process(
+                        eq_chain, vocal_block, sample_rate, first, numpy
+                    )
+                before_compression_rms = _rms(vocal_block, numpy)
+                if compressor is not None:
+                    vocal_block = _pedalboard_process(
+                        compressor, vocal_block, sample_rate, first, numpy
+                    )
+                after_compression_rms = _rms(vocal_block, numpy)
+                block_ratio = (
+                    after_compression_rms / before_effect_rms
+                    if before_effect_rms > 1e-12 else 1.0
+                )
+                if meter_hi > meter_lo:
+                    for track_index in range(len(settings.vocals)):
+                        track_after_peaks[track_index] = max(
+                            track_after_peaks[track_index],
+                            block_track_peaks[track_index] * block_ratio,
+                        )
+                    if compressor is not None:
+                        gr_values.append(_gain_ratio_db(
+                            before_compression_rms, after_compression_rms))
+                        bus_gr = gr_values[-1]
+                    else:
+                        bus_gr = 0.0
+                else:
+                    bus_gr = 0.0
+                if compressor is not None and meter_hi <= meter_lo:
+                    bus_gr = _gain_ratio_db(
+                        before_compression_rms, after_compression_rms)
+
+                dry_vocal = vocal_block
+                if reverb is not None:
+                    if predelay is not None:
+                        delayed_send = _pedalboard_process(
+                            predelay, send_block, sample_rate, first, numpy)
+                    else:
+                        delayed_send, delay_state = _delay_block(
+                            send_block, delay_frames, delay_state, numpy)
+                    wet = _pedalboard_process(
+                        reverb, delayed_send, sample_rate, first, numpy
+                    )
+                    mix_value = settings.reverb_mix
+                    vocal_block = (
+                        dry_vocal * (1.0 - mix_value) + wet * mix_value
+                    ).astype(numpy.float32, copy=False)
+                first = False
+
+                if backing_audible:
+                    instrumental_block *= numpy.float32(instrumental_gain)
+                    if channels == 2:
+                        instrumental_block[:, 0] *= numpy.float32(instrumental_pans[0])
+                        instrumental_block[:, 1] *= numpy.float32(instrumental_pans[1])
+                if meter_hi > meter_lo:
+                    measured_backing = instrumental_block[meter_lo:meter_hi]
+                    instrumental_peak = max(
+                        instrumental_peak,
+                        float(numpy.max(numpy.abs(measured_backing))),
+                    )
+                mixed = numpy.add(vocal_block, instrumental_block, dtype=numpy.float32)
+                mixed = _apply_width(mixed, settings.width, numpy)
+                if not numpy.isfinite(mixed).all():
+                    raise ValueError("混音产生了 NaN 或无穷大采样，已停止输出。")
+                if meter_hi > meter_lo:
+                    measured_bus = mixed[meter_lo:meter_hi]
+                    measured_peak = float(numpy.max(numpy.abs(measured_bus)))
+                    bus_peak = max(bus_peak, measured_peak)
+                    bus_after_effects_peak = max(bus_after_effects_peak, measured_peak)
+
+                output.write(mixed)
+                if reverb is not None and start + count > base_frames:
+                    tail_start = max(0, base_frames - start)
+                    peak = numpy.max(numpy.abs(mixed[tail_start:]), axis=1)
+                    audible = numpy.flatnonzero(peak > tail_threshold)
+                    if audible.size:
+                        last_tail_frame = start + tail_start + int(audible[-1])
+                _emit_progress(
+                    progress,
+                    phase="mix",
+                    frames_done=start + count,
+                    frames_total=render_frames,
+                    tracks=progress_tracks(
+                        bus_gr if compressor is not None else None),
+                    bus_peak=_amplitude_to_dbfs(bus_peak),
+                    elapsed_ms=(time.monotonic() - started) * 1000.0,
+                )
+    except MixdownError:
+        raise
+    except InterruptedError:
+        raise
+    except Exception as error:
+        raise MixdownError("混音处理失败，未生成目标文件。") from error
+
+    full_frames = base_frames
+    if reverb is not None and last_tail_frame is not None:
+        margin = int(round(TAIL_MARGIN_SECONDS * sample_rate))
+        full_frames = min(maximum_frames, max(base_frames, last_tail_frame + 1 + margin))
+    gr_db_p95 = 0.0
+    if gr_values:
+        gr_db_p95 = float(numpy.percentile(numpy.asarray(gr_values), 95))
+    return (base_frames, full_frames, preview_start, preview_duration,
+            vocal_peaks, instrumental_peak, bus_peak, track_after_peaks,
+            bus_after_effects_peak, gr_db_p95)
 
 
 def _encode_final(premix: Path, output: Path, sample_rate: int, channels: int,
                   start_frame: int, end_frame: int, ffmpeg: Path, log_path: Path,
-                  cancel: Callable[[], Any] | None) -> None:
+                  cancel: Callable[[], Any] | None, *, codec: str = 'pcm_s24le') -> None:
     if end_frame <= start_frame:
         raise ValueError("预览区间没有可输出的采样。")
+    if codec not in ('pcm_s24le', 'pcm_f32le'):
+        raise ValueError("不支持此混音 WAV 编码。")
     filters = (
         f"alimiter=limit={PEAK_CEILING:.9f}:attack=5:release=100:level=false:latency=true,"
         f"atrim=start_sample={start_frame}:end_sample={end_frame},asetpts=PTS-STARTPTS"
@@ -765,7 +1558,7 @@ def _encode_final(premix: Path, output: Path, sample_rate: int, channels: int,
         [
             str(ffmpeg), "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
             "-fflags", "+bitexact", "-i", str(premix), "-af", filters,
-            "-ar", str(sample_rate), "-ac", str(channels), "-c:a", "pcm_s24le",
+            "-ar", str(sample_rate), "-ac", str(channels), "-c:a", codec,
             "-rf64", "auto", "-map_metadata", "-1", str(output),
         ],
         log_path,
@@ -776,7 +1569,8 @@ def _encode_final(premix: Path, output: Path, sample_rate: int, channels: int,
 
 def _inspect_final(path: Path, sample_rate: int, channels: int,
                    expected_frames: int, soundfile: Any, numpy: Any,
-                   cancel: Callable[[], Any] | None) -> float:
+                   cancel: Callable[[], Any] | None, *,
+                   allowed_subtypes: tuple[str, ...] = ("PCM_24",)) -> float:
     try:
         info = soundfile.info(str(path))
     except Exception as error:
@@ -787,8 +1581,12 @@ def _inspect_final(path: Path, sample_rate: int, channels: int,
             or int(info.frames) != expected_frames):
         raise MixdownError("最终 WAV 的采样率、声道数或帧数验证失败。")
     subtype = str(getattr(info, "subtype", "")).upper()
-    if subtype != "PCM_24":
-        raise MixdownError(f"最终 WAV 不是 PCM24 编码（实际为 {subtype or '未知'}）。")
+    allowed = {str(value).strip().upper() for value in allowed_subtypes}
+    if subtype not in allowed:
+        expected = "/".join(sorted(allowed))
+        raise MixdownError(
+            f"最终 WAV 编码不符（期望 {expected}，实际为 {subtype or '未知'}）。"
+        )
 
     peak = 0.0
     try:
@@ -814,21 +1612,25 @@ def _inspect_final(path: Path, sample_rate: int, channels: int,
     return max(SILENCE_DBFS, 20.0 * math.log10(peak)) if peak > 0.0 else SILENCE_DBFS
 
 
-def render(request: Mapping[str, Any], cancel: Callable[[], Any] | None = None) -> dict[str, Any]:
+def render(request: Mapping[str, Any], cancel: Callable[[], Any] | None = None,
+           progress: Callable[[dict[str, Any]], Any] | None = None) -> dict[str, Any]:
     """Render one to three vocals and one required backing to a new PCM24 WAV.
 
     New callers provide ``vocals`` as a list of ``{path, gain_db,
     offset_seconds}`` objects. The legacy single-vocal fields
     ``vocal_path``/``vocal_db``/``offset_seconds`` remain accepted when
     ``vocals`` is absent. Per-vocal offsets are rounded to output samples.
-    Positive values delay a vocal; negative values trim its beginning. Each
-    vocal gain and offset is applied before the vocal bus is summed and passed
-    once through the shared effects chain. Preview rendering runs that same
-    chain from the start of the song and returns a sample-aligned excerpt.
+    Positive values delay a vocal; negative values trim its beginning. The
+    optional ``progress`` callback receives one throttled dictionary per
+    rendered block; its observations never alter the returned report. Preview
+    rendering runs the same chain from the start of the song and returns a
+    sample-aligned excerpt.
     """
 
     if cancel is not None and not callable(cancel):
         raise TypeError("cancel 必须是无参数可调用对象或 None。")
+    if progress is not None and not callable(progress):
+        raise TypeError("progress 必须是无参数可调用对象或 None。")
     settings = _settings(request)
     _check_cancel(cancel)
     ffmpeg = _ffmpeg_executable()
@@ -867,7 +1669,17 @@ def render(request: Mapping[str, Any], cancel: Callable[[], Any] | None = None) 
             instrumental_probe.channels,
             *(probe.channels for probe in vocal_probes),
         ]
-        channels = 2 if max(source_channels) == 2 else 1
+        vocal_audible, backing_audible = _audibility(settings)
+        # v3 uses a stereo-capable bus only when a stereo source, an audible
+        # pan, or a non-unit width needs one. All-mono, centered, width=1
+        # requests may safely collapse back to mono.
+        channels = _output_channels(settings, source_channels)
+        if settings.uses_v3 and max(source_channels) == 1 and settings.width != 1.0:
+            _safe_warning(
+                settings,
+                "width is centered and therefore inaudible for mono sources; "
+                "the requested value was retained in the report.",
+            )
 
         vocal_inputs: list[tuple[Path, int]] = []
         for index, track in enumerate(settings.vocals):
@@ -890,9 +1702,13 @@ def render(request: Mapping[str, Any], cancel: Callable[[], Any] | None = None) 
             raise MixdownError("简易混音缺少 NumPy 或 SoundFile 运行时依赖。") from error
 
         premix = temp_root / "premix-f32.wav"
-        base_frames, full_frames, preview_start, preview_duration = _render_mix(
+        render_function = _render_mix_v3 if settings.uses_v3 else _render_mix
+        (base_frames, full_frames, preview_start, preview_duration,
+         vocal_peaks, instrumental_peak, bus_peak, track_after_peaks,
+         bus_after_effects_peak, gr_db_p95) = render_function(
             settings, vocal_inputs, instrumental_float, sample_rate, channels,
             instrumental_info.frames, premix, pedalboard, numpy, soundfile, cancel,
+            progress=progress,
         )
 
         if preview_start is None:
@@ -932,35 +1748,73 @@ def render(request: Mapping[str, Any], cancel: Callable[[], Any] | None = None) 
             raise FileExistsError(f"输出文件已经存在，为避免覆盖已拒绝：{output}")
         _install_new_file(staged, output)
 
+        vocal_audible, backing_audible = _audibility(settings)
+        global_gr = float(gr_db_p95)
         tracks = []
         for index, track in enumerate(settings.vocals):
+            track_peak = _amplitude_to_dbfs(vocal_peaks[index])
             tracks.append({
                 "role": "vocal",
                 "index": index,
                 "path": str(track.path),
                 "gain_db": track.gain_db,
                 "offset_seconds": track.offset_seconds,
+                "mute": track.mute,
+                "solo": track.solo,
+                "pan": track.pan,
+                "reverb_send": float(track.reverb_send),
+                "audible": vocal_audible[index],
+                "peak_dbfs": track_peak,
+                "peak_after_effects_dbfs": _amplitude_to_dbfs(
+                    track_after_peaks[index]),
+                "gr_db_p95": global_gr if vocal_audible[index] else 0.0,
                 "input_sha256": source_hashes[str(track.path)],
                 "output_sha256": output_sha256,
             })
+        backing_peak = _amplitude_to_dbfs(instrumental_peak)
         tracks.append({
             "role": "backing",
             "index": 0,
             "path": str(settings.instrumental_path),
             "gain_db": settings.instrumental_db,
             "offset_seconds": 0.0,
+            "mute": settings.instrumental_mute,
+            "solo": settings.instrumental_solo,
+            "pan": settings.instrumental_pan,
+            "reverb_send": 0.0,
+            "audible": backing_audible,
+            "peak_dbfs": backing_peak,
+            "peak_after_effects_dbfs": backing_peak,
+            "gr_db_p95": 0.0,
             "input_sha256": source_hashes[str(settings.instrumental_path)],
             "output_sha256": output_sha256,
         })
+        meter_tracks = [
+            {
+                "role": track["role"],
+                "index": track["index"],
+                "audible": track["audible"],
+                "peak_dbfs": track["peak_dbfs"],
+            }
+            for track in tracks
+        ]
 
         return {
-            "schema": REPORT_SCHEMA,
+            "schema": REPORT_SCHEMA if settings.uses_v3 else REPORT_SCHEMA_V2,
             "output_path": str(output),
             "duration_seconds": expected_frames / float(sample_rate),
             "peak_dbfs": float(peak_dbfs),
             "sample_rate": sample_rate,
             "channels": channels,
             "tracks": tracks,
+            "meters": {
+                "tracks": meter_tracks,
+                "bus_peak_dbfs": _amplitude_to_dbfs(bus_peak),
+            },
+            "gr_db_p95": global_gr,
+            "peak_after_effects_dbfs": _amplitude_to_dbfs(bus_after_effects_peak),
+            "uses_v3": bool(settings.uses_v3),
+            "warnings": list(settings.warnings),
             "source_sha256": source_hashes,
             "output_sha256": output_sha256,
         }

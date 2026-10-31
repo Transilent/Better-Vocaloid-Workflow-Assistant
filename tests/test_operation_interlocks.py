@@ -141,6 +141,10 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='operation-interlocks-
     video.busy = busy(False)
     assert results_ui.active_task_operations(owner, job) == ('简易混音',)
     assert results_ui.active_task_operations(owner, other) == ()
+    mixer.fields = {'vocal': Text(other / 'audio/lead.wav')}
+    mixer._audition_request_context = {'source_key': ((str(job / 'audio/harmony.wav'), 1, 1),)}
+    assert results_ui.active_task_operations(owner, job) == ('简易混音',)
+    assert results_ui.active_task_operations(owner, other) == ('简易混音',)
     owner.audio_mixdown.busy = busy(False)
 
     calibration.busy = busy(True)

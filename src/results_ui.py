@@ -225,6 +225,20 @@ def active_task_operations(owner, job):
         fields = getattr(mixer, 'fields', {})
         references = [getattr(mixer, 'job', None)]
         references.extend(field.text() for field in fields.values() if callable(getattr(field, 'text', None)))
+        # The user can edit source fields while audition renders in the
+        # background. Protect the captured inputs as well as current fields.
+        preview = getattr(mixer, '_audition_request_context', None) or {}
+        for item in preview.get('source_key', ()):
+            if isinstance(item, (tuple, list)) and item:
+                references.append(item[0])
+        export = getattr(mixer, '_export_context', None) or {}
+        inputs = export.get('inputs', {}) if isinstance(export, dict) else {}
+        for item in inputs.get('vocals', ()):
+            if isinstance(item, dict):
+                references.append(item.get('path'))
+        backing = inputs.get('instrumental_path')
+        if isinstance(backing, dict):
+            references.append(backing.get('path'))
         if any(_path_within(value, job) for value in references):
             active.append('简易混音')
     video = getattr(owner, 'video_mixdown', None)
