@@ -68,6 +68,9 @@ def _load_qt_multimedia():
 
 DEFAULT_VOLUME = 72
 DEFAULT_CROSSFADE_MS = 80
+# Qt's default 1000 ms position notification makes playback-driven meters
+# visibly jump. This only changes UI timing; it does not rerender audio.
+DEFAULT_POSITION_NOTIFY_MS = 50
 
 __all__ = [
     'BaseMediaAdapter',
@@ -176,6 +179,7 @@ class QtMediaAdapter(BaseMediaAdapter):
                 (': ' + _QT_MULTIMEDIA_ERROR if _QT_MULTIMEDIA_ERROR else ''))
         super().__init__(parent)
         self._player = _QtMediaPlayer(self)
+        self._player.setNotifyInterval(DEFAULT_POSITION_NOTIFY_MS)
         self._player.mediaStatusChanged.connect(self._mirror_media_status)
         self._player.positionChanged.connect(self._mirror_position)
         self._player.durationChanged.connect(self._mirror_duration)
