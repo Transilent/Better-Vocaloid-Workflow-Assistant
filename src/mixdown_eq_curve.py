@@ -1,9 +1,10 @@
 """Interactive four-band equalizer curve for the VWA mixdown inspector.
 
-The widget is deliberately backend-neutral. It owns only the visible band
-dictionaries, paints with QPainter, and reports user edits. Audio generation,
-audition throttling, and persistence stay with the host UI; visible strings use
-the shared project catalog.
+The widget is deliberately backend-neutral. It owns the visible band
+dictionaries plus a validated, segment-relative spectrum envelope, paints with
+QPainter, and reports user edits. Audio generation, spectrum measurement,
+audition throttling, and persistence stay with the host UI; visible strings
+use the shared project catalog.
 
 Band dictionaries follow the mixdown request contract::
 
@@ -37,6 +38,14 @@ MIN_Q = 0.1
 MAX_Q = 18.0
 DEFAULT_SAMPLE_RATE = 48000.0
 RESPONSE_POINTS = 240
+SPECTRUM_SCHEMA = 'vwa.audio_mixdown.spectrum/v1'
+SPECTRUM_STAGE_BEFORE = 'vocal_before_eq'
+SPECTRUM_STAGE_AFTER = 'vocal_after_eq'
+SPECTRUM_STAGES = (SPECTRUM_STAGE_BEFORE, SPECTRUM_STAGE_AFTER)
+# Kept as the default/backward-compatible stage name for existing callers.
+SPECTRUM_STAGE = SPECTRUM_STAGE_AFTER
+SPECTRUM_MIN_DBFS = -96.0
+SPECTRUM_MAX_DBFS = 0.0
 NODE_DIAMETER = 12.0
 HIT_RADIUS = 22.0
 MIN_WIDGET_WIDTH = 320
@@ -73,6 +82,14 @@ _BAND_NAMES = {
     'bell': '峰值',
     'highshelf': '高架',
 }
+_SPECTRUM_STAGE_LABELS = {
+    SPECTRUM_STAGE_BEFORE: 'A  处理前',
+    SPECTRUM_STAGE_AFTER: 'B  处理后',
+}
+_SPECTRUM_STAGE_COLORS = {
+    SPECTRUM_STAGE_BEFORE: QColor('#e3b45f'),
+    SPECTRUM_STAGE_AFTER: QColor('#62cfdf'),
+}
 
 __all__ = [
     'BAND_TYPES', 'DEFAULT_BANDS', 'DEFAULT_SAMPLE_RATE', 'EQCurveView',
@@ -80,7 +97,10 @@ __all__ = [
     'MAX_BANDS', 'MAX_FREQUENCY_HZ', 'MAX_GAIN_DB', 'MAX_Q',
     'MIN_FREQUENCY_HZ', 'MIN_GAIN_DB', 'MIN_Q', 'MIN_WIDGET_HEIGHT',
     'MIN_WIDGET_WIDTH', 'NODE_DIAMETER', 'Q_LOCKED_TYPES',
-    'RESPONSE_POINTS', 'band_response_db', 'biquad_coefficients', 'default_bands',
+    'RESPONSE_POINTS', 'SPECTRUM_MAX_DBFS', 'SPECTRUM_MIN_DBFS',
+    'SPECTRUM_SCHEMA', 'SPECTRUM_STAGE', 'SPECTRUM_STAGE_AFTER',
+    'SPECTRUM_STAGE_BEFORE', 'SPECTRUM_STAGES', 'band_response_db',
+    'biquad_coefficients', 'default_bands',
     'frequency_response_db', 'frequency_to_unit', 'logarithmic_frequencies',
     'normalise_band', 'normalize_band', 'response_curve', 'unit_to_frequency',
 ]
@@ -350,6 +370,11 @@ class EQCurveView(QWidget):
     starts a pointer edit and ``editingFinished(index, final_bands)`` ends it,
     allowing the host to merge/render only once at release while auditioning
     every intermediate ``bandsChanged`` snapshot.
+
+    A measured ``vocal_before_eq`` or ``vocal_after_eq`` spectrum may be
+    supplied with :meth:`set_spectrum_envelope` and advanced with
+    :meth:`set_spectrum_playhead`. It is painted behind the EQ traces and
+    nodes without changing the band geometry or edit gestures.
     """
 
     bandsChanged = pyqtSignal(object)
@@ -380,6 +405,10 @@ class EQCurveView(QWidget):
         self._drag_frequency = 0.0
         self._drag_gain = 0.0
         self._playhead: Optional[float] = None
+        self._spectrum_envelope: Optional[dict[str, Any]] = None
+        self._spectrum_frame_index: Optional[int] = None
+        self._spectrum_playhead_ms: Optional[float] = None
+        self._spectrum_playing = False
         self._response_cache: Optional[
             tuple[tuple[float, ...], tuple[tuple[float, ...], ...]]
         ] = None
@@ -457,6 +486,215 @@ class EQCurveView(QWidget):
 
     def sample_rate(self) -> float:
         return self._sample_rate
+
+    def set_spectrum_envelope(
+        self, envelope: Optional[Mapping[str, Any]],
+    ) -> bool:
+        """Replace the segment-relative spectrum envelope safely.
+
+        ``envelope`` is the value of ``report['spectrum_envelope']``.  The
+        widget copies and validates it, then clears any playhead/frame from the
+        previous audition segment.  Malformed data clears the old spectrum and
+        returns ``False`` instead of leaving stale audio visible or raising in
+        a player callback.  Empty frames and missing/non-finite bins are valid
+        gaps and are never replaced with generated audio values.
+        """
+        normalized = None
+        if envelope is not None:
+            try:
+                normalized = self._normalize_spectrum_envelope(envelope)
+            except (TypeError, ValueError, OverflowError):
+                normalized = None
+        self._spectrum_envelope = normalized
+        self._spectrum_frame_index = None
+        self._spectrum_playhead_ms = None
+        self._spectrum_playing = False
+        self._refresh_accessibility()
+        self.update()
+        return normalized is not None
+
+    def clear_spectrum_envelope(self) -> None:
+        """Remove the spectrum data and its segment-relative playhead."""
+        self.set_spectrum_envelope(None)
+
+    def spectrum_envelope(self) -> Optional[dict[str, Any]]:
+        """Return an independent copy of the normalised spectrum envelope."""
+        return copy.deepcopy(self._spectrum_envelope)
+
+    def spectrum_stage(self) -> Optional[str]:
+        """Return the exact A/B data stage, or ``None`` when no data exists."""
+        envelope = self._spectrum_envelope
+        return None if envelope is None else envelope['stage']
+
+    def spectrum_stage_label(self) -> Optional[str]:
+        """Return the translated visible A/B label for the current stage."""
+        stage = self.spectrum_stage()
+        label = _SPECTRUM_STAGE_LABELS.get(stage)
+        return _tr(label) if label is not None else None
+
+    def _spectrum_stage_color(self) -> Optional[QColor]:
+        stage = self.spectrum_stage()
+        color = _SPECTRUM_STAGE_COLORS.get(stage)
+        # The pale cyan/amber used on dark panels is too faint on the light
+        # theme. Keep the A/B distinction while increasing contrast there.
+        if color is not None and self.palette().color(QPalette.Text).lightness() < 128:
+            color = (QColor('#a76716') if stage == SPECTRUM_STAGE_BEFORE
+                     else QColor('#16899a'))
+        return QColor(color) if color is not None else None
+
+    def set_spectrum_playhead(
+        self, position_ms: Optional[float], *, playing: bool = True,
+    ) -> bool:
+        """Select and paint the spectrum frame at a segment-relative time.
+
+        Frame zero starts at 0 ms and each frame lasts ``interval_ms``.
+        Positions are clamped to the available frames.  Playing state affects
+        only the exposed transport flag: every explicitly supplied position,
+        including a paused seek or an A/B replacement, immediately selects its
+        measured frame.  This widget owns no timer, so a paused host advances
+        nothing by simply not sending new positions.  It never synthesises
+        frames between measurements.
+        """
+        self._spectrum_playing = bool(playing)
+        if position_ms is None:
+            self._spectrum_playing = False
+            self._spectrum_playhead_ms = None
+            self._spectrum_frame_index = None
+            self.update()
+            return False
+        try:
+            position = max(0.0, _finite_number(position_ms, 'position_ms'))
+        except ValueError:
+            self._spectrum_playing = False
+            self._spectrum_playhead_ms = None
+            self._spectrum_frame_index = None
+            self.update()
+            return False
+
+        self._spectrum_playhead_ms = position
+        envelope = self._spectrum_envelope
+        if envelope is None or not envelope['frames_dbfs']:
+            self._spectrum_frame_index = None
+            self.update()
+            return False
+
+        frame_count = len(envelope['frames_dbfs'])
+        frame_index = min(
+            int(position // envelope['interval_ms']), frame_count - 1,
+        )
+        paint_changed = frame_index != self._spectrum_frame_index
+        self._spectrum_frame_index = frame_index
+        drawable = self._selected_spectrum_frame() is not None
+        if paint_changed:
+            self.update()
+        return drawable
+
+    def set_spectrum_playback(
+        self, position_ms: Optional[float], *, playing: bool = True,
+    ) -> bool:
+        """Alias for hosts that name their transport callback ``playback``."""
+        return self.set_spectrum_playhead(position_ms, playing=playing)
+
+    def spectrum_playhead_ms(self) -> Optional[float]:
+        """Return the last accepted segment-relative playhead in milliseconds."""
+        return self._spectrum_playhead_ms
+
+    def spectrum_is_playing(self) -> bool:
+        return self._spectrum_playing
+
+    def spectrum_frame(self) -> Optional[list[Optional[float]]]:
+        """Return the selected frame as a copy; ``None`` means no drawable bin."""
+        frame = self._selected_spectrum_frame()
+        if frame is None:
+            return None
+        return [None if value is None else float(value) for value in frame]
+
+    @staticmethod
+    def _frame_has_values(
+        frame: Optional[Iterable[Optional[float]]],
+    ) -> bool:
+        return frame is not None and any(value is not None for value in frame)
+
+    @classmethod
+    def _normalize_spectrum_envelope(
+        cls, envelope: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if not isinstance(envelope, Mapping):
+            raise TypeError('spectrum_envelope 必须为字典。')
+        if envelope.get('schema') != SPECTRUM_SCHEMA:
+            raise ValueError('不支持的频谱包络版本。')
+        stage = envelope.get('stage')
+        if stage not in SPECTRUM_STAGES:
+            raise ValueError(
+                '频谱包络 stage 必须为 vocal_before_eq 或 vocal_after_eq。'
+            )
+
+        interval = _finite_number(envelope.get('interval_ms'), 'interval_ms')
+        if interval <= 0.0:
+            raise ValueError('interval_ms 必须大于 0。')
+        fft_size = _finite_number(envelope.get('fft_size'), 'fft_size')
+        if fft_size < 1.0 or int(fft_size) != fft_size:
+            raise ValueError('fft_size 必须为正整数。')
+
+        raw_frequencies = envelope.get('frequencies_hz')
+        if (isinstance(raw_frequencies, (str, bytes))
+                or not isinstance(raw_frequencies, Iterable)):
+            raise TypeError('frequencies_hz 必须为递增数字序列。')
+        frequencies = []
+        previous = None
+        for raw_frequency in raw_frequencies:
+            frequency = _finite_number(raw_frequency, 'frequencies_hz')
+            if frequency <= 0.0 or (previous is not None
+                                    and frequency <= previous):
+                raise ValueError('frequencies_hz 必须严格递增且大于 0 Hz。')
+            frequencies.append(frequency)
+            previous = frequency
+
+        raw_frames = envelope.get('frames_dbfs')
+        if (isinstance(raw_frames, (str, bytes))
+                or not isinstance(raw_frames, Iterable)):
+            raise TypeError('frames_dbfs 必须为帧序列。')
+        frames = []
+        bin_count = len(frequencies)
+        for raw_frame in raw_frames:
+            try:
+                values = list(raw_frame)
+            except (TypeError, ValueError, OverflowError):
+                values = []
+            normalised: list[Optional[float]] = []
+            for index in range(bin_count):
+                if index >= len(values):
+                    normalised.append(None)
+                    continue
+                try:
+                    value = float(values[index])
+                except (TypeError, ValueError, OverflowError):
+                    normalised.append(None)
+                else:
+                    normalised.append(value if math.isfinite(value) else None)
+            frames.append(normalised)
+
+        return {
+            'schema': SPECTRUM_SCHEMA,
+            'interval_ms': interval,
+            'frequencies_hz': frequencies,
+            'frames_dbfs': frames,
+            'stage': stage,
+            'fft_size': int(fft_size),
+        }
+
+    def _selected_spectrum_frame(
+        self,
+    ) -> Optional[list[Optional[float]]]:
+        envelope = self._spectrum_envelope
+        index = self._spectrum_frame_index
+        if envelope is None or index is None:
+            return None
+        frames = envelope['frames_dbfs']
+        if not (0 <= index < len(frames)):
+            return None
+        frame = frames[index]
+        return frame if self._frame_has_values(frame) else None
 
     def selected_band_index(self) -> int:
         return self._selected
@@ -566,6 +804,15 @@ class EQCurveView(QWidget):
         unit = (float(y_position) - plot.top()) / max(plot.height(), 1.0)
         return _clamp(MAX_GAIN_DB - unit * (MAX_GAIN_DB - MIN_GAIN_DB),
                       MIN_GAIN_DB, MAX_GAIN_DB)
+
+    def spectrum_db_to_y(self, level_dbfs: float) -> float:
+        """Map the fixed spectrum display range onto the EQ plot rectangle."""
+        plot = self.plot_rect()
+        level = _clamp(_finite_number(level_dbfs, 'level_dbfs'),
+                       SPECTRUM_MIN_DBFS, SPECTRUM_MAX_DBFS)
+        unit = ((SPECTRUM_MAX_DBFS - level)
+                / (SPECTRUM_MAX_DBFS - SPECTRUM_MIN_DBFS))
+        return plot.top() + plot.height() * unit
 
     def bubble_text(self, index: int) -> str:
         """Return the compact numeric node description."""
@@ -706,7 +953,11 @@ class EQCurveView(QWidget):
 
 
     def _refresh_accessibility(self) -> None:
-        self.setAccessibleDescription(self.accessible_summary())
+        description = self.accessible_summary()
+        stage_label = self.spectrum_stage_label()
+        if stage_label is not None:
+            description = stage_label + '。' + description
+        self.setAccessibleDescription(description)
     # ------------------------------------------------------------------
     # Input
     # ------------------------------------------------------------------
@@ -931,6 +1182,49 @@ class EQCurveView(QWidget):
                 path.lineTo(x, y)
         return path
 
+    def _spectrum_segments(self) -> list[list[QPointF]]:
+        """Return contiguous drawable spectrum runs in widget coordinates."""
+        frame = self._selected_spectrum_frame()
+        envelope = self._spectrum_envelope
+        if frame is None or envelope is None:
+            return []
+        segments: list[list[QPointF]] = []
+        current: list[QPointF] = []
+        for frequency, level in zip(envelope['frequencies_hz'], frame):
+            if level is None:
+                if current:
+                    segments.append(current)
+                    current = []
+                continue
+            current.append(QPointF(self.frequency_to_x(frequency),
+                                   self.spectrum_db_to_y(level)))
+        if current:
+            segments.append(current)
+        return [segment for segment in segments if len(segment) >= 2]
+
+    def _paint_spectrum(self, painter: QPainter, plot: QRectF) -> None:
+        """Paint measured frames behind the editable EQ response."""
+        segments = self._spectrum_segments()
+        if not segments:
+            return
+        spectrum_color = self._spectrum_stage_color() or QColor('#62cfdf')
+        fill_color = self._color_with_alpha(spectrum_color, 36)
+        line_color = self._color_with_alpha(spectrum_color, 145)
+        for points in segments:
+            curve = QPainterPath(points[0])
+            for point in points[1:]:
+                curve.lineTo(point)
+            area = QPainterPath(curve)
+            area.lineTo(points[-1].x(), plot.bottom())
+            area.lineTo(points[0].x(), plot.bottom())
+            area.closeSubpath()
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(fill_color)
+            painter.drawPath(area)
+            painter.setPen(QPen(line_color, 1.25))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(curve)
+
     def paintEvent(self, event) -> None:
         del event
         painter = QPainter(self)
@@ -995,6 +1289,7 @@ class EQCurveView(QWidget):
             painter.drawLine(QPointF(plot.left(), y),
                              QPointF(plot.right(), y))
 
+        self._paint_spectrum(painter, plot)
         frequencies, responses = self._response_data()
         enabled_values = None
         if any(band['enabled'] for band in self._bands):
@@ -1063,11 +1358,22 @@ class EQCurveView(QWidget):
                 Qt.AlignHCenter | Qt.AlignTop,
                 label,
             )
+        range_text = (
+            f'{MIN_FREQUENCY_HZ:.0f} Hz - '
+            f'{MAX_FREQUENCY_HZ / 1000.0:.0f} kHz'
+        )
+        stage_label = self.spectrum_stage_label()
+        stage_color = self._spectrum_stage_color()
+        if stage_label is not None and stage_color is not None:
+            header_text = f'{stage_label} · {range_text}'
+            painter.setPen(self._color_with_alpha(stage_color, 220))
+        else:
+            header_text = range_text
         painter.drawText(
             QRectF(outer.left() + 45.0, outer.top() + 2.0,
                    max(86.0, plot.width() - 150.0), 18.0),
             Qt.AlignLeft | Qt.AlignVCenter,
-            f'{MIN_FREQUENCY_HZ:.0f} Hz - {MAX_FREQUENCY_HZ / 1000.0:.0f} kHz',
+            header_text,
         )
 
         # A persistent pill makes bypass discoverable without a right-click or

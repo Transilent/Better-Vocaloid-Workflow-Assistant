@@ -62,6 +62,7 @@ def _assert_mixdown_custom_widget_localization(mixer, language):
             i18n.tr('低架') + ' 260.0 Hz  +0.00 dB  Q 0.707 · '
             + i18n.tr('旁路'))
         assert gr.caption == i18n.tr('GR 为分块RMS估计（非采样精确）')
+        assert gr.meter_hint == i18n.tr('分块估算 · 压缩关闭/未触发=0 dB')
         assert edc.measurement_status == i18n.tr('未实测')
         assert edc.placeholder_text == i18n.tr('暂无实测 EDC · 等待脉冲测量')
         assert meters.accessibleName() == i18n.tr('实时混音电平表')
@@ -281,7 +282,9 @@ for language in ('zh-CN', 'ja', 'en'):
             if index == 10:
                 mixer = window.audio_mixdown.mixer
                 assert [mixer.analysis_tabs.tabText(index) for index in range(3)] == [
-                    i18n.tr('EQ'), i18n.tr('GR'), i18n.tr('EDC')]
+                    i18n.tr('EQ'), i18n.tr('GR'), i18n.tr('混响空间')]
+                assert mixer.reverb_decay_toggle.text() == i18n.tr('查看混响衰减（静态）')
+                assert not mixer.reverb_decay_toggle.isChecked()
                 assert mixer.preset_bar.lock_mix_checkbox.text() == i18n.tr('锁定轨道设置')
                 assert mixer.preset_bar.lock_mix_checkbox.accessibleName() == i18n.tr(
                     '锁定轨道设置，应用预设时保留各轨声像和混响发送')

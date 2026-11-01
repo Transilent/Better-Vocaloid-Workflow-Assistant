@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
 import os
 from pathlib import Path
@@ -118,6 +119,25 @@ def _request(root, vocals, backing, *, seconds=2.0, reverb=0.0,
         "preview_start_seconds": 0.15,
         "preview_duration_seconds": seconds,
     }
+
+
+def _spectrum_band_dbfs(audio, rate, start_sample, fft_size, bin_range):
+    hop_frames = int(round(rate * 0.1))
+    chunk = np.asarray(
+        audio[int(start_sample):int(start_sample) + hop_frames],
+        dtype=np.float64,
+    )
+    weights = np.hanning(len(chunk))
+    spectrum = np.fft.rfft(chunk * weights[:, None], n=int(fft_size), axis=0)
+    magnitudes = np.abs(spectrum) * (2.0 / float(np.sum(weights)))
+    amplitudes = np.sqrt(np.mean(np.square(magnitudes), axis=1))
+    start, end = (int(value) for value in bin_range)
+    amplitude = float(np.max(amplitudes[start:end + 1], initial=0.0))
+    if amplitude <= 0.0:
+        return float(audio_mixdown.SILENCE_DBFS)
+    return max(
+        float(audio_mixdown.SILENCE_DBFS), 20.0 * math.log10(amplitude)
+    )
 
 
 class AuditionEngineTests(unittest.TestCase):
@@ -611,6 +631,339 @@ class AuditionEngineTests(unittest.TestCase):
         self.assertTrue(report['request_features']['uses_v3'])
         self.assertLess(float(np.max(np.abs(expected - observed))), 1e-6)
 
+    def test_vocal_spectrum_tracks_ab_signal_time_and_wav_readback(self):
+        rate = 16000
+        root = self.root / "spectrum-ab"
+        root.mkdir()
+        early = _tone(1.2, rate, 440.0, 0.08)
+        late = _tone(1.2, rate, 880.0, 0.08)
+        vocal_signal = np.concatenate((early, late)).astype(np.float32)
+        vocal = root / "vocal.wav"
+        backing = root / "backing.wav"
+        _write(vocal, vocal_signal, rate)
+        _write(backing, np.zeros_like(vocal_signal), rate)
+        request = _request(
+            root,
+            [{"path": str(vocal), "gain_db": 0.0, "offset_seconds": 0.0,
+              "mute": False, "solo": False, "pan": 0.0, "reverb_send": 1.0}],
+            backing,
+            seconds=2.2,
+        )
+        request.update({
+            "eq_bands": [{
+                "type": "bell", "freq_hz": 880.0, "gain_db": 9.0,
+                "q": 1.0, "enabled": True,
+            }],
+            "eq_low_cut_hz": 0.0,
+            "eq_presence_db": 0.0,
+            "compression_strength": 0.0,
+            "reverb_mix": 0.0,
+            "width": 1.0,
+            "preview_start_seconds": 0.1,
+            "preview_duration_seconds": 2.2,
+        })
+        before, after = root / "before.wav", root / "after.wav"
+        report = audition.render_audition_pair(
+            request, before, after, root / "cache", variant="both"
+        )
+
+        self.assertEqual(
+            report["spectrum_envelope"],
+            report["after"]["spectrum_envelope"],
+        )
+        self.assertEqual(
+            set(report["spectrum_data_summary"]["variants"]),
+            {"before", "after"},
+        )
+        envelopes = {
+            side: report[side]["spectrum_envelope"]
+            for side in ("before", "after")
+        }
+        expected_stages = {
+            "before": "vocal_before_eq",
+            "after": "vocal_after_eq",
+        }
+        expected_taps = {
+            "before": "vocal_bus_after_track_gain_and_pan_before_effects",
+            "after": "vocal_bus_after_eq_before_compressor_and_reverb",
+        }
+        for side, envelope in envelopes.items():
+            self.assertEqual(envelope["schema"], "vwa.audio_mixdown.spectrum/v1")
+            self.assertEqual(envelope["stage"], expected_stages[side])
+            self.assertEqual(envelope["variant"], side)
+            self.assertEqual(envelope["signal_sample_point"], expected_taps[side])
+            self.assertEqual(envelope["interval_ms"], 100.0)
+            self.assertEqual(envelope["timeline_origin"], "audition_segment_start")
+            self.assertEqual(envelope["timeline_start_seconds"], 0.0)
+            self.assertEqual(
+                envelope["segment_source_start_sample"], int(rate * 0.1)
+            )
+            frequencies = envelope["frequencies_hz"]
+            self.assertTrue(all(a < b for a, b in zip(frequencies, frequencies[1:])))
+            self.assertEqual(
+                len(envelope["frames_dbfs"]), envelope["frame_count"]
+            )
+            self.assertTrue(all(
+                len(frame) == envelope["bin_count"]
+                for frame in envelope["frames_dbfs"]
+            ))
+            self.assertEqual(
+                envelope["frame_start_samples"][:3],
+                [0, envelope["hop_samples"], 2 * envelope["hop_samples"]],
+            )
+            self.assertTrue(all(
+                math.isfinite(value)
+                for frame in envelope["frames_dbfs"]
+                for value in frame
+            ))
+            self.assertTrue(all(
+                value == round(value, 3)
+                for frame in envelope["frames_dbfs"]
+                for value in frame
+            ))
+            self.assertTrue(all(
+                value == round(value, 4) for value in frequencies
+            ))
+            self.assertEqual(
+                report["spectrum_data_summary"]["variants"][side]
+                ["compact_json_bytes"],
+                len(json.dumps(
+                    envelope, ensure_ascii=False, separators=(",", ":")
+                ).encode("utf-8")),
+            )
+            self.assertEqual(envelope["band_aggregation"], "max")
+            self.assertEqual(
+                len(envelope["frequency_band_edges_hz"]),
+                envelope["bin_count"] + 1,
+            )
+            self.assertEqual(
+                len(envelope["frequency_band_bin_ranges_inclusive"]),
+                envelope["bin_count"],
+            )
+            self.assertEqual(
+                report["spectrum_data_summary"]["variants"][side]["frame_count"],
+                envelope["frame_count"],
+            )
+            self.assertGreater(
+                report["spectrum_data_summary"]["variants"][side]
+                ["compact_json_bytes"],
+                0,
+            )
+
+        early_frame, late_frame = 3, 16
+        for side, envelope in envelopes.items():
+            frequencies = np.asarray(envelope["frequencies_hz"])
+            early_values = np.asarray(
+                envelope["frames_dbfs"][early_frame]
+            )
+            late_values = np.asarray(
+                envelope["frames_dbfs"][late_frame]
+            )
+            self.assertLess(
+                abs(float(frequencies[int(np.argmax(early_values))]) - 440.0),
+                envelope["frequency_resolution_hz"] * 2.0,
+                side,
+            )
+            self.assertLess(
+                abs(float(frequencies[int(np.argmax(late_values))]) - 880.0),
+                envelope["frequency_resolution_hz"] * 2.0,
+                side,
+            )
+
+        def nearest(envelope, frequency):
+            return int(np.argmin(np.abs(
+                np.asarray(envelope["frequencies_hz"]) - frequency
+            )))
+
+        before_880 = report["before"]["spectrum_envelope"]
+        after_880 = report["after"]["spectrum_envelope"]
+        before_level = before_880["frames_dbfs"][late_frame][nearest(before_880, 880.0)]
+        after_level = after_880["frames_dbfs"][late_frame][nearest(after_880, 880.0)]
+        self.assertGreater(after_level, before_level + 5.0)
+
+        for side, output in (("before", before), ("after", after)):
+            audio, output_rate = _read(output)
+            envelope = envelopes[side]
+            for frame_index in (early_frame, late_frame):
+                start_sample = envelope["frame_start_samples"][frame_index]
+                band_index = int(np.argmax(
+                    envelope["frames_dbfs"][frame_index]
+                ))
+                expected = _spectrum_band_dbfs(
+                    audio, output_rate, start_sample, envelope["fft_size"],
+                    envelope["frequency_band_bin_ranges_inclusive"][band_index],
+                )
+                self.assertAlmostEqual(
+                    envelope["frames_dbfs"][frame_index][band_index],
+                    expected,
+                    delta=0.01,
+                    msg=(side, frame_index),
+                )
+
+    def test_spectrum_frames_follow_continuous_playback_position(self):
+        rate = 16000
+        root = self.root / "spectrum-chirp"
+        root.mkdir()
+        duration = 2.4
+        start_hz, end_hz = 350.0, 1400.0
+        time_axis = np.arange(int(rate * duration), dtype=np.float64) / rate
+        sweep_rate = (end_hz - start_hz) / duration
+        phase = 2.0 * np.pi * (
+            start_hz * time_axis + 0.5 * sweep_rate * np.square(time_axis)
+        )
+        signal = (0.07 * np.sin(phase)).astype(np.float32)
+        vocal = root / "vocal.wav"
+        backing = root / "backing.wav"
+        _write(vocal, signal, rate)
+        _write(backing, np.zeros_like(signal), rate)
+        request = _request(
+            root,
+            [{"path": str(vocal), "gain_db": 0.0, "offset_seconds": 0.0,
+              "mute": False, "solo": False, "pan": 0.0, "reverb_send": 1.0}],
+            backing,
+            seconds=2.2,
+        )
+        request.update({
+            "eq_bands": [], "eq_low_cut_hz": 0.0, "eq_presence_db": 0.0,
+            "compression_strength": 0.0, "reverb_mix": 0.0, "width": 1.0,
+            "preview_start_seconds": 0.1,
+            "preview_duration_seconds": 2.2,
+        })
+        after = root / "after.wav"
+        report = audition.render_audition_pair(
+            request, root / "unused.wav", after, root / "cache",
+            variant="after",
+        )
+        envelope = report["after"]["spectrum_envelope"]
+        frames = np.asarray(envelope["frames_dbfs"])
+        frequencies = np.asarray(envelope["frequencies_hz"])
+        peaks = frequencies[np.argmax(frames, axis=1)]
+        self.assertEqual(len(peaks), 22)
+        self.assertGreater(peaks[-2], peaks[1] + 700.0)
+        correlation = float(np.corrcoef(np.arange(len(peaks)), peaks)[0, 1])
+        self.assertGreater(correlation, 0.98)
+        self.assertGreater(float(np.std(peaks)), 200.0)
+        self.assertFalse(np.array_equal(frames[1], frames[6]))
+
+    def test_high_frequency_sine_between_log_centers_is_not_lost(self):
+        rate = 44100
+        probe = audition._SpectrumCollector(
+            rate, int(rate * 0.4), 1,
+            stage="vocal_after_eq",
+            signal_sample_point="vocal_bus_after_eq_before_compressor_and_reverb",
+            variant="after", numpy=np,
+        )
+        centers = np.asarray(probe.frequencies_hz)
+        lower_index = int(np.searchsorted(centers, 12000.0))
+        tone_hz = float(centers[lower_index] + centers[lower_index + 1]) / 2.0
+        self.assertFalse(np.any(np.isclose(centers, tone_hz, atol=1e-3)))
+
+        root = self.root / "spectrum-high-between-centers"
+        root.mkdir()
+        vocal = root / "vocal.wav"
+        backing = root / "backing.wav"
+        signal = _tone(0.45, rate, tone_hz, 0.07)
+        _write(vocal, signal, rate)
+        _write(backing, np.zeros_like(signal), rate)
+        request = _request(
+            root,
+            [{"path": str(vocal), "gain_db": 0.0, "offset_seconds": 0.0,
+              "mute": False, "solo": False, "pan": 0.0, "reverb_send": 1.0}],
+            backing,
+            seconds=0.3,
+        )
+        request.update({
+            "eq_bands": [], "eq_low_cut_hz": 0.0, "eq_presence_db": 0.0,
+            "compression_strength": 0.0, "reverb_mix": 0.0, "width": 1.0,
+            "preview_start_seconds": 0.05,
+            "preview_duration_seconds": 0.3,
+        })
+        after = root / "after.wav"
+        report = audition.render_audition_pair(
+            request, root / "unused.wav", after, root / "cache",
+            variant="after",
+        )
+        envelope = report["after"]["spectrum_envelope"]
+        frequencies = np.asarray(envelope["frequencies_hz"])
+        values = np.asarray(envelope["frames_dbfs"][1])
+        edges = envelope["frequency_band_edges_hz"]
+        band_index = int(np.searchsorted(edges, tone_hz, side="right") - 1)
+        nearest = int(np.argmin(np.abs(frequencies - tone_hz)))
+        self.assertLessEqual(abs(nearest - band_index), 1)
+        self.assertLessEqual(edges[band_index], tone_hz + 1e-3)
+        self.assertGreaterEqual(edges[band_index + 1], tone_hz - 1e-3)
+        self.assertGreater(values[band_index], -30.0)
+        self.assertEqual(envelope["band_aggregation"], "max")
+
+    def test_spectrum_handles_silence_low_rate_and_short_tail(self):
+        rate = 8000
+        root = self.root / "spectrum-silence"
+        root.mkdir()
+        signal = np.concatenate((
+            _tone(0.24, rate, 440.0, 0.08),
+            np.zeros(int(rate * 0.36), dtype=np.float32),
+        ))
+        vocal = root / "vocal.wav"
+        backing = root / "backing.wav"
+        _write(vocal, signal, rate)
+        _write(backing, np.zeros_like(signal), rate)
+        request = _request(
+            root,
+            [{"path": str(vocal), "gain_db": 0.0, "offset_seconds": 0.0,
+              "mute": False, "solo": False, "pan": 0.0, "reverb_send": 1.0}],
+            backing,
+            seconds=0.23,
+        )
+        request.update({
+            "eq_bands": [], "eq_low_cut_hz": 0.0, "eq_presence_db": 0.0,
+            "compression_strength": 0.0, "reverb_mix": 0.0, "width": 1.0,
+            "preview_start_seconds": 0.2,
+            "preview_duration_seconds": 0.23,
+        })
+        _, after = root / "unused-before.wav", root / "after.wav"
+        report = audition.render_audition_pair(
+            request, root / "unused-before.wav", after, root / "cache",
+            variant="after",
+        )
+        envelope = report["after"]["spectrum_envelope"]
+        self.assertEqual(envelope["sample_rate"], rate)
+        self.assertLessEqual(rate // 2, 4000)
+        self.assertEqual(envelope["frame_count"], 3)
+        self.assertTrue(all(
+            value == float(audio_mixdown.SILENCE_DBFS)
+            for value in envelope["frames_dbfs"][-1]
+        ))
+        self.assertGreater(max(envelope["frames_dbfs"][0]), -70.0)
+        self.assertLess(max(envelope["frequencies_hz"]), rate / 2.0)
+        audio, output_rate = _read(after)
+        self.assertEqual(output_rate, rate)
+        self.assertEqual(len(audio), int(round(rate * 0.23)))
+
+    def test_spectrum_instrumentation_does_not_change_audio_or_peak(self):
+        request = copy.deepcopy(self.request)
+        normal_before, normal_after = self._paths("spectrum-normal")
+        normal = audition.render_audition_pair(
+            request, normal_before, normal_after, self.cache, variant="both"
+        )
+
+        inert_before, inert_after = self._paths("spectrum-inert")
+        with mock.patch.object(
+                audition._SpectrumCollector, "feed", return_value=None):
+            inert = audition.render_audition_pair(
+                request, inert_before, inert_after, self.cache, variant="both"
+            )
+
+        for side, normal_path, inert_path in (
+                ("before", normal_before, inert_before),
+                ("after", normal_after, inert_after)):
+            normal_audio, normal_rate = _read(normal_path)
+            inert_audio, inert_rate = _read(inert_path)
+            self.assertEqual(normal_rate, inert_rate)
+            np.testing.assert_array_equal(normal_audio, inert_audio)
+            self.assertEqual(
+                normal[side]["peak_dbfs"], inert[side]["peak_dbfs"]
+            )
+
     def test_v3_shim_branch_remains_supported_for_legacy_backend(self):
         request = copy.deepcopy(self.request)
         request.update({
@@ -855,6 +1208,18 @@ class AuditionEngineTests(unittest.TestCase):
         self.assertEqual(len(audio), 30 * rate)
         self.assertEqual(report["cache_identity"]["processed_audio_cached"], False)
         self.assertEqual(_audition_artifacts(after.parent), [])
+        spectrum = report["after"]["spectrum_envelope"]
+        self.assertEqual(spectrum["frame_count"], 300)
+        self.assertEqual(
+            len(spectrum["frames_dbfs"]), spectrum["frame_count"]
+        )
+        self.assertLessEqual(
+            spectrum["bin_count"], audition.AUDITION_SPECTRUM_MAX_BINS
+        )
+        self.assertLess(
+            spectrum["data_size"]["compact_json_bytes"], 700000
+        )
+        self.assertGreater(report["timings_ms"]["spectrum"]["after"], 0.0)
 
     def test_cached_twelve_second_after_only_meets_latency_target(self):
         rate = 8000
@@ -900,6 +1265,9 @@ class AuditionEngineTests(unittest.TestCase):
         self.assertEqual(second["preview_duration_seconds"], 12.0)
         self.assertLess(elapsed, 0.350, "cached 12 s after-only render: %.3f s" % elapsed)
         self.assertLess(second["timings_ms"]["total"], 350.0)
+        spectrum = second["after"]["spectrum_envelope"]
+        self.assertEqual(spectrum["frame_count"], 120)
+        self.assertIn("after", second["timings_ms"]["spectrum"])
 
 
 if __name__ == "__main__":

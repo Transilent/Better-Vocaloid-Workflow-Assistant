@@ -31,7 +31,8 @@ METER_REFRESH_MS = 33
 PEAK_FLOOR_DBFS = -60.0
 PEAK_ENVELOPE_FLOOR_DBFS = -96.0
 PEAK_DECAY_DB_PER_SECOND = 24.0
-GR_FLOOR_DB = -24.0
+GR_FLOOR_DB = -6.0
+GR_AXIS_TICKS_DB = (0.0, -1.0, -2.0, -3.0, -4.0, -5.0, -6.0)
 GR_ENVELOPE_FLOOR_DB = -60.0
 GR_RELEASE_DB_PER_SECOND = 18.0
 GR_HISTORY_SECONDS = 30.0
@@ -393,6 +394,52 @@ def _report_duration_ms(report: Mapping[str, Any]) -> float | None:
     return max(durations) if durations else None
 
 
+def _report_scope_values(report: Mapping[str, Any]) -> dict[str, Any]:
+    """Extract the report identity that invalidates playback-relative history."""
+    values: dict[str, Any] = {}
+    for container in _report_containers(report):
+        output = container.get("output_path")
+        if output is not None and str(output).strip():
+            values["output_path"] = str(output)
+        for name in ("preview_start_seconds", "audition_start_seconds"):
+            number = _finite(container.get(name))
+            if number is not None:
+                values["preview_start_seconds"] = number
+                break
+        for name in ("preview_duration_seconds", "audition_duration_seconds"):
+            number = _finite(container.get(name))
+            if number is not None:
+                values["preview_duration_seconds"] = number
+                break
+        duration = _finite(container.get("duration_seconds"))
+        if duration is not None:
+            values["duration_seconds"] = duration
+        if "bypass_processing" in container:
+            values["bypass_processing"] = bool(container.get("bypass_processing"))
+    return values
+
+
+def _report_scope_conflicts(previous: Mapping[str, Any],
+                            incoming: Mapping[str, Any]) -> tuple[bool, bool]:
+    """Return (scope_changed, segment_changed) for a newly published report."""
+    changed = False
+    segment = False
+    old_path = previous.get("output_path")
+    new_path = incoming.get("output_path")
+    if old_path is not None and new_path is not None and old_path != new_path:
+        changed = True
+    if ("bypass_processing" in previous and "bypass_processing" in incoming
+            and bool(previous["bypass_processing"]) != bool(incoming["bypass_processing"])):
+        changed = True
+    for key in ("preview_start_seconds", "preview_duration_seconds"):
+        old = _finite(previous.get(key))
+        new = _finite(incoming.get(key))
+        if old is not None and new is not None and abs(old - new) > 0.001:
+            changed = True
+            segment = True
+    return changed, segment
+
+
 def _normalise_position_ms(position_ms: Any, duration_ms: float | None) -> float:
     value = _finite(position_ms)
     position = 0.0 if value is None else float(value)
@@ -639,11 +686,15 @@ class MeterEnvelope(QObject):
 
     Reports merge by lane by default.  A partial after-only report therefore
     cannot erase a previously received before-side track, backing, or MIX BUS
-    series.  Call :meth:`clear`/:meth:`reset` for an explicit full reset, or
+    series.  A report with a different output identity, A/B processing state,
+    or audition start invalidates the previous series even in merge mode, so
+    history from another segment cannot be mistaken for the current playback.
+    Call :meth:`clear`/:meth:`reset` for an explicit full reset, or
     :meth:`replace_report` to clear and replace in one operation.
 
     ``changed`` retains the original snapshot shape and adds
-    ``duration_ms``/``position_ratio``/``wrapped``/``seeked`` keys.
+    ``duration_ms``/``position_ratio``/``wrapped``/``seeked`` and report
+    generation ``history_epoch`` keys.
     ``positionChanged`` emits only the delivered normalised millisecond
     position; ``positionWrapped`` additionally announces loop/overshoot
     normalisation.  Envelope arrays are parsed only by report updates, never by
@@ -686,6 +737,8 @@ class MeterEnvelope(QObject):
         self._coalesced = 0
         self._parse_error: str | None = None
         self._report_revision = 0
+        self._report_scope: dict[str, Any] = {}
+        self._history_epoch = 0
 
     def set_report(self, report: Mapping[str, Any] | None, *, merge: bool = True) -> None:
         """Merge one audition or render-side report into the live bridge.
@@ -698,8 +751,24 @@ class MeterEnvelope(QObject):
             return
         if not isinstance(report, Mapping):
             raise TypeError("MeterEnvelope.set_report 需要 audition report 字典。")
+        incoming_scope = _report_scope_values(report)
+        scope_changed, segment_changed = _report_scope_conflicts(
+            self._report_scope, incoming_scope)
         if not merge:
             self._clear_series()
+            self._history_epoch += 1
+        elif scope_changed:
+            # A/B, a changed parameter render, or a new audition segment owns a
+            # different curve. Never append its samples to the previous report.
+            self._clear_series()
+            self._history_epoch += 1
+        if incoming_scope:
+            self._report_scope.update(incoming_scope)
+        if segment_changed:
+            self._position_ms = 0.0
+            self._pending_position_ms = 0.0
+            self._pending_source_position_ms = 0.0
+            self._pending_seeked = True
         for root in _meter_report_roots(report):
             self._ingest_report(root)
         discovered_duration = _report_duration_ms(report)
@@ -854,7 +923,10 @@ class MeterEnvelope(QObject):
         self._seeked = False
         self._dirty = False
         self._last_delivery_ms = None
+        self._report_scope.clear()
+        self._history_epoch += 1
         self._snapshot = self._empty_snapshot(0.0)
+        self._snapshot["history_epoch"] = self._history_epoch
         self.changed.emit(self.snapshot())
         self.cleared.emit()
 
@@ -892,6 +964,11 @@ class MeterEnvelope(QObject):
     @property
     def position_ratio(self) -> float:
         return _position_ratio_ms(self._position_ms, self._duration_ms)
+
+    @property
+    def history_epoch(self) -> int:
+        """Generation that changes whenever old GR history must be discarded."""
+        return self._history_epoch
 
     @property
     def wrapped(self) -> bool:
@@ -1042,6 +1119,7 @@ class MeterEnvelope(QObject):
             "position_ratio": _position_ratio_ms(position, self._duration_ms),
             "wrapped": self._wrapped,
             "seeked": self._seeked,
+            "history_epoch": self._history_epoch,
             "tracks": tracks,
             "bus": bus,
             "lanes": [*tracks, bus],
@@ -1059,6 +1137,7 @@ class MeterEnvelope(QObject):
             "position_ratio": 0.0,
             "wrapped": False,
             "seeked": False,
+            "history_epoch": 0,
             "tracks": [],
             "bus": bus,
             "lanes": [bus],
@@ -1074,6 +1153,7 @@ def _copy_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "position_ratio": float(snapshot.get("position_ratio", 0.0) or 0.0),
         "wrapped": bool(snapshot.get("wrapped", False)),
         "seeked": bool(snapshot.get("seeked", False)),
+        "history_epoch": int(snapshot.get("history_epoch", 0) or 0),
         "tracks": tracks,
         "bus": bus,
         "lanes": [*tracks, bus],
@@ -1329,7 +1409,7 @@ def _parse_edc(report: Mapping[str, Any]) -> tuple[tuple[tuple[float, float], ..
 
 
 class GrHistoryView(QWidget):
-    """Rolling 30 second gain-reduction graph with a reverse red GR bar."""
+    """Playback-aligned gain-reduction graph on a focused 0 to -6 dB scale."""
 
     historyChanged = pyqtSignal(object)
 
@@ -1351,6 +1431,7 @@ class GrHistoryView(QWidget):
         self._position_ms = float(self.feed.current_position_ms)
         self._current_gr: float | None = None
         self._has_report = False
+        self._history_epoch = int(self.feed.history_epoch)
 
     def sizeHint(self) -> QSize:
         return QSize(460, 238)
@@ -1364,6 +1445,26 @@ class GrHistoryView(QWidget):
         return self._current_gr
 
     @property
+    def current_display_gr_db(self) -> float | None:
+        """Return the current value after clamping it to the visible range."""
+        return self.clamped_gr_db()
+
+    @property
+    def current_gr_over_range(self) -> bool:
+        """Whether the current value exceeds the visible -6 dB floor."""
+        return self.is_gr_over_range()
+
+    @property
+    def current_range_text(self) -> str:
+        """Return a compact label that never hides a clamped raw value."""
+        value = self._current_gr
+        if value is None:
+            return "—"
+        if self.is_gr_over_range(value):
+            return "%.1f dB / -6 dB MAX" % value
+        return "%.1f dB" % value
+
+    @property
     def has_data(self) -> bool:
         return bool(self.history_points())
 
@@ -1372,8 +1473,48 @@ class GrHistoryView(QWidget):
         return _tr("GR 为分块RMS估计（非采样精确）")
 
     @property
+    def meter_hint(self) -> str:
+        """Clarify that a true 0 dB reading can mean compression is inactive."""
+        return _tr("分块估算 · 压缩关闭/未触发=0 dB")
+
+    @property
+    def compact_meter_hint(self) -> str:
+        """Shorter form for the minimum-width graph without losing the zero cue."""
+        return _tr("分块 · 0 dB=OFF")
+
+    @property
     def position_ms(self) -> float:
         return self._position_ms
+
+    def clamped_gr_db(self, value: float | None = None) -> float | None:
+        """Normalise GR magnitude to a negative dB value and clamp at -6 dB."""
+        number = self._current_gr if value is None else _finite(value)
+        if number is None:
+            return None
+        return _clamp(-abs(number), GR_FLOOR_DB, 0.0)
+
+    def is_gr_over_range(self, value: float | None = None) -> bool:
+        """Return whether a value falls below the visible -6 dB floor."""
+        number = self._current_gr if value is None else _finite(value)
+        return number is not None and -abs(number) < GR_FLOOR_DB - 1e-9
+
+    def gr_plot_y(self, value: float | None = None,
+                  graph: QRectF | None = None) -> float | None:
+        """Map 0 dB to the plot top and -6 dB to the plot bottom."""
+        display = self.clamped_gr_db(value)
+        if display is None:
+            return None
+        target = graph or self.plot_rect()
+        fraction = abs(display) / abs(GR_FLOOR_DB)
+        return target.top() + target.height() * _clamp(fraction, 0.0, 1.0)
+
+    def axis_tick_values(self) -> tuple[float, ...]:
+        """Expose the full 0-to--6 dB axis for callers and rendering tests."""
+        return GR_AXIS_TICKS_DB
+
+    def visible_time_range_ms(self) -> tuple[float, float]:
+        """Return the playback-relative time window painted by this view."""
+        return self._time_window()
 
     def playhead_ratio(self) -> float:
         """Return the transport cursor ratio inside the visible GR window."""
@@ -1399,6 +1540,12 @@ class GrHistoryView(QWidget):
 
     def _time_window(self) -> tuple[float, float]:
         window_ms = self.history_seconds * 1000.0
+        duration_ms = _finite(self.feed.duration_ms)
+        if duration_ms is not None and duration_ms > 0.0:
+            if duration_ms <= window_ms + 1e-9:
+                return 0.0, duration_ms
+            end_ms = max(window_ms, min(duration_ms, self._position_ms))
+            return end_ms - window_ms, end_ms
         end_ms = max(window_ms, self._position_ms)
         return end_ms - window_ms, end_ms
 
@@ -1469,6 +1616,13 @@ class GrHistoryView(QWidget):
             return
         position = float(snapshot.get("position_ms", 0.0) or 0.0)
         self._position_ms = position
+        epoch = int(snapshot.get("history_epoch", self._history_epoch) or 0)
+        epoch_changed = epoch != self._history_epoch
+        if epoch_changed:
+            self._history.clear()
+            self._last_position_ms = None
+            self._current_gr = None
+            self._history_epoch = epoch
         if (bool(snapshot.get("wrapped")) or bool(snapshot.get("seeked"))
                 or (self._last_position_ms is not None
                     and (position + 1.0 < self._last_position_ms
@@ -1482,6 +1636,7 @@ class GrHistoryView(QWidget):
                 self._selected_lane = "bus"
             elif candidates:
                 self._selected_lane = candidates[0]
+        history_changed = epoch_changed
         for item in lanes:
             if not isinstance(item, Mapping):
                 continue
@@ -1491,16 +1646,21 @@ class GrHistoryView(QWidget):
                 continue
             bucket = self._history.setdefault(lane, deque())
             if bucket and abs(bucket[-1][0] - position) < 0.5:
-                bucket[-1] = (position, value)
+                if abs(bucket[-1][1] - value) > 1e-6:
+                    bucket[-1] = (position, value)
+                    history_changed = True
             else:
                 bucket.append((position, value))
+                history_changed = True
         self._last_position_ms = position
         cutoff = position - self.history_seconds * 1000.0
         for bucket in self._history.values():
             while bucket and bucket[0][0] < cutoff:
                 bucket.popleft()
+                history_changed = True
         self._select_current(snapshot)
-        self.historyChanged.emit(self.history_points())
+        if history_changed:
+            self.historyChanged.emit(self.history_points())
 
     def paintEvent(self, event: Any) -> None:
         del event
@@ -1510,7 +1670,7 @@ class GrHistoryView(QWidget):
         red = QColor("#c43d58") if base.lightness() >= 142 else QColor("#ff6b83")
         width = max(1, self.width())
         height = max(1, self.height())
-        margin_left = 44.0
+        margin_left = 52.0
         graph = self.plot_rect()
         painter.setPen(Qt.NoPen)
         painter.setBrush(base)
@@ -1519,54 +1679,96 @@ class GrHistoryView(QWidget):
         title_font = _widget_font(self.font(), 1.0, bold=True)
         painter.setFont(title_font)
         painter.setPen(text)
-        painter.drawText(
-            QRectF(12.0, 7.0, graph.width(), 20.0),
-            Qt.AlignLeft | Qt.AlignVCenter,
-            _tr("GR 历史 · 最近 %g s") % self.history_seconds,
-        )
+        start_ms, end_ms = self._time_window()
+        span_seconds = max(0.001, (end_ms - start_ms) / 1000.0)
+        title_rect = QRectF(12.0, 7.0, max(80.0, width - 238.0), 20.0)
+        title = (_tr("GR 历史 · 最近 %g s") % span_seconds
+                 if width >= 520.0 else _tr("压缩 GR"))
+        title = painter.fontMetrics().elidedText(
+            title, Qt.ElideRight, max(1, int(title_rect.width())))
+        painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, title)
         painter.setFont(self.font())
-        value_text = "—" if self._current_gr is None else "%.1f dB" % self._current_gr
-        painter.drawText(QRectF(width - 150.0, 7.0, 136.0, 20.0),
-                         Qt.AlignRight | Qt.AlignVCenter, value_text)
+        over_color = QColor("#e98420") if base.lightness() >= 142 else QColor("#ffb454")
+        current_over = self.is_gr_over_range()
+        painter.setPen(over_color if current_over else text)
+        painter.drawText(QRectF(width - 224.0, 7.0, 210.0, 20.0),
+                         Qt.AlignRight | Qt.AlignVCenter, self.current_range_text)
 
         bar = QRectF(graph.left(), 31.0, graph.width(), 8.0)
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(text.red(), text.green(), text.blue(), 22))
         painter.drawRoundedRect(bar, 4.0, 4.0)
-        if self._current_gr is not None and self._current_gr < 0.0:
-            fraction = _clamp(abs(self._current_gr) / abs(GR_FLOOR_DB), 0.0, 1.0)
-            fill = QRectF(bar.right() - bar.width() * fraction, bar.top(),
-                          bar.width() * fraction, bar.height())
-            painter.setBrush(red)
+        display_current = self.clamped_gr_db()
+        if display_current is not None and display_current < 0.0:
+            fraction = _clamp(abs(display_current) / abs(GR_FLOOR_DB), 0.0, 1.0)
+            fill = QRectF(bar.left(), bar.top(), bar.width() * fraction, bar.height())
+            painter.setBrush(over_color if current_over else red)
             painter.drawRoundedRect(fill, 4.0, 4.0)
         painter.setPen(secondary)
-        painter.drawText(QRectF(graph.left(), 43.0, graph.width(), 18.0),
-                         Qt.AlignLeft | Qt.AlignVCenter,
-                         "%s · %s" % (self.caption, format_time_ms(self._position_ms)))
+        timestamp_width = 92.0
+        hint_rect = QRectF(
+            graph.left(), 43.0, max(30.0, graph.width() - timestamp_width), 18.0)
+        hint_text = (self.meter_hint if hint_rect.width() >= 280.0
+                     else self.compact_meter_hint)
+        hint = painter.fontMetrics().elidedText(
+            hint_text, Qt.ElideRight, max(1, int(hint_rect.width())))
+        painter.drawText(hint_rect, Qt.AlignLeft | Qt.AlignVCenter, hint)
+        painter.drawText(
+            QRectF(graph.right() - timestamp_width, 43.0,
+                   timestamp_width, 18.0),
+            Qt.AlignRight | Qt.AlignVCenter, format_time_ms(self._position_ms))
 
-        for db in (0, -6, -12, -18, -24):
-            y = graph.top() + graph.height() * (abs(db) / abs(GR_FLOOR_DB))
+        ticks = self.axis_tick_values() if graph.height() >= 84.0 else (
+            0.0, -2.0, -4.0, -6.0,
+        )
+        for db in ticks:
+            y = self.gr_plot_y(db, graph)
+            if y is None:
+                continue
             painter.setPen(QPen(grid, 1.0))
             painter.drawLine(QPointF(graph.left(), y), QPointF(graph.right(), y))
-            painter.setPen(QColor(text.red(), text.green(), text.blue(), 155))
+            painter.setPen(QColor(text.red(), text.green(), text.blue(), 165))
+            label = ("%d dB" % db) if db in (0.0, GR_FLOOR_DB) else "%d" % db
             painter.drawText(QRectF(2.0, y - 8.0, margin_left - 7.0, 16.0),
-                             Qt.AlignRight | Qt.AlignVCenter, "%d" % db)
+                             Qt.AlignRight | Qt.AlignVCenter, label)
 
-        start_ms, end_ms = self._time_window()
-        for fraction in (0.0, 0.5, 1.0):
+        for index, fraction in enumerate((0.0, 0.5, 1.0)):
             x = graph.left() + graph.width() * fraction
             painter.setPen(QPen(grid, 1.0))
             painter.drawLine(QPointF(x, graph.top()), QPointF(x, graph.bottom()))
-            seconds = (start_ms + (end_ms - start_ms) * fraction) / 1000.0
-            align = Qt.AlignCenter
+            timestamp = start_ms + (end_ms - start_ms) * fraction
+            align = (Qt.AlignLeft if index == 0 else
+                     Qt.AlignRight if index == 2 else Qt.AlignCenter)
             painter.setPen(QColor(text.red(), text.green(), text.blue(), 145))
-            painter.drawText(QRectF(x - 35.0, graph.bottom() + 2.0, 70.0, 18.0),
-                             align, "%.0f s" % seconds)
+            tick_rect = (QRectF(graph.left(), graph.bottom() + 2.0, 76.0, 18.0)
+                         if index == 0 else
+                         QRectF(graph.right() - 76.0, graph.bottom() + 2.0, 76.0, 18.0)
+                         if index == 2 else
+                         QRectF(x - 38.0, graph.bottom() + 2.0, 76.0, 18.0))
+            painter.drawText(tick_rect, align | Qt.AlignVCenter,
+                             format_time_ms(timestamp))
 
         points = [(timestamp, value) for timestamp, value in self.history_points()
                   if start_ms - 1.0 <= timestamp <= end_ms + 1.0]
+        visible_over_range = current_over or any(
+            self.is_gr_over_range(value) for _, value in points)
+        if visible_over_range:
+            painter.setPen(over_color)
+            painter.drawText(QRectF(graph.right() - 84.0, graph.top() + 3.0, 78.0, 16.0),
+                             Qt.AlignRight | Qt.AlignVCenter, "-6 dB MAX")
+
+        def draw_current_marker() -> None:
+            marker_y = self.gr_plot_y(graph=graph)
+            if marker_y is None:
+                return
+            marker = QPointF(self.playhead_x(), marker_y)
+            painter.setPen(QPen(base, 3.5))
+            painter.setBrush(over_color if current_over else red)
+            painter.drawEllipse(marker, 4.5, 4.5)
+
         if not points:
             _draw_playhead(painter, self.playhead_x(), graph.top(), graph.bottom(), base)
+            draw_current_marker()
             painter.setPen(QColor(text.red(), text.green(), text.blue(), 165))
             message = (_tr("暂无 GR 数据 · 等待试听包络")
                        if not self._has_report else _tr("当前区间没有 GR 采样"))
@@ -1574,19 +1776,21 @@ class GrHistoryView(QWidget):
             return
         path = QPainterPath()
         for index, (timestamp, value) in enumerate(points):
-            x = graph.left() + (timestamp - start_ms) / max(1.0, end_ms - start_ms) * graph.width()
-            y = graph.top() + _clamp(abs(value) / abs(GR_FLOOR_DB), 0.0, 1.0) * graph.height()
+            x = (graph.left() + (timestamp - start_ms)
+                 / max(1.0, end_ms - start_ms) * graph.width())
+            y = self.gr_plot_y(value, graph)
             if index == 0:
                 path.moveTo(x, y)
             else:
                 path.lineTo(x, y)
         area = QPainterPath(path)
-        if points:
-            first_x = graph.left() + (points[0][0] - start_ms) / max(1.0, end_ms - start_ms) * graph.width()
-            last_x = graph.left() + (points[-1][0] - start_ms) / max(1.0, end_ms - start_ms) * graph.width()
-            area.lineTo(last_x, graph.top())
-            area.lineTo(first_x, graph.top())
-            area.closeSubpath()
+        first_x = (graph.left() + (points[0][0] - start_ms)
+                   / max(1.0, end_ms - start_ms) * graph.width())
+        last_x = (graph.left() + (points[-1][0] - start_ms)
+                  / max(1.0, end_ms - start_ms) * graph.width())
+        area.lineTo(last_x, graph.top())
+        area.lineTo(first_x, graph.top())
+        area.closeSubpath()
         fill = QColor(red)
         fill.setAlpha(34)
         painter.setPen(Qt.NoPen)
@@ -1595,7 +1799,17 @@ class GrHistoryView(QWidget):
         painter.setPen(QPen(red, 2.0))
         painter.setBrush(Qt.NoBrush)
         painter.drawPath(path)
+        if visible_over_range:
+            painter.setPen(QPen(over_color, 2.0))
+            for timestamp, value in points:
+                if not self.is_gr_over_range(value):
+                    continue
+                x = (graph.left() + (timestamp - start_ms)
+                     / max(1.0, end_ms - start_ms) * graph.width())
+                painter.drawLine(QPointF(x, graph.bottom() - 3.0),
+                                 QPointF(x, graph.bottom()))
         _draw_playhead(painter, self.playhead_x(), graph.top(), graph.bottom(), base)
+        draw_current_marker()
 
 
 class ReverbDecayView(QWidget):
@@ -2340,6 +2554,7 @@ __all__ = [
     "METER_REFRESH_MS",
     "PEAK_FLOOR_DBFS",
     "GR_FLOOR_DB",
+    "GR_AXIS_TICKS_DB",
     "GR_HISTORY_SECONDS",
     "EDC_FLOOR_DB",
 ]

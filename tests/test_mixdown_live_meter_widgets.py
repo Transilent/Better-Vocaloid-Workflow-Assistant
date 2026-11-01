@@ -65,6 +65,28 @@ def row_envelope_report():
     }
 
 
+def gain_reduction_report(values, *, duration=1.0, start=0.0,
+                           output_path="after.wav", bypass=False, hz=None):
+    times = [index / float(hz or max(1, len(values) - 1))
+             for index in range(len(values))]
+    return {
+        "duration_seconds": duration,
+        "preview_start_seconds": start,
+        "output_path": output_path,
+        "bypass_processing": bypass,
+        "gr_db_p95": max(values, default=0.0),
+        "gr_envelope": {
+            "kind": "gain_reduction",
+            "method": "chunk_rms_db_difference",
+            "enabled": not bypass,
+            "hz": float(hz or max(1, len(values) - 1)),
+            "alignment": "bucket_start",
+            "time_seconds": times,
+            "values_db": list(values),
+        },
+    }
+
+
 class MeterEnvelopeTests(unittest.TestCase):
     def test_interpolates_tracks_and_bus_at_playback_time(self):
         feed = live.MeterEnvelope(auto_start=False)
@@ -336,6 +358,118 @@ class GrHistoryTests(unittest.TestCase):
         self.assertGreater(view.playhead_x(), first_x)
         self.assertAlmostEqual(
             (view.playhead_x() - graph.left()) / graph.width(), 0.5, places=6)
+
+    def test_current_gr_point_tracks_playback_on_six_db_scale(self):
+        feed = live.MeterEnvelope(auto_start=False)
+        view = live.GrHistoryView(feed=feed, history_seconds=30.0)
+        view.set_report(gain_reduction_report((0.0, 1.0, 3.0, 5.0), hz=4))
+        graph = view.plot_rect()
+        self.assertEqual(live.GR_FLOOR_DB, -6.0)
+        self.assertEqual(view.axis_tick_values(), (0.0, -1.0, -2.0, -3.0, -4.0, -5.0, -6.0))
+        self.assertEqual(view.visible_time_range_ms(), (0.0, 1000.0))
+        self.assertIn("0 dB", view.meter_hint)
+
+        sampled_y = []
+        for position, expected in ((0, 0.0), (250, -1.0), (500, -3.0), (750, -5.0)):
+            view.set_position_ms(position)
+            self.assertAlmostEqual(view.current_gr_db, expected, places=6)
+            self.assertAlmostEqual(
+                view.current_display_gr_db, expected, places=6)
+            self.assertFalse(view.current_gr_over_range)
+            y = view.gr_plot_y(graph=graph)
+            expected_y = graph.top() + abs(expected) / 6.0 * graph.height()
+            self.assertAlmostEqual(y, expected_y, places=6)
+            self.assertAlmostEqual(
+                view.playhead_ratio(), position / 1000.0, places=6)
+            sampled_y.append(y)
+        self.assertEqual(len(set(round(value, 6) for value in sampled_y)), 4)
+
+    def test_out_of_range_gr_is_clamped_and_visibly_marked(self):
+        feed = live.MeterEnvelope(auto_start=False)
+        view = live.GrHistoryView(feed=feed)
+        view.set_report(gain_reduction_report((8.5, 4.0), hz=2))
+        view.set_position_ms(0)
+        graph = view.plot_rect()
+        self.assertAlmostEqual(view.current_gr_db, -8.5, places=6)
+        self.assertAlmostEqual(view.current_display_gr_db, -6.0, places=6)
+        self.assertTrue(view.current_gr_over_range)
+        self.assertIn("-8.5 dB", view.current_range_text)
+        self.assertIn("-6 dB MAX", view.current_range_text)
+        self.assertAlmostEqual(
+            view.gr_plot_y(graph=graph), graph.bottom(), places=6)
+        view.resize(460, 220)
+        view.show()
+        APP.processEvents()
+        self.assertFalse(view.grab().isNull())
+
+    def test_short_clip_uses_full_timeline_and_long_clip_scrolls(self):
+        short_feed = live.MeterEnvelope(auto_start=False)
+        short_view = live.GrHistoryView(feed=short_feed, history_seconds=30.0)
+        short_view.set_report(gain_reduction_report((0.0, 2.0), duration=2.0))
+        short_view.set_position_ms(1000)
+        self.assertEqual(short_view.visible_time_range_ms(), (0.0, 2000.0))
+        self.assertAlmostEqual(short_view.playhead_ratio(), 0.5, places=6)
+
+        long_feed = live.MeterEnvelope(auto_start=False)
+        long_view = live.GrHistoryView(feed=long_feed, history_seconds=30.0)
+        long_view.set_report(gain_reduction_report((0.0, 2.0), duration=60.0))
+        long_view.set_position_ms(35000)
+        self.assertEqual(long_view.visible_time_range_ms(), (5000.0, 35000.0))
+        self.assertAlmostEqual(long_view.playhead_ratio(), 1.0, places=6)
+
+    def test_true_zero_and_paused_position_do_not_invent_motion(self):
+        feed = live.MeterEnvelope(auto_start=False)
+        view = live.GrHistoryView(feed=feed)
+        view.set_report(gain_reduction_report(
+            (0.0, 4.0, 0.0, 0.0, 0.0), hz=4))
+        for position in (0, 250, 500):
+            view.set_position_ms(position)
+        self.assertAlmostEqual(view.current_gr_db, 0.0, places=6)
+        self.assertAlmostEqual(
+            view.gr_plot_y(), view.plot_rect().top(), places=6)
+
+        muted = gain_reduction_report(
+            (0.0, 0.0, 0.0, 0.0, 0.0), hz=4, output_path="muted.wav")
+        muted["meters"] = {"tracks": [
+            {"role": "vocal", "index": 0, "audible": False},
+        ]}
+        view.set_report(muted)
+        view.set_position_ms(500)
+        self.assertTrue(all(value == 0.0 for _, value in view.history_points()))
+        points = view.history_points()
+        emitted = []
+        view.historyChanged.connect(lambda values: emitted.append(values))
+        for _ in range(4):
+            view.set_position_ms(500)
+        self.assertEqual(view.history_points(), points)
+        self.assertEqual(emitted, [])
+
+    def test_ab_switch_and_new_segment_discard_old_gr_history(self):
+        feed = live.MeterEnvelope(auto_start=False)
+        view = live.GrHistoryView(feed=feed)
+        view.set_report(gain_reduction_report(
+            (0.0, 4.0), duration=2.0, output_path="after-a.wav"))
+        view.set_position_ms(500)
+        self.assertEqual(len(view.history_points()), 2)
+        initial_epoch = feed.history_epoch
+
+        view.set_report(gain_reduction_report(
+            (0.0, 0.0), duration=2.0, output_path="after-a.wav", bypass=True))
+        self.assertGreater(feed.history_epoch, initial_epoch)
+        self.assertEqual(view.history_points(), ((500.0, 0.0),))
+
+        switched_epoch = feed.history_epoch
+        view.set_report(gain_reduction_report(
+            (0.0, 5.0), duration=2.0, output_path="after-c.wav"))
+        self.assertGreater(feed.history_epoch, switched_epoch)
+        self.assertEqual(view.history_points(), ((500.0, -2.5),))
+
+        segment_epoch = feed.history_epoch
+        view.set_report(gain_reduction_report(
+            (0.0, 1.5), duration=2.0, start=12.0, output_path="after-segment.wav"))
+        self.assertGreater(feed.history_epoch, segment_epoch)
+        self.assertEqual(view.position_ms, 0.0)
+        self.assertEqual(view.history_points(), ((0.0, 0.0),))
 
     def test_shared_30hz_feed_updates_views_once(self):
         feed = live.MeterEnvelope(auto_start=True)

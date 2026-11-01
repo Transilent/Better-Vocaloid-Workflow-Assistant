@@ -301,6 +301,9 @@ class _Crossfade:
     started_at: Optional[float] = None
     paused_elapsed_ms: Optional[float] = None
     progress: float = 0.0
+    auto_start: bool = True
+    align_to_active: bool = True
+    ready: bool = False
 
 
 class MixdownPlayer(QObject):
@@ -320,6 +323,7 @@ class MixdownPlayer(QObject):
     loaded = pyqtSignal(str)
     sourceChanged = pyqtSignal(str)
     crossfadeLoading = pyqtSignal(str)
+    crossfadeReady = pyqtSignal(str)
     crossfadeStarted = pyqtSignal(str)
     crossfadeProgress = pyqtSignal(float)
     crossfadeFinished = pyqtSignal(str)
@@ -509,11 +513,29 @@ class MixdownPlayer(QObject):
         player is stopped at completion.  A replacement request cancels the
         previous candidate but never pauses/stops the active player.
         """
+        return self._queue_crossfade(
+            path, position_ms, duration_ms,
+            operation='load_crossfade', auto_start=True, align_to_active=True)
+
+    def prepare_crossfade(self, path, position_ms, duration_ms=DEFAULT_CROSSFADE_MS):
+        """Load and seek a paused standby that starts only on request.
+
+        This keeps the active source and its position stream untouched while a
+        locally rendered next segment becomes ready.  Unlike ``load_crossfade``,
+        the candidate does not advance while it waits.
+        """
+        return self._queue_crossfade(
+            path, position_ms, duration_ms,
+            operation='prepare_crossfade', auto_start=False,
+            align_to_active=False)
+
+    def _queue_crossfade(self, path, position_ms, duration_ms, *, operation,
+                         auto_start, align_to_active):
         if not self._available:
-            return self._reject_unavailable('load_crossfade')
+            return self._reject_unavailable(operation)
         source = _source_path(path)
         if not source:
-            self.errorOccurred.emit('load_crossfade requires a non-empty media path')
+            self.errorOccurred.emit(operation + ' requires a non-empty media path')
             return False
         self._cancel_crossfade()
         self._loop_timer.stop()
@@ -540,7 +562,7 @@ class MixdownPlayer(QObject):
         except Exception as error:
             self._set_adapter_volume(active_index, self._master_volume)
             self.errorOccurred.emit(
-                'load_crossfade could not load standby: ' +
+                operation + ' could not load standby: ' +
                 (str(error) or type(error).__name__))
             return False
         self._crossfade = _Crossfade(
@@ -551,9 +573,37 @@ class MixdownPlayer(QObject):
             position_ms=target_position,
             duration_ms=target_duration,
             active_position_ms=active_position,
+            auto_start=bool(auto_start),
+            align_to_active=bool(align_to_active),
         )
         self.crossfadeLoading.emit(source)
         return True
+
+    def start_crossfade(self, position_ms=None):
+        """Start a candidate previously loaded by ``prepare_crossfade``."""
+        transition = self._crossfade
+        if (not self._available or transition is None or transition.started
+                or not transition.ready or transition.auto_start):
+            return False
+        try:
+            if position_ms is not None:
+                candidate = self._adapters[transition.candidate_index]
+                duration = max(0, int(candidate.duration()))
+                position = max(0, int(position_ms))
+                if duration:
+                    position = min(position, duration)
+                candidate.set_position(position)
+            self._begin_candidate(transition)
+            return True
+        except Exception as error:
+            self.errorOccurred.emit(
+                'start_crossfade failed: ' +
+                (str(error) or type(error).__name__))
+            return False
+
+    def cancel_crossfade(self):
+        """Discard a loading, ready or fading candidate; keep the active audio."""
+        return self._cancel_crossfade(restore_volume=True)
 
     def play(self):
         if not self._available:
@@ -841,9 +891,12 @@ class MixdownPlayer(QObject):
             self._direct = None
             self._active_index = transition.candidate_index
             self._last_source = None
-            self._publish_active_snapshot(force=True)
+            # Commit the logical segment before the new active player's
+            # position/duration events.  UI report, meter and directory state
+            # can therefore switch atomically with the actual audio handoff.
             self.crossfadeProgress.emit(1.0)
             self.crossfadeFinished.emit(transition.path)
+            self._publish_active_snapshot(force=True)
         except Exception as error:
             self._crossfade = None
             self.errorOccurred.emit(
@@ -867,7 +920,8 @@ class MixdownPlayer(QObject):
                 candidate = self._adapters[index]
                 position = transition.position_ms
                 active = self._adapters[transition.active_index]
-                if active.has_media() and active.state() == PlaybackState.PlayingState:
+                if (transition.align_to_active and active.has_media()
+                        and active.state() == PlaybackState.PlayingState):
                     # The old player advances while the new media loads. Seek
                     # to the same song position at the moment the fade starts.
                     elapsed = int(active.position()) - transition.active_position_ms
@@ -884,6 +938,7 @@ class MixdownPlayer(QObject):
                     else:
                         position = min(position, duration)
                 candidate.set_position(position)
+                transition.ready = True
                 candidate_loaded = True
                 loaded_path = transition.path
             elif self._direct is not None and index == self._direct.index:
@@ -901,7 +956,10 @@ class MixdownPlayer(QObject):
         if index == self._active_index:
             self.mediaStatusChanged.emit(status)
         if candidate_loaded:
-            self._begin_candidate(transition)
+            if transition.auto_start:
+                self._begin_candidate(transition)
+            else:
+                self.crossfadeReady.emit(transition.path)
             return
         if status == MediaStatus.EndOfMedia:
             if index == self._active_index:

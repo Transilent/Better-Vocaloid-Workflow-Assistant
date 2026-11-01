@@ -45,6 +45,11 @@ from ui_components import AdaptiveColumns, FlowLayout
 
 _PREVIEW_PREFIX = 'vwa-mx-'
 _PREVIEW_CACHE_PREFIX = 'vwa-mxl-'
+_PREVIEW_CROSSFADE_MS = 80
+_PREVIEW_SWITCH_MARGIN_MS = 250
+_PREVIEW_PREFETCH_MAX_SECONDS = 8.0
+_PREVIEW_PREFETCH_SEGMENT_RATIO = 0.65
+_PREVIEW_FALLBACK_LOAD_MS = 200
 _OPTIONAL_PACKAGES = None
 _MAX_VOCAL_TRACKS = 3
 _VOCAL_FILTER = _tr('歌声干声 WAV (*.wav)')
@@ -1840,6 +1845,14 @@ class AudioMixdownDialog(QDialog):
         self._preview_retired_directories = []
         self._preview_meter_report = {}
         self._last_audition_report = {}
+        # Retain reports by actual media path while a replacement is loading;
+        # the displayed A/B analysis must follow the source being heard.
+        self._preview_analysis_reports = {}
+        self._preview_analysis_source = None
+        self._last_audible_preview = None
+        self._stream_load_context = None
+        self._stream_fallback_scheduled = False
+        self._stream_device_faulted = False
         self._edc_playback_position_ms = 0.0
         self._preview_dirty = True
         self._preview_autoplay = False
@@ -1858,12 +1871,18 @@ class AudioMixdownDialog(QDialog):
         self._preview_segment_start_seconds = 0.0
         self._preview_segment_duration_seconds = 0.0
         self._pending_preview_segment = None
+        self._preview_prefetch = None
+        self._preview_prefetch_failed_for = None
         self._pending_player_position_ms = 0
         self._player_loop = False
         self._preview_debounce = QTimer(self)
         self._preview_debounce.setSingleShot(True)
         self._preview_debounce.setInterval(90)
         self._preview_debounce.timeout.connect(self._start_live_preview)
+        self._preview_switch_timer = QTimer(self)
+        self._preview_switch_timer.setSingleShot(True)
+        self._preview_switch_timer.timeout.connect(
+            self._start_prefetched_preview)
         self._close_wait_timer = QTimer(self)
         self._close_wait_timer.setSingleShot(True)
         self._close_wait_timer.setInterval(25)
@@ -2385,6 +2404,8 @@ class AudioMixdownDialog(QDialog):
         self.eq_header = QHBoxLayout()
         self.eq_header.addWidget(self.eq_enabled)
         self.eq_header.addStretch(1)
+        self.eq_spectrum_label = label(_tr('人声频谱'), 'muted')
+        self.eq_header.addWidget(self.eq_spectrum_label)
         self.eq_page_layout.addLayout(self.eq_header)
         self.eq_page_layout.addWidget(self.eq_curve, 1)
         self.gr_page = QWidget()
@@ -2438,7 +2459,14 @@ class AudioMixdownDialog(QDialog):
             self.reverb_decay = ReverbDecayView()
         self.reverb_decay.setMinimumSize(0, 180)
         self.reverb_decay.setMaximumHeight(16777215)
-        self.edc_layout.addWidget(self.reverb_decay, 1)
+        self.reverb_decay_toggle = fold(
+            _tr('查看混响衰减（静态）'), self.reverb_decay, self.edc_layout,
+            expanded=False)
+        self.reverb_decay_help = label(
+            _tr('衰减图显示空间的脉冲响应，不随歌曲播放变化。'), 'muted')
+        self.reverb_decay_help.setWordWrap(True)
+        self.edc_layout.addWidget(self.reverb_decay_help)
+        self.edc_layout.addStretch(1)
         self.analysis_tabs = QTabWidget()
         self.analysis_tabs.setObjectName("mixdownAnalysisTabs")
         self.analysis_tabs.setDocumentMode(True)
@@ -2448,7 +2476,7 @@ class AudioMixdownDialog(QDialog):
         self.analysis_tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.analysis_tabs.addTab(self.eq_page, _tr("EQ"))
         self.analysis_tabs.addTab(self.gr_page, _tr("GR"))
-        self.analysis_tabs.addTab(self.edc_page, _tr("EDC"))
+        self.analysis_tabs.addTab(self.edc_page, _tr("混响空间"))
         processing_body.addWidget(self.analysis_tabs, 1)
         self.eq_precision_toggle = fold(
             _tr('四段精确参数'), self.eq_band_controls, self.eq_page_layout, expanded=False)
@@ -3027,20 +3055,71 @@ class AudioMixdownDialog(QDialog):
                 self._schedule_preview_refresh()
 
     def _init_preview_player(self):
-        self._player = MixdownPlayer(self, volume=72)
-        self._player.positionChanged.connect(self._player_position_changed)
-        self._player.durationChanged.connect(self._player_duration_changed)
-        self._player.stateChanged.connect(self._player_state_changed)
-        self._player.mediaStatusChanged.connect(self._player_media_status_changed)
-        if hasattr(self._player, 'errorOccurred'):
-            self._player.errorOccurred.connect(self._player_error)
-        if hasattr(self._player, 'crossfadeFinished'):
-            self._player.crossfadeFinished.connect(self._preview_crossfade_finished)
-        if hasattr(self._player, 'crossfadeCancelled'):
-            self._player.crossfadeCancelled.connect(self._preview_crossfade_cancelled)
+        self._legacy_preview_player = MixdownPlayer(self, volume=72)
+        self._stream_preview_player = None
+        self._player = self._legacy_preview_player
+        self._connect_preview_player(self._player)
         if not self._player.available:
             self.player_time.setText(_tr('系统播放器'))
             self._system_player_fallback_available = True
+
+    def _connect_preview_player(self, player, *, connect=True):
+        bindings = (
+            ('positionChanged', self._player_position_changed),
+            ('durationChanged', self._player_duration_changed),
+            ('stateChanged', self._player_state_changed),
+            ('mediaStatusChanged', self._player_media_status_changed),
+            ('sourceChanged', self._player_source_changed),
+            ('errorOccurred', self._player_error),
+            ('crossfadeFinished', self._preview_crossfade_finished),
+            ('crossfadeReady', self._preview_crossfade_ready),
+            ('crossfadeCancelled', self._preview_crossfade_cancelled),
+        )
+        for name, callback in bindings:
+            signal = getattr(player, name, None)
+            if signal is None:
+                continue
+            try:
+                (signal.connect if connect else signal.disconnect)(callback)
+            except (TypeError, RuntimeError):
+                if connect:
+                    raise
+
+    def _player_source_changed(self, _path):
+        self._sync_preview_analysis()
+
+    def _choose_preview_player(self, path):
+        """Prefer a supported one-stream device before starting a new source."""
+        legacy = getattr(self, '_legacy_preview_player', None)
+        stream = getattr(self, '_stream_preview_player', None)
+        if self._player not in (legacy, stream) or self._player_has_media():
+            return
+        app = QApplication.instance()
+        if stream is None and app is not None and app.platformName().lower() != 'offscreen':
+            try:
+                from mixdown_stream_player import MixdownStreamPlayer
+                stream = MixdownStreamPlayer(self, volume=72)
+                self._stream_preview_player = stream
+            except (ImportError, RuntimeError, OSError):
+                stream = None
+        try:
+            supported = bool(stream and stream.available
+                             and not getattr(self, '_stream_device_faulted', False)
+                             and stream.supports_path(path))
+        except (AttributeError, RuntimeError, OSError, TypeError, ValueError):
+            supported = False
+        selected = stream if supported else legacy
+        if selected is None or selected is self._player:
+            return
+        previous = self._player
+        self._connect_preview_player(previous, connect=False)
+        self._player = selected
+        self._connect_preview_player(selected)
+        try:
+            selected.set_volume(previous.volume())
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            pass
+        self._system_player_fallback_available = not bool(selected.available)
 
     def _install_mixdown_shortcuts(self):
         """Install discoverable transport shortcuts without stealing typing."""
@@ -3060,7 +3139,7 @@ class AudioMixdownDialog(QDialog):
             self._mixdown_shortcuts.append(shortcut)
         self.analysis_tabs.setTabToolTip(0, _tr('快捷键 Alt+1：EQ 曲线'))
         self.analysis_tabs.setTabToolTip(1, _tr('快捷键 Alt+2：压缩 GR'))
-        self.analysis_tabs.setTabToolTip(2, _tr('快捷键 Alt+3：实测 EDC'))
+        self.analysis_tabs.setTabToolTip(2, _tr('快捷键 Alt+3：混响空间'))
         self.preview_before_button.setToolTip(_tr('快捷键 Ctrl+Shift+A：切换到处理前'))
         self.preview_after_button.setToolTip(_tr('快捷键 Ctrl+Shift+B：切换到处理后'))
         self.player_loop_button.setToolTip(_tr('快捷键 Ctrl+Shift+L：切换循环'))
@@ -3078,6 +3157,8 @@ class AudioMixdownDialog(QDialog):
 
     def _set_preview_loop(self, checked):
         self._player_loop = bool(checked)
+        if self._player_loop:
+            self._invalidate_preview_prefetch()
         if self._player is not None and hasattr(self._player, 'set_loop'):
             self._player.set_loop(self._player_loop)
 
@@ -3135,6 +3216,61 @@ class AudioMixdownDialog(QDialog):
                 return key
         return None
 
+    @staticmethod
+    def _analysis_source_key(path):
+        if not path:
+            return None
+        try:
+            return os.path.normcase(str(Path(path).resolve()))
+        except (OSError, TypeError, ValueError):
+            return None
+
+    def _remember_preview_analysis(self, reports):
+        """Keep the current and pending media's reports until playback switches."""
+        active = self._analysis_source_key(self._player_source_path())
+        for report in (reports or {}).values():
+            if not isinstance(report, dict):
+                continue
+            key = self._analysis_source_key(report.get('output_path'))
+            if key:
+                self._preview_analysis_reports.pop(key, None)
+                self._preview_analysis_reports[key] = report
+        while len(self._preview_analysis_reports) > 8:
+            oldest = next((key for key in self._preview_analysis_reports
+                           if key != active), None)
+            if oldest is None:
+                break
+            self._preview_analysis_reports.pop(oldest, None)
+
+    def _sync_preview_analysis(self, position_ms=None):
+        """Show the report for the actual source, not a staged replacement."""
+        source = self._analysis_source_key(self._player_source_path())
+        if source != self._preview_analysis_source:
+            self._preview_analysis_source = source
+            report = self._preview_analysis_reports.get(source)
+            self.eq_curve.set_spectrum_envelope(
+                report.get('spectrum_envelope') if report else None)
+            if report:
+                self.meter_feed.set_report(report, merge=False)
+                if report.get('reverb_edc') is not None:
+                    self.reverb_decay.set_report(report)
+                try:
+                    self.gr_summary.setText('GR p95 %.1f dB' % float(report.get('gr_db_p95')))
+                except (TypeError, ValueError):
+                    self.gr_summary.setText('GR p95 —')
+            else:
+                self.meter_feed.clear()
+                self.gr_summary.setText('GR p95 —')
+        if position_ms is None:
+            try:
+                position_ms = self._player.position() if self._player is not None else 0
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                position_ms = 0
+        position_ms = max(0, int(position_ms))
+        self.eq_curve.set_spectrum_playhead(
+            position_ms, playing=self._player_is_playing())
+        self.meter_feed.set_position_ms(position_ms)
+
     def _begin_preview_selection(self, key):
         self._preview_selection_restore_key = (
             self._preview_key_for_source()
@@ -3150,6 +3286,7 @@ class AudioMixdownDialog(QDialog):
             self._set_preview_selection(key)
         self._preview_selection_pending_key = None
         self._preview_selection_restore_key = None
+        self._sync_preview_analysis()
 
     def _restore_preview_selection(self):
         key = (self._preview_key_for_source()
@@ -3254,10 +3391,13 @@ class AudioMixdownDialog(QDialog):
         if (pending and self._player is not None
                 and not getattr(self._player, 'transitioning', False)
                 and callable(getattr(self._player, 'source', None))
-                and _same_path(self._player.source(), pending[0])):
-            self._pending_preview_segment = None
-            self._preview_segment_start_seconds = pending[1]
-            self._preview_segment_duration_seconds = pending[2]
+                and _same_path(self._player.source(), pending.get('path'))):
+            self._preview_segment_start_seconds = pending['start']
+            self._preview_segment_duration_seconds = pending['duration']
+            # A continuation keeps its pending record until
+            # crossfadeFinished promotes the prefetched report atomically.
+            if pending.get('kind') != 'continuation':
+                self._pending_preview_segment = None
         blocked = self.player_position.blockSignals(True)
         try:
             self.player_position.setRange(0, self._preview_total_milliseconds())
@@ -3267,30 +3407,129 @@ class AudioMixdownDialog(QDialog):
             self.player_position.blockSignals(blocked)
         self._preview_resume_seconds = (
             self._preview_segment_start_seconds + max(0, int(position)) / 1000.0)
-        if hasattr(self, 'meter_feed'):
-            self.meter_feed.set_position_ms(max(0, int(position)))
+        source = self._player_source_path()
+        if source and self._player is getattr(self, '_stream_preview_player', None):
+            self._last_audible_preview = {
+                'path': source, 'key': self._preview_key_for_source(source) or self._preview_actual_key,
+                'position_ms': max(0, int(position)),
+                'start': self._preview_segment_start_seconds,
+                'duration': self._preview_segment_duration_seconds,
+            }
+        self._sync_preview_analysis(max(0, int(position)))
         self._edc_playback_position_ms = max(0, int(position))
         self._update_player_time()
         self._maybe_continue_preview(max(0, int(position)))
 
     def _maybe_continue_preview(self, position_ms):
-        """Prepare the next overlapping segment before normal playback ends."""
+        """Prefetch and stage the next segment well before this one ends."""
         if (self._player_loop or self._player_seeking or not self._preview_is_playing()
-                or self._preview_dirty or self.preview_busy()
-                or self._preview_debounce.isActive()
+                or self._preview_dirty or self._preview_debounce.isActive()
                 or getattr(self._player, 'transitioning', False)):
+            return
+        if self._preview_prefetch is not None:
+            self._schedule_preview_switch()
+            return
+        if self.preview_busy():
             return
         after = (self._preview_result or {}).get('after') or {}
         total = float(after.get('source_duration_seconds') or 0.0)
         start = self._preview_segment_start_seconds
         length = self._preview_segment_duration_seconds
-        current = start + position_ms / 1000.0
-        if (length < 2.0 or total <= start + length + 0.01
-                or current < start + length - min(2.0, length / 4.0)):
+        end = start + length
+        if length < 2.0 or total <= end + 0.01:
             return
-        self._preview_resume_seconds = current
-        self._preview_force_both = True
-        self._schedule_preview_refresh(autoplay=True, immediate=True)
+        remaining = length - max(0, int(position_ms)) / 1000.0
+        lead = min(_PREVIEW_PREFETCH_MAX_SECONDS,
+                   max(2.0, length * _PREVIEW_PREFETCH_SEGMENT_RATIO))
+        if remaining > lead:
+            return
+        key = (round(start, 3), round(length, 3), round(total, 3))
+        if self._preview_prefetch_failed_for == key:
+            return
+        # The rendered windows overlap by the fade plus a scheduling margin.
+        # The fade begins at ``target_start``; the extra margin keeps the old
+        # tail alive if Qt starts the candidate late or a coarse timer fires
+        # after its deadline, so the fade never runs through EndOfMedia.
+        overlap = ((_PREVIEW_CROSSFADE_MS + _PREVIEW_SWITCH_MARGIN_MS)
+                   / 1000.0)
+        target_start = max(start, end - overlap)
+        self._start_preview_prefetch(target_start, from_end=end)
+
+    def _start_preview_prefetch(self, target_start, *, from_end):
+        """Render an aligned next window without replacing the current one."""
+        if (self._audition_service is None or not self._audition_service_ready
+                or self._audition_request_id is not None or self._preview_worker is not None):
+            return False
+        source_key = self._current_preview_source_key()
+        if source_key is None or source_key != self._preview_source_key:
+            return False
+        try:
+            self._validated_sources()
+            duration = max(2.0, min(30.0, float(self.preview_duration.value())))
+            start = max(0.0, float(target_start))
+        except (OSError, ValueError, TypeError) as error:
+            current_after = (self._preview_result or {}).get('after') or {}
+            self._preview_prefetch_failed_for = (
+                round(self._preview_segment_start_seconds, 3),
+                round(self._preview_segment_duration_seconds, 3),
+                round(float(current_after.get('source_duration_seconds') or 0.0), 3))
+            self._set_audition_diagnostic("failed", _tr("下一段预取失败：") + str(error))
+            return False
+        directory = Path(tempfile.mkdtemp(prefix=_PREVIEW_PREFIX))
+        after_path = directory / "after.wav"
+        before_path = directory / "before.wav"
+        before = self._request(before_path, preview=True, bypass_processing=True)
+        before.update(preview_start_seconds=start,
+                      preview_duration_seconds=duration)
+        before_signature = self._before_parameter_signature(before)
+        after = self._request(after_path, preview=True, bypass_processing=False)
+        after.update(preview_start_seconds=start,
+                     preview_duration_seconds=duration)
+        context = {
+            "directory": directory,
+            "source_key": source_key,
+            "start": start,
+            "duration": duration,
+            "from_start": self._preview_segment_start_seconds,
+            "from_end": float(from_end),
+            "was_playing": True,
+            "autoplay": True,
+            "play_intent": self._preview_play_intent,
+            "variant": "both",
+            "purpose": "continuation",
+            "signature": self._preview_parameter_signature(),
+            "before_signature": before_signature,
+        }
+        self._preview_prefetch = {
+            "state": "rendering",
+            "directory": directory,
+            "start": start,
+            "duration": duration,
+            "from_start": context["from_start"],
+            "from_end": context["from_end"],
+            "signature": context["signature"],
+            "before_signature": before_signature,
+        }
+        try:
+            request_id = self._audition_service.request(
+                after, before_output=before_path, after_output=after_path,
+                cache_dir=self._ensure_preview_cache_directory(),
+                variant="both", merge=True)
+        except Exception as error:
+            self._preview_prefetch = None
+            _discard_preview_directory(directory)
+            self._set_audition_diagnostic(
+                "failed", _tr("下一段预取失败：") + str(error))
+            return False
+        context["request_id"] = request_id
+        context["sent_at"] = time.monotonic()
+        self._audition_request_id = request_id
+        self._audition_request_context = context
+        self._audition_request_sent_at = context["sent_at"]
+        self._preview_pending = False
+        self._set_audition_diagnostic("updating", _tr("正在后台预取下一段"))
+        self._sync_controls()
+        return True
 
     def _player_duration_changed(self, duration):
         if duration > 0:
@@ -3309,6 +3548,7 @@ class AudioMixdownDialog(QDialog):
         self.player_toggle_button.setText(_tr('暂停') if playing else _tr('播放'))
         self.player_toggle_button.setAccessibleName(
             _tr('暂停试听') if playing else _tr('播放试听'))
+        self._sync_preview_analysis()
 
     def _player_media_status_changed(self, status):
         if self._player is not None and hasattr(self._player, 'load_crossfade'):
@@ -3348,6 +3588,14 @@ class AudioMixdownDialog(QDialog):
             self.player_toggle_button.setText(_tr('播放'))
 
     def _player_error(self, message):
+        if self._queue_stream_fallback(message):
+            return
+        if (self._player is getattr(self, '_stream_preview_player', None)
+                and self._player is not None and self._player_has_media()
+                and str(message).startswith(('crossfade load failed:', 'start_crossfade failed:'))):
+            self.status.setText(_tr('下一段暂不可用；当前片段继续播放。'))
+            _set_role(self.status, 'muted')
+            return
         if self._preview_selection_pending_key is not None:
             self._restore_preview_selection()
         self._show_system_player_fallback()
@@ -3355,6 +3603,89 @@ class AudioMixdownDialog(QDialog):
             _tr('内置播放器无法播放此片段；可用系统播放器手动打开当前片段。') +
             ' ' + str(message))
         _set_role(self.status, 'error')
+
+    def _queue_stream_fallback(self, message):
+        """Retry fatal output failures once with the existing Qt player."""
+        stream = getattr(self, '_stream_preview_player', None)
+        legacy = getattr(self, '_legacy_preview_player', None)
+        prefixes = ('load failed:', 'play failed:', 'audio output stopped unexpectedly',
+                    'audio read failed:')
+        if (self._player is stream and stream is not None
+                and self._stream_fallback_scheduled and str(message).startswith(prefixes)):
+            return True
+        if (self._player is not stream or stream is None or legacy is None
+                or not getattr(legacy, 'available', False)
+                or not str(message).startswith(prefixes)):
+            return False
+        last_audible = dict(self._last_audible_preview or {})
+        snapshot = dict(last_audible or self._stream_load_context or {})
+        path = snapshot.get('path')
+        if not path or not Path(path).is_file():
+            snapshot = dict(self._stream_load_context or {})
+            path = snapshot.get('path')
+            if last_audible and path:
+                try:
+                    absolute = (float(last_audible.get('start') or 0.0)
+                                + max(0, int(last_audible.get('position_ms') or 0)) / 1000.0)
+                    relative = max(0, int(round(
+                        (absolute - float(snapshot.get('start') or 0.0)) * 1000.0)))
+                    duration_ms = max(0, int(round(float(snapshot.get('duration') or 0.0) * 1000.0)))
+                    snapshot['position_ms'] = min(relative, max(0, duration_ms - 1)) if duration_ms else relative
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        if not path or not Path(path).is_file():
+            return False
+        snapshot['autoplay'] = bool(self._preview_play_intent)
+        snapshot['stream_generation'] = getattr(stream, '_generation', None)
+        self._stream_fallback_scheduled = True
+        self.status.setText(_tr('音频设备不可用，正在切换兼容播放器继续试听。'))
+        _set_role(self.status, 'muted')
+        QTimer.singleShot(0, lambda: self._fallback_to_legacy_player(stream, snapshot))
+        return True
+
+    def _fallback_to_legacy_player(self, failed_stream, snapshot):
+        if not self._stream_fallback_scheduled:
+            return False
+        self._stream_fallback_scheduled = False
+        legacy = getattr(self, '_legacy_preview_player', None)
+        path = snapshot.get('path')
+        if (self._player is not failed_stream or legacy is None
+                or not getattr(legacy, 'available', False)
+                or not path or not Path(path).is_file()):
+            return False
+        generation = snapshot.get('stream_generation')
+        if generation is not None and generation != getattr(failed_stream, '_generation', None):
+            return False  # A later load/seek/stop superseded this queued retry.
+        self._stream_device_faulted = True
+        self._invalidate_preview_prefetch(cancel_request=True)
+        self._connect_preview_player(failed_stream, connect=False)
+        self._player = legacy
+        self._connect_preview_player(legacy)
+        try:
+            legacy.set_volume(failed_stream.volume())
+            failed_stream.stop()
+            legacy.set_loop(self._player_loop)
+            self._preview_segment_start_seconds = float(snapshot.get('start') or 0.0)
+            self._preview_segment_duration_seconds = float(snapshot.get('duration') or 0.0)
+            position = max(0, int(snapshot.get('position_ms') or 0))
+            self._preview_resume_seconds = self._preview_segment_start_seconds + position / 1000.0
+            key = snapshot.get('key') or self._preview_actual_key or 'after'
+            self._begin_preview_selection(key)
+            self._preview_play_intent = bool(snapshot.get('autoplay') and self._preview_play_intent)
+            if legacy.load(path, position) is False:
+                self._restore_preview_selection()
+                self._show_system_player_fallback()
+                return False
+            if self._preview_play_intent:
+                legacy.play()
+            self._system_player_fallback_available = False
+            self._sync_preview_analysis(position)
+            self._sync_controls()
+            return True
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            self._restore_preview_selection()
+            self._show_system_player_fallback()
+            return False
 
     def _restart_preview_segment(self):
         if self._player is None or not self._preview_result:
@@ -3377,6 +3708,8 @@ class AudioMixdownDialog(QDialog):
         return result
 
     def _begin_player_seek(self):
+        self._invalidate_preview_prefetch()
+        self._preview_prefetch_failed_for = None
         self._player_seeking = True
 
     def _player_position_value_changed(self, position):
@@ -3392,11 +3725,15 @@ class AudioMixdownDialog(QDialog):
     def _seek_to_song_position(self, position, *, commit):
         if self._player is None:
             return
+        if commit:
+            self._invalidate_preview_prefetch()
+            self._preview_prefetch_failed_for = None
         target = max(0, int(position))
         base = int(round(self._preview_segment_start_seconds * 1000))
         end = base + int(round(self._preview_segment_duration_seconds * 1000))
         if base <= target < end:
             self._seek_player(target - base)
+            self._sync_preview_analysis(target - base)
             if commit:
                 self._preview_resume_seconds = target / 1000.0
                 if self._preview_dirty:
@@ -3413,6 +3750,8 @@ class AudioMixdownDialog(QDialog):
             self._schedule_preview_refresh(autoplay=was_playing, immediate=True)
         if commit:
             self._update_player_time()
+            if not self._preview_dirty and base <= target < end:
+                self._maybe_continue_preview(target - base)
 
     def _finish_player_seek(self):
         position = max(0, int(self.player_position.value()))
@@ -3421,12 +3760,19 @@ class AudioMixdownDialog(QDialog):
 
     def _stop_preview_player(self):
         self._preview_play_intent = False
+        self._stream_fallback_scheduled = False
+        self._last_audible_preview = None
+        self._stream_load_context = None
         if self._player is not None:
             self._player.stop()
             if not hasattr(self._player, 'load_crossfade'):
                 self._player.setMedia(QMediaContent())
         self._player_duration_ms = 0
         self._pending_player_position_ms = None
+        self._preview_analysis_source = None
+        self._preview_analysis_reports.clear()
+        self.eq_curve.clear_spectrum_envelope()
+        self.meter_feed.clear()
         blocked = self.player_position.blockSignals(True)
         try:
             self.player_position.setRange(0, 0)
@@ -3439,6 +3785,7 @@ class AudioMixdownDialog(QDialog):
         item = (self._preview_result or {}).get(key)
         if not item:
             return False
+        self._remember_preview_analysis(self._preview_result)
         path = Path(item.get('output_path', ''))
         if not path.is_file():
             self._restore_preview_selection()
@@ -3446,6 +3793,7 @@ class AudioMixdownDialog(QDialog):
             _set_role(self.preview_report, 'error')
             self._schedule_preview_refresh(autoplay=autoplay)
             return False
+        self._choose_preview_player(path)
         segment_start = float(
             item.get('preview_start_seconds', self.preview_start.value()))
         segment_duration = float(
@@ -3458,21 +3806,43 @@ class AudioMixdownDialog(QDialog):
             position_ms = max(
                 0, min(int(position_ms),
                        max(0, int(round(segment_duration * 1000)) - 1)))
+            self._preview_play_intent = bool(autoplay)
+            if self._player is getattr(self, '_stream_preview_player', None):
+                self._stream_load_context = {
+                    'path': str(path.resolve()), 'key': key, 'position_ms': position_ms,
+                    'start': segment_start, 'duration': segment_duration,
+                }
             if hasattr(self._player, 'load_crossfade'):
                 was_playing = self._player_is_playing()
                 if autoplay and was_playing:
-                    if not self._player.load_crossfade(str(path), position_ms, 80):
+                    options = {}
+                    rate = item.get('sample_rate')
+                    if getattr(self._player, 'supports_sample_aligned_boundary', False) and rate:
+                        rate = int(rate)
+                        options['candidate_origin_frame'] = (
+                            int(round(segment_start * rate))
+                            - int(round(self._preview_segment_start_seconds * rate)))
+                    if not self._player.load_crossfade(str(path), position_ms, 80, **options):
                         self._restore_preview_selection()
                         return False
                     self._begin_preview_selection(key)
                     # Keep interpreting the old player's position against its
                     # own segment until the candidate actually becomes active.
-                    self._pending_preview_segment = (str(path.resolve()), segment_start, segment_duration)
+                    self._pending_preview_segment = {
+                        'kind': 'selection',
+                        'path': str(path.resolve()),
+                        'start': segment_start,
+                        'duration': segment_duration,
+                    }
                 else:
                     self._begin_preview_selection(key)
                     self._pending_preview_segment = None
                     self._preview_segment_start_seconds = segment_start
                     self._preview_segment_duration_seconds = segment_duration
+                    if self._player is getattr(self, '_stream_preview_player', None):
+                        # A paused A/B replacement is a new explicit request;
+                        # a failed load should retry this file, not the old A/B.
+                        self._last_audible_preview = None
                     loaded = self._player.load(str(path), position_ms)
                     if loaded is False:
                         self._restore_preview_selection()
@@ -3493,6 +3863,7 @@ class AudioMixdownDialog(QDialog):
                 if autoplay:
                     self._player.play()
             self._preview_play_intent = bool(autoplay)
+            self._sync_preview_analysis()
             self.status.setText(
                 _tr('正在试听：') + (_tr('处理前') if key == 'before' else _tr('处理后')))
             _set_role(self.status, 'success')
@@ -3518,11 +3889,13 @@ class AudioMixdownDialog(QDialog):
         if self._player is not None and self._player_is_playing():
             self._preview_autoplay = False
             self._preview_play_intent = False
+            self._invalidate_preview_prefetch()
             self._player.pause()
             return
         if self._player is not None and self._player_has_media():
             self._preview_play_intent = True
             self._player.play()
+            self._maybe_continue_preview(self._player.position())
             if self._preview_dirty:
                 self._request_preview_playback()
             return
@@ -3555,6 +3928,7 @@ class AudioMixdownDialog(QDialog):
         return self._schedule_preview_refresh(autoplay=True)
 
     def play_preview(self, key):
+        self._invalidate_preview_prefetch()
         self._player_key = key
         self._preview_play_intent = True
         current = self._absolute_player_seconds()
@@ -3633,6 +4007,10 @@ class AudioMixdownDialog(QDialog):
             return False
         if self._syncing or self.busy():
             return False
+        if (self._preview_prefetch is not None
+                or (self._audition_request_context or {}).get('purpose') == 'continuation'):
+            self._invalidate_preview_prefetch(cancel_request=True,
+                                              cancel_staged=True)
         source_key = self._current_preview_source_key()
         if source_key is None or not self._support_ready:
             self._preview_dirty = True
@@ -3771,9 +4149,10 @@ class AudioMixdownDialog(QDialog):
         old_directory = self._preview_directory
         self._preview_directory = Path(directory)
         self._preview_result = {'before': before_report, 'after': after_report}
+        self._remember_preview_analysis(self._preview_result)
         self._preview_signature = context.get('signature')
         self._preview_dirty = False
-        self._apply_report_meters(after_report)
+        self._apply_report_meters(after_report, publish_live=False)
         self.preview_before_state.setText(_tr('已就绪 · 可播放'))
         self.preview_after_state.setText(_tr('已就绪 · 可播放'))
         _set_role(self.preview_before_state, 'success')
@@ -3833,6 +4212,8 @@ class AudioMixdownDialog(QDialog):
             return
 
     def cancel_preview(self):
+        self._invalidate_preview_prefetch(cancel_request=False,
+                                          cancel_staged=True)
         self._preview_debounce.stop()
         self._preview_pending = False
         if self._audition_service is not None and self._audition_request_id is not None:
@@ -4047,6 +4428,26 @@ class AudioMixdownDialog(QDialog):
         context = dict(self._audition_request_context or {})
         latency = self._audition_roundtrip_ms()
         _discard_preview_directory(context.get("directory"))
+        if context.get("purpose") == "continuation":
+            entry = self._preview_prefetch
+            self._preview_prefetch = None
+            self._audition_request_id = None
+            self._audition_request_context = None
+            self._audition_request_sent_at = None
+            if entry is not None:
+                current_after = (self._preview_result or {}).get('after') or {}
+                self._preview_prefetch_failed_for = (
+                    round(entry.get("from_start", 0.0), 3),
+                    round(float(entry.get("from_end", 0.0))
+                          - float(entry.get("from_start", 0.0)), 3),
+                    round(float(current_after.get('source_duration_seconds') or 0.0), 3))
+            message = str(event.get("message") or _tr("未知错误"))
+            self._set_audition_diagnostic(
+                "failed", _tr("下一段预取失败：") + message, latency)
+            if self._preview_pending:
+                self._preview_debounce.start(0)
+            self._sync_controls()
+            return
         self._audition_request_id = None
         self._audition_request_context = None
         self._audition_request_sent_at = None
@@ -4066,6 +4467,17 @@ class AudioMixdownDialog(QDialog):
     def _audition_cancelled_received(self, event):
         context = dict(self._audition_request_context or {})
         _discard_preview_directory(context.get("directory"))
+        if context.get("purpose") == "continuation":
+            if (self._preview_prefetch is not None
+                    and self._preview_prefetch.get("state") == "rendering"):
+                self._preview_prefetch = None
+            self._audition_request_id = None
+            self._audition_request_context = None
+            self._audition_request_sent_at = None
+            if self._preview_pending and not self._audition_closing:
+                self._preview_debounce.start(0)
+            self._sync_controls()
+            return
         self._audition_request_id = None
         self._audition_request_context = None
         self._audition_request_sent_at = None
@@ -4083,6 +4495,14 @@ class AudioMixdownDialog(QDialog):
         self._audition_poll_timer.stop()
         context = dict(self._audition_request_context or {})
         _discard_preview_directory(context.get("directory"))
+        if context.get("purpose") == "continuation":
+            self._preview_prefetch = None
+            self._audition_request_id = None
+            self._audition_request_context = None
+            self._audition_request_sent_at = None
+            self._set_audition_diagnostic("failed", _tr("下一段预取服务已停止"))
+            self._sync_controls()
+            return
         self._audition_request_id = None
         self._audition_request_context = None
         self._audition_request_sent_at = None
@@ -4135,6 +4555,7 @@ class AudioMixdownDialog(QDialog):
     def _merge_single_side_report(self, report, after):
         merged = copy.deepcopy(dict(after or {}))
         for key in ("peak_envelope", "peak_envelopes", "gr_envelope", "gr_envelopes",
+                    "spectrum_envelope",
                     "gr_db_p95", "bus_gr_db", "reverb_edc", "meters", "tracks"):
             if merged.get(key) is None and report.get(key) is not None:
                 merged[key] = copy.deepcopy(report[key])
@@ -4161,6 +4582,9 @@ class AudioMixdownDialog(QDialog):
         if not isinstance(report, dict):
             self._audition_error_received({"message": _tr("服务返回了空结果")})
             return
+        if context.get("purpose") == "continuation":
+            self._audition_prefetch_result_received(context, report, latency)
+            return
         if self._preview_pending or context.get("signature") != self._preview_parameter_signature():
             _discard_preview_directory(context.get("directory"))
             self._audition_request_id = None
@@ -4171,6 +4595,68 @@ class AudioMixdownDialog(QDialog):
             self._preview_debounce.start(0)
             return
         self._apply_audition_result(context, report, latency)
+
+    def _audition_prefetch_result_received(self, context, report, latency):
+        """Keep a completed next segment dormant until its transition starts."""
+        entry = self._preview_prefetch
+        directory = Path(context.get("directory"))
+        source_key = context.get("source_key")
+        stale = bool(
+            entry is None or entry.get("state") != "rendering"
+            or self._preview_pending
+            or context.get("signature") != self._preview_parameter_signature()
+            or source_key != self._preview_source_key
+        )
+        if stale:
+            _discard_preview_directory(directory)
+            if self._audition_request_id == context.get("request_id"):
+                self._audition_request_id = None
+                self._audition_request_context = None
+                self._audition_request_sent_at = None
+            if entry is not None and entry.get("state") == "rendering":
+                self._preview_prefetch = None
+            if self._preview_pending:
+                self._preview_debounce.start(0)
+            self._sync_controls()
+            return
+        after = self._rendered_after_report(report)
+        before = report.get("before") if isinstance(report.get("before"), dict) else None
+        if after is None or before is None:
+            _discard_preview_directory(directory)
+            self._preview_prefetch = None
+            self._audition_request_id = None
+            self._audition_request_context = None
+            self._audition_request_sent_at = None
+            self._set_audition_diagnostic(
+                "failed", _tr("下一段预取缺少对齐的 A/B 音频"), latency)
+            self._sync_controls()
+            return
+        try:
+            _validate_render(before, before["output_path"])
+            _validate_render(after, after["output_path"])
+        except (KeyError, TypeError, ValueError, OSError) as error:
+            _discard_preview_directory(directory)
+            self._preview_prefetch = None
+            self._audition_request_id = None
+            self._audition_request_context = None
+            self._audition_request_sent_at = None
+            self._set_audition_diagnostic(
+                "failed", _tr("下一段预取失败：") + str(error), latency)
+            self._sync_controls()
+            return
+        entry.update({
+            "state": "ready",
+            "report": {"before": copy.deepcopy(before),
+                       "after": copy.deepcopy(after)},
+            "raw_report": copy.deepcopy(report),
+            "latency_ms": latency,
+        })
+        self._audition_request_id = None
+        self._audition_request_context = None
+        self._audition_request_sent_at = None
+        self._set_audition_diagnostic("ready", _tr("下一段已预取 · 等待交界"), latency)
+        self._sync_controls()
+        self._arm_prefetched_preview()
 
     def _apply_audition_result(self, context, report, latency):
         directory = Path(context.get("directory"))
@@ -4202,11 +4688,12 @@ class AudioMixdownDialog(QDialog):
         old_directory = self._preview_directory
         self._preview_directory = directory
         self._preview_result = {"before": before, "after": after}
+        self._remember_preview_analysis(self._preview_result)
         self._preview_signature = context.get("signature")
         self._preview_before_signature = context.get("before_signature")
         self._preview_dirty = False
         self._last_audition_report = copy.deepcopy(report)
-        self._apply_report_meters(after)
+        self._apply_report_meters(after, publish_live=False)
         self.preview_before_state.setText(_tr("已就绪 · 可播放"))
         self.preview_after_state.setText(_tr("已就绪 · 可播放"))
         _set_role(self.preview_before_state, "success")
@@ -4231,6 +4718,232 @@ class AudioMixdownDialog(QDialog):
             self._preview_debounce.start(0)
         self._sync_controls()
 
+    @staticmethod
+    def _preview_switch_delay_ms(current_seconds, target_seconds, *,
+                                 prepared, fallback_load_ms=_PREVIEW_FALLBACK_LOAD_MS):
+        """Return a bounded timer delay for a ready continuation."""
+        target = float(target_seconds)
+        if not prepared:
+            target -= max(0, int(fallback_load_ms)) / 1000.0
+        return max(0, int(round((target - float(current_seconds)) * 1000.0)))
+
+    def _arm_prefetched_preview(self):
+        entry = self._preview_prefetch
+        if not entry or entry.get("state") != "ready":
+            return False
+        report = entry.get("report") or {}
+        item = report.get(self._player_key) or {}
+        path = Path(item.get("output_path", ""))
+        if not path.is_file():
+            self._invalidate_preview_prefetch(cancel_request=False)
+            return False
+        pending = {
+            "kind": "continuation",
+            "path": str(path.resolve()),
+            "start": float(item.get("preview_start_seconds", entry["start"])),
+            "duration": float(item.get("duration_seconds", entry["duration"])),
+            "key": self._player_key,
+        }
+        self._pending_preview_segment = pending
+        prepare = getattr(self._player, "prepare_crossfade", None)
+        if callable(prepare) and getattr(self._player, 'available', True):
+            try:
+                prepared = bool(prepare(
+                    pending["path"], 0, _PREVIEW_CROSSFADE_MS))
+            except Exception:
+                prepared = False
+            if not prepared:
+                self._invalidate_preview_prefetch(
+                    cancel_request=False, cancel_staged=True)
+                return False
+            entry["state"] = "staging"
+            self._set_audition_diagnostic("ready", _tr("下一段已预加载 · 等待交界"))
+            return True
+        entry["state"] = "ready"
+        entry["fallback"] = True
+        self._schedule_preview_switch()
+        return True
+
+    def _preview_crossfade_ready(self, path):
+        entry = self._preview_prefetch
+        pending = self._pending_preview_segment
+        if (not entry or not pending
+                or pending.get("kind") != "continuation"
+                or not _same_path(path, pending.get("path"))):
+            return
+        entry["state"] = "staged"
+        self._set_audition_diagnostic("ready", _tr("下一段待命 · 等待交界"))
+        # A single output stream can queue the *exact* future sample boundary
+        # now, before Qt has read it into the device buffer. Its completion
+        # signals still follow the audible transport, not the read-ahead cursor.
+        if (getattr(self._player, 'supports_sample_aligned_boundary', False)
+                and self._preview_is_playing()
+                and pending['start'] - self._absolute_player_seconds() > 0.5):
+            item = (entry.get('report') or {}).get(pending.get('key')) or {}
+            try:
+                rate = int(item.get('sample_rate') or 0)
+                origin = (int(round(float(pending['start']) * rate))
+                          - int(round(self._preview_segment_start_seconds * rate)))
+                started = rate > 0 and self._player.start_crossfade(
+                    0, boundary_frame=origin, candidate_origin_frame=origin)
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                started = False
+            if started:
+                entry['state'] = 'starting'
+                self._preview_switch_timer.stop()
+                return
+        self._schedule_preview_switch()
+
+    def _schedule_preview_switch(self):
+        entry = self._preview_prefetch
+        pending = self._pending_preview_segment
+        if (not entry or not pending
+                or pending.get("kind") != "continuation"
+                or entry.get("state") not in ("ready", "staged")
+                or not self._preview_is_playing() or self._player_seeking
+                or self._player_loop):
+            return False
+        if self._preview_switch_timer.isActive():
+            return True
+        prepared = entry.get("state") == "staged"
+        delay = self._preview_switch_delay_ms(
+            self._absolute_player_seconds(), pending["start"],
+            prepared=prepared)
+        self._preview_switch_timer.start(delay)
+        return True
+
+    def _start_prefetched_preview(self):
+        entry = self._preview_prefetch
+        pending = self._pending_preview_segment
+        if (not entry or not pending
+                or pending.get("kind") != "continuation"
+                or entry.get("state") not in ("ready", "staged")):
+            return False
+        if not self._preview_is_playing() or self._preview_dirty:
+            return False
+        current = self._absolute_player_seconds()
+        target = float(pending["start"])
+        offset_ms = max(0, int(round((current - target) * 1000.0)))
+        if entry.get("state") == "staged":
+            start = getattr(self._player, "start_crossfade", None)
+            if not callable(start):
+                return False
+            try:
+                options = {}
+                if getattr(self._player, 'supports_sample_aligned_boundary', False):
+                    item = (entry.get('report') or {}).get(pending.get('key')) or {}
+                    rate = int(item.get('sample_rate') or 0)
+                    if rate:
+                        options['candidate_origin_frame'] = (
+                            int(round(target * rate))
+                            - int(round(self._preview_segment_start_seconds * rate)))
+                started = bool(start(offset_ms, **options))
+            except Exception:
+                started = False
+            if not started:
+                self._preview_switch_timer.start(10)
+                return False
+            entry["state"] = "starting"
+            self._preview_switch_timer.stop()
+            return True
+        # Legacy players can only start loading at activation time. Ask well
+        # before the target and retain the extra switch margin.
+        load = getattr(self._player, "load_crossfade", None)
+        if not callable(load):
+            self._invalidate_preview_prefetch(cancel_request=False)
+            return False
+        if current + 0.002 < target - _PREVIEW_FALLBACK_LOAD_MS / 1000.0:
+            self._schedule_preview_switch()
+            return False
+        try:
+            loaded = bool(load(pending["path"], offset_ms,
+                               _PREVIEW_CROSSFADE_MS))
+        except Exception:
+            loaded = False
+        if not loaded:
+            self._invalidate_preview_prefetch(cancel_request=False)
+            return False
+        entry["state"] = "starting"
+        self._preview_switch_timer.stop()
+        return True
+
+    def _promote_prefetched_preview(self, pending):
+        entry = self._preview_prefetch
+        if not entry or pending.get("kind") != "continuation":
+            return False
+        report = entry.get("report") or {}
+        before = report.get("before")
+        after = report.get("after")
+        if not before or not after:
+            return False
+        if not _same_path(pending.get("path"),
+                          report.get(pending.get("key"), {}).get("output_path")):
+            return False
+        directory = Path(entry["directory"])
+        old_directory = self._preview_directory
+        self._preview_directory = directory
+        self._preview_result = {
+            "before": copy.deepcopy(before), "after": copy.deepcopy(after)}
+        self._remember_preview_analysis(self._preview_result)
+        self._preview_signature = entry.get("signature")
+        self._preview_before_signature = entry.get("before_signature")
+        self._preview_dirty = False
+        self._preview_segment_start_seconds = float(after.get(
+            "preview_start_seconds", pending["start"]))
+        self._preview_segment_duration_seconds = float(after.get(
+            "duration_seconds", pending["duration"]))
+        self._last_audition_report = copy.deepcopy(entry.get("raw_report") or report)
+        self._preview_prefetch = None
+        self._pending_preview_segment = None
+        self._preview_switch_timer.stop()
+        self._apply_report_meters(after, publish_live=False)
+        self.preview_before_state.setText(_tr("已就绪 · 可播放"))
+        self.preview_after_state.setText(_tr("已就绪 · 可播放"))
+        _set_role(self.preview_before_state, "success")
+        _set_role(self.preview_after_state, "success")
+        self._promote_pending_preview_selection(pending["path"])
+        if old_directory and Path(old_directory) != directory:
+            self._retire_preview_directory(old_directory)
+        self._cleanup_retired_preview_directories()
+        latency = entry.get("latency_ms")
+        self._set_audition_diagnostic("updated", _tr("已跨段 · 下一段已接管"), latency)
+        raw = entry.get("raw_report") or {}
+        warnings = [str(item) for item in raw.get('warnings', ()) if item]
+        self.preview_report.setText(
+            _tr('试听提示：') + warnings[0] if warnings
+            else _tr("实时试听已连续跨段；可在当前段继续调整。"))
+        self.preview_report.setToolTip('\n'.join(warnings))
+        _set_role(self.preview_report, "muted" if warnings else "success")
+        self._sync_controls()
+        return True
+
+    def _invalidate_preview_prefetch(self, *, cancel_request=True,
+                                     cancel_staged=True):
+        """Discard a next-segment candidate without touching current audio."""
+        entry = self._preview_prefetch
+        pending = self._pending_preview_segment
+        context = dict(self._audition_request_context or {})
+        self._preview_switch_timer.stop()
+        self._preview_prefetch = None
+        if pending and pending.get("kind") == "continuation":
+            self._pending_preview_segment = None
+            if (cancel_staged and self._player is not None
+                    and callable(getattr(self._player, 'cancel_crossfade', None))):
+                try:
+                    self._player.cancel_crossfade()
+                except Exception:
+                    pass
+        if entry and entry.get("state") != "rendering":
+            _discard_preview_directory(entry.get("directory"))
+        if (cancel_request and context.get("purpose") == "continuation"
+                and self._audition_service is not None
+                and context.get("request_id") is not None):
+            try:
+                self._audition_service.cancel(context["request_id"])
+            except Exception:
+                pass
+        return bool(entry or pending)
+
     def _retire_preview_directory(self, directory):
         if directory:
             self._preview_retired_directories.append(Path(directory))
@@ -4252,19 +4965,30 @@ class AudioMixdownDialog(QDialog):
 
     def _preview_crossfade_finished(self, path):
         pending = self._pending_preview_segment
-        if pending and _same_path(path, pending[0]):
-            self._pending_preview_segment = None
-            self._preview_segment_start_seconds = pending[1]
-            self._preview_segment_duration_seconds = pending[2]
-            self._promote_pending_preview_selection(path)
-            if self._player is not None:
-                self._player_position_changed(self._player.position())
+        if pending and _same_path(path, pending.get('path')):
+            if pending.get('kind') == 'continuation':
+                self._promote_prefetched_preview(pending)
+            else:
+                self._pending_preview_segment = None
+                self._preview_segment_start_seconds = pending['start']
+                self._preview_segment_duration_seconds = pending['duration']
+                self._promote_pending_preview_selection(path)
         self._cleanup_retired_preview_directories()
 
     def _preview_crossfade_cancelled(self, path):
-        if self._pending_preview_segment and _same_path(path, self._pending_preview_segment[0]):
-            self._pending_preview_segment = None
-        self._restore_preview_selection()
+        pending = self._pending_preview_segment
+        if pending and _same_path(path, pending.get('path')):
+            if pending.get('kind') == 'continuation':
+                entry = self._preview_prefetch
+                if entry is not None:
+                    _discard_preview_directory(entry.get('directory'))
+                self._preview_prefetch = None
+                self._pending_preview_segment = None
+                self._preview_switch_timer.stop()
+                self._set_audition_diagnostic("failed", _tr("下一段交界已取消"))
+            else:
+                self._pending_preview_segment = None
+                self._restore_preview_selection()
         self._cleanup_retired_preview_directories()
 
     def _shutdown_audition_service(self):
@@ -5057,12 +5781,12 @@ class AudioMixdownDialog(QDialog):
         if hasattr(self, '_loudness_summary'):
             self._loudness_summary.setText(_tr('峰值对比：等待实时分段'))
 
-    def _apply_report_meters(self, report):
+    def _apply_report_meters(self, report, *, publish_live=True):
         if not isinstance(report, dict):
             return
         display_report = copy.deepcopy(self._preview_meter_report or {})
         for key, value in report.items():
-            if key in ('tracks', 'meters'):
+            if key in ('tracks', 'meters', 'spectrum_envelope'):
                 continue
             if value is not None:
                 display_report[key] = copy.deepcopy(value)
@@ -5089,7 +5813,7 @@ class AudioMixdownDialog(QDialog):
         display_report['meters'] = meters
         display_report['tracks'] = merge_rows(display_report.get('tracks'), report.get('tracks'))
         self._preview_meter_report = display_report
-        if hasattr(self, 'gr_summary'):
+        if publish_live and hasattr(self, 'gr_summary'):
             try:
                 self.gr_summary.setText('GR p95 %.1f dB' % float(display_report.get('gr_db_p95')))
             except (TypeError, ValueError):
@@ -5108,11 +5832,13 @@ class AudioMixdownDialog(QDialog):
             except (TypeError, ValueError):
                 index = 0
             peak = row.get('peak_dbfs')
+            if not publish_live:
+                continue
             if role == 'vocal' and index in vocal_map:
                 vocal_map[index]['meter'].set_levels(peak, peak)
             elif role == 'backing':
                 self.instrumental_meter.set_levels(peak, peak)
-        if 'duration_seconds' in display_report:
+        if publish_live and 'duration_seconds' in display_report:
             if hasattr(self, 'meter_feed'):
                 self.meter_feed.set_report(display_report)
             if hasattr(self, 'reverb_decay'):
@@ -5122,7 +5848,7 @@ class AudioMixdownDialog(QDialog):
             bus_value = float(bus_peak)
         except (TypeError, ValueError):
             bus_value = None
-        if bus_value is not None:
+        if publish_live and bus_value is not None:
             self.bus_meter.set_levels(bus_value, bus_value)
             self.bus_peak_value.setText(
                 _tr('静音') if not math.isfinite(bus_value) or bus_value <= -143.0
@@ -5437,6 +6163,17 @@ class AudioMixdownDialog(QDialog):
     def _retire_preview(self):
         self.cancel_preview()
         self._stop_preview_player()
+        stream = getattr(self, '_stream_preview_player', None)
+        if stream is not None:
+            if self._player is stream and self._legacy_preview_player is not None:
+                self._connect_preview_player(stream, connect=False)
+                self._player = self._legacy_preview_player
+                self._connect_preview_player(self._player)
+            try:
+                stream.close()
+            except RuntimeError:
+                pass
+            self._stream_preview_player = None
         directory, self._preview_directory = self._preview_directory, None
         self._preview_result = None
         self._preview_context = None

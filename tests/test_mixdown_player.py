@@ -107,11 +107,12 @@ class FakeAdapter(mp.BaseMediaAdapter):
         request_id = self._request_id if request_id is None else int(request_id)
         self.mediaStatusChanged.emit(mp.MediaStatus.InvalidMedia, request_id)
 
-def make_player(clock=None, candidate_duration_ms=10_000):
+def make_player(clock=None, candidate_duration_ms=10_000,
+                initial_duration_ms=10_000):
     created = []
 
     def factory(parent):
-        duration_ms = 10_000 if not created else candidate_duration_ms
+        duration_ms = initial_duration_ms if not created else candidate_duration_ms
         adapter = FakeAdapter(
             'player-' + str(len(created)), parent, duration_ms=duration_ms)
         created.append(adapter)
@@ -482,6 +483,61 @@ def test_cancel_pending_and_midfade_keeps_active_until_loaded(root):
     assert standby._volume == 72
 
 
+def test_prepared_crossfade_three_segments_waits_and_starts_late(root):
+    """Preloaded successors stay silent and three handoffs do not replay."""
+    clock = [400.0]
+    player, adapters = make_player(
+        lambda: clock[0], candidate_duration_ms=12_000,
+        initial_duration_ms=12_000)
+    paths = [root / ('prepared-%d.wav' % index) for index in range(3)]
+    prime_direct(player, adapters, paths[0], position_ms=11_872)
+    ready, finished = [], []
+    player.crossfadeReady.connect(ready.append)
+    player.crossfadeFinished.connect(finished.append)
+
+    for segment in (1, 2):
+        current = player._active_adapter()
+        candidate = player._standby_adapter()
+        current.set_position(11_872)
+        pump()
+        plays = candidate.play_count
+        stops = current.stop_count
+        assert player.prepare_crossfade(paths[segment], 0, 80)
+        pump()
+        assert not player.start_crossfade(0)
+        candidate.emit_loaded()
+        pump()
+        assert ready[-1] == str(paths[segment].resolve())
+        assert candidate.play_count == plays
+        assert player.source() == str(paths[segment - 1].resolve())
+        assert player._active_adapter() is current
+        assert current.state() == mp.PlaybackState.PlayingState
+
+        # Simulate a 16 ms timer miss plus the observed 20 ms Qt start lag.
+        # The active player now has 112 ms left while the candidate begins at
+        # its corresponding 36 ms content offset.  An 80 ms fade must still
+        # finish with 32 ms of old-tail reserve instead of hitting EOF.
+        current.set_position(11_908)
+        clock[0] += 0.036
+        assert player.start_crossfade(36)
+        pump()
+        assert candidate.position() == 36
+        assert candidate.play_count == plays + 1
+        assert current.stop_count == stops
+        clock[0] += 0.081
+        current.set_position(11_988)
+        player._advance_crossfade()
+        assert finished[-1] == str(paths[segment].resolve())
+        assert current.stop_count == stops + 1
+        assert player.source() == str(paths[segment].resolve())
+        assert player._active_adapter() is candidate
+        assert current.position() < current.duration()
+        assert not player.transitioning
+
+    assert finished == [str(path.resolve()) for path in paths[1:]]
+    player.stop()
+
+
 def test_seek_ab_position_pause_and_loop(root):
     clock = [300.0]
     player, adapters = make_player(lambda: clock[0])
@@ -606,6 +662,7 @@ def main():
     test_pause_while_crossfade_candidate_loads_cancels_without_autoplay(root)
     test_seek_during_crossfade_keeps_new_user_position(root)
     test_cancel_pending_and_midfade_keeps_active_until_loaded(root)
+    test_prepared_crossfade_three_segments_waits_and_starts_late(root)
     test_seek_ab_position_pause_and_loop(root)
     test_queued_cross_thread_and_safe_fallbacks(root)
     print('test_mixdown_player: PASS')

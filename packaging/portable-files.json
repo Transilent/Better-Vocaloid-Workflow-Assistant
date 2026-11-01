@@ -670,6 +670,10 @@
       "source": "src/mixdown_player.py"
     },
     {
+      "file": "mixdown_stream_player.py",
+      "source": "src/mixdown_stream_player.py"
+    },
+    {
       "file": "mixer_state.py",
       "source": "src/mixer_state.py"
     },

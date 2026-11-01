@@ -35,6 +35,7 @@ AUDITION_API_VERSION = 2
 AUDITION_IDENTITY_SCHEMA = "vwa.audio_mixdown.audition-identity/v1"
 ENVELOPE_SCHEMA = "vwa.audio_mixdown.short-envelope/v1"
 REVERB_EDC_SCHEMA = "vwa.audio_mixdown.reverb-edc/v1"
+SPECTRUM_SCHEMA = "vwa.audio_mixdown.spectrum/v1"
 AUDITION_PREROLL_SECONDS = 0.35
 # Bound only pathological low-frequency/high-Q EQ history.
 AUDITION_EQ_PREROLL_MAX_SECONDS = 8.0
@@ -47,6 +48,14 @@ AUDITION_ENVELOPE_HZ = 30.0
 AUDITION_EDC_TAIL_SECONDS = 2.0
 AUDITION_EDC_HZ = 120.0
 AUDITION_EDC_MIN_DB = -60.0
+AUDITION_SPECTRUM_INTERVAL_MS = 100.0
+AUDITION_SPECTRUM_MAX_BINS = 128
+AUDITION_SPECTRUM_MIN_HZ = 20.0
+AUDITION_SPECTRUM_MAX_HZ = 20000.0
+AUDITION_SPECTRUM_MIN_FFT_SIZE = 256
+AUDITION_SPECTRUM_MAX_FFT_SIZE = 16384
+AUDITION_SPECTRUM_DB_DECIMALS = 3
+AUDITION_SPECTRUM_FREQUENCY_DECIMALS = 4
 AUDITION_MEMORY_CACHE_GENERATIONS = 2
 _SILENCE = float(backend.SILENCE_DBFS)
 _VARIANTS = ("before", "after", "both")
@@ -96,6 +105,297 @@ class _EnvelopeSpec:
     @property
     def bucket_seconds(self) -> float:
         return self.bucket_frames / float(self.rate)
+
+
+class _SpectrumCollector:
+    """Bounded real-time FFT aggregation for one vocal signal tap.
+
+    Each frame analyzes one interval of the rendered audition timeline.  The
+    collector ignores pre-roll and trailing render data, so ``frame_start``
+    values are always relative to the audible segment, not the warmed render
+    start.  Display frequencies are logarithmically spaced centers.  Every
+    value is the maximum amplitude among all real FFT bins assigned to that
+    center's adjacent logarithmic band, so narrow peaks between centers remain
+    visible.  No curve or synthetic amplitude is generated.
+    """
+
+    def __init__(self, sample_rate: int, duration_frames: int, channels: int,
+                 *, stage: str, signal_sample_point: str, variant: str,
+                 numpy: Any):
+        self.sample_rate = int(sample_rate)
+        self.duration_frames = int(duration_frames)
+        self.channels = int(channels)
+        self.stage = str(stage)
+        self.signal_sample_point = str(signal_sample_point)
+        self.variant = str(variant)
+        self.numpy = numpy
+        self.interval_seconds = AUDITION_SPECTRUM_INTERVAL_MS / 1000.0
+        self.hop_frames = max(
+            1, int(round(self.sample_rate * self.interval_seconds))
+        )
+        self.total_frames = max(
+            1, int(math.ceil(self.duration_frames / float(self.hop_frames)))
+        )
+        requested_fft = 1 << max(0, self.hop_frames - 1).bit_length()
+        self.fft_size = max(
+            AUDITION_SPECTRUM_MIN_FFT_SIZE,
+            min(AUDITION_SPECTRUM_MAX_FFT_SIZE, requested_fft),
+        )
+        self.window_samples = min(self.hop_frames, self.fft_size)
+        self.window = numpy.hanning(self.window_samples).astype(numpy.float64)
+        all_frequencies = numpy.fft.rfftfreq(
+            self.fft_size, d=1.0 / float(self.sample_rate)
+        )
+        maximum = min(
+            AUDITION_SPECTRUM_MAX_HZ, float(all_frequencies[-1]) * 0.98
+        )
+        minimum = min(AUDITION_SPECTRUM_MIN_HZ, maximum)
+        indices = numpy.flatnonzero(
+            (all_frequencies >= minimum) & (all_frequencies <= maximum)
+        )
+        if not len(indices):
+            indices = numpy.flatnonzero(all_frequencies > 0.0)
+        if not len(indices):
+            indices = numpy.asarray([0], dtype=numpy.int64)
+        available_indices = indices.astype(numpy.int64)
+        if len(available_indices) > AUDITION_SPECTRUM_MAX_BINS:
+            low = float(all_frequencies[int(available_indices[0])])
+            high = float(all_frequencies[int(available_indices[-1])])
+            targets = numpy.geomspace(
+                low, high, num=AUDITION_SPECTRUM_MAX_BINS
+            )
+            centers = numpy.searchsorted(
+                all_frequencies, targets, side="left"
+            )
+            centers = numpy.clip(
+                centers, int(available_indices[0]), int(available_indices[-1])
+            )
+            centers = numpy.unique(centers.astype(numpy.int64))
+        else:
+            centers = available_indices
+        self.frequency_bin_indices = centers.astype(numpy.int64)
+        self.frequencies_hz = all_frequencies[self.frequency_bin_indices]
+        available_frequencies = all_frequencies[available_indices]
+        if len(self.frequencies_hz) > 1:
+            band_edges = numpy.sqrt(
+                self.frequencies_hz[:-1] * self.frequencies_hz[1:]
+            )
+            self.frequency_band_edges_hz = numpy.concatenate((
+                available_frequencies[:1], band_edges,
+                available_frequencies[-1:],
+            ))
+            band_ids = numpy.searchsorted(
+                band_edges, available_frequencies, side="left"
+            )
+            band_ids = numpy.clip(
+                band_ids, 0, len(self.frequencies_hz) - 1
+            ).astype(numpy.int64)
+        else:
+            self.frequency_band_edges_hz = numpy.asarray([
+                float(available_frequencies[0]),
+                float(available_frequencies[-1]),
+            ])
+            band_ids = numpy.zeros(len(available_frequencies), dtype=numpy.int64)
+        counts = numpy.bincount(
+            band_ids, minlength=len(self.frequencies_hz)
+        ).astype(numpy.int64)
+        if numpy.any(counts <= 0):
+            raise RuntimeError("频谱对数频段未能覆盖全部真实 FFT bin。")
+        self.available_bin_indices = available_indices
+        self._band_offsets = numpy.concatenate((
+            numpy.asarray([0], dtype=numpy.int64), numpy.cumsum(counts)
+        ))
+        self.frequency_band_bin_ranges = []
+        for index in range(len(self.frequencies_hz)):
+            start = int(self._band_offsets[index])
+            end = int(self._band_offsets[index + 1])
+            group = available_indices[start:end]
+            self.frequency_band_bin_ranges.append(
+                [int(group[0]), int(group[-1])]
+            )
+        self.frame_count = self.total_frames
+        self.output_frames = self.duration_frames
+        self.frames_dbfs = numpy.full(
+            (self.total_frames, len(self.frequency_bin_indices)),
+            _SILENCE,
+            dtype=numpy.float32,
+        )
+        self._bucket = numpy.zeros(
+            (self.hop_frames, self.channels), dtype=numpy.float32
+        )
+        self._bucket_frames = 0
+        self._current_frame = 0
+        self.analysis_seconds = 0.0
+
+    def _analyze_frame(self, frame_index: int, cancel: Callable[[], Any] | None,
+                       numpy: Any) -> None:
+        if frame_index < 0 or frame_index >= self.total_frames:
+            return
+        start = time.perf_counter()
+        try:
+            backend._check_cancel(cancel)
+            count = min(self._bucket_frames, self.window_samples)
+            if count <= 0:
+                return
+            chunk = numpy.asarray(
+                self._bucket[:count], dtype=numpy.float64
+            )
+            weights = self.window[:count]
+            gain = float(numpy.sum(weights))
+            if gain <= 0.0:
+                return
+            windowed = chunk * weights[:, None]
+            spectrum = numpy.fft.rfft(
+                windowed, n=self.fft_size, axis=0
+            )
+            magnitudes = numpy.abs(spectrum) * (2.0 / gain)
+            amplitudes = numpy.sqrt(
+                numpy.mean(numpy.square(magnitudes), axis=1)
+            )
+            available_amplitudes = amplitudes[self.available_bin_indices]
+            selected = numpy.maximum.reduceat(
+                available_amplitudes, self._band_offsets[:-1]
+            )
+            floor = 10.0 ** (_SILENCE / 20.0)
+            values = 20.0 * numpy.log10(numpy.maximum(selected, floor))
+            self.frames_dbfs[frame_index] = numpy.round(
+                numpy.maximum(float(_SILENCE), values),
+                AUDITION_SPECTRUM_DB_DECIMALS,
+            ).astype(numpy.float32)
+        finally:
+            self.analysis_seconds += time.perf_counter() - start
+
+    def feed(self, samples: Any, sample_offset: int,
+             cancel: Callable[[], Any] | None = None) -> None:
+        """Consume one processed block while discarding pre-roll/out-of-range."""
+        source = self.numpy.asarray(samples)
+        if source.ndim != 2 or int(source.shape[1]) != self.channels:
+            raise ValueError("频谱输入必须是当前试听声道的二维音频块。")
+        start = max(0, -int(sample_offset))
+        end = min(
+            int(source.shape[0]), self.duration_frames - int(sample_offset)
+        )
+        if end <= start:
+            return
+        appended = start
+        while appended < end:
+            position = int(sample_offset) + appended
+            frame_index = position // self.hop_frames
+            if frame_index >= self.total_frames:
+                break
+            inside = position - frame_index * self.hop_frames
+            take = min(end - appended, self.hop_frames - inside)
+            self._bucket[inside:inside + take] = source[
+                appended:appended + take
+            ]
+            self._bucket_frames = max(self._bucket_frames, inside + take)
+            appended += take
+            if inside + take == self.hop_frames:
+                self._analyze_frame(frame_index, cancel, self.numpy)
+                self._current_frame = frame_index + 1
+                self._bucket.fill(0.0)
+                self._bucket_frames = 0
+
+    def finalize(self, output_frames: int,
+                 cancel: Callable[[], Any] | None = None) -> None:
+        """Finalize the requested segment prefix and discard render-only tail."""
+        self.output_frames = max(0, min(self.duration_frames, int(output_frames)))
+        self.frame_count = max(
+            1, int(math.ceil(self.output_frames / float(self.hop_frames)))
+        )
+        self.frame_count = min(self.frame_count, self.total_frames)
+        if (self._bucket_frames and self._current_frame < self.frame_count):
+            self._analyze_frame(
+                self._current_frame, cancel, self.numpy
+            )
+
+    def payload(self, source_start_sample: int,
+                cancel: Callable[[], Any] | None = None) -> dict[str, Any]:
+        backend._check_cancel(cancel)
+        build_start = time.perf_counter()
+        frame_starts = [
+            index * self.hop_frames for index in range(self.frame_count)
+        ]
+        frames = self.frames_dbfs[:self.frame_count]
+        payload: dict[str, Any] = {
+            "schema": SPECTRUM_SCHEMA,
+            "interval_ms": float(AUDITION_SPECTRUM_INTERVAL_MS),
+            "frequencies_hz": [
+                round(float(value), AUDITION_SPECTRUM_FREQUENCY_DECIMALS)
+                for value in self.frequencies_hz.tolist()
+            ],
+            "frames_dbfs": [
+                [round(float(value), AUDITION_SPECTRUM_DB_DECIMALS)
+                 for value in row]
+                for row in frames.tolist()
+            ],
+            "stage": self.stage,
+            "fft_size": int(self.fft_size),
+            "variant": self.variant,
+            "bypass_processing": self.variant == "before",
+            "signal_sample_point": self.signal_sample_point,
+            "sample_rate": int(self.sample_rate),
+            "analysis_interval_seconds": round(
+                self.hop_frames / float(self.sample_rate), 6
+            ),
+            "timeline_origin": "audition_segment_start",
+            "timeline_start_seconds": 0.0,
+            "segment_source_start_sample": int(source_start_sample),
+            "hop_samples": int(self.hop_frames),
+            "frame_start_samples": frame_starts,
+            "frame_start_seconds": [
+                round(value / float(self.sample_rate), 6)
+                for value in frame_starts
+            ],
+            "frame_count": int(self.frame_count),
+            "bin_count": int(len(self.frequency_bin_indices)),
+            "frequency_resolution_hz": round(
+                self.sample_rate / float(self.fft_size), 6
+            ),
+            "frequency_bin_indices": [
+                int(value) for value in self.frequency_bin_indices.tolist()
+            ],
+            "frequency_band_edges_hz": [
+                round(float(value), AUDITION_SPECTRUM_FREQUENCY_DECIMALS)
+                for value in self.frequency_band_edges_hz.tolist()
+            ],
+            "frequency_band_bin_ranges_inclusive":
+                self.frequency_band_bin_ranges,
+            "band_aggregation": "max",
+            "band_aggregation_detail":
+                "maximum FFT-bin amplitude among adjacent logarithmic bands",
+            "serialization_decimals": {
+                "frames_dbfs": AUDITION_SPECTRUM_DB_DECIMALS,
+                "frequencies_hz": AUDITION_SPECTRUM_FREQUENCY_DECIMALS,
+            },
+            "window": "hann",
+            "window_samples": int(self.window_samples),
+            "channel_aggregation": "root_mean_square_of_channel_amplitudes",
+            "amplitude_reference": "coherent_gain_compensated_full_scale_sine",
+            "analysis_floor_dbfs": float(_SILENCE),
+            "data_size": {
+                "float32_time_frequency_matrix_bytes": (
+                    int(self.frame_count)
+                    * int(len(self.frequency_bin_indices))
+                    * 4
+                ),
+                "float32_frequency_axis_bytes": (
+                    int(len(self.frequency_bin_indices)) * 4
+                ),
+                "compact_json_bytes": 0,
+            },
+        }
+        payload["instrumentation_ms"] = round(
+            (self.analysis_seconds + time.perf_counter() - build_start) * 1000.0,
+            3,
+        )
+        for _ in range(6):
+            size = len(json.dumps(payload, ensure_ascii=False,
+                                  separators=(",", ":")).encode("utf-8"))
+            if payload["data_size"]["compact_json_bytes"] == size:
+                break
+            payload["data_size"]["compact_json_bytes"] = size
+        return payload
 
 
 @dataclass(frozen=True)
@@ -1115,6 +1415,19 @@ def _render_variant(settings: backend._Settings, prepared: _PreparedSources,
     backing_peak = 0.0
     bus_peak = 0.0
     spec = _envelope_spec(rate, window.duration_frames)
+    spectrum_collector = _SpectrumCollector(
+        rate,
+        window.duration_frames,
+        channels,
+        stage=("vocal_before_eq" if bypass_processing else "vocal_after_eq"),
+        signal_sample_point=(
+            "vocal_bus_after_track_gain_and_pan_before_effects"
+            if bypass_processing else
+            "vocal_bus_after_eq_before_compressor_and_reverb"
+        ),
+        variant=("before" if bypass_processing else "after"),
+        numpy=numpy,
+    )
     track_envelopes = [
         numpy.zeros(spec.count, dtype=numpy.float32)
         for _ in settings.vocals
@@ -1236,13 +1549,20 @@ def _render_variant(settings: backend._Settings, prepared: _PreparedSources,
                         ))),
                     )
 
-                if not bypass_processing:
+                if bypass_processing:
+                    spectrum_collector.feed(
+                        vocal_block, envelope_offset, cancel
+                    )
+                else:
                     dry_vocal = vocal_block
                     if eq_chain is not None:
                         dry_vocal = backend._pedalboard_process(
                             eq_chain, dry_vocal, rate, first, numpy,
                         )
                     equalized_vocal = dry_vocal
+                    spectrum_collector.feed(
+                        equalized_vocal, envelope_offset, cancel
+                    )
                     if compressor is not None:
                         dry_vocal = backend._pedalboard_process(
                             compressor, dry_vocal, rate, first, numpy,
@@ -1306,6 +1626,7 @@ def _render_variant(settings: backend._Settings, prepared: _PreparedSources,
         output_frames = output_end - window.requested_start
         if output_frames <= 0:
             raise backend.MixdownError("试听起点超过实际混音长度，请重新选择片段。")
+        spectrum_collector.finalize(output_frames, cancel)
         if output_frames != window.duration_frames:
             spec = _envelope_spec(rate, output_frames)
             track_envelopes = [value[:spec.count] for value in track_envelopes]
@@ -1362,6 +1683,9 @@ def _render_variant(settings: backend._Settings, prepared: _PreparedSources,
                 "gain_db": settings.instrumental_db,
                 "offset_seconds": 0.0,
             })
+            spectrum_envelope = spectrum_collector.payload(
+                window.requested_start, cancel
+            )
             peak_envelope = {
                 "schema": ENVELOPE_SCHEMA,
                 "kind": "peak",
@@ -1425,6 +1749,7 @@ def _render_variant(settings: backend._Settings, prepared: _PreparedSources,
                 "timings_ms": {
                     "encode": encode_ms,
                     "inspect": inspect_ms,
+                    "spectrum": spectrum_envelope["instrumentation_ms"],
                 },
                 "duration_seconds": output_frames / float(rate),
                 "preview_start_seconds": window.requested_start / float(rate),
@@ -1441,6 +1766,7 @@ def _render_variant(settings: backend._Settings, prepared: _PreparedSources,
                     "gr_envelope": gr_payload,
                     "gr_db_p95": round(gr_p95, 4),
                 },
+                "spectrum_envelope": spectrum_envelope,
                 "peak_envelope": peak_envelope,
                 "gr_envelope": gr_payload,
                 "gr_db_p95": round(gr_p95, 4),
@@ -1653,6 +1979,37 @@ def render_audition_pair(
         },
     }
     result.update(results)
+    spectrum_summary: dict[str, Any] = {}
+    for side in ("before", "after"):
+        side_result = results.get(side)
+        if side_result is None:
+            continue
+        envelope = side_result["spectrum_envelope"]
+        spectrum_summary[side] = {
+            "schema": envelope["schema"],
+            "stage": envelope["stage"],
+            "variant": envelope["variant"],
+            "signal_sample_point": envelope["signal_sample_point"],
+            "interval_ms": envelope["interval_ms"],
+            "sample_rate": envelope["sample_rate"],
+            "fft_size": envelope["fft_size"],
+            "frame_count": envelope["frame_count"],
+            "bin_count": envelope["bin_count"],
+            "compact_json_bytes": envelope["data_size"]["compact_json_bytes"],
+            "instrumentation_ms": envelope["instrumentation_ms"],
+        }
+    default_side = "after" if "after" in results else "before"
+    result["spectrum_envelope"] = results[default_side]["spectrum_envelope"]
+    result["spectrum_data_summary"] = {
+        "schema": SPECTRUM_SCHEMA,
+        "selection": "use the envelope attached to the currently playing variant",
+        "default_variant": default_side,
+        "variants": spectrum_summary,
+    }
+    result["timings_ms"]["spectrum"] = {
+        side: values["instrumentation_ms"]
+        for side, values in spectrum_summary.items()
+    }
     result["timings_ms"]["total"] = _elapsed_ms(total_start)
     return result
 

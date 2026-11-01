@@ -21,6 +21,7 @@ from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication
 
 import mixdown_eq_curve as eq
+from i18n import tr as translate
 
 
 app = QApplication.instance() or QApplication([])
@@ -73,6 +74,20 @@ def send_pixel_wheel(widget, position, pixels, modifiers=Qt.NoModifier):
     )
     QApplication.sendEvent(widget, event)
     settle()
+
+
+def spectrum_envelope(frames, frequencies=None, *, interval_ms=100.0,
+                      schema=eq.SPECTRUM_SCHEMA, stage=eq.SPECTRUM_STAGE,
+                      fft_size=2048):
+    return {
+        'schema': schema,
+        'interval_ms': interval_ms,
+        'frequencies_hz': list(
+            (100.0, 1000.0, 10000.0) if frequencies is None else frequencies),
+        'frames_dbfs': [list(frame) for frame in frames],
+        'stage': stage,
+        'fft_size': fft_size,
+    }
 
 
 class AnalyticCurveTests(unittest.TestCase):
@@ -226,6 +241,279 @@ class WidgetTests(unittest.TestCase):
         self.assertEqual(emitted, [])
         bands[2]['q'] = 17.0
         self.assertNotEqual(self.view.bands()[2]['q'], 17.0)
+
+    def test_spectrum_uses_relative_time_pause_and_segment_reset(self):
+        frames = [
+            [-60.0, -40.0, -20.0],
+            [-50.0, -30.0, -10.0],
+            [None, None, None],
+            [-90.0, -80.0, -70.0],
+        ]
+        emitted = []
+        self.view.bandsChanged.connect(emitted.append)
+        self.assertTrue(self.view.set_spectrum_envelope(
+            spectrum_envelope(frames)))
+        self.assertIsNone(self.view.spectrum_frame())
+        self.assertIsNone(self.view.spectrum_playhead_ms())
+        self.assertFalse(self.view.spectrum_is_playing())
+
+        self.assertTrue(self.view.set_spectrum_playhead(0))
+        self.assertEqual(self.view.spectrum_frame(), frames[0])
+        self.assertTrue(self.view.set_spectrum_playhead(99.9))
+        self.assertEqual(self.view.spectrum_frame(), frames[0])
+        self.assertTrue(self.view.set_spectrum_playhead(100))
+        self.assertEqual(self.view.spectrum_frame(), frames[1])
+        self.assertFalse(self.view.set_spectrum_playhead(200))
+        self.assertIsNone(self.view.spectrum_frame())
+
+        # Pause freezes automatic time progression, but an explicit seek still
+        # selects the measured frame at that position.
+        self.assertTrue(self.view.set_spectrum_playhead(
+            310, playing=False))
+        self.assertEqual(self.view.spectrum_frame(), frames[3])
+        self.assertEqual(self.view.spectrum_playhead_ms(), 310.0)
+        self.assertFalse(self.view.spectrum_is_playing())
+        self.assertTrue(self.view.set_spectrum_playhead(
+            0, playing=False))
+        self.assertEqual(self.view.spectrum_frame(), frames[0])
+        self.assertEqual(self.view.spectrum_playhead_ms(), 0.0)
+        self.assertFalse(self.view.spectrum_is_playing())
+        self.assertTrue(self.view.set_spectrum_playhead(
+            110, playing=False))
+        self.assertEqual(self.view.spectrum_frame(), frames[1])
+
+        # A replacement envelope is a new audition segment; no old index or
+        # frame survives. An already-paused A/B switch can position immediately.
+        new_frames = [[-12.0, -8.0], [-14.0, -6.0]]
+        self.assertTrue(self.view.set_spectrum_envelope(
+            spectrum_envelope(new_frames, [200.0, 2000.0])))
+        self.assertIsNone(self.view.spectrum_frame())
+        self.assertIsNone(self.view.spectrum_playhead_ms())
+        self.assertTrue(self.view.set_spectrum_playhead(
+            50, playing=False))
+        self.assertEqual(self.view.spectrum_frame(), new_frames[0])
+        self.assertFalse(self.view.spectrum_is_playing())
+        self.assertTrue(self.view.set_spectrum_playhead(
+            150, playing=False))
+        self.assertEqual(self.view.spectrum_frame(), new_frames[1])
+
+        snapshot = self.view.spectrum_envelope()
+        snapshot['frames_dbfs'][0][0] = 0.0
+        self.assertEqual(self.view.spectrum_frame()[0], new_frames[1][0])
+        self.view.clear_spectrum_envelope()
+        self.assertIsNone(self.view.spectrum_envelope())
+        self.assertIsNone(self.view.spectrum_frame())
+        self.assertEqual(emitted, [])
+
+    def test_invalid_empty_and_low_rate_spectrum_data_is_safe(self):
+        valid = spectrum_envelope([[-12.0, -8.0, -4.0]])
+        self.assertTrue(self.view.set_spectrum_envelope(valid))
+        self.assertTrue(self.view.set_spectrum_playhead(0))
+
+        cases = []
+        bad = spectrum_envelope([[-12.0, -8.0, -4.0]], schema='bad')
+        cases.append(bad)
+        bad = spectrum_envelope([[-12.0, -8.0, -4.0]], stage='raw')
+        cases.append(bad)
+        bad = spectrum_envelope([[-12.0, -8.0, -4.0]], interval_ms=0.0)
+        cases.append(bad)
+        bad = spectrum_envelope([[-12.0, -8.0, -4.0]], fft_size=0)
+        cases.append(bad)
+        bad = spectrum_envelope([[-12.0, -8.0, -4.0]],
+                                frequencies=[100.0, 200.0, 200.0])
+        cases.append(bad)
+        bad = spectrum_envelope([[-12.0, -8.0, -4.0]])
+        bad['frames_dbfs'] = 'not frames'
+        cases.append(bad)
+        for bad in cases:
+            with self.subTest(bad=bad):
+                self.assertFalse(self.view.set_spectrum_envelope(bad))
+                self.assertIsNone(self.view.spectrum_envelope())
+                self.assertIsNone(self.view.spectrum_frame())
+
+        empty = spectrum_envelope([], frequencies=[20.0, 1000.0])
+        self.assertTrue(self.view.set_spectrum_envelope(empty))
+        self.assertFalse(self.view.set_spectrum_playhead(0))
+        self.assertIsNone(self.view.spectrum_frame())
+
+        dirty = spectrum_envelope([
+            [None, float('nan'), 'not-a-level'],
+            [-60.0],
+        ])
+        self.assertTrue(self.view.set_spectrum_envelope(dirty))
+        self.assertFalse(self.view.set_spectrum_playhead(0))
+        self.assertIsNone(self.view.spectrum_frame())
+        self.assertEqual(self.view._spectrum_segments(), [])
+
+        # An 8 kHz-style capture finishes at 3.9 kHz. The renderer covers only
+        # measured bins and never extends the curve to the widget's 20 kHz end.
+        low_rate = spectrum_envelope(
+            [[-80.0, -60.0, -40.0]], [20.0, 1000.0, 3900.0])
+        self.assertTrue(self.view.set_spectrum_envelope(low_rate))
+        self.assertTrue(self.view.set_spectrum_playhead(0))
+        segments = self.view._spectrum_segments()
+        self.assertEqual(len(segments), 1)
+        self.assertLess(segments[0][-1].x(),
+                        self.view.frequency_to_x(eq.MAX_FREQUENCY_HZ))
+        self.assertAlmostEqual(
+            self.view.spectrum_db_to_y(eq.SPECTRUM_MAX_DBFS),
+            self.view.plot_rect().top(),
+        )
+        self.assertAlmostEqual(
+            self.view.spectrum_db_to_y(eq.SPECTRUM_MIN_DBFS),
+            self.view.plot_rect().bottom(),
+        )
+
+    def test_spectrum_is_background_and_preserves_nodes_and_editing(self):
+        centers_before = [
+            QPointF(self.view.band_node_position(index))
+            for index in range(4)
+        ]
+
+        def render():
+            image = QImage(640, 320, QImage.Format_ARGB32)
+            image.fill(QColor('#14161c'))
+            self.view.render(image)
+            settle()
+            return image
+
+        baseline = render()
+        node_pixels = [
+            baseline.pixelColor(center.toPoint())
+            for center in centers_before
+        ]
+        high_frame = [-5.0, -8.0, -12.0]
+        low_frame = [-94.0, -92.0, -90.0]
+        self.assertTrue(self.view.set_spectrum_envelope(
+            spectrum_envelope([high_frame, low_frame])))
+        self.assertTrue(self.view.set_spectrum_playhead(0))
+        high = render()
+        for index in (0, 2):
+            self.assertEqual(
+                high.pixelColor(centers_before[index].toPoint()),
+                node_pixels[index],
+            )
+        self.assertEqual(
+            [self.view.band_node_position(index) for index in range(4)],
+            centers_before,
+        )
+
+        plot = self.view.plot_rect()
+        sample = QPoint(
+            round(self.view.frequency_to_x(1000.0)),
+            round(plot.top() + plot.height() * 0.45),
+        )
+        high_pixel = high.pixelColor(sample)
+        self.assertTrue(self.view.set_spectrum_playhead(100))
+        low = render()
+        self.assertNotEqual(low.pixelColor(sample), high_pixel)
+
+        segments = self.view._spectrum_segments()
+        self.assertEqual(len(segments), 1)
+        for point, frequency in zip(
+                segments[0], (100.0, 1000.0, 10000.0)):
+            self.assertAlmostEqual(
+                point.x(), self.view.frequency_to_x(frequency), places=6)
+
+        index = 2
+        start = self.view.band_node_position(index).toPoint()
+        before = self.view.bands()[index]
+        send_mouse(self.view, QEvent.MouseButtonPress, start,
+                   Qt.LeftButton, Qt.LeftButton)
+        send_mouse(self.view, QEvent.MouseMove, start + QPoint(18, -6),
+                   Qt.NoButton, Qt.LeftButton)
+        send_mouse(self.view, QEvent.MouseButtonRelease,
+                   start + QPoint(18, -6), Qt.LeftButton, Qt.NoButton)
+        after = self.view.bands()[index]
+        self.assertGreater(after['freq_hz'], before['freq_hz'])
+        self.assertGreater(after['gain_db'], before['gain_db'])
+        self.assertEqual(self.view.spectrum_frame(), low_frame)
+
+    def test_spectrum_accepts_and_distinguishes_before_after_stages(self):
+        frame = [[-30.0, -18.0, -6.0]]
+        before = spectrum_envelope(
+            frame, stage=eq.SPECTRUM_STAGE_BEFORE)
+        after = spectrum_envelope(
+            frame, stage=eq.SPECTRUM_STAGE_AFTER)
+
+        self.assertTrue(self.view.set_spectrum_envelope(before))
+        self.assertEqual(
+            self.view.spectrum_stage(), eq.SPECTRUM_STAGE_BEFORE)
+        self.assertEqual(
+            self.view.spectrum_envelope()['stage'],
+            eq.SPECTRUM_STAGE_BEFORE,
+        )
+        self.assertEqual(
+            self.view.spectrum_stage_label(), translate('A  处理前'))
+        self.assertIn(
+            translate('A  处理前'), self.view.accessibleDescription())
+        before_color = self.view._spectrum_stage_color()
+
+        self.assertTrue(self.view.set_spectrum_envelope(after))
+        self.assertEqual(
+            self.view.spectrum_stage(), eq.SPECTRUM_STAGE_AFTER)
+        self.assertEqual(
+            self.view.spectrum_envelope()['stage'],
+            eq.SPECTRUM_STAGE_AFTER,
+        )
+        self.assertEqual(
+            self.view.spectrum_stage_label(), translate('B  处理后'))
+        self.assertIn(
+            translate('B  处理后'), self.view.accessibleDescription())
+        self.assertNotEqual(
+            self.view.spectrum_stage_label(), translate('A  处理前'))
+        self.assertNotEqual(
+            self.view._spectrum_stage_color(), before_color)
+
+    def test_quiet_partial_band_spectrum_stays_visible_while_paused(self):
+        palette = QPalette()
+        palette.setColor(QPalette.Window, QColor('#1c1f27'))
+        palette.setColor(QPalette.Base, QColor('#20242d'))
+        palette.setColor(QPalette.WindowText, QColor('#eef1f8'))
+        palette.setColor(QPalette.Text, QColor('#eef1f8'))
+        palette.setColor(QPalette.Highlight, QColor('#8a72ff'))
+        self.view.setPalette(palette)
+
+        def render():
+            image = QImage(640, 320, QImage.Format_ARGB32)
+            image.fill(0)
+            self.view.render(image)
+            settle()
+            return image
+
+        baseline = render()
+        quiet_frame = [-84.0, -90.0, -88.0]
+        frequencies = [100.0, 1000.0, 3900.0]
+        x = round(self.view.frequency_to_x(1000.0))
+        y = round(self.view.spectrum_db_to_y(quiet_frame[1]))
+
+        def color_distance(first, second):
+            return (abs(first.red() - second.red())
+                    + abs(first.green() - second.green())
+                    + abs(first.blue() - second.blue()))
+
+        for stage in (eq.SPECTRUM_STAGE_BEFORE, eq.SPECTRUM_STAGE_AFTER):
+            with self.subTest(stage=stage):
+                envelope = spectrum_envelope(
+                    [quiet_frame], frequencies, stage=stage)
+                self.assertTrue(self.view.set_spectrum_envelope(envelope))
+                self.assertTrue(self.view.set_spectrum_playhead(
+                    0, playing=False))
+                paused = render()
+                differences = []
+                for delta_x in (-1, 0, 1):
+                    for delta_y in (-1, 0, 1):
+                        pixel = QPoint(x + delta_x, y + delta_y)
+                        differences.append(color_distance(
+                            baseline.pixelColor(pixel),
+                            paused.pixelColor(pixel),
+                        ))
+                self.assertGreaterEqual(max(differences), 20)
+                self.assertLess(
+                    self.view._spectrum_segments()[-1][-1].x(),
+                    self.view.frequency_to_x(eq.MAX_FREQUENCY_HZ),
+                )
+                self.assertFalse(self.view.spectrum_is_playing())
 
     def test_log_axis_and_gain_direction(self):
         plot = self.view.plot_rect()

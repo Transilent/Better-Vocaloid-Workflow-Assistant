@@ -41,7 +41,7 @@ ROOT_FILES.update({'tuning_engine.py','tuning_workflow.py','tuning_ui.py'})
 ROOT_FILES.update({'audio_mixdown.py', 'audio_mixdown_ui.py'})
 ROOT_FILES.update({'audio_mixdown_audition.py', 'mixdown_audition_service.py',
                    'mixdown_control_panel.py', 'mixdown_eq_curve.py',
-                   'mixdown_live_meters.py', 'mixdown_player.py',
+                   'mixdown_live_meters.py', 'mixdown_player.py', 'mixdown_stream_player.py',
                    'mixdown_presets.py', 'mixer_state.py'})
 ROOT_FILES.update({'agent_mcp_models.py', 'agent_mcp_standard_routing.py',
                    'agent_mcp_standard_read.py', 'agent_mcp_standard_assets.py',
