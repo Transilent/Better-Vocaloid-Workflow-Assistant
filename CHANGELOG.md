@@ -1,8 +1,6 @@
 # Changelog
 
-## 1.1.0 — Unreleased
-
-This entry describes the 1.1.0 development target. It does not assert that the package has been published or that final listening acceptance has passed.
+## 1.1.0 — 2026-11-01
 
 ### Added
 
@@ -14,9 +12,9 @@ This entry describes the 1.1.0 development target. It does not assert that the p
 ### Packaging and upgrades
 
 - The 1.1.0 full portable package is the clean-install route for all users, including new users and users on any older version.
-- A verified update route from 1.0.0 is required for the release. A 0.4.0 or 0.4.1 route remains ineligible unless frozen-client, safety, rollback and end-to-end upgrade checks pass and the 1.1.0 release explicitly lists that installed version.
+- Provide the verified 1.0.0 update route. Direct updates from 0.4.0 and 0.4.1 are not provided in this release.
 - Preserve the JPN variant when updating from 1.0.0: do not force omitted Chinese weights to download, and keep any models the user installed later.
-- Release publication requires completed package checks, upgrade gates and manual listening acceptance on representative tracks and audio devices. This source-tree entry is not a release receipt.
+- Manual listening on representative full songs and audio devices remains to be completed.
 
 ## 1.0.0 — 2026-10-23
 

@@ -25,7 +25,7 @@ VWA 是面向 Windows 的歌声合成工作流助手，提供歌曲准备、SVP 
 
 ## 下载与安装
 
-**1.1.0** 尚未发布。请只从[发行页](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases)中明确标注版本 1.1.0 的条目下载。
+从 [1.1.0 发行页](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v1.1.0)下载适合自己的完整包或 JPN 包。
 
 | 包型 | 用途与内容 |
 | --- | --- |
@@ -59,8 +59,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Merge-PortableParts.ps1
 
 | 当前版本 | 1.1.0 升级路线 |
 | --- | --- |
-| 1.0.0 | 发布门槛要求提供经过验证的 1.0.0 更新路线。仅在**设置与更新**明确提供 1.1.0 时使用；正式发布前请等待，或使用全量包。 |
-| 0.4.0／0.4.1 | 资格尚未确认。只有正式 1.1.0 发行在兼容、回滚和冻结客户端检查通过后明确列出该确切版本，才视为支持；否则请在新目录使用全量包。 |
+| 1.0.0 | 在**设置与更新**中检查并安装 1.1.0；1.0.0 JPN 会更新为 1.1.0 JPN。 |
+| 0.4.0／0.4.1 | 1.1.0 暂不提供直接更新，请在新目录使用全量包。 |
 | 0.3.0／0.3.1 及其他版本 | 请在新目录使用全量包。旧版 `VWA-Updater.exe` 下载不能作为 1.1.0 升级路线。 |
 
 1.0.0 JPN 的更新目标为 1.1.0 JPN：不会为更新强制下载省略的中文权重，用户后来安装的模型会保留。

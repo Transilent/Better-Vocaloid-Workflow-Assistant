@@ -25,7 +25,7 @@ VWA also provides task history and recovery, saved presets, optional model insta
 
 ## Download and installation
 
-The **1.1.0** release is not published yet. Download only from an entry that explicitly identifies version 1.1.0 on [Releases](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases).
+Download the full or JPN package from the [1.1.0 release](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v1.1.0).
 
 | Package | Use and contents |
 | --- | --- |
@@ -59,8 +59,8 @@ Use **Tasks and results** to find, continue or retry tasks. Install optional mod
 
 | Installed version | 1.1.0 route |
 | --- | --- |
-| 1.0.0 | The release requires a verified update route from 1.0.0. Use **Settings and updates** only when it explicitly offers 1.1.0. Until then, wait for the release or use the full package. |
-| 0.4.0 / 0.4.1 | Eligibility has not been established. Treat an update as supported only when the published 1.1.0 release explicitly lists that exact installed version after compatibility and rollback checks. Otherwise, use the full package in a new folder. |
+| 1.0.0 | Check for and install 1.1.0 in **Settings and updates**. The 1.0.0 JPN variant updates to 1.1.0 JPN. |
+| 0.4.0 / 0.4.1 | Direct updates to 1.1.0 are not currently provided. Use the full package in a new folder. |
 | 0.3.0 / 0.3.1 and other versions | Use the full package in a new folder. Older `VWA-Updater.exe` downloads are not a 1.1.0 upgrade route. |
 
 The 1.0.0 JPN update targets 1.1.0 JPN: it does not force a download of omitted Chinese weights, and models installed later are preserved.
