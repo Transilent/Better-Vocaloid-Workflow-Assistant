@@ -51,8 +51,9 @@ class StandardRoutingTest(unittest.TestCase):
         self.assertEqual(len(STANDARD_TOOLS), 12)
         self.assertEqual(len(set(STANDARD_TOOLS)), 12)
         self.assertEqual(set(_ACTION_GROUPS), set(STANDARD_TOOLS) - {'vwa_wait', 'vwa_cancel', 'vwa_search'})
-        self.assertEqual(len(_ACTION_TO_TOOL), 60)
+        self.assertEqual(len(_ACTION_TO_TOOL), 61)
         self.assertEqual(_ACTION_TO_TOOL['pitch_offset_review'], 'vwa_evidence')
+        self.assertEqual(_ACTION_TO_TOOL['lyrics_reconcile_preview'], 'vwa_evidence')
         self.assertEqual(set(_ACTION_TO_TOOL.values()), set(_ACTION_GROUPS))
         self.assertEqual(set(_FLAT_ACTION_ROUTES.values()), {'vwa_wait', 'vwa_cancel', 'vwa_search'})
 

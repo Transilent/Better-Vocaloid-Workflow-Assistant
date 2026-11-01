@@ -209,7 +209,7 @@ def validate_standard_schema(tools, checks):
             _require(rationale.get('type') == 'string', 'apply_review:rationale_string')
     union = frozenset().union(*actions_by_tool.values())
     _require(union == ALL_MAPPED_ACTIONS, 'standard_action_union_mismatch')
-    checks.append('standard_actions_60_mapped')
+    checks.append('standard_actions_61_mapped')
     checks.append('standard_request_objects_strict')
     return actions_by_tool
 

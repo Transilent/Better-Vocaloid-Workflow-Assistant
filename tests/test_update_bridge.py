@@ -90,9 +90,18 @@ with tempfile.TemporaryDirectory(dir=APP/'work',prefix='bridge-') as directory:
     try:
         env=dict(os.environ,QT_QPA_PLATFORM='offscreen',BVWA_TESTING='1')
         for flag in ('--check','--smoke-test'):
-            completed=subprocess.run([str(executable),'--root',str(ui_root),flag],env=env,timeout=60)
-            log=(ui_root/'cache/updates/compatibility.log').read_text(encoding='utf-8')
-            assert completed.returncode==0,log[-5000:]
+            completed=subprocess.run([str(executable),'--root',str(ui_root),flag],env=env,
+                                     timeout=60,capture_output=True)
+            log_path=ui_root/'cache/updates/compatibility.log'
+            cache=ui_root/'cache/updates'
+            diagnostic={'flag':flag,'exit_code':completed.returncode,
+                        'stdout':completed.stdout.decode('utf-8','replace')[-3000:],
+                        'stderr':completed.stderr.decode('utf-8','replace')[-3000:],
+                        'pythonw_exists':(link/'vocal2midi/python/pythonw.exe').is_file(),
+                        'cache_entries':sorted(path.name for path in cache.iterdir()) if cache.is_dir() else []}
+            assert log_path.is_file(), 'Compatibility launcher did not create its log: '+repr(diagnostic)
+            log=log_path.read_text(encoding='utf-8')
+            assert completed.returncode==0,repr(diagnostic)+'\n'+log[-5000:]
         assert '"console_attached": false' in log and '"network_requested": false' in log
         assert 'Compatibility updater GUI ready; no network request.' in log
         assert not list((ui_root/'cache/updates').glob('ct-*')), 'The launcher must remove its extracted payload'

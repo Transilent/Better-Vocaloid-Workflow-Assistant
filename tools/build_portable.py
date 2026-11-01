@@ -132,6 +132,59 @@ def _check_output_variant(output, variant, layout_root=DEFAULT_LAYOUT_ROOT):
         raise ValueError('The JPN archive filename must end with -JPN.zip')
 
 
+def _normalize_sha256(value, label='--base-sha256'):
+    text = str(value)
+    if len(text) != 64 or any(character not in '0123456789abcdefABCDEF' for character in text):
+        raise ValueError(label + ' must be exactly 64 hexadecimal characters')
+    return text.lower()
+
+
+def _sha256_argument(value):
+    try:
+        return _normalize_sha256(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _candidate_output(output):
+    output = Path(output).resolve()
+    if output.suffix.casefold() != '.zip':
+        raise ValueError('Candidate output must be a ZIP file')
+    if not any('candidates' in part.casefold() for part in output.parent.parts):
+        raise ValueError('Candidate output must be inside a directory whose name contains "candidates"')
+    if output.with_name(output.name + '.candidate.json').exists():
+        raise ValueError('Candidate marker already exists')
+    return output
+
+
+def _candidate_report(report, base_sha256=None):
+    annotated = dict(report)
+    annotated.update(
+        build_kind='candidate',
+        candidate={'status': 'unaccepted', 'manual_acceptance': 'pending',
+                   'user_test_confirmed': False, 'published': False,
+                   'release_ready': False, 'release_assets_manifest_created': False},
+        notice='UNACCEPTED LOCAL CANDIDATE: not manually user-tested and not published.')
+    if base_sha256 is not None:
+        annotated['base_sha256'] = base_sha256
+    return annotated
+
+
+def write_candidate_marker(report, output, base_sha256=None):
+    """Mark a local candidate and its final report as unaccepted and unpublished."""
+    output = _candidate_output(output)
+    annotated = _candidate_report(report, base_sha256)
+    build_report = output.with_suffix('.build.json')
+    build_report.write_text(json.dumps(annotated, indent=2), encoding='utf-8')
+    marker = dict(annotated)
+    marker['build_report'] = {'name': build_report.name, 'sha256': digest(build_report)}
+    marker_path = output.with_name(output.name + '.candidate.json')
+    with marker_path.open('x', encoding='utf-8') as stream:
+        json.dump(marker, stream, ensure_ascii=False, indent=2)
+    print(json.dumps(marker), flush=True)
+    return annotated
+
+
 def _portable_inventory(entries, variant, omitted, layout_root=DEFAULT_LAYOUT_ROOT):
     result = {'format': 1, 'layout_root': _layout_root(layout_root), 'entries': entries}
     if variant != 'full':
@@ -148,13 +201,16 @@ def _portable_metadata(report):
               'layout_root': layout_root}
     if 'runtime_sha256' in report:
         result['runtime_sha256'] = report['runtime_sha256']
+    for key in ('build_kind', 'candidate', 'notice'):
+        if key in report:
+            result[key] = report[key]
     return result
 
 
 def write_portable_metadata(report, target):
     """Write portable metadata separately from program update catalogs."""
     target = Path(target).resolve()
-    if target.name == 'release-assets.json':
+    if target.name.casefold() == 'release-assets.json':
         raise ValueError('Portable metadata must not replace release-assets.json')
     if target.exists():
         raise FileExistsError(target)
@@ -455,7 +511,7 @@ def _copy_compressed_record(original, destination, source_info, record_end, new_
     destination.start_dir = destination.fp.tell()
 
 
-def update_from_zip(output, base, compression=1, variant='full', layout_root=DEFAULT_LAYOUT_ROOT, *, base_layout_root=None):
+def update_from_zip(output, base, compression=1, variant='full', layout_root=DEFAULT_LAYOUT_ROOT, *, base_layout_root=None, base_sha256=None):
     if base_layout_root is not None:
         _layout_root(base_layout_root)
     """Reuse verified compressed runtime members when only source changes.
@@ -468,7 +524,10 @@ def update_from_zip(output, base, compression=1, variant='full', layout_root=DEF
     from tools.verify_source_layout import verify
     verify(ROOT)
     _check_output_variant(output, variant, layout_root)
-    expected_base = base.with_suffix(base.suffix + '.sha256').read_text(encoding='ascii').split()[0]
+    if base_sha256 is None:
+        expected_base = base.with_suffix(base.suffix + '.sha256').read_text(encoding='ascii').split()[0]
+    else:
+        expected_base = _normalize_sha256(base_sha256)
     if digest(base) != expected_base:
         raise ValueError('Base ZIP checksum mismatch')
     source_names, dependencies, omitted = package_selection(variant)
@@ -517,10 +576,12 @@ def update_from_zip(output, base, compression=1, variant='full', layout_root=DEF
               'files': len(inventory)+1, 'uncompressed_bytes': sum(e['bytes'] for e in inventory),
               'reused_compressed_files': reused, 'updated_source_files': changed,
               'seconds': round(time.monotonic()-started, 2)}
+    if base_sha256 is not None:
+        report['base_sha256'] = expected_base
     output.with_suffix('.build.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
     print(json.dumps(report), flush=True)
     return report
-if __name__ == '__main__':
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--plan-profile',choices=('complete','music','japanese'),help='Inspect dependency space without creating an archive')
@@ -533,42 +594,74 @@ if __name__ == '__main__':
     parser.add_argument('--portable-metadata', type=Path, help='Write separate portable metadata; never build a program update implicitly')
     parser.add_argument('--runtime-dir', type=Path, default=ROOT)
     parser.add_argument('--base-zip', type=Path, help='Reuse unchanged members from a checksum-verified previous ZIP')
+    parser.add_argument('--base-sha256', type=_sha256_argument,
+                        help='Expected SHA-256 of --base-zip; avoids requiring its .sha256 sidecar')
     parser.add_argument('--base-layout-root', choices=LAYOUT_ROOTS,
                         help='Require the base ZIP to use this VWA or BVWA root')
     parser.add_argument('--compression', type=int, choices=range(10), default=6)
     parser.add_argument('--split-mib', type=int, default=0)
     parser.add_argument('--migration-metadata', type=Path, help='Verified runtime-upgrade.build.json for legacy online upgrades')
     parser.add_argument('--user-test-confirmed', action='store_true', help='Use only after explicit user testing confirmation')
-    args = parser.parse_args()
+    parser.add_argument('--candidate-build', action='store_true',
+                        help='Build an explicitly unaccepted local candidate under a candidates directory')
+    args = parser.parse_args(argv)
     if args.default_name is not None or args.print_default_name:
         selected_root = args.default_name or args.layout_root
         print(portable_archive_name(args.variant, selected_root))
-        sys.exit(0)
+        return 0
     if args.plan_only:
         print(json.dumps(portable_plan(args.variant, args.layout_root), ensure_ascii=False, indent=2))
-        sys.exit(0)
+        return 0
     if args.plan_profile:
         from dependency_profiles import installation_plan
         print(json.dumps(installation_plan(args.plan_profile),indent=2))
-        sys.exit(0)
-    if args.output is None:
+        return 0
+    if args.candidate_build and args.user_test_confirmed:
+        parser.error('--candidate-build and --user-test-confirmed are mutually exclusive')
+    if args.candidate_build:
+        if args.output is None:
+            parser.error('--candidate-build requires an explicit --output ZIP path')
+        try:
+            args.output = _candidate_output(args.output)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if args.migration_metadata:
+            parser.error('--migration-metadata is only valid for a formal release build')
+    elif args.output is None:
         args.output = ROOT / portable_archive_name(args.variant, args.layout_root)
-    if not args.user_test_confirmed:
-        parser.error('Local user testing must be confirmed before creating a portable release archive.')
+    if not (args.candidate_build or args.user_test_confirmed):
+        parser.error('Local user testing must be confirmed before creating a portable release archive; '
+                     'use --candidate-build only for an unaccepted local candidate.')
+    if args.base_sha256 is not None and args.base_zip is None:
+        parser.error('--base-sha256 requires --base-zip')
     if args.split_mib and not 1 <= args.split_mib < 2048:
         parser.error('Release parts must be between 1 and 2047 MiB')
     if args.variant == 'jpn' and args.split_mib and not args.portable_metadata:
         parser.error('Split JPN archives require separate --portable-metadata')
-    if args.portable_metadata and (args.portable_metadata.name == 'release-assets.json' or args.portable_metadata.exists()):
-        parser.error('Choose a new portable metadata file distinct from release-assets.json')
+    if args.portable_metadata:
+        if args.candidate_build:
+            try:
+                args.portable_metadata.resolve().relative_to(args.output.parent)
+            except ValueError:
+                parser.error('Candidate portable metadata must stay inside the candidate output directory')
+        if args.portable_metadata.name.casefold() == 'release-assets.json' or args.portable_metadata.exists():
+            parser.error('Choose a new portable metadata file distinct from release-assets.json')
     _check_output_variant(args.output, args.variant, args.layout_root)
     report = (update_from_zip(args.output.resolve(), args.base_zip.resolve(), args.compression, args.variant,
-                                  args.layout_root, base_layout_root=args.base_layout_root)
+                                  args.layout_root, base_layout_root=args.base_layout_root,
+                                  base_sha256=args.base_sha256)
               if args.base_zip else build(args.output, args.runtime_dir.resolve(), args.compression, args.variant, args.layout_root))
     report['layout_root'] = args.layout_root
     if args.split_mib:
         report['parts'] = split(args.output.resolve(), args.split_mib)
-        if not args.portable_metadata:
+        if not args.candidate_build and not args.portable_metadata:
             write_release_metadata(report, args.output.resolve().parent, args.migration_metadata)
+    if args.candidate_build:
+        report = write_candidate_marker(report, args.output, args.base_sha256)
     if args.portable_metadata:
         write_portable_metadata(report, args.portable_metadata)
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

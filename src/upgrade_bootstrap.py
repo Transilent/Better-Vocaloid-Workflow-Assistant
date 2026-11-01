@@ -148,6 +148,12 @@ class UpgradeDialog(QDialog):
 
     def install(self,plan):
         if self.close_requested: return
+        try:
+            from tools.update_apply import validate_prepared_runtime_upgrade
+            validate_prepared_runtime_upgrade(plan)
+        except Exception as exc:
+            self.failed('安装前源身份复核失败：' + str(exc))
+            return
         runtime = self.root/'dependencies/vocal2midi/python/pythonw.exe'
         command = [str(runtime),'-B',str(Path(plan).parent/'apply_helper.py'),'--plan',str(plan),
                    '--parent',str(os.getpid()),'--launcher-parent',os.environ.get('VWA_LAUNCHER_PID',os.environ.get('BVWA_LAUNCHER_PID','0'))]

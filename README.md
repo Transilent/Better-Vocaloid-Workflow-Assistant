@@ -11,62 +11,65 @@ VWA is a Windows desktop assistant for preparing singing-synthesis projects, tun
 | Workflow | What it does |
 | --- | --- |
 | Preparation | Import local audio or a Bilibili BV/link, separate lead vocals, backing vocals and accompaniment, transcribe Chinese or Japanese lyrics and notes, and export MIDI, USTX, VSQX or SVP. |
-| Tuning | Open a task project or local SVP, select vocal tracks and a parameter source, optionally add a singing style and local pitch gestures, and save a separate project. |
+| Tuning | Open a task project or local SVP, select vocal tracks and a parameter source, optionally add experimental styles, style regions and local pitch gestures, and save a separate project. |
+| Simple mixing | Balance up to three rendered vocal WAVs and one accompaniment with track level, pan, mute/solo, vocal timing and reverb sends, shared vocal-bus EQ/compression/reverb, and editable A/B previews. |
 | Video assembly | Combine a video with your Mixdown, with automatic alignment, manual offset and optional loudness adjustment. |
 | Publishing | Prepare covers, titles, descriptions and credits, and assist with Bilibili and Xiaohongshu uploads. Confirm publication on the platform website. |
+| Agent/MCP (optional) | Connect a compatible host to 12 typed top-level VWA tools for preparation, evidence review, decisions, export, recovery and delivery. Setup is separate from the desktop application. |
 
-Tuning offers preservation of existing expression, reference-vocal mapping, measured voicebank calibration and transfer of existing parameters. Reference mapping and style presets produce editable drafts; audition them with the target voicebank. Calibration requires a matching score and voicebank setup, with trial audio exported from SV by the user. Voice synthesis and mixing take place in your singing editor and audio software.
+Tuning offers preservation of existing expression, reference-vocal mapping, measured voicebank calibration, transfer of existing parameters, time-region style editing, style autosave and an independent Chinese-opera technique. Reference mapping and the Gentle, Sad and Bright & Cheerful styles are experimental drafts; synthesize and audition them with the target voicebank. Calibration requires a matching score and voicebank setup, with trial audio exported from SV by the user. Voice synthesis takes place in your singing editor.
 
-VWA also provides task history and recovery, saved presets, optional model installation, and SRT/WebVTT subtitle export. The interface supports Simplified Chinese, Japanese and English, with light/dark themes and interface scaling.
+[Simple mixing](docs/SimpleMixingComponent.en.md) works on up to three rendered vocal WAVs and one accompaniment. Its A/B preview can continue across short rendered segments and refresh after edits while preserving playback when possible. When an audio output device fails, VWA retries once with its compatible built-in player and, if needed, offers the current segment in the system player. The handoff and buffered segments may differ briefly from a full export; check the complete song on your own voicebank and audio devices. Source files are not overwritten.
+
+VWA also provides task history and recovery, saved presets, optional model installation, and SRT/WebVTT subtitle export. The interface supports Simplified Chinese, Japanese and English, with light/dark themes and interface scaling. The MCP technical preview is optional, installed separately, and does not add a general command executor.
 
 ## Download and installation
 
-Download version **1.0.0** from [Releases](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v1.0.0).
+The **1.1.0** release is not published yet. Download only from an entry that explicitly identifies version 1.1.0 on [Releases](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases).
 
-| Package | Download size | Contents |
-| --- | ---: | --- |
-| Full | About 4.91 GiB, in three parts | Chinese and Japanese recognition models and the base runtime. |
-| [JPN](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/download/v1.0.0/VWA-Windows-x64-JPN.zip) | About 1.53 GiB | Omits only the three Chinese Qwen weight files. Japanese recognition and note extraction remain available; Chinese models can be installed later. |
+| Package | Use and contents |
+| --- | --- |
+| Full | Clean installation for all users, including new users and users on any older version. Includes the complete model set and base runtime. |
+| JPN | The same workflows with only the Chinese Qwen weight files omitted. Japanese recognition and note extraction remain available; Chinese models can be installed later. |
+| Update | Only an installed version explicitly listed as compatible in the 1.1.0 release may use an offered update. An update archive is not a complete installation. |
 
-Both packages support all three interface languages. Interface language and lyric-recognition language are set separately. GitHub's **Source code** archives and update ZIPs are not complete installations.
+Both full variants support all three interface languages. Interface language and lyric-recognition language are set separately. GitHub's **Source code** archives and update ZIPs are not complete installations.
 
-**Full package:** download these five files into the same folder:
-
-- `VWA-Windows-x64.zip.001`, `.002` and `.003`
-- `portable-metadata-full.json`
-- `Merge-PortableParts.ps1`
-
-Open PowerShell in that folder and run:
+**Full package:** if the release splits the full asset, download every part for that asset together with its matching metadata and merge helper. Open PowerShell in that folder and run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Merge-PortableParts.ps1
 ```
 
-The script verifies the parts and creates `VWA-Windows-x64.zip`. Extract that ZIP completely. For JPN, extract the downloaded ZIP directly. Open the extracted `VWA` folder and run **`VWA.exe`**. Keep the complete folder together when moving the application.
+The script verifies the parts and creates `VWA-Windows-x64.zip`. Extract that ZIP completely. If JPN is supplied as one ZIP, extract it directly. Open the extracted `VWA` folder and run **`VWA.exe`**. Keep the complete folder together when moving the application.
 
-Requirements: Windows 10/11 x64. The portable package includes its runtime. For the full package, allow about 25 GB for downloading, joining and extraction, plus space for optional components and media. A compatible singing editor and voicebank are required for voice synthesis.
+Requirements: Windows 10/11 x64. The portable package includes its runtime. Check the published release notes for the final download, joining and extraction space; leave additional room for optional components and media. A compatible singing editor and voicebank are required for voice synthesis.
 
 ## Basic use
 
 1. In **Preparation**, select the source, lyric language, processing options and output folder. Review the resulting audio, notes and lyrics.
-2. In **Tuning**, choose a task project or import an SVP. Select the tracks, parameter source and optional style, then generate a separate project for auditioning in SV.
-3. After rendering and mixing the vocals, select the original video and Mixdown in **Assemble video**. An existing finished video can go directly to **Publishing**.
-4. Check the cover, platform drafts and credits before preparing the upload. Review the creator page and publish manually.
+2. In **Tuning**, choose a task project or import an SVP. Select the tracks, parameter source and optional experimental style, then generate a separate project for auditioning in SV.
+3. Render the vocal stems. Open **Simple mixing** to balance up to three vocal WAVs and one accompaniment, audition the result and export a new WAV or register it as a task Mixdown.
+4. Select the original video and Mixdown in **Assemble video**. An existing finished video can go directly to **Publishing**.
+5. Check the cover, platform drafts and credits before preparing the upload. Review the creator page and publish manually.
 
 Use **Tasks and results** to find, continue or retry tasks. Install optional models under **Models and components**. Change the interface language under **Settings and updates → Appearance → Interface language**, then restart VWA.
 
 ## Upgrading
 
-| Installed version | Upgrade method |
+| Installed version | 1.1.0 route |
 | --- | --- |
-| 0.4.0 / 0.4.1 | Follow the upgrade offered in **Settings and updates**. |
-| 0.3.0 / 0.3.1 | Use [VWA-Updater.exe](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/download/v1.0.0/VWA-Updater.exe) and follow its prompts. |
+| 1.0.0 | The release requires a verified update route from 1.0.0. Use **Settings and updates** only when it explicitly offers 1.1.0. Until then, wait for the release or use the full package. |
+| 0.4.0 / 0.4.1 | Eligibility has not been established. Treat an update as supported only when the published 1.1.0 release explicitly lists that exact installed version after compatibility and rollback checks. Otherwise, use the full package in a new folder. |
+| 0.3.0 / 0.3.1 and other versions | Use the full package in a new folder. Older `VWA-Updater.exe` downloads are not a 1.1.0 upgrade route. |
 
-Supported upgrades preserve settings, tasks, sign-in sessions, installed models and optional components. Back up editor projects before upgrading. Release files named `BVWA` remain available for older clients.
+The 1.0.0 JPN update targets 1.1.0 JPN: it does not force a download of omitted Chinese weights, and models installed later are preserved.
+
+Do not unpack an update archive over an installation; use only the update offered by the application or release notes. A listed compatible update preserves settings, tasks, sign-in sessions, installed models and optional components. Back up editor projects before upgrading.
 
 ## Documentation and support
 
-[User guide](docs/UserGuide.en.md) · [Tuning guide](docs/TuningWorkflow.en.md) · [Changelog](CHANGELOG.md) · [Report an issue](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues)
+[User guide](docs/UserGuide.en.md) · [Tuning guide](docs/TuningWorkflow.en.md) · [Portable guide](docs/Portable.en.md) · [MCP tool reference (Chinese)](docs/AgentMCPStandard.zh-CN.md) · [Changelog](CHANGELOG.md) · [Report an issue](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues)
 
 ## Acknowledgements
 

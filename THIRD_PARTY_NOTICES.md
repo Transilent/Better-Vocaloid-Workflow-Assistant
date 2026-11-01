@@ -7,6 +7,7 @@ The portable package includes third-party components and model weights. Their or
 | Component | Source / notice |
 | --- | --- |
 | Vocal2Midi | [Xiantaidu/Vocal2Midi](https://github.com/Xiantaidu/Vocal2Midi), Apache-2.0; included `dependencies/vocal2midi/LICENSE` and `ACKNOWLEDGEMENTS.md` |
+| Qwen3-ASR-1.7B | The [upstream model card](https://huggingface.co/Qwen/Qwen3-ASR-1.7B/blob/b188e100bd85038c06d2812d24a39776eba774ca/README.md) declares Apache-2.0; the license text is also included at `dependencies/vocal2midi/LICENSE`. The ONNX/GGUF files are converted artifacts from [the pinned distribution](https://huggingface.co/xian-taidu/Qwen3-ASR-1.7B-DML/tree/ba77390c544ce36b6736d95a1c25adcf4651566c), with file hashes in `components/runtime-features.json`. Verify any additional conversion notices before public release. |
 | MDX separation model weights | [UVR model repository](https://github.com/TRvlvr/model_repo/releases/tag/all_public_uvr_models), [model parameter registry](https://github.com/TRvlvr/application_data); model licenses are distinct from the assistant code |
 | Optional BS-RoFormer model | Original checkpoint/config from [becruily/bs-roformer-karaoke](https://huggingface.co/becruily/bs-roformer-karaoke); revision and hashes recorded in `components/roformer.json`; model terms remain separate |
 | Optional Pymss, Pymss Core, PyTorch and supporting libraries | Downloaded from pinned upstream wheels; original package metadata and bundled notices are retained in `dependencies/optional/bs-roformer/current/packages` |

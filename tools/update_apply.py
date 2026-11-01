@@ -69,6 +69,16 @@ RUNTIME_PROGRAM_FILES = {'components/roformer.json', 'components/runtime-feature
                           'components/pedalboard-NOTICE.txt', 'components/pedalboard-THIRD_PARTY_NOTICES.md'}
 ROOT_FILES.add('VWA.exe')
 LAUNCHER_MIGRATION = {'from': 'BVWA.exe', 'to': 'VWA.exe', 'legacy_alias': True}
+SOURCE_POLICY_FORMAT = 1
+SOURCE_POLICY_REQUIRED_TARGET = '1.1.0'
+SOURCE_IDENTITY_REQUIRED_FILES = frozenset({'app.py', 'updater.py', 'updates_ui.py', 'tools/update_apply.py'})
+FIRST_HOP_PROGRAM_FILES = frozenset({'app.py', 'version.json', 'tools/update_apply.py'})
+SOURCE_POLICY_MAX_SOURCES = 32
+SOURCE_POLICY_MAX_FILES = 64
+JPN_RELEASE_LAYOUT = 'VWA'
+JPN_QWEN_PREFIX = 'dependencies/vocal2midi/experiments/Qwen3-ASR-1.7B-dml/'
+JPN_RUNTIME_FEATURES = 'components/runtime-features.json'
+JPN_OMITTED_COUNT = 3
 FILE_ATTRIBUTE_HIDDEN = 0x2
 FILE_ATTRIBUTE_NORMAL = 0x80
 
@@ -186,6 +196,338 @@ def validate_destination(root, name):
     return path
 
 
+def _canonical_json_sha256(value):
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _normalise_source_policy(policy):
+    """Return a canonical policy or reject it before any update write.
+
+    File paths are relative to the installation root. Only fixed program files
+    may participate in source identity; user settings, tasks and optional models
+    must never be read for this check.
+    """
+    if not isinstance(policy, dict) or type(policy.get('format')) is not int or policy['format'] != SOURCE_POLICY_FORMAT:
+        raise ValueError('运行库升级的 source_policy 格式无效，已停止更新；请使用完整便携包恢复。')
+    allowed = policy.get('allowed_sources')
+    if not isinstance(allowed, list) or not 1 <= len(allowed) <= SOURCE_POLICY_MAX_SOURCES:
+        raise ValueError('运行库升级的允许源清单无效，已停止更新；请使用完整便携包恢复。')
+    result, seen = [], set()
+    program_files = ROOT_FILES | TOOL_FILES | RUNTIME_PROGRAM_FILES
+    for item in allowed:
+        if not isinstance(item, dict):
+            raise ValueError('运行库升级的允许源记录无效，已停止更新；请使用完整便携包恢复。')
+        version = item.get('version')
+        runtime_sha = item.get('runtime_sha256')
+        files = item.get('files')
+        if not isinstance(version, str) or not re.fullmatch(r'\d+\.\d+\.\d+', version):
+            raise ValueError('运行库升级的允许源版本无效，已停止更新；请使用完整便携包恢复。')
+        if not isinstance(runtime_sha, str) or not re.fullmatch(r'[a-f0-9]{64}', runtime_sha):
+            raise ValueError('运行库升级的允许源运行库摘要无效，已停止更新；请使用完整便携包恢复。')
+        if (not isinstance(files, dict) or not SOURCE_IDENTITY_REQUIRED_FILES.issubset(files)
+                or len(files) > SOURCE_POLICY_MAX_FILES):
+            raise ValueError('运行库升级的允许源程序文件清单不完整，已停止更新；请使用完整便携包恢复。')
+        canonical_files = {}
+        for name, digest in files.items():
+            pure = PurePosixPath(name) if isinstance(name, str) else None
+            if (pure is None or pure.is_absolute() or '..' in pure.parts or '\\' in name or ':' in name
+                    or name not in program_files or not isinstance(digest, str)
+                    or not re.fullmatch(r'[a-f0-9]{64}', digest)):
+                raise ValueError('运行库升级的允许源包含无效或不安全的程序文件身份，已停止更新；请使用完整便携包恢复。')
+            canonical_files[name] = digest
+        key = (version, runtime_sha)
+        if key in seen:
+            raise ValueError('运行库升级的允许源包含重复身份，已停止更新；请使用完整便携包恢复。')
+        seen.add(key)
+        result.append({'version': version, 'runtime_sha256': runtime_sha,
+                       'files': dict(sorted(canonical_files.items()))})
+    return {'format': SOURCE_POLICY_FORMAT, 'allowed_sources': result}
+
+
+def _source_path(base, name):
+    base = Path(base).resolve()
+    path = validate_destination(base, name)
+    try:
+        info = path.lstat()
+    except OSError as error:
+        raise ValueError('无法读取源程序身份：' + name) from error
+    if (not path.is_file() or path.is_symlink()
+            or getattr(info, 'st_file_attributes', 0) & 1024):
+        raise ValueError('源程序身份文件缺失或包含链接/重解析点：' + name)
+    if not path.resolve().is_relative_to(base):
+        raise ValueError('源程序身份文件位于安装目录之外：' + name)
+    return path
+
+
+def _identity_files_match(root, expected_files, replacements=None):
+    replacements = replacements or {}
+    for name, expected in expected_files.items():
+        try:
+            path = replacements.get(name) or _source_path(root, name)
+            if sha(path) != expected:
+                return False
+        except (OSError, ValueError):
+            return False
+    return True
+
+
+def _backup_directories(stage):
+    candidates = []
+    fixed = Path(stage) / 'backup'
+    if fixed.is_dir():
+        candidates.append(fixed)
+    candidates.extend(path for path in Path(stage).glob('backup-*') if path.is_dir() and path != fixed)
+    result = []
+    for candidate in candidates:
+        try:
+            info = candidate.lstat()
+        except OSError:
+            continue
+        if candidate.is_symlink() or getattr(info, 'st_file_attributes', 0) & 1024:
+            continue
+        result.append(candidate)
+    return result
+
+
+def _first_hop_matches(root, source, target_version):
+    cache = Path(root) / 'cache/updates'
+    if not cache.is_dir():
+        return []
+    matches = []
+    for stage in cache.glob('stage-*'):
+        if (stage.is_symlink() or stage.is_junction() or not stage.is_dir()):
+            continue
+        plan_path = stage / 'plan.json'
+        if not plan_path.is_file():
+            continue
+        try:
+            _, first_plan = _read_plan(plan_path)
+            entries = first_plan.get('entries')
+            names = {entry['file'] for entry in entries}
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if (first_plan.get('kind') == 'runtime_upgrade' or first_plan.get('version') != target_version
+                or first_plan.get('runtime_sha256') != source['runtime_sha256']
+                or names != FIRST_HOP_PROGRAM_FILES or len(entries) != len(names)):
+            continue
+        stage_files_ok = True
+        for entry in entries:
+            try:
+                validate_file(entry)
+                staged = _source_path(stage / 'files', entry['file'])
+                if staged.stat().st_size != entry['bytes'] or sha(staged) != entry['sha256']:
+                    stage_files_ok = False
+                    break
+            except (OSError, ValueError, KeyError, TypeError):
+                stage_files_ok = False
+                break
+        if not stage_files_ok:
+            continue
+        installed_metadata = None
+        try:
+            installed_metadata = json.loads(_source_path(root, 'version.json').read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError, UnicodeError):
+            continue
+        marker = installed_metadata.get('runtime_upgrade') if isinstance(installed_metadata, dict) else None
+        if (not isinstance(marker, dict) or marker.get('version') != target_version
+                or marker.get('source_runtime_sha256') != source['runtime_sha256']):
+            continue
+        for backup in _backup_directories(stage):
+            try:
+                backup_version = _source_path(backup, 'version.json')
+                backup_metadata = json.loads(backup_version.read_text(encoding='utf-8-sig'))
+            except (OSError, ValueError, UnicodeError):
+                continue
+            if (not isinstance(backup_metadata, dict)
+                    or backup_metadata.get('version') != source['version']):
+                continue
+            replacements = {}
+            complete = True
+            for name in FIRST_HOP_PROGRAM_FILES:
+                try:
+                    replacements[name] = _source_path(backup, name)
+                except (OSError, ValueError):
+                    complete = False
+                    break
+            if not complete or not _identity_files_match(root, source['files'], replacements):
+                continue
+            installed_matches = True
+            for name in ('app.py', 'tools/update_apply.py'):
+                try:
+                    if sha(_source_path(root, name)) != sha(_source_path(stage / 'files', name)):
+                        installed_matches = False
+                        break
+                except (OSError, ValueError):
+                    installed_matches = False
+                    break
+            if not installed_matches:
+                continue
+            evidence = {
+                'kind': 'first_hop_backup',
+                'plan': plan_path.relative_to(root).as_posix(),
+                'plan_sha256': sha(plan_path),
+                'backup': backup.relative_to(root).as_posix(),
+                'backup_files': {name: sha(replacements[name]) for name in sorted(FIRST_HOP_PROGRAM_FILES)},
+            }
+            matches.append(evidence)
+    unique = {_canonical_json_sha256(item): item for item in matches}
+    return [unique[key] for key in sorted(unique)]
+
+
+def _resolve_source_identity(root, policy, target_version):
+    policy = _normalise_source_policy(policy)
+    root = Path(root).resolve()
+    try:
+        metadata = _installed_metadata(root)
+        installed_version = metadata.get('version')
+        runtime_sha = sha(root / 'dependencies/manifest.json')
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ValueError('无法确认当前安装的源版本或运行库，已停止更新；请使用完整便携包恢复。') from error
+
+    pending_marker = metadata.get('upgrade_pending', False)
+    if type(pending_marker) is not bool:
+        raise ValueError('当前升级标记损坏，已停止更新；请使用完整便携包恢复。')
+
+    normal_candidates = []
+    if not pending_marker:
+        for source in policy['allowed_sources']:
+            if source['version'] != installed_version or source['runtime_sha256'] != runtime_sha:
+                continue
+            if _identity_files_match(root, source['files']):
+                normal_candidates.append((source, {'kind': 'installed_release'}))
+    if normal_candidates:
+        if len(normal_candidates) != 1:
+            raise ValueError('当前安装匹配多个源发行身份，已停止更新；请使用完整便携包恢复。')
+        return normal_candidates[0]
+
+    if installed_version == target_version and pending_marker:
+        first_hop = []
+        for source in policy['allowed_sources']:
+            if source['runtime_sha256'] != runtime_sha:
+                continue
+            first_hop.extend((source, evidence)
+                             for evidence in _first_hop_matches(root, source, target_version))
+        if len(first_hop) == 1:
+            return first_hop[0]
+        if len(first_hop) > 1:
+            raise ValueError('第一跳备份存在多份歧义，已停止更新；请保留用户数据并使用完整便携包恢复。')
+        raise ValueError('第一跳后无法证明源发行身份或安全回滚证据，已停止更新；请保留用户数据并使用完整便携包恢复。')
+
+    raise ValueError('当前安装不是本次更新允许的源版本、运行库和发行程序身份，已停止更新；请使用完整便携包恢复。')
+
+
+def _source_binding(root, policy, target_version):
+    source, evidence = _resolve_source_identity(root, policy, target_version)
+    if _version_key(source['version']) >= _version_key(target_version):
+        raise ValueError('源版本不低于更新目标，已停止；请使用完整便携包。')
+    return {
+        'source_policy': policy,
+        'source_policy_sha256': _canonical_json_sha256(policy),
+        'source_identity': source,
+        'source_identity_sha256': _canonical_json_sha256(source),
+        'source_evidence': evidence,
+        'source_evidence_sha256': _canonical_json_sha256(evidence),
+    }
+
+
+def _policy_from_runtime_item(item, target_version):
+    policy = item.get('source_policy') if isinstance(item, dict) else None
+    if target_version == SOURCE_POLICY_REQUIRED_TARGET and policy is None:
+        raise ValueError('目标 1.1.0 更新缺少 source_policy，已停止更新；请使用完整便携包。')
+    return _normalise_source_policy(policy) if policy is not None else None
+
+
+def _write_source_binding(plan_path, plan):
+    plan_path = Path(plan_path).resolve()
+    plan_raw = plan_path.read_bytes()
+    if json.loads(plan_raw.decode('utf-8-sig')) != plan:
+        raise ValueError('准备中的更新计划已改变，已停止；请重新检查更新或使用完整便携包。')
+    path = plan_path.parent / 'source-binding.json'
+    payload = {
+        'format': 1,
+        'plan_sha256': hashlib.sha256(plan_raw).hexdigest(),
+        'source_policy_sha256': plan['source_policy_sha256'],
+        'source_identity_sha256': plan['source_identity_sha256'],
+        'source_evidence_sha256': plan['source_evidence_sha256'],
+    }
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                         prefix='source-binding-', suffix='.tmp', delete=False) as stream:
+            temporary = stream.name
+            json.dump(payload, stream, ensure_ascii=False)
+        os.replace(temporary, path)
+    finally:
+        if temporary:
+            Path(temporary).unlink(missing_ok=True)
+
+
+def _verify_policy_receipt(root, plan_path, plan):
+    path = validate_destination(root, 'cache/updates/pending.json')
+    binding_path = Path(plan_path).parent / 'source-binding.json'
+    binding_path = validate_destination(root, binding_path.relative_to(root).as_posix())
+    try:
+        receipt = json.loads(path.read_text(encoding='utf-8-sig'))
+        binding = json.loads(binding_path.read_text(encoding='utf-8-sig'))
+        plan_raw = Path(plan_path).read_bytes()
+        parsed_from_bytes = json.loads(plan_raw.decode('utf-8-sig'))
+    except (OSError, ValueError, UnicodeError) as error:
+        raise ValueError('源身份绑定计划缺少有效的计划绑定或待安装回执，已停止；请重新检查更新或使用完整便携包。') from error
+    plan_sha256 = hashlib.sha256(plan_raw).hexdigest()
+    required_binding = {
+        'format': 1, 'plan_sha256': plan_sha256,
+        'source_policy_sha256': plan.get('source_policy_sha256'),
+        'source_identity_sha256': plan.get('source_identity_sha256'),
+        'source_evidence_sha256': plan.get('source_evidence_sha256'),
+    }
+    if (not isinstance(receipt, dict) or receipt.get('plan') != str(Path(plan_path).resolve())
+            or receipt.get('version') != plan.get('version') or parsed_from_bytes != plan
+            or binding != required_binding):
+        raise ValueError('更新计划或用于防篡改的计划绑定已改变，已停止；请重新检查更新或使用完整便携包。')
+    # Current helpers include the digest fields in pending.json. Frozen 1.0
+    # helpers rewrite the same receipt in their old plan/version-only shape, so
+    # those fields are checked only when present and never required.
+    for key in ('plan_sha256', 'source_policy_sha256', 'source_identity_sha256', 'source_evidence_sha256'):
+        if key in receipt and receipt[key] != required_binding[key]:
+            raise ValueError('更新计划或待安装回执已改变，已停止；请重新检查更新或使用完整便携包。')
+
+
+def _verify_bound_source(root, plan_path, plan):
+    binding_keys = ('source_policy', 'source_policy_sha256', 'source_identity',
+                    'source_identity_sha256', 'source_evidence', 'source_evidence_sha256')
+    has_binding = any(key in plan for key in binding_keys)
+    if plan.get('version') == SOURCE_POLICY_REQUIRED_TARGET and not has_binding:
+        raise ValueError('目标 1.1.0 更新计划缺少 source_policy，已停止；请使用完整便携包。')
+    if not has_binding:
+        return None
+    if not isinstance(plan.get('source_policy'), dict):
+        raise ValueError('更新计划包含不完整的 source_policy，已停止；请使用完整便携包。')
+    _verify_policy_receipt(root, plan_path, plan)
+    policy = _normalise_source_policy(plan['source_policy'])
+    if (plan.get('source_policy_sha256') != _canonical_json_sha256(policy)
+            or plan.get('source_identity') not in policy['allowed_sources']
+            or plan.get('source_identity_sha256') != _canonical_json_sha256(plan.get('source_identity'))
+            or not isinstance(plan.get('source_evidence'), dict)
+            or plan.get('source_evidence_sha256') != _canonical_json_sha256(plan.get('source_evidence'))):
+        raise ValueError('更新计划的源身份绑定无效，已停止；请使用完整便携包。')
+    try:
+        source, evidence = _resolve_source_identity(root, policy, plan['version'])
+    except ValueError as error:
+        raise ValueError('准备更新后源版本、运行库或发行程序身份无法重新确认，已停止；请重新检查更新或使用完整便携包。') from error
+    if source != plan['source_identity'] or evidence != plan['source_evidence']:
+        raise ValueError('准备更新后源版本、运行库或发行程序身份已改变，已停止；请重新检查更新或使用完整便携包。')
+    return policy
+
+
+def validate_prepared_runtime_upgrade(plan_path):
+    """Recheck a prepared source-bound runtime plan before starting apply."""
+    plan_path = Path(plan_path).resolve()
+    root, plan = _read_plan(plan_path)
+    _verify_bound_source(root, plan_path, plan)
+    return True
+
+
 def _plan_root(plan_path):
     """Derive the installation from its staging location, never from JSON."""
     plan_path = Path(plan_path).absolute()
@@ -292,6 +634,8 @@ def apply_update(plan_path):
     root, plan = _read_plan(plan_path)
     if plan.get('kind') == 'runtime_upgrade':
         return apply_runtime_upgrade(plan_path)
+    if plan.get('version') == SOURCE_POLICY_REQUIRED_TARGET:
+        raise ValueError('目标 1.1.0 不能通过普通程序更新入口安装，必须使用带 source_policy 的运行库更新流程。')
     _require_forward_target(root, plan, plan_path)
     if reason := installation_busy(root):
         raise RuntimeError(reason)
@@ -384,6 +728,103 @@ class _RuntimeDestinations:
         return path
 
 
+def _jpn_runtime_omissions(root, base):
+    """Validate the exact shipping exception used by the released JPN build.
+
+    The complete manifest stays authoritative. A missing member is allowed only
+    when the installed VWA JPN inventory, fixed feature metadata and that manifest
+    all describe the same Qwen payload bytes. Present members are still hashed by
+    the normal runtime validation below.
+    """
+    root = Path(root).resolve()
+    raw_path = root / 'release-inventory.json'
+    try:
+        raw_path.lstat()
+    except FileNotFoundError:
+        return {'variant': 'unspecified', 'omitted': []}
+    except OSError as error:
+        raise ValueError('无法读取已发行包清单，已停止更新；请使用完整便携包恢复。') from error
+    path = _source_path(root, 'release-inventory.json')
+    try:
+        inventory = json.loads(path.read_text(encoding='utf-8-sig'))
+    except (OSError, ValueError, UnicodeError) as error:
+        raise ValueError('已发行包清单格式无效，已停止更新；请使用完整便携包恢复。') from error
+    if not isinstance(inventory, dict):
+        raise ValueError('已发行包清单格式无效，已停止更新；请使用完整便携包恢复。')
+    variant = inventory.get('variant', 'full')
+    if variant == 'full':
+        if inventory.get('omitted') not in (None, []):
+            raise ValueError('完整版已发行包包含非空 omitted 记录，已停止更新；请使用完整便携包恢复。')
+        return {'variant': 'full', 'omitted': []}
+    if variant != 'jpn':
+        raise ValueError('已发行包变体无效，已停止更新；请使用完整便携包恢复。')
+    if (type(inventory.get('format')) is not int or inventory['format'] != 1
+            or inventory.get('layout_root') != JPN_RELEASE_LAYOUT):
+        raise ValueError('JPN 已发行包清单格式或目录布局无效，已停止更新；请使用完整便携包恢复。')
+
+    entries = inventory.get('entries')
+    omitted = inventory.get('omitted')
+    if (not isinstance(entries, list) or not isinstance(omitted, list)
+            or len(omitted) != JPN_OMITTED_COUNT):
+        raise ValueError('JPN 已发行包的 omitted 清单无效，已停止更新；请使用完整便携包恢复。')
+    inventory_entries, omitted_records = {}, {}
+    for entry in entries:
+        if (not isinstance(entry, dict) or not isinstance(entry.get('file'), str)
+                or type(entry.get('bytes')) is not int or entry['bytes'] < 0
+                or not isinstance(entry.get('sha256'), str)
+                or not re.fullmatch(r'[a-f0-9]{64}', entry['sha256'])
+                or entry['file'] in inventory_entries):
+            raise ValueError('JPN 已发行包的文件记录无效，已停止更新；请使用完整便携包恢复。')
+        inventory_entries[entry['file']] = (entry['bytes'], entry['sha256'])
+    for entry in omitted:
+        if (not isinstance(entry, dict) or set(entry) != {'file', 'bytes', 'sha256'}
+                or not isinstance(entry.get('file'), str)
+                or type(entry.get('bytes')) is not int or entry['bytes'] < 0
+                or not isinstance(entry.get('sha256'), str)
+                or not re.fullmatch(r'[a-f0-9]{64}', entry['sha256'])
+                or entry['file'] in omitted_records):
+            raise ValueError('JPN 已发行包的 omitted 记录无效，已停止更新；请使用完整便携包恢复。')
+        omitted_records[entry['file']] = (entry['bytes'], entry['sha256'])
+
+    features_path = _source_path(root, JPN_RUNTIME_FEATURES)
+    features_digest = sha(features_path)
+    features_size = features_path.stat().st_size
+    if inventory_entries.get(JPN_RUNTIME_FEATURES) != (features_size, features_digest):
+        raise ValueError('JPN 运行特征文件未由已发行包清单固定，已停止更新；请使用完整便携包恢复。')
+    try:
+        features = json.loads(features_path.read_text(encoding='utf-8-sig'))
+        chinese = features['features']['chinese']
+        fixed_entries = chinese['files']
+        fixed_bytes = chinese['bytes']
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError) as error:
+        raise ValueError('JPN 运行特征清单无效，已停止更新；请使用完整便携包恢复。') from error
+    if (type(features.get('format')) is not int or features['format'] != 1
+            or not isinstance(fixed_entries, list) or len(fixed_entries) != JPN_OMITTED_COUNT
+            or type(fixed_bytes) is not int):
+        raise ValueError('JPN 运行特征清单格式无效，已停止更新；请使用完整便携包恢复。')
+    feature_records = {}
+    for entry in fixed_entries:
+        if (not isinstance(entry, dict) or not isinstance(entry.get('file'), str)
+                or type(entry.get('bytes')) is not int or entry['bytes'] < 0
+                or not isinstance(entry.get('sha256'), str)
+                or not re.fullmatch(r'[a-f0-9]{64}', entry['sha256'])
+                or entry['file'] in feature_records):
+            raise ValueError('JPN 运行特征文件记录无效，已停止更新；请使用完整便携包恢复。')
+        feature_records[entry['file']] = (entry['bytes'], entry['sha256'])
+
+    expected_qwen = {name for name in base if name.startswith(JPN_QWEN_PREFIX)}
+    names = set(omitted_records)
+    if (len(expected_qwen) != JPN_OMITTED_COUNT or names != expected_qwen
+            or set(feature_records) != names or names & set(inventory_entries)
+            or fixed_bytes != sum(entry['bytes'] for entry in omitted)):
+        raise ValueError('JPN 省略项与固定 runtime manifest/运行特征不一致，已停止更新；请使用完整便携包恢复。')
+    for name in names:
+        expected = (base[name]['bytes'], base[name]['sha256'])
+        if expected != omitted_records[name] or expected != feature_records[name]:
+            raise ValueError('JPN 省略项的大小或 SHA 与原 runtime manifest/运行特征不一致，已停止更新；请使用完整便携包恢复。')
+    return {'variant': 'jpn', 'omitted': sorted(names)}
+
+
 def _validate_runtime_stage(root, stage, plan, check=None):
     if sha(root / 'dependencies/manifest.json') != plan['source_runtime_sha256']:
         raise ValueError('当前运行库与升级包不匹配，请使用完整便携包。')
@@ -392,6 +833,9 @@ def _validate_runtime_stage(root, stage, plan, check=None):
         raise ValueError('目标运行库清单校验失败。')
     base = _manifest_entries(root / 'dependencies/manifest.json')
     target = _manifest_entries(target_path)
+    release = _jpn_runtime_omissions(root, base)
+    omitted = set(release['omitted'])
+    installed_omissions, preserved_omissions = [], []
     root_paths, stage_paths = _RuntimeDestinations(root), _RuntimeDestinations(stage/'files')
     changed = {name for name, entry in target.items() if base.get(name) != entry}
     for name in set(target) - changed:
@@ -404,10 +848,17 @@ def _validate_runtime_stage(root, stage, plan, check=None):
         try:
             size = path.stat().st_size
             digest = sha(path) if size == target[name]['bytes'] else None
+        except FileNotFoundError as error:
+            if name in omitted:
+                preserved_omissions.append(name)
+                continue
+            raise ValueError('原有运行库文件缺失、无法读取或校验不符，请使用完整便携包恢复：' + name) from error
         except OSError as error:
             raise ValueError('原有运行库文件缺失、无法读取或校验不符，请使用完整便携包恢复：' + name) from error
         if size != target[name]['bytes'] or digest != target[name]['sha256']:
             raise ValueError('原有运行库文件缺失或校验不符，请使用完整便携包恢复：' + name)
+        if name in omitted:
+            installed_omissions.append(name)
     records = {entry['file']: entry for entry in plan['entries']}
     if len(records) != len(plan['entries']) or not changed.issubset(records):
         raise ValueError('运行库升级清单不完整或包含重复文件。')
@@ -444,7 +895,9 @@ def _validate_runtime_stage(root, stage, plan, check=None):
     version = json.loads((stage / 'files/version.json').read_text(encoding='utf-8'))
     if version['version'] != plan['version'] or version.get('runtime_upgrade'):
         raise ValueError('目标程序版本信息无效。')
-    return records, removals
+    release.update(installed_omitted=sorted(installed_omissions),
+                   preserved_omitted=sorted(preserved_omissions))
+    return records, removals, release
 
 
 def _runtime_name(item):
@@ -709,11 +1162,14 @@ def _runtime_download(item, folder, progress, check, source):
 
 
 def prepare_program_update(version, item, root, progress=lambda *args: None, check=None,
-                           source='auto', downloader=None, *, register_pending=True):
+                           source='auto', downloader=None, *, register_pending=True,
+                           allow_policy_bootstrap=False):
     """One program staging implementation for the GUI and legacy repair tool."""
-    _asset_record(item)
     if not isinstance(version, str) or not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', version):
         raise ValueError('更新版本号无效。')
+    if version == SOURCE_POLICY_REQUIRED_TARGET and not allow_policy_bootstrap:
+        raise ValueError('目标 1.1.0 不能通过普通程序更新入口安装，必须使用带 source_policy 的运行库更新流程。')
+    _asset_record(item)
     root = Path(root).resolve()
     runtime_sha = sha(root / 'dependencies/manifest.json')
     if item.get('runtime_sha256') != runtime_sha:
@@ -782,13 +1238,20 @@ def _remove_stage(stage, cache):
 
 
 def _write_pending(root, plan, version):
+    plan = Path(plan).resolve()
+    plan_raw = plan.read_bytes()
+    data = json.loads(plan_raw.decode('utf-8-sig'))
+    receipt = {'plan': str(plan), 'version': version, 'plan_sha256': hashlib.sha256(plan_raw).hexdigest()}
+    for key in ('source_policy_sha256', 'source_identity_sha256', 'source_evidence_sha256'):
+        if isinstance(data.get(key), str):
+            receipt[key] = data[key]
     path = validate_destination(root, 'cache/updates/pending.json')
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
                                          prefix='pending-', suffix='.tmp', delete=False) as stream:
             temporary = stream.name
-            json.dump({'plan': str(plan), 'version': version}, stream)
+            json.dump(receipt, stream, ensure_ascii=False)
         os.replace(temporary, path)
     finally:
         if temporary:
@@ -806,7 +1269,8 @@ def prepare_catalog_update(version, route, root, progress=lambda *args: None, ch
     if route.get('runtime_sha256') != sha(root / 'dependencies/manifest.json'):
         raise ValueError('更新分流与当前运行库不匹配。')
     bootstrap = prepare_program_update(version, route['update'], root, progress, check,
-                                       source, downloader, register_pending=False)
+                                       source, downloader, register_pending=False,
+                                       allow_policy_bootstrap=True)
     cache, module_name = root / 'cache/updates', '_vwa_update_' + uuid.uuid4().hex
     try:
         plan = json.loads(bootstrap.read_text(encoding='utf-8'))
@@ -830,7 +1294,8 @@ def prepare_catalog_update(version, route, root, progress=lambda *args: None, ch
         if not callable(prepare):
             raise ValueError('升级包中的安装器不支持运行库迁移。')
         progress(0, item['bytes'], '兼容安装器已校验，正在准备所需的增量文件…')
-        full = Path(prepare(item, root, progress, check, source, downloader)).resolve()
+        full = Path(prepare(item, root, progress, check, source, downloader,
+                              register_pending=False)).resolve()
         if (_plan_root(full) != root or full.name != 'plan.json'
                 or json.loads(full.read_text(encoding='utf-8')).get('version') != version):
             raise ValueError('增量安装计划与当前助手不匹配。')
@@ -851,7 +1316,8 @@ def prepare_catalog_update(version, route, root, progress=lambda *args: None, ch
         _remove_stage(bootstrap.parent, cache)
 
 
-def prepare_runtime_upgrade(item, root, progress=lambda *args: None, check=None, source='official', downloader=None):
+def prepare_runtime_upgrade(item, root, progress=lambda *args: None, check=None, source='official', downloader=None,
+                           *, register_pending=True):
     if check and check():
         raise InterruptedError('升级已取消，下次启动可继续。')
     root = Path(root).resolve()
@@ -861,6 +1327,9 @@ def prepare_runtime_upgrade(item, root, progress=lambda *args: None, check=None,
             any(not re.fullmatch(r'[a-f0-9]{64}', item.get(key, '')) for key in
                 ('sha256', 'source_runtime_sha256', 'target_runtime_sha256'))):
         raise ValueError('运行库升级信息无效，请使用完整便携包。')
+    target_version = item['version']
+    policy = _policy_from_runtime_item(item, target_version)
+    initial_source = _source_binding(root, policy, target_version) if policy is not None else None
     if sha(root / 'dependencies/manifest.json') != item['source_runtime_sha256']:
         raise ValueError('当前运行库与升级包不匹配，请使用完整便携包。')
     cache = validate_destination(root, 'cache/updates')
@@ -882,6 +1351,10 @@ def prepare_runtime_upgrade(item, root, progress=lambda *args: None, check=None,
             plan = json.loads(zipped.read('runtime-upgrade.json'))
             if any(plan.get(key) != item[key] for key in ('version', 'source_runtime_sha256', 'target_runtime_sha256')):
                 raise ValueError('运行库升级包与发布信息不一致。')
+            if plan.get('source_policy') is not None:
+                embedded_policy = _normalise_source_policy(plan['source_policy'])
+                if policy is None or embedded_policy != policy:
+                    raise ValueError('运行库升级包内嵌的源版本策略与发布信息不一致。')
             if {info.filename for info in infos} != {'runtime-upgrade.json'} | {entry['file'] for entry in plan['entries']}:
                 raise ValueError('运行库升级包与文件清单不一致。')
             needed = sum(info.file_size for info in infos) * 2 + 64 * 1024**2
@@ -902,10 +1375,24 @@ def prepare_runtime_upgrade(item, root, progress=lambda *args: None, check=None,
                     progress(item['bytes'], item['bytes'], f'正在展开并校验升级文件 {index + 1}/{len(plan["entries"])}…')
             progress(item['bytes'], item['bytes'], '正在核对原有运行库与新增依赖…')
             _validate_runtime_stage(root, stage, plan, check)
+        if policy is not None:
+            try:
+                current_source = _source_binding(root, policy, target_version)
+            except ValueError as error:
+                raise ValueError('准备更新期间源版本、运行库或发行程序身份无法重新确认，已停止；请重新检查更新或使用完整便携包。') from error
+            if (current_source['source_policy_sha256'] != initial_source['source_policy_sha256']
+                    or current_source['source_identity_sha256'] != initial_source['source_identity_sha256']
+                    or current_source['source_evidence_sha256'] != initial_source['source_evidence_sha256']):
+                raise ValueError('准备更新期间源版本或程序身份已改变，已停止；请重新检查更新或使用完整便携包。')
+            plan.update(current_source)
         plan.update(root=str(root), kind='runtime_upgrade', state='ready')
         plan_path = stage / 'plan.json'
         plan_path.write_text(json.dumps(plan,ensure_ascii=False,indent=2),encoding='utf-8')
+        if policy is not None:
+            _write_source_binding(plan_path, plan)
         shutil.copy2(Path(__file__), stage / 'apply_helper.py')
+        if register_pending:
+            _write_pending(root, plan_path, target_version)
         progress(item['bytes'], item['bytes'], '校验完成，增量文件已准备。')
         return plan_path
     except BaseException:
@@ -917,11 +1404,15 @@ def prepare_runtime_upgrade(item, root, progress=lambda *args: None, check=None,
 def apply_runtime_upgrade(plan_path):
     plan_path = Path(plan_path).resolve()
     root, plan = _read_plan(plan_path)
+    _verify_bound_source(root, plan_path, plan)
     _require_forward_target(root, plan, plan_path)
     if reason := installation_busy(root):
         raise RuntimeError(reason)
     stage = plan_path.parent
-    records, removals = _validate_runtime_stage(root, stage, plan)
+    records, removals, release = _validate_runtime_stage(root, stage, plan)
+    # Repeat the identity check after all staged payload validation and directly
+    # before the first installed program file can be touched.
+    _verify_bound_source(root, plan_path, plan)
     source_names = {name: name for name in records}
     alias_attributes = {}
     if plan.get('launcher_migration') is not None:
@@ -971,7 +1462,10 @@ def apply_runtime_upgrade(plan_path):
         _clear_pending(root, plan_path)
         return {'state': 'passed', 'version': plan['version'], 'files': len(records), 'removed': len(removals)-len(skipped),
                 'kept_modified_runtime_files': skipped, 'runtime_upgraded': True,
-                'launcher_migrated': bool(alias_attributes)}
+                'launcher_migrated': bool(alias_attributes), 'release_variant': release['variant'],
+                'omitted_runtime_files': release['omitted'],
+                'installed_omitted_runtime_files': release['installed_omitted'],
+                'preserved_omitted_runtime_files': release['preserved_omitted']}
     except BaseException:
         for destination, saved, existed in reversed(touched):
             if existed:

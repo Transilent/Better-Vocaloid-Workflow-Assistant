@@ -7,6 +7,7 @@
 | 组件 | 来源与声明 |
 | --- | --- |
 | Vocal2Midi | [上游项目](https://github.com/Xiantaidu/Vocal2Midi)，Apache-2.0；保留 `dependencies/vocal2midi/LICENSE` 与 `ACKNOWLEDGEMENTS.md` |
+| Qwen3-ASR-1.7B | [原始模型卡](https://huggingface.co/Qwen/Qwen3-ASR-1.7B/blob/b188e100bd85038c06d2812d24a39776eba774ca/README.md)声明 Apache-2.0；随包的 `dependencies/vocal2midi/LICENSE` 也包含该许可全文。ONNX/GGUF 文件是来自[固定版本分发源](https://huggingface.co/xian-taidu/Qwen3-ASR-1.7B-DML/tree/ba77390c544ce36b6736d95a1c25adcf4651566c)的转换产物，各文件摘要记录在 `components/runtime-features.json`；公开发布前仍需核实转换版本是否另有声明。 |
 | MDX 分离模型 | [UVR 模型发布](https://github.com/TRvlvr/model_repo/releases/tag/all_public_uvr_models)、[模型参数](https://github.com/TRvlvr/application_data)；模型授权与助手代码不同 |
 | 可选 BS-RoFormer 模型 | [becruily/bs-roformer-karaoke](https://huggingface.co/becruily/bs-roformer-karaoke) 的原权重与配置；版本、哈希见 `components/roformer.json`；模型授权独立适用 |
 | 可选 Pymss、Pymss Core、PyTorch 及支持库 | 从冻结的上游 wheel 下载，包元数据及原声明保留于 `dependencies/optional/bs-roformer/current/packages` |
