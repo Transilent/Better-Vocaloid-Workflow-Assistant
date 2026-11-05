@@ -26,6 +26,7 @@ if os.name == 'nt':
     from ctypes import wintypes
 
 from common import native_path
+import style_catalog
 from style_presets import detail_settings, pitch_default, region_settings, technique_settings
 
 
@@ -45,7 +46,6 @@ _TOOL_FIELDS = frozenset({
     'performance_style', 'style_strength', 'style_detail', 'style_pitch',
     'style_technique', 'technique_strength', 'technique_pitch',
 })
-_VISIBLE_STYLES = frozenset({'none', 'gentle', 'sad', 'bold'})
 _SYNC_FIELDS = frozenset({'seq', 'writer'})
 _THREAD_LOCKS = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
@@ -310,8 +310,8 @@ def _normalise_tool(value):
     if unknown:
         _invalid('草稿工具设置包含未知字段。', field='tool', unknown=sorted(unknown))
 
-    preset = value.get('performance_style', 'none')
-    if not isinstance(preset, str) or preset not in _VISIBLE_STYLES:
+    preset = value.get('performance_style', style_catalog.DEFAULT_STYLE_ID)
+    if not style_catalog.is_visible_style(preset):
         _invalid('草稿工具的风格预设无效。', field='tool.performance_style')
     strength = value.get('style_strength', .6)
     if not _finite_number(strength) or not 0 <= strength <= 1:

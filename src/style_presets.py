@@ -6,12 +6,6 @@ optional structural pitch gestures are recorded separately. Score and bank stay.
 """
 from __future__ import annotations
 
-
-def canonical_kind(value):
-    return 'vwa.' + value[5:] if isinstance(value, str) and value.startswith('bvwa.') else value
-
-
-
 import argparse
 import bisect
 import copy
@@ -19,24 +13,38 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import sys
+
+# This module is also a standalone CLI in the packaged flat layout. Embedded
+# Python builds do not add the script directory automatically, so add it before
+# importing the adjacent pure expression boundary.
+_MODULE_ROOT = Path(__file__).resolve().parent
+if str(_MODULE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MODULE_ROOT))
+from expression_controls import STYLE_CONTROL_NAMES, control_limits
+import style_catalog as style_registry
+
+
+def canonical_kind(value):
+    return 'vwa.' + value[5:] if isinstance(value, str) and value.startswith('bvwa.') else value
+
 
 VERSION = 7
-PRESETS = {
-    'none': {'label': '保留原表现', 'controls': {}},
-    'gentle': {'label': '柔和〔实验〕', 'pitch_default': True,
-        'description': '轻柔起音、稳定的有声核心与渐弱收尾；可分别调整各段表现。',
+# Execution recipes stay here. Metadata is projected from the pure catalogue so
+# GUI/MCP/draft/workflow consumers do not maintain parallel copies.
+_PRESET_RECIPES = {
+    'none': {'controls': {}},
+    'gentle': {
         'note_envelope': {'onset': .14, 'release': .22,
                           'sustain_arc': {'loudness': .65, 'tension': .04, 'breathiness': -.015}},
         'controls': {'loudness': (-3.2, -.8, -2.4), 'tension': (-.36, -.10, -.26),
                      'breathiness': (.20, .03, .20), 'voicing': (-.04, 0., -.08)}},
-    'sad': {'label': '悲伤〔实验〕', 'category': 'emotion', 'pitch_default': True,
-        'description': '保持清楚的有声核心，长音中段收敛，句尾缓慢下落；与柔和声线分开控制。',
+    'sad': {
         'note_envelope': {'onset': .19, 'release': .30,
                           'sustain_arc': {'loudness': -.75, 'tension': -.06, 'breathiness': .035}},
         'controls': {'loudness': (-.8, -.15, -3.0), 'tension': (-.06, -.03, -.25),
                      'breathiness': (.04, 0., .18), 'voicing': (-.015, 0., -.08)}},
-    'bold': {'label': '明亮欢快〔实验〕', 'pitch_default': True,
-        'description': '轻快起音、清晰衔接与明亮的持续段；可分别调整各段表现。',
+    'bold': {
         # The bounded phrase arc is a manual audition shape over eligible
         # singing notes. The XStudio same-score pop/opera F0/energy comparison
         # neither labels happiness nor supplies a conversion from energy to dB.
@@ -50,8 +58,7 @@ PRESETS = {
                      'breathiness': (-.105, -.045, -.005)}},
     # A separate technique layer; authored modulation is retained and flat
     # long notes may receive an additional experimental pitch ornament.
-    'chinese_opera': {'label': '中文戏腔〔实验〕', 'category': 'singing_technique', 'pitch_default': True,
-        'description': '字头倚滑、音间衔接、长音颤音与收腔；保留已检测到的原有颤音。',
+    'chinese_opera': {
         # Phrase dynamics are independent of the X Studio energy scale: its
         # captured energy is uncalibrated, not a SynthV loudness or tension.
         'phrase_envelope': {
@@ -62,47 +69,49 @@ PRESETS = {
                           'sustain_arc': {'loudness': 1.35, 'tension': .16, 'breathiness': -.025}},
         'controls': {'loudness': (1.4, .9, -.9), 'tension': (.23, .28, -.04),
                      'breathiness': (-.10, -.08, .04)}},
-    # Stored task/CLI IDs retain their original recipes. Only canonical IDs
-    # are offered for new selections; loading an old UI choice is explicit.
-    'soft_ballad': {'label': '柔和抒情〔实验〕', 'controls': {
+    # Stored task/CLI IDs retain their original recipes. Only canonical IDs are
+    # offered for new selections; loading an old UI choice is explicit.
+    'soft_ballad': {'controls': {
         'loudness': (-.8, .5, -1.5), 'tension': (-.18, -.08, -.18),
         'breathiness': (.06, .02, .12), 'voicing': (0., 0., -.06)}},
-    'intimate_narration': {'label': '轻声叙述〔实验〕', 'controls': {
+    'intimate_narration': {'controls': {
         'loudness': (-2.5, -2., -4.), 'tension': (-.40, -.28, -.40),
         'breathiness': (.28, .14, .34), 'voicing': (-.10, -.05, -.20)}},
-    'power_pop': {'label': '有力流行〔实验〕', 'controls': {
+    'power_pop': {'controls': {
         'loudness': (2.5, 1.8, .5), 'tension': (.30, .20, .10),
         'breathiness': (-.10, -.06, -.02)}},
-    'melancholy': {'label': '忧伤克制〔实验〕', 'category': 'emotion', 'pitch_default': True,
-        'description': '较轻的起音、克制的句中力度与下行收尾；保留原有长音起伏。', 'controls': {
+    'melancholy': {'controls': {
         'loudness': (-1.2, -.4, -1.8), 'tension': (-.16, -.06, -.20),
         'breathiness': (.08, .02, .14), 'voicing': (0., 0., -.06)}},
-    'bright_joy': {'label': '明亮轻快〔实验〕', 'category': 'emotion', 'pitch_default': True,
-        'description': '轻快的起音与清晰的有声核心，局部音高更利落；不改变音符节奏。', 'controls': {
+    'bright_joy': {'controls': {
         'loudness': (.9, .6, .2), 'tension': (.12, .14, .04),
         'breathiness': (-.06, -.03, -.02)}},
-    'fragile_tender': {'label': '脆弱含泪〔实验〕', 'category': 'emotion', 'pitch_default': True,
-        'description': '含泪感的轻声起收与局部音高上挑；请按所用声库试听。', 'controls': {
+    'fragile_tender': {'controls': {
         'loudness': (-1.8, -.7, -2.4), 'tension': (-.18, -.04, -.26),
         'breathiness': (.18, .06, .28), 'voicing': (0., -.02, -.14)}},
 }
-CONTROLS = {'loudness': (-48., 12., 0.), 'tension': (-1., 1., 0.),
-            'breathiness': (-1., 1., 0.), 'voicing': (0., 1., 1.)}
+PRESETS = {}
+for _preset_id, _recipe in _PRESET_RECIPES.items():
+    _definition = copy.deepcopy(_recipe)
+    _definition.update(style_registry.recipe_metadata(_preset_id))
+    PRESETS[_preset_id] = _definition
+del _preset_id, _recipe, _definition
+# The legacy-compatible projection owns only bounds and neutral values; the
+# shared expression boundary owns their source values and ordering.
+CONTROLS = control_limits(STYLE_CONTROL_NAMES)
+PRESET_MERGES = style_registry.STYLE_MERGES
 MAX_POINTS = 2_000_000
 PHRASE_GAP = .25
 STYLE_GRID = .02
 DETAIL_DEFAULTS = {'onset': 1., 'sustain': 1., 'connection': 1., 'release': 1.}
-PRESET_MERGES = {'soft_ballad': 'gentle', 'intimate_narration': 'gentle',
-                 'melancholy': 'sad', 'fragile_tender': 'sad',
-                 'power_pop': 'bold', 'bright_joy': 'bold'}
 
 
 def visible_presets():
-    return ('none', 'gentle', 'sad', 'bold')
+    return style_registry.VISIBLE_STYLES
 
 
 def merged_preset(preset):
-    return PRESET_MERGES.get(preset, preset) if isinstance(preset, str) else preset
+    return style_registry.merged_style(preset)
 
 
 def detail_settings(value=None):
@@ -125,10 +134,10 @@ def detail_settings(value=None):
 def technique_settings(options):
     """Independent manual ornament layer; old settings default to no technique."""
     if not isinstance(options,dict):raise ValueError('唱腔设置必须为对象。')
-    technique=options.get('style_technique','none')
+    technique=options.get('style_technique',style_registry.DEFAULT_TECHNIQUE_ID)
     strength=options.get('technique_strength',.6)
     pitch=options.get('technique_pitch',True)
-    if not isinstance(technique,str) or technique not in ('none','chinese_opera'):
+    if not style_registry.is_technique(technique):
         raise ValueError('唱腔预设无效。')
     if type(strength) not in (int,float) or not math.isfinite(strength) or not 0<=strength<=1:
         raise ValueError('唱腔强度应为 0–100%。')
@@ -157,10 +166,10 @@ def region_settings(value=None):
         if (not isinstance(row, dict) or set(row)-{'start','end','preset','strength','detail','pitch',
                 'technique','technique_strength','technique_pitch'}):
             raise ValueError('风格时间片段格式无效。')
-        technique=technique_settings({'style_technique':row.get('technique','none'),
+        technique=technique_settings({'style_technique':row.get('technique',style_registry.DEFAULT_TECHNIQUE_ID),
             'technique_strength':row.get('technique_strength',.6),'technique_pitch':row.get('technique_pitch',True)})
-        if row.get('preset') not in ('gentle','sad','bold') and not (
-                row.get('preset')=='none' and technique['style_technique']!='none'):
+        if not style_registry.is_visible_style(row.get('preset')) or (
+                row.get('preset')==style_registry.DEFAULT_STYLE_ID and technique['style_technique']==style_registry.DEFAULT_TECHNIQUE_ID):
             raise ValueError('风格时间片段格式无效。')
         start, end = time_range_settings((row.get('start'), row.get('end')))
         preset = row['preset']
@@ -169,7 +178,7 @@ def region_settings(value=None):
         item={'start':start,'end':end,'preset':preset,'strength':strength,
                         'detail':detail_settings(row.get('detail')),
                         'pitch':row.get('pitch',pitch_default(preset))}
-        if technique['style_technique']!='none':
+        if technique['style_technique']!=style_registry.DEFAULT_TECHNIQUE_ID:
             item.update(technique=technique['style_technique'],technique_strength=technique['technique_strength'],
                         technique_pitch=technique['technique_pitch'])
         regions.append(item)
@@ -181,19 +190,18 @@ def region_settings(value=None):
 
 def pitch_default(preset):
     """New cards recommend pitch; stored legacy IDs retain their old default."""
-    return isinstance(preset,str) and PRESETS.get(preset, {}).get('pitch_default') is True
+    return style_registry.style_pitch_default(preset)
 
 
 def preset_description(preset):
-    return (PRESETS.get(preset, {}) if isinstance(preset,str) else {}).get('description',
-        '在原工程上添加所选风格的局部增量，生成后请在声库中试听。')
+    return style_registry.style_description(preset)
 
 
 def settings(options):
     from style_pitch import enabled
     enabled(options)
     detail_settings(options.get('style_detail'))
-    preset = options.get('performance_style', 'none')
+    preset = options.get('performance_style', style_registry.DEFAULT_STYLE_ID)
     strength = options.get('style_strength', .6)
     scope = options.get('style_scope', 'lead')
     if not isinstance(preset, str) or preset not in PRESETS:
@@ -415,7 +423,7 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
         raise ValueError('风格目标轨道索引无效或重复。')
     out=copy.deepcopy(project);rows=[];changed=set();remaining=MAX_POINTS
     receipt={'schema':1,'kind':'vwa.style-adaptation','version':VERSION,'preset':preset,
-        'label':PRESETS[preset]['label'],'category':PRESETS[preset].get('category','singing_style'),
+        'label':style_registry.style_label(preset),'category':style_registry.style_category(preset),
         'description':preset_description(preset),'strength':strength,'detail':detail,'density_mode':density_mode,
         'track_indices':selected,'time_range_seconds':list(time_range) if time_range else None,
         'status':'not_selected','experimental':True,
@@ -423,7 +431,7 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
         'learned_coefficients':False,'voicebank_calibrated':False,'rendered':False,'listened':False,
         'phrase_gap_seconds':PHRASE_GAP,'style_grid_seconds':STYLE_GRID,'tracks':rows,
         'pitch':{'enabled':pitch_enabled,'status':'not_selected'}}
-    if (preset=='none' or strength==0 or (not any(detail[k] for k in ('onset','sustain','release'))
+    if (preset==style_registry.DEFAULT_STYLE_ID or strength==0 or (not any(detail[k] for k in ('onset','sustain','release'))
                                         and (not pitch_enabled or not detail['connection']))):
         return out,receipt
     for index in selected:
@@ -562,7 +570,7 @@ def apply_style_svp(source, destination, *, preset, strength=.6, track_indices=N
     raw=source.read_bytes();source_sha=_sha(raw)
     project=json.loads(raw.decode('utf-8-sig').rstrip('\x00'))
     out,receipt=apply_style(project,preset,strength=strength,track_indices=track_indices,density_mode=density_mode,pitch_enabled=pitch_enabled,detail=detail,time_range=time_range,cancel=cancel)
-    if preset!='none' and strength>0 and receipt['status']=='skipped':
+    if preset!=style_registry.DEFAULT_STYLE_ID and strength>0 and receipt['status']=='skipped':
         raise ValueError('目标曲线未形成可用风格变化；请检查非线性曲线、可用余量或空轨道。')
     payload=(json.dumps(out,ensure_ascii=False,indent=2,allow_nan=False)+'\n').encode('utf-8')
     if source.read_bytes()!=raw:raise ValueError('生成风格期间原工程发生变化，请重试。')

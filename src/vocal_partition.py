@@ -3,6 +3,13 @@ from pathlib import Path
 import math
 import time
 
+from multi_file_commit import (
+    OUTPUT_COMMIT_ROLLBACK_FAILED,
+    STALE_OUTPUT_BACKUP,
+    FileTransactionError,
+    commit_file_pair,
+)
+
 ALGORITHM_VERSION = 3
 MAX_REPORTED_SAMPLE_RANGES = 8
 SUM_RECONSTRUCTION_TOLERANCE = 1e-4
@@ -313,6 +320,65 @@ def coherent_transfer(lead, backing, rate, *, input_paths=None, diagnostics=None
         })
     return moved.astype('float32',copy=False)
 
+def _validate_committed_partition(paths, check):
+    """Re-read published stems and apply the same hard quality gates."""
+    import numpy as np
+    import soundfile as sf
+    from contextlib import ExitStack
+
+    paths = [Path(path) for path in paths]
+    check()
+    metadata = [sf.info(str(path)) for path in paths]
+    shape = lambda info: (info.frames, info.samplerate, info.channels)
+    if (not metadata[0].frames or metadata[0].samplerate != 44100 or metadata[0].channels != 2
+            or any(shape(info) != shape(metadata[0]) for info in metadata)):
+        raise ValueError('声部提交验证失败：总人声、主唱和和声的格式或长度不一致。')
+    rate, frames = 44100, metadata[0].frames
+    block = 10 * rate
+    with ExitStack() as stack:
+        sources = [stack.enter_context(sf.SoundFile(str(path))) for path in paths]
+        for start in range(0, frames, block):
+            check()
+            arrays = []
+            for source in sources:
+                source.seek(start)
+                arrays.append(source.read(min(block, frames - start), dtype='float32', always_2d=True))
+            vocals, lead, backing = arrays
+            input_detail = _nonfinite_audio_detail('vocals', paths[0], vocals, start)
+            if input_detail is not None:
+                raise VocalPartitionError(
+                    '提交后的分离结果包含无效采样，已恢复原文件。',
+                    code='nonfinite_input_samples',
+                    details={'block_range': [start, start + len(vocals)], 'files': [input_detail],
+                             'repair_hint': '重新运行分离；若必须保留现有文件，请检查所列通道与样本区间并重新分离，不能直接清零。'})
+            output_bad = []
+            for role, path, audio in (('primary', paths[1], lead), ('secondary', paths[2], backing)):
+                detail = _nonfinite_audio_detail(role, path, audio, start)
+                if detail is not None:
+                    output_bad.append(detail)
+            if output_bad:
+                raise VocalPartitionError(
+                    '提交后的声部输出包含无效采样，已恢复原文件。',
+                    code='nonfinite_partition_output',
+                    details={'block_range': [start, start + len(vocals)], 'files': output_bad,
+                             'repair_hint': '不要写出或清零这些样本；保留输入和诊断并修复数值路径后重试。'})
+            delta = np.abs(lead.astype(np.float64) + backing.astype(np.float64) - vocals.astype(np.float64))
+            error = float(np.max(delta))
+            if error > SUM_RECONSTRUCTION_TOLERANCE:
+                channel, sample = (int(value) for value in np.unravel_index(np.argmax(delta), delta.shape))
+                raise VocalPartitionError(
+                    '提交后的主唱与和声无法还原总人声，已恢复原文件。',
+                    code='non_complementary_inputs',
+                    details={'files': [str(path) for path in paths],
+                             'block_range': [start, start + len(vocals)],
+                             'sample_range': [start + sample, start + sample + 1],
+                             'channel': channel, 'max_abs_error': error,
+                             'samples_over_threshold': int((delta > SUM_RECONSTRUCTION_TOLERANCE).sum()),
+                             'threshold': SUM_RECONSTRUCTION_TOLERANCE,
+                             'repair_hint': '重新运行分离生成同一时间轴上的互补主唱/和声；不要通过放宽阈值继续。'})
+    check()
+
+
 def repair(directory, job=None, *, cancel_checker=None, progress=None):
     """Check model outputs and commit a complementary pair after all checks.
 
@@ -341,6 +407,7 @@ def repair(directory, job=None, *, cancel_checker=None, progress=None):
     rate, frames = 44100, metadata[0].frames
     block, context = 10*rate, rate//2
     pending = [directory/(name+'.partition.pending.wav') for name in ('lead','backing')]
+    preserve_pending = False
     metrics, moved_energy, backing_energy, input_error, sum_error = [],0.,0.,0.,0.
     numeric_guard = {'negative_power_values_clamped':0,'minimum_power_before_guard':None,'maximum_power_roundoff_tolerance':0.0}
     try:
@@ -421,42 +488,38 @@ def repair(directory, job=None, *, cancel_checker=None, progress=None):
                             'backing_reduction_db':round(reduction,2)})
                 if progress:progress(min(frames,start+block),frames)
         check()
-        backups=[directory/(name+'.partition.previous.wav') for name in ('lead','backing')]
-        stale=[str(path) for path in backups if path.exists()]
-        if stale:
-            raise VocalPartitionError(
-                '发现未清理的声部提交备份，已停止覆盖。',
-                code='stale_partition_backup',
-                details={'files':stale,
-                         'repair_hint':'先核对备份与当前主唱/和声，再移走备份后重试；不要直接删除唯一副本。'})
-        moved_originals=[]
-        committed=False
+        backups = [directory / (name + '.partition.previous.wav') for name in ('lead', 'backing')]
         try:
-            for target,backup in zip(paths[1:],backups):
-                target.replace(backup)
-                moved_originals.append((target,backup))
-            for source,target in zip(pending,paths[1:]):source.replace(target)
-            committed=True
-        except BaseException as exc:
-            rollback_errors=[]
-            for target,backup in reversed(moved_originals):
-                try:
-                    if backup.exists():backup.replace(target)
-                except BaseException as rollback:
-                    rollback_errors.append({'target':str(target),'backup':str(backup),
-                                            'error':str(rollback)})
-            if rollback_errors:
+            commit_file_pair(
+                pending,
+                paths[1:],
+                backup_paths=backups,
+                validate=lambda _targets: _validate_committed_partition(paths, check),
+            )
+        except FileTransactionError as error:
+            preserve_pending = error.preserve_staging
+            if error.code == STALE_OUTPUT_BACKUP:
+                stale = error.details.get('files', [str(path) for path in backups if path.exists()])
+                raise VocalPartitionError(
+                    '发现未清理的声部提交备份，已停止覆盖。',
+                    code='stale_partition_backup',
+                    details={'files': stale,
+                             'repair_hint': '先核对备份与当前主唱/和声，再移走备份后重试；不要直接删除唯一副本。'},
+                ) from error
+            if error.code == OUTPUT_COMMIT_ROLLBACK_FAILED:
+                details = dict(error.details)
+                details['repair_hint'] = ('保留目录内 .partition.previous.wav 与 pending 文件，核对后手动恢复；'
+                                          '不要覆盖现有文件。')
                 raise VocalPartitionError(
                     '声部提交失败且自动回滚未完整完成。',
                     code='partition_commit_rollback_failed',
-                    details={'rollback_errors':rollback_errors,
-                             'repair_hint':'保留目录内 .partition.previous.wav 与 pending 文件，核对后手动恢复；不要覆盖现有文件。'}) from exc
+                    details=details,
+                ) from error
             raise
-        finally:
-            if committed:
-                for backup in backups:backup.unlink(missing_ok=True)
     finally:
-        for path in pending:path.unlink(missing_ok=True)
+        if not preserve_pending:
+            for path in pending:
+                path.unlink(missing_ok=True)
     intervals=[]
     for row in metrics:
         if intervals and row['start']-intervals[-1]['end']<.001:

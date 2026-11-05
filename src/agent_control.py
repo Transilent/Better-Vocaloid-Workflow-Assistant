@@ -32,6 +32,8 @@ CODE_FILES = ('agent_control.py', 'agent_worker.py', 'agent_score.py', 'agent_st
               'agent_errors.py','agent_monophony.py','agent_media.py','agent_views.py','agent_delivery.py',
               'agent_segments.py','agent_segment_workflow.py','agent_project_state.py',
               'source_contract.py','multi_file_commit.py','mdx.py','roformer.py',
+              'style_catalog.py','expression_controls.py','component_health.py','agent_mcp_models.py',
+              'expression_calibration.py','calibration_refinement.py','optional_components.py',
               'agent_lyric_timeline.py','agent_lyric_reconcile.py','lyrics_sources.py','subtitles.py',
               'pitch_accuracy.py', 'agent_pitch.py', 'agent_separation_repair.py', 'vocal_partition.py',
               'agent_preparation.py', 'agent_lyrics.py', 'agent_exports.py', 'agent_workflow.py',

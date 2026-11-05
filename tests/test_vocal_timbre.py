@@ -323,7 +323,10 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='vocal-timbre-') as fo
         from common import native_path
         import shutil
         long_root = folder/'extended-cache-case'
-        long_cache = long_root/('nested-'*10)/('folder-'*10)/'lead.npz'
+        long_parent = long_root
+        while len(str(long_parent / 'lead.npz')) <= 320:
+            long_parent = long_parent / 'nested-cache-directory-0123456789'
+        long_cache = long_parent / 'lead.npz'
         assert len(str(long_cache)) > 300
         try:
             assert not analyze(reference, note_data, .6, PARAMETERS, cache=long_cache)['cache_hit']

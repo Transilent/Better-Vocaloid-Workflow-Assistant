@@ -6,10 +6,9 @@ from pathlib import Path
 import hashlib
 import re
 
-CONTROLS = {
-    'loudness': (-48., 12., 0., 3.), 'tension': (-1., 1., 0., .3),
-    'breathiness': (-1., 1., 0., .3), 'voicing': (0., 1., 1., -.2),
-    'gender': (-1., 1., 0., .25), 'toneShift': (-800., 800., 0., 200.)}
+from expression_controls import calibration_controls
+
+CONTROLS = calibration_controls()
 SCHEMA = 1
 
 

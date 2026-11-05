@@ -432,6 +432,9 @@ def register(mcp, control, workflow, invoke):
         和版本核验状态；读取不会绑定工作流、
         自动重排或改写歌词。新歌曲若已有核对后的正式歌词，应优先在准备阶段
         随 options.lyrics 输入；外部搜索、抓取和读取都不是必须步骤。
+        context_read 的 presets 与 techniques 来自同一轻量登记表，前者只列新选择
+        可见风格，后者是独立唱腔层；应使用返回的 ID、顺序和描述，不能把唱腔 ID
+        填进 preset，也不能因 legacy 展示归并而改写待执行的旧 ID。
         lyrics_reconcile_preview 根据已核对歌词行和所选轨道提出候选，按完整源 SHA
         绑定，不自动修改、拆分或确认；缺字及多音节须人工处理。
         reference_audio_read(make_excerpt=true) 会创建摘录操作，须改走 vwa_run。

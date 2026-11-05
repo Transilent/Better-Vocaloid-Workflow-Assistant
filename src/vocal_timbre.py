@@ -1,9 +1,12 @@
 """Conservative relative timbre cues, not a voicebank's inverse synthesis model."""
 import math
+from expression_controls import TIMBRE_CONTROL_NAMES, control_limits, neutral_values
 
 ALGORITHM_VERSION = 6
-PARAMETERS = ('tension', 'breathiness', 'voicing')
-NEUTRAL = {'tension': 0., 'breathiness': 0., 'voicing': 1.}
+PARAMETERS = TIMBRE_CONTROL_NAMES
+NEUTRAL = neutral_values(PARAMETERS)
+_CONTROL_LIMITS = control_limits(PARAMETERS)
+CHANNEL_MODES = ('standard', 'sv-extra', 'sv-isolated')
 
 
 def settings(options):
@@ -113,10 +116,13 @@ def _feature_code_signature(source=None):
     return hashlib.sha256(''.join(ast.dump(node,include_attributes=False) for node in extractors).encode()).hexdigest()
 
 
-def cached_features(path, notes, cache=None, cancel=lambda: None):
+def cached_features(path, notes, cache=None, cancel=lambda: None, *, channel_mode='standard'):
     """Keep one verified feature file per voice; strength/toggles do not affect it."""
+    if channel_mode not in CHANNEL_MODES:
+        raise ValueError('参考音频声道模式无效。')
     if cache is None:
-        return feature_frames(path, notes, cancel)
+        frames, metadata = feature_frames(path, notes, cancel, channel_mode=channel_mode)
+        return frames, {**metadata, 'channel_mode': channel_mode}
     import hashlib
     import json
     from pathlib import Path
@@ -131,6 +137,10 @@ def cached_features(path, notes, cache=None, cancel=lambda: None):
     identity = {'schema': 2, 'audio': source_hash, 'analyzer': SPEC['sha256'],
                 'extractor': _feature_code_signature(), 'loader': file_hash(Path(loader_file)),
                 'notes': [[float(a), float(b), float(p)] for a, b, p in notes]}
+    # Older caches could only be produced in standard mode. Keep their key
+    # stable; explicit SV channel layouts must never alias that legacy key.
+    if channel_mode != 'standard':
+        identity['channel_mode'] = channel_mode
     signature = hashlib.sha256(json.dumps(identity, sort_keys=True, allow_nan=False).encode()).hexdigest()
     cache = Path(cache)
     try:
@@ -138,14 +148,17 @@ def cached_features(path, notes, cache=None, cancel=lambda: None):
             matching = str(stored['signature']) == signature
             frames = stored['frames'] if matching else None
             metadata = json.loads(str(stored['metadata'])) if matching else {}
-        if (isinstance(metadata, dict) and frames is not None and frames.dtype.kind == 'f'
+        if (isinstance(metadata, dict) and metadata.get('channel_mode', 'standard') == channel_mode
+                and frames is not None and frames.dtype.kind == 'f'
                 and frames.ndim == 2 and frames.shape[1] == 7 and len(frames)
                 and np.isfinite(frames).all() and np.all(np.diff(frames[:, 0]) > 0)):
             cancel()
-            return frames, {**metadata, 'cache_hit': True, 'cache_bytes': Path(native_path(cache)).stat().st_size}
+            return frames, {**metadata, 'channel_mode': channel_mode, 'cache_hit': True,
+                            'cache_bytes': Path(native_path(cache)).stat().st_size}
     except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
         pass
-    frames, metadata = feature_frames(path, notes, cancel)
+    frames, metadata = feature_frames(path, notes, cancel, channel_mode=channel_mode)
+    metadata = {**metadata, 'channel_mode': channel_mode}
     cancel()
     if source_hash != file_hash(path):
         raise ValueError('分析期间参考音频发生变化，请重试。')
@@ -466,7 +479,7 @@ def map_features(frames, intervals, strength, chosen, *, nuclei=None, pitches=No
             report['overlap_reduction_max'] = round(float(overlap.max()) * .35, 4)
             delta = delta * (1 - .35 * overlap)
         values = neutral + delta * strength
-        values = np.clip(values, 0 if name == 'voicing' else -1, 1)
+        values = np.clip(values, *_CONTROL_LIMITS[name][:2])
         peak = float(np.max(abs(values - neutral)))
         if peak < (.003 if name == 'voicing' else .008):
             report['reason'] = 'below_output_resolution'
@@ -493,14 +506,18 @@ def map_features(frames, intervals, strength, chosen, *, nuclei=None, pitches=No
     return reports
 
 
-def analyze(path, notes, strength, chosen, cancel=lambda: None, *, cache=None, nuclei=None, preserve_samples=False):
+def analyze(path, notes, strength, chosen, cancel=lambda: None, *, cache=None, nuclei=None, preserve_samples=False,
+            channel_mode='standard'):
     if any(name not in PARAMETERS for name in chosen) or not math.isfinite(strength) or not 0 <= strength <= 1:
         raise ValueError('参考音色参数无效。')
-    report = {'algorithm_version': ALGORITHM_VERSION, 'strength': strength, 'parameters': {}}
+    if channel_mode not in CHANNEL_MODES:
+        raise ValueError('参考音频声道模式无效。')
+    report = {'algorithm_version': ALGORITHM_VERSION, 'strength': strength, 'parameters': {},
+              'channel_mode': channel_mode}
     if not notes or strength == 0 or not chosen:
         report['parameters'] = {name: {'status': 'skipped', 'reason': 'no_notes_or_zero_strength', 'points': []} for name in chosen}
         return report
-    frames, metadata = cached_features(path, notes, cache, cancel)
+    frames, metadata = cached_features(path, notes, cache, cancel, channel_mode=channel_mode)
     cancel()
     report.update(metadata)
     report['parameters'] = map_features(frames, [(a, b) for a, b, _ in notes], strength, chosen,

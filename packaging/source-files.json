@@ -1969,6 +1969,13 @@
     "tests/runner_contract.py",
     "tests/test_pipeline_safety_fixes.py",
     "tests/test_runner_contract.py",
-    "tests/test_tuning_audit_fixes.py"
+    "tests/test_tuning_audit_fixes.py",
+    "src/component_health.py",
+    "src/expression_controls.py",
+    "src/style_catalog.py",
+    "tests/test_component_health.py",
+    "tests/test_expression_controls.py",
+    "tests/test_style_catalog.py",
+    "tests/test_agent_style_schema.py"
   ]
 }

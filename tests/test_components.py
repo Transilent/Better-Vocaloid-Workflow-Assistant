@@ -10,8 +10,12 @@ import zipfile
 from unittest.mock import patch
 
 APP = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(APP))
+sys.path.insert(0, str(APP / 'src'))
+sys.path.insert(1, str(APP))
+import common
 import optional_components as components
+components.load_config = lambda *args, **kwargs: {'download_workers': 1, 'python': sys.executable}
+common.load_config = components.load_config
 (APP / 'work').mkdir(exist_ok=True)
 temporary = tempfile.TemporaryDirectory(prefix='component-tests-', dir=APP / 'work')
 SCRATCH = Path(temporary.name)
@@ -112,5 +116,9 @@ try:
 except ValueError:
     assert outside.is_dir()
     passed.append('cleanup-boundary')
-assert components.status(SCRATCH / 'never-installed') == {'ready': False, 'runtime': None}
+assert components.status(SCRATCH / 'never-installed') == {
+    'ready': False, 'runtime': None,
+    'verification': {'level': 'metadata', 'content_verified': False,
+                     'sha256_checked': False, 'state': 'not_ready'},
+}
 print(json.dumps({'state': 'passed', 'checks': passed}))

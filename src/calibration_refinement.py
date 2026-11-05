@@ -1,5 +1,8 @@
 """Detailed expression curves and optional conservative performance transfer."""
 import math
+from expression_controls import neutral_values
+
+_NEUTRAL = neutral_values()
 
 VERSION=2
 FEATURE_WEIGHTS=(1.,.9,.35,.65,.55,.45,.35,.30,.25,.20,.15,.15)
@@ -347,7 +350,7 @@ def refine_curves(curves,times,active,notes,reference,baseline,strength,*,cancel
     for name,values in curves.items():
         cancel()
         if name not in limits:raise ValueError('不支持的稳定化参数。')
-        neutral=1. if name=='voicing' else 0.
+        neutral=_NEUTRAL[name]
         original=np.asarray(values,float)-neutral
         if original.shape!=times.shape or not np.isfinite(original).all():raise ValueError('参数曲线含无效数值。')
         delta=original.copy();delta[~observed]=0
@@ -396,10 +399,11 @@ def refine_curves(curves,times,active,notes,reference,baseline,strength,*,cancel
         return lengths.max(initial=0)>=3
     if 'voicing' in output and 'breathiness' in output and meaningful('breathiness',output['breathiness']):
         breath=np.maximum(output['breathiness'],0)/max(.075*strength,1e-9)
-        output['voicing']=1+bound_slew(-(1-output['voicing'])*(1-.75*np.clip(breath,0,1)),'voicing')
+        neutral=_NEUTRAL['voicing']
+        output['voicing']=neutral+bound_slew(-(neutral-output['voicing'])*(1-.75*np.clip(breath,0,1)),'voicing')
     omitted=[]
     for name,values in list(output.items()):
-        neutral=1. if name=='voicing' else 0.;delta=values-neutral
+        neutral=_NEUTRAL[name];delta=values-neutral
         original=np.asarray(curves[name],float)-neutral
         if not meaningful(name,delta):
             omitted.append(name);del output[name];delta=np.zeros_like(delta)

@@ -229,6 +229,9 @@ class DraftStoreTests(unittest.TestCase):
             {'selected_index': True},
             {'selection': [0]},
             {'tool': {'performance_style': 'sad', 'style_strength': True}},
+            {'tool': {'performance_style': 'soft_ballad'}},
+            {'tool': {'performance_style': 'sad', 'style_technique': 'gentle'}},
+            {'style_regions': [{'start': 0, 'end': .1, 'preset': 'power_pop'}]},
             {'style_regions': [{'start': 0, 'end': .1, 'preset': 'sad',
                                 'style_pitch': True}]},
         )

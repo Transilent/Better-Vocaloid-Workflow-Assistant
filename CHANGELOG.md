@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Centralize style discovery and expression-control boundaries across the GUI, MCP, drafts and calibration while preserving existing recipes, legacy IDs and parameter units. Explicit audio channel modes use separate feature-cache identities; legacy standard-mode caches remain reusable.
+- Reuse the paired-output transaction for vocal-partition validation and rollback, retaining recovery sidecars until validation and receipt construction succeed.
+- Distinguish quick optional-component metadata checks from explicit cancellable full-file verification, with progress and file-integrity results available from the component page and command line.
 - Share source validation between desktop preparation and MCP. Unsupported Bilibili subpage selectors now produce an explicit error instead of silently selecting the default page.
 - Bind style results to the current project generation, preserve source and default media context when cloning workflows, and retain archived lifecycle state on repeated close. Reject oversized JSON records before replacing readable state.
 - Clear generated pitch scaffolding when explicitly rebuilding original F0, while retaining authored expression in ordinary style edits. Restore saved adapter and CPU-thread choices.

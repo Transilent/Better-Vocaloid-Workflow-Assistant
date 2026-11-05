@@ -7,12 +7,16 @@ from unittest.mock import patch
 import numpy as np
 import soundfile as sf
 ROOT=Path(__file__).resolve().parents[1]
-sys.path.insert(0,str(ROOT))
+sys.path.insert(0,str(ROOT/'src'))
+import common
+# Exercise the canonical source tree without waiting for root generated copies.
+common.ROOT=ROOT
 from vocal_partition import VocalPartitionError,coherent_transfer,repair,_checked_nonnegative_power
 from agent_errors import error_payload
 from common import atomic_json,file_hash,load_config
 from artifact_cache import stage_signature
 import pipeline
+import vocal_partition
 
 sr=44100
 t=np.arange(sr*12)/sr
@@ -124,6 +128,119 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work',prefix='partition-') as temp:
     assert before_tx=={n:file_hash(audio/(n+'.wav')) for n in before_tx}
     assert not list(audio.glob('*.pending.wav'))
     assert not list(audio.glob('*.partition.previous.wav'))
+
+    # Partition recovery names remain stable while the shared transaction owns
+    # backup, publish, verification and rollback. Each case below uses a tiny
+    # local fixture and never invokes a model.
+    transaction_cases = job / 'transaction-cases'
+
+    def partition_case(name):
+        folder = transaction_cases / name
+        folder.mkdir(parents=True)
+        tx_time = np.arange(4096, dtype='float64') / sr
+        tx_lead = (.2 * np.sin(2 * np.pi * 220 * tx_time))[:, None]
+        tx_backing = (.05 * np.sin(2 * np.pi * 330 * tx_time))[:, None]
+        tx_vocals = tx_lead + tx_backing
+        for file_name, wave in (('vocals.wav', tx_vocals),
+                                ('lead.wav', tx_lead),
+                                ('backing.wav', tx_backing)):
+            sf.write(folder / file_name, np.repeat(wave, 2, axis=1), sr, subtype='FLOAT')
+        return folder
+
+    stale_case = partition_case('stale')
+    stale_backup = stale_case / 'lead.partition.previous.wav'
+    stale_backup.write_bytes(b'unique-old-lead')
+    stale_hashes = {name: file_hash(stale_case / name) for name in ('lead.wav', 'backing.wav')}
+    try:
+        repair(stale_case)
+    except VocalPartitionError as exc:
+        assert exc.code == 'stale_partition_backup'
+        assert exc.details['files'] == [str(stale_backup)]
+        assert exc.details['repair_hint']
+    else:
+        raise AssertionError('stale partition backup was overwritten')
+    assert stale_backup.read_bytes() == b'unique-old-lead'
+    assert stale_hashes == {name: file_hash(stale_case / name) for name in stale_hashes}
+    assert not list(stale_case.glob('*.pending.wav'))
+
+    input_gate = partition_case('input-complementarity-gate')
+    input_backing, _ = sf.read(input_gate / 'backing.wav', dtype='float32', always_2d=True)
+    input_backing[100, 0] += .01
+    sf.write(input_gate / 'backing.wav', input_backing, sr, subtype='FLOAT')
+    input_gate_hashes = {name: file_hash(input_gate / name)
+                         for name in ('lead.wav', 'backing.wav')}
+    try:
+        repair(input_gate)
+    except VocalPartitionError as exc:
+        assert exc.code == 'non_complementary_inputs'
+        assert exc.details['threshold'] == vocal_partition.SUM_RECONSTRUCTION_TOLERANCE
+        assert exc.details['max_abs_error'] > exc.details['threshold']
+    else:
+        raise AssertionError('non-complementary partition input was accepted')
+    assert input_gate_hashes == {name: file_hash(input_gate / name) for name in input_gate_hashes}
+    assert not list(input_gate.glob('*.pending.wav'))
+    assert not list(input_gate.glob('*.partition.previous.wav'))
+
+    validation_case = partition_case('validation')
+    validation_old = {name: file_hash(validation_case / name)
+                      for name in ('lead.wav', 'backing.wav')}
+    validation_seen = {}
+    validation_error = VocalPartitionError(
+        'fixture post-publish validation failure',
+        code='non_complementary_inputs',
+        details={'fixture': 'validation'},
+    )
+
+    def corrupt_published_lead(source, target):
+        result = original_replace(source, target)
+        if (source.name == 'lead.partition.pending.wav'
+                and target.name == 'lead.wav'):
+            frames = sf.info(str(target)).frames
+            sf.write(target, np.zeros((frames, 2), dtype='float32'), sr, subtype='FLOAT')
+            validation_seen['published'] = file_hash(target)
+        return result
+
+    with patch.object(Path, 'replace', new=corrupt_published_lead):
+        try:
+            repair(validation_case)
+        except VocalPartitionError as exc:
+            assert exc.code == 'non_complementary_inputs'
+            assert exc.details['threshold'] == vocal_partition.SUM_RECONSTRUCTION_TOLERANCE
+        else:
+            raise AssertionError('post-publish partition validation failure was accepted')
+    assert validation_seen['published']
+    assert validation_old == {name: file_hash(validation_case / name) for name in validation_old}
+    assert not list(validation_case.glob('*.pending.wav'))
+    assert not list(validation_case.glob('*.partition.previous.wav'))
+
+    rollback_case = partition_case('rollback-failure')
+    rollback_old = {name: file_hash(rollback_case / name)
+                    for name in ('lead.wav', 'backing.wav')}
+
+    def fail_partition_validation(_paths, _check):
+        raise validation_error
+
+    def fail_partition_restore(source, target):
+        if (source.name == 'lead.partition.previous.wav'
+                and target.name == 'lead.wav'):
+            raise OSError('fixture partition rollback failure')
+        return original_replace(source, target)
+
+    with patch.object(vocal_partition, '_validate_committed_partition',
+                      new=fail_partition_validation), \
+            patch.object(Path, 'replace', new=fail_partition_restore):
+        try:
+            repair(rollback_case)
+        except VocalPartitionError as exc:
+            assert exc.code == 'partition_commit_rollback_failed'
+            assert exc.details['rollback_errors']
+            assert exc.details['repair_hint']
+            assert exc.__cause__.code == 'output_commit_rollback_failed'
+        else:
+            raise AssertionError('partition validation rollback failure was hidden')
+    rollback_backup = rollback_case / 'lead.partition.previous.wav'
+    assert file_hash(rollback_backup) == rollback_old['lead.wav']
+    assert file_hash(rollback_case / 'backing.wav') == rollback_old['backing.wav']
     bad=lead.copy();bad[500,1]=np.nan
     sf.write(audio/'lead.wav',bad,sr,subtype='FLOAT')
     try:repair(audio)
@@ -143,7 +260,17 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work',prefix='partition-') as temp:
     try:repair(audio)
     except ValueError:pass
     else:raise AssertionError('Unequal timelines accepted')
-    write();request={'voice_mode':'dual','tools':load_config(False)}
+    write()
+    # Separation is stubbed below. Give cache-signature code its own tiny model
+    # fixtures instead of requiring the user's multi-gigabyte installed runtime.
+    model_fixtures = job / 'test-models'
+    model_fixtures.mkdir()
+    tools = load_config(False)
+    for model_name in ('mdx_model', 'mdx_metadata', 'chorus_model', 'chorus_metadata'):
+        fixture = model_fixtures / (model_name + '.bin')
+        fixture.write_bytes(('fixture-' + model_name).encode('ascii'))
+        tools[model_name] = str(fixture)
+    request={'voice_mode':'dual','tools':tools}
     def separate(source,directory,config,task,output_names=('vocals.wav','instrumental.wav')):
         if output_names[0]=='lead.wav':
             sf.write(audio/'lead.wav',lead,sr,subtype='FLOAT')

@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import QDialog,QVBoxLayout,QHBoxLayout,QWidget,QLineEdit,QC
 from desktop_theme import button,card,label
 from ui_components import AdaptiveColumns,FlowLayout,choice
 from strength_control import PercentStrengthControl,normalized_strength,set_combo_strength
+from expression_controls import CONTROL_SPECS
 
 
 _SESSION_PATTERN = 'calibration*/session.json'
@@ -200,7 +201,7 @@ class CalibrationDialog(QDialog):
         self.file_status.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.file_status.verticalHeader().hide();self.file_status.setEditTriggers(QTableWidget.NoEditTriggers)
         self.file_status.setMinimumHeight(280);self.file_status.setMaximumHeight(360)
-        self.file_names=('neutral','loudness','tension','breathiness','voicing','gender','toneShift')
+        self.file_names=('neutral',*CONTROL_SPECS)
         for i,title in enumerate(('中性参数基准','力度','张力','气声','发声强度','性别','音区')):
             self.file_status.setItem(i,0,QTableWidgetItem(title));self.file_status.setItem(i,1,QTableWidgetItem(_tr('尚未准备')))
             self.file_status.setRowHeight(i,42)

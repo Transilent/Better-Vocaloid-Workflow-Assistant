@@ -2,6 +2,7 @@
 import copy
 import math
 from common import ROOT, atomic_json, workspace_state, load_config
+import style_catalog
 
 NODES = {'source': '音乐输入', 'separation': '分离声部', 'midi': '生成 MIDI', 'subtitles': '导出字幕'}
 LINKS = {('source', 'separation'), ('separation', 'midi'), ('midi', 'subtitles')}
@@ -15,8 +16,8 @@ DEFAULT_OPTIONS = {'language': 'zh', 'recognize_lyrics': True, 'zh_lyric_mode': 
                    'alignment_engine':'hfa','project_formats':['ustx','vsqx','svp'],
                    'audio_formats':['wav'],'project_export_enabled':True,'audio_export_enabled':True,
                    'export_pitch':True,'include_instrumental':True,'expression_density':'dense',
-                   'performance_style':'none','style_strength':.6,'style_scope':'lead','style_pitch':False,'style_detail':None,
-                   'style_technique':'none','technique_strength':.6,'technique_pitch':True,
+                   'performance_style':style_catalog.DEFAULT_STYLE_ID,'style_strength':.6,'style_scope':'lead','style_pitch':False,'style_detail':None,
+                   'style_technique':style_catalog.DEFAULT_TECHNIQUE_ID,'technique_strength':.6,'technique_pitch':True,
                    'reference_dynamics':False,'dynamics_strength':.6,
                    'reference_tension':False,'reference_breathiness':False,'reference_voicing':False,
                    'reference_mode':'local','subtitles_mode':'midi','dml_adapter':'auto','cpu_threads':0}
@@ -142,13 +143,13 @@ def execution_options(preferences, *, midi_enabled=True):
     for name in ('reference_dynamics', 'reference_tension', 'reference_breathiness', 'reference_voicing'):
         result[name] = result[name] and bool(midi_enabled) and 'svp' in result['project_formats']
     if not result['project_export_enabled'] or 'svp' not in result['project_formats']:
-        result['performance_style'] = 'none'
+        result['performance_style'] = style_catalog.DEFAULT_STYLE_ID
     # This surface prepares sources/scores. Tuning preferences remain stored but
     # run only in the separate transaction, never implicitly during preparation.
     result['prepare_only']=True
     for name in ('reference_dynamics','reference_tension','reference_breathiness','reference_voicing','style_pitch'):
         result[name]=False
-    result['performance_style']='none';result['expression_density']='original'
+    result['performance_style']=style_catalog.DEFAULT_STYLE_ID;result['expression_density']='original'
     # These belong to the independent tuning transaction. Preparation's public
     # create_job API keeps its existing signature; export_preferences stores
     # the user's technique choices separately for later tuning.

@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (QButtonGroup, QFrame, QGridLayout, QHBoxLayout,
                             QSizePolicy, QTextEdit, QToolButton, QVBoxLayout,
                             QWidget, QComboBox, QApplication)
 from i18n import tr as _tr
+import style_catalog
 
 
 class ChoiceRadioButton(QRadioButton):
@@ -262,7 +263,12 @@ _TRACK_COLORS = tuple(QColor(value) for value in (
     '#4e9af1', '#e0715b', '#51ad72', '#b179d6', '#d2a347', '#42aeb3'))
 _REGION_COLORS = tuple(QColor(value) for value in (
     '#6d5bb5', '#ad6a3d', '#347d8a', '#9c596f'))
-STYLE_PRESET_COLORS = {'none':'#8190a8','gentle':'#187f78','sad':'#8a5ba8','bold':'#b26519','chinese_opera':'#b74f55'}
+STYLE_PRESET_COLORS = {
+    key: style_catalog.style_color(key) for key in style_catalog.VISIBLE_STYLES
+}
+STYLE_PRESET_COLORS.update({key: style_catalog.technique_color(key)
+                            for key in style_catalog.TECHNIQUE_IDS
+                            if style_catalog.technique_color(key)})
 _STYLE_REGION_COLORS = {key:QColor(value) for key,value in STYLE_PRESET_COLORS.items()}
 
 
@@ -336,7 +342,7 @@ class _TimelineCanvas(QWidget):
         self._notes = []
         self._regions = []
         self._active_region = -1
-        self._selection_preset = 'none'
+        self._selection_preset = style_catalog.DEFAULT_STYLE_ID
         self._region_preview = None
         self._snap_enabled = False
         self._note_edges = ()
@@ -504,19 +510,15 @@ class _TimelineCanvas(QWidget):
             preset = row.get('preset')
             label = row.get('label')
             if not isinstance(label, str) or not label.strip():
-                if preset == 'gentle':
-                    label = _tr('柔和')
-                elif preset == 'sad':
-                    label = _tr('悲伤')
-                elif preset == 'bold':
-                    label = _tr('明亮欢快')
-                else:
-                    label = _tr('风格区域')
+                label = _tr(style_catalog.style_region_label(preset))
             else:
                 label = _tr(label)
             technique=row.get('technique')
-            if technique=='chinese_opera':label=(label+' · ' if preset!='none' else '')+_tr('戏腔')
-            color = _STYLE_REGION_COLORS.get(technique if technique=='chinese_opera' else preset)
+            technique_applied=(style_catalog.is_technique(technique)
+                               and technique!=style_catalog.DEFAULT_TECHNIQUE_ID)
+            if technique_applied:
+                label=(label+' · ' if preset!=style_catalog.DEFAULT_STYLE_ID else '')+_tr(style_catalog.technique_region_label(technique))
+            color = _STYLE_REGION_COLORS.get(technique if technique_applied else preset)
             if color is None:
                 color = _REGION_COLORS[index % len(_REGION_COLORS)]
             display.append({'index': index, 'preset':preset, 'start': start, 'end': end, 'label': label,
@@ -1159,7 +1161,7 @@ class StyleTimeline(QWidget):
         self._ruler_header.update()
 
     def set_selection_style(self,preset):
-        self._canvas._selection_preset=preset if preset in STYLE_PRESET_COLORS else 'none'
+        self._canvas._selection_preset=preset if preset in STYLE_PRESET_COLORS else style_catalog.DEFAULT_STYLE_ID
         self._canvas.update()
 
     def complete_note_range(self,start,end):

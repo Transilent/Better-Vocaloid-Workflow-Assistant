@@ -15,11 +15,12 @@ from common import atomic_json
 
 application=QApplication([])
 window=Window();window.show();application.processEvents();page=window.tuning
-assert window.pages.count()==10
+assert window.pages.count()==len(window.nav_buttons)
+assert window.pages.indexOf(window.audio_mixdown)>=0
 nav=window.nav_buttons[0].parentWidget().layout()
 order=[nav.itemAt(i).widget().text() for i in range(nav.count())
        if nav.itemAt(i).widget() is not None and nav.itemAt(i).widget() in window.nav_buttons]
-assert order[:4]==['准备工作流','调音工作流','合成视频','发布']
+assert order[:5]==['准备工作流','调音工作流','简易混音','合成视频','发布']
 window.navigate(9);assert window.pages.currentWidget() is page
 window.navigate(5);assert window.pages.currentIndex()==0
 window.navigate(6);assert window.pages.currentIndex()==4

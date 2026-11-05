@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 from common import atomic_json, native_path
+import style_catalog
 
 
 def _io_path(path):
@@ -26,8 +27,8 @@ SCHEMA_VERSION = 1
 CONTEXT_KIND = "vwa.style-context"
 PLAN_KIND = "vwa.style-plan"
 RENDER_KIND = "vwa.style-result"
-PRESET_IDS = ("none", "gentle", "sad", "bold")
-TECHNIQUE_IDS = ("none", "chinese_opera")
+PRESET_IDS = style_catalog.VISIBLE_STYLES
+TECHNIQUE_IDS = style_catalog.TECHNIQUE_IDS
 REGION_KEYS = frozenset({
     "start", "end", "start_note_id", "end_note_id", "preset", "strength", "style_pitch",
     "style_technique", "technique_strength", "technique_pitch",
@@ -250,29 +251,7 @@ def _indices(value: Any, track_count: int, *, allow_none: bool) -> list[int] | N
 
 
 def _preset_catalog() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    from style_presets import PRESETS
-
-    presets = []
-    for preset_id in PRESET_IDS:
-        definition = PRESETS[preset_id]
-        presets.append({
-            "id": preset_id,
-            "label": definition.get("label"),
-            "category": definition.get("category", "singing_style"),
-            "pitch_default": definition.get("pitch_default", False),
-            "description": definition.get("description"),
-        })
-    techniques = []
-    for technique_id in TECHNIQUE_IDS:
-        definition = PRESETS[technique_id]
-        techniques.append({
-            "id": technique_id,
-            "label": definition.get("label"),
-            "category": definition.get("category", "singing_technique"),
-            "pitch_default": definition.get("pitch_default", False),
-            "description": definition.get("description"),
-        })
-    return presets, techniques
+    return style_catalog.style_descriptors(PRESET_IDS), style_catalog.technique_descriptors(TECHNIQUE_IDS)
 
 
 def _lyric(note: dict[str, Any]) -> tuple[str | None, str | None, bool]:
@@ -921,7 +900,7 @@ def _validate_proposal(
             end_note_id = resolved_boundary["end_note_id"]
         preset = raw_region["preset"]
         if not isinstance(preset, str) or preset not in PRESET_IDS:
-            raise ValueError(label + ".preset 必须是 none/gentle/sad/bold。")
+            raise ValueError(label + ".preset 必须是 " + "/".join(PRESET_IDS) + "。")
         strength = _finite(raw_region["strength"], label + ".strength")
         if not 0 <= strength <= 1:
             raise ValueError(label + ".strength 必须在 0 到 1 之间。")
@@ -934,7 +913,7 @@ def _validate_proposal(
 
         try:
             technique = technique_settings({
-                "style_technique": raw_region.get("style_technique", "none"),
+                "style_technique": raw_region.get("style_technique", style_catalog.DEFAULT_TECHNIQUE_ID),
                 "technique_strength": raw_region.get(
                     "technique_strength", _DEFAULT_TECHNIQUE_STRENGTH,
                 ),
@@ -945,7 +924,7 @@ def _validate_proposal(
             detail=detail_settings(raw_region.get('detail'))
         except ValueError as error:
             raise ValueError(label + " 的唱腔设置无效：" + str(error)) from error
-        if preset == "none" and technique["style_technique"] == "none":
+        if preset == style_catalog.DEFAULT_STYLE_ID and technique["style_technique"] == style_catalog.DEFAULT_TECHNIQUE_ID:
             raise ValueError(label + " 未选择风格或唱腔，不能生成风格片段。")
 
         refs = raw_region.get("evidence_refs", [])
@@ -1464,7 +1443,7 @@ def _align_regions(
         }
         # The public semantic region always carries the complete technique
         # triple.  The legacy engine row receives it only when enabled.
-        if row["style_technique"] != "none":
+        if row["style_technique"] != style_catalog.DEFAULT_TECHNIQUE_ID:
             engine.update({
                 "technique": row["style_technique"],
                 "technique_strength": row["technique_strength"],
@@ -1608,7 +1587,7 @@ def _engine_options(
     options = {
         "expression_mode": "preserve",
         "track_indices": list(indices),
-        "performance_style": "none",
+        "performance_style": style_catalog.DEFAULT_STYLE_ID,
         "style_strength": 0.0,
         "style_pitch": False,
         "style_detail": {
@@ -1619,7 +1598,7 @@ def _engine_options(
         },
         "style_regions": copy.deepcopy(engine_regions),
         "expression_density": "original",
-        "style_technique": "none",
+        "style_technique": style_catalog.DEFAULT_TECHNIQUE_ID,
         "technique_strength": 0.0,
         "technique_pitch": False,
     }

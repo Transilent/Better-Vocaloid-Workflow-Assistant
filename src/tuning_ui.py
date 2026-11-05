@@ -20,6 +20,7 @@ from common import ROOT,atomic_json,native_path,workspace_state
 from desktop_theme import page,card,label,button,scroll_content,fold
 from ui_components import AdaptiveColumns,ChoiceGroup,FlowLayout,StyleTimeline,choice,style_preset_color
 from strength_control import PercentStrengthControl,StrengthControl,normalized_strength,percent_text,set_combo_strength,strength_choices
+import style_catalog
 
 
 def combo(rows):
@@ -42,43 +43,46 @@ _TUNING_STAGE_TITLES=(
 )
 _TUNING_STAGE_KEYS=tuple(key for key,_ in _TUNING_STAGE_TITLES)
 _TUNING_STAGE_INDEX={key:index for index,(key,_) in enumerate(_TUNING_STAGE_TITLES)}
-_STYLE_CARD_KINDS={'gentle':'声线（柔和）','sad':'情绪（悲伤）',
-                   'bold':'演唱表现（明亮欢快）'}
 _TECHNIQUE_FIELDS=('style_technique','technique_strength','technique_pitch')
 _REGION_TOOL_FIELDS=('performance_style','style_strength','style_detail','style_pitch')+_TECHNIQUE_FIELDS
 
 
 def style_card_keys():
-    from style_presets import visible_presets
-    return visible_presets()
+    return style_catalog.VISIBLE_STYLES
 
 
 def style_card_label(value):
-    if value=='none':return _tr('不叠加风格')
-    from style_presets import PRESETS
-    return _tr(PRESETS[value]['label'])
+    return _tr(style_catalog.style_label(value, card=True))
 
 
 def ui_merged_preset(value):
-    from style_presets import merged_preset
-    return merged_preset(value)
+    return style_catalog.merged_style(value)
 
 
 def style_pitch_default(value):
-    from style_presets import pitch_default
-    return pitch_default(value)
+    return style_catalog.style_pitch_default(value)
 
 
 def style_card_description(value):
-    from style_presets import preset_description
-    source=_tr('保留输入工程现有参数，不添加所选风格。') if value=='none' else _tr(preset_description(value))
-    kind=_STYLE_CARD_KINDS.get(value)
+    source=_tr(style_catalog.style_description(value, card=True))
+    kind=style_catalog.style_card_category(value)
     return ((_tr(kind)+'\n') if kind else '')+source
 
 
+def technique_card_keys():
+    return style_catalog.TECHNIQUE_IDS
+
+
+def technique_card_label(value):
+    return _tr(style_catalog.technique_label(value, card=True))
+
+
+def technique_card_description(value):
+    return _tr(style_catalog.technique_description(value))
+
+
 def _style_is_selectable(value):
-    from style_presets import PRESETS
-    return isinstance(value,str) and value in PRESETS
+    return style_catalog.is_style(value)
 
 
 class TuningVisualProgress:
@@ -451,10 +455,10 @@ class TuningPage(QWidget):
         style_strength_label.setBuddy(self.style_strength_spin)
         technique_panel=QWidget();technique_area=QVBoxLayout(technique_panel)
         technique_area.setContentsMargins(0,4,0,0);technique_area.setSpacing(8)
-        self.style_technique=combo([(_tr('原唱法'),'none'),(_tr('中文戏腔〔实验〕'),'chinese_opera')])
+        self.style_technique=combo([(technique_card_label(key),key) for key in technique_card_keys()])
         self.style_technique.setProperty('stylePresetChoices',True)
         self.technique_choice=choice(self.style_technique,columns=2,compact=True);technique_area.addWidget(self.technique_choice)
-        self.technique_hint=label(_tr('字头倚滑、音间衔接、长音颤音与收腔；保留已检测到的原有颤音。'),'muted')
+        self.technique_hint=label(technique_card_description(style_catalog.TECHNIQUE_IDS[-1]),'muted')
         technique_area.addWidget(self.technique_hint)
         technique_area.addWidget(label(_tr('唱腔强度'),'muted'))
         self.technique_strength=combo(strength_choices((.3,.6,.85,1.)))
@@ -884,12 +888,12 @@ class TuningPage(QWidget):
             if selection is not None:selection=time_range_settings(selection)
             row=row if type(row) is int and 0<=row<len(regions) else -1
             tool=data.get('tool',{})
-            if not isinstance(tool,dict) or tool.get('performance_style') not in ('none','gentle','sad','bold'):raise ValueError('Invalid draft tool')
+            if not isinstance(tool,dict) or not style_catalog.is_visible_style(tool.get('performance_style')):raise ValueError('Invalid draft tool')
             if normalized_strength(tool.get('style_strength')) is None or type(tool.get('style_pitch')) is not bool:raise ValueError('Invalid draft strength')
             detail_settings(tool.get('style_detail'));tool.update(technique_settings(tool))
             next_tool=data.get('next_tool',tool);intent=data.get('editor_intent','new')
             if intent not in ('new','edit') or not isinstance(next_tool,dict):raise ValueError('Invalid draft intent')
-            if next_tool.get('performance_style') not in ('none','gentle','sad','bold') or normalized_strength(next_tool.get('style_strength')) is None:
+            if not style_catalog.is_visible_style(next_tool.get('performance_style')) or normalized_strength(next_tool.get('style_strength')) is None:
                 raise ValueError('Invalid next style tool')
             if type(next_tool.get('style_pitch')) is not bool:raise ValueError('Invalid next style pitch')
             detail_settings(next_tool.get('style_detail'));next_tool.update(technique_settings(next_tool))
@@ -1140,7 +1144,7 @@ class TuningPage(QWidget):
         if self.processing_active or self.style_mode.currentData()!='regions' or self._style_timeline_data is None:return
         if self._region_dialog is not None:
             self._region_dialog.raise_();self._region_dialog.activateWindow();return
-        if not self._has_style_layer():self.performance_style.setCurrentIndex(self.performance_style.findData('gentle'))
+        if not self._has_style_layer():self.performance_style.setCurrentIndex(self.performance_style.findData(style_catalog.DEFAULT_NEW_STYLE_ID))
         dialog=QDialog(self.window());dialog.setWindowTitle(_tr('风格片段编辑器'))
         outer=QVBoxLayout(dialog);outer.setContentsMargins(12,12,12,12);outer.setSpacing(8)
         header=QHBoxLayout();title=label(_tr('风格片段编辑器'));header.addWidget(title);header.addStretch(1)
@@ -1306,20 +1310,24 @@ class TuningPage(QWidget):
         result={'start':float(start),'end':float(end),'preset':style,
                 'strength':float(self.style_strength.currentData()),'detail':dict(values['style_detail']),
                 'pitch':bool(self.style_pitch.isChecked())}
-        if values['style_technique']!='none':
+        if values['style_technique']!=style_catalog.DEFAULT_TECHNIQUE_ID:
             result.update(technique=values['style_technique'],technique_strength=values['technique_strength'],
                           technique_pitch=values['technique_pitch'])
         return result
 
     def _has_style_layer(self):
-        return self.performance_style.currentData() in ('gentle','sad','bold') or self.style_technique.currentData()=='chinese_opera'
+        style=self.performance_style.currentData()
+        technique=self.style_technique.currentData()
+        return ((style_catalog.is_visible_style(style) and style!=style_catalog.DEFAULT_STYLE_ID)
+                or (style_catalog.is_technique(technique) and technique!=style_catalog.DEFAULT_TECHNIQUE_ID))
 
     def _region_item_text(self,region):
         label=style_card_label(region['preset'])+' '+percent_text(region['strength'])
-        if region.get('technique')=='chinese_opera':
-            label=(label+' · ' if region['preset']!='none' else '')+_tr('戏腔')+' '+percent_text(region['technique_strength'])
-        has_pitch=(region['preset']!='none' and region['pitch']) or (
-            region.get('technique')=='chinese_opera' and region.get('technique_pitch',True))
+        technique=region.get('technique')
+        if style_catalog.is_technique(technique) and technique!=style_catalog.DEFAULT_TECHNIQUE_ID:
+            label=(label+' · ' if region['preset']!=style_catalog.DEFAULT_STYLE_ID else '')+_tr(style_catalog.technique_region_label(technique))+' '+percent_text(region['technique_strength'])
+        has_pitch=(region['preset']!=style_catalog.DEFAULT_STYLE_ID and region['pitch']) or (
+            style_catalog.is_technique(technique) and technique!=style_catalog.DEFAULT_TECHNIQUE_ID and region.get('technique_pitch',True))
         pitch=_tr('含附加音高') if has_pitch else _tr('仅音色')
         return f"{region['start']:.3f}–{region['end']:.3f} s · {label} · {pitch}"
 
@@ -1563,10 +1571,12 @@ class TuningPage(QWidget):
 
     def _refresh_style_hint(self):
         current=self.performance_style.currentData()
-        technique=self.style_technique.currentData()=='chinese_opera'
-        if hasattr(self,'style_timeline'):self.style_timeline.set_selection_style('chinese_opera' if technique else current)
+        technique_id=self.style_technique.currentData()
+        technique=(style_catalog.is_technique(technique_id)
+                   and technique_id!=style_catalog.DEFAULT_TECHNIQUE_ID)
+        if hasattr(self,'style_timeline'):self.style_timeline.set_selection_style(technique_id if technique else current)
         text=style_card_description(current)
-        if technique:text+='\n'+_tr('字头倚滑、音间衔接、长音颤音与收腔；保留已检测到的原有颤音。')
+        if technique:text+='\n'+technique_card_description(technique_id)
         source=getattr(self,'_style_migration_source',None)
         if isinstance(source,str) and ui_merged_preset(source)==current:
             old_label=style_card_label(source)
@@ -1639,9 +1649,11 @@ class TuningPage(QWidget):
         mapped=mode in ('reference','calibrated','retained')
         self.tracks.horizontalHeader().setSectionResizeMode(0,QHeaderView.Interactive if mapped else QHeaderView.Stretch)
         if mapped and self.tracks.columnWidth(0)<300:self.tracks.setColumnWidth(0,300)
-        style=self.performance_style.currentData()!='none'
+        style=(style_catalog.is_visible_style(self.performance_style.currentData())
+               and self.performance_style.currentData()!=style_catalog.DEFAULT_STYLE_ID)
         self.style_strength.setEnabled(style);self.style_pitch.setEnabled(style);self.style_scope.setEnabled(True)
-        technique=self.style_technique.currentData()!='none'
+        technique=(style_catalog.is_technique(self.style_technique.currentData())
+                   and self.style_technique.currentData()!=style_catalog.DEFAULT_TECHNIQUE_ID)
         self.style_technique.setEnabled(not self.processing_active)
         self.technique_strength.setEnabled(technique and not self.processing_active)
         self.technique_pitch.setEnabled(technique and not self.processing_active)
@@ -1932,8 +1944,8 @@ class TuningPage(QWidget):
             self._run_outcome='running';self.run_state.setText(_tr('正在生成调音工程'));self.run_stage.setText(_tr('正在准备工程…'))
             self.progress_detail.setText(_tr('正在准备工程…'));self.status.setText(_tr('正在生成独立调音工程…'));self._set_progress('running')
             style_regions=options.get('style_regions') or []
-            if not style_regions and (options.get('performance_style')=='none' or options.get('style_strength',0)<=0) and (
-                    options['style_technique']=='none' or options['technique_strength']<=0):self._set_stage('style','skipped')
+            if not style_regions and (options.get('performance_style')==style_catalog.DEFAULT_STYLE_ID or options.get('style_strength',0)<=0) and (
+                    options['style_technique']==style_catalog.DEFAULT_TECHNIQUE_ID or options['technique_strength']<=0):self._set_stage('style','skipped')
             self._sync_choices();self.open_button.setEnabled(False);self.register_button.setEnabled(False);self.stop_button.setEnabled(True)
             self.worker=TuningWorker(self.session,options,self);self.worker.message.connect(self._worker_message)
             self.worker.succeeded.connect(self.completed);self.worker.failed.connect(self._failed);self.worker.finished.connect(self.finished);self.worker.start()

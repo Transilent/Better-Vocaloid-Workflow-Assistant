@@ -10,9 +10,12 @@ from unittest.mock import patch
 import zipfile
 
 APP = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(APP))
+sys.path.insert(0, str(APP / 'src'))
+sys.path.insert(1, str(APP))
 import expression_component as world
 import optional_components as components
+world.ROOT = APP
+components.ROOT = APP
 
 
 def make_tree(root, payload):

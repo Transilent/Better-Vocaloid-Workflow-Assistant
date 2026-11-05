@@ -50,6 +50,8 @@ the base runtime and verifies SHA-256 before loading the original model. A faile
 or cancelled installation does not activate a partial component. Retry to resume
 verified downloads; choose **更多 → 重新安装所选运行库** to repair an existing component.
 
+Regular status checks installation records and file sizes. Choose **Full verification** for BS-RoFormer to read installed files and check their contents, with progress and cancellation. It does not download or run the model. Older installation records without hashes are reported as unverified; damaged components can be reinstalled. The `optional_components.py --verify` command also returns the verification report.
+
 Choose **使用此模型**, or select BS-RoFormer in processing. CPU and CUDA use the
 same model. **自动** chooses CUDA when available, otherwise CPU. Explicit CUDA
 selection fails clearly if unavailable. Karaoke 2 remains available without this

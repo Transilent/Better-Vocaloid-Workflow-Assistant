@@ -28,7 +28,7 @@ COMMIT_SCHEMA=1
 _LOCKS={};_LOCK_GUARD=threading.Lock()
 CONTRIBUTORS=('tuning_workflow.py','tuning_engine.py','vocal_expression.py','vocal_timbre.py',
  'expression_component.py','expression_calibration.py','calibration_refinement.py','calibration_workflow.py',
- 'calibration_session.py','style_presets.py','style_pitch.py','common.py')
+ 'calibration_session.py','style_presets.py','style_catalog.py','expression_controls.py','style_pitch.py','common.py')
 
 
 def _read(path):

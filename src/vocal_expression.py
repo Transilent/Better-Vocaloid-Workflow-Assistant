@@ -4,13 +4,15 @@ import copy
 import json
 import math
 from pathlib import Path
+from expression_controls import STYLE_CONTROL_NAMES, control_labels, control_limits
 
 ALGORITHM_VERSION = 3
 SV_QUARTER = 705600000
 HOP_SECONDS = .02
 WINDOW_SECONDS = .06
 CURVE_TOLERANCE_DB = .12
-CONTROL_NAMES = {'loudness': '力度', 'tension': '张力', 'breathiness': '气声', 'voicing': '发声强度'}
+CONTROL_NAMES = control_labels()
+_CONTROL_LIMITS = control_limits(STYLE_CONTROL_NAMES)
 SKIP_REASONS = {'no_notes_or_zero_strength': '没有有效音符或强度为零',
                 'insufficient_voiced_signal': '有效有声片段不足',
                 'insufficient_sustained_variation': '有效变化的持续时间不足',
@@ -278,7 +280,7 @@ def curve_statistics(parameters, name, *, require_variation=False):
     positions, values = points[::2], points[1::2]
     if any(a >= b for a, b in zip(positions, positions[1:])):
         raise ValueError(failure)
-    low, high = (-48, 12) if name == 'loudness' else ((0, 1) if name == 'voicing' else (-1, 1))
+    low, high, _ = _CONTROL_LIMITS[name]
     if any(not low <= value <= high for value in values):
         raise ValueError(failure)
     changing = bool(values and max(values) - min(values) > 1e-6)

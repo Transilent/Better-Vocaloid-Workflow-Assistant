@@ -155,6 +155,21 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='pipeline-safety-') as
     assert not list(tx.glob('*.pending.wav'))
     assert not list(tx.glob('*.previous.wav'))
 
+    # A receipt read failure is still inside the transaction. The validated
+    # candidate must not destroy the last-known-good pair before its SHA can
+    # be recorded successfully.
+    for source, value in zip(staging, (b'new-vocals', b'new-instrumental')):
+        source.write_bytes(value)
+    with patch('multi_file_commit._sha256', side_effect=OSError('fixture receipt read failure')):
+        try:
+            commit_file_pair(staging, targets)
+        except OSError as error:
+            assert 'fixture receipt read failure' in str(error)
+        else:
+            raise AssertionError('receipt failure was accepted')
+    assert [digest(target) for target in targets] == old_hashes
+    assert not list(tx.glob('*.pending.wav')) and not list(tx.glob('*.previous.wav'))
+
     for source, value in zip(staging, (b'new-vocals', b'new-instrumental')):
         source.write_bytes(value)
     receipt = commit_file_pair(staging, targets)
@@ -162,6 +177,136 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='pipeline-safety-') as
     assert targets[1].read_bytes() == b'new-instrumental'
     assert receipt['schema'] == 1 and len(receipt['files']) == 2
     assert not list(tx.glob('*.pending.wav')) and not list(tx.glob('*.previous.wav'))
+
+    # Explicit backup names are also included in the cross-set rejection, not
+    # just staging-versus-target checks.
+    for cross_backups in (
+            [overlap_staging[0], overlap_dir / 'backing.partition.previous.wav'],
+            [overlap_dir / 'lead.wav', overlap_dir / 'backing.partition.previous.wav']):
+        try:
+            commit_file_pair(
+                overlap_staging,
+                [overlap_dir / 'lead.wav', overlap_dir / 'backing.wav'],
+                backup_paths=cross_backups,
+            )
+        except FileTransactionError as error:
+            assert error.code == 'invalid_staging_output'
+            assert error.details['overlap']
+        else:
+            raise AssertionError('staging/target/backup intersection was accepted')
+
+    # Explicit sidecars keep caller recovery names. Validation sees both new
+    # targets and their old backups, so no backup is deleted before acceptance.
+    explicit = root / 'explicit-backups'
+    explicit.mkdir()
+    explicit_targets = [explicit / 'lead.wav', explicit / 'backing.wav']
+    explicit_staging = [explicit / 'lead.partition.pending.wav',
+                        explicit / 'backing.partition.pending.wav']
+    explicit_backups = [explicit / 'lead.partition.previous.wav',
+                        explicit / 'backing.partition.previous.wav']
+    for target, value in zip(explicit_targets, (b'old-lead', b'old-backing')):
+        target.write_bytes(value)
+    for source, value in zip(explicit_staging, (b'new-lead', b'new-backing')):
+        source.write_bytes(value)
+    validation = {}
+
+    def validate_published(published):
+        assert tuple(published) == tuple(explicit_targets)
+        validation['targets'] = [path.read_bytes() for path in published]
+        validation['backups'] = [path.read_bytes() for path in explicit_backups]
+        validation['backup_names'] = [path.name for path in explicit_backups]
+        assert not any(path.exists() for path in explicit_staging)
+
+    receipt = commit_file_pair(
+        explicit_staging,
+        explicit_targets,
+        backup_paths=explicit_backups,
+        validate=validate_published,
+    )
+    assert validation['targets'] == [b'new-lead', b'new-backing']
+    assert validation['backups'] == [b'old-lead', b'old-backing']
+    assert validation['backup_names'] == ['lead.partition.previous.wav',
+                                           'backing.partition.previous.wav']
+    assert receipt['backup_cleanup_errors'] == []
+    assert not any(path.exists() for path in explicit_backups)
+
+    # A post-publish validation failure restores every old output and removes
+    # transaction-owned staging rather than exposing the rejected candidate.
+    validation_failure = root / 'validation-failure'
+    validation_failure.mkdir()
+    vt = [validation_failure / 'lead.wav', validation_failure / 'backing.wav']
+    vs = [validation_failure / 'lead.partition.pending.wav',
+          validation_failure / 'backing.partition.pending.wav']
+    vb = [validation_failure / 'lead.partition.previous.wav',
+          validation_failure / 'backing.partition.previous.wav']
+    for target, value in zip(vt, (b'old-lead', b'old-backing')):
+        target.write_bytes(value)
+    old_validation_hashes = [digest(target) for target in vt]
+    for source, value in zip(vs, (b'bad-lead', b'bad-backing')):
+        source.write_bytes(value)
+
+    def reject_published(_published):
+        raise RuntimeError('fixture validation failure')
+
+    try:
+        commit_file_pair(vs, vt, backup_paths=vb, validate=reject_published)
+    except RuntimeError as error:
+        assert 'fixture validation failure' in str(error)
+    else:
+        raise AssertionError('validation failure was accepted')
+    assert [digest(target) for target in vt] == old_validation_hashes
+    assert not any(path.exists() for path in (*vs, *vb))
+
+    # Validation failure must also remove newly published files when there was
+    # no previous output to restore.
+    no_previous = root / 'no-previous'
+    no_previous.mkdir()
+    nt = [no_previous / 'lead.wav', no_previous / 'backing.wav']
+    ns = [no_previous / 'lead.partition.pending.wav',
+          no_previous / 'backing.partition.pending.wav']
+    nb = [no_previous / 'lead.partition.previous.wav',
+          no_previous / 'backing.partition.previous.wav']
+    for source, value in zip(ns, (b'new-lead', b'new-backing')):
+        source.write_bytes(value)
+    try:
+        commit_file_pair(ns, nt, backup_paths=nb, validate=reject_published)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError('validation failure without old output was accepted')
+    assert not any(path.exists() for path in (*nt, *ns, *nb))
+
+    # If validation rejects after publication and restoring an original also
+    # fails, the unique old copy stays in its explicit backup.
+    validation_rollback = root / 'validation-rollback-failure'
+    validation_rollback.mkdir()
+    vrt = [validation_rollback / 'lead.wav', validation_rollback / 'backing.wav']
+    vrs = [validation_rollback / 'lead.partition.pending.wav',
+           validation_rollback / 'backing.partition.pending.wav']
+    vrb = [validation_rollback / 'lead.partition.previous.wav',
+           validation_rollback / 'backing.partition.previous.wav']
+    for target, value in zip(vrt, (b'old-lead', b'old-backing')):
+        target.write_bytes(value)
+    for source, value in zip(vrs, (b'new-lead', b'new-backing')):
+        source.write_bytes(value)
+
+    def fail_validation_restore(source, target):
+        if source.name == 'lead.partition.previous.wav' and target.name == 'lead.wav':
+            raise OSError('fixture validation rollback failure')
+        return original_replace(source, target)
+
+    with patch.object(Path, 'replace', new=fail_validation_restore):
+        try:
+            commit_file_pair(vrs, vrt, backup_paths=vrb, validate=reject_published)
+        except FileTransactionError as error:
+            assert error.code == OUTPUT_COMMIT_ROLLBACK_FAILED
+            assert error.preserve_staging
+            assert error.details['rollback_errors']
+        else:
+            raise AssertionError('validation rollback failure was hidden')
+    assert vrb[0].read_bytes() == b'old-lead'
+    assert vrt[1].read_bytes() == b'old-backing'
+    assert not vrb[1].exists()
 
     # An interrupted recovery keeps its backups and staging rather than deleting
     # the only remaining copies.

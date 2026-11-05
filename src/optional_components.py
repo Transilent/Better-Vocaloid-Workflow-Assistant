@@ -15,13 +15,15 @@ import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import ROOT, atomic_json, file_hash, load_config, direct_urlopen, native_path
+import component_health
 from download_sources import download_urls, source_name
 
 COMPONENT = ROOT / 'dependencies/optional/bs-roformer'
+MANIFEST = ROOT / 'components/roformer.json'
 
 
 def manifest():
-    return json.loads((ROOT / 'components/roformer.json').read_text(encoding='utf-8'))
+    return json.loads(MANIFEST.read_text(encoding='utf-8'))
 
 
 def current(root=COMPONENT):
@@ -29,37 +31,62 @@ def current(root=COMPONENT):
 
 
 def _status_tree(directory):
-    directory = Path(directory)
-    receipt = json.loads((directory / 'installed.json').read_text(encoding='utf-8'))
-    spec = manifest()
-    if receipt['manifest_sha256'] != file_hash(ROOT / 'components/roformer.json'):
-        raise ValueError('Version mismatch')
-    required = [(directory / item['name'], item['bytes']) for item in spec['weights']]
-    required += [(directory / entry['file'], entry['bytes']) for entry in receipt['critical_files']]
-    resolved_directory = directory.resolve()
-    if any(not path.resolve().is_relative_to(resolved_directory)
-           or not path.is_file() or path.stat().st_size != size for path, size in required):
-        raise ValueError('Missing component files')
-    return {'ready': True, 'runtime': receipt['runtime'], 'probe': receipt['probe']}
+    report = component_health.metadata_status(Path(directory), MANIFEST)
+    if not report['metadata_ready']:
+        detail = report['errors'][0]['message'] if report['errors'] else '文件缺失或元数据不一致'
+        raise ValueError(detail)
+    return {
+        'ready': True,
+        'runtime': report['runtime'],
+        'probe': report['probe'],
+        'verification': {
+            'level': 'metadata',
+            'content_verified': False,
+            'sha256_checked': False,
+            'state': 'metadata_ready',
+        },
+    }
 
 
 def status(root=COMPONENT):
+    """Fast metadata status; this intentionally does not hash model/runtime bytes."""
     try:
         return _status_tree(current(root))
-    except (OSError, ValueError, KeyError):
-        return {'ready': False, 'runtime': None}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {
+            'ready': False,
+            'runtime': None,
+            'verification': {
+                'level': 'metadata',
+                'content_verified': False,
+                'sha256_checked': False,
+                'state': 'not_ready',
+            },
+        }
 
 
 def _directory_ready(directory):
+    """Receipt/path/size check used by installation transactions."""
     try:
         return _status_tree(directory)['ready']
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, TypeError):
         return False
+
+
+def full_verify(root=COMPONENT, progress=None, check=None):
+    """Explicitly hash manifest weights and receipt-critical files.
+
+    This is cancellable through ``check``, reports byte progress through
+    ``progress(done, total, message)``, and never loads the model or uses the
+    network. Missing expected SHAs are reported as unverified rather than ready.
+    """
+    return component_health.verify_component(current(root), MANIFEST,
+                                             progress=progress, check=check)
 
 
 def require_ready():
     if not status()['ready']:
-        raise FileNotFoundError('BS-RoFormer 组件尚未安装或文件不完整，请在“模型与组件”页面下载／重新安装。')
+        raise FileNotFoundError('BS-RoFormer 组件元数据检查未通过；文件可能未安装、缺失或路径无效。请在“模型与组件”页面重新安装或执行完整校验。')
     return current()
 
 
@@ -217,7 +244,7 @@ def remove_owned_tree(path, root):
 
 
 def recover_verified_previous(root, ready):
-    """Restore only a receipt-valid backup when an interrupted swap left no current tree."""
+    """Restore only a metadata-valid backup when an interrupted swap left no current tree."""
     root = Path(root).resolve()
     destination, backup = current(root), root / 'previous'
     if destination.exists() or not backup.exists() or not ready(backup):
@@ -228,7 +255,7 @@ def recover_verified_previous(root, ready):
 
 
 def replace_verified_tree(stage, destination, backup, root, ready):
-    """Promote a verified stage while retaining the last valid tree until commit."""
+    """Promote a metadata-valid stage while retaining the last valid tree until commit."""
     root = Path(root).resolve()
     stage, destination, backup = Path(stage), Path(destination), Path(backup)
     paths = (stage, destination, backup)
@@ -236,7 +263,7 @@ def replace_verified_tree(stage, destination, backup, root, ready):
     if any(path == root or not path.is_relative_to(root) for path in resolved) or len(set(resolved)) != 3:
         raise ValueError('Component transaction path escaped its root')
     if not ready(stage):
-        raise ValueError('Staged component failed verification')
+        raise ValueError('Staged component failed metadata verification')
 
     quarantine = root / 'rejected-current'
     previous_ready = backup.exists() and ready(backup)
@@ -261,7 +288,7 @@ def replace_verified_tree(stage, destination, backup, root, ready):
     try:
         stage.replace(destination)
         if not ready(destination):
-            raise ValueError('Installed component failed verification')
+            raise ValueError('Installed component failed metadata verification')
     except BaseException:
         if destination.exists():
             remove_owned_tree(destination, root)
@@ -269,7 +296,7 @@ def replace_verified_tree(stage, destination, backup, root, ready):
             restore_source.replace(destination)
         raise
 
-    # Cleanup is deliberately after the new current tree has passed full verification.
+    # Cleanup follows receipt/path/size checks; content hashes remain an explicit full verification.
     remove_owned_tree(backup, root)
     remove_owned_tree(quarantine, root)
 
@@ -310,7 +337,7 @@ def install(runtime, progress=print, check=None, root=COMPONENT, force=False, so
         recover_verified_previous(root, _directory_ready)
         existing = status(root)
         if not force and existing['ready'] and existing['runtime'] == runtime:
-            progress(1, 1, '组件已安装，可以直接使用')
+            progress(1, 1, '元数据检查已通过；未重新哈希大文件，可在组件页执行完整校验')
             return existing
         spec = manifest()
         items = spec['weights'] + spec['shared_wheels'] + [spec['torch_wheels'][runtime]]
@@ -364,12 +391,13 @@ def install(runtime, progress=print, check=None, root=COMPONENT, force=False, so
             raise ValueError('Installed runtime version does not match the pinned component')
         critical = []
         for file in (stage / 'packages/torch/lib').glob('*.dll'):
-            critical.append({'file': file.relative_to(stage).as_posix(), 'bytes': file.stat().st_size})
+            critical.append({'file': file.relative_to(stage).as_posix(), 'bytes': file.stat().st_size,
+                             'sha256': file_hash(file)})
         for name in ('packages/torch/__init__.py', 'packages/pymss/__init__.py', 'packages/pymss_core/__init__.py'):
             path = stage / name
-            critical.append({'file': name, 'bytes': path.stat().st_size})
+            critical.append({'file': name, 'bytes': path.stat().st_size, 'sha256': file_hash(path)})
         atomic_json(stage / 'installed.json', {'runtime': runtime, 'probe': probed, 'critical_files': critical,
-                    'manifest_sha256': file_hash(ROOT / 'components/roformer.json'),
+                    'manifest_sha256': file_hash(MANIFEST),
                     'source_sha256': {item['name']: item['sha256'] for item in items}})
         if not _directory_ready(stage):
             if check and check():
@@ -387,10 +415,21 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--install', choices=('cpu', 'cuda'))
     parser.add_argument('--probe')
+    parser.add_argument('--verify', action='store_true',
+                        help='explicitly hash manifest weights and receipt-critical files')
     from download_sources import SOURCES
     parser.add_argument('--download-source', choices=SOURCES, default='auto')
     args = parser.parse_args()
     if args.probe:
         probe(args.probe)
+    elif args.verify:
+        try:
+            report = full_verify(progress=lambda done, total, text: print(
+                f'{done}/{total}: {text}', file=sys.stderr, flush=True))
+        except KeyboardInterrupt:
+            print(json.dumps({'state': 'cancelled', 'verified': False}, ensure_ascii=False))
+            raise SystemExit(130)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        raise SystemExit(0 if report['verified'] else 2)
     elif args.install:
         install(args.install, lambda done, total, text: print(f'{done}/{total}: {text}', flush=True), source=args.download_source)

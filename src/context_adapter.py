@@ -26,18 +26,14 @@ import math
 
 from context_evidence import verify_evidence_fingerprint
 from vocal_expression import TempoMap
+from expression_controls import adaptation_controls
 
 SCHEMA_VERSION = 1
 APPLICATION_KIND = 'vwa.context-application'
 PROFILE_KIND = 'vwa.context-adapter-profile'
 RECEIPT_KIND = 'vwa.context-adapter-receipt'
 PHASES = frozenset(('onset', 'sustain', 'release'))
-CONTROLS = {
-    'loudness': {'low': -48., 'high': 12., 'step': 1.5, 'neutral': 0.},
-    'tension': {'low': -1., 'high': 1., 'step': .08, 'neutral': 0.},
-    'breathiness': {'low': -1., 'high': 1., 'step': .08, 'neutral': 0.},
-    'voicing': {'low': 0., 'high': 1., 'step': .04, 'neutral': 1.},
-}
+CONTROLS = adaptation_controls()
 GRID_SECONDS = .005
 MAX_SELECTIONS = 256
 MAX_SELECTED_NOTES = 1024

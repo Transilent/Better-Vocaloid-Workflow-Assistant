@@ -135,6 +135,9 @@ with tempfile.TemporaryDirectory(prefix='style-presets-',dir=APP/'work') as fold
 # original recipes; only the explicit UI mapping changes.
 assert styles.VERSION==7
 assert styles.visible_presets()==('none','gentle','sad','bold')
+from expression_controls import STYLE_CONTROL_NAMES,control_limits
+assert styles.CONTROLS==control_limits(STYLE_CONTROL_NAMES)
+assert list(styles.CONTROLS)==list(STYLE_CONTROL_NAMES)
 assert styles.PRESETS['gentle']['note_envelope']=={'onset':.14,'release':.22,'sustain_arc':{'loudness':.65,'tension':.04,'breathiness':-.015}}
 assert styles.PRESETS['gentle']['controls']=={'loudness':(-3.2,-.8,-2.4),'tension':(-.36,-.10,-.26),'breathiness':(.20,.03,.20),'voicing':(-.04,0.,-.08)}
 assert styles.PRESETS['sad']['note_envelope']=={'onset':.19,'release':.30,'sustain_arc':{'loudness':-.75,'tension':-.06,'breathiness':.035}}

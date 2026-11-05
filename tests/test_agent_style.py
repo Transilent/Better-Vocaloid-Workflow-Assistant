@@ -179,6 +179,16 @@ class StyleContextTests(unittest.TestCase):
             self.assertEqual(context["source_sha256"], hashlib.sha256(source.read_bytes()).hexdigest())
             self.assertEqual(context["preset_ids"], ["none", "gentle", "sad", "bold"])
             self.assertEqual(context["technique_ids"], ["none", "chinese_opera"])
+            self.assertEqual([row["label"] for row in context["presets"]], [
+                "保留原表现", "柔和〔实验〕", "悲伤〔实验〕", "明亮欢快〔实验〕"])
+            self.assertEqual([row["category"] for row in context["presets"]], [
+                "singing_style", "singing_style", "emotion", "singing_style"])
+            self.assertEqual(context["techniques"][0], {
+                "id": "none", "label": "原唱法", "category": "singing_technique",
+                "pitch_default": False, "description": "不添加独立唱腔技法。"})
+            self.assertEqual(context["techniques"][1]["id"], "chinese_opera")
+            self.assertEqual(context["techniques"][1]["category"], "singing_technique")
+            self.assertTrue(context["techniques"][1]["pitch_default"])
             self.assertEqual([row["lyric"] for row in context["notes"]], ["春", "风"])
             self.assertTrue(all(row["lyric_known"] for row in context["notes"]))
             self.assertEqual([row["track_index"] for row in context["tracks"]], [0])

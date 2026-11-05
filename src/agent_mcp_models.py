@@ -11,6 +11,10 @@ from pydantic import (
     model_validator,
 )
 from agent_preparation import PREPARATION_BPM_RANGE, PREPARATION_CPU_THREADS_RANGE, PREPARATION_DEVICE_VALUES
+from style_catalog import DEFAULT_TECHNIQUE_ID, TECHNIQUE_IDS, VISIBLE_STYLES
+
+StylePresetId = Literal[*VISIBLE_STYLES]
+StyleTechniqueId = Literal[*TECHNIQUE_IDS]
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True, allow_inf_nan=False)
@@ -58,11 +62,11 @@ class StyleRegion(StrictModel):
         max_length=180,
         description='当前 SVP 工程 context_read 中末音符的 ID；区间包含该音符完整时值。',
     )
-    preset: Literal['none', 'gentle', 'sad', 'bold']
+    preset: StylePresetId
     strength: float = Field(ge=0, le=1)
     style_pitch: bool = True
     detail: StyleDetail | None = None
-    style_technique: Literal['none', 'chinese_opera'] = Field(default='none',
+    style_technique: StyleTechniqueId = Field(default=DEFAULT_TECHNIQUE_ID,
         validation_alias=AliasChoices('style_technique','technique'),
         description='唱腔字段style_technique；兼容输入别名technique，保存时规范为style_technique。')
     technique_strength: float = Field(default=.6, ge=0, le=1)

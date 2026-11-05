@@ -1,7 +1,7 @@
 """Optional model controls, with cancellable installation outside the GUI thread."""
 from i18n import tr as _tr
 import threading
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import QThread, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (QComboBox, QHBoxLayout, QMenu, QProgressBar, QToolButton,
                              QVBoxLayout, QWidget)
 from desktop_theme import button, card, label, page, scroll_content
@@ -109,6 +109,26 @@ class Installer(QThread):
             self.failed.emit(str(exc))
 
 
+class Verifier(QThread):
+    """Explicit, cancellable full SHA-256 verification outside the GUI thread."""
+
+    progress = pyqtSignal(object, object, str)
+    value = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.stop = threading.Event()
+
+    def run(self):
+        try:
+            report = components.full_verify(progress=self.progress.emit,
+                                            check=self.stop.is_set)
+            self.value.emit(report)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 def _set_role(widget, role):
     value = role or ''
     if widget.property('role') == value:
@@ -124,6 +144,8 @@ class ComponentsPage(QWidget):
         super().__init__()
         self.owner, self.worker, self.active_feature = owner, None, None
         self.last_install_error = ''
+        self.last_health_report = None
+        self.close_pending = False
         container, layout = page(_tr('模型与组件'), _tr('先使用内置方案；可选模型按实际可用性安装、校验或恢复，处理中的下载可安全取消。'))
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -185,7 +207,11 @@ class ComponentsPage(QWidget):
         self.download = button(_tr('下载并安装'), self.activate, 'primary')
         self.cancel = button(_tr('取消下载'), self.request_cancel, 'danger')
         self.cancel.hide()
+        self.verify = button(_tr('完整校验'), self.start_verify)
+        self.verify.setAccessibleName(_tr('完整校验 BS-RoFormer 组件'))
+        self.verify.setToolTip(_tr('逐个核对清单权重与安装关键文件的 SHA-256；不会加载模型，也不会联网。'))
         actions.addWidget(self.download, 1)
+        actions.addWidget(self.verify)
         actions.addWidget(self.cancel)
         self.more = QToolButton()
         self.more.setText(_tr('更多'))
@@ -245,18 +271,34 @@ class ComponentsPage(QWidget):
         selected_name = 'NVIDIA GPU / CUDA' if runtime == 'cuda' else 'CPU'
         if installed['ready']:
             installed_name = 'NVIDIA GPU / CUDA' if installed['runtime'] == 'cuda' else 'CPU'
-            role = 'success'
-            if installed['runtime'] == runtime:
-                self.badge.setText(_tr('运行库就绪 · {0}', f'{installed_name}'))
+            report = self.last_health_report or {}
+            if report.get('verified'):
+                role = 'success'
+                self.badge.setText(_tr('上次完整校验通过 · {0} · 已核对 {1} 个 SHA-256',
+                                       f'{installed_name}', f"{report.get('progress', {}).get('sha256_checked', 0)}"))
+            elif report.get('state') == 'changed_during_verification':
+                role = 'error'
+                self.badge.setText(_tr('完整校验期间文件发生变化 · {0} · 请重试', f'{installed_name}'))
+            elif report.get('state') == 'unverified':
+                role = 'muted'
+                self.badge.setText(_tr('元数据检查通过 · {0} · 完整校验缺少 {1} 项预期 SHA-256',
+                                       f'{installed_name}', f"{len(report.get('unverified', []))}"))
+            elif report.get('state') in ('corrupt', 'not_ready'):
+                role = 'error'
+                self.badge.setText(_tr('完整校验发现问题 · {0} · 请查看下方结果', f'{installed_name}'))
             else:
-                self.badge.setText(_tr('已安装 {0} 运行库 · 当前选择 {1} 尚未安装', f'{installed_name}', f'{selected_name}'))
+                role = 'muted'
+                self.badge.setText(_tr('元数据检查通过 · {0} · 未做 SHA-256 完整性校验', f'{installed_name}'))
+            if installed['runtime'] != runtime:
+                self.badge.setText(self.badge.text() + _tr(' · 当前选择 {0} 尚未安装', f'{selected_name}'))
                 role = 'muted'
         else:
             role = 'muted'
-            self.badge.setText(_tr('尚未就绪 · 可安装，或先校验已有文件后恢复'))
+            self.badge.setText(_tr('元数据检查未通过 · 可安装，或先完整校验已有文件'))
         _set_role(self.badge, role)
         same = installed['ready'] and installed['runtime'] == runtime
         self.download.setText(_tr('使用此模型') if same else _tr('下载并安装'))
+        self.verify.setEnabled(bool(installed['ready']) and not self.busy())
 
         from dependency_profiles import status
         chinese = status(['chinese'])['chinese']
@@ -324,21 +366,13 @@ class ComponentsPage(QWidget):
         active = feature or self.runtime.currentData()
         self.active_feature = active
         self.last_install_error = ''
+        self.last_health_report = None
         self.worker = Installer(active, force, self.source.currentData())
         self.worker.progress.connect(self.update_progress)
         self.worker.value.connect(self.install_completed)
         self.worker.failed.connect(self.install_failed)
         self.worker.finished.connect(self.finished)
-        self.download.setEnabled(False)
-        self.runtime.setEnabled(False)
-        self.source.setEnabled(False)
-        self.more.setEnabled(False)
-        self.language_download.setEnabled(False)
-        self.expression_download.setEnabled(False)
-        self.language_cancel.setVisible(active == 'chinese')
-        self.cancel.setVisible(active != 'chinese')
-        self.language_cancel.setEnabled(True)
-        self.cancel.setEnabled(True)
+        self._set_operation_running(active)
         if active == 'chinese':
             self.language_progress.setValue(0)
             self.language_progress.show()
@@ -351,6 +385,44 @@ class ComponentsPage(QWidget):
             self.message.setText(_tr('正在准备组件…'))
         self.worker.start()
         self.owner.update_component_state()
+
+    def start_verify(self):
+        if self.busy():
+            return
+        state = components.status()
+        if not state['ready']:
+            self.message.setText(_tr('组件元数据检查未通过，无法开始完整校验；请先安装或修复组件。'))
+            return
+        reason = blocking_reason(self.owner)
+        if reason:
+            self.message.setText(_tr('请等待{0}结束后再完整校验组件。', f'{reason}'))
+            return
+        self.active_feature = 'verify'
+        self.last_health_report = None
+        self.worker = Verifier()
+        self.worker.progress.connect(self.update_progress)
+        self.worker.value.connect(self.verification_completed)
+        self.worker.failed.connect(self.verification_failed)
+        self.worker.finished.connect(self.finished)
+        self._set_operation_running('verify')
+        self.progress.setValue(0)
+        self.progress.show()
+        self.language_progress.hide()
+        self.message.setText(_tr('正在完整校验组件文件，不会加载模型或联网…'))
+        self.worker.start()
+        self.owner.update_component_state()
+
+    def _set_operation_running(self, active):
+        running = active is not None
+        for widget in (self.download, self.runtime, self.source, self.more,
+                       self.language_download, self.expression_download):
+            widget.setEnabled(not running)
+        self.verify.setEnabled(not running)
+        self.language_cancel.setVisible(active == 'chinese')
+        self.cancel.setVisible(running and active != 'chinese')
+        self.cancel.setText(_tr('取消校验') if active == 'verify' else _tr('取消下载'))
+        self.language_cancel.setEnabled(True)
+        self.cancel.setEnabled(True)
 
     def install_completed(self, value):
         self.last_install_error = ''
@@ -367,6 +439,44 @@ class ComponentsPage(QWidget):
         if self.active_feature == 'chinese':
             self.language_status.setText(_tr('中文模型安装未完成：') + message)
 
+    def verification_completed(self, report):
+        self.last_health_report = report
+        state = report.get('state')
+        progress = report.get('progress', {})
+        if report.get('verified'):
+            self.progress.setValue(100)
+            self.message.setText(_tr('完整校验通过：已核对 {0} 个文件的 SHA-256。',
+                                     f"{progress.get('sha256_checked', 0)}"))
+        elif state == 'cancelled':
+            self.progress.hide()
+            self.message.setText(_tr('完整校验已取消；现有文件未修改。'))
+        elif state == 'changed_during_verification':
+            self.progress.hide()
+            self.message.setText(_tr('完整校验期间组件文件发生变化；未确认完整性，请重试。'))
+        elif state == 'unverified':
+            self.progress.hide()
+            self.message.setText(_tr('未完成完整校验：{0} 项缺少可信的预期 SHA-256；现有文件未修改。',
+                                     f"{len(report.get('unverified', []))}"))
+        else:
+            self.progress.hide()
+            problems = report.get('corrupted', [])
+            if problems:
+                names = '、'.join(str(row.get('path')) for row in problems[:4])
+                if len(problems) > 4:
+                    names += '、…'
+                self.message.setText(_tr('完整校验发现 {0} 个问题：{1}。现有文件未修改；可重新安装组件。',
+                                         f'{len(problems)}', names))
+            else:
+                errors = report.get('errors', [])
+                detail = errors[0].get('message') if errors else state or '未知状态'
+                self.message.setText(_tr('完整校验未完成：{0}', f'{detail}'))
+
+    def verification_failed(self, message):
+        self.last_health_report = {'state': 'failed', 'verified': False,
+                                   'unverified': [], 'corrupted': [], 'progress': {}}
+        self.progress.hide()
+        self.message.setText(_tr('完整校验失败：{0}', f'{message}'))
+
     def update_progress(self, done, total, text):
         percent = min(100, max(0, int(done) * 100 // max(int(total), 1)))
         detail = f'{text} · {_format_size(done)} / {_format_size(total)}'
@@ -380,15 +490,14 @@ class ComponentsPage(QWidget):
             self.message.setText(detail)
 
     def finished(self):
-        self.download.setEnabled(True)
-        self.runtime.setEnabled(True)
-        self.source.setEnabled(True)
-        self.more.setEnabled(True)
-        self.language_download.setEnabled(True)
-        self.expression_download.setEnabled(True)
+        self._set_operation_running(None)
         self.language_cancel.hide()
         self.cancel.hide()
+        self.active_feature = None
         self.refresh()
+        if self.close_pending:
+            self.close_pending = False
+            QTimer.singleShot(0, self.close)
 
     def request_cancel(self, feature=None):
         if not self.worker:
@@ -396,12 +505,25 @@ class ComponentsPage(QWidget):
         if feature is not None and feature != self.active_feature:
             return
         self.worker.stop.set()
-        self.message.setText(_tr('正在取消，已下载数据会保留。'))
-        if self.active_feature == 'chinese':
-            self.language_status.setText(_tr('正在取消下载，已下载部分会保留。'))
-            self.language_cancel.setEnabled(False)
-        else:
+        if self.active_feature == 'verify':
+            self.message.setText(_tr('正在取消完整校验…'))
             self.cancel.setEnabled(False)
+        else:
+            self.message.setText(_tr('正在取消，已下载数据会保留。'))
+            if self.active_feature == 'chinese':
+                self.language_status.setText(_tr('正在取消下载，已下载部分会保留。'))
+                self.language_cancel.setEnabled(False)
+            else:
+                self.cancel.setEnabled(False)
 
     def busy(self):
         return self.worker is not None and self.worker.isRunning()
+
+    def closeEvent(self, event):
+        if self.busy():
+            self.close_pending = True
+            self.request_cancel()
+            self.message.setText(_tr('正在取消组件操作，完成后关闭页面。'))
+            event.ignore()
+            return
+        super().closeEvent(event)
