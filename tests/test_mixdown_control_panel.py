@@ -47,6 +47,10 @@ class EchoCurve(QWidget):
         super().__init__()
         self.echo = bool(echo)
         self.received = []
+        self.sample_rate_value = 48000.0
+
+    def set_sample_rate(self, sample_rate):
+        self.sample_rate_value = float(sample_rate)
 
     def set_bands(self, bands):
         snapshot = copy.deepcopy(bands)
@@ -328,6 +332,24 @@ check(eq.rows[1]["gain"].minimum() == -24.0 and
 check(eq.rows[1]["q"].minimum() == 0.1 and
       eq.rows[1]["q"].maximum() == 18.0,
       "EQ Q range is wrong")
+check(not eq.rows[0]["gain"].isEnabled() and not eq.rows[0]["q"].isEnabled(),
+      "high-pass gain/Q must be locked in the strip")
+check("固定" in eq.rows[0]["gain"].toolTip(),
+      "high-pass locked fields need an explicit explanation")
+highpass_bands = eq.bands()
+highpass_bands[0].update({"gain_db": 12.0, "q": 3.0})
+eq.set_bands(highpass_bands)
+check(eq.bands()[0]["gain_db"] == 0.0 and
+      abs(eq.bands()[0]["q"] - 0.707) < 1e-9,
+      "high-pass request values were not projected to effective fields")
+eq.set_sample_rate(32000)
+check(abs(eq.frequency_limit_hz() - 15200.0) < 1e-9,
+      "32 kHz EQ limit did not follow the Nyquist-safe boundary")
+check(abs(curve.sample_rate_value - 32000.0) < 1e-9,
+      "sample rate did not reach the bound curve")
+eq.rows[0]["freq"].setValue(20000)
+check(abs(eq.rows[0]["freq"].value() - 15200.0) < 1e-9,
+      "frequency strip did not enforce the render-rate limit")
 eq_count_before = len(eq_spy)
 eq.set_bands(from_curve, emit=False)
 settle()

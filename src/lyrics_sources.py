@@ -107,17 +107,21 @@ def fetch(value, reader=request_api):
     lrc=(response.get('lrc') or {}).get('lyric','')
     if not yrc and not lrc:
         raise ValueError('这首歌没有可用的原文歌词，可选择其他版本或导入本地文件。')
-    try:
-        parsed = parse_yrc(yrc) if yrc else parse_lrc(lrc)
-    except ValueError:
-        if not lrc: raise
-        parsed, yrc = parse_lrc(lrc), ''
-    cues=[cue for cue in parsed if not is_credit(cue.text)]
-    text=clean_lyrics(''.join(cue.text for cue in cues))
-    if not text:
+    for format_name, raw in (('yrc', yrc), ('lrc', lrc)):
+        if not raw:
+            continue
+        try:
+            parsed = parse_yrc(raw) if format_name == 'yrc' else parse_lrc(raw)
+        except ValueError:
+            continue
+        cues=[cue for cue in parsed if not is_credit(cue.text)]
+        text=clean_lyrics(''.join(cue.text for cue in cues))
+        if text:
+            break
+    else:
         raise ValueError('没有找到可用于校准的歌词。')
     return LyricReference(text,cues,{'provider':'netease','song_id':identifier,
-        'url':'https://music.163.com/song?id='+identifier,'format':'yrc' if yrc else 'lrc'},yrc or lrc)
+        'url':'https://music.163.com/song?id='+identifier,'format':format_name},raw)
 
 
 def from_file(path):

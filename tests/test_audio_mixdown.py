@@ -770,8 +770,16 @@ class AudioMixdownContract(unittest.TestCase):
         request.update({'compression_strength': 1.0, 'width': 1.0})
         report = audio_mixdown.render(request)
         _verify_result(self, report, request, self.root)
-        self.assertLess(float(report['gr_db_p95']), -1.0)
-        self.assertLess(float(report['tracks'][0]['gr_db_p95']), -1.0)
+        self.assertGreater(float(report['gr_db_p95']), 1.0)
+        self.assertEqual(float(report['tracks'][0]['gr_db_p95']), 0.0)
+        self.assertEqual(report['gr_scope'], 'vocal_bus')
+        self.assertEqual(report['gr_unit'], 'dB')
+        self.assertEqual(report['gr_semantics'], 'positive_reduction')
+        self.assertEqual(report['meters']['gr_db_p95'],
+                         report['gr_db_p95'])
+        self.assertEqual(report['meters']['gr_scope'], 'vocal_bus')
+        self.assertTrue(any('vocal_bus' in item
+                            for item in report['warnings']))
         self.assertTrue(math.isfinite(float(report['peak_after_effects_dbfs'])))
         self.assertGreaterEqual(float(report['peak_after_effects_dbfs']),
                                 float(report['peak_dbfs']))

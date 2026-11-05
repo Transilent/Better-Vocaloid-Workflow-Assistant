@@ -121,6 +121,28 @@ ABSOLUTE_F0_MAX_AMBIGUOUS_INTERVALS = 32
 ABSOLUTE_F0_MAX_DIAGNOSTIC_PAGE_SIZE = 100
 
 
+def clear_explicit_pitch_scaffolding(group):
+    """Remove old pitch layers before installing a rebuilt F0 curve.
+
+    This boundary is only for an explicit continuous-F0 rebuild. Ordinary
+    style edits keep ``vibratoEnv`` and every authored non-pitch
+    expression curve untouched. Callers replace ``pitchDelta`` separately.
+    """
+    if not isinstance(group, dict):
+        raise ValueError('SVP 音高参数组无效。')
+    removed = []
+    if 'pitchControls' in group:
+        group.pop('pitchControls')
+        removed.append('pitchControls')
+    parameters = group.get('parameters')
+    if parameters is not None and not isinstance(parameters, dict):
+        raise ValueError('SVP 音高参数容器无效。')
+    if isinstance(parameters, dict) and 'vibratoEnv' in parameters:
+        parameters.pop('vibratoEnv')
+        removed.append('vibratoEnv')
+    return removed
+
+
 _DIAGNOSTIC_PAGE_LIMITS = {
     'warnings': ABSOLUTE_F0_MAX_OFFSET_WARNINGS,
     'unevaluated_notes': ABSOLUTE_F0_MAX_OFFSET_UNEVALUATED,

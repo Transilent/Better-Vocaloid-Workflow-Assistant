@@ -861,6 +861,12 @@ class AgentPitchFormatRoundtripTests(unittest.TestCase):
                     self.converters["svp"].dump(path, adapted, {
                         "down_sample": 0, "version_compatibility": version})
                     before = json.loads(path.read_bytes().rstrip(b"\0"))
+                    before_track = before["tracks"][0]
+                    before_parameters = before_track["mainGroup"]["parameters"]
+                    before_parameters["vibratoEnv"] = {
+                        "mode": "linear", "points": [0, 0, 1920, 1000]}
+                    before_parameters["loudness"] = {
+                        "mode": "linear", "points": [0, 0, 1920, 3]}
                     before["userCustom"] = {"keep": "unchanged"}
                     path.write_bytes(json.dumps(before).encode() + b"\0")
                     unchanged = path.read_bytes()
@@ -869,9 +875,18 @@ class AgentPitchFormatRoundtripTests(unittest.TestCase):
                     self.assertEqual(path.read_bytes(), unchanged)
                     result = restore_native_pitch(path, "svp", project, plan)
                     self.assertTrue(result["applied"])
+                    self.assertIn("vibratoEnv", before_parameters)
                     after = json.loads(path.read_bytes().rstrip(b"\0"))
+                    after_track = after["tracks"][0]
+                    after_parameters = after_track["mainGroup"]["parameters"]
+                    self.assertNotIn("vibratoEnv", after_parameters)
+                    self.assertEqual(after_parameters["loudness"],
+                                     before_parameters["loudness"])
+                    self.assertIn("vibratoEnv",
+                                  result["tracks"][0]["removed_source_pitch_scaffolding"])
                     for data in (before, after):
                         data["tracks"][0]["mainGroup"]["parameters"].pop("pitchDelta")
+                        data["tracks"][0]["mainGroup"]["parameters"].pop("vibratoEnv", None)
                         data["tracks"][0]["mainGroup"].pop("pitchControls", None)
                     self.assertEqual(before, after)
                     loaded = load_pitch_project(path, "svp", self.converters)

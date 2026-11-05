@@ -202,10 +202,20 @@ class AuditionEngineTests(unittest.TestCase):
             self.assertTrue(all(value >= -144.0 for value in row["values_dbfs"]))
         self.assertGreater(max(envelope["bus"]["values_dbfs"]), -30.0)
         self.assertGreater(result["gr_db_p95"], 0.1)
+        self.assertEqual(result["gr_scope"], "vocal_bus")
+        self.assertEqual(result["gr_unit"], "dB")
+        self.assertEqual(result["gr_semantics"], "positive_reduction")
+        self.assertEqual(result["meters"]["gr_db_p95"],
+                         result["gr_db_p95"])
+        self.assertEqual(result["meters"]["gr_scope"], "vocal_bus")
         self.assertEqual(
             len(result["gr_envelope"]["values_db"]),
             len(result["gr_envelope"]["time_seconds"]),
         )
+        self.assertEqual(result["gr_envelope"]["scope"], "vocal_bus")
+        self.assertEqual(result["gr_envelope"]["unit"], "dB")
+        self.assertEqual(result["gr_envelope"]["semantics"],
+                         "positive_reduction")
         self.assertTrue(result["gr_envelope"]["enabled"])
         self.assertTrue(math.isfinite(result["gr_db_p95"]))
         audio, rate = _read(after)

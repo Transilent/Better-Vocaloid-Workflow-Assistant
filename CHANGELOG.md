@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Share source validation between desktop preparation and MCP. Unsupported Bilibili subpage selectors now produce an explicit error instead of silently selecting the default page.
+- Bind style results to the current project generation, preserve source and default media context when cloning workflows, and retain archived lifecycle state on repeated close. Reject oversized JSON records before replacing readable state.
+- Clear generated pitch scaffolding when explicitly rebuilding original F0, while retaining authored expression in ordinary style edits. Restore saved adapter and CPU-thread choices.
+- Share effective EQ limits, sample-rate handling and positive vocal-bus gain-reduction semantics across audition, export and controls. Keep preview envelopes separate from export reports.
+- Preserve new cancellation requests during startup, roll back paired separation outputs together, and fall back to usable LRC when a filtered YRC contains only credits.
+- Align task-file and update interlocks, handle unavailable output drives, require complete MIDI handoff, restore publication snapshots without requiring the original task, and translate dynamic recovery messages through stable templates.
+- Reclaim timed-out test process trees and report partial skips explicitly. Device playback, voicebank listening and release-package validation remain separate acceptance steps.
+
 ## 1.1.0 — 2026-11-01
 
 ### Added

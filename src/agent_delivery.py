@@ -263,9 +263,9 @@ def _verify_export_candidates(control, summary, artifacts=None, selected=None):
 
 
 def _style_result(control, workflow, selected, exported):
-    styled = any(isinstance(row, dict) and row.get('action') == 'styled_project_ready'
-                 for row in workflow.get('history', []))
-    if not styled:
+    from agent_project_state import current_style
+    binding = current_style(workflow)
+    if binding is None:
         return {'applied': False, 'status': 'not_applied',
                 'style_status': 'not_applied', 'partial': False,
                 'style_partial': False, 'reason': 'workflow_not_styled',
@@ -274,7 +274,10 @@ def _style_result(control, workflow, selected, exported):
                 'applied_controls': 0, 'skipped_controls': 0,
                 'protected_note_count': 0, 'regions': None, 'receipt': None,
                 'report_sha256': None, 'session_id': None}, []
-    operation_id = workflow.get('operation_id')
+    if (binding.get('artifact_id') != selected['id'] or
+            ('sha256' in binding and binding['sha256'] != selected['sha256'])):
+        raise DeliveryError('delivery_style_evidence_missing', '风格结果身份与当前最终工程不一致。')
+    operation_id = binding.get('operation_id')
     if not isinstance(operation_id, str) or not operation_id:
         raise DeliveryError('delivery_style_evidence_missing',
                             '已完成风格调音的工作流缺少操作 ID。',

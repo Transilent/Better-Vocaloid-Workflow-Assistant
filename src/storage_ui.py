@@ -1,12 +1,14 @@
 """Asynchronous disk scan and explicit cache cleanup selection."""
 from i18n import tr as _tr
 import shutil
+from pathlib import Path
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from PyQt5.QtWidgets import (QHBoxLayout, QHeaderView, QMessageBox, QTreeWidget,
                              QTreeWidgetItem, QVBoxLayout, QWidget)
 from common import ROOT, output_directory, job_directories
 from desktop_theme import page, button, label
 from task_store import format_size, size
+from task_contract_ui import active_ui_operations
 import storage
 
 
@@ -18,6 +20,18 @@ def _set_role(widget, role):
     widget.style().unpolish(widget)
     widget.style().polish(widget)
     widget.update()
+
+
+def _existing_directory(value):
+    """Return the nearest usable directory without relying on a self-parent loop."""
+    path = Path(value)
+    for candidate in (path, *path.parents):
+        try:
+            if candidate.is_dir():
+                return candidate
+        except OSError:
+            continue
+    return None
 
 
 class StorageWorker(QThread):
@@ -33,10 +47,9 @@ class StorageWorker(QThread):
             if self.paths is not None:
                 self.result.emit({'freed': storage.clean(self.paths)})
             else:
-                directory = output_directory()
-                while not directory.exists():
-                    directory = directory.parent
-                self.result.emit({'rows': storage.candidates(include_protected=True), 'free': shutil.disk_usage(directory).free,
+                directory = _existing_directory(output_directory())
+                self.result.emit({'rows': storage.candidates(include_protected=True),
+                                  'free': shutil.disk_usage(directory).free if directory is not None else None,
                                   'tasks': sum(size(job) for job in job_directories()),
                                   'publication': size(ROOT/'publish-packages'),
                                   'dependencies': size(ROOT/'dependencies') + size(ROOT/'models')})
@@ -99,37 +112,7 @@ class StoragePage(QWidget):
 
     def other_operations(self):
         """Name live work that shares cache or task files with this page."""
-        owner = self.owner
-        active = []
-        video = getattr(owner, 'video_mixdown', None)
-        preview_busy = getattr(video, 'preview_busy', None)
-        if callable(preview_busy) and preview_busy():
-            active.append('视频预览')
-        if getattr(owner, 'processing_active', False):
-            active.append('音乐处理')
-        for page, name in ((getattr(owner, 'components', None), '组件安装'),
-                           (getattr(owner, 'updates', None), '更新下载')):
-            busy = getattr(page, 'busy', None)
-            if callable(busy) and busy():
-                active.append(name)
-        publishing = getattr(owner, 'publishing', None)
-        busy = getattr(publishing, 'busy', None)
-        if callable(busy) and busy():
-            active.append('发布准备')
-        # Refresh real child-process state before deciding that browser-temp is disposable.
-        poll = getattr(publishing, 'poll_browser', None)
-        if callable(poll):
-            poll()
-        live = getattr(publishing, 'live_browser_active', None)
-        if callable(live) and live():
-            active.append('登录或上传浏览器')
-        for page, name in ((getattr(owner, 'video_mixdown', None), '视频合成'),
-                           (getattr(owner, 'audio_mixdown', None), '简易混音'),
-                           (getattr(owner, 'calibration_dialog', None), '校准')):
-            busy = getattr(page, 'busy', None)
-            if callable(busy) and busy():
-                active.append(name)
-        return tuple(active)
+        return active_ui_operations(self.owner)
 
     def start(self, paths=None):
         if self.busy():
@@ -144,8 +127,17 @@ class StoragePage(QWidget):
         self.worker = StorageWorker(paths)
         self.worker.result.connect(self.ready)
         self.worker.error.connect(self.failed)
-        self.worker.finished.connect(lambda: (self.scan.setEnabled(True), self.remove.setEnabled(True)))
+        self.worker.finished.connect(self.finished)
         self.worker.start()
+
+    def finished(self):
+        worker = self.sender() or self.worker
+        if self.worker is worker:
+            self.worker = None
+        self.scan.setEnabled(True)
+        self.remove.setEnabled(True)
+        if worker is not None:
+            worker.deleteLater()
 
     def refresh(self):
         self.start()
@@ -175,8 +167,10 @@ class StoragePage(QWidget):
         finally:
             self.tree.blockSignals(False)
         _set_role(self.summary, '')
+        free = data.get('free')
+        free_text = format_size(free) if free is not None else _tr('输出盘不可用')
         self.summary.setText(
-            _tr('磁盘可用：{0}  ·  任务：{1}  ·  发布资料：{2}  ·  运行库与模型：{3}', f"{format_size(data['free'])}", f"{format_size(data['tasks'])}", f"{format_size(data.get('publication', 0))}", f"{format_size(data['dependencies'])}"))
+            _tr('磁盘可用：{0}  ·  任务：{1}  ·  发布资料：{2}  ·  运行库与模型：{3}', f'{free_text}', f"{format_size(data['tasks'])}", f"{format_size(data.get('publication', 0))}", f"{format_size(data['dependencies'])}"))
         self.selection_changed()
 
     def selection_changed(self, *_):

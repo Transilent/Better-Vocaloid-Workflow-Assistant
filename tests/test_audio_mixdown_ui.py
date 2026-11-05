@@ -632,7 +632,7 @@ def fake_audition(payload, check):
             'peak_envelope': {'hz': 10.0, 'bus': [-8.0, -6.0, -12.0]},
             'gr_envelope': {'hz': 10.0, 'vocal:0': [-1.0, -3.0, -2.0],
                             'bus': [-2.0, -4.0, -3.0]},
-            'gr_db_p95': -3.2,
+            'gr_db_p95': 3.2,
             'reverb_edc': {
                 'schema': 'vwa.audio_mixdown.reverb-edc/v1',
                 'measured': True,
@@ -849,6 +849,37 @@ with tempfile.TemporaryDirectory(prefix='audio-mix-gui-', dir=APP / 'work') as t
         assert [dialog.analysis_tabs.tabText(i) for i in range(3)] == ['EQ', 'GR', '混响空间']
         assert not dialog.reverb_decay_toggle.isChecked()
         assert dialog.reverb_decay.isHidden()
+        # Metadata from the backing track, never the first vocal, selects the
+        # project rate before the first preview/render report exists.
+        metadata_backing = root / 'metadata-32000.wav'
+        metadata_time = np.arange(3200, dtype=np.float32) / 32000.0
+        sf.write(
+            str(metadata_backing),
+            .05 * np.sin(2 * np.pi * 110 * metadata_time),
+            32000, subtype='PCM_24',
+        )
+        metadata_vocal = root / 'metadata-vocal-64000.wav'
+        vocal_time = np.arange(6400, dtype=np.float32) / 64000.0
+        sf.write(
+            str(metadata_vocal),
+            .05 * np.sin(2 * np.pi * 220 * vocal_time),
+            64000, subtype='PCM_24',
+        )
+        dialog.fields['vocal'].setText(str(metadata_vocal))
+        dialog.fields['instrumental'].setText(str(metadata_backing))
+        assert dialog.eq_curve.sample_rate() == 32000.0
+        assert dialog.eq_band_controls.sample_rate() == 32000.0
+        assert abs(dialog.eq_curve.frequency_limit_hz() - 15200.0) < 1e-9
+        metadata_bands = dialog.eq_band_controls.bands()
+        metadata_bands[3]['freq_hz'] = 20000.0
+        assert dialog._apply_eq_bands(metadata_bands)
+        metadata_request = dialog._request(root / 'metadata-check.wav',
+                                           preview=True)
+        assert abs(metadata_request['eq_bands'][3]['freq_hz'] - 15200.0) < 1e-9
+        assert dialog._apply_eq_bands(ui.default_bands())
+        dialog.fields['instrumental'].clear()
+        assert dialog.eq_curve.sample_rate() == 48000.0
+        dialog.fields['vocal'].clear()
         # Analysis follows the audible file through delayed A/B/segment
         # switches, rather than displaying an already-rendered candidate.
         class AnalysisPlayer:
@@ -894,13 +925,13 @@ with tempfile.TemporaryDirectory(prefix='audio-mix-gui-', dir=APP / 'work') as t
             assert dialog.eq_curve.spectrum_stage() == 'vocal_before_eq'
             assert dialog.eq_curve.spectrum_frame() == [-30.0, -40.0]
             assert dialog.meter_feed.gr_db('bus', 100) == 0.0
-            assert dialog.gr_summary.text() == 'GR p95 0.0 dB'
+            assert dialog.gr_summary.text() == 'GR p95 0.0 dB (vocal_bus)'
             player.path = after_analysis['output_path']
             dialog._sync_preview_analysis(100)
             assert dialog.eq_curve.spectrum_stage() == 'vocal_after_eq'
             assert dialog.eq_curve.spectrum_frame() == [-15.0, -20.0]
             assert dialog.meter_feed.gr_db('bus', 100) == -3.0
-            assert dialog.gr_summary.text() == 'GR p95 3.0 dB'
+            assert dialog.gr_summary.text() == 'GR p95 3.0 dB (vocal_bus)'
             player.playing = False
             dialog._sync_preview_analysis(0)
             assert dialog.eq_curve.spectrum_frame() == [-25.0, -35.0]
@@ -1220,6 +1251,33 @@ with tempfile.TemporaryDirectory(prefix='audio-mix-gui-', dir=APP / 'work') as t
         assert dialog._preview_meter_report['gr_envelope'] == previous_after['gr_envelope']
         assert dialog._preview_meter_report['reverb_edc'] == previous_after['reverb_edc']
         assert dialog._preview_meter_report['peak_envelope']['bus'] == [-7.0, -5.0]
+
+        export_report = {
+            'output_path': str(root / 'whole-export.wav'),
+            'output_sha256': 'export-identity',
+            'duration_seconds': 180.0,
+            'sample_rate': 32000,
+            'tracks': [],
+            'meters': {
+                'tracks': [], 'bus_peak_dbfs': -4.0,
+                'gr_db_p95': 2.5, 'gr_scope': 'vocal_bus',
+                'gr_unit': 'dB', 'gr_semantics': 'positive_reduction',
+            },
+            'gr_db_p95': 2.5,
+            'gr_scope': 'vocal_bus',
+            'gr_unit': 'dB',
+            'gr_semantics': 'positive_reduction',
+        }
+        dialog._apply_report_meters(export_report, publish_live=False)
+        assert dialog._preview_meter_scope['scope'] == 'export'
+        assert 'peak_envelope' not in dialog._preview_meter_report
+        assert 'gr_envelope' not in dialog._preview_meter_report
+        assert 'peak_envelope' not in dialog._preview_meter_report['meters']
+        assert 'gr_envelope' not in dialog._preview_meter_report['meters']
+        assert dialog._preview_meter_report['gr_db_p95'] == 2.5
+        assert dialog._preview_meter_report['duration_seconds'] == 180.0
+        assert dialog.eq_curve.sample_rate() == 32000.0
+        assert abs(dialog.eq_curve.frequency_limit_hz() - 15200.0) < 1e-9
 
         def wait_for_variant(expected):
             wait(dialog)
@@ -1639,7 +1697,12 @@ if component:
             dialog.preview_duration.setValue(.3)
             dialog.preview(); wait(dialog)
             assert dialog._preview_result, (dialog.status.text(), dialog.preview_report.text())
-            dialog.export(); wait(dialog)
+            # Metadata may have imported the real backend into this process.
+            # Even in test mode native export must use the clean child, where
+            # optional packages are activated separately from the Qt process.
+            with patch.object(ui._mixdown_backend, 'render',
+                              side_effect=AssertionError('native export ran inside the Qt test process')):
+                dialog.export(); wait(dialog)
             assert output.is_file(), dialog.status.text()
             assert len(dialog._export_receipt['inputs']['vocals']) == 3
             preview_dir = Path(dialog._preview_directory) if dialog._preview_directory else None

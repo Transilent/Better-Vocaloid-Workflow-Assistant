@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
 QMediaContent = None
 QMediaPlayer = None
 
+import audio_mixdown as _mixdown_backend
 import desktop_theme as _desktop_theme
 from desktop_theme import button, card, fold, label
 from mixdown_control_panel import (EqBandStripControls, PerTrackSendControls,
@@ -35,6 +36,13 @@ from mixdown_control_panel import (EqBandStripControls, PerTrackSendControls,
 from mixdown_audition_service import (AuditionServiceError, MixdownAuditionService,
                                       ServiceStartError, ServiceUnavailable)
 from mixdown_eq_curve import EQCurveView, default_bands
+from mixdown_contract import (
+    DEFAULT_SAMPLE_RATE,
+    GAIN_REDUCTION_SCOPE,
+    eq_frequency_limit_hz,
+    project_eq_band,
+    valid_sample_rate,
+)
 from mixdown_live_meters import GrHistoryView, MeterEnvelope, ReverbDecayView
 from mixdown_player import MediaStatus, MixdownPlayer, PlaybackState
 from mixdown_presets import catalog as preset_catalog, resolve_preset
@@ -1419,13 +1427,17 @@ except BaseException as error:
 """
 
 
+def _injected_backend(name):
+    """Only explicit module doubles may bypass the isolated native worker."""
+    module = sys.modules.get(name)
+    return module if module is not None and not getattr(module, '__file__', None) else None
+
+
 def _render_once(request, check, progress=None):
     """Run the shared renderer and forward progress without loading native Qt."""
     _check_cancel(check)
-    injected = sys.modules.get('audio_mixdown')
-    if (injected is not None and
-            (not getattr(injected, '__file__', None)
-             or os.environ.get('VWA_TESTING') or os.environ.get('BVWA_TESTING'))):
+    injected = _injected_backend('audio_mixdown')
+    if injected is not None:
         import inspect
         from audio_mixdown import render
         kwargs = {'cancel': check}
@@ -1564,10 +1576,8 @@ except BaseException as error:
 def _audition_once(payload, check):
     """Render one live A/B segment in a clean child process."""
     _check_cancel(check)
-    injected = sys.modules.get('audio_mixdown_audition')
-    if (injected is not None and
-            (not getattr(injected, '__file__', None)
-             or os.environ.get('VWA_TESTING') or os.environ.get('BVWA_TESTING'))):
+    injected = _injected_backend('audio_mixdown_audition')
+    if injected is not None:
         from audio_mixdown_audition import render_audition_pair
         report = render_audition_pair(
             dict(payload['request']), payload['before_output'],
@@ -1844,6 +1854,8 @@ class AudioMixdownDialog(QDialog):
         self._preview_force_both = True
         self._preview_retired_directories = []
         self._preview_meter_report = {}
+        self._preview_meter_scope = {}
+        self._eq_sample_rate_probe = None
         self._last_audition_report = {}
         # Retain reports by actual media path while a replacement is loading;
         # the displayed A/B analysis must follow the source being heard.
@@ -3255,7 +3267,11 @@ class AudioMixdownDialog(QDialog):
                 if report.get('reverb_edc') is not None:
                     self.reverb_decay.set_report(report)
                 try:
-                    self.gr_summary.setText('GR p95 %.1f dB' % float(report.get('gr_db_p95')))
+                    self.gr_summary.setText(
+                        'GR p95 %.1f dB (%s)' % (
+                            float(report.get('gr_db_p95')),
+                            GAIN_REDUCTION_SCOPE,
+                        ))
                 except (TypeError, ValueError):
                     self.gr_summary.setText('GR p95 —')
             else:
@@ -5092,6 +5108,13 @@ class AudioMixdownDialog(QDialog):
     def _apply_eq_bands(self, bands, *, trigger=False):
         try:
             normalized = normalize_eq_bands(bands)
+            sample_rate = (self.eq_curve.sample_rate()
+                           if hasattr(self, 'eq_curve') else None)
+            if normalized:
+                normalized = [
+                    project_eq_band(band, sample_rate=sample_rate)
+                    for band in normalized
+                ]
         except (TypeError, ValueError) as error:
             self.status.setText(_tr('EQ 参数无效：') + str(error))
             _set_role(self.status, 'error')
@@ -5351,6 +5374,7 @@ class AudioMixdownDialog(QDialog):
             state.setText(_tr('常见音频格式'))
             _set_role(state, 'muted')
             self._set_channel_flags(self.backing_panel)
+            self._sync_eq_sample_rate_from_instrumental()
             return
         self.instrumental_file_label.setText(backing_path.name)
         if not backing_path.is_file():
@@ -5376,6 +5400,7 @@ class AudioMixdownDialog(QDialog):
         self._set_channel_flags(
             self.backing_panel,
             muted=muted, solo=solo, filtered=filtered)
+        self._sync_eq_sample_rate_from_instrumental()
 
     def _update_output_state(self):
         output = self._path('output')
@@ -5566,11 +5591,18 @@ class AudioMixdownDialog(QDialog):
         return vocals, instrumental, output
 
     def _request(self, output, *, preview=False, bypass_processing=False):
+        self._sync_eq_sample_rate_from_instrumental()
         use_eq = self.eq_enabled.isChecked() and not bypass_processing
         use_compression = self.compression_enabled.isChecked() and not bypass_processing
         use_reverb = self.reverb_enabled.isChecked() and not bypass_processing
         vocals = self._vocal_specs()
         eq_bands = normalize_eq_bands(self._eq_bands) or []
+        sample_rate = (self.eq_curve.sample_rate()
+                       if hasattr(self, 'eq_curve') else None)
+        eq_bands = [
+            project_eq_band(band, sample_rate=sample_rate)
+            for band in eq_bands
+        ]
         if not use_eq:
             eq_bands = [dict(band, enabled=False) for band in eq_bands]
         request = {
@@ -5770,6 +5802,8 @@ class AudioMixdownDialog(QDialog):
             self._loudness_summary.setText(_tr('峰值对比：') + ' · '.join(values))
 
     def _clear_render_meters(self):
+        self._preview_meter_report = {}
+        self._preview_meter_scope = {}
         for meter in self._channel_meters.values():
             meter.reset()
         self.bus_meter.reset()
@@ -5781,10 +5815,119 @@ class AudioMixdownDialog(QDialog):
         if hasattr(self, '_loudness_summary'):
             self._loudness_summary.setText(_tr('峰值对比：等待实时分段'))
 
+    @staticmethod
+    def _meter_report_scope(report):
+        """Return the report identity used to keep preview/export data apart."""
+        has_preview = any(
+            key in report for key in (
+                'preview_start_seconds', 'audition_start_seconds',
+                'preview_duration_seconds', 'audition_duration_seconds',
+            )
+        )
+        if has_preview:
+            kind = 'preview'
+        elif report.get('output_sha256') or report.get('source_sha256'):
+            kind = 'export'
+        elif report.get('bypass_processing') is not None:
+            kind = 'audition'
+        else:
+            return {}
+        identity = {'scope': kind}
+        for key in (
+                'output_path', 'output_sha256', 'preview_start_seconds',
+                'preview_duration_seconds', 'audition_start_seconds',
+                'audition_duration_seconds', 'bypass_processing'):
+            if key in report and report[key] is not None:
+                identity[key] = report[key]
+        return identity
+
+    def _sync_eq_sample_rate_from_instrumental(self):
+        """Use the renderer's backing-track probe before the first preview."""
+        path = self._path('instrumental')
+        if path is None:
+            self._eq_sample_rate_probe = None
+            self._sync_eq_sample_rate({'sample_rate': DEFAULT_SAMPLE_RATE})
+            return False
+        if not path.is_file():
+            return False
+        try:
+            stat = path.stat()
+        except OSError:
+            return False
+        identity = (str(path), int(stat.st_size), int(stat.st_mtime_ns))
+        cached = self._eq_sample_rate_probe
+        if cached is not None and cached[0] == identity:
+            if cached[1] is not None:
+                self._sync_eq_sample_rate({'sample_rate': cached[1]})
+            return cached[1] is not None
+        log_path = Path(tempfile.gettempdir()) / (
+            'vwa-mix-metadata-' + uuid.uuid4().hex + '.log')
+        try:
+            info = _mixdown_backend._probe_audio(path, None, log_path, None)
+            rate = valid_sample_rate(info.sample_rate)
+        except (OSError, TypeError, ValueError, RuntimeError):
+            self._eq_sample_rate_probe = (identity, None)
+            return False
+        finally:
+            try:
+                log_path.unlink()
+            except OSError:
+                pass
+        self._eq_sample_rate_probe = (identity, rate)
+        self._sync_eq_sample_rate({'sample_rate': rate})
+        return True
+
+    def _sync_eq_sample_rate(self, report):
+        """Apply the real render rate to both EQ views and the request state."""
+        raw_rate = report.get('sample_rate')
+        if raw_rate is None:
+            return
+        try:
+            rate = valid_sample_rate(raw_rate)
+            eq_frequency_limit_hz(rate)
+        except ValueError:
+            return
+        if hasattr(self, 'eq_curve'):
+            self.eq_curve.set_sample_rate(rate)
+        if hasattr(self, 'eq_band_controls'):
+            self.eq_band_controls.set_sample_rate(rate)
+        projected = [
+            project_eq_band(band, sample_rate=rate)
+            for band in (self._eq_bands or [])
+        ]
+        if projected and projected != self._eq_bands:
+            self._eq_bands = projected
+            previous = self._syncing
+            self._syncing = True
+            try:
+                if hasattr(self, 'eq_curve'):
+                    self.eq_curve.set_bands(projected)
+                if hasattr(self, 'eq_band_controls'):
+                    self.eq_band_controls.set_bands(
+                        projected, emit=False, sync_curve=False)
+            finally:
+                self._syncing = previous
+
     def _apply_report_meters(self, report, *, publish_live=True):
         if not isinstance(report, dict):
             return
-        display_report = copy.deepcopy(self._preview_meter_report or {})
+        self._sync_eq_sample_rate(report)
+        incoming_scope = self._meter_report_scope(report)
+        if incoming_scope:
+            previous_scope = self._preview_meter_scope or {}
+            same_scope = (
+                bool(previous_scope)
+                and previous_scope.get('scope') == incoming_scope.get('scope')
+                and all(previous_scope.get(key) == incoming_scope.get(key)
+                        for key in incoming_scope)
+            )
+            display_report = (copy.deepcopy(self._preview_meter_report or {})
+                              if same_scope else {})
+            self._preview_meter_scope = copy.deepcopy(incoming_scope)
+        else:
+            # A partial same-scope update may omit output identity. It merges
+            # only into the currently selected report scope.
+            display_report = copy.deepcopy(self._preview_meter_report or {})
         for key, value in report.items():
             if key in ('tracks', 'meters', 'spectrum_envelope'):
                 continue
@@ -5815,7 +5958,11 @@ class AudioMixdownDialog(QDialog):
         self._preview_meter_report = display_report
         if publish_live and hasattr(self, 'gr_summary'):
             try:
-                self.gr_summary.setText('GR p95 %.1f dB' % float(display_report.get('gr_db_p95')))
+                self.gr_summary.setText(
+                    'GR p95 %.1f dB (%s)' % (
+                        float(display_report.get('gr_db_p95')),
+                        GAIN_REDUCTION_SCOPE,
+                    ))
             except (TypeError, ValueError):
                 pass
         meter_report = meters

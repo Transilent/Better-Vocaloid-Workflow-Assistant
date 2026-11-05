@@ -1961,6 +1961,14 @@
     "tests/test_audio_mixdown_ui.py",
     "tests/test_mixdown_full_sample_acceptance.py",
     "tools/install_pedalboard_component.py",
-    "components/.gitattributes"
+    "components/.gitattributes",
+    "src/agent_project_state.py",
+    "src/mixdown_contract.py",
+    "src/multi_file_commit.py",
+    "src/source_contract.py",
+    "tests/runner_contract.py",
+    "tests/test_pipeline_safety_fixes.py",
+    "tests/test_runner_contract.py",
+    "tests/test_tuning_audit_fixes.py"
   ]
 }

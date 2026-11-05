@@ -25,7 +25,8 @@ from pitch_accuracy import (
     ABSOLUTE_F0_SUSTAINED_OFFSET_MIN_FRAMES,
     ABSOLUTE_F0_SUSTAINED_OFFSET_THRESHOLD_CENTS,
     analyze_sustained_pitch_offsets, assign_note_owners, build_absolute_f0_curve,
-    pitch_note_descriptors, stabilize_isolated_pitch_spikes,
+    clear_explicit_pitch_scaffolding, pitch_note_descriptors,
+    stabilize_isolated_pitch_spikes,
 )
 
 
@@ -1184,17 +1185,20 @@ def restore_native_pitch(path: Any, fmt: str, project: Any, plan: Any, *,
             points.setdefault(end + 1, 0.0)
         total_points += len(points)
         # The v2 exporter also derives pitchControls from the same absolute
-        # curve. Replace that generated layer to avoid applying F0 twice.
+        # curve. A generated vibrato envelope must not scale this measured
+        # residual. Use the same boundary as the GUI rebuild while keeping
+        # authored non-pitch expression curves intact.
+        raw_group = raw_tracks[index]["mainGroup"]
         replaced_controls = len(sv_track.main_group.pitch_controls)
-        if replaced_controls:
-            raw_tracks[index]["mainGroup"]["pitchControls"] = []
-        raw_tracks[index]["mainGroup"]["parameters"]["pitchDelta"] = {
+        removed_scaffolding = clear_explicit_pitch_scaffolding(raw_group)
+        raw_group.setdefault("parameters", {})["pitchDelta"] = {
             "mode": "linear",
             "points": [value for tick, delta in sorted(points.items())
                        for value in (tick * TICK_RATE, delta)],
         }
         rows.append({"vocal_track_index": index, "points": len(points), "runs": len(runs),
                      "replaced_generated_pitch_controls": replaced_controls,
+                     "removed_source_pitch_scaffolding": removed_scaffolding,
                      "baseline_source": "native_svp_note_pitch_and_transition_model",
                      "target_curve": "measured_absolute_f0",
                      "delta_encoding": "target_curve_minus_recomputed_native_baseline",

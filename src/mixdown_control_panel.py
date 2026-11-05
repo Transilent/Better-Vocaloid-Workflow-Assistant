@@ -40,6 +40,19 @@ from PyQt5.QtWidgets import (
 )
 
 from i18n import tr as _tr
+from mixdown_contract import (
+    DEFAULT_SAMPLE_RATE,
+    EQ_HIGHPASS_Q,
+    EQ_MAX_FREQUENCY_HZ,
+    EQ_MAX_GAIN_DB,
+    EQ_MAX_Q,
+    EQ_MIN_FREQUENCY_HZ,
+    EQ_MIN_GAIN_DB,
+    EQ_MIN_Q,
+    eq_frequency_limit_hz,
+    project_eq_band,
+    valid_sample_rate,
+)
 
 
 __all__ = [
@@ -1152,6 +1165,7 @@ class EqBandStripControls(QWidget):
 
         self.rows: list[dict[str, Any]] = []
         self._band_types = list(_BAND_TYPES)
+        self._sample_rate = DEFAULT_SAMPLE_RATE
         self._curve_view = None
         self._curve_setter = None
         self._curve_signal = None
@@ -1179,7 +1193,7 @@ class EqBandStripControls(QWidget):
             )
 
             frequency = _ResetDoubleSpinBox(default["freq_hz"], row_widget)
-            frequency.setRange(10.0, 20000.0)
+            frequency.setRange(EQ_MIN_FREQUENCY_HZ, EQ_MAX_FREQUENCY_HZ)
             frequency.setDecimals(0)
             frequency.setSingleStep(10.0)
             frequency.setSuffix(" Hz")
@@ -1191,7 +1205,7 @@ class EqBandStripControls(QWidget):
             )
 
             gain = _ResetDoubleSpinBox(default["gain_db"], row_widget)
-            gain.setRange(-24.0, 24.0)
+            gain.setRange(EQ_MIN_GAIN_DB, EQ_MAX_GAIN_DB)
             gain.setDecimals(1)
             gain.setSingleStep(0.5)
             gain.setSuffix(" dB")
@@ -1203,7 +1217,7 @@ class EqBandStripControls(QWidget):
             )
 
             q_value = _ResetDoubleSpinBox(default["q"], row_widget)
-            q_value.setRange(0.1, 18.0)
+            q_value.setRange(EQ_MIN_Q, EQ_MAX_Q)
             q_value.setDecimals(2)
             q_value.setSingleStep(0.1)
             _identity(
@@ -1260,6 +1274,36 @@ class EqBandStripControls(QWidget):
 
     def bands(self) -> list[dict[str, Any]]:
         return _copy_bands(self._bands)
+
+    def sample_rate(self) -> float:
+        return self._sample_rate
+
+    def frequency_limit_hz(self) -> float:
+        return eq_frequency_limit_hz(self._sample_rate)
+
+    def set_sample_rate(self, sample_rate: float) -> None:
+        """Follow the render report and project inaccessible EQ values."""
+        rate = valid_sample_rate(sample_rate)
+        if rate == self._sample_rate:
+            return
+        limit = eq_frequency_limit_hz(rate)
+        self._sample_rate = rate
+        for row in self.rows:
+            blocked = row["freq"].blockSignals(True)
+            try:
+                row["freq"].setRange(EQ_MIN_FREQUENCY_HZ, limit)
+                row["freq"].setValue(min(float(row["freq"].value()), limit))
+            finally:
+                row["freq"].blockSignals(blocked)
+        self._bands = [
+            project_eq_band(band, sample_rate=rate) for band in self._bands
+        ]
+        self._write_rows(self._bands)
+        if self._curve_view is not None:
+            curve_setter = getattr(self._curve_view, "set_sample_rate", None)
+            if callable(curve_setter):
+                curve_setter(rate)
+        self._apply_to_curve(self._bands)
 
     def set_bands(self, bands: Any, *, emit: bool = False,
                   sync_curve: bool = True) -> None:
@@ -1396,11 +1440,42 @@ class EqBandStripControls(QWidget):
                     item.get("enabled", default["enabled"]),
                     bool(default["enabled"])),
             })
+            normalized[-1] = project_eq_band(
+                normalized[-1], sample_rate=self._sample_rate)
         return normalized
+
+    def _apply_type_limits(self, index: int, band_type: str) -> None:
+        row = self.rows[index]
+        limit = self.frequency_limit_hz()
+        blocked = row["freq"].blockSignals(True)
+        try:
+            row["freq"].setRange(EQ_MIN_FREQUENCY_HZ, limit)
+            row["freq"].setValue(min(float(row["freq"].value()), limit))
+        finally:
+            row["freq"].blockSignals(blocked)
+        highpass = band_type == "highpass"
+        row["gain"].setEnabled(not highpass)
+        row["q"].setEnabled(not highpass)
+        if highpass:
+            explanation = _tr(
+                "高通频率有效；增益固定为 0 dB，Q 固定为 {0:.3f}。"
+            ).format(EQ_HIGHPASS_Q)
+            row["gain"].setToolTip(explanation)
+            row["q"].setToolTip(explanation)
+            row["gain"].setAccessibleDescription(explanation)
+            row["q"].setAccessibleDescription(explanation)
+        else:
+            row["gain"].setToolTip("")
+            row["q"].setToolTip("")
+            row["gain"].setAccessibleDescription(
+                _tr("范围 -24 到 24 dB；双击恢复该段预设起点。"))
+            row["q"].setAccessibleDescription(
+                _tr("范围 0.10 到 18.00；双击恢复该段预设起点。"))
 
     def _write_rows(self, bands: list[dict[str, Any]]) -> None:
         for index, (row, band) in enumerate(zip(self.rows, bands)):
             self._band_types[index] = band["type"]
+            self._apply_type_limits(index, band["type"])
             label = _tr(_BAND_LABELS[band["type"]])
             row["type_label"].setText(label)
             row["type_label"].setAccessibleName(

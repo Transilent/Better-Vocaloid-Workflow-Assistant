@@ -164,8 +164,11 @@ def export_preferences(preferences):
 def request_options(request):
     """Restore a task's saved choices; old tasks retain their effective settings."""
     values = {key: request[key] for key in DEFAULT_OPTIONS if key in request}
-    values.update({key: request.get('tools', {})[key] for key in ('separation_device', 'midi_device')
-                   if key in request.get('tools', {})})
+    tools = request.get('tools', {})
+    if not isinstance(tools, dict):
+        raise ValueError('任务中的工具设置格式无效。')
+    values.update({key: tools[key] for key in (
+        'separation_device', 'midi_device', 'dml_adapter', 'cpu_threads') if key in tools})
     saved = request.get('export_preferences', {})
     if not isinstance(saved, dict):
         raise ValueError('任务中的导出偏好格式无效。')

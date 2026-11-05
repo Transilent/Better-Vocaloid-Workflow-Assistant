@@ -318,14 +318,14 @@ def remove_pitch_data(path, fmt):
                 note['vibrato'] = {'length': 0}
         path.write_text(yaml.safe_dump(data,allow_unicode=True,sort_keys=False),encoding='utf-8')
     elif fmt == 'svp':
+        from pitch_accuracy import clear_explicit_pitch_scaffolding
         raw = path.read_bytes()
         data = json.loads(raw.removesuffix(b'\x00').decode('utf-8-sig'))
         groups = list(data.get('library', [])) + [track.get('mainGroup', {}) for track in data.get('tracks', [])]
         for group in groups:
-            group.pop('pitchControls', None)
+            clear_explicit_pitch_scaffolding(group)
             parameters = group.get('parameters', {})
             parameters.pop('pitchDelta', None)
-            parameters.pop('vibratoEnv', None)
             for note in group.get('notes', []):
                 attributes = note.get('attributes', {})
                 for key in list(attributes):

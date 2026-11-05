@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from isolation import application_copy, reset_state
+from runner_contract import classify_output, run_bounded_process
 
 APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP))
@@ -36,6 +37,7 @@ names = ('test_context_structure.py', 'test_gesture_catalog.py', 'test_context_s
 names = ('test_ui_input.py','test_style_pitch.py','test_style_presets.py', 'test_context_alignment.py', 'test_context_adapter.py', 'test_context_reading.py', 'test_context_project.py') + names
 names = ('test_tuning_transforms.py','test_tuning_engine.py','test_tuning_workflow.py','test_tuning_ui.py','test_tuning_retention.py','test_tuning_curves.py') + names
 # Audit repair regression contracts.
+names = ('test_runner_contract.py', 'test_pipeline_safety_fixes.py', 'test_tuning_audit_fixes.py') + names
 names = ('test_commit_recovery.py', 'test_component_recovery.py', 'test_delivery_integrity.py', 'test_operation_interlocks.py', 'test_tuning_ui_state.py') + names
 # VWA frontend regression contracts.
 names = ('test_frontend_auxiliary.py', 'test_frontend_foundation.py', 'test_frontend_interlocks.py', 'test_frontend_layout.py', 'test_frontend_preparation.py', 'test_frontend_publication.py', 'test_frontend_tuning.py', 'test_video_preview.py') + names
@@ -66,22 +68,26 @@ with application_copy(APP, APP / 'work/test-sandboxes') as sandbox:
             reset_state(sandbox)
             test_env = dict(env, TEMP=str(sandbox / 'work/temp'), TMP=str(sandbox / 'work/temp'),
                             NUMBA_CACHE_DIR=native_path(sandbox / 'cache/numba'))
-            result = subprocess.run([sys.executable, '-B', '-u', str(sandbox / 'tests' / name)],
-                                    cwd=sandbox, capture_output=True, env=test_env, timeout=180)
-            output, code = result.stdout + result.stderr, result.returncode
-            for artifact in (sandbox / 'work/test-results').iterdir():
-                if artifact.is_file():
-                    shutil.copy2(artifact, folder / (name.removesuffix('.py') + '-' + artifact.name))
-        except subprocess.TimeoutExpired as exc:
-            output = (exc.stdout or b'') + (exc.stderr or b'') + b'\nTest subprocess timed out.\n'
+            result = run_bounded_process([sys.executable, '-B', '-u', str(sandbox / 'tests' / name)],
+                                         cwd=sandbox, env=test_env, timeout=180)
+            output = result.stdout + result.stderr
+            code = 1 if result.timed_out or result.returncode is None else result.returncode
+            if result.timed_out:
+                output += b'\nTest subprocess timed out; owned process tree reclaimed.\n'
+            else:
+                for artifact in (sandbox / 'work/test-results').iterdir():
+                    if artifact.is_file():
+                        shutil.copy2(artifact, folder / (name.removesuffix('.py') + '-' + artifact.name))
         except Exception:
             import traceback
             output += traceback.format_exc().encode('utf-8')
         (folder / (name + '.log')).write_bytes(output)
-        skipped = code == 0 and output.lstrip().startswith(b'SKIP:')
+        classification = classify_output(code, output)
         reports[name] = {'exit_code': code, 'seconds': round(time.monotonic()-started, 2),
-                         'isolated': True, 'status': 'skipped' if skipped else ('passed' if code == 0 else 'failed')}
-        print(name + (': SKIP' if skipped else (': PASS' if code == 0 else ': FAIL')), flush=True)
+                         'isolated': True, **classification}
+        label = {'skipped': 'SKIP', 'passed': 'PASS', 'passed_with_skips': 'PASS WITH SKIP',
+                 'failed': 'FAIL'}[classification['status']]
+        print(name + ': ' + label, flush=True)
         if code:
             print(output.decode('utf-8', errors='replace')[-4000:], flush=True)
 (folder / ('regression-subset.json' if selected else 'regression.json')).write_text(json.dumps(reports, ensure_ascii=False, indent=2), encoding='utf-8')

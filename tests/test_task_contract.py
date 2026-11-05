@@ -120,6 +120,26 @@ with tempfile.TemporaryDirectory(dir=APP/'work', prefix='task-contract-') as tem
         assert job/'temp' in [r['path'] for r in storage.candidates()]
         assert storage.clean([job/'temp'])>0
 
+    # Handoff uses the stage requirements for the requested voice topology.
+    # One verified MIDI file is not enough when its companion voice is missing.
+    handoff_job = root/'handoff'; handoff_job.mkdir()
+    common.atomic_json(handoff_job/'request.json', {'voice_mode':'dual'})
+    common.atomic_json(handoff_job/'status.json', {'state':'done','planned_steps':['midi']})
+    dual_required = pipeline.requirements('midi', {'voice_mode':'dual'})
+
+    def handoff_rows(names):
+        return [{'id': name, 'path': str(handoff_job/name),
+                 'role': 'midi' if name.endswith('.mid') else 'report', 'state': 'verified'}
+                for name in names]
+
+    assert contract.handoff(handoff_job, rows=handoff_rows(
+        [name for name in dual_required if name != 'midi/backing/backing.mid'])) == 'needs_review'
+    assert contract.handoff(handoff_job, rows=handoff_rows(dual_required)) == 'awaiting_tuning'
+    common.atomic_json(handoff_job/'request.json', {'voice_mode':'single'})
+    single_required = pipeline.requirements('midi', {'voice_mode':'single'})
+    assert contract.handoff(handoff_job, rows=handoff_rows(single_required[:-1])) == 'needs_review'
+    assert contract.handoff(handoff_job, rows=handoff_rows(single_required)) == 'awaiting_tuning'
+
     # Metadata/failed-step contracts are exercised through the real pipeline wrapper.
     def failing(*_): raise RuntimeError('reproducible stage failure')
     with patch.object(pipeline,'STEPS',[(key,title,failing if key=='separation' else fn) for key,title,fn in pipeline.STEPS]):

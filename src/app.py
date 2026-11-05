@@ -405,8 +405,8 @@ class Window(QWidget):
         self.set_running(False)
         if code == 0:
             self.progress.setValue(self.progress.maximum())
-            filename = "voices.mid（主唱 / 和声双轨）" if (self.job / "midi/voices.mid").exists() else "vocals.mid"
-            self.status.setText(_tr('处理完成 · ') + filename + _tr(' 和伴奏已准备好。'))
+            filename = _tr('voices.mid（主唱 / 和声双轨）') if (self.job / "midi/voices.mid").exists() else "vocals.mid"
+            self.status.setText(_tr('处理完成 · {0} 和伴奏已准备好。', filename))
             from workflow import validate_graph
             request = json.loads((self.job/'request.json').read_text(encoding='utf-8'))
             if request.get('workflow_graph') and validate_graph(request['workflow_graph']) == 'separation':
@@ -497,10 +497,14 @@ class Window(QWidget):
         from error_recovery import failure
         self.recovery = failure(self.job)
         raw = self.recovery['raw']
-        self.error_message.setText(self.recovery['title'] + '：' + self.recovery['message'] + _tr('\n详细原因：') + raw[:600])
+        self.error_message.setText(_tr(
+            '{0}：{1}\n详细原因：{2}',
+            _tr(self.recovery['title']), _tr(self.recovery['message']), raw[:600],
+        ))
         self.error_message.setToolTip(raw)
         self.cpu_retry.setVisible(self.recovery['action'] == 'cpu')
-        self.recovery_action.setText({'storage': '查看磁盘', 'subtitles': '打开字幕工具', 'components': '检查模型与组件'}.get(self.recovery['action'], '检查处理设置'))
+        action = {'storage': '查看磁盘', 'subtitles': '打开字幕工具', 'components': '检查模型与组件'}.get(self.recovery['action'], '检查处理设置')
+        self.recovery_action.setText(_tr(action))
         self.error_panel.show()
 
     def retry_job(self):

@@ -95,6 +95,35 @@ with patch.object(publishing_ui, 'prepare', prepared), \
     assert tab.cover_file.text() == ready['cover']['source']
     assert tab.prepare_button.text() == '生成发布资料' and tab.upload_button.isEnabled()
     assert tab.voice.text() == '测试歌姬'
+    # The verified bundle itself restores the publication fields when its
+    # source task no longer exists. A missing artifact must still fail closed.
+    original_manifest = (bundle/'manifest.json').read_bytes()
+    manifest_data = json.loads(original_manifest)
+    moved_job = job.with_name('source-moved')
+    job.rename(moved_job)
+    try:
+        tab.restore_bundle(bundle, saved_inputs)
+        assert tab.job.text() == str(job)
+        assert '来源任务不可用' in tab.source_info.text()
+        assert tab.upload_button.isEnabled()
+        manifest_data.pop('source_job', None)
+        atomic_json(bundle/'manifest.json', manifest_data)
+        tab.restore_bundle(bundle, saved_inputs)
+        assert tab.job.text() == ''
+        assert tab.upload_button.isEnabled()
+        missing_manifest = json.loads(original_manifest)
+        missing_manifest['video']['path'] = str(scratch/'missing-video.mp4')
+        atomic_json(bundle/'manifest.json', missing_manifest)
+        try:
+            tab.restore_bundle(bundle, saved_inputs)
+        except ValueError as exc:
+            assert '视频或封面' in str(exc)
+        else:
+            raise AssertionError('A missing bundle video was hidden as a valid restore')
+    finally:
+        (bundle/'manifest.json').write_bytes(original_manifest)
+        moved_job.rename(job)
+        tab.restore_bundle(bundle, saved_inputs)
     # Failed preparation restores controls and reveals diagnostic details.
     tab.video.setText(str(scratch / 'missing.mp4'))
     QTest.mouseClick(tab.prepare_button, Qt.LeftButton)

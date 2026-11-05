@@ -32,6 +32,8 @@ import time
 from typing import Any, Callable, Mapping
 import unicodedata
 
+import mixdown_contract as contract
+
 
 PEDALBOARD_VERSION = "0.9.26"
 CHUNK_FRAMES = 32768
@@ -51,7 +53,7 @@ SILENCE_DBFS = -144.0
 REPORT_SCHEMA = "vwa.audio_mixdown.render/v3"
 REPORT_SCHEMA_V2 = "vwa.audio_mixdown.render/v2"
 EQ_BANDS_MAX = 4
-EQ_BAND_TYPES = frozenset(("highpass", "lowshelf", "bell", "highshelf"))
+EQ_BAND_TYPES = contract.EQ_BAND_TYPES
 
 
 class MixdownError(RuntimeError):
@@ -336,10 +338,14 @@ def _eq_bands_value(request: Mapping[str, Any]) -> tuple[_EqBand, ...] | None:
             raise ValueError(
                 f"{prefix}.type 必须是 highpass、lowshelf、bell 或 highshelf。")
         frequency = _strict_number(
-            item, "freq_hz", 10.0, 20000.0, label=f"{prefix}.freq_hz")
+            item, "freq_hz", contract.EQ_MIN_FREQUENCY_HZ,
+            contract.EQ_MAX_FREQUENCY_HZ, label=f"{prefix}.freq_hz")
         gain = _strict_number(
-            item, "gain_db", -24.0, 24.0, label=f"{prefix}.gain_db")
-        q = _strict_number(item, "q", 0.1, 18.0, label=f"{prefix}.q")
+            item, "gain_db", contract.EQ_MIN_GAIN_DB,
+            contract.EQ_MAX_GAIN_DB, label=f"{prefix}.gain_db")
+        q = _strict_number(
+            item, "q", contract.EQ_MIN_Q, contract.EQ_MAX_Q,
+            label=f"{prefix}.q")
         enabled = _boolean_value(item, "enabled", label=f"{prefix}.enabled")
         bands.append(_EqBand(kind, frequency, gain, q, enabled))
     return tuple(bands)
@@ -573,7 +579,7 @@ def _probe_with_ffmpeg(path: Path, ffmpeg: Path, log_path: Path,
     return _valid_audio_info(_AudioInfo(path, sample_rate, channels, frames))
 
 
-def _probe_audio(path: Path, ffmpeg: Path, log_path: Path,
+def _probe_audio(path: Path, ffmpeg: Path | None, log_path: Path,
                  cancel: Callable[[], Any] | None) -> _AudioInfo:
     _check_cancel(cancel)
     try:
@@ -587,8 +593,10 @@ def _probe_audio(path: Path, ffmpeg: Path, log_path: Path,
         ))
     except (ImportError, RuntimeError, OSError, ValueError):
         # Some containers are decoded by FFmpeg but not by libsndfile.  The
-        # fallback still obtains the values needed to plan the render.
-        return _probe_with_ffmpeg(path, ffmpeg, log_path, cancel)
+        # fallback still obtains the values needed to plan the render.  UI
+        # metadata probes may omit FFmpeg until the fast path actually fails.
+        return _probe_with_ffmpeg(
+            path, ffmpeg or _ffmpeg_executable(), log_path, cancel)
 
 
 def _decode_to_float_wav(source: Path, target: Path, sample_rate: int, channels: int,
@@ -711,12 +719,8 @@ def _rms(block: Any, numpy: Any) -> float:
 
 
 def _gain_ratio_db(before: float, after: float) -> float:
-    if before <= 1e-12:
-        return 0.0
-    if after <= 1e-12:
-        return -30.0
-    value = 20.0 * math.log10(after / before)
-    return max(-30.0, min(0.0, float(value)))
+    """Compatibility name for the positive vocal-bus gain-reduction metric."""
+    return contract.gain_reduction_db(before, after)
 
 
 def _apply_width(block: Any, width: float, numpy: Any) -> Any:
@@ -778,8 +782,8 @@ def _make_eq_chain(pedalboard: Any, settings: _Settings, sample_rate: int) -> An
             ))
         return pedalboard.Pedalboard(plugins) if plugins else None
 
-    max_frequency = min(20000.0, sample_rate * 0.45)
-    highpass_default_q = 0.707
+    max_frequency = contract.eq_frequency_limit_hz(sample_rate)
+    highpass_default_q = contract.EQ_HIGHPASS_Q
     for index, band in enumerate(settings.eq_bands):
         if not band.enabled:
             continue
@@ -1767,7 +1771,9 @@ def render(request: Mapping[str, Any], cancel: Callable[[], Any] | None = None,
                 "peak_dbfs": track_peak,
                 "peak_after_effects_dbfs": _amplitude_to_dbfs(
                     track_after_peaks[index]),
-                "gr_db_p95": global_gr if vocal_audible[index] else 0.0,
+                # Compression is measured once on the shared vocal bus.  Do
+                # not misattribute that bus reduction to individual tracks.
+                "gr_db_p95": 0.0,
                 "input_sha256": source_hashes[str(track.path)],
                 "output_sha256": output_sha256,
             })
@@ -1798,6 +1804,13 @@ def render(request: Mapping[str, Any], cancel: Callable[[], Any] | None = None,
             }
             for track in tracks
         ]
+        if settings.compression_strength > 0.0:
+            note = (
+                "压缩器作用于合并人声总线；GR 仅以 vocal_bus scope 报告，"
+                "不分配到各歌声轨。"
+            )
+            if note not in settings.warnings:
+                settings.warnings.append(note)
 
         return {
             "schema": REPORT_SCHEMA if settings.uses_v3 else REPORT_SCHEMA_V2,
@@ -1810,8 +1823,15 @@ def render(request: Mapping[str, Any], cancel: Callable[[], Any] | None = None,
             "meters": {
                 "tracks": meter_tracks,
                 "bus_peak_dbfs": _amplitude_to_dbfs(bus_peak),
+                "gr_db_p95": global_gr,
+                "gr_scope": contract.GAIN_REDUCTION_SCOPE,
+                "gr_unit": contract.GAIN_REDUCTION_UNIT,
+                "gr_semantics": contract.GAIN_REDUCTION_SEMANTICS,
             },
             "gr_db_p95": global_gr,
+            "gr_scope": contract.GAIN_REDUCTION_SCOPE,
+            "gr_unit": contract.GAIN_REDUCTION_UNIT,
+            "gr_semantics": contract.GAIN_REDUCTION_SEMANTICS,
             "peak_after_effects_dbfs": _amplitude_to_dbfs(bus_after_effects_peak),
             "uses_v3": bool(settings.uses_v3),
             "warnings": list(settings.warnings),

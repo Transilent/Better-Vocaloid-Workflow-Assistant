@@ -121,6 +121,14 @@ class PreparationPlanTests(unittest.TestCase):
                 self.assertIn("子页参数", message)
                 self.assertIn("独立视频 BV/URL", message)
                 self.assertIn("移除这些参数", message)
+                # Both public preparation and GUI job creation share the
+                # rejection before either can persist a default-page request.
+                self.assertEqual(raised.exception.code, 'unsupported_bilibili_subpage')
+                with patch.object(pipeline, 'load_config', return_value={}), \
+                        self.assertRaises(ValueError) as gui_error:
+                    pipeline.create_job(source, parent=self.root / 'rejected-jobs')
+                self.assertEqual(gui_error.exception.code, raised.exception.code)
+                self.assertFalse((self.root / 'rejected-jobs').exists())
 
     def test_bilibili_festival_requires_one_complete_bvid(self):
         base = "https://www.bilibili.com/festival/2023bnj/"

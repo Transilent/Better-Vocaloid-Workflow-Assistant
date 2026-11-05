@@ -27,6 +27,7 @@ from typing import Any, Callable, Mapping
 import uuid
 
 import audio_mixdown as backend
+import mixdown_contract as contract
 
 
 AUDITION_CACHE_SCHEMA = "vwa.audio_mixdown.audition-cache/v3"
@@ -1181,7 +1182,6 @@ def _accumulate_gr(target: Any, before: Any, after: Any, sample_offset: int,
         return
     first = absolute_start // spec.bucket_frames
     last = (absolute_end - 1) // spec.bucket_frames
-    epsilon = 1e-12
     for bucket in range(first, last + 1):
         lo = max(absolute_start, bucket * spec.bucket_frames)
         hi = min(absolute_end, (bucket + 1) * spec.bucket_frames)
@@ -1199,14 +1199,7 @@ def _accumulate_gr(target: Any, before: Any, after: Any, sample_offset: int,
                 view_after[local_lo:local_hi], dtype=numpy.float64
             ))),
         ))
-        if input_rms <= epsilon:
-            reduction = 0.0
-        elif output_rms <= epsilon:
-            reduction = 60.0
-        else:
-            reduction = max(
-                0.0, min(60.0, 20.0 * math.log10(input_rms / output_rms))
-            )
+        reduction = contract.gain_reduction_db(input_rms, output_rms)
         target[bucket] = max(float(target[bucket]), reduction)
 
 
@@ -1726,7 +1719,8 @@ def _render_variant(settings: backend._Settings, prepared: _PreparedSources,
                 "schema": ENVELOPE_SCHEMA,
                 "kind": "gain_reduction",
                 "unit": "dB",
-                "scope": "vocal_bus",
+                "scope": contract.GAIN_REDUCTION_SCOPE,
+                "semantics": contract.GAIN_REDUCTION_SEMANTICS,
                 "method": "chunk_rms_db_difference",
                 "enabled": compressor is not None,
                 "hz": AUDITION_ENVELOPE_HZ,
@@ -1765,11 +1759,17 @@ def _render_variant(settings: backend._Settings, prepared: _PreparedSources,
                     "peak_envelope": peak_envelope,
                     "gr_envelope": gr_payload,
                     "gr_db_p95": round(gr_p95, 4),
+                    "gr_scope": contract.GAIN_REDUCTION_SCOPE,
+                    "gr_unit": contract.GAIN_REDUCTION_UNIT,
+                    "gr_semantics": contract.GAIN_REDUCTION_SEMANTICS,
                 },
                 "spectrum_envelope": spectrum_envelope,
                 "peak_envelope": peak_envelope,
                 "gr_envelope": gr_payload,
                 "gr_db_p95": round(gr_p95, 4),
+                "gr_scope": contract.GAIN_REDUCTION_SCOPE,
+                "gr_unit": contract.GAIN_REDUCTION_UNIT,
+                "gr_semantics": contract.GAIN_REDUCTION_SEMANTICS,
                 "width": options.width,
                 "warnings": list(warnings),
             }

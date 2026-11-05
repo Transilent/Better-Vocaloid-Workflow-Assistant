@@ -33,6 +33,42 @@ def read_json(path):
 
 
 class ControlFixtureTests(unittest.TestCase):
+    def test_oversized_operation_does_not_create_owned_directory_or_spawn(self):
+        with patch.object(agent_control, 'MAX_JSON', 512), \
+                patch.object(agent_control.subprocess, 'Popen') as spawn:
+            with self.assertRaises(agent_control.ControlError) as caught:
+                self.control.start_operation('verify_artifact', {'text': '大' * 512}, 'large-operation')
+        self.assertEqual(caught.exception.code, 'too_large')
+        self.assertFalse(spawn.called)
+        self.assertEqual(list((self.state / 'operations').iterdir()), [])
+
+    def test_oversized_worker_response_returns_readable_error(self):
+        import agent_worker
+        calls = self.state / 'calls'
+        calls.mkdir(exist_ok=True)
+        request, response = calls / 'request.json', calls / 'response.json'
+        agent_control.atomic_json(request, {'action': 'fixture', 'arguments': {},
+                                          'code_revision': self.control.code_revision})
+        with patch.object(agent_worker, 'Control', return_value=self.control), \
+                patch.object(agent_worker, 'dispatch', return_value={'text': '大' * 4096}), \
+                patch.object(agent_control, 'MAX_JSON', 4096), \
+                patch.object(sys, 'argv', ['agent_worker', '--config', str(self.config_path),
+                    '--request', str(request), '--response', str(response)]):
+            agent_worker.main()
+            result = agent_control.read_json(response)
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['code'], 'too_large')
+
+    def test_new_operation_reserves_room_for_terminal_status(self):
+        with patch.object(agent_control, 'MAX_JSON', 1024), \
+                patch.object(agent_control.subprocess, 'Popen') as spawn:
+            with self.assertRaises(agent_control.ControlError) as caught:
+                self.control.start_operation('verify_artifact', {'text': 'x' * 500}, 'budget-headroom')
+        self.assertEqual(caught.exception.code, 'too_large')
+        self.assertIn('预留空间', str(caught.exception))
+        self.assertFalse(spawn.called)
+        self.assertEqual(list((self.state / 'operations').iterdir()), [])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=APP / 'work', prefix='agent-control-')
         self.addCleanup(self.temp.cleanup)
@@ -572,6 +608,34 @@ class ControlFixtureTests(unittest.TestCase):
         self.assert_error('listing_changed', self.control.artifacts_list,
                           None, 2, 2, 'midi', global_page['listing_revision'])
         self.assert_error('invalid_page', self.control.artifacts_list, None, 101)
+
+
+class JsonBudgetTests(unittest.TestCase):
+    def setUp(self):
+        (APP / 'work').mkdir(parents=True, exist_ok=True)
+
+    def test_exact_utf8_budget_roundtrips_and_rejected_update_preserves_record(self):
+        with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='json-budget-') as directory:
+            path = Path(directory) / 'record.json'
+            value = {'text': '中文é'}
+            size = len(json.dumps(value, ensure_ascii=False, indent=2).encode('utf-8'))
+            with patch.object(agent_control, 'MAX_JSON', size):
+                agent_control.atomic_json(path, value)
+                self.assertEqual(agent_control.read_json(path), value)
+                before = path.read_bytes()
+                with self.assertRaises(agent_control.ControlError) as caught:
+                    agent_control.atomic_json(path, {'text': '中文éx'})
+                self.assertEqual(caught.exception.code, 'too_large')
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(list(Path(directory).glob('*.tmp')), [])
+
+    def test_rejected_new_record_creates_no_directory(self):
+        with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='json-budget-') as directory:
+            path = Path(directory) / 'new' / 'record.json'
+            with patch.object(agent_control, 'MAX_JSON', 16):
+                with self.assertRaises(agent_control.ControlError):
+                    agent_control.atomic_json(path, {'text': '大' * 20})
+            self.assertFalse(path.parent.exists())
 
 
 if __name__ == '__main__':

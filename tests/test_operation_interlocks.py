@@ -16,6 +16,7 @@ import publishing_ui
 import results_ui
 import storage_ui
 import task_store
+import task_contract_ui
 import updates_ui
 
 application = QApplication.instance() or QApplication([])
@@ -39,6 +40,18 @@ class Text:
 
 def busy(value):
     return lambda: value
+
+
+class WindowProcessingOwner:
+    def __init__(self, job, tuning):
+        self.job = job
+        self.tuning = tuning
+        self._processing_active = False
+
+    @property
+    def processing_active(self):
+        # Mirrors Window.processing_active: tuning is not the pipeline latch.
+        return self._processing_active or self.tuning.busy()
 
 
 def write_session(path, project, reference, renders):
@@ -111,6 +124,11 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='operation-interlocks-
     update_page = SimpleNamespace(owner=owner, busy=busy(False))
     assert updates_ui.UpdatesPage.active_operations(update_page)
     assert polled == [True]
+    tuning_owner = SimpleNamespace(processing_active=False,
+                                   tuning=SimpleNamespace(busy=busy(True)))
+    tuning_page = SimpleNamespace(owner=tuning_owner, busy=busy(False))
+    assert task_contract_ui.active_ui_operations(tuning_owner) == ('调音',)
+    assert updates_ui.UpdatesPage.active_operations(tuning_page)
     manual = SimpleNamespace(plan=str(root / 'plan.json'), owner=SimpleNamespace(workflow=Mock()),
                              active_operations=busy(True), message=Mock())
     with patch.object(updates_ui.updater, 'restart_to_apply') as restarting:
@@ -121,6 +139,19 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='operation-interlocks-
     # Destructive task management follows the worker's captured inputs, not later UI text.
     job = root / 'jobs/current'; other = root / 'jobs/other'
     job.mkdir(parents=True); other.mkdir()
+    tuning = SimpleNamespace(busy=busy(True), source_job=other)
+    latch_owner = WindowProcessingOwner(job, tuning)
+    with patch.object(task_store, 'locked', return_value=False):
+        assert results_ui.active_task_operations(latch_owner, other) == ('调音',)
+        assert task_contract_ui.task_file_blockers(latch_owner, other) == ('调音',)
+        assert task_contract_ui.task_file_blockers(latch_owner, job) == ()
+        assert task_contract_ui.active_ui_operations(latch_owner) == ('调音',)
+        latch_owner._processing_active = True
+        assert task_contract_ui.active_ui_operations(latch_owner) == ('音乐处理', '调音')
+        assert task_contract_ui.task_file_blockers(latch_owner, job) == ('音乐处理',)
+    fixture_owner = SimpleNamespace(job=job, processing_active=True)
+    with patch.object(task_store, 'locked', return_value=False):
+        assert task_contract_ui.task_file_blockers(fixture_owner, job) == ('音乐处理',)
     video_b = {'video': str(other / 'source.mp4'), 'mixdown': str(other / 'mix.wav'),
                'output': str(other / 'out.mp4')}
     video = SimpleNamespace(busy=busy(True), source_job=other,
@@ -131,6 +162,12 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='operation-interlocks-
     owner = SimpleNamespace(video_mixdown=video, calibration_dialog=calibration)
     assert results_ui.active_task_operations(owner, job) == ('视频合成',)
     assert results_ui.active_task_operations(owner, other) == ()
+    with patch.object(task_store, 'locked', return_value=False):
+        assert task_contract_ui.task_file_blockers(owner, job) == ('视频合成',)
+        assert task_contract_ui.task_file_blockers(owner, other) == ()
+        dialog = SimpleNamespace(owner=owner, job=job, status=Mock(), busy=busy(False))
+        task_contract_ui.TaskFilesDialog.start(dialog)
+    assert '视频合成' in dialog.status.setText.call_args.args[0]
     video.active_inputs = {}
     assert results_ui.active_task_operations(owner, other) == ('视频合成',)
     assert results_ui.active_task_operations(owner, job) == ()
@@ -162,6 +199,8 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='operation-interlocks-
                             job / 'audio/lead.wav', job / 'renders')
     calibration.session = fixed_a
     assert results_ui.active_task_operations(owner, job) == ('校准',)
+    with patch.object(task_store, 'locked', return_value=False):
+        assert task_contract_ui.task_file_blockers(owner, job) == ('校准',)
     calibration.session = root / 'missing-session.json'
     assert results_ui.active_task_operations(owner, job) == ('校准',)
     assert results_ui.active_task_operations(owner, other) == ('校准',)

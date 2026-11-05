@@ -13,6 +13,7 @@ import soundfile as sf
 from scipy.fft import rfft, irfft
 
 from common import cancelled
+from multi_file_commit import FileTransactionError, commit_file_pair
 
 
 class Transform:
@@ -129,6 +130,7 @@ def separate(source, directory, config, job, log=print,
     directory.mkdir(parents=True, exist_ok=True)
     pending = [directory / (Path(name).stem + '.pending.wav') for name in output_names]
     max_error = 0.
+    preserve_pending = False
     try:
         with sf.SoundFile(str(pending[0]), 'w', samplerate=sr, channels=2, subtype='FLOAT') as a, \
              sf.SoundFile(str(pending[1]), 'w', samplerate=sr, channels=2, subtype='FLOAT') as b:
@@ -142,9 +144,13 @@ def separate(source, directory, config, job, log=print,
                 vocals, instrumental = (secondary, primary) if params['primary_stem'] == 'Instrumental' else (primary, secondary)
                 a.write(vocals); b.write(instrumental)
                 max_error = max(max_error, float(np.max(np.abs(vocals + instrumental - audio[start:end]))))
-        for path, name in zip(pending, output_names): path.replace(directory / name)
+        transaction = commit_file_pair(pending, [directory / name for name in output_names])
+    except FileTransactionError as error:
+        preserve_pending = error.preserve_staging
+        raise
     finally:
-        for path in pending: path.unlink(missing_ok=True)
+        if not preserve_pending:
+            for path in pending: path.unlink(missing_ok=True)
     return {
         "model": config["mdx_model"], "model_hash": fingerprint,
         "provider": session.get_providers()[0], "sample_rate": sr,
@@ -153,4 +159,5 @@ def separate(source, directory, config, job, log=print,
         "timeline_offset_seconds": 0,
         "overlap": overlap, "polarity_averaging": denoise,
         "sum_max_error": max_error,
+        "transaction": transaction,
     }

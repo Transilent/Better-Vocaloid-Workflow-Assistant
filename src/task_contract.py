@@ -652,6 +652,19 @@ def selected(job, kind, *, verify=True):
     return Path(row['path'])
 
 
+def _midi_artifacts_complete(job, request, rows):
+    """Check stage requirements instead of accepting any one MIDI file."""
+    from pipeline import requirements
+    expected = {(Path(job) / name).resolve() for name in requirements('midi', request)}
+    states = {}
+    for row in rows:
+        try:
+            states[Path(row['path']).resolve()] = row.get('state')
+        except (KeyError, OSError, TypeError, ValueError):
+            continue
+    return bool(expected) and all(states.get(path) in ('verified', 'unchecked') for path in expected)
+
+
 def handoff(job, *, verify=False, rows=None):
     status = _json(Path(job) / 'status.json')
     state = status.get('state', 'ready')
@@ -674,7 +687,9 @@ def handoff(job, *, verify=False, rows=None):
         if kind in meta.get('bindings', {}): return action
     if state == 'partial': return 'continue'
     if state == 'done':
-        if any(row['role'] == 'midi' and row['state'] in ('verified', 'unchecked') for row in rows):
+        request = _json(Path(job) / 'request.json')
+        if (any(row.get('role') == 'midi' and row.get('state') in ('verified', 'unchecked') for row in rows)
+                and _midi_artifacts_complete(job, request, rows)):
             return 'awaiting_tuning'
         if 'midi' in status.get('planned_steps', ()) or status.get('steps', {}).get('midi', {}).get('state') == 'done':
             return 'needs_review'

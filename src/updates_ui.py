@@ -10,6 +10,7 @@ from common import ROOT, load_config, atomic_json
 from desktop_theme import button, card, label, page, scroll_content
 from ui_components import choice
 import updater
+from task_contract_ui import active_ui_operations
 
 
 class UpdateWorker(QThread):
@@ -279,29 +280,7 @@ class UpdatesPage(QWidget):
             self.restart_timer.start()
 
     def active_operations(self):
-        owner = self.owner
-        publishing = getattr(owner, 'publishing', None)
-        publishing_busy = getattr(publishing, 'busy', None)
-        publishing_busy = bool(callable(publishing_busy) and publishing_busy())
-        # A prepared upload is only one publishing activity; its login/upload child can outlive it.
-        poll = getattr(publishing, 'poll_browser', None)
-        if callable(poll):
-            poll()
-        live_browser = getattr(publishing, 'live_browser_active', None)
-        live_browser = bool(callable(live_browser) and live_browser())
-        components = getattr(owner, 'components', None)
-        storage = getattr(owner, 'storage', None)
-        component_busy = getattr(components, 'busy', None)
-        storage_busy = getattr(storage, 'busy', None)
-        preview_busy = getattr(getattr(owner, 'video_mixdown', None), 'preview_busy', None)
-        return (self.busy() or getattr(owner, 'processing_active', False)
-                or bool(callable(component_busy) and component_busy())
-                or publishing_busy or live_browser
-                or bool(callable(storage_busy) and storage_busy())
-                or bool(callable(preview_busy) and preview_busy())
-                or bool(getattr(owner, 'video_mixdown', None) and owner.video_mixdown.busy())
-                or bool(getattr(owner, 'audio_mixdown', None) and owner.audio_mixdown.busy())
-                or bool(getattr(owner,'calibration_dialog',None) and owner.calibration_dialog.busy()))
+        return bool(self.busy() or active_ui_operations(self.owner))
 
     def maybe_auto_restart(self):
         if (not self.plan or not self.startup_update or not self.auto_check.isChecked()

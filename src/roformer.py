@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import time
 from common import ROOT, atomic_json, cancelled, file_hash, native_path, load_config
+from multi_file_commit import FileTransactionError, commit_file_pair
 
 
 def separate_vocals(source, directory, job, device='auto', *, input_kind='vocals'):
@@ -61,6 +62,7 @@ def separate_vocals(source, directory, job, device='auto', *, input_kind='vocals
         directory.mkdir(parents=True,exist_ok=True)
         pending=[directory/'lead.pending.wav',directory/'backing.pending.wav']
         max_error=0.
+        preserve_pending=False
         try:
             with sf.SoundFile(str(pending[0]),'w',samplerate=rate,channels=2,subtype='FLOAT') as a, \
                  sf.SoundFile(str(pending[1]),'w',samplerate=rate,channels=2,subtype='FLOAT') as b:
@@ -70,16 +72,20 @@ def separate_vocals(source, directory, job, device='auto', *, input_kind='vocals
                     backing=mix-primary
                     a.write(primary);b.write(backing)
                     max_error=max(max_error,float(np.abs(primary+backing-mix).max()))
-            pending[0].replace(directory/'lead.wav');pending[1].replace(directory/'backing.wav')
+            transaction=commit_file_pair(pending,[directory/'lead.wav',directory/'backing.wav'])
+        except FileTransactionError as error:
+            preserve_pending=error.preserve_staging
+            raise
         finally:
-            for path in pending:path.unlink(missing_ok=True)
+            if not preserve_pending:
+                for path in pending:path.unlink(missing_ok=True)
         return {'model': spec['weights'][0]['name'], 'sha256': spec['weights'][0]['sha256'],
                 'provider': provider, 'method': 'original_mix_to_lead_and_remainder' if input_kind=='mix' else 'total_vocals_then_karaoke',
                 'input_kind': input_kind,
                 'sample_rate': rate, 'samples': len(audio), 'timeline_offset_seconds': 0,
                 'batch_size': 1, 'chunk_size': 882000, 'overlap_size': 661500, 'tta': False,
                 'output_normalization': False, 'processing_seconds': round(time.monotonic() - started, 2),
-                'sum_max_error': max_error}
+                'sum_max_error': max_error, 'transaction': transaction}
 
 
 def combine_independent(vocals, lead, directory, job):
@@ -89,6 +95,7 @@ def combine_independent(vocals, lead, directory, job):
     directory = Path(directory); directory.mkdir(parents=True, exist_ok=True)
     outputs = [directory/'lead.pending.wav', directory/'backing.pending.wav']
     error, samples, excess = 0., 0, 0
+    preserve_pending = False
     try:
         with sf.SoundFile(str(vocals)) as total, sf.SoundFile(str(lead)) as primary:
             if (not total.frames or total.samplerate != 44100 or total.channels != 2 or
@@ -108,9 +115,14 @@ def combine_independent(vocals, lead, directory, job):
                     error=max(error,float(np.max(np.abs(foreground+backing-mix))))
                     samples+=len(mix); excess+=int(np.count_nonzero(np.max(abs(foreground),axis=1)>np.max(abs(mix),axis=1)+.05))
         cancelled(job)
-        for pending,name in zip(outputs,('lead.wav','backing.wav')): pending.replace(directory/name)
+        transaction=commit_file_pair(outputs,[directory/'lead.wav',directory/'backing.wav'])
+    except FileTransactionError as error:
+        preserve_pending=error.preserve_staging
+        raise
     finally:
-        for pending in outputs: pending.unlink(missing_ok=True)
+        if not preserve_pending:
+            for pending in outputs: pending.unlink(missing_ok=True)
     return {'method':'total_vocals_minus_independent_lead','samples':samples,'sum_max_error':error,
             'lead_exceeds_total_fraction':round(excess/max(samples,1),5),
-            'note':'独立预测求差可能保留分离误差；请对比试听和声。'}
+            'note':'独立预测求差可能保留分离误差；请对比试听和声。',
+            'transaction':transaction}

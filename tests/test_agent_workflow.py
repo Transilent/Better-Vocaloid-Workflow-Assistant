@@ -535,6 +535,46 @@ class WorkflowTestBase(unittest.TestCase):
 
 
 class WorkflowCreateGetTests(WorkflowTestBase):
+    def test_clone_preserves_same_source_context_without_acceptance(self):
+        flow, artifact = self.create_midi_flow(initial_export_options={'language': 'ja'})
+        job = self.control.register_preparation_job({'source': 'fixture'}, 'origin')
+        evidence = {'source_provenance': {'kind': 'caller_supplied_unverified',
+                    'url': 'https://www.bilibili.com/video/BV1xx411c7mD/'},
+                    'local_audio_sha256': 'a' * 64}
+        parent = self.workflow._write(self.workflow._read(flow['id']), 'fixture_source',
+            job_id=job, source_evidence=evidence, review_receipt={'accepted': True})
+        child = self.workflow.clone(parent['id'], parent['revision'], reason='同源重新核对')
+        raw = self.workflow._read(child['id'])
+        self.assertEqual(raw['job_id'], job)
+        self.assertEqual(raw['pitch_source_job_id'], job)
+        self.assertEqual(raw['source_evidence'], evidence)
+        self.assertEqual(raw['export_options'], {'language': 'ja'})
+        self.assertEqual(raw['score_artifact_id'], artifact['id'])
+        self.assertNotIn('review_receipt', raw)
+        self.assertIsNone(raw['style_result'])
+        reviewed = self.complete_review(child)
+        self.workflow.advance(reviewed['id'], reviewed['revision'])
+        options = self.control.plan_calls[-1][2]['options']
+        self.assertEqual(options['instrumental_source_job_id'], job)
+        self.assertEqual(options['pitch_source_job_id'], job)
+
+    def test_clone_before_midi_reuses_managed_preparation_job(self):
+        job = self.control.register_preparation_job({'source': 'fixture'}, 'prepared')
+        parent = self.workflow.create(preparation_job_id=job, idempotency_key='prepared-parent')
+        child = self.workflow.clone(parent['id'], parent['revision'], reason='准备阶段分支')
+        self.assertEqual(child['stage'], 'created')
+        self.assertEqual(child['job_id'], job)
+        started = self.workflow.advance(child['id'], child['revision'])
+        self.assertEqual(started['stage'], 'preparing')
+        self.assertEqual(self.control.preparation_starts[-1][0], job)
+
+    def test_archive_does_not_regress_on_close(self):
+        flow, _ = self.create_midi_flow()
+        archived = self.workflow.close(flow['id'], flow['revision'], '完成归档', archive=True)
+        closed = self.workflow.close(archived['id'], archived['revision'], '重复关闭')
+        self.assertEqual(closed['lifecycle'], 'archived')
+        self.assertEqual(closed['history'][-1]['action'], 'archived')
+
     def test_direct_local_declaration_is_canonical_and_idempotent(self):
         import agent_preparation
         audio = self.root / 'assets' / 'fixture.wav'
@@ -1491,6 +1531,42 @@ class WorkflowReviewTests(WorkflowTestBase):
 
 
 class WorkflowExportStyleTests(WorkflowTestBase):
+    def test_rebound_unstyled_export_does_not_inherit_old_style(self):
+        from agent_project_state import current_style
+        from agent_segment_workflow import _style_result_read
+        from agent_delivery import _style_result
+        flow, _ = self.create_midi_flow(brief='风格待人工决定')
+        project = self.complete_export(self.complete_review(flow), [self.export_candidate('first.svp')])
+        styling = self.approve_export(project, style_proposal={'track_indices': [0], 'regions': []})
+        styled = self.export_candidate('first-styled.svp')
+        self.control.set_operation(styling['operation_id'], 'succeeded', result={'artifacts': [styled]})
+        ready = self.workflow.advance(styling['id'], styling['revision'])
+        self.assertEqual(current_style(ready)['sha256'], styled['sha256'])
+        generation = ready['project_generation']
+        ready = self.workflow._write(self.workflow._read(ready['id']), 'fixture_error',
+            last_error={'code': 'old_generation_error', 'message': '旧工程诊断'})
+
+        corrected = self.control.import_asset(write_midi(self.root / 'assets' / 'corrected.mid'))
+        rebound = self.workflow.rebind_score(ready['id'], ready['revision'], corrected['id'], '同源修正后重新核对')
+        self.assertGreater(rebound['project_generation'], generation)
+        self.assertNotIn('last_error', rebound)
+        self.assertEqual(rebound['error_history'][-1]['retired_by'], 'score_rebound')
+        next_project = self.complete_export(self.complete_review(rebound), [self.export_candidate('second.svp')])
+        finished = self.approve_export(next_project, finish=True)
+        self.assertIsNone(current_style(finished))
+        self.assertFalse(_style_result_read(self.workflow, finished)['applied'])
+        summary, _ = _style_result(self.control, finished, self.control.artifact(finished['project_artifact_id']), {})
+        self.assertFalse(summary['applied'])
+        self.assertTrue(any(row['action'] == 'styled_project_ready' for row in finished['history']))
+
+        # Existing on-disk workflows have history but no generation fields.
+        legacy = copy.deepcopy(finished)
+        legacy.pop('style_result'); legacy.pop('project_generation')
+        self.assertIsNone(current_style(legacy))
+        self.assertFalse(_style_result_read(self.workflow, legacy)['applied'])
+        summary, _ = _style_result(self.control, legacy, self.control.artifact(legacy['project_artifact_id']), {})
+        self.assertFalse(summary['applied'])
+
     def test_export_success_publishes_project_and_all_candidates(self):
         created, _ = self.create_midi_flow(formats=["ustx", "svp"])
         reviewed = self.complete_review(created)

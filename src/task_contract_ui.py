@@ -57,6 +57,83 @@ def _set_role(widget, role):
     widget.update()
 
 
+def _page_busy(page, method='busy'):
+    busy = getattr(page, method, None)
+    return bool(callable(busy) and busy())
+
+
+def _processing_latch(owner):
+    """Read the real processing latch without the tuning-derived Window property."""
+    if hasattr(owner, '_processing_active'):
+        return bool(getattr(owner, '_processing_active', False))
+    return bool(getattr(owner, 'processing_active', False))
+
+
+def active_ui_operations(owner):
+    """Return named application-wide operations that can share UI resources."""
+    active = []
+    if _page_busy(getattr(owner, 'updates', None)):
+        active.append('更新下载')
+    # Window.processing_active also includes tuning. Keep the process latch and
+    # tuning page distinct when the concrete application exposes both.
+    if _processing_latch(owner):
+        active.append('音乐处理')
+    if _page_busy(getattr(owner, 'tuning', None)):
+        active.append('调音')
+    if _page_busy(getattr(owner, 'components', None)):
+        active.append('组件安装')
+    publishing = getattr(owner, 'publishing', None)
+    if _page_busy(publishing):
+        active.append('发布准备')
+    poll = getattr(publishing, 'poll_browser', None)
+    if callable(poll):
+        poll()
+    if _page_busy(publishing, 'live_browser_active'):
+        active.append('登录或上传浏览器')
+    if _page_busy(getattr(owner, 'storage', None)):
+        active.append('缓存管理')
+    video = getattr(owner, 'video_mixdown', None)
+    if _page_busy(video, 'preview_busy'):
+        active.append('视频预览')
+    if _page_busy(video):
+        active.append('视频合成')
+    if _page_busy(getattr(owner, 'audio_mixdown', None)):
+        active.append('简易混音')
+    if _page_busy(getattr(owner, 'calibration_dialog', None)):
+        active.append('校准')
+    return tuple(active)
+
+
+def task_file_blockers(owner, job):
+    """Name operations that currently share this task's files.
+
+    Processing is scoped by the task lock and the application's current job;
+    unrelated tasks remain editable. Cache and publication operations use
+    shared roots and therefore retain their application-wide guards.
+    """
+    if not job:
+        return ()
+    job = Path(job).resolve()
+    active = []
+    from task_store import locked
+    from results_ui import active_task_operations
+    if locked(job):
+        active.append('任务处理')
+    current_job = getattr(owner, 'job', None)
+    if current_job:
+        try:
+            if Path(current_job).resolve() == job and _processing_latch(owner):
+                active.append('音乐处理')
+        except (OSError, TypeError, ValueError):
+            pass
+    active.extend(active_task_operations(owner, job))
+    shared = set(active_ui_operations(owner))
+    for name in ('缓存管理', '发布准备', '登录或上传浏览器'):
+        if name in shared:
+            active.append(name)
+    return tuple(dict.fromkeys(active))
+
+
 class FileCheck(QThread):
     ready = pyqtSignal(object)
     failed = pyqtSignal(str)
@@ -154,10 +231,10 @@ class TaskFilesDialog(QDialog):
         if self.busy():
             self.status.setText(_tr('请等待当前文件检查结束后再制作混音。'))
             return
-        from task_store import locked
-        if (locked(self.job) or self.owner.processing_active or self.owner.storage.busy()
-                or self.owner.publishing.busy()):
-            self.status.setText(_tr('请等待任务处理、缓存管理或发布准备结束后再制作混音。'))
+        blockers = task_file_blockers(self.owner, self.job)
+        if blockers:
+            names = '、'.join(_tr(name) for name in blockers)
+            self.status.setText(_tr('请等待{0}结束后再制作混音。', names))
             return
         page = getattr(self.owner, 'audio_mixdown', None)
         if page is None or not page.set_job(self.job):
@@ -171,9 +248,11 @@ class TaskFilesDialog(QDialog):
 
     def start(self, action=None, callback=None):
         if self.busy(): return
-        from task_store import locked
-        if locked(self.job) or self.owner.processing_active or self.owner.storage.busy() or self.owner.publishing.busy():
-            self.status.setText(_tr('请等待任务处理、缓存管理或发布准备结束后再检查文件。')); return
+        blockers = task_file_blockers(self.owner, self.job)
+        if blockers:
+            names = '、'.join(_tr(name) for name in blockers)
+            self.status.setText(_tr('请等待{0}结束后再检查文件。', names))
+            return
         self.status.setText(_tr('正在检查文件，较大的音视频可能需要几秒钟…'))
         def run():
             result = action() if action else None

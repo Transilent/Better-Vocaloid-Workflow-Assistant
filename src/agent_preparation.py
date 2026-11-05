@@ -20,7 +20,7 @@ import shutil
 import stat
 import threading
 import time
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import urlsplit
 
 import common
 from common import ROOT, app_path, atomic_json, clean_lyrics, file_hash, load_config, native_path, resolve_tools
@@ -48,7 +48,6 @@ ERROR_DETAILS_TEXT_CHARS = 1000
 ERROR_DETAILS_MAX_BYTES = 8 * 1024
 SHA256_RE = re.compile(r"[a-f0-9]{64}")
 BV_RE = re.compile(r"BV1[A-Za-z0-9]{9}")
-_BILIBILI_SUBPAGE_QUERY_KEYS = frozenset({"cid", "p", "page"})
 ALLOWED_OPTIONS = frozenset({
     "language", "lyrics", "backing_lyrics", "recognize_lyrics", "voice_mode",
     "midi_backend", "alignment_engine", "midi_steps", "separation_device",
@@ -493,19 +492,8 @@ def _normalise_options(options):
 
 
 def _bilibili_query_pairs(query):
-    pairs = parse_qsl(query, keep_blank_values=True)
-    subpage_keys = sorted({
-        key.casefold() for key, _ in pairs
-        if key.casefold() in _BILIBILI_SUBPAGE_QUERY_KEYS
-    })
-    if subpage_keys:
-        names = "、".join(subpage_keys)
-        raise ValueError(
-            f"Bilibili 链接包含子页参数（{names}）；当前准备管线只保存 BV "
-            "默认分 P，无法保留并核验目标子页。请提供指向目标内容的独立视频 "
-            "BV/URL；只有确认目标就是默认分 P 时，才可移除这些参数后重试。"
-        )
-    return pairs
+    from source_contract import bilibili_query_pairs
+    return bilibili_query_pairs(query)
 
 
 def normalize_source_url(value):

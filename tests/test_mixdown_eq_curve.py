@@ -107,11 +107,14 @@ class AnalyticCurveTests(unittest.TestCase):
         self.assertEqual(len(frequencies), 240)
         self.assertAlmostEqual(frequencies[0], eq.MIN_FREQUENCY_HZ)
         self.assertAlmostEqual(frequencies[-1], eq.MAX_FREQUENCY_HZ)
-        self.assertAlmostEqual(eq.frequency_to_unit(20.0), 0.0)
-        self.assertAlmostEqual(eq.frequency_to_unit(200.0), 1.0 / 3.0)
-        self.assertAlmostEqual(eq.frequency_to_unit(2000.0), 2.0 / 3.0)
+        self.assertAlmostEqual(eq.frequency_to_unit(10.0), 0.0)
+        self.assertAlmostEqual(
+            eq.frequency_to_unit(100.0),
+            math.log10(100.0 / 10.0) /
+            math.log10(eq.MAX_FREQUENCY_HZ / eq.MIN_FREQUENCY_HZ),
+        )
         self.assertAlmostEqual(eq.frequency_to_unit(20000.0), 1.0)
-        for frequency in (20.0, 92.0, 440.0, 3200.0, 20000.0):
+        for frequency in (10.0, 92.0, 440.0, 3200.0, 20000.0):
             restored = eq.unit_to_frequency(eq.frequency_to_unit(frequency))
             self.assertAlmostEqual(restored, frequency, places=6)
         self.assertAlmostEqual(plot.left() + plot.width() / 3.0, 250.0)
@@ -220,6 +223,30 @@ class WidgetTests(unittest.TestCase):
         self.assertIn('第 3 段', summary)
         self.assertIn('Q', summary)
         self.assertIn('频率', summary)
+
+    def test_render_rate_shrinks_axis_to_nyquist_safe_limit(self):
+        self.view.set_sample_rate(32000)
+        self.assertAlmostEqual(self.view.sample_rate(), 32000.0)
+        self.assertAlmostEqual(self.view.frequency_limit_hz(), 15200.0)
+        frequencies = eq.logarithmic_frequencies(
+            32, sample_rate=self.view.sample_rate())
+        self.assertAlmostEqual(frequencies[-1], 15200.0)
+        self.assertTrue(all(value < 16000.0 for value in frequencies))
+        self.assertAlmostEqual(
+            self.view.frequency_to_x(20000.0),
+            self.view.plot_rect().right(),
+        )
+        self.assertAlmostEqual(
+            self.view.x_to_frequency(self.view.plot_rect().right()),
+            15200.0,
+        )
+        bands = self.view.bands()
+        bands[3]['freq_hz'] = 20000.0
+        self.view.set_bands(bands)
+        self.assertAlmostEqual(self.view.bands()[3]['freq_hz'], 15200.0)
+        self.assertEqual(self.view.band_limits(2)['freq_hz'],
+                         (eq.MIN_FREQUENCY_HZ, 15200.0))
+        self.assertIn(15200, self.view.visible_frequency_grid())
 
     def test_set_bands_and_bands_are_independent(self):
         replacement = [
@@ -517,10 +544,12 @@ class WidgetTests(unittest.TestCase):
 
     def test_log_axis_and_gain_direction(self):
         plot = self.view.plot_rect()
-        self.assertAlmostEqual(self.view.frequency_to_x(20.0), plot.left())
-        self.assertAlmostEqual(self.view.frequency_to_x(20000.0), plot.right())
         self.assertAlmostEqual(
-            self.view.frequency_to_x(200.0),
+            self.view.frequency_to_x(eq.MIN_FREQUENCY_HZ), plot.left())
+        self.assertAlmostEqual(self.view.frequency_to_x(20000.0), plot.right())
+        third_frequency = eq.unit_to_frequency(1.0 / 3.0)
+        self.assertAlmostEqual(
+            self.view.frequency_to_x(third_frequency),
             plot.left() + plot.width() / 3.0,
         )
         sample_x = plot.left() + plot.width() * 0.57
@@ -529,9 +558,11 @@ class WidgetTests(unittest.TestCase):
             sample_x,
             places=6,
         )
-        self.assertAlmostEqual(self.view.gain_to_y(18.0), plot.top())
+        self.assertAlmostEqual(
+            self.view.gain_to_y(eq.MAX_GAIN_DB), plot.top())
         self.assertAlmostEqual(self.view.gain_to_y(0.0), plot.center().y())
-        self.assertAlmostEqual(self.view.gain_to_y(-18.0), plot.bottom())
+        self.assertAlmostEqual(
+            self.view.gain_to_y(eq.MIN_GAIN_DB), plot.bottom())
         frequencies, response = self.view.response_curve()
         self.assertEqual(len(frequencies), eq.RESPONSE_POINTS)
         self.assertEqual(len(response), eq.RESPONSE_POINTS)
@@ -752,7 +783,7 @@ class WidgetTests(unittest.TestCase):
         self.assertEqual(self.view.size(), QSize(320, 180))
         self.assertEqual(self.view.minimumSizeHint(), QSize(320, 190))
         self.assertEqual(self.view.visible_frequency_grid(),
-                         (20, 100, 1000, 10000))
+                         (10, 100, 1000, 10000))
         image = QImage(320, 180, QImage.Format_ARGB32)
         image.fill(0)
         self.view.render(image)
@@ -761,7 +792,7 @@ class WidgetTests(unittest.TestCase):
         index = 2
         center = self.view.band_node_position(index).toPoint()
         self.assertTrue(self.view.rect().contains(center))
-        near_hit = center + QPoint(int(self.view.hit_radius()) - 2, 0)
+        near_hit = center - QPoint(int(self.view.hit_radius()) - 2, 0)
         self.assertEqual(self.view._hit_index(QPointF(near_hit)), index)
         started = []
         self.view.editingStarted.connect(started.append)

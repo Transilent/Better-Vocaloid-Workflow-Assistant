@@ -54,10 +54,25 @@ class Workflow:
         value = copy.deepcopy(value)
         if (('last_error' in changes and changes['last_error'] != value.get('last_error')) or action in {
                 'review_started', 'operation_retried', 'export_repaired',
-                'review_accepted', 'prepared_midi_imported', 'project_exported',
+                'review_accepted', 'prepared_midi_imported', 'project_exported', 'score_rebound',
                 'styled_project_ready', 'project_ready'}):
             self._retire_last_error(value, action)
         value.update(changes, revision=value['revision'] + 1, updated=time.time())
+        if action in ('score_rebound', 'project_exported'):
+            value['project_generation'] = value.get('project_generation', 0) + 1
+            value['style_result'] = None
+        elif action == 'project_ready':
+            value['style_result'] = None
+        elif action == 'styled_project_ready':
+            selected = next((row for row in value.get('final_artifacts', [])
+                             if row.get('id') == value.get('project_artifact_id')), None)
+            if selected is None:
+                raise ControlError('missing_styled_project', '风格结果缺少当前工程身份。')
+            value['style_result'] = {
+                'generation': value.get('project_generation', 0),
+                'operation_id': value.get('operation_id'),
+                'artifact_id': selected['id'], 'sha256': selected.get('sha256'),
+            }
         if value.get('last_error') is None:
             value.pop('last_error', None)
         value.setdefault('history', []).append({'action': action, 'revision': value['revision'],
@@ -127,8 +142,11 @@ class Workflow:
                 if operation['state'] in ('queued','running'):
                     raise ControlError('workflow_busy','操作仍在运行；先取消并等待结束再关闭。')
             self._retain_revision(value,reason.strip())
-            self._write(value,'archived' if archive else 'closed',
-                lifecycle='archived' if archive else 'closed',close_reason=reason.strip(),closed_at=time.time())
+            # Closing is monotonic: archive is terminal unless an explicit
+            # unarchive action is introduced. Repeated close remains allowed.
+            archived = archive or value.get('lifecycle') == 'archived'
+            self._write(value,'archived' if archived else 'closed',
+                lifecycle='archived' if archived else 'closed',close_reason=reason.strip(),closed_at=time.time())
         return self.get(identifier)
 
     def list(self,limit=20,offset=0,status=None,query=''):
@@ -171,17 +189,30 @@ class Workflow:
             key=idempotency_key or digest({'clone_of':identifier,'revision':revision,'score':score,'reason':reason})
             if 'flow_'+digest(key)[:32]==identifier:
                 raise ControlError('invalid_idempotency_key','克隆需使用新的工作流重试键。')
-            result=self.create(source='' if score else request.get('source',''),options=request.get('options',{}),
+            preparation_job = None if score else (value.get('job_id') or request.get('preparation_job_id'))
+            source = '' if score or preparation_job else request.get('source', '')
+            result=self.create(source=source,options=request.get('options',{}),
                 brief=request.get('brief',''),reference_lyrics=request.get('reference_lyrics',''),
                 score_artifact_id=score,formats=request.get('formats'),idempotency_key=key,
+                preparation_job_id=preparation_job,
+                source_url=request.get('source_url') if source else None,
+                initial_export_options=copy.deepcopy(value.get('export_options', value.get('initial_export_options'))),
                 review_mode=review_mode or request.get('review_mode','legacy'))
         child=result['id']
         with self._lock(child):
             created=self._read(child)
+            lineage = {'workflow_id':identifier,'revision':revision,'reason':reason.strip()}
+            if created.get('cloned_from') and created['cloned_from'] != lineage:
+                raise ControlError('idempotency_conflict', '克隆重试键已绑定其他来源或修订。')
             if not created.get('cloned_from'):
-                self._write(created,'cloned',cloned_from={'workflow_id':identifier,'revision':revision,'reason':reason.strip()},
+                # A clone is a same-source continuation. Keep provenance and
+                # default media context, but never inherit review acceptance or
+                # old project/style results into the new generation.
+                inherited = {key:copy.deepcopy(value[key]) for key in
+                    ('job_id', 'source_evidence', 'preparation_reference_lyrics') if key in value}
+                self._write(created,'cloned',cloned_from=lineage,
                             pitch_source_job_id=value.get('job_id') or value.get('pitch_source_job_id'),
-                            export_options=copy.deepcopy(value.get('export_options', {})))
+                            **inherited)
         return self.get(child)
 
     def delivery(self,identifier,revision,destination=None,name=None):
@@ -755,7 +786,8 @@ class Workflow:
                      'code_revision': self.control.code_revision, 'request': request,
                      'preparation_plan_id': plan['id'] if plan else None,
                      'score_artifact_id': score_artifact_id, 'created': time.time(),
-                     'updated': time.time(), 'attempt': 0, 'history': []}
+                     'updated': time.time(), 'attempt': 0, 'history': [],
+                     'project_generation': 0, 'style_result': None}
             if source_evidence:
                 value['source_evidence'] = source_evidence
             if preparation_job_id:

@@ -187,6 +187,50 @@ for language in ('en', 'ja'):
         assert sorted(re.findall(r'\{\d+\}', source)) == sorted(re.findall(r'\{\d+\}', target)), (language, source)
     assert len(i18n.catalog(language)) >= len(raw)
 
+# Dynamic failure and completion messages remain stable templates so language
+# changes never mix translated headings with Chinese concatenation fragments.
+class _TextSink:
+    def __init__(self):
+        self.value = ''
+    def setText(self, value):
+        self.value = str(value)
+    def setToolTip(self, value):
+        self.tooltip = str(value)
+    def setVisible(self, value):
+        pass
+    def show(self):
+        pass
+
+class _RecoveryView:
+    pass
+
+recovery = {
+    'title': '处理未完成',
+    'message': '已完成的阶段已保留。可重试，或查看日志了解失败原因。',
+    'action': 'resume',
+    'raw': 'RuntimeError: fixture diagnostic',
+}
+for language in ('zh-CN', 'en', 'ja'):
+    i18n.set_language(language)
+    view = _RecoveryView()
+    view.job = APP / 'work/fixture-job'
+    view.error_message, view.cpu_retry = _TextSink(), _TextSink()
+    view.recovery_action, view.error_panel = _TextSink(), _TextSink()
+    with patch('error_recovery.failure', return_value=recovery):
+        Window.show_failure(view)
+    expected = i18n.tr('{0}：{1}\n详细原因：{2}', i18n.tr(recovery['title']),
+                       i18n.tr(recovery['message']), recovery['raw'])
+    assert view.error_message.value == expected and recovery['raw'] in expected
+    assert view.error_message.tooltip == recovery['raw']
+    assert view.recovery_action.value == i18n.tr('检查处理设置')
+    completed = i18n.tr('处理完成 · {0} 和伴奏已准备好。', i18n.tr('voices.mid（主唱 / 和声双轨）'))
+    assert i18n.tr('voices.mid（主唱 / 和声双轨）') in completed
+    if language == 'en':
+        assert not _CJK.search(completed) and not _CJK.search(view.error_message.value.split(recovery['raw'])[0])
+    elif language == 'ja':
+        assert completed != '处理完成 · voices.mid（主唱 / 和声双轨） 和伴奏已准备好。'
+i18n.set_language('zh-CN')
+
 assert normalize({'ui_language': 'broken'})['ui_language'] == 'zh-CN'
 saved = {'tuning': {'strength': .625}, 'output_directory': 'keep', 'appearance': {'future': 'keep'}}
 merged = merge_appearance(saved, {'ui_language': 'ja'})

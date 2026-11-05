@@ -23,6 +23,7 @@ if hasattr(sys.stdout, "reconfigure"):
 from common import ROOT, BV_PATTERN, atomic_json, cancelled, clean_lyrics, extract_bv, load_config, resolve_tools, completed_voice, file_hash, app_path, saved_path, output_directory, remember_job
 from common import direct_urlopen, native_path
 from check_dependencies import validate as validate_dependencies
+from source_contract import reject_unsupported_bilibili_subpage
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "vendor"))
@@ -144,6 +145,8 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
             raise ValueError('本地音频来源声明或摘要无效。')
     if local is not None and (not local.is_file() or local.stat().st_size == 0):
         raise ValueError("请选择存在且非空的本地音乐文件。")
+    if local is None:
+        reject_unsupported_bilibili_subpage(source)
     bv = None if local is not None else extract_bv(source)
     if voice_mode not in ("single", "dual", "import", "roformer"):
         raise ValueError("未知的分轨模式。")
@@ -1053,12 +1056,83 @@ def job_lock(job):
             msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
 
 
+_TERMINAL_STATUS_STATES = frozenset({'done', 'partial', 'cancelled', 'failed', 'interrupted'})
+
+
+def _restore_cancel_claim(flag, claim):
+    """Restore a claimed flag without replacing a newer cancel request."""
+    try:
+        os.link(claim, flag)
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        # Filesystems without hard links still need a non-overwriting restore.
+        try:
+            descriptor = os.open(flag, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0), 0o600)
+        except FileExistsError:
+            return False
+        try:
+            target = os.fdopen(descriptor, 'wb')
+        except BaseException:
+            os.close(descriptor)
+            raise
+        with target:
+            target.write(claim.read_bytes())
+        return True
+
+
+def discard_obsolete_cancel_request(job):
+    """Claim and remove only a cancel request older than terminal status.
+
+    The existing flag is first renamed to a unique owned name. Any GUI stop
+    created during inspection therefore lands on the released cancel.flag path
+    and cannot be deleted by cleanup of the captured request. Uncertain state
+    restores an equivalent flag without overwriting a newer one.
+    """
+    job = Path(native_path(Path(job)))
+    flag = job / 'cancel.flag'
+    status_file = job / 'status.json'
+    claim = job / f'cancel.claim-{uuid.uuid4().hex}.flag'
+    try:
+        flag.rename(claim)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        # If another owner holds the flag open, leaving it in place is safer;
+        # the first cancelled() check will still observe the request.
+        return False
+    try:
+        try:
+            flag_time = claim.stat().st_mtime_ns
+            status_time = status_file.stat().st_mtime_ns
+            status = json.loads(status_file.read_text(encoding='utf-8'))
+        except (OSError, ValueError, TypeError):
+            flag_time = status_time = None
+            status = {}
+        stale = (status.get('state') in _TERMINAL_STATUS_STATES
+                 and flag_time is not None and flag_time <= status_time)
+        if stale:
+            claim.unlink(missing_ok=True)
+            return True
+        if not flag.exists() and not _restore_cancel_claim(flag, claim):
+            # A newer request won the exclusive restore race.
+            pass
+        return False
+    finally:
+        # Safe only once either the original request or a newer cancel flag is
+        # present. A failed restore deliberately leaves the claim as evidence.
+        if claim.exists() and flag.exists():
+            claim.unlink(missing_ok=True)
+
+
 def run(job, until=None):
     job = app_path(job)
     with job_lock(job):
-        # Cancel removal happens only after obtaining the lock, so a second
-        # launch cannot clear the active job's stop request.
-        (Path(job) / "cancel.flag").unlink(missing_ok=True)
+        # Only a flag predating the previous terminal status is stale. A stop
+        # requested after launch but before this child obtains the lock remains
+        # current and is consumed by the first cancelled() check in _run().
+        discard_obsolete_cancel_request(job)
         _run(job, until)
 
 

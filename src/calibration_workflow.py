@@ -497,7 +497,7 @@ def prepare_copy(project,reference,destination,*,track_index=0,template=None,rep
     pending=destination/'pitch.pending.svp';source=destination/'input.pending.svp'
     try:
         if repair_pitch:
-            from pitch_accuracy import absolute_curve
+            from pitch_accuracy import absolute_curve,clear_explicit_pitch_scaffolding
             from calibration_refinement import dense_points
             from vocal_expression import TempoMap,automation
             from project_exports import library
@@ -521,9 +521,9 @@ def prepare_copy(project,reference,destination,*,track_index=0,template=None,rep
                     if value is None:os.environ.pop(key,None)
                     else:os.environ[key]=value
             clock=TempoMap(data['time']['tempo']);offset=track.get('mainRef',{}).get('blickOffset',0)
+            clear_explicit_pitch_scaffolding(track['mainGroup'])
             track['mainGroup'].setdefault('parameters',{})['pitchDelta']=automation(
                 dense_points([(clock.to_seconds(pos),value) for pos,value in zip(points[::2],points[1::2])],cancel=cancel),clock,offset)
-            track['mainGroup'].pop('pitchControls',None)
             track.setdefault('mainRef',{}).pop('systemPitchDelta',None)
             for key in ('tF0Left','tF0Right','dF0Left','dF0Right'):track['mainRef'].setdefault('voice',{})[key]=0.
             for note in track['mainGroup']['notes']:

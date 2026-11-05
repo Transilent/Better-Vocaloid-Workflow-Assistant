@@ -76,13 +76,13 @@ def _style_result_read(workflow, value, segment_id=None):
         'segment_context_applicable': False,
         'requested_segment_id': segment_id,
     }
-    applied = any(isinstance(row, dict) and row.get('action') == 'styled_project_ready'
-                  for row in value.get('history', []))
-    if not applied:
+    from agent_project_state import current_style
+    binding = current_style(value)
+    if binding is None:
         return {**base, 'available': False, 'applied': False,
                 'reason': 'workflow_ready_without_style_apply',
                 'instructions': '当前工作流在未应用风格的情况下已完成；没有风格结果可回读。'}
-    operation_id = value.get('operation_id')
+    operation_id = binding.get('operation_id')
     if not isinstance(operation_id, str) or not operation_id:
         return {**base, 'available': False, 'applied': True,
                 'reason': 'style_operation_id_missing',
@@ -111,6 +111,10 @@ def _style_result_read(workflow, value, segment_id=None):
                 'instructions': '当前工作流的最终工程已不可读。'}
     candidate_path = rendered.get('candidate_path') or rendered.get('output')
     candidate_sha = rendered.get('candidate_sha256') or rendered.get('output_sha256')
+    if (binding.get('artifact_id') != selected.get('id') or
+            ('sha256' in binding and binding['sha256'] != selected.get('sha256'))):
+        return {**summary, 'reason': 'style_result_identity_mismatch',
+                'instructions': '风格结果身份与当前最终工程不一致，请重新读取工作流。'}
     path_matches = isinstance(candidate_path, str) and candidate_path and (
         Path(candidate_path).resolve() == Path(selected['path']).resolve())
     if not path_matches or candidate_sha != selected.get('sha256'):

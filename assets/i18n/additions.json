@@ -1,5 +1,13 @@
 {
   "en": {
+    "{0}：{1}\n详细原因：{2}": "{0}: {1}\nDetailed reason: {2}",
+    "处理完成 · {0} 和伴奏已准备好。": "Processing complete · {0} and the instrumental are ready.",
+    "请等待{0}结束后再检查文件。": "Wait for {0} to finish before checking files.",
+    "请等待{0}结束后再制作混音。": "Wait for {0} to finish before creating a mix.",
+    "输出盘不可用": "Output drive unavailable",
+    "本家：{0} / @{1} / {2}": "Original creator: {0} / @{1} / {2}",
+    "来源任务资料不可读；发布文稿、成品和封面已从发布资料包恢复。": "The source task cannot be read; the publication drafts, finished video, and cover were restored from the publication bundle.",
+    "来源任务不可用；发布文稿、成品和封面已从发布资料包恢复，打开平台前会再次校验。": "The source task is unavailable; the publication drafts, finished video, and cover were restored from the publication bundle and will be checked again before opening the platform.",
     "试听提示：": "Audition note: ",
     "导出提示：": "Export note: ",
     "试听服务已停止；点击播放或 A/B 可重试。": "The audition service stopped. Press Play or A/B to retry.",
@@ -886,9 +894,18 @@
     "内置播放器不可用；请点击“用系统播放器播放当前片段”。": "The built-in player is unavailable. Click “Play current segment in system player”.",
     "内置播放器无法播放此片段；可用系统播放器手动打开当前片段。": "The built-in player cannot play this segment. Use the system player to open the current segment manually.",
     "当前试听片段已失效，请重新生成后再用系统播放器打开。": "The current preview segment has expired. Regenerate it before opening it in the system player.",
-    "已将当前试听片段交给系统默认播放器：": "Opened the current preview segment in the system default player: "
+    "已将当前试听片段交给系统默认播放器：": "Opened the current preview segment in the system default player: ",
+    "高通频率有效；增益固定为 0 dB，Q 固定为 {0:.3f}。": "Only the high-pass frequency is adjustable; gain is fixed at 0 dB and Q at {0:.3f}."
   },
   "ja": {
+    "{0}：{1}\n详细原因：{2}": "{0}：{1}\n詳細な原因：{2}",
+    "处理完成 · {0} 和伴奏已准备好。": "処理完了 · {0} と伴奏の準備ができました。",
+    "请等待{0}结束后再检查文件。": "{0}が終わってからファイルを確認してください。",
+    "请等待{0}结束后再制作混音。": "{0}が終わってからミックスを作成してください。",
+    "输出盘不可用": "出力ドライブを使用できません",
+    "本家：{0} / @{1} / {2}": "本家：{0} / @{1} / {2}",
+    "来源任务资料不可读；发布文稿、成品和封面已从发布资料包恢复。": "ソースタスクを読み取れません。投稿文、完成動画、カバーは投稿資料パッケージから復元しました。",
+    "来源任务不可用；发布文稿、成品和封面已从发布资料包恢复，打开平台前会再次校验。": "ソースタスクは使用できません。投稿文、完成動画、カバーは投稿資料パッケージから復元し、プラットフォームを開く前に再確認します。",
     "试听提示：": "試聴に関する注意：",
     "导出提示：": "書き出しに関する注意：",
     "试听服务已停止；点击播放或 A/B 可重试。": "試聴サービスが停止しました。再生または A/B を押すと再試行できます。",
@@ -1775,6 +1792,7 @@
     "内置播放器不可用；请点击“用系统播放器播放当前片段”。": "内蔵プレーヤーを利用できません。「現在の区間をシステムプレーヤーで再生」をクリックしてください。",
     "内置播放器无法播放此片段；可用系统播放器手动打开当前片段。": "内蔵プレーヤーではこの区間を再生できません。システムプレーヤーで現在の区間を手動で開けます。",
     "当前试听片段已失效，请重新生成后再用系统播放器打开。": "現在の試聴区間は期限切れです。再生成してからシステムプレーヤーで開いてください。",
-    "已将当前试听片段交给系统默认播放器：": "現在の試聴区間をシステムの既定プレーヤーで開きました："
+    "已将当前试听片段交给系统默认播放器：": "現在の試聴区間をシステムの既定プレーヤーで開きました：",
+    "高通频率有效；增益固定为 0 dB，Q 固定为 {0:.3f}。": "ハイパスは周波数のみ調整できます。ゲインは 0 dB、Q は {0:.3f} に固定されます。"
   }
 }

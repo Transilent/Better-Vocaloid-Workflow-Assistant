@@ -245,7 +245,13 @@ def main():
     except Exception as error:
         from agent_errors import error_payload
         value = {'ok': False, **error_payload(error)}
-    atomic_json(response_path, value)
+    try:
+        atomic_json(response_path, value)
+    except ControlError as error:
+        if error.code != 'too_large':
+            raise
+        from agent_errors import error_payload
+        atomic_json(response_path, {'ok': False, **error_payload(error)})
 
 
 if __name__ == '__main__':

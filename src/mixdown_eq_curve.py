@@ -28,15 +28,28 @@ from PyQt5.QtGui import (QColor, QFont, QFontMetricsF, QPainter, QPainterPath,
 from PyQt5.QtWidgets import QSizePolicy, QWidget
 
 from i18n import tr as _tr
+from mixdown_contract import (
+    DEFAULT_SAMPLE_RATE,
+    EQ_HIGHPASS_Q,
+    EQ_MAX_FREQUENCY_HZ,
+    EQ_MAX_GAIN_DB,
+    EQ_MAX_Q,
+    EQ_MIN_FREQUENCY_HZ,
+    EQ_MIN_GAIN_DB,
+    EQ_MIN_Q,
+    eq_frequency_limit_hz,
+    finite_number as _contract_finite_number,
+    project_eq_band,
+    valid_sample_rate as _contract_valid_sample_rate,
+)
 
 
-MIN_FREQUENCY_HZ = 20.0
-MAX_FREQUENCY_HZ = 20000.0
-MIN_GAIN_DB = -18.0
-MAX_GAIN_DB = 18.0
-MIN_Q = 0.1
-MAX_Q = 18.0
-DEFAULT_SAMPLE_RATE = 48000.0
+MIN_FREQUENCY_HZ = EQ_MIN_FREQUENCY_HZ
+MAX_FREQUENCY_HZ = EQ_MAX_FREQUENCY_HZ
+MIN_GAIN_DB = EQ_MIN_GAIN_DB
+MAX_GAIN_DB = EQ_MAX_GAIN_DB
+MIN_Q = EQ_MIN_Q
+MAX_Q = EQ_MAX_Q
 RESPONSE_POINTS = 240
 SPECTRUM_SCHEMA = 'vwa.audio_mixdown.spectrum/v1'
 SPECTRUM_STAGE_BEFORE = 'vocal_before_eq'
@@ -53,11 +66,12 @@ MIN_WIDGET_HEIGHT = 190
 MAX_BANDS = 4
 GAIN_LOCKED_TYPES = frozenset(('highpass',))
 Q_LOCKED_TYPES = frozenset(('highpass',))
-HIGHPASS_FIXED_Q = 0.707
+HIGHPASS_FIXED_Q = EQ_HIGHPASS_Q
 BAND_TYPES = ('highpass', 'lowshelf', 'bell', 'highshelf')
 
-FREQUENCY_GRID = (20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000)
-GAIN_GRID_DB = (-18, -12, -6, 0, 6, 12, 18)
+FREQUENCY_GRID = (10, 20, 50, 100, 200, 500, 1000, 2000, 5000,
+                  10000, 20000)
+GAIN_GRID_DB = (-24, -18, -12, -6, 0, 6, 12, 18, 24)
 
 DEFAULT_BANDS = (
     {'type': 'highpass', 'freq_hz': 90.0, 'gain_db': 0.0,
@@ -112,12 +126,9 @@ def _clamp(value: float, lower: float, upper: float) -> float:
 
 def _finite_number(value: Any, label: str) -> float:
     try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError) as exc:
+        return _contract_finite_number(value, label)
+    except ValueError as exc:
         raise ValueError(f'{label} 必须为有限数字。') from exc
-    if not math.isfinite(number):
-        raise ValueError(f'{label} 必须为有限数字。')
-    return number
 
 
 def _default_spec(index: int) -> dict[str, Any]:
@@ -135,11 +146,13 @@ def _default_q(band_type: str) -> float:
     return 0.8 if band_type == 'bell' else 0.707
 
 
-def normalize_band(band: Mapping[str, Any], index: int = 0) -> dict[str, Any]:
-    """Validate and normalise one band dictionary.
+def normalize_band(band: Mapping[str, Any], index: int = 0, *,
+                   sample_rate: Optional[float] = None) -> dict[str, Any]:
+    """Validate and project one band through the shared mixdown contract.
 
-    Values are constrained to the widget's visible editing range. Unknown
-    keys are ignored, and the result never shares containers with ``band``.
+    The widget accepts partial legacy dictionaries by supplying per-index
+    defaults.  Invalid/non-finite values are rejected; absolute request limits
+    and the render-rate Nyquist-safe limit are applied consistently.
     """
     if not isinstance(band, Mapping):
         raise TypeError('EQ band must be a mapping.')
@@ -155,65 +168,61 @@ def normalize_band(band: Mapping[str, Any], index: int = 0) -> dict[str, Any]:
     if not isinstance(enabled, bool):
         enabled = bool(enabled)
 
-    normalized_gain = _clamp(gain, MIN_GAIN_DB, MAX_GAIN_DB)
-    normalized_q = _clamp(q_value, MIN_Q, MAX_Q)
-    # The DSP contract ignores gain and uses a fixed Q for the high-pass.
-    # Keeping those values canonical makes the painted node match audition.
-    if band_type in GAIN_LOCKED_TYPES:
-        normalized_gain = 0.0
-    if band_type in Q_LOCKED_TYPES:
-        normalized_q = HIGHPASS_FIXED_Q
-
-    return {
+    return project_eq_band({
         'type': band_type,
         'freq_hz': _clamp(frequency, MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ),
-        'gain_db': normalized_gain,
-        'q': normalized_q,
+        'gain_db': _clamp(gain, MIN_GAIN_DB, MAX_GAIN_DB),
+        'q': _clamp(q_value, MIN_Q, MAX_Q),
         'enabled': enabled,
-    }
+    }, sample_rate=sample_rate)
 
 
 normalise_band = normalize_band
 
 
-def frequency_to_unit(frequency_hz: float) -> float:
-    """Map 20..20000 Hz to the widget's 0..1 logarithmic X coordinate."""
+def frequency_to_unit(frequency_hz: float,
+                      sample_rate: float = DEFAULT_SAMPLE_RATE) -> float:
+    """Map the editable frequency band to a 0..1 logarithmic X coordinate."""
+    maximum = eq_frequency_limit_hz(sample_rate)
     frequency = _clamp(_finite_number(frequency_hz, 'frequency_hz'),
-                       MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ)
-    span = math.log10(MAX_FREQUENCY_HZ / MIN_FREQUENCY_HZ)
+                       MIN_FREQUENCY_HZ, maximum)
+    span = math.log10(maximum / MIN_FREQUENCY_HZ)
     return math.log10(frequency / MIN_FREQUENCY_HZ) / span
 
 
-def unit_to_frequency(unit: float) -> float:
-    """Map a 0..1 logarithmic X coordinate to 20..20000 Hz."""
+def unit_to_frequency(unit: float,
+                      sample_rate: float = DEFAULT_SAMPLE_RATE) -> float:
+    """Map a 0..1 logarithmic X coordinate to the current effective range."""
+    maximum = eq_frequency_limit_hz(sample_rate)
     position = _clamp(_finite_number(unit, 'unit'), 0.0, 1.0)
-    span = math.log10(MAX_FREQUENCY_HZ / MIN_FREQUENCY_HZ)
+    span = math.log10(maximum / MIN_FREQUENCY_HZ)
     return MIN_FREQUENCY_HZ * (10.0 ** (position * span))
 
 
-def logarithmic_frequencies(points: int = RESPONSE_POINTS) -> list[float]:
-    """Return evenly spaced frequencies on a logarithmic axis."""
+def logarithmic_frequencies(points: int = RESPONSE_POINTS, *,
+                            sample_rate: float = DEFAULT_SAMPLE_RATE) -> list[float]:
+    """Return evenly spaced frequencies through the render-safe upper limit."""
     if isinstance(points, bool) or int(points) != points or int(points) < 2:
         raise ValueError('points 必须为不小于 2 的整数。')
     count = int(points)
-    ratio = MAX_FREQUENCY_HZ / MIN_FREQUENCY_HZ
+    maximum = eq_frequency_limit_hz(sample_rate)
+    ratio = maximum / MIN_FREQUENCY_HZ
     values = [MIN_FREQUENCY_HZ * (ratio ** (index / (count - 1.0)))
               for index in range(count)]
-    values[-1] = MAX_FREQUENCY_HZ
+    values[-1] = maximum
     return values
 
 
 def _valid_sample_rate(sample_rate: float) -> float:
-    rate = _finite_number(sample_rate, 'sample_rate')
-    if rate <= 0.0:
-        raise ValueError('sample_rate 必须大于 0 Hz。')
-    return rate
+    try:
+        return _contract_valid_sample_rate(sample_rate)
+    except ValueError as exc:
+        raise ValueError('sample_rate 必须大于 0 Hz。') from exc
 
 
 def _display_sample_rate(sample_rate: float) -> float:
     rate = _valid_sample_rate(sample_rate)
-    if rate <= MAX_FREQUENCY_HZ * 2.0:
-        raise ValueError('sample_rate 必须高于 40 kHz，才能显示到 20 kHz。')
+    eq_frequency_limit_hz(rate)
     return rate
 
 
@@ -332,8 +341,8 @@ def frequency_response_db(
     rate = _valid_sample_rate(sample_rate)
     frequencies = list(frequencies_hz)
     total = [0.0 for _ in frequencies]
-    for raw_band in bands:
-        band = normalize_band(raw_band)
+    for index, raw_band in enumerate(bands):
+        band = normalize_band(raw_band, index, sample_rate=rate)
         if enabled_only and not band['enabled']:
             continue
         response = band_response_db(band, frequencies, rate)
@@ -347,7 +356,7 @@ def response_curve(
     points: int = RESPONSE_POINTS, enabled_only: bool = True,
 ) -> tuple[list[float], list[float]]:
     """Return ``(frequencies_hz, total_gain_db)`` for the painted curve."""
-    frequencies = logarithmic_frequencies(points)
+    frequencies = logarithmic_frequencies(points, sample_rate=sample_rate)
     values = frequency_response_db(
         bands, frequencies, sample_rate=sample_rate, enabled_only=enabled_only
     )
@@ -439,8 +448,10 @@ class EQCurveView(QWidget):
         if len(values) > MAX_BANDS:
             raise ValueError('EQ 最多支持四段。')
         drag_index = self._drag_index
-        self._bands = [normalize_band(value, index)
-                       for index, value in enumerate(values)]
+        self._bands = [
+            normalize_band(value, index, sample_rate=self._sample_rate)
+            for index, value in enumerate(values)
+        ]
         self._selected = min(self._selected, len(self._bands) - 1)
         if self._selected < 0 and self._bands:
             self._selected = 0
@@ -477,15 +488,24 @@ class EQCurveView(QWidget):
         return self._playhead
 
     def set_sample_rate(self, sample_rate: float) -> None:
-        """Set the sample rate used only for analytic curve preview."""
+        """Set the render rate used by both the curve and its frequency axis."""
         rate = _display_sample_rate(sample_rate)
         if rate != self._sample_rate:
             self._sample_rate = rate
+            self._bands = [
+                normalize_band(band, index, sample_rate=rate)
+                for index, band in enumerate(self._bands)
+            ]
             self._invalidate_response_cache()
+            self._refresh_accessibility()
             self.update()
 
     def sample_rate(self) -> float:
         return self._sample_rate
+
+    def frequency_limit_hz(self) -> float:
+        """Effective upper frequency shared with the renderer at this rate."""
+        return eq_frequency_limit_hz(self._sample_rate)
 
     def set_spectrum_envelope(
         self, envelope: Optional[Mapping[str, Any]],
@@ -717,7 +737,7 @@ class EQCurveView(QWidget):
         """Return per-band editable limits; ``None`` means DSP-locked."""
         band = self._bands[index]
         return {
-            'freq_hz': (MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ),
+            'freq_hz': (MIN_FREQUENCY_HZ, self.frequency_limit_hz()),
             'gain_db': (None if band['type'] in GAIN_LOCKED_TYPES
                         else (MIN_GAIN_DB, MAX_GAIN_DB)),
             'q': (None if band['type'] in Q_LOCKED_TYPES
@@ -738,7 +758,8 @@ class EQCurveView(QWidget):
         target = self._selected if index is None else int(index)
         if not (0 <= target < len(self._bands)):
             return False
-        factory = normalize_band(_default_spec(target), target)
+        factory = normalize_band(
+            _default_spec(target), target, sample_rate=self._sample_rate)
         if factory == self._bands[target]:
             return False
         self._bands[target] = factory
@@ -778,19 +799,38 @@ class EQCurveView(QWidget):
         return QRectF(left, top, max(1.0, right - left),
                       max(1.0, bottom - top))
 
+    def _axis_grid_frequencies(self) -> tuple[float, ...]:
+        limit = self.frequency_limit_hz()
+        values = [float(value) for value in FREQUENCY_GRID if value <= limit]
+        if limit < MAX_FREQUENCY_HZ - 0.5:
+            values.append(limit)
+        result = []
+        for value in values:
+            if not result or abs(result[-1] - value) > 0.5:
+                result.append(value)
+        return tuple(result)
+
     def visible_frequency_grid(self) -> tuple[int, ...]:
         """Return ruler labels that fit the current compact/full width."""
-        return (FREQUENCY_GRID if self.plot_rect().width() >= 420.0
-                else (20, 100, 1000, 10000))
+        limit = self.frequency_limit_hz()
+        if self.plot_rect().width() >= 420.0:
+            values = list(self._axis_grid_frequencies())
+        else:
+            values = [float(value) for value in (10, 100, 1000, 10000)
+                      if value <= limit]
+            if limit < MAX_FREQUENCY_HZ - 0.5:
+                values.append(limit)
+        return tuple(dict.fromkeys(int(round(value)) for value in values))
 
     def frequency_to_x(self, frequency_hz: float) -> float:
         plot = self.plot_rect()
-        return plot.left() + plot.width() * frequency_to_unit(frequency_hz)
+        return plot.left() + plot.width() * frequency_to_unit(
+            frequency_hz, self._sample_rate)
 
     def x_to_frequency(self, x_position: float) -> float:
         plot = self.plot_rect()
         unit = (float(x_position) - plot.left()) / max(plot.width(), 1.0)
-        return unit_to_frequency(unit)
+        return unit_to_frequency(unit, self._sample_rate)
 
     def gain_to_y(self, gain_db: float) -> float:
         plot = self.plot_rect()
@@ -863,7 +903,8 @@ class EQCurveView(QWidget):
     ) -> tuple[tuple[float, ...], tuple[tuple[float, ...], ...]]:
         """Cache analytic samples; repaint alone never re-evaluates them."""
         if self._response_cache is None:
-            frequencies = tuple(logarithmic_frequencies(RESPONSE_POINTS))
+            frequencies = tuple(logarithmic_frequencies(
+                RESPONSE_POINTS, sample_rate=self._sample_rate))
             responses = tuple(
                 tuple(band_response_db(band, frequencies, self._sample_rate))
                 for band in self._bands
@@ -912,7 +953,7 @@ class EQCurveView(QWidget):
                 value = bool(value)
             elif key == 'freq_hz':
                 value = round(_clamp(float(value), MIN_FREQUENCY_HZ,
-                                     MAX_FREQUENCY_HZ), 2)
+                                     self.frequency_limit_hz()), 2)
             elif key == 'gain_db':
                 value = (0.0 if band['type'] in GAIN_LOCKED_TYPES else
                          round(_clamp(float(value), MIN_GAIN_DB,
@@ -977,7 +1018,7 @@ class EQCurveView(QWidget):
         plot = self.plot_rect()
         delta_x = position.x() - self._drag_origin.x()
         delta_y = position.y() - self._drag_origin.y()
-        span = math.log10(MAX_FREQUENCY_HZ / MIN_FREQUENCY_HZ)
+        span = math.log10(self.frequency_limit_hz() / MIN_FREQUENCY_HZ)
         frequency = self._drag_frequency * (
             10.0 ** (span * delta_x / max(plot.width(), 1.0)))
         changes: dict[str, Any] = {'freq_hz': frequency}
@@ -1158,13 +1199,13 @@ class EQCurveView(QWidget):
 
     @staticmethod
     def _frequency_label(frequency: int) -> str:
-        if frequency >= 1000:
-            return f'{frequency // 1000}k'
-        return str(frequency)
+        value = float(frequency)
+        if value >= 1000.0:
+            return f'{value / 1000.0:.1f}'.rstrip('0').rstrip('.') + 'k'
+        return f'{value:.0f}'
 
-    @staticmethod
     def _path_for_values(
-        frequencies: Iterable[float], values: Iterable[float], plot: QRectF,
+        self, frequencies: Iterable[float], values: Iterable[float], plot: QRectF,
     ) -> QPainterPath:
         frequencies_list = list(frequencies)
         values_list = list(values)
@@ -1173,7 +1214,8 @@ class EQCurveView(QWidget):
             return path
         for index, (frequency, gain) in enumerate(
                 zip(frequencies_list, values_list)):
-            x = plot.left() + plot.width() * frequency_to_unit(frequency)
+            x = plot.left() + plot.width() * frequency_to_unit(
+                frequency, self._sample_rate)
             y = plot.top() + ((MAX_GAIN_DB - float(gain))
                               / (MAX_GAIN_DB - MIN_GAIN_DB)) * plot.height()
             if index == 0:
@@ -1276,7 +1318,7 @@ class EQCurveView(QWidget):
         painter.save()
         painter.setClipRect(plot)
         painter.setPen(QPen(faint, 1.0))
-        for frequency in FREQUENCY_GRID:
+        for frequency in self._axis_grid_frequencies():
             x = self.frequency_to_x(frequency)
             painter.drawLine(QPointF(x, plot.top()),
                              QPointF(x, plot.bottom()))
@@ -1358,10 +1400,13 @@ class EQCurveView(QWidget):
                 Qt.AlignHCenter | Qt.AlignTop,
                 label,
             )
-        range_text = (
-            f'{MIN_FREQUENCY_HZ:.0f} Hz - '
-            f'{MAX_FREQUENCY_HZ / 1000.0:.0f} kHz'
-        )
+        frequency_limit = self.frequency_limit_hz()
+        if frequency_limit >= 1000.0:
+            upper_text = f'{frequency_limit / 1000.0:.1f} kHz'.replace(
+                '.0 kHz', ' kHz')
+        else:
+            upper_text = f'{frequency_limit:.0f} Hz'
+        range_text = f'{MIN_FREQUENCY_HZ:.0f} Hz - {upper_text}'
         stage_label = self.spectrum_stage_label()
         stage_color = self._spectrum_stage_color()
         if stage_label is not None and stage_color is not None:

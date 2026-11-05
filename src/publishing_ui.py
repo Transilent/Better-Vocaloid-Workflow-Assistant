@@ -71,10 +71,10 @@ class PublishingTab(QWidget):
                 if not isinstance(settings, dict):
                     raise ValueError("发布设置格式无效；请重新选择成品和来源任务。")
                 self.video.setText(str(clean_path(settings["video"])) if settings.get("video") else "")
-                if settings.get("job"):
-                    self.load_job(settings["job"])
                 if settings.get("bundle"):
                     self.restore_bundle(settings["bundle"], settings.get("inputs"))
+                elif settings.get("job"):
+                    self.load_job(settings["job"])
             except (OSError, ValueError, KeyError) as exc:
                 self.status.setText(_tr('上次的发布资料未能恢复，请重新选择来源任务或发布资料。'))
                 self.log_message(str(exc))
@@ -753,7 +753,10 @@ class PublishingTab(QWidget):
         # video/cover hashes are deferred to the asynchronous open-platform preflight.
         for platform in data.get("content", {}):
             load_bundle(bundle, platform, verify_hash=False)
-        self.load_job(data["source_job"])
+        source_job = data.get("source_job")
+        source_job = str(clean_path(source_job)) if isinstance(source_job, str) and source_job.strip() else ""
+        self.job.setText(source_job)
+        self.bv.setText(str(data.get("source_bv") or ""))
         self.video.setText(str(clean_path(data["video"]["path"])))
         for platform, fields in self.fields.items():
             content = data["content"].get(platform)
@@ -768,6 +771,22 @@ class PublishingTab(QWidget):
         if inputs:
             for key in ("song", "voice", "credit"):
                 getattr(self, key).setText(inputs.get(key, ""))
+        else:
+            enabled = next((value for value in data["content"].values() if isinstance(value, dict)), {})
+            self.song.setText(song_from_title(str(enabled.get("title") or "")))
+            self.voice.clear()
+            self.credit.clear()
+        if source_job and Path(source_job).is_dir():
+            try:
+                source = read_source_info(source_job)
+                self.source_info.setText(
+                    _tr('本家：{0} / @{1} / {2}', f"{source.get('bvid') or '未提供'}",
+                        f"{source.get('owner', {}).get('name', '')}", f"{source.get('title', '')}")
+                )
+            except (OSError, ValueError):
+                self.source_info.setText(_tr('来源任务资料不可读；发布文稿、成品和封面已从发布资料包恢复。'))
+        else:
+            self.source_info.setText(_tr('来源任务不可用；发布文稿、成品和封面已从发布资料包恢复，打开平台前会再次校验。'))
         self.bundle = bundle
         self.bundle_inputs = self.input_snapshot()
         self.upload_preflight_error = None

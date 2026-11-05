@@ -18,6 +18,7 @@ import uuid
 
 SCHEMA = 1
 MAX_JSON = 16 * 1024**2
+OPERATION_UPDATE_RESERVE = 64 * 1024
 MAX_SCORE = 32 * 1024**2
 TOOLS = (
     'vwa_start', 'vwa_status', 'vwa_evidence', 'vwa_decide',
@@ -29,7 +30,8 @@ CODE_FILES = ('agent_control.py', 'agent_worker.py', 'agent_score.py', 'agent_st
               'agent_supervision.py', 'agent_export_audit.py', 'agent_reference.py', 'agent_structure.py',
               'style_drafts.py','agent_drafts.py','agent_pronunciation.py','agent_refinement.py',
               'agent_errors.py','agent_monophony.py','agent_media.py','agent_views.py','agent_delivery.py',
-              'agent_segments.py','agent_segment_workflow.py',
+              'agent_segments.py','agent_segment_workflow.py','agent_project_state.py',
+              'source_contract.py','multi_file_commit.py','mdx.py','roformer.py',
               'agent_lyric_timeline.py','agent_lyric_reconcile.py','lyrics_sources.py','subtitles.py',
               'pitch_accuracy.py', 'agent_pitch.py', 'agent_separation_repair.py', 'vocal_partition.py',
               'agent_preparation.py', 'agent_lyrics.py', 'agent_exports.py', 'agent_workflow.py',
@@ -102,13 +104,25 @@ def read_json(path):
     return value
 
 
+def _json_payload(value):
+    # Use the same byte budget as read_json. Validate before creating any files
+    # so an oversized update cannot replace a readable record or leave a tmp.
+    if not isinstance(value, dict):
+        raise ControlError('invalid_record', '记录必须是 JSON 对象。')
+    payload = json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False).encode('utf-8')
+    if len(payload) > MAX_JSON:
+        raise ControlError('too_large', 'JSON 记录超出读写限制。')
+    return payload
+
+
 def atomic_json(path, value):
+    payload = _json_payload(value)
     path = safe_path(path)
     io_path(path.parent).mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
     try:
-        with io_path(temporary).open('x', encoding='utf-8', newline='\n') as handle:
-            json.dump(value, handle, ensure_ascii=False, indent=2, allow_nan=False)
+        with io_path(temporary).open('xb') as handle:
+            handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         for attempt in range(6):
@@ -1080,9 +1094,15 @@ class Control:
                     raise ControlError('idempotency_conflict', '重试键已用于其他输入，需保留原键或使用新键。')
             else:
                 directory = safe_path(self.state / 'operations' / identifier)
-                directory.mkdir()
                 value = {'schema': SCHEMA, 'id': identifier, 'state': 'queued',
                          'request': request, 'created': time.time(), 'updated': time.time()}
+                payload = _json_payload(value)
+                # Status/progress and a bounded failure receipt must still fit
+                # even when a caller submits a request close to the read cap.
+                reserve = min(OPERATION_UPDATE_RESERVE, MAX_JSON // 4)
+                if len(payload) > MAX_JSON - reserve:
+                    raise ControlError('too_large', '操作请求过大，无法为状态回执预留空间。')
+                directory.mkdir()
                 atomic_json(path, value)
                 with (directory / 'worker.log').open('ab') as log:
                     try:

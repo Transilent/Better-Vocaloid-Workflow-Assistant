@@ -286,6 +286,13 @@ def active_task_operations(owner, job):
                     pass
         if unreadable or any(_path_within(value, job) for value in references):
             active.append('校准')
+    tuning = getattr(owner, 'tuning', None)
+    if _page_busy(tuning):
+        references = [getattr(tuning, 'source_job', None), getattr(tuning, 'job', None),
+                      _control_value(getattr(tuning, 'input_path', None)),
+                      _control_value(getattr(tuning, 'project', None))]
+        if any(_path_within(value, job) for value in references):
+            active.append('调音')
     return tuple(active)
 
 
