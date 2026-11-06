@@ -11,6 +11,21 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import ROOT, atomic_json, file_hash, load_config, app_path
 
+XIAOHONGSHU = 'xiaohongshu'
+XIAOHONGSHU_CREATOR_URL = 'https://creator.xiaohongshu.com/'
+BROWSER_PLATFORMS = ('bilibili',)
+PUBLICATION_LIMITS = {'bilibili': (80, 2000), XIAOHONGSHU: (20, 1000)}
+MANUAL_ONLY = '小红书仅支持手动投稿，请使用发布页的“小红书手动投稿”资料。'
+AI_REQUIRED = '请先确认小红书笔记是否包含 AI 生成或合成内容。'
+AI_PLATFORM_HINT = '含 AI 内容：请在小红书发布页使用“笔记内容声明”，选择“笔记含 AI 合成内容”。'
+
+
+def require_browser_platform(platform):
+    if platform == XIAOHONGSHU:
+        raise ValueError(MANUAL_ONLY)
+    if platform not in BROWSER_PLATFORMS:
+        raise ValueError('未知的浏览器填写平台。')
+
 
 def clean_path(value):
     return app_path(value)
@@ -88,20 +103,22 @@ def source_draft(job):
         raise SourceInfoError("来源简介无法读取。请重新选择来源任务，或重新读取本家 BV 资料。") from exc
 
 
-def validate_content(content, platform):
-    if platform not in ("bilibili", "xiaohongshu"):
+def validate_content(content, platform, *, require_ai=False):
+    if platform not in PUBLICATION_LIMITS:
         raise ValueError("未知发布平台。")
     if not content.get("title", "").strip():
         raise ValueError("请先填写发布标题。")
     if not content.get("description", "").strip():
         raise ValueError("请填写简介并保留本家与 STAFF 信息。")
-    # Defaults are conservative local limits; live DOM constraints are checked
-    # again. Never truncate a title, credit, or description behind the user's back.
-    limits = {"bilibili": (80, 2000), "xiaohongshu": (20, 1000)}[platform]
+    # Conservative local limits; never truncate title, description or credits.
+    limits = PUBLICATION_LIMITS[platform]
     for key, limit in zip(("title", "description"), limits):
         if len(content[key]) > limit:
             label = "标题" if key == "title" else "简介"
             raise ValueError(f"{platform} {label}超过助手的 {limit} 字检查限制，请在发布准备页编辑。")
+    if platform == XIAOHONGSHU and (require_ai or 'ai_generated' in content):
+        if type(content.get('ai_generated')) is not bool:
+            raise ValueError(AI_REQUIRED)
 
 
 def prepare_bilibili_covers(bundle):
@@ -144,7 +161,7 @@ def prepare(job, video, content, cover_seconds=20, cover_file=None, parent=None,
     if not content:
         raise ValueError("至少选择一个发布平台。")
     for platform, fields in content.items():
-        validate_content(fields, platform)
+        validate_content(fields, platform, require_ai=True)
     info = inspect_video(video)
     stamp = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime("%Y%m%d-%H%M%S-%f")
     bundle = Path(parent or ROOT / "publish-packages") / f"{request.get('bv') or 'Local'}_{stamp}"
@@ -193,12 +210,26 @@ def prepare(job, video, content, cover_seconds=20, cover_file=None, parent=None,
         for platform, fields in content.items():
             (bundle / (platform + "_标题.txt")).write_text(fields["title"], encoding="utf-8")
             (bundle / (platform + "_简介.txt")).write_text(fields["description"], encoding="utf-8")
-        (bundle / "发布前核对.txt").write_text(
+        checklist = (
             f"成品：{info['path']}\n本家：{request.get('bv') or '待填写（本地音乐）'}\n时长：{info['duration']:.2f} 秒\n"
             f"封面来源：{ {'original':'本家原始封面','frame':'视频画面截图','custom':'手选图片'}[cover['kind']] }。\n"
-            "B站封面按4:3、16:9分别适配，比例不同时补黑边，保留完整原图。\n"
             "标题与简介使用你在助手中填写的版本。\n"
-            "上传完成后请在网页核对封面、分区、标签、原创/转载及其他必填项，再手动发布。\n", encoding="utf-8")
+        )
+        if 'bilibili' in content:
+            checklist += (
+                "\nB站：封面按4:3、16:9分别适配，比例不同时补黑边，保留完整原图。\n"
+                "上传后请在网页核对封面、分区、标签、原创/转载及其他必填项，再手动发布。\n"
+            )
+        if XIAOHONGSHU in content:
+            ai_generated = content[XIAOHONGSHU]['ai_generated']
+            checklist += (
+                "\n小红书：请在官方网页或 App 手动上传成品和 cover.jpg，并粘贴标题与正文。\n"
+                f"创作中心：{XIAOHONGSHU_CREATOR_URL}\n"
+                f"AI 生成或合成内容（本地选择）：{'含有' if ai_generated else '不含'}。\n"
+                + (AI_PLATFORM_HINT + '\n' if ai_generated else '若编辑后加入 AI 生成或合成内容，请在平台更新声明。\n')
+                + "本地选择不会替你设置平台声明。发布前请核对原创/转载、署名与授权。\n"
+            )
+        (bundle / "发布前核对.txt").write_text(checklist, encoding="utf-8")
         # Only unchanged generated files can later be offered for cleanup.
         # Edited drafts, unknown files and legacy bundles remain protected.
         atomic_json(bundle / 'cleanup-inventory.json', {'version':1,'kind':'publication-generated',
@@ -213,16 +244,16 @@ def prepare(job, video, content, cover_seconds=20, cover_file=None, parent=None,
         raise
 
 
-def load_bundle(bundle, platform, verify_hash=True):
+def load_bundle(bundle, platform, verify_hash=True, *, require_ai=False):
     bundle = clean_path(bundle)
     data = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
-    validate_content(data["content"].get(platform, {}), platform)
+    validate_content(data["content"].get(platform, {}), platform, require_ai=require_ai)
     video = clean_path(data["video"]["path"])
     cover = bundle / "cover.jpg"
     if not video.is_file() or not cover.is_file():
         raise ValueError("视频或封面已经移动，请重新准备发布包。")
     if verify_hash and (file_hash(video) != data["video"]["sha256"] or file_hash(cover) != data["cover"]["sha256"]):
-        raise ValueError("成品或封面已修改，请重新准备发布包后上传。")
+        raise ValueError("成品或封面已修改，请重新准备发布包。")
     variants = data.get("platform_covers", {}).get(platform, {})
     for ratio in ("4:3", "16:9"):
         if ratio not in variants:
@@ -234,6 +265,29 @@ def load_bundle(bundle, platform, verify_hash=True):
         if not path.is_file() or (verify_hash and file_hash(path) != asset["sha256"]):
             raise ValueError("平台封面已修改或移动，请重新准备发布包。")
     return data
+
+
+def publication_file_stamp(path):
+    info = Path(path).stat()
+    return info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns, info.st_size
+
+
+def xiaohongshu_handoff(bundle):
+    """Verify a local handoff without opening a browser or mutating the bundle."""
+    bundle = clean_path(bundle)
+    manifest = bundle / 'manifest.json'
+    manifest_stamp = publication_file_stamp(manifest)
+    data = load_bundle(bundle, XIAOHONGSHU, verify_hash=False, require_ai=True)
+    video = clean_path(data['video']['path'])
+    cover = bundle / 'cover.jpg'
+    stamps = {manifest: manifest_stamp, video: publication_file_stamp(video),
+              cover: publication_file_stamp(cover)}
+    verified = load_bundle(bundle, XIAOHONGSHU, require_ai=True)
+    if (verified != data or clean_path(verified['video']['path']) != video
+            or any(publication_file_stamp(path) != stamp for path, stamp in stamps.items())):
+        raise ValueError('核对期间发布资料或素材发生变化，请重新核对。')
+    return {'fields': verified['content'][XIAOHONGSHU], 'video': video, 'cover': cover,
+            'stamps': stamps}
 
 
 def main():

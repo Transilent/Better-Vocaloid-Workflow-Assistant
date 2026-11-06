@@ -6,7 +6,7 @@ sys.path[:0]=[str(app),str(app/'vendor')]
 sys.stdout.reconfigure(encoding='utf-8',errors='replace')
 from playwright.sync_api import sync_playwright
 from publish_browser import browser_engine_options,confirm_cover_dialog,upload_finished,cover_dialog_open,fill_existing,candidates
-settings=json.loads((app/'publish-selectors.json').read_text(encoding='utf-8'))['xiaohongshu']
+settings=json.loads((app/'publish-selectors.json').read_text(encoding='utf-8'))['bilibili']
 with sync_playwright() as p:
     options=browser_engine_options(True)
     browser=p.chromium.launch(**options)
@@ -30,15 +30,15 @@ with sync_playwright() as p:
         except Exception:pass
         else:raise AssertionError('Publish footer mistaken for cover-only footer')
         assert not page.evaluate('window.wrong || false')
-        page.set_content('<div class="cover-container"><div class="uploading">上传中 98%</div></div>')
+        page.set_content('<div class="upload-status">上传中 98%</div>')
         assert not upload_finished(page,settings)
-        page.set_content('<div class="cover-container"><div class="preview-new">检测为高清视频</div></div>')
+        page.set_content('<div class="upload-status">上传完成</div>')
         assert upload_finished(page,settings)
-        page.locator('.preview-new').evaluate("e=>e.style.display='none'")
+        page.locator('.upload-status').evaluate("e=>e.style.display='none'")
         assert not upload_finished(page,settings)
-        page.set_content('<div class="cover-container"><div class="fail">上传失败</div></div>')
+        page.set_content('<div class="upload-status">上传失败</div>')
         assert not upload_finished(page,settings)
-        page.set_content('''<input placeholder="填写标题会有更多赞哦"><div class="tiptap" contenteditable="true"></div>
+        page.set_content('''<input placeholder="填写标题会有更多赞哦"><div class="desc-container"><div contenteditable="true"></div></div>
           <input type="file" accept="image/jpeg" aria-label="上传封面图片"><div class="cover-preview"></div>
           <div class="upload-status">上传完成</div><script>
           window.selected=0;document.querySelector('input[type=file]').onchange=function(){
@@ -67,4 +67,4 @@ with sync_playwright() as p:
         found=candidates(page,['input[type=file]'],visible=False,container_visible=True)
         assert found and found.evaluate("e=>e.parentElement.tagName")=="LABEL"
     finally:browser.close()
-print('PASS: 双比例封面确认只作用于封面；小红书实际 Preview 分支、上传中、失败和隐藏预览分别验证。')
+print('PASS: 双比例封面确认只作用于封面；B站填写、上传中、失败和隐藏状态分别验证。')

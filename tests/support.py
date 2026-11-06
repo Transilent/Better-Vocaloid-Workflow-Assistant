@@ -33,6 +33,7 @@ def ensure_fixture(app):
     draft = '本家：合成测试素材\nSTAFF：合成测试作者'
     (job / '发布简介草稿.txt').write_text(draft, encoding='utf-8')
     content = {name: {'title': '【测试翻唱】合成测试', 'description': draft} for name in ('bilibili', 'xiaohongshu')}
+    content['xiaohongshu']['ai_generated'] = True
     bundle = prepare(job, video, content, cover_file=cover, parent=scratch / 'bundles')
     pointer.write_text(str(bundle), encoding='utf-8')
     return bundle

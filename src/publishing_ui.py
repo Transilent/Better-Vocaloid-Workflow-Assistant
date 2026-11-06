@@ -6,13 +6,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PyQt5.QtCore import QThread, pyqtSignal, QTimer, Qt
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtCore import QThread, pyqtSignal, QTimer, Qt, QUrl
+from PyQt5.QtGui import QDesktopServices, QPixmap
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QLabel, QPushButton,
                             QDoubleSpinBox, QTextEdit, QCheckBox, QFileDialog, QMessageBox, QTabWidget,
-                            QScrollArea, QComboBox)
+                            QScrollArea, QComboBox, QApplication)
 from common import ROOT, atomic_json, load_config, saved_path
 from publication import SourceInfoError, read_source_info, source_draft, clean_path, extract_cover, prepare
+from publication import (XIAOHONGSHU, XIAOHONGSHU_CREATOR_URL, BROWSER_PLATFORMS, PUBLICATION_LIMITS,
+                         AI_REQUIRED, AI_PLATFORM_HINT, MANUAL_ONLY, publication_file_stamp)
 
 
 class Task(QThread):
@@ -58,6 +60,8 @@ class PublishingTab(QWidget):
         self._cover_asset_paths={}
         self._cover_asset_item_state={}
         self.upload_preflight_error=None
+        self.manual_preflight_error = None
+        self._manual_handoff = None
         from publishing_layout import build
         build(self)
         self.timer = QTimer(self)
@@ -101,7 +105,7 @@ class PublishingTab(QWidget):
     def upload_ready(self):
         if self.busy() or self.storage_is_busy():
             return False
-        if not self.bundle_inputs_current() or not self.content() or self.upload_preflight_error:
+        if not self.bundle_inputs_current() or 'bilibili' not in self.content() or self.upload_preflight_error:
             return False
         return (Path(self.bundle) / 'manifest.json').is_file()
 
@@ -118,12 +122,12 @@ class PublishingTab(QWidget):
             reason = '请先生成发布资料。'
         elif self.bundle_inputs != self.input_snapshot():
             reason = '成品、来源、封面或平台草稿已变化，请重新生成发布资料。'
-        elif not self.content():
-            reason = '请至少启用一个平台草稿。'
+        elif 'bilibili' not in self.content():
+            reason = '本次未启用 B站草稿。'
         elif self.upload_preflight_error:
             reason = '上次发布资料检查未通过；请重新生成后再试。'
         elif enabled:
-            reason = '打开所选平台网页供你填写；最终发布需你在网页确认。'
+            reason = '打开 B站创作中心填写；最终发布需你在网页确认。'
         else:
             reason = '发布资料缺少必要文件，请重新生成。'
         self.upload_button.setToolTip(reason)
@@ -132,6 +136,7 @@ class PublishingTab(QWidget):
         if hasattr(self, 'prepare_button'):
             self.prepare_button.setEnabled(not self.busy())
         self.refresh_upload_button()
+        self.refresh_handoff()
         self.refresh_cover_assets()
         self.refresh_review()
 
@@ -214,11 +219,13 @@ class PublishingTab(QWidget):
             for platform, values in selected.items():
                 title_length = len(values['title'])
                 description_length = len(values['description'])
-                limits = (80, 2000) if platform == 'bilibili' else (20, 1000)
+                limits = PUBLICATION_LIMITS[platform]
                 drafts_valid = drafts_valid and bool(values['title'].strip())
                 drafts_valid = drafts_valid and bool(values['description'].strip())
                 drafts_valid = drafts_valid and title_length <= limits[0]
                 drafts_valid = drafts_valid and description_length <= limits[1]
+                if platform == XIAOHONGSHU:
+                    drafts_valid = drafts_valid and type(values.get('ai_generated')) is bool
                 drafts.append(
                     f'{platform_names[platform]} {title_length}/{description_length} 字'
                 )
@@ -244,7 +251,7 @@ class PublishingTab(QWidget):
                 active.append(platform_names[platform] + '：' + status.text())
         self.set_review_state(
             'browser',
-            '；'.join(active) if active else '尚未打开；发布资料就绪后可打开平台填写',
+            '；'.join(active) if active else '发布资料就绪后，可打开 B站填写或核对小红书手动投稿资料。',
             'muted',
         )
 
@@ -270,7 +277,7 @@ class PublishingTab(QWidget):
             self.workspace.select(index+1)
             if self.workspace.stack.currentIndex()==index+1:
                 self.status.setText(
-                    _tr('检查') + self.workspace.titles[index + 1] + _tr('，完成后继续下一步。') if index < 2 else _tr('资料检查完成，可生成发布资料；生成并核对后再打开平台填写。')
+                    _tr('检查') + self.workspace.titles[index + 1] + _tr('，完成后继续下一步。') if index < 2 else _tr('文稿已检查，可以生成发布资料。')
                 )
         except (OSError,ValueError) as exc:
             self.status.setText(str(exc))
@@ -302,7 +309,7 @@ class PublishingTab(QWidget):
                 if not self.content():
                     raise ValueError("请至少启用一个平台草稿。")
                 for platform, content in self.content().items():
-                    validate_content(content, platform)
+                    validate_content(content, platform, require_ai=True)
             except ValueError:
                 self.workspace.select(2)
                 raise
@@ -485,6 +492,7 @@ class PublishingTab(QWidget):
         self.bundle = None
         self.bundle_inputs = None
         self.upload_preflight_error = None
+        self.manual_preflight_error = None
         self.refresh_cover_assets(force=True)
         if hasattr(self, 'cover_asset_mode'):
             previous = self.cover_asset_mode.blockSignals(True)
@@ -550,7 +558,7 @@ class PublishingTab(QWidget):
 
     def count_text(self):
         for platform, fields in self.fields.items():
-            a, b = (80, 2000) if platform == "bilibili" else (20, 1000)
+            a, b = PUBLICATION_LIMITS[platform]
             fields["counter"].setText(_tr('标题 {0}/{1} 字 · 简介 {2}/{3} 字；超长时请编辑，助手不会自动删去 STAFF。', f"{len(fields['title'].text())}", f'{a}', f"{len(fields['description'].toPlainText())}", f'{b}'))
             role='error' if len(fields['title'].text())>a or len(fields['description'].toPlainText())>b else 'muted'
             fields['counter'].setProperty('role',role)
@@ -687,8 +695,13 @@ class PublishingTab(QWidget):
         return self.display_cover(path, detail)
 
     def content(self):
-        return {platform: {"title": fields["title"].text().strip(), "description": fields["description"].toPlainText()}
-                for platform, fields in self.fields.items() if fields["enabled"].isChecked()}
+        content = {platform: {"title": fields["title"].text().strip(), "description": fields["description"].toPlainText()}
+                   for platform, fields in self.fields.items() if fields["enabled"].isChecked()}
+        if XIAOHONGSHU in content:
+            disclosure = self.fields[XIAOHONGSHU]['ai_generated'].currentData()
+            if type(disclosure) is bool:
+                content[XIAOHONGSHU]['ai_generated'] = disclosure
+        return content
 
     def prepare_bundle(self):
         try:
@@ -711,6 +724,8 @@ class PublishingTab(QWidget):
                 ensure_source_video(job)
             return prepare(job, video, content, seconds, image, cover_mode=mode)
         def ready(bundle):
+            self._manual_handoff = None
+            self.manual_preflight_error = None
             self.bundle = bundle
             self.bundle_inputs = inputs
             self.upload_preflight_error = None
@@ -721,7 +736,7 @@ class PublishingTab(QWidget):
             self.show_cover(bundle / "cover.jpg", '发布资料中的原图')
             manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
             self.status.setText(
-                _tr('发布资料已生成 · 成品 {0} 秒 · 核对后可打开平台填写。', f"{manifest['video']['duration']:.2f}")
+                _tr('发布资料已生成 · 成品 {0} 秒 · 可继续核对所选平台资料。', f"{manifest['video']['duration']:.2f}")
             )
             self.log_message(str(bundle))
             self.save_settings()
@@ -768,6 +783,9 @@ class PublishingTab(QWidget):
         kind = data["cover"].get("kind", "frame" if data["cover"].get("seconds") is not None else "custom")
         self.cover_mode.setCurrentIndex(max(0, self.cover_mode.findData(kind)))
         self.cover_file.setText(str(clean_path(data["cover"]["source"])) if kind == "custom" else "")
+        disclosure = data['content'].get(XIAOHONGSHU, {}).get('ai_generated')
+        self.fields[XIAOHONGSHU]['ai_generated'].setCurrentIndex(
+            1 if disclosure is True else 2 if disclosure is False else 0)
         if inputs:
             for key in ("song", "voice", "credit"):
                 getattr(self, key).setText(inputs.get(key, ""))
@@ -787,6 +805,8 @@ class PublishingTab(QWidget):
                 self.source_info.setText(_tr('来源任务资料不可读；发布文稿、成品和封面已从发布资料包恢复。'))
         else:
             self.source_info.setText(_tr('来源任务不可用；发布文稿、成品和封面已从发布资料包恢复，打开平台前会再次校验。'))
+        self._manual_handoff = None
+        self.manual_preflight_error = None
         self.bundle = bundle
         self.bundle_inputs = self.input_snapshot()
         self.upload_preflight_error = None
@@ -795,7 +815,7 @@ class PublishingTab(QWidget):
         self.cover_asset_mode.blockSignals(previous)
         self.refresh_cover_assets(force=True)
         self.show_cover(bundle / "cover.jpg", '发布资料中的原图')
-        self.status.setText(_tr('已载入发布资料并完成检查。打开平台填写前会再次核对文件。'))
+        self.status.setText(_tr('已载入发布资料。交接前会再次核对文件。'))
         self.refresh_action()
         self.refresh_browser_controls()
         self.refresh_review()
@@ -810,6 +830,8 @@ class PublishingTab(QWidget):
                 QMessageBox.warning(self, _tr('发布资料无法载入'), _tr(str(exc)))
 
     def browser_location(self, platform):
+        if platform not in BROWSER_PLATFORMS:
+            return None
         process = self.processes.get(platform)
         if process is not None and process.poll() is None:
             return process.vf_location
@@ -846,6 +868,7 @@ class PublishingTab(QWidget):
                 live.add(platform)
         from task_store import locked
         profiles = ROOT / "cache/publish-browser"
+        # A legacy helper may still own a lock. Protect it from concurrent cleanup.
         for platform in ("bilibili", "xiaohongshu"):
             if locked(profiles / platform):
                 live.add(platform)
@@ -855,6 +878,9 @@ class PublishingTab(QWidget):
         return bool(self.live_browser_platforms())
 
     def resume_browser(self, platform):
+        if platform not in BROWSER_PLATFORMS:
+            self.status.setText(MANUAL_ONLY)
+            return
         if self.bundle is None or self.bundle_inputs != self.input_snapshot():
             QMessageBox.warning(self, _tr('发布资料已变化'), _tr('请载入原发布资料，或按当前内容重新生成后再填写。'))
             return
@@ -876,6 +902,9 @@ class PublishingTab(QWidget):
             QMessageBox.warning(self, _tr('无法继续填写'), _tr(str(exc)))
 
     def launch_browser(self, platform, login_only=False):
+        if platform not in BROWSER_PLATFORMS:
+            self.status.setText(MANUAL_ONLY)
+            return
         storage = getattr(self.owner, "storage", None)
         storage_busy = getattr(storage, "busy", None)
         if callable(storage_busy) and storage_busy():
@@ -913,11 +942,22 @@ class PublishingTab(QWidget):
         self.refresh_review()
 
     def upload_selected(self):
-        if self.busy():
+        if 'bilibili' in self.content():
+            self._start_bundle_preflight('bilibili')
+
+    def check_xiaohongshu(self):
+        fields = self.content().get(XIAOHONGSHU)
+        if not fields:
             return
-        platforms = list(self.content())
-        if not platforms:
-            QMessageBox.warning(self, _tr('没有选择平台'), _tr('请选择需要填写的平台。'))
+        if type(fields.get('ai_generated')) is not bool:
+            self.status.setText(AI_REQUIRED)
+            return
+        self._manual_handoff = None
+        self.manual_preflight_error = None
+        self._start_bundle_preflight(XIAOHONGSHU)
+
+    def _start_bundle_preflight(self, platform):
+        if self.busy():
             return
         if self.bundle is None or self.bundle_inputs != self.input_snapshot():
             QMessageBox.warning(self, _tr('请先生成发布资料'), _tr('请先生成与当前成品、封面和文稿一致的发布资料。'))
@@ -932,15 +972,10 @@ class PublishingTab(QWidget):
         bundle = Path(self.bundle)
         frozen_inputs = self.input_snapshot()
         frozen_binding = json.loads(json.dumps(self.bundle_inputs))
-        platforms = tuple(platforms)
         manifest = bundle / 'manifest.json'
 
-        def manifest_stamp():
-            stat = manifest.stat()
-            return stat.st_mtime_ns, stat.st_size
-
         try:
-            frozen_manifest = manifest_stamp()
+            frozen_manifest = publication_file_stamp(manifest)
         except OSError as exc:
             self.status.setText(_tr('发布资料无法读取，请重新生成后再打开平台填写。'))
             QMessageBox.warning(self, _tr('发布资料检查未通过'), _tr(str(exc)))
@@ -948,37 +983,41 @@ class PublishingTab(QWidget):
             return
 
         def validate_bundle():
-            # This method has no GUI access. Large video/cover hashes stay off the
-            # event loop; repeating load_bundle per platform also checks platform variants.
-            from publication import load_bundle
-            for platform in platforms:
+            # Hash large assets on the worker; the platform action runs on the UI thread.
+            from publication import load_bundle, xiaohongshu_handoff
+            if platform == XIAOHONGSHU:
+                handoff = xiaohongshu_handoff(bundle)
+            else:
                 load_bundle(bundle, platform)
-            return bundle, frozen_inputs, frozen_binding, frozen_manifest, platforms
+                handoff = None
+            return bundle, frozen_inputs, frozen_binding, frozen_manifest, platform, handoff
 
         self.start_task(
             validate_bundle,
             self.finish_upload_preflight,
             status_text="正在检查发布资料…",
-            failure=self.upload_preflight_failed,
+            failure=lambda text: self.upload_preflight_failed(text, platform),
         )
 
-    def upload_preflight_failed(self, text):
-        self.upload_preflight_error = str(text)
+    def upload_preflight_failed(self, text, platform='bilibili'):
+        if platform == XIAOHONGSHU:
+            self.manual_preflight_error = str(text)
+        else:
+            self.upload_preflight_error = str(text)
         self.status.setText(_tr('发布资料检查未通过；请检查文件或重新生成后再试。'))
         self.log_message("发布资料检查未通过：" + str(text))
         self.log_toggle.setChecked(True)
         QMessageBox.warning(
             self,
             _tr('发布资料检查未通过'),
-            _tr('{0}\n\n可以重新生成发布资料后再打开平台填写。', f'{text}'),
+            _tr('{0}\n\n请检查素材和文稿，必要时重新生成发布资料。', f'{text}'),
         )
 
     def finish_upload_preflight(self, result):
-        bundle, frozen_inputs, frozen_binding, frozen_manifest, platforms = result
+        bundle, frozen_inputs, frozen_binding, frozen_manifest, platform, handoff = result
         manifest = Path(bundle) / 'manifest.json'
         try:
-            stat = manifest.stat()
-            current_manifest = (stat.st_mtime_ns, stat.st_size)
+            current_manifest = publication_file_stamp(manifest)
         except OSError:
             current_manifest = None
         stale = (
@@ -999,8 +1038,15 @@ class PublishingTab(QWidget):
             )
             self.refresh_action()
             return
-        self.status.setText(_tr('发布资料检查通过，正在打开所选平台填写…'))
-        for platform in platforms:
+        if platform == XIAOHONGSHU:
+            if handoff['fields'] != frozen_inputs['content'][XIAOHONGSHU]:
+                self.upload_preflight_failed(_tr('发布资料中的小红书文稿与当前内容不一致。'), XIAOHONGSHU)
+                return
+            self._manual_handoff = (bundle, handoff)
+            self.status.setText(_tr('小红书资料已核对。请复制文案并在官方端手动上传。'))
+            self.refresh_handoff()
+        else:
+            self.status.setText(_tr('发布资料检查通过，正在打开 B站填写…'))
             self.launch_browser(platform)
 
     def poll_browser(self):
@@ -1011,7 +1057,7 @@ class PublishingTab(QWidget):
                 data = json.loads(path.read_text(encoding="utf-8"))
                 message=data.get('message') or data.get('state','正在等待平台响应。')
                 self.account_status[platform].setText(message)
-                messages.append(('B站' if platform=='bilibili' else '小红书')+'：'+message)
+                messages.append('B站：'+message)
             except (OSError, ValueError):
                 pass
             if process.poll() is not None:
@@ -1027,14 +1073,14 @@ class PublishingTab(QWidget):
         if messages:
             self.status.setText("\n".join(messages))
         elif self.bundle:
-            for platform in self.fields:
+            for platform in BROWSER_PLATFORMS:
                 try:
                     if self.browser_location(platform):
                         location = self.browser_location(platform)
                         data = json.loads((location / (platform + "_上传状态.json")).read_text(encoding="utf-8"))
                         message=data.get('message') or data.get('state','正在等待平台响应。')
                         self.account_status[platform].setText(message)
-                        messages.append(('B站' if platform=='bilibili' else '小红书')+'：'+message)
+                        messages.append('B站：'+message)
                 except (OSError, ValueError):
                     pass
             if messages:
@@ -1060,6 +1106,59 @@ class PublishingTab(QWidget):
                 except (OSError,ValueError): pass
             actions['resume'].setEnabled(can_resume)
         self.refresh_upload_button()
+        self.refresh_handoff()
+
+    def refresh_handoff(self):
+        if not hasattr(self, 'manual_actions'):
+            return
+        fields = self.content().get(XIAOHONGSHU)
+        eligible = bool(fields and type(fields.get('ai_generated')) is bool
+                        and self.bundle_inputs_current())
+        idle = not (self.busy() or self.workspace.locked or self.storage_is_busy())
+        ready = bool(eligible and self._manual_handoff and self._manual_handoff[0] == self.bundle)
+        if not ready:
+            self._manual_handoff = None
+        self.manual_check.setEnabled(eligible and idle)
+        for control in self.manual_actions.values():
+            control.setEnabled(ready and idle)
+        if not fields:
+            message = '本次未启用小红书草稿。'
+        elif type(fields.get('ai_generated')) is not bool:
+            message = AI_REQUIRED
+        elif self.manual_preflight_error and eligible:
+            message = self.manual_preflight_error
+        elif ready:
+            message = (AI_PLATFORM_HINT if fields['ai_generated']
+                       else '本地选择：不含 AI 生成或合成内容。若素材有变，请重新核对声明。')
+        else:
+            message = '请生成与当前文稿一致的资料，再核对视频、封面和声明。'
+        self.manual_status.setText(message)
+
+    def xiaohongshu_action(self, action):
+        self.refresh_handoff()
+        if not self._manual_handoff or self.busy() or self.workspace.locked or self.storage_is_busy():
+            return
+        bundle, handoff = self._manual_handoff
+        try:
+            if any(publication_file_stamp(path) != stamp for path, stamp in handoff['stamps'].items()):
+                raise ValueError('发布资料或素材已变化，请重新核对。')
+        except (OSError, ValueError):
+            self._manual_handoff = None
+            self.manual_preflight_error = '发布资料或素材已变化，请重新核对。'
+            self.refresh_handoff()
+            self.status.setText(_tr('发布资料或素材已变化，请重新核对。'))
+            return
+        fields = handoff['fields']
+        copies = {'title': fields['title'], 'description': fields['description'],
+                  'all': fields['title'] + '\n\n' + fields['description'],
+                  'video': str(handoff['video']), 'cover': str(handoff['cover'])}
+        if action in copies:
+            QApplication.clipboard().setText(copies[action])
+            self.status.setText(_tr('已复制到剪贴板。'))
+        elif action == 'folder':
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(bundle)))
+        elif action == 'official':
+            QDesktopServices.openUrl(QUrl(XIAOHONGSHU_CREATOR_URL))
 
     def stop_browser(self, platform):
         location = self.browser_location(platform)

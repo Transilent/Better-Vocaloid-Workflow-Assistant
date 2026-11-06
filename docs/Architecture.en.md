@@ -53,7 +53,7 @@ The VWA appearance uses light/dark semantic palettes, shared Qt styles and a cac
 | `v2m_runtime.py`, `midi_bridge.py` | Bundled transcription integration |
 | `midi_checks.py`, `midi_merge.py` | Review hints, MIDI validation and track assembly |
 | `cover_art.py`, `publication.py` | Original covers, padded variants, publication bundles |
-| `publishing_ui.py`, `publish_browser.py` | Platform sign-in and upload preparation |
+| `publishing_ui.py`, `publish_browser.py` | Local publication handoff and Bilibili-only browser assistance |
 | `publish-selectors.json` | Platform page selectors |
 | `tools/build_portable.py` | Inventory-based ZIP creation and splitting |
 | `tools/Install-Runtime.ps1` | Frozen legacy source-checkout path; consumes the BVWA-root compatibility metadata and Release ZIP |

@@ -170,7 +170,7 @@ tab.bundle = APP / 'work/placeholder-bundle'
 tab.bundle_inputs = tab.input_snapshot()
 tab.refresh_action()
 assert tab.prepare_button.text() == '生成发布资料'
-assert tab.upload_button.text() == '打开平台填写'
+assert tab.upload_button.text() == '打开 B站填写'
 assert not tab.upload_button.isEnabled(), 'A placeholder path is not a prepared publication bundle'
 tab.fields['bilibili']['title'].setText('修改后的草稿')
 assert tab.prepare_button.text() == '生成发布资料'

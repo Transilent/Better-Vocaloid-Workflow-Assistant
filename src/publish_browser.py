@@ -1,4 +1,4 @@
-"""Reusable creator-page uploader. Final publish is exclusively a human action."""
+"""Bilibili creator-page uploader. Final publish is exclusively a human action."""
 import argparse
 import base64
 import json
@@ -12,7 +12,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path[:0] = [str(ROOT), str(ROOT / "vendor")]
 from common import atomic_json, file_hash, load_config
-from publication import clean_path, load_bundle
+from publication import BROWSER_PLATFORMS, clean_path, load_bundle, require_browser_platform
+
+BILIBILI_HOST = 'member.bilibili.com'
 
 
 class ManualStep(RuntimeError):
@@ -20,6 +22,7 @@ class ManualStep(RuntimeError):
 
 
 def load_selectors(platform):
+    require_browser_platform(platform)
     data = json.loads((ROOT/'publish-selectors.json').read_text(encoding='utf-8'))
     if not isinstance(data, dict):
         raise ValueError('上传页面配置需要是 JSON 对象。')
@@ -28,20 +31,37 @@ def load_selectors(platform):
             or type(metadata.get('revision')) is not int or metadata['revision'] < 0):
         raise ValueError('上传页面配置版本不兼容，请更新助手。')
     settings = data.get(platform)
-    hosts = {'bilibili': 'member.bilibili.com', 'xiaohongshu': 'creator.xiaohongshu.com'}
-    if not isinstance(settings, dict) or platform not in hosts:
+    if not isinstance(settings, dict):
         raise ValueError('上传平台配置无效。')
     if not isinstance(settings.get('url'), str):
         raise ValueError('上传页面地址无效。')
     url = urllib.parse.urlsplit(settings['url'])
-    if url.scheme != 'https' or url.hostname != hosts[platform]:
+    if url.scheme != 'https' or url.hostname != BILIBILI_HOST:
         raise ValueError('上传页面地址不属于对应的创作中心。')
     return settings
 
 
+def _editor_url(url):
+    parsed = urllib.parse.urlsplit(url)
+    return parsed.scheme == 'https' and parsed.hostname == BILIBILI_HOST
+
+
+def _local_fixture_url(url):
+    parsed = urllib.parse.urlsplit(url)
+    return url == 'about:blank' or (parsed.scheme == 'http' and parsed.hostname in ('127.0.0.1', 'localhost'))
+
+
+def _editor_frames(page):
+    if _editor_url(page.url):
+        return (frame for frame in page.frames if _editor_url(frame.url))
+    if _local_fixture_url(page.url):
+        return (frame for frame in page.frames if _local_fixture_url(frame.url))
+    raise ManualStep('当前网页不是 B站创作中心，请检查浏览器地址。')
+
+
 def candidates(page, selectors, *, visible=True, container_visible=False):
     for selector in selectors:
-        for frame in page.frames:
+        for frame in _editor_frames(page):
             try:
                 locator = frame.locator(selector)
                 available = [locator.nth(i) for i in range(locator.count())
@@ -108,7 +128,7 @@ def safe_click(locator, *, cover_confirmation=False):
 
 
 def click_named(page, labels, *, cover_confirmation=False, scope=None):
-    scopes = [scope] if scope is not None else page.frames
+    scopes = [scope] if scope is not None else _editor_frames(page)
     for label in labels:
         for frame in scopes:
             for locator in (frame.get_by_role("button", name=label, exact=True), frame.get_by_text(label, exact=True)):
@@ -151,7 +171,7 @@ def fill_exact(locator, value):
 
 def image_signature(page, selectors):
     result = []
-    for frame in page.frames:
+    for frame in _editor_frames(page):
         for selector in selectors:
             try:
                 result += frame.locator(selector).evaluate_all(
@@ -181,7 +201,7 @@ def open_cover(page, settings):
 def confirm_cover_dialog(page):
     # Confirm only inside an identified cover dialog. Never use a page-wide
     # '确定'/'完成' click; the page may also contain a publish confirmation.
-    for frame in page.frames:
+    for frame in _editor_frames(page):
         # This footer belongs to the identified dual-ratio cover editor. Its
         # sample feed can contain video titles mentioning 发布/投稿; those titles
         # do not determine the meaning of this editor's 完成 action.
@@ -208,11 +228,11 @@ def confirm_cover_dialog(page):
 
 
 def upload_finished(page, settings):
-    for frame in page.frames:
+    for frame in _editor_frames(page):
         for selector in settings.get("upload_ready", []):
             if frame.locator(selector).count() == 1 and frame.locator(selector).is_visible():
                 return True
-    for frame in page.frames:
+    for frame in _editor_frames(page):
         for selector in settings.get("upload_done", []):
             for item in frame.locator(selector).all():
                 if item.is_visible():
@@ -223,7 +243,7 @@ def upload_finished(page, settings):
 
 
 def cover_dialog_open(page):
-    for frame in page.frames:
+    for frame in _editor_frames(page):
         if frame.locator(".cover-editor,.videoup-confirm-modal,[role=dialog],.el-dialog,.cover-modal").evaluate_all(
                 "es=>es.some(e=>e.getBoundingClientRect().height>0&&getComputedStyle(e).visibility!=='hidden'&&e.innerText.includes('封面'))"):
             return True
@@ -348,6 +368,7 @@ def upload_bilibili_covers(page, settings, bundle, variants, check=lambda: None)
 
 def fill_upload(page, settings, data, cover, update, check=lambda: None, timeout=900):
     """Works with real DOMs and offline fixtures. Does not navigate or publish."""
+    _editor_frames(page)
     details = {"video_selected": False, "upload_complete": False,
                "title_filled": False, "description_filled": False, "cover_filled": False}
     if candidates(page, settings["video_input"], visible=False) is None:
@@ -362,12 +383,13 @@ def fill_upload(page, settings, data, cover, update, check=lambda: None, timeout
 
 
 def fill_existing(page, settings, data, cover, update, check=lambda: None, timeout=900, details=None):
+    _editor_frames(page)  # Reject unsupported pages before reading any local state.
     details = dict(details or {"video_selected": True, "upload_complete": False,
                               "title_filled": False, "description_filled": False, "cover_filled": False})
     notes = []
     details.pop("cover_selected", None)
     host = urllib.parse.urlsplit(page.url).hostname or "browser"
-    platform = {"member.bilibili.com": "bilibili", "creator.xiaohongshu.com": "xiaohongshu"}.get(host)
+    platform = 'bilibili' if _editor_url(page.url) else None
     control_root = Path(cover).parent
     if platform and (control_root / (platform + ".replacement.json")).exists():
         command = json.loads((control_root / (platform + ".replacement.json")).read_text(encoding="utf-8"))
@@ -406,7 +428,7 @@ def fill_existing(page, settings, data, cover, update, check=lambda: None, timeo
             # Test-only handoff from this assistant's own authenticated profile.
             # The fixed private cache path is never included in diagnostics.
             state = page.context.storage_state()
-            domains = ("bilibili.com", "biliapi.com") if platform == "bilibili" else ("xiaohongshu.com",)
+            domains = ("bilibili.com", "biliapi.com")
             state["cookies"] = [c for c in state["cookies"] if any(c["domain"].lstrip(".") == d or c["domain"].endswith("." + d) for d in domains)]
             state["origins"] = [o for o in state["origins"] if any((urllib.parse.urlsplit(o["origin"]).hostname or "") == d or (urllib.parse.urlsplit(o["origin"]).hostname or "").endswith("." + d) for d in domains)]
             atomic_json(ROOT / "cache/publish-browser" / platform / "offscreen-session.json", state)
@@ -464,12 +486,6 @@ def fill_existing(page, settings, data, cover, update, check=lambda: None, timeo
         def find_cover_input():
             found = candidates(page, settings["cover_input"], visible=False, container_visible=True)
             if found is None:
-                if host == "creator.xiaohongshu.com":
-                    clear = candidates(page, [".main-cover-editor-modal .uploaded-thumbnail-clear[aria-label='清除已上传封面']"])
-                    if clear is not None and not clear.evaluate("e=>e.closest('button')?.disabled || false"):
-                        modal_text = clear.evaluate("e=>e.closest('.main-cover-editor-modal').innerText")
-                        if "设置封面" in modal_text and not re.search(r"发布|投稿|提交审核|提交作品", modal_text):
-                            clear.click(timeout=7000)
                 click_named(page, settings.get("cover_tabs", []))
                 found = candidates(page, settings["cover_input"], visible=False, container_visible=True)
             return found
@@ -556,6 +572,7 @@ def restore_migrated_session(context, profile):
 
 
 def run(platform, bundle=None, headless=False, login_only=False):
+    require_browser_platform(platform)
     from playwright.sync_api import sync_playwright
     from pipeline import job_lock
     settings = load_selectors(platform)
@@ -630,8 +647,7 @@ def run(platform, bundle=None, headless=False, login_only=False):
                     return
                 def editor_ready():
                     parsed = urllib.parse.urlsplit(page.url)
-                    expected = "member.bilibili.com" if platform == "bilibili" else "creator.xiaohongshu.com"
-                    if parsed.hostname != expected or "/login" in parsed.path:
+                    if not _editor_url(page.url) or "/login" in parsed.path:
                         return None
                     locator = candidates(page, settings["video_input"], visible=False)
                     if locator is None:
@@ -641,9 +657,7 @@ def run(platform, bundle=None, headless=False, login_only=False):
                 found = wait_for(page, editor_ready, 600, check)
                 if found is None:
                     raise ManualStep("等待登录或视频上传页超时，请登录后再次开始上传。")
-                parsed = urllib.parse.urlsplit(page.url)
-                expected = "member.bilibili.com" if platform == "bilibili" else "creator.xiaohongshu.com"
-                if parsed.scheme != "https" or parsed.hostname != expected:
+                if not _editor_url(page.url):
                     raise ManualStep("当前网页不是预期的创作中心，请检查浏览器地址。")
                 fill_upload(page, settings, {**data, "fields": data["content"][platform]},
                             clean_path(bundle) / "cover.jpg", update, check)
@@ -690,8 +704,10 @@ def dt_now():
 
 def diagnose_page(page):
     result = {"url": page.url, "captured_at": dt_now(), "frames": []}
+    if not _editor_url(page.url):
+        return result
     for frame in page.frames:
-        if "member.bilibili.com" not in frame.url and "creator.xiaohongshu.com" not in frame.url:
+        if not _editor_url(frame.url):
             continue
         controls = frame.locator("input,textarea,[contenteditable],button,[role=dialog]").evaluate_all(
             "es => es.map(e=>({tag:e.tagName,type:e.type,class:e.className,placeholder:e.getAttribute('placeholder'),"
@@ -722,8 +738,8 @@ def diagnose_page(page):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="上传视频、填写标题/简介/封面，最后人工发布")
-    parser.add_argument("--platform", choices=("bilibili", "xiaohongshu"), required=True)
+    parser = argparse.ArgumentParser(description="辅助 B站上传与填写，最终发布由用户确认")
+    parser.add_argument("--platform", choices=BROWSER_PLATFORMS, required=True)
     parser.add_argument("--bundle")
     parser.add_argument("--login", action="store_true")
     args = parser.parse_args()

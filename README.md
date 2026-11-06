@@ -14,7 +14,7 @@ VWA is a Windows desktop assistant for preparing singing-synthesis projects, tun
 | Tuning | Open a task project or local SVP, select vocal tracks and a parameter source, optionally add experimental styles, style regions and local pitch gestures, and save a separate project. |
 | Simple mixing | Balance up to three rendered vocal WAVs and one accompaniment with track level, pan, mute/solo, vocal timing and reverb sends, shared vocal-bus EQ/compression/reverb, and editable A/B previews. |
 | Video assembly | Combine a video with your Mixdown, with automatic alignment, manual offset and optional loudness adjustment. |
-| Publishing | Prepare covers, titles, descriptions and credits, and assist with Bilibili and Xiaohongshu uploads. Confirm publication on the platform website. |
+| Publishing | Prepare covers, titles, descriptions and credits. Bilibili supports assisted upload; Xiaohongshu provides a local handoff for manual posting and AI disclosure. |
 | Agent/MCP (optional) | Connect a compatible host to 12 typed top-level VWA tools for preparation, evidence review, decisions, export, recovery and delivery. Setup is separate from the desktop application. |
 
 Tuning offers preservation of existing expression, reference-vocal mapping, measured voicebank calibration, transfer of existing parameters, time-region style editing, style autosave and an independent Chinese-opera technique. Reference mapping and the Gentle, Sad and Bright & Cheerful styles are experimental drafts; synthesize and audition them with the target voicebank. Calibration requires a matching score and voicebank setup, with trial audio exported from SV by the user. Voice synthesis takes place in your singing editor.

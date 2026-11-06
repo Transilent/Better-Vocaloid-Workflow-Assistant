@@ -22,7 +22,7 @@ Imported track names and note counts use two lines. When no mapping columns are 
 
 Video assembly accepts independent local video and Mixdown files. Offset is in seconds: positive delays the Mixdown, negative advances it. Automatic alignment disables manual offset. Optional -14 LUFS processing is separate. A static source frame is a preview, not a synchronized audition or a final output. External playback uses the system application. Only the verified formal result can be taken to Publishing; changing inputs invalidates that result selection.
 
-Publishing retains four steps and distinguishes generating materials from opening platform forms. The cover choices are original Bilibili cover, custom image and source-video frame. The original-image preview is distinct from Bilibili's generated 4:3 and 16:9 assets, which fit the whole image with padding. Edits to source, final video, cover or platform copy require regenerating the materials. Sign-in, verification challenges and final publication remain in the user's browser.
+Publishing retains four steps. After generating the files, open Bilibili's form or check the Xiaohongshu package for manual posting. The cover choices are the source cover, a custom image and a source-video frame. Bilibili's 4:3 and 16:9 covers preserve the whole image with padding. Xiaohongshu provides local drafts, media paths and a required AI disclosure choice. Regenerate the files after changing source, video, cover, draft or disclosure.
 
 ## Appearance and input
 

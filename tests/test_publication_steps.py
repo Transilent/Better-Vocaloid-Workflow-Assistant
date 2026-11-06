@@ -139,11 +139,15 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work') as tmp:
     assert tab.workspace.stack.currentIndex()==1 and '封面图片' in tab.status.text()
     tab.cover_file.setText(str(cover_path));tab.select_step(2)
     assert all(fields['description'].isVisible() for fields in tab.fields.values())
+    tab.fields['xiaohongshu']['enabled'].setChecked(True)
     tab.fields['xiaohongshu']['title'].setText('长'*21)
     QTest.mouseClick(tab.workspace.next,Qt.LeftButton)
     assert tab.workspace.stack.currentIndex()==2 and '20' in tab.status.text()
     assert tab.fields['xiaohongshu']['counter'].property('role')=='error'
     tab.fields['xiaohongshu']['title'].setText('测试翻唱')
+    QTest.mouseClick(tab.workspace.next,Qt.LeftButton);app.processEvents()
+    assert tab.workspace.stack.currentIndex()==2 and 'AI' in tab.status.text()
+    tab.fields['xiaohongshu']['ai_generated'].setCurrentIndex(1)
     QTest.mouseClick(tab.workspace.next,Qt.LeftButton);app.processEvents()
     assert tab.workspace.stack.currentIndex()==3
     visible_inside(tab.prepare_button)

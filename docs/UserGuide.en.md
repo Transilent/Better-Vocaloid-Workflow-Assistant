@@ -100,14 +100,15 @@ Open **发布** (Publishing), after optional **合成视频** (Video assembly). 
 
 1. **Finished video/source:** select the finished video and its source task, or fetch source information from a BV identifier.
 2. **Cover:** preview the original cover at a large size, choose a custom image, or capture a video frame. Local music tasks require a custom image unless BV source information is added.
-3. **Title/description:** review both platforms side by side, apply the singer/title template and check credits and character limits.
-4. **Account/upload:** select **生成发布资料** (Prepare assets), then sign in and select **上传所选平台** (Upload selected platforms). The main action stays visible at the bottom while the page scrolls.
+3. **Title/description:** edit the drafts for the selected platforms and check credits and character limits. To post on Xiaohongshu, enable its draft and check whether the video, audio, cover or text contains AI-generated or synthetic content.
+4. **Review and handoff:** select **生成发布资料** (Prepare assets), then follow the relevant steps. The main action stays visible at the bottom.
 
-Use Previous/Next or the numbered steps to move between pages. Next checks the required inputs before advancing. Each platform has visible sign-in, resume and close controls; unavailable actions are disabled. Close the sign-in window after logging in. The assistant leaves creator pages open for review and manual publishing.
+- **Bilibili:** sign in, close the sign-in window, then select **打开 B站填写** (Open Bilibili to fill). Review the category, tags, credits and required fields before publishing manually. **继续填写当前页面** (Continue filling the open page) updates an open upload for the same video.
+- **Xiaohongshu:** select **核对小红书资料** (Check Xiaohongshu files), then copy the title, body or media paths, or open the package. You can open the Creator Center in your default browser or use the official app. Upload and fill the note yourself. If the note includes AI-generated or synthetic content, use the platform's note content disclosure; VWA's local selection does not set it on the platform. Check credits, attribution and permissions before posting.
 
 Original covers come from video metadata. Frame capture and custom images are separate choices. Cover conversion preserves the complete image with padding for 4:3 and 16:9 when needed.
 
-Regenerate publication files after changing a finished video, cover or draft. **继续填写当前上传** (Continue current upload) updates an open task with the same verified video. Closed browsers require a new upload. Review categories, tags, credits and remaining required fields on the creator page before publishing.
+Regenerate publication files after changing a finished video, cover, draft or disclosure. Existing packages can still be opened. If an older package lacks the Xiaohongshu AI disclosure, confirm it and regenerate the package. VWA no longer uses the old Xiaohongshu browser session; you can sign out of unused web sessions in the official app's device settings.
 
 ## CLI and diagnostics
 

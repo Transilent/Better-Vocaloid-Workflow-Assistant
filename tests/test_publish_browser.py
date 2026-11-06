@@ -1,6 +1,9 @@
 import json, os, sys, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import patch
 
 root = Path(__file__).resolve().parents[1]
 app = root
@@ -10,6 +13,30 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 from playwright.sync_api import sync_playwright
 from publication import load_bundle
 from publish_browser import fill_upload, browser_engine_options, safe_click, ManualStep, confirm_cover_dialog, fill_exact
+import publish_browser
+
+# Reject historical login/upload calls before importing Playwright, reading
+# selectors or creating a profile. Direct helpers must not touch an XHS DOM.
+with TemporaryDirectory(dir=app / 'work', prefix='browser-guard-') as folder, \
+     patch.object(publish_browser, 'ROOT', Path(folder)):
+    for call in (lambda: publish_browser.load_selectors('xiaohongshu'),
+                 lambda: publish_browser.run('xiaohongshu', login_only=True),
+                 lambda: publish_browser.run('xiaohongshu', bundle=Path(folder))):
+        try:
+            with patch('builtins.__import__', side_effect=AssertionError('automation was imported')):
+                call()
+            raise AssertionError('Xiaohongshu automation was accepted')
+        except ValueError as error:
+            assert '手动投稿' in str(error)
+    assert list(Path(folder).iterdir()) == []
+    page = SimpleNamespace(url='https://creator.xiaohongshu.com/')
+    for fill in (fill_upload, publish_browser.fill_existing):
+        try:
+            fill(page, {'video_input': []}, {}, Path(folder) / 'cover.jpg', lambda *_: None)
+            raise AssertionError('Access to Xiaohongshu DOM was accepted')
+        except ManualStep:
+            pass
+    assert publish_browser.diagnose_page(page)['frames'] == []
 
 html = r'''<!doctype html><html lang="zh"><meta charset="utf-8"><body>
 <button type="button" onclick="window.unsafe=(window.unsafe||0)+1">确定</button>
@@ -75,7 +102,8 @@ from tests.support import ensure_fixture
 bundle = ensure_fixture(app)
 data=load_bundle(bundle,'bilibili'); fields=data['content']['bilibili']
 all_settings=json.loads((app / 'publish-selectors.json').read_text(encoding='utf-8'))
-settings=all_settings['xiaohongshu']
+assert 'xiaohongshu' not in all_settings
+settings=all_settings['bilibili']
 results={'test_environment':'local DOM fixtures with real browser and HTTP uploads',
          'live_sites':'This test never connects to creator platforms.',
          'external_uploads_in_this_test':0}
@@ -85,12 +113,11 @@ try:
         assert '--no-proxy-server' in options['args'], 'Dedicated creator browser must ignore system proxies'
         browser=p.chromium.launch(**options)
         try:
-            for name,route in [('xiaohongshu','/xhs'),('bilibili_iframe','/bili')]:
+            for name,route in [('bilibili_direct','/direct'),('bilibili_iframe','/bili')]:
                 page=browser.new_page()
                 page.goto(f'http://127.0.0.1:{server.server_port}{route}')
                 updates=[]
-                selected_settings=all_settings['bilibili' if name=='bilibili_iframe' else 'xiaohongshu']
-                report=fill_upload(page,selected_settings,{**data,'fields':fields},bundle / 'cover.jpg',
+                report=fill_upload(page,settings,{**data,'fields':fields},bundle / 'cover.jpg',
                                    lambda *args:updates.append(args),timeout=5)
                 assert report['state']=='waiting_review',report
                 frame=page.frames[-1]
@@ -105,20 +132,20 @@ try:
                 results[name]=report
                 page.close()
             page=browser.new_page()
-            page.goto(f'http://127.0.0.1:{server.server_port}/xhs?mode=ambiguous')
+            page.goto(f'http://127.0.0.1:{server.server_port}/direct?mode=ambiguous')
             try: fill_upload(page,settings,{**data,'fields':fields},bundle/'cover.jpg',lambda *a:None,timeout=1)
             except ManualStep: pass
             else: raise AssertionError('Ambiguous video input accepted')
             assert page.evaluate('window.selected')==0
             results['ambiguous_input_rejected']=True; page.close()
             page=browser.new_page()
-            page.goto(f'http://127.0.0.1:{server.server_port}/xhs?mode=stuck')
+            page.goto(f'http://127.0.0.1:{server.server_port}/direct?mode=stuck')
             report=fill_upload(page,settings,{**data,'fields':fields},bundle/'cover.jpg',lambda *a:None,timeout=1)
             assert report['state']=='needs_manual' and not report['checks']['upload_complete']
             assert page.evaluate('window.published')==0
             results['unconfirmed_upload_not_reported_as_done']=True; page.close()
             page=browser.new_page()
-            page.goto(f'http://127.0.0.1:{server.server_port}/xhs?mode=missing-cover')
+            page.goto(f'http://127.0.0.1:{server.server_port}/direct?mode=missing-cover')
             report=fill_upload(page,settings,{**data,'fields':fields},bundle/'cover.jpg',lambda *a:None,timeout=1)
             assert report['state']=='needs_manual' and not report['checks']['cover_filled']
             assert report['checks']['title_filled'] and report['checks']['description_filled']
@@ -138,7 +165,7 @@ try:
             else: raise AssertionError('Live field length limit ignored')
             assert page.locator('input').input_value()==''
             results['live_maxlength_checked_before_writing']=True
-            page.goto(f'http://127.0.0.1:{server.server_port}/xhs')
+            page.goto(f'http://127.0.0.1:{server.server_port}/direct')
             def cancel(): raise InterruptedError('test cancellation')
             try: fill_upload(page,settings,{**data,'fields':fields},bundle/'cover.jpg',lambda *a:None,check=cancel,timeout=1)
             except InterruptedError: pass

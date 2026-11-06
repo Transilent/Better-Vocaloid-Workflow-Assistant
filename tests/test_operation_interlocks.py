@@ -83,7 +83,7 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='operation-interlocks-
         tab = SimpleNamespace(processes={})
         assert publishing_ui.PublishingTab.live_browser_platforms(tab) == ('xiaohongshu',)
 
-    # Both login and upload entrypoints reject while storage owns the shared cache.
+    # Login and both publication paths reject while storage owns the shared cache.
     owner = SimpleNamespace(storage=SimpleNamespace(busy=busy(True)))
     launch = SimpleNamespace(owner=owner, status=Mock(), processes={},
                              browser_location=Mock(side_effect=AssertionError('browser probe must not run')))
@@ -91,11 +91,14 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='operation-interlocks-
         publishing_ui.PublishingTab.launch_browser(launch, 'bilibili', login_only=True)
     warning.assert_called_once()
     assert '缓存' in launch.status.setText.call_args.args[0]
-    upload = SimpleNamespace(owner=owner, status=Mock(), busy=busy(False), content=lambda: {'bilibili': {}},
+    upload = SimpleNamespace(owner=owner, status=Mock(), busy=busy(False),
+        content=lambda: {'bilibili': {}, 'xiaohongshu': {'ai_generated': True}},
         bundle=object(), bundle_inputs=('same',), input_snapshot=lambda: ('same',), launch_browser=Mock())
+    upload._start_bundle_preflight = publishing_ui.PublishingTab._start_bundle_preflight.__get__(upload)
     with patch.object(publishing_ui.QMessageBox, 'warning') as warning:
         publishing_ui.PublishingTab.upload_selected(upload)
-    warning.assert_called_once()
+        publishing_ui.PublishingTab.check_xiaohongshu(upload)
+    assert warning.call_count == 2
     upload.launch_browser.assert_not_called()
 
     # Storage polling notices a live login/upload child even after publishing preparation ended.

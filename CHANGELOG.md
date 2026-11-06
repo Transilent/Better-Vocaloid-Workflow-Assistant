@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Replace Xiaohongshu browser automation with verified local publication files, copy actions and manual posting. Require an explicit AI-content disclosure for new Xiaohongshu packages; Bilibili keeps its existing upload assistance.
 - Hold the existing task lock while reusing a download and retain unverified source declarations when reprocessing local audio. Component installation and inference use the same lock while selecting and using the active runtime.
 - Reject a review response if its sections were assembled from different artifact identities or the workflow revision changed during the read. Use stable desktop page IDs while retaining legacy numeric navigation, and keep video render controls locked from launch through completion.
 - Centralize style discovery and expression-control boundaries across the GUI, MCP, drafts and calibration while preserving existing recipes, legacy IDs and parameter units. Explicit audio channel modes use separate feature-cache identities; legacy standard-mode caches remain reusable.

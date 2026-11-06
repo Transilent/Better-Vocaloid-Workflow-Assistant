@@ -1,6 +1,7 @@
 """Publication review actions, real cover variants, and stale-state guards."""
 import json
 import sys
+import tempfile
 import time
 from threading import Event
 from pathlib import Path
@@ -10,12 +11,12 @@ APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP))
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QDesktopServices, QPixmap
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
 from app import Window
-from publication import load_bundle
+from publication import XIAOHONGSHU, XIAOHONGSHU_CREATOR_URL, load_bundle, prepare
 from tests.support import ensure_fixture
 
 
@@ -43,7 +44,7 @@ def wait_idle(timeout=20):
     app.processEvents()
 
 assert tab.prepare_button.text() == '生成发布资料'
-assert tab.upload_button.text() == '打开平台填写'
+assert tab.upload_button.text() == '打开 B站填写'
 assert tab.prepare_button.isVisible() and tab.prepare_button.isEnabled()
 assert tab.upload_button.isVisible() and tab.upload_button.isEnabled()
 
@@ -58,7 +59,77 @@ launched = []
 with patch.object(tab, 'launch_browser', lambda platform: launched.append(platform)):
     QTest.mouseClick(tab.upload_button, Qt.LeftButton)
     wait_idle()
-assert set(launched) == {'bilibili', 'xiaohongshu'}, launched
+assert launched == ['bilibili'], launched
+
+# Handing off a Xiaohongshu-only package requires an explicit local declaration.
+xhs = manifest['content'][XIAOHONGSHU]
+assert set(tab.account_actions) == {'bilibili'}
+with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='xhs-handoff-') as folder:
+    scratch = Path(folder)
+    original_video = Path(manifest['video']['path'])
+    local_video = scratch / 'finished.mp4'
+    local_video.write_bytes(original_video.read_bytes())
+    source = scratch / 'source'
+    source.mkdir()
+    for name in ('request.json', 'source-info.json', '发布简介草稿.txt'):
+        (source / name).write_bytes((Path(manifest['source_job']) / name).read_bytes())
+    args = (source, local_video)
+    options = {'cover_file': bundle / 'cover.jpg', 'parent': scratch / 'bundles'}
+    for invalid in ({}, {'ai_generated': 0}, {'ai_generated': 'false'}):
+        try:
+            prepare(*args, {XIAOHONGSHU: {'title': xhs['title'], 'description': xhs['description'], **invalid}}, **options)
+            raise AssertionError('Ambiguous or absent AI declaration accepted')
+        except ValueError as error:
+            assert 'AI' in str(error)
+    assert not options['parent'].exists()
+    solo = prepare(*args, {XIAOHONGSHU: {**xhs, 'ai_generated': False}}, **options)
+    saved = load_bundle(solo, XIAOHONGSHU, require_ai=True)
+    assert saved['content'][XIAOHONGSHU]['ai_generated'] is False
+    assert not saved['platform_covers'] and not list(solo.glob('cover-bilibili-*'))
+    assert '（本地选择）：不含' in (solo / '发布前核对.txt').read_text(encoding='utf-8')
+    tab.restore_bundle(solo)
+    assert not tab.upload_button.isEnabled()
+    assert tab.manual_check.isEnabled() and not tab.manual_actions['title'].isEnabled()
+    opened = []
+    with patch('publishing_ui.ROOT', scratch), \
+         patch('publishing_ui.subprocess.Popen', side_effect=AssertionError('manual handoff launched a helper')), \
+         patch.object(QDesktopServices, 'openUrl', side_effect=lambda url: opened.append(url) or True):
+        tab.launch_browser(XIAOHONGSHU, login_only=True)
+        tab.launch_browser(XIAOHONGSHU)
+        tab.resume_browser(XIAOHONGSHU)
+        tab.stop_browser(XIAOHONGSHU)
+        tab.upload_selected()
+        assert not tab.processes and not (scratch / 'cache/publish-browser').exists()
+        tab.manual_check.click()
+        wait_idle()
+        assert not opened and tab.manual_actions['title'].isEnabled()
+        for action, expected in (
+                ('title', xhs['title']), ('description', xhs['description']),
+                ('all', xhs['title'] + '\n\n' + xhs['description']),
+                ('video', str(local_video)), ('cover', str(solo / 'cover.jpg'))):
+            tab.manual_actions[action].click()
+            assert app.clipboard().text() == expected
+        tab.manual_actions['folder'].click()
+        tab.manual_actions['official'].click()
+        assert opened[0].isLocalFile() and Path(opened[0].toLocalFile()) == solo
+        assert opened[1].toString() == XIAOHONGSHU_CREATOR_URL
+        local_video.write_bytes(b'changed after preflight')
+        tab.manual_actions['official'].click()
+        assert len(opened) == 2 and not tab.manual_actions['official'].isEnabled()
+        assert not tab.processes and not (scratch / 'cache/publish-browser').exists()
+    # Restore a v2 package without the new field without silently inferring it.
+    legacy = dict(manifest, content={**manifest['content'], XIAOHONGSHU: {
+        'title': xhs['title'], 'description': xhs['description']}})
+    (solo / 'manifest.json').write_text(json.dumps(legacy, ensure_ascii=False), encoding='utf-8')
+    (solo / 'cover.jpg').write_bytes((bundle / 'cover.jpg').read_bytes())
+    for ratio in manifest['platform_covers']['bilibili'].values():
+        if isinstance(ratio, dict) and ratio['file'] != 'cover.jpg':
+            (solo / ratio['file']).write_bytes((bundle / ratio['file']).read_bytes())
+    tab.restore_bundle(solo)
+    assert tab.fields[XIAOHONGSHU]['ai_generated'].currentData() is None
+    assert tab.upload_button.isEnabled() and not tab.manual_check.isEnabled()
+tab.restore_bundle(bundle)
+assert tab.fields[XIAOHONGSHU]['ai_generated'].currentData() is True
 
 # A preflight result is discarded if any frozen input changes while hashing runs.
 tab.restore_bundle(bundle)
@@ -162,4 +233,4 @@ assert not tab.upload_button.isEnabled() and '重新生成' in tab.upload_button
 
 window.close()
 app.processEvents()
-print('PASS: separate publication actions, async preflight, stale-input rejection, hash failure, real dual-cover previews, locked steps')
+print('PASS: manual Xiaohongshu handoff and legacy restore, Bilibili-only dispatch, async preflight, stale inputs, hash failure and dual-cover previews')

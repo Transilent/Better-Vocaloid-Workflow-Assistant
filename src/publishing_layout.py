@@ -1,5 +1,6 @@
 """Four publication steps with visible drafts, real cover variants, and review."""
 from i18n import tr as _tr
+from publication import XIAOHONGSHU
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QGridLayout,
                              QHBoxLayout, QLineEdit, QTextEdit, QVBoxLayout,
@@ -186,7 +187,7 @@ def build(tab):
     for platform, name in (('bilibili', 'B站'), ('xiaohongshu', '小红书')):
         panel, controls = card(name + _tr('草稿'), _tr('勾选后才会进入本次发布资料。'))
         enabled = QCheckBox(_tr('纳入 ') + name + _tr(' 发布草稿'))
-        enabled.setChecked(True)
+        enabled.setChecked(platform != XIAOHONGSHU)
         enabled.setAccessibleName(name + _tr(' 发布启用状态'))
         controls.addWidget(enabled)
         draft_state = label(_tr('已启用 · 待核对标题与简介'), 'muted')
@@ -212,6 +213,17 @@ def build(tab):
             'draft_state': draft_state,
             'panel': panel,
         }
+        if platform == XIAOHONGSHU:
+            controls.addWidget(label(_tr('小红书笔记是否包含 AI 生成或合成内容？'), 'muted'))
+            declaration = QComboBox()
+            declaration.setAccessibleName(_tr('小红书 AI 内容声明'))
+            declaration.addItem(_tr('请选择（不确定时请先核对素材）'), None)
+            declaration.addItem(_tr('含有 AI 生成或合成内容'), True)
+            declaration.addItem(_tr('不含 AI 生成或合成内容'), False)
+            controls.addWidget(declaration)
+            controls.addWidget(label(_tr('请核对视频、音频、封面和文案。此选择仅写入本地资料，平台声明需手动设置。'), 'muted'))
+            tab.fields[platform]['ai_generated'] = declaration
+            declaration.currentIndexChanged.connect(tab.refresh_action)
         for signal in (title.textChanged, description.textChanged):
             signal.connect(tab.count_text)
             signal.connect(tab.refresh_action)
@@ -223,7 +235,7 @@ def build(tab):
 
     upload, body = tab.workspace.add_step(
         '04 · 核对与填写',
-        '核对成品、来源、封面和文稿，再生成发布资料；生成后可打开平台填写。',
+        '核对成品、来源、封面和文稿，再生成发布资料。B站可辅助填写，小红书由你手动投稿。',
     )
     summary_card, summary = card(_tr('核对摘要'), _tr('汇总当前选择与资料状态；这里不代表已在平台发布。'))
     tab.review = label(_tr('完成前三步后，在这里核对发布资料。'), 'muted')
@@ -241,12 +253,12 @@ def build(tab):
     summary.addStretch()
 
     accounts_card, accounts_controls = card(
-        _tr('平台填写'),
-        _tr('登录后会保留浏览器会话，方便再次填写。'),
+        _tr('投稿方式'),
+        _tr('按所选平台使用以下入口。'),
     )
     tab.account_status = {}
     tab.account_actions = {}
-    for platform, name in (('bilibili', 'B站'), ('xiaohongshu', '小红书')):
+    for platform, name in (('bilibili', 'B站'),):
         platform_box, controls = card(name + _tr('账号与填写'), _tr('先登录或复用已有会话。'))
         status = label(_tr('登录完成后请关闭登录窗口，再打开平台填写；已有会话会继续使用。'), 'muted')
         status.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -265,6 +277,26 @@ def build(tab):
             controls.addWidget(control)
         platform_box.setMinimumHeight(260)
         accounts_controls.addWidget(platform_box)
+
+    manual, controls = card(
+        _tr('小红书手动投稿'),
+        _tr('从本地资料复制文案和素材路径，在官方网页或 App 中手动上传。'),
+    )
+    tab.manual_status = label('', 'muted')
+    controls.addWidget(tab.manual_status)
+    tab.manual_check = button(_tr('核对小红书资料'), tab.check_xiaohongshu)
+    controls.addWidget(tab.manual_check)
+    tab.manual_actions = {}
+    manual_buttons = QGridLayout()
+    for index, (action, title) in enumerate((
+            ('title', '复制标题'), ('description', '复制正文'), ('all', '复制全部文案'),
+            ('video', '复制视频路径'), ('cover', '复制封面路径'),
+            ('folder', '打开发布包'), ('official', '打开小红书创作中心'))):
+        control = button(_tr(title), lambda checked=False, action=action: tab.xiaohongshu_action(action))
+        tab.manual_actions[action] = control
+        manual_buttons.addWidget(control, index // 2, index % 2)
+    controls.addLayout(manual_buttons)
+    accounts_controls.addWidget(manual)
     accounts_controls.addStretch()
     body.addWidget(AdaptiveColumns(summary_card, accounts_card,
                                    breakpoint=1080, ratio=(3, 2)), 1)
@@ -273,7 +305,7 @@ def build(tab):
     tab.prepare_button.setObjectName('prepare-publication')
     tab.prepare_button.setMinimumHeight(54)
     tab.prepare_button.setMinimumWidth(190)
-    tab.upload_button = button(_tr('打开平台填写'), tab.upload_selected)
+    tab.upload_button = button(_tr('打开 B站填写'), tab.upload_selected)
     tab.upload_button.setObjectName('upload-publication')
     tab.upload_button.setMinimumHeight(54)
     tab.upload_button.setMinimumWidth(190)
@@ -299,4 +331,8 @@ def build(tab):
         field.textChanged.connect(tab.refresh_action)
     tab.cover_mode.currentIndexChanged.connect(tab.refresh_action)
     tab.cover_seconds.valueChanged.connect(tab.refresh_action)
+    declaration = tab.fields[XIAOHONGSHU]['ai_generated']
+    for signal in (tab.job.textChanged, tab.video.textChanged, tab.cover_file.textChanged,
+                   tab.cover_mode.currentIndexChanged, tab.cover_seconds.valueChanged):
+        signal.connect(lambda *_: declaration.setCurrentIndex(0))
     tab.workspace.refresh()

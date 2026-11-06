@@ -37,6 +37,10 @@ tab.cover_file.setText(original['cover']['source'])
 tab.voice.setText('测试歌姬')
 tab.apply_title()
 tab.append_credit()
+xhs = tab.fields['xiaohongshu']
+assert not xhs['enabled'].isChecked() and xhs['ai_generated'].currentData() is None
+xhs['enabled'].setChecked(True)
+xhs['ai_generated'].setCurrentIndex(1)
 app.processEvents()
 warnings, uploaded = [], []
 # Cache cleanup owns browser-temp while active, so no login child may be started.
@@ -66,7 +70,7 @@ with patch.object(publishing_ui, 'prepare', prepared), \
     app.processEvents()
     assert tab.bundle is not None, tab.status.text()
     assert tab.prepare_button.text() == '生成发布资料' and tab.prepare_button.isEnabled()
-    assert tab.upload_button.text() == '打开平台填写' and tab.upload_button.isEnabled()
+    assert tab.upload_button.text() == '打开 B站填写' and tab.upload_button.isEnabled()
     bundle = tab.bundle
     inventory=json.loads((bundle/'cleanup-inventory.json').read_bytes())
     assert inventory['kind']=='publication-generated'
@@ -76,14 +80,16 @@ with patch.object(publishing_ui, 'prepare', prepared), \
     assert ready['cover']['kind'] == 'custom'
     assert ready['final_publish'] == 'human_only'
     assert ready['platform_covers']['bilibili']['policy'] == 'contain'
-    # Verify dispatch to both selected platforms without opening external sites.
+    assert ready['content']['xiaohongshu']['ai_generated'] is True
+    assert '笔记含 AI 合成内容' in (bundle / '发布前核对.txt').read_text(encoding='utf-8')
+    # Mixed bundles only dispatch the browser-assisted Bilibili path.
     with patch.object(tab, 'launch_browser', lambda platform: uploaded.append(platform)):
         QTest.mouseClick(tab.upload_button, Qt.LeftButton)
         deadline = time.monotonic()+60
         while tab.busy() and time.monotonic()<deadline:
             app.processEvents();QTest.qWait(20)
         app.processEvents()
-    assert uploaded == ['bilibili', 'xiaohongshu']
+    assert uploaded == ['bilibili']
     tab.fields['xiaohongshu']['title'].setText('修改后的草稿')
     assert tab.prepare_button.text() == '生成发布资料'
     assert not tab.upload_button.isEnabled()
@@ -95,6 +101,7 @@ with patch.object(publishing_ui, 'prepare', prepared), \
     assert tab.cover_file.text() == ready['cover']['source']
     assert tab.prepare_button.text() == '生成发布资料' and tab.upload_button.isEnabled()
     assert tab.voice.text() == '测试歌姬'
+    assert xhs['ai_generated'].currentData() is True
     # The verified bundle itself restores the publication fields when its
     # source task no longer exists. A missing artifact must still fail closed.
     original_manifest = (bundle/'manifest.json').read_bytes()
