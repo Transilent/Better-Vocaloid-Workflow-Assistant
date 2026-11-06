@@ -240,7 +240,7 @@ class TaskFilesDialog(QDialog):
         if page is None or not page.set_job(self.job):
             self.status.setText(_tr('请等待当前混音处理结束后再切换任务。'))
             return
-        self.owner.navigate(10)
+        self.owner.navigate('audio_mixdown')
         self.accept()
 
     def busy(self):
@@ -334,7 +334,7 @@ class TaskFilesDialog(QDialog):
     def to_video(self):
         def ready(path):
             self.owner.video_mixdown.use_source_job(self.job, path)
-            self.owner.navigate(8); self.accept()
+            self.owner.navigate('video_mixdown'); self.accept()
         self.start(lambda: contract.selected(self.job, 'mixdown'), ready)
 
     def to_publication(self):
@@ -346,7 +346,7 @@ class TaskFilesDialog(QDialog):
             try:
                 self.owner.publishing.load_job(self.job)
                 self.owner.publishing.video.setText(str(path))
-                self.owner.navigate(3); self.accept()
+                self.owner.navigate('publishing'); self.accept()
             except (OSError, ValueError) as error: self.status.setText(str(error))
         self.start(choose, ready)
 

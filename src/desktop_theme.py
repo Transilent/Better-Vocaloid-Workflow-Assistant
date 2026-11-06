@@ -642,11 +642,12 @@ def apply_theme(window, mode=None):
     apply_material(window,mode,preferences)
     apply_mixdown_analysis_palette(window,mode,material,factor*100)
     from ui_materials import navigation_icon
-    for index in (0,9,10,8,3,1,2,4):
-        controls=getattr(window,'nav_buttons',[])
-        if index<len(controls) and controls[index] is not None:
-            controls[index].setIcon(navigation_icon(index,COLORS[mode]['selected_text']))
-            controls[index].setIconSize(QSize(22,22))
+    navigation = getattr(window, 'navigation', None)
+    if navigation is not None:
+        for spec in navigation.sidebar:
+            control = navigation.button(spec.page_id)
+            control.setIcon(navigation_icon(spec.page_id, COLORS[mode]['selected_text']))
+            control.setIconSize(QSize(22,22))
     chrome=getattr(window,'_workspace_chrome',None)
     if chrome is not None:chrome.refresh(force=True)
     tuning=getattr(window,'tuning',None)

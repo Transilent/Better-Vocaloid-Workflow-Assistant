@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import stat
 import time
 from agent_control import (ControlError, MAX_JSON, atomic_json, digest, file_lock,
                            file_hash, io_path, safe_path)
@@ -91,6 +92,67 @@ class Workflow:
         if value.get('lifecycle','active')!='active' and not allow_closed:
             raise ControlError('workflow_closed','工作流已关闭或归档；证据保留，可克隆后继续。')
         return value
+
+    @staticmethod
+    def _review_changed_error(message, *, cause, **details):
+        error = ControlError('review_bundle_changed', message, {'cause': cause, **details})
+        error.retryable = True
+        error.remediation = ['vwa_workflow_get', 'vwa_workflow_review']
+        return error
+
+    def _artifact_stamp(self, record):
+        path = safe_path(record['path'], [self.control.state, *self.control.assets, *self.control.jobs])
+        status = io_path(path).lstat()
+        if stat.S_ISLNK(status.st_mode) or getattr(status, 'st_file_attributes', 0) & 1024:
+            raise ControlError('unsafe_path', '核对源路径在组装期间变为链接或重解析点。')
+        if not stat.S_ISREG(status.st_mode):
+            raise OSError('核对源不再是普通文件。')
+        return {'device': status.st_dev, 'inode': status.st_ino, 'ctime_ns': status.st_ctime_ns,
+                'size': status.st_size, 'mtime_ns': status.st_mtime_ns}
+
+    @staticmethod
+    def _bundle_identity_mismatches(bundle, expected_sha256):
+        mismatches = []
+        for section_name in ('score', 'score_review', 'lyrics', 'lyric_review'):
+            section = bundle.get(section_name)
+            actual = section.get('source_sha256') if isinstance(section, dict) else None
+            if actual != expected_sha256:
+                mismatches.append({'section': section_name,
+                                   'expected_sha256': expected_sha256,
+                                   'actual_sha256': actual if isinstance(actual, str) else None})
+        return mismatches
+
+    def _assert_review_stable(self, value, artifact, file_stamps):
+        """Bound concurrent workflow/file changes without locking expensive reads."""
+        with self._lock(value['id']):
+            current = self._read(value['id'])
+            # Reading an already closed or old-code review remains possible.
+            # Only a change relative to the record we actually read is a conflict.
+            if any(current.get(key) != value.get(key) for key in
+                   ('revision', 'code_revision', 'lifecycle', 'stage', 'score_artifact_id', 'references')):
+                raise self._review_changed_error(
+                    '核对内容组装期间工作流已改变；请重新读取后核对。',
+                    cause='workflow_changed', workflow_id=value['id'],
+                    expected_revision=value['revision'],
+                    actual_revision=current.get('revision'),
+                    artifact_id=artifact['id'], expected_sha256=artifact['sha256'],
+                )
+            changed = []
+            for role, record, expected in file_stamps:
+                try:
+                    actual = self._artifact_stamp(record)
+                except (ControlError, OSError):
+                    actual = None
+                if actual != expected:
+                    changed.append({'role': role, 'artifact_id': record['id'],
+                                    'expected': expected, 'actual': actual})
+            if changed:
+                raise self._review_changed_error(
+                    '核对内容组装期间源文件已改变；请重新读取后核对。',
+                    cause='artifact_changed', workflow_id=value['id'],
+                    revision=value['revision'], artifact_id=artifact['id'],
+                    expected_sha256=artifact['sha256'], files=changed,
+                )
 
     def _retain_revision(self,value,reason):
         path=safe_path(self.control.state/'workflow-evidence'/value['id']/('revision-'+str(value['revision'])+'.json'),
@@ -926,9 +988,46 @@ class Workflow:
         if type(limit) is not int or not 1 <= limit <= 200 or type(offset) is not int or offset < 0:
             raise ControlError('invalid_page', '音符分页 limit 为 1–200，offset 非负。')
         artifact = self.control.artifact(value['score_artifact_id'])
+        try:
+            score_stamp = self._artifact_stamp(artifact)
+        except (ControlError, OSError) as error:
+            raise self._review_changed_error(
+                '核对源文件在读取前已改变；请重新读取后核对。',
+                cause='artifact_changed', workflow_id=identifier,
+                revision=value['revision'], artifact_id=artifact['id'],
+                expected_sha256=artifact['sha256'], files=[{'role': 'score'}],
+            ) from error
+        file_stamps = [('score', artifact, score_stamp)]
+
+        def assemble(callback):
+            try:
+                return callback()
+            except ControlError as error:
+                # A disappearing or invalid replacement can fail a worker before
+                # it returns section hashes. Prefer the retryable consistency
+                # signal when the cheap final snapshot proves that input moved.
+                self._assert_review_stable(value, artifact, file_stamps)
+                if error.code in ('stale_artifact', 'snapshot_conflict'):
+                    raise self._review_changed_error(
+                        '核对源在组装期间改变；请重新读取后核对。',
+                        cause='artifact_changed', workflow_id=identifier,
+                        revision=value['revision'], artifact_id=artifact['id'],
+                        expected_sha256=artifact['sha256'], signal=error.code,
+                    ) from error
+                raise
+
         language = value['request']['options'].get('language', 'zh')
-        bundle = self.control.call_worker('review_bundle', {'path': artifact['path'],
-            'language': language, 'reference_text': value['request']['reference_lyrics'] or None})
+        bundle = assemble(lambda: self.control.call_worker('review_bundle', {
+            'path': artifact['path'], 'language': language,
+            'reference_text': value['request']['reference_lyrics'] or None}))
+        mismatches = self._bundle_identity_mismatches(bundle, artifact['sha256'])
+        if mismatches:
+            raise self._review_changed_error(
+                '音符、歌词或提示在读取期间来自不同文件版本；请重新读取后核对。',
+                cause='artifact_changed', workflow_id=identifier,
+                revision=value['revision'], artifact_id=artifact['id'],
+                expected_sha256=artifact['sha256'], sections=mismatches,
+            )
         all_notes=bundle['score']['notes']
         notes=all_notes
         from agent_segment_workflow import enabled,select,progress
@@ -982,13 +1081,57 @@ class Workflow:
                 hint['note_ids'] = refs[:200]
         references = copy.deepcopy(value.get('references', {}))
         reference_evidence = {}
+
+        def reference_record(role, artifact_id):
+            try:
+                record = self.control.artifact(artifact_id, verify=False)
+                stamp = self._artifact_stamp(record)
+            except (ControlError, OSError) as error:
+                raise self._review_changed_error(
+                    '核对引用源在组装期间已改变；请重新读取后核对。',
+                    cause='artifact_changed', workflow_id=identifier,
+                    revision=value['revision'], artifact_id=artifact['id'],
+                    expected_sha256=artifact['sha256'], role=role,
+                    signal=getattr(error, 'code', type(error).__name__),
+                ) from error
+            file_stamps.append((role, record, stamp))
+            return record
+
+        def require_identities(role, checks):
+            changed = [{'field': field, 'expected_sha256': expected,
+                        'actual_sha256': actual if isinstance(actual, str) else None}
+                       for field, actual, expected in checks if actual != expected]
+            if changed:
+                raise self._review_changed_error(
+                    '核对引用的来源摘要与已绑定产物不一致；请重新读取后核对。',
+                    cause='artifact_changed', workflow_id=identifier,
+                    revision=value['revision'], artifact_id=artifact['id'],
+                    expected_sha256=artifact['sha256'], role=role, identities=changed,
+                )
+
         if references.get('pitch_artifact_id'):
-            reference_evidence['pitch'] = self.control.reference_pitch_review(artifact['id'],
-                references['pitch_artifact_id'], references.get('track_indices'),
+            pitch_record = reference_record('pitch', references['pitch_artifact_id'])
+            pitch_evidence = assemble(lambda: self.control.reference_pitch_review(
+                artifact['id'], references['pitch_artifact_id'], references.get('track_indices'),
                 references.get('time_origin', 0.0),len(page) or limit,
-                all_notes.index(page[0]) if segment and page else offset)
+                all_notes.index(page[0]) if segment and page else offset))
+            score_identity = pitch_evidence.get('score') or {}
+            pitch_identity = pitch_evidence.get('pitch') or {}
+            originals = pitch_evidence.get('original_hashes') or {}
+            require_identities('pitch', (
+                ('score.sha256', score_identity.get('sha256'), artifact['sha256']),
+                ('pitch.sha256', pitch_identity.get('sha256'), pitch_record['sha256']),
+                ('original_hashes.score_sha256', originals.get('score_sha256'), artifact['sha256']),
+                ('original_hashes.pitch_sha256', originals.get('pitch_sha256'), pitch_record['sha256']),
+            ))
+            reference_evidence['pitch'] = pitch_evidence
         if references.get('audio_artifact_id'):
-            audio = self.control.reference_audio_read(references['audio_artifact_id'])
+            audio_record = reference_record('audio', references['audio_artifact_id'])
+            audio = assemble(lambda: self.control.reference_audio_read(
+                references['audio_artifact_id']))
+            require_identities('audio', (
+                ('source_sha256', audio.get('source_sha256'), audio_record['sha256']),
+            ))
             reference_evidence['audio'] = audio
             starts = [row['onset_seconds']-references.get('audio_time_origin',0.0)
                       for row in page if row.get('onset_seconds') is not None]
@@ -1004,13 +1147,21 @@ class Workflow:
                                      'start':start,'end':end,'make_excerpt':True}}
         available = self.control.discover_references(value['job_id']) if value.get('job_id') else []
         if references.get('lyrics_artifact_id') and page:
+            timeline_record = reference_record('lyrics_timeline', references['lyrics_artifact_id'])
             starts=[row['onset_seconds'] for row in page if row.get('onset_seconds') is not None]
             ends=[row['end_seconds'] for row in page if row.get('end_seconds') is not None]
             first=min(starts) if starts else 0.;last=min(max(ends),first+30.) if ends else first
             if last>first:
-                reference_evidence['lyrics_timeline']=self.control.lyric_timeline_review(artifact['id'],
-                    references['lyrics_artifact_id'],references.get('lyrics_time_origin',0.),first,last,
-                    references.get('track_indices') or ([segment['track_index']] if segment else None),limit,0)
+                timeline_evidence=assemble(lambda: self.control.lyric_timeline_review(
+                    artifact['id'], references['lyrics_artifact_id'],
+                    references.get('lyrics_time_origin',0.),first,last,
+                    references.get('track_indices') or ([segment['track_index']] if segment else None),limit,0))
+                require_identities('lyrics_timeline', (
+                    ('source_sha256', timeline_evidence.get('source_sha256'), artifact['sha256']),
+                    ('reference_sha256', timeline_evidence.get('reference_sha256'),
+                     timeline_record['sha256']),
+                ))
+                reference_evidence['lyrics_timeline']=timeline_evidence
                 reference_evidence['lyrics_timeline']['version_note']=references.get('lyric_version_note','')
                 if detail!='full' and not include_raw_evidence:
                     timeline=reference_evidence['lyrics_timeline']
@@ -1036,6 +1187,7 @@ class Workflow:
                 segment_note_count=len(notes),total_notes=len(all_notes),review_progress=progress(value,'midi'),
                 decision_arguments={'workflow_id':identifier,'expected_revision':value['revision'],
                     'segment_id':segment['id'],'rationale':'请填写本段的具体核对结论。'})
+        self._assert_review_stable(value, artifact, file_stamps)
         return result
 
     def references_set(self, identifier, revision, pitch_artifact_id=None, audio_artifact_id=None,

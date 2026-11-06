@@ -2,6 +2,7 @@
 from i18n import tr as _tr
 import json
 from pathlib import Path
+from dataclasses import dataclass
 from PyQt5.QtCore import QEvent, QObject, QSize, Qt
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import QApplication
@@ -11,6 +12,144 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLi
 from common import ROOT, app_path, load_config, output_directory, job_directories
 from desktop_theme import apply_theme, button, card, fold, label, page, scroll_content
 from results_ui import ResultsPage
+
+
+@dataclass(frozen=True)
+class PageSpec:
+    """One stack slot plus its stable ID and sidebar projection."""
+
+    page_id: str
+    legacy_index: int
+    title: str
+    sidebar_order: int = None
+    sidebar_gap_before: bool = False
+    english_title: str = None
+    target: str = None
+    focus_step: str = None
+
+
+PAGE_SPECS = (
+    PageSpec(page_id='processing', legacy_index=0, title='准备工作流', sidebar_order=0),
+    PageSpec(page_id='components', legacy_index=1, title='模型与组件', sidebar_order=5,
+             sidebar_gap_before=True, english_title='Models'),
+    PageSpec(page_id='results', legacy_index=2, title='任务与结果', sidebar_order=6,
+             english_title='Tasks and results'),
+    PageSpec(page_id='publishing', legacy_index=3, title='发布', sidebar_order=4),
+    PageSpec(page_id='updates', legacy_index=4, title='设置与更新', sidebar_order=7,
+             english_title='Settings'),
+    PageSpec(page_id='workflow', legacy_index=5, title='工作流', target='processing'),
+    PageSpec(page_id='storage', legacy_index=6, title='缓存与磁盘', target='updates'),
+    PageSpec(page_id='subtitles', legacy_index=7, title='歌词转字幕', target='processing',
+             focus_step='subtitles'),
+    PageSpec(page_id='video_mixdown', legacy_index=8, title='合成视频', sidebar_order=3),
+    PageSpec(page_id='tuning', legacy_index=9, title='调音工作流', sidebar_order=1),
+    PageSpec(page_id='audio_mixdown', legacy_index=10, title='简易混音', sidebar_order=2),
+)
+
+
+class WorkspaceNavigation:
+    """Project the page registry onto the stack, sidebar and legacy integer API."""
+
+    def __init__(self, window, specs=PAGE_SPECS):
+        self.window = window
+        self.specs = tuple(specs)
+        self._by_id = {spec.page_id: spec for spec in self.specs}
+        self._by_index = {spec.legacy_index: spec for spec in self.specs}
+        if len(self._by_id) != len(self.specs) or len(self._by_index) != len(self.specs):
+            raise RuntimeError('Page IDs and legacy indices must be unique')
+        if sorted(self._by_index) != list(range(len(self.specs))):
+            raise RuntimeError('Page legacy indices must be contiguous from zero')
+        orders = [spec.sidebar_order for spec in self.specs if spec.sidebar_order is not None]
+        if len(orders) != len(set(orders)):
+            raise RuntimeError('Sidebar positions must be unique')
+        for spec in self.specs:
+            if spec.target:
+                destination = self._by_id.get(spec.target)
+                if destination is None or destination.target:
+                    raise RuntimeError(f'Page alias {spec.page_id!r} has an invalid target')
+        self._widgets = {}
+        self._buttons = {}
+        self._attached = []
+
+    @property
+    def sidebar(self):
+        return tuple(sorted(
+            (spec for spec in self.specs if spec.sidebar_order is not None),
+            key=lambda spec: spec.sidebar_order,
+        ))
+
+    def spec(self, page_id):
+        try:
+            return self._by_id[page_id]
+        except KeyError as exc:
+            raise KeyError(f'Unknown page ID: {page_id}') from exc
+
+    def resolve(self, destination):
+        if isinstance(destination, int):
+            spec = self._by_index.get(destination)
+        elif isinstance(destination, str):
+            spec = self._by_id.get(destination)
+        else:
+            raise TypeError('Page navigation requires a stable ID or legacy integer index')
+        if spec is None:
+            raise KeyError(f'Unknown page navigation target: {destination}')
+        focus_step = spec.focus_step
+        if spec.target:
+            spec = self._by_id[spec.target]
+            focus_step = focus_step or spec.focus_step
+        return spec, focus_step
+
+    def attach(self, page_id, widget=None):
+        spec = self.spec(page_id)
+        expected = self.specs[len(self._attached)].page_id
+        if page_id != expected:
+            raise RuntimeError(f'Expected page {expected!r} before {page_id!r}')
+        if spec.target:
+            if widget is not None:
+                raise RuntimeError(f'Page alias {page_id!r} cannot own a widget')
+            widget = QWidget()
+        elif widget is None:
+            raise RuntimeError(f'Page {page_id!r} requires a widget')
+        self.window.pages.addWidget(widget)
+        self._widgets[page_id] = widget
+        self._attached.append(page_id)
+
+    def finish(self):
+        if self._attached != [spec.page_id for spec in self.specs]:
+            raise RuntimeError('Not all registered pages were attached')
+        if self.window.pages.count() != len(self.specs):
+            raise RuntimeError('Page stack does not match the registry')
+
+    def widget(self, page_id):
+        self.spec(page_id)
+        return self._widgets[page_id]
+
+    def bind_button(self, page_id, item):
+        spec = self.spec(page_id)
+        if spec.sidebar_order is None or spec.target:
+            raise RuntimeError(f'Page {page_id!r} is not a sidebar destination')
+        self._buttons[page_id] = item
+
+    def button(self, page_id):
+        self.spec(page_id)
+        return self._buttons.get(page_id)
+
+    def compatibility_buttons(self):
+        buttons = [None] * len(self.specs)
+        for page_id, item in self._buttons.items():
+            buttons[self._by_id[page_id].legacy_index] = item
+        return buttons
+
+    def sidebar_title(self, page_id, language):
+        spec = self.spec(page_id)
+        if language == 'en':
+            return spec.english_title or _tr(spec.title)
+        return spec.title
+
+    @property
+    def current_page_id(self):
+        spec = self._by_index.get(self.window.pages.currentIndex())
+        return spec.page_id if spec is not None else None
 
 
 def build_processing(window):
@@ -245,20 +384,18 @@ def build_window(window):
     full_name.setStyleSheet('font-size: 12px;')
     nav.addWidget(full_name)
     nav.addSpacing(16)
+    window.navigation = WorkspaceNavigation(window)
     window.nav_group = QButtonGroup(window)
-    titles = ('准备工作流', '模型与组件', '任务与结果', '发布', '设置与更新', '工作流', '缓存与磁盘', '歌词转字幕', '合成视频', '调音工作流', '简易混音')
-    window.nav_buttons = [None] * len(titles)
-    for index in (0, 9, 10, 8, 3, 1, 2, 4):
-        if index==1:
+    for spec in window.navigation.sidebar:
+        if spec.sidebar_gap_before:
             nav.addSpacing(16)
-        title = titles[index]
-        if current_language() == 'en':
-            title = {1: 'Models', 2: 'Tasks and results', 4: 'Settings'}.get(index, _tr(title))
-        item = button(title, lambda checked=False, i=index: window.navigate(i), 'nav')
+        title = window.navigation.sidebar_title(spec.page_id, current_language())
+        item = button(title, lambda checked=False, page_id=spec.page_id: window.navigate(page_id), 'nav')
         item.setCheckable(True)
         window.nav_group.addButton(item)
         nav.addWidget(item)
-        window.nav_buttons[index] = item
+        window.navigation.bind_button(spec.page_id, item)
+    window.nav_buttons = window.navigation.compatibility_buttons()
     nav.addStretch()
     window.theme_picker = QComboBox()
     window.theme_picker.addItem(_tr('深色界面'), 'dark')
@@ -278,23 +415,24 @@ def build_window(window):
     window.pages = QStackedWidget()
     window.tabs = window.pages
     outer.addWidget(window.pages, 1)
-    window.pages.addWidget(build_processing(window))
+    window.processing = build_processing(window)
+    window.navigation.attach('processing', window.processing)
     from tuning_ui import TuningPage
     window.tuning = TuningPage(window)
     from components_ui import ComponentsPage
     window.components = ComponentsPage(window)
-    window.pages.addWidget(window.components)
+    window.navigation.attach('components', window.components)
     window.results = ResultsPage(window)
-    window.pages.addWidget(window.results)
+    window.navigation.attach('results', window.results)
     from publishing_ui import PublishingTab
     window.publishing = PublishingTab(window)
-    window.pages.addWidget(window.publishing)
+    window.navigation.attach('publishing', window.publishing)
     from updates_ui import UpdatesPage
     window.updates = UpdatesPage(window)
-    window.pages.addWidget(window.updates)
+    window.navigation.attach('updates', window.updates)
     from processing_workflow import ProcessingWorkflow
     window.workflow = ProcessingWorkflow(window)
-    window.pages.addWidget(QWidget())  # Index retained for saved navigation and recovery actions.
+    window.navigation.attach('workflow')
     window.workflow_preset.currentIndexChanged.connect(window.choose_processing_preset)
     from storage_ui import StoragePage
     window.storage = StoragePage(window,compact=True)
@@ -302,14 +440,15 @@ def build_window(window):
     from ui_preferences import AppearancePanel
     window.appearance_panel=AppearancePanel(window)
     window.updates.body_layout.insertWidget(0,window.appearance_panel)
-    window.pages.addWidget(QWidget())
-    window.pages.addWidget(QWidget())
+    window.navigation.attach('storage')
+    window.navigation.attach('subtitles')
     from video_mixdown_ui import VideoMixdownPage
     window.video_mixdown = VideoMixdownPage(window)
-    window.pages.addWidget(window.video_mixdown)
-    window.pages.addWidget(window.tuning)
+    window.navigation.attach('video_mixdown', window.video_mixdown)
+    window.navigation.attach('tuning', window.tuning)
     window.audio_mixdown = AudioMixdownPage(window)
-    window.pages.addWidget(window.audio_mixdown)
+    window.navigation.attach('audio_mixdown', window.audio_mixdown)
+    window.navigation.finish()
     window.results.rows_changed.connect(window.tuning.refresh_task_context)
     window.results.rows_changed.connect(lambda rows:window.publishing.refresh_review())
     window.results.rows_changed.connect(lambda rows:window.video_mixdown._set_context())
@@ -327,5 +466,5 @@ def build_window(window):
         check.toggled.connect(window.quick_options_changed)
     window.update_import_panel()
     window.refresh_workflow_summary()
-    window.navigate(0)
+    window.navigate('processing')
     apply_theme(window,window.theme_picker.currentData())

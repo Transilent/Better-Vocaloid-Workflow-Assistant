@@ -415,7 +415,7 @@ def build_steps(window,outer):
     automatic.addLayout(row)
     window.component_status = label('', 'muted')
     automatic.addWidget(window.component_status)
-    window.component_link = button(_tr('下载分离组件'), lambda: window.navigate(1))
+    window.component_link = button(_tr('下载分离组件'), lambda: window.navigate('components'))
     automatic.addWidget(window.component_link)
     body.addWidget(window.automatic_panel)
     window.import_panel = QWidget()

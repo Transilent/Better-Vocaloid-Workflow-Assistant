@@ -84,19 +84,19 @@ class Window(QWidget):
         self.timer.setInterval(700)
         self.timer.timeout.connect(self.refresh_progress)
 
-    def navigate(self, index):
-        if index == 5: index = 0
-        if index == 6: index = 4
-        if index == 7:
-            index=0
-            self.focus_step('subtitles')
-        self.pages.setCurrentIndex(index)
-        self.nav_buttons[index].setChecked(True)
-        if index == 2 and hasattr(self, 'results'):
+    def navigate(self, destination):
+        spec, focus_step = self.navigation.resolve(destination)
+        if focus_step:
+            self.focus_step(focus_step)
+        self.pages.setCurrentWidget(self.navigation.widget(spec.page_id))
+        button = self.navigation.button(spec.page_id)
+        if button is not None:
+            button.setChecked(True)
+        if spec.page_id == 'results' and hasattr(self, 'results'):
             self.results.reload()
-        elif index == 1 and hasattr(self, 'components'):
+        elif spec.page_id == 'components' and hasattr(self, 'components'):
             self.components.refresh()
-        elif index == 9:
+        elif spec.page_id == 'tuning':
             self.tuning.reload_jobs()
 
     def focus_step(self, name):
@@ -523,7 +523,9 @@ class Window(QWidget):
                 QMessageBox.warning(self, _tr('无法继续任务'), _tr(str(exc)))
 
     def open_recovery(self):
-        self.navigate({'storage': 6, 'subtitles': 7, 'components':1}.get(getattr(self, 'recovery', {}).get('action'), 5))
+        action = getattr(self, 'recovery', {}).get('action')
+        destination = {'storage': 'storage', 'subtitles': 'subtitles', 'components': 'components'}.get(action, 'workflow')
+        self.navigate(destination)
 
     def show_job(self, job):
         self.job = job

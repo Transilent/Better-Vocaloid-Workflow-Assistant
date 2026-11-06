@@ -34,14 +34,14 @@ The VWA appearance uses light/dark semantic palettes, shared Qt styles and a cac
 | Module | Responsibility |
 | --- | --- |
 | `launch.py`, `app.py` | Runtime bootstrap, desktop controls, background jobs |
-| `desktop_theme.py`, `workspace_ui.py`, `publishing_layout.py` | Theme, sidebar workspace and publication form |
+| `desktop_theme.py`, `workspace_ui.py`, `publishing_layout.py` | Theme, sidebar workspace with stable page IDs and legacy redirects, and publication form |
 | `workflow_widgets.py` | Step navigation and proportional cover preview |
 | `components_ui.py`, `optional_components.py`, `components/roformer.json` | Download UI, pinned install manifest, resumable installer and validation |
 | [component_health.py](../src/component_health.py) | Separate quick metadata status from explicit full verification, with path and record limits, cancellation and file-identity checks |
 | [style_catalog.py](../src/style_catalog.py), [expression_controls.py](../src/expression_controls.py) | Shared style metadata and expression specifications for GUI, MCP, drafts and execution; preserve legacy recipes and purpose-specific steps |
 | [multi_file_commit.py](../src/multi_file_commit.py), `vocal_partition.py` | Back up, publish, validate and restore related outputs together; retain recovery copies until receipts are complete |
 | `roformer.py` | Optional Pymss inference and timeline-preserving lead/backing outputs |
-| `common.py`, `check_dependencies.py` | Relative paths, configuration, subprocess cancellation, dependency checks |
+| `common.py`, `check_dependencies.py` | Relative paths, configuration, subprocess cancellation, shared one-byte sidecar locking, dependency checks |
 | `pipeline.py` | Input snapshots, metadata, downloads, stages, resume |
 | `workflow.py`, `processing_workflow.py`, `processing_ui.py` | Preset migration and ordered processing cards |
 | `tuning_ui.py`, `tuning_workflow.py`, `tuning_engine.py` | Independent tuning UI, immutable source sessions, exclusive parameter-source composition, one final density pass and protected candidate commits |

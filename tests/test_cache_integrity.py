@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import tracemalloc
@@ -14,7 +15,10 @@ import numpy as np
 import soundfile as sf
 import common
 import pipeline
+import task_store
 import workflow
+from agent_control import ControlError, file_lock
+from optional_components import use_ready
 from artifact_cache import receipt, valid_receipt
 from midi_bridge import silent_audio
 
@@ -91,6 +95,74 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='cache-integrity-') as
     restart=pipeline.reuse_download(early,parent=root/'early-restart',voice_mode='import',imported_stems=stems,
         workflow_graph=workflow.builtins()['内置 · 仅分离音频']['graph'])
     assert json.loads((restart/'request.json').read_text(encoding='utf-8'))['source_audio']==common.saved_path(source)
+    # The old one-byte Windows protocol still coordinates new task reads,
+    # Agent locks and component users. An empty sidecar belongs to the holder.
+    lock_path = early / 'run.lock'
+    lock_path.write_bytes(b'')
+    holder = subprocess.Popen([sys.executable, '-B', '-c',
+        "import msvcrt, sys\n"
+        "with open(sys.argv[1], 'r+b') as lock:\n"
+        "    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)\n"
+        "    print('held', flush=True)\n"
+        "    sys.stdin.readline()\n", str(lock_path)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    blocked = root / 'blocked-reuse'
+    try:
+        assert holder.stdout.readline().strip() == 'held'
+        assert task_store.locked(early)
+        try:
+            pipeline.reuse_download(early, parent=blocked, voice_mode='single')
+            raise AssertionError('Reused a job with a concurrent writer')
+        except RuntimeError as error:
+            assert '已经在运行' in str(error), error
+        try:
+            with use_ready(early):
+                raise AssertionError('Used a component with a concurrent installer')
+        except RuntimeError as error:
+            assert '正在安装或使用' in str(error), error
+        try:
+            with file_lock(lock_path, blocking=False):
+                raise AssertionError('Agent ignored legacy run.lock')
+        except ControlError as error:
+            assert error.code == 'busy'
+        assert not blocked.exists() and lock_path.stat().st_size == 0
+    finally:
+        holder.communicate(input='release\n', timeout=15)
+    assert holder.returncode == 0 and not task_store.locked(early)
+    assert not task_store.locked(blocked) and not blocked.exists()
+    with pipeline.job_lock(early):
+        assert lock_path.stat().st_size == 1
+
+    # Reprocessing retains caller provenance without upgrading the claim;
+    # changing/removing the declaration regenerates metadata for the same WAV.
+    claim = {'kind': 'caller_supplied_unverified', 'url': 'https://www.bilibili.com/video/BV1xx411c7mD/'}
+    identity = common.file_hash(source)
+    declared = pipeline.create_job(local_music=source, parent=root/'declared', remember=False,
+        voice_mode='single', source_provenance=claim, local_audio_sha256=identity)
+    with contextlib.redirect_stdout(io.StringIO()):
+        pipeline.run(declared, until='audio')
+    original_info = (declared/'source-info.json').read_bytes()
+    override = dict(claim, url='https://www.bilibili.com/video/BV1xx411c7mE/')
+    for wanted, options in ((claim, {}), (override, {'source_provenance': override}),
+                            (None, {'source_provenance': None})):
+        result = pipeline.reuse_download(declared, parent=root/'declared-reuse', voice_mode='single', **options)
+        request2 = json.loads((result/'request.json').read_text(encoding='utf-8'))
+        info2 = json.loads((result/'source-info.json').read_text(encoding='utf-8'))
+        steps2 = json.loads((result/'status.json').read_text(encoding='utf-8'))['steps']
+        assert steps2['download']['reused_from'] == steps2['audio']['reused_from'] == str(declared)
+        assert ('reused_from' in steps2['metadata']) == (wanted == claim)
+        for evidence in (request2, info2):
+            assert evidence.get('source_provenance') == wanted
+            assert evidence.get('local_audio_sha256') == (identity if wanted else None)
+        assert valid_receipt(result, request2, 'metadata', pipeline.requirements('metadata', request2),
+                             steps2['metadata']['receipt'])
+    assert (declared/'source-info.json').read_bytes() == original_info
+    try:
+        pipeline.reuse_download(declared, parent=blocked, voice_mode='single', local_audio_sha256='0'*64)
+        raise AssertionError('Accepted a conflicting source hash')
+    except ValueError as error:
+        assert '摘要' in str(error)
+    assert not blocked.exists()
     # Silence checking must inspect late blocks and avoid a whole-file array.
     path = root / 'silence.wav'
     block = np.zeros((65536, 2), dtype='float32')

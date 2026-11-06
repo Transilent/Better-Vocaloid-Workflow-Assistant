@@ -22,6 +22,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 from common import ROOT, BV_PATTERN, atomic_json, cancelled, clean_lyrics, extract_bv, load_config, resolve_tools, completed_voice, file_hash, app_path, saved_path, output_directory, remember_job
 from common import direct_urlopen, native_path
+from common import exclusive_sidecar, SidecarBusy
 from check_dependencies import validate as validate_dependencies
 from source_contract import reject_unsupported_bilibili_subpage
 
@@ -214,30 +215,48 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
 
 
 def reuse_download(previous, **options):
-    """New immutable job, reusing the old download; old outputs stay available."""
-    import shutil
+    """Create a new job from a stable view of the old task's acquisition files."""
     previous = app_path(previous)
+    if not Path(native_path(previous / 'request.json')).is_file():
+        raise FileNotFoundError('没有找到上次任务。请先新建一个任务。')
+    with job_lock(previous):
+        return _reuse_download_locked(previous, **options)
+
+
+def _reuse_download_locked(previous, **options):
+    import shutil
     old = json.loads((previous / "request.json").read_text(encoding="utf-8"))
     prior_status = json.loads((previous / "status.json").read_text(encoding="utf-8"))
-    if old.get("source_kind") == "local":
+    local = old.get("source_kind") == "local"
+    copied_input_sha = None
+    if local:
         snapshot = previous / old['input_file']
         path = previous/'import-report.json'
         saved = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
-        expected = saved.get('sha256')
-        if not expected:
-            snapshot = app_path(old['source_audio'])
-        elif not snapshot.is_file() or file_hash(snapshot) != expected:
-            original = app_path(old['source_audio'])
-            if not original.is_file() or file_hash(original) != expected:
+        saved_sha = saved.get('sha256')
+        original = app_path(old['source_audio'])
+        expected = old.get('local_audio_sha256') or saved_sha
+        if expected and snapshot.is_file() and file_hash(snapshot) == expected:
+            copied_input_sha = expected if saved_sha == expected else None
+        else:
+            if expected and (not original.is_file() or file_hash(original) != expected):
                 raise ValueError('原音乐副本已改变，无法复用。请重新选择要处理的音乐文件。')
             snapshot = original
         options["local_music"] = snapshot
+        options.setdefault('source_provenance', old.get('source_provenance'))
+        if options['source_provenance'] is None:
+            options.pop('local_audio_sha256', None)
+        else:
+            options.setdefault('local_audio_sha256', expected)
+            binding = options['local_audio_sha256']
+            if binding != expected or not expected:
+                if not snapshot.is_file() or file_hash(snapshot) != binding:
+                    raise ValueError('本地音乐与计划摘要不一致，请重新生成准备计划。')
     job = create_job(old.get("bv") or "", remember=False, **options)
-    if old.get("source_kind") == "local":
-        new_request = json.loads((job / "request.json").read_text(encoding="utf-8"))
+    new_request = json.loads((job / 'request.json').read_text(encoding='utf-8'))
+    if local:
         new_request["source_title"] = old["source_title"]
         atomic_json(job / "request.json", new_request)
-    new_request = json.loads((job / 'request.json').read_text(encoding='utf-8'))
     from artifact_cache import valid_receipt, receipt
     copied = {"steps": {}}
     for stage in ("metadata", "download", "audio"):
@@ -248,8 +267,24 @@ def reuse_download(previous, **options):
             break
         if not valid_receipt(previous,old,stage,files,prior_status['steps'][stage].get('receipt')):
             break
-        if stage == 'download' and old.get('source_kind') == 'local' and file_hash(previous/old['input_file']) != saved.get('sha256'):
+        if stage == 'download' and local and not copied_input_sha:
             break
+        if stage == 'metadata' and local:
+            try:
+                source_info = json.loads((previous / 'source-info.json').read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                source_info = None
+            source_fields = ('source_provenance', 'local_audio_sha256')
+            if (not isinstance(source_info, dict)
+                    or any(source_info.get(field) != new_request.get(field) for field in source_fields)):
+                # A declaration change invalidates metadata even when the
+                # exact same audio can still be reused.
+                prepare_metadata(job, new_request)
+                copied['steps'][stage] = {
+                    'state': 'done',
+                    'receipt': receipt(job, new_request, stage, requirements(stage, new_request)),
+                }
+                continue
         if stage == "metadata":
             files += [p.name for p in previous.glob("*.txt") if p.name != "last_job.txt"]
         for name in dict.fromkeys(files):
@@ -1039,21 +1074,11 @@ def requirements(key, request):
 
 @contextmanager
 def job_lock(job):
-    import msvcrt
-    with (Path(job) / "run.lock").open("a+b") as lock:
-        if lock.seek(0, 2) == 0:
-            lock.write(b"0")
-            lock.flush()
-        lock.seek(0)
-        try:
-            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
-        except OSError:
-            raise RuntimeError("这个任务已经在运行，请等待它完成或在原窗口取消。") from None
-        try:
+    try:
+        with exclusive_sidecar(Path(job) / "run.lock"):
             yield
-        finally:
-            lock.seek(0)
-            msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+    except SidecarBusy:
+        raise RuntimeError("这个任务已经在运行，请等待它完成或在原窗口取消。") from None
 
 
 _TERMINAL_STATUS_STATES = frozenset({'done', 'partial', 'cancelled', 'failed', 'interrupted'})

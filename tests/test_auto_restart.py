@@ -51,7 +51,7 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='auto-restart-') as di
             page.startup_update = True
             page.checked(release)
             assert schedule.call_args.args[0] == 100
-            owner.navigate.assert_called_once_with(4)
+            owner.navigate.assert_called_once_with('updates')
         with patch.object(page, 'download') as downloading:
             page.primary_action()
             downloading.assert_called_once()

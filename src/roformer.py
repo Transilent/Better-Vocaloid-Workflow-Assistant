@@ -11,14 +11,11 @@ from multi_file_commit import FileTransactionError, commit_file_pair
 def separate_vocals(source, directory, job, device='auto', *, input_kind='vocals'):
     if input_kind not in ('vocals', 'mix'):
         raise ValueError('分离输入类型无效。')
-    from optional_components import COMPONENT, require_ready, manifest
-    from pipeline import job_lock
-    environment = require_ready()
-    # The optional engine probes PATH even when receiving an in-memory waveform.
-    # Use the bundled FFmpeg so a valid portable install is not reported missing.
-    binary = str(Path(load_config()['ffmpeg']).parent)
-    os.environ['PATH'] = binary + os.pathsep + os.environ.get('PATH', '')
-    with job_lock(COMPONENT):
+    from optional_components import use_ready, manifest
+    with use_ready() as environment:
+        # The optional engine probes PATH even for an in-memory waveform.
+        binary = str(Path(load_config()['ffmpeg']).parent)
+        os.environ['PATH'] = binary + os.pathsep + os.environ.get('PATH', '')
         spec = manifest()
         for item in spec['weights']:
             if file_hash(environment / item['name']) != item['sha256']:

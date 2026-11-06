@@ -503,7 +503,7 @@ class ResultsPage(QWidget):
     def view_progress(self):
         if self.selected_job and not self.owner.processing_active:
             self.owner.show_job(self.selected_job)
-        self.owner.navigate(0)
+        self.owner.navigate('processing')
 
     def menu(self):
         if self.owner.processing_active or self.owner.storage.busy() or self.owner.publishing.busy():
@@ -546,7 +546,7 @@ class ResultsPage(QWidget):
                 if not source:
                     raise ValueError('任务还没有生成 MIDI。')
                 self.owner.subtitles.load_file(str(source))
-                self.owner.navigate(7)
+                self.owner.navigate('subtitles')
             elif selected == delete:
                 amount = task_store.format_size(task_store.size(job))
                 if QMessageBox.question(self, _tr('删除任务'), _tr('删除任务“{0}”及所有输出（{1}）？\n{2}\n此操作无法撤销。', f'{self.tree.currentItem().text(0)}', f'{amount}', f'{job}')) == QMessageBox.Yes:

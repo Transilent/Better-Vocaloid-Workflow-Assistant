@@ -4,7 +4,7 @@ import math
 import os
 import shutil
 from pathlib import Path
-from common import ROOT, atomic_json, job_directories, app_path, workspace_state
+from common import ROOT, atomic_json, job_directories, app_path, workspace_state, exclusive_sidecar
 
 INDEX_MAX_ENTRIES = 256
 INDEX_MAX_BYTES = 8 * 1024**2
@@ -32,14 +32,12 @@ def read_json(path):
 
 
 def locked(job):
-    import msvcrt
     path = Path(job) / 'run.lock'
-    if not path.exists():
-        return False
     try:
-        with path.open('r+b') as stream:
-            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-            msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        with exclusive_sidecar(path, create=False):
+            pass
+        return False
+    except FileNotFoundError:
         return False
     except OSError:
         return True

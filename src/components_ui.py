@@ -347,7 +347,7 @@ class ComponentsPage(QWidget):
     def use(self, model):
         self.owner.voice_mode.setCurrentIndex(self.owner.voice_mode.findData('dual'))
         self.owner.separator_model.setCurrentIndex(self.owner.separator_model.findData(model))
-        self.owner.navigate(0)
+        self.owner.navigate('processing')
 
     def activate(self):
         state = components.status()

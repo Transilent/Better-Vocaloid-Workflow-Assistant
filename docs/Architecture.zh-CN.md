@@ -23,14 +23,14 @@ VWA外观使用深浅语义配色、共享Qt样式及应用内缓存背景。单
 | 文件 | 职责 |
 | --- | --- |
 | `launch.py`、`app.py` | 启动、界面、后台任务 |
-| `desktop_theme.py`、`workspace_ui.py`、`publishing_layout.py` | 主题、侧栏工作区与发布表单 |
+| `desktop_theme.py`、`workspace_ui.py`、`publishing_layout.py` | 主题、使用稳定页面 ID 并兼容旧跳转的侧栏工作区、发布表单 |
 | `workflow_widgets.py` | 步骤导航及等比例封面预览 |
 | `components_ui.py`、`optional_components.py`、`components/roformer.json` | 下载界面、冻结清单、续传安装与验证 |
 | [component_health.py](../src/component_health.py) | 将快速元数据检查与显式完整校验分开；约束路径、记录预算、取消和校验期间的文件身份 |
 | [style_catalog.py](../src/style_catalog.py)、[expression_controls.py](../src/expression_controls.py) | GUI、MCP、草稿和执行层共用风格元数据及表现参数规格；旧 ID 配方与各用途步长保留 |
 | [multi_file_commit.py](../src/multi_file_commit.py)、`vocal_partition.py` | 相关输出统一备份、发布、验证和失败恢复；回执完成后才清理恢复副本 |
 | `roformer.py` | 可选 Pymss 推理，保留主唱、和声完整时间线 |
-| `common.py`、`check_dependencies.py` | 路径、配置、进程取消、依赖校验 |
+| `common.py`、`check_dependencies.py` | 路径、配置、进程取消、共享单字节文件锁、依赖校验 |
 | `pipeline.py` | 输入副本、来源、下载、阶段、续跑 |
 | `workflow.py`、`processing_workflow.py`、`processing_ui.py` | 旧预设迁移、步骤卡片与参数复用 |
 | `tuning_ui.py`、`tuning_workflow.py`、`tuning_engine.py` | 独立调音页面、固定输入会话、互斥来源组合、统一加密和候选提交保护 |

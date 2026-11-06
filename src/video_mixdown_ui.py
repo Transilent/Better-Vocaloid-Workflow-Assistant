@@ -366,7 +366,7 @@ class VideoMixdownPage(QWidget):
 
     def busy(self):
         """Formal render only; preview has an independent lifetime."""
-        return self.task is not None and self.task.isRunning()
+        return bool(self.active_inputs) or (self.task is not None and self.task.isRunning())
 
     def _still_preview_busy(self):
         return ((self.preview_task is not None and self.preview_task.isRunning())
@@ -940,8 +940,9 @@ class VideoMixdownPage(QWidget):
             self.status.setText(_tr('正在对齐并合成视频…'))
             self.task.start()
         except (OSError, ValueError) as error:
-            if not self.busy():
+            if self.active_inputs and (self.task is None or not self.task.isRunning()):
                 self.active_inputs = {}
+                self.set_locked(False)
             self.formal_inputs = {}
             self.status.setText(str(error))
 
@@ -1068,7 +1069,7 @@ class VideoMixdownPage(QWidget):
         self._resume_pending_render()
 
     def cancel(self):
-        if self.busy():
+        if self.task is not None and self.task.isRunning():
             (self.job / 'cancel.flag').touch()
             self.stop.setEnabled(False)
             self.status.setText(_tr('正在停止合成，原视频与 Mixdown 保持不变…'))
@@ -1089,7 +1090,7 @@ class VideoMixdownPage(QWidget):
             if self.result.get('source_job'):
                 self.owner.publishing.load_job(Path(self.result['source_job']))
             self.owner.publishing.video.setText(self.result['output'])
-            self.owner.navigate(3)
+            self.owner.navigate('publishing')
 
 
 

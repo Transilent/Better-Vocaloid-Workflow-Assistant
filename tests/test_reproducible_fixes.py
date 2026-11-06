@@ -182,11 +182,14 @@ with tempfile.TemporaryDirectory(dir=APP/'work', prefix='reproduced-fixes-') as 
     (builder/'src').mkdir()
     (builder/'src/app.py').write_text('# fixture')
     (builder/'src/unapproved.py').write_text('# fixture')
+    (builder/'tools').mkdir()
+    (builder/'tools/update_apply.py').write_text('# required helper fixture')
     with patch.object(build_runtime_upgrade, 'ROOT', builder), \
             patch('tools.verify_source_layout.verify'), \
             patch.object(build_runtime_upgrade.subprocess, 'check_output', return_value=b'{"entries": []}'), \
             patch.object(build_runtime_upgrade, 'package_sources', return_value={
-                'app.py': 'src/app.py', 'version.json': 'packaging/version.json', 'unapproved.py': 'src/unapproved.py'}):
+                'app.py': 'src/app.py', 'version.json': 'packaging/version.json',
+                'tools/update_apply.py': 'tools/update_apply.py', 'unapproved.py': 'src/unapproved.py'}):
         try:
             build_runtime_upgrade.build(builder/'output')
             raise AssertionError('Unapproved program file accepted during runtime build')

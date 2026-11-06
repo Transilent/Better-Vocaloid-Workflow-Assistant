@@ -15,6 +15,7 @@ import re
 import subprocess
 import time
 import uuid
+from common import exclusive_sidecar, SidecarBusy
 
 SCHEMA = 1
 MAX_JSON = 16 * 1024**2
@@ -153,42 +154,11 @@ def file_lock(path, *, blocking=True, cancel=lambda: None):
     """Owned sidecar locks only. Never creates a lock in a user's job directory."""
     path = safe_path(path)
     io_path(path.parent).mkdir(parents=True, exist_ok=True)
-    handle = io_path(path).open('a+b')
-    acquired = False
     try:
-        while True:
-            handle.seek(0)
-            try:
-                if os.name == 'nt':
-                    import msvcrt
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired = True
-                break
-            except OSError:
-                if not blocking:
-                    raise ControlError('busy', '该操作正在执行。')
-                cancel()
-                time.sleep(.05)
-        # Initialize only after locking. On Windows two first-time contenders
-        # can otherwise both observe an empty file, and one flush can collide
-        # with the other process's byte-range lock.
-        if handle.seek(0, 2) == 0:
-            handle.write(b'0')
-            handle.flush()
-        yield
-    finally:
-        if acquired:
-            handle.seek(0)
-            if os.name == 'nt':
-                import msvcrt
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(handle, fcntl.LOCK_UN)
-        handle.close()
+        with exclusive_sidecar(path, blocking=blocking, cancel=cancel):
+            yield
+    except SidecarBusy:
+        raise ControlError('busy', '该操作正在执行。') from None
 
 
 def lock_held(path):

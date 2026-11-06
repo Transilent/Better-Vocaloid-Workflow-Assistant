@@ -132,6 +132,14 @@ def _lstat_directory(path):
     return target, info, None
 
 
+def component_lock_path(root):
+    """Validate the installer/inference sidecar without following a redirect."""
+    path, _, issue = _lstat_regular(Path(root) / 'run.lock')
+    if issue and issue['code'] != 'missing':
+        raise PathBoundaryError(issue['code'], issue['path'], issue['message'])
+    return path
+
+
 def _relative_parts(value):
     if not isinstance(value, str) or not value or '\x00' in value:
         raise PathBoundaryError('invalid_path', value, '组件文件路径无效。')

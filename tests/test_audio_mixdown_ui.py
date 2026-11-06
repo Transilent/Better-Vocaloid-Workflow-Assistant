@@ -1549,7 +1549,7 @@ with tempfile.TemporaryDirectory(prefix='audio-mix-gui-', dir=APP / 'work') as t
         assert Path(owner.video_mixdown.fields['mixdown'].text()).resolve() == output.resolve()
         assert owner.video_mixdown.loaded is None
         assert owner.video_mixdown.source_job is None
-        assert navigation == [8]
+        assert navigation == ['video_mixdown']
 
         assert dialog.set_job(job)
         app.processEvents()

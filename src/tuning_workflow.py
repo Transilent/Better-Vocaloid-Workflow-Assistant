@@ -20,7 +20,7 @@ import uuid
 
 ROOT=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT))
-from common import atomic_json,file_hash,native_path,preserve_changed_file
+from common import atomic_json,file_hash,native_path,preserve_changed_file,exclusive_sidecar,SidecarBusy
 from tuning_engine import settings,digest,process_project
 
 SCHEMA=1
@@ -269,29 +269,12 @@ def _dependencies(options):
 def _exclusive(root):
     with _LOCK_GUARD:lock=_LOCKS.setdefault(str(root),threading.Lock())
     if not lock.acquire(blocking=False):raise RuntimeError('此调音会话正在运行，请等待或停止当前处理。')
-    stream=None;acquired=False
     try:
-        stream=Path(native_path(_owned(root,root/'run.lock'))).open('a+b')
-        if stream.seek(0,2)==0:stream.write(b'0');stream.flush()
-        stream.seek(0)
-        if os.name=='nt':
-            import msvcrt
-            msvcrt.locking(stream.fileno(),msvcrt.LK_NBLCK,1)
-        else:
-            import fcntl
-            fcntl.flock(stream.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
-        acquired=True;yield
+        with exclusive_sidecar(_owned(root, root/'run.lock')):
+            yield
+    except SidecarBusy:
+        raise RuntimeError('此调音会话正在运行，请等待或停止当前处理。') from None
     finally:
-        if stream is not None:
-            if acquired:
-                stream.seek(0)
-                if os.name=='nt':
-                    import msvcrt
-                    msvcrt.locking(stream.fileno(),msvcrt.LK_UNLCK,1)
-                else:
-                    import fcntl
-                    fcntl.flock(stream.fileno(),fcntl.LOCK_UN)
-            stream.close()
         lock.release()
 
 

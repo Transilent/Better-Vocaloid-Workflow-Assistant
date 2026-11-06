@@ -1,5 +1,4 @@
 """Synthetic layered health, installer receipt and ComponentsPage verification tests."""
-from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -361,19 +360,27 @@ with tempfile.TemporaryDirectory(prefix='component-health-', dir=APP / 'work') a
          patch.object(components, 'extract_wheel', side_effect=fake_extract), \
          patch.object(components, 'load_config', return_value={'python': sys.executable}), \
          patch.object(components.subprocess, 'Popen', return_value=ProbeProcess()), \
-         patch.object(components.shutil, 'disk_usage', return_value=SimpleNamespace(free=10**18)), \
-         patch('pipeline.job_lock', return_value=nullcontext()):
+         patch.object(components.shutil, 'disk_usage', return_value=SimpleNamespace(free=10**18)):
         installed = components.install(
             'cpu', progress=lambda done, total, text: installer_progress.append(text), root=install_root)
         receipt = json.loads((components.current(install_root) / 'installed.json').read_text(encoding='utf-8'))
         assert installed['ready'] and installed['verification']['level'] == 'metadata'
         assert all(len(row.get('sha256', '')) == 64 for row in receipt['critical_files'])
         full = components.full_verify(install_root)
+        with components.use_ready(install_root) as active:
+            assert active == components.current(install_root)
         installer_progress.clear()
         no_op = components.install(
             'cpu', progress=lambda done, total, text: installer_progress.append(text), root=install_root)
     assert full['verified'] and full['progress']['sha256_checked'] == 5
     assert no_op['ready'] and any('元数据检查' in text for text in installer_progress)
+    invalid_lock = install_base / 'invalid-lock'
+    (invalid_lock / 'run.lock').mkdir(parents=True)
+    try:
+        with components.use_ready(invalid_lock):
+            raise AssertionError('An invalid sidecar was accepted')
+    except component_health.PathBoundaryError as error:
+        assert error.code == 'not_regular_file'
     passed.append('installer-writes-critical-sha-and-status-compatible')
 
 # UI must discover verification, remain busy while it runs, and defer closing.

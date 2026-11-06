@@ -33,6 +33,7 @@ import mido
 import numpy as np
 
 from agent_control import ControlError, digest, io_path, read_json, safe_path
+from agent_errors import error_payload
 from agent_lyrics import read_lyrics
 from agent_score import read_score
 from agent_supervision import SupervisionError, _digest as supervision_digest
@@ -165,6 +166,7 @@ class FakeControl:
         self.plan_calls = []
         self.plan_starts = []
         self.worker_calls = []
+        self.artifact_calls = []
 
     def _record_path(self, category, identifier, prefix):
         if not isinstance(identifier, str) or not identifier.startswith(prefix + "_"):
@@ -202,12 +204,15 @@ class FakeControl:
             json.dumps(record, ensure_ascii=False), encoding="utf-8")
         return identifier
 
-    def artifact(self, identifier):
+    def artifact(self, identifier, *, verify=True):
+        self.artifact_calls.append((identifier, verify))
         try:
             value = copy.deepcopy(self.records["artifacts"][identifier])
         except KeyError as error:
             raise ControlError("not_found", "artifact not found") from error
-        if sha256_file(value["path"]) != value["sha256"]:
+        if io_path(value["path"]).stat().st_size != value["bytes"]:
+            raise ControlError("stale_artifact", "fixture artifact size changed")
+        if verify and sha256_file(value["path"]) != value["sha256"]:
             raise ControlError("stale_artifact", "fixture artifact changed")
         return value
 
@@ -286,8 +291,10 @@ class FakeControl:
         self.worker_calls.append((action, copy.deepcopy(arguments)))
         score = read_score(arguments["path"])
         lyrics = read_lyrics(arguments["path"], arguments.get("language", "zh"))
-        return {"score": score, "score_review": {"hints": []},
-                "lyrics": lyrics, "lyric_review": {"hints": []}}
+        return {"score": score,
+                "score_review": {"hints": [], "source_sha256": score["source_sha256"]},
+                "lyrics": lyrics,
+                "lyric_review": {"hints": [], "source_sha256": lyrics["source_sha256"]}}
 
     def reference_pitch_review(self, score_artifact_id, pitch_artifact_id,
                                track_indices=None, time_origin=0.0, limit=100, offset=0):
@@ -1138,15 +1145,115 @@ class WorkflowCreateGetTests(WorkflowTestBase):
 class WorkflowReviewTests(WorkflowTestBase):
     def test_review_bundle_is_real_and_bound_to_current_revision(self):
         created, _ = self.create_midi_flow()
+        expected_sha256 = self.control.artifact(created["score_artifact_id"])["sha256"]
+        self.control.artifact_calls.clear()
         bundle = self.workflow.review(created["id"], limit=2, offset=0)
         self.assertEqual(bundle["revision"], created["revision"])
         self.assertEqual(bundle["total_notes"], 3)
         self.assertEqual(len(bundle["evidence"]["score"]["notes"]), 2)
         self.assertEqual(bundle["next_offset"], 2)
-        self.assertEqual(bundle["evidence"]["score"]["source_sha256"],
-                         self.control.artifact(created["score_artifact_id"])["sha256"])
+        for section in ("score", "score_review", "lyrics", "lyric_review"):
+            self.assertEqual(bundle["evidence"][section]["source_sha256"], expected_sha256)
+        self.assertEqual(self.control.artifact_calls,
+                         [(created["score_artifact_id"], True)])
         self.assertEqual(bundle["decision_tool"], "vwa_workflow_apply_review")
         self.assertTrue(self.control.worker_calls)
+
+    def test_review_remains_readable_after_code_update(self):
+        created, _ = self.create_midi_flow()
+        self.control.code_revision = 'subsequent-code-revision'
+        bundle = self.workflow.review(created["id"], limit=2)
+        self.assertEqual(bundle["revision"], created["revision"])
+
+    def test_review_bundle_rejects_mid_read_swap_then_recovers(self):
+        created, _ = self.create_midi_flow(key="mid-read bundle swap")
+        expected_sha256 = self.control.artifact(created["score_artifact_id"])["sha256"]
+        original_bytes = io_path(self.midi).read_bytes()
+        original_read_lyrics = read_lyrics
+
+        def swap_before_lyrics(path, language="zh"):
+            midi = mido.MidiFile(filename=native_path(path), charset="utf8")
+            changed = False
+            for track in midi.tracks:
+                for message in track:
+                    if message.type == "lyrics":
+                        message.text = "云"
+                        changed = True
+                        break
+                if changed:
+                    break
+            self.assertTrue(changed)
+            with open(native_path(path), "wb") as stream:
+                midi.save(file=stream)
+            return original_read_lyrics(path, language)
+
+        with patch(f"{__name__}.read_lyrics", side_effect=swap_before_lyrics):
+            with self.assertRaises(ControlError) as raised:
+                self.workflow.review(created["id"], limit=2, offset=0)
+        payload = error_payload(raised.exception)
+        self.assertEqual(payload["code"], "review_bundle_changed")
+        self.assertTrue(payload["retryable"])
+        self.assertEqual(payload["details"]["cause"], "artifact_changed")
+        self.assertEqual({row["section"] for row in payload["details"]["sections"]},
+                         {"lyrics", "lyric_review"})
+        self.assertEqual(self.workflow._read(created["id"])["revision"], created["revision"])
+
+        io_path(self.midi).write_bytes(original_bytes)
+        recovered = self.workflow.review(created["id"], limit=2, offset=0)
+        for section in ("score", "score_review", "lyrics", "lyric_review"):
+            self.assertEqual(recovered["evidence"][section]["source_sha256"], expected_sha256)
+
+    def test_review_bundle_worker_failure_prefers_swap_identity_error(self):
+        created, _ = self.create_midi_flow(key="worker failure after replacement")
+        original_bytes = io_path(self.midi).read_bytes()
+        replacement = self.midi.with_name("replacement.mid")
+
+        def fail_after_replacement(action, arguments):
+            io_path(replacement).write_bytes(b"\0" * len(original_bytes))
+            os.replace(native_path(replacement), native_path(self.midi))
+            raise ControlError("business_error", "fixture parser rejected replacement")
+
+        with patch.object(self.control, "call_worker", side_effect=fail_after_replacement):
+            with self.assertRaises(ControlError) as raised:
+                self.workflow.review(created["id"], limit=2, offset=0)
+        payload = error_payload(raised.exception)
+        self.assertEqual(payload["code"], "review_bundle_changed")
+        self.assertTrue(payload["retryable"])
+        self.assertEqual(payload["details"]["cause"], "artifact_changed")
+        changed = payload["details"]["files"][0]
+        self.assertEqual(changed["role"], "score")
+        self.assertTrue({"device", "inode", "ctime_ns", "size", "mtime_ns"}
+                        <= set(changed["expected"]))
+
+        io_path(self.midi).write_bytes(original_bytes)
+        recovered = self.workflow.review(created["id"], limit=2, offset=0)
+        self.assertEqual(recovered["revision"], created["revision"])
+
+    def test_review_bundle_rejects_workflow_change_while_assembling(self):
+        created, _ = self.create_midi_flow(key="workflow change during review")
+        original_read_lyrics = read_lyrics
+        changed = {}
+
+        def bind_during_assembly(path, language="zh"):
+            result = original_read_lyrics(path, language)
+            current = self.workflow._read(created["id"])
+            changed["record"] = self.workflow.references_set(
+                current["id"], current["revision"],
+                rationale="并发修改夹具：组装期间明确更换引用集合。")
+            return result
+
+        with patch(f"{__name__}.read_lyrics", side_effect=bind_during_assembly):
+            with self.assertRaises(ControlError) as raised:
+                self.workflow.review(created["id"], limit=2, offset=0)
+        payload = error_payload(raised.exception)
+        self.assertEqual(payload["code"], "review_bundle_changed")
+        self.assertTrue(payload["retryable"])
+        self.assertEqual(payload["details"]["cause"], "workflow_changed")
+        self.assertEqual(payload["details"]["expected_revision"], created["revision"])
+        self.assertEqual(payload["details"]["actual_revision"], changed["record"]["revision"])
+
+        recovered = self.workflow.review(created["id"], limit=2, offset=0)
+        self.assertEqual(recovered["revision"], changed["record"]["revision"])
 
     def test_apply_review_requires_reason_and_does_not_export_before_advance(self):
         created, _ = self.create_midi_flow()
@@ -1429,8 +1536,21 @@ class WorkflowReviewTests(WorkflowTestBase):
         self.assertEqual(bound["references"]["audio_artifact_id"], audio["id"])
         self.assertEqual(bound["references"]["track_indices"], [1])
 
+        self.control.artifact_calls.clear()
         evidence = self.workflow.review(bound["id"], limit=1, offset=0)
         self.assertEqual(evidence["reference_evidence"]["pitch"]["summary"]["notes_selected"], 3)
+        self.assertEqual(
+            evidence["reference_evidence"]["pitch"]["original_hashes"]["score_sha256"],
+            self.control.artifact(bound["score_artifact_id"])["sha256"])
+        self.assertEqual(
+            evidence["reference_evidence"]["pitch"]["original_hashes"]["pitch_sha256"],
+            pitch["sha256"])
+        self.assertEqual(evidence["reference_evidence"]["audio"]["source_sha256"],
+                         audio["sha256"])
+        self.assertEqual(sum(1 for identifier, verify in self.control.artifact_calls
+                             if identifier == pitch["id"] and verify), 1)
+        self.assertEqual(sum(1 for identifier, verify in self.control.artifact_calls
+                             if identifier == audio["id"] and verify), 1)
         self.assertFalse(evidence["reference_evidence"]["audio"]["frame_analysis_performed"])
         self.assertEqual(evidence["reference_evidence"]["audio_excerpt_next"]["tool"],
                          "vwa_reference_audio_read")
@@ -1442,6 +1562,37 @@ class WorkflowReviewTests(WorkflowTestBase):
                 pending["id"], pending["revision"], audio_artifact_id=audio["id"],
                 rationale="操作启动后不应重绑参考。")
         self.assertEqual(raised.exception.code, "wrong_stage")
+
+    def test_review_bundle_rejects_changed_audio_reference_identity(self):
+        created, _ = self.create_midi_flow(key="changed audio identity")
+        audio_path = write_wav(self.root / "assets" / "参考 audio changed.wav")
+        audio = self.control.register_artifact(audio_path, kind="reference_audio")
+        bound = self.workflow.references_set(
+            created["id"], created["revision"], audio_artifact_id=audio["id"],
+            audio_time_origin=0.0, rationale="自制音频参考，明确对齐MIDI秒0。")
+        original_audio_read = self.control.reference_audio_read
+
+        def changed_audio(identifier, start=None, end=None, make_excerpt=False):
+            result = original_audio_read(identifier, start, end, make_excerpt)
+            result["source_sha256"] = "f" * 64
+            return result
+
+        self.control.artifact_calls.clear()
+        with patch.object(self.control, "reference_audio_read", side_effect=changed_audio):
+            with self.assertRaises(ControlError) as raised:
+                self.workflow.review(bound["id"], limit=1, offset=0)
+        payload = error_payload(raised.exception)
+        self.assertEqual(payload["code"], "review_bundle_changed")
+        self.assertTrue(payload["retryable"])
+        self.assertEqual(payload["details"]["cause"], "artifact_changed")
+        self.assertEqual(payload["details"]["role"], "audio")
+        self.assertEqual(payload["details"]["identities"][0]["field"], "source_sha256")
+        self.assertEqual(sum(1 for identifier, verify in self.control.artifact_calls
+                             if identifier == audio["id"] and verify), 1)
+
+        recovered = self.workflow.review(bound["id"], limit=1, offset=0)
+        self.assertEqual(recovered["reference_evidence"]["audio"]["source_sha256"],
+                         audio["sha256"])
 
     def test_structure_delete_insert_lyrics_and_pitch_use_real_worker_batch(self):
         created, _ = self.create_midi_flow(key="combined structure")

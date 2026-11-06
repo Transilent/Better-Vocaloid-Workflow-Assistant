@@ -1,5 +1,8 @@
 {
   "en": {
+    "这个任务已经在运行，请等待它完成或在原窗口取消。": "This task is already running. Wait for it to finish or cancel it in the original window.",
+    "BS-RoFormer 组件正在安装或使用，请稍后重试。": "BS-RoFormer is being installed or used. Try again in a moment.",
+    "本地音乐与计划摘要不一致，请重新生成准备计划。": "The local audio does not match the digest in the preparation plan. Create a new plan and try again.",
     "{0}：{1}\n详细原因：{2}": "{0}: {1}\nDetailed reason: {2}",
     "处理完成 · {0} 和伴奏已准备好。": "Processing complete · {0} and the instrumental are ready.",
     "请等待{0}结束后再检查文件。": "Wait for {0} to finish before checking files.",
@@ -921,6 +924,9 @@
     "完整校验期间组件文件发生变化；未确认完整性，请重试。": "Component files changed during full verification. Integrity is not confirmed; try again."
   },
   "ja": {
+    "这个任务已经在运行，请等待它完成或在原窗口取消。": "このタスクは実行中です。完了を待つか、元のウィンドウでキャンセルしてください。",
+    "BS-RoFormer 组件正在安装或使用，请稍后重试。": "BS-RoFormer はインストール中または使用中です。しばらくしてから再試行してください。",
+    "本地音乐与计划摘要不一致，请重新生成准备计划。": "ローカル音源が準備プランのハッシュと一致しません。プランを作成し直してください。",
     "{0}：{1}\n详细原因：{2}": "{0}：{1}\n詳細な原因：{2}",
     "处理完成 · {0} 和伴奏已准备好。": "処理完了 · {0} と伴奏の準備ができました。",
     "请等待{0}结束后再检查文件。": "{0}が終わってからファイルを確認してください。",

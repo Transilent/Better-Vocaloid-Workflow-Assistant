@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Hold the existing task lock while reusing a download and retain unverified source declarations when reprocessing local audio. Component installation and inference use the same lock while selecting and using the active runtime.
+- Reject a review response if its sections were assembled from different artifact identities or the workflow revision changed during the read. Use stable desktop page IDs while retaining legacy numeric navigation, and keep video render controls locked from launch through completion.
 - Centralize style discovery and expression-control boundaries across the GUI, MCP, drafts and calibration while preserving existing recipes, legacy IDs and parameter units. Explicit audio channel modes use separate feature-cache identities; legacy standard-mode caches remain reusable.
 - Reuse the paired-output transaction for vocal-partition validation and rollback, retaining recovery sidecars until validation and receipt construction succeed.
 - Distinguish quick optional-component metadata checks from explicit cancellable full-file verification, with progress and file-integrity results available from the component page and command line.

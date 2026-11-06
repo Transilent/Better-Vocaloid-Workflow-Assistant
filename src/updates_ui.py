@@ -241,7 +241,7 @@ class UpdatesPage(QWidget):
             self.action.setText(_tr('下载程序更新'))
             if self.startup_update and self.auto_download.isChecked() and not self.restart_deferred:
                 if hasattr(self.owner, 'navigate'):
-                    self.owner.navigate(4)
+                    self.owner.navigate('updates')
                 QTimer.singleShot(100, self.download)
 
     def download(self):
@@ -273,7 +273,7 @@ class UpdatesPage(QWidget):
         if (self.plan and self.startup_update and self.auto_check.isChecked()
                 and self.auto_download.isChecked() and self.auto_restart.isChecked() and not self.restart_deferred):
             if hasattr(self.owner, 'navigate'):
-                self.owner.navigate(4)
+                self.owner.navigate('updates')
             self.cancel.setText(_tr('暂缓安装'))
             self.cancel.setEnabled(True)
             self.cancel.show()

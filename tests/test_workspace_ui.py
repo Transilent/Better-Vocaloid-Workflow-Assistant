@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import QApplication
 import optional_components as components
 import updater
 from app import Window
-from workspace_ui import workspace_geometry
+from workspace_ui import PAGE_SPECS, workspace_geometry
 
 assert workspace_geometry(QRect(0, 0, 1920, 1040))[0] == (1440, 900)
 assert workspace_geometry(QRect(0, 0, 2560, 1400))[0] == (1440, 900)
@@ -25,14 +25,43 @@ app.setFont(QFont('Microsoft YaHei', 10))
 window = Window()
 window.show()
 app.processEvents()
-assert window.pages.count() == 10
+navigation = window.navigation
+assert window.pages.count() == len(PAGE_SPECS) == len(window.nav_buttons) == 11
+assert [spec.page_id for spec in navigation.sidebar] == [
+    'processing', 'tuning', 'audio_mixdown', 'video_mixdown',
+    'publishing', 'components', 'results', 'updates',
+]
+for page_id, widget in {
+    'processing': window.processing,
+    'components': window.components,
+    'results': window.results,
+    'publishing': window.publishing,
+    'updates': window.updates,
+    'video_mixdown': window.video_mixdown,
+    'tuning': window.tuning,
+    'audio_mixdown': window.audio_mixdown,
+}.items():
+    assert navigation.widget(page_id) is widget
+assert navigation.button('updates') is window.nav_buttons[4]
+assert navigation.resolve(5)[0].page_id == 'processing'
+assert navigation.resolve(6)[0].page_id == 'updates'
+subtitles, focus_step = navigation.resolve(7)
+assert subtitles.page_id == 'processing' and focus_step == 'subtitles'
 sidebar = window.nav_buttons[4].parentWidget().layout()
 visual_order = [sidebar.itemAt(i).widget().text() for i in range(sidebar.count())
                 if sidebar.itemAt(i).widget() is not None and sidebar.itemAt(i).widget() in window.nav_buttons]
-assert visual_order == ['准备工作流', '调音工作流', '合成视频', '发布', '模型与组件', '任务与结果', '设置与更新']
-QTest.mouseClick(window.nav_buttons[4], Qt.LeftButton)
+assert visual_order == ['准备工作流', '调音工作流', '简易混音', '合成视频', '发布', '模型与组件', '任务与结果', '设置与更新']
+QTest.mouseClick(navigation.button('updates'), Qt.LeftButton)
 assert window.pages.currentWidget() == window.updates
-window.navigate(0)
+assert navigation.current_page_id == 'updates'
+window.navigate(5)
+assert window.pages.currentIndex() == 0 and navigation.current_page_id == 'processing'
+window.navigate(6)
+assert window.pages.currentIndex() == 4 and navigation.current_page_id == 'updates'
+window.navigate(10)
+assert window.pages.currentWidget() == window.audio_mixdown
+assert navigation.current_page_id == 'audio_mixdown'
+window.navigate('processing')
 assert window.windowTitle() == '术力口工作流助手 · VWA'
 assert window.width() == 1600 and window.height() == 1000
 assert not window.log.isVisible() and window.lyrics.isVisible(), 'Important lyrics are visible by default'
@@ -123,8 +152,9 @@ window.show()
 app.processEvents()
 images = APP / 'docs/images'
 images.mkdir(parents=True, exist_ok=True)
-for index, name in ((0, 'processing'), (1, 'components'), (3, 'publishing'), (4, 'updates'), (6, 'storage'), (7, 'subtitles')):
-    window.navigate(index)
+for page_id, name in (('processing', 'processing'), ('components', 'components'), ('publishing', 'publishing'),
+                      ('updates', 'updates'), ('storage', 'storage'), ('subtitles', 'subtitles')):
+    window.navigate(page_id)
     app.processEvents()
     window.grab().save(str(images / (name + '.png')))
 window.navigate(0)
@@ -152,4 +182,4 @@ app.processEvents()
 assert tab.cover_seconds.isVisible() and tab.cover_seconds.isEnabled()
 window.close()
 app.processEvents()
-print('PASS: workspace navigation, action hierarchy, multi-GB installer signals, dirty drafts, small-window layout')
+print('PASS: stable page IDs, sidebar projection, legacy aliases, workspace actions, installer signals, dirty drafts and small-window layout')

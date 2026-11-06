@@ -88,7 +88,7 @@ class ControlFixtureTests(unittest.TestCase):
     def _install_fixture_app(self):
         for name in agent_control.CODE_FILES:
             destination = self.app / name
-            if name in ('agent_control.py', 'agent_worker.py','agent_errors.py'):
+            if name in ('agent_control.py', 'agent_worker.py','agent_errors.py','common.py'):
                 shutil.copy2(SRC / name, destination)
             elif name == 'agent_score.py':
                 destination.write_text(

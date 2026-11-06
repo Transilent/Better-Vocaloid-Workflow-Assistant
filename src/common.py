@@ -1,11 +1,15 @@
 """Small, dependency-free helpers for the desktop app and pipeline."""
 import json
 import hashlib
+import errno
+import os
 import re
+import time
 import unicodedata
 import urllib.request
 import threading
 import weakref
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 
@@ -28,6 +32,59 @@ def native_path(path):
     if value.startswith('\\\\'):
         return '\\\\?\\UNC\\' + value[2:]
     return '\\\\?\\' + value
+
+
+class SidecarBusy(BlockingIOError):
+    """Another process holds the first byte of the agreed sidecar."""
+
+
+@contextmanager
+def exclusive_sidecar(path, *, create=True, blocking=False, cancel=lambda: None):
+    """Use the existing one-byte lock protocol; caller owns path validation.
+
+    Probes use create=False so listing jobs never creates or updates a lock.
+    The sidecar stays in place after release: unlinking it can split ownership.
+    """
+    if os.name == 'nt':
+        import msvcrt
+
+        def acquire(stream):
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+
+        def release(stream):
+            msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        def acquire(stream):
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        def release(stream):
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+    with open(native_path(path), 'a+b' if create else 'r+b') as stream:
+        while True:
+            stream.seek(0)
+            try:
+                acquire(stream)
+                break
+            except OSError as error:
+                if (error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK, errno.EWOULDBLOCK)
+                        and getattr(error, 'winerror', None) not in (32, 33)):
+                    raise
+                if not blocking:
+                    raise SidecarBusy(str(error)) from error
+                cancel()
+                time.sleep(.05)
+        try:
+            # Only the lock owner may initialize a newly opened empty file.
+            if create and stream.seek(0, os.SEEK_END) == 0:
+                stream.write(b'0')
+                stream.flush()
+            yield
+        finally:
+            stream.seek(0)
+            release(stream)
 
 
 def direct_urlopen(request, timeout=30):

@@ -6147,9 +6147,7 @@ class AudioMixdownDialog(QDialog):
                 refresh_context()
         if not callable(navigate):
             raise ValueError('当前窗口没有可用的页面导航。')
-        page = getattr(self.owner, 'pages', None)
-        index = page.indexOf(video) if page is not None else -1
-        navigate(index if index >= 0 else 8)
+        navigate('video_mixdown')
         self.video_requested = True
         return True
 

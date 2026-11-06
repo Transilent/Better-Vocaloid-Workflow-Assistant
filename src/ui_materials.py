@@ -94,18 +94,21 @@ def apply_material(window, mode, preferences):
     backdrop.configure(mode, preferences)
 
 
-def navigation_icon(index, color):
+def navigation_icon(page_id, color):
     paths = {
-        0: '<path d="M6 3h8l4 4v14H6zM14 3v5h5M9 12h6M9 16h6"/>',
-        9: '<path d="M3 10v4M7 5v14M12 2v20M17 7v10M21 10v4"/>',
-        10: '<path d="M5 3v18M12 3v18M19 3v18"/><path d="M3 8h4M10 15h4M17 10h4"/>',
-        8: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="m10 8 6 4-6 4z"/>',
-        3: '<path d="M4 14v6h16v-6M12 16V3m-5 5 5-5 5 5"/>',
-        1: '<path d="m12 2 9 5v10l-9 5-9-5V7zm-9 5 9 5 9-5M12 12v10M7 5l9 5"/>',
-        2: '<rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8 8h1m3 0h5M8 12h1m3 0h5M8 16h1m3 0h5"/>',
-        4: '<circle cx="12" cy="12" r="4"/><path d="m10 2-1 3-3 1-3-1-1 4 2 2v2l-2 2 2 4 3-1 2 1 1 3h4l1-3 2-1 3 1 2-4-2-2v-2l2-2-2-4-3 1-3-1-1-3z"/>',
+        'processing': '<path d="M6 3h8l4 4v14H6zM14 3v5h5M9 12h6M9 16h6"/>',
+        'tuning': '<path d="M3 10v4M7 5v14M12 2v20M17 7v10M21 10v4"/>',
+        'audio_mixdown': '<path d="M5 3v18M12 3v18M19 3v18"/><path d="M3 8h4M10 15h4M17 10h4"/>',
+        'video_mixdown': '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="m10 8 6 4-6 4z"/>',
+        'publishing': '<path d="M4 14v6h16v-6M12 16V3m-5 5 5-5 5 5"/>',
+        'components': '<path d="m12 2 9 5v10l-9 5-9-5V7zm-9 5 9 5 9-5M12 12v10M7 5l9 5"/>',
+        'results': '<rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8 8h1m3 0h5M8 12h1m3 0h5M8 16h1m3 0h5"/>',
+        'updates': '<circle cx="12" cy="12" r="4"/><path d="m10 2-1 3-3 1-3-1-1 4 2 2v2l-2 2 2 4 3-1 2 1 1 3h4l1-3 2-1 3 1 2-4-2-2v-2l2-2-2-4-3 1-3-1-1-3z"/>',
     }
-    svg=f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="{color}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">{paths[index]}</g></svg>'
+    path = paths.get(page_id)
+    if path is None:
+        return QIcon()
+    svg=f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="{color}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">{path}</g></svg>'
     pixmap=QPixmap(48,48);pixmap.fill(Qt.transparent)
     painter=QPainter(pixmap)
     QSvgRenderer(QByteArray(svg.encode())).render(painter)

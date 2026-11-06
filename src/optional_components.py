@@ -1,5 +1,6 @@
 """Pinned, resumable optional-component installer; the base runtime is untouched."""
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -15,11 +16,13 @@ import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import ROOT, atomic_json, file_hash, load_config, direct_urlopen, native_path
+from common import exclusive_sidecar, SidecarBusy
 import component_health
 from download_sources import download_urls, source_name
 
 COMPONENT = ROOT / 'dependencies/optional/bs-roformer'
 MANIFEST = ROOT / 'components/roformer.json'
+_NOT_READY = 'BS-RoFormer 组件元数据检查未通过；文件可能未安装、缺失或路径无效。请在“模型与组件”页面重新安装或执行完整校验。'
 
 
 def manifest():
@@ -84,10 +87,33 @@ def full_verify(root=COMPONENT, progress=None, check=None):
                                              progress=progress, check=check)
 
 
-def require_ready():
-    if not status()['ready']:
-        raise FileNotFoundError('BS-RoFormer 组件元数据检查未通过；文件可能未安装、缺失或路径无效。请在“模型与组件”页面重新安装或执行完整校验。')
-    return current()
+def require_ready(root=None):
+    root = COMPONENT if root is None else root
+    if not status(root)['ready']:
+        raise FileNotFoundError(_NOT_READY)
+    return current(root)
+
+
+@contextmanager
+def _component_lock(root, *, install=False):
+    path = component_health.component_lock_path(root)
+    if install:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    elif not path.parent.is_dir():
+        raise FileNotFoundError(_NOT_READY)
+    try:
+        with exclusive_sidecar(path):
+            yield path.parent
+    except SidecarBusy:
+        raise RuntimeError('BS-RoFormer 组件正在安装或使用，请稍后重试。') from None
+
+
+@contextmanager
+def use_ready(root=None):
+    """Select and use the current installation under its existing run.lock."""
+    root = COMPONENT if root is None else root
+    with _component_lock(root) as owned:
+        yield require_ready(owned)
 
 
 def cancelled(check):
@@ -330,10 +356,7 @@ def install(runtime, progress=print, check=None, root=COMPONENT, force=False, so
         raise ValueError('请选择 CPU 或 NVIDIA GPU 运行库。')
     if sys.version_info[:2] != (3, 12) or sys.maxsize < 2**32 or sys.platform != 'win32':
         raise RuntimeError('此组件需要助手自带的 Windows x64 Python 3.12。')
-    from pipeline import job_lock
-    root = Path(root).resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    with job_lock(root):
+    with _component_lock(root, install=True) as root:
         recover_verified_previous(root, _directory_ready)
         existing = status(root)
         if not force and existing['ready'] and existing['runtime'] == runtime:
