@@ -1798,13 +1798,15 @@ def _create_audition_service(cache_dir):
 class AudioMixdownDialog(QDialog):
     """Mix up to three dry vocal WAVs and one backing without replacing sources."""
 
-    def __init__(self, owner, job, parent=None, embedded=False):
+    def __init__(self, owner, job, parent=None, embedded=False, *, preset_library=None):
         if embedded:
             super().__init__(parent, Qt.Widget)
             self.setWindowFlags(Qt.Widget)
         else:
             super().__init__(parent)
         self.owner = owner
+        self._mix_preset_library = preset_library
+        self._mix_preset_undo = None
         self.embedded = bool(embedded)
         self._job = Path(job).resolve() if job else None
         self._ui_ready = False
@@ -1997,6 +1999,20 @@ class AudioMixdownDialog(QDialog):
         self.preset_bar.presetRequested.connect(self.apply_mix_preset)
         self.preset_bar.setToolTip(_tr('起点预设，需按素材微调。'))
         mixer_body.addWidget(self.preset_bar)
+
+        preset_actions = QWidget()
+        preset_actions.setObjectName('mixdownLibraryActions')
+        preset_actions_layout = FlowLayout(preset_actions, spacing=8)
+        self.save_mix_preset_button = button(_tr('保存当前为预设…'), self.save_mix_preset)
+        self.save_mix_preset_button.setObjectName('mixdownSavePresetButton')
+        self.choose_mix_preset_button = button(_tr('从本机库选择…'), self.choose_mix_preset)
+        self.choose_mix_preset_button.setObjectName('mixdownChoosePresetButton')
+        self.undo_mix_preset_button = button(_tr('撤销预设应用'), self.undo_mix_preset)
+        self.undo_mix_preset_button.setObjectName('mixdownUndoPresetButton')
+        for control in (self.save_mix_preset_button, self.choose_mix_preset_button,
+                        self.undo_mix_preset_button):
+            preset_actions_layout.addWidget(control)
+        mixer_body.addWidget(preset_actions)
 
         def compact_spin(spin, width=None):
             if width is None:
@@ -2772,7 +2788,8 @@ class AudioMixdownDialog(QDialog):
             self.reverb_profile, self.reverb_predelay,
             self.advanced_toggle, self.preview_start, self.preview_duration,
             self.preview_range_toggle, self.preset_bar, self.width_control,
-            self.send_controls_fold]
+            self.send_controls_fold, self.save_mix_preset_button,
+            self.choose_mix_preset_button, self.undo_mix_preset_button]
 
         self._syncing = True
         try:
@@ -5188,57 +5205,179 @@ class AudioMixdownDialog(QDialog):
         if not self._syncing:
             self.parameters_changed()
 
+    def _library_for_mixing(self):
+        if self._mix_preset_library is None:
+            from preset_library import PresetLibrary
+            self._mix_preset_library = PresetLibrary()
+        return self._mix_preset_library
+
+    def _mix_preset_state(self):
+        return {'processing': {
+            'apply_scope': 'vocal_processing_and_output_width',
+            'eq_enabled': self.eq_enabled.isChecked(),
+            'eq_bands': copy.deepcopy(self._eq_bands),
+            'compression_enabled': self.compression_enabled.isChecked(),
+            'compression_strength': float(self.compression.value()) / 100,
+            'reverb_enabled': self.reverb_enabled.isChecked(),
+            'reverb_profile': self.reverb_profile.currentData(),
+            'reverb_mix': float(self.reverb.value()) / 100,
+            'reverb_predelay_ms': self.reverb_predelay.value(),
+            'width': self.width_control.value(),
+        }, 'tracks': [{'pan': track['pan'].value() / 100,
+                       'reverb_send': float(track.get('reverb_send', 1.0))}
+                      for track in self.active_vocal_tracks()]}
+
+    def _mix_preset_stamp(self):
+        # The protected context never goes into a portable document.
+        return {'state': self._mix_preset_state(),
+                'paths': {k: v.text() for k, v in self.fields.items()},
+                'balance': [(t['gain_db'].value(), t['offset'].value(),
+                             t['mute'].isChecked(), t['solo'].isChecked())
+                            for t in self.active_vocal_tracks()],
+                'backing': (self.instrumental_db.value(), self.instrumental_pan.value(),
+                            self.instrumental_mute.isChecked(), self.instrumental_solo.isChecked()),
+                'sample_rate': self.eq_curve.sample_rate(), 'job': str(self.job)}
+
+    def _write_mix_preset_state(self, state):
+        payload = state['processing']
+        previous = self._syncing
+        self._syncing = True
+        try:
+            if not self._apply_eq_bands(payload['eq_bands']):
+                raise ValueError('EQ parameters could not be applied')
+            self.eq_enabled.setChecked(payload['eq_enabled'])
+            self.compression.setValue(payload['compression_strength'] * 100)
+            self.compression_enabled.setChecked(payload['compression_enabled'])
+            self.reverb.setValue(payload['reverb_mix'] * 100)
+            self.reverb_enabled.setChecked(payload['reverb_enabled'])
+            self.reverb_profile.setCurrentIndex(self.reverb_profile.findData(payload['reverb_profile']))
+            self.reverb_predelay.setValue(int(payload['reverb_predelay_ms']))
+            self.width_control.set_value(payload['width'], emit=False)
+            for track, values in zip(self.active_vocal_tracks(), state['tracks'], strict=True):
+                track['pan'].setValue(int(round(values['pan'] * 100)))
+                track['reverb_send'] = values['reverb_send']
+            self._sync_send_controls()
+        finally:
+            self._syncing = previous
+
+    def _commit_mix_preset(self, plan, expected_stamp, *, key=None):
+        from mixdown_preset_documents import plan_application
+        from preset_documents import PresetError
+        if self.busy() or self._mix_preset_stamp() != expected_stamp:
+            raise PresetError('target_changed', '混音参数或输入已变化，请重新预览。')
+        # Rebuild from the validated source and scope, not an editable UI table.
+        plan = plan_application(plan['document'], expected_stamp['state'],
+                                sample_rate=expected_stamp['sample_rate'],
+                                include_width=plan['include_width'],
+                                include_tracks=plan['include_tracks'])
+        before = self._mix_preset_state()
+        old_key = self._active_preset_key
+        try:
+            self._write_mix_preset_state(plan['after'])
+            if self._mix_preset_state() != plan['after']:
+                raise PresetError('precision_mismatch', '界面实际参数与预览不一致，本次应用已取消。')
+        except Exception:
+            self._write_mix_preset_state(before)
+            raise
+        self._active_preset_key = key
+        self.preset_bar.set_current_key(key or 'custom')
+        # Existing parameter notification invalidates result/prefetch caches
+        # once, using the same audition and export request path as manual edits.
+        self.parameters_changed()
+        self._mix_preset_undo = {'before': before, 'after': self._mix_preset_stamp(),
+                                 'key': old_key}
+        self._sync_controls()
+        return True
+
+    def _preset_error(self, error):
+        self.status.setText(_tr('预设操作未完成：') + _tr(str(error)))
+        _set_role(self.status, 'error')
+        return False
+
+    def save_mix_preset(self):
+        if self.busy():
+            return False
+        from mixdown_preset_ui import MixPresetSaveDialog
+        from preset_documents import PresetError
+        try:
+            stamp = self._mix_preset_stamp()
+            library = self._library_for_mixing()
+            revision = library.snapshot()['revision']
+            dialog = MixPresetSaveDialog(stamp['state']['processing'], self)
+            if dialog.exec_() != QDialog.Accepted:
+                return False
+            if self._mix_preset_stamp() != stamp or self.busy():
+                raise PresetError('target_changed', '混音参数或输入已变化，请重新预览。')
+            result = library.put_document(dialog.document, expected_revision=revision)
+            self.status.setText(_tr('已附加保存预设“{0}”。', result['entry']['name']))
+            _set_role(self.status, 'success')
+            return True
+        except (ValueError, OSError) as error:
+            return self._preset_error(error)
+
+    def choose_mix_preset(self):
+        if self.busy():
+            return False
+        from mixdown_preset_ui import MixPresetLibraryDialog
+        from preset_documents import PresetError
+        try:
+            stamp = self._mix_preset_stamp()
+            library = self._library_for_mixing()
+            def manage(parent=None):
+                from preset_library_ui import PresetLibraryManagerDialog
+                PresetLibraryManagerDialog(parent or self, library=library).exec_()
+            dialog = MixPresetLibraryDialog(library, stamp['state'],
+                                           sample_rate=stamp['sample_rate'], parent=self,
+                                           manage=manage)
+            if dialog.exec_() != QDialog.Accepted:
+                return False
+            selected = dialog.selected_entry
+            current = next((entry for entry in library.snapshot()['entries']
+                            if (entry['id'], entry['version']) ==
+                               (selected['id'], selected['version'])), None)
+            if current is None or current['sha256'] != selected['sha256']:
+                raise PresetError('preset_changed', '所选预设已变化，请刷新后重新预览。')
+            self._commit_mix_preset(dialog.plan, stamp)
+            self.status.setText(_tr('已应用库预设“{0}”；可撤销本次应用。', selected['name']))
+            _set_role(self.status, 'success')
+            return True
+        except (ValueError, OSError) as error:
+            return self._preset_error(error)
+
+    def undo_mix_preset(self):
+        undo = self._mix_preset_undo
+        if not undo or self.busy():
+            return False
+        if self._mix_preset_stamp() != undo['after']:
+            self._mix_preset_undo = None
+            self._sync_controls()
+            return self._preset_error(ValueError(_tr('混音参数或输入已变化，请重新预览。')))
+        self._write_mix_preset_state(undo['before'])
+        self._active_preset_key = undo['key']
+        self.preset_bar.set_current_key(undo['key'] or 'custom')
+        self.parameters_changed()
+        self.status.setText(_tr('已撤销本次预设应用。'))
+        _set_role(self.status, 'success')
+        return True
+
     def apply_mix_preset(self, key, lock_mix=True):
+        # Retain the programmatic legacy entry while sharing actual application.
         if key == 'custom':
             self.status.setText(_tr('当前使用自定义参数；请选择一套起点预设。'))
             _set_role(self.status, 'muted')
             return False
+        from mixdown_preset_documents import plan_application
+        from preset_builtin_documents import builtin_documents
         try:
             preset = resolve_preset(key)
-        except (TypeError, ValueError) as error:
-            self.status.setText(_tr('无法应用预设：') + str(error))
-            _set_role(self.status, 'error')
-            return False
-        previous = self._syncing
-        self._syncing = True
-        try:
-            self._eq_bands = normalize_eq_bands(preset['eq_bands']) or default_bands()
-            highpass = next(band for band in self._eq_bands if band['type'] == 'highpass')
-            bell = next(band for band in self._eq_bands if band['type'] == 'bell')
-            self.low_cut.setValue(float(highpass['freq_hz']))
-            self.presence.setValue(float(bell['gain_db']))
-            self.eq_enabled.setChecked(True)
-            self.compression.setValue(float(preset['compression_strength']) * 100.0)
-            self.compression_enabled.setChecked(float(preset['compression_strength']) > 0.0)
-            self.reverb.setValue(float(preset['reverb_mix']) * 100.0)
-            self.reverb_enabled.setChecked(float(preset['reverb_mix']) > 0.0)
-            profile_index = self.reverb_profile.findData(preset['reverb_profile'])
-            if profile_index >= 0:
-                self.reverb_profile.setCurrentIndex(profile_index)
-            self.reverb_predelay.setValue(int(round(float(preset['reverb_predelay_ms']))))
-            self.width_control.set_value(float(preset['width']))
-            if hasattr(self, 'eq_curve'):
-                self.eq_curve.set_bands(self._eq_bands)
-            if hasattr(self, 'eq_band_controls'):
-                self.eq_band_controls.set_bands(self._eq_bands, emit=False)
-            if not lock_mix:
-                harmony = float(preset.get('harmony_pan', 0.0))
-                pan_mode = preset.get('pan_mode', 'center')
-                for index, track in enumerate(self.active_vocal_tracks()):
-                    if pan_mode == 'alternate':
-                        pan = harmony if index % 2 else -harmony
-                    elif pan_mode == 'lead_harmony' and index > 0:
-                        pan = harmony if index % 2 else -harmony
-                    else:
-                        pan = float(preset.get('pan', 0.0))
-                    track['pan'].setValue(int(round(pan * 100.0)))
-                    track['reverb_send'] = float(preset['reverb_send'])
-                self._sync_send_controls()
-            self._active_preset_key = preset['key']
-            self.preset_bar.set_current_key(preset['key'])
-        finally:
-            self._syncing = previous
-        self.parameters_changed()
+            document = next(d for d in builtin_documents()
+                            if d['id'] == 'builtin.mixdown.' + preset['key'])
+            stamp = self._mix_preset_stamp()
+            plan = plan_application(document, stamp['state'], sample_rate=stamp['sample_rate'],
+                                    include_width=True, include_tracks=not lock_mix)
+            self._commit_mix_preset(plan, stamp, key=preset['key'])
+        except (TypeError, ValueError, OSError) as error:
+            return self._preset_error(error)
         self.status.setText(
             _tr('已应用预设“{0}”').format(_tr(preset['label'])) +
             (_tr('；已锁定当前音量、声像和发送。') if lock_mix else _tr('；已同时应用声像与发送建议。')))
@@ -5421,6 +5560,8 @@ class AudioMixdownDialog(QDialog):
         active = self.busy()
         for widget in self._editable_widgets:
             widget.setEnabled(not active)
+        if hasattr(self, 'undo_mix_preset_button'):
+            self.undo_mix_preset_button.setEnabled(not active and self._mix_preset_undo is not None)
         self._sync_processing_controls()
         sources_ready = self._sources_ready()
         preview_ready = bool(not active and sources_ready and self._support_ready)
@@ -5472,6 +5613,7 @@ class AudioMixdownDialog(QDialog):
     def parameters_changed(self, *args):
         if self._syncing or self.busy():
             return
+        self._mix_preset_undo = None
         had_result = self._result is not None
         self._result = None
         self._export_context = None

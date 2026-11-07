@@ -59,6 +59,25 @@ def _failure(code: str, message: str, **details: Any) -> PresetError:
     return PresetError(code, message, **details)
 
 
+def _version_conflict(
+    identifier: str,
+    version: str,
+    installed_sha256: str,
+    incoming_sha256: str,
+) -> PresetError:
+    return _failure(
+        "preset_version_conflict",
+        "同一预设 ID 与版本已有不同内容；不会覆盖。若要保留两份，"
+        "请在导入时启用“创建独立副本”（as_copy）。",
+        id=identifier,
+        version=version,
+        installed_sha256=installed_sha256,
+        incoming_sha256=incoming_sha256,
+        alternative="as_copy",
+        preserve_existing=True,
+    )
+
+
 def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
@@ -990,13 +1009,11 @@ class PresetLibrary:
                         )
                     historical_digest = name[:-5]
                     if historical_digest != digest:
-                        raise _failure(
-                            "preset_version_conflict",
-                            "该预设 ID 与版本已有不同历史内容，不能重新安装。",
-                            id=identifier,
-                            version=version,
-                            installed_sha256=historical_digest,
-                            incoming_sha256=digest,
+                        raise _version_conflict(
+                            identifier,
+                            version,
+                            historical_digest,
+                            digest,
                         )
                     if _read_bytes(
                         item,
@@ -1069,7 +1086,7 @@ class PresetLibrary:
         if identifier.startswith("builtin."):
             raise _failure(
                 "preset_builtin_forbidden",
-                "内置预设身份不能导入用户库；请使用 copy。",
+                "内置预设身份不能直接写入用户库；导入时会自动创建独立用户副本。",
                 id=identifier,
                 version=version,
             )
@@ -1085,13 +1102,11 @@ class PresetLibrary:
                         "entry": dict(existing.entry),
                         "already_present": True,
                     }
-                raise _failure(
-                    "preset_version_conflict",
-                    "同一预设 ID 与版本已经安装了不同内容。",
-                    id=identifier,
-                    version=version,
-                    installed_sha256=existing.row["sha256"],
-                    incoming_sha256=digest,
+                raise _version_conflict(
+                    identifier,
+                    version,
+                    existing.row["sha256"],
+                    digest,
                 )
             self._check_version_history(identifier, version, raw, digest)
             if len(state.entries) >= MAX_LIBRARY_ENTRIES:
@@ -1153,7 +1168,20 @@ class PresetLibrary:
         *,
         expected_revision: str | None,
         expected_sha256: str | None = None,
+        as_copy: bool = False,
     ) -> dict[str, Any]:
+        """Append a validated file; built-in identities always become copies.
+
+        The default path preserves the incoming ID, version and exact bytes.
+        Exact duplicates are idempotent, while a same-identity conflict never
+        overwrites the existing row. as_copy=True instead installs a canonical
+        user.UUID/0.1.0 copy and leaves the source file untouched.
+        """
+        if type(as_copy) is not bool:
+            raise _failure(
+                "preset_invalid_copy_option",
+                "as_copy 必须是布尔值。",
+            )
         raw = read_regular_bytes(path, limit=MAX_DOCUMENT_BYTES)
         actual_sha256 = document_digest(raw)
         if expected_sha256 is not None and actual_sha256 != expected_sha256:
@@ -1163,8 +1191,20 @@ class PresetLibrary:
                 expected_sha256=expected_sha256,
                 actual_sha256=actual_sha256,
             )
-        document = decode_document(raw, allow_builtin=False)
-        return self._put_raw(raw, document, expected_revision=expected_revision)
+        document = decode_document(raw, allow_builtin=True)
+        if as_copy or document["id"].startswith("builtin."):
+            result = self._copy_validated_document(
+                document,
+                name=None,
+                expected_revision=expected_revision,
+            )
+            result["source_sha256"] = actual_sha256
+            result["copied"] = True
+            return result
+        result = self._put_raw(raw, document, expected_revision=expected_revision)
+        result["source_sha256"] = actual_sha256
+        result["copied"] = False
+        return result
 
     def put_document(
         self,
@@ -1172,28 +1212,41 @@ class PresetLibrary:
         *,
         expected_revision: str | None,
     ) -> dict[str, Any]:
+        if (
+            type(document) is dict
+            and type(document.get("id")) is str
+            and document["id"].startswith("builtin.")
+        ):
+            raise _failure(
+                "preset_builtin_forbidden",
+                "内置预设身份不能通过 put_document 写入用户库；请导入为独立用户副本。",
+                id=document["id"],
+                version=document.get("version"),
+            )
         raw = encode_document(document, allow_builtin=False)
         validated = decode_document(raw, allow_builtin=False)
         return self._put_raw(raw, validated, expected_revision=expected_revision)
 
-    def copy(
+    def _copy_validated_document(
         self,
-        identifier: str,
-        version: str,
+        source_document: dict[str, Any],
         *,
-        name: str,
+        name: str | None,
         expected_revision: str | None,
     ) -> dict[str, Any]:
-        if type(name) is not str or not name.strip() or len(name) > 80:
+        """Install a detached validated document through the common copy path."""
+        if name is not None and (
+            type(name) is not str or not name.strip() or len(name) > 80
+        ):
             raise _failure("preset_invalid_name", "副本名称必须为 1 到 80 个字符。")
-        source_document = self.get_document(identifier, version)
         for _attempt in range(8):
             copied = copy.deepcopy(source_document)
             copied["id"] = "user." + str(uuid.uuid4())
             copied["version"] = "0.1.0"
-            metadata = copy.deepcopy(copied.get("metadata", {}))
-            metadata["name"] = name.strip()
-            copied["metadata"] = metadata
+            if name is not None:
+                metadata = copy.deepcopy(copied.get("metadata", {}))
+                metadata["name"] = name.strip()
+                copied["metadata"] = metadata
             try:
                 raw = encode_document(copied, allow_builtin=False)
                 document = decode_document(raw, allow_builtin=False)
@@ -1216,6 +1269,21 @@ class PresetLibrary:
             result["already_present"] = False
             return result
         raise _failure("preset_copy_conflict", "无法生成唯一的用户预设副本 ID。")
+
+    def copy(
+        self,
+        identifier: str,
+        version: str,
+        *,
+        name: str,
+        expected_revision: str | None,
+    ) -> dict[str, Any]:
+        source_document = self.get_document(identifier, version)
+        return self._copy_validated_document(
+            source_document,
+            name=name,
+            expected_revision=expected_revision,
+        )
 
 
     def _mutate(

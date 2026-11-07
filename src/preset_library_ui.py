@@ -11,6 +11,7 @@ from pathlib import Path
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -45,7 +46,7 @@ def _read_raw(path):
 
 def _decode(raw):
     from preset_documents import decode_document
-    return decode_document(raw)
+    return decode_document(raw, allow_builtin=True)
 
 
 def _digest(raw):
@@ -101,12 +102,18 @@ class PresetImportPreviewDialog(QDialog):
         self.setModal(True)
         self.resize(760, 620)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 22, 24, 22)
-        layout.setSpacing(14)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(8)
 
-        layout.addWidget(label(_tr('确认导入预设'), 'card-title'))
-        layout.addWidget(label(_tr('这里只验证并显示文件内容。点击“确认导入”后才会写入本机预设库。'), 'muted'))
-        layout.addWidget(label(_tr('不会应用调音或混音参数，也不会处理、播放或上传音频。'), 'muted'))
+        append_notice = label(_tr('默认附加到本机库，保留已有预设'), 'card-title')
+        append_notice.setObjectName('presetImportAppendNotice')
+        append_notice.setAccessibleName(_tr('导入预设默认行为'))
+        layout.addWidget(append_notice)
+        layout.addWidget(label(
+            _tr('同一 ID 与版本已有不同内容时不会覆盖；如需同时保留两份，请启用独立副本。'),
+            'muted',
+        ))
+        layout.addWidget(label(_tr('导入只新增预设，不会应用到当前工程。'), 'muted'))
 
         summary = label('{0}\n{1}\n{2}'.format(
             _document_name(document),
@@ -120,6 +127,27 @@ class PresetImportPreviewDialog(QDialog):
         source_label = label(_tr('文件') + '：' + Path(self.source).name, 'muted')
         source_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(source_label)
+
+        self.is_builtin_source = str(document.get('id', '')).startswith('builtin.')
+        self.copy_checkbox = QCheckBox(
+            _tr('创建独立副本（新 ID 与版本 0.1.0）')
+        )
+        self.copy_checkbox.setObjectName('presetImportAsCopyCheckBox')
+        self.copy_checkbox.setChecked(False)
+        self.copy_checkbox.setAccessibleName(_tr('导入为独立副本'))
+        self.copy_checkbox.setToolTip(
+            _tr('默认保留已有预设；勾选后为导入文件创建新的独立条目。')
+        )
+        layout.addWidget(self.copy_checkbox)
+        if self.is_builtin_source:
+            self.copy_checkbox.setChecked(True)
+            self.copy_checkbox.setEnabled(False)
+            builtin_notice = label(
+                _tr('内置导出文件始终创建独立本机副本；不会覆盖内置预设。'),
+                'muted',
+            )
+            builtin_notice.setObjectName('presetImportBuiltinCopyNotice')
+            layout.addWidget(builtin_notice)
 
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
@@ -166,7 +194,7 @@ class PresetLibraryManagerDialog(QDialog):
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(8)
         root.addWidget(label(_tr('本机预设库'), 'heading'))
-        notice = label(_tr('混音与调音应用功能尚未开放。'))
+        notice = label(_tr('此页管理预设；请从混音台选择并预览应用。'))
         notice.setObjectName('presetLibraryScopeNotice')
         notice.setAccessibleName(_tr('本机预设库功能范围'))
         root.addWidget(notice)
@@ -447,6 +475,10 @@ class PresetLibraryManagerDialog(QDialog):
             text = _tr('操作未完成：') + str(error)
             if code:
                 text += ' · ' + code
+            if code == 'preset_version_conflict':
+                text += '\n' + _tr(
+                    '已保留本机已有预设与导入文件；可重新预览并勾选“创建独立副本”以同时保存两份。'
+                )
             if refreshed:
                 text += _tr(' 列表已刷新，请核对后重新操作。')
             self._report_error(text)
@@ -476,15 +508,24 @@ class PresetLibraryManagerDialog(QDialog):
             return
         result = self._mutate(
             lambda revision: self.library.import_file(
-                path, expected_revision=revision, expected_sha256=preview_digest),
+                path,
+                expected_revision=revision,
+                expected_sha256=preview_digest,
+                as_copy=preview.copy_checkbox.isChecked(),
+            ),
             _tr('导入检查已完成。'),
         )
         if result is None:
             return
         entry = result.get('entry') if isinstance(result, dict) else None
         if isinstance(entry, dict):
-            message = (_tr('同一预设版本已存在：') if result.get('already_present') else _tr('导入已完成：')) + _entry_label(entry)
-            self._set_status_success(message)
+            if result.get('copied'):
+                prefix = _tr('已导入为独立本机副本：')
+            elif result.get('already_present'):
+                prefix = _tr('同一预设版本已存在：')
+            else:
+                prefix = _tr('已附加到本机库：')
+            self._set_status_success(prefix + _entry_label(entry))
 
     def copy_selected(self):
         entry = self.selected_entry()

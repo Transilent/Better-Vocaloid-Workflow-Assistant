@@ -784,6 +784,14 @@
     {
       "file": "style_catalog.py",
       "source": "src/style_catalog.py"
+    },
+    {
+      "file": "mixdown_preset_documents.py",
+      "source": "src/mixdown_preset_documents.py"
+    },
+    {
+      "file": "mixdown_preset_ui.py",
+      "source": "src/mixdown_preset_ui.py"
     }
   ]
 }

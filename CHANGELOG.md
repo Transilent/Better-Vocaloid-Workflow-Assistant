@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Connect portable mixing presets to capture, scoped before/after application and guarded one-step undo. Preserve current width and track templates by default, share the existing processing path, and append imported presets across all four kinds with an explicit independent-copy option.
+
 - Add a versioned preset format and local library for preparation, mixing, tuning and declarative style recipes, with previewed imports, immutable exports, copies, local aliases/favorites, revision conflicts and explicit recovery. Settings exposes the manager and a shared CLI; applying library entries to processing controls remains a later stage.
 - Include shared style, mixing, source, transaction and component modules in portable/update payloads, with a regression guard against missing runtime modules.
 - Replace Xiaohongshu browser automation with verified local publication files, copy actions and manual posting. Require an explicit AI-content disclosure for new Xiaohongshu packages; Bilibili keeps its existing upload assistance.

@@ -57,6 +57,7 @@ names = ('test_agent_workflow_dry_run_mcp.py', 'test_agent_lyric_reconcile.py', 
 names = ('test_agent_monophony.py', 'test_agent_media.py', 'test_agent_views.py', 'test_agent_delivery.py', 'test_agent_song_feedback.py', 'test_agent_segments.py', 'test_agent_segment_workflow.py') + names
 names = ('test_agent_pitch.py', 'test_agent_separation_repair.py', 'test_agent_signal_workflow.py') + names
 names = ('test_preset_documents.py', 'test_preset_library.py', 'test_preset_library_ui.py', 'test_preset_cli.py') + names
+names = ('test_mixdown_preset_documents.py', 'test_mixdown_preset_ui.py', 'test_mixdown_preset_integration.py') + names
 names = names_v110 + names
 if selected - set(names):
     raise ValueError('Unknown selected tests: ' + ', '.join(sorted(selected - set(names))))

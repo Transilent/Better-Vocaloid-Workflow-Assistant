@@ -28,6 +28,7 @@ ROOT_FILES = {'style_presets.py', 'context_project.py', 'context_reading.py', 'c
               'publish-selectors.json', 'version.json', 'README.md', 'README.zh-CN.md',
               'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.zh-CN.md'}
 ROOT_FILES.update({'style_pitch.py','ui_input.py'})
+ROOT_FILES.update({'mixdown_preset_documents.py', 'mixdown_preset_ui.py'})
 ROOT_FILES.update({'agent_project_state.py', 'component_health.py',
                    'expression_controls.py', 'mixdown_contract.py',
                    'multi_file_commit.py', 'source_contract.py', 'style_catalog.py'})

@@ -111,7 +111,9 @@ class StubLibrary:
         }
         self.calls = []
         self.conflict_once = False
+        self.import_document = copy.deepcopy(IMPORT_DOCUMENT)
         self.import_sha = IMPORT_SHA
+        self.import_error = None
 
     def snapshot(self):
         self.calls.append(('snapshot', (), {}))
@@ -134,16 +136,36 @@ class StubLibrary:
                 return row
         raise StubPresetError('preset_not_found', 'missing preset')
 
-    def import_file(self, path, *, expected_revision, expected_sha256=None):
+    def import_file(self, path, *, expected_revision, expected_sha256=None, as_copy=False):
         self.calls.append(('import_file', (str(path),), {
-            'expected_revision': expected_revision, 'expected_sha256': expected_sha256}))
+            'expected_revision': expected_revision,
+            'expected_sha256': expected_sha256,
+            'as_copy': as_copy,
+        }))
+        if self.import_error is not None:
+            code, message, details = self.import_error
+            self.import_error = None
+            raise StubPresetError(code, message, **details)
         if expected_sha256 != self.import_sha:
             raise StubPresetError('file_changed', 'preset file changed after preview')
         self._next_revision()
-        new_entry = entry(IMPORT_DOCUMENT, IMPORT_SHA)
+        stored = copy.deepcopy(self.import_document)
+        copied = as_copy or stored['id'].startswith('builtin.')
+        if copied:
+            stored['id'] = 'user.import.{0}'.format(self.revision.rsplit('-', 1)[-1])
+            stored['version'] = '0.1.0'
+        stored_raw = encode_document(stored)
+        stored_sha = document_digest(stored_raw)
+        new_entry = entry(stored, stored_sha)
         self.entries.append(new_entry)
-        self.documents[(IMPORT_DOCUMENT['id'], IMPORT_DOCUMENT['version'])] = copy.deepcopy(IMPORT_DOCUMENT)
-        return {'revision': self.revision, 'entry': copy.deepcopy(new_entry), 'already_present': False}
+        self.documents[(stored['id'], stored['version'])] = copy.deepcopy(stored)
+        return {
+            'revision': self.revision,
+            'entry': copy.deepcopy(new_entry),
+            'already_present': False,
+            'source_sha256': self.import_sha,
+            'copied': copied,
+        }
 
     def copy(self, preset_id, version, *, name, expected_revision):
         self.calls.append(('copy', (preset_id, version), {
@@ -245,16 +267,19 @@ LANGUAGE_EXPECTATIONS = {
         'title': '本机预设库', 'import': '导入预设…', 'refresh': '刷新',
         'recover': '恢复上一索引…', 'copy': '复制内置预设…', 'export': '导出原始文件…',
         'rename': '修改别名…', 'favorite': '收藏', 'delete': '逻辑删除…', 'close': '关闭',
+        'scope': '此页管理预设；请从混音台选择并预览应用。',
     },
     'en': {
         'title': 'Local preset library', 'import': 'Import preset…', 'refresh': 'Refresh',
         'recover': 'Recover previous index…', 'copy': 'Copy built-in…', 'export': 'Export original…',
         'rename': 'Edit alias…', 'favorite': 'Favorite', 'delete': 'Remove entry…', 'close': 'Close',
+        'scope': 'Manage presets on this page; choose and preview them from the mixing console.',
     },
     'ja': {
         'title': 'ローカルプリセットライブラリ', 'import': 'プリセットを読み込む…', 'refresh': '更新',
         'recover': '前のインデックスを復元…', 'copy': '内蔵プリセットをコピー…', 'export': '元ファイルを書き出す…',
         'rename': '別名を編集…', 'favorite': 'お気に入り', 'delete': '登録を解除…', 'close': '閉じる',
+        'scope': 'このページではプリセットを管理します。ミキサーで選択してプレビューし、適用してください。',
     },
 }
 
@@ -281,6 +306,9 @@ for language, expected in LANGUAGE_EXPECTATIONS.items():
         assert dialog.favorite_button.text() == expected['favorite']
         assert dialog.delete_button.text() == expected['delete']
         assert dialog.close_button.text() == expected['close']
+        scope_notice = dialog.findChild(QWidget, 'presetLibraryScopeNotice')
+        assert scope_notice is not None
+        assert scope_notice.text() == expected['scope']
         assert_narrow_layout(dialog)
         screenshot = result_images / ('preset-library-manager-' + language + '.png')
         assert dialog.grab().save(str(screenshot)) and screenshot.stat().st_size > 0
@@ -309,7 +337,7 @@ try:
     assert not manager.delete_button.isEnabled()
     assert BUILTIN_ID in manager.document.toPlainText()
     scope = manager.findChild(QWidget, 'presetLibraryScopeNotice')
-    assert '尚未开放' in scope.text()
+    assert scope.text() == '此页管理预设；请从混音台选择并预览应用。'
 
     select_row(manager, 1)
     assert manager.selected_entry()['builtin'] is False
@@ -333,10 +361,22 @@ try:
     manager._raw_reader = lambda path: IMPORT_BYTES
     manager._document_decoder = lambda raw: copy.deepcopy(IMPORT_DOCUMENT)
     manager._document_digest = lambda raw: IMPORT_SHA
-    with patch.object(preset_ui.PresetImportPreviewDialog, 'exec_', return_value=QDialog.Rejected):
+    rejected_previews = []
+
+    def reject_preview(dialog):
+        rejected_previews.append(dialog)
+        return QDialog.Rejected
+
+    with patch.object(preset_ui.PresetImportPreviewDialog, 'exec_', new=reject_preview):
         manager.import_preset()
     assert call_count(library, 'import_file') == 0
     assert '没有发生变化' in manager.status.text()
+    assert len(rejected_previews) == 1
+    preview_dialog = rejected_previews[0]
+    append_notice = preview_dialog.findChild(QWidget, 'presetImportAppendNotice')
+    assert append_notice.text() == '默认附加到本机库，保留已有预设'
+    assert preview_dialog.copy_checkbox.isChecked() is False
+    assert preview_dialog.copy_checkbox.isEnabled()
 
     before_entries = copy.deepcopy(library.entries)
     before_revision = library.revision
@@ -345,7 +385,7 @@ try:
         library.import_sha = 'e' * 64
         return QDialog.Accepted
 
-    with patch.object(preset_ui.PresetImportPreviewDialog, 'exec_', side_effect=change_file_during_preview), \
+    with patch.object(preset_ui.PresetImportPreviewDialog, 'exec_', new=change_file_during_preview), \
          patch.object(preset_ui.QMessageBox, 'warning') as warning:
         manager.import_preset()
     assert warning.called
@@ -359,8 +399,105 @@ try:
     imports = [row for row in library.calls if row[0] == 'import_file']
     assert len(imports) == 2
     assert imports[-1][2] == {
-        'expected_revision': 'rev-0001', 'expected_sha256': IMPORT_SHA}
+        'expected_revision': 'rev-0001',
+        'expected_sha256': IMPORT_SHA,
+        'as_copy': False,
+    }
     assert manager.selected_entry()['id'] == IMPORT_DOCUMENT['id']
+    assert '已附加到本机库' in manager.status.text()
+finally:
+    manager.close()
+    application.processEvents()
+
+# Explicit independent-copy import sends the opt-in flag and shows the copied result.
+library = StubLibrary()
+manager = preset_ui.PresetLibraryManagerDialog(library=library)
+try:
+    manager._ask_import_path = lambda: str(APP / 'work' / 'copy-preview.json')
+    manager._raw_reader = lambda path: IMPORT_BYTES
+    manager._document_decoder = lambda raw: copy.deepcopy(IMPORT_DOCUMENT)
+    manager._document_digest = lambda raw: IMPORT_SHA
+
+    def accept_as_copy(dialog):
+        assert dialog.copy_checkbox.isChecked() is False
+        dialog.copy_checkbox.setChecked(True)
+        return QDialog.Accepted
+
+    with patch.object(preset_ui.PresetImportPreviewDialog, 'exec_', new=accept_as_copy):
+        manager.import_preset()
+    import_call = [row for row in library.calls if row[0] == 'import_file'][-1]
+    assert import_call[2] == {
+        'expected_revision': 'rev-0001',
+        'expected_sha256': IMPORT_SHA,
+        'as_copy': True,
+    }
+    copied_entry = manager.selected_entry()
+    assert copied_entry['id'].startswith('user.')
+    assert copied_entry['id'] != IMPORT_DOCUMENT['id']
+    assert copied_entry['version'] == '0.1.0'
+    assert '独立本机副本' in manager.status.text()
+finally:
+    manager.close()
+    application.processEvents()
+
+# Built-in exports preview successfully and are always installed as user copies.
+assert preset_ui._decode(BUILTIN_BYTES) == BUILTIN_DOCUMENT
+library = StubLibrary()
+library.import_document = copy.deepcopy(BUILTIN_DOCUMENT)
+library.import_sha = BUILTIN_SHA
+manager = preset_ui.PresetLibraryManagerDialog(library=library)
+try:
+    manager._ask_import_path = lambda: str(APP / 'work' / 'builtin-preview.json')
+    manager._raw_reader = lambda path: BUILTIN_BYTES
+    manager._document_decoder = preset_ui._decode
+    manager._document_digest = lambda raw: BUILTIN_SHA
+
+    def accept_builtin(dialog):
+        assert dialog.is_builtin_source is True
+        assert dialog.copy_checkbox.isChecked() is True
+        assert dialog.copy_checkbox.isEnabled() is False
+        notice = dialog.findChild(QWidget, 'presetImportBuiltinCopyNotice')
+        assert notice is not None and '始终创建独立本机副本' in notice.text()
+        return QDialog.Accepted
+
+    with patch.object(preset_ui.PresetImportPreviewDialog, 'exec_', new=accept_builtin):
+        manager.import_preset()
+    import_call = [row for row in library.calls if row[0] == 'import_file'][-1]
+    assert import_call[2]['as_copy'] is True
+    selected = manager.selected_entry()
+    assert selected['id'].startswith('user.')
+    assert selected['id'] != BUILTIN_ID
+    assert selected['version'] == '0.1.0'
+    assert '独立本机副本' in manager.status.text()
+    assert not any(row['id'] == BUILTIN_ID and not row['builtin']
+                   for row in library.entries)
+finally:
+    manager.close()
+    application.processEvents()
+
+# A typed conflict refreshes without retry and tells the user how to keep both files.
+library = StubLibrary()
+library.import_error = (
+    'preset_version_conflict',
+    'same id and version has different bytes',
+    {'alternative': 'as_copy', 'preserve_existing': True},
+)
+manager = preset_ui.PresetLibraryManagerDialog(library=library)
+try:
+    manager._ask_import_path = lambda: str(APP / 'work' / 'conflict-preview.json')
+    manager._raw_reader = lambda path: IMPORT_BYTES
+    manager._document_decoder = lambda raw: copy.deepcopy(IMPORT_DOCUMENT)
+    manager._document_digest = lambda raw: IMPORT_SHA
+    before_entries = copy.deepcopy(library.entries)
+    before_revision = library.revision
+    with patch.object(preset_ui.PresetImportPreviewDialog, 'exec_', return_value=QDialog.Accepted), \
+         patch.object(preset_ui.QMessageBox, 'warning') as warning:
+        manager.import_preset()
+    assert library.entries == before_entries
+    assert library.revision == before_revision
+    warning.assert_called_once()
+    assert '创建独立副本' in manager.status.text()
+    assert call_count(library, 'import_file') == 1
 finally:
     manager.close()
     application.processEvents()

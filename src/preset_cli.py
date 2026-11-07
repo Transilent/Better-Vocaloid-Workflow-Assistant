@@ -24,6 +24,11 @@ def main(argv=None):
     inspect.add_argument('file')
     install = actions.add_parser('import')
     install.add_argument('file')
+    install.add_argument(
+        '--as-copy',
+        action='store_true',
+        help='安装为新的 user.UUID/0.1.0 独立副本；内置导出文件始终按副本导入',
+    )
     for name in ('show', 'export', 'copy', 'rename', 'favorite', 'delete'):
         command = actions.add_parser(name)
         command.add_argument('id')
@@ -46,9 +51,10 @@ def main(argv=None):
             result = next(doc for doc in example_documents() if doc['type'] == args.type)
         elif args.action == 'validate':
             raw = read_regular_bytes(args.file)
-            doc = decode_document(raw)
+            doc = decode_document(raw, allow_builtin=True)
             result = {'id': doc['id'], 'version': doc['version'], 'type': doc['type'],
-                      'sha256': document_digest(raw), 'valid': True, 'applied': False}
+                      'sha256': document_digest(raw), 'valid': True, 'applied': False,
+                      'will_copy': doc['id'].startswith('builtin.')}
         else:
             from preset_library import PresetLibrary
             library = PresetLibrary(args.root)
@@ -63,7 +69,12 @@ def main(argv=None):
             else:
                 revision = library.snapshot()['revision']
                 if args.action == 'import':
-                    result = library.import_file(args.file, expected_revision=revision)
+                    result = library.import_file(
+                        args.file,
+                        expected_revision=revision,
+                        as_copy=args.as_copy,
+                    )
+                    result['will_copy'] = bool(result.get('copied'))
                 elif args.action == 'copy':
                     result = library.copy(args.id, args.version, name=args.name, expected_revision=revision)
                 elif args.action == 'rename':

@@ -1,4 +1,5 @@
 """Exercise the public local-library CLI with an isolated directory."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -29,6 +30,25 @@ class CliTests(unittest.TestCase):
             empty = run('list')
             self.assertEqual(len(empty['entries']), 10)
             self.assertFalse(library.exists(), 'Listing must not create a user library')
+            builtin = next(e for e in empty['entries'] if e['builtin'])
+            builtin_source = root / 'builtin-export.vwa-preset.json'
+            run('export', builtin['id'], builtin['version'], str(builtin_source))
+            builtin_bytes = builtin_source.read_bytes()
+            builtin_valid = run('validate', str(builtin_source))
+            self.assertTrue(builtin_valid['valid'])
+            self.assertTrue(builtin_valid['will_copy'])
+            builtin_imported = run('import', str(builtin_source))
+            self.assertTrue(builtin_imported['copied'])
+            self.assertTrue(builtin_imported['will_copy'])
+            self.assertFalse(builtin_imported['already_present'])
+            self.assertTrue(builtin_imported['entry']['id'].startswith('user.'))
+            self.assertEqual(builtin_imported['entry']['version'], '0.1.0')
+            self.assertEqual(
+                builtin_imported['source_sha256'],
+                hashlib.sha256(builtin_bytes).hexdigest(),
+            )
+            self.assertEqual(builtin_source.read_bytes(), builtin_bytes)
+
             sample = run('example', 'mixdown')
             raw = (json.dumps(sample, ensure_ascii=False, separators=(',', ':')) + '\n').encode('utf-8')
             source = root / 'sample.vwa-preset.json'
@@ -36,6 +56,7 @@ class CliTests(unittest.TestCase):
             valid = run('validate', str(source))
             self.assertTrue(valid['valid'])
             self.assertFalse(valid['applied'])
+            self.assertFalse(valid['will_copy'])
             imported = run('import', str(source))
             self.assertFalse(imported['already_present'])
             again = run('import', str(source))
@@ -54,7 +75,21 @@ class CliTests(unittest.TestCase):
             source.write_text(json.dumps(sample), encoding='utf-8')
             conflict = run('import', str(source), code=2)
             self.assertEqual(conflict['error']['code'], 'preset_version_conflict')
-            builtin = next(e for e in empty['entries'] if e['builtin'])
+            self.assertEqual(
+                conflict['error']['details']['alternative'], 'as_copy')
+            self.assertIn('独立副本', conflict['error']['message'])
+            preserved = next(e for e in run('list')['entries']
+                             if e['id'] == identifier and e['version'] == version)
+            self.assertEqual(preserved['alias'], 'My local label')
+            self.assertTrue(preserved['favorite'])
+            independent = run('import', '--as-copy', str(source))
+            self.assertTrue(independent['copied'])
+            self.assertTrue(independent['will_copy'])
+            self.assertNotEqual(independent['entry']['id'], identifier)
+            self.assertTrue(independent['entry']['id'].startswith('user.'))
+            self.assertEqual(independent['entry']['version'], '0.1.0')
+            self.assertEqual(independent['source_sha256'],
+                             hashlib.sha256(source.read_bytes()).hexdigest())
             copied = run('copy', builtin['id'], builtin['version'], '--name', 'My variant')
             self.assertTrue(copied['entry']['id'].startswith('user.'))
             run('delete', identifier, version)

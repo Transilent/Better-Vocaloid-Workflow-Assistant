@@ -74,10 +74,15 @@ class PresetLibraryTests(unittest.TestCase):
         target: library.PresetLibrary,
         raw: bytes,
         expected_revision,
+        *,
+        as_copy=False,
+        expected_sha256=None,
     ):
         return target.import_file(
             self.source_file(raw),
             expected_revision=expected_revision,
+            expected_sha256=expected_sha256,
+            as_copy=as_copy,
         )
 
     @staticmethod
@@ -169,6 +174,227 @@ class PresetLibraryTests(unittest.TestCase):
             builtin_destination.read_bytes(),
             encode_document(builtin, allow_builtin=True),
         )
+
+    def test_import_appends_all_four_types_and_preserves_aliases_and_favorites(self):
+        revision = None
+        originals = []
+        for position, document in enumerate(self.examples):
+            raw = encode_document(document)
+            first = self.import_raw(self.lib, raw, revision)
+            alias = document["type"] + " 既有别名"
+            renamed = self.lib.rename(
+                document["id"],
+                document["version"],
+                alias=alias,
+                expected_revision=first["revision"],
+            )
+            favorite = position % 2 == 0
+            favored = self.lib.set_favorite(
+                document["id"],
+                document["version"],
+                favorite=favorite,
+                expected_revision=renamed["revision"],
+            )
+            revision = favored["revision"]
+            originals.append((document, raw, alias, favorite))
+
+        appended = []
+        for document, _raw, _alias, _favorite in originals:
+            next_document = copy.deepcopy(document)
+            next_document["id"] = "user.example.append_" + document["type"]
+            next_document["version"] = "0.2.0"
+            next_document["metadata"]["name"] += " 追加"
+            next_raw = encode_document(next_document)
+            result = self.import_raw(self.lib, next_raw, revision)
+            revision = result["revision"]
+            appended.append((next_document, next_raw))
+
+        snapshot = self.lib.snapshot()
+        self.assertEqual(len(self.local_entries(snapshot)), 8)
+        self.assertEqual({entry["type"] for entry in self.local_entries(snapshot)},
+                         {"preparation", "mixdown", "tuning", "style_recipe"})
+        for document, raw, alias, favorite in originals:
+            entry = self.find_entry(snapshot, document["id"], document["version"])
+            self.assertEqual(entry["sha256"], digest(raw))
+            self.assertEqual(entry["alias"], alias)
+            self.assertEqual(entry["name"], alias)
+            self.assertEqual(entry["favorite"], favorite)
+        for document, raw in appended:
+            entry = self.find_entry(snapshot, document["id"], document["version"])
+            self.assertIsNotNone(entry)
+            self.assertEqual(entry["sha256"], digest(raw))
+            self.assertFalse(entry["favorite"])
+
+        index_before = self.lib.index_path.read_bytes()
+        for document, raw, _alias, _favorite in originals:
+            repeated = self.import_raw(self.lib, raw, revision)
+            self.assertTrue(repeated["already_present"])
+            self.assertFalse(repeated["copied"])
+            self.assertEqual(repeated["revision"], revision)
+            self.assertEqual(repeated["source_sha256"], digest(raw))
+        self.assertEqual(self.lib.index_path.read_bytes(), index_before)
+        self.assertEqual(len(self.document_files(self.root)), 8)
+
+    def test_conflicting_import_keeps_existing_metadata_and_offers_independent_copy(self):
+        document = self.example("mixdown")
+        raw = encode_document(document)
+        first = self.import_raw(self.lib, raw, None)
+        alias = "保留的混音别名"
+        renamed = self.lib.rename(
+            document["id"],
+            document["version"],
+            alias=alias,
+            expected_revision=first["revision"],
+        )
+        favored = self.lib.set_favorite(
+            document["id"],
+            document["version"],
+            favorite=True,
+            expected_revision=renamed["revision"],
+        )
+        before_snapshot = self.lib.snapshot()
+        before_index = self.lib.index_path.read_bytes()
+
+        changed = copy.deepcopy(document)
+        changed["payload"]["reverb_mix"] = 0.234
+        changed_raw = encode_document(changed)
+        changed_source = self.source_file(changed_raw)
+        with self.assertRaises(PresetError) as raised:
+            self.lib.import_file(
+                changed_source,
+                expected_revision=favored["revision"],
+                expected_sha256=digest(changed_raw),
+            )
+        self.assertEqual(raised.exception.code, "preset_version_conflict")
+        self.assertEqual(raised.exception.details["alternative"], "as_copy")
+        self.assertTrue(raised.exception.details["preserve_existing"])
+        self.assertIn("独立副本", str(raised.exception))
+        self.assertEqual(self.lib.snapshot(), before_snapshot)
+        self.assertEqual(self.lib.index_path.read_bytes(), before_index)
+        self.assertEqual(changed_source.read_bytes(), changed_raw)
+        self.assertEqual(len(self.document_files(self.root)), 1)
+
+        copied = self.lib.import_file(
+            changed_source,
+            expected_revision=favored["revision"],
+            expected_sha256=digest(changed_raw),
+            as_copy=True,
+        )
+        self.assertTrue(copied["copied"])
+        self.assertFalse(copied["already_present"])
+        self.assertEqual(copied["source_sha256"], digest(changed_raw))
+        self.assertNotEqual(copied["entry"]["id"], document["id"])
+        self.assertTrue(copied["entry"]["id"].startswith("user."))
+        self.assertEqual(copied["entry"]["version"], "0.1.0")
+        self.assertEqual(changed_source.read_bytes(), changed_raw)
+        after_snapshot = self.lib.snapshot()
+        original_entry = self.find_entry(
+            after_snapshot, document["id"], document["version"]
+        )
+        self.assertEqual(original_entry["alias"], alias)
+        self.assertTrue(original_entry["favorite"])
+        self.assertEqual(original_entry["sha256"], digest(raw))
+        copied_document = self.lib.get_document(
+            copied["entry"]["id"], copied["entry"]["version"]
+        )
+        validate_document(copied_document)
+        self.assertEqual(copied_document["metadata"]["name"],
+                         changed["metadata"]["name"])
+        self.assertEqual(len(self.local_entries(after_snapshot)), 2)
+
+    def test_as_copy_checks_preview_sha_and_revision_before_writing(self):
+        document = self.example("tuning")
+        raw = encode_document(document)
+        source = self.source_file(raw)
+        preview_lib = library.PresetLibrary(self.base / "as-copy-preview")
+        with self.assertRaises(PresetError) as raised:
+            preview_lib.import_file(
+                source,
+                expected_revision=None,
+                expected_sha256="0" * 64,
+                as_copy=True,
+            )
+        self.assertEqual(raised.exception.code, "file_changed")
+        self.assertFalse(preview_lib.root.exists())
+        self.assertEqual(source.read_bytes(), raw)
+
+        copied = preview_lib.import_file(
+            source,
+            expected_revision=None,
+            expected_sha256=digest(raw),
+            as_copy=True,
+        )
+        self.assertTrue(copied["copied"])
+        self.assertNotEqual(copied["entry"]["id"], document["id"])
+        self.assertEqual(copied["entry"]["version"], "0.1.0")
+        self.assertEqual(copied["source_sha256"], digest(raw))
+        files_before = self.document_files(preview_lib.root)
+        index_before = preview_lib.index_path.read_bytes()
+        next_document = self.example("style_recipe")
+        next_raw = encode_document(next_document)
+        with self.assertRaises(PresetError) as raised:
+            preview_lib.import_file(
+                self.source_file(next_raw),
+                expected_revision=None,
+                expected_sha256=digest(next_raw),
+                as_copy=True,
+            )
+        self.assertEqual(raised.exception.code, "library_stale")
+        self.assertEqual(self.document_files(preview_lib.root), files_before)
+        self.assertEqual(preview_lib.index_path.read_bytes(), index_before)
+
+    def test_builtin_export_import_always_appends_an_independent_user_copy(self):
+        builtin = copy.deepcopy(builtin_documents()[0])
+        builtin_before = copy.deepcopy(builtin)
+        raw = encode_document(builtin, allow_builtin=True)
+        source = self.source_file(raw)
+        first = self.lib.import_file(
+            source,
+            expected_revision=None,
+            expected_sha256=digest(raw),
+        )
+        self.assertTrue(first["copied"])
+        self.assertFalse(first["already_present"])
+        self.assertEqual(first["source_sha256"], digest(raw))
+        self.assertTrue(first["entry"]["id"].startswith("user."))
+        self.assertEqual(first["entry"]["version"], "0.1.0")
+        self.assertEqual(source.read_bytes(), raw)
+        copied_document = self.lib.get_document(
+            first["entry"]["id"], first["entry"]["version"]
+        )
+        validate_document(copied_document)
+        self.assertEqual(copied_document["metadata"]["name"],
+                         builtin["metadata"]["name"])
+        self.assertEqual(copied_document["payload"], builtin["payload"])
+        self.assertEqual(
+            self.lib.get_document(builtin["id"], builtin["version"]),
+            builtin_before,
+        )
+        snapshot = self.lib.snapshot()
+        self.assertEqual(len(self.local_entries(snapshot)), 1)
+        self.assertFalse(any(
+            entry["id"] == builtin["id"]
+            and entry["version"] == builtin["version"]
+            and not entry["builtin"]
+            for entry in snapshot["entries"]
+        ))
+
+        second = self.lib.import_file(
+            source,
+            expected_revision=first["revision"],
+            expected_sha256=digest(raw),
+        )
+        self.assertTrue(second["copied"])
+        self.assertNotEqual(second["entry"]["id"], first["entry"]["id"])
+        self.assertEqual(len(self.local_entries(self.lib.snapshot())), 2)
+        self.assertEqual(source.read_bytes(), raw)
+        with self.assertRaises(PresetError) as raised:
+            self.lib.put_document(
+                builtin_before,
+                expected_revision=second["revision"],
+            )
+        self.assertEqual(raised.exception.code, "preset_builtin_forbidden")
+        self.assertEqual(len(self.local_entries(self.lib.snapshot())), 2)
 
     def test_import_is_idempotent_and_rejects_same_version_conflicts(self):
         document = self.example("mixdown")

@@ -4,13 +4,21 @@
 
 The development version provides **Settings/updates → Local preset library** for preparation, mixing, tuning and style recipes. Inspect and confirm imports, copy built-ins, add local aliases/favorites, delete entries and export files. Six existing mixing presets and four preparation workflows are read-only; copy one to create your own identity.
 
-This stage manages data. Saving current controls and applying library entries in mixing/tuning pages are future work. Importing does not change a project or its sound. Style recipes are stored without execution. Online catalogs, downloads and GitHub account integration are deferred.
+The manager stores data. The mixing console now offers Save current as preset, Choose from local library and Undo preset application. Imports append by default and preserve existing entries; importing does not apply processing. Tuning plans and style recipes remain storage-only pending their application adapters.
 
 ## Using and sharing
 
-Import a local `.vwa-preset.json` after reviewing its name, kind, version and JSON. Export individual files and share them manually through GitHub or another platform. Existing destination files are never overwritten. Aliases and favorites affect only the local index and preserve the imported package and digest. To change parameters, edit a conforming example/export and assign a new version; an in-app parameter editor is deferred. Built-in exports retain reserved `builtin.*` identities for inspection/archive. Copy them first when producing importable shared variants.
+Import a local `.vwa-preset.json` after reviewing its name, kind, version and JSON. Export individual files and share them manually through GitHub or another platform. Existing destination files are never overwritten. Aliases and favorites affect only the local index and preserve the imported package and digest. To change parameters, edit a conforming example/export and assign a new version; mixing controls can capture a new preset, while dedicated tuning/style editors are deferred. Built-in exports retain reserved `builtin.*` identities and are automatically imported as independent user copies. Normal identity/content conflicts are rejected without overwriting. Select Create independent copy, or use `import --as-copy`, to keep both. Copies receive a new ID and version `0.1.0` with canonical encoding; source files remain unchanged. All four kinds share these additive import rules.
 
-Examples: [preparation](examples/presets/preparation.vwa-preset.json), [mixing](examples/presets/mixdown.vwa-preset.json), [tuning](examples/presets/tuning.vwa-preset.json), [style recipe](examples/presets/style_recipe.vwa-preset.json). Validation does not imply application adapters are available.
+Examples: [preparation](examples/presets/preparation.vwa-preset.json), [mixing](examples/presets/mixdown.vwa-preset.json), [tuning](examples/presets/tuning.vwa-preset.json), [style recipe](examples/presets/style_recipe.vwa-preset.json). Tuning and style examples currently support storage and sharing.
+
+## Using presets in the mixing console
+
+Save current as preset captures EQ, compression and reverb, including retained values of bypassed controls. Each save appends a new identity, even with the same display name. Overall output width is optional; file paths, hardware, projects and current track balance are excluded.
+
+Choose from local library shows a before/after comparison without changing the mix. Manage presets can append imported files and refresh the list. Applying output width and the declared pan/reverb-send template are separate opt-ins, both disabled by default. Width can affect accompaniment. Levels, mute/solo, offsets and source bindings stay intact.
+
+Confirm apply rechecks the selected version/digest and live mixer state. EQ frequencies respect the current sample rate and the preview reflects actual percentage/predelay control precision without rewriting the package. One-step undo is available until the next manual parameter edit. Existing audition and export processing use the resulting controls.
 
 ## Version 1 contract
 

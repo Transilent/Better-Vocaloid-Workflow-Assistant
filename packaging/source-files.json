@@ -1992,6 +1992,11 @@
     "tests/test_preset_cli.py",
     "tests/test_preset_documents.py",
     "tests/test_preset_library.py",
-    "tests/test_preset_library_ui.py"
+    "tests/test_preset_library_ui.py",
+    "src/mixdown_preset_documents.py",
+    "src/mixdown_preset_ui.py",
+    "tests/test_mixdown_preset_documents.py",
+    "tests/test_mixdown_preset_integration.py",
+    "tests/test_mixdown_preset_ui.py"
   ]
 }
