@@ -1,0 +1,71 @@
+{
+  "binding_slots": [],
+  "format": "vwa.preset",
+  "format_version": 1,
+  "id": "user.example.clear_vocal",
+  "metadata": {
+    "author": "Example",
+    "description": "文档示例，未完成声学试听。",
+    "license": "CC0-1.0",
+    "name": "人声混音示例"
+  },
+  "payload": {
+    "apply_scope": "vocal_processing_and_output_width",
+    "compression_enabled": true,
+    "compression_strength": 0.3,
+    "eq_bands": [
+      {
+        "enabled": true,
+        "freq_hz": 90.0,
+        "gain_db": 0.0,
+        "q": 0.707,
+        "type": "highpass"
+      },
+      {
+        "enabled": false,
+        "freq_hz": 260.0,
+        "gain_db": 0.0,
+        "q": 0.707,
+        "type": "lowshelf"
+      },
+      {
+        "enabled": true,
+        "freq_hz": 3200.0,
+        "gain_db": 2.5,
+        "q": 0.8,
+        "type": "bell"
+      },
+      {
+        "enabled": true,
+        "freq_hz": 10000.0,
+        "gain_db": 1.5,
+        "q": 0.707,
+        "type": "highshelf"
+      }
+    ],
+    "eq_enabled": true,
+    "reverb_enabled": true,
+    "reverb_mix": 0.14,
+    "reverb_predelay_ms": 20.0,
+    "reverb_profile": "natural",
+    "track_template": {
+      "harmony_pan": 0.0,
+      "pan": 0.0,
+      "pan_mode": "center",
+      "reverb_send": 0.8
+    },
+    "width": 1.0
+  },
+  "requires": {
+    "capabilities": [
+      "mix.eq4",
+      "mix.compression",
+      "mix.reverb",
+      "mix.width"
+    ],
+    "engine_contract": "mixdown-parameters/v1",
+    "preset_api": 1
+  },
+  "type": "mixdown",
+  "version": "0.1.0"
+}

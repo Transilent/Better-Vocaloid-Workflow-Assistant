@@ -69,6 +69,8 @@ with tempfile.TemporaryDirectory(prefix='app-update-', dir=APP / 'work') as fold
     (root / 'dependencies/manifest.json').write_bytes(b'fixed-runtime')
     runtime = hashlib.sha256(b'fixed-runtime').hexdigest()
     kept = {'config.json': b'user settings', 'jobs/song.mid': b'user song',
+            'user-presets/library.json': b'private preset library',
+            'user-presets/documents/user-preset.json': b'private preset work',
             'cache/browser-profile/session': b'private login',
             'dependencies/optional/model.bin': b'installed optional model'}
     for name, data in kept.items():
@@ -178,7 +180,8 @@ with tempfile.TemporaryDirectory(prefix='app-update-', dir=APP / 'work') as fold
     pending.write_text(json.dumps({'plan': str(next_plan), 'version': '10.0.0'}), encoding='utf-8')
     assert updater.pending_update(root)['plan'] == str(next_plan)
 
-    for forbidden in ('config.json', 'jobs/song.mid', '../outside.py', 'dependencies/optional/model.bin'):
+    for forbidden in ('config.json', 'jobs/song.mid', 'user-presets/library.json',
+                      '../outside.py', 'dependencies/optional/model.bin'):
         bad_release, bad_download = package(dict(files, **{forbidden: b'BAD'}))
         try:
             updater.prepare_update(bad_release, root=root, downloader=bad_download)

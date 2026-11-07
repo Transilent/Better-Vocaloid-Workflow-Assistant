@@ -708,6 +708,82 @@
     {
       "file": "tools/install_pedalboard_component.py",
       "source": "tools/install_pedalboard_component.py"
+    },
+    {
+      "file": "preset_documents.py",
+      "source": "src/preset_documents.py"
+    },
+    {
+      "file": "preset_builtin_documents.py",
+      "source": "src/preset_builtin_documents.py"
+    },
+    {
+      "file": "preset_library.py",
+      "source": "src/preset_library.py"
+    },
+    {
+      "file": "preset_library_ui.py",
+      "source": "src/preset_library_ui.py"
+    },
+    {
+      "file": "preset_cli.py",
+      "source": "src/preset_cli.py"
+    },
+    {
+      "file": "packaging/preset.schema.json",
+      "source": "packaging/preset.schema.json"
+    },
+    {
+      "file": "docs/PresetLibrary.en.md",
+      "source": "docs/PresetLibrary.en.md"
+    },
+    {
+      "file": "docs/PresetLibrary.zh-CN.md",
+      "source": "docs/PresetLibrary.zh-CN.md"
+    },
+    {
+      "file": "docs/examples/presets/preparation.vwa-preset.json",
+      "source": "docs/examples/presets/preparation.vwa-preset.json"
+    },
+    {
+      "file": "docs/examples/presets/mixdown.vwa-preset.json",
+      "source": "docs/examples/presets/mixdown.vwa-preset.json"
+    },
+    {
+      "file": "docs/examples/presets/tuning.vwa-preset.json",
+      "source": "docs/examples/presets/tuning.vwa-preset.json"
+    },
+    {
+      "file": "docs/examples/presets/style_recipe.vwa-preset.json",
+      "source": "docs/examples/presets/style_recipe.vwa-preset.json"
+    },
+    {
+      "file": "agent_project_state.py",
+      "source": "src/agent_project_state.py"
+    },
+    {
+      "file": "component_health.py",
+      "source": "src/component_health.py"
+    },
+    {
+      "file": "expression_controls.py",
+      "source": "src/expression_controls.py"
+    },
+    {
+      "file": "mixdown_contract.py",
+      "source": "src/mixdown_contract.py"
+    },
+    {
+      "file": "multi_file_commit.py",
+      "source": "src/multi_file_commit.py"
+    },
+    {
+      "file": "source_contract.py",
+      "source": "src/source_contract.py"
+    },
+    {
+      "file": "style_catalog.py",
+      "source": "src/style_catalog.py"
     }
   ]
 }

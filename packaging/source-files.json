@@ -1976,6 +1976,22 @@
     "tests/test_component_health.py",
     "tests/test_expression_controls.py",
     "tests/test_style_catalog.py",
-    "tests/test_agent_style_schema.py"
+    "tests/test_agent_style_schema.py",
+    "docs/PresetLibrary.en.md",
+    "docs/PresetLibrary.zh-CN.md",
+    "docs/examples/presets/mixdown.vwa-preset.json",
+    "docs/examples/presets/preparation.vwa-preset.json",
+    "docs/examples/presets/style_recipe.vwa-preset.json",
+    "docs/examples/presets/tuning.vwa-preset.json",
+    "packaging/preset.schema.json",
+    "src/preset_builtin_documents.py",
+    "src/preset_cli.py",
+    "src/preset_documents.py",
+    "src/preset_library.py",
+    "src/preset_library_ui.py",
+    "tests/test_preset_cli.py",
+    "tests/test_preset_documents.py",
+    "tests/test_preset_library.py",
+    "tests/test_preset_library_ui.py"
   ]
 }

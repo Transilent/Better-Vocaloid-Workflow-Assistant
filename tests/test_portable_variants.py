@@ -35,6 +35,11 @@ def invoke_main(arguments):
 # entries, so it is not a physical copy of every distributable input.
 script=APP/'tools/build_portable.py'
 actual_sources,actual_dependencies,actual_omitted=builder.package_selection('jpn')
+# Runtime modules must travel with their consumers. Two developer/first-hop
+# utilities have separate entry points and are intentionally omitted.
+runtime_modules = {path.name for path in (APP / 'src').glob('*.py')} - {
+    'separate_audio.py', 'upgrade_bootstrap.py'}
+assert runtime_modules <= set(actual_sources), sorted(runtime_modules - set(actual_sources))
 assert len(actual_omitted)==3 and sum(e['bytes'] for e in actual_omitted)>4*1024**3
 assert not any('Qwen3-ASR-1.7B-dml/' in name for name in set(actual_sources)|set(actual_dependencies))
 assert any('/romajiASR/' in name for name in actual_dependencies)

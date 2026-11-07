@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from common import native_path
 BLOCK = 4 * 1024**2
-FORBIDDEN = {'cache', 'jobs', 'publish-packages', 'quality-test', 'work', '.git'}
+FORBIDDEN = {'cache', 'jobs', 'publish-packages', 'user-presets', 'quality-test', 'work', '.git'}
 LAYOUT_ROOTS = ('VWA', 'BVWA')
 DEFAULT_LAYOUT_ROOT = 'VWA'
 

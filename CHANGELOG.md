@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a versioned preset format and local library for preparation, mixing, tuning and declarative style recipes, with previewed imports, immutable exports, copies, local aliases/favorites, revision conflicts and explicit recovery. Settings exposes the manager and a shared CLI; applying library entries to processing controls remains a later stage.
+- Include shared style, mixing, source, transaction and component modules in portable/update payloads, with a regression guard against missing runtime modules.
 - Replace Xiaohongshu browser automation with verified local publication files, copy actions and manual posting. Require an explicit AI-content disclosure for new Xiaohongshu packages; Bilibili keeps its existing upload assistance.
 - Hold the existing task lock while reusing a download and retain unverified source declarations when reprocessing local audio. Component installation and inference use the same lock while selecting and using the active runtime.
 - Reject a review response if its sections were assembled from different artifact identities or the workflow revision changed during the read. Use stable desktop page IDs while retaining legacy numeric navigation, and keep video render controls locked from launch through completion.

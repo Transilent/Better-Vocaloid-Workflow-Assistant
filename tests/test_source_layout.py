@@ -23,6 +23,8 @@ with tempfile.TemporaryDirectory(prefix='source-layout-', dir=APP/'work') as fol
     (checkout/'config.json').write_bytes(b'KEEP SETTINGS')
     (checkout/'jobs').mkdir()
     (checkout/'jobs/task.json').write_bytes(b'KEEP PROJECT')
+    (checkout/'user-presets').mkdir()
+    (checkout/'user-presets/library.json').write_bytes(b'KEEP PRESETS')
     assert not (checkout/'launch.py').exists()
     for attempt in range(2):
         result = subprocess.run([str(shell), '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
@@ -33,6 +35,7 @@ with tempfile.TemporaryDirectory(prefix='source-layout-', dir=APP/'work') as fol
             assert (checkout/source.name).read_bytes() == source.read_bytes()
         assert (checkout/'config.json').read_bytes() == b'KEEP SETTINGS'
         assert (checkout/'jobs/task.json').read_bytes() == b'KEEP PROJECT'
+        assert (checkout/'user-presets/library.json').read_bytes() == b'KEEP PRESETS'
         (checkout/'src/launch.py').write_bytes(b'# Updated developer source\n')
         if attempt == 0:
             try:

@@ -22,6 +22,7 @@ VWA外观使用深浅语义配色、共享Qt样式及应用内缓存背景。单
 
 | 文件 | 职责 |
 | --- | --- |
+| [preset_documents.py](../src/preset_documents.py)、`preset_builtin_documents.py`、`preset_library.py`、`preset_library_ui.py`、`preset_cli.py` | 统一预设格式与本机库；界面与 CLI 共用校验和持久化，处理模块适配另行接入。 |
 | `launch.py`、`app.py` | 启动、界面、后台任务 |
 | `desktop_theme.py`、`workspace_ui.py`、`publishing_layout.py` | 主题、使用稳定页面 ID 并兼容旧跳转的侧栏工作区、发布表单 |
 | `workflow_widgets.py` | 步骤导航及等比例封面预览 |

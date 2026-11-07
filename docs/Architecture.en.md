@@ -33,6 +33,7 @@ The VWA appearance uses light/dark semantic palettes, shared Qt styles and a cac
 
 | Module | Responsibility |
 | --- | --- |
+| [preset_documents.py](../src/preset_documents.py), `preset_builtin_documents.py`, `preset_library.py`, `preset_library_ui.py`, `preset_cli.py` | Unified preset documents and local library; UI and CLI share validation and persistence. Processing adapters are separate. |
 | `launch.py`, `app.py` | Runtime bootstrap, desktop controls, background jobs |
 | `desktop_theme.py`, `workspace_ui.py`, `publishing_layout.py` | Theme, sidebar workspace with stable page IDs and legacy redirects, and publication form |
 | `workflow_widgets.py` | Step navigation and proportional cover preview |

@@ -1,0 +1,45 @@
+{
+  "binding_slots": [
+    {
+      "id": "target_vocals",
+      "kind": "vocal_tracks",
+      "required": true
+    }
+  ],
+  "format": "vwa.preset",
+  "format_version": 1,
+  "id": "user.example.gentle_tuning",
+  "metadata": {
+    "name": "保留原表现与柔和组合"
+  },
+  "payload": {
+    "expression_density": "original",
+    "expression_mode": "preserve",
+    "style": {
+      "detail": {
+        "connection": 1.0,
+        "onset": 1.0,
+        "release": 1.0,
+        "sustain": 1.0
+      },
+      "pitch_enabled": false,
+      "ref": "builtin:gentle",
+      "strength": 0.5
+    },
+    "technique": {
+      "pitch_enabled": false,
+      "ref": "builtin:none",
+      "strength": 0.6
+    }
+  },
+  "requires": {
+    "capabilities": [
+      "tuning.svp-main-group",
+      "style.builtin.gentle"
+    ],
+    "engine_contract": "tuning-pipeline/v1",
+    "preset_api": 1
+  },
+  "type": "tuning",
+  "version": "0.1.0"
+}

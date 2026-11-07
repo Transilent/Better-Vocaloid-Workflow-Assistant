@@ -1,5 +1,7 @@
 # VWA user guide
 
+The development version includes a [local preset library](PresetLibrary.en.md) in Settings/updates for inspecting and sharing portable documents. Applying entries to mixing/tuning controls is planned separately.
+
 [English](UserGuide.en.md) | [简体中文](UserGuide.zh-CN.md) | [README](../README.md)
 
 ## Input

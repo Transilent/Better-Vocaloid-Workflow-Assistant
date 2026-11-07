@@ -4,6 +4,7 @@ jobs/
 BV1*_*/
 Local_*/
 publish-packages/
+user-presets/
 quality-test/
 work/
 last_job.txt

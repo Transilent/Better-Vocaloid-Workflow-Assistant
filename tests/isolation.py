@@ -76,7 +76,7 @@ def application_copy(source, parent):
 def reset_state(sandbox):
     """Reset only private state in an already isolated program copy."""
     sandbox = Path(sandbox).resolve()
-    for name in ('cache', 'jobs', 'publish-packages', 'work'):
+    for name in ('cache', 'jobs', 'publish-packages', 'user-presets', 'work'):
         target = sandbox / name
         if not target.exists():
             continue

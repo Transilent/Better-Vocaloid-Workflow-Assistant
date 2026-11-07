@@ -99,6 +99,21 @@ class UpdatesPage(QWidget):
         self.auto_restart.toggled.connect(self.save_settings)
         body_layout.addWidget(automatic)
 
+        library_card, library_body = card(
+            _tr('本机预设库'),
+            _tr('集中管理本机的准备、混音、调音与风格配方预设；只读写本地 JSON，不上传或自动应用。'))
+        library_card.setObjectName('presetLibraryCard')
+        library_body.addWidget(label(_tr('支持导入预览、复制内置预设、修改本地别名、收藏、精确导出、逻辑删除和恢复上一索引。混音与调音应用功能尚未开放。'), 'muted'))
+        library_row = QHBoxLayout()
+        library_row.setSpacing(10)
+        self.open_preset_button = button(_tr('打开本机预设库'), self.open_preset_library, 'primary')
+        self.open_preset_button.setObjectName('openPresetLibraryButton')
+        self.open_preset_button.setAccessibleName(_tr('打开本机预设库管理器'))
+        library_row.addWidget(self.open_preset_button)
+        library_row.addStretch()
+        library_body.addLayout(library_row)
+        body_layout.addWidget(library_card)
+
         updates, body = card(_tr('程序版本'), _tr('当前版本 · ') + updater.current_version())
         self.message = label(_tr('点击“检查更新”获取最新版本。'), 'muted')
         self.message.setWordWrap(True)
@@ -338,6 +353,10 @@ class UpdatesPage(QWidget):
             self.download()
         else:
             self.check()
+
+    def open_preset_library(self):
+        from preset_library_ui import open_preset_library_manager
+        return open_preset_library_manager(self)
 
     def open_release(self):
         import webbrowser

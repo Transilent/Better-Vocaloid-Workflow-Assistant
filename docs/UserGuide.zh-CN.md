@@ -1,5 +1,7 @@
 # VWA 术力口工作流助手使用指南
 
+开发版“设置与更新”提供[本机预设库](PresetLibrary.zh-CN.md)，用于检查和分享统一格式文件；将库条目应用到混音/调音控制的入口将在后续接入。
+
 [English](UserGuide.en.md) | [简体中文](UserGuide.zh-CN.md) | [README](../README.zh-CN.md)
 
 ## 输入

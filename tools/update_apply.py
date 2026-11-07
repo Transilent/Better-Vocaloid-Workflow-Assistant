@@ -28,6 +28,17 @@ ROOT_FILES = {'style_presets.py', 'context_project.py', 'context_reading.py', 'c
               'publish-selectors.json', 'version.json', 'README.md', 'README.zh-CN.md',
               'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.zh-CN.md'}
 ROOT_FILES.update({'style_pitch.py','ui_input.py'})
+ROOT_FILES.update({'agent_project_state.py', 'component_health.py',
+                   'expression_controls.py', 'mixdown_contract.py',
+                   'multi_file_commit.py', 'source_contract.py', 'style_catalog.py'})
+ROOT_FILES.update({'preset_documents.py', 'preset_builtin_documents.py',
+                   'preset_library.py', 'preset_library_ui.py', 'preset_cli.py',
+                   'packaging/preset.schema.json',
+                   'docs/PresetLibrary.en.md', 'docs/PresetLibrary.zh-CN.md',
+                   'docs/examples/presets/preparation.vwa-preset.json',
+                   'docs/examples/presets/mixdown.vwa-preset.json',
+                   'docs/examples/presets/tuning.vwa-preset.json',
+                   'docs/examples/presets/style_recipe.vwa-preset.json'})
 ROOT_FILES.update({'agent_pitch.py','agent_separation_repair.py'})
 # Current program payloads include the optional MCP boundary. Historical
 # first-hop fixtures retain their own fixed three-file allowlist.

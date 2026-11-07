@@ -5,7 +5,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from isolation import application_copy
+from isolation import application_copy, reset_state
 
 APP = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='isolation-contract-') as folder:
@@ -15,6 +15,7 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='isolation-contract-')
     (source / 'packaging/config.example.json').write_bytes(b'{"default": true}')
     (source / 'app.py').write_bytes(b'# program')
     kept = {'config.json': b'PRIVATE CONFIG', 'cache/workspace.json': b'PRIVATE PRESETS',
+            'user-presets/library.json': b'PRIVATE PRESET LIBRARY',
             'publish-ui.json': b'PRIVATE PUBLICATION', 'last_job.txt': b'PRIVATE TASK',
             'cache/publish-browser/login': b'PRIVATE ACCOUNT', 'docs/images/test.png': b'ORIGINAL IMAGE',
             'dependencies/model.bin': b'ORIGINAL MODEL'}
@@ -26,6 +27,7 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='isolation-contract-')
         with application_copy(source, parent) as sandbox:
             assert (sandbox / 'config.json').read_bytes() == b'{"default": true}'
             assert not (sandbox / 'cache').exists() and not (sandbox / 'publish-ui.json').exists()
+            assert not (sandbox / 'user-presets').exists(), 'User library must not enter isolation'
             assert (sandbox / 'dependencies/model.bin').read_bytes() == b'ORIGINAL MODEL'
             script = ("from pathlib import Path; import os; "
                       "Path('config.json').write_bytes(b'TEST CONFIG'); "
@@ -39,5 +41,9 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='isolation-contract-')
     with application_copy(source, parent) as sandbox:
         assert not (sandbox / 'cache').exists(), 'The next test must start clean'
         assert (sandbox / 'config.json').read_bytes() == b'{"default": true}'
+        (sandbox / 'user-presets').mkdir()
+        (sandbox / 'user-presets/library.json').write_bytes(b'TEST LIBRARY')
+        reset_state(sandbox)
+        assert not (sandbox / 'user-presets').exists(), 'Per-test reset must clear only the isolated library'
     assert all((source / name).read_bytes() == data for name, data in kept.items())
 print('PASS: private-state exclusion, per-test reset, crash/failure cleanup and unchanged shared model')

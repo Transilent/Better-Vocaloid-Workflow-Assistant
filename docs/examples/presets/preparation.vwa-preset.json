@@ -1,0 +1,70 @@
+{
+  "binding_slots": [],
+  "format": "vwa.preset",
+  "format_version": 1,
+  "id": "user.example.zh_preparation",
+  "metadata": {
+    "name": "中文准备流程示例"
+  },
+  "payload": {
+    "graph": {
+      "edges": [
+        [
+          "source",
+          "separation"
+        ],
+        [
+          "separation",
+          "midi"
+        ]
+      ],
+      "nodes": {
+        "midi": [
+          530,
+          150
+        ],
+        "separation": [
+          295,
+          150
+        ],
+        "source": [
+          60,
+          150
+        ]
+      }
+    },
+    "options": {
+      "alignment_engine": "hfa",
+      "audio_export_enabled": true,
+      "audio_formats": [
+        "wav"
+      ],
+      "export_pitch": true,
+      "include_instrumental": true,
+      "language": "zh",
+      "midi_backend": "v2",
+      "midi_steps": 16,
+      "project_export_enabled": true,
+      "project_formats": [
+        "ustx",
+        "vsqx",
+        "svp"
+      ],
+      "recognize_lyrics": true,
+      "reference_mode": "local",
+      "separation_flow": "cascade",
+      "subtitles_mode": "midi",
+      "voice_mode": "dual",
+      "zh_lyric_mode": "hanzi"
+    }
+  },
+  "requires": {
+    "capabilities": [
+      "preparation.parameters"
+    ],
+    "engine_contract": "preparation-parameters/v1",
+    "preset_api": 1
+  },
+  "type": "preparation",
+  "version": "0.1.0"
+}

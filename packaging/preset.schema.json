@@ -1,0 +1,937 @@
+{
+  "type": "object",
+  "properties": {
+    "format": {
+      "type": "string",
+      "const": "vwa.preset"
+    },
+    "format_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^(?!builtin\\.)[a-z][a-z0-9_-]*(?:\\.[a-z0-9_-]+)+$(?![\\s\\S])"
+    },
+    "type": {
+      "enum": [
+        "preparation",
+        "mixdown",
+        "tuning",
+        "style_recipe"
+      ]
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$(?![\\s\\S])"
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "author": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "license": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "minItems": 0,
+          "maxItems": 16,
+          "uniqueItems": true
+        },
+        "color": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 7,
+          "pattern": "^#[0-9a-fA-F]{6}$(?![\\s\\S])"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "requires": {
+      "type": "object",
+      "properties": {
+        "preset_api": {
+          "type": "integer",
+          "const": 1
+        },
+        "engine_contract": {
+          "enum": [
+            "preparation-parameters/v1",
+            "mixdown-parameters/v1",
+            "tuning-pipeline/v1",
+            "style-recipe/v1"
+          ]
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "pattern": "^[a-z][a-z0-9_.-]*$(?![\\s\\S])"
+          },
+          "minItems": 0,
+          "maxItems": 32,
+          "uniqueItems": true
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^(?!builtin\\.)[a-z][a-z0-9_-]*(?:\\.[a-z0-9_-]+)+$(?![\\s\\S])"
+              },
+              "version": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80,
+                "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$(?![\\s\\S])"
+              },
+              "sha256": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+              }
+            },
+            "required": [
+              "id",
+              "version",
+              "sha256"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 0,
+          "maxItems": 16,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "preset_api",
+        "engine_contract",
+        "capabilities"
+      ],
+      "additionalProperties": false
+    },
+    "binding_slots": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_]*$(?![\\s\\S])"
+          },
+          "kind": {
+            "enum": [
+              "vocal_tracks",
+              "reference_audio",
+              "calibration_profile",
+              "retained_project",
+              "separated_stems"
+            ]
+          },
+          "required": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "required"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 8
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "format",
+    "format_version",
+    "id",
+    "type",
+    "version",
+    "metadata",
+    "requires",
+    "binding_slots",
+    "payload"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VWA portable preset v1",
+  "oneOf": [
+    {
+      "properties": {
+        "type": {
+          "const": "preparation"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "graph": {
+              "type": "object",
+              "properties": {
+                "nodes": {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "array",
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "prefixItems": [
+                        {
+                          "type": "number",
+                          "minimum": -10000,
+                          "maximum": 10000
+                        },
+                        {
+                          "type": "number",
+                          "minimum": -10000,
+                          "maximum": 10000
+                        }
+                      ],
+                      "items": false
+                    },
+                    "separation": {
+                      "type": "array",
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "prefixItems": [
+                        {
+                          "type": "number",
+                          "minimum": -10000,
+                          "maximum": 10000
+                        },
+                        {
+                          "type": "number",
+                          "minimum": -10000,
+                          "maximum": 10000
+                        }
+                      ],
+                      "items": false
+                    },
+                    "midi": {
+                      "type": "array",
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "prefixItems": [
+                        {
+                          "type": "number",
+                          "minimum": -10000,
+                          "maximum": 10000
+                        },
+                        {
+                          "type": "number",
+                          "minimum": -10000,
+                          "maximum": 10000
+                        }
+                      ],
+                      "items": false
+                    },
+                    "subtitles": {
+                      "type": "array",
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "prefixItems": [
+                        {
+                          "type": "number",
+                          "minimum": -10000,
+                          "maximum": 10000
+                        },
+                        {
+                          "type": "number",
+                          "minimum": -10000,
+                          "maximum": 10000
+                        }
+                      ],
+                      "items": false
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "separation"
+                  ],
+                  "additionalProperties": false
+                },
+                "edges": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "enum": [
+                        "source",
+                        "separation",
+                        "midi",
+                        "subtitles"
+                      ]
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "minItems": 1,
+                  "maxItems": 3,
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "nodes",
+                "edges"
+              ],
+              "additionalProperties": false
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "language": {
+                  "enum": [
+                    "zh",
+                    "ja"
+                  ]
+                },
+                "recognize_lyrics": {
+                  "type": "boolean"
+                },
+                "zh_lyric_mode": {
+                  "enum": [
+                    "hanzi",
+                    "pinyin"
+                  ]
+                },
+                "voice_mode": {
+                  "enum": [
+                    "single",
+                    "dual",
+                    "import",
+                    "roformer"
+                  ]
+                },
+                "midi_steps": {
+                  "enum": [
+                    8,
+                    16,
+                    32
+                  ]
+                },
+                "midi_backend": {
+                  "enum": [
+                    "v1",
+                    "v2"
+                  ]
+                },
+                "alignment_engine": {
+                  "enum": [
+                    "hfa",
+                    "tifa"
+                  ]
+                },
+                "project_formats": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "ustx",
+                      "vsqx",
+                      "svp"
+                    ]
+                  },
+                  "minItems": 0,
+                  "maxItems": 3,
+                  "uniqueItems": true
+                },
+                "audio_formats": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "wav",
+                      "flac",
+                      "mp3",
+                      "ogg"
+                    ]
+                  },
+                  "minItems": 0,
+                  "maxItems": 4,
+                  "uniqueItems": true
+                },
+                "project_export_enabled": {
+                  "type": "boolean"
+                },
+                "audio_export_enabled": {
+                  "type": "boolean"
+                },
+                "export_pitch": {
+                  "type": "boolean"
+                },
+                "include_instrumental": {
+                  "type": "boolean"
+                },
+                "separation_flow": {
+                  "enum": [
+                    "cascade",
+                    "independent"
+                  ]
+                },
+                "reference_mode": {
+                  "enum": [
+                    "local",
+                    "netease"
+                  ]
+                },
+                "subtitles_mode": {
+                  "enum": [
+                    "midi",
+                    "netease"
+                  ]
+                }
+              },
+              "required": [
+                "language",
+                "recognize_lyrics",
+                "zh_lyric_mode",
+                "voice_mode",
+                "midi_steps",
+                "midi_backend",
+                "alignment_engine",
+                "project_formats",
+                "audio_formats",
+                "project_export_enabled",
+                "audio_export_enabled",
+                "export_pitch",
+                "include_instrumental",
+                "separation_flow",
+                "reference_mode",
+                "subtitles_mode"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "graph",
+            "options"
+          ],
+          "additionalProperties": false
+        },
+        "requires": {
+          "properties": {
+            "engine_contract": {
+              "const": "preparation-parameters/v1"
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "mixdown"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "apply_scope": {
+              "enum": [
+                "vocal_processing",
+                "vocal_processing_and_output_width"
+              ]
+            },
+            "eq_enabled": {
+              "type": "boolean"
+            },
+            "eq_bands": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "highpass",
+                      "lowshelf",
+                      "bell",
+                      "highshelf"
+                    ]
+                  },
+                  "freq_hz": {
+                    "type": "number",
+                    "minimum": 10,
+                    "maximum": 20000
+                  },
+                  "gain_db": {
+                    "type": "number",
+                    "minimum": -24,
+                    "maximum": 24
+                  },
+                  "q": {
+                    "type": "number",
+                    "minimum": 0.1,
+                    "maximum": 18
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "type",
+                  "freq_hz",
+                  "gain_db",
+                  "q",
+                  "enabled"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 4,
+              "maxItems": 4
+            },
+            "compression_enabled": {
+              "type": "boolean"
+            },
+            "compression_strength": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "reverb_enabled": {
+              "type": "boolean"
+            },
+            "reverb_profile": {
+              "enum": [
+                "small",
+                "natural",
+                "wide"
+              ]
+            },
+            "reverb_mix": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "reverb_predelay_ms": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 120
+            },
+            "width": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 2
+            },
+            "track_template": {
+              "type": "object",
+              "properties": {
+                "pan_mode": {
+                  "enum": [
+                    "center",
+                    "alternate",
+                    "lead_harmony"
+                  ]
+                },
+                "pan": {
+                  "type": "number",
+                  "minimum": -1,
+                  "maximum": 1
+                },
+                "harmony_pan": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "reverb_send": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              },
+              "required": [
+                "pan_mode",
+                "pan",
+                "harmony_pan",
+                "reverb_send"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "apply_scope",
+            "eq_enabled",
+            "eq_bands",
+            "compression_enabled",
+            "compression_strength",
+            "reverb_enabled",
+            "reverb_profile",
+            "reverb_mix",
+            "reverb_predelay_ms"
+          ],
+          "additionalProperties": false
+        },
+        "requires": {
+          "properties": {
+            "engine_contract": {
+              "const": "mixdown-parameters/v1"
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "tuning"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "expression_mode": {
+              "enum": [
+                "preserve",
+                "reference",
+                "calibrated",
+                "retained"
+              ]
+            },
+            "style": {
+              "type": "object",
+              "properties": {
+                "ref": {
+                  "oneOf": [
+                    {
+                      "enum": [
+                        "builtin:none",
+                        "builtin:gentle",
+                        "builtin:sad",
+                        "builtin:bold"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128,
+                          "pattern": "^(?!builtin\\.)[a-z][a-z0-9_-]*(?:\\.[a-z0-9_-]+)+$(?![\\s\\S])"
+                        },
+                        "version": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 80,
+                          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$(?![\\s\\S])"
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64,
+                          "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "version",
+                        "sha256"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "strength": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "pitch_enabled": {
+                  "type": "boolean"
+                },
+                "detail": {
+                  "type": "object",
+                  "properties": {
+                    "onset": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "sustain": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "connection": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "release": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    }
+                  },
+                  "required": [
+                    "onset",
+                    "sustain",
+                    "connection",
+                    "release"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "ref",
+                "strength",
+                "pitch_enabled",
+                "detail"
+              ],
+              "additionalProperties": false
+            },
+            "technique": {
+              "type": "object",
+              "properties": {
+                "ref": {
+                  "oneOf": [
+                    {
+                      "enum": [
+                        "builtin:none",
+                        "builtin:chinese_opera"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128,
+                          "pattern": "^(?!builtin\\.)[a-z][a-z0-9_-]*(?:\\.[a-z0-9_-]+)+$(?![\\s\\S])"
+                        },
+                        "version": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 80,
+                          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$(?![\\s\\S])"
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64,
+                          "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "version",
+                        "sha256"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "strength": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "pitch_enabled": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "ref",
+                "strength",
+                "pitch_enabled"
+              ],
+              "additionalProperties": false
+            },
+            "expression_density": {
+              "enum": [
+                "original",
+                "dense"
+              ]
+            },
+            "reference_controls": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "dynamics",
+                  "tension",
+                  "breathiness",
+                  "voicing"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 4,
+              "uniqueItems": true
+            },
+            "reference_strength": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "required": [
+            "expression_mode",
+            "style",
+            "technique",
+            "expression_density"
+          ],
+          "additionalProperties": false
+        },
+        "requires": {
+          "properties": {
+            "engine_contract": {
+              "const": "tuning-pipeline/v1"
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "style_recipe"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "role": {
+              "enum": [
+                "style",
+                "technique"
+              ]
+            },
+            "coordinate_system": {
+              "enum": [
+                "normalized_note_phase"
+              ]
+            },
+            "default_strength": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "pitch": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "const": false
+                },
+                "gestures": {
+                  "type": "array",
+                  "items": {},
+                  "minItems": 0,
+                  "maxItems": 0
+                }
+              },
+              "required": [
+                "enabled",
+                "gestures"
+              ],
+              "additionalProperties": false
+            },
+            "controls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "channel": {
+                    "enum": [
+                      "loudness",
+                      "tension",
+                      "breathiness",
+                      "voicing"
+                    ]
+                  },
+                  "operation": {
+                    "enum": [
+                      "add"
+                    ]
+                  },
+                  "points": {
+                    "type": "array",
+                    "items": {
+                      "type": "array",
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "prefixItems": [
+                        {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1
+                        },
+                        {
+                          "type": "number",
+                          "minimum": -12,
+                          "maximum": 12
+                        }
+                      ],
+                      "items": false
+                    },
+                    "minItems": 2,
+                    "maxItems": 64
+                  }
+                },
+                "required": [
+                  "channel",
+                  "operation",
+                  "points"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1,
+              "maxItems": 4
+            }
+          },
+          "required": [
+            "role",
+            "coordinate_system",
+            "default_strength",
+            "pitch",
+            "controls"
+          ],
+          "additionalProperties": false
+        },
+        "requires": {
+          "properties": {
+            "engine_contract": {
+              "const": "style-recipe/v1"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

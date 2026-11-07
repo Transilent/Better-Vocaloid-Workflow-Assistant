@@ -1,0 +1,52 @@
+{
+  "binding_slots": [],
+  "format": "vwa.preset",
+  "format_version": 1,
+  "id": "user.example.soft_ending",
+  "metadata": {
+    "color": "#438C9B",
+    "name": "柔和收尾配方示例"
+  },
+  "payload": {
+    "controls": [
+      {
+        "channel": "tension",
+        "operation": "add",
+        "points": [
+          [
+            0,
+            0
+          ],
+          [
+            0.2,
+            -0.03
+          ],
+          [
+            0.7,
+            -0.03
+          ],
+          [
+            1,
+            0
+          ]
+        ]
+      }
+    ],
+    "coordinate_system": "normalized_note_phase",
+    "default_strength": 0.5,
+    "pitch": {
+      "enabled": false,
+      "gestures": []
+    },
+    "role": "style"
+  },
+  "requires": {
+    "capabilities": [
+      "style.note-envelope"
+    ],
+    "engine_contract": "style-recipe/v1",
+    "preset_api": 1
+  },
+  "type": "style_recipe",
+  "version": "0.1.0"
+}
