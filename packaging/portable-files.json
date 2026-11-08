@@ -792,6 +792,18 @@
     {
       "file": "mixdown_preset_ui.py",
       "source": "src/mixdown_preset_ui.py"
+    },
+    {
+      "file": "mixdown_native_output.py",
+      "source": "src/mixdown_native_output.py"
+    },
+    {
+      "file": "mixdown_realtime_renderer.py",
+      "source": "src/mixdown_realtime_renderer.py"
+    },
+    {
+      "file": "mixdown_realtime_session.py",
+      "source": "src/mixdown_realtime_session.py"
     }
   ]
 }
