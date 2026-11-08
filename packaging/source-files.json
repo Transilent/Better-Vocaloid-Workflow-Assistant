@@ -2021,6 +2021,11 @@
     "tests/test_mixdown_workspace.py",
     "src/mixdown_transport.py",
     "src/mixdown_sources.py",
-    "tests/test_mixdown_live_meters.py"
+    "tests/test_mixdown_live_meters.py",
+    "AGENTS.md",
+    "src/vwa_project_memory.py",
+    "tools/project_memory.py",
+    "tests/test_project_memory.py",
+    "docs/ProjectMemory.zh-CN.md"
   ]
 }

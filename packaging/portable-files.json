@@ -856,6 +856,10 @@
     {
       "file": "mixdown_sources.py",
       "source": "src/mixdown_sources.py"
+    },
+    {
+      "file": "vwa_project_memory.py",
+      "source": "src/vwa_project_memory.py"
     }
   ]
 }
