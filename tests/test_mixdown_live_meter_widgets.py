@@ -717,5 +717,69 @@ class MeterBankTests(unittest.TestCase):
         self.assertEqual(view.snapshot["tracks"], [])
 
 
+class LiveDisplayPerformanceContracts(unittest.TestCase):
+    def test_gr_history_is_bounded_and_keeps_bucket_peak(self):
+        feed = live.MeterEnvelope(auto_start=False)
+        view = live.GrHistoryView(feed=feed)
+        for i in range(1000):
+            feed.set_live_snapshot(dict(source='realtime_dsp', history_epoch=1,parameter_revision=1,
+                position_ms=i*10,duration_ms=60000,tracks=[],
+                bus=dict(peak_dbfs=-6,rms_dbfs=-12,limiter_gr_db=5 if i==3 else 1)))
+        self.assertLessEqual(len(view.history_points()),101)
+        self.assertEqual(view.history_points()[0][1],-5)
+        self.assertFalse(view._paint_timer.isActive(), 'Hidden GR must not schedule painting')
+        feed.set_live_snapshot(dict(source='realtime_dsp', history_epoch=2,parameter_revision=1,
+            position_ms=0,duration_ms=60000,tracks=[],bus=dict(peak_dbfs=-6,rms_dbfs=-12,limiter_gr_db=0)))
+        self.assertEqual(view.history_points(),((0.0,0.0),))
+
+    def test_requested_gr_scope_returns_after_pending_or_empty_frames(self):
+        feed = live.MeterEnvelope(auto_start=False)
+        view = live.GrHistoryView(feed=feed, lane='vocal:0')
+        def frame(tracks):
+            feed.set_live_snapshot(dict(source='realtime_dsp', history_epoch=1,parameter_revision=1,
+                position_ms=100,duration_ms=60000,tracks=tracks,
+                bus=dict(peak_dbfs=-6,rms_dbfs=-12,limiter_gr_db=0)))
+        frame([dict(role='vocal',index=0,gr_db=3)])
+        self.assertEqual(view.selected_lane,'vocal:0')
+        feed.clear()
+        frame([dict(role='vocal',index=0,gr_db=2)])
+        self.assertEqual(view.selected_lane,'vocal:0')
+        self.assertEqual(view.current_gr_db,-2)
+        view.set_lane('bus')
+        feed.clear();frame([dict(role='vocal',index=0,gr_db=2)])
+        self.assertEqual(view.selected_lane,'bus')
+
+    def test_static_edc_does_not_follow_song_cursor_and_reuses_paint(self):
+        feed = live.MeterEnvelope(auto_start=False)
+        view = live.ReverbDecayView(feed=feed, follow_transport=False)
+        view.resize(600,260)
+        view.set_edc([0,-12,-60],time_s=[0,.2,.8],profile='natural',predelay_ms=20)
+        view.show();APP.processEvents();view.grab()
+        cached=view._plot_cache
+        self.assertIsNotNone(cached)
+        for i in range(20):
+            feed.set_live_snapshot(dict(position_ms=i*33,duration_ms=10000,tracks=[],bus={}))
+        APP.processEvents();view.grab()
+        self.assertIs(view._plot_cache,cached)
+        self.assertEqual(view.playback_position_ms,0)
+        view.set_edc([0,-24,-60],time_s=[0,.2,.8],profile='wide',predelay_ms=20)
+        view.grab()
+        self.assertIsNot(view._plot_cache,cached)
+        view.close()
+
+    def test_readouts_have_fixed_geometry_and_explicit_missing_values(self):
+        view=live.AnalysisReadout('reverb')
+        view.resize(500,view.height());size=view.sizeHint();height=view.height()
+        view.set_values(-12,-18,20)
+        self.assertIn('-12.0 dBFS',view.text())
+        self.assertIn('20.0 %',view.text())
+        view.set_values(-120,-.1,99.9)
+        self.assertEqual(view.height(),height)
+        self.assertEqual(view.sizeHint(),size)
+        view.clear()
+        self.assertIn('—',view.text())
+        self.assertNotIn('-120',view.text())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

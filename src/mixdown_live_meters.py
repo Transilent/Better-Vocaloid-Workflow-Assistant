@@ -22,7 +22,7 @@ import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from PyQt5.QtCore import QObject, QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen
+from PyQt5.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PyQt5.QtWidgets import QSizePolicy, QWidget
 
 from i18n import tr as _tr
@@ -38,6 +38,8 @@ GR_AXIS_TICKS_DB = (0.0, -1.0, -2.0, -3.0, -4.0, -5.0, -6.0)
 GR_ENVELOPE_FLOOR_DB = -60.0
 GR_RELEASE_DB_PER_SECOND = 18.0
 GR_HISTORY_SECONDS = 30.0
+GR_HISTORY_BUCKET_MS = 100.0
+ANALYSIS_PAINT_INTERVAL_MS = 66
 EDC_FLOOR_DB = -60.0
 EDC_DEFAULT_SECONDS = 2.0
 DEFAULT_ENVELOPE_INTERVAL_MS = 1000.0 / METER_REFRESH_HZ
@@ -1753,13 +1755,76 @@ def _parse_edc(report: Mapping[str, Any]) -> tuple[tuple[tuple[float, float], ..
     return points, metadata
 
 
+class AnalysisReadout(QWidget):
+    """Fixed geometry live values: no QLabel relayout when a number changes."""
+
+    def __init__(self, mode, parent=None):
+        super().__init__(parent)
+        if mode not in ('gr', 'reverb'):
+            raise ValueError('Unknown analysis readout')
+        self.mode = mode
+        self._rows = ((_tr('人声压缩'), 'dB'), (_tr('总线限制'), 'dB')) if mode == 'gr' else (
+            (_tr('发送 RMS'), 'dBFS'), (_tr('返回 RMS'), 'dBFS'), (_tr('湿声能量占比'), '%'))
+        self._values = tuple(None for _ in self._rows)
+        self.setFixedHeight(len(self._rows) * 29 + 8)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setAttribute(Qt.WA_OpaquePaintEvent)
+        self.setAccessibleName(_tr('压缩与限制实时读数') if mode == 'gr' else _tr('混响实时读数'))
+
+    def set_values(self, *values):
+        if len(values) != len(self._rows):
+            raise ValueError('Metric count differs from readout rows')
+        normalized = tuple(round(x, 1) if (x := _finite(value)) is not None else None for value in values)
+        if normalized == self._values:
+            return
+        self._values = normalized
+        self.setAccessibleDescription(self.text())
+        if self.isVisible():
+            self.update()
+
+    def text(self):
+        return '\n'.join(label + ' ' + ('—' if value is None else f'{value:.1f}') + ' ' + unit
+                         for (label, unit), value in zip(self._rows, self._values))
+
+    def clear(self):
+        self.set_values(*(None for _ in self._rows))
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        base, text, grid, secondary = _drawing_colors(self)
+        base.setAlpha(255)
+        painter.fillRect(self.rect(), base)
+        painter.setFont(self.font())
+        colors = (QColor('#be8bff'), QColor('#54cbbb'), QColor('#72a8ec'))
+        for i, ((label, unit), value) in enumerate(zip(self._rows, self._values)):
+            top = 4 + i * 29
+            painter.setPen(text)
+            painter.drawText(QRectF(10, top, max(80, self.width() - 125), 19), Qt.AlignLeft | Qt.AlignVCenter, label)
+            number = '—' if value is None else f'{value:.1f}'
+            painter.drawText(QRectF(self.width() - 118, top, 108, 19), Qt.AlignRight | Qt.AlignVCenter, number + ' ' + unit)
+            rail = QRectF(10, top + 21, max(1, self.width() - 20), 3)
+            painter.fillRect(rail, grid)
+            if value is None:
+                continue
+            if unit == 'dB':
+                fraction = _clamp(abs(value) / 12.0, 0, 1)
+            elif unit == '%':
+                fraction = _clamp(value / 100.0, 0, 1)
+            else:
+                fraction = _clamp((value + 60.0) / 60.0, 0, 1)
+            rail.setWidth(rail.width() * fraction)
+            painter.fillRect(rail, colors[i])
+
+
 class GrHistoryView(QWidget):
     """Playback-aligned gain-reduction graph on a focused 0 to -6 dB scale."""
 
     historyChanged = pyqtSignal(object)
 
     def __init__(self, parent: QWidget | None = None, *, feed: MeterEnvelope | None = None,
-                 auto_start: bool = True, history_seconds: float = GR_HISTORY_SECONDS):
+                 auto_start: bool = True, history_seconds: float = GR_HISTORY_SECONDS,
+                 lane: str = 'bus'):
         super().__init__(parent)
         self.setObjectName("mixdownGrHistory")
         self.setAccessibleName(_tr("GR 历史曲线"))
@@ -1770,13 +1835,23 @@ class GrHistoryView(QWidget):
         self.feed = feed or MeterEnvelope(self, auto_start=auto_start)
         self.feed.changed.connect(self._apply_snapshot)
         self.feed.cleared.connect(self._clear_history)
-        self._selected_lane = "bus"
+        self._selected_lane = lane_id(lane) or 'bus'
+        self._requested_lane = self._selected_lane
         self._history: dict[str, deque[tuple[float, float]]] = {}
         self._last_position_ms: float | None = None
         self._position_ms = float(self.feed.current_position_ms)
         self._current_gr: float | None = None
         self._has_report = False
         self._history_epoch = int(self.feed.history_epoch)
+        self.setAttribute(Qt.WA_OpaquePaintEvent)
+        self._paint_timer = QTimer(self)
+        self._paint_timer.setSingleShot(True)
+        self._paint_timer.setInterval(ANALYSIS_PAINT_INTERVAL_MS)
+        self._paint_timer.timeout.connect(self.update)
+
+    def _request_repaint(self):
+        if self.isVisible() and not self._paint_timer.isActive():
+            self._paint_timer.start()
 
     def sizeHint(self) -> QSize:
         return QSize(460, 238)
@@ -1904,11 +1979,13 @@ class GrHistoryView(QWidget):
             candidate = lane_id(lane[0], lane[1] if len(lane) > 1 else 0)
         else:
             candidate = lane_id(lane) or str(lane) if lane is not None else None
-        if candidate in self.feed.lane_ids:
+        if candidate:
+            self._requested_lane = candidate
+        if candidate and (candidate in self.feed.lane_ids or not self.feed.lane_ids):
             self._selected_lane = candidate
             snapshot = self.feed.snapshot()
             self._select_current(snapshot)
-            self.update()
+            self._request_repaint()
 
     def set_report(self, report: Mapping[str, Any] | None, *, merge: bool = True) -> None:
         """Merge partial reports by default; use ``merge=False`` or clear to reset."""
@@ -1947,14 +2024,14 @@ class GrHistoryView(QWidget):
         self._history.clear()
         self._last_position_ms = None
         self._current_gr = None
-        self.update()
+        self._request_repaint()
 
     def _select_current(self, snapshot: Mapping[str, Any]) -> None:
         lane = next((item for item in snapshot.get("lanes", [])
                      if item.get("id") == self._selected_lane), None)
         value = _lane_gr_db_value(lane) if isinstance(lane, Mapping) else None
-        self._current_gr = _finite(value)
-        self.update()
+        self._current_gr = None if value is None else -abs(float(value))
+        self._request_repaint()
 
     def _apply_snapshot(self, snapshot: Mapping[str, Any]) -> None:
         if not isinstance(snapshot, Mapping):
@@ -1974,7 +2051,10 @@ class GrHistoryView(QWidget):
                          or position - self._last_position_ms > 2000.0))):
             self._history.clear()
         lanes = snapshot.get("lanes") or []
-        if self._selected_lane not in {item.get("id") for item in lanes if isinstance(item, Mapping)}:
+        lane_ids = {item.get('id') for item in lanes if isinstance(item, Mapping)}
+        if self._requested_lane in lane_ids:
+            self._selected_lane = self._requested_lane
+        elif self._selected_lane not in lane_ids:
             candidates = [item.get("id") for item in lanes
                           if isinstance(item, Mapping) and item.get("id")]
             if self.feed.has_bus_data or not candidates:
@@ -1989,10 +2069,14 @@ class GrHistoryView(QWidget):
             value = _lane_gr_db_value(item)
             if not lane or value is None:
                 continue
+            value = -abs(float(value))
             bucket = self._history.setdefault(lane, deque())
-            if bucket and abs(bucket[-1][0] - position) < 0.5:
-                if abs(bucket[-1][1] - value) > 1e-6:
-                    bucket[-1] = (position, value)
+            if bucket and int(bucket[-1][0] // GR_HISTORY_BUCKET_MS) == int(position // GR_HISTORY_BUCKET_MS):
+                # Keep the strongest measured reduction in each 100ms bucket.
+                # Do not average a short compression event out of the trace.
+                peak = min(bucket[-1][1], value)
+                if abs(bucket[-1][1] - peak) > 1e-6:
+                    bucket[-1] = (position, peak)
                     history_changed = True
             else:
                 bucket.append((position, value))
@@ -2012,6 +2096,8 @@ class GrHistoryView(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         base, text, grid, secondary = _drawing_colors(self)
+        base.setAlpha(255)
+        painter.fillRect(self.rect(), base)
         red = QColor("#c43d58") if base.lightness() >= 142 else QColor("#ff6b83")
         width = max(1, self.width())
         height = max(1, self.height())
@@ -2027,8 +2113,9 @@ class GrHistoryView(QWidget):
         start_ms, end_ms = self._time_window()
         span_seconds = max(0.001, (end_ms - start_ms) / 1000.0)
         title_rect = QRectF(12.0, 7.0, max(80.0, width - 238.0), 20.0)
-        title = (_tr("GR 历史 · 最近 %g s") % span_seconds
-                 if width >= 520.0 else _tr("压缩 GR"))
+        scope = _tr('总线限制 GR') if self._selected_lane == 'bus' else _tr('人声压缩 GR')
+        title = (scope + ' · ' + (_tr('最近 %g s') % span_seconds)
+                 if width >= 520.0 else scope)
         title = painter.fontMetrics().elidedText(
             title, Qt.ElideRight, max(1, int(title_rect.width())))
         painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, title)
@@ -2171,14 +2258,17 @@ class ReverbDecayView(QWidget):
     curveChanged = pyqtSignal(object)
 
     def __init__(self, parent: QWidget | None = None, *,
-                 feed: MeterEnvelope | None = None, auto_start: bool = True):
+                 feed: MeterEnvelope | None = None, auto_start: bool = True,
+                 follow_transport: bool = True):
         super().__init__(parent)
         self.setObjectName("mixdownReverbDecay")
         self.setAccessibleName(_tr("实测混响能量衰减曲线"))
         self.setMinimumSize(320, 190)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.feed = feed or MeterEnvelope(self, auto_start=auto_start)
-        self.feed.changed.connect(self._apply_meter_snapshot)
+        self._follow_transport = bool(follow_transport)
+        if self._follow_transport:
+            self.feed.changed.connect(self._apply_meter_snapshot)
         self._position_ms = float(self.feed.current_position_ms)
         self._audition_duration_ms = self.feed.duration_ms
         self._points: tuple[tuple[float, float], ...] = ()
@@ -2191,6 +2281,14 @@ class ReverbDecayView(QWidget):
         self._computing = False
         self._duration_ms = EDC_DEFAULT_SECONDS * 1000.0
         self._error: str | None = None
+        self._plot_cache = None
+        self._plot_cache_key = None
+        self.setAttribute(Qt.WA_OpaquePaintEvent)
+
+    def _invalidate_plot(self):
+        self._plot_cache = None
+        if self.isVisible():
+            self.update()
 
     def sizeHint(self) -> QSize:
         return QSize(460, 238)
@@ -2303,7 +2401,7 @@ class ReverbDecayView(QWidget):
                 self._key = metadata.get("key") or self._key
                 self._computing = True
                 self._error = error
-                self.update()
+                self._invalidate_plot()
                 return
             self._points = ()
             self._profile = str(metadata.get("profile") or "—")
@@ -2317,7 +2415,7 @@ class ReverbDecayView(QWidget):
             self._duration_ms = max(20.0, float(metadata.get("duration_ms") or 0.0))
             self._error = error
             self.curveChanged.emit(self.curve_points())
-            self.update()
+            self._invalidate_plot()
             return
         self._points = points
         self._profile = str(metadata.get("profile") or "—")
@@ -2332,7 +2430,7 @@ class ReverbDecayView(QWidget):
         measured_duration = points[-1][0] if points else 0.0
         self._duration_ms = max(20.0, float(metadata.get("duration_ms") or measured_duration))
         self.curveChanged.emit(self.curve_points())
-        self.update()
+        self._invalidate_plot()
 
     def set_edc(self, db: Any = None, *, time_s: Any = None, times_ms: Any = None,
                 interval_ms: float | None = None, hz: float | None = None,
@@ -2427,10 +2525,14 @@ class ReverbDecayView(QWidget):
         self._duration_ms = EDC_DEFAULT_SECONDS * 1000.0
         self._error = None
         self.curveChanged.emit(self.curve_points())
-        self.update()
+        self._invalidate_plot()
 
     def _status_text(self) -> str:
         predelay = "—" if self._predelay_ms is None else "%g ms" % self._predelay_ms
+        if not self._follow_transport:
+            names = {'natural': _tr('自然空间'), 'wide': _tr('宽阔空间'), 'clean': _tr('清晰空间')}
+            profile = names.get(self._profile, _tr(self._profile))
+            return '  ·  '.join((self.measurement_status, profile, _tr('预延迟') + ' ' + predelay))
         parts = [
             self.measurement_status,
             self.cache_status,
@@ -2441,10 +2543,28 @@ class ReverbDecayView(QWidget):
         return "  ·  ".join(parts)
 
     def paintEvent(self, event: Any) -> None:
-        del event
         painter = QPainter(self)
+        if not self._follow_transport:
+            # An impulse decay belongs to a configured space, not to the song
+            # cursor. Rebuild only for new measurement/geometry/theme/font.
+            ratio = self.devicePixelRatioF()
+            key = (self.width(), self.height(), ratio, self.palette().cacheKey(), self.font().toString())
+            if self._plot_cache is None or key != self._plot_cache_key:
+                pixmap = QPixmap(max(1, int(self.width() * ratio)), max(1, int(self.height() * ratio)))
+                pixmap.setDevicePixelRatio(ratio)
+                cached = QPainter(pixmap)
+                self._paint_contents(cached)
+                cached.end()
+                self._plot_cache, self._plot_cache_key = pixmap, key
+            painter.drawPixmap(0, 0, self._plot_cache)
+            return
+        self._paint_contents(painter)
+
+    def _paint_contents(self, painter):
         painter.setRenderHint(QPainter.Antialiasing, True)
         base, text, grid, secondary = _drawing_colors(self)
+        base.setAlpha(255)
+        painter.fillRect(self.rect(), base)
         accent = QColor("#6546d7") if base.lightness() >= 142 else QColor("#a78dff")
         marker_color = QColor("#8a5a00") if base.lightness() >= 142 else QColor("#f0c15a")
         width = max(1, self.width())
@@ -2473,7 +2593,7 @@ class ReverbDecayView(QWidget):
         painter.drawText(QRectF(12.0, 28.0, detail_width, 18.0),
                          Qt.AlignLeft | Qt.AlignVCenter, status_text)
         detail_text = self.time_range_text
-        if self._key:
+        if self._key and self._follow_transport:
             detail_text += "  ·  key: " + (
                 self._key[:30] + "…" if len(self._key) > 31 else self._key)
         painter.setPen(QColor(text.red(), text.green(), text.blue(), 125))
@@ -2482,15 +2602,16 @@ class ReverbDecayView(QWidget):
         painter.drawText(QRectF(12.0, 46.0, detail_width, 17.0),
                          Qt.AlignLeft | Qt.AlignVCenter, detail_text)
 
-        rail = self.playback_rail_rect()
-        painter.setPen(QPen(QColor(text.red(), text.green(), text.blue(), 34), 1.0))
-        painter.drawLine(QPointF(rail.left(), rail.center().y()),
-                         QPointF(rail.right(), rail.center().y()))
-        painter.setPen(QPen(accent, 2.0))
-        painter.drawLine(QPointF(rail.left(), rail.center().y()),
-                         QPointF(self.playhead_x(), rail.center().y()))
-        _draw_playhead(painter, self.playhead_x(), rail.top() - 1.0,
-                       rail.bottom() + 1.0, base)
+        if self._follow_transport:
+            rail = self.playback_rail_rect()
+            painter.setPen(QPen(QColor(text.red(), text.green(), text.blue(), 34), 1.0))
+            painter.drawLine(QPointF(rail.left(), rail.center().y()),
+                             QPointF(rail.right(), rail.center().y()))
+            painter.setPen(QPen(accent, 2.0))
+            painter.drawLine(QPointF(rail.left(), rail.center().y()),
+                             QPointF(self.playhead_x(), rail.center().y()))
+            _draw_playhead(painter, self.playhead_x(), rail.top() - 1.0,
+                           rail.bottom() + 1.0, base)
 
         for index in range(6):
             db = -12.0 * index

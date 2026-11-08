@@ -19,9 +19,9 @@ sys.path.insert(0, str(APP / 'src'))
 sys.path.insert(0, str(APP / 'tests'))
 
 from PyQt5.QtCore import QEvent, QPoint, QPointF, Qt
-from PyQt5.QtGui import QMouseEvent
+from PyQt5.QtGui import QKeyEvent, QMouseEvent
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication, QWidget
+from PyQt5.QtWidgets import QApplication, QDialog, QLineEdit, QWidget
 
 import audio_mixdown_ui as ui
 from mixdown_realtime_player import PlaybackState, RealtimePreviewPlayer
@@ -133,7 +133,7 @@ class MixerRoutingTests(unittest.TestCase):
         deadline = time.perf_counter() + timeout
         while not predicate() and time.perf_counter() < deadline:
             QTest.qWait(5)
-        self.assertTrue(predicate())
+        self.assertTrue(predicate(), repr(self.player._service.commands))
 
     def commands(self, kind):
         return [row for row in self.player._service.commands if row[0] == kind]
@@ -280,6 +280,69 @@ class MixerRoutingTests(unittest.TestCase):
             time_seconds=[0,1],edc_db=[0,-48])
         self.emit_state(96000,state='paused',telemetry=telemetry)
         self.wait(lambda:len(d.reverb_decay.curve_points())==2)
+
+    def test_space_toggles_once_from_controls_and_does_not_repeat(self):
+        d = self.dialog
+        generation = self.open_session()
+        d.activateWindow()
+        d.player_loop_button.setFocus()
+        initial_loop = d.player_loop_button.isChecked()
+        pauses = len(self.commands('pause'))
+        QTest.keyClick(d.player_loop_button, Qt.Key_Space)
+        self.wait(lambda: len(self.commands('pause')) == pauses + 1)
+        self.assertFalse(d._preview_play_intent)
+        self.assertEqual(d.player_loop_button.isChecked(), initial_loop)
+        QApplication.sendEvent(d.player_loop_button,
+            QKeyEvent(QEvent.KeyPress, Qt.Key_Space, Qt.NoModifier, ' ', True, 1))
+        settle()
+        self.assertFalse(d._preview_play_intent)
+        self.assertEqual(len(self.commands('pause')), pauses + 1)
+        self.emit_state(96000, state='paused')
+        settle()
+        plays = len(self.commands('play'))
+        d.player_position.setFocus()
+        QTest.keyClick(d.player_position, Qt.Key_Space)
+        self.wait(lambda: len(self.commands('play')) == plays + 1)
+        self.assertTrue(d._preview_play_intent)
+        self.assertEqual(self.player._generation, generation)
+
+    def test_space_preserves_text_modal_and_other_page_input(self):
+        d = self.dialog
+        self.open_session()
+        d.activateWindow()
+        editor = d.fields['output']
+        editor.setFocus()
+        editor.setCursorPosition(len(editor.text()))
+        before = editor.text()
+        QTest.keyClick(editor, Qt.Key_Space)
+        self.assertEqual(editor.text(), before + ' ')
+        self.assertTrue(d._preview_play_intent)
+        d.compression.setFocus()
+        QTest.keyClick(d.compression, Qt.Key_Space)
+        self.assertTrue(d._preview_play_intent)
+        modal = QDialog(d)
+        modal.setModal(True)
+        field = QLineEdit(modal)
+        modal.show();field.setFocus();settle()
+        QTest.keyClick(field, Qt.Key_Space)
+        self.assertEqual(field.text(), ' ')
+        self.assertTrue(d._preview_play_intent)
+        modal.close();modal.deleteLater();settle()
+        other = QLineEdit()
+        other.show();other.setFocus();d.hide();settle()
+        QTest.keyClick(other, Qt.Key_Space)
+        self.assertEqual(other.text(), ' ')
+        self.assertTrue(d._preview_play_intent)
+        other.close();other.deleteLater()
+
+    def test_meter_updates_do_not_resolve_audio_files(self):
+        d = self.dialog
+        frame = dict(tracks=[dict(role='vocal', index=0, peak_dbfs=-6, rms_dbfs=-12)],
+                     bus=dict(peak_dbfs=-4, rms_dbfs=-10))
+        with patch.object(Path, 'resolve', side_effect=AssertionError('Filesystem access in meter refresh')):
+            for _ in range(20):
+                d._apply_live_meter_snapshot(frame)
+        self.assertIn('-4.0', d.bus_peak_value.text())
 
     def test_ab_buttons_update_same_session_and_wire_real_request_values(self):
         d = self.dialog

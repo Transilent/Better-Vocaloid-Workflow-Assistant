@@ -19,12 +19,12 @@ import uuid
 from PyQt5.QtCore import QEvent, QRectF, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import (QColor, QDesktopServices, QFontMetrics, QKeySequence,
                          QLinearGradient, QPainter, QPainterPath, QPen)
-from PyQt5.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
+from PyQt5.QtWidgets import (QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDialog,
                              QDial, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout,
                              QSpinBox, QHBoxLayout, QLabel, QLineEdit, QProgressBar,
                              QPushButton, QScrollArea, QShortcut, QSizePolicy,
                              QSlider, QStyle, QStyleOptionSlider, QTabWidget,
-                             QToolButton, QVBoxLayout, QWidget)
+                             QToolButton, QVBoxLayout, QWidget, QTextEdit, QPlainTextEdit)
 
 import audio_mixdown as _mixdown_backend
 import desktop_theme as _desktop_theme
@@ -40,7 +40,7 @@ from mixdown_contract import (
     project_eq_band,
     valid_sample_rate,
 )
-from mixdown_live_meters import GrHistoryView, MeterEnvelope, ReverbDecayView
+from mixdown_live_meters import AnalysisReadout, GrHistoryView, MeterEnvelope, ReverbDecayView
 from mixdown_realtime_player import MediaStatus, PlaybackState
 from mixdown_presets import catalog as preset_catalog, resolve_preset
 from mixer_state import normalize_eq_bands
@@ -1490,6 +1490,9 @@ class AudioMixdownDialog(QDialog):
         # the displayed A/B analysis must follow the source being heard.
         self._native_preview_player = None
         self._live_measurement_frame = None
+        self._latest_spectrum = None
+        self._live_sample_rate = None
+        self._last_readout_update = 0.0
         self._native_dll_path = None
         self._native_source_key = None
         self._native_requested_key = 'after'
@@ -2054,14 +2057,24 @@ class AudioMixdownDialog(QDialog):
         self.gr_layout.setSpacing(2)
         self.gr_head = QHBoxLayout()
         self.gr_head.addWidget(self.compression_enabled)
-        self.gr_summary = QLabel("GR p95 —")
+        self.gr_summary = label(_tr('分块 RMS 差估计'), 'muted')
+        self.gr_summary.setToolTip(_tr('由处理前后音频块的 RMS 差估计；歌声共享一个压缩总线。'))
         self.gr_head.addStretch(1)
         self.gr_head.addWidget(self.gr_summary)
         self.gr_layout.addLayout(self.gr_head)
         self.gr_controls = QHBoxLayout()
         self.gr_controls.addWidget(label(_tr('压缩强度')))
         self.gr_controls.addWidget(self.compression, 1)
+        self.compression.setMaximumWidth(150)
+        self.gr_controls.addStretch(1)
         self.gr_layout.addLayout(self.gr_controls)
+        self.gr_readout = AnalysisReadout('gr')
+        self.gr_readout.setObjectName('mixdownGrReadout')
+        self.gr_layout.addWidget(self.gr_readout)
+        self.gr_lane_selector = QComboBox()
+        self.gr_lane_selector.addItem(_tr('历史：人声压缩'), 'vocal:0')
+        self.gr_lane_selector.addItem(_tr('历史：总线限制'), 'bus')
+        self.gr_controls.addWidget(self.gr_lane_selector)
         self.edc_page = QWidget()
         self.edc_page.setObjectName("mixdownAnalysisEdcPage")
         self.edc_page.setAutoFillBackground(False)
@@ -2076,24 +2089,25 @@ class AudioMixdownDialog(QDialog):
         self.edc_space = QHBoxLayout()
         self.reverb_profile.setMinimumWidth(72)
         self.reverb_profile.setMaximumWidth(130)
-        self.reverb_predelay.setFixedWidth(74)
+        self.reverb_predelay.setFixedWidth(110)
         self.edc_space.addWidget(label(_tr('空间类型')))
         self.edc_space.addWidget(self.reverb_profile, 1)
         self.edc_space.addWidget(label(_tr('预延迟')))
         self.edc_space.addWidget(self.reverb_predelay)
         self.edc_layout.addLayout(self.edc_head)
         self.edc_layout.addLayout(self.edc_space)
-        self.reverb_live_values = label(_tr('发送 / 返回电平：等待播放'), 'muted')
+        self.reverb_live_values = AnalysisReadout('reverb')
         self.reverb_live_values.setObjectName('mixdownReverbLiveValues')
-        self.reverb_live_values.setWordWrap(True)
         self.edc_layout.addWidget(self.reverb_live_values)
         self.meter_feed = MeterEnvelope(self)
         self.meter_feed.changed.connect(self._apply_live_meter_snapshot)
-        self.gr_history = GrHistoryView(feed=self.meter_feed)
+        self.gr_history = GrHistoryView(feed=self.meter_feed, lane='vocal:0')
+        self.gr_lane_selector.currentIndexChanged.connect(
+            lambda: self.gr_history.set_lane(self.gr_lane_selector.currentData()))
         self.gr_history.setMinimumSize(0, 180)
         self.gr_history.setMaximumHeight(16777215)
         self.gr_layout.addWidget(self.gr_history, 1)
-        self.reverb_decay = ReverbDecayView(feed=self.meter_feed)
+        self.reverb_decay = ReverbDecayView(feed=self.meter_feed, follow_transport=False)
         self.reverb_decay.setMinimumSize(0, 180)
         self.reverb_decay.setMaximumHeight(16777215)
         self.reverb_decay_toggle = fold(
@@ -2838,29 +2852,25 @@ class AudioMixdownDialog(QDialog):
                     data.get('parameter_revision'))
         if identity != self._live_measurement_frame:
             self._live_measurement_frame = identity
-            self._sync_eq_sample_rate(data)
+            if data.get('sample_rate') != self._live_sample_rate:
+                self._sync_eq_sample_rate(data)
+                self._live_sample_rate = data.get('sample_rate')
             self.meter_feed.set_live_snapshot(data)
-            spectrum = data.get('spectrum')
-            if spectrum and spectrum.get('media_frame') is not None:
-                self.eq_curve.set_live_spectrum(spectrum)
-            else:
-                self.eq_curve.clear_live_spectrum()
+            self._latest_spectrum = data.get('spectrum')
+            if self.eq_curve.isVisible():
+                self._display_latest_spectrum()
         # Background IR measurements may arrive while paused at the same
         # media frame. They still own a fresh display update.
         compressor = (data.get('dynamics') or {}).get('compressor') or {}
         limiter = (data.get('dynamics') or {}).get('limiter') or {}
-        def db(value):
-            return '—' if value is None else f'{float(value):.1f}'
-        self.gr_summary.setText(_tr('压缩 GR') + ' ' + db(compressor.get('gr_db')) +
-                               ' dB · ' + _tr('限制 GR') + ' ' + db(limiter.get('gr_db')) + ' dB')
-        self.gr_summary.setToolTip(_tr('由对应处理前后音频块的 RMS 差估计；歌声共享同一个压缩总线。'))
         reverb = data.get('reverb') or {}
-        fraction = reverb.get('measured_wet_fraction')
-        wet = '—' if fraction is None else f'{float(fraction)*100:.1f}%'
-        self.reverb_live_values.setText(
-            _tr('发送 RMS') + ' ' + db(reverb.get('send_rms_dbfs')) + ' dBFS · ' +
-            _tr('返回 RMS') + ' ' + db(reverb.get('return_rms_dbfs')) + ' dBFS\n' +
-            _tr('湿声分量能量占比') + ' ' + wet)
+        now = time.monotonic()
+        if now - self._last_readout_update >= .1:
+            self._last_readout_update = now
+            self.gr_readout.set_values(compressor.get('gr_db'), limiter.get('gr_db'))
+            fraction = reverb.get('measured_wet_fraction')
+            self.reverb_live_values.set_values(reverb.get('send_rms_dbfs'), reverb.get('return_rms_dbfs'),
+                                               None if fraction is None else float(fraction) * 100)
         edc = reverb.get('kernel_edc') or {}
         if edc.get('available') and edc.get('measured'):
             edc_key = (edc.get('profile'), edc.get('predelay_ms'), edc.get('sample_rate'),
@@ -2868,15 +2878,27 @@ class AudioMixdownDialog(QDialog):
             if edc_key != getattr(self, '_shown_edc_key', None):
                 self.reverb_decay.set_report({'reverb_edc': edc}, merge=False)
                 self._shown_edc_key = edc_key
-            self.reverb_decay_help.setText(_tr('当前空间的真实单位脉冲衰减；发送与返回电平随歌曲变化。'))
+            help_text = _tr('当前空间的真实单位脉冲衰减；发送与返回电平随歌曲变化。')
         else:
-            self._shown_edc_key = None
-            self.reverb_decay.set_report(None)
-            self.reverb_decay_help.setText(_tr('脉冲衰减未测量；发送与返回电平来自当前音频。'))
+            if getattr(self, '_shown_edc_key', None) is not None or self.reverb_decay.has_data:
+                self._shown_edc_key = None
+                self.reverb_decay.set_report(None)
+            help_text = _tr('脉冲衰减未测量；发送与返回电平来自当前音频。')
+        if self.reverb_decay_help.text() != help_text:
+            self.reverb_decay_help.setText(help_text)
         native = snapshot.get('native') or {}
-        self.audition_diagnostics.setText(
+        diagnostic = (
             _tr('连续试听') + f" · {float(data['sample_rate'])/1000:g} kHz · " +
             _tr('欠载') + f" {int(native.get('underrun_frames', 0))}")
+        if self.audition_diagnostics.text() != diagnostic:
+            self.audition_diagnostics.setText(diagnostic)
+
+    def _display_latest_spectrum(self):
+        spectrum = self._latest_spectrum
+        if spectrum and spectrum.get('media_frame') is not None:
+            self.eq_curve.set_live_spectrum(spectrum)
+        else:
+            self.eq_curve.clear_live_spectrum()
 
     def _native_preview_error(self, message):
         self._preview_play_intent = self._preview_autoplay = False
@@ -2903,6 +2925,8 @@ class AudioMixdownDialog(QDialog):
 
     def _player_source_changed(self, _generation):
         self._live_measurement_frame = None
+        self._latest_spectrum = None
+        self._last_readout_update = 0.0
         self.eq_curve.clear_spectrum_envelope()
         self.meter_feed.clear()
 
@@ -2929,6 +2953,35 @@ class AudioMixdownDialog(QDialog):
         self.preview_before_button.setToolTip(_tr('快捷键 Ctrl+Shift+A：切换到处理前'))
         self.preview_after_button.setToolTip(_tr('快捷键 Ctrl+Shift+B：切换到处理后'))
         self.player_loop_button.setToolTip(_tr('快捷键 Ctrl+Shift+L：切换循环'))
+        self.player_toggle_button.setToolTip(_tr('空格：播放 / 暂停；输入文字时不触发'))
+        QApplication.instance().installEventFilter(self)
+
+    def _space_transport_target(self, watched):
+        if not isinstance(watched, QWidget) or not self.isVisible() or self.window().isMinimized():
+            return False
+        if watched is not self and not self.isAncestorOf(watched):
+            return False
+        app = QApplication.instance()
+        modal = app.activeModalWidget()
+        if app.activePopupWidget() is not None or (modal is not None and modal is not self.window()):
+            return False
+        focus = app.focusWidget()
+        target = focus if focus is not None and (focus is self or self.isAncestorOf(focus)) else watched
+        while target is not None and target is not self:
+            if isinstance(target, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox, QComboBox)):
+                return False
+            target = target.parentWidget()
+        return self.player_toggle_button.isEnabled()
+
+    def eventFilter(self, watched, event):
+        kind = event.type()
+        if kind in (QEvent.ShortcutOverride, QEvent.KeyPress, QEvent.KeyRelease):
+            if event.key() == Qt.Key_Space and event.modifiers() == Qt.NoModifier and self._space_transport_target(watched):
+                if kind == QEvent.KeyPress and not event.isAutoRepeat():
+                    self.toggle_preview_playback()
+                event.accept()
+                return True
+        return super().eventFilter(watched, event)
     def _shortcut_select_analysis_tab(self, index):
         if self.analysis_tabs.isVisible():
             self.analysis_tabs.setCurrentIndex(index)
@@ -3400,6 +3453,8 @@ class AudioMixdownDialog(QDialog):
             policy = QSizePolicy.Expanding if page_index == index else QSizePolicy.Ignored
             page.setSizePolicy(policy, policy)
         self.analysis_tabs.updateGeometry()
+        if index == 0 and self._latest_spectrum is not None:
+            self._display_latest_spectrum()
 
     def _expand_curve_workspace(self, checked):
         self.workspace.set_curve_expanded(checked)
@@ -4119,7 +4174,10 @@ class AudioMixdownDialog(QDialog):
     def _apply_live_meter_snapshot(self, snapshot):
         if not isinstance(snapshot, dict):
             return
-        vocal_map = {index: track for index, track in enumerate(self._filled_vocal_tracks())}
+        # These slots already follow the request's nonempty-track order. Never
+        # resolve/stat audio paths in a 30Hz GUI callback.
+        vocal_map = dict(enumerate(track for track in self.active_vocal_tracks()
+                                   if track['path'].text().strip().strip('"')))
         values = []
         for row in snapshot.get('tracks') or []:
             if not isinstance(row, dict):
@@ -4161,8 +4219,10 @@ class AudioMixdownDialog(QDialog):
             self.meter_feed.clear()
         if hasattr(self, 'reverb_decay'):
             self.reverb_decay.set_report(None)
-        self.gr_summary.setText(_tr('压缩 GR — · 限制 GR —'))
-        self.reverb_live_values.setText(_tr('发送 / 返回电平：等待播放'))
+        self.gr_readout.clear()
+        self.reverb_live_values.clear()
+        self._latest_spectrum = None
+        self._last_readout_update = 0.0
         if hasattr(self, '_loudness_summary'):
             self._loudness_summary.setText(_tr('实测电平：等待播放'))
 
