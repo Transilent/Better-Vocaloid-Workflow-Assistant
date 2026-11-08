@@ -8,7 +8,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 import numpy as np
-from mixdown_realtime_session import RealtimeAuditionSession, RealtimeSessionError
+from mixdown_realtime_session import RealtimeAuditionSession, RealtimeSessionError, _copy_state
 
 
 class Renderer:
@@ -111,6 +111,17 @@ def wait(session, predicate, seconds=3):
 
 
 class SessionTests(unittest.TestCase):
+    def test_telemetry_copy_is_independent_for_nested_state_and_numeric_history(self):
+        state = {'native': {'clock': {'position': 9}}, 'last_seek': {'frame': 3},
+                 'render_ms': [.4] * 4096}
+        snapshot = _copy_state(state)
+        snapshot['native']['clock']['position'] = 12
+        snapshot['last_seek']['frame'] = 6
+        snapshot['render_ms'][0] = 8
+        self.assertEqual(state['native']['clock']['position'], 9)
+        self.assertEqual(state['last_seek']['frame'], 3)
+        self.assertEqual(state['render_ms'][0], .4)
+
     def test_parameter_validation_does_not_starve_the_producer(self):
         entered = threading.Event()
         proceed = threading.Event()

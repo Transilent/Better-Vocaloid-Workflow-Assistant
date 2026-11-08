@@ -2024,6 +2024,8 @@
     "tests/test_mixdown_realtime_service.py",
     "tests/test_mixdown_realtime_player.py",
     "tests/test_mixdown_realtime_ui.py",
-    "components/miniaudio-LICENSE.txt"
+    "components/miniaudio-LICENSE.txt",
+    "src/mixdown_workspace.py",
+    "tests/test_mixdown_workspace.py"
   ]
 }

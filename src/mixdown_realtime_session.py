@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections import deque
 import copy
+import os
 import threading
 import time
 from typing import Any
@@ -16,6 +17,14 @@ from audio_mixdown import PEAK_CEILING
 
 class RealtimeSessionError(RuntimeError):
     pass
+
+
+def _copy_state(state):
+    """Copy mutable telemetry without recursively visiting thousands of floats."""
+    result = copy.deepcopy({key: value for key, value in state.items() if key != 'render_ms'})
+    if 'render_ms' in state:
+        result['render_ms'] = list(state['render_ms'])
+    return result
 
 
 class RealtimeAuditionSession:
@@ -139,11 +148,11 @@ class RealtimeAuditionSession:
 
     def snapshot(self):
         with self._lock:
-            return copy.deepcopy(self._snapshot)
+            return _copy_state(self._snapshot)
 
     def _publish(self, state):
         with self._lock:
-            self._snapshot = copy.deepcopy(state)
+            self._snapshot = _copy_state(state)
 
     def close(self, timeout=5.0):
         if self._done.is_set():
@@ -344,7 +353,15 @@ class RealtimeAuditionSession:
                              render_ms=list(render_times))
                 self._publish(state)
                 if not wrote or queued >= self.target_queue_frames:
-                    self._wake.wait(0.002)
+                    if os.name == 'nt':
+                        # Event.wait(2ms) rounds to ~15.6ms on the supported
+                        # Windows runtime. Its native time.sleep uses a finer
+                        # timer; keep the bounded queue supplied without a
+                        # persistent system timer-resolution change.
+                        if not self._wake.is_set():
+                            time.sleep(0.002)
+                    else:
+                        self._wake.wait(0.002)
         except Exception as error:
             state.update(state='failed', error='%s: %s' % (type(error).__name__, error))
         finally:

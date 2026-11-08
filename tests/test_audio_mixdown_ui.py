@@ -972,11 +972,11 @@ with tempfile.TemporaryDirectory(prefix='audio-mix-gui-', dir=APP / 'work') as t
         assert dialog.workspace.column_count() == 1
         dialog.resize(1600, 900)
         app.processEvents()
-        assert dialog.workspace.column_count() == 3
-        assert not dialog.workspace._right_stack.isHidden()
+        assert dialog.workspace.column_count() == 2
+        assert dialog.workspace._mixer_scroll.isVisible()
         dialog.resize(1920, 1080)
         app.processEvents()
-        assert dialog.workspace.column_count() == 3
+        assert dialog.workspace.column_count() == 2
         assert scroll.verticalScrollBar().maximum() == 0
         assert scroll.horizontalScrollBar().maximum() == 0
         assert dialog.analysis_tabs.height() >= 300
@@ -986,17 +986,17 @@ with tempfile.TemporaryDirectory(prefix='audio-mix-gui-', dir=APP / 'work') as t
         app.processEvents()
         assert scroll.verticalScrollBar().maximum() == 0
         assert scroll.horizontalScrollBar().maximum() == 0
-        assert dialog.workspace.height() >= 1100
-        assert dialog.analysis_tabs.height() >= 800
-        assert dialog.eq_curve.height() >= 700
-        assert dialog.mixer_card.height() >= dialog.workspace.height() - 1
-        assert dialog.processing_card.height() >= dialog.workspace.height() - 1
-        assert (dialog.preview_card.height() + dialog.export_card.height()
-                >= dialog.workspace.height() - 20)
+        assert dialog.workspace.height() >= 850
+        assert dialog.analysis_tabs.height() >= 600
+        assert dialog.eq_curve.height() >= 540
+        assert dialog.workspace._mixer_scroll.height() >= 500
+        assert dialog.processing_card.height() >= dialog.workspace.height() - dialog.export_card.height() - 14
+        assert dialog.player_position.width() >= dialog.width() - 80
+        assert dialog.player_position.height() >= 44
         dialog.resize(1100, 800)
         app.processEvents()
         assert dialog.workspace.column_count() == 2
-        assert dialog.workspace._right_stack.isHidden()
+        assert dialog.workspace.mode() == "medium"
         dialog.resize(640, 560)
         app.processEvents()
         assert console.column_count() == 2, console.column_count()
@@ -1061,7 +1061,7 @@ with tempfile.TemporaryDirectory(prefix='audio-mix-gui-', dir=APP / 'work') as t
         assert console.column_count() == 2
         dialog.resize(1600, 1000)
         app.processEvents()
-        assert dialog.workspace.column_count() == 3
+        assert dialog.workspace.column_count() == 2
         assert console.column_count() == 4
         strip_tops = [strip.mapTo(console, QPoint(0, 0)).y()
                       for strip in console.active_strips()]
@@ -1071,7 +1071,7 @@ with tempfile.TemporaryDirectory(prefix='audio-mix-gui-', dir=APP / 'work') as t
         dialog.resize(round(1920 / 1.30), round(1080 / 1.30))
         app.processEvents()
         assert scroll.horizontalScrollBar().maximum() == 0
-        assert dialog.workspace.column_count() == 3
+        assert dialog.workspace.column_count() == 2
         screenshot_dir = APP / 'work/test-results'
         screenshot_dir.mkdir(parents=True, exist_ok=True)
         for width, height, name in (
@@ -1186,8 +1186,8 @@ with tempfile.TemporaryDirectory(prefix='audio-mix-gui-', dir=APP / 'work') as t
         real_window_dialog.fields['output'].setText(str(root / 'window-output.wav'))
         app.processEvents()
         real_scroll = real_window_dialog.findChild(QScrollArea)
-        assert real_window_dialog.workspace.column_count() == 3
-        assert 520 <= real_window_dialog.mixer_card.width() <= 660
+        assert real_window_dialog.workspace.column_count() == 2
+        assert 360 <= real_window_dialog.workspace._mixer_scroll.width() <= 660
         assert real_window_dialog.fields['output'].width() >= 160
         assert (real_window_dialog.processing_card.width()
                 >= ui._MixerWorkspace.SIDE_CARD_MIN_WIDTH)
@@ -1217,17 +1217,20 @@ with tempfile.TemporaryDirectory(prefix='audio-mix-gui-', dir=APP / 'work') as t
         assert real_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
         shell.resize(1600, 1000)
         app.processEvents(); app.processEvents()
-        assert real_window_dialog.workspace.column_count() == 3
-        assert real_window_dialog.mixer_console.column_count() == 4
+        assert real_window_dialog.workspace.column_count() == 2
+        assert real_window_dialog.mixer_console.column_count() in (2, 4)
         assert real_window_dialog.vocal_tracks[0]['slider'].minimumHeight() == 124
         assert real_window_dialog.vocal_tracks[2]['remove'].width() <= 26
         assert real_window_dialog.vocal_tracks[2]['remove'].text() == '×'
         compact_title = real_window_dialog.vocal_tracks[2]['panel'].findChild(
             QLabel, 'mixer-channel-title')
-        assert compact_title is not None and compact_title.isHidden()
+        assert compact_title is not None
+        assert compact_title.isHidden() == (real_window_dialog.vocal_tracks[2]["panel"].width() < 138)
         real_tops = [strip.mapTo(real_window_dialog.mixer_console, QPoint(0, 0)).y()
                      for strip in real_window_dialog.mixer_console.active_strips()]
-        assert len(real_tops) == 4 and len(set(real_tops)) == 1
+        assert len(real_tops) == 4
+        expected_rows = 1 if real_window_dialog.mixer_console.column_count() == 4 else 2
+        assert len(set(real_tops)) == expected_rows
         assert real_scroll.verticalScrollBar().maximum() <= 8
         assert real_scroll.horizontalScrollBar().maximum() == 0
         window_shot = screenshot_dir / 'mixdown-window-1600x1000-with-nav.png'

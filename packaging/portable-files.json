@@ -860,6 +860,10 @@
     {
       "file": "docs/RealtimeAudition.zh-CN.md",
       "source": "docs/RealtimeAudition.zh-CN.md"
+    },
+    {
+      "file": "mixdown_workspace.py",
+      "source": "src/mixdown_workspace.py"
     }
   ]
 }

@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
                              QSpinBox, QHBoxLayout, QLabel, QLineEdit, QProgressBar,
                              QPushButton, QScrollArea, QShortcut, QSizePolicy,
                              QSlider, QStyle, QStyleOptionSlider, QTabWidget,
-                             QVBoxLayout, QWidget)
+                             QToolButton, QVBoxLayout, QWidget)
 
 QMediaContent = None
 QMediaPlayer = None
@@ -37,6 +37,7 @@ from mixdown_control_panel import (EqBandStripControls, PerTrackSendControls,
 from mixdown_audition_service import (AuditionServiceError, MixdownAuditionService,
                                       ServiceStartError, ServiceUnavailable)
 from mixdown_eq_curve import EQCurveView, default_bands
+from mixdown_workspace import MixerWorkspace as _MixerWorkspace
 from mixdown_contract import (
     DEFAULT_SAMPLE_RATE,
     GAIN_REDUCTION_SCOPE,
@@ -871,6 +872,7 @@ class _ResponsiveMixerConsole(QWidget):
         self._outer = outer
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+        outer.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self._rack = QWidget()
         self._rack.setObjectName('mixer-rack')
         self._rack.setMinimumWidth(0)
@@ -927,6 +929,9 @@ class _ResponsiveMixerConsole(QWidget):
     def column_count(self):
         return self._columns
 
+    def minimumSizeHint(self):
+        return QSize(0, super().minimumSizeHint().height())
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.reflow()
@@ -944,9 +949,9 @@ class _ResponsiveMixerConsole(QWidget):
                 title.setVisible(strip_width >= 138)
         self._rack.setMinimumWidth(target)
         self._rack.setMaximumWidth(target)
-        extra = max(0, self.width() - target)
-        left_pad = extra // 2
-        self._outer.setContentsMargins(left_pad, 0, extra - left_pad, 0)
+        # Center via alignment. Padding based on the previous width becomes
+        # part of minimumSizeHint and prevents a scroll pane from shrinking.
+        self._outer.setContentsMargins(0, 0, 0, 0)
         self._outer.invalidate()
 
     def reflow(self, force=False):
@@ -982,7 +987,7 @@ class _ResponsiveMixerConsole(QWidget):
 
 
 class _ResponsiveEQCurveView(EQCurveView):
-    """EQ editor with a width that fits the compact three-column dashboard."""
+    """EQ editor that fits the full-width focus view and narrow windows."""
 
     COMPACT_MINIMUM_WIDTH = 264
 
@@ -1047,165 +1052,6 @@ class _ResponsiveEffectGrid(QWidget):
             self.grid.setColumnStretch(column, 1 if column < columns else 0)
         self.grid.invalidate()
         self.updateGeometry()
-
-    def minimumSizeHint(self):
-        return QSize(0, self.grid.minimumSize().height())
-
-
-class _MixerWorkspace(QWidget):
-    """Card dashboard: three columns on full screen, 2x2 medium, stack narrow."""
-
-    WIDE_BREAKPOINT = 1200
-    MEDIUM_BREAKPOINT = 980
-    SIDE_CARD_MIN_WIDTH = 320
-
-    def __init__(self, mixer, processing, preview, export, parent=None, chrome=()):
-        super().__init__(parent)
-        self.setObjectName('mixer-workspace')
-        self._chrome = tuple(chrome)
-        self.setMinimumWidth(0)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.cards = (mixer, processing, preview, export)
-        self._descriptions = []
-        for card in self.cards:
-            card.setMinimumWidth(0)
-            card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            item = card.layout().itemAt(1) if card.layout() else None
-            description = item.widget() if item else None
-            if description is not None and description.property('role') == 'muted':
-                description.setToolTip(description.text())
-                self._descriptions.append(description)
-        self.grid = QGridLayout(self)
-        self.grid.setContentsMargins(0, 0, 0, 0)
-        self.grid.setHorizontalSpacing(14)
-        self.grid.setVerticalSpacing(14)
-        self._right_stack = QWidget()
-        self._right_stack.setObjectName('mixer-right-stack')
-        self._right_stack.setMinimumWidth(0)
-        self._right_stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self._right_layout = QVBoxLayout(self._right_stack)
-        self._right_layout.setContentsMargins(0, 0, 0, 0)
-        self._right_layout.setSpacing(10)
-        self._columns = 0
-        self.rack_console = None
-        self.reflow(force=True)
-
-    def column_count(self):
-        return self._columns
-
-    def mode(self):
-        return {3: 'wide', 2: 'medium', 1: 'stacked'}.get(self._columns, 'stacked')
-
-    def set_rack_console(self, console):
-        self.rack_console = console
-        self._sync_rack_console()
-
-    def _sync_rack_console(self):
-        if self.rack_console is not None:
-            self.rack_console.set_wide_rack(self._columns == 3)
-
-    def reflow(self, force=False):
-        width = self.width()
-        columns = 3 if width >= self.WIDE_BREAKPOINT else (
-            2 if width >= self.MEDIUM_BREAKPOINT else 1)
-        if not force and columns == self._columns:
-            if columns == 3:
-                self.cards[1].setMinimumWidth(self.SIDE_CARD_MIN_WIDTH)
-                self._right_stack.setMinimumWidth(self.SIDE_CARD_MIN_WIDTH)
-                available = max(0, self.width() - 28)
-                self.cards[0].setMaximumWidth(max(1, available * 7 // 15))
-                side_width = max(self.SIDE_CARD_MIN_WIDTH, available * 4 // 15)
-                self.cards[1].setMaximumWidth(side_width)
-                self._right_stack.setMaximumWidth(side_width)
-            else:
-                self.cards[1].setMinimumWidth(0)
-                self._right_stack.setMinimumWidth(0)
-                for card in self.cards:
-                    card.setMaximumWidth(16777215)
-                self._right_stack.setMaximumWidth(16777215)
-            body_layout = getattr(self, '_body_layout', None)
-            if body_layout is not None:
-                body_layout.setContentsMargins(*(12, 10, 12, 10) if columns == 3 else (26, 22, 26, 24))
-                body_layout.setSpacing(8 if columns == 3 else 14)
-            self._sync_rack_console()
-            return
-        self._columns = columns
-        while self._right_layout.count():
-            self._right_layout.takeAt(0)
-        for card in self.cards:
-            self.grid.removeWidget(card)
-        self.grid.removeWidget(self._right_stack)
-        while self.grid.count():
-            self.grid.takeAt(0)
-        compact = columns == 3
-        if compact:
-            available = max(0, self.width() - 28)
-            self.cards[0].setMaximumWidth(max(1, available * 7 // 15))
-            side_width = max(self.SIDE_CARD_MIN_WIDTH, available * 4 // 15)
-            self.cards[1].setMaximumWidth(side_width)
-            self._right_stack.setMaximumWidth(side_width)
-        else:
-            for card in self.cards:
-                card.setMaximumWidth(16777215)
-            self._right_stack.setMaximumWidth(16777215)
-        for card in self.cards:
-            card.setSizePolicy(
-                QSizePolicy.Expanding,
-                QSizePolicy.Expanding if compact else QSizePolicy.Preferred)
-        self._right_stack.setSizePolicy(
-            QSizePolicy.Expanding,
-            QSizePolicy.Expanding if compact else QSizePolicy.Preferred)
-        body_layout = getattr(self, '_body_layout', None)
-        if body_layout is not None:
-            body_layout.setContentsMargins(*(12, 10, 12, 10) if compact else (26, 22, 26, 24))
-            body_layout.setSpacing(8 if compact else 14)
-        self.cards[1].setMinimumWidth(self.SIDE_CARD_MIN_WIDTH if compact else 0)
-        self._right_stack.setMinimumWidth(self.SIDE_CARD_MIN_WIDTH if compact else 0)
-        for card in self.cards:
-            body = card.layout()
-            body.setContentsMargins(16, 12, 16, 12) if compact else body.setContentsMargins(24, 22, 24, 22)
-            body.setSpacing(8 if compact else 15)
-        for description in self._descriptions:
-            description.setVisible(not compact)
-        for widget in self._chrome:
-            widget.setVisible(not compact)
-        for column in range(3):
-            self.grid.setColumnStretch(column, 0)
-        for row in range(4):
-            self.grid.setRowStretch(row, 0)
-
-        mixer, processing, preview, export = self.cards
-        if columns == 3:
-            self._right_stack.show()
-            self._right_layout.addWidget(preview, 1)
-            self._right_layout.addWidget(export, 1)
-            self.grid.addWidget(mixer, 0, 0)
-            self.grid.addWidget(processing, 0, 1)
-            self.grid.addWidget(self._right_stack, 0, 2)
-            self.grid.setColumnStretch(0, 7)
-            self.grid.setColumnStretch(1, 4)
-            self.grid.setColumnStretch(2, 4)
-            self.grid.setRowStretch(0, 1)
-        elif columns == 2:
-            self._right_stack.hide()
-            self.grid.addWidget(mixer, 0, 0)
-            self.grid.addWidget(processing, 0, 1)
-            self.grid.addWidget(preview, 1, 0)
-            self.grid.addWidget(export, 1, 1)
-            self.grid.setColumnStretch(0, 6)
-            self.grid.setColumnStretch(1, 5)
-        else:
-            self._right_stack.hide()
-            for row, card in enumerate(self.cards):
-                self.grid.addWidget(card, row, 0)
-            self.grid.setColumnStretch(0, 1)
-        self._sync_rack_console()
-        self.grid.invalidate()
-        self.updateGeometry()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.reflow()
 
     def minimumSizeHint(self):
         return QSize(0, self.grid.minimumSize().height())
@@ -2013,6 +1859,7 @@ class AudioMixdownDialog(QDialog):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         scroll = QScrollArea()
+        self._main_scroll = scroll
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
         content = QWidget()
@@ -2398,7 +2245,7 @@ class AudioMixdownDialog(QDialog):
         self._mix_summary = label(_tr('1 路歌声 · 1 路伴奏 · 共享人声处理'), 'muted')
         console_footer.addWidget(self._mix_summary)
         mixer_body.addLayout(console_footer)
-        self._loudness_summary = label(_tr('峰值对比：等待实时分段'), 'muted')
+        self._loudness_summary = label(_tr('峰值对比：等待音频数据'), 'muted')
         self._loudness_summary.setObjectName('mixdownLoudnessSummary')
         self._loudness_summary.setAccessibleName(_tr('各轨峰值电平对比'))
         self._loudness_summary.setStyleSheet('font-size: 12px; font-weight: 600;')
@@ -2425,6 +2272,7 @@ class AudioMixdownDialog(QDialog):
         bus_title.setStyleSheet('font-size: 11px; font-weight: 700; letter-spacing: 1px;')
         bus_layout.addWidget(bus_title)
         self.bus_meter = _LevelMeter(Qt.Horizontal)
+        self.bus_meter.setMinimumWidth(96)
         self.bus_meter.setObjectName('mixdownBusMeter')
         self.bus_meter.setAccessibleName(_tr('混音总线峰值表'))
         bus_layout.addWidget(self.bus_meter, 1)
@@ -2466,7 +2314,7 @@ class AudioMixdownDialog(QDialog):
         self.reverb_predelay.setSuffix(' ms')
         self.reverb_predelay.setValue(0)
         self.eq_curve = _ResponsiveEQCurveView()
-        self.eq_curve.setMinimumHeight(200)
+        self.eq_curve.setMinimumHeight(320)
         self.eq_curve.setMaximumHeight(16777215)
         self.eq_curve.set_bands(self._eq_bands)
         self.eq_curve.setAccessibleName(_tr('实时四段 EQ 曲线'))
@@ -2591,7 +2439,17 @@ class AudioMixdownDialog(QDialog):
         self.analysis_tabs.addTab(self.eq_page, _tr("EQ"))
         self.analysis_tabs.addTab(self.gr_page, _tr("GR"))
         self.analysis_tabs.addTab(self.edc_page, _tr("混响空间"))
+        self.analysis_tabs.currentChanged.connect(self._analysis_page_changed)
+        self._analysis_page_changed(0)
         processing_body.addWidget(self.analysis_tabs, 1)
+        self.expand_curve_button = QToolButton()
+        self.expand_curve_button.setText(_tr('放大曲线'))
+        self.expand_curve_button.setObjectName('mixdownExpandCurve')
+        self.expand_curve_button.setAccessibleName(_tr('放大曲线编辑区域'))
+        self.expand_curve_button.setCheckable(True)
+        self.expand_curve_button.setMinimumHeight(36)
+        self.expand_curve_button.toggled.connect(self._expand_curve_workspace)
+        processing_body.itemAt(0).layout().addWidget(self.expand_curve_button)
         self.eq_precision_toggle = fold(
             _tr('四段精确参数'), self.eq_band_controls, self.eq_page_layout, expanded=False)
         self.eq_precision_toggle.setAccessibleName(_tr('展开四段精确参数'))
@@ -2615,13 +2473,20 @@ class AudioMixdownDialog(QDialog):
         self.advanced_toggle.setObjectName(CONTROL_NAMES['advanced_toggle'])
         self.advanced_toggle.setAccessibleName(_tr('展开高级处理值'))
         self.advanced_toggle.setProperty('role', 'muted')
+        eq_tools = FlowLayout(spacing=12)
+        for toggle in (self.eq_precision_toggle, self.advanced_toggle):
+            self.eq_page_layout.removeWidget(toggle)
+            eq_tools.addWidget(toggle)
+        self.eq_page_layout.addLayout(eq_tools)
         self.eq_precision_toggle.toggled.connect(self._analysis_fold_changed)
         self.advanced_toggle.toggled.connect(self._analysis_fold_changed)
 
-        preview_card, preview_body = card(
-            _tr('实时 A/B 试听'),
-            _tr('参数变化后自动更新当前分段；按播放即可听，不需要单独渲染。'),
-            '3')
+        preview_card = QWidget()
+        preview_card.setObjectName('card')
+        preview_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        preview_body = QVBoxLayout(preview_card)
+        preview_body.setContentsMargins(14, 8, 14, 8)
+        preview_body.setSpacing(4)
         preview_range_content = QWidget()
         preview_range_content.setObjectName('mixdownPreviewRangePanel')
         preview_range = QGridLayout(preview_range_content)
@@ -2638,7 +2503,7 @@ class AudioMixdownDialog(QDialog):
         self.preview_start.setValue(0.0)
         self.preview_duration = QDoubleSpinBox()
         self.preview_duration.setObjectName(CONTROL_NAMES['preview_duration'])
-        self.preview_duration.setAccessibleName(_tr('自动分段时长秒数'))
+        self.preview_duration.setAccessibleName(_tr('试听范围时长秒数'))
         self.preview_duration.setRange(2.0, 30.0)
         self.preview_duration.setDecimals(1)
         self.preview_duration.setSingleStep(1.0)
@@ -2646,10 +2511,10 @@ class AudioMixdownDialog(QDialog):
         self.preview_duration.setValue(12.0)
         preview_range.addWidget(label(_tr('试听起点')), 0, 0)
         preview_range.addWidget(self.preview_start, 0, 1)
-        preview_range.addWidget(label(_tr('分段时长')), 0, 2)
+        preview_range.addWidget(label(_tr('范围时长')), 0, 2)
         preview_range.addWidget(self.preview_duration, 0, 3)
         preview_range.addWidget(label(
-            _tr('默认从开头试听；自动分段最长 30 秒。打开循环可重复当前片段。'), 'muted'), 1, 0, 1, 4)
+            _tr('打开循环后重复此范围；顺序播放时可直接在进度条定位。'), 'muted'), 1, 0, 1, 4)
         self.preview_range_toggle = fold(
             _tr('试听范围'), preview_range_content, preview_body, expanded=False)
         self.preview_range_toggle.setObjectName(CONTROL_NAMES['preview_range_toggle'])
@@ -2658,7 +2523,7 @@ class AudioMixdownDialog(QDialog):
 
         live_head = QHBoxLayout()
         live_head.setSpacing(8)
-        self.preview_live_badge = label(_tr('自动预听'), 'success')
+        self.preview_live_badge = label(_tr('实时试听'), 'success')
         self.preview_live_badge.setStyleSheet('font-weight: 650;')
         live_head.addWidget(self.preview_live_badge)
         self.audition_diagnostics = _ElidedLabel(_tr('实时试听 · 等待组件'))
@@ -2671,14 +2536,13 @@ class AudioMixdownDialog(QDialog):
         self.preview_report.setObjectName(CONTROL_NAMES['preview_status'])
         self.preview_report.setAccessibleName(_tr('实时试听状态'))
         preview_body.addWidget(self.preview_report)
+        self.preview_report.hide()
 
         player_panel = QWidget()
         player_panel.setObjectName('mixer-player')
         player_layout = QVBoxLayout(player_panel)
         player_layout.setContentsMargins(12, 10, 12, 10)
         player_layout.setSpacing(8)
-        ab_row = QHBoxLayout()
-        ab_row.setSpacing(8)
         self.preview_before_button = button(
             _tr('A  处理前'), lambda: self.play_preview('before'))
         self.preview_before_button.setObjectName(CONTROL_NAMES['preview_before'])
@@ -2691,35 +2555,35 @@ class AudioMixdownDialog(QDialog):
         self.preview_after_button.setCheckable(True)
         for control in (self.preview_before_button, self.preview_after_button):
             control.setProperty('role', 'step-nav')
-            control.setMinimumWidth(132)
-        ab_row.addWidget(self.preview_before_button)
-        ab_row.addWidget(self.preview_after_button)
-        ab_row.addStretch(1)
-        player_layout.addLayout(ab_row)
-
-        transport = QHBoxLayout()
-        transport.setSpacing(8)
+            control.setMinimumWidth(108)
+        transport = FlowLayout(spacing=8)
         self.player_toggle_button = QPushButton(_tr('播放'))
         self.player_toggle_button.setObjectName('mixdownPlayerToggle')
         self.player_toggle_button.setAccessibleName(_tr('播放试听'))
-        self.player_toggle_button.setFixedSize(54, 38)
+        self.player_toggle_button.setMinimumSize(64, 40)
         self.player_toggle_button.clicked.connect(self.toggle_preview_playback)
         self.continuous_preview = QCheckBox(_tr('连续试听'))
         self.continuous_preview.setObjectName('mixdownContinuousPreview')
         self.continuous_preview.setAccessibleName(_tr('使用连续试听'))
-        self.continuous_preview.setToolTip(_tr('持续处理整曲；切换试听方式时会停止播放。'))
+        self.continuous_preview.setToolTip(_tr('默认使用连续试听；取消后使用兼容试听。切换时停止播放。'))
         self.continuous_preview.toggled.connect(self._switch_continuous_preview)
         self.player_loop_button = QPushButton(_tr('循环'))
         self.player_loop_button.setObjectName(CONTROL_NAMES['player_loop'])
-        self.player_loop_button.setAccessibleName(_tr('循环当前试听分段'))
-        self.player_loop_button.setToolTip(_tr('循环当前试听分段'))
+        self.player_loop_button.setAccessibleName(_tr('循环当前试听范围'))
+        self.player_loop_button.setToolTip(_tr('循环当前试听范围'))
         self.player_loop_button.setCheckable(True)
-        self.player_loop_button.setFixedSize(48, 38)
+        self.player_loop_button.setMinimumSize(64, 40)
         self.player_loop_button.toggled.connect(self._set_preview_loop)
         self.player_position = _SeekSlider(Qt.Horizontal)
         self.player_position.setObjectName('mixdownPlayerPosition')
         self.player_position.setAccessibleName(_tr('试听播放位置'))
         self.player_position.setRange(0, 0)
+        self.player_position.setMinimumHeight(44)
+        self.player_position.setStyleSheet(
+            'QSlider#mixdownPlayerPosition:horizontal { min-height: 48px; }'
+            'QSlider#mixdownPlayerPosition::groove:horizontal { height: 8px; }'
+            'QSlider#mixdownPlayerPosition::handle:horizontal { width: 22px; }')
+        self.player_position.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.player_position.sliderPressed.connect(self._begin_player_seek)
         self.player_position.sliderMoved.connect(self._seek_player_preview)
         self.player_position.sliderReleased.connect(self._finish_player_seek)
@@ -2730,11 +2594,15 @@ class AudioMixdownDialog(QDialog):
         self.player_time.setMinimumWidth(104)
         self.player_time.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         transport.addWidget(self.player_toggle_button)
-        transport.addWidget(self.continuous_preview)
         transport.addWidget(self.player_loop_button)
-        transport.addWidget(self.player_position, 1)
+        transport.addWidget(self.preview_before_button)
+        transport.addWidget(self.preview_after_button)
         transport.addWidget(self.player_time)
+        transport.addWidget(self.continuous_preview)
+        preview_body.removeWidget(self.preview_range_toggle)
+        transport.addWidget(self.preview_range_toggle)
         player_layout.addLayout(transport)
+        player_layout.addWidget(self.player_position)
 
         state_row = QHBoxLayout()
         state_row.setSpacing(10)
@@ -2742,6 +2610,8 @@ class AudioMixdownDialog(QDialog):
         self.preview_before_state.setObjectName(CONTROL_NAMES['preview_before_state'])
         self.preview_after_state = label(_tr('自动待命'), 'muted')
         self.preview_after_state.setObjectName(CONTROL_NAMES['preview_after_state'])
+        self.preview_before_state.hide()
+        self.preview_after_state.hide()
         state_row.addWidget(self.preview_before_state, 1)
         state_row.addWidget(self.preview_after_state, 1)
         player_layout.addLayout(state_row)
@@ -2756,7 +2626,6 @@ class AudioMixdownDialog(QDialog):
         self.system_player_button.hide()
         player_layout.addWidget(self.system_player_button)
         preview_body.addWidget(player_panel)
-        preview_body.addStretch(1)
 
         export_card, export_body = card(
             _tr('导出与登记'),
@@ -2805,7 +2674,7 @@ class AudioMixdownDialog(QDialog):
         self.result_title = label(_tr('尚无导出结果'), 'muted')
         self.result_title.setStyleSheet('font-weight: 600;')
         self.result_title.setObjectName(CONTROL_NAMES['result_title'])
-        self.result_text = label(_tr('选择两个输入 WAV 和新输出文件名后导出。'), 'muted')
+        self.result_text = label(_tr('选择歌声与伴奏，并指定新输出文件名后导出。'), 'muted')
         self.result_text.setObjectName(CONTROL_NAMES['result_status'])
         self.result_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
         result_layout.addWidget(self.result_title)
@@ -2829,6 +2698,26 @@ class AudioMixdownDialog(QDialog):
         register_actions.addWidget(self.to_video_button)
         export_body.addLayout(register_actions)
         export_body.addStretch(1)
+        export_details = QWidget()
+        export_details_layout = QVBoxLayout(export_details)
+        export_details_layout.setContentsMargins(0, 0, 0, 0)
+        export_details_layout.setSpacing(10)
+        while export_body.count() > 1:
+            export_details_layout.addItem(export_body.takeAt(1))
+        export_body.addWidget(export_details)
+        export_body.setContentsMargins(14, 8, 14, 8)
+        export_details.hide()
+        self.export_details_toggle = QToolButton()
+        self.export_details_toggle.setText(_tr('展开导出设置'))
+        self.export_details_toggle.setObjectName('mixdownExportDetails')
+        self.export_details_toggle.setCheckable(True)
+        self.export_details_toggle.setArrowType(Qt.RightArrow)
+        self.export_details_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.export_details_toggle.toggled.connect(export_details.setVisible)
+        self.export_details_toggle.toggled.connect(lambda checked: (
+            self.export_details_toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow),
+            self.export_details_toggle.setText(_tr('收起导出设置') if checked else _tr('展开导出设置'))))
+        export_body.itemAt(0).layout().addWidget(self.export_details_toggle)
         self.mixer_card = mixer_card
         self.processing_card = processing_card
         self.preview_card = preview_card
@@ -2840,6 +2729,7 @@ class AudioMixdownDialog(QDialog):
         self.workspace._body_layout = body
         self.workspace.set_rack_console(console)
         body.addWidget(self.workspace, 1)
+        outer.addWidget(preview_card)
 
         footer = QWidget()
         footer.setObjectName('footer')
@@ -3177,18 +3067,44 @@ class AudioMixdownDialog(QDialog):
                 self._schedule_preview_refresh()
 
     def _init_preview_player(self):
-        self._legacy_preview_player = MixdownPlayer(self, volume=72)
+        self._legacy_preview_player = None
         self._stream_preview_player = None
-        self._player = self._legacy_preview_player
-        self._connect_preview_player(self._player)
-        if not self._player.available:
-            self.player_time.setText(_tr('系统播放器'))
-            self._system_player_fallback_available = True
         from mixdown_realtime_player import native_output_path
         self._native_dll_path = native_output_path()
+        if self._native_dll_path is not None:
+            self._player = self._create_native_preview_player()
+            blocked = self.continuous_preview.blockSignals(True)
+            self.continuous_preview.setChecked(True)
+            self.continuous_preview.blockSignals(blocked)
+        else:
+            self._legacy_preview_player = MixdownPlayer(self, volume=72)
+            self._player = self._legacy_preview_player
+            if not self._player.available:
+                self.player_time.setText(_tr('系统播放器'))
+                self._system_player_fallback_available = True
+        self._connect_preview_player(self._player)
         self.continuous_preview.setEnabled(self._native_dll_path is not None)
         if self._native_dll_path is None:
-            self.continuous_preview.setToolTip(_tr('当前安装尚未包含连续试听组件。'))
+            self.continuous_preview.setToolTip(_tr('连续试听组件不可用，当前使用兼容试听。'))
+
+    def _create_native_preview_player(self):
+        from mixdown_realtime_player import RealtimePreviewPlayer
+        packages = self._component_packages or _OPTIONAL_PACKAGES
+        player = RealtimePreviewPlayer(
+            self._native_dll_path, cache_dir=self._ensure_preview_cache_directory(), parent=self,
+            service_options=dict(python_executable=_child_python(),
+                                 extra_paths=[packages] if packages else [],
+                                 environment=_worker_environment(packages),
+                                 startup_timeout=8.0, shutdown_timeout=2.0))
+        self._native_preview_player = player
+        self.eq_spectrum_label.setText(_tr('EQ 响应曲线'))
+        self._native_requested_key = self._player_key
+        self._audition_service = player
+        self._audition_service_ready = self._audition_start_attempted = True
+        player.prepared.connect(self._native_preview_prepared)
+        player.parametersApplied.connect(self._native_parameters_applied)
+        player.telemetryChanged.connect(self._native_preview_telemetry)
+        return player
 
     def _switch_continuous_preview(self, enabled):
         if self._native_switching or not self._native_dll_path:
@@ -3233,6 +3149,7 @@ class AudioMixdownDialog(QDialog):
             self._native_switching = False
             self._shutdown_audition_service()
             return
+        previous_native = self._native_preview_player
         self._connect_preview_player(self._player, connect=False)
         self._audition_service = None
         self._audition_service_ready = self._audition_start_attempted = False
@@ -3244,25 +3161,15 @@ class AudioMixdownDialog(QDialog):
         self._preview_segment_start_seconds = self._preview_segment_duration_seconds = 0.0
         self._native_preview_player = None
         if enabled:
-            from mixdown_realtime_player import RealtimePreviewPlayer
-            packages = self._component_packages or _OPTIONAL_PACKAGES
-            player = RealtimePreviewPlayer(
-                self._native_dll_path, cache_dir=self._ensure_preview_cache_directory(), parent=self,
-                service_options=dict(python_executable=_child_python(),
-                                     extra_paths=[packages] if packages else [],
-                                     environment=_worker_environment(packages),
-                                     startup_timeout=8.0, shutdown_timeout=2.0))
-            self._native_preview_player = self._player = player
-            self._native_requested_key = self._player_key
-            self._audition_service = player
-            self._audition_service_ready = True
-            self._audition_start_attempted = True
-            player.prepared.connect(self._native_preview_prepared)
-            player.parametersApplied.connect(self._native_parameters_applied)
-            player.telemetryChanged.connect(self._native_preview_telemetry)
+            self._player = self._create_native_preview_player()
             self._audition_poll_timer.start()
         else:
+            if self._legacy_preview_player is None:
+                self._legacy_preview_player = MixdownPlayer(self, volume=72)
             self._player = self._legacy_preview_player
+            self.eq_spectrum_label.setText(_tr('人声频谱'))
+        if previous_native is not None:
+            previous_native.deleteLater()
         self._connect_preview_player(self._player)
         self.eq_curve.clear_spectrum_envelope()
         self.meter_feed.clear()
@@ -3323,6 +3230,8 @@ class AudioMixdownDialog(QDialog):
         self._player_duration_changed(player.duration())
         self._native_parameters_applied(player.selected_key)
         self.preview_report.setText(_tr('连续试听已就绪，可拖动进度条定位整曲。'))
+        self.status.setText(_tr('连续试听已就绪；点击播放可试听整曲。'))
+        _set_role(self.status, 'success')
         self._sync_controls()
 
     def _native_parameters_applied(self, key):
@@ -3332,6 +3241,9 @@ class AudioMixdownDialog(QDialog):
         self.preview_before_state.setText(_tr('已就绪'))
         self.preview_after_state.setText(_tr('已就绪'))
         self._set_audition_diagnostic('updated', _tr('连续试听 · 已更新'))
+        if self._preview_play_intent:
+            self.status.setText(_tr('正在试听：') + (_tr('处理前') if key == 'before' else _tr('处理后')))
+            _set_role(self.status, 'success')
 
     def _native_preview_telemetry(self, snapshot):
         peak = snapshot.get('block_peak')
@@ -3879,12 +3791,21 @@ class AudioMixdownDialog(QDialog):
         self.player_toggle_button.setAccessibleName(
             _tr('暂停试听') if playing else _tr('播放试听'))
         self._sync_preview_analysis()
+        if _is_native_preview(self) and not self._audition_closing:
+            if playing:
+                key = self._native_preview_player.selected_key
+                self.status.setText(_tr('正在试听：') + (_tr('处理前') if key == 'before' else _tr('处理后')))
+                _set_role(self.status, 'success')
+            elif int(state) == PlaybackState.PausedState and not self._preview_play_intent:
+                self.status.setText(_tr('试听已暂停；可拖动进度条定位。'))
+                _set_role(self.status, 'muted')
 
     def _player_media_status_changed(self, status):
         if _is_native_preview(self):
             if status == MediaStatus.EndOfMedia and not self._player_loop:
                 self._preview_play_intent = self._preview_autoplay = False
                 self.player_toggle_button.setText(_tr('播放'))
+                self.status.setText(_tr('已播放到曲尾。'))
             return
         if self._player is not None and hasattr(self._player, 'load_crossfade'):
             if status == MediaStatus.LoadedMedia:
@@ -5680,8 +5601,22 @@ class AudioMixdownDialog(QDialog):
 
     def _analysis_fold_changed(self, checked=False):
         expanded = bool(self.eq_precision_toggle.isChecked() or self.advanced_toggle.isChecked())
-        self.analysis_tabs.setMinimumHeight(230 if expanded else 190)
+        self.analysis_tabs.setMinimumHeight(460 if expanded else 390)
         self.analysis_tabs.setMaximumHeight(16777215)
+
+    def _analysis_page_changed(self, index):
+        # Hidden analysis pages must not reserve their controls' height in EQ.
+        for page_index in range(self.analysis_tabs.count()):
+            page = self.analysis_tabs.widget(page_index)
+            policy = QSizePolicy.Expanding if page_index == index else QSizePolicy.Ignored
+            page.setSizePolicy(policy, policy)
+        self.analysis_tabs.updateGeometry()
+
+    def _expand_curve_workspace(self, checked):
+        self.workspace.set_curve_expanded(checked)
+        self.expand_curve_button.setText(_tr('返回混音台') if checked else _tr('放大曲线'))
+        if checked:
+            QTimer.singleShot(0, lambda: self._main_scroll.ensureWidgetVisible(self.eq_curve, 0, 0))
 
     def _refresh_analysis_palette(self):
         apply_palette = getattr(

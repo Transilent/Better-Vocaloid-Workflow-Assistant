@@ -426,8 +426,8 @@ def main():
                 choose_rule = re.search(
                     r'QPushButton\[mixerAction="choose"\] \{[^}]+\}', host.styleSheet()).group(0)
                 assert 'font-size: {0}px'.format(round(14 * factor)) in choose_rule
-                assert host.workspace.column_count() == 3
-                assert not host.workspace._right_stack.isHidden()
+                assert host.workspace.column_count() == 2
+                assert host.workspace._mixer_scroll.isVisible()
 
     for mode, material, scale in (
             ('light', 'glass', 100), ('light', 'solid', 115),

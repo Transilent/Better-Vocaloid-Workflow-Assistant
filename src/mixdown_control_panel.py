@@ -380,7 +380,9 @@ class PresetBar(QWidget):
         )
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
-        layout = QHBoxLayout(self)
+        layout = QGridLayout(self)
+        self._preset_layout = layout
+        self._preset_layout_mode = None
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
@@ -411,10 +413,10 @@ class PresetBar(QWidget):
         self.apply_button.setAutoDefault(False)
         self.apply_button.setDefault(False)
 
-        layout.addWidget(self.preset_label)
-        layout.addWidget(self.preset_combo, 1)
-        layout.addWidget(self.lock_mix_checkbox)
-        layout.addWidget(self.apply_button)
+        self.preset_combo.setMinimumContentsLength(6)
+        self.preset_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.preset_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._reflow_preset_bar()
 
         self._items: list[tuple[str, str]] = []
         self.set_presets(presets, current_key=current_key)
@@ -425,6 +427,34 @@ class PresetBar(QWidget):
 
         self.combo = self.preset_combo
         self.apply = self.apply_button
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, '_preset_layout'):
+            self._reflow_preset_bar()
+
+    def _reflow_preset_bar(self):
+        mode = 1 if self.width() >= 560 else 2 if self.width() >= 360 else 3
+        if mode == self._preset_layout_mode:
+            return
+        self._preset_layout_mode = mode
+        layout = self._preset_layout
+        while layout.count(): layout.takeAt(0)
+        for column in range(4): layout.setColumnStretch(column, 0)
+        layout.addWidget(self.preset_label, 0, 0)
+        if mode == 1:
+            layout.addWidget(self.preset_combo, 0, 1)
+            layout.addWidget(self.lock_mix_checkbox, 0, 2)
+            layout.addWidget(self.apply_button, 0, 3)
+            layout.setColumnStretch(1, 1)
+        else:
+            layout.addWidget(self.preset_combo, 0, 1, 1, 3)
+            layout.addWidget(self.lock_mix_checkbox, 1, 0, 1, 3 if mode == 2 else 4)
+            layout.addWidget(self.apply_button, 1 if mode == 2 else 2,
+                             3 if mode == 2 else 0, 1, 1 if mode == 2 else 4)
+            layout.setColumnStretch(1, 1)
+        layout.invalidate()
+        self.updateGeometry()
 
     def set_presets(self, presets: Any = None,
                     current_key: str | None = None) -> None:

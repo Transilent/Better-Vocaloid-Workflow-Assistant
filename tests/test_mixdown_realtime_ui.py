@@ -22,7 +22,8 @@ class MixerRoutingTests(unittest.TestCase):
     def setUp(self):
         self.owner = QWidget()
         with patch.object(ui.AudioMixdownDialog, '_prepare_component_support'), \
-                patch.object(ui.AudioMixdownDialog, '_start_component_support_check'):
+                patch.object(ui.AudioMixdownDialog, '_start_component_support_check'), \
+                patch('mixdown_realtime_player.native_output_path', return_value=None):
             self.dialog = ui.AudioMixdownDialog(self.owner, None, self.owner, embedded=True)
         d = self.dialog
         d._connect_preview_player(d._player, connect=False)
