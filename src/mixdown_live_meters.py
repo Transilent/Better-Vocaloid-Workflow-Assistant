@@ -1,9 +1,10 @@
-"""Live meter data bridge and QPainter views for mixdown audition reports.
+"""Live meter data bridge and QPainter views for mixdown output blocks.
 
-The module deliberately has no audio-engine dependency.  Backends publish level
-envelopes in their audition reports; this module turns those sparse envelopes
-into playback-relative meter readings and paints the live table, gain-reduction
-history, and measured reverb energy-decay curve.
+The module deliberately has no audio-engine dependency.  Backends publish
+actual current-block meters through :meth:`MeterEnvelope.set_live_snapshot`;
+sparse offline audition reports remain supported for export consumers.  The
+views paint the current table, gain-reduction history, and a measured reverb
+energy-decay curve only when an actual impulse measurement is available.
 
 Playback positions passed to :class:`MeterEnvelope` are milliseconds relative to
 the start of the audition report.  For an embedded player whose current media
@@ -14,6 +15,7 @@ from __future__ import annotations
 from bisect import bisect_left
 from collections import deque
 from dataclasses import dataclass
+import copy
 import math
 import re
 import time
@@ -41,6 +43,7 @@ EDC_DEFAULT_SECONDS = 2.0
 DEFAULT_ENVELOPE_INTERVAL_MS = 1000.0 / METER_REFRESH_HZ
 PEAK_HOLD_MS = 1500
 PEAK_HOLD_FALL_DB_PER_SECOND = 12.0
+LIVE_POSITION_DISCONTINUITY_MS = 2000.0
 
 _ENVELOPE_KEYS = ("points", "curve", "envelope", "values_dbfs", "values_db", "values", "samples", "db", "edc_db", "data")
 _VARIANT_CONTAINER_KEYS = ("a", "before", "dry", "original", "b", "after", "wet", "processed", "post", "current")
@@ -481,6 +484,103 @@ def _row_lane(row: Mapping[str, Any], fallback_index: int = 0) -> str | None:
     return lane_id("vocal", fallback_index)
 
 
+def _safe_deepcopy(value: Any) -> Any:
+    try:
+        return copy.deepcopy(value)
+    except Exception:
+        return value
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    number = _finite(value)
+    if number is not None:
+        return bool(number)
+    text = str(value).strip().lower()
+    if text in {"true", "yes", "on", "1"}:
+        return True
+    if text in {"false", "no", "off", "0"}:
+        return False
+    return None
+
+
+def _live_parameter_revision(value: Any) -> Any:
+    if value is None or isinstance(value, bool):
+        return _safe_deepcopy(value)
+    number = _finite(value)
+    if number is not None and number.is_integer():
+        return int(number)
+    return _safe_deepcopy(value)
+
+
+def _live_history_epoch(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    number = _finite(value)
+    if number is None or not number.is_integer():
+        return None
+    return max(0, int(number))
+
+
+def _live_track_row(row: Mapping[str, Any], fallback_index: int) -> dict[str, Any] | None:
+    lane = _row_lane(row, fallback_index)
+    if lane is None or lane == "bus":
+        return None
+    role, index = _split_lane(lane) or ("vocal", fallback_index)
+    peak = _finite(row.get("peak_dbfs"))
+    name = row.get("label") or row.get("name") or row.get("display_name")
+    return {
+        "id": lane,
+        "role": role,
+        "index": index,
+        "label": _display_lane_label(
+            str(name).strip() if name is not None and str(name).strip()
+            else _lane_label(role, index)),
+        "peak_dbfs": peak,
+        "rms_dbfs": _finite(row.get("rms_dbfs")),
+        "gr_db": _finite(row.get("gr_db")),
+        "audible": _optional_bool(row.get("audible")),
+        "clip": peak is not None and peak >= -1.0,
+        "present": True,
+    }
+
+
+def _live_bus_row(value: Any) -> dict[str, Any]:
+    present = isinstance(value, Mapping)
+    row = value if present else {}
+    peak = _finite(row.get("peak_dbfs"))
+    limiter_gr = _finite(row.get("limiter_gr_db"))
+    gr = limiter_gr if limiter_gr is not None else _finite(row.get("gr_db"))
+    if limiter_gr is None:
+        limiter_gr = gr
+    name = row.get("label") or row.get("name") or row.get("display_name")
+    return {
+        "id": "bus",
+        "role": "bus",
+        "index": 0,
+        "label": _display_lane_label(
+            str(name).strip() if name is not None and str(name).strip()
+            else "MIX BUS"),
+        "peak_dbfs": peak,
+        "rms_dbfs": _finite(row.get("rms_dbfs")),
+        "gr_db": gr,
+        "limiter_gr_db": limiter_gr,
+        "audible": _optional_bool(row.get("audible")),
+        "clip": peak is not None and peak >= -1.0,
+        "present": present,
+    }
+
+
+def _lane_gr_db_value(item: Mapping[str, Any]) -> float | None:
+    value = _finite(item.get("gr_db"))
+    if value is None and (item.get("id") == "bus" or item.get("role") == "bus"):
+        value = _finite(item.get("limiter_gr_db"))
+    return value
+
+
 def _find_envelope(report: Mapping[str, Any], kind: str) -> tuple[Any, Mapping[str, Any] | None]:
     names = (kind + "_envelope", kind + "_envelopes")
     for container in _report_containers(report):
@@ -673,24 +773,27 @@ def _fallback_current_series(report: Mapping[str, Any], kind: str,
 
 
 class MeterEnvelope(QObject):
-    """Coalesced playback-time bridge for audition peak/GR envelopes.
+    """Playback-time bridge for offline reports and actual live block meters.
 
-    ``set_position_ms`` accepts arbitrary player cadence and normalises values
-    with the report's ``duration_seconds`` (or an explicit
+    :meth:`set_live_snapshot` is the live UI entry point.  Each call replaces
+    the published lane set with the measurements from that output block; it
+    never interpolates an offline envelope or reuses an absent value.  The
+    original :meth:`set_report` API remains available for existing report and
+    export consumers.
+
+    In report mode, :meth:`set_position_ms` accepts arbitrary player cadence and
+    normalises values with the report's ``duration_seconds`` (or an explicit
     :meth:`set_duration_ms`) so positive overshoot and negative positions wrap
     instead of being silently clamped.  In normal operation one QTimer delivers
-    at most 30 snapshots per second; all calls made while a delivery is pending
-    collapse into the latest position.  Set ``auto_start=False`` for
-    deterministic tests or static rendering, where every method call delivers
-    immediately.
+    at most 30 snapshots per second.  Live snapshots already carry their own
+    transport position and are published immediately, cutting any pending
+    report delivery.
 
-    Reports merge by lane by default.  A partial after-only report therefore
-    cannot erase a previously received before-side track, backing, or MIX BUS
-    series.  A report with a different output identity, A/B processing state,
-    or audition start invalidates the previous series even in merge mode, so
-    history from another segment cannot be mistaken for the current playback.
-    Call :meth:`clear`/:meth:`reset` for an explicit full reset, or
-    :meth:`replace_report` to clear and replace in one operation.
+    Reports merge by lane by default.  A report with a different output
+    identity, A/B processing state, or audition start invalidates the previous
+    series even in merge mode.  Live source, parameter revision, duration, lane
+    set, and transport discontinuities advance ``history_epoch`` so views can
+    discard measurements from an earlier session.
 
     ``changed`` retains the original snapshot shape and adds
     ``duration_ms``/``position_ratio``/``wrapped``/``seeked`` and report
@@ -739,6 +842,12 @@ class MeterEnvelope(QObject):
         self._report_revision = 0
         self._report_scope: dict[str, Any] = {}
         self._history_epoch = 0
+        self._live_mode = False
+        self._live_initialized = False
+        self._live_input_history_epoch: int | None = None
+        self._live_source: Any = None
+        self._live_parameter_revision: Any = None
+        self._live_bus_present = False
 
     def set_report(self, report: Mapping[str, Any] | None, *, merge: bool = True) -> None:
         """Merge one audition or render-side report into the live bridge.
@@ -751,6 +860,20 @@ class MeterEnvelope(QObject):
             return
         if not isinstance(report, Mapping):
             raise TypeError("MeterEnvelope.set_report 需要 audition report 字典。")
+        if self._live_mode:
+            # Report parsing belongs to offline/export consumers.  Switching
+            # back must never let a previously queued report overwrite live
+            # output or append its synthetic envelope to live GR history.
+            self._live_mode = False
+            self._live_initialized = False
+            self._live_input_history_epoch = None
+            self._live_source = None
+            self._live_parameter_revision = None
+            self._live_bus_present = False
+            self._timer.stop()
+            self._dirty = False
+            self._clear_series()
+            self._history_epoch += 1
         incoming_scope = _report_scope_values(report)
         scope_changed, segment_changed = _report_scope_conflicts(
             self._report_scope, incoming_scope)
@@ -779,6 +902,160 @@ class MeterEnvelope(QObject):
         self._parse_error = None
         self._report_revision += 1
         self._request_delivery()
+
+    def set_live_snapshot(self, snapshot: Mapping[str, Any] | None) -> None:
+        """Publish one actual output block without report interpolation.
+
+        Required producer fields are ``tracks`` (lane dictionaries with
+        role/index, peak_dbfs, rms_dbfs, gr_db, and audible), ``bus``
+        (peak_dbfs, rms_dbfs, limiter_gr_db), ``position_ms``,
+        ``duration_ms``, ``history_epoch``, ``source``, and
+        ``parameter_revision``.  Unknown or missing metric values are
+        published as ``None``; this method never falls back to a previous
+        report value.
+
+        Every call is a complete current-frame replacement and emits
+        ``changed`` synchronously.  A pending report timer is cancelled so a
+        stale offline frame cannot later overwrite the live reading.
+        """
+        if snapshot is None:
+            self.clear()
+            return
+        if not isinstance(snapshot, Mapping):
+            raise TypeError("MeterEnvelope.set_live_snapshot 需要 live snapshot 字典。")
+
+        # Live snapshots are complete frames.  A report timer started before
+        # the first live frame is stale by definition.
+        self._timer.stop()
+        self._dirty = False
+        if not self._live_mode:
+            had_report_measurement = bool(
+                self._peak_series or self._gr_series
+                or self._snapshot.get("tracks")
+                or bool((self._snapshot.get("bus") or {}).get("present")))
+            self._clear_series()
+            self._report_scope.clear()
+            self._live_mode = True
+            self._live_initialized = False
+            self._live_input_history_epoch = None
+            self._live_source = None
+            self._live_parameter_revision = None
+            self._live_bus_present = False
+            if had_report_measurement:
+                self._history_epoch += 1
+
+        position_value = _finite(snapshot.get("position_ms"))
+        position = 0.0 if position_value is None else float(position_value)
+        duration = _finite(snapshot.get("duration_ms"))
+        if duration is not None and duration <= 0.0:
+            duration = None
+        wrapped = bool(_optional_bool(snapshot.get("wrapped")) or False)
+        seek_requested = bool(
+            _optional_bool(snapshot.get("seeked"))
+            or _optional_bool(snapshot.get("seek"))
+            or False)
+
+        raw_tracks = snapshot.get("tracks")
+        if (not isinstance(raw_tracks, Sequence)
+                or isinstance(raw_tracks, (str, bytes, bytearray))):
+            raw_tracks = []
+        tracks: list[dict[str, Any]] = []
+        track_slots: dict[str, int] = {}
+        for fallback_index, raw_row in enumerate(raw_tracks):
+            if not isinstance(raw_row, Mapping):
+                continue
+            row = _live_track_row(raw_row, fallback_index)
+            if row is None:
+                continue
+            lane = str(row["id"])
+            if lane in track_slots:
+                tracks[track_slots[lane]] = row
+            else:
+                track_slots[lane] = len(tracks)
+                tracks.append(row)
+
+        bus = _live_bus_row(snapshot.get("bus"))
+        track_ids = tuple(str(row["id"]) for row in tracks)
+        bus_present = bool(bus["present"])
+        source_value = _safe_deepcopy(snapshot.get("source"))
+        revision_value = _live_parameter_revision(snapshot.get("parameter_revision"))
+        incoming_epoch = _live_history_epoch(snapshot.get("history_epoch"))
+
+        source_changed = (
+            self._live_initialized and source_value != self._live_source)
+        revision_changed = (
+            self._live_initialized
+            and revision_value != self._live_parameter_revision)
+        incoming_epoch_changed = (
+            self._live_initialized
+            and incoming_epoch != self._live_input_history_epoch)
+        duration_changed = False
+        if self._live_initialized:
+            if duration is None or self._duration_ms is None:
+                duration_changed = duration is not self._duration_ms
+            else:
+                duration_changed = abs(duration - self._duration_ms) > 0.001
+        lanes_changed = (
+            self._live_initialized
+            and (set(track_ids) != set(self._track_ids)
+                 or bus_present != self._live_bus_present))
+        position_seek = (
+            self._live_initialized
+            and not wrapped
+            and (position + 1e-6 < self._position_ms
+                 or position - self._position_ms
+                 > LIVE_POSITION_DISCONTINUITY_MS))
+        seeked = seek_requested or position_seek
+
+        if not self._live_initialized:
+            self._history_epoch = max(
+                self._history_epoch, incoming_epoch or 0)
+        elif (source_changed or revision_changed or incoming_epoch_changed
+              or duration_changed or lanes_changed or wrapped or seeked):
+            self._history_epoch = max(
+                self._history_epoch + 1, incoming_epoch or 0)
+        elif (incoming_epoch is not None
+              and incoming_epoch > self._history_epoch):
+            self._history_epoch = incoming_epoch
+
+        self._duration_ms = duration
+        self._position_ms = position
+        self._pending_position_ms = position
+        self._pending_source_position_ms = position
+        self._pending_wrapped = False
+        self._pending_seeked = False
+        self._wrapped = wrapped
+        self._seeked = seeked
+        self._track_ids = list(track_ids)
+        self._labels = {str(row["id"]): str(row["label"]) for row in tracks}
+        if bus_present:
+            self._labels["bus"] = str(bus["label"])
+        self._live_bus_present = bus_present
+        self._live_source = _safe_deepcopy(source_value)
+        self._live_parameter_revision = _safe_deepcopy(revision_value)
+        self._live_input_history_epoch = incoming_epoch
+        self._live_initialized = True
+        self._parse_error = None
+
+        self._snapshot = {
+            "position_ms": position,
+            "duration_ms": duration,
+            "position_ratio": _position_ratio_ms(position, duration),
+            "wrapped": wrapped,
+            "seeked": seeked,
+            "history_epoch": self._history_epoch,
+            "source": _safe_deepcopy(source_value),
+            "parameter_revision": _safe_deepcopy(revision_value),
+            "tracks": _safe_deepcopy(tracks),
+            "bus": _safe_deepcopy(bus),
+            "lanes": _safe_deepcopy([*tracks, bus]),
+        }
+        self._received += 1
+        self._delivered += 1
+        self.positionChanged.emit(position)
+        if wrapped:
+            self.positionWrapped.emit(position)
+        self.changed.emit(self.snapshot())
 
     def _ingest_report(self, report: Mapping[str, Any]) -> None:
         rows = _report_track_rows(report)
@@ -855,7 +1132,11 @@ class MeterEnvelope(QObject):
         self._track_ids = sorted(set(track_ids), key=_lane_sort_key)
 
     def set_duration_ms(self, duration_ms: int | float | None) -> None:
-        """Set or clear the audition duration used for loop/seek normalisation."""
+        """Set or clear the report duration used for loop/seek normalisation."""
+        if self._live_mode:
+            # Live snapshots own position and duration.  Mutating only the
+            # timeline would pair old measurements with a new transport frame.
+            return
         duration = _finite(duration_ms)
         self._duration_ms = duration if duration is not None and duration > 0.0 else None
         self._position_ms = _normalise_position_ms(self._position_ms, self._duration_ms)
@@ -865,13 +1146,16 @@ class MeterEnvelope(QObject):
 
     def set_position_ms(self, position_ms: int | float | None, *,
                         wrapped: bool | None = None, seek: bool | None = None) -> None:
-        """Queue a playback position, wrapping against the known duration.
+        """Queue a report-mode playback position.
 
-        ``wrapped`` may be supplied by a transport that knows a loop boundary;
-        otherwise it is inferred from negative/overshooting input and a large
-        backward jump.  ``seek`` is advisory metadata for consumers and does
-        not discard envelope data.
+        In live mode the position arrives with each actual snapshot; this
+        method deliberately does nothing rather than redisplaying old levels at
+        a new transport position.  ``wrapped`` may be supplied by a report
+        transport that knows a loop boundary; otherwise it is inferred.
+        ``seek`` is advisory metadata for report consumers.
         """
+        if self._live_mode:
+            return
         value = _finite(position_ms)
         source = 0.0 if value is None else float(value)
         previous = self._pending_position_ms
@@ -924,6 +1208,12 @@ class MeterEnvelope(QObject):
         self._dirty = False
         self._last_delivery_ms = None
         self._report_scope.clear()
+        self._live_mode = False
+        self._live_initialized = False
+        self._live_input_history_epoch = None
+        self._live_source = None
+        self._live_parameter_revision = None
+        self._live_bus_present = False
         self._history_epoch += 1
         self._snapshot = self._empty_snapshot(0.0)
         self._snapshot["history_epoch"] = self._history_epoch
@@ -937,7 +1227,8 @@ class MeterEnvelope(QObject):
     @property
     def lane_ids(self) -> tuple[str, ...]:
         lanes = list(self._track_ids)
-        if self._has_series("bus"):
+        if (self._live_bus_present if self._live_mode
+                else self._has_series("bus")):
             lanes.append("bus")
         return tuple(lanes)
 
@@ -947,7 +1238,7 @@ class MeterEnvelope(QObject):
 
     @property
     def has_bus_data(self) -> bool:
-        return self._has_series("bus")
+        return self._live_bus_present if self._live_mode else self._has_series("bus")
 
     @property
     def current_position_ms(self) -> float:
@@ -1003,13 +1294,19 @@ class MeterEnvelope(QObject):
         self._received = self._delivered = self._coalesced = 0
 
     def snapshot(self, position_ms: int | float | None = None) -> dict[str, Any]:
-        if position_ms is not None:
+        if position_ms is not None and not self._live_mode:
             position = _normalise_position_ms(position_ms, self._duration_ms)
             return self._snapshot_at(position)
         return _copy_snapshot(self._snapshot)
 
     def sample_at(self, position_ms: int | float | None) -> dict[str, Any]:
-        """Compute a reading directly without waiting for the 30 Hz timer."""
+        """Return a report sample, or the unchanged current live measurement.
+
+        Live values are valid only at the block that produced them, so asking
+        for another position must not interpolate a synthetic frame.
+        """
+        if self._live_mode:
+            return self.snapshot()
         return self._snapshot_at(_normalise_position_ms(position_ms, self._duration_ms))
 
     read_at = sample_at
@@ -1020,6 +1317,13 @@ class MeterEnvelope(QObject):
 
     def peak_db(self, lane: str, position_ms: int | float | None = None) -> float | None:
         key = lane_id(lane) or str(lane)
+        if self._live_mode:
+            if (position_ms is not None
+                    and abs(float(position_ms) - self._position_ms) > 0.5):
+                return None
+            item = next((row for row in self._snapshot.get("lanes", [])
+                         if isinstance(row, Mapping) and row.get("id") == key), None)
+            return _finite(item.get("peak_dbfs")) if item is not None else None
         position = (self._position_ms if position_ms is None
                     else _normalise_position_ms(position_ms, self._duration_ms))
         series = self._peak_series.get(key)
@@ -1027,6 +1331,13 @@ class MeterEnvelope(QObject):
 
     def gr_db(self, lane: str, position_ms: int | float | None = None) -> float | None:
         key = lane_id(lane) or str(lane)
+        if self._live_mode:
+            if (position_ms is not None
+                    and abs(float(position_ms) - self._position_ms) > 0.5):
+                return None
+            item = next((row for row in self._snapshot.get("lanes", [])
+                         if isinstance(row, Mapping) and row.get("id") == key), None)
+            return _lane_gr_db_value(item) if item is not None else None
         position = (self._position_ms if position_ms is None
                     else _normalise_position_ms(position_ms, self._duration_ms))
         series = self._gr_series.get(key)
@@ -1094,7 +1405,9 @@ class MeterEnvelope(QObject):
                 "label": _display_lane_label(
                     self._labels.get(lane) or _lane_label(role, index)),
                 "peak_dbfs": peak,
+                "rms_dbfs": None,
                 "gr_db": gr,
+                "audible": None,
                 "clip": peak is not None and peak >= -1.0,
                 "present": peak_series is not None or gr_series is not None,
             })
@@ -1109,7 +1422,10 @@ class MeterEnvelope(QObject):
             "label": _display_lane_label(
                 self._labels.get("bus") or "MIX BUS"),
             "peak_dbfs": bus_peak_value,
+            "rms_dbfs": None,
             "gr_db": bus_gr_value,
+            "limiter_gr_db": bus_gr_value,
+            "audible": None,
             "clip": bus_peak_value is not None and bus_peak_value >= -1.0,
             "present": bus_peak is not None or bus_gr is not None,
         }
@@ -1120,6 +1436,8 @@ class MeterEnvelope(QObject):
             "wrapped": self._wrapped,
             "seeked": self._seeked,
             "history_epoch": self._history_epoch,
+            "source": None,
+            "parameter_revision": None,
             "tracks": tracks,
             "bus": bus,
             "lanes": [*tracks, bus],
@@ -1129,7 +1447,9 @@ class MeterEnvelope(QObject):
     def _empty_snapshot(position_ms: float) -> dict[str, Any]:
         bus = {
             "id": "bus", "role": "bus", "index": 0, "label": "MIX BUS",
-            "peak_dbfs": None, "gr_db": None, "clip": False, "present": False,
+            "peak_dbfs": None, "rms_dbfs": None, "gr_db": None,
+            "limiter_gr_db": None, "audible": None, "clip": False,
+            "present": False,
         }
         return {
             "position_ms": position_ms,
@@ -1138,6 +1458,8 @@ class MeterEnvelope(QObject):
             "wrapped": False,
             "seeked": False,
             "history_epoch": 0,
+            "source": None,
+            "parameter_revision": None,
             "tracks": [],
             "bus": bus,
             "lanes": [bus],
@@ -1145,19 +1467,42 @@ class MeterEnvelope(QObject):
 
 
 def _copy_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
-    tracks = [dict(item) for item in snapshot.get("tracks", [])]
-    bus = dict(snapshot.get("bus") or MeterEnvelope._empty_snapshot(0.0)["bus"])
-    return {
-        "position_ms": float(snapshot.get("position_ms", 0.0)),
-        "duration_ms": snapshot.get("duration_ms"),
-        "position_ratio": float(snapshot.get("position_ratio", 0.0) or 0.0),
+    result = _safe_deepcopy(dict(snapshot))
+    raw_tracks = snapshot.get("tracks")
+    if not isinstance(raw_tracks, Sequence) or isinstance(
+            raw_tracks, (str, bytes, bytearray)):
+        raw_tracks = []
+    tracks = [_safe_deepcopy(dict(item)) for item in raw_tracks
+              if isinstance(item, Mapping)]
+    raw_bus = snapshot.get("bus")
+    bus = (_safe_deepcopy(dict(raw_bus)) if isinstance(raw_bus, Mapping)
+           else MeterEnvelope._empty_snapshot(0.0)["bus"])
+    bus_gr = _finite(bus.get("gr_db"))
+    bus_limiter_gr = _finite(bus.get("limiter_gr_db"))
+    if bus_limiter_gr is None:
+        bus["limiter_gr_db"] = bus_gr
+    elif bus_gr is None:
+        bus["gr_db"] = bus_limiter_gr
+    position = _finite(snapshot.get("position_ms"))
+    duration = _finite(snapshot.get("duration_ms"))
+    if duration is not None and duration <= 0.0:
+        duration = None
+    result.update({
+        "position_ms": 0.0 if position is None else float(position),
+        "duration_ms": duration,
+        "position_ratio": _position_ratio_ms(
+            0.0 if position is None else float(position), duration),
         "wrapped": bool(snapshot.get("wrapped", False)),
         "seeked": bool(snapshot.get("seeked", False)),
-        "history_epoch": int(snapshot.get("history_epoch", 0) or 0),
+        "history_epoch": max(0, int(snapshot.get("history_epoch", 0) or 0)),
+        "source": _safe_deepcopy(snapshot.get("source")),
+        "parameter_revision": _live_parameter_revision(
+            snapshot.get("parameter_revision")),
         "tracks": tracks,
         "bus": bus,
-        "lanes": [*tracks, bus],
-    }
+        "lanes": [_safe_deepcopy(item) for item in tracks] + [bus],
+    })
+    return result
 
 
 def format_dbfs(value: float | None) -> str:
@@ -1607,7 +1952,7 @@ class GrHistoryView(QWidget):
     def _select_current(self, snapshot: Mapping[str, Any]) -> None:
         lane = next((item for item in snapshot.get("lanes", [])
                      if item.get("id") == self._selected_lane), None)
-        value = lane.get("gr_db") if isinstance(lane, Mapping) else None
+        value = _lane_gr_db_value(lane) if isinstance(lane, Mapping) else None
         self._current_gr = _finite(value)
         self.update()
 
@@ -1641,7 +1986,7 @@ class GrHistoryView(QWidget):
             if not isinstance(item, Mapping):
                 continue
             lane = str(item.get("id") or "")
-            value = _finite(item.get("gr_db"))
+            value = _lane_gr_db_value(item)
             if not lane or value is None:
                 continue
             bucket = self._history.setdefault(lane, deque())

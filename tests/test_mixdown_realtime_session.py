@@ -28,6 +28,55 @@ class Renderer:
         data = ((np.arange(start, start + frames, dtype=np.float32) % 1000) * .0001 * self.gain)
         return np.full((frames, 2), 2.0, dtype=np.float32) if self.loud else np.column_stack((data, data))
 
+    def telemetry_for_range(self, start, end):
+        count = int(end) - int(start)
+        return {
+            'schema': 'vwa.audio_mixdown.realtime-telemetry/v1',
+            'source': 'realtime_dsp',
+            'frame_start': int(start),
+            'frame_end': int(end),
+            'frame_count': count,
+            'sample_rate': self.sample_rate,
+            'channels': self.channels,
+            'tracks': [{
+                'role': 'vocal', 'index': 0,
+                'peak_dbfs': -12.0 + float(start % 7),
+                'rms_dbfs': -20.0 + float(start % 5),
+                'gr_db': 1.5, 'audible': True,
+            }],
+            'bus': {
+                'peak_dbfs': -10.0, 'rms_dbfs': -18.0,
+                'limiter_gr_db': 0.75,
+                'final_output': {'peak_dbfs': -10.0, 'rms_dbfs': -18.0},
+                'pre_limiter': {'peak_dbfs': -8.0, 'rms_dbfs': -16.0},
+                'post_limiter': {'peak_dbfs': -9.0, 'rms_dbfs': -17.0},
+            },
+            'dynamics': {
+                'compressor': {'enabled': True, 'gr_db': 1.5, 'scope': 'shared_vocal_bus'},
+                'limiter': {'enabled': True, 'gr_db': 0.75,
+                            'method': 'aligned_rms_db_difference'},
+            },
+            'spectrum': {
+                'frequency_hz': [100.0, 1000.0],
+                'before_dbfs': [-20.0, -30.0],
+                'after_dbfs': [-19.0, -28.0],
+                'source': 'dsp_fft_pre_post_eq',
+                'window_start_frame': int(start), 'window_end_frame': int(end),
+                'interval_ms': 100.0, 'bins': 2, 'fft_size': 512,
+            },
+            'reverb': {
+                'enabled': True, 'mix': 0.25,
+                'live': {
+                    'send_rms_dbfs': -28.0, 'send_peak_dbfs': -22.0,
+                    'wet_rms_dbfs': -29.0, 'wet_peak_dbfs': -23.0,
+                    'dry_rms_dbfs': -24.0, 'measured_wet_fraction': 0.1,
+                    'wet_to_dry_db': -5.0,
+                },
+                'kernel_edc': {'available': False, 'measured': False,
+                               'reason': 'test_pending'},
+            },
+        }
+
     def seek(self, frame): self.position_frame = frame
     def set_parameters(self, request): self.gain = float(request['gain'])
     def close(self): self.closed += 1
@@ -113,14 +162,20 @@ def wait(session, predicate, seconds=3):
 class SessionTests(unittest.TestCase):
     def test_telemetry_copy_is_independent_for_nested_state_and_numeric_history(self):
         state = {'native': {'clock': {'position': 9}}, 'last_seek': {'frame': 3},
-                 'render_ms': [.4] * 4096}
+                 'render_ms': [.4] * 4096,
+                 'telemetry': {'spectrum': {'before_dbfs': [-40.0] * 128},
+                               'reverb': {'kernel_edc': {'points': [[0, 0], [1, -6]]}}}}
         snapshot = _copy_state(state)
         snapshot['native']['clock']['position'] = 12
         snapshot['last_seek']['frame'] = 6
         snapshot['render_ms'][0] = 8
+        snapshot['telemetry']['spectrum']['before_dbfs'][0] = -12
+        snapshot['telemetry']['reverb']['kernel_edc']['points'][1][1] = -90
         self.assertEqual(state['native']['clock']['position'], 9)
         self.assertEqual(state['last_seek']['frame'], 3)
         self.assertEqual(state['render_ms'][0], .4)
+        self.assertEqual(state['telemetry']['spectrum']['before_dbfs'][0], -40)
+        self.assertEqual(state['telemetry']['reverb']['kernel_edc']['points'][1][1], -6)
 
     def test_parameter_validation_does_not_starve_the_producer(self):
         entered = threading.Event()
@@ -157,6 +212,53 @@ class SessionTests(unittest.TestCase):
         self.assertFalse(errors, errors)
         wait(session, lambda s: s['parameter_revision'] == 1)
         self.assertEqual(renderer.gain, .5)
+
+    def test_telemetry_tracks_submitted_frame_parameter_revision_and_seek_epoch(self):
+        session, renderer, output = self.make()
+        self.assertEqual(session._telemetry_blocks.maxlen, 256)
+        session.play()
+        session.start()
+        first = wait(session, lambda s: (
+            (s.get('telemetry') or {}).get('status') == 'ready'
+            and s['native']['media_frame'] > 0
+        ))
+        telemetry = first['telemetry']
+        self.assertEqual(telemetry['media_frame'], first['native']['media_frame'])
+        self.assertLess(telemetry['render_frame_start'], telemetry['media_frame'])
+        self.assertGreaterEqual(telemetry['render_frame_end'], telemetry['media_frame'])
+        self.assertGreater(renderer.position_frame, telemetry['media_frame'])
+        self.assertGreater(
+            max(block['frame_end'] for block in session._telemetry_blocks),
+            telemetry['media_frame'],
+        )
+        self.assertEqual(telemetry['history_epoch'], 1)
+        self.assertEqual(telemetry['parameter_revision'], 0)
+        self.assertEqual(telemetry['tracks'][0]['role'], 'vocal')
+        self.assertEqual(telemetry['spectrum']['freq_hz'], [100.0, 1000.0])
+        self.assertEqual(telemetry['spectrum']['media_frame'], telemetry['media_frame'])
+        self.assertEqual(telemetry['reverb']['return_rms_dbfs'], -29.0)
+
+        revision = session.set_parameters({'gain': .5})
+        applied = wait(session, lambda s: (
+            s['parameter_revision'] == revision
+            and (s.get('telemetry') or {}).get('parameter_revision') == revision
+            and s['native']['media_frame'] > s['parameter_first_frame']
+        ))
+        self.assertEqual(applied['telemetry']['media_frame'], applied['native']['media_frame'])
+        self.assertEqual(renderer.gain, .5)
+
+        serial = session.seek(5000, autoplay=True)
+        sought = wait(session, lambda s: (
+            (s.get('last_seek') or {}).get('seek_id') == serial
+            and (s.get('telemetry') or {}).get('history_epoch') >= 2
+            and (s.get('telemetry') or {}).get('status') == 'ready'
+            and s['native']['media_frame'] > 5000
+        ))
+        telemetry = sought['telemetry']
+        self.assertEqual(telemetry['media_frame'], sought['native']['media_frame'])
+        self.assertGreaterEqual(telemetry['render_frame_start'], 5000)
+        self.assertLessEqual(telemetry['media_frame'], 16000)
+        self.assertEqual(telemetry['history_epoch'], sought['native']['epoch'])
 
     def test_factory_has_one_control_thread_for_creation_and_close(self):
         created = []
@@ -226,7 +328,7 @@ class SessionTests(unittest.TestCase):
         self.assertTrue(all(not data.any() for _, _, data in output.consumed))
 
     def test_resume_with_a_partial_prefilled_queue(self):
-        session, renderer, output = self.make()
+        session, renderer, output = self.make(target_queue_frames=128)
         session.play()
         session.start()
         wait(session, lambda s: s['native']['media_frame'] >= 32)
@@ -243,6 +345,21 @@ class SessionTests(unittest.TestCase):
             self.assertTrue(64 < len(output.queue) < 128)
         session.play()
         wait(session, lambda s: s['native']['media_frame'] > held)
+
+    def test_default_queue_uses_actual_device_period_in_source_frames(self):
+        renderer, output = Renderer(), Output()
+        original_snapshot = output.snapshot
+        def snapshot():
+            value = original_snapshot()
+            value.update(capacity_frames=1024,actual_device_sample_rate=48000,
+                         actual_device_period_frames=480)
+            return value
+        output.snapshot = snapshot
+        session = RealtimeAuditionSession(renderer, output, block_frames=64)
+        self.addCleanup(session.close)
+        # 10 ms device period at 48k is 80 source frames at 8k. Three
+        # periods round up to four 64-frame DSP blocks, not 3*480 frames.
+        self.assertEqual(session.target_queue_frames,256)
 
     def test_end_of_song_is_stable_and_does_not_render_forever(self):
         session, renderer, output = self.make()

@@ -138,6 +138,11 @@ VWA_OUTPUT_API int vwa_output_seek(
     char* error_text,
     size_t error_text_capacity);
 
+/* UINT64_MAX clears the end marker. A marker belongs to the current epoch. */
+VWA_OUTPUT_API int vwa_output_mark_end(
+    VwaOutput* output, uint64_t end_frame, uint64_t epoch,
+    char* error_text, size_t error_text_capacity);
+
 VWA_OUTPUT_API int vwa_output_set_playing(
     VwaOutput* output,
     uint32_t playing,

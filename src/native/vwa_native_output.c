@@ -56,6 +56,7 @@ struct VwaOutput
     _Atomic uint64_t write_index;
     _Atomic uint64_t epoch;
     _Atomic uint64_t accepted_end_frame;
+    _Atomic uint64_t end_frame;
     _Atomic uint64_t media_frame;
     _Atomic uint64_t submitted_frames;
     _Atomic uint64_t callback_frames_last;
@@ -222,6 +223,12 @@ static uint64_t ring_consumer_copy(VwaOutput* output, float* destination, uint64
     uint64_t write_index = atomic_load_explicit(&output->write_index, memory_order_acquire);
     uint64_t available = write_index >= read_index ? write_index - read_index : 0u;
     uint64_t frames = requested_frames < available ? requested_frames : available;
+    uint64_t media_start = atomic_load_explicit(&output->media_frame, memory_order_acquire);
+    uint64_t end_frame = atomic_load_explicit(&output->end_frame, memory_order_acquire);
+    uint64_t until_end = end_frame > media_start ? end_frame - media_start : 0u;
+    if (end_frame != UINT64_MAX && frames > until_end) {
+        frames = until_end;
+    }
     uint64_t consumed = 0u;
     uint64_t channel_count = (uint64_t)output->channels;
 
@@ -251,8 +258,16 @@ static uint64_t ring_consumer_copy(VwaOutput* output, float* destination, uint64
             destination + ((size_t)frames * (size_t)channel_count),
             0,
             (size_t)missing * (size_t)channel_count * sizeof(float));
-        add_u64(&output->underrun_frames, missing);
-        add_u64(&output->xrun_count, UINT64_C(1));
+        if (end_frame != UINT64_MAX && media_start + frames >= end_frame) {
+            /* A finite song's final callback has a normal silent suffix. */
+            add_u64(&output->pause_frames, missing);
+        } else {
+            add_u64(&output->underrun_frames, missing);
+            add_u64(&output->xrun_count, UINT64_C(1));
+        }
+    }
+    if (end_frame != UINT64_MAX && media_start + frames >= end_frame) {
+        atomic_store_explicit(&output->playing, 0u, memory_order_release);
     }
 
     return frames;
@@ -692,6 +707,7 @@ int vwa_output_create(
     atomic_init(&output->write_index, 0u);
     atomic_init(&output->epoch, 0u);
     atomic_init(&output->accepted_end_frame, 0u);
+    atomic_init(&output->end_frame, UINT64_MAX);
     atomic_init(&output->media_frame, 0u);
     atomic_init(&output->submitted_frames, 0u);
     atomic_init(&output->callback_frames_last, 0u);
@@ -847,6 +863,29 @@ uint64_t vwa_output_write(
     return accepted;
 }
 
+int vwa_output_mark_end(
+    VwaOutput* output, uint64_t end_frame, uint64_t epoch,
+    char* error_text, size_t error_text_capacity)
+{
+    int code = VWA_OUTPUT_OK;
+    if (output == NULL) {
+        set_error(error_text, error_text_capacity, "native output is null");
+        return VWA_OUTPUT_ERR_INVALID_ARGUMENT;
+    }
+    EnterCriticalSection(&output->control_lock);
+    if (atomic_load_explicit(&output->closed, memory_order_acquire)) {
+        code = VWA_OUTPUT_ERR_CLOSED;
+        set_error(error_text, error_text_capacity, "mark_end on closed native output");
+    } else if (atomic_load_explicit(&output->epoch, memory_order_acquire) != epoch) {
+        code = VWA_OUTPUT_ERR_STALE_EPOCH;
+        set_error(error_text, error_text_capacity, "end marker epoch is not current");
+    } else {
+        atomic_store_explicit(&output->end_frame, end_frame, memory_order_release);
+    }
+    LeaveCriticalSection(&output->control_lock);
+    return code;
+}
+
 int vwa_output_seek(
     VwaOutput* output,
     uint64_t frame,
@@ -947,6 +986,7 @@ int vwa_output_seek(
     }
 
     reset_ring_locked(output);
+    atomic_store_explicit(&output->end_frame, UINT64_MAX, memory_order_release);
     atomic_store_explicit(&output->accepted_end_frame, frame, memory_order_release);
     atomic_store_explicit(&output->media_frame, frame, memory_order_release);
     atomic_store_explicit(&output->epoch, epoch, memory_order_release);

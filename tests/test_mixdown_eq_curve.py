@@ -1,4 +1,5 @@
 """Offscreen interaction and analytic-response tests for EqCurveView."""
+import copy
 import math
 import os
 import sys
@@ -87,6 +88,23 @@ def spectrum_envelope(frames, frequencies=None, *, interval_ms=100.0,
         'frames_dbfs': [list(frame) for frame in frames],
         'stage': stage,
         'fft_size': fft_size,
+    }
+
+
+def live_spectrum_frame(before_dbfs, after_dbfs=None, frequencies=None, *,
+                        source='pedalboard_eq', sample_rate=48000,
+                        media_frame=0):
+    before = list(before_dbfs)
+    after = list(before if after_dbfs is None else after_dbfs)
+    return {
+        'source': source,
+        'sample_rate': sample_rate,
+        'media_frame': media_frame,
+        'freq_hz': list(
+            (20.0, 200.0, 2000.0, 10000.0)
+            if frequencies is None else frequencies),
+        'before_dbfs': before,
+        'after_dbfs': after,
     }
 
 
@@ -541,6 +559,255 @@ class WidgetTests(unittest.TestCase):
                     self.view.frequency_to_x(eq.MAX_FREQUENCY_HZ),
                 )
                 self.assertFalse(self.view.spectrum_is_playing())
+
+    def test_live_spectrum_contract_is_explicit_and_independent(self):
+        emitted = []
+        self.view.bandsChanged.connect(emitted.append)
+        frame = live_spectrum_frame(
+            [-80.0, -55.0, -28.0, -14.0],
+            [-76.0, -48.0, -20.0, -9.0],
+            source='pedalboard_rbj_dsp',
+            media_frame=4321,
+        )
+        self.assertTrue(self.view.set_live_spectrum(frame))
+        self.assertTrue(self.view.has_live_spectrum())
+        self.assertEqual(self.view.live_spectrum_source(),
+                         'pedalboard_rbj_dsp')
+        self.assertEqual(self.view.live_spectrum_media_frame(), 4321)
+        self.assertAlmostEqual(self.view.sample_rate(), 48000.0)
+        self.assertIsNone(self.view.spectrum_stage())
+        self.assertIn('实时频谱', self.view.live_spectrum_status_text())
+        self.assertIn('A 处理前', self.view.live_spectrum_status_text())
+        self.assertIn('B 处理后', self.view.live_spectrum_status_text())
+        self.assertIn('pedalboard_rbj_dsp',
+                      self.view.live_spectrum_status_text())
+        self.assertIn('实时频谱', self.view.accessibleDescription())
+        self.assertEqual(emitted, [])
+
+        snapshot = self.view.live_spectrum()
+        self.assertEqual(snapshot['freq_hz'], frame['freq_hz'])
+        self.assertEqual(snapshot['before_dbfs'], frame['before_dbfs'])
+        self.assertEqual(snapshot['after_dbfs'], frame['after_dbfs'])
+        frame['before_dbfs'][0] = 0.0
+        snapshot['after_dbfs'][0] = 0.0
+        self.assertEqual(self.view.live_spectrum()['before_dbfs'][0], -80.0)
+        self.assertEqual(self.view.live_spectrum()['after_dbfs'][0], -76.0)
+
+        # A leading DC bin is real FFT input, but cannot be placed on the log
+        # frequency axis. It is dropped without fabricating another bin.
+        dc_frame = live_spectrum_frame(
+            [-120.0, -100.0, -70.0, -20.0],
+            frequencies=[0.0, 20.0, 2000.0, 24000.0],
+            media_frame=4400,
+        )
+        self.assertTrue(self.view.set_live_spectrum(dc_frame))
+        normalized = self.view.live_spectrum()
+        self.assertEqual(normalized['freq_hz'][0], 20.0)
+        self.assertEqual(len(normalized['before_dbfs']), 3)
+        self.assertAlmostEqual(
+            self.view.spectrum_db_to_y(-120.0),
+            self.view.plot_rect().bottom(),
+        )
+
+        self.assertFalse(self.view.set_live_spectrum(None))
+        self.assertFalse(self.view.has_live_spectrum())
+        self.assertIsNone(self.view.live_spectrum())
+        self.assertIsNone(self.view.spectrum_envelope())
+
+    def test_live_spectrum_bounded_smoothing_tracks_changes_and_silence(self):
+        old_before = (-90.0, -60.0, -30.0, -12.0)
+        old_after = (-88.0, -52.0, -22.0, -6.0)
+        first = live_spectrum_frame(
+            old_before, old_after, media_frame=1000)
+        self.assertTrue(self.view.set_live_spectrum(first))
+        self.assertEqual(self.view.live_spectrum_display()['before_dbfs'],
+                         list(old_before))
+
+        new_before = (-20.0, -10.0, -3.0, -1.0)
+        new_after = (-18.0, -8.0, -2.0, -0.5)
+        louder = live_spectrum_frame(
+            new_before, new_after, media_frame=1480)
+        self.assertTrue(self.view.set_live_spectrum(louder))
+        display = self.view.live_spectrum_display()
+        attack = min(eq.LIVE_SPECTRUM_ATTACK_WEIGHT,
+                     eq.LIVE_SPECTRUM_MAX_SMOOTHING_WEIGHT)
+        for previous, current, actual in zip(
+                old_before, new_before, display['before_dbfs']):
+            expected = attack * previous + (1.0 - attack) * current
+            self.assertAlmostEqual(actual, expected, places=9)
+            self.assertGreater(actual, previous)
+            self.assertLess(actual, current)
+        louder_display = display
+
+        silence_before = (-96.0,) * 4
+        silence_after = (-96.0,) * 4
+        silent = live_spectrum_frame(
+            silence_before, silence_after, media_frame=1960)
+        self.assertTrue(self.view.set_live_spectrum(silent))
+        display = self.view.live_spectrum_display()
+        release = min(eq.LIVE_SPECTRUM_RELEASE_WEIGHT,
+                      eq.LIVE_SPECTRUM_MAX_SMOOTHING_WEIGHT)
+        for previous, actual in zip(louder_display['after_dbfs'],
+                                    display['after_dbfs']):
+            self.assertTrue(math.isfinite(previous))
+            self.assertTrue(math.isfinite(actual))
+        self.assertAlmostEqual(display['before_dbfs'][0],
+                               release * louder_display['before_dbfs'][0]
+                               + (1.0 - release) * -96.0,
+                               places=9)
+        self.assertAlmostEqual(display['after_dbfs'][0],
+                               release * louder_display['after_dbfs'][0]
+                               + (1.0 - release) * -96.0,
+                               places=9)
+
+        # Continued real silence converges exactly to the measured floor; no
+        # noise or synthetic spectrum is added to make a trace look active.
+        for offset in range(1, 81):
+            silent['media_frame'] = 1960 + offset
+            self.assertTrue(self.view.set_live_spectrum(silent))
+        steady = self.view.live_spectrum_display()
+        for value in steady['before_dbfs'] + steady['after_dbfs']:
+            self.assertAlmostEqual(value, -96.0, places=5)
+
+        # A transport gap starts a new segment instead of carrying an old
+        # smoothed line across a seek.
+        resumed = live_spectrum_frame(
+            new_before, new_after, media_frame=60000)
+        self.assertTrue(self.view.set_live_spectrum(resumed))
+        self.assertEqual(self.view.live_spectrum_display()['before_dbfs'],
+                         list(new_before))
+
+    def test_live_spectrum_invalid_values_clear_and_never_use_old_report(self):
+        legacy = spectrum_envelope([[-20.0, -10.0, -5.0]])
+        valid = live_spectrum_frame(
+            [-80.0, -60.0, -40.0, -20.0],
+            [-82.0, -58.0, -35.0, -12.0],
+            media_frame=2000,
+        )
+        cases = []
+        bad = copy.deepcopy(valid)
+        bad.pop('source')
+        cases.append(bad)
+        cases.append({**copy.deepcopy(valid), 'source': '   '})
+        cases.append({**copy.deepcopy(valid), 'sample_rate': 0})
+        cases.append({**copy.deepcopy(valid), 'sample_rate': float('nan')})
+        cases.append({**copy.deepcopy(valid), 'media_frame': -1})
+        cases.append({**copy.deepcopy(valid), 'media_frame': 1.5})
+        cases.append({**copy.deepcopy(valid), 'freq_hz': []})
+        cases.append({**copy.deepcopy(valid),
+                      'freq_hz': [20.0, 200.0, 200.0, 10000.0]})
+        cases.append({**copy.deepcopy(valid),
+                      'freq_hz': [-20.0, 200.0, 2000.0, 10000.0]})
+        cases.append({**copy.deepcopy(valid),
+                      'freq_hz': [20.0, 200.0, 2000.0, 24100.0]})
+        cases.append({**copy.deepcopy(valid),
+                      'before_dbfs': [-80.0, -60.0, -40.0]})
+        cases.append({**copy.deepcopy(valid),
+                      'before_dbfs': [-80.0, float('nan'), -40.0, -20.0]})
+        cases.append({**copy.deepcopy(valid),
+                      'after_dbfs': [-80.0, -60.0, float('inf'), -20.0]})
+        cases.append({**copy.deepcopy(valid), 'freq_hz': 'not bins'})
+
+        for bad in cases:
+            with self.subTest(bad=bad):
+                self.assertTrue(self.view.set_spectrum_envelope(legacy))
+                self.assertTrue(self.view.set_live_spectrum(valid))
+                self.assertFalse(self.view.set_live_spectrum(bad))
+                self.assertFalse(self.view.has_live_spectrum())
+                self.assertIsNone(self.view.live_spectrum())
+                self.assertIsNone(self.view.live_spectrum_display())
+                self.assertIsNone(self.view.spectrum_envelope())
+                self.assertIsNone(self.view.spectrum_frame())
+                self.assertEqual(self.view._spectrum_segments(), [])
+
+    def test_live_spectrum_draws_both_stages_dbfs_axis_and_keeps_editing(self):
+        palette = QPalette()
+        palette.setColor(QPalette.Window, QColor('#1c1f27'))
+        palette.setColor(QPalette.Base, QColor('#20242d'))
+        palette.setColor(QPalette.WindowText, QColor('#eef1f8'))
+        palette.setColor(QPalette.Text, QColor('#eef1f8'))
+        palette.setColor(QPalette.Highlight, QColor('#8a72ff'))
+        self.view.setPalette(palette)
+
+        def render():
+            image = QImage(640, 320, QImage.Format_ARGB32)
+            image.fill(QColor('#14161c'))
+            self.view.render(image)
+            settle()
+            return image
+
+        def max_distance(first, second, point):
+            distances = []
+            for delta_x in (-1, 0, 1):
+                for delta_y in (-1, 0, 1):
+                    position = QPoint(point.x() + delta_x,
+                                      point.y() + delta_y)
+                    one = first.pixelColor(position)
+                    two = second.pixelColor(position)
+                    distances.append(
+                        abs(one.red() - two.red())
+                        + abs(one.green() - two.green())
+                        + abs(one.blue() - two.blue()))
+            return max(distances)
+
+        centers = [QPointF(self.view.band_node_position(index))
+                   for index in range(4)]
+        baseline = render()
+        node_pixels = [baseline.pixelColor(center.toPoint())
+                       for center in centers]
+        frame = live_spectrum_frame(
+            [-70.0, -38.0, -22.0, -16.0],
+            [-74.0, -30.0, -16.0, -5.0],
+            media_frame=9000,
+        )
+        self.assertTrue(self.view.set_live_spectrum(frame))
+        before = self.view._live_spectrum_segments(eq.SPECTRUM_STAGE_BEFORE)
+        after = self.view._live_spectrum_segments(eq.SPECTRUM_STAGE_AFTER)
+        self.assertEqual(len(before), 1)
+        self.assertEqual(len(after), 1)
+        for point, frequency in zip(before[0], frame['freq_hz']):
+            self.assertAlmostEqual(
+                point.x(), self.view.frequency_to_x(frequency), places=6)
+        self.assertNotEqual(before[0][2].y(), after[0][2].y())
+
+        painted = render()
+        for index in (0, 2):
+            self.assertEqual(
+                painted.pixelColor(centers[index].toPoint()),
+                node_pixels[index],
+            )
+        self.assertEqual(
+            [self.view.band_node_position(index) for index in range(4)],
+            centers,
+        )
+        after_point = after[0][2].toPoint()
+        self.assertGreaterEqual(
+            max_distance(baseline, painted, after_point), 20)
+
+        plot = self.view.plot_rect()
+        axis_point = QPoint(
+            round(plot.right() + 1.5),
+            round(self.view.spectrum_db_to_y(-48.0)),
+        )
+        self.assertGreaterEqual(
+            max_distance(baseline, painted, axis_point), 20)
+        self.assertIn(eq.SPECTRUM_MIN_DBFS, eq.SPECTRUM_DBFS_GRID)
+        self.assertIn(eq.SPECTRUM_MAX_DBFS, eq.SPECTRUM_DBFS_GRID)
+
+        index = 2
+        start = self.view.band_node_position(index).toPoint()
+        old_band = self.view.bands()[index]
+        send_mouse(self.view, QEvent.MouseButtonPress, start,
+                   Qt.LeftButton, Qt.LeftButton)
+        send_mouse(self.view, QEvent.MouseMove, start + QPoint(18, -6),
+                   Qt.NoButton, Qt.LeftButton)
+        send_mouse(self.view, QEvent.MouseButtonRelease,
+                   start + QPoint(18, -6), Qt.LeftButton, Qt.NoButton)
+        new_band = self.view.bands()[index]
+        self.assertGreater(new_band['freq_hz'], old_band['freq_hz'])
+        self.assertGreater(new_band['gain_db'], old_band['gain_db'])
+        self.assertEqual(self.view.live_spectrum()['after_dbfs'],
+                         frame['after_dbfs'])
 
     def test_log_axis_and_gain_direction(self):
         plot = self.view.plot_rect()

@@ -59,7 +59,6 @@ sys.path[:0] = [str(pedalboard_root), str(APP / 'src')]
 try:
     import pedalboard  # noqa: F401 - verifies the explicitly selected dependency without installing it
     import audio_mixdown
-    import audio_mixdown_audition
 except Exception as error:
     print('ERROR: cannot import the isolated mixing dependency: ' + type(error).__name__ + ': ' + str(error))
     raise SystemExit(1)
@@ -1057,108 +1056,6 @@ class AudioMixdownContract(unittest.TestCase):
         self.assertFalse(list(self.root.glob('.audio-mixdown-*')))
         self.assertFalse(list(self.root.glob('*.part')))
         self.assertFalse(list(self.root.glob('*.tmp')))
-
-
-
-class AuditionTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix='mix-audition-')
-        self.root = Path(self.temp.name)
-        self.rate = 16000
-        self.vocals = [self.root / ('audition-vocal-%d.wav' % index) for index in range(1, 4)]
-        for index, path in enumerate(self.vocals, 1):
-            _write(path, _tone(1.8, self.rate, 180 + 90 * index, .045), self.rate)
-        self.backing = self.root / 'audition-backing.wav'
-        _write(self.backing, _tone(1.8, self.rate, 95, .03), self.rate)
-        self.cache = self.root / 'audition-cache'
-        self.outputs = []
-        self.request = _request(
-            self.vocals[0], self.backing, self.root / 'audition-after-1.wav',
-            reverb=.18, vocals=[
-                {'path': str(self.vocals[0]), 'gain_db': -1.0, 'offset_seconds': .02,
-                 'mute': False, 'solo': False, 'pan': -.25},
-                {'path': str(self.vocals[1]), 'gain_db': -3.0, 'offset_seconds': .10,
-                 'mute': False, 'solo': True, 'pan': .30},
-                {'path': str(self.vocals[2]), 'gain_db': 2.0, 'offset_seconds': 0.0,
-                 'mute': True, 'solo': False, 'pan': .0},
-            ])
-        self.request.update({
-            'eq_low_cut_hz': 70,
-            'eq_presence_db': 1.5,
-            'compression_strength': .25,
-            'instrumental_db': -5.0,
-            'instrumental_pan': .15,
-            'preview_start_seconds': .45,
-            'preview_duration_seconds': .55,
-        })
-
-    def tearDown(self):
-        self.temp.cleanup()
-
-    def _render(self, name):
-        before = self.root / ('audition-before-' + name + '.wav')
-        after = self.root / ('audition-after-' + name + '.wav')
-        request = copy.deepcopy(self.request)
-        request['output_path'] = str(after)
-        report = audio_mixdown_audition.render_audition_pair(
-            request, before, after, self.cache)
-        self.outputs.extend((before, after))
-        return report, before, after
-
-    def test_live_segment_uses_decode_cache_and_keeps_export_contract_separate(self):
-        source_hashes = {path: _digest(path) for path in (*self.vocals, self.backing)}
-        first, before1, after1 = self._render('1')
-        self.assertEqual({path: _digest(path) for path in source_hashes}, source_hashes)
-        self.assertFalse(first['cache_hit'])
-        self.assertEqual(first['schema'], 'vwa.audio_mixdown.audition/v1')
-        for path in (before1, after1):
-            audio, rate = _read(path)
-            self.assertEqual(rate, self.rate)
-            self.assertEqual(audio.shape[1], 2)
-            self.assertAlmostEqual(len(audio) / rate, .55, delta=.02)
-            self.assertLessEqual(float(np.max(np.abs(audio))), 10 ** (-1 / 20) + 1e-4)
-        self.assertEqual(first['after']['preview_start_seconds'], .45)
-        self.assertTrue(all(row['role'] in ('vocal', 'backing')
-                            for row in first['after']['meters']['tracks']))
-        audible = {row['role'] + ':' + str(row['index']): row['audible']
-                   for row in first['after']['tracks']}
-        self.assertFalse(audible['vocal:0'])
-        self.assertTrue(audible['vocal:1'])
-        self.assertFalse(audible['vocal:2'])
-        self.assertFalse(audible['backing:0'])
-        cache_files = sorted(path for path in first_cache_files(first, self.cache)
-                             if path.is_file())
-        self.assertGreaterEqual(len(cache_files), 4)
-        cache_mtimes = {path: path.stat().st_mtime_ns for path in cache_files}
-
-        self.request['vocals'][1]['gain_db'] = -7.5
-        second, before2, after2 = self._render('2')
-        self.assertTrue(second['cache_hit'])
-        self.assertTrue(before2.is_file() and after2.is_file())
-        self.assertEqual({path: path.stat().st_mtime_ns for path in cache_files},
-                         cache_mtimes)
-        self.assertAlmostEqual(second['after']['preview_start_seconds'], .45, places=4)
-        self.assertNotEqual(before1.read_bytes(), before2.read_bytes())
-
-    def test_source_change_invalidates_decode_cache(self):
-        first, _before, _after = self._render('1')
-        first_generation = first['cache_generation']
-        _write(self.vocals[1], _tone(1.8, self.rate, 880, .04), self.rate)
-        second, _before2, _after2 = self._render('2')
-        self.assertFalse(second['cache_hit'])
-        self.assertNotEqual(first_generation, second['cache_generation'])
-        self.assertTrue(all(path.is_file() for path in second_cache_files(second, self.cache)))
-
-
-def first_cache_files(report, cache_root):
-    generation = cache_root / report['cache_generation']
-    return sorted(generation.glob('*.wav'))
-
-
-def second_cache_files(report, cache_root):
-    return first_cache_files(report, cache_root)
-
-
 
 
 if __name__ == '__main__':

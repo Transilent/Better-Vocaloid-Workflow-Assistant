@@ -22,9 +22,9 @@ import time
 from typing import Any, Callable, Mapping
 import uuid
 
-from mixdown_audition_service import (
+from mixdown_transport import (
     AuditionServiceError,
-    MixdownAuditionService,
+    ResidentProcessClient,
     PROTOCOL_VERSION,
     ServiceUnavailable,
     TICK_HZ,
@@ -52,7 +52,7 @@ def _silent_probe_enabled() -> bool:
     return os.environ.get("VWA_REALTIME_SILENT_PROBE") == "1"
 
 
-class MixdownRealtimeService(MixdownAuditionService):
+class MixdownRealtimeService(ResidentProcessClient):
     """Nonblocking client for one resident realtime mixdown worker."""
 
     _WORKER_MODULE = "mixdown_realtime_service"
@@ -300,10 +300,12 @@ _RUNTIME_NATIVE_OUTPUT: Any = None
 
 
 def _load_worker_runtime() -> None:
-    """Load the same mixdown runtime as the resident audition service."""
-    from mixdown_audition_service import _load_worker_runtime as load_shared_runtime
+    """Load only the resident realtime runtime and its DSP dependencies."""
+    import numpy  # noqa: F401 - loaded before graph construction
+    import soundfile  # noqa: F401 - loaded before source preparation
+    import audio_mixdown as backend
 
-    load_shared_runtime()
+    backend._load_pedalboard()
     global _RUNTIME_GRAPH, _RUNTIME_SESSION, _RUNTIME_NATIVE_OUTPUT
     _RUNTIME_GRAPH = importlib.import_module("mixdown_realtime_graph")
     _RUNTIME_SESSION = importlib.import_module("mixdown_realtime_session")
@@ -1132,6 +1134,34 @@ class _RealtimeWorkerServer:
             self._parameter_control_by_revision.get(revision_value)
             if revision_value is not None else None
         )
+        telemetry = snapshot.get("telemetry")
+        if isinstance(telemetry, Mapping):
+            telemetry = dict(telemetry)
+            snapshot["telemetry"] = telemetry
+            submitted_media = (
+                native.get("media_frame") if isinstance(native, Mapping) else None
+            )
+            telemetry["media_frame"] = (
+                None if submitted_media is None else int(submitted_media)
+            )
+            try:
+                telemetry_revision = int(telemetry.get("parameter_revision"))
+            except (TypeError, ValueError):
+                telemetry_revision = None
+            telemetry["parameter_control_id"] = (
+                self._parameter_control_by_revision.get(telemetry_revision)
+                if telemetry_revision is not None else None
+            )
+            spectrum = telemetry.get("spectrum")
+            if isinstance(spectrum, Mapping):
+                spectrum = dict(spectrum)
+                spectrum["media_frame"] = telemetry["media_frame"]
+                telemetry["spectrum"] = spectrum
+            if submitted_media is None:
+                telemetry["status"] = (
+                    "pending_seek" if snapshot.get("media_frame") is None
+                    else "unavailable"
+                )
         snapshot["control_id"] = self._latest_control_id
         return snapshot
 

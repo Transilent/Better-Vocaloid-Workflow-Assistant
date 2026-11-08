@@ -17,7 +17,18 @@ import uuid
 
 from PyQt5.QtCore import QObject, pyqtSignal
 
-from mixdown_player import MediaStatus, PlaybackState
+class PlaybackState:
+    StoppedState = 0
+    PlayingState = 1
+    PausedState = 2
+
+
+class MediaStatus:
+    NoMedia = 1
+    LoadingMedia = 2
+    LoadedMedia = 3
+    EndOfMedia = 7
+    InvalidMedia = 8
 
 
 def native_output_path(root=None, environment=None):
@@ -247,6 +258,9 @@ class RealtimePreviewPlayer(QObject):
             return
         self.failed = True
         self.loading = self._ready = self._intent = False
+        # A rejected control request can leave the worker's previous graph
+        # alive. Stop its playback intent before presenting a stopped UI.
+        self._queue('pause')
         self._set_state(PlaybackState.StoppedState)
         self.errorOccurred.emit(str(message))
 

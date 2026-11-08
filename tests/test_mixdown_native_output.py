@@ -326,6 +326,28 @@ def test_null_pull_thread_is_serialized_with_write_and_seek() -> None:
         raise AssertionError('closed null output accepted pull()')
 
 
+def test_finite_end_marker_keeps_tail_and_real_xruns_distinct() -> None:
+    with NativeOutput(DLL_PATH, sample_rate=48000, channels=2, capacity_frames=256,
+                      period_frames=64, mode='null') as output:
+        output.seek(0, epoch=1)
+        output.mark_end(37, epoch=1)
+        samples = np.full((37, 2), .125, dtype=np.float32)
+        assert output.write(samples, epoch=1, start_frame=0) == 37
+        output.set_playing(True)
+        pcm = output.pull(64)
+        assert np.array_equal(pcm[:37], samples)
+        assert not np.any(pcm[37:])
+        state = output.snapshot()
+        assert state['media_frame'] == 37 and not state['playing']
+        assert state['underrun_frames'] == 0
+        output.pull(64)
+        assert output.snapshot()['media_frame'] == 37
+        output.seek(0, epoch=2)
+        output.set_playing(True)
+        output.pull(64)
+        assert output.snapshot()['underrun_frames'] == 64
+
+
 def test_clean_path_dll_load() -> None:
     runtime = Path(sys.executable).parent
     clean_path = os.pathsep.join([str(runtime), str(runtime / 'DLLs'), str(Path(os.environ['WINDIR']) / 'System32')])
@@ -382,6 +404,7 @@ if __name__ == '__main__':
     test_null_wrapper()
     test_mock_wasapi_error_surfaces_without_recreation()
     test_null_pull_thread_is_serialized_with_write_and_seek()
+    test_finite_end_marker_keeps_tail_and_real_xruns_distinct()
     test_clean_path_dll_load()
     test_optional_silent_wasapi()
     print('PASS: native null output, device failure contract, concurrent serialization and clean-path DLL load')

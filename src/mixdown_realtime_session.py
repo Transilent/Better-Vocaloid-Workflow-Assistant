@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections import deque
 import copy
+import math
 import os
 import threading
 import time
@@ -15,16 +16,36 @@ from typing import Any
 from audio_mixdown import PEAK_CEILING
 
 
+TELEMETRY_SCHEMA = 'vwa.audio_mixdown.realtime-telemetry/v1'
+TELEMETRY_SOURCE = 'realtime_dsp'
+TELEMETRY_HISTORY_BLOCKS = 256
+
+
 class RealtimeSessionError(RuntimeError):
     pass
 
 
-def _copy_state(state):
-    """Copy mutable telemetry without recursively visiting thousands of floats."""
-    result = copy.deepcopy({key: value for key, value in state.items() if key != 'render_ms'})
-    if 'render_ms' in state:
-        result['render_ms'] = list(state['render_ms'])
-    return result
+_SNAPSHOT_SCALARS = frozenset((int, float, str, bool, type(None)))
+
+
+def _copy_state(value):
+    """Isolate JSON telemetry containers while copying flat numeric arrays once.
+
+    FFT, EDC and timing arrays contain immutable scalars. Deepcopy's per-float
+    dispatch and memo bookkeeping on every producer/poller iteration needlessly
+    compete with DSP for the GIL. Nested containers still receive independent
+    copies; unexpected extension values retain deepcopy's original semantics.
+    """
+    kind = type(value)
+    if kind in _SNAPSHOT_SCALARS:
+        return value
+    if kind is dict:
+        return {key: _copy_state(item) for key, item in value.items()}
+    if kind is list:
+        if all(type(item) in _SNAPSHOT_SCALARS for item in value):
+            return list(value)
+        return [_copy_state(item) for item in value]
+    return copy.deepcopy(value)
 
 
 class RealtimeAuditionSession:
@@ -56,6 +77,7 @@ class RealtimeAuditionSession:
         self._done = threading.Event()
         self._closing = threading.Event()
         self._commands: deque = deque()
+        self._telemetry_blocks: deque = deque(maxlen=TELEMETRY_HISTORY_BLOCKS)
         self._seek_serial = 0
         self._parameter_serial = 0
         self._thread = None
@@ -67,6 +89,9 @@ class RealtimeAuditionSession:
             'max_queue_frames': 0, 'error': None,
             'clock_quality': 'native_callback_submitted_media_not_acoustic',
         }
+        self._snapshot['telemetry'] = self._telemetry_snapshot(
+            self._snapshot, 0, initial.get('media_frame') if isinstance(initial, dict) else None
+        )
 
     def _configure_output(self):
         initial = dict(self._output.snapshot())
@@ -77,8 +102,18 @@ class RealtimeAuditionSession:
                 or int(initial['channels']) != int(renderer.channels)):
             raise ValueError('renderer/output rate or channel count differs')
         capacity = int(initial['capacity_frames'])
-        target = (max(self.block_frames * 2, int(initial.get('period_frames', 0)) * 2)
-                  if self._requested_queue_frames is None else int(self._requested_queue_frames))
+        if self._requested_queue_frames is None:
+            # The requested callback quantum may be smaller than WASAPI's
+            # actual shared-device period. Keep three real device periods,
+            # converted to source frames, with a bounded DSP-sized margin.
+            actual_rate = int(initial.get('actual_device_sample_rate') or renderer.sample_rate)
+            actual_period = int(initial.get('actual_device_period_frames') or
+                                initial.get('period_frames') or self.block_frames)
+            period = int(math.ceil(actual_period * int(renderer.sample_rate) / actual_rate))
+            target = min(capacity // self.block_frames * self.block_frames,
+                         max(self.block_frames * 3, period * 3))
+        else:
+            target = int(self._requested_queue_frames)
         target = ((target + self.block_frames - 1) // self.block_frames) * self.block_frames
         if not self.block_frames <= target <= capacity:
             raise ValueError('target queue must fit the native ring and one DSP block')
@@ -153,6 +188,163 @@ class RealtimeAuditionSession:
     def _publish(self, state):
         with self._lock:
             self._snapshot = _copy_state(state)
+
+    def _telemetry_record_for_frame(self, media_frame, epoch):
+        if media_frame is None:
+            return None
+        frame = int(media_frame)
+        if frame <= 0:
+            return None
+        # Records and the native media cursor are monotonic inside one epoch.
+        # Advance the left edge as the callback consumes blocks: total work is
+        # amortized O(1), with no scan of the bounded history per snapshot.
+        while len(self._telemetry_blocks) > 1:
+            head = self._telemetry_blocks[0]
+            following = self._telemetry_blocks[1]
+            if (int(head.get('session_epoch', -1)) != int(epoch)
+                    or int(following.get('session_epoch', -1)) != int(epoch)):
+                self._telemetry_blocks.popleft()
+                continue
+            if int(following.get('frame_start', frame + 1)) < frame:
+                self._telemetry_blocks.popleft()
+                continue
+            break
+        if not self._telemetry_blocks:
+            return None
+        record = self._telemetry_blocks[0]
+        if (int(record.get('session_epoch', -1)) != int(epoch)
+                or int(record.get('frame_start', frame + 1)) >= frame
+                or int(record.get('frame_end', -1)) < frame):
+            return None
+        return record
+
+    def _telemetry_snapshot(self, state, epoch, media_frame):
+        sample_rate = int(self._renderer.sample_rate)
+        duration_frames = int(self._renderer.duration_frames)
+        record = self._telemetry_record_for_frame(media_frame, epoch)
+        if record is None:
+            status = ('pending_seek' if state.get('state') == 'preparing'
+                      else 'not_submitted' if media_frame is not None else 'unavailable')
+            return {
+                'schema': TELEMETRY_SCHEMA,
+                'source': TELEMETRY_SOURCE,
+                'sample_rate': sample_rate,
+                'media_frame': None if media_frame is None else int(media_frame),
+                'parameter_revision': int(state.get('parameter_revision', 0)),
+                'position_ms': (0.0 if media_frame is None else
+                                round(int(media_frame) * 1000.0 / sample_rate, 3)),
+                'duration_ms': round(duration_frames * 1000.0 / sample_rate, 3),
+                'history_epoch': int(epoch),
+                'status': status,
+                'tracks': [],
+                'bus': {'peak_dbfs': None, 'rms_dbfs': None,
+                        'limiter_gr_db': None},
+                'spectrum': {
+                    'freq_hz': [], 'before_dbfs': [], 'after_dbfs': [],
+                    'source': 'dsp_fft_pre_post_eq', 'sample_rate': sample_rate,
+                    'media_frame': None if media_frame is None else int(media_frame),
+                    'window_start_frame': None, 'window_end_frame': None,
+                    'interval_ms': 100.0, 'bins': 0, 'fft_size': None,
+                },
+                'reverb': {
+                    'enabled': False, 'mix': 0.0,
+                    'send_rms_dbfs': None, 'send_peak_dbfs': None,
+                    'return_rms_dbfs': None, 'return_peak_dbfs': None,
+                    'dry_rms_dbfs': None, 'measured_wet_fraction': None,
+                    'wet_to_dry_db': None,
+                    'kernel_edc': {'available': False, 'measured': False,
+                                   'reason': 'no_submitted_telemetry'},
+                },
+                'dynamics': {},
+            }
+        frame = int(media_frame)
+        bus_source = record.get('bus') if isinstance(record.get('bus'), dict) else {}
+        bus = {
+            'peak_dbfs': bus_source.get('peak_dbfs'),
+            'rms_dbfs': bus_source.get('rms_dbfs'),
+            'limiter_gr_db': bus_source.get('limiter_gr_db'),
+            'pre_limiter': dict(bus_source.get('pre_limiter') or {}),
+            'post_limiter': dict(bus_source.get('post_limiter') or {}),
+            'final_output': dict(bus_source.get('final_output') or {}),
+        }
+        tracks = []
+        for row in record.get('tracks') or ():
+            if not isinstance(row, dict):
+                continue
+            tracks.append({
+                'role': str(row.get('role', 'vocal')),
+                'index': int(row.get('index', 0)),
+                'peak_dbfs': row.get('peak_dbfs'),
+                'rms_dbfs': row.get('rms_dbfs'),
+                'gr_db': row.get('gr_db', 0.0),
+                'audible': bool(row.get('audible', False)),
+                'stage': row.get('stage'),
+            })
+        source_spectrum = record.get('spectrum')
+        if not isinstance(source_spectrum, dict):
+            source_spectrum = {}
+        frequencies = source_spectrum.get('freq_hz')
+        if frequencies is None:
+            frequencies = source_spectrum.get('frequency_hz', [])
+        freq_hz = list(frequencies or ())
+        spectrum = {
+            'freq_hz': freq_hz,
+            'before_dbfs': list(source_spectrum.get('before_dbfs') or ()),
+            'after_dbfs': list(source_spectrum.get('after_dbfs') or ()),
+            'source': str(source_spectrum.get('source') or 'dsp_fft_pre_post_eq'),
+            'sample_rate': sample_rate,
+            'media_frame': frame,
+            'window_start_frame': source_spectrum.get('window_start_frame'),
+            'window_end_frame': source_spectrum.get('window_end_frame'),
+            'interval_ms': float(source_spectrum.get('interval_ms', 100.0)),
+            'bins': int(source_spectrum.get('bins', len(freq_hz))),
+            'fft_size': source_spectrum.get('fft_size'),
+        }
+        reverb_source = record.get('reverb')
+        reverb = dict(reverb_source) if isinstance(reverb_source, dict) else {}
+        live = dict(reverb.get('live') or {})
+        reverb.update({
+            'enabled': bool(reverb.get('enabled', False)),
+            'mix': float(reverb.get('mix', 0.0)),
+            'send_rms_dbfs': live.get('send_rms_dbfs'),
+            'send_peak_dbfs': live.get('send_peak_dbfs'),
+            'return_rms_dbfs': live.get('wet_rms_dbfs'),
+            'return_peak_dbfs': live.get('wet_peak_dbfs'),
+            'dry_rms_dbfs': live.get('dry_rms_dbfs'),
+            'measured_wet_fraction': live.get('measured_wet_fraction'),
+            'wet_to_dry_db': live.get('wet_to_dry_db'),
+        })
+        kernel = dict(reverb.get('kernel_edc') or {})
+        get_kernel = getattr(self._renderer, 'reverb_measurement', None)
+        if callable(get_kernel) and reverb.get('enabled'):
+            current_kernel = get_kernel()
+            if (isinstance(current_kernel, dict)
+                    and current_kernel.get('effects_rebuild_count')
+                    == kernel.get('effects_rebuild_count')):
+                kernel = dict(current_kernel)
+        kernel.setdefault('available', False)
+        kernel.setdefault('measured', False)
+        if not kernel.get('available'):
+            kernel.setdefault('reason', 'reverb_kernel_measurement_pending')
+        reverb['kernel_edc'] = kernel
+        return {
+            'schema': TELEMETRY_SCHEMA,
+            'source': TELEMETRY_SOURCE,
+            'sample_rate': sample_rate,
+            'media_frame': frame,
+            'parameter_revision': int(record.get('parameter_revision', 0)),
+            'position_ms': round(frame * 1000.0 / sample_rate, 3),
+            'duration_ms': round(duration_frames * 1000.0 / sample_rate, 3),
+            'history_epoch': int(epoch),
+            'status': 'ready',
+            'render_frame_start': int(record.get('frame_start', 0)),
+            'render_frame_end': int(record.get('frame_end', 0)),
+            'tracks': tracks,
+            'bus': bus,
+            'spectrum': spectrum,
+            'reverb': reverb,
+            'dynamics': dict(record.get('dynamics') or {}),
+        }
 
     def close(self, timeout=5.0):
         if self._done.is_set():
@@ -240,6 +432,9 @@ class RealtimeAuditionSession:
                 if latest_volume is not None:
                     self._renderer.set_volume(latest_volume)
                 if latest_parameters:
+                    mark_end = getattr(self._output, 'mark_end', None)
+                    if callable(mark_end):
+                        mark_end(None, epoch=epoch)
                     (revision, (prepared, request, validation_ms)), at = latest_parameters
                     start = time.perf_counter()
                     if prepared:
@@ -264,6 +459,7 @@ class RealtimeAuditionSession:
                     actual_playing = False
                     prefilling = True
                     epoch += 1
+                    self._telemetry_blocks.clear()
                     self._output.seek(frame=frame, epoch=epoch)
                     self._renderer.seek(frame)
                     if latest_parameters:
@@ -289,6 +485,16 @@ class RealtimeAuditionSession:
                     before = time.perf_counter()
                     pending = self._np.ascontiguousarray(self._renderer.render(count), dtype='float32')
                     render_times.append((time.perf_counter() - before) * 1000.0)
+                    get_telemetry = getattr(self._renderer, 'telemetry_for_range', None)
+                    if callable(get_telemetry):
+                        telemetry = get_telemetry(pending_start, pending_start + count)
+                        if isinstance(telemetry, dict):
+                            telemetry = dict(telemetry)
+                            telemetry['parameter_revision'] = int(
+                                state.get('parameter_revision', 0)
+                            )
+                            telemetry['session_epoch'] = int(epoch)
+                            self._telemetry_blocks.append(telemetry)
                     if pending.shape != (count, int(self._renderer.channels)):
                         raise RealtimeSessionError('renderer returned an invalid PCM shape')
                     peak = float(self._np.max(self._np.abs(pending))) if count else 0.0
@@ -303,6 +509,10 @@ class RealtimeAuditionSession:
                     state['rendered_frames'] += count
                 wrote = 0
                 if pending is not None:
+                    if int(self._renderer.position_frame) >= int(self._renderer.duration_frames):
+                        mark_end = getattr(self._output, 'mark_end', None)
+                        if callable(mark_end):
+                            mark_end(int(self._renderer.duration_frames), epoch=epoch)
                     wrote = int(self._output.write(
                         pending[pending_offset:], epoch=epoch,
                         start_frame=pending_start + pending_offset))
@@ -328,7 +538,8 @@ class RealtimeAuditionSession:
                     self._output.set_playing(True)
                     actual_playing = True
                     prefilling = False
-                if actual_playing and at_end and pending is None and queued == 0:
+                drained = queued == 0 or int(native.get('media_frame', 0)) >= int(self._renderer.duration_frames)
+                if actual_playing and at_end and pending is None and drained:
                     self._output.set_playing(False)
                     actual_playing = intent = False
                     state['state'] = 'ended'
@@ -347,6 +558,9 @@ class RealtimeAuditionSession:
                     if last['phase'] != 'submitted':
                         last.update(phase='submitted', submitted_at=time.perf_counter())
                         last['request_to_submit_ms'] = (last['submitted_at'] - last['requested_at']) * 1000
+                state['telemetry'] = self._telemetry_snapshot(
+                    state, epoch, native.get('media_frame')
+                )
                 state.update(native=native, play_intent=intent,
                              max_queue_frames=max(state['max_queue_frames'], queued),
                              renderer_frame=int(self._renderer.position_frame),

@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -59,7 +60,8 @@ try:
     import soundfile as sf
     import pedalboard  # noqa: F401 - dependency is injected explicitly below
     import audio_mixdown as backend
-    import audio_mixdown_audition as audition
+    import mixdown_sources as audition
+    import mixdown_realtime_graph as realtime_graph
     import mixdown_realtime_renderer as realtime
 except Exception as error:
     print(
@@ -352,7 +354,8 @@ class PreLimiterMixSessionTests(unittest.TestCase):
             path.relative_to(self.cache).as_posix(): (
                 path.stat().st_size, path.stat().st_mtime_ns,
             )
-            for path in self.cache.rglob("*") if path.is_file()
+            for path in self.cache.rglob("*")
+            if path.is_file() and "analysis" not in path.relative_to(self.cache).parts
         }
         rebuild_before = session.effect_rebuild_count
         routed = self._request(
@@ -387,7 +390,8 @@ class PreLimiterMixSessionTests(unittest.TestCase):
             path.relative_to(self.cache).as_posix(): (
                 path.stat().st_size, path.stat().st_mtime_ns,
             )
-            for path in self.cache.rglob("*") if path.is_file()
+            for path in self.cache.rglob("*")
+            if path.is_file() and "analysis" not in path.relative_to(self.cache).parts
         }
         self.assertEqual(cache_after, cache_before)
 
@@ -427,7 +431,17 @@ class PreLimiterMixSessionTests(unittest.TestCase):
 
         structural = copy.deepcopy(changed)
         structural["compression_strength"] = 0.81
-        session.set_parameters(structural)
+        prepared = session.prepare_parameters(structural)
+        self.assertIsNotNone(prepared.effects)
+        candidate_ids = (
+            id(prepared.effects.eq_chain),
+            id(prepared.effects.compressor),
+            id(prepared.effects.reverb),
+        )
+        session.apply_parameters(prepared)
+        self.assertEqual(candidate_ids, (
+            id(session._eq_chain), id(session._compressor), id(session._reverb),
+        ))
         rebuilt = session.snapshot()
         self.assertEqual(
             rebuilt["effect_rebuild_count"],
@@ -438,6 +452,15 @@ class PreLimiterMixSessionTests(unittest.TestCase):
             rebuilt["last_warmup"]["reason"], "structural_parameter_change",
         )
         self.assertGreater(rebuilt["last_warmup"]["warmup_frames"], 0)
+        self.assertLessEqual(
+            rebuilt["last_warmup"]["warmup_frames"],
+            int(round(realtime.REALTIME_DEFAULT_WARMUP_MAX_SECONDS * self.rate)),
+        )
+        self.assertTrue(rebuilt["reverb_kernel_edc"]["available"])
+        self.assertEqual(
+            rebuilt["reverb_kernel_edc"]["effects_rebuild_count"],
+            baseline["reverb_kernel_edc"]["effects_rebuild_count"],
+        )
 
     def test_source_identity_cache_and_post_prepare_io_contract(self):
         request = self._request()
@@ -445,7 +468,8 @@ class PreLimiterMixSessionTests(unittest.TestCase):
         token = first.source_token
         cache_files_before = sorted(
             path.relative_to(self.cache).as_posix()
-            for path in self.cache.rglob("*") if path.is_file()
+            for path in self.cache.rglob("*")
+            if path.is_file() and "analysis" not in path.relative_to(self.cache).parts
         )
         with mock.patch.object(
             backend, "_run_ffmpeg",
@@ -457,7 +481,8 @@ class PreLimiterMixSessionTests(unittest.TestCase):
             first.set_parameters(changed)
         cache_files_after = sorted(
             path.relative_to(self.cache).as_posix()
-            for path in self.cache.rglob("*") if path.is_file()
+            for path in self.cache.rglob("*")
+            if path.is_file() and "analysis" not in path.relative_to(self.cache).parts
         )
         self.assertEqual(cache_files_after, cache_files_before)
         first.close()
@@ -557,6 +582,131 @@ class PreLimiterMixSessionTests(unittest.TestCase):
         other = self._session(self._request())
         with self.assertRaises(ValueError):
             other.apply_parameters(plan)
+
+    def test_real_dsp_telemetry_tracks_pre_post_spectrum_and_reverb(self):
+        session = self._session(self._request())
+        session.seek(10000, preroll_frames=5000)
+        self.assertIsNone(session.telemetry_for_range(5000, 10000))
+        session.seek(0, preroll_frames=0)
+        session.render(4800)
+        telemetry = session.telemetry_for_range(0, 4800)
+        self.assertIsInstance(telemetry, dict)
+        telemetry = session.telemetry_for_range(0, 4800)
+        self.assertIsInstance(telemetry, dict)
+        self.assertEqual(telemetry['source'], 'realtime_dsp')
+        self.assertEqual((telemetry['frame_start'], telemetry['frame_end']), (0, 4800))
+        self.assertEqual(len(telemetry['tracks']), 4)
+        self.assertEqual(
+            [(row['role'], row['index']) for row in telemetry['tracks']],
+            [('vocal', 0), ('vocal', 1), ('vocal', 2), ('backing', 0)],
+        )
+        for row in telemetry['tracks']:
+            self.assertTrue(np.isfinite(row['peak_dbfs']))
+            self.assertTrue(np.isfinite(row['rms_dbfs']))
+            self.assertGreaterEqual(row['rms_dbfs'], backend.SILENCE_DBFS)
+            self.assertGreaterEqual(row['peak_dbfs'], row['rms_dbfs'])
+            self.assertGreaterEqual(row['gr_db'], 0.0)
+        self.assertTrue(np.isfinite(telemetry['bus']['pre_limiter']['peak_dbfs']))
+        self.assertTrue(np.isfinite(telemetry['bus']['pre_limiter']['rms_dbfs']))
+        compressor = telemetry['dynamics']['compressor']
+        self.assertTrue(compressor['enabled'])
+        self.assertEqual(compressor['scope'], 'shared_vocal_bus')
+        self.assertEqual(compressor['method'], 'aligned_rms_db_difference')
+        self.assertGreaterEqual(compressor['gr_db'], 0.0)
+        spectrum = telemetry['spectrum']
+        self.assertEqual(spectrum['source'], 'dsp_fft_pre_post_eq')
+        self.assertEqual(spectrum['window_start_frame'], 0)
+        self.assertEqual(spectrum['window_end_frame'], 4800)
+        self.assertEqual(len(spectrum['frequency_hz']), spectrum['bins'])
+        self.assertEqual(len(spectrum['before_dbfs']), spectrum['bins'])
+        self.assertEqual(len(spectrum['after_dbfs']), spectrum['bins'])
+        self.assertGreater(
+            float(np.max(np.abs(np.asarray(spectrum['before_dbfs'])
+                                - np.asarray(spectrum['after_dbfs'])))),
+            0.01,
+        )
+        reverb = telemetry['reverb']['live']
+        self.assertGreater(reverb['send_rms_dbfs'], backend.SILENCE_DBFS)
+        self.assertGreaterEqual(reverb['measured_wet_fraction'], 0.0)
+        self.assertLessEqual(reverb['measured_wet_fraction'], 1.0)
+        self.assertEqual(reverb['level_ratio_method'], 'reverb_blend_energy_fraction')
+        kernel = session.snapshot()['reverb_kernel_edc']
+        self.assertFalse(kernel.get('measuring'), kernel)
+        self.assertTrue(kernel.get('available'), kernel)
+        self.assertTrue(kernel.get('measured'), kernel)
+        self.assertEqual(kernel.get('excitation'), 'unit_impulse')
+        self.assertEqual(kernel.get('method'), 'actual_pedalboard_reverb_impulse_response')
+        self.assertGreater(len(kernel.get('edc_db', [])), 1)
+        self.assertFalse(hasattr(session, '_reverb_ir_thread'))
+
+    def test_reverb_profile_change_measures_on_control_and_ab_restores_cache(self):
+        session = self._session(self._request())
+        initial = session.snapshot()['reverb_kernel_edc']
+        self.assertTrue(initial['available'])
+        changed = self._request(reverb_profile='natural', reverb_predelay_ms=25.0)
+        prepared = session.prepare_parameters(changed)
+        self.assertIsNotNone(prepared.effects)
+        self.assertTrue(prepared.reverb_edc['available'])
+        self.assertEqual(prepared.reverb_edc['profile'], 'natural')
+        self.assertEqual(session.snapshot()['reverb_kernel_edc']['profile'], 'wide')
+        session.apply_parameters(prepared)
+        natural = session.snapshot()['reverb_kernel_edc']
+        self.assertTrue(natural['available'])
+        self.assertEqual(natural['profile'], 'natural')
+        natural_key = natural['key']
+
+        before = copy.deepcopy(changed)
+        before['eq_bands'] = []
+        before['compression_strength'] = 0.0
+        before['reverb_mix'] = 0.0
+        session.apply_parameters(session.prepare_parameters(before))
+        disabled = session.snapshot()['reverb_kernel_edc']
+        self.assertFalse(disabled['available'])
+        self.assertEqual(disabled['reason'], 'reverb_is_disabled')
+
+        with mock.patch.object(
+            realtime, '_measure_reverb_edc_chunked',
+            side_effect=AssertionError('A/B restore remeasured an unchanged IR'),
+        ):
+            restored = session.prepare_parameters(changed)
+            session.apply_parameters(restored)
+        current = session.snapshot()['reverb_kernel_edc']
+        self.assertTrue(current['available'])
+        self.assertEqual(current['key'], natural_key)
+
+    def test_real_pre_limiter_and_limiter_pipeline_emits_one_frame_keyed_record(self):
+        dll = APP / "components/native-audio/vwa_native_output.dll"
+        if not dll.with_name("vwa_limiter.dll").is_file():
+            self.skipTest("native limiter is unavailable")
+        request = self._request()
+        graph = realtime_graph.LimitedMixSession(
+            request,
+            self.cache,
+            dll,
+            ffmpeg=self.ffmpeg,
+            renderer_factory=lambda value, cache_dir, ffmpeg=None: realtime.PreLimiterMixSession(
+                value, cache_dir, numpy=np, soundfile=sf,
+                pedalboard=pedalboard, ffmpeg=ffmpeg,
+            ),
+        )
+        self.addCleanup(graph.close)
+        output = graph.render(4800)
+        telemetry = graph.telemetry_for_range(0, 4800)
+        self.assertEqual(output.shape, (4800, 2))
+        self.assertEqual((telemetry['frame_start'], telemetry['frame_end']), (0, 4800))
+        self.assertEqual(len(telemetry['tracks']), 4)
+        self.assertEqual(telemetry['dynamics']['compressor']['scope'], 'shared_vocal_bus')
+        self.assertEqual(telemetry['dynamics']['limiter']['method'],
+                         'aligned_rms_db_difference')
+        self.assertGreaterEqual(telemetry['dynamics']['limiter']['gr_db'], 0.0)
+        self.assertEqual(len(telemetry['spectrum']['frequency_hz']),
+                         telemetry['spectrum']['bins'])
+        self.assertEqual(telemetry['spectrum']['window_end_frame'], 4800)
+        self.assertIsNotNone(telemetry['bus']['pre_limiter'])
+        self.assertIsNotNone(telemetry['bus']['post_limiter'])
+        self.assertEqual(telemetry['bus']['peak_dbfs'],
+                         telemetry['bus']['final_output']['peak_dbfs'])
+        graph.close()
 
     def test_close_is_idempotent_and_rejects_later_render(self):
         session = self._session(self._request())

@@ -1,10 +1,10 @@
 """Interactive four-band equalizer curve for the VWA mixdown inspector.
 
 The widget is deliberately backend-neutral. It owns the visible band
-dictionaries plus a validated, segment-relative spectrum envelope, paints with
-QPainter, and reports user edits. Audio generation, spectrum measurement,
-audition throttling, and persistence stay with the host UI; visible strings
-use the shared project catalog.
+dictionaries, accepts an explicit frame of measured live DSP spectra, and paints
+with QPainter. Audio generation, spectrum measurement, audition throttling, and
+persistence stay with the host UI; visible strings use the shared project
+catalog. Live spectra never fall back to an older audition report.
 
 Band dictionaries follow the mixdown request contract::
 
@@ -59,6 +59,16 @@ SPECTRUM_STAGES = (SPECTRUM_STAGE_BEFORE, SPECTRUM_STAGE_AFTER)
 SPECTRUM_STAGE = SPECTRUM_STAGE_AFTER
 SPECTRUM_MIN_DBFS = -96.0
 SPECTRUM_MAX_DBFS = 0.0
+SPECTRUM_DBFS_GRID = (0.0, -24.0, -48.0, -72.0, -96.0)
+LIVE_SPECTRUM_MAX_BINS = 4096
+LIVE_SPECTRUM_SOURCE_MAX_LENGTH = 96
+# Previous-frame weights for temporal display smoothing. Both are deliberately
+# below the cap; measured frames are never replaced by generated values.
+LIVE_SPECTRUM_ATTACK_WEIGHT = 0.38
+LIVE_SPECTRUM_RELEASE_WEIGHT = 0.72
+LIVE_SPECTRUM_MAX_SMOOTHING_WEIGHT = 0.82
+LIVE_SPECTRUM_RESET_AFTER_SECONDS = 0.75
+SPECTRUM_AXIS_WIDTH = 40.0
 NODE_DIAMETER = 12.0
 HIT_RADIUS = 22.0
 MIN_WIDGET_WIDTH = 320
@@ -111,7 +121,12 @@ __all__ = [
     'MAX_BANDS', 'MAX_FREQUENCY_HZ', 'MAX_GAIN_DB', 'MAX_Q',
     'MIN_FREQUENCY_HZ', 'MIN_GAIN_DB', 'MIN_Q', 'MIN_WIDGET_HEIGHT',
     'MIN_WIDGET_WIDTH', 'NODE_DIAMETER', 'Q_LOCKED_TYPES',
-    'RESPONSE_POINTS', 'SPECTRUM_MAX_DBFS', 'SPECTRUM_MIN_DBFS',
+    'LIVE_SPECTRUM_ATTACK_WEIGHT', 'LIVE_SPECTRUM_MAX_BINS',
+    'LIVE_SPECTRUM_MAX_SMOOTHING_WEIGHT',
+    'LIVE_SPECTRUM_RELEASE_WEIGHT', 'LIVE_SPECTRUM_RESET_AFTER_SECONDS',
+    'LIVE_SPECTRUM_SOURCE_MAX_LENGTH', 'RESPONSE_POINTS',
+    'SPECTRUM_AXIS_WIDTH', 'SPECTRUM_DBFS_GRID',
+    'SPECTRUM_MAX_DBFS', 'SPECTRUM_MIN_DBFS',
     'SPECTRUM_SCHEMA', 'SPECTRUM_STAGE', 'SPECTRUM_STAGE_AFTER',
     'SPECTRUM_STAGE_BEFORE', 'SPECTRUM_STAGES', 'band_response_db',
     'biquad_coefficients', 'default_bands',
@@ -380,10 +395,11 @@ class EQCurveView(QWidget):
     allowing the host to merge/render only once at release while auditioning
     every intermediate ``bandsChanged`` snapshot.
 
-    A measured ``vocal_before_eq`` or ``vocal_after_eq`` spectrum may be
-    supplied with :meth:`set_spectrum_envelope` and advanced with
-    :meth:`set_spectrum_playhead`. It is painted behind the EQ traces and
-    nodes without changing the band geometry or edit gestures.
+    A live DSP measurement is supplied one frame at a time with
+    :meth:`set_live_spectrum`; the same frame contains both pre-EQ and post-EQ
+    dBFS arrays and is painted behind the EQ traces and nodes. The older
+    ``set_spectrum_envelope`` path remains available for legacy report callers,
+    but a live update never falls back to that report data.
     """
 
     bandsChanged = pyqtSignal(object)
@@ -414,6 +430,8 @@ class EQCurveView(QWidget):
         self._drag_frequency = 0.0
         self._drag_gain = 0.0
         self._playhead: Optional[float] = None
+        self._live_spectrum: Optional[dict[str, Any]] = None
+        self._live_spectrum_display: Optional[dict[str, Any]] = None
         self._spectrum_envelope: Optional[dict[str, Any]] = None
         self._spectrum_frame_index: Optional[int] = None
         self._spectrum_playhead_ms: Optional[float] = None
@@ -507,6 +525,245 @@ class EQCurveView(QWidget):
         """Effective upper frequency shared with the renderer at this rate."""
         return eq_frequency_limit_hz(self._sample_rate)
 
+    def set_live_spectrum(
+        self, frame: Optional[Mapping[str, Any]],
+    ) -> bool:
+        """Replace the display with one measured live DSP spectrum frame.
+
+        The expected shape is::
+
+            {
+                'source': 'pedalboard_eq',       # actual active DSP
+                'sample_rate': 48000,
+                'media_frame': 123456,
+                'freq_hz': (20.0, 23.4, ...),
+                'before_dbfs': (-84.0, -79.2, ...),
+                'after_dbfs': (-80.0, -74.1, ...),
+            }
+
+        Frequency bins must be ascending and lie at or below Nyquist. A single
+        leading DC bin at 0 Hz is accepted and omitted from the log-frequency
+        display. ``None`` clears the live trace. Invalid frames clear all
+        spectrum data and return ``False``; stale live data and legacy report
+        envelopes are never used as a fallback in a player callback.
+        """
+        if frame is None:
+            self._clear_spectrum_state()
+            self._refresh_accessibility()
+            self.update()
+            return False
+        try:
+            normalized = self._normalize_live_spectrum_frame(frame)
+        except (TypeError, ValueError, OverflowError):
+            self._clear_spectrum_state()
+            self._refresh_accessibility()
+            self.update()
+            return False
+
+        self.set_sample_rate(normalized['sample_rate'])
+        display = self._smooth_live_spectrum(normalized)
+        # A live frame is authoritative even when a legacy report was present.
+        self._spectrum_envelope = None
+        self._spectrum_frame_index = None
+        self._spectrum_playhead_ms = None
+        self._spectrum_playing = False
+        self._live_spectrum = normalized
+        self._live_spectrum_display = display
+        self._refresh_accessibility()
+        self.update()
+        return True
+
+    def set_live_spectrum_frame(
+        self, frame: Optional[Mapping[str, Any]],
+    ) -> bool:
+        """Compatibility alias for :meth:`set_live_spectrum`."""
+        return self.set_live_spectrum(frame)
+
+    def clear_live_spectrum(self) -> None:
+        """Remove the live and legacy spectrum traces."""
+        self.set_live_spectrum(None)
+
+    def has_live_spectrum(self) -> bool:
+        return self._live_spectrum is not None
+
+    @staticmethod
+    def _public_live_frame(
+        frame: Optional[Mapping[str, Any]],
+    ) -> Optional[dict[str, Any]]:
+        if frame is None:
+            return None
+        return {
+            'source': frame['source'],
+            'sample_rate': float(frame['sample_rate']),
+            'media_frame': int(frame['media_frame']),
+            'freq_hz': [float(value) for value in frame['freq_hz']],
+            'before_dbfs': [float(value) for value in frame['before_dbfs']],
+            'after_dbfs': [float(value) for value in frame['after_dbfs']],
+        }
+
+    def live_spectrum(self) -> Optional[dict[str, Any]]:
+        """Return a copy of the latest accepted, unsmoothed DSP measurement."""
+        return self._public_live_frame(self._live_spectrum)
+
+    def live_spectrum_display(self) -> Optional[dict[str, Any]]:
+        """Return a copy of the bounded temporal smoothing actually painted."""
+        return self._public_live_frame(self._live_spectrum_display)
+
+    def live_spectrum_source(self) -> Optional[str]:
+        frame = self._live_spectrum
+        return None if frame is None else frame['source']
+
+    def live_spectrum_media_frame(self) -> Optional[int]:
+        frame = self._live_spectrum
+        return None if frame is None else frame['media_frame']
+
+    def live_spectrum_status_text(self) -> Optional[str]:
+        frame = self._live_spectrum
+        if frame is None:
+            return None
+        return _tr(
+            '实时频谱 · A 处理前 / B 处理后 · {0:.1f} kHz · {1}',
+            frame['sample_rate'] / 1000.0,
+            frame['source'],
+        )
+
+    @staticmethod
+    def _normalize_live_spectrum_frame(
+        frame: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if not isinstance(frame, Mapping):
+            raise TypeError('live spectrum frame 必须为字典。')
+
+        source = frame.get('source')
+        if not isinstance(source, str):
+            raise TypeError('source 必须为实际 DSP 名称。')
+        source = source.strip()
+        if (not source or len(source) > LIVE_SPECTRUM_SOURCE_MAX_LENGTH
+                or any(ord(character) < 32 or ord(character) == 127
+                       for character in source)):
+            raise ValueError('source 必须为非空的可显示 DSP 名称。')
+
+        sample_rate = _display_sample_rate(frame.get('sample_rate'))
+        media_frame_value = _finite_number(frame.get('media_frame'),
+                                           'media_frame')
+        if (media_frame_value < 0.0
+                or int(media_frame_value) != media_frame_value):
+            raise ValueError('media_frame 必须为非负整数。')
+
+        raw_frequencies = frame.get('freq_hz')
+        if (isinstance(raw_frequencies, (str, bytes))
+                or not isinstance(raw_frequencies, Iterable)):
+            raise TypeError('freq_hz 必须为递增数字序列。')
+        try:
+            frequencies = list(raw_frequencies)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise TypeError('freq_hz 必须为递增数字序列。') from exc
+        if not frequencies:
+            raise ValueError('freq_hz 不能为空。')
+        if len(frequencies) > LIVE_SPECTRUM_MAX_BINS + 1:
+            raise ValueError('freq_hz 超过实时频谱显示上限。')
+
+        normalized_frequencies: list[float] = []
+        nyquist = sample_rate / 2.0
+        nyquist_tolerance = max(1.0, sample_rate * 1e-6)
+        for index, raw_frequency in enumerate(frequencies):
+            frequency = _finite_number(raw_frequency, 'freq_hz')
+            if frequency < 0.0:
+                raise ValueError('freq_hz 不能为负数。')
+            if frequency == 0.0 and index != 0:
+                raise ValueError('0 Hz 只能作为首个直流频点。')
+            if normalized_frequencies and frequency <= normalized_frequencies[-1]:
+                raise ValueError('freq_hz 必须严格递增。')
+            if frequency > nyquist + nyquist_tolerance:
+                raise ValueError('freq_hz 不能超过奈奎斯特频率。')
+            normalized_frequencies.append(frequency)
+
+        def levels(key: str) -> list[float]:
+            raw_values = frame.get(key)
+            if (isinstance(raw_values, (str, bytes))
+                    or not isinstance(raw_values, Iterable)):
+                raise TypeError(f'{key} 必须为 dBFS 数字序列。')
+            try:
+                values = list(raw_values)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise TypeError(f'{key} 必须为 dBFS 数字序列。') from exc
+            if len(values) != len(frequencies):
+                raise ValueError(f'{key} 必须与 freq_hz 长度一致。')
+            return [_finite_number(value, key) for value in values]
+
+        before = levels('before_dbfs')
+        after = levels('after_dbfs')
+        if normalized_frequencies and normalized_frequencies[0] == 0.0:
+            normalized_frequencies.pop(0)
+            before.pop(0)
+            after.pop(0)
+        if len(normalized_frequencies) < 2:
+            raise ValueError('实时频谱至少需要两个可显示频点。')
+        if len(normalized_frequencies) > LIVE_SPECTRUM_MAX_BINS:
+            raise ValueError('freq_hz 超过实时频谱显示上限。')
+
+        return {
+            'source': source,
+            'sample_rate': sample_rate,
+            'media_frame': int(media_frame_value),
+            'freq_hz': tuple(normalized_frequencies),
+            'before_dbfs': tuple(before),
+            'after_dbfs': tuple(after),
+        }
+
+    @staticmethod
+    def _smooth_live_levels(
+        previous: tuple[float, ...], current: tuple[float, ...],
+    ) -> tuple[float, ...]:
+        smoothed = []
+        maximum = _clamp(LIVE_SPECTRUM_MAX_SMOOTHING_WEIGHT, 0.0, 1.0)
+        for old, new in zip(previous, current):
+            weight = (LIVE_SPECTRUM_ATTACK_WEIGHT if new >= old
+                      else LIVE_SPECTRUM_RELEASE_WEIGHT)
+            weight = _clamp(weight, 0.0, maximum)
+            smoothed.append(weight * old + (1.0 - weight) * new)
+        return tuple(smoothed)
+
+    def _smooth_live_spectrum(
+        self, frame: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        previous = self._live_spectrum_display
+        contiguous = False
+        if previous is not None:
+            reset_span = (frame['sample_rate']
+                          * LIVE_SPECTRUM_RESET_AFTER_SECONDS)
+            contiguous = (
+                previous['source'] == frame['source']
+                and previous['sample_rate'] == frame['sample_rate']
+                and previous['freq_hz'] == frame['freq_hz']
+                and previous['media_frame'] <= frame['media_frame']
+                and frame['media_frame'] - previous['media_frame'] <= reset_span
+            )
+        if contiguous:
+            before = self._smooth_live_levels(
+                previous['before_dbfs'], frame['before_dbfs'])
+            after = self._smooth_live_levels(
+                previous['after_dbfs'], frame['after_dbfs'])
+        else:
+            before = tuple(frame['before_dbfs'])
+            after = tuple(frame['after_dbfs'])
+        return {
+            'source': frame['source'],
+            'sample_rate': frame['sample_rate'],
+            'media_frame': frame['media_frame'],
+            'freq_hz': tuple(frame['freq_hz']),
+            'before_dbfs': before,
+            'after_dbfs': after,
+        }
+
+    def _clear_spectrum_state(self) -> None:
+        self._live_spectrum = None
+        self._live_spectrum_display = None
+        self._spectrum_envelope = None
+        self._spectrum_frame_index = None
+        self._spectrum_playhead_ms = None
+        self._spectrum_playing = False
+
     def set_spectrum_envelope(
         self, envelope: Optional[Mapping[str, Any]],
     ) -> bool:
@@ -519,6 +776,8 @@ class EQCurveView(QWidget):
         a player callback.  Empty frames and missing/non-finite bins are valid
         gaps and are never replaced with generated audio values.
         """
+        self._live_spectrum = None
+        self._live_spectrum_display = None
         normalized = None
         if envelope is not None:
             try:
@@ -554,6 +813,9 @@ class EQCurveView(QWidget):
 
     def _spectrum_stage_color(self) -> Optional[QColor]:
         stage = self.spectrum_stage()
+        return self._spectrum_color_for_stage(stage)
+
+    def _spectrum_color_for_stage(self, stage: Optional[str]) -> Optional[QColor]:
         color = _SPECTRUM_STAGE_COLORS.get(stage)
         # The pale cyan/amber used on dark panels is too faint on the light
         # theme. Keep the A/B distinction while increasing contrast there.
@@ -794,7 +1056,9 @@ class EQCurveView(QWidget):
         outer = QRectF(self.rect()).adjusted(2.0, 2.0, -2.0, -2.0)
         left = outer.left() + 42.0
         top = outer.top() + 29.0
-        right = outer.right() - 12.0
+        # The left ruler is EQ gain; the right ruler is measured dBFS. Keeping
+        # them separate prevents the two very different units sharing labels.
+        right = outer.right() - SPECTRUM_AXIS_WIDTH
         bottom = outer.bottom() - 28.0
         return QRectF(left, top, max(1.0, right - left),
                       max(1.0, bottom - top))
@@ -995,8 +1259,11 @@ class EQCurveView(QWidget):
 
     def _refresh_accessibility(self) -> None:
         description = self.accessible_summary()
+        live_label = self.live_spectrum_status_text()
         stage_label = self.spectrum_stage_label()
-        if stage_label is not None:
+        if live_label is not None:
+            description = live_label + '。' + description
+        elif stage_label is not None:
             description = stage_label + '。' + description
         self.setAccessibleDescription(description)
     # ------------------------------------------------------------------
@@ -1226,6 +1493,8 @@ class EQCurveView(QWidget):
 
     def _spectrum_segments(self) -> list[list[QPointF]]:
         """Return contiguous drawable spectrum runs in widget coordinates."""
+        if self._live_spectrum_display is not None:
+            return self._live_spectrum_segments(SPECTRUM_STAGE_AFTER)
         frame = self._selected_spectrum_frame()
         envelope = self._spectrum_envelope
         if frame is None or envelope is None:
@@ -1244,8 +1513,75 @@ class EQCurveView(QWidget):
             segments.append(current)
         return [segment for segment in segments if len(segment) >= 2]
 
+    def _live_spectrum_segments(
+        self, stage: str,
+    ) -> list[list[QPointF]]:
+        """Return one measured live stage on the logarithmic frequency axis."""
+        if stage == SPECTRUM_STAGE_BEFORE:
+            key = 'before_dbfs'
+        elif stage == SPECTRUM_STAGE_AFTER:
+            key = 'after_dbfs'
+        else:
+            raise ValueError('未知的实时频谱阶段。')
+        frame = self._live_spectrum_display
+        if frame is None:
+            return []
+        limit = self.frequency_limit_hz()
+        points = [
+            QPointF(self.frequency_to_x(frequency),
+                    self.spectrum_db_to_y(level))
+            for frequency, level in zip(frame['freq_hz'], frame[key])
+            if MIN_FREQUENCY_HZ <= frequency <= limit
+        ]
+        return [points] if len(points) >= 2 else []
+
+    def _paint_live_trace(
+        self, painter: QPainter, plot: QRectF, points: list[QPointF],
+        color: QColor, *, fill_alpha: int, line_alpha: int,
+        line_width: float,
+    ) -> None:
+        if len(points) < 2:
+            return
+        curve = QPainterPath(points[0])
+        for point in points[1:]:
+            curve.lineTo(point)
+        area = QPainterPath(curve)
+        area.lineTo(points[-1].x(), plot.bottom())
+        area.lineTo(points[0].x(), plot.bottom())
+        area.closeSubpath()
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(self._color_with_alpha(color, fill_alpha))
+        painter.drawPath(area)
+        pen = QPen(self._color_with_alpha(color, line_alpha), line_width)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawPath(curve)
+
+    def _paint_live_spectrum(self, painter: QPainter, plot: QRectF) -> None:
+        before_color = (self._spectrum_color_for_stage(
+            SPECTRUM_STAGE_BEFORE) or QColor('#e3b45f'))
+        after_color = (self._spectrum_color_for_stage(
+            SPECTRUM_STAGE_AFTER) or QColor('#62cfdf'))
+        before = self._live_spectrum_segments(SPECTRUM_STAGE_BEFORE)
+        after = self._live_spectrum_segments(SPECTRUM_STAGE_AFTER)
+        for points in before:
+            self._paint_live_trace(
+                painter, plot, points, before_color,
+                fill_alpha=16, line_alpha=196, line_width=1.65,
+            )
+        for points in after:
+            self._paint_live_trace(
+                painter, plot, points, after_color,
+                fill_alpha=24, line_alpha=232, line_width=2.15,
+            )
+
     def _paint_spectrum(self, painter: QPainter, plot: QRectF) -> None:
         """Paint measured frames behind the editable EQ response."""
+        if self._live_spectrum_display is not None:
+            self._paint_live_spectrum(painter, plot)
+            return
         segments = self._spectrum_segments()
         if not segments:
             return
@@ -1266,6 +1602,43 @@ class EQCurveView(QWidget):
             painter.setPen(QPen(line_color, 1.25))
             painter.setBrush(Qt.NoBrush)
             painter.drawPath(curve)
+
+    def _paint_dbfs_axis(
+        self, painter: QPainter, plot: QRectF, outer: QRectF,
+        text: QColor,
+    ) -> None:
+        """Draw a separate measured-amplitude scale in the right gutter."""
+        if self._live_spectrum_display is None and self._spectrum_envelope is None:
+            return
+        live_color = self._spectrum_color_for_stage(SPECTRUM_STAGE_AFTER)
+        axis_color = (live_color if self._live_spectrum_display is not None
+                      else self._spectrum_stage_color())
+        if axis_color is None:
+            axis_color = text
+        painter.save()
+        painter.setPen(QPen(self._color_with_alpha(axis_color, 118), 1.0))
+        for level in SPECTRUM_DBFS_GRID:
+            y = self.spectrum_db_to_y(level)
+            painter.drawLine(QPointF(plot.right(), y),
+                             QPointF(plot.right() + 3.5, y))
+        painter.setPen(self._color_with_alpha(text, 165))
+        for level in SPECTRUM_DBFS_GRID:
+            y = self.spectrum_db_to_y(level)
+            painter.drawText(
+                QRectF(plot.right() + 5.0, y - 7.0,
+                       max(18.0, outer.right() - plot.right() - 8.0), 14.0),
+                Qt.AlignLeft | Qt.AlignVCenter,
+                f'{level:.0f}',
+            )
+        painter.translate(plot.right() + 31.0, plot.center().y())
+        painter.rotate(-90.0)
+        painter.setPen(self._color_with_alpha(axis_color, 190))
+        painter.drawText(
+            QRectF(-30.0, -7.0, 60.0, 14.0),
+            Qt.AlignCenter,
+            'dBFS',
+        )
+        painter.restore()
 
     def paintEvent(self, event) -> None:
         del event
@@ -1400,6 +1773,7 @@ class EQCurveView(QWidget):
                 Qt.AlignHCenter | Qt.AlignTop,
                 label,
             )
+        self._paint_dbfs_axis(painter, plot, outer, text)
         frequency_limit = self.frequency_limit_hz()
         if frequency_limit >= 1000.0:
             upper_text = f'{frequency_limit / 1000.0:.1f} kHz'.replace(
@@ -1407,9 +1781,15 @@ class EQCurveView(QWidget):
         else:
             upper_text = f'{frequency_limit:.0f} Hz'
         range_text = f'{MIN_FREQUENCY_HZ:.0f} Hz - {upper_text}'
+        live_header = self.live_spectrum_status_text()
         stage_label = self.spectrum_stage_label()
         stage_color = self._spectrum_stage_color()
-        if stage_label is not None and stage_color is not None:
+        if live_header is not None:
+            header_text = live_header
+            painter.setPen(self._color_with_alpha(
+                self._spectrum_color_for_stage(SPECTRUM_STAGE_AFTER)
+                or accent, 225))
+        elif stage_label is not None and stage_color is not None:
             header_text = f'{stage_label} · {range_text}'
             painter.setPen(self._color_with_alpha(stage_color, 220))
         else:

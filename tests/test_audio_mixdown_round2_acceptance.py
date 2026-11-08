@@ -2,7 +2,10 @@
 
 This test intentionally uses the public widget surface plus the dialog's
 request builder. It stubs the optional Pedalboard probe and never renders audio.
+The retired right-stack/card geometry contract was removed with that workspace;
+the responsive rack, fader/pan input and canonical multi-track request remain.
 """
+import atexit
 import os
 import sys
 import tempfile
@@ -16,6 +19,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP))
 sys.path.insert(0, str(APP / 'src'))
+sys.path.insert(0, str(APP / 'tests'))
 
 from PyQt5.QtCore import QPoint, QPointF, QRect, Qt
 from PyQt5.QtGui import QWheelEvent
@@ -23,9 +27,33 @@ from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QScrollArea, QWidget
 
 import audio_mixdown_ui as ui
+import mixdown_realtime_player as realtime
+from mixdown_realtime_player import RealtimePreviewPlayer
+from test_mixdown_realtime_player import Service
 
 
 app = QApplication.instance() or QApplication([])
+
+_ACTIVE_PLAYERS = []
+
+
+def _close_active_players():
+    while _ACTIVE_PLAYERS:
+        player = _ACTIVE_PLAYERS.pop()
+        try:
+            player.close()
+        except Exception:
+            pass
+
+
+atexit.register(_close_active_players)
+
+
+def fixture_player_factory(dll_path, *, cache_dir, parent=None,
+                           service_factory=None, service_options=None):
+    del dll_path, service_factory, service_options
+    return RealtimePreviewPlayer('fixture.dll', cache_dir=cache_dir, parent=parent,
+                                 service_factory=Service)
 
 
 def settle(rounds=6):
@@ -78,8 +106,9 @@ def check_rack(console, expected_columns):
     rows = row_rects(rects)
     check(console._grid.horizontalSpacing() == ui._ResponsiveMixerConsole.GAP,
           'rack grid spacing differs from the declared gap')
-    check(console._grid.verticalSpacing() == ui._ResponsiveMixerConsole.GAP,
-          'rack grid vertical spacing differs from the declared gap')
+    expected_vertical_gap = 6 if console._wide_rack_hint else ui._ResponsiveMixerConsole.GAP
+    check(console._grid.verticalSpacing() == expected_vertical_gap,
+          'rack grid vertical spacing differs from the active density contract')
     expected_rows = (len(expected) + expected_columns - 1) // expected_columns
     check(len(rows) == expected_rows,
           'rack rows: expected %d, got %d' % (expected_rows, len(rows)))
@@ -100,46 +129,6 @@ def check_rack(console, expected_columns):
               'vertical channel gap: expected %d, got %d'
               % (ui._ResponsiveMixerConsole.GAP, actual))
 
-
-def check_workspace(workspace):
-    width = workspace.width()
-    expected_columns = 3 if width >= workspace.WIDE_BREAKPOINT else (
-        2 if width >= workspace.MEDIUM_BREAKPOINT else 1)
-    expected_mode = {3: 'wide', 2: 'medium', 1: 'stacked'}[expected_columns]
-    check(workspace.column_count() == expected_columns,
-          'workspace columns at width %d: expected %d, got %d'
-          % (width, expected_columns, workspace.column_count()))
-    check(workspace.mode() == expected_mode,
-          'workspace mode at width %d: expected %s, got %s'
-          % (width, expected_mode, workspace.mode()))
-
-    mixer, processing, preview, export = workspace.cards
-    positions = {card: rect_in(card, workspace) for card in workspace.cards}
-    for card in workspace.cards:
-        check(card.isVisible(), 'workspace card is hidden: %s' % card.objectName())
-
-    if expected_columns == 3:
-        check(not workspace._right_stack.isHidden(), 'wide mode hides the right stack')
-        check(abs(positions[mixer].top() - positions[processing].top()) <= 1,
-              'wide mode mixer/processing rows differ')
-        right = rect_in(workspace._right_stack, workspace)
-        check(positions[mixer].left() < positions[processing].left() < right.left(),
-              'wide mode card order is not mixer/processing/right stack')
-        check(positions[preview].top() < positions[export].top(),
-              'wide mode preview/export are not stacked')
-    elif expected_columns == 2:
-        check(workspace._right_stack.isHidden(), 'medium mode shows the retired right stack')
-        check(abs(positions[mixer].top() - positions[processing].top()) <= 1,
-              'medium mode first row is not aligned')
-        check(abs(positions[preview].top() - positions[export].top()) <= 1,
-              'medium mode second row is not aligned')
-        check(positions[preview].top() > positions[mixer].bottom(),
-              'medium mode second row does not follow the first')
-    else:
-        check(workspace._right_stack.isHidden(), 'stacked mode shows the retired right stack')
-        tops = [positions[card].top() for card in workspace.cards]
-        check(tops == sorted(tops) and len(set(tops)) == 4,
-              'stacked mode cards are not in four vertical rows')
 
 
 def make_wav(path, frequency):
@@ -184,25 +173,28 @@ with tempfile.TemporaryDirectory(prefix='mix-round2-ui-', dir=APP / 'work') as f
 
     owner = QWidget()
     owner.show()
-    with patch.object(ui, '_activate_pedalboard', return_value=(True, 'offscreen-stub')):
+    with patch.object(ui, '_activate_pedalboard', return_value=(True, 'offscreen-stub')), \
+            patch.object(realtime, 'native_output_path',
+                         return_value=str(APP / 'fixture-native-output.dll')), \
+            patch.object(realtime, 'RealtimePreviewPlayer',
+                         side_effect=fixture_player_factory):
         dialog = ui.AudioMixdownDialog(owner, None, owner, embedded=True)
+        _ACTIVE_PLAYERS.append(dialog._player)
         dialog.show()
         settle()
         wait_support(dialog)
-        # This acceptance is layout/input-only; keep its synthetic sources from
-        # spawning the separate live-audition worker.
+        # This acceptance is layout/input-only; suppress debounced preview
+        # requests while exercising synthetic sources and track controls.
         dialog._preview_debounce.stop()
         dialog._preview_debounce.setInterval(600000)
 
         console = dialog.mixer_console
-        workspace = dialog.workspace
         scroll = dialog.findChild(QScrollArea)
         check(scroll is not None, 'outer scroll area is missing')
 
         dialog.resize(920, 840)
         settle()
         check_rack(console, 2)
-        check_workspace(workspace)
         check(scroll.horizontalScrollBar().maximum() == 0,
               '2-channel rack introduced horizontal scrolling')
 
@@ -233,13 +225,9 @@ with tempfile.TemporaryDirectory(prefix='mix-round2-ui-', dir=APP / 'work') as f
         for width in (920, 1100, 1600, 1920, 2512):
             dialog.resize(width, 840 if width < 1600 else 1000)
             settle()
-            check_workspace(workspace)
+            check_rack(console, console.column_count())
             check(scroll.horizontalScrollBar().maximum() == 0,
-                  'workspace at %dpx introduced horizontal scrolling' % width)
-            if width == 1600:
-                check(workspace.column_count() == 3, '1600px dialog should use wide cards')
-            if width == 1920 or width == 2512:
-                check(workspace.column_count() == 3, '%dpx dialog should use wide cards' % width)
+                  'mixer at %dpx introduced horizontal scrolling' % width)
 
         dialog.resize(920, 840)
         settle()
@@ -323,14 +311,27 @@ with tempfile.TemporaryDirectory(prefix='mix-round2-ui-', dir=APP / 'work') as f
 
         check(scroll.horizontalScrollBar().maximum() == 0,
               'final interaction state introduced horizontal scrolling')
+        player = dialog._player
+        service = player._service
+        dialog._preview_debounce.stop()
+        dialog._audition_poll_timer.stop()
+        dialog._audition_closing = True
+        dialog._audition_cleanup_complete = True
+        dialog._audition_service = None
+        dialog._native_preview_player = None
+        cache = dialog._preview_cache_directory
+        dialog._preview_cache_directory = None
+        player.close()
+        if player in _ACTIVE_PLAYERS:
+            _ACTIVE_PLAYERS.remove(player)
+        ui._discard_preview_directory(cache)
+        check(player._done.is_set() and service.closed,
+              'fixture realtime actor was not closed')
         dialog.close()
         owner.close()
-        if dialog._player is not None:
-            dialog._player.stop()
-            dialog._player.deleteLater()
         dialog.deleteLater()
         owner.deleteLater()
         settle(10)
         app.processEvents()
 
-print('PASS: centered 2x2 narrow/mid rack and 4-track wide rack, 920/1600/1920/2512 card modes, fader/pan input, M/S/Pan request mapping, no horizontal overflow')
+print('PASS: responsive two/four-channel rack, fader/pan input, three-track M/S/Pan request mapping and no horizontal overflow')

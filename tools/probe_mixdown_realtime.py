@@ -1,8 +1,8 @@
 """Reproducible four-track comparison. Unattended WASAPI output is silent.
 
 This is a development probe, not the application's default preview player.
-It measures request-to-native-submission, never claims acoustic latency, and
-leaves final-limiter compatibility as an explicit production gate.
+It measures request-to-native-submission and never claims acoustic latency.
+Human listening and multi-device acceptance remain separate checks.
 """
 from __future__ import annotations
 
@@ -111,6 +111,7 @@ def profile(mode, block, request, root, args, np, sf, pb):
             outputs.append(value)
             return value
         session = RealtimeAuditionSession(renderer, output_factory, block_frames=block,
+                                          target_queue_frames=args.queue_frames,
                                           silent=True, numpy=np)
         session.start()
         wait_for(session, lambda s: s['native'] is not None)
@@ -248,7 +249,8 @@ def main():
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--mode', choices=('null', 'wasapi', 'all'), default='null')
     parser.add_argument('--blocks', default='256,512,1024,2048')
-    parser.add_argument('--legacy-baseline', action='store_true')
+    parser.add_argument('--queue-frames', type=int, default=None,
+                        help='Optional bounded queue override for device tuning probes')
     parser.add_argument('--soak-seconds', type=float, default=0,
                         help='Optional silent stability run, with live parameters and bounded rewinds')
     args = parser.parse_args()
@@ -301,24 +303,6 @@ def main():
                 print('%s %d: %s' % (mode, block, error), flush=True)
                 if mode == 'wasapi':
                     break
-    if args.legacy_baseline:
-        import audio_mixdown_audition as old
-        timings = []
-        for index, (label, value) in enumerate(variations(request)):
-            started = time.perf_counter()
-            try:
-                result = old.render_audition_pair(
-                    value, None, args.out / ('legacy-%d.wav' % index),
-                    args.out / 'source-cache', variant='after')
-            except Exception as error:
-                report['errors'].append({'mode': 'legacy', 'label': label,
-                                         'error': '%s: %s' % (type(error).__name__, error)})
-                break
-            timings.append({'label': label, 'wall_ms': (time.perf_counter() - started) * 1000,
-                            'timings_ms': result.get('timings_ms'), 'cache_hit': result.get('cache_hit')})
-        report['legacy_direct_render'] = {'measurements': timings,
-            'wall_ms': summary([v['wall_ms'] for v in timings], np),
-            'measurement': 'cached 12-second after-WAV publication including analysis, direct Python call; not the same workload as block submission'}
     report['real_device_verified'] = any(v['mode'] == 'wasapi' for v in report['profiles'])
     report['all_requested_profiles_pass'] = not report['errors'] and all(
         v['all_probe_gates_pass'] for v in report['profiles'])

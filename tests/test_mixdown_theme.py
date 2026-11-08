@@ -1,27 +1,30 @@
-"""Offscreen theme and three-column mixdown workspace smoke test."""
+"""Offscreen theme, analysis, and real expanded-export geometry checks."""
 import math
 import os
 import re
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 os.environ.setdefault('VWA_TESTING', '1')
 
 APP = Path(__file__).resolve().parents[1]
 SRC = APP / 'src'
-sys.path.insert(0, str(SRC))
+sys.path[:0] = [str(SRC), str(APP / 'tests')]
 
 import common
 common.ROOT = APP
 
 from PyQt5.QtCore import QPoint, QRect, Qt
 from PyQt5.QtGui import QColor, QImage, QPalette
+from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea,
     QStackedWidget, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
+import audio_mixdown_ui as mixdown_ui
 from audio_mixdown_ui import _LevelMeter, _MixerWorkspace, _PanDial
 from desktop_theme import (
     COLORS, apply_theme, card, label, mixdown_analysis_qss,
@@ -30,9 +33,16 @@ from desktop_theme import (
 from mixdown_control_panel import PresetBar
 from mixdown_eq_curve import EQCurveView
 from mixdown_live_meters import GrHistoryView, ReverbDecayView
+from mixdown_realtime_player import RealtimePreviewPlayer
+from test_mixdown_realtime_player import Service
 
 
 SCREEN_SIZES = ((1600, 1000), (1920, 1080), (2512, 1352))
+REAL_EXPORT_SIZES = ((1280, 800), (1600, 1000), (1920, 1080), (2512, 1352))
+REAL_THEME_SCALES = (
+    ('light', 'glass', 100), ('light', 'solid', 115),
+    ('dark', 'glass', 130), ('dark', 'solid', 150),
+)
 MIXDOWN_THEMES = (
     ('light', 'glass'), ('light', 'solid'),
     ('dark', 'glass'), ('dark', 'solid'),
@@ -397,6 +407,139 @@ def verify_transparency_probe(app, host, mode, material):
     assert scroll.viewport().palette().color(QPalette.Base).alpha() == tokens['chart_alpha']
 
 
+def rect_in(widget, ancestor):
+    assert ancestor.isAncestorOf(widget)
+    return QRect(widget.mapTo(ancestor, QPoint()), widget.size())
+
+
+def build_real_mixdown_dialog(app):
+    owner = QWidget()
+    players = []
+
+    def create_player(*args, **kwargs):
+        kwargs['service_factory'] = Service
+        player = RealtimePreviewPlayer(*args, **kwargs)
+        players.append(player)
+        return player
+
+    with patch.object(mixdown_ui.AudioMixdownDialog,
+                      '_prepare_component_support'), \
+            patch.object(mixdown_ui.AudioMixdownDialog,
+                         '_start_component_support_check'), \
+            patch('mixdown_realtime_player.native_output_path', return_value=None), \
+            patch('mixdown_realtime_player.RealtimePreviewPlayer',
+                  side_effect=create_player):
+        dialog = mixdown_ui.AudioMixdownDialog(
+            owner, None, owner, embedded=False)
+    dialog._audition_start_attempted = True
+    dialog._preview_debounce.stop()
+    dialog._support_ready = False
+    dialog.support_panel.hide()
+    dialog._vwa_appearance = {
+        'ui_scale': 100, 'material': 'solid',
+        'reduce_motion': False, 'ui_language': 'zh-CN',
+    }
+    dialog.resize(*REAL_EXPORT_SIZES[0])
+    dialog.show()
+    settle(app)
+    dialog._preview_debounce.stop()
+    return owner, dialog, players
+
+
+def close_real_mixdown_dialog(app, owner, dialog, players):
+    dialog._audition_poll_timer.stop()
+    dialog._preview_debounce.stop()
+    dialog._player_seek_timer.stop()
+    dialog._audition_closing = True
+    dialog._audition_cleanup_complete = True
+    dialog._audition_service = None
+    for player in reversed(players):
+        if player.is_alive:
+            player.close()
+    dialog.hide()
+    dialog.deleteLater()
+    owner.deleteLater()
+    settle(app)
+
+
+def verify_real_export_geometry(app, dialog, context):
+    del app
+    toggle = dialog.export_details_toggle
+    details = dialog.export_details
+    title = next(
+        widget for widget in dialog.export_card.findChildren(QLabel)
+        if widget.property('role') == 'card-title')
+    assert toggle.isChecked(), context
+    assert details.isVisible(), context
+    assert details.parentWidget() is dialog.export_card, context
+    assert isinstance(details.layout(), QVBoxLayout), context
+    assert dialog.export_card.isAncestorOf(toggle), context
+    assert dialog.export_card.isAncestorOf(details), context
+
+    controls = [
+        toggle, dialog.fields['output'], dialog._choose_buttons['output'],
+        dialog.output_state, dialog.export_button, dialog.register_button,
+        dialog.to_video_button, dialog.result_title, dialog.result_text,
+        dialog.export_note,
+    ]
+    controls = [widget for widget in controls if widget.isVisible()]
+    assert len(controls) >= 8, (context, [w.objectName() for w in controls])
+    rects = {widget: rect_in(widget, dialog.export_card)
+             for widget in controls}
+    title_rect = rect_in(title, dialog.export_card)
+    details_rect = rect_in(details, dialog.export_card)
+    assert title_rect.width() > 0 and title_rect.height() > 0, context
+    assert details_rect.height() > 0, context
+    assert details_rect.top() >= title_rect.bottom(), (
+        context, details_rect, title_rect)
+    assert not details_rect.intersects(title_rect), (
+        context, details_rect, title_rect)
+    for widget, rect in rects.items():
+        assert rect.width() > 0 and rect.height() > 0, (
+            context, widget.objectName(), rect)
+        assert dialog.export_card.rect().contains(rect), (
+            context, widget.objectName(), rect, dialog.export_card.rect())
+        assert not rect.intersects(title_rect), (
+            context, widget.objectName(), rect, title_rect)
+    items = list(rects.items())
+    for index, (first, first_rect) in enumerate(items):
+        for second, second_rect in items[index + 1:]:
+            assert not first_rect.intersects(second_rect), (
+                context, first.objectName(), second.objectName(),
+                first_rect, second_rect)
+
+
+def verify_real_export_layout(app, output):
+    owner, dialog, players = build_real_mixdown_dialog(app)
+    try:
+        dialog._main_scroll.ensureWidgetVisible(dialog.export_details_toggle)
+        settle(app)
+        assert dialog.export_details_toggle.isVisible()
+        assert not dialog.export_details.isVisible()
+        QTest.mouseClick(dialog.export_details_toggle, Qt.LeftButton)
+        settle(app)
+        for mode, material, scale in REAL_THEME_SCALES:
+            dialog._vwa_appearance = {
+                'ui_scale': scale, 'material': material,
+                'reduce_motion': False, 'ui_language': 'zh-CN',
+            }
+            apply_theme(dialog, mode)
+            for width, height in REAL_EXPORT_SIZES:
+                dialog.resize(width, height)
+                dialog._main_scroll.ensureWidgetVisible(
+                    dialog.export_details_toggle)
+                settle(app)
+                context = (mode, material, scale, width, height)
+                verify_real_export_geometry(app, dialog, context)
+                screenshot = output / (
+                    'real-export-{0}-{1}-{2}-{3}x{4}.png'.format(
+                        mode, material, scale, width, height))
+                assert dialog.grab().save(str(screenshot)), context
+                assert screenshot.stat().st_size > 5000, context
+    finally:
+        close_real_mixdown_dialog(app, owner, dialog, players)
+
+
 def main():
     app = QApplication.instance() or QApplication([])
     host = build_host(app)
@@ -510,6 +653,8 @@ def main():
     analysis_host.close()
     settle(app)
 
+    verify_real_export_layout(app, output)
+
     host.resize(1100, 800)
     settle(app)
     assert host.workspace.column_count() == 2
@@ -519,7 +664,8 @@ def main():
     host.close()
     settle(app)
     print('PASS: 2 themes x 2 materials x 3 scales; 4 themes x 3 full-screen sizes; '
-          'analysis pane/page/stack/viewport transparency and palette/render pixels; offscreen')
+          '4 theme/scales x 4 real export sizes; controls stay in the actual '
+          'export-card hierarchy without overlap; offscreen')
 
 
 if __name__ == '__main__':

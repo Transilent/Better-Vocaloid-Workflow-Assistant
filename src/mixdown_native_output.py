@@ -170,6 +170,11 @@ def _bind_library(dll_path: Path) -> ctypes.CDLL:
         ctypes.c_size_t,
     ]
     library.vwa_output_set_playing.restype = ctypes.c_int
+    library.vwa_output_mark_end.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint64,
+        ctypes.c_char_p, ctypes.c_size_t,
+    ]
+    library.vwa_output_mark_end.restype = ctypes.c_int
     library.vwa_output_snapshot.argtypes = [
         ctypes.c_void_p,
         ctypes.POINTER(_NativeSnapshot),
@@ -295,6 +300,18 @@ class NativeOutput:
             result = int(self._dll.vwa_output_seek(handle, frame, epoch, error, len(error)))
             if result != 0:
                 self._operation_error("seek", result, error)
+
+    def mark_end(self, frame: int | None, *, epoch: int) -> None:
+        """Publish the final media frame; its callback suffix is ordinary silence."""
+        if frame is not None and (isinstance(frame, bool) or not isinstance(frame, int) or frame < 0):
+            raise ValueError('end frame must be a non-negative integer or None')
+        error = ctypes.create_string_buffer(_ERROR_CAPACITY)
+        with self._lock:
+            handle = self._require_open()
+            result = int(self._dll.vwa_output_mark_end(
+                handle, (1 << 64) - 1 if frame is None else frame, epoch, error, len(error)))
+            if result != 0:
+                self._operation_error('mark_end', result, error)
 
     def set_playing(self, playing: bool = True) -> None:
         error = ctypes.create_string_buffer(_ERROR_CAPACITY)

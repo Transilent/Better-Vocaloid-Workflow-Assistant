@@ -68,6 +68,41 @@ static int snapshot_of(VwaOutput* output, VwaOutputSnapshot* snapshot)
     return 1;
 }
 
+static int run_eos_test(void)
+{
+    VwaOutput* output = NULL;
+    VwaOutputSnapshot snapshot;
+    char error[256] = {0};
+    float input[74], rendered[128];
+    int failures = 0;
+#define EOS_CHECK(condition, message) do { if (!(condition)) { fprintf(stderr, "EOF FAIL: %s\n", message); failures++; } } while (0)
+    EOS_CHECK(vwa_output_create(VWA_OUTPUT_BACKEND_NULL, 48000u, 2u, 256u, 64u, &output, error, sizeof(error)) == VWA_OUTPUT_OK, "create");
+    if (output == NULL) return 1;
+    EOS_CHECK(vwa_output_seek(output, 0u, 1u, error, sizeof(error)) == VWA_OUTPUT_OK, "seek");
+    EOS_CHECK(vwa_output_mark_end(output, 37u, 0u, error, sizeof(error)) == VWA_OUTPUT_ERR_STALE_EPOCH, "reject stale marker");
+    EOS_CHECK(vwa_output_mark_end(output, 37u, 1u, error, sizeof(error)) == VWA_OUTPUT_OK, "publish finite end");
+    fill_pattern(input, 37u, 2u, 0u);
+    EOS_CHECK(vwa_output_write(output, input, 37u, 1u, 0u) == 37u, "final partial write");
+    EOS_CHECK(vwa_output_set_playing(output, 1u, error, sizeof(error)) == VWA_OUTPUT_OK, "play");
+    EOS_CHECK(vwa_output_pull(output, rendered, 64u) == 64u, "callback");
+    EOS_CHECK(compare_pattern(rendered, 37u, 2u, 0u), "final samples intact");
+    EOS_CHECK(all_zero(rendered + 74u, 27u, 2u), "normal silent suffix");
+    EOS_CHECK(snapshot_of(output, &snapshot), "end snapshot");
+    EOS_CHECK(snapshot.media_frame == 37u && snapshot.playing == 0u, "stop at exact frame");
+    EOS_CHECK(snapshot.underrun_frames == 0u, "normal EOF is not xrun");
+    EOS_CHECK(vwa_output_pull(output, rendered, 64u) == 64u, "post-end callback");
+    EOS_CHECK(snapshot_of(output, &snapshot), "post-end snapshot");
+    EOS_CHECK(snapshot.media_frame == 37u && snapshot.underrun_frames == 0u, "no phantom playback");
+    EOS_CHECK(vwa_output_seek(output, 0u, 2u, error, sizeof(error)) == VWA_OUTPUT_OK, "replay clears marker");
+    EOS_CHECK(vwa_output_set_playing(output, 1u, error, sizeof(error)) == VWA_OUTPUT_OK, "replay");
+    EOS_CHECK(vwa_output_pull(output, rendered, 64u) == 64u, "real underrun");
+    EOS_CHECK(snapshot_of(output, &snapshot), "real underrun snapshot");
+    EOS_CHECK(snapshot.underrun_frames == 64u, "genuine missing PCM is still xrun");
+    vwa_output_destroy(output);
+#undef EOS_CHECK
+    return failures;
+}
+
 static int run_null_test(void)
 {
     VwaOutput* output = NULL;
@@ -194,6 +229,7 @@ static int run_null_test(void)
     CHECK(snapshot_of(output, &snapshot) != 0, "final snapshot");
     CHECK(snapshot.media_frame == 48064u, "final media frame");
     CHECK(snapshot.ring_owner_violations == 0u, "ring owner violations");
+    failures += run_eos_test();
 
     vwa_output_destroy(output);
 #undef CHECK

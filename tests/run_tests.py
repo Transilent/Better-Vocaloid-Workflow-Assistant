@@ -27,8 +27,8 @@ reports = {}
 selected=set(os.environ.get('BVWA_TEST_SELECTION','').split(','))-{''}
 names_v110 = ('test_v110_update_source_gate.py', 'test_v110_update_build.py')
 names = ('test_update_bridge.py', 'test_update_catalog.py', 'test_test_isolation.py', 'test_review_fixes.py', 'test_update_compatibility.py', 'test_runtime_upgrade.py','test_process_recovery.py','test_dependency_profiles.py','test_cache_integrity.py','test_parallel_download.py','test_slicing_bounds.py','test_v2_backend.py','test_lyrics_sources.py','test_project_exports.py','test_vocal_expression.py','test_vocal_timbre.py','test_pitch_accuracy.py','test_transcription_quality.py','test_processing_steps.py','test_reference_modes.py','test_core.py', 'test_bilibili_network.py', 'test_japanese_midi.py', 'test_chinese_lyrics.py', 'test_updates.py', 'test_auto_restart.py', 'test_gui.py', 'test_workspace_ui.py', 'test_components.py', 'test_publication_workspace.py', 'test_publication_steps.py', 'test_local_music.py', 'test_output_directory.py', 'test_workflow_features.py', 'test_subtitles.py', 'test_publish_browser.py', 'test_publish_adapters.py', 'test_bilibili_dual_cover.py', 'test_launchers.py', 'test_bootstrap.py', 'test_source_layout.py')
-names = ('test_mixdown_full_sample_acceptance.py','test_mixdown_audition_service.py','test_audio_mixdown_audition.py','test_mixer_state.py','test_mixdown_eq_curve.py','test_mixdown_control_panel.py','test_mixdown_live_meter_widgets.py','test_mixdown_player.py','test_audio_mixdown_round2_acceptance.py','test_mixdown_theme.py','test_audio_mixdown_ui.py','test_audio_mixdown.py','test_reproducible_fixes.py','test_manual_bpm.py','test_note_benchmark.py','test_reference_audio.py','test_reference_corpus.py','test_vocal_partition.py','test_storage_management.py',) + names
-names = ('test_mixdown_stream_player.py',) + names
+names = ('test_mixdown_full_sample_acceptance.py','test_mixer_state.py','test_mixdown_eq_curve.py','test_mixdown_control_panel.py','test_mixdown_live_meter_widgets.py','test_audio_mixdown_round2_acceptance.py','test_mixdown_theme.py','test_audio_mixdown_ui.py','test_audio_mixdown.py','test_reproducible_fixes.py','test_manual_bpm.py','test_note_benchmark.py','test_reference_audio.py','test_reference_corpus.py','test_vocal_partition.py','test_storage_management.py',) + names
+names = () + names
 names = ('test_mixdown_seek.py',) + names
 names = ('test_mixdown_workspace.py',) + names
 names = ('test_mixdown_limiter.py', 'test_mixdown_realtime_graph.py', 'test_mixdown_realtime_service.py', 'test_mixdown_realtime_player.py', 'test_mixdown_realtime_ui.py') + names
@@ -62,7 +62,7 @@ names = ('test_agent_monophony.py', 'test_agent_media.py', 'test_agent_views.py'
 names = ('test_agent_pitch.py', 'test_agent_separation_repair.py', 'test_agent_signal_workflow.py') + names
 names = ('test_preset_documents.py', 'test_preset_library.py', 'test_preset_library_ui.py', 'test_preset_cli.py') + names
 names = ('test_mixdown_preset_documents.py', 'test_mixdown_preset_ui.py', 'test_mixdown_preset_integration.py') + names
-names = names_v110 + names
+names = ('test_mixdown_live_meters.py',) + names_v110 + names
 if selected - set(names):
     raise ValueError('Unknown selected tests: ' + ', '.join(sorted(selected - set(names))))
 print('Preparing isolated application; installed user state will not be changed.', flush=True)

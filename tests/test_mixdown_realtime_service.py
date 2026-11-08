@@ -243,6 +243,31 @@ class _GraphRenderer:
         self.position_frame += int(frames)
         return result
 
+    def telemetry_for_range(self, start, end):
+        return {
+            'schema': 'vwa.audio_mixdown.realtime-telemetry/v1',
+            'source': 'realtime_dsp',
+            'frame_start': int(start), 'frame_end': int(end),
+            'frame_count': int(end) - int(start),
+            'sample_rate': self.sample_rate, 'channels': self.channels,
+            'tracks': [{'role': 'backing', 'index': 0,
+                        'peak_dbfs': -144.0, 'rms_dbfs': -144.0,
+                        'gr_db': 0.0, 'audible': True}],
+            'bus': {'peak_dbfs': -144.0, 'rms_dbfs': -144.0,
+                    'limiter_gr_db': 0.0,
+                    'pre_limiter': {'peak_dbfs': -144.0, 'rms_dbfs': -144.0},
+                    'post_limiter': {'peak_dbfs': -144.0, 'rms_dbfs': -144.0},
+                    'final_output': {'peak_dbfs': -144.0, 'rms_dbfs': -144.0}},
+            'dynamics': {},
+            'spectrum': {'frequency_hz': [], 'before_dbfs': [], 'after_dbfs': [],
+                         'source': 'dsp_fft_pre_post_eq', 'bins': 0,
+                         'window_start_frame': None, 'window_end_frame': None,
+                         'interval_ms': 100.0, 'fft_size': 256},
+            'reverb': {'enabled': False, 'mix': 0.0,
+                       'live': {}, 'kernel_edc': {'available': False,
+                                                 'measured': False}},
+        }
+
     def seek(self, frame, preroll_frames=None):
         self.position_frame = int(frame)
 
@@ -436,6 +461,10 @@ class RealtimeServerTests(unittest.TestCase):
             ),
         )
         self.assertEqual(state["generation"], generation)
+        self.assertEqual(state["telemetry"]["schema"],
+                         "vwa.audio_mixdown.realtime-telemetry/v1")
+        self.assertEqual(state["telemetry"]["status"], "not_submitted")
+        self.assertEqual(state["telemetry"]["media_frame"], 0)
 
         seek_id = "actual-graph-seek"
         server.handle_command({
@@ -450,6 +479,8 @@ class RealtimeServerTests(unittest.TestCase):
             lambda snapshot: snapshot.get("seek_control_id") == seek_id,
         )
         self.assertEqual(seeked["media_frame"], 2000)
+        self.assertEqual(seeked["telemetry"]["status"], "not_submitted")
+        self.assertEqual(seeked["telemetry"]["media_frame"], 2000)
         parameter_id = "actual-graph-parameters"
         server.handle_command({
             "cmd": "parameters",

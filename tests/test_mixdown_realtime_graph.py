@@ -88,6 +88,24 @@ class GraphTests(unittest.TestCase):
         graph.seek(len(data))
         np.testing.assert_array_equal(graph.render(3), np.zeros((3, 2), dtype='float32'))
 
+    def test_limiter_telemetry_is_frame_aligned_and_measured(self):
+        data, graph = self.fixture(4096)
+        rendered = graph.render(512)
+        telemetry = graph.telemetry_for_range(0, 512)
+        self.assertEqual(rendered.shape, (512, 2))
+        self.assertIsInstance(telemetry, dict)
+        self.assertEqual(telemetry['schema'], 'vwa.audio_mixdown.realtime-telemetry/v1')
+        self.assertEqual((telemetry['frame_start'], telemetry['frame_end']), (0, 512))
+        self.assertEqual(telemetry['sample_rate'], 48000)
+        self.assertIn('pre_limiter', telemetry['bus'])
+        self.assertIn('post_limiter', telemetry['bus'])
+        limiter = telemetry['dynamics']['limiter']
+        self.assertEqual(limiter['method'], 'aligned_rms_db_difference')
+        self.assertGreaterEqual(limiter['gr_db'], 0.0)
+        self.assertGreater(limiter['gr_db'], 0.0)
+        self.assertEqual(telemetry['bus']['peak_dbfs'], telemetry['bus']['final_output']['peak_dbfs'])
+        self.assertLessEqual(telemetry['bus']['peak_dbfs'], -1.0 + 1.0e-4)
+
     def test_volume_does_not_change_limiter_history_or_gain_contract(self):
         data, graph = self.fixture()
         graph.set_volume(25)
@@ -100,6 +118,19 @@ class GraphTests(unittest.TestCase):
         graph.close()
         self.assertEqual(graph._pre.closed, 1)
         with self.assertRaises(RuntimeError): graph.render(12)
+
+    def test_seek_warmup_publishes_no_display_telemetry(self):
+        data, graph = self.fixture(15000)
+        graph.render(512)
+        graph.seek(10000)
+        self.assertEqual(len(graph._telemetry_records), 0)
+        self.assertEqual(len(graph._telemetry_index), 0)
+        if hasattr(graph._pre, '_telemetry_records'):
+            self.assertEqual(len(graph._pre._telemetry_records), 0)
+        graph.render(512)
+        telemetry = graph.telemetry_for_range(10000, 10512)
+        self.assertEqual(telemetry['frame_start'], 10000)
+        self.assertEqual(telemetry['frame_end'], 10512)
 
     def test_parameters_apply_after_prepared_read_ahead(self):
         _data, graph = self.fixture()

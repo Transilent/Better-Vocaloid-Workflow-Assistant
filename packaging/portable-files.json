@@ -638,16 +638,8 @@
       "source": "src/audio_mixdown.py"
     },
     {
-      "file": "audio_mixdown_audition.py",
-      "source": "src/audio_mixdown_audition.py"
-    },
-    {
       "file": "audio_mixdown_ui.py",
       "source": "src/audio_mixdown_ui.py"
-    },
-    {
-      "file": "mixdown_audition_service.py",
-      "source": "src/mixdown_audition_service.py"
     },
     {
       "file": "mixdown_control_panel.py",
@@ -664,14 +656,6 @@
     {
       "file": "mixdown_presets.py",
       "source": "src/mixdown_presets.py"
-    },
-    {
-      "file": "mixdown_player.py",
-      "source": "src/mixdown_player.py"
-    },
-    {
-      "file": "mixdown_stream_player.py",
-      "source": "src/mixdown_stream_player.py"
     },
     {
       "file": "mixer_state.py",
@@ -864,6 +848,14 @@
     {
       "file": "mixdown_workspace.py",
       "source": "src/mixdown_workspace.py"
+    },
+    {
+      "file": "mixdown_transport.py",
+      "source": "src/mixdown_transport.py"
+    },
+    {
+      "file": "mixdown_sources.py",
+      "source": "src/mixdown_sources.py"
     }
   ]
 }

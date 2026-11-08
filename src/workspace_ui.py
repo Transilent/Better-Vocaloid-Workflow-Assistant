@@ -338,9 +338,6 @@ class AudioMixdownPage(QWidget):
             if mixer._support_worker is not None:
                 mixer._support_worker.cancel()
             return False
-        if mixer._preview_worker is not None:
-            mixer.cancel_preview()
-            return False
         if not mixer._audition_cleanup_complete:
             mixer._stop_preview_player()
             mixer._shutdown_audition_service()
