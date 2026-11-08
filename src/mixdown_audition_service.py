@@ -87,11 +87,16 @@ def _normalized_paths(values: Any) -> list[str]:
 class MixdownAuditionService:
     """UI-thread-safe owner of one resident audition worker process.
 
+    Subclasses may replace ``_WORKER_MODULE`` with another module exposing the
+    same ``_worker_main`` protocol; process transport remains shared here.
+
     ``start``, ``request``, ``warm``, ``poll``, ``cancel`` and ``close`` do not
     block on rendering.  A background thread drains stdout into a Queue, so an
     event loop can call :meth:`poll` with no timeout.  Process restart is never
     automatic.
     """
+
+    _WORKER_MODULE = 'mixdown_audition_service'
 
     def __init__(
             self,
@@ -205,7 +210,7 @@ class MixdownAuditionService:
                 "paths=[p for p in "
                 "os.environ.get('VWA_MIXDOWN_EXTRA_PATHS','').split(os.pathsep) if p]; "
                 "[sys.path.insert(0,p) for p in reversed(paths)]; "
-                "import mixdown_audition_service as service; "
+                f"import {self._WORKER_MODULE} as service; "
                 "raise SystemExit(service._worker_main())"
             )
             command = [
@@ -298,7 +303,7 @@ class MixdownAuditionService:
                         self._ready = dict(event)
                         self._ready_event.set()
                         continue
-                    self._events.put(event)
+                    self._receive_event(event)
         finally:
             returncode = process.wait()
             self._reader_done.set()
@@ -307,13 +312,17 @@ class MixdownAuditionService:
                 if stderr_thread is not None and stderr_thread is not threading.current_thread():
                     stderr_thread.join(timeout=0.2)
                 event_type = 'crashed' if returncode not in (None, 0) else 'exited'
-                self._events.put({
+                self._receive_event({
                     'type': event_type,
                     'returncode': returncode,
                     'stderr_tail': self.stderr_tail,
                     'auto_restart': False,
                     'restart_count': self.restart_count,
                 })
+
+    def _receive_event(self, event: dict[str, Any]) -> None:
+        """Queue one parsed worker event; subclasses may coalesce telemetry."""
+        self._events.put(event)
 
     def _stderr_loop(self, process: subprocess.Popen[str]) -> None:
         stream = process.stderr

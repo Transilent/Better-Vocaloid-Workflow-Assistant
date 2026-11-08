@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import ctypes
 import os
 from pathlib import Path
 import subprocess
 import sys
 import threading
 import time
+from unittest.mock import patch
 
 import numpy as np
 
 
 APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP / 'src'))
-from mixdown_native_output import NativeOutput, NativeOutputError
+import mixdown_native_output as native_output_module
+from mixdown_native_output import NativeDeviceError, NativeOutput, NativeOutputError
 
 
 def _maintenance_root() -> Path:
@@ -25,7 +28,10 @@ def _maintenance_root() -> Path:
 
 
 MAINTENANCE_ROOT = _maintenance_root()
-BUILD_DIR = APP / 'work' / 'native-audio' / 'build'
+BUILD_DIR = Path(os.environ.get(
+    'VWA_NATIVE_OUTPUT_BUILD_DIR',
+    str(APP / 'work' / 'native-audio' / 'build'),
+)).expanduser().resolve()
 DLL_PATH = BUILD_DIR / 'vwa_native_output.dll'
 BUILD_SCRIPT = APP / 'tools' / 'Build-MixdownNative.ps1'
 GCC_PATH = Path('D:/mingw64/bin/gcc.exe')
@@ -74,6 +80,62 @@ def _build() -> None:
         raise AssertionError((result.stdout + result.stderr)[-6000:])
 
 
+class _MockWasapiDll:
+    def __init__(self) -> None:
+        self.device_error_code = 0
+        self.device_error = b''
+        self.snapshot_calls = 0
+        self.create_calls = 0
+        self.destroy_calls = 0
+
+    def vwa_output_create(self, mode, sample_rate, channels, capacity_frames,
+                          period_frames, out_output, error, capacity):
+        assert (mode, sample_rate, channels, capacity_frames, period_frames) == (
+            1, 48000, 2, 4096, 256,
+        )
+        self.create_calls += 1
+        handle_pointer = ctypes.cast(out_output, ctypes.POINTER(ctypes.c_void_p))
+        handle_pointer[0] = ctypes.c_void_p(0x1234)
+        return 0
+
+    def vwa_output_snapshot(self, handle, snapshot_pointer, error, capacity):
+        assert int(handle) == 0x1234
+        assert int(capacity) >= 1
+        self.snapshot_calls += 1
+        native = ctypes.cast(
+            snapshot_pointer,
+            ctypes.POINTER(native_output_module._NativeSnapshot),
+        ).contents
+        native.abi_version = 1
+        native.backend = 1
+        native.share_mode = 1
+        native.sample_rate = 48000
+        native.channels = 2
+        native.period_frames = 256
+        native.requested_period_frames = 256
+        native.device_error_code = self.device_error_code
+        native.device_error = self.device_error
+        return 0
+
+    def vwa_output_destroy(self, handle):
+        assert int(handle) == 0x1234
+        self.destroy_calls += 1
+
+
+def _mock_wasapi_output() -> tuple[NativeOutput, _MockWasapiDll]:
+    dll = _MockWasapiDll()
+    with patch.object(native_output_module, '_bind_library', return_value=dll):
+        output = NativeOutput(
+            DLL_PATH,
+            sample_rate=48000,
+            channels=2,
+            capacity_frames=4096,
+            period_frames=256,
+            mode='wasapi',
+        )
+    return output, dll
+
+
 def _expected(start: int, frames: int, channels: int = 2) -> np.ndarray:
     frame_numbers = np.arange(start, start + frames, dtype=np.uint64)[:, None]
     channel_numbers = np.arange(channels, dtype=np.uint64)[None, :]
@@ -100,7 +162,7 @@ def test_null_wrapper() -> None:
         required = {
             'epoch', 'queued_frames', 'media_frame', 'capacity_frames', 'sample_rate',
             'channels', 'period_frames', 'backend', 'clock_quality', 'underrun_frames',
-            'device_error',
+            'device_failed', 'device_error_code', 'device_error_kind', 'device_error',
         }
         assert required <= initial.keys()
         assert initial['epoch'] == 0
@@ -112,6 +174,8 @@ def test_null_wrapper() -> None:
         assert initial['period_frames'] == 64
         assert initial['queued_frames'] == 0
         assert initial['media_frame'] == 0
+        assert initial['device_failed'] is False
+        assert initial['device_error_kind'] is None
 
         output.seek(0, epoch=1)
         output.set_playing(True)
@@ -153,7 +217,58 @@ def test_null_wrapper() -> None:
         assert final['epoch'] == 2
         assert final['media_frame'] == 48064
         assert final['ring_owner_violations'] == 0
+        assert final['device_failed'] is False
         assert final['device_error'] == ''
+
+
+def test_mock_wasapi_error_surfaces_without_recreation() -> None:
+    output, dll = _mock_wasapi_output()
+    healthy = output.snapshot()
+    output.raise_if_device_failed(healthy)
+
+    dll.device_error_code = -100
+    dll.device_error = (
+        b'WASAPI playback device stopped or was disconnected unexpectedly'
+    )
+    failed = output.snapshot()
+    assert failed['device_failed'] is True
+    assert failed['device_error_kind'] == 'stopped'
+    assert failed['device_error'] == dll.device_error.decode('ascii')
+
+    snapshot_calls = dll.snapshot_calls
+    try:
+        output.raise_if_device_failed(failed)
+    except NativeDeviceError as error:
+        assert error.code == -100
+        assert 'disconnected' in error.device_error
+        assert error.snapshot['device_error_kind'] == 'stopped'
+    else:
+        raise AssertionError('failed WASAPI snapshot did not raise NativeDeviceError')
+    assert dll.snapshot_calls == snapshot_calls
+    assert dll.create_calls == 1
+    assert dll.destroy_calls == 0
+
+    owner_errors: list[BaseException] = []
+
+    def close_from_wrong_thread() -> None:
+        try:
+            output.close()
+        except BaseException as error:
+            owner_errors.append(error)
+
+    thread = threading.Thread(target=close_from_wrong_thread, name='vwa-wrong-owner')
+    thread.start()
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+    assert len(owner_errors) == 1
+    assert isinstance(owner_errors[0], NativeOutputError)
+    assert dll.destroy_calls == 0
+
+    output.close()
+    output.close()
+    assert dll.destroy_calls == 1
+    assert dll.create_calls == 1
+
 
 def test_null_pull_thread_is_serialized_with_write_and_seek() -> None:
     output = NativeOutput(DLL_PATH, sample_rate=48000, channels=2, capacity_frames=512, period_frames=64, mode='null')
@@ -231,7 +346,7 @@ def test_clean_path_dll_load() -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'miniaudio-0.11.26' in result.stdout
-    assert sorted(path.suffix.lower() for path in BUILD_DIR.glob('*.dll')) == ['.dll']
+    assert DLL_PATH.is_file()
 
 
 def test_optional_silent_wasapi() -> None:
@@ -265,7 +380,8 @@ def test_optional_silent_wasapi() -> None:
 if __name__ == '__main__':
     _build()
     test_null_wrapper()
+    test_mock_wasapi_error_surfaces_without_recreation()
     test_null_pull_thread_is_serialized_with_write_and_seek()
     test_clean_path_dll_load()
     test_optional_silent_wasapi()
-    print('PASS: native null output, concurrent control serialization and clean-path DLL load')
+    print('PASS: native null output, device failure contract, concurrent serialization and clean-path DLL load')

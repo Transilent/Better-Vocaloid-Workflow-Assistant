@@ -31,3 +31,15 @@ The base archive excludes the optional BS-RoFormer payload as well as browser pr
 LibreSVIP 2.9.2 core and its dependencies reside in `dependencies/export`, with package licenses and metadata retained; its desktop GUI is not included. Vocal2Midi 2.0 application/inference code resides in `dependencies/vocal2midi2`, reusing existing models and Python, with Apache-2.0 LICENSE, NOTICE and acknowledgements preserved. The assistant bounds Japanese HFA boundary repairs to 150 ms gaps to keep longer pauses separate. NetEase lookup is an independently implemented public API client; 163MusicLyrics is a behavioral reference, without copied or bundled application code. The compact card layout references the supplied MaaEnd screenshot; the Qt implementation is original.
 
 Integration patches also scope original model-path checks by language and apply shared DirectML adapter/CPU-thread preferences. Original model weights are unchanged. Unused upstream GUI modules and Qt facilities are omitted from the headless assistant runtime; retained package license metadata remains included.
+# Continuous audition native components
+
+The continuous audition output uses miniaudio 0.11.26 (commit
+877ea4a7c2601c7b0f2a44e83dfac42e6470fea6), under the MIT No Attribution
+option; see `components/miniaudio-LICENSE.txt`.
+
+The separately loaded `vwa_limiter.dll` adapts FFmpeg n7.1's alimiter under
+LGPL-2.1-or-later. Its corresponding modified source and header are shipped as
+`src/native/vwa_limiter.c` and `src/native/vwa_limiter.h`; its license and
+provenance are in `components/ffmpeg-alimiter-LICENSE.txt` and
+`components/ffmpeg-alimiter-NOTICE.txt`. It can be rebuilt and replaced
+independently; see `docs/RealtimeAudition.zh-CN.md`.

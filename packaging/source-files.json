@@ -2009,6 +2009,21 @@
     "tests/test_mixdown_realtime_renderer.py",
     "tests/test_mixdown_realtime_session.py",
     "tools/Build-MixdownNative.ps1",
-    "tools/probe_mixdown_realtime.py"
+    "tools/probe_mixdown_realtime.py",
+    "src/mixdown_limiter_spec.py",
+    "src/mixdown_limiter.py",
+    "src/mixdown_realtime_graph.py",
+    "src/mixdown_realtime_service.py",
+    "src/mixdown_realtime_player.py",
+    "src/native/vwa_limiter.c",
+    "src/native/vwa_limiter.h",
+    "components/ffmpeg-alimiter-LICENSE.txt",
+    "components/ffmpeg-alimiter-NOTICE.txt",
+    "tests/test_mixdown_limiter.py",
+    "tests/test_mixdown_realtime_graph.py",
+    "tests/test_mixdown_realtime_service.py",
+    "tests/test_mixdown_realtime_player.py",
+    "tests/test_mixdown_realtime_ui.py",
+    "components/miniaudio-LICENSE.txt"
   ]
 }

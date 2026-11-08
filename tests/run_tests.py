@@ -30,6 +30,7 @@ names = ('test_update_bridge.py', 'test_update_catalog.py', 'test_test_isolation
 names = ('test_mixdown_full_sample_acceptance.py','test_mixdown_audition_service.py','test_audio_mixdown_audition.py','test_mixer_state.py','test_mixdown_eq_curve.py','test_mixdown_control_panel.py','test_mixdown_live_meter_widgets.py','test_mixdown_player.py','test_audio_mixdown_round2_acceptance.py','test_mixdown_theme.py','test_audio_mixdown_ui.py','test_audio_mixdown.py','test_reproducible_fixes.py','test_manual_bpm.py','test_note_benchmark.py','test_reference_audio.py','test_reference_corpus.py','test_vocal_partition.py','test_storage_management.py',) + names
 names = ('test_mixdown_stream_player.py',) + names
 names = ('test_mixdown_seek.py',) + names
+names = ('test_mixdown_limiter.py', 'test_mixdown_realtime_graph.py', 'test_mixdown_realtime_service.py', 'test_mixdown_realtime_player.py', 'test_mixdown_realtime_ui.py') + names
 names = ('test_mixdown_native_output.py', 'test_mixdown_realtime_renderer.py', 'test_mixdown_realtime_session.py') + names
 names = ('test_bilibili_login.py',) + names
 names = ('test_expression_density.py', 'test_calibration_workflow.py', 'test_calibration_detail.py', 'test_calibration_refinement.py', 'test_calibration_channels.py', 'test_calibration_session.py', 'test_optional_flows.py', 'test_expression_calibration.py', 'test_module_audit.py', 'test_video_mixdown.py') + names

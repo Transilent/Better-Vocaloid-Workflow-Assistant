@@ -271,6 +271,27 @@ class SessionTests(unittest.TestCase):
         session.close()
         self.assertEqual(output.closed, 1)
 
+    def test_stalled_wasapi_callback_fails_without_starting_second_output(self):
+        class StalledOutput(Output):
+            def snapshot(self):
+                state = super().snapshot()
+                state.update(backend='wasapi-shared', callback_count=12)
+                return state
+        created = []
+        def factory():
+            output = StalledOutput()
+            created.append(output)
+            return output
+        renderer = Renderer()
+        session = RealtimeAuditionSession(renderer, factory, block_frames=64)
+        self.addCleanup(session.close)
+        session.start()
+        snap = wait(session, lambda s: s['state'] == 'failed', seconds=3)
+        self.assertIn('stopped responding', snap['error'])
+        session.close()
+        self.assertEqual(len(created), 1)
+        self.assertEqual((renderer.closed, created[0].closed), (1, 1))
+
     def test_close_before_start_and_invalid_commands(self):
         session, renderer, output = self.make()
         with self.assertRaises(ValueError): session.seek(-1)

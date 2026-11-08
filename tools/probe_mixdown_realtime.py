@@ -88,9 +88,15 @@ def profile(mode, block, request, root, args, np, sf, pb):
     from mixdown_native_output import NativeOutput
     from mixdown_realtime_renderer import PreLimiterMixSession
     from mixdown_realtime_session import RealtimeAuditionSession
-    renderer = PreLimiterMixSession(request, cache_dir=root / 'source-cache',
-                                   numpy=np, soundfile=sf, pedalboard=pb,
-                                   ffmpeg=args.ffmpeg)
+    if args.limited:
+        from mixdown_realtime_graph import LimitedMixSession
+        renderer = LimitedMixSession(request, cache_dir=root / 'source-cache',
+                                     dll_path=args.dll, numpy=np, soundfile=sf,
+                                     pedalboard=pb, ffmpeg=args.ffmpeg)
+    else:
+        renderer = PreLimiterMixSession(request, cache_dir=root / 'source-cache',
+                                       numpy=np, soundfile=sf, pedalboard=pb,
+                                       ffmpeg=args.ffmpeg)
     output = None
     session = None
     consumer = None
@@ -204,7 +210,7 @@ def profile(mode, block, request, root, args, np, sf, pb):
             gates['no_soak_underrun'] = soak['underrun_frames'] == 0
         return {'mode': mode, 'block_frames': block, 'gates': gates,
                 'all_probe_gates_pass': all(gates.values()), 'silent_output': True,
-                'real_four_track_dsp': True, 'pre_limiter': True,
+                'real_four_track_dsp': True, 'pre_limiter': not args.limited,
                 'render_ms': stats, 'parameter_submit_ms': control,
                 'seek_submit_ms': seek_stats, 'steady_underrun_frames': steady_underrun,
                 'updates': updates, 'seeks': seeks, 'snapshot': before_close,
@@ -234,6 +240,8 @@ def profile(mode, block, request, root, args, np, sf, pb):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--limited', action='store_true',
+                        help='Include the shared final limiter and latency-compensated graph')
     parser.add_argument('--dll', type=Path, required=True)
     parser.add_argument('--packages', type=Path, required=True)
     parser.add_argument('--ffmpeg', type=Path, required=True)
@@ -264,13 +272,19 @@ def main():
     report = {'schema': 'vwa.mixdown.native-four-track-probe/v1',
               'source_sha256': {str(p.relative_to(APP)): digest(p) for p in (
                   Path(__file__).resolve(), APP / 'src/mixdown_realtime_session.py',
-                  APP / 'src/mixdown_realtime_renderer.py', APP / 'src/mixdown_native_output.py')},
+                  APP / 'src/mixdown_realtime_renderer.py', APP / 'src/mixdown_native_output.py',
+                  APP / 'src/mixdown_realtime_graph.py', APP / 'src/mixdown_limiter.py',
+                  APP / 'src/mixdown_limiter_spec.py')},
               'source_fingerprints': {str(p): digest(p) for p in (args.out / 'fixtures').iterdir()},
               'dll': str(args.dll.resolve()), 'dll_sha256': digest(args.dll),
+              'limiter_dll_sha256': digest(args.dll.with_name('vwa_limiter.dll')) if args.limited else None,
               'ffmpeg_sha256': digest(args.ffmpeg), 'pedalboard_version': pb.__version__,
               'default_backend_eligible': False,
-              'pending_production_gates': ['shared final limiter', 'complete seek/FX history equivalence',
-                                           'audible/whole-song acceptance', 'GUI adapter and device recovery'],
+              'pending_production_gates': (['complete seek/FX history equivalence',
+                                           'audible/whole-song acceptance', 'multi-device/hot-unplug acceptance']
+                                          if args.limited else ['shared final limiter',
+                                           'complete seek/FX history equivalence',
+                                           'audible/whole-song acceptance', 'GUI adapter and device recovery']),
               'profiles': [], 'errors': [], 'request': request}
     modes = ('null', 'wasapi') if args.mode == 'all' else (args.mode,)
     for mode in modes:

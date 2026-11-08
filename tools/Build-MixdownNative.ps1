@@ -4,7 +4,8 @@ param(
     [string]$MiniaudioHeaderPath = '',
     [string]$OutputDirectory = '',
     [switch]$RunTests,
-    [switch]$ProbeWasapi
+    [switch]$ProbeWasapi,
+    [switch]$InstallForDevelopment
 )
 
 $ErrorActionPreference = 'Stop'
@@ -64,6 +65,7 @@ if (Test-Path -LiteralPath $license) {
 
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 $dllPath = Join-Path $OutputDirectory 'vwa_native_output.dll'
+$limiterDllPath = Join-Path $OutputDirectory 'vwa_limiter.dll'
 $testExePath = Join-Path $OutputDirectory 'vwa_native_output_test.exe'
 $commonArgs = @(
     '-std=c11',
@@ -80,6 +82,11 @@ $commonArgs = @(
     '-o' $dllPath '-static-libgcc' '-Wl,--strip-all' '-lole32' '-luuid' '-luser32'
 if ($LASTEXITCODE -ne 0) {
     throw "native DLL build failed: $LASTEXITCODE"
+}
+& $gcc.FullName @commonArgs '-DVWA_LIMITER_BUILD_DLL' '-shared' (Join-Path $repoRoot 'src/native/vwa_limiter.c') `
+    '-o' $limiterDllPath '-static-libgcc' '-Wl,--strip-all'
+if ($LASTEXITCODE -ne 0) {
+    throw "limiter DLL build failed: $LASTEXITCODE"
 }
 & $gcc.FullName @commonArgs (Join-Path $repoRoot 'src/native/vwa_native_output.c') (Join-Path $repoRoot 'src/native/test_vwa_output.c') `
     '-o' $testExePath '-static-libgcc' '-Wl,--strip-all' '-lole32' '-luuid' '-luser32'
@@ -134,7 +141,7 @@ if (Test-Path -LiteralPath $objdumpPath) {
 }
 
 $sourceHashes = @{}
-foreach ($relative in @('src/native/vwa_native_output.h', 'src/native/vwa_native_output.c', 'src/native/test_vwa_output.c', 'src/mixdown_native_output.py')) {
+foreach ($relative in @('src/native/vwa_native_output.h', 'src/native/vwa_native_output.c', 'src/native/test_vwa_output.c', 'src/mixdown_native_output.py', 'src/native/vwa_limiter.c', 'src/native/vwa_limiter.h', 'src/mixdown_limiter.py', 'src/mixdown_limiter_spec.py')) {
     $sourceHashes[$relative] = (Get-FileHash -LiteralPath (Join-Path $repoRoot $relative) -Algorithm SHA256).Hash
 }
 
@@ -158,10 +165,17 @@ $receipt = [ordered]@{
     }
     artifacts = [ordered]@{
         dll = [ordered]@{ path = $dllPath; sha256 = (Get-FileHash -LiteralPath $dllPath -Algorithm SHA256).Hash }
+        limiter_dll = [ordered]@{ path = $limiterDllPath; sha256 = (Get-FileHash -LiteralPath $limiterDllPath -Algorithm SHA256).Hash }
         test_exe = [ordered]@{ path = $testExePath; sha256 = (Get-FileHash -LiteralPath $testExePath -Algorithm SHA256).Hash }
     }
     sources_sha256 = $sourceHashes
     dll_imports = $imports
+    limiter = [ordered]@{
+        upstream = 'FFmpeg n7.1 libavfilter/af_alimiter.c'
+        upstream_sha256 = 'dc15973088a1e6197ae1001cfecbc0d847c479571563c37b5e2efe4073fa56eb'
+        license = 'LGPL-2.1-or-later'
+        source_included = @('src/native/vwa_limiter.c', 'src/native/vwa_limiter.h')
+    }
     null_test = [ordered]@{ requested = [bool]$RunTests; receipt = if ($RunTests) { $nullTestPath } else { $null }; exit_code = $nullExit; passed = $nullPassed }
     silent_wasapi_probe = [ordered]@{
         requested = [bool]$ProbeWasapi
@@ -174,4 +188,24 @@ $receipt = [ordered]@{
 }
 $receiptPath = Join-Path $OutputDirectory 'build-receipt.json'
 Write-Utf8Text $receiptPath (($receipt | ConvertTo-Json -Depth 8) + [Environment]::NewLine)
+if ($InstallForDevelopment) {
+    if (-not $RunTests -or -not $nullPassed) {
+        throw 'InstallForDevelopment requires passing -RunTests.'
+    }
+    # Only the current checkout is staged; no installed client is changed.
+    $componentDirectory = Join-Path $repoRoot 'components/native-audio'
+    New-Item -ItemType Directory -Force -Path $componentDirectory | Out-Null
+    Copy-Item -LiteralPath $dllPath -Destination (Join-Path $componentDirectory 'vwa_native_output.dll')
+    Copy-Item -LiteralPath $limiterDllPath -Destination (Join-Path $componentDirectory 'vwa_limiter.dll')
+    $component = [ordered]@{
+        schema = 'vwa.native-audio.component/v1'
+        dll_sha256 = (Get-FileHash -LiteralPath $dllPath -Algorithm SHA256).Hash
+        limiter_dll_sha256 = (Get-FileHash -LiteralPath $limiterDllPath -Algorithm SHA256).Hash
+        abi = 1
+        miniaudio_version = $pinVersion
+        limiter = $receipt.limiter
+        sources_sha256 = $sourceHashes
+    }
+    Write-Utf8Text (Join-Path $componentDirectory 'native-audio.json') (($component | ConvertTo-Json -Depth 8) + [Environment]::NewLine)
+}
 Write-Output $receiptPath

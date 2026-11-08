@@ -38,8 +38,7 @@ import mixdown_contract as contract
 PEDALBOARD_VERSION = "0.9.26"
 CHUNK_FRAMES = 32768
 PEDALBOARD_BUFFER_SIZE = 8192
-PEAK_CEILING_DBFS = -1.0
-PEAK_CEILING = 10.0 ** (PEAK_CEILING_DBFS / 20.0)
+from mixdown_limiter_spec import PEAK_CEILING_DBFS, PEAK_CEILING, ffmpeg_filter as _limiter_filter
 TAIL_FLOOR_DBFS = -90.0
 # Reverb decay budget after the separately quantized pre-delay.
 MAX_REVERB_TAIL_SECONDS = 8.0
@@ -1555,7 +1554,7 @@ def _encode_final(premix: Path, output: Path, sample_rate: int, channels: int,
     if codec not in ('pcm_s24le', 'pcm_f32le'):
         raise ValueError("不支持此混音 WAV 编码。")
     filters = (
-        f"alimiter=limit={PEAK_CEILING:.9f}:attack=5:release=100:level=false:latency=true,"
+        _limiter_filter() + ',' +
         f"atrim=start_sample={start_frame}:end_sample={end_frame},asetpts=PTS-STARTPTS"
     )
     _run_ffmpeg(

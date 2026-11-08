@@ -1,0 +1,38 @@
+FFmpeg alimiter streaming component
+===================================
+
+Component source:
+  src/native/vwa_limiter.c
+  src/native/vwa_limiter.h
+
+Upstream source:
+  FFmpeg libavfilter/af_alimiter.c, tag n7.1
+  https://raw.githubusercontent.com/FFmpeg/FFmpeg/n7.1/libavfilter/af_alimiter.c
+  SHA-256 dc15973088a1e6197ae1001cfecbc0d847c479571563c37b5e2efe4073fa56eb
+
+Upstream license:
+  GNU Lesser General Public License version 2.1 or later
+  See components/ffmpeg-alimiter-LICENSE.txt
+  Upstream copy: https://raw.githubusercontent.com/FFmpeg/FFmpeg/n7.1/COPYING.LGPLv2.1
+
+Upstream copyright:
+  Copyright (C) 2001-2010 Krzysztof Foltman, Markus Schmidt,
+  Thor Harald Johansen and others
+  Copyright (c) 2015 Paul B Mahol
+
+Modifications:
+  The AVFilter and libavutil infrastructure was removed. The lookahead ring,
+  attack tracking and release state were adapted to a persistent streaming
+  API over interleaved float32 buffers. The component supports only mono and
+  stereo and fixes the final-export parameters to limit=-1 dBFS, attack=5 ms,
+  release=100 ms, level=false, latency=true and asc=false. FFmpeg-compatible
+  latency compensation is exposed as attack_frames - 1.
+
+Licensing boundary:
+  The VWA application remains under its own MIT license. This native component
+  is a separate LGPL-2.1-or-later work and its source is included here. No
+  FFmpeg executable or library is embedded in this component.
+
+FFmpeg is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+A PARTICULAR PURPOSE. See the license text for details.

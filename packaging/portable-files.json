@@ -804,6 +804,62 @@
     {
       "file": "mixdown_realtime_session.py",
       "source": "src/mixdown_realtime_session.py"
+    },
+    {
+      "file": "mixdown_limiter_spec.py",
+      "source": "src/mixdown_limiter_spec.py"
+    },
+    {
+      "file": "mixdown_limiter.py",
+      "source": "src/mixdown_limiter.py"
+    },
+    {
+      "file": "mixdown_realtime_graph.py",
+      "source": "src/mixdown_realtime_graph.py"
+    },
+    {
+      "file": "mixdown_realtime_service.py",
+      "source": "src/mixdown_realtime_service.py"
+    },
+    {
+      "file": "mixdown_realtime_player.py",
+      "source": "src/mixdown_realtime_player.py"
+    },
+    {
+      "file": "src/native/vwa_limiter.c",
+      "source": "src/native/vwa_limiter.c"
+    },
+    {
+      "file": "src/native/vwa_limiter.h",
+      "source": "src/native/vwa_limiter.h"
+    },
+    {
+      "file": "components/ffmpeg-alimiter-LICENSE.txt",
+      "source": "components/ffmpeg-alimiter-LICENSE.txt"
+    },
+    {
+      "file": "components/ffmpeg-alimiter-NOTICE.txt",
+      "source": "components/ffmpeg-alimiter-NOTICE.txt"
+    },
+    {
+      "file": "components/native-audio/vwa_native_output.dll",
+      "source": "components/native-audio/vwa_native_output.dll"
+    },
+    {
+      "file": "components/native-audio/vwa_limiter.dll",
+      "source": "components/native-audio/vwa_limiter.dll"
+    },
+    {
+      "file": "components/native-audio/native-audio.json",
+      "source": "components/native-audio/native-audio.json"
+    },
+    {
+      "file": "components/miniaudio-LICENSE.txt",
+      "source": "components/miniaudio-LICENSE.txt"
+    },
+    {
+      "file": "docs/RealtimeAudition.zh-CN.md",
+      "source": "docs/RealtimeAudition.zh-CN.md"
     }
   ]
 }

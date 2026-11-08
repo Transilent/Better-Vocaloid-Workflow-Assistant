@@ -1850,6 +1850,11 @@ def _report_detail(report):
     return '；'.join(parts)
 
 
+def _is_native_preview(dialog):
+    player = getattr(dialog, '_native_preview_player', None)
+    return player is not None and getattr(dialog, '_player', None) is player
+
+
 def _create_audition_service(cache_dir):
     packages = _OPTIONAL_PACKAGES
     extra_paths = [packages] if packages else []
@@ -1942,6 +1947,12 @@ class AudioMixdownDialog(QDialog):
         self._stream_load_context = None
         self._stream_fallback_scheduled = False
         self._stream_device_faulted = False
+        self._native_preview_player = None
+        self._native_dll_path = None
+        self._native_source_key = None
+        self._native_requested_key = 'after'
+        self._native_switching = False
+        self._native_switch_result = None
         self._edc_playback_position_ms = 0.0
         self._preview_dirty = True
         self._preview_autoplay = False
@@ -2693,6 +2704,11 @@ class AudioMixdownDialog(QDialog):
         self.player_toggle_button.setAccessibleName(_tr('播放试听'))
         self.player_toggle_button.setFixedSize(54, 38)
         self.player_toggle_button.clicked.connect(self.toggle_preview_playback)
+        self.continuous_preview = QCheckBox(_tr('连续试听'))
+        self.continuous_preview.setObjectName('mixdownContinuousPreview')
+        self.continuous_preview.setAccessibleName(_tr('使用连续试听'))
+        self.continuous_preview.setToolTip(_tr('持续处理整曲；切换试听方式时会停止播放。'))
+        self.continuous_preview.toggled.connect(self._switch_continuous_preview)
         self.player_loop_button = QPushButton(_tr('循环'))
         self.player_loop_button.setObjectName(CONTROL_NAMES['player_loop'])
         self.player_loop_button.setAccessibleName(_tr('循环当前试听分段'))
@@ -2714,6 +2730,7 @@ class AudioMixdownDialog(QDialog):
         self.player_time.setMinimumWidth(104)
         self.player_time.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         transport.addWidget(self.player_toggle_button)
+        transport.addWidget(self.continuous_preview)
         transport.addWidget(self.player_loop_button)
         transport.addWidget(self.player_position, 1)
         transport.addWidget(self.player_time)
@@ -3167,6 +3184,172 @@ class AudioMixdownDialog(QDialog):
         if not self._player.available:
             self.player_time.setText(_tr('系统播放器'))
             self._system_player_fallback_available = True
+        from mixdown_realtime_player import native_output_path
+        self._native_dll_path = native_output_path()
+        self.continuous_preview.setEnabled(self._native_dll_path is not None)
+        if self._native_dll_path is None:
+            self.continuous_preview.setToolTip(_tr('当前安装尚未包含连续试听组件。'))
+
+    def _switch_continuous_preview(self, enabled):
+        if self._native_switching or not self._native_dll_path:
+            return
+        self.cancel_preview()
+        self._stop_preview_player()
+        self._audition_poll_timer.stop()
+        self._native_switching = True
+        self.continuous_preview.setEnabled(False)
+        service = self._audition_service
+        self._native_switch_result = None
+        self.preview_report.setText(_tr('正在切换试听方式…'))
+
+        def close_previous():
+            try:
+                if service is not None:
+                    service.close(timeout=3.0)
+                self._native_switch_result = (bool(enabled), '')
+            except Exception as error:
+                self._native_switch_result = (bool(enabled), str(error))
+
+        threading.Thread(target=close_previous, name='VWA switch audition', daemon=True).start()
+        QTimer.singleShot(25, self._finish_continuous_preview_switch)
+
+    def _finish_continuous_preview_switch(self):
+        result = self._native_switch_result
+        if result is None:
+            QTimer.singleShot(25, self._finish_continuous_preview_switch)
+            return
+        enabled, error = result
+        if error:
+            self._native_switching = False
+            blocked = self.continuous_preview.blockSignals(True)
+            self.continuous_preview.setChecked(_is_native_preview(self))
+            self.continuous_preview.blockSignals(blocked)
+            self.continuous_preview.setEnabled(True)
+            self._native_preview_error(_tr('切换失败：') + error)
+            return
+        if self._audition_closing or self._close_pending:
+            # A mode switch may finish after the dialog begins closing. The
+            # old service is now quiescent; do not create a new actor/output.
+            self._native_switching = False
+            self._shutdown_audition_service()
+            return
+        self._connect_preview_player(self._player, connect=False)
+        self._audition_service = None
+        self._audition_service_ready = self._audition_start_attempted = False
+        self._audition_starting = False
+        self._audition_request_id = self._audition_request_context = None
+        self._preview_result = None
+        self._system_player_fallback_available = False
+        self._preview_source_key = self._native_source_key = None
+        self._preview_segment_start_seconds = self._preview_segment_duration_seconds = 0.0
+        self._native_preview_player = None
+        if enabled:
+            from mixdown_realtime_player import RealtimePreviewPlayer
+            packages = self._component_packages or _OPTIONAL_PACKAGES
+            player = RealtimePreviewPlayer(
+                self._native_dll_path, cache_dir=self._ensure_preview_cache_directory(), parent=self,
+                service_options=dict(python_executable=_child_python(),
+                                     extra_paths=[packages] if packages else [],
+                                     environment=_worker_environment(packages),
+                                     startup_timeout=8.0, shutdown_timeout=2.0))
+            self._native_preview_player = self._player = player
+            self._native_requested_key = self._player_key
+            self._audition_service = player
+            self._audition_service_ready = True
+            self._audition_start_attempted = True
+            player.prepared.connect(self._native_preview_prepared)
+            player.parametersApplied.connect(self._native_parameters_applied)
+            player.telemetryChanged.connect(self._native_preview_telemetry)
+            self._audition_poll_timer.start()
+        else:
+            self._player = self._legacy_preview_player
+        self._connect_preview_player(self._player)
+        self.eq_curve.clear_spectrum_envelope()
+        self.meter_feed.clear()
+        self.gr_summary.setText('GR p95 —')
+        self._preview_play_intent = self._preview_autoplay = False
+        self._preview_dirty = True
+        self._native_switching = False
+        self.continuous_preview.setEnabled(True)
+        if not self._audition_closing and not self._close_pending:
+            self._ensure_audition_service_started()
+            if self._sources_ready():
+                self._schedule_preview_refresh(immediate=True)
+        self._sync_controls()
+
+    def _start_native_preview(self):
+        if self._native_switching or self._audition_closing or self.busy():
+            return False
+        player = self._native_preview_player
+        if player.failed and not self._preview_play_intent:
+            return False
+        source_key = self._current_preview_source_key()
+        if not source_key or not self._support_ready:
+            player.release()
+            self._native_source_key = None
+            return False
+        key = self._native_requested_key
+        try:
+            # This path is only a request field; live playback never writes it.
+            request = self._request(self._ensure_preview_cache_directory() / 'live-unused.wav',
+                                    bypass_processing=key == 'before')
+            position = int(round((self._preview_resume_seconds or 0.0) * 1000))
+            if source_key != self._native_source_key:
+                position = int(round(self.preview_start.value() * 1000))
+            player.set_loop_range(int(self.preview_start.value() * 1000),
+                                  int((self.preview_start.value() + self.preview_duration.value()) * 1000))
+            if source_key != self._native_source_key or not player.ready:
+                if player.loading and source_key == self._native_source_key:
+                    player.parameters(request, key=key)
+                else:
+                    player.open(request, position_ms=position,
+                                autoplay=self._preview_play_intent, key=key)
+                    self._native_source_key = source_key
+            else:
+                player.parameters(request, key=key)
+            self._preview_dirty = False
+            self._preview_pending = False
+            self._set_audition_diagnostic('updating', _tr('正在更新连续试听…'))
+            self._sync_controls()
+            return True
+        except Exception as error:
+            self._native_preview_error(str(error))
+            return False
+
+    def _native_preview_prepared(self):
+        player = self._native_preview_player
+        self._preview_segment_start_seconds = 0.0
+        self._preview_segment_duration_seconds = player.duration() / 1000.0
+        self._player_duration_changed(player.duration())
+        self._native_parameters_applied(player.selected_key)
+        self.preview_report.setText(_tr('连续试听已就绪，可拖动进度条定位整曲。'))
+        self._sync_controls()
+
+    def _native_parameters_applied(self, key):
+        self._set_preview_selection(key)
+        self._preview_actual_key = key
+        self._preview_selection_pending_key = self._preview_selection_restore_key = None
+        self.preview_before_state.setText(_tr('已就绪'))
+        self.preview_after_state.setText(_tr('已就绪'))
+        self._set_audition_diagnostic('updated', _tr('连续试听 · 已更新'))
+
+    def _native_preview_telemetry(self, snapshot):
+        peak = snapshot.get('block_peak')
+        if peak is not None:
+            peak_db = 20.0 * math.log10(peak) if peak > 0 else -144.0
+            self.bus_meter.set_levels(peak_db, peak_db)
+            self.bus_peak_value.setText(_tr('静音') if peak_db <= -143 else f'{peak_db:.1f} dBFS')
+            self.bus_meter.setToolTip(_tr('连续试听输出块峰值；位置为设备回调提交估计。'))
+
+    def _native_preview_error(self, message):
+        self._preview_play_intent = self._preview_autoplay = False
+        self._preview_dirty = True
+        if self._pending_player_seek:
+            self._fail_player_seek()
+        self._set_audition_diagnostic('failed', _tr('连续试听已停止'))
+        self.status.setText(_tr('连续试听失败：') + str(message) + _tr('；点击播放重试，或取消勾选连续试听。'))
+        _set_role(self.status, 'error')
+        self._sync_controls()
 
     def _connect_preview_player(self, player, *, connect=True):
         bindings = (
@@ -3492,6 +3675,8 @@ class AudioMixdownDialog(QDialog):
             + ' / ' + self._format_player_time(duration_ms))
 
     def _preview_total_milliseconds(self):
+        if _is_native_preview(self):
+            return self._native_preview_player.duration()
         after = (self._preview_result or {}).get('after') or {}
         total = float(after.get('source_duration_seconds') or 0.0)
         total = max(total, self._preview_segment_start_seconds + self._preview_segment_duration_seconds)
@@ -3499,6 +3684,8 @@ class AudioMixdownDialog(QDialog):
 
     def _player_position_changed(self, position):
         if self._player_seeking:
+            return
+        if _is_native_preview(self) and self._native_preview_player._pending_seek:
             return
         # A queued Qt notification is only a wake-up: sample the current player
         # rather than allowing an old payload to undo an accepted seek.
@@ -3517,7 +3704,8 @@ class AudioMixdownDialog(QDialog):
             if not seeking['relative_ms'] - 2 <= int(position) <= seeking['relative_ms'] + advance_ms:
                 return
             seeking.update(phase='following', confirmed_at=time.monotonic(),
-                           clock_quality='player_position_estimate')
+                           clock_quality=('native_callback_submitted_media_not_acoustic'
+                                          if _is_native_preview(self) else 'player_position_estimate'))
             seeking['elapsed_ms'] = round(
                 (seeking['confirmed_at'] - seeking['requested_at']) * 1000.0, 3)
             self._last_player_seek = dict(seeking)
@@ -3557,6 +3745,8 @@ class AudioMixdownDialog(QDialog):
 
     def _maybe_continue_preview(self, position_ms):
         """Prefetch and stage the next segment well before this one ends."""
+        if _is_native_preview(self):
+            return
         if (self._player_loop or self._player_seeking or not self._preview_is_playing()
                 or self._preview_dirty or self._preview_debounce.isActive()
                 or getattr(self._player, 'transitioning', False)):
@@ -3691,6 +3881,11 @@ class AudioMixdownDialog(QDialog):
         self._sync_preview_analysis()
 
     def _player_media_status_changed(self, status):
+        if _is_native_preview(self):
+            if status == MediaStatus.EndOfMedia and not self._player_loop:
+                self._preview_play_intent = self._preview_autoplay = False
+                self.player_toggle_button.setText(_tr('播放'))
+            return
         if self._player is not None and hasattr(self._player, 'load_crossfade'):
             if status == MediaStatus.LoadedMedia:
                 self._promote_pending_preview_selection()
@@ -3728,6 +3923,9 @@ class AudioMixdownDialog(QDialog):
             self.player_toggle_button.setText(_tr('播放'))
 
     def _player_error(self, message):
+        if _is_native_preview(self):
+            self._native_preview_error(message)
+            return
         if getattr(self, '_pending_player_seek', None):
             self._fail_player_seek()
         if self._queue_stream_fallback(message):
@@ -3914,6 +4112,17 @@ class AudioMixdownDialog(QDialog):
     def _seek_to_song_position(self, position, *, commit):
         if self._player is None or not commit:
             return
+        if _is_native_preview(self):
+            self._player_seek_timer.stop()
+            pending = self._pending_player_seek
+            if not pending or pending['target_ms'] != int(position):
+                pending = self._stage_player_seek(position, phase='seeking')
+            pending.update(phase='seeking', path=self._player.source(),
+                           relative_ms=pending['target_ms'], submitted_at=time.monotonic())
+            if not self._player.seek(pending['target_ms'], autoplay=pending['autoplay']):
+                self._fail_player_seek()
+            self._update_player_time()
+            return
         self._player_seek_timer.stop()
         pending = self._pending_player_seek
         if (pending and pending['phase'] == 'queued' and pending['target_ms'] == int(position)
@@ -3983,8 +4192,12 @@ class AudioMixdownDialog(QDialog):
         self._last_audible_preview = None
         self._stream_load_context = None
         if self._player is not None:
-            self._player.stop()
-            if not hasattr(self._player, 'load_crossfade'):
+            if _is_native_preview(self):
+                self._player.release()
+                self._native_source_key = None
+            else:
+                self._player.stop()
+            if not _is_native_preview(self) and not hasattr(self._player, 'load_crossfade'):
                 self._player.setMedia(QMediaContent())
         self._player_duration_ms = 0
         self._pending_player_position_ms = None
@@ -4119,6 +4332,23 @@ class AudioMixdownDialog(QDialog):
             self.status.setText(_tr('选择全部声音并等待混音组件就绪后即可试听。'))
             _set_role(self.status, 'muted')
             return
+        if _is_native_preview(self):
+            if self._preview_play_intent:
+                self._preview_play_intent = False
+                self._preview_autoplay = False
+                if self._pending_player_seek:
+                    self._pending_player_seek['autoplay'] = False
+                self._player.pause()
+            else:
+                self._preview_play_intent = True
+                self._preview_autoplay = True
+                if self._pending_player_seek:
+                    self._pending_player_seek['autoplay'] = True
+                if self._player.ready:
+                    self._player.play()
+                else:
+                    self._start_native_preview()
+            return
         seeking = getattr(self, '_pending_player_seek', None)
         if seeking:
             self._preview_play_intent = not self._preview_play_intent
@@ -4154,6 +4384,9 @@ class AudioMixdownDialog(QDialog):
         self._request_preview_playback()
 
     def _request_preview_playback(self):
+        if _is_native_preview(self):
+            self._preview_play_intent = self._preview_autoplay = True
+            return self._start_native_preview()
         self._preview_autoplay = True
         self._preview_play_intent = True
         seeking = getattr(self, '_pending_player_seek', None)
@@ -4177,6 +4410,16 @@ class AudioMixdownDialog(QDialog):
         return self._schedule_preview_refresh(autoplay=True)
 
     def play_preview(self, key):
+        if _is_native_preview(self):
+            self._player_key = key
+            self._native_requested_key = key
+            self._preview_play_intent = self._preview_autoplay = True
+            if self._pending_player_seek and self._pending_player_seek['phase'] == 'queued':
+                self._commit_queued_player_seek()
+            result = self._start_native_preview()
+            if self._player.ready:
+                self._player.play()
+            return result
         self._invalidate_preview_prefetch()
         self._player_key = key
         self._preview_play_intent = True
@@ -4199,7 +4442,10 @@ class AudioMixdownDialog(QDialog):
         self._sync_controls()
 
     def preview_busy(self):
-        return bool(self._preview_worker is not None or self._audition_starting or self._audition_request_id is not None)
+        native = getattr(self, '_native_preview_player', None)
+        return bool(getattr(self, '_native_switching', False) or
+                    (native is not None and native.loading) or self._preview_worker is not None
+                    or self._audition_starting or self._audition_request_id is not None)
 
     def _current_preview_source_key(self):
         try:
@@ -4253,6 +4499,8 @@ class AudioMixdownDialog(QDialog):
         return self._preview_cache_directory
 
     def _clear_preview_cache(self):
+        if _is_native_preview(self) and not self._audition_cleanup_complete:
+            return
         directory, self._preview_cache_directory = self._preview_cache_directory, None
         _discard_preview_directory(directory)
 
@@ -4261,6 +4509,19 @@ class AudioMixdownDialog(QDialog):
             return False
         if self._syncing or self.busy():
             return False
+        if getattr(self, '_native_switching', False):
+            return False
+        if _is_native_preview(self):
+            self._preview_dirty = True
+            if autoplay:
+                self._preview_play_intent = self._preview_autoplay = True
+            if not self._sources_ready() or not self._support_ready:
+                self._player.release()
+                self._native_source_key = None
+                return False
+            if not self._preview_debounce.isActive() or immediate:
+                self._preview_debounce.start(0 if immediate else 60)
+            return True
         if (self._preview_prefetch is not None
                 or (self._audition_request_context or {}).get('purpose') == 'continuation'):
             self._invalidate_preview_prefetch(cancel_request=True,
@@ -4507,6 +4768,11 @@ class AudioMixdownDialog(QDialog):
         _set_role(self.audition_diagnostics, "error" if state == "failed" else ("success" if state == "updated" else "muted"))
 
     def _ensure_audition_service_started(self):
+        if getattr(self, '_native_switching', False):
+            return False
+        if _is_native_preview(self):
+            self._audition_poll_timer.start()
+            return True
         if self._audition_start_attempted or self._audition_closing:
             return False
         self._audition_start_attempted = True
@@ -4574,6 +4840,9 @@ class AudioMixdownDialog(QDialog):
         self._set_audition_diagnostic("failed", _tr("更新失败"))
 
     def _poll_audition_service(self):
+        if _is_native_preview(self):
+            self._native_preview_player.poll()
+            return
         service = self._audition_service
         if service is None or self._audition_closing:
             return
@@ -4610,6 +4879,8 @@ class AudioMixdownDialog(QDialog):
         if self._player_seeking:
             self._preview_pending = True
             return False
+        if _is_native_preview(self):
+            return self._start_native_preview()
         if self.busy() or self._audition_closing:
             return False
         if not self._audition_service_ready:
@@ -5810,7 +6081,8 @@ class AudioMixdownDialog(QDialog):
         self._sync_processing_controls()
         sources_ready = self._sources_ready()
         preview_ready = bool(not active and sources_ready and self._support_ready)
-        has_segment = bool(preview_ready and self._preview_result)
+        has_segment = bool(preview_ready and (self._preview_result or
+                           (_is_native_preview(self) and self._player.ready)))
         self.preview_before_button.setEnabled(preview_ready)
         self.preview_after_button.setEnabled(preview_ready)
         player_available = bool(
@@ -5823,6 +6095,9 @@ class AudioMixdownDialog(QDialog):
         self.player_toggle_button.setEnabled(preview_ready and player_available)
         self.player_loop_button.setEnabled(has_segment and player_available)
         self.player_position.setEnabled(has_segment and player_available)
+        self.continuous_preview.setEnabled(bool(not active and not self._native_switching
+                                               and not self._audition_starting
+                                               and self._native_dll_path))
         self.export_button.setEnabled(not active and not self.preview_busy()
                                   and sources_ready and self._support_ready
                                   and self._output_ready())
@@ -5890,6 +6165,13 @@ class AudioMixdownDialog(QDialog):
 
     def preview_parameters_changed(self, *args):
         if self._syncing or self.busy():
+            return
+        if _is_native_preview(self):
+            self._player.set_loop_range(int(self.preview_start.value() * 1000),
+                                        int((self.preview_start.value() + self.preview_duration.value()) * 1000))
+            self._preview_resume_seconds = float(self.preview_start.value())
+            if self._player.ready:
+                self._seek_to_song_position(int(self.preview_start.value() * 1000), commit=True)
             return
         self._preview_resume_seconds = float(self.preview_start.value())
         self._preview_force_both = True

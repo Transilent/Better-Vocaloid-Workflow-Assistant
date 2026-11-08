@@ -4,6 +4,10 @@ The native data callback never enters Python. This wrapper serializes write,
 seek, play state, snapshot and null pull calls from the control side. The null
 pull helper is a deterministic consumer for tests only; actual WASAPI output is
 consumed solely by miniaudio's audio thread.
+
+Device failure is reported by native snapshots and remains visible until this
+output is closed. This wrapper never opens a replacement device automatically;
+the controller must close this instance and create a new one on its owner thread.
 """
 
 from __future__ import annotations
@@ -11,7 +15,7 @@ from __future__ import annotations
 import ctypes
 from pathlib import Path
 import threading
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 
@@ -21,6 +25,28 @@ _ERROR_CAPACITY = 1024
 
 class NativeOutputError(RuntimeError):
     """A native output operation returned an error or failed to initialize."""
+
+
+class NativeDeviceError(NativeOutputError):
+    """A terminal native device failure reported by a non-throwing snapshot."""
+
+    def __init__(
+        self,
+        code: int,
+        message: str,
+        snapshot: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.code = int(code)
+        self.device_error = str(message).strip()
+        self.snapshot = dict(snapshot or {})
+        detail = self.device_error or f"native device failed with code {self.code}"
+        super().__init__(detail)
+
+
+_DEVICE_ERROR_KINDS = {
+    -100: "stopped",
+    -101: "interrupted",
+}
 
 
 class _NativeSnapshot(ctypes.Structure):
@@ -308,6 +334,12 @@ class NativeOutput:
         )
         padding_evidence = native.seek_padding_evidence
         clock_evidence = native.seek_clock_evidence
+        device_error_code = int(native.device_error_code)
+        device_error = _decode_c_string(native.device_error)
+        device_error_kind = (
+            _DEVICE_ERROR_KINDS.get(device_error_code, "native")
+            if device_error_code else None
+        )
         return {
             "abi_version": int(native.abi_version),
             "backend": backend,
@@ -384,12 +416,28 @@ class NativeOutput:
             "playing": bool(native.playing),
             "closing": bool(native.closing),
             "ring_owner_violations": int(native.ring_owner_violations),
-            "device_error_code": int(native.device_error_code),
-            "device_error": _decode_c_string(native.device_error),
+            "device_failed": device_error_code != 0,
+            "device_error_code": device_error_code,
+            "device_error_kind": device_error_kind,
+            "device_error": device_error,
             "clock_error": _decode_c_string(native.clock_error),
             "last_error_code": int(native.error_code),
             "last_error": _decode_c_string(native.last_error),
         }
+
+    def raise_if_device_failed(self, snapshot: Mapping[str, Any] | None = None) -> None:
+        """Raise a typed error for a terminal native device failure.
+
+        snapshot() remains non-throwing for diagnostics. Callers that already
+        have a recent snapshot can pass it here to avoid another native status,
+        clock and padding query. This method does not close or recreate a device.
+        """
+        self._require_owner()
+        current = dict(self.snapshot() if snapshot is None else snapshot)
+        code = int(current.get("device_error_code", 0) or 0)
+        message = str(current.get("device_error", "") or "").strip()
+        if code or message:
+            raise NativeDeviceError(code, message, current)
 
     def pull(self, frames: int = 256) -> np.ndarray:
         """Deterministic null consumer. This method is unavailable for WASAPI."""
@@ -431,4 +479,4 @@ class NativeOutput:
             pass
 
 
-__all__ = ["NativeOutput", "NativeOutputError"]
+__all__ = ["NativeDeviceError", "NativeOutput", "NativeOutputError"]

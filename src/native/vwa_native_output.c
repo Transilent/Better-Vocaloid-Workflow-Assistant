@@ -34,6 +34,10 @@
 #define VWA_SEEK_CLOCK_BEFORE        (UINT64_C(1) << 0)
 #define VWA_SEEK_CLOCK_AFTER_STOP    (UINT64_C(1) << 1)
 
+#define VWA_DEVICE_ERROR_STOPPED     (-INT64_C(100))
+#define VWA_DEVICE_ERROR_INTERRUPTED (-INT64_C(101))
+#define VWA_DEVICE_STOPPED_MESSAGE   "WASAPI playback device stopped or was disconnected unexpectedly"
+
 struct VwaOutput
 {
     uint64_t backend;
@@ -312,7 +316,7 @@ static void notification_callback(const ma_device_notification* notification)
             atomic_fetch_add_explicit(&output->notification_stopped_count, 1u, memory_order_relaxed);
             if (atomic_load_explicit(&output->expected_stop, memory_order_acquire) == 0u &&
                 !atomic_load_explicit(&output->closed, memory_order_acquire)) {
-                set_callback_device_error_code(output, -100);
+                set_callback_device_error_code(output, VWA_DEVICE_ERROR_STOPPED);
             }
             break;
         case ma_device_notification_type_rerouted:
@@ -322,13 +326,47 @@ static void notification_callback(const ma_device_notification* notification)
         case ma_device_notification_type_interruption_ended:
             atomic_fetch_add_explicit(&output->notification_interruption_count, 1u, memory_order_relaxed);
             if (notification->type == ma_device_notification_type_interruption_began) {
-                set_callback_device_error_code(output, -101);
+                set_callback_device_error_code(output, VWA_DEVICE_ERROR_INTERRUPTED);
             }
             break;
         case ma_device_notification_type_unlocked:
         default:
             break;
     }
+}
+
+/*
+ * miniaudio 0.11.26 suppresses the stopped notification when the backend's
+ * onDeviceStop() fails, which is the expected path after WASAPI invalidates an
+ * endpoint. The worker still leaves the device in stopping/stopped state.
+ * Observe that state here on the owner/control thread. This intentionally
+ * performs no wait, device control, or string work from the callback.
+ */
+static bool detect_unexpected_device_stop_locked(VwaOutput* output)
+{
+    int64_t code;
+    ma_device_state state;
+
+    if (output->backend != VWA_OUTPUT_BACKEND_WASAPI || !output->device_initialized) {
+        return false;
+    }
+
+    code = atomic_load_explicit(&output->device_error_code, memory_order_acquire);
+    if (code == 0 &&
+        atomic_load_explicit(&output->expected_stop, memory_order_acquire) == 0u &&
+        !atomic_load_explicit(&output->closed, memory_order_acquire)) {
+        state = ma_device_get_state(&output->device);
+        if (state == ma_device_state_stopping || state == ma_device_state_stopped) {
+            set_handle_device_error(output, VWA_DEVICE_ERROR_STOPPED, VWA_DEVICE_STOPPED_MESSAGE);
+            code = VWA_DEVICE_ERROR_STOPPED;
+        }
+    }
+
+    if (code != 0) {
+        atomic_store_explicit(&output->playing, 0u, memory_order_release);
+        return true;
+    }
+    return false;
 }
 
 static void format_hresult(char* destination, size_t capacity, const char* operation, HRESULT hr)
@@ -571,6 +609,10 @@ static int initialize_wasapi(VwaOutput* output, char* error_text, size_t error_t
         set_error(error_text, error_text_capacity, message);
         return VWA_OUTPUT_ERR_DEVICE_START;
     }
+    if (detect_unexpected_device_stop_locked(output)) {
+        set_error(error_text, error_text_capacity, output->device_error);
+        return VWA_OUTPUT_ERR_DEVICE_STOP;
+    }
 
     return VWA_OUTPUT_OK;
 }
@@ -750,6 +792,12 @@ uint64_t vwa_output_write(
         LeaveCriticalSection(&output->control_lock);
         return 0u;
     }
+    if (detect_unexpected_device_stop_locked(output)) {
+        set_handle_last_error(output, VWA_OUTPUT_ERR_DEVICE_STOP,
+                              "write rejected: WASAPI device is stopped or disconnected");
+        LeaveCriticalSection(&output->control_lock);
+        return 0u;
+    }
     if (atomic_exchange_explicit(&output->producer_active, 1u, memory_order_acquire) != 0u) {
         add_u64(&output->ring_owner_violations, UINT64_C(1));
         set_handle_last_error(output, VWA_OUTPUT_ERR_INVALID_ARGUMENT, "concurrent producer ring access");
@@ -826,6 +874,13 @@ int vwa_output_seek(
     if (atomic_load_explicit(&output->closed, memory_order_acquire)) {
         set_error(error_text, error_text_capacity, "seek on closed native output");
         return_code = VWA_OUTPUT_ERR_CLOSED;
+        goto done;
+    }
+    if (detect_unexpected_device_stop_locked(output)) {
+        set_error(error_text, error_text_capacity, output->device_error);
+        set_handle_last_error(output, VWA_OUTPUT_ERR_DEVICE_STOP,
+                              "seek rejected: WASAPI device is stopped or disconnected");
+        return_code = VWA_OUTPUT_ERR_DEVICE_STOP;
         goto done;
     }
     current_epoch = atomic_load_explicit(&output->epoch, memory_order_acquire);
@@ -911,6 +966,12 @@ int vwa_output_seek(
             return_code = VWA_OUTPUT_ERR_DEVICE_START;
             goto done;
         }
+        if (detect_unexpected_device_stop_locked(output)) {
+            set_error(error_text, error_text_capacity, output->device_error);
+            set_handle_last_error(output, VWA_OUTPUT_ERR_DEVICE_STOP, output->device_error);
+            return_code = VWA_OUTPUT_ERR_DEVICE_STOP;
+            goto done;
+        }
         if (query_padding_locked(output, &padding)) {
             evidence |= VWA_SEEK_PADDING_AFTER_START;
             atomic_store_explicit(&output->seek_padding_after_restart, padding, memory_order_release);
@@ -947,6 +1008,13 @@ int vwa_output_set_playing(
         LeaveCriticalSection(&output->control_lock);
         return VWA_OUTPUT_ERR_CLOSED;
     }
+    if (detect_unexpected_device_stop_locked(output)) {
+        set_error(error_text, error_text_capacity, output->device_error);
+        set_handle_last_error(output, VWA_OUTPUT_ERR_DEVICE_STOP,
+                              "set_playing rejected: WASAPI device is stopped or disconnected");
+        LeaveCriticalSection(&output->control_lock);
+        return VWA_OUTPUT_ERR_DEVICE_STOP;
+    }
     atomic_store_explicit(&output->playing, playing != 0u ? 1u : 0u, memory_order_release);
     LeaveCriticalSection(&output->control_lock);
     return VWA_OUTPUT_OK;
@@ -971,6 +1039,7 @@ int vwa_output_snapshot(
 
     memset(snapshot, 0, sizeof(*snapshot));
     EnterCriticalSection(&output->control_lock);
+    (void)detect_unexpected_device_stop_locked(output);
 
     snapshot->abi_version = VWA_OUTPUT_ABI_VERSION;
     snapshot->backend = output->backend;
@@ -1031,10 +1100,10 @@ int vwa_output_snapshot(
     device_error_code = snapshot->device_error_code;
     copy_error(snapshot->device_error, sizeof(snapshot->device_error), output->device_error);
     if (snapshot->device_error[0] == '\0' && device_error_code != 0) {
-        if (device_error_code == -100) {
+        if (device_error_code == VWA_DEVICE_ERROR_STOPPED) {
             copy_error(snapshot->device_error, sizeof(snapshot->device_error),
-                       "WASAPI device stopped unexpectedly");
-        } else if (device_error_code == -101) {
+                       VWA_DEVICE_STOPPED_MESSAGE);
+        } else if (device_error_code == VWA_DEVICE_ERROR_INTERRUPTED) {
             copy_error(snapshot->device_error, sizeof(snapshot->device_error),
                        "WASAPI device interruption began");
         } else {

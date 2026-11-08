@@ -23,6 +23,7 @@ dependencies/vocal2midi/python/
 dependencies/vocal2midi/experiments/
 *.exe
 *.dll
+/components/native-audio/native-audio.json
 *.pyd
 *.onnx
 *.gguf

@@ -31,3 +31,15 @@ Pedalboard 是单独下载的可选组件，不随基础运行库分发。现有
 LibreSVIP 2.9.2 核心及依赖保存在 `dependencies/export`，保留各包的许可与元数据；无需其桌面 GUI。Vocal2Midi 2.0 的应用层与推理代码保存在 `dependencies/vocal2midi2`，复用已有模型与 Python，保留 Apache-2.0、NOTICE 与致谢。助手对日语 HFA 边界修复增加 150 ms 间隔限制，避免把较长停顿合并进音节。网易云歌词入口使用独立实现的公开接口客户端；163MusicLyrics 仅作为行为参考，未复制或分发其程序。卡片布局参考 MaaEnd 截图，Qt 实现由本项目编写。
 
 集成适配另按语言检查原模型路径，并共用 DirectML 显卡与 CPU 线程设置。原权重不变。助手运行库精简未使用的上游 GUI 模块与 Qt 功能，保留所需包的原许可证资料。
+# 连续试听原生组件
+
+连续试听输出使用 miniaudio 0.11.26（提交
+877ea4a7c2601c7b0f2a44e83dfac42e6470fea6），选择 MIT No Attribution
+许可；完整文本见 `components/miniaudio-LICENSE.txt`。
+
+独立加载的 `vwa_limiter.dll` 改编自 FFmpeg n7.1 的 alimiter，使用
+LGPL-2.1-or-later。对应修改源码及头文件随包提供于
+`src/native/vwa_limiter.c` 和 `src/native/vwa_limiter.h`；许可与来源见
+`components/ffmpeg-alimiter-LICENSE.txt` 和
+`components/ffmpeg-alimiter-NOTICE.txt`。可独立重建并替换该 DLL，操作见
+`docs/RealtimeAudition.zh-CN.md`。

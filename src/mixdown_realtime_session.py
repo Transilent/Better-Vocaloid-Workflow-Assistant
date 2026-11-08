@@ -1,8 +1,7 @@
-"""Experimental worker-side PCM pump; no Python runs in the device callback.
+"""Worker-side PCM pump; no Python runs in the device callback.
 
-The renderer is explicitly pre-limiter. This session rejects unsafe sample
-peaks instead of substituting a different limiter for the export contract.
-It is not selected by the GUI until the remaining device/DSP gates pass.
+Both pre-limiter diagnostics and the limited playback graph are accepted.
+Every output block is checked against the export ceiling before submission.
 """
 from __future__ import annotations
 
@@ -129,6 +128,12 @@ class RealtimeAuditionSession:
     def pause(self):
         self._enqueue('pause')
 
+    def set_volume(self, volume):
+        value = float(volume)
+        if not self._np.isfinite(value) or not 0 <= value <= 100:
+            raise ValueError('volume must be between 0 and 100')
+        return self._enqueue('volume', value)
+
     def stop(self):
         return self.seek(0, autoplay=False)
 
@@ -181,6 +186,8 @@ class RealtimeAuditionSession:
         prefilling = True
         render_times: deque = deque(maxlen=4096)
         initial_frame = int(self._renderer.position_frame)
+        callback_count = None
+        callback_at = time.perf_counter()
         try:
             if self._output_factory is not None:
                 self._output = self._output_factory()
@@ -194,7 +201,7 @@ class RealtimeAuditionSession:
                 with self._lock:
                     commands = list(self._commands)
                     self._commands.clear()
-                latest_seek = latest_parameters = None
+                latest_seek = latest_parameters = latest_volume = None
                 for kind, value, at in commands:
                     if kind == 'seek':
                         latest_seek = (value, at)
@@ -206,13 +213,23 @@ class RealtimeAuditionSession:
                         intent = True
                     elif kind == 'pause':
                         intent = False
+                    elif kind == 'volume':
+                        latest_volume = value
                 native = dict(self._output.snapshot())
                 if native.get('device_error'):
                     raise RealtimeSessionError(str(native['device_error']))
+                if str(native.get('backend', '')).startswith('wasapi') and 'callback_count' in native:
+                    current_count = int(native['callback_count'])
+                    if current_count != callback_count:
+                        callback_count, callback_at = current_count, time.perf_counter()
+                    elif time.perf_counter() - callback_at > 2.0:
+                        raise RealtimeSessionError('WASAPI output callback stopped responding')
                 if not intent and actual_playing:
                     self._output.set_playing(False)
                     actual_playing = False
                     native = dict(self._output.snapshot())
+                if latest_volume is not None:
+                    self._renderer.set_volume(latest_volume)
                 if latest_parameters:
                     (revision, (prepared, request, validation_ms)), at = latest_parameters
                     start = time.perf_counter()
@@ -225,7 +242,9 @@ class RealtimeAuditionSession:
                                  parameter_applied_at=time.perf_counter(),
                                  parameter_requested_at=at,
                                  parameter_processing_ms=(time.perf_counter() - start) * 1000,
-                                 parameter_first_frame=int(self._renderer.position_frame))
+                                 parameter_first_frame=int(getattr(
+                                     self._renderer, 'parameter_first_frame',
+                                     self._renderer.position_frame)))
                     # Paused queues cannot drain. Rebuild the selected location
                     # rather than playing an old parameter snapshot on resume.
                     if not intent and latest_seek is None:
@@ -265,8 +284,9 @@ class RealtimeAuditionSession:
                         raise RealtimeSessionError('renderer returned an invalid PCM shape')
                     peak = float(self._np.max(self._np.abs(pending))) if count else 0.0
                     if not self._np.isfinite(pending).all() or peak > PEAK_CEILING + 1e-6:
-                        raise RealtimeSessionError('pre-limiter PCM exceeds the safe output ceiling')
+                        raise RealtimeSessionError('PCM exceeds the safe output ceiling')
                     state['sample_peak'] = max(state.get('sample_peak', 0.0), peak)
+                    state['block_peak'] = peak
                     if self.silent:
                         pending = self._np.zeros_like(pending)
                     pending_offset = 0
@@ -309,6 +329,8 @@ class RealtimeAuditionSession:
                     state['state'] = ('preparing' if intent else
                                       'ended' if at_end and not queued else 'paused')
                 last = state.get('last_seek')
+                if last and last['epoch'] == epoch and at_end and not queued and pending is None:
+                    last.update(phase='ended')
                 if last and last['epoch'] == epoch and last['phase'] == 'prepared' and queued:
                     last.update(phase='queued', first_pcm_queued_at=time.perf_counter())
                     last['request_to_queue_ms'] = (last['first_pcm_queued_at'] - last['requested_at']) * 1000
