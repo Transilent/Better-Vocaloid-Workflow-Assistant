@@ -16,14 +16,15 @@ import threading
 import time
 import uuid
 
-from PyQt5.QtCore import QRectF, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt5.QtCore import QEvent, QRectF, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import (QColor, QDesktopServices, QFontMetrics, QKeySequence,
                          QLinearGradient, QPainter, QPainterPath, QPen)
 from PyQt5.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
                              QDial, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout,
                              QSpinBox, QHBoxLayout, QLabel, QLineEdit, QProgressBar,
                              QPushButton, QScrollArea, QShortcut, QSizePolicy,
-                             QSlider, QTabWidget, QVBoxLayout, QWidget)
+                             QSlider, QStyle, QStyleOptionSlider, QTabWidget,
+                             QVBoxLayout, QWidget)
 
 QMediaContent = None
 QMediaPlayer = None
@@ -58,6 +59,7 @@ _PREVIEW_SWITCH_MARGIN_MS = 250
 _PREVIEW_PREFETCH_MAX_SECONDS = 8.0
 _PREVIEW_PREFETCH_SEGMENT_RATIO = 0.65
 _PREVIEW_FALLBACK_LOAD_MS = 200
+_PLAYER_SEEK_COALESCE_MS = 60
 _OPTIONAL_PACKAGES = None
 _MAX_VOCAL_TRACKS = 3
 _VOCAL_FILTER = _tr('歌声干声 WAV (*.wav)')
@@ -166,6 +168,72 @@ def _fraction_to_db(fraction, minimum=-24.0, maximum=12.0):
     if fraction <= zero_fraction and zero > minimum:
         return minimum + (zero - minimum) * fraction / zero_fraction
     return zero + (maximum - zero) * (fraction - zero_fraction) / (1.0 - zero_fraction)
+
+
+class _SeekSlider(QSlider):
+    """An absolute timeline: left-click locates, dragging keeps its grab offset."""
+
+    seekCancelled = pyqtSignal()
+
+    def _cancel_gesture(self):
+        if self.isSliderDown():
+            blocked = self.blockSignals(True)
+            try:
+                self.setSliderDown(False)
+            finally:
+                self.blockSignals(blocked)
+            self.seekCancelled.emit()
+
+    def event(self, event):
+        if event.type() in (QEvent.UngrabMouse, QEvent.WindowDeactivate, QEvent.Hide):
+            self._cancel_gesture()
+        return super().event(event)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape and self.isSliderDown():
+            self._cancel_gesture()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _mouse_position(self, event):
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        style = self.style()
+        groove = style.subControlRect(QStyle.CC_Slider, option, QStyle.SC_SliderGroove, self)
+        handle = style.subControlRect(QStyle.CC_Slider, option, QStyle.SC_SliderHandle, self)
+        span = max(1, groove.width() - handle.width())
+        pixel = event.pos().x() - getattr(self, '_grab_offset', 0) - groove.left() - handle.width() // 2
+        return QStyle.sliderValueFromPosition(
+            self.minimum(), self.maximum(), max(0, min(span, pixel)), span, option.upsideDown)
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.LeftButton or self.minimum() == self.maximum():
+            return super().mousePressEvent(event)
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        handle = self.style().subControlRect(
+            QStyle.CC_Slider, option, QStyle.SC_SliderHandle, self)
+        self._grab_offset = event.pos().x() - handle.center().x() if handle.contains(event.pos()) else 0
+        self.setFocus(Qt.MouseFocusReason)
+        self.setSliderDown(True)
+        self.setSliderPosition(self._mouse_position(event))
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self.isSliderDown() and event.buttons() & Qt.LeftButton:
+            self.setSliderPosition(self._mouse_position(event))
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.isSliderDown():
+            self.setSliderPosition(self._mouse_position(event))
+            self.setSliderDown(False)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 class _DbFader(QWidget):
@@ -1825,6 +1893,13 @@ class AudioMixdownDialog(QDialog):
         self._player = None
         self._player_key = 'after'
         self._player_seeking = False
+        self._player_seek_serial = 0
+        self._pending_player_seek = None
+        self._last_player_seek = None
+        self._player_seek_timer = QTimer(self)
+        self._player_seek_timer.setSingleShot(True)
+        self._player_seek_timer.setInterval(_PLAYER_SEEK_COALESCE_MS)
+        self._player_seek_timer.timeout.connect(self._commit_queued_player_seek)
         self._player_duration_ms = 0
         self.navigate_requested = False
         self.video_requested = False
@@ -2625,13 +2700,14 @@ class AudioMixdownDialog(QDialog):
         self.player_loop_button.setCheckable(True)
         self.player_loop_button.setFixedSize(48, 38)
         self.player_loop_button.toggled.connect(self._set_preview_loop)
-        self.player_position = QSlider(Qt.Horizontal)
+        self.player_position = _SeekSlider(Qt.Horizontal)
         self.player_position.setObjectName('mixdownPlayerPosition')
         self.player_position.setAccessibleName(_tr('试听播放位置'))
         self.player_position.setRange(0, 0)
         self.player_position.sliderPressed.connect(self._begin_player_seek)
         self.player_position.sliderMoved.connect(self._seek_player_preview)
         self.player_position.sliderReleased.connect(self._finish_player_seek)
+        self.player_position.seekCancelled.connect(self._cancel_player_seek_gesture)
         self.player_position.valueChanged.connect(self._player_position_value_changed)
         self.player_time = QLabel('00:00 / 00:00')
         self.player_time.setObjectName('mixer-time')
@@ -3359,6 +3435,9 @@ class AudioMixdownDialog(QDialog):
         return '{:02d}:{:02d}'.format(seconds // 60, seconds % 60)
 
     def _absolute_player_seconds(self):
+        pending = getattr(self, '_pending_player_seek', None)
+        if pending:
+            return pending['target_ms'] / 1000.0
         if self._player is not None and self._player_has_media():
             return (self._preview_segment_start_seconds
                     + max(0, int(self._player.position())) / 1000.0)
@@ -3404,7 +3483,8 @@ class AudioMixdownDialog(QDialog):
 
     def _update_player_time(self):
         base_ms = int(round(self._preview_segment_start_seconds * 1000))
-        position = (self.player_position.value() if self._player_seeking else
+        position = (self.player_position.value() if (
+                    self._player_seeking or getattr(self, '_pending_player_seek', None)) else
                     base_ms + (self._player.position() if self._player is not None else 0))
         duration_ms = self._preview_total_milliseconds()
         self.player_time.setText(
@@ -3420,6 +3500,28 @@ class AudioMixdownDialog(QDialog):
     def _player_position_changed(self, position):
         if self._player_seeking:
             return
+        # A queued Qt notification is only a wake-up: sample the current player
+        # rather than allowing an old payload to undo an accepted seek.
+        current_position = getattr(self._player, 'position', None)
+        if callable(current_position):
+            position = max(0, int(current_position()))
+        seeking = getattr(self, '_pending_player_seek', None)
+        if seeking:
+            if seeking['phase'] not in ('seeking', 'loading'):
+                return
+            if seeking.get('path') and not _same_path(
+                    self._player_source_path(), seeking['path']):
+                return
+            elapsed_ms = (time.monotonic() - seeking['submitted_at']) * 1000.0
+            advance_ms = elapsed_ms + 40 if self._preview_is_playing() else 2
+            if not seeking['relative_ms'] - 2 <= int(position) <= seeking['relative_ms'] + advance_ms:
+                return
+            seeking.update(phase='following', confirmed_at=time.monotonic(),
+                           clock_quality='player_position_estimate')
+            seeking['elapsed_ms'] = round(
+                (seeking['confirmed_at'] - seeking['requested_at']) * 1000.0, 3)
+            self._last_player_seek = dict(seeking)
+            self._pending_player_seek = None
         pending = self._pending_preview_segment
         if (pending and self._player is not None
                 and not getattr(self._player, 'transitioning', False)
@@ -3565,6 +3667,9 @@ class AudioMixdownDialog(QDialog):
         return True
 
     def _player_duration_changed(self, duration):
+        if self._player_seeking or getattr(self, '_pending_player_seek', None):
+            # A retiring segment must not shrink the user's global timeline.
+            return
         if duration > 0:
             self._preview_segment_duration_seconds = int(duration) / 1000.0
         self._player_duration_ms = max(0, int(duration))
@@ -3578,6 +3683,8 @@ class AudioMixdownDialog(QDialog):
 
     def _player_state_changed(self, state):
         playing = self._player is not None and int(state) == PlaybackState.PlayingState
+        if getattr(self, '_pending_player_seek', None):
+            playing = bool(self._preview_play_intent)
         self.player_toggle_button.setText(_tr('暂停') if playing else _tr('播放'))
         self.player_toggle_button.setAccessibleName(
             _tr('暂停试听') if playing else _tr('播放试听'))
@@ -3621,6 +3728,8 @@ class AudioMixdownDialog(QDialog):
             self.player_toggle_button.setText(_tr('播放'))
 
     def _player_error(self, message):
+        if getattr(self, '_pending_player_seek', None):
+            self._fail_player_seek()
         if self._queue_stream_fallback(message):
             return
         if (self._player is getattr(self, '_stream_preview_player', None)
@@ -3741,50 +3850,118 @@ class AudioMixdownDialog(QDialog):
         return result
 
     def _begin_player_seek(self):
+        self._player_seek_timer.stop()
+        self._player_seeking = True
+        self._player_seek_serial += 1
         self._invalidate_preview_prefetch()
         self._preview_prefetch_failed_for = None
-        self._player_seeking = True
 
     def _player_position_value_changed(self, position):
         # Mouse drags are handled by sliderMoved; keyboard and wheel changes
         # only emit valueChanged. Programmatic playback updates are blocked.
         if not self._player_seeking and self._player_has_media():
-            self._seek_to_song_position(position, commit=True)
+            self._stage_player_seek(position, phase='queued')
+            self._player_seek_timer.start()
 
     def _seek_player_preview(self, position):
+        # The gesture owns the displayed cursor. Never reset/start a device
+        # from sliderMoved; the release commits exactly one final location.
         self._update_player_time()
-        self._seek_to_song_position(position, commit=False)
+
+    def _stage_player_seek(self, position, *, phase):
+        previous = self._pending_player_seek
+        autoplay = (bool(previous.get('autoplay') and self._preview_play_intent)
+                    if previous else self._preview_is_playing())
+        if not previous:
+            self._preview_play_intent = autoplay
+        self._player_seek_serial += 1
+        target = max(0, min(int(position), self._preview_total_milliseconds()))
+        self._pending_player_seek = {
+            'seek_id': self._player_seek_serial, 'target_ms': target,
+            'phase': phase, 'autoplay': autoplay, 'requested_at': time.monotonic(),
+        }
+        blocked = self.player_position.blockSignals(True)
+        try:
+            self.player_position.setValue(target)
+        finally:
+            self.player_position.blockSignals(blocked)
+        self._preview_resume_seconds = target / 1000.0
+        self._update_player_time()
+        return self._pending_player_seek
+
+    def _commit_queued_player_seek(self):
+        pending = self._pending_player_seek
+        if pending and pending['phase'] == 'queued' and not self._player_seeking:
+            self._seek_to_song_position(pending['target_ms'], commit=True)
+
+    def _cancel_player_seek_gesture(self):
+        self._player_seeking = False
+        if self._pending_player_seek:
+            self._seek_to_song_position(self._pending_player_seek['target_ms'], commit=True)
+        elif self._player is not None:
+            self._player_position_changed(self._player.position())
+            if self._preview_dirty:
+                self._schedule_preview_refresh(autoplay=self._preview_is_playing())
+
+    def _fail_player_seek(self):
+        pending = getattr(self, '_pending_player_seek', None)
+        if pending:
+            pending.update(phase='failed', failed_at=time.monotonic(), autoplay=False)
+            self._last_player_seek = dict(pending)
+            self._preview_play_intent = self._preview_autoplay = False
+            self._player_state_changed(PlaybackState.PausedState)
 
     def _seek_to_song_position(self, position, *, commit):
-        if self._player is None:
+        if self._player is None or not commit:
             return
-        if commit:
-            self._invalidate_preview_prefetch()
-            self._preview_prefetch_failed_for = None
-        target = max(0, int(position))
+        self._player_seek_timer.stop()
+        pending = self._pending_player_seek
+        if (pending and pending['phase'] == 'queued' and pending['target_ms'] == int(position)
+                and pending['seek_id'] == self._player_seek_serial):
+            # Retain the final input timestamp, including the coalescing delay.
+            pending['phase'] = 'seeking'
+        else:
+            pending = self._stage_player_seek(position, phase='seeking')
+        self._invalidate_preview_prefetch()
+        self._preview_prefetch_failed_for = None
+        if self._audition_service is not None and self._audition_request_id is not None:
+            self._preview_pending = True
+            try:
+                self._audition_service.cancel(self._audition_request_id)
+            except Exception:
+                pass
+        target = pending['target_ms']
         base = int(round(self._preview_segment_start_seconds * 1000))
         end = base + int(round(self._preview_segment_duration_seconds * 1000))
-        if base <= target < end:
-            self._seek_player(target - base)
+        if base <= target < end or target == end == self._preview_total_milliseconds():
+            pending.update(path=self._player_source_path(), relative_ms=target - base,
+                           submitted_at=time.monotonic())
+            if self._seek_player(target - base) is False:
+                self._fail_player_seek()
+                return
+            # Cached adapters may acknowledge synchronously, or emit their next
+            # position later. This is position confirmation, not acoustic ACK.
+            self._player_position_changed(target - base)
             self._sync_preview_analysis(target - base)
-            if commit:
-                self._preview_resume_seconds = target / 1000.0
-                if self._preview_dirty:
-                    self._schedule_preview_refresh(autoplay=self._preview_is_playing())
-        elif commit:
-            was_playing = self._preview_is_playing()
-            if was_playing:
+            if pending['autoplay'] and not self._preview_is_playing():
+                self._player.play()
+            if self._preview_dirty:
+                self._schedule_preview_refresh(autoplay=pending['autoplay'])
+        else:
+            pending['phase'] = 'rendering'
+            if self._preview_is_playing():
                 self._player.pause()
-            # Leave a small playable window even if the user selects the end.
+            self._preview_autoplay = False
+            self._preview_play_intent = pending['autoplay']
+            # Keep the displayed target, including exact EOF. A small render
+            # lead-in provides valid frames without moving the user's cursor.
             total = self._preview_total_milliseconds()
-            target = min(target, max(0, total - 250))
-            self._preview_resume_seconds = target / 1000.0
+            render_target = min(target, max(0, total - 250))
+            self._preview_resume_seconds = render_target / 1000.0
             self._preview_force_both = True
-            self._schedule_preview_refresh(autoplay=was_playing, immediate=True)
-        if commit:
-            self._update_player_time()
-            if not self._preview_dirty and base <= target < end:
-                self._maybe_continue_preview(target - base)
+            if not self._schedule_preview_refresh(autoplay=pending['autoplay'], immediate=True):
+                self._fail_player_seek()
+        self._update_player_time()
 
     def _finish_player_seek(self):
         position = max(0, int(self.player_position.value()))
@@ -3792,6 +3969,15 @@ class AudioMixdownDialog(QDialog):
         self._seek_to_song_position(position, commit=True)
 
     def _stop_preview_player(self):
+        self._player_seek_timer.stop()
+        self._player_seek_serial += 1
+        self._pending_player_seek = None
+        self._player_seeking = False
+        blocked = self.player_position.blockSignals(True)
+        try:
+            self.player_position.setSliderDown(False)
+        finally:
+            self.player_position.blockSignals(blocked)
         self._preview_play_intent = False
         self._stream_fallback_scheduled = False
         self._last_audible_preview = None
@@ -3831,6 +4017,17 @@ class AudioMixdownDialog(QDialog):
             item.get('preview_start_seconds', self.preview_start.value()))
         segment_duration = float(
             item.get('duration_seconds', self.preview_duration.value()))
+        seeking = getattr(self, '_pending_player_seek', None)
+        if seeking:
+            if seeking['phase'] in ('queued', 'failed') or self._player_seeking:
+                return False
+            segment_end = (segment_start + segment_duration) * 1000.0
+            if not segment_start * 1000.0 <= seeking['target_ms'] <= segment_end:
+                # A/B may still refer to the old cached window while a seek is
+                # rendering. Do not clamp that new intent into an unrelated file.
+                return False
+            position_ms = max(0, int(round(seeking['target_ms'] - segment_start * 1000)))
+            autoplay = bool(seeking['autoplay'] and self._preview_play_intent)
         if self._player is not None and hasattr(self._player, 'set_loop'):
             self._player.set_loop(self._player_loop)
         if self._player is not None and getattr(self._player, 'available', True):
@@ -3838,7 +4035,10 @@ class AudioMixdownDialog(QDialog):
                 position_ms = 0
             position_ms = max(
                 0, min(int(position_ms),
-                       max(0, int(round(segment_duration * 1000)) - 1)))
+                       max(0, int(round(segment_duration * 1000)))))
+            if seeking:
+                seeking.update(phase='loading', path=str(path.resolve()),
+                               relative_ms=position_ms, submitted_at=time.monotonic())
             self._preview_play_intent = bool(autoplay)
             if self._player is getattr(self, '_stream_preview_player', None):
                 self._stream_load_context = {
@@ -3919,6 +4119,19 @@ class AudioMixdownDialog(QDialog):
             self.status.setText(_tr('选择全部声音并等待混音组件就绪后即可试听。'))
             _set_role(self.status, 'muted')
             return
+        seeking = getattr(self, '_pending_player_seek', None)
+        if seeking:
+            self._preview_play_intent = not self._preview_play_intent
+            self._preview_autoplay = self._preview_play_intent
+            seeking['autoplay'] = self._preview_play_intent
+            if not self._preview_play_intent and self._preview_is_playing():
+                self._player.pause()
+            if seeking['phase'] == 'failed' and self._preview_play_intent:
+                seeking['phase'] = 'rendering'
+                self._preview_force_both = True
+                self._request_preview_playback()
+            self._player_state_changed(PlaybackState.PausedState)
+            return
         if self._player is not None and self._player_is_playing():
             self._preview_autoplay = False
             self._preview_play_intent = False
@@ -3943,6 +4156,9 @@ class AudioMixdownDialog(QDialog):
     def _request_preview_playback(self):
         self._preview_autoplay = True
         self._preview_play_intent = True
+        seeking = getattr(self, '_pending_player_seek', None)
+        if seeking:
+            seeking['autoplay'] = True
         if (not self._audition_service_ready and self._audition_start_attempted
                 and not self._audition_starting and not self._audition_closing):
             # Retry only on a deliberate playback action; avoid a crash loop.
@@ -3964,6 +4180,11 @@ class AudioMixdownDialog(QDialog):
         self._invalidate_preview_prefetch()
         self._player_key = key
         self._preview_play_intent = True
+        seeking = getattr(self, '_pending_player_seek', None)
+        if seeking:
+            seeking['autoplay'] = True
+            if seeking['phase'] == 'queued':
+                self._commit_queued_player_seek()
         current = self._absolute_player_seconds()
         if (not self._preview_dirty and self._preview_result
                 and key in self._preview_result):
@@ -4089,6 +4310,9 @@ class AudioMixdownDialog(QDialog):
         return True
 
     def _start_live_preview_legacy(self):
+        if self._player_seeking:
+            self._preview_pending = True
+            return False
         if self._preview_worker is not None or self.busy():
             self._preview_pending = True
             return False
@@ -4129,6 +4353,7 @@ class AudioMixdownDialog(QDialog):
         generation = self._preview_generation
         self._preview_context = {
             'generation': generation,
+            'seek_serial': self._player_seek_serial,
             'signature': signature,
             'source_key': source_key,
             'directory': segment_directory,
@@ -4162,7 +4387,9 @@ class AudioMixdownDialog(QDialog):
     def _live_preview_succeeded(self, generation, result):
         context = dict(self._preview_context or {})
         directory = context.get('directory')
-        if generation != self._preview_generation or context.get('source_key') != self._preview_source_key:
+        if (generation != self._preview_generation
+                or context.get('source_key') != self._preview_source_key
+                or context.get('seek_serial', self._player_seek_serial) != self._player_seek_serial):
             _discard_preview_directory(directory)
             self._preview_pending = True
             return
@@ -4380,6 +4607,9 @@ class AudioMixdownDialog(QDialog):
             self._audition_cancelled_received(event)
 
     def _start_live_preview(self):
+        if self._player_seeking:
+            self._preview_pending = True
+            return False
         if self.busy() or self._audition_closing:
             return False
         if not self._audition_service_ready:
@@ -4430,6 +4660,7 @@ class AudioMixdownDialog(QDialog):
         before = before_candidate if both else None
         context = {
             "directory": directory, "source_key": source_key, "start": start,
+            "seek_serial": self._player_seek_serial,
             "duration": duration, "was_playing": self._preview_is_playing(),
             "autoplay": self._preview_autoplay,
             "play_intent": self._preview_play_intent,
@@ -4448,6 +4679,9 @@ class AudioMixdownDialog(QDialog):
             return False
         context["request_id"] = request_id
         context["sent_at"] = time.monotonic()
+        seeking = getattr(self, '_pending_player_seek', None)
+        if seeking and seeking['seek_id'] == context.get('seek_serial'):
+            seeking.update(render_request_id=request_id, render_sent_at=context['sent_at'])
         self._audition_request_id = request_id
         self._audition_request_context = context
         self._audition_request_sent_at = context["sent_at"]
@@ -4484,6 +4718,12 @@ class AudioMixdownDialog(QDialog):
         self._audition_request_id = None
         self._audition_request_context = None
         self._audition_request_sent_at = None
+        if (self._preview_pending or
+                context.get('seek_serial', self._player_seek_serial) != self._player_seek_serial):
+            self._preview_pending = True
+            self._preview_debounce.start(0)
+            return
+        self._fail_player_seek()
         self._preview_dirty = True
         self._preview_pending = False
         self._preview_force_both = True
@@ -4540,6 +4780,7 @@ class AudioMixdownDialog(QDialog):
         self._audition_request_context = None
         self._audition_request_sent_at = None
         self._preview_dirty = True
+        self._fail_player_seek()
         self._audition_failed_once(text)
         self.preview_report.setText(_tr("试听服务已停止；点击播放或 A/B 可重试。"))
         _set_role(self.preview_report, "error")
@@ -4618,7 +4859,8 @@ class AudioMixdownDialog(QDialog):
         if context.get("purpose") == "continuation":
             self._audition_prefetch_result_received(context, report, latency)
             return
-        if self._preview_pending or context.get("signature") != self._preview_parameter_signature():
+        if (self._preview_pending or context.get("signature") != self._preview_parameter_signature()
+                or context.get('seek_serial', self._player_seek_serial) != self._player_seek_serial):
             _discard_preview_directory(context.get("directory"))
             self._audition_request_id = None
             self._audition_request_context = None
@@ -4692,6 +4934,9 @@ class AudioMixdownDialog(QDialog):
         self._arm_prefetched_preview()
 
     def _apply_audition_result(self, context, report, latency):
+        seeking = getattr(self, '_pending_player_seek', None)
+        if seeking and seeking['seek_id'] == context.get('seek_serial'):
+            seeking['render_ready_at'] = time.monotonic()
         directory = Path(context.get("directory"))
         after = self._rendered_after_report(report)
         if after is None:

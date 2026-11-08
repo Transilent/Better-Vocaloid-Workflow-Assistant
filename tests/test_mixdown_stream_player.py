@@ -100,6 +100,7 @@ class FakeOutput(QObject):
         self.stream = None
         self.consumed_frames = 0
         self.resets = 0
+        self.reset_snapshots = []
         self.starts = 0
         self.level = None
 
@@ -121,6 +122,10 @@ class FakeOutput(QObject):
 
     def reset(self):
         self.resets += 1
+        stream = self.stream
+        self.reset_snapshots.append((
+            stream.cursor_bytes() if stream is not None else None,
+            stream._plan if stream is not None else None))
         self.fifo.clear()
         self.device_state = 2
 
@@ -333,7 +338,9 @@ def test_pause_seek_cancel_ab_loop_and_end():
     clock.value += 3.0
     player._tick()
     assert player.position() == paused and out.stream.read_calls == reads
+    reset_count = out.resets
     assert player.seek(500)
+    assert out.resets == reset_count + 1
     assert player.state() == sp.PlaybackState.PausedState and player.position() == 500
     starts = out.starts
     assert player.play() and out.starts == starts + 1  # reset while paused needs start, not resume
@@ -394,6 +401,105 @@ def test_legacy_ab_delayed_decode_uses_current_position_and_buffer_lead():
     assert plan.boundary * FRAME_BYTES >= out.stream.cursor_bytes()
     advance(player, out, RATE // 2)
     assert player.source() == clips[1][0] and not errors
+    player.close()
+
+
+def test_seek_updates_pending_load_and_preserves_play_intent():
+    clips, wavs = fixtures()
+    path = clips[0][0]
+    entered, release = threading.Event(), threading.Event()
+    base_reader = reader_for(wavs)
+    def delayed(candidate):
+        if candidate == path:
+            entered.set()
+            assert release.wait(3)
+        return base_reader(candidate)
+    player, factory, clock, errors = make_player(wavs, reader=delayed)
+    loaded = []
+    player.loaded.connect(loaded.append)
+    assert player.load(path, 100)
+    assert player.play()  # Pending loads retain this intent across seek.
+    assert entered.wait(2)
+    assert player.seek(1200)
+    assert player.seek(1350)  # The latest pending-load target wins.
+    release.set()
+    wait_for(lambda: player.state() == sp.PlaybackState.PlayingState,
+             'seeked pending load')
+    target = sp._frames(1350, RATE)
+    assert loaded == [path] and player.position() == 1350
+    output = factory.outputs[0]
+    before = len(output.played)
+    advance(player, output, 1000)
+    played = np.frombuffer(output.played[before:], dtype='<f4').reshape(-1, 2)
+    np.testing.assert_array_equal(played, clips[0][1][target:target + 1000])
+    assert not errors
+    player.close()
+
+
+def test_seek_supersedes_delayed_crossfade_and_ignores_late_decode():
+    clips, wavs = fixtures()
+    candidate = clips[1][0]
+    entered, release = threading.Event(), threading.Event()
+    base_reader = reader_for(wavs)
+    def delayed(path):
+        if path == candidate:
+            entered.set()
+            assert release.wait(3)
+        return base_reader(path)
+    player, factory, clock, errors = make_player(wavs, reader=delayed)
+    open_playing(player, clips[0][0])
+    loaded, ready, cancelled = [], [], []
+    player.loaded.connect(loaded.append)
+    player.crossfadeReady.connect(ready.append)
+    player.crossfadeCancelled.connect(cancelled.append)
+    output = factory.outputs[0]
+    advance(player, output, 300 * RATE // 1000)
+    assert player.prepare_crossfade(candidate, 0)
+    assert entered.wait(2)
+    future = player._future
+    resets = output.resets
+    assert player.seek(1200)
+    assert output.resets == resets + 1 and not player.transitioning
+    assert cancelled == [candidate] and player.position() == 1200
+    release.set()
+    wait_for(future.done, 'superseded crossfade decode')
+    for _ in range(20):
+        APP.processEvents()
+        time.sleep(.002)
+    assert not player.transitioning and player.source() == clips[0][0]
+    assert ready == [] and loaded == [] and player.position() == 1200
+    before = len(output.played)
+    advance(player, output, 1000)
+    played = np.frombuffer(output.played[before:], dtype='<f4').reshape(-1, 2)
+    target = sp._frames(1200, RATE)
+    np.testing.assert_array_equal(played, clips[0][1][target:target + 1000])
+    assert not errors
+    player.close()
+
+
+def test_seek_flushes_device_once_before_discarding_buffered_transition():
+    clips, wavs = fixtures()
+    player, factory, clock, errors = make_player(wavs)
+    open_playing(player, clips[0][0])
+    output = factory.outputs[0]
+    prepare(player, clips[1][0])
+    assert player.start_crossfade(0, boundary_frame=RATE)
+    plan = player._transition.plan
+    advance(player, output, 900 * RATE // 1000)
+    assert output.stream._plan is plan
+    assert output.stream.cursor_bytes() > plan.boundary * FRAME_BYTES
+    resets = output.resets
+    before = len(output.played)
+    assert player.seek(500)
+    assert output.resets == resets + 1
+    cursor, installed = output.reset_snapshots[-1]
+    assert installed is plan and cursor > plan.boundary * FRAME_BYTES
+    assert output.stream._plan is None and not player.transitioning
+    target = sp._frames(500, RATE)
+    advance(player, output, 1000)
+    played = np.frombuffer(output.played[before:], dtype='<f4').reshape(-1, 2)
+    np.testing.assert_array_equal(played, clips[0][1][target:target + 1000])
+    assert not errors
     player.close()
 
 
@@ -792,6 +898,9 @@ def main():
     test_odd_byte_chunks_and_late_candidate_alignment()
     test_pause_seek_cancel_ab_loop_and_end()
     test_legacy_ab_delayed_decode_uses_current_position_and_buffer_lead()
+    test_seek_updates_pending_load_and_preserves_play_intent()
+    test_seek_supersedes_delayed_crossfade_and_ignores_late_decode()
+    test_seek_flushes_device_once_before_discarding_buffered_transition()
     test_install_from_ready_signal_with_absolute_source_times()
     test_reentrant_load_keeps_latest_source()
     test_long_fixed_multisegment_mixed_channels_and_fractional_end()

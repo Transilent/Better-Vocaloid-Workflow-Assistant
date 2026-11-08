@@ -781,9 +781,10 @@ class MixdownStreamPlayer(QObject):
             self.errorOccurred.emit('pause failed: ' + str(error))
             return False
 
-    def _reset_to(self, frame, was_playing):
+    def _reset_to(self, frame, was_playing, *, reset_output=True):
         self._timer.stop()
-        self._output.reset()
+        if reset_output:
+            self._output.reset()
         self._stream.set_position(frame)
         self._phase_frame = self._frozen_frame = self._last_logical_frame = frame
         self._wall_active = 0.0
@@ -805,7 +806,7 @@ class MixdownStreamPlayer(QObject):
                 playing = self._state == PlaybackState.PlayingState
                 self._output.reset()
                 self._stream.discard(plan)
-                self._reset_to(frame, playing)
+                self._reset_to(frame, playing, reset_output=False)
         self._transition = None
         self._new_generation()
         self.crossfadeCancelled.emit(transition.path)
@@ -823,17 +824,26 @@ class MixdownStreamPlayer(QObject):
         self._owner()
         if not self.available:
             return self._reject('seek')
-        if self._active is None:
-            return False
         try:
-            # Reset discards the backend's already-prefetched samples before
-            # dropping a plan, so they cannot reappear after a user seek.
+            position_ms = max(0, int(position_ms))
+            if self._active is None:
+                if self._direct is None:
+                    return False
+                # A pending direct decode applies this tuple only when it
+                # completes. Replacing the target keeps a late load from
+                # restoring the position that preceded the latest user seek.
+                path, _ = self._direct
+                self._direct = (path, position_ms)
+                return True
+            frame = self._active.origin + min(
+                self._active.frames, _frames(position_ms, self._active.rate))
             playing = self._state == PlaybackState.PlayingState
+            # Flush the backend while the transition plan is still installed,
+            # then discard it. This prevents bytes prefetched from a cancelled
+            # fade from becoming audible at the new position.
             self._output.reset()
             self._cancel_transition(reset_if_buffered=False)
-            frame = self._active.origin + min(self._active.frames,
-                                               _frames(position_ms, self._active.rate))
-            self._reset_to(frame, playing)
+            self._reset_to(frame, playing, reset_output=False)
             self._publish(force=True)
             return True
         except Exception as error:

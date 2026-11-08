@@ -358,6 +358,7 @@ pause_state._invalidate_preview_prefetch.assert_called_once_with()
 pause_state._player.pause.assert_called_once_with()
 
 seek_state = SimpleNamespace(
+    _player_seek_timer=SimpleNamespace(stop=Mock()), _player_seek_serial=0,
     _invalidate_preview_prefetch=Mock(),
     _preview_prefetch_failed_for=('stale',), _player_seeking=False)
 ui.AudioMixdownDialog._begin_player_seek(seek_state)
@@ -1470,10 +1471,11 @@ with tempfile.TemporaryDirectory(prefix='audio-mix-gui-', dir=APP / 'work') as t
         dialog._begin_player_seek()
         dialog.player_position.setValue(410)
         dialog._seek_player_preview(410)
-        assert seek_player.value == 410
+        assert seek_player.value == 0  # dragging only updates the displayed cursor
         dialog._finish_player_seek()
         assert seek_player.value == 410 and not dialog._player_seeking
         dialog.player_position.setValue(420)  # keyboard/wheel path
+        QTest.qWait(ui._PLAYER_SEEK_COALESCE_MS + 30)
         assert seek_player.value == 420
         seek_player.value = 500
         dialog._player_position_changed(500)  # player update must not seek again
@@ -1484,13 +1486,14 @@ with tempfile.TemporaryDirectory(prefix='audio-mix-gui-', dir=APP / 'work') as t
             assert dialog._preview_resume_seconds == 21.0 and dialog._preview_force_both
             schedule.assert_called_once_with(autoplay=False, immediate=True)
         dialog._preview_result['after'].pop('source_duration_seconds')
+        dialog._pending_player_seek = None  # the render above was intentionally mocked
         dialog._player = previous_player
         with patch.object(ui, 'QMediaPlayer', FakeMediaPlayer), \
                 patch.object(ui, 'QMediaContent', FakeMediaContent):
             fake_player = FakeMediaPlayer(dialog)
             dialog._player = fake_player
             dialog._select_preview('after', autoplay=False)
-            fake_player.position_value = 300
+            fake_player.position_value = 321
             fake_player.state_value = FakeMediaPlayer.PlayingState
             dialog._player_position_changed(321)
             QTest.qWait(40)
