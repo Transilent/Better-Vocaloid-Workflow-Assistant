@@ -22,13 +22,17 @@ ROOT=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT))
 from common import atomic_json,file_hash,native_path,preserve_changed_file,exclusive_sidecar,SidecarBusy
 from tuning_engine import settings,digest,process_project
+from tuning_execution import (normalize_options as _normalize,dependencies as _execution_dependencies,
+                              preset_context as _preset_context,preset_dependency,receipt_binding_matches,
+                              project_context)
 
 SCHEMA=1
 COMMIT_SCHEMA=1
 _LOCKS={};_LOCK_GUARD=threading.Lock()
 CONTRIBUTORS=('tuning_workflow.py','tuning_engine.py','vocal_expression.py','vocal_timbre.py',
  'expression_component.py','expression_calibration.py','calibration_refinement.py','calibration_workflow.py',
- 'calibration_session.py','style_presets.py','style_catalog.py','expression_controls.py','style_pitch.py','common.py')
+ 'calibration_session.py','style_presets.py','style_catalog.py','expression_controls.py','style_pitch.py','common.py',
+ 'tuning_execution.py','tuning_preset_documents.py','preset_documents.py','tuning_project_identity.py')
 
 
 def _read(path):
@@ -82,7 +86,10 @@ def inspect_project(path):
             'note_count':len(track.get('mainGroup',{}).get('notes',[])),
             'instrumental':bool(track.get('mainRef',{}).get('isInstrumental'))})
     if not any(not row['instrumental'] for row in tracks):raise ValueError('SVP中没有演唱轨。')
-    return {'path':str(path),'sha256':hashlib.sha256(raw).hexdigest(),'bytes':len(raw),'tracks':tracks}
+    sha=hashlib.sha256(raw).hexdigest()
+    from tuning_project_identity import inspect_candidate_origin
+    return {'path':str(path),'sha256':sha,'bytes':len(raw),'tracks':tracks,
+            'candidate_origin':inspect_candidate_origin(path,sha256=sha)}
 
 
 def job_projects(job):
@@ -153,6 +160,7 @@ def _verified_receipt(path,target,signature,spec,options,dependencies):
         if (not isinstance(data,dict) or not isinstance(data.get('report'),dict)
                 or data.get('signature')!=signature or data.get('source_sha256')!=spec['input_sha256']
                 or data.get('options')!=options or data.get('dependencies')!=dependencies
+                or not receipt_binding_matches(data,dependencies)
                 or Path(data.get('output','')).resolve()!=target.resolve()
                 or data.get('output_sha256')!=file_hash(target) or data.get('output_bytes')!=_stat(target).st_size
                 or data.get('serialized_content_sha256')!=digest(parsed)):
@@ -177,6 +185,7 @@ def _intent(root,path,session,spec,options,dependencies,signature,target):
                 or value.get('session_id')!=spec['id'] or value.get('signature')!=signature
                 or value.get('source_sha256')!=spec['input_sha256']
                 or value.get('options')!=options or value.get('dependencies')!=dependencies
+                or not receipt_binding_matches(value,dependencies)
                 or value.get('output_sha256')!=file_hash(target)
                 or value.get('output_bytes')!=_stat(target).st_size
                 or value.get('serialized_content_sha256')!=digest(parsed)
@@ -188,7 +197,7 @@ def _intent(root,path,session,spec,options,dependencies,signature,target):
 
 
 def _intent_result(path,spec,options,dependencies,signature,target,receipt,intent):
-    return {'schema':SCHEMA,'kind':'vwa.tuning-result','session':str(path),'signature':signature,
+    result={'schema':SCHEMA,'kind':'vwa.tuning-result','session':str(path),'signature':signature,
         'source_sha256':spec['input_sha256'],'output':str(target),'output_sha256':file_hash(target),
         'output_bytes':_stat(target).st_size,'options':copy.deepcopy(options),'dependencies':copy.deepcopy(dependencies),
         'report':copy.deepcopy(intent['report']),'status':intent['report']['status'],'cached':True,'receipt':str(receipt),
@@ -196,6 +205,8 @@ def _intent_result(path,spec,options,dependencies,signature,target,receipt,inten
         'project_commit_count':0,'media_references':copy.deepcopy(intent.get('media_references',[])),
         'serialized_content_sha256':intent['serialized_content_sha256'],'recovered_from_intent':True,
         'commit_state':'committed','receipt_verified':False}
+    if intent.get('preset_binding') is not None:result['preset_binding']=copy.deepcopy(intent['preset_binding'])
+    return result
 
 
 def create_session(project,destination,*,job=None):
@@ -213,7 +224,7 @@ def create_session(project,destination,*,job=None):
     spec={'schema':SCHEMA,'kind':'vwa.tuning-session','id':uuid.uuid4().hex,
           'created_at':datetime.now(timezone.utc).isoformat(),'source':str(project),'source_sha256':info['sha256'],
           'input_file':'inputs/source.svp','input_sha256':info['sha256'],'tracks':info['tracks'],
-          'job':str(associated) if associated else None}
+          'job':str(associated) if associated else None,'input_origin':copy.deepcopy(info.get('candidate_origin'))}
     atomic_json(root/'session.json',spec)
     atomic_json(root/'status.json',{'state':'ready','session':spec['id']})
     return root/'session.json'
@@ -239,30 +250,37 @@ def _check_source(root,spec):
     return snapshot
 
 
-def _normalize(options):
-    result=settings(options)
-    for key in ('reference_calibration','retained_project'):
-        if result[key]:result[key]=str(Path(result[key]).resolve())
-    for row in result['reference_sources']:
-        if isinstance(row,dict) and isinstance(row.get('path'),str):row['path']=str(Path(row['path']).resolve())
-    for row in result['retained_sources']:
-        if isinstance(row,dict) and isinstance(row.get('project'),str):row['project']=str(Path(row['project']).resolve())
+def _dependencies(options):
+    return _execution_dependencies(options,CONTRIBUTORS,ROOT)
+
+
+def _run_dependencies(options,binding):
+    result=_dependencies(options)
+    if binding is not None:result['preset']=preset_dependency(binding)
     return result
 
 
-def _dependencies(options):
-    paths=[Path(row['path']) for row in options['reference_sources']]
-    if options['retained_project']:paths.append(Path(options['retained_project']))
-    paths.extend(Path(row['project']) for row in options['retained_sources'])
-    profile=options['reference_calibration']
-    if profile:
-        from expression_calibration import read_profile
-        spec=read_profile(profile);paths.append(Path(profile))
-        for row in spec['tracks'].values():
-            paths.extend((Path(row['baseline']),*(Path(probe['audio']) for probe in row['probes'])))
-    files={str(path.resolve()):file_hash(path) for path in sorted(set(paths))}
-    code={name:file_hash(ROOT/name) for name in CONTRIBUTORS}
-    return {'files':files,'code':code}
+def inspect_session_project(session):
+    path=Path(session).resolve();path=path/'session.json' if path.is_dir() else path
+    spec=read_session(path);_check_source(path.parent,spec)
+    return project_context(spec)
+
+
+def read_preset_binding(session):
+    """Restore frozen provenance without requiring an installed library entry."""
+    path=Path(session).resolve();path=path/'session.json' if path.is_dir() else path
+    spec=read_session(path);root=path.parent
+    binding_path=_owned(root,root/'last-preset-binding.json')
+    if not _exists(binding_path):return None
+    if not _isfile(binding_path) or _stat(binding_path).st_size>2*1024*1024:
+        raise ValueError('调音预设绑定记录无效或过大。')
+    value=_read(binding_path)
+    if value is None:return None
+    from tuning_preset_documents import validate_plan
+    binding=validate_plan(value,project=project_context(spec))
+    if _normalize(binding['options'])!=_normalize(_read(root/'last-options.json')):
+        raise ValueError('预设绑定与恢复的调音参数不一致，请重新选择预设。')
+    return binding
 
 
 @contextmanager
@@ -278,14 +296,15 @@ def _exclusive(root):
         lock.release()
 
 
-def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None):
+def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None,preset_binding=None):
     path=Path(session).resolve();path=path/'session.json' if Path(native_path(path)).is_dir() else path
     root=path.parent;spec=read_session(path);options=_normalize(options)
     with _exclusive(root):
         pending=None;signature=None;committed=False
         try:
             cancel();snapshot=_check_source(root,spec);raw=_raw(snapshot);data=_project(raw)
-            deps=_dependencies(options)
+            preset_binding=_preset_context(preset_binding,spec,options,data)
+            deps=_run_dependencies(options,preset_binding)
             signature=digest({'schema':SCHEMA,'input':spec['input_sha256'],'options':options,'dependencies':deps})
             target=_owned(root,root/'outputs'/('tuned-'+signature[:16]+'.svp'))
             receipt_path=_owned(root,target.with_suffix('.svp.tuning.json'))
@@ -295,10 +314,11 @@ def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None):
             old=_object(receipt_path)
             _status(root,{'state':'running','signature':signature})
             atomic_json(root/'last-options.json',options)
+            atomic_json(_owned(root,root/'last-preset-binding.json'),preset_binding)
             verified_old=_verified_receipt(receipt_path,target,signature,spec,options,deps) if _isfile(target) else None
             if verified_old is not None:
                 _check_source(root,spec)
-                if _dependencies(options)!=deps:raise ValueError('调音依赖发生变化，请重试。')
+                if _run_dependencies(options,preset_binding)!=deps:raise ValueError('调音依赖发生变化，请重试。')
                 cancel();result={**verified_old,'cached':True,'receipt':str(receipt_path),'output':str(target),
                     'project_commit_count':0,'commit_state':'receipted','receipt_verified':True,
                     'recovered_from_intent':False,'observer_errors':[]}
@@ -310,7 +330,7 @@ def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None):
             prepared=_intent(root,intent_path,path,spec,options,deps,signature,target) if _isfile(target) else None
             if prepared is not None:
                 _check_source(root,spec)
-                if _dependencies(options)!=deps:raise ValueError('调音依赖发生变化，请重试。')
+                if _run_dependencies(options,preset_binding)!=deps:raise ValueError('调音依赖发生变化，请重试。')
                 # This output crossed the commit boundary in an earlier run;
                 # metadata repair must not turn it into an ordinary failure.
                 cancel();committed=True
@@ -348,7 +368,7 @@ def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None):
                 pending=Path(stream.name);stream.write(payload)
             if file_hash(pending)!=payload_sha:raise ValueError('调音临时文件写入校验失败。')
             _check_source(root,spec)
-            if _dependencies(options)!=deps:raise ValueError('调音期间参考音频、配置或算法发生变化，未提交，请重试。')
+            if _run_dependencies(options,preset_binding)!=deps:raise ValueError('调音期间参考音频、配置或算法发生变化，未提交，请重试。')
             cancel();expected=old.get('output_sha256') if isinstance(old,dict) else None
             before_existing=file_hash(target) if _exists(target) else None
             preserved=preserve_changed_file(root,target,expected,payload_sha)
@@ -370,10 +390,13 @@ def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None):
                 'dependencies':copy.deepcopy(deps),'output':target.relative_to(root).as_posix(),'output_sha256':payload_sha,
                 'output_bytes':len(payload),'serialized_content_sha256':digest(output),'report':copy.deepcopy(report),
                 'preserved_copy':preserved,'preserved_receipt':preserved_receipt,'media_references':media}
+            if preset_binding is not None:
+                result['preset_binding']=copy.deepcopy(preset_binding)
+                intent_doc['preset_binding']=copy.deepcopy(preset_binding)
             atomic_json(intent_path,intent_doc)
             # Recheck cancellation and inputs while the transaction is still abortable.
             cancel();_check_source(root,spec)
-            if _dependencies(options)!=deps:raise ValueError('调音提交前参考音频、配置或算法发生变化，未提交，请重试。')
+            if _run_dependencies(options,preset_binding)!=deps:raise ValueError('调音提交前参考音频、配置或算法发生变化，未提交，请重试。')
             if (file_hash(target) if _exists(target) else None)!=before_existing:
                 raise ValueError('提交意图写入后现有工程发生变化，未覆盖；请重试。')
             if file_hash(pending)!=payload_sha:raise ValueError('调音临时文件在提交前发生变化，未覆盖；请重试。')
@@ -430,7 +453,9 @@ def register_result(session,*,job=None):
             or receipt.get('receipt')!=str(receipt_path) or receipt.get('report',{}).get('status')!=receipt.get('status')):
         raise ValueError('调音回执结构或会话身份不完整，不能登记。')
     options=_normalize(receipt.get('options'))
-    dependencies=_dependencies(options)
+    snapshot=_check_source(root,spec)
+    preset_binding=_preset_context(receipt.get('preset_binding'),spec,options,_project(_raw(snapshot)))
+    dependencies=_run_dependencies(options,preset_binding)
     expected=digest({'schema':SCHEMA,'input':spec['input_sha256'],'options':options,'dependencies':dependencies})
     if signature!=expected or receipt.get('dependencies')!=dependencies:
         raise ValueError('调音回执与当前输入、选项或算法依赖不匹配，不能登记。')
@@ -452,6 +477,8 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--session',required=True,type=Path)
     parser.add_argument('--options',required=True,type=Path)
+    parser.add_argument('--preset-binding',type=Path)
     arguments=parser.parse_args()
-    result=run_session(arguments.session,_read(arguments.options),progress=lambda text:print(text,flush=True))
+    result=run_session(arguments.session,_read(arguments.options),progress=lambda text:print(text,flush=True),
+                       preset_binding=_read(arguments.preset_binding) if arguments.preset_binding else None)
     print(json.dumps(result,ensure_ascii=False),flush=True)

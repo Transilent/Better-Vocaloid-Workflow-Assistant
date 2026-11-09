@@ -1141,6 +1141,14 @@ class PresetLibrary:
             }
 
     def get_document(self, identifier: str, version: str) -> dict[str, Any]:
+        return self.get_snapshot(identifier, version)['document']
+
+    def get_snapshot(self, identifier: str, version: str) -> dict[str, Any]:
+        """Read document, exact original bytes and identity from one record.
+
+        Execution adapters can freeze the same bytes that the library verified,
+        instead of joining a list snapshot to a later document read.
+        """
         if not _valid_identity(identifier, version):
             raise _failure(
                 "preset_not_found",
@@ -1150,7 +1158,8 @@ class PresetLibrary:
             )
         for record in self._builtin_records():
             if record.row["id"] == identifier and record.row["version"] == version:
-                return copy.deepcopy(record.document)
+                return {'entry': copy.deepcopy(record.entry),
+                        'document': copy.deepcopy(record.document), 'raw': bytes(record.raw)}
         state = self._read_current()
         record = self._find_record(state, identifier, version)
         if record is None:
@@ -1160,7 +1169,8 @@ class PresetLibrary:
                 id=identifier,
                 version=version,
             )
-        return copy.deepcopy(record.document)
+        return {'entry': copy.deepcopy(record.entry),
+                'document': copy.deepcopy(record.document), 'raw': bytes(record.raw)}
 
     def import_file(
         self,

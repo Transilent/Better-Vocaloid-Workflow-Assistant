@@ -880,6 +880,38 @@
     {
       "file": "docs/MixdownArchitecture.zh-CN.md",
       "source": "docs/MixdownArchitecture.zh-CN.md"
+    },
+    {
+      "file": "tuning_execution.py",
+      "source": "src/tuning_execution.py"
+    },
+    {
+      "file": "tuning_form_state.py",
+      "source": "src/tuning_form_state.py"
+    },
+    {
+      "file": "tuning_preset_controller.py",
+      "source": "src/tuning_preset_controller.py"
+    },
+    {
+      "file": "tuning_preset_documents.py",
+      "source": "src/tuning_preset_documents.py"
+    },
+    {
+      "file": "tuning_preset_ui.py",
+      "source": "src/tuning_preset_ui.py"
+    },
+    {
+      "file": "tuning_project_identity.py",
+      "source": "src/tuning_project_identity.py"
+    },
+    {
+      "file": "tuning_worker.py",
+      "source": "src/tuning_worker.py"
+    },
+    {
+      "file": "docs/TuningPresets.zh-CN.md",
+      "source": "docs/TuningPresets.zh-CN.md"
     }
   ]
 }

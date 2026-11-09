@@ -69,6 +69,15 @@ class MixerWorkspace(QWidget):
         mode = ('wide' if self.width() >= self.WIDE_BREAKPOINT else
                 'medium' if self.width() >= self.MEDIUM_BREAKPOINT else 'stacked')
         columns = 1 if mode == 'stacked' or self._curve_expanded else 2
+        source_minimum=(self.cards[0].minimumSizeHint().width()+
+                        self._mixer_scroll.verticalScrollBar().sizeHint().width()+
+                        2*self._mixer_scroll.frameWidth())
+        editor_minimum=max(self.cards[1].minimumSizeHint().width(),self.width()//2)
+        if columns==2 and source_minimum+editor_minimum+self.grid.horizontalSpacing()>self.width():
+            columns=1
+        # A scroll area's own minimum omits its child's themed control widths.
+        # Reserve their actual space before distributing the remaining width.
+        self.grid.setColumnMinimumWidth(0,source_minimum if columns==2 else 0)
         compact = mode != 'stacked'
         body = getattr(self, '_body_layout', None)
         if body is not None:

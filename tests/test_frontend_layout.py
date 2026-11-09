@@ -58,8 +58,8 @@ for mode,material in ((m,s) for m in ('light','dark') for s in ('glass','solid')
                     inside(window.audio_mixdown.choose_task)
                     mixer=window.audio_mixdown.mixer
                     workspace=mixer.workspace
-                    expected_columns=3 if workspace.width()>=1200 else (2 if workspace.width()>=980 else 1)
-                    assert workspace.column_count()==expected_columns,(workspace.width(),workspace.column_count())
+                    assert workspace.column_count() in (1,2)
+                    if workspace.width()<980:assert workspace.column_count()==1
                     assert len(mixer.mixer_console.active_strips())==2
                     assert mixer.mixer_console.column_count()==2
                     rects=rack_rects(mixer.mixer_console)
@@ -70,16 +70,13 @@ for mode,material in ((m,s) for m in ('light','dark') for s in ('glass','solid')
                     left=min(rect.left() for rect in rects)
                     right=mixer.mixer_console.width()-max(rect.right()+1 for rect in rects)
                     assert abs(left-right)<=3,(left,right)
-                    if workspace.column_count()==3:
-                        assert not workspace._right_stack.isHidden()
-                        assert mixer.mixer_card.geometry().top()==mixer.processing_card.geometry().top()
-                        assert mixer.mixer_card.geometry().left()<mixer.processing_card.geometry().left()
-                    elif workspace.column_count()==2:
-                        assert workspace._right_stack.isHidden()
-                        assert mixer.processing_card.geometry().top()==mixer.mixer_card.geometry().top()
-                        assert mixer.preview_card.geometry().top()>mixer.mixer_card.geometry().top()
+                    assert mixer.preview_card.parentWidget() is not workspace,'Transport stays outside the scrolling editor'
+                    assert mixer.player_position.width()>=mixer.width()-90
+                    if workspace.column_count()==2:
+                        assert workspace._mixer_scroll.geometry().top()==mixer.processing_card.geometry().top()
+                        assert workspace._mixer_scroll.geometry().left()<mixer.processing_card.geometry().left()
                     else:
-                        assert mixer.processing_card.geometry().top()>mixer.mixer_card.geometry().top()
+                        assert mixer.processing_card.geometry().top()>workspace._mixer_scroll.geometry().top()
                 elif index==8:
                     inside(window.video_mixdown.start)
                     if scale==100 and size==(1600,1000):
@@ -111,10 +108,10 @@ window._vwa_appearance.update(ui_scale=100,material='glass');apply_theme(window,
 for size in ((1920,1080),(2512,1352)):
     window.resize(*size);window.navigate(10);settle()
     mixer=window.audio_mixdown.mixer;ready_mixer(mixer)
-    area=mixer.findChild(QScrollArea)
+    area=mixer._main_scroll
     assert area.horizontalScrollBar().maximum()==0,(size,'horizontal')
     assert area.verticalScrollBar().maximum()==0,(size,'vertical',area.verticalScrollBar().maximum(),mixer.workspace.height())
-    assert mixer.workspace.column_count()==3
+    assert mixer.workspace.column_count()==2
     assert window.audio_mixdown.mixer._intro.isHidden()
     assert window.audio_mixdown.mixer._steps.isHidden()
     assert window.audio_mixdown.mixer.export_note.isHidden()
@@ -131,7 +128,8 @@ for width,height in ((640,900),(920,1000)):
     if width<=640:
         assert dialog.mixer_console.column_count()==2
     dialog.close()
-    wait_until(lambda: not dialog.isVisible() and dialog._audition_start_worker is None and dialog._audition_cleanup_complete,('dialog close timeout',width))
+    wait_until(lambda: not dialog.isVisible() and dialog._audition_cleanup_complete and
+               (dialog._audition_close_thread is None or not dialog._audition_close_thread.is_alive()),('dialog close timeout',width))
     dialog.deleteLater();settle()
 window.close()
 wait_until(lambda: not window.isVisible(),'window close timeout')

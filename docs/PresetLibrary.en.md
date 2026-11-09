@@ -4,13 +4,13 @@
 
 The development version provides **Settings/updates → Local preset library** for preparation, mixing, tuning and style recipes. Inspect and confirm imports, copy built-ins, add local aliases/favorites, delete entries and export files. Six existing mixing presets and four preparation workflows are read-only; copy one to create your own identity.
 
-The manager stores data. The mixing console now offers Save current as preset, Choose from local library and Undo preset application. Imports append by default and preserve existing entries; importing does not apply processing. Tuning plans and style recipes remain storage-only pending their application adapters.
+The manager stores data. The mixing console offers save, choose and undo. The tuning workflow now saves whole-track plans, previews changes, binds local project inputs and generates independent candidates. Imports append by default and preserve existing entries; importing does not apply processing. External style recipe execution and authoring remain deferred.
 
 ## Using and sharing
 
-Import a local `.vwa-preset.json` after reviewing its name, kind, version and JSON. Export individual files and share them manually through GitHub or another platform. Existing destination files are never overwritten. Aliases and favorites affect only the local index and preserve the imported package and digest. To change parameters, edit a conforming example/export and assign a new version; mixing controls can capture a new preset, while dedicated tuning/style editors are deferred. Built-in exports retain reserved `builtin.*` identities and are automatically imported as independent user copies. Normal identity/content conflicts are rejected without overwriting. Select Create independent copy, or use `import --as-copy`, to keep both. Copies receive a new ID and version `0.1.0` with canonical encoding; source files remain unchanged. All four kinds share these additive import rules.
+Import a local `.vwa-preset.json` after reviewing its name, kind, version and JSON. Export individual files and share them manually through GitHub or another platform. Existing destination files are never overwritten. Aliases and favorites affect only the local index and preserve the imported package and digest. To change parameters, edit a conforming example/export and assign a new version; mixing controls can capture a new preset, while a dedicated external style editor is deferred. Built-in exports retain reserved `builtin.*` identities and are automatically imported as independent user copies. Normal identity/content conflicts are rejected without overwriting. Select Create independent copy, or use `import --as-copy`, to keep both. Copies receive a new ID and version `0.1.0` with canonical encoding; source files remain unchanged. All four kinds share these additive import rules.
 
-Examples: [preparation](examples/presets/preparation.vwa-preset.json), [mixing](examples/presets/mixdown.vwa-preset.json), [tuning](examples/presets/tuning.vwa-preset.json), [style recipe](examples/presets/style_recipe.vwa-preset.json). Tuning and style examples currently support storage and sharing.
+Examples: [preparation](examples/presets/preparation.vwa-preset.json), [mixing](examples/presets/mixdown.vwa-preset.json), [tuning](examples/presets/tuning.vwa-preset.json), [style recipe](examples/presets/style_recipe.vwa-preset.json). Tuning plans using supported built-in styles can be applied after binding; external recipes currently support storage and sharing.
 
 ## Using presets in the mixing console
 
@@ -19,6 +19,12 @@ Save current as preset captures EQ, compression and reverb, including retained v
 Choose from local library shows a before/after comparison without changing the mix. Manage presets can append imported files and refresh the list. Applying output width and the declared pan/reverb-send template are separate opt-ins, both disabled by default. Width can affect accompaniment. Levels, mute/solo, offsets and source bindings stay intact.
 
 Confirm apply rechecks the selected version/digest and live mixer state. EQ frequencies respect the current sample rate and the preview reflects actual percentage/predelay control precision without rewriting the package. One-step undo is available until the next manual parameter edit. Existing audition and export processing use the resulting controls.
+
+## Tuning plans and local bindings
+
+Save a whole-track plan from the tuning controls, load a target SVP, then choose a library entry to preview changes and select vocal tracks. Reference mode needs per-track audio and explicit voice roles; calibrated mode also needs a matching score/voicebank calibration profile. Retained mode needs the source SVP and track mapping. An incomplete plan can be applied to the form, but generation stays disabled until its inputs are supplied. Shareable documents exclude local paths.
+
+Application rechecks the project SHA, exact preset bytes and current form. Generation and recovery reuse the existing immutable-input candidate transaction. Receipts freeze the preset document, identity and local bindings, so restoring a session does not require the library entry to remain present. Manual processing edits detach the preset identity. Recognized candidates require explicit confirmation before becoming a new baseline. See the [Chinese operation and architecture guide](TuningPresets.zh-CN.md).
 
 ## Version 1 contract
 

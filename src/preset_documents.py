@@ -331,7 +331,13 @@ def validate_document(value, *, allow_builtin=False):
         mode = payload['expression_mode']
         source = {'reference': 'reference_audio', 'calibrated': 'calibration_profile',
                   'retained': 'retained_project'}.get(mode)
-        if slot_kinds != {'vocal_tracks', *([source] if source else [])}:
+        expected = {'vocal_tracks', *([source] if source else [])}
+        # Calibration fitting also consumes each target's reference audio.
+        # Older storage-only v1 documents omitted that slot. They remain
+        # readable; execution still requires explicit reference bindings.
+        valid_slots = (slot_kinds == expected or
+                       (mode == 'calibrated' and slot_kinds == expected | {'reference_audio'}))
+        if not valid_slots:
             _invalid('$.binding_slots', '调音参数来源与输入槽不一致。')
         if sum(s['kind'] == 'vocal_tracks' for s in slots) != 1:
             _invalid('$.binding_slots', '调音模板须有一个目标演唱轨槽。')

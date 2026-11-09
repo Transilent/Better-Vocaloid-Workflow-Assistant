@@ -2035,6 +2035,19 @@
     "tests/test_mixdown_request.py",
     "tests/test_mixdown_widgets.py",
     "tests/test_mixdown_preview_controller.py",
-    "docs/MixdownArchitecture.zh-CN.md"
+    "docs/MixdownArchitecture.zh-CN.md",
+    "src/tuning_execution.py",
+    "src/tuning_form_state.py",
+    "src/tuning_preset_controller.py",
+    "src/tuning_preset_documents.py",
+    "src/tuning_preset_ui.py",
+    "src/tuning_project_identity.py",
+    "src/tuning_worker.py",
+    "tests/test_tuning_preset_documents.py",
+    "tests/test_tuning_preset_ui.py",
+    "tests/test_tuning_preset_workflow.py",
+    "tests/test_tuning_project_identity.py",
+    "docs/TuningPresets.zh-CN.md",
+    "tests/test_tuning_preset_integration.py"
   ]
 }

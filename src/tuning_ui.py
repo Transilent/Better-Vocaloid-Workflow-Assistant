@@ -8,10 +8,9 @@ import json
 import math
 import os
 from pathlib import Path
-import threading
 import time
 import uuid
-from PyQt5.QtCore import QThread,pyqtSignal,QUrl,Qt,QTimer
+from PyQt5.QtCore import QUrl,Qt,QTimer
 from PyQt5.QtGui import QDesktopServices,QKeySequence,QIcon,QPixmap
 from PyQt5.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QGridLayout,QLineEdit,QComboBox,QCheckBox,
     QSpinBox,QFileDialog,QTableWidget,QHeaderView,QPlainTextEdit,QProgressBar,QScrollArea,QFrame,QSizePolicy,
@@ -21,6 +20,9 @@ from desktop_theme import page,card,label,button,scroll_content,fold
 from ui_components import AdaptiveColumns,ChoiceGroup,FlowLayout,StyleTimeline,choice,style_preset_color
 from strength_control import PercentStrengthControl,StrengthControl,normalized_strength,percent_text,set_combo_strength,strength_choices
 import style_catalog
+from tuning_form_state import TuningFormState
+from tuning_worker import TuningWorker
+from tuning_preset_controller import TuningPresetController
 
 
 def combo(rows):
@@ -202,29 +204,13 @@ def format_register_gate(job,result):
     return '任务登记：工程已检查，可登记。'
 
 
-class TuningWorker(QThread):
-    message=pyqtSignal(str)
-    succeeded=pyqtSignal(object)
-    failed=pyqtSignal(str)
-
-    def __init__(self,session,options,parent):
-        super().__init__(parent);self.session,self.options=session,options;self.stop=threading.Event()
-
-    def check(self):
-        if self.stop.is_set():raise InterruptedError('已停止；工程与处理记录已保留，可继续。')
-
-    def run(self):
-        try:
-            from tuning_workflow import run_session
-            self.succeeded.emit(run_session(self.session,self.options,cancel=self.check,progress=self.message.emit))
-        except Exception as error:self.failed.emit(str(error))
-
-
 class TuningPage(QWidget):
     _REGION_HISTORY_LIMIT=100
 
     def __init__(self,owner):
         super().__init__(owner);self.owner=owner;self.worker=None;self.session=None;self.last_session=None;self.job=None
+        self._preset_controller=TuningPresetController();self._preset_library=None
+        self._preset_execution_binding=None;self._preset_applying=False;self._input_info=None
         self._selecting_scope=False;self._run_outcome='idle';self._style_migration_source=None
         self._region_undo=[];self._region_redo=[];self._region_shortcuts=[]
         self._syncing_region_time=False;self._restoring_region_state=False
@@ -252,6 +238,18 @@ class TuningPage(QWidget):
         layout=QVBoxLayout(self);layout.setContentsMargins(0,0,0,0);layout.addWidget(panel)
         content=scroll_content(outer);body=QVBoxLayout(content);body.setContentsMargins(0,0,0,0);body.setSpacing(18)
         self.form=QWidget();form=QVBoxLayout(self.form);form.setContentsMargins(0,0,0,0);form.setSpacing(18);body.addWidget(self.form)
+        preset_card,preset_area=card(_tr('调音方案预设'))
+        preset_actions=FlowLayout(spacing=10)
+        self.save_tuning_preset_button=button(_tr('保存当前调音方案…'),self.save_tuning_preset)
+        self.choose_tuning_preset_button=button(_tr('从本机库选择并绑定工程…'),self.choose_tuning_preset)
+        self.clear_tuning_preset_button=button(_tr('解除预设关联'),self.clear_tuning_preset)
+        for control in (self.save_tuning_preset_button,self.choose_tuning_preset_button,self.clear_tuning_preset_button):preset_actions.addWidget(control)
+        preset_area.addLayout(preset_actions)
+        self.tuning_preset_status=label(_tr('保存流程参数；工程、音频与声库配置仅在本机绑定。'),'muted')
+        self.tuning_preset_status.setTextFormat(Qt.PlainText);preset_area.addWidget(self.tuning_preset_status)
+        self.confirm_preset_baseline=QCheckBox(_tr('将此候选作为新基线'))
+        self.confirm_preset_baseline.hide();self.confirm_preset_baseline.toggled.connect(self._preset_inputs_changed)
+        preset_area.addWidget(self.confirm_preset_baseline)
 
         # The inner pair needs roughly 1080 logical pixels so its non-compact
         # two-choice cards can stay side by side. With the 5:6 outer ratio this
@@ -267,6 +265,7 @@ class TuningPage(QWidget):
         source,area=card(_tr('01 · 工程与输入'),_tr('选择已有任务，或导入本地 SVP 工程。'))
         self.input_card=source
         left_column.addWidget(source)
+        left_column.addWidget(preset_card)
         inputs=QHBoxLayout();inputs.setSpacing(12)
         self.task_input_button=button(_tr('选择任务'),self.choose_job,'primary')
         self.local_input_button=button(_tr('本地工程'),self.choose_project)
@@ -601,6 +600,8 @@ class TuningPage(QWidget):
         for name in ('dynamics','tension','breathiness','voicing'):getattr(self,'reference_'+name).toggled.connect(self.persist)
         self.style_pitch.toggled.connect(self.persist)
         self.technique_pitch.toggled.connect(self.persist)
+        self.calibration_file.textChanged.connect(self._preset_inputs_changed)
+        self.retained_project.textChanged.connect(self._preset_inputs_changed)
         self._sync_choices();self._update_session_context();self._reset_result_panel()
         self.loading=False;self.reload_jobs();self.refresh()
         # Keep the recent path without implicitly restoring the session.
@@ -1632,6 +1633,7 @@ class TuningPage(QWidget):
 
     def persist(self,*args):
         if self.loading or getattr(self,'_restoring_preferences',False):return
+        self._refresh_preset_state()
         self._schedule_style_autosave()
         if environment_value('VWA_TESTING')=='1':return
         if self.session:self.last_session=str(self.session)
@@ -1668,6 +1670,7 @@ class TuningPage(QWidget):
         self._sync_choices();self._update_session_context();self.sync_scope_label()
         self.register_gate.setText(format_register_gate(self.job,self.result))
         self.register_button.setEnabled(register_ready(self.job,self.result))
+        self._refresh_preset_state()
         self.persist()
 
     def calibration_toggle(self,checked):
@@ -1749,6 +1752,8 @@ class TuningPage(QWidget):
         except Exception as error:self.status.setText(str(error));return False
 
     def set_input(self,info,*,job=None,display_path=None):
+        self._preset_controller.clear();self._preset_execution_binding=None
+        self.confirm_preset_baseline.blockSignals(True);self.confirm_preset_baseline.setChecked(False);self.confirm_preset_baseline.blockSignals(False)
         requested_mode=self.style_mode.currentData()
         self._flush_style_autosave();self._region_autosave_timer.stop();self._pending_region_style=None
         if self._region_dialog is not None:self._region_dialog.close()
@@ -1765,6 +1770,8 @@ class TuningPage(QWidget):
                 self._style_input_sha256,self._safe_style_draft_data())
 
     def _set_input_contents(self,info,*,job=None,display_path=None):
+        self._input_info=deepcopy(info)
+        if display_path:self._input_info['path']=str(display_path)
         self.input_path=Path(display_path or info['path']);self.job=Path(job) if job else None;self.project.setText(str(self.input_path))
         self.rows=[];self.tracks.setRowCount(0)
         vocals=[row for row in info['tracks'] if not row['instrumental']]
@@ -1784,10 +1791,13 @@ class TuningPage(QWidget):
                 audio=self.job/'audio'/(role.currentData()+'.wav')
                 if audio.is_file():reference.setText(str(audio))
             choose=button(_tr('选择音频'),lambda checked=False,field=reference:self.choose_audio(field));self.tracks.setCellWidget(number,3,choose)
-            source_track=QSpinBox();source_track.setRange(1,999);source_track.setValue(ordinal+1);source_track.setToolTip(_tr('原参数工程中的实际轨号'));self.tracks.setCellWidget(number,4,source_track)
+            source_track=QSpinBox();source_track.setRange(0,999);source_track.setSpecialValueText(_tr('请选择来源轨'));source_track.setValue(ordinal+1);source_track.setToolTip(_tr('原参数工程中的实际轨号'));self.tracks.setCellWidget(number,4,source_track)
             row={'track_index':item['track_index'],'name':item['name'],'note_count':item['note_count'],
                 'check':check,'voice':role,'path':reference,'source_track':source_track}
             self.rows.append(row);check.toggled.connect(self._track_selection_changed)
+            reference.textChanged.connect(self._preset_inputs_changed)
+            role.currentIndexChanged.connect(self._preset_inputs_changed)
+            source_track.valueChanged.connect(self._preset_inputs_changed)
         self.refresh_track_geometry();self._sync_row_controls();self.sync_scope_label()
         self._style_input_sha256=info.get('sha256');self._style_timeline_data=None
         self._clear_style_regions(mode=self.style_mode.currentData());self._load_style_timeline(info)
@@ -1878,6 +1888,136 @@ class TuningPage(QWidget):
         value,_=QFileDialog.getOpenFileName(self,_tr('选择同时间的原参数工程'),self.retained_project.text(),'SVP (*.svp)')
         if value:self.retained_project.setText(value)
 
+    def _library_for_tuning(self):
+        if self._preset_library is None:
+            from preset_library import PresetLibrary
+            self._preset_library=PresetLibrary()
+        return self._preset_library
+
+    def _fresh_preset_project(self):
+        if self.input_path is None or self._input_info is None:
+            raise ValueError(_tr('请先载入需要绑定的 SVP 工程。'))
+        from tuning_workflow import inspect_project,inspect_session_project
+        info=inspect_session_project(self.session) if self.session else inspect_project(self.input_path)
+        if info['sha256']!=self._style_input_sha256:
+            raise ValueError(_tr('工程在载入后已改变，请重新载入再绑定预设。'))
+        return info
+
+    def _preset_stamp(self):
+        return {'form':TuningFormState(self).snapshot(),'project':deepcopy(self._input_info),
+                'session':str(self.session),'style_mode':self.style_mode.currentData(),
+                'style_regions':deepcopy(self.style_regions)}
+
+    def _preset_inputs_changed(self,*args):
+        if self.loading or self._preset_applying:return
+        self._update_mapping_hint();self._refresh_preset_state()
+
+    def _refresh_preset_state(self):
+        if self.loading or self._preset_applying:return
+        if self._preset_controller.error:
+            self.tuning_preset_status.setText(_tr('预设记录需要重新确认：')+self._preset_controller.error)
+            self.clear_tuning_preset_button.setVisible(True)
+            if hasattr(self,'apply_button'):self.apply_button.setEnabled(False)
+            return
+        state=TuningFormState(self)
+        try:
+            plan=self._preset_controller.reconcile(
+                self._input_info,state.controls(),state.bindings(
+                    confirm_candidate_baseline=self.confirm_preset_baseline.isChecked()))
+        except (ValueError,TypeError,KeyError) as error:
+            self.tuning_preset_status.setText(_tr('工程绑定需要重新检查：')+str(error))
+            if hasattr(self,'apply_button'):self.apply_button.setEnabled(False)
+            return
+        active=plan is not None
+        self.clear_tuning_preset_button.setVisible(active)
+        self.confirm_preset_baseline.setVisible(active and bool(self._input_info and self._input_info.get('candidate_origin')))
+        if active:
+            name=plan['preset']['name']
+            if plan['missing']:
+                self.tuning_preset_status.setText(_tr('预设 {0} · 待补输入：{1}').format(name,'；'.join(plan['missing'])))
+            else:
+                self.tuning_preset_status.setText(_tr('预设 {0} · 已绑定当前工程；生成前将复核输入。').format(name))
+        elif self._preset_controller.detached:
+            self.tuning_preset_status.setText(_tr('参数已调整为自定义；生成时保留实际参数，不再标记为该预设。'))
+        else:
+            self.tuning_preset_status.setText(_tr('保存流程参数；工程、音频与声库配置仅在本机绑定。'))
+        if hasattr(self,'apply_button'):
+            self.apply_button.setEnabled(not self.busy() and
+                (not active or (not plan['missing'] and not self._mapping_error())))
+
+    def clear_tuning_preset(self):
+        if self.busy():return
+        self._preset_controller.clear();self._preset_execution_binding=None
+        self._refresh_preset_state()
+
+    def save_tuning_preset(self):
+        if self.busy():return
+        try:
+            if self.style_mode.currentData()!='whole':
+                raise ValueError(_tr('当前预设保存整轨方案；请切回整轨模式，片段草稿会保留。'))
+            from tuning_preset_ui import TuningPresetSaveDialog
+            library=self._library_for_tuning();revision=library.snapshot()['revision']
+            dialog=TuningPresetSaveDialog(TuningFormState(self).controls(),self)
+            if dialog.exec_()!=QDialog.Accepted:return
+            document=dialog.document()
+            library.put_document(document,expected_revision=revision)
+            self.status.setText(_tr('调音方案已附加保存到本机库，可在管理器导出分享。'))
+        except Exception as error:self.status.setText(str(error))
+
+    def choose_tuning_preset(self):
+        if self.busy():return
+        try:
+            if self.style_mode.currentData()!='whole':
+                raise ValueError(_tr('调音预设仅应用整轨方案；请先切回整轨模式。'))
+            from tuning_preset_ui import TuningPresetLibraryDialog
+            info=self._fresh_preset_project();self._input_info=deepcopy(info)
+            stamp=self._preset_stamp();state=TuningFormState(self);library=self._library_for_tuning()
+            def manage(parent=None):
+                from preset_library_ui import PresetLibraryManagerDialog
+                PresetLibraryManagerDialog(parent or self,library=library).exec_()
+            dialog=TuningPresetLibraryDialog(library,info,state.bindings(
+                confirm_candidate_baseline=self.confirm_preset_baseline.isChecked()),state.controls(),
+                self,manage_callback=manage)
+            if dialog.exec_()==QDialog.Accepted:
+                self._commit_tuning_preset(dialog.selected_plan,dialog.selected_identity,stamp)
+        except Exception as error:self.status.setText(str(error))
+
+    def _commit_tuning_preset(self,plan,identity,stamp):
+        from tuning_preset_documents import plan_application,make_document
+        from preset_documents import document_digest
+        if self.busy() or stamp!=self._preset_stamp():
+            raise ValueError(_tr('当前工程或参数已变化，请重新预览预设。'))
+        record=self._library_for_tuning().get_snapshot(identity['id'],identity['version'])
+        if (record['entry']['sha256']!=identity['sha256'] or document_digest(record['raw'])!=identity['sha256']
+                or record['document']!=plan['document'] or record['raw'].decode('utf-8')!=plan['document_text']):
+            raise ValueError(_tr('预设在预览后已变化，请刷新本机库并重新选择。'))
+        info=self._fresh_preset_project()
+        rebuilt=plan_application(plan['document'],info,plan['bindings'],raw_document=record['raw'])
+        for field in ('preset','project','input_sha256','bindings','controls','options','missing'):
+            if rebuilt[field]!=plan[field]:raise ValueError(_tr('绑定提案已变化，请重新预览。'))
+        state=TuningFormState(self);before=state.snapshot();previous=self._preset_controller.plan
+        previous_error=self._preset_controller.error
+        old_confirmation=self.confirm_preset_baseline.isChecked()
+        self._preset_applying=True
+        try:
+            state.apply(plan['controls'],plan['bindings'])
+            actual=make_document(state.controls(),'Applied form')['payload']
+            if actual!=plan['document']['payload']:
+                raise ValueError(_tr('当前控件无法准确应用该方案，已恢复原参数。'))
+            self.confirm_preset_baseline.setChecked(plan['bindings'].get('confirm_candidate_baseline') is True)
+            self._input_info=deepcopy(info);self._preset_controller.activate(rebuilt)
+        except Exception:
+            state.restore(before)
+            self.confirm_preset_baseline.setChecked(old_confirmation)
+            if previous_error:self._preset_controller.invalidate(previous_error)
+            elif previous is None:self._preset_controller.clear()
+            else:self._preset_controller.activate(previous)
+            raise
+        finally:self._preset_applying=False
+        self.result=None;self._reset_result_panel();self.refresh()
+        self.status.setText(_tr('调音方案已应用到表单；确认绑定后再生成独立工程。'))
+        return True
+
     def choose_session(self):
         value,_=QFileDialog.getOpenFileName(self,_tr('恢复调音处理记录'),str(self.last_session or self.output_parent()),_tr('处理记录 (session.json)'))
         if value:self.restore_session(value)
@@ -1886,43 +2026,39 @@ class TuningPage(QWidget):
         try:
             if self.busy() or bool(getattr(self,'calibration_dialog',None) and self.calibration_dialog.busy()):
                 raise ValueError('请先停止当前调音或校准，再载入其他会话。')
-            from tuning_workflow import read_session,inspect_project
-            path=Path(value);spec=read_session(path)
-            self.set_input(inspect_project(path.parent/spec['input_file']),job=spec.get('job'),display_path=spec['source']);self.session=path;self.result=None;self._update_session_context();self._reset_result_panel()
+            from tuning_workflow import read_session,inspect_project,read_preset_binding
+            path=Path(value);path=path/'session.json' if path.is_dir() else path;spec=read_session(path)
+            info=inspect_project(path.parent/spec['input_file']);info['candidate_origin']=deepcopy(spec.get('input_origin'))
+            self.set_input(info,job=spec.get('job'),display_path=spec['source']);self.session=path;self.result=None;self._update_session_context();self._reset_result_panel()
             options=path.parent/'last-options.json'
             if options.is_file():
                 values=json.loads(options.read_text(encoding='utf-8'))
                 from style_presets import technique_settings
-                values.update(technique_settings(values));self.apply_preferences(values)
-                self.mode.setCurrentIndex(self.mode.findData(values['expression_mode']));self.calibration_file.setText(values.get('reference_calibration') or '')
-                retained=values.get('retained_sources',[])
-                self.retained_project.setText(values.get('retained_project') or (retained[0]['project'] if retained else ''))
-                for row in self.rows:
-                    row['check'].setChecked(row['track_index'] in (values.get('track_indices') or []))
-                    mapping=next((item for item in values.get('reference_sources',[]) if item['track_index']==row['track_index']),None)
-                    if mapping:row['voice'].setCurrentIndex(row['voice'].findData(mapping['voice']));row['path'].setText(mapping['path'])
-                    prior=next((item for item in retained if item['track_index']==row['track_index']),None)
-                    if prior:row['source_track'].setValue(prior.get('source_track_index',0)+1)
-                    elif values.get('retained_project'):row['source_track'].setValue(values.get('retained_track_index',0)+1)
-                if spec.get('input_sha256')==self._style_input_sha256:
-                    self.restore_style_regions(values.get('style_regions',[]))
-                else:
-                    self._clear_style_regions()
-            self.open_button.setEnabled(False);self.register_button.setEnabled(False);self.refresh();self.status.setText(_tr('处理记录已恢复，可继续生成工程。'))
+                values.update(technique_settings(values));self._preset_applying=True
+                try:
+                    TuningFormState(self).apply_options(values,restore_regions=spec.get('input_sha256')==self._style_input_sha256)
+                    try:
+                        binding=read_preset_binding(path)
+                        if binding is not None:
+                            from tuning_preset_documents import make_document
+                            if make_document(TuningFormState(self).controls(),'Restored form')['payload']!=binding['document']['payload']:
+                                raise ValueError(_tr('当前控件无法准确表达恢复参数，请重新选择方案。'))
+                            self._preset_controller.activate(binding)
+                            self.confirm_preset_baseline.setChecked(binding['bindings'].get('confirm_candidate_baseline') is True)
+                    except (ValueError,OSError,TypeError,KeyError) as error:self._preset_controller.invalidate(error)
+                finally:self._preset_applying=False
+            self.open_button.setEnabled(False);self.register_button.setEnabled(False);self.refresh()
+            self.status.setText(_tr('预设记录需要重新确认：')+self._preset_controller.error if self._preset_controller.error
+                                else _tr('处理记录已恢复，可继续生成工程。'))
             return True
         except Exception as error:self.status.setText(str(error));return False
 
     def options(self):
-        mode=self.mode.currentData();values=self.preferences()
-        values['expression_mode']=mode;values['track_indices']=self._selected_track_indices()
-        values['style_regions']=[dict(region) for region in self.style_regions] if self.style_mode.currentData()=='regions' else []
-        for name in ('dynamics','tension','breathiness','voicing'):values['reference_'+name]=mode=='reference' and getattr(self,'reference_'+name).isChecked()
-        if mode in ('reference','calibrated'):values['reference_sources']=[{'track_index':row['track_index'],'voice':row['voice'].currentData(),'path':row['path'].text()} for row in self.rows if row['check'].isChecked()]
-        if mode=='calibrated':values['reference_calibration']=self.calibration_file.text()
-        if mode=='retained':values['retained_sources']=[{'track_index':row['track_index'],'project':self.retained_project.text(),
-            'source_track_index':row['source_track'].value()-1} for row in self.rows if row['check'].isChecked()]
-        from tuning_engine import settings
-        return settings(values)
+        state=TuningFormState(self)
+        binding=self._preset_controller.for_execution(
+            self._input_info,state.controls(),state.bindings(confirm_candidate_baseline=self.confirm_preset_baseline.isChecked()))
+        self._preset_execution_binding=deepcopy(binding)
+        return deepcopy(binding['options']) if binding is not None else state.options()
 
     def start_run(self):
         if self.busy():return
@@ -1947,7 +2083,8 @@ class TuningPage(QWidget):
             if not style_regions and (options.get('performance_style')==style_catalog.DEFAULT_STYLE_ID or options.get('style_strength',0)<=0) and (
                     options['style_technique']==style_catalog.DEFAULT_TECHNIQUE_ID or options['technique_strength']<=0):self._set_stage('style','skipped')
             self._sync_choices();self.open_button.setEnabled(False);self.register_button.setEnabled(False);self.stop_button.setEnabled(True)
-            self.worker=TuningWorker(self.session,options,self);self.worker.message.connect(self._worker_message)
+            extra={} if self._preset_execution_binding is None else {'preset_binding':self._preset_execution_binding}
+            self.worker=TuningWorker(self.session,options,self,**extra);self.worker.message.connect(self._worker_message)
             self.worker.succeeded.connect(self.completed);self.worker.failed.connect(self._failed);self.worker.finished.connect(self.finished);self.worker.start()
             self.owner.update_component_state()
         except Exception as error:self.status.setText(str(error))
