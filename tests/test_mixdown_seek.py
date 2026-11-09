@@ -86,9 +86,7 @@ def fresh():
     dialog._support_error = ''
     dialog.support_panel.hide()
     dialog._sources_ready = lambda: True
-    dialog._preview_dirty = False
-    dialog._preview_resume_seconds = 1.0
-    dialog._preview_segment_start_seconds = 0.0
+    dialog._preview.dirty = False
     dialog._sync_preview_analysis = Mock()
     dialog._schedule_preview_refresh = Mock(return_value=True)
     dialog._preview_debounce.stop()
@@ -133,8 +131,6 @@ def dispose(owner, dialog, player):
     dialog._audition_poll_timer.stop()
     dialog._audition_closing = True
     dialog._audition_cleanup_complete = True
-    dialog._audition_service = None
-    dialog._native_preview_player = None
     cache = dialog._preview_cache_directory
     dialog._preview_cache_directory = None
     player.close()
@@ -165,11 +161,11 @@ assert wait_for(lambda: player._pending_seek is not None
                  and player._pending_seek['control_id'] is not None, player)
 dialog._player_position_changed(1000)
 assert dialog.player_position.value() == 9980
-assert dialog._pending_player_seek is not None
+assert dialog._preview.pending_seek is not None
 acknowledge(player, service, generation, state='playing')
-assert dialog._pending_player_seek is None
+assert dialog._preview.pending_seek is None
 assert 9980 <= dialog.player_position.value() < 9990
-assert dialog._last_player_seek['clock_quality'] == 'native_callback_submitted_media_not_acoustic'
+assert dialog._preview.last_seek['clock_quality'] == 'native_callback_submitted_media_not_acoustic'
 dispose(owner, dialog, player)
 
 # Groove click uses absolute timeline coordinates.  Grabbing near the handle
@@ -217,7 +213,7 @@ seek_command = next(command for command in reversed(service.commands)
                     if command[0] == 'seek')
 assert seek_command[2] == (4000, True)
 acknowledge(player, service, generation, state='playing')
-assert dialog._preview_play_intent
+assert dialog._player.play_intent
 assert dialog.player_position.value() == 4000
 
 dialog.player_position.setValue(3000)
@@ -229,7 +225,7 @@ latest = next(command for command in reversed(service.commands)
               if command[0] == 'seek')
 assert latest[2] == (3000, False)
 acknowledge(player, service, generation, state='paused')
-assert not dialog._preview_play_intent
+assert not dialog._player.play_intent
 assert dialog.player_position.value() == 3000
 dispose(owner, dialog, player)
 
@@ -261,7 +257,7 @@ assert player._pending_seek is not None
 assert player._pending_seek['control_id'] == latest
 assert dialog.player_position.value() == 9000
 acknowledge(player, service, generation, state='paused')
-assert dialog._pending_player_seek is None
+assert dialog._preview.pending_seek is None
 assert 9000 <= dialog.player_position.value() < 9010
 dispose(owner, dialog, player)
 

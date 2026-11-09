@@ -107,6 +107,22 @@ class RealtimePreviewPlayer(QObject):
         return self._ready and not self.failed
 
     @property
+    def generation(self):
+        return self._generation
+
+    @property
+    def play_intent(self):
+        return self._intent
+
+    @property
+    def seek_pending(self):
+        return self._pending_seek is not None
+
+    def set_play_intent(self, enabled):
+        """Stage intent before a dirty request is submitted; sends no command."""
+        self._intent = bool(enabled)
+
+    @property
     def is_alive(self):
         return not self._done.is_set()
 
@@ -258,6 +274,7 @@ class RealtimePreviewPlayer(QObject):
             return
         self.failed = True
         self.loading = self._ready = self._intent = False
+        self._pending_seek = self._pending_parameters = None
         # A rejected control request can leave the worker's previous graph
         # alive. Stop its playback intent before presenting a stopped UI.
         self._queue('pause')
@@ -345,6 +362,7 @@ class RealtimePreviewPlayer(QObject):
         if self._loop and self._intent and self._position >= end and not self._pending_seek:
             self.seek(min(self._loop_start, max(0, self._duration - 1)), autoplay=True)
         elif state == 'ended' and not self._end_reported:
+            self._intent = False
             self._end_reported = True
             self.mediaStatusChanged.emit(MediaStatus.EndOfMedia)
 

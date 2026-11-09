@@ -31,6 +31,7 @@ from PyQt5.QtWidgets import QApplication, QDialog, QWidget
 import audio_mixdown_ui as ui
 import mixdown_preset_ui as preset_ui
 import mixdown_realtime_player as realtime
+import mixdown_export
 from mixdown_preset_documents import make_document
 from mixdown_realtime_player import RealtimePreviewPlayer
 from preset_library import PresetLibrary
@@ -171,8 +172,6 @@ def fixture_dialog(*, preset_library=None):
         dialog._audition_poll_timer.stop()
         dialog._audition_closing = True
         dialog._audition_cleanup_complete = True
-        dialog._audition_service = None
-        dialog._native_preview_player = None
         cache = dialog._preview_cache_directory
         dialog._preview_cache_directory = None
         try:
@@ -201,7 +200,6 @@ def configure_sources(dialog, root, vocal_count=1):
 
 
 def prepare_session(dialog, player, service):
-    dialog._preview_resume_seconds = 0.0
     assert dialog._start_native_preview()
     assert wait_for(
         lambda: any(command[0] == 'open' for command in service.commands),
@@ -273,7 +271,7 @@ with tempfile.TemporaryDirectory(
         dialog.compression.setValue(45)
         dialog.reverb.setValue(30)
         dialog._preview_debounce.stop()
-        with patch.object(ui, '_render_once',
+        with patch.object(mixdown_export, 'render_once',
                           side_effect=AssertionError('preview rendered a WAV')):
             assert dialog.play_preview('before')
             assert wait_for(
@@ -333,6 +331,15 @@ with tempfile.TemporaryDirectory(
         assert [round(row['pan'], 6) for row in request['vocals']] == [-.25, .30, 0.0]
         assert abs(request['vocals'][0]['reverb_send'] - .25) < 1e-9
         assert request['instrumental_mute'] is True
+        frozen_input = copy.deepcopy(request)
+        plan = mixdown_export.plan_export(
+            frozen_input, source_job=Path(folder) / 'source-job')
+        frozen_input['vocals'][0]['offset_seconds'] = 9.0
+        assert plan.request['vocals'][0]['offset_seconds'] == .11
+        assert plan.parameters['vocals'][0]['offset_seconds'] == .11
+        assert Path(plan.request['output_path']) != plan.destination
+        assert plan.temporary.name.endswith('.part.wav')
+        assert not plan.destination.exists()
 
         before = {path: path.read_bytes() for path in (*vocals, backing)}
         blocked = root / 'blocked.wav'
@@ -359,7 +366,7 @@ with tempfile.TemporaryDirectory(
             return True
 
         fake_render.requests.clear()
-        with patch.object(ui, '_render_once', side_effect=fake_render), \
+        with patch.object(mixdown_export, 'render_once', side_effect=fake_render), \
                 patch.object(dialog, '_launch', side_effect=run_export_now):
             dialog.export()
         assert output.is_file() and output.stat().st_size > 44

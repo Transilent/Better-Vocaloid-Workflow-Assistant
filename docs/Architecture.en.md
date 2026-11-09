@@ -33,6 +33,7 @@ The VWA appearance uses light/dark semantic palettes, shared Qt styles and a cac
 
 | Module | Responsibility |
 | --- | --- |
+| `audio_mixdown_ui`, `mixdown_widgets`, `mixdown_request`, `mixdown_preview_controller`, `mixdown_export`, `mixdown_runtime` | Separate mixer views, shared parameter projection, transport coordination, frozen exports and runtime discovery. See the [mixdown architecture](MixdownArchitecture.zh-CN.md). |
 | [preset_documents.py](../src/preset_documents.py), `preset_builtin_documents.py`, `preset_library.py`, `preset_library_ui.py`, `preset_cli.py` | Unified documents, additive local-library imports and CLI; mixing capture, scoped previews and guarded undo share the current controls through `mixdown_preset_documents.py` / `mixdown_preset_ui.py`. |
 | `launch.py`, `app.py` | Runtime bootstrap, desktop controls, background jobs |
 | `desktop_theme.py`, `workspace_ui.py`, `publishing_layout.py` | Theme, sidebar workspace with stable page IDs and legacy redirects, and publication form |

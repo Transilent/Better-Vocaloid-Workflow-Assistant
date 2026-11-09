@@ -165,7 +165,7 @@ class MixerRoutingTests(unittest.TestCase):
         d = self.dialog
         generation = self.open_session()
         self.assertTrue(d._audition_poll_timer.isActive())
-        self.assertTrue(d._preview_play_intent)
+        self.assertTrue(d._player.play_intent)
         self.assertEqual(self.player._generation, generation)
         self.assertEqual(d.player_position.value(), 2000)
 
@@ -173,7 +173,7 @@ class MixerRoutingTests(unittest.TestCase):
         settle()
         self.assertTrue(d._audition_poll_timer.isActive())
         self.assertEqual(self.player._generation, generation)
-        self.assertTrue(d._preview_play_intent)
+        self.assertTrue(d._player.play_intent)
         self.emit_state(144000)
         self.wait(lambda: self.player.position() == 3000)
         self.assertEqual(d.player_position.value(), 3000)
@@ -183,21 +183,21 @@ class MixerRoutingTests(unittest.TestCase):
         self.assertEqual(self.player._generation, generation)
         self.assertEqual(self.player.position(), 3000)
         self.assertEqual(d.player_position.value(), 3000)
-        self.assertTrue(d._preview_play_intent)
+        self.assertTrue(d._player.play_intent)
         self.assertTrue(d._audition_poll_timer.isActive())
         self.assertEqual(len(self.commands('open')), 1)
         self.assertFalse(any(row[0] == 'release' for row in self.player._service.commands))
 
         self.click(d.player_toggle_button)
         self.wait(lambda: self.commands('pause'))
-        self.assertFalse(d._preview_play_intent)
+        self.assertFalse(d._player.play_intent)
         self.emit_state(144000, state='paused')
         self.wait(lambda: d.player_toggle_button.text() == ui._tr('播放'))
         self.assertEqual(self.player._generation, generation)
 
         self.click(d.player_toggle_button)
         self.wait(lambda: self.commands('play'))
-        self.assertTrue(d._preview_play_intent)
+        self.assertTrue(d._player.play_intent)
         self.emit_state(168000)
         self.wait(lambda: d.player_toggle_button.text() == ui._tr('暂停'))
         self.assertEqual(self.player._generation, generation)
@@ -237,14 +237,14 @@ class MixerRoutingTests(unittest.TestCase):
                         last_seek=dict(frame=48000, phase='submitted'))
         settle()
         self.assertEqual(slider.value(), target)
-        self.assertIsNotNone(d._pending_player_seek)
+        self.assertIsNotNone(d._preview.pending_seek)
         self.assertIsNotNone(self.player._pending_seek)
 
         frame = int(round(target * 48000 / 1000))
         self.emit_state(frame, seek_control_id=identifier,
                         last_seek=dict(frame=frame, phase='submitted'))
         self.wait(lambda: self.player._pending_seek is None)
-        self.wait(lambda: d._pending_player_seek is None)
+        self.wait(lambda: d._preview.pending_seek is None)
         self.assertEqual(slider.value(), target)
         self.assertEqual(self.player._generation, generation)
         self.assertEqual(len(self.commands('seek')), before + 1)
@@ -254,14 +254,15 @@ class MixerRoutingTests(unittest.TestCase):
         d = self.dialog
         self.open_session()
         self.click(d.player_toggle_button)
-        self.assertFalse(d._preview_play_intent)
+        self.assertFalse(d._player.play_intent)
         # No paused state has arrived yet: the last backend snapshot still
         # says playing. UI edits must honor the user's newer pause command.
         d.vocal_tracks[0]['gain_db'].setValue(-5)
-        self.assertFalse(d._preview_play_intent)
+        self.assertFalse(d._player.play_intent)
         d._seek_to_song_position(4000, commit=True)
-        self.assertFalse(d._pending_player_seek['autoplay'])
-        self.assertFalse(d._preview_play_intent)
+        self.wait(lambda: bool(self.commands('seek')))
+        self.assertFalse(self.commands('seek')[-1][2][1])
+        self.assertFalse(d._player.play_intent)
 
     def test_background_ir_finishes_at_the_same_paused_media_frame(self):
         d = self.dialog
@@ -290,12 +291,12 @@ class MixerRoutingTests(unittest.TestCase):
         pauses = len(self.commands('pause'))
         QTest.keyClick(d.player_loop_button, Qt.Key_Space)
         self.wait(lambda: len(self.commands('pause')) == pauses + 1)
-        self.assertFalse(d._preview_play_intent)
+        self.assertFalse(d._player.play_intent)
         self.assertEqual(d.player_loop_button.isChecked(), initial_loop)
         QApplication.sendEvent(d.player_loop_button,
             QKeyEvent(QEvent.KeyPress, Qt.Key_Space, Qt.NoModifier, ' ', True, 1))
         settle()
-        self.assertFalse(d._preview_play_intent)
+        self.assertFalse(d._player.play_intent)
         self.assertEqual(len(self.commands('pause')), pauses + 1)
         self.emit_state(96000, state='paused')
         settle()
@@ -303,7 +304,7 @@ class MixerRoutingTests(unittest.TestCase):
         d.player_position.setFocus()
         QTest.keyClick(d.player_position, Qt.Key_Space)
         self.wait(lambda: len(self.commands('play')) == plays + 1)
-        self.assertTrue(d._preview_play_intent)
+        self.assertTrue(d._player.play_intent)
         self.assertEqual(self.player._generation, generation)
 
     def test_space_preserves_text_modal_and_other_page_input(self):
@@ -316,23 +317,23 @@ class MixerRoutingTests(unittest.TestCase):
         before = editor.text()
         QTest.keyClick(editor, Qt.Key_Space)
         self.assertEqual(editor.text(), before + ' ')
-        self.assertTrue(d._preview_play_intent)
+        self.assertTrue(d._player.play_intent)
         d.compression.setFocus()
         QTest.keyClick(d.compression, Qt.Key_Space)
-        self.assertTrue(d._preview_play_intent)
+        self.assertTrue(d._player.play_intent)
         modal = QDialog(d)
         modal.setModal(True)
         field = QLineEdit(modal)
         modal.show();field.setFocus();settle()
         QTest.keyClick(field, Qt.Key_Space)
         self.assertEqual(field.text(), ' ')
-        self.assertTrue(d._preview_play_intent)
+        self.assertTrue(d._player.play_intent)
         modal.close();modal.deleteLater();settle()
         other = QLineEdit()
         other.show();other.setFocus();d.hide();settle()
         QTest.keyClick(other, Qt.Key_Space)
         self.assertEqual(other.text(), ' ')
-        self.assertTrue(d._preview_play_intent)
+        self.assertTrue(d._player.play_intent)
         other.close();other.deleteLater()
 
     def test_meter_updates_do_not_resolve_audio_files(self):
@@ -388,7 +389,7 @@ class MixerRoutingTests(unittest.TestCase):
         self.assertFalse(d.preview_before_button.isChecked())
         self.assertEqual(self.player._generation, generation)
         self.assertEqual(len(self.commands('open')), 1)
-        self.assertIs(d._player, d._native_preview_player)
+        self.assertIs(d._player, d._preview.player)
 
     def test_device_failure_requires_explicit_button_retry_in_same_player(self):
         d = self.dialog
@@ -397,14 +398,14 @@ class MixerRoutingTests(unittest.TestCase):
             type='error', request_id=generation, message='device lost'))
         self.wait(lambda: self.player.failed)
         self.assertIn('点击播放重试', d.status.text())
-        self.assertFalse(d._preview_play_intent)
+        self.assertFalse(d._player.play_intent)
         self.assertEqual(len(self.commands('open')), 1)
-        self.assertIs(d._player, d._native_preview_player)
+        self.assertIs(d._player, d._preview.player)
 
         self.click(d.player_toggle_button)
         self.wait(lambda: len(self.commands('open')) == 2)
         self.assertNotEqual(self.player._generation, generation)
-        self.assertIs(d._player, d._native_preview_player)
+        self.assertIs(d._player, d._preview.player)
 
 
 if __name__ == '__main__':

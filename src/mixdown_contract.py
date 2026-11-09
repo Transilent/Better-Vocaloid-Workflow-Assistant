@@ -6,12 +6,20 @@ renderer use the same limits and semantics from here.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import math
 from typing import Any
 
 
-EQ_BAND_TYPES = frozenset(("highpass", "lowshelf", "bell", "highshelf"))
+EQ_BAND_TYPES = ("highpass", "lowshelf", "bell", "highshelf")
+MAX_VOCALS = 3
+MAX_OFFSET_SECONDS = 6.0 * 60.0 * 60.0
+MAX_EQ_BANDS = 4
+REVERB_PROFILES = ("small", "natural", "wide")
+MIN_PAN, MAX_PAN = -1.0, 1.0
+MIN_REVERB_SEND, MAX_REVERB_SEND = 0.0, 1.0
+MIN_WIDTH, MAX_WIDTH = 0.0, 2.0
+MIN_REVERB_PREDELAY_MS, MAX_REVERB_PREDELAY_MS = 0.0, 120.0
 EQ_MIN_FREQUENCY_HZ = 10.0
 EQ_MAX_FREQUENCY_HZ = 20_000.0
 EQ_MIN_GAIN_DB = -24.0
@@ -48,6 +56,40 @@ def valid_sample_rate(sample_rate: Any) -> float:
     if rate <= 0.0:
         raise ValueError("sample_rate must be greater than zero")
     return rate
+
+
+def normalize_eq_bands(value: Any) -> list[dict[str, Any]] | None:
+    """Copy editable bands using the same bounds as the renderer contract.
+
+    Effective high-pass and Nyquist projection belongs to project_eq_band;
+    this input validator preserves author values until an actual rate is known.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise ValueError('eq_bands must be a list of at most four bands')
+    if len(value) > MAX_EQ_BANDS:
+        raise ValueError('eq_bands must contain at most four bands')
+    bands = []
+    for index, item in enumerate(value):
+        prefix = f'eq_bands[{index}]'
+        if not isinstance(item, Mapping) or item.get('type') not in EQ_BAND_TYPES:
+            raise ValueError(f'{prefix} must be a known EQ band')
+        normalized = {'type': item['type']}
+        for key, low, high, default in (
+                ('freq_hz', EQ_MIN_FREQUENCY_HZ, EQ_MAX_FREQUENCY_HZ, None),
+                ('gain_db', EQ_MIN_GAIN_DB, EQ_MAX_GAIN_DB, 0.0),
+                ('q', EQ_MIN_Q, EQ_MAX_Q, EQ_HIGHPASS_Q)):
+            number = finite_number(item.get(key, default), f'{prefix}.{key}')
+            if not low <= number <= high:
+                raise ValueError(f'{prefix}.{key} is outside the request contract')
+            normalized[key] = number
+        enabled = item.get('enabled', True)
+        if type(enabled) is not bool:
+            raise ValueError(f'{prefix}.enabled must be a boolean')
+        normalized['enabled'] = enabled
+        bands.append(normalized)
+    return bands
 
 
 def eq_frequency_limit_hz(sample_rate: Any) -> float:
@@ -128,6 +170,10 @@ def gain_reduction_db(before_rms: Any, after_rms: Any, *,
 
 
 __all__ = [
+    "MAX_VOCALS", "MAX_OFFSET_SECONDS", "MAX_EQ_BANDS", "REVERB_PROFILES",
+    "MIN_PAN", "MAX_PAN", "MIN_REVERB_SEND", "MAX_REVERB_SEND",
+    "MIN_WIDTH", "MAX_WIDTH", "MIN_REVERB_PREDELAY_MS", "MAX_REVERB_PREDELAY_MS",
+    "normalize_eq_bands",
     "DEFAULT_SAMPLE_RATE",
     "EQ_BAND_TYPES",
     "EQ_HIGHPASS_GAIN_DB",

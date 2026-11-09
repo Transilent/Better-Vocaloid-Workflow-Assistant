@@ -14,7 +14,7 @@ import math
 import unicodedata
 from typing import Any
 
-from mixer_state import (
+from mixdown_contract import (
     EQ_BAND_TYPES,
     MAX_PAN,
     MAX_REVERB_PREDELAY_MS,
@@ -24,7 +24,6 @@ from mixer_state import (
     MIN_REVERB_PREDELAY_MS,
     MIN_REVERB_SEND,
     MIN_WIDTH,
-    MixState,
     REVERB_PROFILES,
     normalize_eq_bands,
 )
@@ -32,7 +31,6 @@ from mixer_state import (
 
 __all__ = [
     "PRESET_KEYS",
-    "apply_preset",
     "catalog",
     "resolve_preset",
 ]
@@ -320,58 +318,3 @@ def resolve_preset(key: str) -> dict[str, Any]:
     """Resolve a canonical key, English alias, or Chinese label."""
 
     return copy.deepcopy(_PRESETS[_canonical_key(key)])
-
-
-def _suggested_pan(
-    preset: Mapping[str, Any],
-    index: int,
-    total: int,
-) -> float:
-    mode = preset["pan_mode"]
-    if mode == "alternate":
-        return preset["harmony_pan"] if index % 2 else -preset["harmony_pan"]
-    if mode == "lead_harmony" and index > 0:
-        return preset["harmony_pan"] if index % 2 else -preset["harmony_pan"]
-    return preset["pan"]
-
-
-def apply_preset(
-    state: MixState,
-    key: str,
-    lock_mix: bool = True,
-) -> MixState:
-    """Apply one starter preset to ``state`` in place and return it.
-
-    Processing fields are always replaced.  With ``lock_mix=True`` the
-    user-owned gain, offset, pan, send, mute, and solo values remain untouched.
-    With ``lock_mix=False`` the preset's suggested pan placement and
-    ``reverb_send`` are also applied.  Presets intentionally do not reset fader
-    gain or timing offsets because appendix A specifies neither.
-    """
-
-    if not isinstance(state, MixState):
-        raise TypeError("state must be a MixState.")
-    if type(lock_mix) is not bool:
-        raise ValueError("lock_mix must be a boolean.")
-    preset = resolve_preset(key)
-    bands = normalize_eq_bands(preset["eq_bands"])
-    assert bands is not None
-    state.eq_bands = bands
-    highpass = next(band for band in bands if band["type"] == "highpass")
-    bell = next(band for band in bands if band["type"] == "bell")
-    state.eq_low_cut_hz = (
-        highpass["freq_hz"] if highpass["enabled"] else 0.0
-    )
-    state.eq_presence_db = bell["gain_db"] if bell["enabled"] else 0.0
-    state.compression_strength = preset["compression_strength"]
-    state.reverb_profile = preset["reverb_profile"]
-    state.reverb_mix = preset["reverb_mix"]
-    state.reverb_predelay_ms = preset["reverb_predelay_ms"]
-    state.width = preset["width"]
-    state.active_preset = preset["key"]
-    if not lock_mix:
-        total = len(state.vocals)
-        for index, track in enumerate(state.vocals):
-            track.pan = _suggested_pan(preset, index, total)
-            track.reverb_send = preset["reverb_send"]
-    return state

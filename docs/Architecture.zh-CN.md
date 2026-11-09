@@ -22,6 +22,7 @@ VWA外观使用深浅语义配色、共享Qt样式及应用内缓存背景。单
 
 | 文件 | 职责 |
 | --- | --- |
+| `audio_mixdown_ui.py`、`mixdown_widgets.py`、`mixdown_request.py`、`mixdown_preview_controller.py`、`mixdown_export.py`、`mixdown_runtime.py` | 简易混音的界面、纯参数投影、试听控制、冻结导出和运行库职责分开；详见[混音架构](MixdownArchitecture.zh-CN.md)。 |
 | [preset_documents.py](../src/preset_documents.py)、`preset_builtin_documents.py`、`preset_library.py`、`preset_library_ui.py`、`preset_cli.py` | 统一格式、本机库附加导入和 CLI；`mixdown_preset_documents.py` / `mixdown_preset_ui.py` 接入混音参数捕获、范围预览、应用和撤销。 |
 | `launch.py`、`app.py` | 启动、界面、后台任务 |
 | `desktop_theme.py`、`workspace_ui.py`、`publishing_layout.py` | 主题、使用稳定页面 ID 并兼容旧跳转的侧栏工作区、发布表单 |

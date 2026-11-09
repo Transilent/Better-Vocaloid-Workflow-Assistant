@@ -10,6 +10,7 @@ GR 与混响的实时读数使用固定尺寸的绘制条，数值最多每100ms
 
 ## 组成与边界
 
+- 简易混音的界面、参数快照、预设、试听与导出职责见[整体架构](MixdownArchitecture.zh-CN.md)。`MixdownPreviewController`只维护输入身份、待提交编辑与本地定位手势；播放意图、媒体位置/时长与命令确认统一由`RealtimePreviewPlayer`维护。旧分段区间和重复播放器状态不再保存在界面。
 - `PreLimiterMixSession` 复用当前混音的请求解析、源解码缓存、路由及 EQ/压缩/混响处理核。固定双声道设备总线，mono 源按现有 FFmpeg 转换规则上混；声源、顺序及解码器身份在会话中固定。
 - `RealtimeAuditionSession` 串行执行 DSP 和原生输出控制，使用有界队列与版本化命令。参数的路径/文件校验通过 `prepare_parameters` 在控制侧完成，`apply_parameters` 在供音线程应用。音量、声像、send、mute/solo、width 不重建效果；结构变化会按有限历史重新预热。
 - 当前 Windows/Python 运行库中，`Event.wait(0.002)` 实测会等待约 15.6 ms；供音线程使用短 `time.sleep` 等待并保留命令唤醒标记，避免粗粒度等待耗尽队列。遥测复制仍隔离嵌套状态，但数值历史列表不再递归深拷贝。该调整未修改系统的持久计时设置。

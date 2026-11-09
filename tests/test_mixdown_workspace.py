@@ -43,7 +43,6 @@ class WorkspaceTests(unittest.TestCase):
                 patch('mixdown_realtime_player.RealtimePreviewPlayer',
                       side_effect=create_player):
             dialog = ui.AudioMixdownDialog(owner, None, owner, embedded=False)
-        dialog._audition_start_attempted = True
         dialog._support_ready = False
         dialog.support_panel.hide()
         self.addCleanup(self.dispose, owner, dialog)
@@ -55,7 +54,6 @@ class WorkspaceTests(unittest.TestCase):
         dialog._player_seek_timer.stop()
         dialog._audition_closing = True
         dialog._audition_cleanup_complete = True
-        dialog._audition_service = None
         for player in reversed(self.players):
             if player.is_alive:
                 player.close()
@@ -71,14 +69,14 @@ class WorkspaceTests(unittest.TestCase):
 
     def test_single_native_player_is_created_when_component_is_available(self):
         d = self.fresh(native=True)
-        self.assertIs(d._player, d._native_preview_player)
+        self.assertIs(d._player, d._preview.player)
         self.assertIsInstance(d._player, RealtimePreviewPlayer)
         self.assertTrue(d._player.available)
         self.assertFalse(d._player._service.commands)
 
     def test_invalid_native_path_marks_single_player_unavailable(self):
         d = self.fresh()
-        self.assertIs(d._player, d._native_preview_player)
+        self.assertIs(d._player, d._preview.player)
         self.assertIsInstance(d._player, RealtimePreviewPlayer)
         self.assertFalse(d._player.available)
         self.assertFalse(d._player._service.commands)

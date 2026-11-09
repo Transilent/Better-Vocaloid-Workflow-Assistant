@@ -1942,13 +1942,11 @@
     "src/mixdown_eq_curve.py",
     "src/mixdown_live_meters.py",
     "src/mixdown_presets.py",
-    "src/mixer_state.py",
     "tests/test_audio_mixdown.py",
     "tests/test_audio_mixdown_round2_acceptance.py",
     "tests/test_mixdown_control_panel.py",
     "tests/test_mixdown_eq_curve.py",
     "tests/test_mixdown_live_meter_widgets.py",
-    "tests/test_mixer_state.py",
     "tests/test_mixdown_theme.py",
     "tests/test_audio_mixdown_ui.py",
     "tests/test_mixdown_full_sample_acceptance.py",
@@ -2026,6 +2024,17 @@
     "src/vwa_project_memory.py",
     "tools/project_memory.py",
     "tests/test_project_memory.py",
-    "docs/ProjectMemory.zh-CN.md"
+    "docs/ProjectMemory.zh-CN.md",
+    "src/mixdown_export.py",
+    "src/mixdown_runtime.py",
+    "src/mixdown_request.py",
+    "src/mixdown_widgets.py",
+    "src/mixdown_preview_controller.py",
+    "tests/test_mixdown_catalog.py",
+    "tests/test_mixdown_export.py",
+    "tests/test_mixdown_request.py",
+    "tests/test_mixdown_widgets.py",
+    "tests/test_mixdown_preview_controller.py",
+    "docs/MixdownArchitecture.zh-CN.md"
   ]
 }

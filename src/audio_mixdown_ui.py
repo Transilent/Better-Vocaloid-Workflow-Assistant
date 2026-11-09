@@ -1,37 +1,48 @@
 """Simple vocal/instrumental mixdown dialog with cancellable background renders."""
 from datetime import datetime
 import copy
-import hashlib
-import importlib
-import json
-import math
-import os
 from pathlib import Path
-import queue
-import shutil
-import subprocess
-import sys
 import tempfile
 import threading
 import time
 import uuid
 
-from PyQt5.QtCore import QEvent, QRectF, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
-from PyQt5.QtGui import (QColor, QDesktopServices, QFontMetrics, QKeySequence,
-                         QLinearGradient, QPainter, QPainterPath, QPen)
+from PyQt5.QtCore import QEvent, Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt5.QtGui import QDesktopServices, QKeySequence, QPainterPath
 from PyQt5.QtWidgets import (QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDialog,
-                             QDial, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout,
+                             QDoubleSpinBox, QFileDialog, QFrame, QGridLayout,
                              QSpinBox, QHBoxLayout, QLabel, QLineEdit, QProgressBar,
                              QPushButton, QScrollArea, QShortcut, QSizePolicy,
-                             QSlider, QStyle, QStyleOptionSlider, QTabWidget,
+                             QStyle, QStyleOptionSlider, QTabWidget,
                              QToolButton, QVBoxLayout, QWidget, QTextEdit, QPlainTextEdit)
 
 import audio_mixdown as _mixdown_backend
+from mixdown_export import execute as _execute_export, plan_export as _plan_export
+from mixdown_runtime import (
+    MixdownCancelled as _Cancelled,
+    activate_pedalboard as _activate_pedalboard,
+    application_root as _application_root,
+    cached_optional_packages as _cached_optional_packages,
+    check_cancel as _check_cancel,
+    child_python as _child_python,
+    component_manifest as _component_manifest,
+    discard_preview_directory as _discard_preview_directory,
+    file_sha256 as _file_sha256,
+    normal_path_key as _normal_path_key,
+    optional_packages as _optional_packages,
+    report_detail as _report_detail,
+    run_component_installer as _run_component_installer,
+    same_path as _same_path,
+    suggested_output as _suggested_output,
+    task_source as _task_source,
+    worker_environment as _worker_environment,
+)
+
 import desktop_theme as _desktop_theme
 from desktop_theme import button, card, fold, label
 from mixdown_control_panel import (EqBandStripControls, PerTrackSendControls,
                                    PresetBar, WidthControl)
-from mixdown_eq_curve import EQCurveView, default_bands
+from mixdown_eq_curve import default_bands
 from mixdown_workspace import MixerWorkspace as _MixerWorkspace
 from mixdown_contract import (
     DEFAULT_SAMPLE_RATE,
@@ -42,17 +53,31 @@ from mixdown_contract import (
 )
 from mixdown_live_meters import AnalysisReadout, GrHistoryView, MeterEnvelope, ReverbDecayView
 from mixdown_realtime_player import MediaStatus, PlaybackState
+from mixdown_preview_controller import MixdownPreviewController
 from mixdown_presets import catalog as preset_catalog, resolve_preset
-from mixer_state import normalize_eq_bands
+from mixdown_request import build_mixdown_request, build_processing_state
+from mixdown_contract import normalize_eq_bands
 from i18n import tr as _tr
 from ui_components import AdaptiveColumns, FlowLayout
+from mixdown_widgets import (
+    _DbFader,
+    _ElidedLabel,
+    _LevelMeter,
+    _MAX_VOCAL_TRACKS,
+    _PanDial,
+    _ResponsiveEQCurveView,
+    _ResponsiveEffectGrid,
+    _ResponsiveMixerConsole,
+    _SeekSlider,
+    _db_to_fraction,
+    _fraction_to_db,
+    _set_role,
+)
 
 
 _PREVIEW_PREFIX = 'vwa-mx-'
 _PREVIEW_CACHE_PREFIX = 'vwa-mxl-'
 _PLAYER_SEEK_COALESCE_MS = 60
-_OPTIONAL_PACKAGES = None
-_MAX_VOCAL_TRACKS = 3
 _VOCAL_FILTER = _tr('歌声干声 WAV (*.wav)')
 _INSTRUMENTAL_FILTER = _tr('音频 (*.wav *.flac *.mp3 *.ogg *.m4a *.aac)')
 _WAV_FILTER = _tr('WAV 音频 (*.wav)')
@@ -122,978 +147,6 @@ CONTROL_NAMES = {
 }
 
 
-def _set_role(widget, role):
-    role = role or ''
-    if widget.property('role') == role:
-        return
-    widget.setProperty('role', role)
-    widget.style().unpolish(widget)
-    widget.style().polish(widget)
-    widget.update()
-
-
-class _Cancelled(RuntimeError):
-    pass
-
-
-def _db_to_fraction(db, minimum=-24.0, maximum=12.0):
-    """Map dB to a fader taper; meters ending at 0 dB remain linear."""
-    value = max(minimum, min(maximum, float(db)))
-    zero = 0.0 if minimum <= 0.0 <= maximum else minimum
-    if maximum <= zero:
-        return (value - minimum) / max(1e-12, zero - minimum)
-    zero_fraction = 0.78 if zero > minimum else 0.0
-    if value <= zero and zero > minimum:
-        return zero_fraction * (value - minimum) / (zero - minimum)
-    if value <= zero:
-        return 0.0
-    return zero_fraction + (1.0 - zero_fraction) * (value - zero) / (maximum - zero)
-
-
-def _fraction_to_db(fraction, minimum=-24.0, maximum=12.0):
-    fraction = max(0.0, min(1.0, float(fraction)))
-    zero = 0.0 if minimum <= 0.0 <= maximum else minimum
-    if maximum <= zero:
-        return minimum + (zero - minimum) * fraction
-    zero_fraction = 0.78 if zero > minimum else 0.0
-    if fraction <= zero_fraction and zero > minimum:
-        return minimum + (zero - minimum) * fraction / zero_fraction
-    return zero + (maximum - zero) * (fraction - zero_fraction) / (1.0 - zero_fraction)
-
-
-class _SeekSlider(QSlider):
-    """An absolute timeline: left-click locates, dragging keeps its grab offset."""
-
-    seekCancelled = pyqtSignal()
-
-    def _cancel_gesture(self):
-        if self.isSliderDown():
-            blocked = self.blockSignals(True)
-            try:
-                self.setSliderDown(False)
-            finally:
-                self.blockSignals(blocked)
-            self.seekCancelled.emit()
-
-    def event(self, event):
-        if event.type() in (QEvent.UngrabMouse, QEvent.WindowDeactivate, QEvent.Hide):
-            self._cancel_gesture()
-        return super().event(event)
-
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Escape and self.isSliderDown():
-            self._cancel_gesture()
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-    def _mouse_position(self, event):
-        option = QStyleOptionSlider()
-        self.initStyleOption(option)
-        style = self.style()
-        groove = style.subControlRect(QStyle.CC_Slider, option, QStyle.SC_SliderGroove, self)
-        handle = style.subControlRect(QStyle.CC_Slider, option, QStyle.SC_SliderHandle, self)
-        span = max(1, groove.width() - handle.width())
-        pixel = event.pos().x() - getattr(self, '_grab_offset', 0) - groove.left() - handle.width() // 2
-        return QStyle.sliderValueFromPosition(
-            self.minimum(), self.maximum(), max(0, min(span, pixel)), span, option.upsideDown)
-
-    def mousePressEvent(self, event):
-        if event.button() != Qt.LeftButton or self.minimum() == self.maximum():
-            return super().mousePressEvent(event)
-        option = QStyleOptionSlider()
-        self.initStyleOption(option)
-        handle = self.style().subControlRect(
-            QStyle.CC_Slider, option, QStyle.SC_SliderHandle, self)
-        self._grab_offset = event.pos().x() - handle.center().x() if handle.contains(event.pos()) else 0
-        self.setFocus(Qt.MouseFocusReason)
-        self.setSliderDown(True)
-        self.setSliderPosition(self._mouse_position(event))
-        event.accept()
-
-    def mouseMoveEvent(self, event):
-        if self.isSliderDown() and event.buttons() & Qt.LeftButton:
-            self.setSliderPosition(self._mouse_position(event))
-            event.accept()
-            return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton and self.isSliderDown():
-            self.setSliderPosition(self._mouse_position(event))
-            self.setSliderDown(False)
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
-
-class _DbFader(QWidget):
-    """A compact vertical fader with snap, fine drag and keyboard control."""
-
-    valueChanged = pyqtSignal(int)
-    _SNAP_TENTHS = 5
-
-    def __init__(self, minimum=-240, maximum=120, value=0, parent=None):
-        super().__init__(parent)
-        self._minimum = int(minimum)
-        self._maximum = int(maximum)
-        self._value = max(self._minimum, min(self._maximum, int(value)))
-        self._dragging = False
-        self._drag_origin_y = 0
-        self._drag_origin_value = self._value
-        self._drag_fine = False
-        self.setMinimumSize(54, 146)
-        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        self.setFocusPolicy(Qt.StrongFocus)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setAccessibleDescription(_tr(
-            '双击回零；Shift+拖动或 Shift+方向键微调 0.1 dB；普通滚轮用于滚动页面。'))
-        self._update_tooltip()
-
-    def sizeHint(self):
-        return QSize(60, 166)
-
-    def minimumSizeHint(self):
-        return QSize(54, 132)
-
-    def value(self):
-        return self._value
-
-    def _update_tooltip(self):
-        self.setToolTip(
-            self._db_text() + '  ·  '
-            + _tr('双击回零；Shift+拖动或方向键微调 0.1 dB'))
-
-    def setValue(self, value):
-        value = max(self._minimum, min(self._maximum, int(round(value))))
-        if value == self._value:
-            return
-        self._value = value
-        self._update_tooltip()
-        self.update()
-        self.valueChanged.emit(value)
-
-    def setRange(self, minimum, maximum):
-        self._minimum, self._maximum = int(minimum), int(maximum)
-        self.setValue(self._value)
-        self._update_tooltip()
-
-    def setMinimum(self, minimum):
-        self.setRange(minimum, self._maximum)
-
-    def setMaximum(self, maximum):
-        self.setRange(self._minimum, maximum)
-
-    def _db_text(self):
-        value = self._value / 10.0
-        return ('+' if value > 0 else '') + f'{value:.1f} dB'
-
-    def _track_rect(self):
-        return QRectF(max(24.0, self.width() - 27.0), 12.0, 7.0,
-                      max(30.0, self.height() - 24.0))
-
-    def _handle_y(self):
-        track = self._track_rect()
-        fraction = _db_to_fraction(
-            self._value / 10.0, self._minimum / 10.0, self._maximum / 10.0)
-        return track.bottom() - fraction * track.height()
-
-    def _set_from_y(self, y, *, snap=True):
-        track = self._track_rect()
-        fraction = 1.0 - (float(y) - track.top()) / max(1.0, track.height())
-        db = _fraction_to_db(
-            fraction, self._minimum / 10.0, self._maximum / 10.0)
-        value = int(round(db * 10.0))
-        if snap and abs(value) <= self._SNAP_TENTHS:
-            value = 0
-        self.setValue(value)
-
-    def _drag_to(self, y, modifiers):
-        fine = bool(modifiers & Qt.ShiftModifier)
-        if fine != self._drag_fine:
-            self._drag_fine = fine
-            self._drag_origin_y = int(y)
-            self._drag_origin_value = self._value
-        if fine:
-            # One pixel is one internal 0.1 dB step. The anchor avoids a jump
-            # when Shift is pressed after an ordinary drag has started.
-            self.setValue(self._drag_origin_value + self._drag_origin_y - int(y))
-        else:
-            self._set_from_y(y, snap=True)
-
-    def paintEvent(self, event):
-        del event
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        palette = self.palette()
-        text_color = palette.color(palette.Text)
-        muted = QColor(text_color)
-        muted.setAlpha(155)
-        groove = QColor(text_color)
-        groove.setAlpha(30)
-        accent = palette.color(palette.Highlight)
-        if not accent.isValid():
-            accent = QColor('#705af8')
-        paint_accent = accent if self.isEnabled() else palette.color(palette.Mid)
-        track = self._track_rect()
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(groove)
-        painter.drawRoundedRect(track, 3.5, 3.5)
-
-        handle_y = self._handle_y()
-        fill = QRectF(track.left(), handle_y, track.width(), track.bottom() - handle_y)
-        gradient = QLinearGradient(0, track.bottom(), 0, track.top())
-        gradient.setColorAt(0.0, QColor(paint_accent).darker(125))
-        gradient.setColorAt(1.0, paint_accent)
-        painter.setBrush(gradient)
-        painter.drawRoundedRect(fill, 3.5, 3.5)
-
-        font = painter.font()
-        font.setPointSizeF(max(7.5, font.pointSizeF() * .72))
-        painter.setFont(font)
-        for db in (12, 0, -6, -12, -24):
-            y = track.bottom() - _db_to_fraction(
-                db, self._minimum / 10.0, self._maximum / 10.0) * track.height()
-            zero = db == 0
-            pen = QPen(paint_accent if zero else muted)
-            pen.setWidthF(1.35 if zero else 1.0)
-            painter.setPen(pen)
-            painter.drawLine(int(track.left() - (7 if zero else 4)), int(y),
-                             int(track.left() + (6 if zero else 3)), int(y))
-            painter.setPen(paint_accent if zero else muted)
-            label = ('+' if db > 0 else '') + str(db)
-            painter.drawText(QRectF(0, y - 8, track.left() - 8, 16),
-                             Qt.AlignRight | Qt.AlignVCenter, label)
-
-        handle = QRectF(track.center().x() - 17, handle_y - 7, 34, 14)
-        edge = QColor(paint_accent).darker(125)
-        painter.setPen(QPen(edge, 1.0))
-        painter.setBrush(paint_accent)
-        painter.drawRoundedRect(handle, 5, 5)
-        painter.setPen(QPen(QColor(255, 255, 255, 160), 1.0))
-        painter.drawLine(int(handle.left() + 8), int(handle.center().y()),
-                         int(handle.right() - 8), int(handle.center().y()))
-        if self.hasFocus():
-            focus_accent = QColor(paint_accent)
-            focus_accent.setAlpha(225)
-            painter.setPen(QPen(focus_accent, 2.0))
-            painter.setBrush(Qt.NoBrush)
-            focus_rect = QRectF(self.rect()).adjusted(1.5, 1.5, -2.5, -2.5)
-            painter.drawRoundedRect(focus_rect, 8.0, 8.0)
-
-    def focusInEvent(self, event):
-        super().focusInEvent(event)
-        self.update()
-
-    def focusOutEvent(self, event):
-        super().focusOutEvent(event)
-        self.update()
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and self.isEnabled():
-            self._dragging = True
-            self._drag_fine = bool(event.modifiers() & Qt.ShiftModifier)
-            self._drag_origin_y = event.pos().y()
-            self._drag_origin_value = self._value
-            self.setFocus(Qt.MouseFocusReason)
-            if not self._drag_fine:
-                self._set_from_y(event.pos().y(), snap=True)
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self._dragging and self.isEnabled():
-            self._drag_to(event.pos().y(), event.modifiers())
-            event.accept()
-            return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if self._dragging:
-            self._drag_to(event.pos().y(), event.modifiers())
-            self._dragging = False
-            self._drag_fine = False
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
-    def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.LeftButton and self.isEnabled():
-            self.setValue(0)
-            event.accept()
-            return
-        super().mouseDoubleClickEvent(event)
-
-    def wheelEvent(self, event):
-        # A console fader must never steal an ordinary page scroll. Use drag or
-        # the documented keyboard shortcuts when the control has focus.
-        event.ignore()
-
-    def keyPressEvent(self, event):
-        step = 1 if event.modifiers() & Qt.ShiftModifier else 5
-        if event.key() in (Qt.Key_Up, Qt.Key_Right):
-            self.setValue(self._value + step)
-        elif event.key() in (Qt.Key_Down, Qt.Key_Left):
-            self.setValue(self._value - step)
-        elif event.key() == Qt.Key_PageUp:
-            self.setValue(self._value + 20)
-        elif event.key() == Qt.Key_PageDown:
-            self.setValue(self._value - 20)
-        elif event.key() == Qt.Key_Home:
-            self.setValue(self._maximum)
-        elif event.key() == Qt.Key_End:
-            self.setValue(self._minimum)
-        else:
-            super().keyPressEvent(event)
-            return
-        event.accept()
-
-
-class _PanDial(QDial):
-    """Compact pan knob: -100 left, 0 center, +100 right."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setRange(-100, 100)
-        self.setSingleStep(5)
-        self.setPageStep(10)
-        self.setNotchesVisible(True)
-        self.setWrapping(False)
-        self.setFixedSize(40, 40)
-        self.setFocusPolicy(Qt.StrongFocus)
-        self.setCursor(Qt.PointingHandCursor)
-        self._dragging = False
-        super().setValue(0)
-        self.setAccessibleDescription(_tr(
-            '双击回中；方向键调 5%，Shift+方向键调 1%；普通滚轮用于滚动页面。'))
-        self._update_tooltip()
-
-    @staticmethod
-    def _pan_text(value):
-        if value == 0:
-            return 'C'
-        return ('L' if value < 0 else 'R') + str(abs(value))
-
-    def _update_tooltip(self):
-        self.setToolTip(
-            self._pan_text(super().value()) + '  ·  '
-            + _tr('双击回中；方向键调 5%，Shift 调 1%'))
-
-    def setValue(self, value):
-        value = max(-100, min(100, int(round(value))))
-        super().setValue(value)
-        self._update_tooltip()
-
-    def paintEvent(self, event):
-        del event
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        palette = self.palette()
-        text_color = palette.color(palette.Text)
-        muted = QColor(text_color)
-        muted.setAlpha(130)
-        accent = palette.color(palette.Highlight)
-        if not accent.isValid():
-            accent = QColor('#705af8')
-        paint_accent = accent if self.isEnabled() else muted
-        rect = QRectF(self.rect()).adjusted(4.0, 4.0, -4.0, -4.0)
-        painter.setPen(QPen(muted, 1.4))
-        painter.setBrush(QColor(text_color.red(), text_color.green(), text_color.blue(), 14))
-        painter.drawEllipse(rect)
-        painter.setPen(QPen(QColor(text_color.red(), text_color.green(), text_color.blue(), 80),
-                            1.0, Qt.DotLine))
-        center = rect.center()
-        painter.drawLine(int(center.x()), int(rect.top()), int(center.x()), int(rect.top() + 5))
-        angle = math.radians(135.0 - ((super().value() + 100) / 200.0) * 270.0)
-        radius = rect.width() * 0.34
-        pointer_end = QRectF(
-            center.x() + math.cos(angle) * radius,
-            center.y() - math.sin(angle) * radius,
-            0.0, 0.0,
-        ).topLeft()
-        painter.setPen(QPen(paint_accent, 2.2))
-        painter.drawLine(center, pointer_end)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(paint_accent if super().value() != 0 else muted)
-        painter.drawEllipse(QRectF(center.x() - 2.5, center.y() - 2.5, 5.0, 5.0))
-        if self.hasFocus():
-            focus_accent = QColor(paint_accent)
-            focus_accent.setAlpha(225)
-            painter.setPen(QPen(focus_accent, 2.0))
-            painter.setBrush(Qt.NoBrush)
-            painter.drawEllipse(QRectF(self.rect()).adjusted(1.5, 1.5, -2.5, -2.5))
-
-    def focusInEvent(self, event):
-        super().focusInEvent(event)
-        self.update()
-
-    def focusOutEvent(self, event):
-        super().focusOutEvent(event)
-        self.update()
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and self.isEnabled():
-            self._dragging = True
-            self.setFocus(Qt.MouseFocusReason)
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        super().mouseMoveEvent(event)
-        if self._dragging and abs(super().value()) <= 2:
-            self.setValue(0)
-
-    def mouseReleaseEvent(self, event):
-        if self._dragging and abs(super().value()) <= 2:
-            self.setValue(0)
-        self._dragging = False
-        super().mouseReleaseEvent(event)
-
-    def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.LeftButton and self.isEnabled():
-            self.setValue(0)
-            event.accept()
-            return
-        super().mouseDoubleClickEvent(event)
-
-    def wheelEvent(self, event):
-        # Let the enclosing scroll area receive an ordinary wheel gesture.
-        event.ignore()
-
-    def keyPressEvent(self, event):
-        step = 1 if event.modifiers() & Qt.ShiftModifier else 5
-        if event.key() in (Qt.Key_Up, Qt.Key_Right):
-            self.setValue(super().value() + step)
-        elif event.key() in (Qt.Key_Down, Qt.Key_Left):
-            self.setValue(super().value() - step)
-        elif event.key() == Qt.Key_PageUp:
-            self.setValue(super().value() + 10)
-        elif event.key() == Qt.Key_PageDown:
-            self.setValue(super().value() - 10)
-        elif event.key() == Qt.Key_Home:
-            self.setValue(-100)
-        elif event.key() == Qt.Key_End:
-            self.setValue(100)
-        elif event.key() == Qt.Key_0:
-            self.setValue(0)
-        else:
-            super().keyPressEvent(event)
-            return
-        event.accept()
-
-
-class _LevelMeter(QWidget):
-    """Small peak meter with a held peak line and a latchable clip lamp."""
-
-    def __init__(self, orientation=Qt.Vertical, parent=None):
-        super().__init__(parent)
-        self.orientation = orientation
-        if orientation == Qt.Vertical:
-            self.setMinimumSize(18, 132)
-            self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        else:
-            self.setMinimumSize(240, 20)
-            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self._level_db = -60.0
-        self._peak_db = -60.0
-        self._clip = False
-
-    def sizeHint(self):
-        return QSize(24, 166) if self.orientation == Qt.Vertical else QSize(420, 24)
-
-    def reset(self):
-        self._level_db = self._peak_db = -60.0
-        self._clip = False
-        self.update()
-
-    def set_levels(self, level_db, peak_db=None, clip=None):
-        try:
-            level = float(level_db)
-        except (TypeError, ValueError):
-            level = -60.0
-        if not math.isfinite(level) or level <= -143.0:
-            level = -60.0
-        try:
-            peak = float(peak_db) if peak_db is not None else level
-        except (TypeError, ValueError):
-            peak = level
-        if not math.isfinite(peak) or peak <= -143.0:
-            peak = -60.0
-        self._level_db = max(-60.0, min(0.0, level))
-        self._peak_db = max(self._level_db, max(-60.0, min(0.0, peak)))
-        if clip is None:
-            clip = self._peak_db >= -1.0
-        self._clip = bool(clip)
-        self.setToolTip(f'RMS {self._level_db:.1f} dBFS · ' + _tr('峰值') + f' {self._peak_db:.1f} dBFS')
-        self.update()
-
-    def paintEvent(self, event):
-        del event
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        palette = self.palette()
-        text_color = palette.color(palette.Text)
-        base = QColor(text_color)
-        base.setAlpha(18)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(base)
-        if self.orientation == Qt.Vertical:
-            rect = self.rect().adjusted(2, 4, -3, -3)
-            painter.drawRoundedRect(QRectF(rect), 4, 4)
-            count = 24
-            gap = 1.5
-            cell = max(2.0, (rect.height() - gap * (count - 1)) / count)
-            channel_width = max(3.0, (rect.width() - 3.0) / 2.0)
-            lit_limit = int(round(_db_to_fraction(self._level_db, -60.0, 0.0) * count))
-            for channel in range(2):
-                x = rect.left() + 1 + channel * (channel_width + 1.5)
-                for index in range(count):
-                    y = rect.bottom() - (index + 1) * cell - index * gap
-                    color = self._segment_color(index / max(1, count - 1), index < lit_limit)
-                    painter.setBrush(color)
-                    painter.drawRoundedRect(QRectF(x, y, channel_width, cell), 1.2, 1.2)
-            peak_y = rect.bottom() - _db_to_fraction(self._peak_db, -60.0, 0.0) * rect.height()
-            painter.setPen(QPen(QColor('#ffffff'), 1.2))
-            painter.drawLine(QRectF(rect.left(), peak_y, rect.width(), 0).topLeft(),
-                             QRectF(rect.right(), peak_y, 0, 0).topLeft())
-            painter.setPen(QPen(QColor(text_color.red(), text_color.green(), text_color.blue(), 90), 1.0))
-            painter.drawLine(QRectF(rect.left() - 1, rect.bottom() - .78 * rect.height(), rect.width() + 2, 0).topLeft(),
-                             QRectF(rect.right() + 1, rect.bottom() - .78 * rect.height(), 0, 0).topLeft())
-            lamp = QRectF(rect.left() + 1, 0, rect.width() - 2, 3)
-        else:
-            rect = self.rect().adjusted(3, 3, -3, -4)
-            painter.drawRoundedRect(QRectF(rect), 6, 6)
-            count = 40
-            gap = 1.5
-            cell = max(2.0, (rect.width() - gap * (count - 1)) / count)
-            lit_limit = int(round(_db_to_fraction(self._level_db, -60.0, 0.0) * count))
-            for index in range(count):
-                x = rect.left() + index * (cell + gap)
-                color = self._segment_color(index / max(1, count - 1), index < lit_limit)
-                painter.setBrush(color)
-                painter.drawRoundedRect(QRectF(x, rect.top() + 1, cell, rect.height() - 2), 1.5, 1.5)
-            peak_x = rect.left() + _db_to_fraction(self._peak_db, -60.0, 0.0) * rect.width()
-            painter.setPen(QPen(QColor('#ffffff'), 1.2))
-            painter.drawLine(QRectF(peak_x, rect.top(), 0, rect.height()).topLeft(),
-                             QRectF(peak_x, rect.bottom(), 0, 0).topLeft())
-            lamp = QRectF(rect.right() - 3, 0, 3, 3)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor('#ff6577') if self._clip else QColor(text_color.red(), text_color.green(), text_color.blue(), 40))
-        painter.drawRoundedRect(lamp, 1.5, 1.5)
-
-    @staticmethod
-    def _segment_color(position, lit):
-        if position >= .88:
-            color = QColor('#ff6577')
-        elif position >= .67:
-            color = QColor('#f1c75b')
-        else:
-            color = QColor('#35d0a5')
-        color.setAlpha(255 if lit else 28)
-        return color
-
-
-class _ResponsiveMixerConsole(QWidget):
-    """Centered channel rack that only lays out active strips."""
-
-    MAX_STRIP_WIDTH = 190
-    GAP = 8
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName('mixer-console')
-        self.setMinimumWidth(0)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        outer = QHBoxLayout(self)
-        self._outer = outer
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        outer.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
-        self._rack = QWidget()
-        self._rack.setObjectName('mixer-rack')
-        self._rack.setMinimumWidth(0)
-        self._rack.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-        self._grid = QGridLayout(self._rack)
-        self._grid.setContentsMargins(10, 10, 10, 10)
-        self._grid.setHorizontalSpacing(self.GAP)
-        self._grid.setVerticalSpacing(self.GAP)
-        self._grid.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
-        outer.addWidget(self._rack)
-        self._strips = []
-        self._active_vocal_count = 1
-        self._columns = 0
-        self._wide_rack_hint = None
-
-    def add_strip(self, strip):
-        self._strips.append(strip)
-        self.reflow(force=True)
-
-    def set_active_vocal_count(self, count):
-        self._active_vocal_count = max(1, min(_MAX_VOCAL_TRACKS, int(count)))
-        self.reflow(force=True)
-
-    def active_strips(self):
-        vocals = [strip for strip in self._strips
-                  if strip.property('channelKind') == 'vocal']
-        backing = [strip for strip in self._strips
-                   if strip.property('channelKind') == 'backing']
-        return vocals[:self._active_vocal_count] + backing
-
-    def set_wide_rack(self, enabled):
-        """Let the card workspace choose 1-row/2x2 independently of width."""
-        self._wide_rack_hint = bool(enabled)
-        self._set_compact_density(bool(enabled))
-        self.reflow(force=True)
-
-    def _set_compact_density(self, compact):
-        margin = 6 if compact else 10
-        self._grid.setContentsMargins(margin, margin, margin, margin)
-        self._grid.setVerticalSpacing(6 if compact else 8)
-        for panel in self._strips:
-            layout = panel.layout()
-            layout.setContentsMargins(*(7, 5, 7, 7) if compact else (9, 8, 9, 10))
-            layout.setSpacing(2 if compact else 5)
-            for fader in panel.findChildren(_DbFader):
-                fader.setMinimumHeight(124 if compact else 146)
-            for meter in panel.findChildren(_LevelMeter):
-                if meter.orientation == Qt.Vertical:
-                    meter.setMinimumHeight(124 if compact else 132)
-            for role in panel.findChildren(QLabel, 'mixer-role'):
-                role.setVisible(not compact)
-        self.updateGeometry()
-
-    def column_count(self):
-        return self._columns
-
-    def minimumSizeHint(self):
-        return QSize(0, super().minimumSizeHint().height())
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.reflow()
-
-    def _size_rack(self, active, columns):
-        available = max(0, self.width() - 20)
-        inner = max(1, available - 20 - max(0, columns - 1) * self.GAP)
-        strip_width = max(112, min(self.MAX_STRIP_WIDTH,
-                                   inner // max(1, columns)))
-        target = (columns * strip_width
-                  + max(0, columns - 1) * self.GAP + 20)
-        for strip in active:
-            strip.setFixedWidth(strip_width)
-            for title in strip.findChildren(QLabel, 'mixer-channel-title'):
-                title.setVisible(strip_width >= 138)
-        self._rack.setMinimumWidth(target)
-        self._rack.setMaximumWidth(target)
-        # Center via alignment. Padding based on the previous width becomes
-        # part of minimumSizeHint and prevents a scroll pane from shrinking.
-        self._outer.setContentsMargins(0, 0, 0, 0)
-        self._outer.invalidate()
-
-    def reflow(self, force=False):
-        active = self.active_strips()
-        count = max(1, len(active))
-        if count == 1:
-            columns = 1
-        elif self._wide_rack_hint is True and self.width() >= 480:
-            columns = min(4, count)
-        elif self._wide_rack_hint is False:
-            columns = 2
-        elif self.width() < 600:
-            columns = 2
-        else:
-            columns = min(4, count)
-        if not force and columns == self._columns and self._grid.count() == count:
-            self._size_rack(active, columns)
-            return
-        self._columns = columns
-        while self._grid.count():
-            self._grid.takeAt(0)
-        for index, strip in enumerate(active):
-            row, column = divmod(index, columns)
-            self._grid.addWidget(strip, row, column,
-                                 Qt.AlignTop | Qt.AlignHCenter)
-        self._size_rack(active, columns)
-        for column in range(4):
-            self._grid.setColumnStretch(column, 1 if column < columns else 0)
-        self._grid.invalidate()
-        self._rack.updateGeometry()
-        self.updateGeometry()
-        self.update()
-
-
-class _ResponsiveEQCurveView(EQCurveView):
-    """EQ editor that fits the full-width focus view and narrow windows."""
-
-    COMPACT_MINIMUM_WIDTH = 264
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumSize(self.COMPACT_MINIMUM_WIDTH, self.MINIMUM_HEIGHT)
-
-    def minimumSizeHint(self):
-        hint = super().minimumSizeHint()
-        return QSize(min(hint.width(), self.COMPACT_MINIMUM_WIDTH), hint.height())
-
-    def bypass_rect(self):
-        outer = QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
-        width = min(104.0, max(94.0, outer.width() * 0.30))
-        return QRectF(outer.right() - width - 5.0, outer.top() + 3.0,
-                      width, 22.0)
-
-
-class _ResponsiveEffectGrid(QWidget):
-    """Keep effect toggles readable as the processing card changes width."""
-
-    def __init__(self, items, parent=None):
-        super().__init__(parent)
-        self.setMinimumWidth(0)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self._cells = []
-        for control, text in items:
-            cell = QWidget()
-            layout = QVBoxLayout(cell)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(2)
-            layout.addWidget(control)
-            hint = label(text, 'muted')
-            hint.setStyleSheet('font-size: 13px;')
-            layout.addWidget(hint)
-            self._cells.append(cell)
-        self.grid = QGridLayout(self)
-        self.grid.setContentsMargins(0, 0, 0, 0)
-        self.grid.setHorizontalSpacing(10)
-        self.grid.setVerticalSpacing(8)
-        self._columns = 0
-        self.reflow(force=True)
-
-    def column_count(self):
-        return self._columns
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.reflow()
-
-    def reflow(self, force=False):
-        columns = 3 if self.width() >= 650 else (2 if self.width() >= 400 else 1)
-        if not force and columns == self._columns:
-            return
-        self._columns = columns
-        while self.grid.count():
-            self.grid.takeAt(0)
-        for index, cell in enumerate(self._cells):
-            row, column = divmod(index, columns)
-            self.grid.addWidget(cell, row, column)
-        for column in range(3):
-            self.grid.setColumnStretch(column, 1 if column < columns else 0)
-        self.grid.invalidate()
-        self.updateGeometry()
-
-    def minimumSizeHint(self):
-        return QSize(0, self.grid.minimumSize().height())
-
-
-class _ElidedLabel(QLabel):
-    def __init__(self, text='', parent=None):
-        super().__init__(parent)
-        self._full_text = ''
-        self.setWordWrap(False)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.setText(text)
-
-    def setText(self, text):
-        self._full_text = str(text or '')
-        self.setToolTip(self._full_text)
-        self._refresh()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._refresh()
-
-    def _refresh(self):
-        metrics = QFontMetrics(self.font())
-        shown = metrics.elidedText(self._full_text, Qt.ElideMiddle,
-                                   max(20, self.contentsRect().width()))
-        QLabel.setText(self, shown)
-
-
-def _application_root():
-    """Locate the app tree containing component manifest and packaged installer."""
-    try:
-        from common import ROOT
-        candidates = (Path(ROOT), Path(ROOT).parent)
-    except Exception:
-        candidates = (Path(__file__).resolve().parent, Path(__file__).resolve().parents[1])
-    for candidate in candidates:
-        if ((candidate / 'components/pedalboard.json').is_file()
-                and (candidate / 'tools/install_pedalboard_component.py').is_file()):
-            return candidate.resolve()
-    return None
-
-
-def _component_manifest():
-    root = _application_root()
-    if root is None:
-        return root, None, None
-    manifest = root / 'components/pedalboard.json'
-    try:
-        value = json.loads(manifest.read_text(encoding='utf-8'))
-    except (OSError, ValueError):
-        return root, None, None
-    return root, value, root / 'tools/install_pedalboard_component.py'
-
-
-def _optional_packages(root, spec, packages=None):
-    if packages:
-        path = Path(packages).resolve()
-    elif spec:
-        try:
-            path = (root / spec['install']['root']
-                    / spec['install']['packages']).resolve()
-            if not (root / spec['install']['root']).resolve().is_relative_to(root.resolve()):
-                return None
-        except (KeyError, TypeError, OSError, ValueError):
-            return None
-    else:
-        path = None
-    return path if path and path.is_dir() else None
-
-
-def _child_python():
-    """Use a console Python for clean subprocesses, with an explicit fallback."""
-    executable = Path(sys.executable).resolve()
-    sibling = executable.with_name('python.exe')
-    if sibling.is_file():
-        return sibling
-    return executable
-
-
-def _worker_environment(packages=None):
-    env = dict(os.environ, PYTHONUTF8='1', PYTHONDONTWRITEBYTECODE='1')
-    paths = []
-    if packages:
-        paths.append(str(Path(packages).resolve()))
-    app_root = _application_root()
-    if app_root:
-        paths.append(str(app_root))
-        source = app_root / 'src'
-        if source.is_dir():
-            paths.append(str(source))
-    paths.append(str(Path(__file__).resolve().parent))
-    paths.extend(str(path) for path in sys.path if path)
-    previous = env.get('PYTHONPATH')
-    if previous:
-        paths.extend(part for part in previous.split(os.pathsep) if part)
-    ordered = list(dict.fromkeys(paths))
-    # Embedded Python ignores PYTHONPATH because python312._pth is present.
-    # The child bootstrap explicitly inserts this custom list before imports.
-    env['VWA_MIXDOWN_EXTRA_PATHS'] = os.pathsep.join(ordered)
-    env['PYTHONPATH'] = os.pathsep.join(ordered)
-    return env
-
-
-def _activate_pedalboard(packages=None, check=None):
-    """Verify Pedalboard in a clean Python process and remember its optional path."""
-    global _OPTIONAL_PACKAGES
-    if packages:
-        path = Path(packages).resolve()
-        if not path.is_dir():
-            return False, '已安装的 Pedalboard 组件目录不存在。'
-        _OPTIONAL_PACKAGES = str(path)
-    _check_cancel(check)
-    fake = sys.modules.get('pedalboard')
-    if fake is not None and not getattr(fake, '__file__', None):
-        version = str(getattr(fake, '__version__', ''))
-        if version != '0.9.26':
-            return False, 'Pedalboard 版本不符：需要 0.9.26，当前为 ' + (version or '未知') + '。'
-        return True, version
-    code = (
-        "import os,sys; "
-        "[sys.path.insert(0,p) for p in reversed(os.environ.get('VWA_MIXDOWN_EXTRA_PATHS','').split(os.pathsep)) if p]; "
-        "import pedalboard; "
-        "v=str(getattr(pedalboard,'__version__','')); "
-        "assert v=='0.9.26', '版本不符: '+v; "
-        "assert all(hasattr(pedalboard,n) for n in ('Pedalboard','HighpassFilter','PeakFilter','Compressor','Reverb')), '组件不完整'; "
-        "print(v)"
-    )
-    creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-    try:
-        process = subprocess.Popen(
-            [str(_child_python()), '-B', '-c', code],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding='utf-8',
-            errors='replace',
-            env=_worker_environment(_OPTIONAL_PACKAGES),
-            creationflags=creationflags,
-        )
-    except OSError as error:
-        return False, 'Pedalboard 组件检查失败：' + str(error)
-    deadline = time.monotonic() + 20.0
-    stdout = stderr = ''
-    try:
-        while True:
-            try:
-                stdout, stderr = process.communicate(timeout=0.10)
-                break
-            except subprocess.TimeoutExpired:
-                _check_cancel(check)
-                if time.monotonic() >= deadline:
-                    _terminate_process(process)
-                    return False, 'Pedalboard 组件检查失败：检查超时。'
-    except BaseException:
-        _terminate_process(process)
-        raise
-    if process.returncode:
-        detail = (stderr or '').strip().splitlines()
-        return False, 'Pedalboard 组件检查失败：' + (detail[-1] if detail else '未知错误')
-    return True, (stdout or '').strip() or '0.9.26'
-
-
-def _run_component_installer(action, root, installer, check, force=False):
-    """Run the packaged component installer without a shell or PowerShell."""
-    if not installer or not Path(installer).is_file():
-        raise FileNotFoundError('混音组件安装器未随当前版本提供。')
-    argv = [str(_child_python()), '-B', str(installer), action, '--app-root', str(root)]
-    if action == 'install':
-        argv.extend(['--python', str(_child_python())])
-    if action == 'install' and force:
-        argv.append('--force')
-    env = dict(os.environ, PYTHONUTF8='1', PYTHONDONTWRITEBYTECODE='1')
-    process = subprocess.Popen(
-        argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, encoding='utf-8', errors='replace', env=env,
-        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-    try:
-        while process.poll() is None:
-            _check_cancel(check)
-            time.sleep(0.10)
-        stdout, stderr = process.communicate()
-    finally:
-        if process.poll() is None:
-            try:
-                from process_control import terminate_tree
-                terminate_tree(process)
-            except Exception:
-                try:
-                    process.kill()
-                except OSError:
-                    pass
-            process.wait(timeout=5)
-    if process.returncode:
-        detail = (stderr or stdout).strip().splitlines()
-        raise RuntimeError(detail[-1] if detail else '混音组件安装器返回失败。')
-    try:
-        value = json.loads(stdout)
-    except ValueError:
-        raise ValueError('混音组件安装器没有返回可读状态。')
-    if not isinstance(value, dict):
-        raise ValueError('混音组件安装器返回状态无效。')
-    return value
-
-
 class MixdownTask(QThread):
     """One owned render/register operation; the worker owns all cleanup."""
 
@@ -1132,306 +185,6 @@ class MixdownTask(QThread):
             self.succeeded.emit(result)
 
 
-def _check_cancel(check):
-    if check and check():
-        raise _Cancelled('混音操作已取消。')
-
-
-_RENDER_WORKER = r"""
-import inspect
-import json
-import os
-from pathlib import Path
-import sys
-
-for extra in reversed(os.environ.get('VWA_MIXDOWN_EXTRA_PATHS', '').split(os.pathsep)):
-    if extra:
-        sys.path.insert(0, extra)
-
-request_path = Path(sys.argv[1])
-cancel_path = Path(sys.argv[2])
-request = json.loads(request_path.read_text(encoding='utf-8'))
-
-def cancel():
-    return cancel_path.exists()
-
-def emit(event):
-    value = dict(event)
-    value.setdefault('event', 'progress')
-    print(json.dumps(value, ensure_ascii=False), flush=True)
-
-try:
-    from audio_mixdown import render
-    parameters = inspect.signature(render).parameters
-    if 'progress' in parameters:
-        result = render(request, cancel=cancel, progress=emit)
-    else:
-        result = render(request, cancel=cancel)
-    if not isinstance(result, dict):
-        raise TypeError('render did not return a dictionary')
-    print(json.dumps({'event': 'done', 'fraction': 1.0, 'report': result},
-                     ensure_ascii=False), flush=True)
-except BaseException as error:
-    print(type(error).__name__ + ': ' + str(error), file=sys.stderr, flush=True)
-    raise SystemExit(1)
-"""
-
-
-def _injected_backend(name):
-    """Only explicit module doubles may bypass the isolated native worker."""
-    module = sys.modules.get(name)
-    return module if module is not None and not getattr(module, '__file__', None) else None
-
-
-def _render_once(request, check, progress=None):
-    """Run the shared renderer and forward progress without loading native Qt."""
-    _check_cancel(check)
-    injected = _injected_backend('audio_mixdown')
-    if injected is not None:
-        import inspect
-        from audio_mixdown import render
-        kwargs = {'cancel': check}
-        if progress is not None and 'progress' in inspect.signature(render).parameters:
-            kwargs['progress'] = progress
-        report = render(dict(request), **kwargs)
-        _check_cancel(check)
-        if not isinstance(report, dict):
-            raise ValueError('混音后端没有返回结果字典。')
-        return dict(report)
-
-    root = Path(tempfile.mkdtemp(prefix='vwa-audio-render-'))
-    request_path = root / 'request.json'
-    cancel_path = root / 'cancel.flag'
-    stderr_path = root / 'stderr.txt'
-    request_path.write_text(json.dumps(request, ensure_ascii=False), encoding='utf-8')
-    process = None
-    reader = None
-    output_lines = queue.Queue()
-    try:
-        with stderr_path.open('wb') as stderr:
-            process = subprocess.Popen(
-                [str(_child_python()), '-B', '-u', '-c', _RENDER_WORKER,
-                 str(request_path), str(cancel_path)],
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=stderr,
-                env=_worker_environment(_OPTIONAL_PACKAGES),
-                cwd=str(_application_root() or Path(__file__).resolve().parents[1]),
-                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
-                text=True, encoding='utf-8', errors='replace', bufsize=1)
-
-            def read_output():
-                try:
-                    for line in process.stdout:
-                        output_lines.put(line)
-                finally:
-                    try:
-                        process.stdout.close()
-                    except Exception:
-                        pass
-
-            reader = threading.Thread(target=read_output, daemon=True)
-            reader.start()
-            final_report = None
-            while True:
-                if check and check():
-                    cancel_path.touch()
-                    grace = time.monotonic() + 2.0
-                    while process.poll() is None and time.monotonic() < grace:
-                        time.sleep(0.05)
-                    if process.poll() is None:
-                        try:
-                            from process_control import terminate_tree
-                            terminate_tree(process)
-                        except Exception:
-                            process.kill()
-                    raise _Cancelled('混音操作已取消。')
-                try:
-                    line = output_lines.get(timeout=0.05)
-                except queue.Empty:
-                    line = None
-                if line:
-                    try:
-                        event = json.loads(line)
-                    except ValueError:
-                        event = None
-                    if isinstance(event, dict):
-                        if event.get('event') == 'progress':
-                            if progress is not None:
-                                try:
-                                    progress(event)
-                                except Exception:
-                                    pass
-                        elif event.get('event') == 'done':
-                            payload = event.get('report')
-                            if isinstance(payload, dict):
-                                final_report = payload
-                        elif 'event' not in event:
-                            final_report = event
-                if (process.poll() is not None and reader is not None
-                        and not reader.is_alive() and output_lines.empty()):
-                    break
-        stderr_text = stderr_path.read_text(encoding='utf-8', errors='replace').strip()
-        if check and check():
-            raise _Cancelled('混音操作已取消。')
-        if process.returncode:
-            detail = stderr_text.splitlines()[-1] if stderr_text else '混音渲染子进程失败。'
-            raise RuntimeError(detail)
-        if final_report is None:
-            raise ValueError('混音后端没有返回可读结果。')
-        return dict(final_report)
-    finally:
-        if process is not None and process.poll() is None:
-            try:
-                from process_control import terminate_tree
-                terminate_tree(process)
-            except Exception:
-                try:
-                    process.kill()
-                except OSError:
-                    pass
-        if reader is not None:
-            reader.join(timeout=1.0)
-        shutil.rmtree(root, ignore_errors=True)
-
-
-def _source_signature(path):
-    info = Path(path).stat()
-    return info.st_size, info.st_mtime_ns
-
-
-def _file_sha256(path, check=None):
-    digest = hashlib.sha256()
-    with Path(path).open('rb') as stream:
-        while True:
-            _check_cancel(check)
-            block = stream.read(1024 * 1024)
-            if not block:
-                break
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def _normal_path_key(path):
-    return os.path.normcase(os.path.abspath(os.fspath(path)))
-
-
-def _validate_render_source_hashes(report, sources):
-    """Require the backend to identify every input it actually consumed."""
-    hashes = report.get('source_sha256')
-    if not isinstance(hashes, dict):
-        raise ValueError('混音后端没有返回源音频 SHA-256 指纹。')
-    normalized = {_normal_path_key(path): value for path, value in hashes.items()}
-    for source in sources:
-        value = normalized.get(_normal_path_key(source))
-        if not isinstance(value, str) or len(value) != 64:
-            raise ValueError('混音后端没有返回完整源音频指纹：' + Path(source).name)
-        try:
-            int(value, 16)
-        except ValueError:
-            raise ValueError('混音后端返回的源音频指纹无效：' + Path(source).name) from None
-    return normalized
-
-
-def _validate_render(report, output):
-    output = Path(output).resolve()
-    if not output.is_file() or output.stat().st_size <= 0:
-        raise ValueError('混音后端没有生成有效的 WAV 文件。')
-    returned = report.get('output_path')
-    if returned and Path(returned).resolve() != output:
-        raise ValueError('混音后端返回了预期之外的文件路径。')
-    report['output_path'] = str(output)
-    return report
-
-
-def _publish_without_overwrite(temporary, destination):
-    """Atomically give the finished WAV its requested name; never replace a file."""
-    temporary, destination = Path(temporary), Path(destination)
-    if destination.exists():
-        raise FileExistsError('导出目标已存在；为保护现有文件，请换一个文件名。')
-    try:
-        os.link(temporary, destination)
-    except FileExistsError:
-        raise FileExistsError('导出目标已存在；为保护现有文件，请换一个文件名。')
-    except OSError as error:
-        # Windows os.rename does not replace an existing destination. Hard links
-        # can be unavailable on a mounted filesystem, so this is a narrow fallback.
-        if os.name != 'nt':
-            raise OSError('无法以不覆盖方式发布混音文件：' + str(error))
-        try:
-            os.rename(temporary, destination)
-        except FileExistsError:
-            raise FileExistsError('导出目标已存在；为保护现有文件，请换一个文件名。')
-    else:
-        try:
-            temporary.unlink()
-        except OSError:
-            # The destination is already durable; a hidden staging link left on
-            # an unusual filesystem must not turn a successful publish into failure.
-            pass
-
-
-def _same_path(left, right):
-    if left is None or right is None:
-        return False
-    try:
-        return Path(left).resolve() == Path(right).resolve()
-    except OSError:
-        return False
-
-
-def _discard_preview_directory(path):
-    if not path:
-        return
-    try:
-        candidate = Path(path).absolute()
-        root = Path(tempfile.gettempdir()).resolve()
-        if (candidate.parent.resolve() != root
-                or not (candidate.name.startswith(_PREVIEW_PREFIX)
-                        or candidate.name.startswith('vwa-audio-mixdown-'))):
-            return
-        if candidate.is_symlink() or candidate.is_junction():
-            return
-        shutil.rmtree(candidate, ignore_errors=True)
-    except (OSError, ValueError):
-        pass
-
-
-def _task_source(job, names):
-    if not job:
-        return None
-    job = Path(job)
-    for name in names:
-        path = job / name
-        if path.is_file():
-            return path.resolve()
-    return None
-
-
-def _suggested_output(job):
-    directory = (Path(job) / 'rendered') if job else Path.cwd()
-    stem = 'simple-mixdown-' + datetime.now().strftime('%Y%m%d-%H%M%S')
-    path = directory / (stem + '.wav')
-    index = 2
-    while path.exists():
-        path = directory / (stem + '-' + str(index) + '.wav')
-        index += 1
-    return path
-
-
-def _report_detail(report):
-    parts = []
-    try:
-        parts.append(_tr('时长：{0:.3f} 秒').format(float(report['duration_seconds'])))
-    except (KeyError, TypeError, ValueError):
-        parts.append(_tr('时长：后端未报告'))
-    try:
-        peak = float(report['peak_dbfs'])
-        value = _tr('静音') if not math.isfinite(peak) or peak <= -143.0 else '{:.2f} dBFS'.format(peak)
-        parts.append(_tr('峰值：') + value)
-    except (KeyError, TypeError, ValueError):
-        parts.append(_tr('峰值：后端未报告'))
-    return '；'.join(parts)
-
-
 class AudioMixdownDialog(QDialog):
     """Mix up to three dry vocal WAVs and one backing without replacing sources."""
 
@@ -1458,16 +211,11 @@ class AudioMixdownDialog(QDialog):
         self._export_context = None
         self._export_receipt = None
         self._player = None
-        self._player_key = 'after'
-        self._player_seeking = False
-        self._player_seek_serial = 0
-        self._pending_player_seek = None
-        self._last_player_seek = None
+        self._preview = None
         self._player_seek_timer = QTimer(self)
         self._player_seek_timer.setSingleShot(True)
         self._player_seek_timer.setInterval(_PLAYER_SEEK_COALESCE_MS)
         self._player_seek_timer.timeout.connect(self._commit_queued_player_seek)
-        self._player_duration_ms = 0
         self.navigate_requested = False
         self.video_requested = False
         self.registered = False
@@ -1479,7 +227,6 @@ class AudioMixdownDialog(QDialog):
         self._component_installer = None
         self._support_worker = None
         self._support_checking = False
-        self._audition_service = None
         self._audition_closing = False
         self._audition_close_thread = None
         self._audition_cleanup_complete = False
@@ -1488,21 +235,12 @@ class AudioMixdownDialog(QDialog):
         self._eq_sample_rate_probe = None
         # Retain reports by actual media path while a replacement is loading;
         # the displayed A/B analysis must follow the source being heard.
-        self._native_preview_player = None
         self._live_measurement_frame = None
         self._latest_spectrum = None
         self._live_sample_rate = None
         self._last_readout_update = 0.0
         self._native_dll_path = None
-        self._native_source_key = None
-        self._native_requested_key = 'after'
-        self._edc_playback_position_ms = 0.0
-        self._preview_dirty = True
-        self._preview_play_intent = False
         self._preview_cache_directory = None
-        self._preview_resume_seconds = None
-        self._preview_segment_start_seconds = 0.0
-        self._pending_player_position_ms = 0
         self._player_loop = False
         self._preview_debounce = QTimer(self)
         self._preview_debounce.setSingleShot(True)
@@ -2670,7 +1408,8 @@ class AudioMixdownDialog(QDialog):
             ready, detail = result
         except (TypeError, ValueError):
             ready, detail = False, _tr('混音组件检查返回了无效结果。')
-        self._apply_component_support(ready, detail, self._component_packages)
+        packages = self._component_packages or _cached_optional_packages()
+        self._apply_component_support(ready, detail, packages)
         if ready:
             self.status.setText(_tr('混音组件已就绪，可以渲染试听或导出。'))
             _set_role(self.status, 'success')
@@ -2750,13 +1489,14 @@ class AudioMixdownDialog(QDialog):
         self._native_dll_path = native_output_path()
         self._player = self._create_native_preview_player()
         self._player.available = self._native_dll_path is not None
+        self._preview = MixdownPreviewController(self._player)
         self._connect_preview_player(self._player)
         if not self._player.available:
             self.preview_report.setText(_tr('连续试听组件缺失或校验失败，请修复组件后重新打开混音页。'))
 
     def _create_native_preview_player(self):
         from mixdown_realtime_player import RealtimePreviewPlayer
-        packages = self._component_packages or _OPTIONAL_PACKAGES
+        packages = self._component_packages or _cached_optional_packages()
         if not packages:
             root, spec, _ = _component_manifest()
             packages = _optional_packages(root, spec) if root and spec else None
@@ -2766,11 +1506,7 @@ class AudioMixdownDialog(QDialog):
                                  extra_paths=[packages] if packages else [],
                                  environment=_worker_environment(packages),
                                  startup_timeout=8.0, shutdown_timeout=2.0))
-        self._native_preview_player = player
         self.eq_spectrum_label.setText(_tr('实测频谱 · EQ 前 / 后'))
-        self._native_requested_key = self._player_key
-        self._audition_service = player
-        self._audition_service_ready = self._audition_start_attempted = True
         player.prepared.connect(self._native_preview_prepared)
         player.parametersApplied.connect(self._native_parameters_applied)
         player.telemetryChanged.connect(self._native_preview_telemetry)
@@ -2780,35 +1516,22 @@ class AudioMixdownDialog(QDialog):
     def _start_native_preview(self):
         if self._audition_closing or self.busy() or not self._player.available:
             return False
-        player = self._native_preview_player
-        if player.failed and not self._preview_play_intent:
+        if self._player.failed and not self._preview.play_intent:
             return False
         source_key = self._current_preview_source_key()
         if not source_key or not self._support_ready:
-            player.release()
-            self._native_source_key = None
+            self._preview.release()
             return False
-        key = self._native_requested_key
         try:
             # This path is only a request field; live playback never writes it.
             request = self._request(self._ensure_preview_cache_directory() / 'live-unused.wav',
-                                    bypass_processing=key == 'before')
-            position = int(round((self._preview_resume_seconds or 0.0) * 1000))
-            if source_key != self._native_source_key:
-                position = int(round(self.preview_start.value() * 1000))
-            player.set_loop_range(int(self.preview_start.value() * 1000),
-                                  int((self.preview_start.value() + self.preview_duration.value()) * 1000))
-            if source_key != self._native_source_key or not player.ready:
-                if player.loading and source_key == self._native_source_key:
-                    player.parameters(request, key=key)
-                else:
-                    player.open(request, position_ms=position,
-                                autoplay=self._preview_play_intent, key=key)
-                    self._native_source_key = source_key
-            else:
-                player.parameters(request, key=key)
-            self._preview_dirty = False
-            self._preview_pending = False
+                                    bypass_processing=self._preview.requested_key == 'before')
+            accepted = self._preview.refresh(
+                request, source_key, start_ms=int(round(self.preview_start.value() * 1000)),
+                loop_range=(int(self.preview_start.value() * 1000),
+                            int((self.preview_start.value() + self.preview_duration.value()) * 1000)))
+            if not accepted:
+                return False
             self._set_audition_diagnostic('updating', _tr('正在更新连续试听…'))
             self._sync_controls()
             return True
@@ -2817,9 +1540,7 @@ class AudioMixdownDialog(QDialog):
             return False
 
     def _native_preview_prepared(self):
-        player = self._native_preview_player
-        self._preview_segment_start_seconds = 0.0
-        self._preview_segment_duration_seconds = player.duration() / 1000.0
+        player = self._player
         self._player_duration_changed(player.duration())
         self._native_parameters_applied(player.selected_key)
         self.preview_report.setText(_tr('连续试听已就绪，可拖动进度条定位整曲。'))
@@ -2829,12 +1550,10 @@ class AudioMixdownDialog(QDialog):
 
     def _native_parameters_applied(self, key):
         self._set_preview_selection(key)
-        self._preview_actual_key = key
-        self._preview_selection_pending_key = self._preview_selection_restore_key = None
         self.preview_before_state.setText(_tr('已就绪'))
         self.preview_after_state.setText(_tr('已就绪'))
         self._set_audition_diagnostic('updated', _tr('连续试听 · 已更新'))
-        if self._preview_play_intent:
+        if self._preview.play_intent:
             self.status.setText(_tr('正在试听：') + (_tr('处理前') if key == 'before' else _tr('处理后')))
             _set_role(self.status, 'success')
 
@@ -2848,7 +1567,7 @@ class AudioMixdownDialog(QDialog):
                 self._clear_render_meters()
                 self.eq_curve.clear_live_spectrum()
             return
-        identity = (self._player._generation, data.get('history_epoch'), data.get('media_frame'),
+        identity = (self._player.generation, data.get('history_epoch'), data.get('media_frame'),
                     data.get('parameter_revision'))
         if identity != self._live_measurement_frame:
             self._live_measurement_frame = identity
@@ -2874,7 +1593,7 @@ class AudioMixdownDialog(QDialog):
         edc = reverb.get('kernel_edc') or {}
         if edc.get('available') and edc.get('measured'):
             edc_key = (edc.get('profile'), edc.get('predelay_ms'), edc.get('sample_rate'),
-                       edc.get('signature'), self._player._generation)
+                       edc.get('signature'), self._player.generation)
             if edc_key != getattr(self, '_shown_edc_key', None):
                 self.reverb_decay.set_report({'reverb_edc': edc}, merge=False)
                 self._shown_edc_key = edc_key
@@ -2901,10 +1620,7 @@ class AudioMixdownDialog(QDialog):
             self.eq_curve.clear_live_spectrum()
 
     def _native_preview_error(self, message):
-        self._preview_play_intent = self._preview_autoplay = False
-        self._preview_dirty = True
-        if self._pending_player_seek:
-            self._fail_player_seek()
+        self._preview.failed()
         self._set_audition_diagnostic('failed', _tr('连续试听已停止'))
         self.eq_curve.clear_live_spectrum()
         self._clear_render_meters()
@@ -3013,7 +1729,6 @@ class AudioMixdownDialog(QDialog):
     def _set_preview_selection(self, key):
         if key not in ('before', 'after'):
             return False
-        self._player_key = key
         self.preview_before_button.setChecked(key == 'before')
         self.preview_after_button.setChecked(key == 'after')
         return True
@@ -3024,26 +1739,10 @@ class AudioMixdownDialog(QDialog):
         seconds = max(0, int(milliseconds or 0) // 1000)
         return '{:02d}:{:02d}'.format(seconds // 60, seconds % 60)
 
-    def _absolute_player_seconds(self):
-        pending = getattr(self, '_pending_player_seek', None)
-        if pending:
-            return pending['target_ms'] / 1000.0
-        if self._player is not None and self._player_has_media():
-            return (self._preview_segment_start_seconds
-                    + max(0, int(self._player.position())) / 1000.0)
-        if self._preview_resume_seconds is not None:
-            return float(self._preview_resume_seconds)
-        return float(self.preview_start.value())
-
-    def _preview_is_playing(self):
-        return self._player_is_playing()
-
-
     def _update_player_time(self):
-        base_ms = int(round(self._preview_segment_start_seconds * 1000))
         position = (self.player_position.value() if (
-                    self._player_seeking or getattr(self, '_pending_player_seek', None)) else
-                    base_ms + (self._player.position() if self._player is not None else 0))
+                    self._preview is not None and self._preview.dragging) else
+                    (self._preview.position_ms if self._preview is not None else 0))
         duration_ms = self._preview_total_milliseconds()
         self.player_time.setText(
             self._format_player_time(max(0, int(position)))
@@ -3053,33 +1752,24 @@ class AudioMixdownDialog(QDialog):
         return self._player.duration() if self._player is not None else 0
 
     def _player_position_changed(self, position):
-        if self._player_seeking or self._player._pending_seek:
+        if not self._preview.follow_position():
             return
-        position = max(0, int(self._player.position()))
-        seeking = self._pending_player_seek
-        if seeking:
-            if seeking['phase'] not in ('seeking', 'loading'):
-                return
-            seeking.update(phase='following', confirmed_at=time.monotonic(),
-                           clock_quality='native_callback_submitted_media_not_acoustic')
-            seeking['elapsed_ms'] = round((seeking['confirmed_at']-seeking['requested_at'])*1000, 3)
-            self._last_player_seek = dict(seeking)
-            self._pending_player_seek = None
+        self._paint_player_position(self._preview.position_ms)
+
+    def _paint_player_position(self, position):
+        """Render the local or acknowledged cursor through one signal barrier."""
         blocked = self.player_position.blockSignals(True)
-        self.player_position.setRange(0, self._preview_total_milliseconds())
-        self.player_position.setValue(position)
-        self.player_position.blockSignals(blocked)
-        self._preview_resume_seconds = position / 1000.0
+        try:
+            self.player_position.setRange(0, self._preview_total_milliseconds())
+            self.player_position.setValue(max(0, int(position)))
+        finally:
+            self.player_position.blockSignals(blocked)
         self._update_player_time()
 
 
     def _player_duration_changed(self, duration):
-        if self._player_seeking or getattr(self, '_pending_player_seek', None):
-            # A retiring segment must not shrink the user's global timeline.
+        if self._preview.dragging or self._preview.pending_seek:
             return
-        if duration > 0:
-            self._preview_segment_duration_seconds = int(duration) / 1000.0
-        self._player_duration_ms = max(0, int(duration))
         blocked = self.player_position.blockSignals(True)
         try:
             self.player_position.setRange(
@@ -3090,23 +1780,22 @@ class AudioMixdownDialog(QDialog):
 
     def _player_state_changed(self, state):
         playing = self._player is not None and int(state) == PlaybackState.PlayingState
-        if getattr(self, '_pending_player_seek', None):
-            playing = bool(self._preview_play_intent)
+        if self._preview.pending_seek:
+            playing = self._preview.play_intent
         self.player_toggle_button.setText(_tr('暂停') if playing else _tr('播放'))
         self.player_toggle_button.setAccessibleName(
             _tr('暂停试听') if playing else _tr('播放试听'))
         if not self._audition_closing:
             if playing:
-                key = self._native_preview_player.selected_key
+                key = self._player.selected_key
                 self.status.setText(_tr('正在试听：') + (_tr('处理前') if key == 'before' else _tr('处理后')))
                 _set_role(self.status, 'success')
-            elif int(state) == PlaybackState.PausedState and not self._preview_play_intent:
+            elif int(state) == PlaybackState.PausedState and not self._preview.play_intent:
                 self.status.setText(_tr('试听已暂停；可拖动进度条定位。'))
                 _set_role(self.status, 'muted')
 
     def _player_media_status_changed(self, status):
         if status == MediaStatus.EndOfMedia and not self._player_loop:
-            self._preview_play_intent = self._preview_autoplay = False
             self.player_toggle_button.setText(_tr('播放'))
             self.status.setText(_tr('已播放到曲尾。'))
         self._sync_controls()
@@ -3115,18 +1804,14 @@ class AudioMixdownDialog(QDialog):
         self._native_preview_error(message)
 
 
-    def _seek_player(self, position):
-        return self._player.seek(max(0, int(position))) if self._player else False
-
     def _begin_player_seek(self):
         self._player_seek_timer.stop()
-        self._player_seeking = True
-        self._player_seek_serial += 1
+        self._preview.begin_seek()
 
     def _player_position_value_changed(self, position):
         # Mouse drags are handled by sliderMoved; keyboard and wheel changes
         # only emit valueChanged. Programmatic playback updates are blocked.
-        if not self._player_seeking and self._player_has_media():
+        if not self._preview.dragging and self._player_has_media():
             self._stage_player_seek(position, phase='queued')
             self._player_seek_timer.start()
 
@@ -3136,76 +1821,46 @@ class AudioMixdownDialog(QDialog):
         self._update_player_time()
 
     def _stage_player_seek(self, position, *, phase):
-        previous = self._pending_player_seek
-        autoplay = bool(self._preview_play_intent)
-        if not previous:
-            self._preview_play_intent = autoplay
-        self._player_seek_serial += 1
-        target = max(0, min(int(position), self._preview_total_milliseconds()))
-        self._pending_player_seek = {
-            'seek_id': self._player_seek_serial, 'target_ms': target,
-            'phase': phase, 'autoplay': autoplay, 'requested_at': time.monotonic(),
-        }
-        blocked = self.player_position.blockSignals(True)
-        try:
-            self.player_position.setValue(target)
-        finally:
-            self.player_position.blockSignals(blocked)
-        self._preview_resume_seconds = target / 1000.0
-        self._update_player_time()
-        return self._pending_player_seek
+        target = self._preview.stage_seek(position, phase=phase)
+        self._paint_player_position(target)
+        return self._preview.pending_seek
 
     def _commit_queued_player_seek(self):
-        pending = self._pending_player_seek
-        if pending and pending['phase'] == 'queued' and not self._player_seeking:
+        pending = self._preview.pending_seek
+        if pending and pending['phase'] == 'queued' and not self._preview.dragging:
             self._seek_to_song_position(pending['target_ms'], commit=True)
 
     def _cancel_player_seek_gesture(self):
-        self._player_seeking = False
-        if self._pending_player_seek:
-            self._seek_to_song_position(self._pending_player_seek['target_ms'], commit=True)
+        self._preview.dragging = False
+        if self._preview.pending_seek:
+            self._seek_to_song_position(self._preview.pending_seek['target_ms'], commit=True)
         elif self._player is not None:
             self._player_position_changed(self._player.position())
-            if self._preview_dirty:
-                self._schedule_preview_refresh(autoplay=self._preview_play_intent)
+            if self._preview.dirty:
+                self._schedule_preview_refresh()
 
     def _fail_player_seek(self):
-        pending = getattr(self, '_pending_player_seek', None)
-        if pending:
-            pending.update(phase='failed', failed_at=time.monotonic(), autoplay=False)
-            self._last_player_seek = dict(pending)
-            self._preview_play_intent = self._preview_autoplay = False
-            self._player_state_changed(PlaybackState.PausedState)
+        self._preview.fail_seek()
+        self._preview.set_playing(False)
+        self._player_state_changed(PlaybackState.PausedState)
 
     def _seek_to_song_position(self, position, *, commit):
         if self._player is None or not commit or not self._player.ready:
             return
         self._player_seek_timer.stop()
-        pending = self._pending_player_seek
-        if not pending or pending['target_ms'] != int(position):
-            pending = self._stage_player_seek(position, phase='seeking')
-        pending.update(phase='seeking', relative_ms=pending['target_ms'], submitted_at=time.monotonic())
-        if not self._player.seek(pending['target_ms'], autoplay=pending['autoplay']):
+        if not self._preview.commit_seek(position):
             self._fail_player_seek()
-        self._update_player_time()
+        self._paint_player_position(self._preview.position_ms)
 
     def _finish_player_seek(self):
         position = max(0, int(self.player_position.value()))
-        self._player_seeking = False
+        self._preview.dragging = False
         self._seek_to_song_position(position, commit=True)
 
     def _stop_preview_player(self):
         """Release a session only for source retirement, cancellation or shutdown."""
         self._player_seek_timer.stop()
-        self._pending_player_seek = None
-        self._player_seeking = False
-        self._preview_play_intent = self._preview_autoplay = False
-        if self._player is not None:
-            self._player.release()
-        self._native_source_key = None
-        self._preview_resume_seconds = None
-        self._player_duration_ms = 0
-        self._preview_dirty = True
+        self._preview.release()
         self._live_measurement_frame = None
         self.eq_curve.clear_spectrum_envelope()
         self._clear_render_meters()
@@ -3221,28 +1876,17 @@ class AudioMixdownDialog(QDialog):
         if not self._sources_ready() or not self._support_ready or not self._player.available:
             self.status.setText(_tr('选择声音并等待连续试听组件就绪后即可播放。'))
             return
-        self._preview_play_intent = not self._preview_play_intent
-        self._preview_autoplay = self._preview_play_intent
-        if self._pending_player_seek:
-            self._pending_player_seek['autoplay'] = self._preview_play_intent
-        if not self._preview_play_intent:
-            self._player.pause()
-        elif self._player.ready and not self._preview_dirty:
-            self._player.play()
-        else:
+        self._preview.set_playing(not self._preview.play_intent)
+        if self._preview.play_intent and (not self._player.ready or self._preview.dirty):
             self._start_native_preview()
         self._player_state_changed(self._player.state())
-
-    def _request_preview_playback(self):
-        self._preview_play_intent = self._preview_autoplay = True
-        return self._start_native_preview()
 
     def play_preview(self, key):
         if key not in ('before', 'after'):
             return False
-        self._native_requested_key = key
-        self._preview_play_intent = self._preview_autoplay = True
-        if self._pending_player_seek and self._pending_player_seek['phase'] == 'queued':
+        self._preview.select(key)
+        self._preview.set_playing(True)
+        if self._preview.pending_seek and self._preview.pending_seek['phase'] == 'queued':
             self._commit_queued_player_seek()
         result = self._start_native_preview()
         if self._player.ready:
@@ -3251,7 +1895,7 @@ class AudioMixdownDialog(QDialog):
         return result
 
     def preview_busy(self):
-        return bool(self._native_preview_player is not None and self._native_preview_player.loading)
+        return bool(self._player is not None and self._player.loading)
 
     def _current_preview_source_key(self):
         try:
@@ -3276,16 +1920,14 @@ class AudioMixdownDialog(QDialog):
         directory, self._preview_cache_directory = self._preview_cache_directory, None
         _discard_preview_directory(directory)
 
-    def _schedule_preview_refresh(self, *, autoplay=False, immediate=False, message=None):
+    def _schedule_preview_refresh(self, *, immediate=False):
         if not self._ui_ready or self._audition_closing:
             return False
-        self._preview_dirty = True
+        self._preview.dirty = True
         if not self._sources_ready() or not self._support_ready:
-            if self._native_source_key is not None:
+            if self._preview.source_key is not None:
                 self._stop_preview_player()
             return False
-        if autoplay:
-            self._preview_play_intent = self._preview_autoplay = True
         if not self._preview_debounce.isActive() or immediate:
             self._preview_debounce.start(0 if immediate else 60)
         return True
@@ -3293,7 +1935,6 @@ class AudioMixdownDialog(QDialog):
 
     def cancel_preview(self):
         self._preview_debounce.stop()
-        self._preview_pending = False
 
 
     def _set_audition_diagnostic(self, state, text, latency_ms=None):
@@ -3329,7 +1970,7 @@ class AudioMixdownDialog(QDialog):
         self._audition_closing = True
         self._audition_poll_timer.stop()
         self._preview_debounce.stop()
-        service = self._audition_service
+        service = self._player
         if service is None:
             self._audition_cleanup_complete = True
             self._finish_pending_dialog_close()
@@ -3506,21 +2147,28 @@ class AudioMixdownDialog(QDialog):
             self._mix_preset_library = PresetLibrary()
         return self._mix_preset_library
 
+    def _processing_state(self, sample_rate=None):
+        if sample_rate is None:
+            sample_rate = (self.eq_curve.sample_rate()
+                           if hasattr(self, 'eq_curve') else DEFAULT_SAMPLE_RATE)
+        return build_processing_state(
+            sample_rate=sample_rate,
+            eq_enabled=self.eq_enabled.isChecked(),
+            eq_bands=self._eq_bands,
+            compression_enabled=self.compression_enabled.isChecked(),
+            compression_strength=float(self.compression.value()) / 100,
+            reverb_enabled=self.reverb_enabled.isChecked(),
+            reverb_profile=self.reverb_profile.currentData(),
+            reverb_mix=float(self.reverb.value()) / 100,
+            reverb_predelay_ms=self.reverb_predelay.value(),
+            width=self.width_control.value(),
+        )
+
     def _mix_preset_state(self):
-        return {'processing': {
-            'apply_scope': 'vocal_processing_and_output_width',
-            'eq_enabled': self.eq_enabled.isChecked(),
-            'eq_bands': copy.deepcopy(self._eq_bands),
-            'compression_enabled': self.compression_enabled.isChecked(),
-            'compression_strength': float(self.compression.value()) / 100,
-            'reverb_enabled': self.reverb_enabled.isChecked(),
-            'reverb_profile': self.reverb_profile.currentData(),
-            'reverb_mix': float(self.reverb.value()) / 100,
-            'reverb_predelay_ms': self.reverb_predelay.value(),
-            'width': self.width_control.value(),
-        }, 'tracks': [{'pan': track['pan'].value() / 100,
-                       'reverb_send': float(track.get('reverb_send', 1.0))}
-                      for track in self.active_vocal_tracks()]}
+        return {'processing': self._processing_state(),
+                'tracks': [{'pan': track['pan'].value() / 100,
+                            'reverb_send': float(track.get('reverb_send', 1.0))}
+                           for track in self.active_vocal_tracks()]}
 
     def _mix_preset_stamp(self):
         # The protected context never goes into a portable document.
@@ -3917,7 +2565,7 @@ class AudioMixdownDialog(QDialog):
             self.result_title.setText(_tr('参数已变化'))
             self.result_text.setText(_tr('请重新导出；磁盘上此前的成品不会被删除。'))
             _set_role(self.result_title, 'muted')
-        self._schedule_preview_refresh(autoplay=self._preview_play_intent)
+        self._schedule_preview_refresh()
         self._sync_controls()
 
     def output_changed(self, *args):
@@ -4021,43 +2669,22 @@ class AudioMixdownDialog(QDialog):
             raise ValueError('导出文件不能与任一源文件相同。')
         return vocals, instrumental, output
 
-    def _request(self, output, *, preview=False, bypass_processing=False):
+    def _request(self, output, *, bypass_processing=False):
         self._sync_eq_sample_rate_from_instrumental()
-        use_eq = self.eq_enabled.isChecked() and not bypass_processing
-        use_compression = self.compression_enabled.isChecked() and not bypass_processing
-        use_reverb = self.reverb_enabled.isChecked() and not bypass_processing
-        vocals = self._vocal_specs()
-        eq_bands = normalize_eq_bands(self._eq_bands) or []
         sample_rate = (self.eq_curve.sample_rate()
-                       if hasattr(self, 'eq_curve') else None)
-        eq_bands = [
-            project_eq_band(band, sample_rate=sample_rate)
-            for band in eq_bands
-        ]
-        if not use_eq:
-            eq_bands = [dict(band, enabled=False) for band in eq_bands]
-        request = {
-            'vocals': vocals,
-            'instrumental_path': str(self._path('instrumental')),
-            'output_path': str(Path(output).resolve()),
-            'instrumental_db': float(self.instrumental_db.value()),
-            'instrumental_mute': bool(self.instrumental_mute.isChecked()),
-            'instrumental_solo': bool(self.instrumental_solo.isChecked()),
-            'instrumental_pan': float(self.instrumental_pan.value()) / 100.0,
-            'eq_low_cut_hz': float(self.low_cut.value()) if use_eq else 0.0,
-            'eq_presence_db': float(self.presence.value()) if use_eq else 0.0,
-            'eq_bands': eq_bands,
-            'compression_strength': float(self.compression.value()) / 100.0 if use_compression else 0.0,
-            'reverb_mix': float(self.reverb.value()) / 100.0 if use_reverb else 0.0,
-            'reverb_profile': self.reverb_profile.currentData(),
-            'reverb_predelay_ms': (float(self.reverb_predelay.value())
-                                   if use_reverb else 0.0),
-            'width': float(self.width_control.value()),
-        }
-        if preview:
-            request['preview_start_seconds'] = float(self.preview_start.value())
-            request['preview_duration_seconds'] = float(self.preview_duration.value())
-        return request
+                       if hasattr(self, 'eq_curve') else DEFAULT_SAMPLE_RATE)
+        return build_mixdown_request(
+            self._processing_state(sample_rate),
+            vocals=self._vocal_specs(),
+            instrumental_path=self._path('instrumental'),
+            output_path=Path(output).resolve(),
+            instrumental_db=float(self.instrumental_db.value()),
+            instrumental_mute=bool(self.instrumental_mute.isChecked()),
+            instrumental_solo=bool(self.instrumental_solo.isChecked()),
+            instrumental_pan=float(self.instrumental_pan.value()) / 100.0,
+            sample_rate=sample_rate,
+            bypass_processing=bypass_processing,
+        )
 
     def _launch(self, kind, function, with_progress=False):
         if self.busy():
@@ -4077,40 +2704,15 @@ class AudioMixdownDialog(QDialog):
         worker.start()
         return True
 
-    def _signatures_unchanged(self, expected):
-        return all(Path(path).is_file() and _source_signature(path) == signature
-                   for path, signature in expected.items())
-
     def export(self):
+        """Freeze the request here; the worker executes it without reading widgets."""
         if self.busy():
             return
         try:
-            vocals, instrumental, output = self._validated_paths()
-            source_paths = [Path(item['path']).resolve() for item in vocals] + [instrumental]
-            temporary = output.with_name(
-                '.' + output.stem + '.' + uuid.uuid4().hex + '.part.wav')
-            if any(_same_path(temporary, path) for path in (*source_paths, output)):
-                raise ValueError('临时导出路径与输入或目标冲突，已拒绝开始。')
-            request = self._request(temporary)
-            final_request = self._request(output)
-            expected = {path: _source_signature(path) for path in source_paths}
-            vocal_inputs = []
-            for vocal in vocals:
-                path = Path(vocal['path']).resolve()
-                vocal_inputs.append({
-                    'path': str(path), 'bytes': expected[path][0],
-                    'mtime_ns': expected[path][1],
-                })
-            self._export_context = {
-                'parameters': final_request,
-                'source_job': str(self.job) if self.job else None,
-                'inputs': {
-                    'vocals': vocal_inputs,
-                    'instrumental_path': {'path': str(instrumental),
-                                          'bytes': expected[instrumental][0],
-                                          'mtime_ns': expected[instrumental][1]},
-                },
-            }
+            self._validated_paths()
+            final_request = self._request(self._path('output'))
+            plan = _plan_export(final_request, source_job=self.job)
+            self._export_context = plan.receipt_context()
             self._export_receipt = None
         except (OSError, ValueError) as error:
             self.status.setText(_tr('无法开始导出：') + str(error))
@@ -4118,24 +2720,7 @@ class AudioMixdownDialog(QDialog):
             return
 
         def run(check, progress=None):
-            output.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                report = _render_once(request, check, progress=progress)
-                _validate_render(report, temporary)
-                _validate_render_source_hashes(report, source_paths)
-                _check_cancel(check)
-                if not self._signatures_unchanged(expected):
-                    raise ValueError('处理期间源 WAV 发生了变化；没有发布成品，请重新检查输入。')
-                if output.exists():
-                    raise FileExistsError('导出目标在渲染期间出现；没有覆盖该文件。')
-                _publish_without_overwrite(temporary, output)
-                report.update(output_path=str(output), source_files_unchanged=True)
-                return report
-            finally:
-                try:
-                    temporary.unlink()
-                except OSError:
-                    pass
+            return _execute_export(plan, check, progress=progress)
 
         self.result_title.setText(_tr('正在导出'))
         self.result_text.setText(_tr('正在后台处理；关闭窗口会先请求停止。'))
@@ -4148,8 +2733,7 @@ class AudioMixdownDialog(QDialog):
         """Compatibility entry for callers that explicitly request a fresh segment."""
         if self.busy():
             return False
-        self._preview_resume_seconds = self._absolute_player_seconds()
-        return self._schedule_preview_refresh(immediate=True, autoplay=False)
+        return self._schedule_preview_refresh(immediate=True)
 
     def _apply_progress_event(self, event):
         if not isinstance(event, dict):
@@ -4209,8 +2793,6 @@ class AudioMixdownDialog(QDialog):
 
     def _clear_render_meters(self):
         self._shown_edc_key = None
-        self._preview_meter_report = {}
-        self._preview_meter_scope = {}
         for meter in self._channel_meters.values():
             meter.reset()
         self.bus_meter.reset()
@@ -4610,7 +3192,7 @@ class AudioMixdownDialog(QDialog):
             elif self._support_worker is not None:
                 self._support_worker.cancel()
             return
-        if self._audition_service is None:
+        if self._player is None:
             self._audition_cleanup_complete = True
             self._audition_closing = True
             self._audition_poll_timer.stop()
@@ -4631,7 +3213,7 @@ class AudioMixdownDialog(QDialog):
         super().showEvent(event)
         if self._ui_ready and not self._audition_closing:
             self._ensure_audition_service_started()
-            if self._support_ready and self._sources_ready() and self._native_source_key is None:
+            if self._support_ready and self._sources_ready() and self._preview.source_key is None:
                 self._schedule_preview_refresh()
             elif self._player is not None:
                 self._player_position_changed(self._player.position())
@@ -4651,7 +3233,7 @@ class AudioMixdownDialog(QDialog):
             elif self._support_worker is not None:
                 self._support_worker.cancel()
             return
-        if self._audition_service is None:
+        if self._player is None:
             self._audition_cleanup_complete = True
             self._audition_closing = True
             self._audition_poll_timer.stop()

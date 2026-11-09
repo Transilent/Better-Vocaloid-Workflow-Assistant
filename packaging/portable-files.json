@@ -658,10 +658,6 @@
       "source": "src/mixdown_presets.py"
     },
     {
-      "file": "mixer_state.py",
-      "source": "src/mixer_state.py"
-    },
-    {
       "file": "components/pedalboard.json",
       "source": "components/pedalboard.json"
     },
@@ -860,6 +856,30 @@
     {
       "file": "vwa_project_memory.py",
       "source": "src/vwa_project_memory.py"
+    },
+    {
+      "file": "mixdown_export.py",
+      "source": "src/mixdown_export.py"
+    },
+    {
+      "file": "mixdown_runtime.py",
+      "source": "src/mixdown_runtime.py"
+    },
+    {
+      "file": "mixdown_request.py",
+      "source": "src/mixdown_request.py"
+    },
+    {
+      "file": "mixdown_widgets.py",
+      "source": "src/mixdown_widgets.py"
+    },
+    {
+      "file": "mixdown_preview_controller.py",
+      "source": "src/mixdown_preview_controller.py"
+    },
+    {
+      "file": "docs/MixdownArchitecture.zh-CN.md",
+      "source": "docs/MixdownArchitecture.zh-CN.md"
     }
   ]
 }

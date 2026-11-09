@@ -1,11 +1,14 @@
 """UI languages preserve operational keys, private lyrics and saved values."""
 import ast
+import faulthandler
 import json
 import os
 import re
 import sys
 from pathlib import Path
 from unittest.mock import patch
+
+faulthandler.enable()
 
 APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP))
@@ -248,6 +251,7 @@ residuals = {}
 out = APP / 'work/test-results'
 out.mkdir(parents=True, exist_ok=True)
 for language in ('zh-CN', 'ja', 'en'):
+    print('Checking complete window language:', language, flush=True)
     preferences = {**DEFAULTS, 'ui_language': language}
     with patch('ui_preferences.load_appearance', return_value=preferences):
         window = Window()
@@ -369,6 +373,14 @@ for language in ('zh-CN', 'ja', 'en'):
         assert not pending, (language, pending)
     finally:
         window.close()
+        # Window.closeEvent waits for the resident player and component probe.
+        # Deleting an ignored close would destroy their live Qt workers.
+        import time
+        close_deadline = time.monotonic() + 12
+        while window.isVisible() and time.monotonic() < close_deadline:
+            QTest.qWait(10)
+            application.processEvents()
+        assert not window.isVisible(), 'Owned window workers did not finish closing'
         window.deleteLater()
         application.processEvents()
 i18n.set_language('zh-CN')
