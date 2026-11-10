@@ -912,6 +912,26 @@
     {
       "file": "docs/TuningPresets.zh-CN.md",
       "source": "docs/TuningPresets.zh-CN.md"
+    },
+    {
+      "file": "support_info.py",
+      "source": "src/support_info.py"
+    },
+    {
+      "file": "startup_preferences.py",
+      "source": "src/startup_preferences.py"
+    },
+    {
+      "file": "update_notice_ui.py",
+      "source": "src/update_notice_ui.py"
+    },
+    {
+      "file": "onboarding_ui.py",
+      "source": "src/onboarding_ui.py"
+    },
+    {
+      "file": "docs/StartupExperience.zh-CN.md",
+      "source": "docs/StartupExperience.zh-CN.md"
     }
   ]
 }

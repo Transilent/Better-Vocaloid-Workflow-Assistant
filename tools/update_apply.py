@@ -68,6 +68,25 @@ ROOT_FILES.update({'media_preview.py', 'ui_preferences.py', 'ui_components.py', 
 ROOT_FILES.update({'i18n.py', 'strength_control.py', 'assets/i18n/en.json', 'assets/i18n/ja.json', 'assets/i18n/additions.json'})
 ROOT_FILES.update({'docs/InterfaceLanguages.en.md', 'docs/InterfaceLanguages.zh-CN.md',
                    'docs/DownloadSources.en.md', 'docs/DownloadSources.zh-CN.md'})
+# Keep the standalone first-hop helper aware of the current program payload.
+# Retired names above remain valid removal targets for an existing installation.
+ROOT_FILES.update({
+    'mixdown_native_output.py', 'mixdown_realtime_renderer.py', 'mixdown_realtime_session.py',
+    'mixdown_limiter_spec.py', 'mixdown_limiter.py', 'mixdown_realtime_graph.py',
+    'mixdown_realtime_service.py', 'mixdown_realtime_player.py',
+    'src/native/vwa_limiter.c', 'src/native/vwa_limiter.h',
+    'components/ffmpeg-alimiter-LICENSE.txt', 'components/ffmpeg-alimiter-NOTICE.txt',
+    'components/native-audio/vwa_native_output.dll', 'components/native-audio/vwa_limiter.dll',
+    'components/native-audio/native-audio.json', 'components/miniaudio-LICENSE.txt',
+    'docs/RealtimeAudition.zh-CN.md', 'mixdown_workspace.py', 'mixdown_transport.py',
+    'mixdown_sources.py', 'vwa_project_memory.py', 'mixdown_export.py', 'mixdown_runtime.py',
+    'mixdown_request.py', 'mixdown_widgets.py', 'mixdown_preview_controller.py',
+    'docs/MixdownArchitecture.zh-CN.md', 'tuning_execution.py', 'tuning_form_state.py',
+    'tuning_preset_controller.py', 'tuning_preset_documents.py', 'tuning_preset_ui.py',
+    'tuning_project_identity.py', 'tuning_worker.py', 'docs/TuningPresets.zh-CN.md',
+    'support_info.py', 'startup_preferences.py', 'update_notice_ui.py', 'onboarding_ui.py',
+    'docs/StartupExperience.zh-CN.md',
+})
 TOOL_FILES = {'tools/update_apply.py', 'tools/Start-Diagnostics.bat',
               'tools/Check-Dependencies.bat', 'tools/Use-CPU.bat', 'tools/Use-GPU.bat',
               'tools/Install-Runtime.ps1', 'tools/set_device.py'}

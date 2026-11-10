@@ -3,7 +3,7 @@ import os,sys,time,json
 from pathlib import Path
 APP=Path(__file__).resolve().parents[1];sys.path.insert(0,str(APP))
 assert os.environ.get('BVWA_TESTING')=='1' and APP.parent.name=='test-sandboxes','Use tests/run_tests.py'
-from PyQt5.QtCore import QPoint, QRect, Qt
+from PyQt5.QtCore import QEvent, QPoint, QRect, Qt
 from PyQt5.QtWidgets import QApplication,QScrollArea
 from app import Window
 from audio_mixdown_ui import AudioMixdownDialog
@@ -133,6 +133,12 @@ for width,height in ((640,900),(920,1000)):
     dialog.deleteLater();settle()
 window.close()
 wait_until(lambda: not window.isVisible(),'window close timeout')
+settle()
+# Retire the full widget tree while QApplication still owns the Qt runtime.
+# Repeated stylesheet/viewport checks must not leave native widgets for Python
+# interpreter teardown, where their destruction order is unspecified.
+window.deleteLater()
+application.sendPostedEvents(None,QEvent.DeferredDelete)
 settle()
 (out/'frontend-layout-measurements.json').write_text(json.dumps(measurements,ensure_ascii=False,indent=2),encoding='utf-8')
 print('PASS: eight real pages, six normal/wide viewports, two themes/materials, 100/115/130% UI scale, zero full-screen mixdown overflow with ready components, scroll-only narrow dialogs, no page horizontal overflow; offscreen only')

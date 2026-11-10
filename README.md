@@ -6,6 +6,10 @@
 
 VWA is a Windows desktop assistant for preparing singing-synthesis projects, tuning SVP projects, assembling videos and preparing uploads.
 
+**User community: QQ group 490619616.** Join for help and discussion.
+
+Current development builds include a skippable first-run tour and startup update notices with release notes and snooze choices. The QQ group is also available in Settings. See the [startup guide (Chinese)](docs/StartupExperience.zh-CN.md). These source changes are separate from the published 1.1.0 packages.
+
 ## Features
 
 | Workflow | What it does |
@@ -19,7 +23,7 @@ VWA is a Windows desktop assistant for preparing singing-synthesis projects, tun
 
 Tuning offers preservation of existing expression, reference-vocal mapping, measured voicebank calibration, transfer of existing parameters, time-region style editing, style autosave and an independent Chinese-opera technique. Reference mapping and the Gentle, Sad and Bright & Cheerful styles are experimental drafts; synthesize and audition them with the target voicebank. Calibration requires a matching score and voicebank setup, with trial audio exported from SV by the user. Voice synthesis takes place in your singing editor.
 
-[Simple mixing](docs/SimpleMixingComponent.en.md) works on up to three rendered vocal WAVs and one accompaniment. Its A/B preview can continue across short rendered segments and refresh after edits while preserving playback when possible. When an audio output device fails, VWA retries once with its compatible built-in player and, if needed, offers the current segment in the system player. The handoff and buffered segments may differ briefly from a full export; check the complete song on your own voicebank and audio devices. Source files are not overwritten.
+[Simple mixing](docs/SimpleMixingComponent.en.md) uses one native continuous PCM preview with a shared playback session across pages and minimization. Track meters, EQ spectrum, gain reduction estimates and reverb readings use actual preview data. Device failures pause playback and require an explicit retry. Check the complete song on the intended voicebank and audio devices. Source files are preserved.
 
 VWA also provides task history and recovery, saved presets, optional model installation, and SRT/WebVTT subtitle export. The interface supports Simplified Chinese, Japanese and English, with light/dark themes and interface scaling. The MCP technical preview is optional, installed separately, and does not add a general command executor.
 

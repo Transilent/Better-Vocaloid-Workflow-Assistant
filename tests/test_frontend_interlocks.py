@@ -36,8 +36,13 @@ with tempfile.TemporaryDirectory(dir=APP/'work',prefix='preview-guards-') as fol
     assert active_task_operations(owner,other)==()
     assert '视频预览' in StoragePage.other_operations(SimpleNamespace(owner=owner))
     assert UpdatesPage.active_operations(SimpleNamespace(owner=owner,busy=lambda:False))
-    event=Mock();Window.closeEvent(SimpleNamespace(video_mixdown=video),event)
+    # Exercise the existing cancellation branch through the new close wrapper.
+    closing=SimpleNamespace(video_mixdown=video,onboarding=None)
+    closing._close_workspace=lambda event:Window._close_workspace(closing,event)
+    event=Mock();event.isAccepted.return_value=False
+    Window.closeEvent(closing,event)
     event.ignore.assert_called_once();video.cancel_preview.assert_called_once()
+    assert closing._startup_closing is False
     video.preview_busy=lambda:False;video.preview_inputs={}
     assert active_task_operations(owner,job)==()
     assert '视频预览' not in StoragePage.other_operations(SimpleNamespace(owner=owner))

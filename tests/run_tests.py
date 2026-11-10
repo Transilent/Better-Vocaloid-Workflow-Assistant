@@ -67,6 +67,7 @@ names = ('test_mixdown_preset_documents.py', 'test_mixdown_preset_ui.py', 'test_
 names = ('test_mixdown_live_meters.py',) + names_v110 + names
 # Tuning preset and local project binding contracts.
 names = ('test_tuning_preset_integration.py', 'test_tuning_preset_documents.py', 'test_tuning_preset_ui.py', 'test_tuning_preset_workflow.py', 'test_tuning_project_identity.py') + names
+names = ('test_startup_preferences.py', 'test_update_notice_ui.py', 'test_onboarding_ui.py', 'test_startup_experience.py') + names
 if selected - set(names):
     raise ValueError('Unknown selected tests: ' + ', '.join(sorted(selected - set(names))))
 print('Preparing isolated application; installed user state will not be changed.', flush=True)

@@ -2048,6 +2048,15 @@
     "tests/test_tuning_preset_workflow.py",
     "tests/test_tuning_project_identity.py",
     "docs/TuningPresets.zh-CN.md",
-    "tests/test_tuning_preset_integration.py"
+    "tests/test_tuning_preset_integration.py",
+    "src/support_info.py",
+    "src/startup_preferences.py",
+    "src/update_notice_ui.py",
+    "src/onboarding_ui.py",
+    "tests/test_startup_preferences.py",
+    "tests/test_update_notice_ui.py",
+    "tests/test_onboarding_ui.py",
+    "tests/test_startup_experience.py",
+    "docs/StartupExperience.zh-CN.md"
   ]
 }

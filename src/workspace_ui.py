@@ -437,6 +437,8 @@ def build_window(window):
     from ui_preferences import AppearancePanel
     window.appearance_panel=AppearancePanel(window)
     window.updates.body_layout.insertWidget(0,window.appearance_panel)
+    window.updates.body_layout.removeWidget(window.updates.community_card)
+    window.updates.body_layout.insertWidget(0,window.updates.community_card)
     window.navigation.attach('storage')
     window.navigation.attach('subtitles')
     from video_mixdown_ui import VideoMixdownPage

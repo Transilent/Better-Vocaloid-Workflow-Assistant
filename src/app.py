@@ -76,6 +76,9 @@ class Window(QWidget):
         self.job = None
         self.stem_fields = {}
         self.reference_metadata = {'local':None, 'netease':None}
+        self.onboarding=None
+        self._first_run_checked=False
+        self._startup_closing=False
         self.setObjectName('workspace')
         self.setWindowTitle(_tr('术力口工作流助手 · VWA'))
         from workspace_ui import build_window
@@ -83,6 +86,42 @@ class Window(QWidget):
         self.timer = QTimer(self)
         self.timer.setInterval(700)
         self.timer.timeout.connect(self.refresh_progress)
+
+    def showEvent(self,event):
+        super().showEvent(event)
+        if not self._first_run_checked:
+            self._first_run_checked=True
+            if not environment_value('VWA_TESTING'):
+                QTimer.singleShot(350,self.start_tutorial)
+
+    def start_tutorial(self,force=False):
+        if self._startup_closing:return False
+        if self.onboarding is not None and self.onboarding.active:return False
+        from startup_preferences import load_preferences,tour_due
+        if not force and not tour_due(load_preferences(ROOT)):return False
+        from task_contract_ui import active_ui_operations
+        active=active_ui_operations(self)
+        if self.updates.busy() and not self.updates._downloading:
+            active=[name for name in active if name!='更新下载']
+        if active or QApplication.activeModalWidget() is not None:
+            if force:self.updates.message.setText(_tr('请先结束当前操作或关闭弹窗，再查看入门教程。'))
+            elif self.isVisible():QTimer.singleShot(500,self.start_tutorial)
+            return False
+        from onboarding_ui import OnboardingTour
+        tour=OnboardingTour(self);self.onboarding=tour
+        tour.finished.connect(lambda outcome:self._tutorial_finished(tour,outcome))
+        tour.start()
+        return True
+
+    def _tutorial_finished(self,tour,outcome):
+        from startup_preferences import finish_tour
+        if outcome in ('completed','skipped'):
+            try:finish_tour(ROOT,outcome)
+            except (OSError,ValueError) as error:
+                self.updates.message.setText(_tr('入门教程状态未保存：')+str(error))
+        if self.onboarding is tour:self.onboarding=None
+        tour.deleteLater()
+        if not self._startup_closing:self.updates.maybe_show_notice()
 
     def navigate(self, destination):
         spec, focus_step = self.navigation.resolve(destination)
@@ -563,6 +602,16 @@ class Window(QWidget):
         os.startfile(str(destination))
 
     def closeEvent(self, event):
+        self._startup_closing=True
+        if self.onboarding is not None:self.onboarding.dismiss()
+        if hasattr(self,'updates'):self.updates.dismiss_startup_notice()
+        self._close_workspace(event)
+        if event.isAccepted():
+            self.updates.stop_watching()
+        else:
+            self._startup_closing=False
+
+    def _close_workspace(self,event):
         mixer = getattr(self, 'audio_mixdown', None)
         if mixer and not mixer.shutdown():
             event.ignore()

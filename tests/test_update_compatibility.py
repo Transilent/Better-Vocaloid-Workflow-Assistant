@@ -39,9 +39,10 @@ old_helper = module('bvwa_released_041_installer', APP / client['fixtures']['too
 assert set(client['ROOT_FILES']) == old_helper.ROOT_FILES
 assert set(client['TOOL_FILES']) == old_helper.TOOL_FILES
 new_names = ('pitch_accuracy.py', 'transcription_quality.py', 'vocal_timbre.py', 'components/world-LICENSE.txt',
-             'audio_mixdown_audition.py', 'mixdown_audition_service.py',
+             'mixdown_native_output.py', 'mixdown_realtime_renderer.py', 'mixdown_realtime_session.py',
              'mixdown_control_panel.py', 'mixdown_eq_curve.py', 'mixdown_live_meters.py',
-             'mixdown_player.py', 'mixdown_presets.py', 'mixer_state.py')
+             'mixdown_presets.py', 'onboarding_ui.py', 'update_notice_ui.py',
+             'startup_preferences.py', 'support_info.py')
 for name in new_names:
     try:
         require_compatible_clients([record(name, b'fixture')])
@@ -74,6 +75,7 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='legacy-client-') as f
              if name != 'config.json' and not name.startswith(('dependencies/', 'models/', 'vendor/'))}
     files.update({'version.json': json.dumps({'version': version, 'channel': 'stable'}).encode(),
                   'dependencies/manifest.json': manifest})
+    assert set(new_names) <= files.keys(), 'Compatibility probes must name the current program payload'
     runtime_name = 'BVWA-Runtime-Upgrade-v0.4.1.zip'
     runtime = assets / runtime_name
     records = [record(name, data) for name, data in files.items()]
@@ -139,6 +141,8 @@ print('Narrow first-hop GUI ready; no network requested')
     assert installed.apply_update(second)['state'] == 'passed'
     assert all((root / name).read_bytes() == data for name, data in kept.items())
     assert all((root / name).read_bytes() == files[name] for name in new_names)
+    assert not any((root / name).exists() for name in
+                   ('audio_mixdown_audition.py', 'mixdown_audition_service.py', 'mixdown_player.py', 'mixdown_stream_player.py'))
     assert (root / 'dependencies/runtime/keep.bin').read_bytes() == marker
     result = subprocess.run([sys.executable, '-B', '-u', str(root / 'launch.py'), '--smoke-test'],
                             cwd=root, env=dict(os.environ, BVWA_TESTING='1', QT_QPA_PLATFORM='offscreen'),
