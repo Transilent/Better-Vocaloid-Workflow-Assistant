@@ -8,6 +8,8 @@ VWA は、楽曲の準備、SVP の調声、動画合成、投稿用資料の作
 
 **ユーザーコミュニティ：QQ グループ 490619616。** 使い方や問題、ご意見の共有にご利用ください。
 
+[不具合・機能提案・使い方の質問](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues/new/choose) · [貢献ガイド（English）](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/blob/main/CONTRIBUTING.md)
+
 現在の開発版には、スキップ可能な初回ガイドと、更新内容・再通知時期を選べる起動時の更新通知があります。設定からも QQ グループ番号をコピーできます。[起動ガイド（中国語）](docs/StartupExperience.zh-CN.md)をご覧ください。これらのソース変更は公開済み 1.1.0 パッケージとは別です。
 
 ## 主な機能
@@ -73,7 +75,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Merge-PortableParts.ps1
 
 ## ドキュメントとお問い合わせ
 
-[利用ガイド（中文）](docs/UserGuide.zh-CN.md) · [調声ガイド（English）](docs/TuningWorkflow.en.md) · [ポータブル版ガイド（English）](docs/Portable.en.md) · [MCP ツールリファレンス（中文）](docs/AgentMCPStandard.zh-CN.md) · [変更履歴](CHANGELOG.md) · [不具合の報告](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues)
+[利用ガイド（中文）](docs/UserGuide.zh-CN.md) · [調声ガイド（English）](docs/TuningWorkflow.en.md) · [ポータブル版ガイド（English）](docs/Portable.en.md) · [MCP ツールリファレンス（中文）](docs/AgentMCPStandard.zh-CN.md) · [変更履歴](CHANGELOG.md) · [不具合の報告](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues/new/choose)
 
 ## 謝辞
 

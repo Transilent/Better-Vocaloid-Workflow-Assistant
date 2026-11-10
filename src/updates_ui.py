@@ -11,7 +11,7 @@ from desktop_theme import button, card, label, page, scroll_content
 from ui_components import choice
 import updater
 from task_contract_ui import active_ui_operations
-from support_info import QQ_GROUP
+from support_info import QQ_GROUP, FEEDBACK_URL
 import startup_preferences
 
 
@@ -122,6 +122,9 @@ class UpdatesPage(QWidget):
         self.replay_tour_button=button(_tr('重新查看入门教程'),self.replay_tutorial)
         community_actions.addWidget(self.copy_group_button);community_actions.addWidget(self.replay_tour_button)
         community.addLayout(community_actions)
+        self.feedback_button=button(_tr('GitHub 反馈与建议'),self.open_feedback)
+        self.feedback_button.setObjectName('githubFeedbackButton')
+        community.addWidget(self.feedback_button)
         body_layout.addWidget(self.community_card)
 
         library_card, library_body = card(
@@ -217,6 +220,10 @@ class UpdatesPage(QWidget):
     def replay_tutorial(self):
         start=getattr(self.owner,'start_tutorial',None)
         if callable(start):start(force=True)
+
+    def open_feedback(self):
+        import webbrowser
+        webbrowser.open(FEEDBACK_URL)
 
     def reset_update_reminder(self):
         try:startup_preferences.reset_reminder(ROOT)

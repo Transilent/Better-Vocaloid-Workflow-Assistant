@@ -114,6 +114,10 @@ assert settings.source.findData('gh-proxy') >= 0 and settings.source.findData('g
 assert settings.source.findData('hf-mirror') >= 0
 assert len(settings.workers_choice.buttons) == 4
 assert hasattr(settings, 'body_layout')
+with patch('webbrowser.open') as open_browser:
+    settings.feedback_button.click()
+    open_browser.assert_called_once_with(updates_ui.FEEDBACK_URL)
+assert updates_ui.FEEDBACK_URL == 'https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues/new/choose'
 settings.close()
 settings_owner.close()
 

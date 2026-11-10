@@ -8,6 +8,8 @@ VWA 是面向 Windows 的歌声合成工作流助手，提供歌曲准备、SVP 
 
 **用户交流群：QQ群 490619616。** 欢迎交流使用体验、问题与建议。
 
+[问题反馈与建议](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues/new/choose) · [Issue 与 PR 贡献规范](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/blob/main/CONTRIBUTING.zh-CN.md)
+
 当前开发版提供可跳过的首次使用教程，以及包含更新说明和延后选项的启动更新提醒；设置中也可复制群号。详见[启动提醒与教程说明](docs/StartupExperience.zh-CN.md)。源码改动与已发布的 1.1.0 安装包分开。
 
 ## 功能
@@ -73,7 +75,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Merge-PortableParts.ps1
 
 ## 文档与反馈
 
-[使用指南](docs/UserGuide.zh-CN.md) · [调音说明](docs/TuningWorkflow.zh-CN.md) · [便携版说明](docs/Portable.zh-CN.md) · [MCP 12 工具说明](docs/AgentMCPStandard.zh-CN.md) · [更新记录](CHANGELOG.md) · [问题反馈](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues)
+[使用指南](docs/UserGuide.zh-CN.md) · [调音说明](docs/TuningWorkflow.zh-CN.md) · [便携版说明](docs/Portable.zh-CN.md) · [MCP 12 工具说明](docs/AgentMCPStandard.zh-CN.md) · [更新记录](CHANGELOG.md) · [问题反馈](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues/new/choose)
 
 ## 项目致谢
 

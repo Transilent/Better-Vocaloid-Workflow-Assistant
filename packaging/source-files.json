@@ -2057,6 +2057,14 @@
     "tests/test_update_notice_ui.py",
     "tests/test_onboarding_ui.py",
     "tests/test_startup_experience.py",
-    "docs/StartupExperience.zh-CN.md"
+    "docs/StartupExperience.zh-CN.md",
+    ".github/ISSUE_TEMPLATE/01-bug-report.yml",
+    ".github/ISSUE_TEMPLATE/02-feature-request.yml",
+    ".github/ISSUE_TEMPLATE/03-help.yml",
+    ".github/ISSUE_TEMPLATE/config.yml",
+    ".github/pull_request_template.md",
+    ".github/SUPPORT.md",
+    "CONTRIBUTING.zh-CN.md",
+    "README.ja.md"
   ]
 }

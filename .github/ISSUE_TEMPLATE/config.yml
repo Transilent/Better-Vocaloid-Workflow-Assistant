@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "使用指南 / User guide"
+    url: "https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/blob/main/docs/UserGuide.zh-CN.md"
+    about: "先查看工作流、安装和使用说明 / Read the workflow and usage guide."
+  - name: "QQ群 490619616 与反馈说明 / Community and support"
+    url: "https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/blob/main/.github/SUPPORT.md#community"
+    about: "群号、反馈范围和日志提交方法 / Community, feedback and log guidance."

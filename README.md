@@ -8,6 +8,8 @@ VWA is a Windows desktop assistant for preparing singing-synthesis projects, tun
 
 **User community: QQ group 490619616.** Join for help and discussion.
 
+[Feedback and suggestions](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues/new/choose) · [Contribution guide](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/blob/main/CONTRIBUTING.md)
+
 Current development builds include a skippable first-run tour and startup update notices with release notes and snooze choices. The QQ group is also available in Settings. See the [startup guide (Chinese)](docs/StartupExperience.zh-CN.md). These source changes are separate from the published 1.1.0 packages.
 
 ## Features
@@ -73,7 +75,7 @@ Do not unpack an update archive over an installation; use only the update offere
 
 ## Documentation and support
 
-[User guide](docs/UserGuide.en.md) · [Tuning guide](docs/TuningWorkflow.en.md) · [Portable guide](docs/Portable.en.md) · [MCP tool reference (Chinese)](docs/AgentMCPStandard.zh-CN.md) · [Changelog](CHANGELOG.md) · [Report an issue](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues)
+[User guide](docs/UserGuide.en.md) · [Tuning guide](docs/TuningWorkflow.en.md) · [Portable guide](docs/Portable.en.md) · [MCP tool reference (Chinese)](docs/AgentMCPStandard.zh-CN.md) · [Changelog](CHANGELOG.md) · [Report an issue](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues/new/choose)
 
 ## Acknowledgements
 

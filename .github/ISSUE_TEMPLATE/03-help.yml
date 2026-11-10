@@ -1,0 +1,40 @@
+name: "使用求助 / Help"
+description: "询问用法、配置或难以判断的问题 / Ask for usage help."
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        中文、English、日本語均可。不确定是否是 Bug 时也可先在这里求助。
+        Use this form if you need help or are unsure whether something is a bug.
+        用户 QQ 群：**490619616**。请勿在公开 Issue 中留下私人联系方式或账号资料。
+        [先看反馈与日志说明 / Support guide](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/blob/main/.github/SUPPORT.md)
+  - type: input
+    id: version
+    attributes:
+      label: "VWA 版本与安装方式 / Version and installation"
+      placeholder: "例如 1.1.0 Full；不知道版本也可以求助 / Version and package, if known"
+    validations:
+      required: false
+  - type: textarea
+    id: question
+    attributes:
+      label: "想完成什么、在哪一步遇到困难？ / Goal and question"
+      description: "请附所在页面、相关选项和看到的提示。 / Include the page, relevant options and any message shown."
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: "已尝试的方法与补充 / What you tried"
+      description: "可选。正文及附件公开可见，只提交检查过的截图或简短日志。 / Optional; share only redacted evidence."
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: "提交前检查 / Before submitting"
+      options:
+        - label: "我已查看使用说明、搜索相关 Issues，并检查所填内容可以公开。 / I checked the guide, searched issues and reviewed this post for private data."
+          required: true

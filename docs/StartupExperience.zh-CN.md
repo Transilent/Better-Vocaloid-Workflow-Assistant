@@ -15,4 +15,4 @@
 
 教程与提醒状态保存在本机 `config.json` 的 `startup_experience` 中，独立于可清理缓存。旧版 `startup_auto_update` 自动下载设置已移除；更新来源、检查开关与现有任务、预设配置保留。已有用户明确关闭启动检查时继续尊重该设置。
 
-本轮没有新增自动日志上传。反馈与日志收集渠道另作调研；向公开平台贴日志前应检查账号信息、路径及作品内容。
+设置页的“GitHub 反馈与建议”会打开问题反馈、功能建议和使用求助的选择页，不收集或上传日志。提交前请检查正文、截图和日志，公开 Issue 的内容及附件可被他人访问。详见[反馈与日志说明](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/blob/main/.github/SUPPORT.md)。

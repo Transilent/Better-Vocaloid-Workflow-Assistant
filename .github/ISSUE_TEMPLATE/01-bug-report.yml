@@ -1,0 +1,102 @@
+name: "问题反馈 / Bug report"
+description: "报告错误、崩溃、卡顿或与预期不符的行为 / Report a defect."
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        中文、English、日本語均可。一个 Issue 描述一个问题，请用具体症状补全标题。
+        Describe one problem and use a specific title. Search existing issues first.
+        **内容和附件公开可见。不要上传账号、Cookie、令牌、完整配置或私人作品。**
+        Posts and attachments are public. Check and redact them before submitting.
+        [反馈说明 / Support guide](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/blob/main/.github/SUPPORT.md)
+  - type: input
+    id: version
+    attributes:
+      label: "VWA 版本 / Version"
+      description: "填写版本号；开发版附提交 SHA。不确定可写“不确定 / unknown”。"
+      placeholder: "1.1.0 / development commit abc1234"
+    validations:
+      required: true
+  - type: dropdown
+    id: distribution
+    attributes:
+      label: "安装来源 / Installation"
+      options:
+        - "官方完整包 / Official Full"
+        - "官方 JPN 包 / Official JPN"
+        - "从旧版更新 / Updated installation"
+        - "源码开发版 / Source checkout"
+        - "第三方打包 / Third-party package"
+        - "不确定 / Unknown"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: "发生位置 / Area"
+      options:
+        - "启动、安装或更新 / Startup, installation or updates"
+        - "准备、分离或转录 / Preparation, separation or transcription"
+        - "调音与工程 / Tuning and projects"
+        - "简易混音与试听 / Mixing and playback"
+        - "视频或字幕 / Video or subtitles"
+        - "发布 / Publishing"
+        - "预设与风格 / Presets and styles"
+        - "Agent / MCP"
+        - "界面、设置或其他 / Interface, settings or other"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: "Windows 版本 / Windows version"
+      placeholder: "Windows 11 24H2；不确定可写 unknown"
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: "预期与实际表现 / Expected and actual behavior"
+      placeholder: |
+        预期 / Expected:
+        实际 / Actual:
+        报错原文（如有）/ Error text, if any:
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: "复现步骤与频率 / Steps and frequency"
+      description: "无法稳定复现也可报告：写明之前的操作、出现频率和最近正常的版本。"
+      placeholder: |
+        1. 打开哪个页面、选择哪些选项 / Page and selected options
+        2. 执行什么操作 / Action
+        3. 出现什么结果 / Result
+        频率 / Frequency:
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: "相关环境 / Relevant environment"
+      description: "仅填写相关信息：CPU/GPU、内存、音频设备/采样率、模型或输入格式。卡顿请补充素材时长、触发操作和等待时间。不要贴完整配置。"
+    validations:
+      required: false
+  - type: textarea
+    id: evidence
+    attributes:
+      label: "已检查的日志、截图或最小示例 / Redacted evidence"
+      description: "可选。贴简短报错片段或拖入截图/ZIP，建议附件不超过 20 MB；不会自动收集。不要附原始歌曲、分轨、工程或账号目录。"
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: "提交前检查 / Before submitting"
+      options:
+        - label: "我已搜索现有 Issues；如有相关问题，已在上方引用。 / I searched existing issues and linked related reports."
+          required: true
+        - label: "我已检查正文和附件，不含账号、Cookie、令牌、完整配置或未经允许公开的作品。 / I checked the post and attachments for private data."
+          required: true

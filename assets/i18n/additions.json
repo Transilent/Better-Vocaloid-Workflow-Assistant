@@ -1388,7 +1388,8 @@
     "请先结束当前操作或关闭弹窗，再查看入门教程。": "Finish the current operation or close the open dialog before viewing the getting started guide.",
     "入门教程状态未保存：": "Could not save getting started guide status: ",
     "无法写入剪贴板，请选择上方群号手动复制。": "Cannot write to the clipboard. Select the group number above to copy it manually.",
-    "打开 SVP 工程，选择演唱轨与参数来源，预览风格与参数变化后另存新工程。歌声合成和完整听感确认在对应编辑器中完成。": "Open an SVP project, choose vocal tracks and a parameter source, preview style and parameter changes, then save a new project. Synthesize vocals and check the complete result in the corresponding singing editor."
+    "打开 SVP 工程，选择演唱轨与参数来源，预览风格与参数变化后另存新工程。歌声合成和完整听感确认在对应编辑器中完成。": "Open an SVP project, choose vocal tracks and a parameter source, preview style and parameter changes, then save a new project. Synthesize vocals and check the complete result in the corresponding singing editor.",
+    "GitHub 反馈与建议": "GitHub feedback and suggestions"
   },
   "ja": {
     "打开 B站填写": "Bilibiliの投稿フォームを開く",
@@ -2779,6 +2780,7 @@
     "请先结束当前操作或关闭弹窗，再查看入门教程。": "現在の操作を終えるか開いているダイアログを閉じてから、入門ガイドを表示してください。",
     "入门教程状态未保存：": "入門ガイドの状態を保存できません：",
     "无法写入剪贴板，请选择上方群号手动复制。": "クリップボードに書き込めません。上のグループ番号を選択して手動でコピーしてください。",
-    "打开 SVP 工程，选择演唱轨与参数来源，预览风格与参数变化后另存新工程。歌声合成和完整听感确认在对应编辑器中完成。": "SVP プロジェクトを開き、歌唱トラックとパラメータの取得元を選択します。スタイルやパラメータの変更を確認してから別のプロジェクトに保存してください。歌声の合成と曲全体の試聴は対応するエディターで行います。"
+    "打开 SVP 工程，选择演唱轨与参数来源，预览风格与参数变化后另存新工程。歌声合成和完整听感确认在对应编辑器中完成。": "SVP プロジェクトを開き、歌唱トラックとパラメータの取得元を選択します。スタイルやパラメータの変更を確認してから別のプロジェクトに保存してください。歌声の合成と曲全体の試聴は対応するエディターで行います。",
+    "GitHub 反馈与建议": "GitHub で不具合報告・提案"
   }
 }
