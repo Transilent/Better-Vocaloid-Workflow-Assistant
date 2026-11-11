@@ -591,15 +591,48 @@ class QuickTuning(QObject):
         try:
             time_range_settings((self._start, self._end))
             rows = [self.project.region(track, self._start, self._end, self._brush()) for track in self._targets]
-            if not any(rows):
+            applied = [row for row in rows if row is not None]
+            if not applied:
                 raise ValueError('选区内没有所选演唱轨的音符。')
-            updated = self._regions + [row for row in rows if row]
+            updated = self._regions + applied
             self.project.verify_regions(updated)
             self._regions = updated
+            self._start = min(float(row['recipe']['start']) for row in applied)
+            self._end = max(float(row['recipe']['end']) for row in applied)
             self._preset = None
             self.regionsChanged.emit()
             self._dirty_draft()
-            self.message = tr('已添加 {count} 个逐轨片段。').format(count=sum(row is not None for row in rows))
+            self.message = tr('已添加 {count} 个逐轨片段。').format(count=len(applied))
+            self.state = 'ready'
+            self.changed.emit()
+        except (ValueError, OSError) as error:
+            self._error(error)
+
+    @Slot(str)
+    def updateRegion(self, identity):
+        if not self.project or self.worker.kind or self._legacy:
+            return
+        try:
+            current = next((row for row in self._regions if row['id'] == identity), None)
+            if current is None:
+                raise ValueError('要更新的逐轨片段已不存在。')
+            track = current['track_id']
+            if track not in self.project.editable:
+                raise ValueError('该片段轨道当前不可编辑。')
+            time_range_settings((self._start, self._end))
+            replacement = self.project.region(track, self._start, self._end, self._brush(), identity=identity)
+            if replacement is None:
+                raise ValueError('当前选区内没有此片段轨道可应用的音符。')
+            updated = [replacement if row['id'] == identity else row for row in self._regions]
+            self.project.verify_regions(updated)
+            self._regions = updated
+            self._start = float(replacement['recipe']['start'])
+            self._end = float(replacement['recipe']['end'])
+            self._preset = None
+            self.regionsChanged.emit()
+            self._dirty_draft()
+            name = self.project.tracks[track]['name']
+            self.message = tr('已用当前选区和风格更新“{name}”的逐轨片段。').format(name=name)
             self.state = 'ready'
             self.changed.emit()
         except (ValueError, OSError) as error:

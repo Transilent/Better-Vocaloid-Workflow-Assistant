@@ -26,10 +26,10 @@ import video_mixdown
 from common import ROOT, file_hash
 from i18n import tr
 
-_VIDEO_KINDS = frozenset(('video-analyze', 'video-render', 'video-register',
+_VIDEO_KINDS = frozenset(('video-analyze', 'video-adopt', 'video-render', 'video-register',
                           'video-preview', 'video-publish'))
 _ACTIVE_STATES = {'video-analyze': 'analyzing', 'video-render': 'rendering',
-                  'video-preview': 'previewing'}
+                  'video-preview': 'previewing', 'video-adopt': 'adopting'}
 _OWNED_JOB = re.compile(r'task-[0-9a-f]{32}\Z')
 
 
@@ -102,6 +102,23 @@ def _signature(path: Path) -> tuple[int, int] | None:
         return stat.st_size, stat.st_mtime_ns
     except OSError:
         return None
+
+
+def _same_alignment_inputs(expected: Any, current: dict[str, dict[str, str]]) -> bool:
+    """Check the analysis' immutable input records against current files."""
+    if not isinstance(expected, dict):
+        return False
+    for role, record in current.items():
+        saved = expected.get(role)
+        if not isinstance(saved, dict):
+            return False
+        try:
+            same_path = Path(saved.get('path', '')).resolve() == Path(record['path']).resolve()
+        except (OSError, TypeError, ValueError):
+            return False
+        if not same_path or saved.get('sha256') != record['sha256']:
+            return False
+    return True
 
 
 class QuickVideo(QObject):
@@ -183,6 +200,7 @@ class QuickVideo(QObject):
             'canPublish': can_publish,
             'canCancel': bool((self._worker.kind or self._active_kind) in _VIDEO_KINDS),
             'alignmentSummary': self._alignment_summary(),
+            'canAdoptSuggestion': self._can_adopt_suggestion(),
             'resultSha256': self._result_sha256,
             'receipt': deepcopy(self._result_receipt) if self._result_receipt else {},
         }
@@ -223,6 +241,25 @@ class QuickVideo(QObject):
         if method:
             text += f' · {method}'
         return text
+
+    def _alignment_offset(self) -> float | None:
+        report = self._alignment
+        if (not isinstance(report, dict) or report.get('accepted') is not True
+                or report.get('method') != video_mixdown.ALIGNMENT_METHOD):
+            return None
+        try:
+            offset = float(report.get('offset_seconds'))
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(offset) or abs(offset) > 3600:
+            return None
+        return offset
+
+    def _can_adopt_suggestion(self) -> bool:
+        return bool(not self._worker.kind and not self._active_kind and self._auto_align
+                    and self._source_video and Path(self._source_video).is_file()
+                    and self._mixdown and Path(self._mixdown).is_file()
+                    and self._alignment_offset() is not None)
 
     def _media_token(self) -> tuple[Any, ...]:
         return (
@@ -556,6 +593,52 @@ class QuickVideo(QObject):
         if not self._start('video-analyze', '正在冻结任务输入并分析音频对齐…', work, finish):
             self._discard_owned_job(job)
 
+    @Slot()
+    def adoptSuggestion(self):
+        if self._closed or self._worker.kind or self._active_kind:
+            self._notice('已有后台操作正在运行。')
+            return
+        if not self._auto_align:
+            self._notice('当前已经是手动偏移，无需再次采用建议。')
+            return
+        report = deepcopy(self._alignment)
+        offset = self._alignment_offset()
+        if offset is None:
+            self._notice('当前没有可用且可靠的对齐建议，请重新分析或手动填写偏移。')
+            return
+        try:
+            source = Path(self._source_video).expanduser().resolve()
+            mix = Path(self._mixdown).expanduser().resolve()
+        except (OSError, TypeError, ValueError):
+            self._notice('当前原视频或 Mixdown 路径无效，请重新选择。')
+            return
+        token = self._media_token()
+        expected_inputs = report.get('input_fingerprints')
+
+        def work(stop, send):
+            send('正在校验建议偏移仍对应当前原视频与 Mixdown…')
+            current = {}
+            for role, path in (('video', source), ('mixdown', mix)):
+                _stop_check(stop)
+                if not path.is_file():
+                    raise ValueError('分析所对应的输入文件已不存在。')
+                current[role] = {'path': str(path), 'sha256': file_hash(path, check=stop.is_set)}
+            _stop_check(stop)
+            if not _same_alignment_inputs(expected_inputs, current):
+                raise ValueError('对齐分析已过期：原视频或 Mixdown 内容已经变化，请重新分析。')
+            return {'offset': offset, 'token': token, 'alignment': report}
+
+        def finish(value):
+            if value['token'] != self._media_token() or self._alignment != value['alignment']:
+                raise ValueError('采用建议前输入或分析结果已经变化，请重新分析。')
+            self._auto_align = False
+            self._offset = float(value['offset'])
+            self._state = 'ready'
+            self._message = (f'已显式采用建议偏移 {self._offset:+.3f} 秒，并切换为手动偏移；'
+                             '合成时会再次使用当前输入校验。')
+
+        self._start('video-adopt', '正在核验并采用建议偏移…', work, finish)
+
     def _receipt_from_report(self, report, job, source, mix, used_mix, used_source, output, options):
         if not isinstance(report, dict):
             raise ValueError('视频合成后端没有返回有效回执。')
@@ -817,6 +900,25 @@ class QuickVideo(QObject):
                              f' SHA-256：{value["sha256"]}')
 
         self._start('video-register', '正在重新核验并登记视频成品…', work, finish)
+
+    def _open_input(self, value: str, label: str):
+        try:
+            path = Path(value).expanduser().resolve()
+        except (OSError, TypeError, ValueError):
+            path = None
+        if path is None or not path.is_file():
+            self._notice(f'当前没有可打开的{label}。')
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            self._notice(f'系统无法打开当前{label}。')
+
+    @Slot()
+    def openSourceVideo(self):
+        self._open_input(self._source_video, '原视频')
+
+    @Slot()
+    def openMixdown(self):
+        self._open_input(self._mixdown, 'Mixdown')
 
     @Slot()
     def openResult(self):

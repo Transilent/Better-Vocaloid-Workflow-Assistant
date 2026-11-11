@@ -23,6 +23,7 @@ ScrollView {
     readonly property bool normalize: page.boolValue(view.normalize, false)
     readonly property bool resultStale: page.boolValue(view.resultStale, false)
     readonly property bool canAnalyze: page.boolValue(view.canAnalyze, false)
+    readonly property bool canAdoptSuggestion: page.boolValue(view.canAdoptSuggestion, false)
     readonly property bool canRender: page.boolValue(view.canRender, false)
     readonly property bool canRegister: page.boolValue(view.canRegister, false)
     readonly property bool canPublish: page.boolValue(view.canPublish, false)
@@ -98,6 +99,40 @@ ScrollView {
         return ""
     }
 
+    function loudnessValueText(label, value, digits) {
+        if (value === undefined || value === null || value === "")
+            return ""
+        const number = Number(value)
+        return isFinite(number) ? label + " " + number.toFixed(digits) : label + " " + String(value)
+    }
+
+    function loudnessReportText() {
+        const receipt = page.view.receipt
+        if (!receipt || typeof receipt !== "object")
+            return ""
+        const parts = []
+        parts.push(receipt.normalized === true
+            ? page.tr("响度处理：已应用") : page.tr("响度处理：未启用"))
+        const measurement = receipt.loudness_measurement
+        if (measurement && typeof measurement === "object") {
+            const fields = [
+                { key: "input_i", label: page.tr("输入 LUFS"), digits: 2 },
+                { key: "output_i", label: page.tr("输出 LUFS"), digits: 2 },
+                { key: "input_tp", label: page.tr("峰值 dBTP"), digits: 2 },
+                { key: "output_tp", label: page.tr("输出 dBTP"), digits: 2 },
+                { key: "input_lra", label: page.tr("LRA"), digits: 1 },
+                { key: "target_offset", label: page.tr("目标修正 dB"), digits: 2 }
+            ]
+            for (let index = 0; index < fields.length; ++index) {
+                const field = fields[index]
+                const line = page.loudnessValueText(field.label, measurement[field.key], field.digits)
+                if (line.length > 0)
+                    parts.push(line)
+            }
+        }
+        return parts.join(" · ")
+    }
+
     function offsetText() {
         const value = view.offset
         if (value === undefined || value === null || value === "")
@@ -128,6 +163,7 @@ ScrollView {
         case "queued": return page.tr("等待开始")
         case "analyzing":
         case "aligning": return page.tr("正在分析对齐")
+        case "adopting": return page.tr("正在采用建议偏移")
         case "previewing": return page.tr("正在生成预览")
         case "rendering": return page.tr("正在合成")
         case "running": return page.tr("正在处理")
@@ -628,6 +664,31 @@ ScrollView {
                 }
             }
 
+            Flow {
+                Layout.fillWidth: true
+                spacing: Math.round(8 * page.theme.scale)
+
+                UiButton {
+                    objectName: "videoOpenSource"
+                    visible: page.sourceText.length > 0
+                    theme: page.theme
+                    text: page.tr("打开原视频")
+                    enabled: !page.busy
+                    Accessible.name: text
+                    onClicked: page.controller.openSourceVideo()
+                }
+
+                UiButton {
+                    objectName: "videoOpenMixdown"
+                    visible: page.mixdownText.length > 0
+                    theme: page.theme
+                    text: page.tr("打开 Mixdown")
+                    enabled: !page.busy
+                    Accessible.name: text
+                    onClicked: page.controller.openMixdown()
+                }
+            }
+
             Text {
                 Layout.fillWidth: true
                 text: page.tr("选择后即可分别检查画面和音轨；成品位置在导出步骤填写。")
@@ -853,6 +914,16 @@ ScrollView {
                                 enabled: !page.busy && page.canAnalyze
                                 Accessible.name: text
                                 onClicked: page.controller.analyze()
+                            }
+
+                            UiButton {
+                                objectName: "videoAdoptSuggestion"
+                                visible: page.autoAlign && page.alignmentText.length > 0
+                                theme: page.theme
+                                text: page.tr("采用建议偏移")
+                                enabled: page.canAdoptSuggestion
+                                Accessible.name: text
+                                onClicked: page.controller.adoptSuggestion()
                             }
                         }
                     }
@@ -1083,6 +1154,18 @@ ScrollView {
                         ToolTip.visible: resultHover.hovered && truncated
                         ToolTip.text: page.resultPathText()
                         HoverHandler { id: resultHover }
+                    }
+
+                    Text {
+                        objectName: "videoLoudnessReport"
+                        Layout.fillWidth: true
+                        visible: page.hasResult && page.loudnessReportText().length > 0
+                        text: page.loudnessReportText()
+                        color: page.theme.text
+                        font.pixelSize: Math.round(11 * page.theme.scale)
+                        lineHeight: 1.15
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
                     }
                 }
             }

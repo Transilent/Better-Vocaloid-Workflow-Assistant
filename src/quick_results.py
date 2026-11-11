@@ -61,9 +61,31 @@ ARTIFACT_ROLES = {
     'calibration_input': '校准输入',
     'calibrated_project': '校准后的工程',
 }
+MODE_LABELS = {
+    'dual': 'Karaoke 2 双轨',
+    'roformer': 'BS-RoFormer 双轨',
+    'import': '外部分轨',
+    'single': '人声单轨',
+}
+DEVICE_LABELS = {'cpu': 'CPU', 'dml': 'GPU / DirectML'}
+PRODUCER_LABELS = {
+    'metadata': '来源资料',
+    'download': '下载 / 导入',
+    'audio': '音频解码',
+    'separation': '分离声部',
+    'midi': '提取 MIDI',
+    'subtitles': '导出字幕',
+    'exports': '导出文件',
+    'human': '人工登记',
+    'video': '视频合成',
+    'video_source': '手选原视频',
+    'publication': '发布准备',
+    'calibration_result': '声库校准',
+    'project_reference': '工程附件',
+}
 _RESUMABLE_ACTIONS = frozenset(('retry', 'continue', 'ready'))
 OPENABLE_SUFFIXES = frozenset(('.wav', '.flac', '.ogg', '.mp3', '.m4a', '.mp4', '.mkv', '.webm',
-                               '.mid', '.midi', '.svp', '.ustx', '.vsqx', '.srt', '.ass', '.lrc',
+                               '.mid', '.midi', '.svp', '.ustx', '.vsqx', '.srt', '.vtt', '.ass', '.lrc',
                                '.txt', '.log', '.csv', '.json', '.png', '.jpg', '.jpeg', '.webp'))
 
 
@@ -122,6 +144,7 @@ def _list_row(row):
         'statusText': status_text,
         'summary': updated + ' · ' + next_text,
         'state': state,
+        'modified': float(row.get('modified') or 0),
         'searchText': _search_text(row, path, status_text, next_text),
     }
 
@@ -160,6 +183,80 @@ def _artifact(job, row):
         'sha256': _text(row.get('sha256')),
         'revision': _text(row.get('revision')),
     }
+
+
+def _artifact_details(row, by_id):
+    """Project verified provenance without inferring dependencies."""
+    dependencies = []
+    for dependency in row.get('dependencies') or ():
+        if not isinstance(dependency, dict):
+            continue
+        key = _text(dependency.get('id'))
+        upstream = by_id.get(key)
+        if upstream is None:
+            dependencies.append({
+                'label': tr('上游文件未登记'),
+                'displayPath': '',
+                'statusText': tr('上游文件缺失'),
+                'revision': _text(dependency.get('revision')),
+            })
+            continue
+        path = _text(upstream.get('path'))
+        role = _text(upstream.get('role'))
+        state = _text(upstream.get('state'))
+        dependencies.append({
+            'label': tr(ARTIFACT_ROLES.get(role, role or '产物')),
+            'displayPath': Path(path).name if path else '',
+            'statusText': tr(ARTIFACT_STATES.get(state, state or '未知')),
+            'revision': _text(upstream.get('revision')),
+        })
+    sha256 = _text(row.get('sha256'))
+    producer = _text(row.get('producer'))
+    return {
+        'producerText': tr(PRODUCER_LABELS.get(producer, producer or '未知步骤')),
+        'sha256': sha256,
+        'sha256Short': sha256[:12] + ('…' if len(sha256) > 12 else ''),
+        'dependencies': dependencies,
+    }
+
+
+def _request_summary(row):
+    request = row.get('request') if isinstance(row.get('request'), dict) else {}
+    source_title = _text(request.get('source_title'))
+    bv = _text(request.get('bv'))
+    source_audio = _text(request.get('source_audio'))
+    source = source_title or (Path(source_audio).name if source_audio else '')
+    if bv:
+        source = (source + ' · ' + bv) if source else bv
+    mode = _text(request.get('voice_mode')) or 'single'
+    language = '日语' if _text(request.get('language')).lower() == 'ja' else '中文'
+    steps = request.get('midi_steps', 16)
+    if type(steps) is not int or steps <= 0:
+        steps = 16
+    tools = request.get('tools') if isinstance(request.get('tools'), dict) else {}
+    separation_device = _text(tools.get('separation_device')) or 'dml'
+    midi_device = _text(tools.get('midi_device')) or 'dml'
+    created = _text(request.get('created_at')).replace('T', ' ')[:19]
+    values = [
+        ('来源', source),
+        ('处理方案', tr(MODE_LABELS.get(mode, mode)) + ' · ' + str(steps) + tr(' 步')),
+        ('语言', tr(language)),
+        ('设备', tr('分离 ') + DEVICE_LABELS.get(separation_device, separation_device)
+         + tr(' / MIDI ') + DEVICE_LABELS.get(midi_device, midi_device)),
+        ('创建', created),
+        ('更新', _time_text(row.get('modified'))),
+    ]
+    rows = [{'label': tr(label), 'value': value} for label, value in values if value]
+    preview = ' · '.join(value for _, value in values[:3] if value)
+    return {'requestSummary': rows, 'requestPreview': preview}
+
+
+def _task_log_path(job):
+    root = Path(job).resolve()
+    candidate = (root / 'pipeline.log').resolve()
+    if not candidate.is_relative_to(root) or not candidate.is_file():
+        return None
+    return candidate
 
 
 def _delivery(job, action, rows):
@@ -223,7 +320,7 @@ def detail(job, check=None):
     title = _text(row.get('title')) or path.name or tr('未命名任务')
     status_text = _status_text(state)
     action = 'needs_review'
-    artifacts, delivery, mix, open_path, targets = [], [], [], None, {}
+    artifacts, artifact_details, delivery, mix, open_path, targets = [], {}, [], [], None, {}
     error_message = ''
     try:
         rows = task_contract.inspect(path, check=check)
@@ -241,6 +338,8 @@ def detail(job, check=None):
             row['role'] not in ('editor_project', 'midi', 'mixdown', 'video', 'audio'),
         ))
         artifacts = [_artifact(path, item) for item in ordered]
+        by_id = {item['id']: item for item in rows}
+        artifact_details = {item['id']: _artifact_details(item, by_id) for item in ordered}
         if action == 'audio_ready' and not delivery:
             action = 'needs_review'
     except InterruptedError:
@@ -252,6 +351,12 @@ def detail(job, check=None):
     locked = task_store.locked(path)
     known_state = state in TASK_STATES
     manageable = not locked and known_state and not error_message
+    metadata = task_store.read_json(path / 'task.json')
+    bindings = metadata.get('bindings') if isinstance(metadata.get('bindings'), dict) else {}
+    has_video_binding = bool(bindings.get('video'))
+    has_publication = bool(metadata.get('publication'))
+    log_path = _task_log_path(path)
+    request = _request_summary(row)
     result = {
         'jobId': _job_id(path),
         'title': title,
@@ -262,7 +367,14 @@ def detail(job, check=None):
         'canDispatch': not locked and not error_message and bool(delivery),
         'canRename': manageable,
         'canDelete': manageable,
+        'canRegisterVideo': manageable and not has_video_binding and not has_publication,
+        'hasVideoBinding': has_video_binding,
+        'hasPublication': has_publication,
+        'hasLog': log_path is not None,
+        'logPath': str(log_path or ''),
+        **request,
         'artifacts': artifacts,
+        'artifactDetails': artifact_details,
         'handoff': action,
         'delivery': {
             'artifactIds': [item['id'] for item in delivery],
@@ -289,7 +401,27 @@ def delete(job):
     return task_store.delete(job)
 
 
+def task_log(job):
+    """Return the bounded log path for one registered task."""
+    row = task_store.record(job)
+    path = _task_log_path(row['path'])
+    if path is None:
+        raise ValueError('此任务还没有处理日志。')
+    return path
+
+
+def register_existing_video(job, path, check=None):
+    """Explicitly bind an independent local video without inferred upstreams."""
+    from pipeline import job_lock
+
+    job = task_store.known_job(job)
+    video = Path(path).resolve()
+    with job_lock(job):
+        _cancelled(check)
+        return task_contract.bind(job, 'video', video, validate=True, dependencies=[], check=check, only_unbound=True)
+
+
 __all__ = (
     'ARTIFACT_ROLES', 'ARTIFACT_STATES', 'TASK_STATES', 'OPENABLE_SUFFIXES',
-    'scan', 'detail', 'rename', 'delete',
+    'scan', 'detail', 'rename', 'delete', 'task_log', 'register_existing_video',
 )

@@ -104,6 +104,8 @@ class QuickMixdown(QObject):
         self._library = PresetLibrary()
         self._presets = []
         self._preset_meta = {}
+        self._preset_plan = None
+        self._preset_undo = None
         self._view = {}
         self._tracks = self._state.tracks
         self._bands = self._state.bands
@@ -535,6 +537,8 @@ class QuickMixdown(QObject):
         view['componentMissing'] = bool(self._initialized and not self._support_ready)
         view['supportMessage'] = str(self._support.get('message') or '')
         view['nativeOutputAvailable'] = bool(player is not None and player.available)
+        view['presetPreview'] = copy.deepcopy(self._preset_plan['view']) if self._preset_plan else {}
+        view['canUndoPreset'] = self._preset_undo is not None
         return view
 
     def _recompute_and_emit(self):
@@ -566,7 +570,9 @@ class QuickMixdown(QObject):
             self._state.set_position(position)
             self.positionChanged.emit()
 
-    def _after_render_change(self, *, preset_name=None):
+    def _after_render_change(self, *, preset_name=None, keep_preset_undo=False):
+        if not keep_preset_undo:
+            self._preset_undo = None
         if self._preview is not None:
             self._preview.dirty = True
         with self._lock:
@@ -865,6 +871,18 @@ class QuickMixdown(QObject):
             with self._lock:
                 self._state.move_band(index, frequency_hz, gain_db)
                 self._state.message = 'EQ 控制点已移动。'
+            self._after_render_change()
+        except Exception as error:
+            self._notice(error)
+
+    @Slot(int)
+    def resetBand(self, index):
+        if not self._ensure_entered():
+            return
+        try:
+            with self._lock:
+                self._state.reset_band(index)
+                self._state.message = '此 EQ 频段已恢复默认。'
             self._after_render_change()
         except Exception as error:
             self._notice(error)
@@ -1268,45 +1286,91 @@ class QuickMixdown(QObject):
             self._preset_meta = {}
             self._notice('预设库读取失败：' + str(error))
 
-    @Slot(str)
-    def applyPreset(self, key):
-        if not self._ensure_entered():
-            return
-        if self._active_kind:
-            self._notice('后台操作进行中，暂时不能应用预设。')
-            return
-        try:
-            document, entry = self._resolve_preset(key)
-            from mixdown_preset_documents import plan_application
-            from preset_documents import validate_document
-            document = validate_document(document, allow_builtin=True)
-            include_width = 'width' in document.get('payload', {})
-            with self._lock:
-                before = self._state.preset_state()
-                if before['tracks']:
-                    plan = plan_application(
-                        document, before, sample_rate=self._state.sample_rate,
-                        include_width=include_width, include_tracks=False)
-                    self._state.write_preset_state(plan['after'])
-                else:
-                    payload = document['payload']
-                    current = self._state.processing_state()
-                    merged = dict(current)
-                    for name in ('eq_enabled', 'eq_bands', 'compression_enabled',
-                                 'compression_strength', 'reverb_enabled', 'reverb_profile',
-                                 'reverb_mix', 'reverb_predelay_ms'):
-                        merged[name] = copy.deepcopy(payload[name])
-                    if include_width:
-                        merged['width'] = payload['width']
-                    self._state.write_processing(merged)
-                self._state.preset_name = str(entry.get('name') or key)
-                self._state.message = '已应用预设“{0}”'.format(entry.get('name') or key)
-            self._after_render_change(preset_name=entry.get('name') or key)
-        except Exception as error:
-            self._notice('预设应用失败：' + str(error))
+    def _preset_stamp(self):
+        return (self._state.job, self._state.output, self._state.sample_rate,
+                self._state.tracks, self._state.preset_state(), self._state.source_key())
 
-    @Slot(str)
-    def savePreset(self, name):
+    @Slot(str, bool, bool, result=bool)
+    def previewPreset(self, key, include_width=False, include_tracks=False):
+        if not self._ensure_entered():
+            return False
+        if self._active_kind:
+            self._notice('后台操作进行中，暂时不能预览预设。')
+            return False
+        try:
+            from mixdown_preset_documents import plan_application
+            document, entry = self._resolve_preset(key)
+            label = str(entry.get('name') or key)
+            with self._lock:
+                stamp = self._preset_stamp()
+                plan = plan_application(document, stamp[4], sample_rate=stamp[2],
+                                        include_width=include_width, include_tracks=include_tracks)
+                self._preset_plan = {'stamp': stamp, 'plan': plan, 'view': {
+                    'key': key, 'name': label, 'changes': plan['changes'], 'adjusted': plan['adjusted'],
+                    'hasWidth': 'width' in document['payload'], 'hasTracks': 'track_template' in document['payload'],
+                    'includeWidth': include_width, 'includeTracks': include_tracks,
+                }}
+            self._recompute_and_emit()
+            return True
+        except Exception as error:
+            self._preset_plan = None
+            self._notice('预设预览失败：' + str(error))
+            return False
+
+    @Slot()
+    def discardPresetPreview(self):
+        if self._preset_plan is not None:
+            self._preset_plan = None
+            self._recompute_and_emit()
+
+    @Slot(result=bool)
+    def confirmPreset(self):
+        if self._active_kind or not self._preset_plan:
+            return False
+        try:
+            with self._lock:
+                pending = self._preset_plan
+                current, _entry = self._resolve_preset(pending['view']['key'])
+                if self._preset_stamp() != pending['stamp'] or current != pending['plan']['document']:
+                    raise ValueError('混音或预设文件已变更，请重新预览。')
+                previous, old_name = self._state.preset_state(), self._state.preset_name
+                candidate = self._state.copy()
+                candidate.write_preset_state(pending['plan']['after'])
+                label = pending['view']['name']
+                candidate.message = '已应用预设“{0}”。'.format(label)
+                self._state = candidate
+                self._preset_undo = (self._preset_stamp(), previous, old_name)
+                self._preset_plan = None
+            self._after_render_change(preset_name=label, keep_preset_undo=True)
+            return True
+        except Exception as error:
+            self._preset_plan = None
+            self._notice('预设应用失败：' + str(error))
+            return False
+
+    @Slot(result=bool)
+    def undoPreset(self):
+        if self._active_kind or self._preset_undo is None:
+            return False
+        try:
+            with self._lock:
+                stamp, previous, old_name = self._preset_undo
+                if self._preset_stamp() != stamp:
+                    raise ValueError('混音设置或源文件已变化，不能覆盖后续编辑。')
+                candidate = self._state.copy()
+                candidate.write_preset_state(previous)
+                candidate.message = '已撤销最近一次预设应用。'
+                self._state = candidate
+                self._preset_undo = None
+            self._after_render_change(preset_name=old_name)
+            return True
+        except Exception as error:
+            self._preset_undo = None
+            self._notice('不能撤销预设：' + str(error))
+            return False
+
+    @Slot(str, bool, result=bool)
+    def savePreset(self, name, include_width=False):
         if not self._ensure_entered():
             return False
         if self._active_kind:
@@ -1318,7 +1382,7 @@ class QuickMixdown(QObject):
             from mixdown_preset_documents import make_document
             with self._lock:
                 payload = self._state.processing_state()
-            document = make_document(payload, name.strip(), include_width=True)
+            document = make_document(payload, name.strip(), include_width=include_width)
             revision = self._library.snapshot()['revision']
             result = self._library.put_document(document, expected_revision=revision)
             self._load_presets()
@@ -1487,6 +1551,8 @@ class QuickMixdown(QObject):
                 old_has_media = self._state.has_media()
                 self._state.load_task_sources(job_path, sources)
                 self._state.preset_name = '自定义'
+                self._preset_plan = None
+                self._preset_undo = None
                 self._result_fingerprint = ''
                 self._export_plan, self._export_receipt, self._export_task_artifacts = None, None, []
                 self._registered_mix_id = ''

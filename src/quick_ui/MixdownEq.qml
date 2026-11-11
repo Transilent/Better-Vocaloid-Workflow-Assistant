@@ -225,6 +225,33 @@ Item {
         root.controller.setBand(root.activeBand, key, root.clamp(value, low, high));
     }
 
+    function editBandWithKey(event) {
+        if (root.activeBand < 0 || root.availableBands === 0
+                || (event.modifiers & (Qt.AltModifier | Qt.MetaModifier)))
+            return;
+        const index = root.activeBand;
+        const fine = (event.modifiers & Qt.ShiftModifier) !== 0;
+        const ctrl = (event.modifiers & Qt.ControlModifier) !== 0;
+        const locked = root.bandValue(index, "type", "") === "highpass";
+        const key = event.key;
+        if (key === Qt.Key_Return || key === Qt.Key_Enter) {
+            root.controller.resetBand(index);
+        } else if (!ctrl && (key === Qt.Key_Left || key === Qt.Key_Right)) {
+            const ratio = Math.pow(2, (key === Qt.Key_Right ? 1 : -1) / (fine ? 240 : 24));
+            root.controller.setBand(index, "freq_hz", root.bandFrequency(index) * ratio);
+        } else if (key === Qt.Key_PageUp || key === Qt.Key_PageDown || (ctrl && (key === Qt.Key_Up || key === Qt.Key_Down))) {
+            const direction = key === Qt.Key_PageUp || key === Qt.Key_Up ? 1 : -1;
+            if (!locked)
+                root.controller.setBand(index, "q", root.qValue(index) * Math.pow(fine ? 1.01 : 1.06, direction));
+        } else if (!ctrl && (key === Qt.Key_Up || key === Qt.Key_Down)) {
+            if (!locked)
+                root.controller.setBand(index, "gain_db", root.bandGain(index) + (key === Qt.Key_Up ? 1 : -1) * (fine ? 0.1 : 0.5));
+        } else {
+            return;
+        }
+        event.accepted = true;
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: Math.round(9 * root.theme.scale)
@@ -264,14 +291,20 @@ Item {
 
         Rectangle {
             id: chartFrame
+            objectName: "mixdownEqPlot"
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.minimumHeight: Math.round(230 * root.theme.scale)
             radius: Math.round(9 * root.theme.scale)
             color: root.theme.base
             border.width: 1
-            border.color: root.theme.line
+            border.color: activeFocus ? root.theme.accent : root.theme.line
             clip: true
+            activeFocusOnTab: true
+            Accessible.role: Accessible.Pane
+            Accessible.name: "混音 EQ 曲线"
+            Accessible.description: "拖动改频率和增益，滚轮调 Q，Alt 点击旁路，双击恢复。焦点在图内时方向键精调，Enter 恢复。"
+            Keys.onPressed: event => root.editBandWithKey(event)
 
             Canvas {
                 id: chartCanvas
@@ -400,22 +433,33 @@ Item {
 
             MouseArea {
                 id: plotMouse
+                objectName: "mixdownEqPlotInput"
                 anchors.fill: parent
                 hoverEnabled: true
                 acceptedButtons: Qt.LeftButton
+                preventStealing: true
                 cursorShape: root.activeBand >= 0 && containsMouse ? Qt.SizeAllCursor : Qt.ArrowCursor
 
                 onPressed: function (mouse) {
                     const geometry = root.plotGeometry(width, height);
                     const hit = root.nearestBand(mouse.x, mouse.y, geometry);
-                    if (hit < 0 || !root.isBandEnabled(hit))
+                    chartFrame.forceActiveFocus(Qt.MouseFocusReason);
+                    if (hit < 0) {
+                        mouse.accepted = false;
                         return;
+                    }
                     root.activeBand = hit;
-                    root.ensureEqEnabled();
-                    root.dragBand = hit;
-                    root.dragging = true;
+                    if ((mouse.modifiers & Qt.AltModifier) !== 0) {
+                        root.controller.setBand(hit, "enabled", !root.isBandEnabled(hit));
+                        root.schedulePaint();
+                        return;
+                    }
+                    // Snapshot the actual node before switching the drawing to
+                    // the drag values. A press alone must not move the node.
                     root.dragFrequency = root.bandFrequency(hit);
                     root.dragGain = root.bandGain(hit);
+                    root.dragBand = hit;
+                    root.dragging = true;
                     root.schedulePaint();
                 }
                 onPositionChanged: function (mouse) {
@@ -423,7 +467,9 @@ Item {
                         return;
                     const geometry = root.plotGeometry(width, height);
                     root.dragFrequency = root.clamp(root.frequencyAt((mouse.x - geometry.left) / geometry.width), 20, root.expectedMaxHz);
-                    root.dragGain = root.gainAtY(mouse.y, geometry);
+                    root.dragGain = root.bandValue(root.dragBand, "type", "") === "highpass" ? 0 : root.gainAtY(mouse.y, geometry);
+                    if (root.isBandEnabled(root.dragBand))
+                        root.ensureEqEnabled();
                     root.controller.moveBand(root.dragBand, root.dragFrequency, root.dragGain);
                     root.schedulePaint();
                 }
@@ -440,8 +486,29 @@ Item {
                 onDoubleClicked: function (mouse) {
                     const geometry = root.plotGeometry(width, height);
                     const hit = root.nearestBand(mouse.x, mouse.y, geometry);
-                    if (hit >= 0)
+                    if (hit >= 0) {
                         root.activeBand = hit;
+                        root.dragging = false;
+                        root.dragBand = -1;
+                        root.controller.resetBand(hit);
+                        root.schedulePaint();
+                    }
+                }
+                onWheel: function (wheel) {
+                    const hit = root.nearestBand(wheel.x, wheel.y, root.plotGeometry(width, height));
+                    if (hit < 0) {
+                        wheel.accepted = false;
+                        return;
+                    }
+                    root.activeBand = hit;
+                    chartFrame.forceActiveFocus(Qt.MouseFocusReason);
+                    if (root.bandValue(hit, "type", "") !== "highpass") {
+                        const delta = wheel.angleDelta.y || wheel.pixelDelta.y * 8;
+                        const fine = (wheel.modifiers & Qt.ShiftModifier) !== 0;
+                        root.controller.setBand(hit, "q", root.qValue(hit) * Math.pow(fine ? 1.035 : 1.18, delta / 120));
+                    }
+                    root.schedulePaint();
+                    wheel.accepted = true;
                 }
             }
 

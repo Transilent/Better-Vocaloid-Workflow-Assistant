@@ -540,7 +540,7 @@ def inspect(job, *, verify=True, check=None, artifact_ids=None):
 
 
 def bind(job, kind, path, *, validate=True, dependencies=None, expected_sha256=None,
-         video_source=None, check=None):
+         video_source=None, check=None, only_unbound=False):
     """Explicitly accept a user's completed file without changing automatic outputs."""
     if kind not in ('project', 'mixdown', 'video'):
         raise ContractError('未知人工产物类型。')
@@ -595,6 +595,8 @@ def bind(job, kind, path, *, validate=True, dependencies=None, expected_sha256=N
         if check and check():
             raise InterruptedError('已取消产物登记。')
         bindings = meta.setdefault('bindings', {})
+        if only_unbound and (bindings.get(kind) or (kind == 'video' and meta.get('publication'))):
+            raise ContractError('任务已登记此类产物或发布资料；不会替换现有登记。')
         if dependencies is None:
             # A deliberately edited score may replace a generated project. Bind
             # to source and MIDI, not the mutable generated editor project.

@@ -8,6 +8,7 @@ ScrollView {
     objectName: "preparationPage"
     required property QtObject theme
     required property QtObject controller
+    signal subtitleRequested()
 
     readonly property var prep: controller.preparation || ({})
     readonly property var task: controller.preparationTask || ({})
@@ -1034,6 +1035,14 @@ ScrollView {
             theme: page.theme
             title: page.controller.text("工作目标与输出")
             subtitle: page.controller.text("MIDI 是基础产物；工程与音频格式会写入独立任务目录。")
+
+            UiButton {
+                objectName: "openLocalSubtitleTool"
+                theme: page.theme
+                quiet: true
+                text: page.controller.text("打开字幕工具…")
+                onClicked: page.subtitleRequested()
+            }
 
             LabelText {
                 theme: page.theme

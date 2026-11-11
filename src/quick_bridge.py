@@ -14,6 +14,7 @@ import preparation_commands as preparation
 import quick_results
 from quick_media_handoff import artifact_identity, verify_publication_bundle, verify_task_artifact
 from quick_publication import QuickPublication
+from quick_subtitles import QuickSubtitles, read_task_midi
 from quick_support import QuickSupport
 from quick_tuning import QuickTuning
 from quick_mixdown import QuickMixdown
@@ -21,6 +22,11 @@ from quick_video import QuickVideo
 from quick_work import WorkerLane
 from workspace_controller import WorkspaceController
 import workflow
+
+
+_TASK_STATE_FILTERS = frozenset(('all', 'done', 'pending', 'failed', 'running'))
+_TASK_SORTS = frozenset(('recent', 'title'))
+_PENDING_TASK_STATES = frozenset(('ready', 'partial', 'cancelled', 'interrupted'))
 
 
 class RowsModel(QAbstractListModel):
@@ -113,6 +119,7 @@ class QuickBridge(QObject):
     activityChanged = Signal()
     preparationTaskChanged = Signal()
     taskChanged = Signal()
+    subtitlesRequested = Signal()
     closeReady = Signal()
 
     def __init__(self):
@@ -132,6 +139,7 @@ class QuickBridge(QObject):
         self._mixdown = QuickMixdown(self, self._work)
         self._video = QuickVideo(self, self._work)
         self._publication = QuickPublication(self, self._work)
+        self._subtitles = QuickSubtitles(self)
         self._video.publishRequested.connect(self._open_verified_video)
         self._tuning.presetLibraryChanged.connect(self._mixdown.refresh_presets)
         self.state.set_download_source(self._support.state.values['download_source'])
@@ -147,6 +155,8 @@ class QuickBridge(QObject):
         self._notice = ''
         self._next_detail = None
         self._rescan = False
+        self._task_state_filter = 'all'
+        self._task_sort = 'recent'
 
     def _error(self, error):
         self._notice = str(error)[:1600] or error.__class__.__name__
@@ -176,6 +186,10 @@ class QuickBridge(QObject):
     @Property(QObject, constant=True)
     def publication(self):
         return self._publication
+
+    @Property(QObject, constant=True)
+    def subtitles(self):
+        return self._subtitles
 
     @Property(str, notify=activityChanged)
     def operationKind(self):
@@ -268,6 +282,14 @@ class QuickBridge(QObject):
     @Property(str, notify=taskChanged)
     def taskQuery(self):
         return self.state.task_query
+
+    @Property(str, notify=taskChanged)
+    def taskStateFilter(self):
+        return self._task_state_filter
+
+    @Property(str, notify=taskChanged)
+    def taskSort(self):
+        return self._task_sort
 
     @Property('QVariantMap', notify=taskChanged)
     def taskDetail(self):
@@ -560,6 +582,20 @@ class QuickBridge(QObject):
             self._work.cancel()
             self.activityChanged.emit()
 
+    def _task_rows(self):
+        rows = list(self.state.visible_tasks)
+        selected_filter = self._task_state_filter
+        if selected_filter == 'done':
+            rows = [row for row in rows if row.get('state') in ('done', 'completed')]
+        elif selected_filter == 'pending':
+            rows = [row for row in rows if row.get('state') in _PENDING_TASK_STATES]
+        elif selected_filter in ('failed', 'running'):
+            rows = [row for row in rows if row.get('state') == selected_filter]
+        rows.sort(key=lambda row: (str(row.get('title') or '').casefold(), row.get('jobId') or ''))
+        if self._task_sort == 'recent':
+            rows.sort(key=lambda row: float(row.get('modified') or 0), reverse=True)
+        return tuple(rows)
+
     @Slot()
     def refreshTasks(self):
         if self._closed:
@@ -581,7 +617,7 @@ class QuickBridge(QObject):
             if self.state.selected_task_id not in visible_ids:
                 self.state.selected_task_id = rows[0]['jobId'] if rows else ''
                 self.state.task_detail = {}
-            self._tasks.replace_rows(self.state.visible_tasks)
+            self._tasks.replace_rows(self._task_rows())
             self.taskChanged.emit()
             if self.state.selected_task_id:
                 self._request_detail(self.state.selected_task_id)
@@ -594,7 +630,27 @@ class QuickBridge(QObject):
     def setTaskQuery(self, query):
         if query != self.state.task_query:
             self.state.task_query = query
-            self._tasks.replace_rows(self.state.visible_tasks)
+            self._tasks.replace_rows(self._task_rows())
+            self.taskChanged.emit()
+
+    @Slot(str)
+    def setTaskStateFilter(self, value):
+        value = str(value or 'all')
+        if value not in _TASK_STATE_FILTERS:
+            return
+        if value != self._task_state_filter:
+            self._task_state_filter = value
+            self._tasks.replace_rows(self._task_rows())
+            self.taskChanged.emit()
+
+    @Slot(str)
+    def setTaskSort(self, value):
+        value = str(value or 'recent')
+        if value not in _TASK_SORTS:
+            return
+        if value != self._task_sort:
+            self._task_sort = value
+            self._tasks.replace_rows(self._task_rows())
             self.taskChanged.emit()
 
     @Slot(str)
@@ -633,6 +689,47 @@ class QuickBridge(QObject):
         if job and self.state.task_detail.get('jobId') == job and Path(job).is_dir():
             self._open_local(Path(job))
 
+    @Slot()
+    def openSelectedTaskLog(self):
+        job = self.state.selected_task_id
+        if not job or self.state.task_detail.get('jobId') != job:
+            return
+        try:
+            self._open_local(quick_results.task_log(job))
+        except (OSError, ValueError) as exc:
+            self._error(exc)
+
+    @Slot(str, QUrl)
+    def registerSelectedTaskVideo(self, expected_job, url):
+        job = self.state.selected_task_id
+        detail = self.state.task_detail
+        if (self.workBusy or self.taskLoading or not job or expected_job != job
+                or detail.get('jobId') != job or not detail.get('canRegisterVideo')
+                or not url.isLocalFile()):
+            self._error(ValueError('任务已变化或当前不允许登记已有视频，请重新选择后确认。'))
+            return
+        source = url.toLocalFile()
+        self._notice = '正在核验视频内容并登记到当前任务…'
+        self.activityChanged.emit()
+
+        def work(stop, _send):
+            return quick_results.register_existing_video(job, source, check=stop.is_set)
+
+        def finish(artifact_id, error):
+            if isinstance(error, InterruptedError):
+                return
+            if error is not None:
+                self._error(error)
+                return
+            self._notice = (
+                f'已登记独立成品视频 {str(artifact_id)[:8]}…；未推断 Mixdown 或其他上游依赖。'
+            )
+            self.state.handoff = {}
+            self.activityChanged.emit()
+            self.refreshTasks()
+
+        self._work.start('task-video-register', work, finish)
+
     @Slot(str)
     def openArtifact(self, artifact_id):
         self._checked_artifact(artifact_id)
@@ -640,6 +737,28 @@ class QuickBridge(QObject):
     @Slot(str)
     def tuneArtifact(self, artifact_id):
         self._checked_artifact(artifact_id, route='tuning')
+
+    @Slot(str)
+    def editSubtitleArtifact(self, artifact_id):
+        job = self.state.selected_task_id
+        if self.workBusy or not job or self.route != 'results':
+            return
+        row = next((item for item in self.state.task_detail.get('artifacts', ())
+                    if item['id'] == artifact_id and item['role'] == 'midi' and item['openable']), None)
+        if row is None:
+            return
+
+        def finish(data, error):
+            if (self._exit_when_idle or self.route != 'results' or self.state.selected_task_id != job
+                    or isinstance(error, InterruptedError)):
+                return
+            if error:
+                self._error(error)
+                return
+            self._subtitles.accept_midi(data, job=job, artifact_id=artifact_id)
+            self.subtitlesRequested.emit()
+
+        self._work.start('artifact-check', lambda stop, _send: read_task_midi(job, row, stop.is_set), finish)
 
     @Slot()
     def mixTaskStems(self):

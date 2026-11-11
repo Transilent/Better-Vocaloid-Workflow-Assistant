@@ -162,9 +162,30 @@ ApplicationWindow {
         }
         Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: theme.line }
 
-        ColumnLayout {
+        Flickable {
+            id: navScroll
+            objectName: "workspaceNavigationViewport"
             anchors.fill: parent
             anchors.margins: window.compact ? 8 : 12
+            contentWidth: width
+            contentHeight: navColumn.height
+            boundsBehavior: Flickable.StopAtBounds
+            clip: true
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+            function reveal(item) {
+                if (!item || contentHeight <= height)
+                    return;
+                const y = item.mapToItem(navColumn, 0, 0).y;
+                const target = y < contentY ? y
+                    : y + item.height > contentY + height ? y + item.height - height : contentY;
+                contentY = Math.max(0, Math.min(contentHeight - height, target));
+            }
+
+          ColumnLayout {
+            id: navColumn
+            width: navScroll.width
+            height: Math.max(implicitHeight, navScroll.height)
             spacing: 9
             RowLayout {
                 Layout.fillWidth: true
@@ -194,6 +215,7 @@ ApplicationWindow {
                     Layout.fillHeight: modelData.pageId === "components"
                     Item { visible: modelData.pageId === "components"; Layout.fillHeight: true }
                     UiButton {
+                        id: navButton
                         objectName: "nav_" + modelData.pageId
                         Layout.fillWidth: true
                         Layout.preferredHeight: Math.round(41 * Math.min(1.15, theme.scale))
@@ -206,11 +228,20 @@ ApplicationWindow {
                         quiet: true
                         selected: window.controller.route === modelData.pageId
                         onClicked: window.controller.navigate(modelData.pageId)
+                        onActiveFocusChanged: {
+                            if (activeFocus)
+                                navScroll.reveal(navButton);
+                        }
+                        onSelectedChanged: {
+                            if (selected)
+                                navScroll.reveal(navButton);
+                        }
                         ToolTip.visible: hovered && window.compact
                         ToolTip.text: modelData.title
                     }
                 }
             }
+          }
         }
     }
 
@@ -246,7 +277,11 @@ ApplicationWindow {
         }
         Component {
             id: preparationPage
-            PreparationPage { theme: window.tokens; controller: window.controller }
+            PreparationPage {
+                theme: window.tokens
+                controller: window.controller
+                onSubtitleRequested: subtitleDialog.openLocal()
+            }
         }
         Component {
             id: resultsPage
@@ -380,6 +415,17 @@ ApplicationWindow {
                 }
             }
         }
+    }
+
+    SubtitleDialog {
+        id: subtitleDialog
+        theme: window.tokens
+        controller: window.controller.subtitles
+    }
+
+    Connections {
+        target: window.controller
+        function onSubtitlesRequested() { subtitleDialog.openLocal() }
     }
 
     StartupDialogs {

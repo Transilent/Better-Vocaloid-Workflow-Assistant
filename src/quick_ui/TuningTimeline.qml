@@ -132,6 +132,25 @@ Item {
         return text.length <= limit ? text : text.slice(0, Math.max(1, limit - 1)) + "…"
     }
 
+    function fittedText(context, value, maxWidth) {
+        const text = String(value === undefined || value === null ? "" : value).trim()
+        if (!text || maxWidth <= 0)
+            return ""
+        if (context.measureText(text).width <= maxWidth)
+            return text
+        const characters = Array.from(text)
+        let low = 0
+        let high = characters.length
+        while (low < high) {
+            const middle = Math.ceil((low + high) / 2)
+            if (context.measureText(characters.slice(0, middle).join("") + "…").width <= maxWidth)
+                low = middle
+            else
+                high = middle - 1
+        }
+        return low > 0 ? characters.slice(0, low).join("") + "…" : ""
+    }
+
     function formatTime(value) {
         const seconds = numberOr(value, 0)
         const negative = seconds < 0
@@ -226,6 +245,7 @@ Item {
             const textColor = timeline.colorText(timeline.theme.text, "#eeeef5")
             const muted = timeline.colorText(timeline.theme.muted, "#a6a9ba")
             const accent = timeline.colorText(timeline.theme.accent, "#c2a8ff")
+            const lyricColor = timeline.theme.dark ? "#171420" : "#fffaff"
             const smallFont = Math.max(10, Math.round(10 * timeline.scale))
             const labelFont = Math.max(11, Math.round(11 * timeline.scale))
             const timeFont = Math.max(10, Math.round(10 * timeline.scale))
@@ -348,8 +368,11 @@ Item {
                 const hasPitch = isFinite(minPitch) && isFinite(maxPitch)
                 const innerTop = laneTop + Math.round(8 * timeline.scale)
                 const innerHeight = Math.max(1, laneHeight - Math.round(16 * timeline.scale))
-                const noteHeight = Math.max(4, Math.min(Math.round(10 * timeline.scale),
-                    innerHeight * 0.22))
+                const lyricFont = Math.max(9, Math.min(Math.round(11 * timeline.scale),
+                    Math.round(innerHeight * 0.18)))
+                const noteHeight = Math.max(lyricFont + 2, Math.min(Math.round(14 * timeline.scale),
+                    innerHeight * 0.3))
+                const lyricMinWidth = Math.max(Math.round(28 * timeline.scale), lyricFont * 3)
 
                 for (let noteIndex = 0; noteIndex < laneNotes.length; ++noteIndex) {
                     const note = laneNotes[noteIndex]
@@ -371,10 +394,28 @@ Item {
                             : (maxPitch - pitch) / (maxPitch - minPitch)
                         centerY = innerTop + ratio * innerHeight
                     }
+                    const noteWidth = Math.max(2, right - left)
                     ctx.fillStyle = active ? accent : muted
                     ctx.globalAlpha = lane.editable === false ? 0.46 : 0.78
-                    ctx.fillRect(left, centerY - noteHeight / 2,
-                        Math.max(2, right - left), noteHeight)
+                    ctx.fillRect(left, centerY - noteHeight / 2, noteWidth, noteHeight)
+
+                    const lyric = String(note.lyric === undefined || note.lyric === null
+                        ? "" : note.lyric).trim()
+                    const fullyVisible = startX >= timeline.plotLeft - 0.5
+                        && endX <= timeline.plotRight + 0.5
+                    if (lyric && fullyVisible && noteWidth >= lyricMinWidth) {
+                        ctx.save()
+                        ctx.globalAlpha = 1
+                        ctx.font = String(lyricFont) + "px sans-serif"
+                        ctx.fillStyle = lyricColor
+                        ctx.textAlign = "center"
+                        ctx.textBaseline = "middle"
+                        const label = timeline.fittedText(ctx, lyric,
+                            Math.max(0, noteWidth - Math.round(6 * timeline.scale)))
+                        if (label)
+                            ctx.fillText(label, left + noteWidth / 2, centerY)
+                        ctx.restore()
+                    }
                 }
                 ctx.globalAlpha = 1
             }

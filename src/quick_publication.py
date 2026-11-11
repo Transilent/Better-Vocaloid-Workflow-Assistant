@@ -828,6 +828,18 @@ class QuickPublication(QObject):
         return self._start_work('publication-open-creator', work, self._finish_open_creator)
 
     @Slot()
+    def requestExit(self):
+        with self._lock:
+            if self._state.busy or self._active_kind:
+                return self.cancel()
+        navigate = getattr(self._owner, 'navigate', None)
+        if callable(navigate):
+            navigate('results')
+            return True
+        self._notice('当前页面无法离开；请使用左侧导航返回任务与结果。')
+        return False
+
+    @Slot()
     def cancel(self):
         with self._lock:
             if not self._active_kind or not self._active_kind.startswith('publication-'):

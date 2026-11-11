@@ -34,6 +34,10 @@
       "source": "src/quick_publication.py"
     },
     {
+      "file": "quick_subtitles.py",
+      "source": "src/quick_subtitles.py"
+    },
+    {
       "file": "quick_video.py",
       "source": "src/quick_video.py"
     },
@@ -44,6 +48,10 @@
     {
       "file": "quick_ui/PublicationPage.qml",
       "source": "src/quick_ui/PublicationPage.qml"
+    },
+    {
+      "file": "quick_ui/SubtitleDialog.qml",
+      "source": "src/quick_ui/SubtitleDialog.qml"
     },
     {
       "file": "tuning_timeline.py",
@@ -148,6 +156,10 @@
     {
       "file": "quick_ui/UiButton.qml",
       "source": "src/quick_ui/UiButton.qml"
+    },
+    {
+      "file": "quick_ui/UiIcon.qml",
+      "source": "src/quick_ui/UiIcon.qml"
     },
     {
       "file": "quick_ui/UiComboBox.qml",

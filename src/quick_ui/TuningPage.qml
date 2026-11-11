@@ -173,6 +173,36 @@ ScrollView {
             + String(rest).padStart(2, "0") + "." + String(tenths)
     }
 
+    function selectionMinimum() {
+        return numberOr(view.timelineStart, 0)
+    }
+
+    function selectionMaximum() {
+        return selectionMinimum() + Math.max(0, numberOr(view.duration, 0))
+    }
+
+    function syncPreciseSelection(force) {
+        if (force || !selectionStartInput.activeFocus)
+            selectionStartInput.value = Math.round(numberOr(view.start, selectionMinimum()) * 1000)
+        if (force || !selectionEndInput.activeFocus)
+            selectionEndInput.value = Math.round(numberOr(view.end, selectionMaximum()) * 1000)
+    }
+
+    function commitPreciseSelection() {
+        if (!hasSource || busy)
+            return
+        controller.selectSpan(Number(selectionStartInput.value) / 1000,
+            Number(selectionEndInput.value) / 1000)
+        syncPreciseSelection(true)
+    }
+
+    function syncStyleStrengthSlider(force) {
+        const target = Math.round(Math.max(0, Math.min(1, numberOr(view.styleStrength, 0))) * 100)
+        if (force || (!styleStrengthSlider.pressed
+                      && Math.abs(styleStrengthSlider.value - target) > 0.5))
+            styleStrengthSlider.value = target
+    }
+
     function strengthText(value) {
         const strength = numberOr(value, 0)
         return String(Math.round(Math.max(0, Math.min(1, strength)) * 100)) + "%"
@@ -464,10 +494,16 @@ ScrollView {
 
     onActiveIdChanged: syncRetainedDraft()
     onPresetsChanged: syncPresetChoice()
-    onViewChanged: syncPresetChoice()
+    onViewChanged: {
+        syncPresetChoice()
+        syncPreciseSelection(false)
+        syncStyleStrengthSlider(false)
+    }
     Component.onCompleted: {
         syncRetainedDraft()
         syncPresetChoice()
+        syncPreciseSelection(true)
+        syncStyleStrengthSlider(true)
     }
 
     component PanelLabel: Text {
@@ -1145,6 +1181,92 @@ ScrollView {
 
                         RowLayout {
                             Layout.fillWidth: true
+                            spacing: Math.round(6 * page.scale)
+
+                            HelperText {
+                                Layout.alignment: Qt.AlignVCenter
+                                theme: page.theme
+                                text: "精确选区"
+                            }
+                            Text {
+                                text: "开始"
+                                color: page.theme.muted
+                                font.pixelSize: Math.round(11 * page.scale)
+                                textFormat: Text.PlainText
+                            }
+                            SpinBox {
+                                id: selectionStartInput
+                                objectName: "tuningSelectionStart"
+                                Layout.preferredWidth: Math.round(108 * page.scale)
+                                from: Math.round(page.selectionMinimum() * 1000)
+                                to: Math.round(Math.max(page.selectionMinimum(),
+                                    page.selectionMaximum()) * 1000)
+                                stepSize: 1
+                                editable: true
+                                live: false
+                                enabled: page.hasSource && !page.busy
+                                textFromValue: function(value) {
+                                    return (Number(value) / 1000).toFixed(3)
+                                }
+                                valueFromText: function(text) {
+                                    const parsed = Number(String(text).trim().replace(",", "."))
+                                    return isFinite(parsed) ? Math.round(parsed * 1000) : value
+                                }
+                                onValueModified: page.commitPreciseSelection()
+                                Accessible.name: "选区开始时间，秒"
+                            }
+                            Text {
+                                text: "秒"
+                                color: page.theme.muted
+                                font.pixelSize: Math.round(11 * page.scale)
+                                textFormat: Text.PlainText
+                            }
+                            Text {
+                                text: "结束"
+                                color: page.theme.muted
+                                font.pixelSize: Math.round(11 * page.scale)
+                                textFormat: Text.PlainText
+                            }
+                            SpinBox {
+                                id: selectionEndInput
+                                objectName: "tuningSelectionEnd"
+                                Layout.preferredWidth: Math.round(108 * page.scale)
+                                from: Math.round(page.selectionMinimum() * 1000)
+                                to: Math.round(Math.max(page.selectionMinimum(),
+                                    page.selectionMaximum()) * 1000)
+                                stepSize: 1
+                                editable: true
+                                live: false
+                                enabled: page.hasSource && !page.busy
+                                textFromValue: function(value) {
+                                    return (Number(value) / 1000).toFixed(3)
+                                }
+                                valueFromText: function(text) {
+                                    const parsed = Number(String(text).trim().replace(",", "."))
+                                    return isFinite(parsed) ? Math.round(parsed * 1000) : value
+                                }
+                                onValueModified: page.commitPreciseSelection()
+                                Accessible.name: "选区结束时间，秒"
+                            }
+                            Text {
+                                text: "秒"
+                                color: page.theme.muted
+                                font.pixelSize: Math.round(11 * page.scale)
+                                textFormat: Text.PlainText
+                            }
+                            Item { Layout.fillWidth: true }
+                            UiButton {
+                                objectName: "applyTuningSelection"
+                                theme: page.theme
+                                text: "应用时间"
+                                quiet: true
+                                enabled: page.hasSource && !page.busy
+                                onClicked: page.commitPreciseSelection()
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
                             spacing: Math.round(8 * page.scale)
 
                             Rectangle {
@@ -1230,49 +1352,121 @@ ScrollView {
                         }
                     }
 
-                    RowLayout {
+                    ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: Math.round(6 * page.scale)
+                        spacing: Math.round(4 * page.scale)
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Math.round(8 * page.scale)
+                            HelperText {
+                                Layout.fillWidth: true
+                                theme: page.theme
+                                text: "风格强度"
+                            }
+                            Text {
+                                objectName: "tuningStyleStrengthPercent"
+                                text: page.strengthText(page.view.styleStrength)
+                                color: page.theme.text
+                                font.pixelSize: Math.round(13 * page.scale)
+                                font.weight: Font.DemiBold
+                                textFormat: Text.PlainText
+                            }
+                        }
+
+                        Slider {
+                            id: styleStrengthSlider
+                            objectName: "tuningStyleStrengthSlider"
+                            Layout.fillWidth: true
+                            from: 0
+                            to: 100
+                            value: Math.round(Math.max(0,
+                                Math.min(1, page.numberOr(page.view.styleStrength, 0))) * 100)
+                            stepSize: 1
+                            snapMode: Slider.SnapAlways
+                            enabled: !page.busy && page.hasSource
+                            focusPolicy: Qt.StrongFocus
+                            wheelEnabled: false
+                            onMoved: page.controller.setStyleStrength(value / 100)
+                            Accessible.name: "风格强度"
+                            Accessible.description: "范围 0% 到 100%，每次调整 1%"
+
+                            background: Rectangle {
+                                y: Math.round((parent.height - height) / 2)
+                                width: parent.width
+                                height: Math.round(5 * page.scale)
+                                radius: height / 2
+                                color: page.theme.line
+                                Rectangle {
+                                    width: parent.width * parent.parent.visualPosition
+                                    height: parent.height
+                                    radius: parent.radius
+                                    color: page.theme.accent
+                                }
+                            }
+                            handle: Rectangle {
+                                x: parent.visualPosition * (parent.width - width)
+                                y: Math.round((parent.height - height) / 2)
+                                width: Math.round(15 * page.scale)
+                                height: width
+                                radius: width / 2
+                                color: page.theme.text
+                                border.width: 1
+                                border.color: page.theme.accent
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Math.round(6 * page.scale)
+                            HelperText {
+                                Layout.alignment: Qt.AlignVCenter
+                                theme: page.theme
+                                text: "快捷"
+                            }
+                            StrengthButton {
+                                theme: page.theme
+                                choiceValue: 0.3
+                                knownValue: true
+                                currentValue: page.numberOr(page.view.styleStrength, 0)
+                                onClicked: page.controller.setStyleStrength(0.3)
+                            }
+                            StrengthButton {
+                                theme: page.theme
+                                choiceValue: 0.6
+                                knownValue: true
+                                currentValue: page.numberOr(page.view.styleStrength, 0)
+                                onClicked: page.controller.setStyleStrength(0.6)
+                            }
+                            StrengthButton {
+                                theme: page.theme
+                                choiceValue: 0.7
+                                knownValue: true
+                                currentValue: page.numberOr(page.view.styleStrength, 0)
+                                onClicked: page.controller.setStyleStrength(0.7)
+                            }
+                            StrengthButton {
+                                theme: page.theme
+                                choiceValue: 1.0
+                                knownValue: true
+                                currentValue: page.numberOr(page.view.styleStrength, 0)
+                                onClicked: page.controller.setStyleStrength(1.0)
+                            }
+                            Item { Layout.fillWidth: true }
+                            UiButton {
+                                objectName: "tuningStylePitch"
+                                theme: page.theme
+                                text: boolOr(page.view.stylePitch, false) ? "音高 · 开" : "音高 · 关"
+                                selected: boolOr(page.view.stylePitch, false)
+                                enabled: !page.busy
+                                onClicked: page.controller.setStylePitch(!boolOr(page.view.stylePitch, false))
+                            }
+                        }
+
                         HelperText {
-                            Layout.alignment: Qt.AlignVCenter
+                            Layout.fillWidth: true
                             theme: page.theme
-                            text: "强度"
-                        }
-                        StrengthButton {
-                            theme: page.theme
-                            choiceValue: 0.3
-                            knownValue: true
-                            currentValue: page.numberOr(page.view.styleStrength, 0)
-                            onClicked: page.controller.setStyleStrength(0.3)
-                        }
-                        StrengthButton {
-                            theme: page.theme
-                            choiceValue: 0.6
-                            knownValue: true
-                            currentValue: page.numberOr(page.view.styleStrength, 0)
-                            onClicked: page.controller.setStyleStrength(0.6)
-                        }
-                        StrengthButton {
-                            theme: page.theme
-                            choiceValue: 0.7
-                            knownValue: true
-                            currentValue: page.numberOr(page.view.styleStrength, 0)
-                            onClicked: page.controller.setStyleStrength(0.7)
-                        }
-                        StrengthButton {
-                            theme: page.theme
-                            choiceValue: 1.0
-                            knownValue: true
-                            currentValue: page.numberOr(page.view.styleStrength, 0)
-                            onClicked: page.controller.setStyleStrength(1.0)
-                        }
-                        UiButton {
-                            objectName: "tuningStylePitch"
-                            theme: page.theme
-                            text: boolOr(page.view.stylePitch, false) ? "音高 · 开" : "音高 · 关"
-                            selected: boolOr(page.view.stylePitch, false)
-                            enabled: !page.busy
-                            onClicked: page.controller.setStylePitch(!boolOr(page.view.stylePitch, false))
+                            text: "按 1% 步进；用方向键可键盘调节，0% 不应用。"
                         }
                     }
 
@@ -1367,6 +1561,19 @@ ScrollView {
                                         onClicked: page.controller.selectSpan(
                                             Number(regionRow.modelData.start),
                                             Number(regionRow.modelData.end))
+                                    }
+                                    UiButton {
+                                        objectName: "updateTuningRegion_" + String(regionRow.modelData.id)
+                                        theme: page.theme
+                                        text: "更新"
+                                        quiet: true
+                                        enabled: !page.busy && page.hasRange
+                                            && page.textOf(regionRow.modelData.id).length > 0
+                                        onClicked: page.controller.updateRegion(
+                                            String(regionRow.modelData.id))
+                                        Accessible.name: "用当前选区和风格更新此逐轨片段"
+                                        ToolTip.visible: hovered
+                                        ToolTip.text: "轨道按此片段固定；范围和风格取当前选区"
                                     }
                                     UiButton {
                                         theme: page.theme

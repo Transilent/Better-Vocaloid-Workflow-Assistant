@@ -467,7 +467,7 @@ Item {
                         theme: page.theme
                         text: page.busy ? page.controller.text("取消操作") : page.controller.text("退出引导")
                         quiet: true
-                        onClicked: page.controller.cancel()
+                        onClicked: page.controller.requestExit()
                     }
                 }
 
@@ -1240,25 +1240,52 @@ Item {
                                 rowSpacing: Math.round(6 * page.theme.scale)
 
                                 UiButton {
+                                    objectName: "publicationCopyTitle"
                                     Layout.fillWidth: true
                                     theme: page.theme
                                     text: page.controller.text("复制标题")
-                                    enabled: page.titleText.length > 0
+                                    enabled: page.canHandoff
                                     onClicked: page.controller.copyField("title")
                                 }
                                 UiButton {
+                                    objectName: "publicationCopyDescription"
                                     Layout.fillWidth: true
                                     theme: page.theme
                                     text: page.controller.text("复制简介")
-                                    enabled: page.descriptionText.length > 0
+                                    enabled: page.canHandoff
                                     onClicked: page.controller.copyField("description")
                                 }
                                 UiButton {
+                                    objectName: "publicationCopyTags"
                                     Layout.fillWidth: true
                                     theme: page.theme
                                     text: page.controller.text("复制标签")
-                                    enabled: page.tagsText.length > 0
+                                    enabled: page.canHandoff
                                     onClicked: page.controller.copyField("tags")
+                                }
+                                UiButton {
+                                    objectName: "publicationCopyAll"
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    text: page.controller.text("复制全部文稿")
+                                    enabled: page.canHandoff
+                                    onClicked: page.controller.copyField("all")
+                                }
+                                UiButton {
+                                    objectName: "publicationCopyVideoPath"
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    text: page.controller.text("复制成品路径")
+                                    enabled: page.canHandoff
+                                    onClicked: page.controller.copyField("video")
+                                }
+                                UiButton {
+                                    objectName: "publicationCopyCoverPath"
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    text: page.controller.text("复制封面路径")
+                                    enabled: page.canHandoff
+                                    onClicked: page.controller.copyField("cover")
                                 }
                             }
 

@@ -71,6 +71,32 @@ class MixdownWorkspaceStateTests(unittest.TestCase):
             state.set_track('instrumental', 'send', 0.5)
         self.assertEqual(state.render_fingerprint(), fingerprint)
 
+    def test_pan_and_signed_vocal_position_are_applied_in_ab_and_invalidate_export(self):
+        state = self.make_state()
+        fingerprint = state.render_fingerprint()
+        source = state.source_key()
+        state.set_track('vocal-1', 'pan', -.42)
+        state.set_track('vocal-1', 'offset', -.125)
+        state.set_track('instrumental', 'pan', .28)
+        for bypass in (False, True):
+            request = state.request(self.output, bypass_processing=bypass)
+            self.assertEqual(request['vocals'][0]['pan'], -.42)
+            self.assertEqual(request['vocals'][0]['offset_seconds'], -.125)
+            self.assertEqual(request['instrumental_pan'], .28)
+        self.assertEqual(state.source_key(), source)
+        self.assertNotEqual(state.render_fingerprint(), fingerprint)
+        with self.assertRaisesRegex(ValueError, '伴奏提供时间基准'):
+            state.set_track('instrumental', 'offset', .2)
+
+    def test_factory_band_reset_does_not_touch_other_bands_or_global_bypass(self):
+        state = self.make_state()
+        state.set_band(0, 'freq_hz', 500)
+        state.set_band(1, 'freq_hz', 1150)
+        state.reset_band(0)
+        self.assertEqual(state.bands[0], default_bands()[0])
+        self.assertEqual(state.bands[1]['freq_hz'], 1150)
+        self.assertFalse(state.eq_enabled)
+
     def test_compressor_controls_are_a_derived_single_strength(self):
         derived = compression_controls(0.25)
         self.assertAlmostEqual(derived['threshold'], -11.0)
@@ -251,6 +277,59 @@ class QuickMixdownLifecycleTests(unittest.TestCase):
             finally:
                 controller.close()
                 worker.close()
+
+    def test_presets_preview_scope_then_confirm_undo_and_reject_a_stale_plan(self):
+        try:
+            from unittest.mock import patch
+            from PySide6.QtCore import QCoreApplication
+            from mixdown_preset_documents import make_document
+            from quick_mixdown import QuickMixdown
+            from quick_work import WorkerLane
+        except ImportError as error:
+            self.skipTest(str(error))
+        app = QCoreApplication.instance() or QCoreApplication([])
+        worker = WorkerLane(app, 'quick-mixdown-preset-test')
+        controller = QuickMixdown(app, worker)
+        try:
+            state = controller._state
+            voice2 = state.add_vocal()  # Unfilled rows are valid targets for a track template.
+            state.set_track('vocal-1', 'gain', -4)
+            state.set_track('vocal-1', 'offset', .25)
+            state.set_track('vocal-1', 'pan', .1)
+            before = state.preset_state()
+            payload = state.processing_state()
+            payload.update(width=1.5, eq_enabled=True,
+                           track_template={'pan_mode': 'alternate', 'pan': .15, 'harmony_pan': .35,
+                                           'reverb_send': .6})
+            preset = make_document(payload, 'Scope test', include_width=True, identifier='user.audit.mixdown')
+            with patch.object(controller, '_ensure_entered', return_value=True), \
+                    patch.object(controller, '_resolve_preset', return_value=(preset, {'name': 'Scope test'})):
+                self.assertTrue(controller.previewPreset('audit', False, False))
+                self.assertEqual(controller._state.preset_state(), before)
+                self.assertTrue(controller.confirmPreset(), controller.view['message'])
+                self.assertTrue(controller._state.eq_enabled)
+                self.assertEqual(controller._state.width, 1.0)
+                self.assertEqual(controller._state.tracks[0]['pan'], .1)
+                self.assertTrue(controller.undoPreset())
+                self.assertEqual(controller._state.preset_state(), before)
+                self.assertTrue(controller.previewPreset('audit', True, True))
+                self.assertTrue(controller.confirmPreset(), controller.view['message'])
+                self.assertEqual(controller._state.width, 1.5)
+                rows = {row['id']: row for row in controller.tracks}
+                self.assertEqual(rows[voice2]['pan'], .35)
+                self.assertEqual(rows['vocal-1']['pan'], -.35)
+                self.assertEqual(rows['vocal-1']['offset'], .25)
+                self.assertEqual(rows['vocal-1']['gain'], -4)
+                self.assertTrue(controller.undoPreset())
+                self.assertEqual(controller._state.preset_state(), before)
+                self.assertTrue(controller.previewPreset('audit', True, True))
+                controller.setTrack('vocal-1', 'gain', -5)
+                self.assertFalse(controller.confirmPreset())
+                self.assertEqual(controller._state.tracks[0]['gain'], -5)
+                self.assertEqual(controller._state.preset_state(), before)
+        finally:
+            controller.close()
+            worker.close()
 
 
 if __name__ == '__main__':

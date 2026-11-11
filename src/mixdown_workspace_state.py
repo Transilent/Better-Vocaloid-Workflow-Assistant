@@ -340,9 +340,9 @@ class MixdownWorkspaceState:
         self.preset_name = '自定义'
         self._tracks = [
             {'id': 'vocal-1', 'label': '歌声 1', 'path': '', 'name': '', 'gain': 0.0,
-             'muted': False, 'solo': False, 'send': 1.0, '_artifact': None},
+             'muted': False, 'solo': False, 'pan': 0.0, 'offset': 0.0, 'send': 1.0, '_artifact': None},
             {'id': 'instrumental', 'label': '伴奏', 'path': '', 'name': '', 'gain': 0.0,
-             'muted': False, 'solo': False, 'send': 0.0, '_artifact': None},
+             'muted': False, 'solo': False, 'pan': 0.0, 'offset': 0.0, 'send': 0.0, '_artifact': None},
         ]
         self._bands = default_bands()
 
@@ -367,7 +367,7 @@ class MixdownWorkspaceState:
     @staticmethod
     def _public_track(row: Mapping[str, Any]) -> dict[str, Any]:
         return {key: copy.deepcopy(row.get(key)) for key in
-                ('id', 'label', 'path', 'name', 'gain', 'muted', 'solo', 'send')}
+                ('id', 'label', 'path', 'name', 'gain', 'muted', 'solo', 'pan', 'offset', 'send')}
 
     def set_job(self, job: Any) -> None:
         self.job = str(Path(job).resolve()) if job else ''
@@ -401,7 +401,8 @@ class MixdownWorkspaceState:
         identifier = f'vocal-{number}'
         self._tracks.insert(len(vocals), {
             'id': identifier, 'label': f'歌声 {number}', 'path': '', 'name': '',
-            'gain': 0.0, 'muted': False, 'solo': False, 'send': 1.0, '_artifact': None,
+            'gain': 0.0, 'muted': False, 'solo': False, 'pan': 0.0, 'offset': 0.0,
+            'send': 1.0, '_artifact': None,
         })
         return identifier
 
@@ -419,6 +420,12 @@ class MixdownWorkspaceState:
         name = str(key or '')
         if name == 'gain':
             row['gain'] = _clamp(value, -120.0, 24.0, 'gain')
+        elif name == 'pan':
+            row['pan'] = _clamp(value, -1.0, 1.0, 'pan')
+        elif name == 'offset':
+            if row['id'] == 'instrumental':
+                raise ValueError('位置偏移仅作用于歌声轨；伴奏提供时间基准。')
+            row['offset'] = _clamp(value, -30.0, 30.0, 'offset')
         elif name == 'send':
             if row['id'] == 'instrumental':
                 raise ValueError('混响发送仅作用于歌声轨。')
@@ -477,7 +484,7 @@ class MixdownWorkspaceState:
                 'label': str(source.get('label') or ('伴奏' if identifier == 'instrumental'
                                                      else f'歌声 {index + 1}')),
                 'path': str(path), 'name': path.name, 'gain': 0.0,
-                'muted': False, 'solo': False,
+                'muted': False, 'solo': False, 'pan': 0.0, 'offset': 0.0,
                 'send': 0.0 if identifier == 'instrumental' else 1.0,
                 '_artifact': copy.deepcopy(dict(artifact)),
             })
@@ -524,6 +531,11 @@ class MixdownWorkspaceState:
             raise ValueError('unknown EQ band field: ' + field)
         self._bands[position] = project_eq_band(candidate, sample_rate=self.sample_rate)
         return True
+
+    def reset_band(self, index: int) -> None:
+        if not 0 <= index < len(self._bands):
+            raise ValueError('EQ band index is out of range')
+        self._bands[index] = project_eq_band(default_bands()[index], sample_rate=self.sample_rate)
 
     def move_band(self, index: int, frequency_hz: float, gain_db: float) -> bool:
         position = int(index)
@@ -667,6 +679,7 @@ class MixdownWorkspaceState:
         if len(tracks) != len(vocals):
             raise ValueError('预设声部模板与当前歌声轨数量不一致。')
         for row, values in zip(vocals, tracks, strict=True):
+            row['pan'] = _clamp(values['pan'], -1.0, 1.0, 'pan')
             row['send'] = _clamp(values.get('reverb_send', row['send']), 0.0, 1.0, 'reverb_send')
 
     def processing_state(self) -> dict[str, Any]:
@@ -684,10 +697,10 @@ class MixdownWorkspaceState:
         )
 
     def preset_state(self) -> dict[str, Any]:
-        vocals = [row for row in self._tracks if row['id'] != 'instrumental' and row['path']]
+        vocals = [row for row in self._tracks if row['id'] != 'instrumental']
         return {
             'processing': self.processing_state(),
-            'tracks': [{'pan': 0.0, 'reverb_send': float(row['send'])} for row in vocals],
+            'tracks': [{'pan': float(row['pan']), 'reverb_send': float(row['send'])} for row in vocals],
         }
 
     def write_preset_state(self, value: Mapping[str, Any]) -> None:
@@ -748,15 +761,15 @@ class MixdownWorkspaceState:
             self.processing_state(),
             vocals=[{
                 'path': row['path'], 'gain_db': float(row['gain']),
-                'offset_seconds': 0.0, 'mute': bool(row['muted']), 'solo': bool(row['solo']),
-                'pan': 0.0, 'reverb_send': float(row['send']),
+                'offset_seconds': float(row['offset']), 'mute': bool(row['muted']), 'solo': bool(row['solo']),
+                'pan': float(row['pan']), 'reverb_send': float(row['send']),
             } for row in vocals],
             instrumental_path=backing['path'],
             output_path=Path(output_path).resolve(),
             instrumental_db=float(backing['gain']),
             instrumental_mute=bool(backing['muted']),
             instrumental_solo=bool(backing['solo']),
-            instrumental_pan=0.0,
+            instrumental_pan=float(backing['pan']),
             sample_rate=DEFAULT_SAMPLE_RATE,
             bypass_processing=bool(bypass_processing),
         )
@@ -825,6 +838,7 @@ class MixdownWorkspaceState:
             'canPlay': bool(can_play),
             'masterGain': float(self.master_gain),
             'compressionEnabled': bool(self.compression_enabled),
+            'compressionStrength': float(self.compression_strength),
             'compressionThreshold': round(compression['threshold'], 3),
             'compressionRatio': round(compression['ratio'], 3),
             'compressorAttack': round(compression['attack'], 3),
@@ -832,6 +846,7 @@ class MixdownWorkspaceState:
             'reverbEnabled': bool(self.reverb_enabled),
             'reverbRoom': str(self.reverb_room),
             'reverbMix': float(self.reverb_mix),
+            'reverbPredelay': float(self.reverb_predelay_ms),
             'limiterEnabled': True,
             'limiterCeiling': float(PEAK_CEILING_DBFS),
             'maxHz': round(float(max_hz), 5),
