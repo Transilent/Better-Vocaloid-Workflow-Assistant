@@ -11,6 +11,7 @@ Item {
     required property var notes
     required property var regions
     property bool compact: false
+    signal regionFocused()
 
     readonly property real scale: theme.scale || 1
     readonly property bool dark: theme.dark
@@ -33,10 +34,9 @@ Item {
     readonly property real selectionStart: numberOr(view.start, Number.NaN)
     readonly property real selectionEnd: numberOr(view.end, Number.NaN)
 
-    // The Widgets roll uses 40 px per semitone, with a 32 px compact setting.
-    readonly property int pitchRowHeight: Math.round((compact ? 32 : 40) * scale)
+    readonly property int pitchRowHeight: Math.round((compact ? 17 : 20) * scale)
     readonly property real rulerHeight: Math.round(25 * scale)
-    readonly property real regionRowHeight: Math.round(5 * scale)
+    readonly property real regionRowHeight: Math.round(19 * scale)
     readonly property real plotLeft: Math.round((compact ? 48 : 60) * scale)
     readonly property real plotRight: Math.max(plotLeft + 1, width - Math.round(13 * scale))
     readonly property real plotTop: rulerHeight + regionRowCount * regionRowHeight
@@ -47,8 +47,11 @@ Item {
     readonly property real pitchOffset: clamp(topRow, 0, 128 - rowsInView)
     readonly property var visibleNotes: collectNotes()
     readonly property var styleSpans: collectRegions()
-    readonly property int regionRowCount: Object.keys(styleSpans).length
-        ? Math.min(3, Object.keys(targetTracks).length) : 0
+    readonly property var styledTracks: Object.keys(styleSpans)
+        .sort((a, b) => targetTracks[a].order - targetTracks[b].order)
+    readonly property int regionRowCount: hasSource ? Math.max(1, styledTracks.length) : 0
+    readonly property var styleBlocks: visibleStyleBlocks()
+    readonly property var noteEdges: collectEdges()
     readonly property var noteRects: layoutNotes()
     readonly property int visibleNoteCount: visibleNotes.length
     readonly property var focusedNote: visibleNotes.find(entry =>
@@ -134,6 +137,58 @@ Item {
         for (const id of Object.keys(result))
             result[id].sort((a, b) => Number(a.start) - Number(b.start))
         return result
+    }
+
+    function visibleStyleBlocks() {
+        const blocks = []
+        for (let row = 0; row < styledTracks.length; ++row) {
+            for (const region of styleSpans[styledTracks[row]]) {
+                if (region.end > visibleStart && region.start < visibleEnd)
+                    blocks.push({region: region, row: row})
+            }
+        }
+        return blocks
+    }
+
+    function collectEdges() {
+        const all = new Set()
+        const perTrack = Object.create(null)
+        for (const note of visibleNotes) {
+            if (note.lane.track.editable === false)
+                continue
+            if (!perTrack[note.trackId])
+                perTrack[note.trackId] = new Set()
+            for (const edge of [note.start, note.end]) {
+                all.add(edge)
+                perTrack[note.trackId].add(edge)
+            }
+        }
+        const byTime = (a, b) => a - b
+        const tracks = Object.create(null)
+        for (const id of Object.keys(perTrack))
+            tracks[id] = Array.from(perTrack[id]).sort(byTime)
+        return {all: Array.from(all).sort(byTime), tracks: tracks}
+    }
+
+    function snapTime(seconds, modifiers, trackId) {
+        if (!view.snapEnabled || (modifiers & Qt.AltModifier))
+            return seconds
+        const edges = trackId ? noteEdges.tracks[trackId] || [] : noteEdges.all
+        if (!edges.length)
+            return seconds
+        let left = 0
+        let right = edges.length
+        while (left < right) {
+            const mid = (left + right) >> 1
+            if (edges[mid] < seconds)
+                left = mid + 1
+            else
+                right = mid
+        }
+        const a = edges[Math.max(0, left - 1)]
+        const b = edges[Math.min(edges.length - 1, left)]
+        const nearest = Math.abs(seconds - a) <= Math.abs(seconds - b) ? a : b
+        return Math.abs(nearest - seconds) * plotWidth / visibleSpan <= 9 * scale ? nearest : seconds
     }
 
     function styleForNote(note) {
@@ -500,16 +555,17 @@ Item {
         }
 
         function paintRegions(ctx) {
-            const rowHeight = timeline.regionRowHeight
-            const spans = timeline.styleSpans
-            for (const id of Object.keys(spans)) {
-                const row = Math.min(timeline.targetTracks[id].order, timeline.regionRowCount - 1)
-                const y = timeline.rulerHeight + row * rowHeight
-                for (const region of spans[id]) {
-                    const x = Math.max(timeline.plotLeft, timeline.xForTime(Number(region.start)))
-                    const end = Math.min(timeline.plotRight, timeline.xForTime(Number(region.end)))
-                    if (end > x)
-                        fill(ctx, region.color || timeline.theme.accent, x, y, end - x, rowHeight - 1)
+            ctx.font = Math.round(10 * timeline.scale) + "px sans-serif"
+            for (let row = 0; row < timeline.regionRowCount; ++row) {
+                const y = timeline.rulerHeight + row * timeline.regionRowHeight
+                fill(ctx, timeline.theme.raised, 0, y, width, timeline.regionRowHeight)
+                fill(ctx, timeline.theme.line, 0, y + timeline.regionRowHeight - 1, width, 1)
+                const track = timeline.targetTracks[timeline.styledTracks[row]]
+                const label = timeline.multi && track ? track.track.name : "风格"
+                ctx.fillStyle = timeline.theme.muted
+                ctx.fillText(timeline.fittedText(ctx, label, timeline.plotLeft - 10), 6, y + timeline.regionRowHeight / 2)
+                if (!track) {
+                    ctx.fillText("还未应用片段", timeline.plotLeft + 5, y + timeline.regionRowHeight / 2)
                 }
             }
         }
@@ -577,6 +633,148 @@ Item {
         }
     }
 
+    Repeater {
+        model: timeline.styleBlocks
+        Item {
+            id: styleBlock
+            required property var modelData
+            readonly property var region: modelData.region
+            readonly property color tint: region.color || timeline.theme.accent
+            readonly property real firstX: timeline.xForTime(Number(region.start))
+            readonly property real lastX: timeline.xForTime(Number(region.end))
+            x: Math.max(timeline.plotLeft, firstX)
+            y: timeline.rulerHeight + modelData.row * timeline.regionRowHeight + 1
+            width: Math.max(0, Math.min(timeline.plotRight, lastX) - x)
+            height: timeline.regionRowHeight - 2
+            visible: width > 0
+
+            function openRegion() {
+                timeline.regionFocused()
+                timeline.controller.editRegion(String(region.id))
+            }
+
+            Button {
+                id: regionButton
+                objectName: "tuningStyleBand_" + String(styleBlock.region.id)
+                anchors.fill: parent
+                hoverEnabled: true
+                padding: 0
+                leftPadding: Math.round(5 * timeline.scale)
+                rightPadding: leftPadding
+                text: String(styleBlock.region.label)
+                enabled: !timeline.view.busy
+                Accessible.name: styleBlock.region.trackName + " · " + text
+                ToolTip.visible: (styleDrag.containsMouse || visualFocus) && !styleDrag.pressed
+                ToolTip.text: Accessible.name + " · " + timeline.formatTime(styleBlock.region.start, 3)
+                    + " – " + timeline.formatTime(styleBlock.region.end, 3)
+                ToolTip.delay: 500
+                onClicked: styleBlock.openRegion()
+                contentItem: Text {
+                    text: regionButton.text
+                    color: "#ffffff"
+                    elide: Text.ElideRight
+                    verticalAlignment: Text.AlignVCenter
+                    font.pixelSize: Math.round(10 * timeline.scale)
+                    textFormat: Text.PlainText
+                }
+                background: Rectangle {
+                    radius: 3
+                    color: Qt.darker(styleBlock.tint, styleDrag.containsMouse ? 1 : 1.25)
+                    border.color: regionButton.visualFocus ? timeline.theme.text : styleBlock.tint
+                    Repeater {
+                        model: styleDrag.containsMouse && parent.width >= 26 ? 2 : 0
+                        Rectangle {
+                            required property int index
+                            x: index === 0 ? 2 : parent.width - 4
+                            y: 3
+                            width: 2
+                            height: Math.max(0, parent.height - 6)
+                            radius: 1
+                            color: "#ffffff"
+                            opacity: 0.65
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                visible: styleDrag.pressed && styleDrag.moved
+                x: Math.max(timeline.plotLeft, timeline.xForTime(styleDrag.start)) - styleBlock.x
+                width: Math.max(0, Math.min(timeline.plotRight, timeline.xForTime(styleDrag.end))
+                    - styleBlock.x - x)
+                height: parent.height
+                border.color: timeline.theme.text
+                color: Qt.rgba(styleBlock.tint.r, styleBlock.tint.g, styleBlock.tint.b, 0.55)
+                radius: 3
+            }
+            MouseArea {
+                id: styleDrag
+                anchors.fill: parent
+                acceptedButtons: Qt.LeftButton
+                hoverEnabled: true
+                preventStealing: true
+                enabled: regionButton.enabled
+                property real pressX
+                property real start
+                property real end
+                property bool moved: false
+                property string mode: ""
+                function grip(x) {
+                    const hit = Math.min(8 * timeline.scale, width / 3)
+                    return x < hit && styleBlock.firstX >= timeline.plotLeft ? "left"
+                        : x > width - hit && styleBlock.lastX <= timeline.plotRight ? "right" : "move"
+                }
+                cursorShape: (pressed ? mode : grip(mouseX)) !== "move" ? Qt.SizeHorCursor
+                    : (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor)
+                onPressed: mouse => {
+                    pressX = mouse.x
+                    mode = grip(mouse.x)
+                    start = Number(styleBlock.region.start)
+                    end = Number(styleBlock.region.end)
+                    moved = false
+                    regionButton.forceActiveFocus(Qt.MouseFocusReason)
+                }
+                onPositionChanged: mouse => {
+                    const delta = mouse.x - pressX
+                    if (!pressed || (!moved && Math.abs(delta) < 3))
+                        return
+                    moved = true
+                    const first = Number(styleBlock.region.start)
+                    const last = Number(styleBlock.region.end)
+                    const shift = delta * timeline.visibleSpan / timeline.plotWidth
+                    const track = String(styleBlock.region.trackId)
+                    if (mode === "left") {
+                        start = timeline.clamp(timeline.snapTime(first + shift, mouse.modifiers, track),
+                                               timeline.origin, last - .025)
+                    } else if (mode === "right") {
+                        end = timeline.clamp(timeline.snapTime(last + shift, mouse.modifiers, track),
+                                             first + .025, timeline.fullEnd)
+                    } else {
+                        const nearFirst = timeline.snapTime(first + shift, mouse.modifiers, track) - first
+                        const nearLast = timeline.snapTime(last + shift, mouse.modifiers, track) - last
+                        const snapped = nearFirst === shift ? nearLast : nearLast === shift ? nearFirst
+                            : (Math.abs(nearFirst - shift) <= Math.abs(nearLast - shift) ? nearFirst : nearLast)
+                        const bounded = timeline.clamp(snapped, timeline.origin - first, timeline.fullEnd - last)
+                        start = first + bounded
+                        end = last + bounded
+                    }
+                }
+                onReleased: {
+                    if (moved) {
+                        const nextStart = start
+                        const nextEnd = end
+                        moved = false
+                        timeline.regionFocused()
+                        timeline.controller.moveRegion(String(styleBlock.region.id), nextStart, nextEnd)
+                    } else {
+                        styleBlock.openRegion()
+                    }
+                }
+                onCanceled: moved = false
+            }
+        }
+    }
+
     MouseArea {
         width: timeline.plotLeft
         y: timeline.plotTop
@@ -615,19 +813,19 @@ Item {
             }
             timeline.pressX = mouse.x
             timeline.pressY = mouse.y
-            timeline.pressTime = timeline.timeForPlotX(mouse.x)
+            timeline.pressTime = timeline.snapTime(timeline.timeForPlotX(mouse.x), mouse.modifiers, "")
             timeline.dragTime = timeline.pressTime
         }
         onPositionChanged: function(mouse) {
             if (pressed && timeline.pressX >= 0)
-                timeline.dragTime = timeline.timeForPlotX(mouse.x)
+                timeline.dragTime = timeline.snapTime(timeline.timeForPlotX(mouse.x), mouse.modifiers, "")
         }
         onReleased: function(mouse) {
             if (timeline.pressX < 0)
                 return
             const dx = Math.abs(mouse.x - timeline.pressX)
             const dy = Math.abs(mouse.y - timeline.pressY)
-            const end = timeline.timeForPlotX(mouse.x)
+            const end = timeline.snapTime(timeline.timeForPlotX(mouse.x), mouse.modifiers, "")
             const first = Math.min(timeline.pressTime, end)
             const last = Math.max(timeline.pressTime, end)
             const note = dx < 2 && dy < 3
@@ -636,7 +834,7 @@ Item {
             if (timeline.view.busy === true)
                 return
             if (dx >= 2 && last > first)
-                timeline.controller.selectSpan(first, last)
+                timeline.controller.finishTimelineSelection(first, last)
             else if (note)
                 timeline.selectNote(note)
         }

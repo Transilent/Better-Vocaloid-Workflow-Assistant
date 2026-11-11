@@ -30,19 +30,22 @@ ScrollView {
     readonly property int contentMargin: stacked ? 12 : 18
     readonly property int editorPadding: Math.round(10 * scale)
     readonly property int editorGap: Math.round(6 * scale)
-    readonly property real railWidth: Math.round(322 * scale)
+    readonly property real railWidth: Math.round(246 * scale)
     readonly property real minimumRollHeight: Math.round((stacked ? 170 : 220) * scale)
     readonly property bool hasRange: validRange().length > 0
     readonly property bool hasLegacyDraft: hasValue(view.legacyDraft)
     readonly property bool targetEditable: editableTargets()
     readonly property bool canAddRegion: hasSource && hasRange && !busy && !hasLegacyDraft
-        && targetIds().length > 0 && targetEditable && textOf(view.style).length > 0
+        && targetIds().length > 0 && targetEditable
+        && (textOf(view.style) !== "none" || textOf(view.style_technique) !== "none")
     readonly property bool candidatePresent: hasValue(view.candidate)
     readonly property bool expressionModeKnown: textOf(view.expressionMode).length > 0
     readonly property int regionCount: regions.length
 
     property int retainedIndexDraft: 0
     property string selectedPresetKey: ""
+    property string inspectorTab: "style"
+    property bool showStyleDetails: false
 
     contentWidth: availableWidth
     clip: true
@@ -196,6 +199,35 @@ ScrollView {
     function strengthText(value) {
         const strength = numberOr(value, 0)
         return String(Math.round(Math.max(0, Math.min(1, strength)) * 100)) + "%"
+    }
+
+    function presetFieldName(field) {
+        const names = {performance_style:"风格", style_strength:"风格强度", style_pitch:"附加音高",
+            style_detail:"风格细节", style_technique:"唱腔", technique_strength:"唱腔强度",
+            technique_pitch:"唱腔音高", dynamics_strength:"动态强度", expression_mode:"表达来源",
+            expression_density:"表达采样", reference_dynamics:"参考力度", reference_tension:"参考张力",
+            reference_breathiness:"参考气声", reference_voicing:"参考发声", track_indices:"目标轨道"}
+        return names[field] || field
+    }
+
+    function presetValue(field, value) {
+        if (field === "performance_style")
+            return styleLabel(value)
+        if (field === "style_technique") {
+            const item = techniqueFor(value)
+            return item ? item.label : textOf(value)
+        }
+        if (field.endsWith("_strength"))
+            return strengthText(value)
+        if (field === "style_detail" && value)
+            return [value.onset, value.sustain, value.connection, value.release].map(strengthText).join(" / ")
+        if (typeof value === "boolean")
+            return value ? "开启" : "关闭"
+        if (field === "expression_mode")
+            return {preserve:"保留原表现", reference:"参考音频", calibrated:"校准 + 参考", retained:"沿用原参数"}[value] || value
+        if (field === "expression_density")
+            return value === "dense" ? "加密采样" : "原始采样"
+        return value === null || value === undefined ? "—" : String(value)
     }
 
     function styleIndex(styleId) {
@@ -521,6 +553,62 @@ ScrollView {
         bottomPadding: 0
     }
 
+    component RecipeButton: EditorButton {
+        id: recipe
+        required property color tint
+        required property string fullLabel
+        Accessible.name: fullLabel
+        Accessible.checkable: true
+        Accessible.checked: selected
+        ToolTip.visible: hovered || visualFocus
+        ToolTip.text: fullLabel
+        background: Rectangle {
+            radius: Math.round(6 * recipe.theme.scale)
+            color: Qt.rgba(recipe.tint.r, recipe.tint.g, recipe.tint.b,
+                           recipe.selected ? 0.52 : recipe.hovered ? 0.30 : 0.17)
+            border.color: recipe.selected || recipe.visualFocus ? recipe.tint : recipe.theme.line
+            border.width: recipe.selected || recipe.visualFocus ? 2 : 1
+            Rectangle {
+                anchors.left: parent.left
+                anchors.leftMargin: 5
+                anchors.verticalCenter: parent.verticalCenter
+                width: 5; height: 5; radius: 2.5
+                color: recipe.tint
+            }
+        }
+    }
+
+    component StrengthRow: RowLayout {
+        id: strengthRow
+        required property string label
+        required property string sliderName
+        required property real amount
+        property string valueName: ""
+        signal edited(real amount)
+        Layout.fillWidth: true
+        spacing: page.editorGap
+        HelperText {
+            theme: page.theme
+            Layout.minimumWidth: Math.round(46 * page.scale)
+            text: strengthRow.label
+        }
+        PercentSlider {
+            objectName: strengthRow.sliderName
+            Layout.fillWidth: true
+            strength: strengthRow.amount
+            enabled: !page.busy && page.hasSource && strengthRow.enabled
+            Accessible.name: strengthRow.label
+            onMoved: strengthRow.edited(value / 100)
+        }
+        HelperText {
+            objectName: strengthRow.valueName
+            theme: page.theme
+            Layout.minimumWidth: Math.round(33 * page.scale)
+            horizontalAlignment: Text.AlignRight
+            text: page.strengthText(strengthRow.amount)
+        }
+    }
+
     component PercentSlider: Slider {
         id: slider
         required property real strength
@@ -837,6 +925,19 @@ ScrollView {
                                 enabled: page.hasSource
                                 onClicked: page.fitTimelineView()
                             }
+                            EditorButton {
+                                objectName: "tuningSnapToNotes"
+                                theme: page.theme
+                                text: "吸附"
+                                quiet: true
+                                selected: !!page.view.snapEnabled
+                                enabled: page.hasSource
+                                Accessible.checkable: true
+                                Accessible.checked: selected
+                                ToolTip.visible: hovered || visualFocus
+                                ToolTip.text: "吸附到附近音符边界 · Alt 临时跳过"
+                                onClicked: page.controller.setSnapEnabled(!page.view.snapEnabled)
+                            }
                         }
 
                         Rectangle {
@@ -982,6 +1083,7 @@ ScrollView {
                             notes: page.notes
                             regions: page.regions
                             compact: page.stacked
+                            onRegionFocused: page.inspectorTab = "style"
                         }
                     }
 
@@ -1077,15 +1179,6 @@ ScrollView {
                                 onClicked: page.commitPreciseSelection()
                             }
                         }
-                        Item { Layout.fillWidth: true; visible: selectionToolbar.columns > 1 }
-                        EditorButton {
-                            objectName: "addTuningRegion"
-                            theme: page.theme
-                            text: "应用为片段"
-                            primary: true
-                            enabled: page.canAddRegion
-                            onClicked: page.controller.addRegion()
-                        }
                     }
                 }
             }
@@ -1095,891 +1188,1002 @@ ScrollView {
                 objectName: "tuningInspectorPanel"
                 Layout.fillWidth: page.stacked
                 Layout.preferredWidth: page.stacked ? 0 : page.railWidth
+                Layout.minimumWidth: page.stacked ? 0 : page.railWidth
+                Layout.preferredHeight: page.stacked ? Math.round(560 * page.scale) : workspacePanel.height
                 Layout.alignment: Qt.AlignTop
-                implicitHeight: inspectorColumn.implicitHeight + 2 * page.editorPadding
-                radius: Math.round(10 * page.scale)
+                radius: Math.round(8 * page.scale)
                 color: page.theme.surface
-                border.width: 1
                 border.color: page.theme.line
+                clip: true
 
                 ColumnLayout {
-                    id: inspectorColumn
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.margins: page.editorPadding
+                    anchors.fill: parent
+                    anchors.margins: Math.round(8 * page.scale)
                     spacing: page.editorGap
-
                     RowLayout {
                         Layout.fillWidth: true
-                        spacing: Math.round(8 * page.scale)
-                        PanelLabel {
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: "风格与已应用片段"
-                        }
-                        Rectangle {
-                            implicitWidth: Math.round(10 * page.scale)
-                            implicitHeight: implicitWidth
-                            radius: implicitWidth / 2
-                            color: page.styleColor(page.view.style)
-                        }
-                    }
-
-                    UiComboBox {
-                        id: stylePicker
-                        objectName: "tuningStylePicker"
-                        Layout.fillWidth: true
-                        theme: page.theme
-                        model: page.styles
-                        textRole: "label"
-                        valueRole: "id"
-                        currentIndex: page.styleIndex(page.view.style)
-                        enabled: !page.busy && page.styles.length > 0
-                        Accessible.name: "风格"
-                        onActivated: function(index) {
-                            if (index >= 0 && index < page.styles.length)
-                                page.controller.setStyle(String(page.styles[index].id))
-                        }
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: page.editorGap
-                        HelperText {
-                            theme: page.theme
-                            text: "风格强度"
-                        }
-                        PercentSlider {
-                            objectName: "tuningStyleStrengthSlider"
-                            Layout.fillWidth: true
-                            strength: page.numberOr(page.view.styleStrength, 0)
-                            enabled: !page.busy && page.hasSource
-                            Accessible.name: "风格强度"
-                            onMoved: page.controller.setStyleStrength(value / 100)
-                        }
-                        Text {
-                            objectName: "tuningStyleStrengthPercent"
-                            Layout.minimumWidth: Math.round(32 * page.scale)
-                            horizontalAlignment: Text.AlignRight
-                            text: page.strengthText(page.view.styleStrength)
-                            color: page.theme.text
-                            font.pixelSize: Math.round(12 * page.scale)
-                            font.weight: Font.DemiBold
-                            textFormat: Text.PlainText
-                        }
-                        EditorButton {
-                            objectName: "tuningStylePitch"
-                            theme: page.theme
-                            text: boolOr(page.view.stylePitch, false) ? "音高 · 开" : "音高 · 关"
-                            selected: boolOr(page.view.stylePitch, false)
-                            enabled: !page.busy
-                            onClicked: page.controller.setStylePitch(!boolOr(page.view.stylePitch, false))
-                        }
-                    }
-
-                    HelperText {
-                        Layout.fillWidth: true
-                        visible: page.regionCount === 0
-                        theme: page.theme
-                        text: "选好区间和风格后，应用为片段。"
-                    }
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        visible: page.regionCount > 0
-                        Layout.preferredHeight: Math.min(page.regionCount, 3) * Math.round(42 * page.scale) + 2
-                        radius: Math.round(8 * page.scale)
-                        color: page.theme.base
-                        border.width: 1
-                        border.color: page.theme.line
-                        clip: true
-
-                        ListView {
-                            id: regionList
-                            objectName: "tuningRegions"
-                            anchors.fill: parent
-                            anchors.margins: 1
-                            clip: true
-                            model: page.regions
-                            boundsBehavior: Flickable.StopAtBounds
-                            ScrollBar.vertical: ScrollBar {}
-
-                            delegate: Rectangle {
-                                id: regionRow
+                        spacing: 2
+                        Repeater {
+                            model: [{key:"style", label:"风格"}, {key:"source", label:"来源"},
+                                    {key:"presets", label:"预设"}, {key:"result", label:"结果"}]
+                            EditorButton {
                                 required property var modelData
-                                width: regionList.width
-                                height: Math.round(42 * page.scale)
-                                color: regionHover.hovered ? page.theme.raised : "transparent"
+                                objectName: "tuningInspector_" + modelData.key
+                                Layout.fillWidth: true
+                                theme: page.theme
+                                quiet: true
+                                text: modelData.label
+                                selected: page.inspectorTab === modelData.key
+                                onClicked: page.inspectorTab = modelData.key
+                            }
+                        }
+                    }
+                    Divider {}
+                    ScrollView {
+                        id: inspectorScroll
+                        objectName: "tuningInspectorScroll"
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        contentWidth: availableWidth
+                        clip: true
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                        ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                        Connections {
+                            target: page
+                            function onInspectorTabChanged() { inspectorScroll.contentItem.contentY = 0 }
+                        }
+                        ColumnLayout {
+                            width: inspectorScroll.availableWidth
+                            spacing: page.editorGap
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                visible: page.inspectorTab === "style"
+                                spacing: page.editorGap
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    PanelLabel { Layout.fillWidth: true; theme: page.theme; text: "风格" }
+                                    EditorButton {
+                                        objectName: "tuningStylePitch"
+                                        theme: page.theme
+                                        text: "附加音高"
+                                        quiet: true
+                                        selected: !!page.view.stylePitch
+                                        enabled: !page.busy && page.hasSource
+                                        onClicked: page.controller.setStylePitch(!page.view.stylePitch)
+                                    }
+                                }
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    columns: 2
+                                    uniformCellWidths: true
+                                    columnSpacing: page.editorGap
+                                    rowSpacing: page.editorGap
+                                    Repeater {
+                                        model: page.styles
+                                        RecipeButton {
+                                            required property var modelData
+                                            objectName: "tuningStyle_" + String(modelData.id)
+                                            Layout.fillWidth: true
+                                            theme: page.theme
+                                            text: String(modelData.short || modelData.label)
+                                            fullLabel: String(modelData.label)
+                                            tint: modelData.color || page.theme.muted
+                                            selected: String(page.view.style) === String(modelData.id)
+                                            enabled: !page.busy && page.hasSource
+                                            onClicked: page.controller.setStyle(String(modelData.id))
+                                        }
+                                    }
+                                }
+                                StrengthRow {
+                                    label: "风格强度"
+                                    sliderName: "tuningStyleStrengthSlider"
+                                    valueName: "tuningStyleStrengthPercent"
+                                    amount: page.numberOr(page.view.styleStrength, 0)
+                                    onEdited: amount => page.controller.setStyleStrength(amount)
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    PanelLabel { Layout.fillWidth: true; theme: page.theme; text: "唱腔" }
+                                    EditorButton {
+                                        objectName: "tuningTechniquePitch"
+                                        theme: page.theme
+                                        text: "倚滑与收腔"
+                                        quiet: true
+                                        selected: !!page.view.technique_pitch
+                                        enabled: !page.busy && page.hasSource && page.view.style_technique !== "none"
+                                        onClicked: page.toggleOption("technique_pitch")
+                                    }
+                                }
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    columns: 2
+                                    uniformCellWidths: true
+                                    columnSpacing: page.editorGap
+                                    rowSpacing: page.editorGap
+                                    Repeater {
+                                        model: page.techniques
+                                        RecipeButton {
+                                            required property var modelData
+                                            objectName: "tuningTechnique_" + String(modelData.id)
+                                            Layout.fillWidth: true
+                                            theme: page.theme
+                                            text: String(modelData.short || modelData.label)
+                                            fullLabel: String(modelData.label)
+                                            tint: modelData.color || page.theme.muted
+                                            selected: String(page.view.style_technique) === String(modelData.id)
+                                            enabled: !page.busy && page.hasSource
+                                            onClicked: page.controller.setTuningOption("style_technique", String(modelData.id))
+                                        }
+                                    }
+                                }
+                                StrengthRow {
+                                    label: "唱腔强度"
+                                    sliderName: "tuningTechniqueStrengthSlider"
+                                    amount: page.numberOr(page.view.technique_strength, 0)
+                                    enabled: page.view.style_technique !== "none"
+                                    onEdited: amount => page.controller.setTuningOption("technique_strength", amount)
+                                }
+                                EditorButton {
+                                    objectName: "tuningStyleDetailToggle"
+                                    theme: page.theme
+                                    text: page.showStyleDetails ? "收起风格细节" : "起音、持续、衔接、收尾…"
+                                    quiet: true
+                                    selected: page.showStyleDetails
+                                    onClicked: page.showStyleDetails = !page.showStyleDetails
+                                }
+                                ColumnLayout {
+                                    visible: page.showStyleDetails
+                                    Layout.fillWidth: true
+                                    spacing: 0
+                                    Repeater {
+                                        model: [{key:"onset", label:"起音"}, {key:"sustain", label:"持续"},
+                                                {key:"connection", label:"衔接"}, {key:"release", label:"收尾"}]
+                                        StrengthRow {
+                                            required property var modelData
+                                            label: modelData.label
+                                            sliderName: "tuningStyleDetail_" + modelData.key
+                                            amount: page.numberOr((page.view.styleDetail || {})[modelData.key], 1)
+                                            onEdited: amount => page.controller.setStyleDetail(modelData.key, amount)
+                                        }
+                                    }
+                                }
+                                Divider {}
+                                EditorButton {
+                                    objectName: "addTuningRegion"
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    text: "应用为片段"
+                                    primary: true
+                                    enabled: page.canAddRegion
+                                    onClicked: page.controller.addRegion()
+                                }
+                                CheckBox {
+                                    objectName: "tuningAutoApplySelection"
+                                    text: "框选即应用"
+                                    font.pixelSize: Math.round(12 * page.scale)
+                                    checked: !!page.view.autoApplySelection
+                                    onClicked: page.controller.setAutoApplySelection(checked)
+                                    ToolTip.visible: hovered || visualFocus
+                                    ToolTip.text: "拖选松手后应用当前风格和唱腔并保存草稿；点音符或输入时间仍只选择。"
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 2
+                                    PanelLabel { Layout.fillWidth: true; theme: page.theme; text: "片段" }
+                                    EditorButton {
+                                        objectName: "undoTuningRegions"
+                                        theme: page.theme; text: "撤销"; quiet: true
+                                        enabled: !page.busy && !!page.view.canUndoRegions
+                                        onClicked: page.controller.undoRegions()
+                                    }
+                                    EditorButton {
+                                        objectName: "redoTuningRegions"
+                                        theme: page.theme; text: "重做"; quiet: true
+                                        enabled: !page.busy && !!page.view.canRedoRegions
+                                        onClicked: page.controller.redoRegions()
+                                    }
+                                    EditorButton {
+                                        objectName: "clearTuningRegions"
+                                        theme: page.theme; text: "清空…"; quiet: true
+                                        enabled: !page.busy && page.regionCount > 0
+                                        onClicked: clearRegionsDialog.open()
+                                    }
+                                }
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    visible: page.regionCount > 0
+                                    Layout.preferredHeight: Math.min(page.regionCount, 3) * Math.round(42 * page.scale) + 2
+                                    radius: Math.round(8 * page.scale)
+                                    color: page.theme.base
+                                    border.width: 1
+                                    border.color: page.theme.line
+                                    clip: true
 
-                                HoverHandler { id: regionHover }
+                                    ListView {
+                                        id: regionList
+                                        objectName: "tuningRegions"
+                                        anchors.fill: parent
+                                        anchors.margins: 1
+                                        clip: true
+                                        model: page.regions
+                                        boundsBehavior: Flickable.StopAtBounds
+                                        ScrollBar.vertical: ScrollBar {}
+
+                                        delegate: Rectangle {
+                                            id: regionRow
+                                            required property var modelData
+                                            width: regionList.width
+                                            height: Math.round(42 * page.scale)
+                                            color: regionHover.hovered ? page.theme.raised : "transparent"
+
+                                            HoverHandler { id: regionHover }
+
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.leftMargin: Math.round(9 * page.scale)
+                                                anchors.rightMargin: Math.round(6 * page.scale)
+                                                spacing: Math.round(3 * page.scale)
+
+                                                Rectangle {
+                                                    implicitWidth: Math.round(8 * page.scale)
+                                                    implicitHeight: Math.round(30 * page.scale)
+                                                    radius: width / 2
+                                                    color: page.textOf(regionRow.modelData.color).length > 0
+                                                        ? regionRow.modelData.color
+                                                        : page.styleColor(regionRow.modelData.style)
+                                                }
+
+                                                ColumnLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: 0
+                                                    Text {
+                                                        Layout.fillWidth: true
+                                                        text: regionRow.modelData.label
+                                                            || page.styleLabel(regionRow.modelData.style)
+                                                        color: page.theme.text
+                                                        font.pixelSize: Math.round(11 * page.scale)
+                                                        font.weight: Font.DemiBold
+                                                        elide: Text.ElideRight
+                                                        textFormat: Text.PlainText
+                                                    }
+                                                    Text {
+                                                        Layout.fillWidth: true
+                                                        text: page.trackName(regionRow.modelData.trackId)
+                                                            + " · " + Number(regionRow.modelData.start).toFixed(2)
+                                                            + "–" + Number(regionRow.modelData.end).toFixed(2) + " s"
+                                                        color: page.theme.muted
+                                                        font.pixelSize: Math.round(10 * page.scale)
+                                                        elide: Text.ElideRight
+                                                        textFormat: Text.PlainText
+                                                    }
+                                                }
+
+                                                EditorButton {
+                                                    theme: page.theme
+                                                    glyph: "edit"
+                                                    text: "编辑片段"
+                                                    quiet: true
+                                                    enabled: !page.busy
+                                                    onClicked: page.controller.editRegion(String(regionRow.modelData.id))
+                                                }
+                                                EditorButton {
+                                                    objectName: "updateTuningRegion_" + String(regionRow.modelData.id)
+                                                    theme: page.theme
+                                                    glyph: "check"
+                                                    text: "更新片段"
+                                                    quiet: true
+                                                    enabled: !page.busy && page.hasRange
+                                                        && page.textOf(regionRow.modelData.id).length > 0
+                                                    onClicked: page.controller.updateRegion(
+                                                        String(regionRow.modelData.id))
+                                                    Accessible.name: "用当前选区和风格更新此逐轨片段"
+                                                    ToolTip.text: "轨道按此片段固定；范围和风格取当前选区"
+                                                }
+                                                EditorButton {
+                                                    theme: page.theme
+                                                    text: "移除"
+                                                    quiet: true
+                                                    enabled: !page.busy
+                                                        && page.textOf(regionRow.modelData.id).length > 0
+                                                    onClicked: page.controller.removeRegion(
+                                                        String(regionRow.modelData.id))
+                                                }
+                                            }
+
+                                            Rectangle {
+                                                anchors.left: parent.left
+                                                anchors.right: parent.right
+                                                anchors.bottom: parent.bottom
+                                                height: 1
+                                                color: page.theme.line
+                                                opacity: 0.7
+                                            }
+                                        }
+                                    }
+                                }
+
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                visible: page.inspectorTab === "source"
+                                spacing: page.editorGap
+                                PanelLabel {
+                                    theme: page.theme
+                                    text: "表达来源与调音选项"
+                                }
+
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    columns: 2
+                                    columnSpacing: Math.round(5 * page.scale)
+                                    rowSpacing: Math.round(5 * page.scale)
+
+                                    EditorButton {
+                                        objectName: "expressionPreserve"
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: "保留原表现"
+                                        selected: page.textOf(page.view.expressionMode) === "preserve"
+                                        enabled: !page.busy && page.hasSource
+                                        onClicked: page.controller.setExpressionMode("preserve")
+                                    }
+                                    EditorButton {
+                                        objectName: "expressionReference"
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: "参考音频"
+                                        selected: page.textOf(page.view.expressionMode) === "reference"
+                                        enabled: !page.busy && page.hasSource
+                                        onClicked: page.controller.setExpressionMode("reference")
+                                    }
+                                    EditorButton {
+                                        objectName: "expressionCalibrated"
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: "校准 + 参考"
+                                        selected: page.textOf(page.view.expressionMode) === "calibrated"
+                                        enabled: !page.busy && page.hasSource
+                                        onClicked: page.controller.setExpressionMode("calibrated")
+                                    }
+                                    EditorButton {
+                                        objectName: "expressionRetained"
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: "沿用原参数"
+                                        selected: page.textOf(page.view.expressionMode) === "retained"
+                                        enabled: !page.busy && page.hasSource
+                                        onClicked: page.controller.setExpressionMode("retained")
+                                    }
+                                }
+
+                                HelperText {
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    text: page.expressionModeKnown
+                                        ? "四种来源共用当前轨道与区间；外部声库渲染仍由你手动完成。"
+                                        : "表达来源状态待后端回读；可先选择一种真实来源。"
+                                }
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: "焦点轨：" + (page.activeId.length > 0
+                                        ? page.trackName(page.activeId) : "未选择")
+                                    color: page.theme.text
+                                    font.pixelSize: Math.round(11 * page.scale)
+                                    font.weight: Font.DemiBold
+                                    wrapMode: Text.Wrap
+                                    textFormat: Text.PlainText
+                                }
+
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    columns: page.compact ? 1 : 2
+                                    columnSpacing: Math.round(6 * page.scale)
+                                    rowSpacing: Math.round(6 * page.scale)
+
+                                    HelperText {
+                                        Layout.alignment: Qt.AlignVCenter
+                                        theme: page.theme
+                                        text: "参考音频"
+                                        visible: page.expressionSourceAllows(["reference", "calibrated"])
+                                    }
+                                    EditorButton {
+                                        objectName: "bindReferenceAudio"
+                                        visible: page.expressionSourceAllows(["reference", "calibrated"])
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: page.textOf(page.bindingField("reference", "")).length > 0
+                                            ? "更换参考…" : "选择参考…"
+                                        enabled: !page.busy && page.activeId.length > 0
+                                            && page.activeTrackData !== null
+                                            && page.activeTrackData.editable !== false
+                                            && page.expressionSourceAllows(["reference", "calibrated"])
+                                        onClicked: {
+                                            referenceDialog.trackId = page.activeId
+                                            referenceDialog.open()
+                                        }
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        Layout.columnSpan: page.compact ? 1 : 2
+                                        visible: page.textOf(page.bindingField("reference", "")).length > 0
+                                        text: page.fileName(page.bindingField("reference", ""))
+                                        color: page.theme.muted
+                                        font.pixelSize: Math.round(10 * page.scale)
+                                        elide: Text.ElideMiddle
+                                        textFormat: Text.PlainText
+                                    }
+                                    HelperText {
+                                        theme: page.theme
+                                        visible: page.textOf(page.bindingField("reference", "")).length > 0
+                                        text: "参考声部"
+                                    }
+                                    UiComboBox {
+                                        theme: page.theme
+                                        Layout.fillWidth: true
+                                        visible: page.textOf(page.bindingField("reference", "")).length > 0
+                                        model: [{label: "主唱", value: "lead"}, {label: "和声", value: "backing"},
+                                                {label: "合并人声", value: "vocals"}]
+                                        currentIndex: indexOfValue(page.bindingField("referenceVoice", ""))
+                                        enabled: !page.busy
+                                        onActivated: page.controller.setReferenceVoice(page.activeId, currentValue)
+                                    }
+
+                                    HelperText {
+                                        Layout.alignment: Qt.AlignVCenter
+                                        theme: page.theme
+                                        text: "校准配置"
+                                        visible: page.view.expressionMode === "calibrated"
+                                    }
+                                    EditorButton {
+                                        objectName: "bindCalibrationProfile"
+                                        visible: page.view.expressionMode === "calibrated"
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: "选择 JSON…"
+                                        enabled: !page.busy && page.hasSource
+                                            && page.textOf(page.view.expressionMode) === "calibrated"
+                                        onClicked: calibrationDialog.open()
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        Layout.columnSpan: page.compact ? 1 : 2
+                                        visible: page.textOf(page.view.calibration).length > 0
+                                        text: page.fileName(page.view.calibration)
+                                        color: page.theme.muted
+                                        font.pixelSize: Math.round(10 * page.scale)
+                                        elide: Text.ElideMiddle
+                                        textFormat: Text.PlainText
+                                    }
+
+                                    HelperText {
+                                        Layout.alignment: Qt.AlignVCenter
+                                        theme: page.theme
+                                        text: "沿用的原 SVP"
+                                        visible: page.view.expressionMode === "retained"
+                                    }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        visible: page.view.expressionMode === "retained"
+                                        spacing: Math.round(5 * page.scale)
+                                        SpinBox {
+                                            id: retainedIndexInput
+                                            objectName: "retainedSourceTrackIndex"
+                                            Layout.preferredWidth: Math.round(96 * page.scale)
+                                            from: 0
+                                            to: 255
+                                            value: page.retainedIndexDraft
+                                            editable: true
+                                            enabled: !page.busy && page.activeId.length > 0
+                                            Accessible.name: "原工程源轨索引"
+                                            onValueModified: page.retainedIndexDraft = value
+                                        }
+                                        EditorButton {
+                                            objectName: "bindRetainedProject"
+                                            Layout.fillWidth: true
+                                            theme: page.theme
+                                            text: page.textOf(page.bindingField("retained", "")).length > 0
+                                                ? "更换 SVP…" : "选择 SVP…"
+                                            enabled: !page.busy && page.activeId.length > 0
+                                                && page.activeTrackData !== null
+                                                && page.activeTrackData.editable !== false
+                                                && page.textOf(page.view.expressionMode) === "retained"
+                                            onClicked: {
+                                                retainedDialog.trackId = page.activeId
+                                                retainedDialog.sourceTrackIndex = page.retainedIndexDraft
+                                                retainedDialog.open()
+                                            }
+                                        }
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        Layout.columnSpan: page.compact ? 1 : 2
+                                        visible: page.textOf(page.bindingField("retained", "")).length > 0
+                                        text: page.fileName(page.bindingField("retained", ""))
+                                            + "  ·  源轨索引 " + page.retainedIndexDraft
+                                        color: page.theme.muted
+                                        font.pixelSize: Math.round(10 * page.scale)
+                                        elide: Text.ElideMiddle
+                                        textFormat: Text.PlainText
+                                    }
+                                }
+
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    visible: page.expressionSourceAllows(["reference", "calibrated"])
+                                    columns: 2
+                                    columnSpacing: Math.round(5 * page.scale)
+                                    rowSpacing: Math.round(5 * page.scale)
+
+                                    EditorButton {
+                                        objectName: "optionReferenceDynamics"
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: page.boolOptionText("reference_dynamics", "参考力度")
+                                        selected: boolOr(page.optionValue("reference_dynamics", false), false)
+                                        enabled: !page.busy
+                                        onClicked: page.toggleOption("reference_dynamics")
+                                    }
+                                    EditorButton {
+                                        objectName: "optionReferenceTension"
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: page.boolOptionText("reference_tension", "参考张力")
+                                        selected: boolOr(page.optionValue("reference_tension", false), false)
+                                        enabled: !page.busy
+                                        onClicked: page.toggleOption("reference_tension")
+                                    }
+                                    EditorButton {
+                                        objectName: "optionReferenceBreathiness"
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: page.boolOptionText("reference_breathiness", "参考气声")
+                                        selected: boolOr(page.optionValue("reference_breathiness", false), false)
+                                        enabled: !page.busy
+                                        onClicked: page.toggleOption("reference_breathiness")
+                                    }
+                                    EditorButton {
+                                        objectName: "optionReferenceVoicing"
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: page.boolOptionText("reference_voicing", "参考发声")
+                                        selected: boolOr(page.optionValue("reference_voicing", false), false)
+                                        enabled: !page.busy
+                                        onClicked: page.toggleOption("reference_voicing")
+                                    }
+                                }
 
                                 RowLayout {
-                                    anchors.fill: parent
-                                    anchors.leftMargin: Math.round(9 * page.scale)
-                                    anchors.rightMargin: Math.round(6 * page.scale)
-                                    spacing: Math.round(7 * page.scale)
-
-                                    Rectangle {
-                                        implicitWidth: Math.round(8 * page.scale)
-                                        implicitHeight: Math.round(30 * page.scale)
-                                        radius: width / 2
-                                        color: page.textOf(regionRow.modelData.color).length > 0
-                                            ? regionRow.modelData.color
-                                            : page.styleColor(regionRow.modelData.style)
+                                    Layout.fillWidth: true
+                                    spacing: Math.round(5 * page.scale)
+                                    HelperText {
+                                        Layout.alignment: Qt.AlignVCenter
+                                        theme: page.theme
+                                        text: "动态强度"
                                     }
-
-                                    ColumnLayout {
+                                    PercentSlider {
                                         Layout.fillWidth: true
-                                        spacing: 0
-                                        Text {
-                                            Layout.fillWidth: true
-                                            text: (regionRow.modelData.trackName
-                                                    || page.trackName(regionRow.modelData.trackId))
-                                                + "  ·  " + (regionRow.modelData.label
-                                                    || page.styleLabel(regionRow.modelData.style))
-                                            color: page.theme.text
-                                            font.pixelSize: Math.round(11 * page.scale)
-                                            font.weight: Font.DemiBold
-                                            elide: Text.ElideRight
-                                            textFormat: Text.PlainText
-                                        }
-                                        Text {
-                                            Layout.fillWidth: true
-                                            text: page.formatTime(regionRow.modelData.start)
-                                                + "–" + page.formatTime(regionRow.modelData.end)
-                                                + "  ·  " + page.strengthText(regionRow.modelData.strength)
-                                            color: page.theme.muted
-                                            font.pixelSize: Math.round(10 * page.scale)
-                                            elide: Text.ElideRight
-                                            textFormat: Text.PlainText
-                                        }
+                                        objectName: "tuningDynamicsStrengthSlider"
+                                        strength: page.numberOr(page.optionValue("dynamics_strength", 0), 0)
+                                        enabled: !page.busy && page.optionKnown("dynamics_strength")
+                                        Accessible.name: "动态强度"
+                                        onMoved: page.controller.setTuningOption("dynamics_strength", value / 100)
                                     }
+                                    HelperText {
+                                        theme: page.theme
+                                        Layout.minimumWidth: Math.round(34 * page.scale)
+                                        horizontalAlignment: Text.AlignRight
+                                        text: page.optionKnown("dynamics_strength")
+                                            ? page.strengthText(page.optionValue("dynamics_strength", 0)) : "—"
+                                    }
+                                }
 
-                                    EditorButton {
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Math.round(5 * page.scale)
+                                    HelperText {
+                                        Layout.alignment: Qt.AlignVCenter
                                         theme: page.theme
-                                        text: "定位"
-                                        quiet: true
-                                        onClicked: page.controller.selectSpan(
-                                            Number(regionRow.modelData.start),
-                                            Number(regionRow.modelData.end))
+                                        text: "表达采样"
                                     }
                                     EditorButton {
-                                        objectName: "updateTuningRegion_" + String(regionRow.modelData.id)
+                                        objectName: "tuningDensityDense"
+                                        Layout.fillWidth: true
                                         theme: page.theme
-                                        text: "更新"
-                                        quiet: true
-                                        enabled: !page.busy && page.hasRange
-                                            && page.textOf(regionRow.modelData.id).length > 0
-                                        onClicked: page.controller.updateRegion(
-                                            String(regionRow.modelData.id))
-                                        Accessible.name: "用当前选区和风格更新此逐轨片段"
-                                        ToolTip.visible: hovered
-                                        ToolTip.text: "轨道按此片段固定；范围和风格取当前选区"
-                                    }
-                                    EditorButton {
-                                        theme: page.theme
-                                        text: "移除"
-                                        quiet: true
+                                        text: "加密采样"
+                                        selected: page.optionKnown("expression_density")
+                                            && String(page.optionValue("expression_density", "")) === "dense"
                                         enabled: !page.busy
-                                            && page.textOf(regionRow.modelData.id).length > 0
-                                        onClicked: page.controller.removeRegion(
-                                            String(regionRow.modelData.id))
+                                        onClicked: page.controller.setTuningOption("expression_density", "dense")
                                     }
+                                    EditorButton {
+                                        objectName: "tuningDensityOriginal"
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: "原始采样"
+                                        selected: page.optionKnown("expression_density")
+                                            && String(page.optionValue("expression_density", "")) === "original"
+                                        enabled: !page.busy
+                                        onClicked: page.controller.setTuningOption("expression_density", "original")
+                                    }
+                                }
+
+                                HelperText {
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    text: "这里只编辑工程与参数；声库合成、真实听感和外部编辑器中的手动渲染保持独立。"
+                                }
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                visible: page.inspectorTab === "presets"
+                                spacing: page.editorGap
+                                PanelLabel {
+                                    theme: page.theme
+                                    text: "工程预设"
+                                }
+
+                                UiComboBox {
+                                    id: presetPicker
+                                    objectName: "tuningPresetPicker"
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    model: page.presets
+                                    textRole: "label"
+                                    valueRole: "key"
+                                    currentIndex: page.presetKeyIndex(page.selectedPresetKey)
+                                    enabled: !page.busy && page.presets.length > 0
+                                    Accessible.name: "工程预设"
+                                    onActivated: function(index) {
+                                        if (index >= 0 && index < page.presets.length) {
+                                            page.selectedPresetKey = String(page.presets[index].key)
+                                            page.controller.dismissPresetReview()
+                                        }
+                                    }
+                                }
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    EditorButton {
+                                        objectName: "previewTuningPreset"
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: "查看差异"
+                                        enabled: page.hasSource && !page.busy && page.selectedPresetKey.length > 0
+                                        onClicked: page.controller.previewPreset(page.selectedPresetKey)
+                                    }
+                                    EditorButton {
+                                        objectName: "unbindTuningPreset"
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: "解除绑定"
+                                        enabled: !page.busy && page.textOf(page.view.presetName).length > 0
+                                        onClicked: page.controller.unbindPreset()
+                                    }
+                                }
+                                ColumnLayout {
+                                    readonly property var review: page.view.presetReview || ({})
+                                    Layout.fillWidth: true
+                                    visible: !!review.name
+                                    spacing: page.editorGap
+                                    HelperText {
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: parent.review.name + (parent.review.brushOnly ? " · 仅下一片段" : " · 绑定当前工程")
+                                    }
+                                    Repeater {
+                                        model: parent.review.changes || []
+                                        HelperText {
+                                            required property var modelData
+                                            Layout.fillWidth: true
+                                            theme: page.theme
+                                            text: page.presetFieldName(modelData.field) + "："
+                                                + page.presetValue(modelData.field, modelData.before) + " → "
+                                                + page.presetValue(modelData.field, modelData.after)
+                                        }
+                                    }
+                                    HelperText {
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        visible: (parent.review.missing || []).length > 0
+                                        text: (parent.review.missing || []).join("\n")
+                                    }
+                                    EditorButton {
+                                        objectName: "applyReviewedTuningPreset"
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: parent.review.brushOnly ? "应用到下一片段" : "确认绑定预设"
+                                        enabled: !page.busy
+                                        primary: true
+                                        onClicked: page.controller.confirmPreset()
+                                    }
+                                }
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: page.textOf(page.view.presetName).length > 0
+                                        ? "当前工程绑定：" + page.view.presetName
+                                        : "当前工程尚未绑定预设。"
+                                    color: page.theme.muted
+                                    font.pixelSize: Math.round(11 * page.scale)
+                                    wrapMode: Text.Wrap
+                                    textFormat: Text.PlainText
+                                }
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    visible: page.textOf(page.view.presetPending).length > 0
+                                    text: page.textOf(page.view.presetPending)
+                                    color: page.theme.attention
+                                    font.pixelSize: Math.round(11 * page.scale)
+                                    wrapMode: Text.Wrap
+                                    textFormat: Text.PlainText
+                                }
+
+                                GridLayout {
+                                    Layout.fillWidth: true
+                                    columns: 2
+                                    columnSpacing: Math.round(6 * page.scale)
+                                    rowSpacing: Math.round(6 * page.scale)
+                                    EditorButton {
+                                        objectName: "importTuningPresets"
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: "导入附加…"
+                                        enabled: !page.busy
+                                        onClicked: presetImportDialog.open()
+                                    }
+                                    EditorButton {
+                                        objectName: "exportTuningPreset"
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: "导出预设…"
+                                        enabled: !page.busy && page.selectedPresetKey.length > 0
+                                        onClicked: presetExportDialog.open()
+                                    }
+                                    EditorButton {
+                                        objectName: "saveTuningPreset"
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: "保存到本机库"
+                                        enabled: !page.busy && page.hasSource
+                                        onClicked: {
+                                            presetNameField.text = page.textOf(page.view.presetName)
+                                            presetNameDialog.open()
+                                        }
+                                    }
+                                }
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                visible: page.inspectorTab === "result"
+                                spacing: page.editorGap
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Math.round(7 * page.scale)
+                                    PanelLabel {
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: "候选与结果"
+                                    }
+                                    Rectangle {
+                                        implicitHeight: Math.round(22 * page.scale)
+                                        implicitWidth: stateText.implicitWidth + Math.round(14 * page.scale)
+                                        radius: height / 2
+                                        color: Qt.rgba(page.statusColor().r, page.statusColor().g,
+                                            page.statusColor().b, 0.16)
+                                        Text {
+                                            id: stateText
+                                            anchors.centerIn: parent
+                                            text: page.statusLabel()
+                                            color: page.statusColor()
+                                            font.pixelSize: Math.round(10 * page.scale)
+                                            font.weight: Font.DemiBold
+                                            textFormat: Text.PlainText
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    visible: page.textOf(page.view.previewSummary).length > 0
+                                    text: page.textOf(page.view.previewSummary)
+                                    color: page.theme.text
+                                    font.pixelSize: Math.round(11 * page.scale)
+                                    wrapMode: Text.Wrap
+                                    textFormat: Text.PlainText
+                                }
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    visible: page.textOf(page.view.message).length > 0
+                                    text: page.textOf(page.view.message)
+                                    color: page.statusColor()
+                                    font.pixelSize: Math.round(11 * page.scale)
+                                    wrapMode: Text.Wrap
+                                    textFormat: Text.PlainText
+                                }
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    visible: page.candidatePresent
+                                    spacing: Math.round(7 * page.scale)
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: page.candidateText()
+                                        color: page.theme.text
+                                        font.pixelSize: Math.round(11 * page.scale)
+                                        elide: Text.ElideMiddle
+                                        textFormat: Text.PlainText
+                                        HoverHandler { id: candidateHover }
+                                        ToolTip.visible: candidateHover.hovered
+                                        ToolTip.text: typeof page.view.candidate === "string"
+                                            ? page.view.candidate : page.candidateText()
+                                    }
+                                    Text {
+                                        visible: boolOr(page.view.candidateStale, false)
+                                        text: "已过期"
+                                        color: page.theme.error
+                                        font.pixelSize: Math.round(10 * page.scale)
+                                        font.weight: Font.DemiBold
+                                        textFormat: Text.PlainText
+                                    }
+                                    EditorButton {
+                                        objectName: "openTuningCandidate"
+                                        theme: page.theme
+                                        text: "打开候选"
+                                        enabled: page.candidatePresent
+                                        onClicked: page.controller.openCandidate()
+                                    }
+                                }
+
+                                HelperText {
+                                    Layout.fillWidth: true
+                                    visible: boolOr(page.view.candidateStale, false)
+                                    theme: page.theme
+                                    text: "候选基线已变化，请重新冻结、生成或明确确认后再继续。"
+                                }
+                                EditorButton {
+                                    objectName: "tuningOpenMixdown"
+                                    theme: page.theme
+                                    visible: page.candidatePresent
+                                    text: "导入已合成的歌声…"
+                                    enabled: !page.busy
+                                    onClicked: page.controller.openMixdown()
                                 }
 
                                 Rectangle {
-                                    anchors.left: parent.left
-                                    anchors.right: parent.right
-                                    anchors.bottom: parent.bottom
-                                    height: 1
-                                    color: page.theme.line
-                                    opacity: 0.7
+                                    Layout.fillWidth: true
+                                    visible: boolOr(page.view.candidateNeedsConfirmation, false)
+                                    implicitHeight: confirmLayout.implicitHeight + Math.round(20 * page.scale)
+                                    radius: Math.round(8 * page.scale)
+                                    color: page.theme.raised
+                                    border.width: 1
+                                    border.color: boolOr(page.view.candidateConfirmed, false)
+                                        ? page.theme.success : page.theme.attention
+
+                                    ColumnLayout {
+                                        id: confirmLayout
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        anchors.margins: Math.round(10 * page.scale)
+                                        spacing: Math.round(6 * page.scale)
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: boolOr(page.view.candidateConfirmed, false)
+                                                ? "候选基线已明确确认。"
+                                                : "候选与当前工程基线不同，需要人工确认。"
+                                            color: boolOr(page.view.candidateConfirmed, false)
+                                                ? page.theme.success : page.theme.attention
+                                            font.pixelSize: Math.round(11 * page.scale)
+                                            font.weight: Font.DemiBold
+                                            wrapMode: Text.Wrap
+                                            textFormat: Text.PlainText
+                                        }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            EditorButton {
+                                                objectName: "confirmCandidateBaseline"
+                                                Layout.fillWidth: true
+                                                theme: page.theme
+                                                text: "确认候选基线"
+                                                primary: !boolOr(page.view.candidateConfirmed, false)
+                                                enabled: !page.busy
+                                                    && !boolOr(page.view.candidateConfirmed, false)
+                                                onClicked: page.controller.confirmCandidate(true)
+                                            }
+                                            EditorButton {
+                                                objectName: "unconfirmCandidateBaseline"
+                                                Layout.fillWidth: true
+                                                theme: page.theme
+                                                text: "恢复待确认"
+                                                enabled: !page.busy
+                                                    && boolOr(page.view.candidateConfirmed, false)
+                                                onClicked: page.controller.confirmCandidate(false)
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
-
                     Divider {}
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: Math.round(7 * page.scale)
-                        PanelLabel {
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: "候选与结果"
-                        }
-                        Rectangle {
-                            implicitHeight: Math.round(22 * page.scale)
-                            implicitWidth: stateText.implicitWidth + Math.round(14 * page.scale)
-                            radius: height / 2
-                            color: Qt.rgba(page.statusColor().r, page.statusColor().g,
-                                page.statusColor().b, 0.16)
-                            Text {
-                                id: stateText
-                                anchors.centerIn: parent
-                                text: page.statusLabel()
-                                color: page.statusColor()
-                                font.pixelSize: Math.round(10 * page.scale)
-                                font.weight: Font.DemiBold
-                                textFormat: Text.PlainText
-                            }
-                        }
-                    }
-
                     Text {
                         Layout.fillWidth: true
-                        visible: page.textOf(page.view.previewSummary).length > 0
-                        text: page.textOf(page.view.previewSummary)
-                        color: page.theme.text
-                        font.pixelSize: Math.round(11 * page.scale)
-                        wrapMode: Text.Wrap
-                        textFormat: Text.PlainText
-                    }
-
-                    Text {
-                        Layout.fillWidth: true
-                        visible: page.textOf(page.view.message).length > 0
+                        visible: page.inspectorTab !== "result" && page.view.state === "failed"
                         text: page.textOf(page.view.message)
-                        color: page.statusColor()
+                        color: page.theme.error
                         font.pixelSize: Math.round(11 * page.scale)
+                        elide: Text.ElideRight
+                        maximumLineCount: 2
                         wrapMode: Text.Wrap
                         textFormat: Text.PlainText
+                        ToolTip.visible: noticeHover.hovered && truncated
+                        ToolTip.text: text
+                        HoverHandler { id: noticeHover }
                     }
-
                     GridLayout {
                         Layout.fillWidth: true
                         columns: 2
                         columnSpacing: Math.round(6 * page.scale)
                         rowSpacing: Math.round(6 * page.scale)
 
-                        UiButton {
+                        EditorButton {
                             objectName: "freezeTuning"
                             Layout.fillWidth: true
                             theme: page.theme
                             text: "冻结预览"
                             enabled: !page.busy && boolOr(page.view.canFreeze, false)
-                            onClicked: page.controller.freeze()
+                            onClicked: { page.inspectorTab = "result"; page.controller.freeze() }
                         }
-                        UiButton {
+                        EditorButton {
                             objectName: "runTuning"
                             Layout.fillWidth: true
                             theme: page.theme
                             text: "生成候选"
                             primary: true
                             enabled: !page.busy && boolOr(page.view.canRun, false)
-                            onClicked: page.controller.run()
+                            onClicked: { page.inspectorTab = "result"; page.controller.run() }
                         }
-                        UiButton {
+                        EditorButton {
                             objectName: "cancelTuning"
                             Layout.fillWidth: true
                             theme: page.theme
-                            text: "取消当前任务"
+                            text: "取消任务"
+                            visible: page.busy
                             enabled: page.busy
                             onClicked: page.controller.cancel()
                         }
-                        UiButton {
+                        EditorButton {
                             objectName: "registerTuningResult"
                             Layout.fillWidth: true
                             theme: page.theme
                             text: "登记结果"
+                            visible: !!page.view.canRegister
                             enabled: !page.busy && boolOr(page.view.canRegister, false)
                             onClicked: page.controller.registerResult()
                         }
                     }
 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        visible: page.candidatePresent
-                        spacing: Math.round(7 * page.scale)
-                        Text {
-                            Layout.fillWidth: true
-                            text: page.candidateText()
-                            color: page.theme.text
-                            font.pixelSize: Math.round(11 * page.scale)
-                            elide: Text.ElideMiddle
-                            textFormat: Text.PlainText
-                            HoverHandler { id: candidateHover }
-                            ToolTip.visible: candidateHover.hovered
-                            ToolTip.text: typeof page.view.candidate === "string"
-                                ? page.view.candidate : page.candidateText()
-                        }
-                        Text {
-                            visible: boolOr(page.view.candidateStale, false)
-                            text: "已过期"
-                            color: page.theme.error
-                            font.pixelSize: Math.round(10 * page.scale)
-                            font.weight: Font.DemiBold
-                            textFormat: Text.PlainText
-                        }
-                        UiButton {
-                            objectName: "openTuningCandidate"
-                            theme: page.theme
-                            text: "打开候选"
-                            enabled: page.candidatePresent
-                            onClicked: page.controller.openCandidate()
-                        }
-                    }
-
-                    HelperText {
-                        Layout.fillWidth: true
-                        visible: boolOr(page.view.candidateStale, false)
-                        theme: page.theme
-                        text: "候选基线已变化，请重新冻结、生成或明确确认后再继续。"
-                    }
-                    UiButton {
-                        objectName: "tuningOpenMixdown"
-                        theme: page.theme
-                        visible: page.candidatePresent
-                        text: "导入已合成的歌声…"
-                        enabled: !page.busy
-                        onClicked: page.controller.openMixdown()
-                    }
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        visible: boolOr(page.view.candidateNeedsConfirmation, false)
-                        implicitHeight: confirmLayout.implicitHeight + Math.round(20 * page.scale)
-                        radius: Math.round(8 * page.scale)
-                        color: page.theme.raised
-                        border.width: 1
-                        border.color: boolOr(page.view.candidateConfirmed, false)
-                            ? page.theme.success : page.theme.attention
-
-                        ColumnLayout {
-                            id: confirmLayout
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.top: parent.top
-                            anchors.margins: Math.round(10 * page.scale)
-                            spacing: Math.round(6 * page.scale)
-
-                            Text {
-                                Layout.fillWidth: true
-                                text: boolOr(page.view.candidateConfirmed, false)
-                                    ? "候选基线已明确确认。"
-                                    : "候选与当前工程基线不同，需要人工确认。"
-                                color: boolOr(page.view.candidateConfirmed, false)
-                                    ? page.theme.success : page.theme.attention
-                                font.pixelSize: Math.round(11 * page.scale)
-                                font.weight: Font.DemiBold
-                                wrapMode: Text.Wrap
-                                textFormat: Text.PlainText
-                            }
-                            RowLayout {
-                                Layout.fillWidth: true
-                                UiButton {
-                                    objectName: "confirmCandidateBaseline"
-                                    Layout.fillWidth: true
-                                    theme: page.theme
-                                    text: "确认候选基线"
-                                    primary: !boolOr(page.view.candidateConfirmed, false)
-                                    enabled: !page.busy
-                                        && !boolOr(page.view.candidateConfirmed, false)
-                                    onClicked: page.controller.confirmCandidate(true)
-                                }
-                                UiButton {
-                                    objectName: "unconfirmCandidateBaseline"
-                                    Layout.fillWidth: true
-                                    theme: page.theme
-                                    text: "恢复待确认"
-                                    enabled: !page.busy
-                                        && boolOr(page.view.candidateConfirmed, false)
-                                    onClicked: page.controller.confirmCandidate(false)
-                                }
-                            }
-                        }
-                    }
                 }
             }
         }
+    }
 
-        GridLayout {
-            Layout.fillWidth: true
-            Layout.leftMargin: page.contentMargin
-            Layout.rightMargin: page.contentMargin
-            Layout.bottomMargin: page.editorPadding
-            columns: page.stacked ? 1 : 2
-            columnSpacing: page.editorPadding
-            rowSpacing: page.editorPadding
-
-            Rectangle {
-                Layout.fillWidth: page.stacked
-                Layout.preferredWidth: page.railWidth
-                Layout.alignment: Qt.AlignTop
-                implicitHeight: presetColumn.implicitHeight + 2 * page.editorPadding
-                radius: Math.round(8 * page.scale)
-                color: page.theme.surface
-                border.width: 1
-                border.color: page.theme.line
-
-                ColumnLayout {
-                    id: presetColumn
-                    anchors.fill: parent
-                    anchors.margins: page.editorPadding
-                    spacing: page.editorGap
-
-                    PanelLabel {
-                        theme: page.theme
-                        text: "工程预设"
-                    }
-
-                    UiComboBox {
-                        id: presetPicker
-                        objectName: "tuningPresetPicker"
-                        Layout.fillWidth: true
-                        theme: page.theme
-                        model: page.presets
-                        textRole: "label"
-                        valueRole: "key"
-                        currentIndex: page.presetKeyIndex(page.selectedPresetKey)
-                        enabled: !page.busy && page.presets.length > 0
-                        Accessible.name: "工程预设"
-                        onActivated: function(index) {
-                            if (index >= 0 && index < page.presets.length) {
-                                page.selectedPresetKey = String(page.presets[index].key)
-                                page.controller.applyPreset(page.selectedPresetKey)
-                            }
-                        }
-                    }
-
-                    Text {
-                        Layout.fillWidth: true
-                        text: page.textOf(page.view.presetName).length > 0
-                            ? "当前工程绑定：" + page.view.presetName
-                            : "当前工程尚未绑定预设。"
-                        color: page.theme.muted
-                        font.pixelSize: Math.round(11 * page.scale)
-                        wrapMode: Text.Wrap
-                        textFormat: Text.PlainText
-                    }
-
-                    Text {
-                        Layout.fillWidth: true
-                        visible: page.textOf(page.view.presetPending).length > 0
-                        text: page.textOf(page.view.presetPending)
-                        color: page.theme.attention
-                        font.pixelSize: Math.round(11 * page.scale)
-                        wrapMode: Text.Wrap
-                        textFormat: Text.PlainText
-                    }
-
-                    GridLayout {
-                        Layout.fillWidth: true
-                        columns: 2
-                        columnSpacing: Math.round(6 * page.scale)
-                        rowSpacing: Math.round(6 * page.scale)
-                        UiButton {
-                            objectName: "importTuningPresets"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: "导入附加…"
-                            enabled: !page.busy
-                            onClicked: presetImportDialog.open()
-                        }
-                        UiButton {
-                            objectName: "exportTuningPreset"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: "导出预设…"
-                            enabled: !page.busy && page.selectedPresetKey.length > 0
-                            onClicked: presetExportDialog.open()
-                        }
-                        UiButton {
-                            objectName: "saveTuningPreset"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: "保存到本机库"
-                            enabled: !page.busy && page.hasSource
-                            onClicked: {
-                                presetNameField.text = page.textOf(page.view.presetName)
-                                presetNameDialog.open()
-                            }
-                        }
-                        UiButton {
-                            objectName: "fitViewFromPresetArea"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: "查看全曲"
-                            enabled: page.hasSource
-                            onClicked: page.fitTimelineView()
-                        }
-                    }
-                }
-            }
-
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.alignment: Qt.AlignTop
-                implicitHeight: expressionColumn.implicitHeight + 2 * page.editorPadding
-                radius: Math.round(8 * page.scale)
-                color: page.theme.surface
-                border.width: 1
-                border.color: page.theme.line
-
-                ColumnLayout {
-                    id: expressionColumn
-                    anchors.fill: parent
-                    anchors.margins: page.editorPadding
-                    spacing: page.editorGap
-
-                    PanelLabel {
-                        theme: page.theme
-                        text: "表达来源与调音选项"
-                    }
-
-                    GridLayout {
-                        Layout.fillWidth: true
-                        columns: 2
-                        columnSpacing: Math.round(5 * page.scale)
-                        rowSpacing: Math.round(5 * page.scale)
-
-                        UiButton {
-                            objectName: "expressionPreserve"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: "保留原表现"
-                            selected: page.textOf(page.view.expressionMode) === "preserve"
-                            enabled: !page.busy && page.hasSource
-                            onClicked: page.controller.setExpressionMode("preserve")
-                        }
-                        UiButton {
-                            objectName: "expressionReference"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: "参考音频"
-                            selected: page.textOf(page.view.expressionMode) === "reference"
-                            enabled: !page.busy && page.hasSource
-                            onClicked: page.controller.setExpressionMode("reference")
-                        }
-                        UiButton {
-                            objectName: "expressionCalibrated"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: "校准 + 参考"
-                            selected: page.textOf(page.view.expressionMode) === "calibrated"
-                            enabled: !page.busy && page.hasSource
-                            onClicked: page.controller.setExpressionMode("calibrated")
-                        }
-                        UiButton {
-                            objectName: "expressionRetained"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: "沿用原参数"
-                            selected: page.textOf(page.view.expressionMode) === "retained"
-                            enabled: !page.busy && page.hasSource
-                            onClicked: page.controller.setExpressionMode("retained")
-                        }
-                    }
-
-                    HelperText {
-                        Layout.fillWidth: true
-                        theme: page.theme
-                        text: page.expressionModeKnown
-                            ? "四种来源共用当前轨道与区间；外部声库渲染仍由你手动完成。"
-                            : "表达来源状态待后端回读；可先选择一种真实来源。"
-                    }
-
-                    Text {
-                        Layout.fillWidth: true
-                        text: "焦点轨：" + (page.activeId.length > 0
-                            ? page.trackName(page.activeId) : "未选择")
-                        color: page.theme.text
-                        font.pixelSize: Math.round(11 * page.scale)
-                        font.weight: Font.DemiBold
-                        wrapMode: Text.Wrap
-                        textFormat: Text.PlainText
-                    }
-
-                    GridLayout {
-                        Layout.fillWidth: true
-                        columns: page.compact ? 1 : 2
-                        columnSpacing: Math.round(6 * page.scale)
-                        rowSpacing: Math.round(6 * page.scale)
-
-                        HelperText {
-                            Layout.alignment: Qt.AlignVCenter
-                            theme: page.theme
-                            text: "参考音频"
-                        }
-                        UiButton {
-                            objectName: "bindReferenceAudio"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: page.textOf(page.bindingField("reference", "")).length > 0
-                                ? "更换参考…" : "选择参考…"
-                            enabled: !page.busy && page.activeId.length > 0
-                                && page.activeTrackData !== null
-                                && page.activeTrackData.editable !== false
-                                && page.expressionSourceAllows(["reference", "calibrated"])
-                            onClicked: {
-                                referenceDialog.trackId = page.activeId
-                                referenceDialog.open()
-                            }
-                        }
-                        Text {
-                            Layout.fillWidth: true
-                            Layout.columnSpan: page.compact ? 1 : 2
-                            visible: page.textOf(page.bindingField("reference", "")).length > 0
-                            text: page.fileName(page.bindingField("reference", ""))
-                            color: page.theme.muted
-                            font.pixelSize: Math.round(10 * page.scale)
-                            elide: Text.ElideMiddle
-                            textFormat: Text.PlainText
-                        }
-                        HelperText {
-                            theme: page.theme
-                            visible: page.textOf(page.bindingField("reference", "")).length > 0
-                            text: "参考声部"
-                        }
-                        UiComboBox {
-                            theme: page.theme
-                            Layout.fillWidth: true
-                            visible: page.textOf(page.bindingField("reference", "")).length > 0
-                            model: [{label: "主唱", value: "lead"}, {label: "和声", value: "backing"},
-                                    {label: "合并人声", value: "vocals"}]
-                            currentIndex: indexOfValue(page.bindingField("referenceVoice", ""))
-                            enabled: !page.busy
-                            onActivated: page.controller.setReferenceVoice(page.activeId, currentValue)
-                        }
-
-                        HelperText {
-                            Layout.alignment: Qt.AlignVCenter
-                            theme: page.theme
-                            text: "校准配置"
-                        }
-                        UiButton {
-                            objectName: "bindCalibrationProfile"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: "选择 JSON…"
-                            enabled: !page.busy && page.hasSource
-                                && page.textOf(page.view.expressionMode) === "calibrated"
-                            onClicked: calibrationDialog.open()
-                        }
-                        Text {
-                            Layout.fillWidth: true
-                            Layout.columnSpan: page.compact ? 1 : 2
-                            visible: page.textOf(page.view.calibration).length > 0
-                            text: page.fileName(page.view.calibration)
-                            color: page.theme.muted
-                            font.pixelSize: Math.round(10 * page.scale)
-                            elide: Text.ElideMiddle
-                            textFormat: Text.PlainText
-                        }
-
-                        HelperText {
-                            Layout.alignment: Qt.AlignVCenter
-                            theme: page.theme
-                            text: "沿用的原 SVP"
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Math.round(5 * page.scale)
-                            SpinBox {
-                                id: retainedIndexInput
-                                objectName: "retainedSourceTrackIndex"
-                                Layout.preferredWidth: Math.round(68 * page.scale)
-                                from: 0
-                                to: 255
-                                value: page.retainedIndexDraft
-                                editable: true
-                                enabled: !page.busy && page.activeId.length > 0
-                                Accessible.name: "原工程源轨索引"
-                                onValueModified: page.retainedIndexDraft = value
-                            }
-                            UiButton {
-                                objectName: "bindRetainedProject"
-                                Layout.fillWidth: true
-                                theme: page.theme
-                                text: page.textOf(page.bindingField("retained", "")).length > 0
-                                    ? "更换 SVP…" : "选择 SVP…"
-                                enabled: !page.busy && page.activeId.length > 0
-                                    && page.activeTrackData !== null
-                                    && page.activeTrackData.editable !== false
-                                    && page.textOf(page.view.expressionMode) === "retained"
-                                onClicked: {
-                                    retainedDialog.trackId = page.activeId
-                                    retainedDialog.sourceTrackIndex = page.retainedIndexDraft
-                                    retainedDialog.open()
-                                }
-                            }
-                        }
-                        Text {
-                            Layout.fillWidth: true
-                            Layout.columnSpan: page.compact ? 1 : 2
-                            visible: page.textOf(page.bindingField("retained", "")).length > 0
-                            text: page.fileName(page.bindingField("retained", ""))
-                                + "  ·  源轨索引 " + page.retainedIndexDraft
-                            color: page.theme.muted
-                            font.pixelSize: Math.round(10 * page.scale)
-                            elide: Text.ElideMiddle
-                            textFormat: Text.PlainText
-                        }
-                    }
-
-                    GridLayout {
-                        Layout.fillWidth: true
-                        columns: 2
-                        columnSpacing: Math.round(5 * page.scale)
-                        rowSpacing: Math.round(5 * page.scale)
-
-                        UiButton {
-                            objectName: "optionReferenceDynamics"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: page.boolOptionText("reference_dynamics", "参考力度")
-                            selected: boolOr(page.optionValue("reference_dynamics", false), false)
-                            enabled: !page.busy
-                            onClicked: page.toggleOption("reference_dynamics")
-                        }
-                        UiButton {
-                            objectName: "optionReferenceTension"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: page.boolOptionText("reference_tension", "参考张力")
-                            selected: boolOr(page.optionValue("reference_tension", false), false)
-                            enabled: !page.busy
-                            onClicked: page.toggleOption("reference_tension")
-                        }
-                        UiButton {
-                            objectName: "optionReferenceBreathiness"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: page.boolOptionText("reference_breathiness", "参考气声")
-                            selected: boolOr(page.optionValue("reference_breathiness", false), false)
-                            enabled: !page.busy
-                            onClicked: page.toggleOption("reference_breathiness")
-                        }
-                        UiButton {
-                            objectName: "optionReferenceVoicing"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: page.boolOptionText("reference_voicing", "参考发声")
-                            selected: boolOr(page.optionValue("reference_voicing", false), false)
-                            enabled: !page.busy
-                            onClicked: page.toggleOption("reference_voicing")
-                        }
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: Math.round(5 * page.scale)
-                        HelperText {
-                            Layout.alignment: Qt.AlignVCenter
-                            theme: page.theme
-                            text: "动态强度"
-                        }
-                        PercentSlider {
-                            Layout.fillWidth: true
-                            objectName: "tuningDynamicsStrengthSlider"
-                            strength: page.numberOr(page.optionValue("dynamics_strength", 0), 0)
-                            enabled: !page.busy && page.optionKnown("dynamics_strength")
-                            Accessible.name: "动态强度"
-                            onMoved: page.controller.setTuningOption("dynamics_strength", value / 100)
-                        }
-                        HelperText {
-                            theme: page.theme
-                            Layout.minimumWidth: Math.round(34 * page.scale)
-                            horizontalAlignment: Text.AlignRight
-                            text: page.optionKnown("dynamics_strength")
-                                ? page.strengthText(page.optionValue("dynamics_strength", 0)) : "—"
-                        }
-                    }
-
-                    UiComboBox {
-                        objectName: "tuningTechniquePicker"
-                        Layout.fillWidth: true
-                        theme: page.theme
-                        model: page.techniques
-                        textRole: "label"
-                        valueRole: "id"
-                        currentIndex: page.techniqueIndex(
-                            page.optionValue("style_technique", ""))
-                        enabled: !page.busy && page.techniques.length > 0
-                        Accessible.name: "唱腔技法"
-                        onActivated: function(index) {
-                            if (index >= 0 && index < page.techniques.length)
-                                page.controller.setTuningOption("style_technique",
-                                    String(page.techniques[index].id))
-                        }
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: Math.round(5 * page.scale)
-                        HelperText {
-                            Layout.alignment: Qt.AlignVCenter
-                            theme: page.theme
-                            text: "唱腔强度"
-                        }
-                        PercentSlider {
-                            Layout.fillWidth: true
-                            objectName: "tuningTechniqueStrengthSlider"
-                            strength: page.numberOr(page.optionValue("technique_strength", 0), 0)
-                            enabled: !page.busy && page.optionKnown("technique_strength")
-                            Accessible.name: "唱腔强度"
-                            onMoved: page.controller.setTuningOption("technique_strength", value / 100)
-                        }
-                        HelperText {
-                            theme: page.theme
-                            Layout.minimumWidth: Math.round(34 * page.scale)
-                            horizontalAlignment: Text.AlignRight
-                            text: page.optionKnown("technique_strength")
-                                ? page.strengthText(page.optionValue("technique_strength", 0)) : "—"
-                        }
-                        UiButton {
-                            objectName: "tuningTechniquePitch"
-                            theme: page.theme
-                            text: page.optionKnown("technique_pitch")
-                                ? (boolOr(page.optionValue("technique_pitch", false), false)
-                                    ? "音高 · 开" : "音高 · 关")
-                                : "音高 · 待回读"
-                            selected: page.optionKnown("technique_pitch")
-                                && boolOr(page.optionValue("technique_pitch", false), false)
-                            enabled: !page.busy
-                            onClicked: page.toggleOption("technique_pitch")
-                        }
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: Math.round(5 * page.scale)
-                        HelperText {
-                            Layout.alignment: Qt.AlignVCenter
-                            theme: page.theme
-                            text: "表达采样"
-                        }
-                        UiButton {
-                            objectName: "tuningDensityDense"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: "加密采样"
-                            selected: page.optionKnown("expression_density")
-                                && String(page.optionValue("expression_density", "")) === "dense"
-                            enabled: !page.busy
-                            onClicked: page.controller.setTuningOption("expression_density", "dense")
-                        }
-                        UiButton {
-                            objectName: "tuningDensityOriginal"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: "原始采样"
-                            selected: page.optionKnown("expression_density")
-                                && String(page.optionValue("expression_density", "")) === "original"
-                            enabled: !page.busy
-                            onClicked: page.controller.setTuningOption("expression_density", "original")
-                        }
-                    }
-
-                    HelperText {
-                        Layout.fillWidth: true
-                        theme: page.theme
-                        text: "这里只编辑工程与参数；声库合成、真实听感和外部编辑器中的手动渲染保持独立。"
-                    }
-                }
-            }
+    Dialog {
+        id: clearRegionsDialog
+        objectName: "tuningClearRegionsDialog"
+        title: "清空风格片段"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(page.width - 28, Math.round(375 * page.scale))
+        standardButtons: Dialog.Cancel | Dialog.Ok
+        onAccepted: page.controller.clearRegions()
+        contentItem: HelperText {
+            theme: page.theme
+            text: "清空此工程的已应用片段。原工程文件不会改写，可用撤销恢复。"
         }
     }
 

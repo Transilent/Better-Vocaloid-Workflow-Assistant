@@ -14,7 +14,7 @@ from i18n import tr
 from preset_library import PresetLibrary
 import style_catalog
 from style_drafts import DraftStore
-from style_presets import time_range_settings
+from style_presets import DETAIL_DEFAULTS, time_range_settings
 import tuning_engine as engine
 from tuning_timeline import ProjectNotes, TimelineDraftStore, draft_options, freeze_plan
 from tuning_preset_documents import make_document, plan_application
@@ -27,6 +27,12 @@ _BRUSH_KEYS = ('performance_style', 'style_strength', 'style_pitch', 'style_deta
                'style_technique', 'technique_strength', 'technique_pitch')
 _SETTING_KEYS = _REFERENCE_FLAGS + ('dynamics_strength', 'expression_density', 'style_technique',
                                    'technique_strength', 'technique_pitch')
+_REGION_UNDO_LIMIT = 32
+_REGION_BRUSH_FIELDS = {
+    'preset': 'performance_style', 'strength': 'style_strength', 'pitch': 'style_pitch',
+    'detail': 'style_detail', 'technique': 'style_technique', 'technique_strength': 'technique_strength',
+    'technique_pitch': 'technique_pitch',
+}
 
 
 class SourceChanged(ValueError):
@@ -125,10 +131,14 @@ class QuickTuning(QObject):
         self._summary = ''
         self._confirmed = False
         self._preset = None
+        self._preset_review = None
         self._mode, self._active, self._selected = 'single', '', []
         self._start, self._end, self._left, self._span = 0., 0., 0., 18.
         self._query = ''
         self._matches, self._notes, self._regions = [], [], []
+        self._region_undo, self._region_redo = [], []
+        self._view_preferences_file = self.root / 'cache/quick-tuning-view.json'
+        self._view_preferences = self._load_view_preferences()
         self._options = self._defaults()
         self._legacy = None
         self._legacy_revision = None
@@ -148,6 +158,26 @@ class QuickTuning(QObject):
     def _defaults():
         return engine.settings({'performance_style': style_catalog.DEFAULT_NEW_STYLE_ID, 'style_pitch': False,
                                 'expression_density': 'original'})
+
+    def _load_view_preferences(self):
+        try:
+            values = json.loads(self._view_preferences_file.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            values = {}
+        values = values if isinstance(values, dict) else {}
+        return {key: values.get(key, True) is not False for key in ('snap', 'auto_apply_selection')}
+
+    def _set_view_preference(self, key, enabled):
+        if self._view_preferences[key] == enabled:
+            return
+        updated = {**self._view_preferences, key: enabled}
+        try:
+            atomic_json(self._view_preferences_file, updated)
+        except OSError as error:
+            self._error(error)
+            return
+        self._view_preferences = updated
+        self.changed.emit()
 
     @property
     def _origin(self):
@@ -270,7 +300,11 @@ class QuickTuning(QObject):
             'viewportStart': self._left, 'viewportSpan': self._span, 'duration': duration,
             'timelineStart': self.project.minimum if self.project else 0.,
             'style': self._options['performance_style'], 'styleStrength': self._options['style_strength'],
+            'styleDetail': dict(self._options['style_detail']),
             'stylePitch': self._options['style_pitch'], 'busy': busy, 'state': self.state, 'message': self.message,
+            'canUndoRegions': bool(self._region_undo), 'canRedoRegions': bool(self._region_redo),
+            'snapEnabled': self._view_preferences['snap'],
+            'autoApplySelection': self._view_preferences['auto_apply_selection'],
             'canFreeze': bool(project and not busy and usable and (not self._origin or self._confirmed)),
             'canRun': bool(self._plan and not busy), 'canRegister': bool(self.job and receipt.get('receipt_verified')
                        and not self._candidate_stale and not busy and self.state != 'registered'),
@@ -283,6 +317,7 @@ class QuickTuning(QObject):
             } if self._legacy else None),
             'candidateNeedsConfirmation': bool(self._origin), 'candidateConfirmed': self._confirmed,
             'presetName': self._preset['preset']['name'] if self._preset else '', 'presetPending': missing,
+            'presetReview': self._preset_review['summary'] if self._preset_review else {},
             'expressionMode': self._options['expression_mode'], 'calibration': self._options['reference_calibration'] or '',
             **{key: self._options[key] for key in _SETTING_KEYS},
         }
@@ -293,12 +328,16 @@ class QuickTuning(QObject):
 
     @Property('QVariantList', constant=True)
     def styles(self):
-        return [{'id': key, 'label': tr(style_catalog.style_label(key)), 'color': style_catalog.style_color(key)}
+        return [{'id': key, 'label': tr(style_catalog.style_label(key)),
+                 'short': tr('不叠加' if key == 'none' else style_catalog.style_region_label(key)),
+                 'color': style_catalog.style_color(key)}
                 for key in style_catalog.VISIBLE_STYLES]
 
     @Property('QVariantList', constant=True)
     def techniques(self):
-        return [{'id': key, 'label': tr(style_catalog.technique_label(key)), 'color': style_catalog.technique_color(key)}
+        return [{'id': key, 'label': tr(style_catalog.technique_label(key)),
+                 'short': tr(style_catalog.technique_region_label(key) or style_catalog.technique_label(key)),
+                 'color': style_catalog.technique_color(key)}
                 for key in style_catalog.TECHNIQUE_IDS]
 
     @Property('QVariantList', notify=changed)
@@ -323,10 +362,14 @@ class QuickTuning(QObject):
             recipe, key = row['recipe'], row['track_id']
             style, technique = recipe['preset'], recipe.get('technique', 'none')
             label = style_catalog.style_region_label(style) if style != 'none' else style_catalog.technique_region_label(technique)
+            if style != 'none' and technique != 'none':
+                label = tr(label) + ' · ' + tr(style_catalog.technique_region_label(technique))
+            else:
+                label = tr(label)
             color = style_catalog.style_color(style) if style != 'none' else style_catalog.technique_color(technique)
             result.append({'id': row['id'], 'trackId': key, 'trackName': self.project.tracks[key]['name'],
                            'start': recipe['start'], 'end': recipe['end'], 'style': style,
-                           'label': tr(label), 'color': color, 'strength': recipe['strength']})
+                           'label': label, 'color': color, 'strength': recipe['strength']})
         return result
 
     @Property('QVariantList', notify=matchesChanged)
@@ -377,8 +420,11 @@ class QuickTuning(QObject):
             self.session, self.candidate = session, receipt
             self._options = deepcopy(payload['options']) if payload else self._defaults()
             self._preset = deepcopy(payload['preset']) if payload else None
+            self._preset_review = None
             self._confirmed = bool(payload and payload['confirmed'])
             self._regions = deepcopy(payload['regions']) if payload else []
+            self._region_undo.clear()
+            self._region_redo.clear()
             self._legacy = previous if previous and previous.get('mode') == 'regions' and previous['style_regions'] else None
             self._legacy_revision = old_draft['revision'] if self._legacy else None
             if previous and not self._legacy:
@@ -483,6 +529,17 @@ class QuickTuning(QObject):
             self.changed.emit()
 
     @Slot(float, float)
+    def finishTimelineSelection(self, first, last):
+        if not self.project or self.worker.kind or not (math.isfinite(first) and math.isfinite(last)):
+            return
+        self.selectSpan(first, last)
+        if (self._view_preferences['auto_apply_selection'] and self._targets
+                and self._end - self._start >= .025
+                and (self._options['performance_style'] != style_catalog.DEFAULT_STYLE_ID
+                     or self._options['style_technique'] != style_catalog.DEFAULT_TECHNIQUE_ID)):
+            self.addRegion()
+
+    @Slot(float, float)
     def setViewport(self, left, span):
         if self.project and math.isfinite(left) and math.isfinite(span):
             low, high = self.project.minimum, self.project.maximum
@@ -492,6 +549,14 @@ class QuickTuning(QObject):
                 self._left, self._span = left, span
                 self._update_notes()
                 self.changed.emit()
+
+    @Slot(bool)
+    def setSnapEnabled(self, enabled):
+        self._set_view_preference('snap', enabled)
+
+    @Slot(bool)
+    def setAutoApplySelection(self, enabled):
+        self._set_view_preference('auto_apply_selection', enabled)
 
     def _set_options(self, changes, *, detach=True):
         if self.worker.kind:
@@ -511,6 +576,8 @@ class QuickTuning(QObject):
 
     @Slot(str)
     def setStyle(self, name):
+        if name == self._options['performance_style']:
+            return
         self._set_options({'performance_style': name, 'style_detail': None})
 
     @Slot(float)
@@ -520,6 +587,11 @@ class QuickTuning(QObject):
     @Slot(bool)
     def setStylePitch(self, value):
         self._set_options({'style_pitch': value})
+
+    @Slot(str, float)
+    def setStyleDetail(self, phase, value):
+        if phase in DETAIL_DEFAULTS:
+            self._set_options({'style_detail': {**self._options['style_detail'], phase: value}})
 
     @Slot(str, 'QVariant')
     def setTuningOption(self, key, value):
@@ -579,14 +651,31 @@ class QuickTuning(QObject):
             self._dirty_draft()
 
     def _brush(self):
-        return {key: deepcopy(self._options[value]) for key, value in (
-            ('preset', 'performance_style'), ('strength', 'style_strength'), ('pitch', 'style_pitch'),
-            ('detail', 'style_detail'), ('technique', 'style_technique'),
-            ('technique_strength', 'technique_strength'), ('technique_pitch', 'technique_pitch'))}
+        return {key: deepcopy(self._options[value]) for key, value in _REGION_BRUSH_FIELDS.items()}
+
+    def _can_edit_regions(self):
+        return bool(self.project and not self.worker.kind and not self._legacy)
+
+    def _replace_regions(self, rows, notice):
+        self._regions = rows
+        self._preset = None
+        self.state, self.message = 'ready', tr(notice)
+        self.regionsChanged.emit()
+        self._dirty_draft()
+
+    def _commit_regions(self, rows, notice):
+        if rows == self._regions:
+            return False
+        self.project.verify_regions(rows)
+        self._region_undo.append(self._regions)
+        del self._region_undo[:-_REGION_UNDO_LIMIT]
+        self._region_redo.clear()
+        self._replace_regions(rows, notice)
+        return True
 
     @Slot()
     def addRegion(self):
-        if not self.project or self.worker.kind or self._legacy:
+        if not self._can_edit_regions():
             return
         try:
             time_range_settings((self._start, self._end))
@@ -595,13 +684,9 @@ class QuickTuning(QObject):
             if not applied:
                 raise ValueError('选区内没有所选演唱轨的音符。')
             updated = self._regions + applied
-            self.project.verify_regions(updated)
-            self._regions = updated
+            self._commit_regions(updated, '已添加逐轨片段。')
             self._start = min(float(row['recipe']['start']) for row in applied)
             self._end = max(float(row['recipe']['end']) for row in applied)
-            self._preset = None
-            self.regionsChanged.emit()
-            self._dirty_draft()
             self.message = tr('已添加 {count} 个逐轨片段。').format(count=len(applied))
             self.state = 'ready'
             self.changed.emit()
@@ -610,40 +695,71 @@ class QuickTuning(QObject):
 
     @Slot(str)
     def updateRegion(self, identity):
-        if not self.project or self.worker.kind or self._legacy:
+        self._edit_region(identity, self._start, self._end, use_current_brush=True)
+
+    @Slot(str, float, float)
+    def moveRegion(self, identity, start, end):
+        self._edit_region(identity, start, end, use_current_brush=False)
+
+    def _edit_region(self, identity, start, end, *, use_current_brush):
+        if not self._can_edit_regions():
             return
         try:
             current = next((row for row in self._regions if row['id'] == identity), None)
             if current is None:
-                raise ValueError('要更新的逐轨片段已不存在。')
+                raise ValueError('该片段已不存在。')
             track = current['track_id']
-            if track not in self.project.editable:
-                raise ValueError('该片段轨道当前不可编辑。')
-            time_range_settings((self._start, self._end))
-            replacement = self.project.region(track, self._start, self._end, self._brush(), identity=identity)
+            time_range_settings((start, end))
+            brush = self._brush() if use_current_brush else {
+                key: value for key, value in current['recipe'].items() if key in _REGION_BRUSH_FIELDS
+            }
+            replacement = self.project.region(track, start, end, brush, identity=identity)
             if replacement is None:
                 raise ValueError('当前选区内没有此片段轨道可应用的音符。')
             updated = [replacement if row['id'] == identity else row for row in self._regions]
-            self.project.verify_regions(updated)
-            self._regions = updated
+            self._commit_regions(updated, '已更新片段范围和风格。' if use_current_brush
+                                 else '已将片段移动到完整音符范围。')
             self._start = float(replacement['recipe']['start'])
             self._end = float(replacement['recipe']['end'])
-            self._preset = None
-            self.regionsChanged.emit()
-            self._dirty_draft()
-            name = self.project.tracks[track]['name']
-            self.message = tr('已用当前选区和风格更新“{name}”的逐轨片段。').format(name=name)
-            self.state = 'ready'
             self.changed.emit()
         except (ValueError, OSError) as error:
             self._error(error)
 
     @Slot(str)
     def removeRegion(self, identity):
-        if not self.worker.kind and any(row['id'] == identity for row in self._regions):
-            self._regions = [row for row in self._regions if row['id'] != identity]
-            self.regionsChanged.emit()
-            self._dirty_draft()
+        if self._can_edit_regions():
+            self._commit_regions([row for row in self._regions if row['id'] != identity], '已移除片段。')
+
+    @Slot()
+    def clearRegions(self):
+        if self._can_edit_regions():
+            self._commit_regions([], '已清空片段；可用撤销恢复。')
+
+    @Slot()
+    def undoRegions(self):
+        if self._can_edit_regions() and self._region_undo:
+            self._region_redo.append(self._regions)
+            self._replace_regions(self._region_undo.pop(), '已撤销片段编辑。')
+
+    @Slot()
+    def redoRegions(self):
+        if self._can_edit_regions() and self._region_redo:
+            self._region_undo.append(self._regions)
+            self._replace_regions(self._region_redo.pop(), '已重做片段编辑。')
+
+    @Slot(str)
+    def editRegion(self, identity):
+        if not self._can_edit_regions():
+            return
+        row = next((item for item in self._regions if item['id'] == identity), None)
+        if row is None:
+            return
+        recipe = row['recipe']
+        self.focusTrack(row['track_id'])
+        self.selectSpan(recipe['start'], recipe['end'])
+        self._set_options({option: deepcopy(recipe.get(field, engine.DEFAULTS[option]))
+                           for field, option in _REGION_BRUSH_FIELDS.items()})
+        self.setViewport(recipe['start'] - self._span * .15, self._span)
 
     @Slot()
     def migrateLegacy(self):
@@ -779,32 +895,68 @@ class QuickTuning(QObject):
     def openMixdown(self):
         self.parent().navigate('audio_mixdown')
 
-    def _bound(self, document, raw):
+    def _bound(self, document, raw, *, before=None):
         indices = self._indices()
         bindings = {'vocal_tracks': indices, 'confirm_candidate_baseline': self._confirmed,
                     'reference_audio': [row for row in self._options['reference_sources'] if row['track_index'] in indices],
                     'retained_project': [row for row in self._options['retained_sources'] if row['track_index'] in indices]}
         if self._options['reference_calibration']:
             bindings['calibration_profile'] = self._options['reference_calibration']
-        return plan_application(document, self.project.project, bindings, raw_document=raw)
+        return plan_application(document, self.project.project, bindings, raw_document=raw, before=before)
 
     def _rebind_preset(self):
         if self._preset and self.project:
             self._preset = self._bound(self._preset['document'], self._preset['document_text'])
 
+    def _preset_review_stamp(self):
+        return (self.project.sha256, self._indices(), self._confirmed,
+                deepcopy(self._options), deepcopy(self._regions))
+
     @Slot(str)
-    def applyPreset(self, key):
+    def previewPreset(self, key):
         if not self.project or key not in self._presets or self.worker.kind:
             return
         row = self._presets[key]
+        self._preset_review = None
 
         def finish(value):
             if value['entry']['sha256'] != row['sha256']:
                 raise ValueError('预设版本已改变，请重新选择。')
-            plan = self._bound(value['document'], value['raw'])
+            plan = self._bound(value['document'], value['raw'], before=self._options)
             if self._regions:
                 if plan['document']['payload']['expression_mode'] != 'preserve':
                     raise ValueError('此预设包含参数来源。请在没有逐轨片段的工程上绑定。')
+            self._preset_review = {
+                'entry': row, 'stamp': self._preset_review_stamp(),
+                'summary': {'name': plan['preset']['name'], 'changes': plan['changes'],
+                            'missing': plan['missing'] if not self._regions else [],
+                            'brushOnly': bool(self._regions)},
+            }
+            self.message = tr('预设差异已准备，确认后才会应用。')
+            self.state = 'ready'
+
+        self._command('preset', '正在读取预设版本…',
+                      lambda _stop, _send: self._library.get_snapshot(row['id'], row['version']), finish)
+
+    @Slot()
+    def dismissPresetReview(self):
+        if self._preset_review is not None:
+            self._preset_review = None
+            self.changed.emit()
+
+    @Slot()
+    def confirmPreset(self):
+        review = self._preset_review
+        if not self.project or not review or self.worker.kind:
+            return
+        row = review['entry']
+        self._preset_review = None
+
+        def finish(value):
+            if value['entry']['sha256'] != row['sha256'] or self._preset_review_stamp() != review['stamp']:
+                raise ValueError('工程或预设已变化，请重新预览。')
+            plan = self._bound(value['document'], value['raw'])
+            if self._regions:
                 self._options.update({key: deepcopy(plan['controls'][key]) for key in _BRUSH_KEYS})
                 self._dirty_draft(invalidate=False)
                 self.message = tr('预设已成为下一片段的风格；现有片段保留。')
@@ -822,8 +974,17 @@ class QuickTuning(QObject):
                 self.message = tr('已绑定预设到当前工程。冻结前可查看或补齐所需的本地来源。')
             self.state = 'ready'
 
-        self._command('preset', '正在读取预设版本…',
+        self._command('preset', '正在核验并应用预设…',
                       lambda _stop, _send: self._library.get_snapshot(row['id'], row['version']), finish)
+
+    @Slot()
+    def unbindPreset(self):
+        if self._preset and not self.worker.kind:
+            self._preset = None
+            self._preset_review = None
+            self._dirty_draft()
+            self.message = tr('已解除工程预设关联；当前设置保留。')
+            self.changed.emit()
 
     @Slot(str)
     def savePreset(self, name):
