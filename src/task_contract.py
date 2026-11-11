@@ -478,19 +478,23 @@ def rebuild(job):
     return backup if backup.exists() else None
 
 
-def inspect(job, *, verify=True):
+def inspect(job, *, verify=True, check=None):
     data = read(job)
     results, own = {}, {}
     for key, entry in data['entries'].items():
+        if check is not None and check():
+            raise InterruptedError('已取消产物校验。')
         if not entry.get('active', True): continue
         try:
             path = resolve(job, entry)
             stat = path.stat()
-            own[key] = ('modified' if not path.is_file() or (verify and file_hash(path) != entry['sha256'])
+            own[key] = ('modified' if not path.is_file() or (verify and file_hash(path, check=check) != entry['sha256'])
                         else 'verified' if verify else 'unchecked')
             if not verify and stat.st_size != entry['bytes']: own[key] = 'modified'
         except FileNotFoundError:
             own[key] = 'missing'
+        except InterruptedError:
+            raise
         except (OSError, ValueError):
             own[key] = 'unreadable'
     def state(key, visiting):
@@ -642,11 +646,11 @@ def register_session(session):
         _write(job, data)
 
 
-def selected(job, kind, *, verify=True):
+def selected(job, kind, *, verify=True, rows=None):
     binding = _metadata(job).get('bindings', {}).get(kind)
     if not binding: return None
-    rows = {item['id']: item for item in inspect(job, verify=verify)}
-    row = rows.get(binding['id'])
+    entries = inspect(job, verify=verify) if rows is None else rows
+    row = next((item for item in entries if item['id'] == binding['id']), None)
     if not row or row['state'] not in ('verified', 'unchecked'):
         raise ContractError('已登记的文件或其依赖已改变，请在“文件与下一步”中检查并重新登记。')
     return Path(row['path'])

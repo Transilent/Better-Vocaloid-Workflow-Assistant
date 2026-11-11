@@ -43,6 +43,36 @@ def locked(job):
         return True
 
 
+def _metadata_row(path, modified):
+    request = read_json(path / 'request.json')
+    if not request:
+        return None
+    status, info = read_json(path / 'status.json'), read_json(path / 'source-info.json')
+    title = read_json(path / 'task.json').get('name') or info.get('title') or request.get('source_title')
+    return {'title': str(title or request.get('bv') or path.name), 'request': request, 'status': status,
+            'created': request.get('created_at') or path.name.split('_')[-1], 'modified': modified}
+
+
+def _task_state(path, status):
+    state = status.get('state', 'ready')
+    return 'interrupted' if state == 'running' and not locked(path) else state
+
+
+def record(job):
+    """Read a single registered task without rescanning every artifact index."""
+    path = Path(job).resolve()
+    if path not in job_directories():
+        raise ValueError('任务不存在或已移出任务列表。')
+    try:
+        modified = (path / 'status.json').stat().st_mtime
+    except FileNotFoundError:
+        modified = path.stat().st_mtime
+    row = _metadata_row(path, modified)
+    if row is None:
+        raise ValueError('任务参数无法读取。')
+    return {**row, 'path': path, 'state': _task_state(path, row['status'])}
+
+
 def records(check=None):
     index_path = ROOT / 'cache/task-index.json'
     try:
@@ -71,19 +101,13 @@ def records(check=None):
                     and math.isfinite(cached['modified'])):
                 row = dict(saved['row'])
             else:
-                request, state, info = read_json(path/'request.json'), read_json(path/'status.json'), read_json(path/'source-info.json')
-                if not request: continue
-                row = {'title': str(read_json(path/'task.json').get('name') or info.get('title') or request.get('source_title') or request.get('bv') or path.name),
-                       'request': request, 'status': state, 'created': request.get('created_at') or path.name.split('_')[-1],
-                       'modified': stamps['status.json'][1]/1e9 if stamps['status.json'] else path.stat().st_mtime}
+                row = _metadata_row(path, stamps['status.json'][1]/1e9 if stamps['status.json'] else path.stat().st_mtime)
+                if row is None: continue
             entries[str(path)] = {'stamps': stamps, 'row': row}
         except OSError:
             continue  # A deleted/moved task must not fail the entire library.
-        state = row['status']
-        status = state.get('state', 'ready')
-        if status == 'running' and not locked(path):
-            status = 'interrupted'
-        from task_contract import handoff, ContractError
+        status = _task_state(path, row['status'])
+        from task_contract import handoff
         try:
             action = handoff(path) if status != 'interrupted' else 'retry'
         except (OSError, ValueError, KeyError, TypeError):

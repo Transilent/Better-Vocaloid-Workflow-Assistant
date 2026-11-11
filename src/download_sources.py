@@ -346,20 +346,22 @@ def source_name(url):
     }.get(host, '官方源')
 
 
-def read_small(url, source='auto', limit=2 * 1024**2, opener=direct_urlopen):
+def read_small(url, source='auto', limit=2 * 1024**2, opener=direct_urlopen, *, timeout=12, check=None):
     """Read bounded public metadata, trying approved routes without secrets."""
     if not isinstance(limit, int) or limit <= 0:
         raise ValueError('读取大小限制无效。')
     last_error = None
     oversized = False
     for candidate in download_urls(url, source):
+        if check is not None and check():
+            raise InterruptedError('已取消更新检查。')
         request = urllib.request.Request(candidate, headers={
             'User-Agent': 'VWA-Updater',
             'Accept': 'application/json',
             'Accept-Encoding': 'identity',
         })
         try:
-            with opener(request, timeout=12) as response:
+            with opener(request, timeout=timeout) as response:
                 declared = response.headers.get('Content-Length')
                 if declared:
                     try:
@@ -369,10 +371,14 @@ def read_small(url, source='auto', limit=2 * 1024**2, opener=direct_urlopen):
                     except ValueError:
                         pass
                 data = response.read(limit + 1)
+                if check is not None and check():
+                    raise InterruptedError('已取消更新检查。')
                 if len(data) > limit:
                     oversized = True
                     continue
                 return data
+        except InterruptedError:
+            raise
         except (OSError, urllib.error.URLError) as exc:
             last_error = exc
     if oversized:

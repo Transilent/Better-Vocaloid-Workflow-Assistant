@@ -1,13 +1,21 @@
-"""Build a reproducible, unpackable Quick component-engineering candidate ZIP.
+"""Build a reproducible, unpackable Quick engineering candidate ZIP.
 
 The fixed CLI is:
     --source-root --python-runtime --wheel-dir --output
+
+An optional --workflow-resources installed-root switches on a workflow candidate.
+It copies only files named by the frozen dependency manifest, verifies each
+copied file's declared size and SHA-256, and never walks or copies user state.
+The default workflow profile covers local import through SVP preparation; --full
+adds the optional language and publishing resource groups.
 
 This builder never installs packages, uses the network, mutates the source tree,
 or packages user state. It copies application files selected from
 packaging/portable-files.json, a trimmed CPython runtime, only the NumPy 1.26.4
 installation roots, and the two hash-locked Qt 6.10.3 wheels. Build-time child
 processes verify NumPy ABI/BLAS loading and the required Qt Quick QML imports.
+When workflow resources are enabled, the frozen installed runtime supplies the
+processing Python packages and models instead of the component-only trim.
 """
 from __future__ import annotations
 
@@ -42,6 +50,40 @@ PYTHON_TARGET = "dependencies/vocal2midi/python"
 QT_TARGET = "runtime/qt6"
 ZIP_DATE = (2026, 11, 11, 0, 0, 0)
 CHUNK = 4 * 1024 * 1024
+WORKFLOW_FEATURES = ("core", "midi", "alignment", "chinese", "japanese",
+                     "pitch", "projects", "publishing")
+DEFAULT_WORKFLOW_FEATURES = frozenset({"core", "midi", "alignment", "pitch", "projects"})
+RESOURCE_ROOTS = frozenset({"dependencies", "models", "vendor"})
+PRIVATE_RESOURCE_PARTS = frozenset({
+    ".git", "cache", "jobs", "accounts", "publish-browser", "quality-test",
+    "user-presets", "work",
+})
+RUNTIME_SITE_PACKAGES = "dependencies/vocal2midi/python/Lib/site-packages/"
+QT5_UI_PACKAGES = (
+    "pyqt5", "pyqt5-", "pyqt5_", "pyqt_fluent_widgets-", "qfluentwidgets",
+    "qframelesswindow", "pyqt5_frameless_window-", "darkdetect",
+)
+PACKAGE_MANAGER_PATHS = (
+    "pip", "pip-", "setuptools", "setuptools-", "wheel", "wheel-",
+    "_distutils_hack", "distutils-precedence.pth",
+)
+MINIMUM_WORKFLOW_FILES = (
+    "dependencies/ffmpeg/ffmpeg.exe",
+    "dependencies/models/UVR-MDX-NET-Inst_HQ_3.onnx",
+    "dependencies/models/mdx-model-data.json",
+    "dependencies/vocal2midi/settings/vocal2midi.ini",
+    "dependencies/vocal2midi2/backend-version.json",
+    "dependencies/vocal2midi/experiments/RMVPE/rmvpe.onnx",
+    "dependencies/vocal2midi2/application/pipeline.py",
+    "dependencies/vocal2midi2/inference/pipeline/auto_lyric_hybrid.py",
+    "dependencies/export/libresvip/__init__.py",
+    "models/UVR_MDXNET_KARA_2.onnx",
+    "models/mdx-model-data.json",
+)
+MINIMUM_WORKFLOW_PREFIXES = (
+    "dependencies/vocal2midi/experiments/1218_hfa_model_new_dict/",
+    "dependencies/vocal2midi/experiments/GAME-1.0.3-medium-onnx/",
+)
 
 EXPECTED_WHEELS = {
     "pyside6-essentials": "pyside6_essentials-6.10.3-cp39-abi3-win_amd64.whl",
@@ -108,6 +150,28 @@ class PackagedFile:
     origin: str
 
 
+@dataclass(frozen=True)
+class ResourceEntry:
+    file: str
+    bytes: int
+    sha256: str
+    feature: str
+
+
+@dataclass(frozen=True)
+class WorkflowResourcePlan:
+    root: Path
+    manifest: Path
+    portable_manifest: Path
+    profile: str
+    manifest_sha256: str
+    portable_manifest_sha256: str
+    entries: tuple[ResourceEntry, ...]
+    omitted: tuple[ResourceEntry, ...]
+    blocked: tuple[ResourceEntry, ...]
+    blocked_categories: tuple[tuple[str, int, int], ...]
+
+
 def digest(path: Path) -> str:
     value = hashlib.sha256()
     with path.open("rb") as stream:
@@ -125,6 +189,263 @@ def read_json(path: Path):
         return json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         raise CandidateError(f"Cannot read JSON {path}: {exc}") from exc
+
+
+def resource_feature(relative: str) -> str:
+    """Mirror the application's feature groups for the reviewed resource plan."""
+    if relative.startswith(("dependencies/browser/", "vendor/")):
+        return "publishing"
+    if relative.startswith("dependencies/export/"):
+        return "projects"
+    if "/experiments/Qwen3-ASR-1.7B-dml/" in relative:
+        return "chinese"
+    if "/experiments/romajiASR/" in relative:
+        return "japanese"
+    if "/experiments/1218_hfa_model_new_dict/" in relative:
+        return "alignment"
+    if "/experiments/RMVPE/" in relative:
+        return "pitch"
+    if "/experiments/GAME-" in relative:
+        return "midi"
+    if relative.startswith(RUNTIME_SITE_PACKAGES):
+        top = relative[len(RUNTIME_SITE_PACKAGES):].split("/", 1)[0].casefold()
+        if top.startswith(("pyopenjtalk",)):
+            return "japanese"
+    return "core"
+
+
+def blocked_runtime_category(relative: str):
+    """Return the exclusion class for UI bindings and package-manager files."""
+    if not relative.startswith(RUNTIME_SITE_PACKAGES):
+        return None
+    top = relative[len(RUNTIME_SITE_PACKAGES):].split("/", 1)[0].casefold()
+    if top.startswith(QT5_UI_PACKAGES):
+        return "qt5-ui"
+    if any(top == item or (item.endswith("-") and top.startswith(item))
+           for item in PACKAGE_MANAGER_PATHS):
+        return "installer-tooling"
+    return None
+
+
+def entry_summary(entries: Iterable[ResourceEntry]):
+    rows = {
+        feature: {"files": 0, "bytes": 0}
+        for feature in WORKFLOW_FEATURES
+    }
+    total = {"files": 0, "bytes": 0}
+    for entry in entries:
+        row = rows[entry.feature]
+        row["files"] += 1
+        row["bytes"] += entry.bytes
+        total["files"] += 1
+        total["bytes"] += entry.bytes
+    return {"total": total, "features": rows}
+
+
+def load_workflow_resources(resource_root: Path, source_root: Path, runtime: Path,
+                            *, full: bool) -> WorkflowResourcePlan:
+    """Validate a frozen installed dependency root without walking user state."""
+    try:
+        root = resource_root.expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise CandidateError(f"--workflow-resources is unavailable: {exc}") from exc
+    if not root.is_dir():
+        raise CandidateError("--workflow-resources must be an installed application directory")
+
+    frozen_path = checked_source(source_root, "dependencies/manifest.json")
+    manifest_path = checked_source(root, "dependencies/manifest.json")
+    manifest_sha256 = digest(manifest_path)
+    if manifest_sha256 != digest(frozen_path):
+        raise CandidateError(
+            "--workflow-resources dependencies/manifest.json does not match the frozen source manifest"
+        )
+
+    portable_relative = next(
+        (name for name in ("portable-files.json", "packaging/portable-files.json")
+         if (root / name).is_file()),
+        None,
+    )
+    if portable_relative is None:
+        raise CandidateError("--workflow-resources must contain portable-files.json")
+    portable_path = checked_source(root, portable_relative)
+    portable = read_json(portable_path)
+    if portable.get("format") != 1 or not isinstance(portable.get("entries"), list):
+        raise CandidateError("Installed portable-files.json must use format 1 and an entries array")
+    portable_mapping = {}
+    for index, item in enumerate(portable["entries"]):
+        if not isinstance(item, dict):
+            raise CandidateError(f"Installed portable-files entry {index} is not an object")
+        target = checked_target(item.get("file"), f"installed portable-files[{index}].file")
+        source = clean_relative(item.get("source"), f"installed portable-files[{index}].source")
+        folded = target.casefold()
+        if folded in portable_mapping:
+            raise CandidateError(f"Duplicate installed portable destination: {target}")
+        portable_mapping[folded] = source
+    if portable_mapping.get("dependencies/manifest.json") != "dependencies/manifest.json":
+        raise CandidateError("Installed portable-files.json must preserve dependencies/manifest.json")
+
+    expected_runtime = checked_source(root, PYTHON_TARGET, directory=True)
+    runtime = resolve_python_runtime(runtime)
+    if runtime != expected_runtime:
+        raise CandidateError(
+            "--python-runtime must be the exact Python runtime under --workflow-resources"
+        )
+
+    manifest = read_json(manifest_path)
+    raw_entries = manifest.get("entries")
+    if not isinstance(raw_entries, list) or not raw_entries:
+        raise CandidateError("Frozen dependency manifest must contain a non-empty entries array")
+    if "files" in manifest and manifest["files"] != len(raw_entries):
+        raise CandidateError("Frozen dependency manifest file count is inconsistent")
+
+    selected = []
+    omitted = []
+    blocked = []
+    blocked_counts = {}
+    seen = set()
+    declared_total = 0
+    for index, item in enumerate(raw_entries):
+        if not isinstance(item, dict):
+            raise CandidateError(f"dependency manifest entry {index} is not an object")
+        relative = clean_relative(item.get("file"), f"dependency manifest[{index}].file")
+        folded = relative.casefold()
+        if folded in seen:
+            raise CandidateError(f"Duplicate dependency manifest path: {relative}")
+        seen.add(folded)
+        root_name = relative.split("/", 1)[0].casefold()
+        if root_name not in RESOURCE_ROOTS:
+            raise CandidateError(f"Resource path is outside the reviewed roots: {relative}")
+        if any(part.casefold() in PRIVATE_RESOURCE_PARTS for part in relative.split("/")):
+            raise CandidateError(f"Resource manifest points at private/runtime state: {relative}")
+        size = item.get("bytes")
+        sha256 = item.get("sha256")
+        if type(size) is not int or size < 0:
+            raise CandidateError(f"Invalid dependency size: {relative}")
+        if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
+            raise CandidateError(f"Invalid dependency SHA-256: {relative}")
+        declared_total += size
+        feature = resource_feature(relative)
+        entry = ResourceEntry(relative, size, sha256.lower(), feature)
+        category = blocked_runtime_category(relative)
+        if category:
+            blocked.append(entry)
+            row = blocked_counts.setdefault(category, [0, 0])
+            row[0] += 1
+            row[1] += size
+        elif full or feature in DEFAULT_WORKFLOW_FEATURES:
+            selected.append(entry)
+        else:
+            omitted.append(entry)
+    if "bytes" in manifest and manifest["bytes"] != declared_total:
+        raise CandidateError("Frozen dependency manifest byte total is inconsistent")
+    if not selected:
+        raise CandidateError("Workflow resource selection is empty")
+
+    selected_names = {entry.file for entry in selected}
+    missing = [name for name in MINIMUM_WORKFLOW_FILES if name not in selected_names]
+    missing.extend(
+        prefix for prefix in MINIMUM_WORKFLOW_PREFIXES
+        if not any(name.startswith(prefix) for name in selected_names)
+    )
+    if missing:
+        raise CandidateError("Workflow resource plan is missing required files: " + ", ".join(missing))
+
+    for entry in selected:
+        path = checked_source(root, entry.file)
+        if path.stat().st_size != entry.bytes:
+            raise CandidateError(f"Workflow resource size mismatch: {entry.file}")
+
+    blocked_categories = tuple(
+        (name, values[0], values[1])
+        for name, values in sorted(blocked_counts.items())
+    )
+    return WorkflowResourcePlan(
+        root=root,
+        manifest=manifest_path,
+        portable_manifest=portable_path,
+        profile="full" if full else "workflow-core",
+        manifest_sha256=manifest_sha256,
+        portable_manifest_sha256=digest(portable_path),
+        entries=tuple(selected),
+        omitted=tuple(omitted),
+        blocked=tuple(blocked),
+        blocked_categories=blocked_categories,
+    )
+
+
+def workflow_resource_summary(plan: WorkflowResourcePlan):
+    selected = entry_summary(plan.entries)
+    omitted = entry_summary(plan.omitted)
+    names = {entry.file for entry in plan.entries}
+    omitted_models = [
+        {"file": entry.file, "bytes": entry.bytes, "feature": entry.feature}
+        for entry in plan.omitted
+        if ("/experiments/" in entry.file
+            and entry.feature in {"chinese", "japanese"})
+    ]
+
+    def has_file(name):
+        return name in names
+
+    def has_prefix(prefix):
+        return any(name.startswith(prefix) for name in names)
+
+    stages = {
+        "local_audio_import": has_file("dependencies/ffmpeg/ffmpeg.exe"),
+        "default_separation": (
+            has_file("dependencies/models/UVR-MDX-NET-Inst_HQ_3.onnx")
+            and has_file("dependencies/models/mdx-model-data.json")
+        ),
+        "chorus_separation": (
+            has_file("models/UVR_MDXNET_KARA_2.onnx")
+            and has_file("models/mdx-model-data.json")
+        ),
+        "midi_notes": (
+            has_prefix("dependencies/vocal2midi/experiments/GAME-1.0.3-medium-onnx/")
+            and has_file("dependencies/vocal2midi/experiments/RMVPE/rmvpe.onnx")
+            and has_file("dependencies/vocal2midi2/application/pipeline.py")
+        ),
+        "hfa_alignment": has_prefix(
+            "dependencies/vocal2midi/experiments/1218_hfa_model_new_dict/"
+        ),
+        "chinese_qwen_lyrics": any(entry.feature == "chinese" for entry in plan.entries),
+        "japanese_romaji_lyrics": any(entry.feature == "japanese" for entry in plan.entries),
+        "svp_project_export": (
+            any(entry.feature == "projects" for entry in plan.entries)
+            and has_file("dependencies/export/libresvip/__init__.py")
+        ),
+        "publishing": any(entry.feature == "publishing" for entry in plan.entries),
+    }
+    return {
+        "profile": plan.profile,
+        "selection": (
+            "local import, separation, MIDI, HFA alignment, RMVPE pitch, and SVP conversion"
+            if plan.profile == "workflow-core"
+            else "all manifest resources except Qt5 UI and installer tooling"
+        ),
+        "source_identity": {
+            "manifest_matches_frozen": True,
+            "manifest_sha256": plan.manifest_sha256,
+            "portable_files_sha256": plan.portable_manifest_sha256,
+        },
+        "selected": selected,
+        "omitted_optional": omitted,
+        "omitted_optional_models": omitted_models,
+        "blocked_runtime": {
+            "categories": [
+                {"name": name, "files": files, "bytes": size}
+                for name, files, size in plan.blocked_categories
+            ],
+            "total": {
+                "files": sum(files for _, files, _ in plan.blocked_categories),
+                "bytes": sum(size for _, _, size in plan.blocked_categories),
+            },
+        },
+        "stages": {
+            name: {"bundled": bundled, "validation": "not_run_by_builder"}
+            for name, bundled in stages.items()
+        },
+    }
 
 
 def normalized_project(value: str) -> str:
@@ -217,6 +538,24 @@ class Payload:
                 value.update(chunk)
                 size += len(chunk)
         self._files[target] = PackagedFile(target, size, value.hexdigest(), origin)
+
+    def copy_verified(self, source: Path, target: str, origin: str, *,
+                      expected_bytes: int, expected_sha256: str) -> None:
+        """Copy one frozen file into the stage and verify the copied bytes."""
+        if source.stat().st_size != expected_bytes:
+            raise CandidateError(f"Resource size changed before copy: {source}")
+        destination = self._claim(target)
+        value = hashlib.sha256()
+        size = 0
+        with source.open("rb") as source_stream, destination.open("xb") as output:
+            for chunk in iter(lambda: source_stream.read(CHUNK), b""):
+                output.write(chunk)
+                value.update(chunk)
+                size += len(chunk)
+        actual_sha256 = value.hexdigest()
+        if size != expected_bytes or actual_sha256 != expected_sha256:
+            raise CandidateError(f"Resource SHA-256/size mismatch: {source}")
+        self._files[target] = PackagedFile(target, size, actual_sha256, origin)
 
     def copy_stream(self, source: BinaryIO, target: str, origin: str) -> None:
         destination = self._claim(target)
@@ -640,6 +979,56 @@ def add_python_runtime(payload: Payload, runtime: Path):
     numpy_summary["files_count"] = len(numpy["files"])
     return version, numpy_summary
 
+
+def add_workflow_resources(payload: Payload, plan: WorkflowResourcePlan):
+    """Copy the manifest-selected processing runtime and models into the stage."""
+    verified_files = 0
+    verified_bytes = 0
+    generated_files = 0
+    generated_pth = f"{PYTHON_TARGET}/python312._pth"
+    for entry in sorted(plan.entries, key=lambda item: item.file.casefold()):
+        if entry.file == generated_pth:
+            continue
+        source = checked_source(plan.root, entry.file)
+        payload.copy_verified(
+            source,
+            entry.file,
+            f"workflow-resource:{entry.feature}",
+            expected_bytes=entry.bytes,
+            expected_sha256=entry.sha256,
+        )
+        verified_files += 1
+        verified_bytes += entry.bytes
+
+    pth = "\n".join((
+        "python312.zip",
+        ".",
+        "Lib\\site-packages",
+        "..",
+        "..\\..\\..\\runtime\\qt6",
+        "import site",
+        "",
+    )).encode("ascii")
+    payload.write_bytes(generated_pth, pth, "generated:workflow-embedded-python-path")
+    generated_files += 1
+
+    python_root = payload.stage / PYTHON_TARGET
+    version = python_version(python_root / "python.exe")
+    numpy = validate_numpy(python_root)
+    numpy_summary = {key: value for key, value in numpy.items() if key != "files"}
+    numpy_summary["files_count"] = len(numpy["files"])
+    version["copy_mode"] = "frozen-workflow-resources"
+    verification = {
+        "selected_files": len(plan.entries),
+        "sha256_verified_files": verified_files,
+        "generated_files": generated_files,
+        "verified_bytes": verified_bytes,
+        "mode": "manifest-size-and-sha256-during-isolated-copy",
+        "source_files_opened_read_only": True,
+        "generated_files_list": [generated_pth],
+    }
+    return version, numpy_summary, verification
+
 def clean_subprocess_env(stage: Path, *, qt: bool):
     env = os.environ.copy()
     for key in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP"):
@@ -813,16 +1202,22 @@ def file_records_for_stage(stage: Path):
 
 
 def write_manifest(stage: Path, source_manifest: Path, lock_path: Path, selected, quick_apps, qml,
-                   python_info, numpy_summary, wheels, licenses, shared_lock):
+                   python_info, numpy_summary, wheels, licenses, shared_lock, workflow=None):
     files = file_records_for_stage(stage)
+    candidate_kind = "quick-workflow-engineering" if workflow else "quick-component-engineering"
+    notice = (
+        "Quick workflow-engineering candidate. Validate extraction, staged startup, and each "
+        "music stage before use; this is not a media release, production installer, upgrade "
+        "route, or product acceptance claim."
+        if workflow else
+        "Quick component-engineering candidate. Validate extraction and startup before use; "
+        "this is not a media release, production installer, upgrade route, or acceptance claim."
+    )
     value = {
         "format": 1,
-        "candidate_kind": "quick-component-engineering",
+        "candidate_kind": candidate_kind,
         "accepted_release": False,
-        "notice": (
-            "Quick component-engineering candidate. Validate extraction and startup before use; "
-            "this is not a media release, production installer, upgrade route, or acceptance claim."
-        ),
+        "notice": notice,
         "entrypoint": {"launcher": "Start-Quick.bat", "python": f"{PYTHON_TARGET}/python.exe", "command": "launch.py --quick"},
         "source_manifest": {"path": SOURCE_MANIFEST, "sha256": digest(source_manifest)},
         "requirements_lock": {"path": LOCK_FILE, "sha256": digest(lock_path)},
@@ -840,6 +1235,8 @@ def write_manifest(stage: Path, source_manifest: Path, lock_path: Path, selected
         "payload_sha256": payload_fingerprint(files),
         "manifest_self_excluded": True,
     }
+    if workflow is not None:
+        value["workflow_resources"] = workflow
     with (stage / CANDIDATE_MANIFEST).open("xb") as stream:
         stream.write(json_bytes(value))
     return value
@@ -873,6 +1270,19 @@ def write_zip(stage: Path, temporary: Path):
     return len(names)
 
 
+def verify_stage_policy(stage: Path):
+    """Reject private state and Qt5/installer runtimes from the isolated stage."""
+    for relative in scan_stage(stage):
+        parts = relative.split("/")
+        if parts[0].casefold() in FORBIDDEN_TARGET_ROOTS:
+            raise CandidateError(f"Staged candidate contains private state: {relative}")
+        if any(part.casefold() in PRIVATE_RESOURCE_PARTS for part in parts):
+            raise CandidateError(f"Staged candidate contains private state: {relative}")
+        category = blocked_runtime_category(relative)
+        if category:
+            raise CandidateError(f"Staged candidate contains blocked {category}: {relative}")
+
+
 def build(args):
     source_root = args.source_root.expanduser().resolve(strict=True)
     runtime = resolve_python_runtime(args.python_runtime)
@@ -887,6 +1297,12 @@ def build(args):
     output.parent.mkdir(parents=True, exist_ok=True)
     staging_root = (args.staging_root or source_root / "work").expanduser().resolve()
     staging_root.mkdir(parents=True, exist_ok=True)
+    workflow_plan = (
+        load_workflow_resources(
+            args.workflow_resources, source_root, runtime, full=args.full,
+        )
+        if args.workflow_resources else None
+    )
 
     source_manifest, entries = load_source_inventory(source_root)
     selected, quick_apps, qml = select_application_entries(entries)
@@ -910,7 +1326,15 @@ def build(args):
         shared_lock = add_shared_lock_helper(payload, source_root, entries)
         payload.copy_path(lock_path, LOCK_FILE, LOCK_FILE)
 
-        python_info, numpy_summary = add_python_runtime(payload, runtime)
+        workflow = None
+        if workflow_plan:
+            python_info, numpy_summary, resource_verification = add_workflow_resources(
+                payload, workflow_plan,
+            )
+            workflow = workflow_resource_summary(workflow_plan)
+            workflow["copy_verification"] = resource_verification
+        else:
+            python_info, numpy_summary = add_python_runtime(payload, runtime)
         licenses = extract_qt_runtime(payload, wheel_dir, wheels)
         qt_inventory = {
             "version": QT_VERSION,
@@ -922,9 +1346,10 @@ def build(args):
 
         numpy_abi = verify_numpy_abi(stage)
         qt_qml = verify_qt_qml(stage)
+        verify_stage_policy(stage)
         candidate = write_manifest(
             stage, source_manifest, lock_path, selected, quick_apps, qml,
-            python_info, numpy_summary, wheels, licenses, shared_lock,
+            python_info, numpy_summary, wheels, licenses, shared_lock, workflow,
         )
         candidate["verification"] = {"numpy_abi": numpy_abi, "qt_qml": qt_qml}
         (stage / CANDIDATE_MANIFEST).write_bytes(json_bytes(candidate))
@@ -941,7 +1366,7 @@ def build(args):
         "bytes": output.stat().st_size,
         "sha256": digest(output),
         "files": file_count,
-        "candidate_kind": "quick-component-engineering",
+        "candidate_kind": candidate["candidate_kind"],
         "accepted_release": False,
         "numpy_version": NUMPY_VERSION,
         "numpy_record_verified_files": numpy_summary["record_verified_files"],
@@ -950,6 +1375,12 @@ def build(args):
         "quick_qml_count": len(qml),
         "shared_lock": shared_lock,
     }
+    if workflow:
+        result.update(
+            workflow_profile=workflow["profile"],
+            workflow_resources=workflow["selected"]["total"],
+            workflow_stages=workflow["stages"],
+        )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return result
 
@@ -958,16 +1389,49 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--source-root", type=Path, required=True,
                         help="repository/source snapshot containing src/, assets/, components/, packaging/")
-    parser.add_argument("--python-runtime", type=Path, required=True,
+    parser.add_argument("--python-runtime", type=Path,
                         help="controlled embedded Python directory, or application root containing dependencies/vocal2midi/python")
-    parser.add_argument("--wheel-dir", type=Path, required=True,
+    parser.add_argument("--wheel-dir", type=Path,
                         help="offline directory containing the two exact Qt 6.10.3 wheels")
-    parser.add_argument("--output", type=Path, required=True,
+    parser.add_argument("--output", type=Path,
                         help="new candidate ZIP path; existing files are never overwritten")
     parser.add_argument("--staging-root", type=Path,
                         help="writable, short path for temporary DLL/QML files (default: source-root/work)")
+    parser.add_argument("--workflow-resources", type=Path,
+                        help="installed read-only application root whose frozen dependency manifest supplies processing resources")
+    parser.add_argument("--full", action="store_true",
+                        help="with --workflow-resources, include optional language and publishing groups; Qt5/UI and installer tooling stay excluded")
+    parser.add_argument("--resource-plan", action="store_true",
+                        help="print the explicit workflow resource groups and sizes without creating an archive")
     args = parser.parse_args(argv)
     try:
+        if args.full and args.workflow_resources is None:
+            parser.error("--full requires --workflow-resources")
+        if args.resource_plan:
+            if args.workflow_resources is None:
+                parser.error("--resource-plan requires --workflow-resources")
+            source_root = args.source_root.expanduser().resolve(strict=True)
+            resource_root = args.workflow_resources.expanduser().resolve(strict=True)
+            runtime = args.python_runtime or resource_root / PYTHON_TARGET
+            plan = load_workflow_resources(resource_root, source_root, runtime, full=args.full)
+            summary = workflow_resource_summary(plan)
+            summary["plan_verification"] = {
+                "manifest_content_verified": True,
+                "selected_file_existence_and_size_verified": True,
+                "selected_file_sha256_verified": False,
+                "note": "SHA-256 is verified while selected files are copied into build isolation.",
+            }
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+            return 0
+        missing = [
+            name for name, value in (
+                ("--python-runtime", args.python_runtime),
+                ("--wheel-dir", args.wheel_dir),
+                ("--output", args.output),
+            ) if value is None
+        ]
+        if missing:
+            parser.error("build mode requires " + ", ".join(missing))
         build(args)
     except (CandidateError, OSError, ValueError, zipfile.BadZipFile, subprocess.TimeoutExpired) as exc:
         print(f"quick candidate build failed: {exc}", file=sys.stderr, flush=True)

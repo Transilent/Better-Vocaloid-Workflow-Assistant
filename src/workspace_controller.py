@@ -1,19 +1,11 @@
 """Own the preparation draft, component browser and cross-page commands."""
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from uuid import uuid4
 
 from workspace_routes import PAGE_SPECS
-
-
-@dataclass(frozen=True)
-class PreparationDraft:
-    music_path: str = ''
-    voice_mode: str = 'dual'
-    separator_model: str = 'dual'
-    roformer_device: str = 'auto'
-    revision: int = 0
+from preparation_commands import PreparationDraft
 
 
 @dataclass(frozen=True)
@@ -29,7 +21,7 @@ class ComponentRequest:
 class WorkspaceController:
     """All mutable state belongs to the application, independent of a page instance."""
 
-    available_routes = ('processing', 'components')
+    available_routes = ('processing', 'components', 'results', 'updates')
 
     def __init__(self, sources):
         self.draft = PreparationDraft()
@@ -45,16 +37,23 @@ class WorkspaceController:
         self.rows_runtime = None
         self.active = None
         self.operation = {'state': 'idle', 'action': '', 'message': '', 'done': 0, 'total': 0}
+        self.preparation_task = {'id': '', 'state': 'idle', 'job': '', 'message': '',
+                                 'current': '', 'completed': 0, 'total': 0, 'elapsed': 0,
+                                 'can_retry': False, 'recovery_action': ''}
+        self.task_rows = ()
+        self.task_query = ''
+        self.selected_task_id = ''
+        self.task_detail = {}
+        self.handoff = {}
 
     @property
     def draft_view(self):
-        view = asdict(self.draft)
-        view['music_name'] = Path(self.draft.music_path).name
-        return view
+        return self.draft.view
 
     @property
     def routes(self):
-        return [spec for spec in PAGE_SPECS if spec.page_id in self.available_routes]
+        return sorted((spec for spec in PAGE_SPECS if spec.page_id in self.available_routes),
+                      key=lambda spec: spec.sidebar_order)
 
     def navigate(self, destination):
         spec = next((spec for spec in PAGE_SPECS if spec.page_id == destination), None)
@@ -79,6 +78,37 @@ class WorkspaceController:
             self.draft = replace(self.draft, music_path=path, revision=self.draft.revision + 1)
             return True
         return False
+
+    def set_draft(self, draft):
+        if self.draft == draft:
+            return False
+        self.draft = draft
+        return True
+
+    def set_preparation_field(self, name, value):
+        return self.set_draft(self.draft.edit(name, value))
+
+    @property
+    def visible_tasks(self):
+        needle = self.task_query.strip().casefold()
+        return tuple(row for row in self.task_rows if not needle or needle in
+                     str(row.get('searchText') or row['title']).casefold())
+
+    def set_task_rows(self, rows):
+        self.task_rows = tuple(rows)
+
+    def select_task(self, job_id):
+        if not any(row['jobId'] == job_id for row in self.task_rows):
+            return False
+        self.selected_task_id = job_id
+        self.task_detail = {}
+        return True
+
+    def set_task_detail(self, job_id, detail):
+        if self.selected_task_id != job_id:
+            return False
+        self.task_detail = detail
+        return True
 
     @property
     def visible_rows(self):
@@ -132,7 +162,7 @@ class WorkspaceController:
         if (self.draft.voice_mode, self.draft.separator_model, self.draft.roformer_device) != ('dual', model, device):
             self.draft = replace(self.draft, voice_mode='dual', separator_model=model, roformer_device=device,
                                  revision=self.draft.revision + 1)
-        self.return_to_preparation()
+        self.navigate('processing')
         return True
 
     def begin(self, action, *, force=False):

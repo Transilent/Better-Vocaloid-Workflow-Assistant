@@ -301,15 +301,25 @@ def _write_json(path, data):
             Path(name).unlink(missing_ok=True)
 
 
+def cancellation_requested(job):
+    job = Path(job)
+    if Path(native_path(job / "cancel.flag")).exists():
+        return True
+    token = os.environ.get('VWA_RUN_CANCEL_TOKEN', '')
+    return bool(re.fullmatch(r'[a-f0-9]{32}', token) and Path(native_path(job / f'.cancel-{token}.flag')).exists())
+
+
 def cancelled(job):
-    if Path(native_path(Path(job) / "cancel.flag")).exists():
+    if cancellation_requested(job):
         raise InterruptedError("已取消任务；已完成的步骤可以继续使用。")
 
 
-def file_hash(path):
+def file_hash(path, *, check=None):
     digest = hashlib.sha256()
     with open(native_path(path), "rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
+            if check is not None and check():
+                raise InterruptedError("已取消文件校验。")
             digest.update(block)
     return digest.hexdigest()
 

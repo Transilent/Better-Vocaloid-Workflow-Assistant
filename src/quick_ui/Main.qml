@@ -11,10 +11,13 @@ ApplicationWindow {
     required property int initialHeight
     required property real initialScale
     required property bool initialReducedMotion
+    required property bool systemDark
     required property bool showWindow
-    required property bool useArtwork
     readonly property QtObject tokens: theme
     readonly property bool compact: width < 1110 || (theme.scale > 1.2 && width < 1280)
+    readonly property bool useArtwork: preferences.material === "glass"
+    readonly property var preferences: controller.support.settings
+    readonly property bool preparationAway: controller.preparationBusy && controller.route !== "processing"
     property bool closingAfterTask: false
     property real entryProgress: 1
 
@@ -32,21 +35,31 @@ ApplicationWindow {
     palette.button: theme.surface
     palette.buttonText: theme.text
     palette.highlight: theme.accent
-    palette.highlightedText: "#211930"
+    palette.highlightedText: theme.onAccent
 
     QtObject {
         id: theme
-        readonly property real scale: window.initialScale
-        readonly property bool reduceMotion: window.initialReducedMotion
-        readonly property color base: "#13141a"
-        readonly property color surface: "#191b23"
-        readonly property color raised: "#20222b"
-        readonly property color text: "#eeeef5"
-        readonly property color muted: "#a6a9ba"
-        readonly property color line: "#30323d"
-        readonly property color accent: "#c2a8ff"
-        readonly property color success: "#91cdbb"
-        readonly property color error: "#efabac"
+        readonly property bool dark: window.preferences.theme === "dark"
+            || (window.preferences.theme === "system" && window.systemDark)
+        readonly property real scale: window.initialScale || (window.preferences.ui_scale || 100) / 100
+        readonly property bool reduceMotion: window.initialReducedMotion || !!window.preferences.reduce_motion
+        readonly property color base: dark ? "#13141a" : "#f5f4f9"
+        readonly property color surface: dark ? "#191b23" : "#ffffff"
+        readonly property color raised: dark ? "#20222b" : "#eeebf5"
+        readonly property color sidebar: dark ? "#171822" : "#eae7f2"
+        readonly property color text: dark ? "#eeeef5" : "#242233"
+        readonly property color muted: dark ? "#a6a9ba" : "#5c576d"
+        readonly property color line: dark ? "#30323d" : "#d8d3e3"
+        readonly property color accent: dark ? "#c2a8ff" : "#6544a5"
+        readonly property color onAccent: dark ? "#211930" : "#ffffff"
+        readonly property color accentPressed: dark ? "#a48ad9" : "#503289"
+        readonly property color selected: dark ? "#312940" : "#e1d8f5"
+        readonly property color selectedLine: dark ? "#564369" : "#b6a4d5"
+        readonly property color hover: dark ? "#262833" : "#e8e3f2"
+        readonly property color pressed: dark ? "#30313d" : "#dcd4e9"
+        readonly property color success: dark ? "#91cdbb" : "#286a53"
+        readonly property color error: dark ? "#efabac" : "#9f3545"
+        readonly property color attention: dark ? "#d4ad80" : "#825320"
     }
 
     NumberAnimation {
@@ -60,7 +73,7 @@ ApplicationWindow {
     }
 
     onClosing: function(event) {
-        if (controller.busy && !closingAfterTask) {
+        if (controller.workBusy && !closingAfterTask) {
             event.accepted = false
             exitDialog.open()
         }
@@ -68,7 +81,7 @@ ApplicationWindow {
 
     Dialog {
         id: exitDialog
-        title: window.controller.text("组件任务正在运行")
+        title: window.controller.text("任务正在运行")
         modal: true
         anchors.centerIn: parent
         width: Math.min(parent.width - 36, 390)
@@ -118,7 +131,7 @@ ApplicationWindow {
         anchors.left: parent.left
         anchors.bottom: parent.bottom
         width: window.compact ? 66 : 176
-        color: "#171822"
+        color: theme.sidebar
         clip: true
 
         Image {
@@ -130,14 +143,14 @@ ApplicationWindow {
             source: window.assets + "moonlight-background.png"
             fillMode: Image.PreserveAspectCrop
             sourceSize.width: 480
-            opacity: 0.22
+            opacity: theme.dark ? 0.22 : 0.18
         }
         Rectangle {
             anchors.fill: parent
             visible: window.useArtwork
             gradient: Gradient {
-                GradientStop { position: 0.64; color: "#ff171822" }
-                GradientStop { position: 1; color: "#47171822" }
+                GradientStop { position: 0.64; color: theme.sidebar }
+                GradientStop { position: 1; color: Qt.rgba(theme.sidebar.r, theme.sidebar.g, theme.sidebar.b, 0.28) }
             }
         }
         Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: theme.line }
@@ -176,9 +189,9 @@ ApplicationWindow {
                     UiButton {
                         objectName: "nav_" + modelData.pageId
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 41
+                        Layout.preferredHeight: Math.round(41 * Math.min(1.15, theme.scale))
                         theme: window.tokens
-                        text: window.compact ? window.controller.text(modelData.pageId === "processing" ? "准备" : "组件") : modelData.title
+                        text: window.compact ? modelData.short : modelData.title
                         Accessible.name: modelData.title
                         leftPadding: window.compact ? 3 : 10
                         rightPadding: leftPadding
@@ -207,7 +220,14 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.fillHeight: true
             opacity: 0.82 + 0.18 * window.entryProgress
-            sourceComponent: window.controller.route === "components" ? componentsPage : preparationPage
+            sourceComponent: {
+                switch (window.controller.route) {
+                case "components": return componentsPage
+                case "results": return resultsPage
+                case "updates": return settingsPage
+                default: return preparationPage
+                }
+            }
         }
         Component {
             id: componentsPage
@@ -217,12 +237,21 @@ ApplicationWindow {
             id: preparationPage
             PreparationPage { theme: window.tokens; controller: window.controller }
         }
+        Component {
+            id: resultsPage
+            ResultsPage { theme: window.tokens; controller: window.controller }
+        }
+        Component {
+            id: settingsPage
+            SettingsPage { theme: window.tokens; controller: window.controller.support }
+        }
 
         Rectangle {
             objectName: "workspaceActivity"
             Layout.fillWidth: true
             Layout.preferredHeight: footer.implicitHeight + 16
-            visible: window.controller.operation.state !== "idle" || window.controller.notice.length > 0
+            visible: window.preparationAway || window.controller.busy || window.controller.notice.length > 0
+                || (window.controller.route === "components" && window.controller.operation.state !== "idle")
             color: theme.surface
             Rectangle { width: parent.width; height: 1; color: theme.line }
             RowLayout {
@@ -238,8 +267,10 @@ ApplicationWindow {
                     spacing: 5
                     Text {
                         Layout.fillWidth: true
-                        text: window.controller.notice || window.controller.operation.message || ""
-                        color: window.controller.operation.state === "failed" ? theme.error : theme.text
+                        text: window.controller.notice || (window.preparationAway
+                            ? window.controller.preparationTask.message
+                            : window.controller.operation.message) || ""
+                        color: !window.preparationAway && window.controller.operation.state === "failed" ? theme.error : theme.text
                         font.pixelSize: 13 * theme.scale
                         textFormat: Text.PlainText
                         elide: Text.ElideRight
@@ -255,6 +286,21 @@ ApplicationWindow {
                         value: window.controller.operation.total ? Math.min(1, window.controller.operation.done / window.controller.operation.total) : 0
                         Accessible.name: window.controller.text("组件任务进度")
                     }
+                    ProgressBar {
+                        objectName: "backgroundPreparationProgress"
+                        Layout.fillWidth: true
+                        visible: window.preparationAway
+                        value: window.controller.preparationTask.total > 0
+                            ? window.controller.preparationTask.completed / window.controller.preparationTask.total : 0
+                        Accessible.name: window.controller.text("准备任务进度")
+                    }
+                }
+                UiButton {
+                    objectName: "viewPreparationProgress"
+                    visible: window.preparationAway
+                    theme: window.tokens
+                    text: window.controller.text("查看进度")
+                    onClicked: window.controller.navigate("processing")
                 }
                 UiButton {
                     objectName: "cancelComponent"
@@ -266,5 +312,11 @@ ApplicationWindow {
                 }
             }
         }
+    }
+
+    StartupDialogs {
+        theme: window.tokens
+        controller: window.controller.support
+        navigationApi: window.controller
     }
 }

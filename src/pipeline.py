@@ -23,6 +23,7 @@ if hasattr(sys.stdout, "reconfigure"):
 from common import ROOT, BV_PATTERN, atomic_json, cancelled, clean_lyrics, extract_bv, load_config, resolve_tools, completed_voice, file_hash, app_path, saved_path, output_directory, remember_job
 from common import direct_urlopen, native_path
 from common import exclusive_sidecar, SidecarBusy
+from common import cancellation_requested
 from check_dependencies import validate as validate_dependencies
 from source_contract import reject_unsupported_bilibili_subpage
 
@@ -388,7 +389,7 @@ def run_process(argv, job, label, cooperative=False):
                     if pending:
                         print(pending.decode("utf-8", errors="replace"), flush=True)
                     break
-                if (Path(job) / "cancel.flag").exists():
+                if cancellation_requested(job):
                     stop_started = stop_started or time.monotonic()
                     if not cooperative or time.monotonic() - stop_started > 30:
                         if handle is not None:
@@ -1151,13 +1152,16 @@ def discard_obsolete_cancel_request(job):
             claim.unlink(missing_ok=True)
 
 
-def run(job, until=None):
+def run(job, until=None, *, retry_cpu=False):
     job = app_path(job)
     with job_lock(job):
         # Only a flag predating the previous terminal status is stale. A stop
         # requested after launch but before this child obtains the lock remains
         # current and is consumed by the first cancelled() check in _run().
         discard_obsolete_cancel_request(job)
+        if retry_cpu and not cancellation_requested(job):
+            from error_recovery import retry_with_cpu
+            retry_with_cpu(job)
         _run(job, until)
 
 
@@ -1380,7 +1384,15 @@ def main():
     parser.add_argument('--reference-voicing', action='store_true', help='Add relative SVP voicing (experimental)')
     parser.add_argument('--netease-song',help='NetEase song ID or URL for reference lyrics')
     parser.add_argument("--until", choices=[x[0] for x in STEPS])
+    parser.add_argument("--cancel-token", help=argparse.SUPPRESS)
+    parser.add_argument("--retry-cpu", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.cancel_token:
+        if not args.job or not re.fullmatch(r'[a-f0-9]{32}', args.cancel_token):
+            parser.error('invalid preparation cancellation token')
+        os.environ['VWA_RUN_CANCEL_TOKEN'] = args.cancel_token
+    if args.retry_cpu and not args.job:
+        parser.error('--retry-cpu requires --job')
     try:
         if args.job:
             job = Path(args.job)
@@ -1411,7 +1423,10 @@ def main():
                              reference_mode='netease' if args.netease_song else 'local',
                              imported_stems={"lead": args.lead_wav, "backing": args.backing_wav, "instrumental": args.instrumental_wav})
         print(f"任务目录：{job}", flush=True)
-        run(job, args.until)
+        if args.retry_cpu:
+            run(job, args.until, retry_cpu=True)
+        else:
+            run(job, args.until)
     except (ValueError, FileNotFoundError) as exc:
         print(f"处理失败：{exc}", file=sys.stderr, flush=True)
         return 1

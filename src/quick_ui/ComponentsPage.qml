@@ -12,7 +12,7 @@ ScrollView {
     ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
     readonly property bool stacked: availableWidth < (theme.scale > 1.2 ? 1050 : 875)
     readonly property var component: controller.selected
-    readonly property bool idle: !controller.busy && !controller.loading
+    readonly property bool idle: !controller.workBusy && !controller.loading
 
     function sizeLabel(bytes) {
         if (typeof bytes !== "number" || !isFinite(bytes) || bytes < 0)
@@ -157,7 +157,7 @@ ScrollView {
                             rightPadding: 14
                             onClicked: page.controller.selectComponent(componentId)
                             background: Rectangle {
-                                color: entry.highlighted ? "#2c273a" : entry.hovered ? "#23252e" : "transparent"
+                                color: entry.highlighted ? page.theme.selected : entry.hovered ? page.theme.hover : "transparent"
                                 border.color: entry.visualFocus ? page.theme.accent : "transparent"
                                 Rectangle { anchors.bottom: parent.bottom; height: 1; width: parent.width; color: page.theme.line }
                             }
@@ -188,7 +188,7 @@ ScrollView {
                                     Layout.preferredWidth: 6
                                     Layout.preferredHeight: 6
                                     radius: 3
-                                    color: entry.status === "ready" ? page.theme.success : entry.status === "error" ? page.theme.error : "#d4ad80"
+                                    color: entry.status === "ready" ? page.theme.success : entry.status === "error" ? page.theme.error : page.theme.attention
                                 }
                                 Text {
                                     text: entry.statusText

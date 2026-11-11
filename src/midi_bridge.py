@@ -10,6 +10,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 from common import atomic_json, cancelled, clean_lyrics, midi_signature, file_hash, resolve_tools, app_path, preserve_changed_file
+from common import cancellation_requested
 from midi_checks import inspect_midi
 from v2m_runtime import configure
 
@@ -179,7 +180,7 @@ def run(job, voice="vocals", asr_session=None):
         return str(candidate)
 
     def is_cancelled():
-        return (job / "cancel.flag").exists()
+        return cancellation_requested(job)
 
     language = request["language"]
     from music_timing import effective_bpm, install_midi_tempo

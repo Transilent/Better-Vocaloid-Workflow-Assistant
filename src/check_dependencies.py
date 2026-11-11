@@ -11,12 +11,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import ROOT, TOOL_PATHS, atomic_json, file_hash, load_config
 
 
-def check(full=False, features=None):
+def check(full=False, features=None, *, tool_paths=None):
     started = time.monotonic()
     config = load_config()
     missing = []
     selected = set(features) if features is not None else None
-    paths = TOOL_PATHS if selected is None else ('python', 'ffmpeg')
+    paths = tool_paths if tool_paths is not None else TOOL_PATHS if selected is None else ('python', 'ffmpeg')
     for key in paths:
         value = config.get(key)
         if not value or not Path(value).exists():

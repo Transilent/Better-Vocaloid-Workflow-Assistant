@@ -140,11 +140,26 @@ def _tree_presence(root, *, damaged_names=('current',), partial_names=('download
     return 'missing'
 
 
-def _builtin_row():
+_SEPARATION_TOOL_PATHS = ('python', 'ffmpeg', 'mdx_model', 'mdx_metadata', 'chorus_model', 'chorus_metadata')
+_SEPARATION_PAYLOAD = frozenset((
+    'dependencies/models/UVR-MDX-NET-Inst_HQ_3.onnx', 'dependencies/models/mdx-model-data.json',
+    'models/UVR_MDXNET_KARA_2.onnx', 'models/mdx-model-data.json',
+    *('dependencies/vocal2midi/python/Lib/site-packages/' + name for name in (
+        'numpy/__init__.py', 'scipy/__init__.py', 'soundfile.py', '_soundfile_data/libsndfile_x64.dll',
+        'onnxruntime/capi/onnxruntime_pybind11_state.pyd',
+    )),
+))
+
+
+def _builtin_row(check=None):
     model = 'dual'
     try:
-        profile = dependency_profiles.status(['core']).get('core') or {}
-        report = check_dependencies.check(features={'core'})
+        # Check the actual audio feature. The legacy UI and installer files
+        # in the core manifest are not requirements of the separation engine.
+        profile = dependency_profiles.status(['core'], file_filter=_SEPARATION_PAYLOAD.__contains__, check=check)['core']
+        report = check_dependencies.check(features={'core'}, tool_paths=_SEPARATION_TOOL_PATHS)
+    except InterruptedError:
+        raise
     except Exception as exc:
         return _error_row('builtin', exc, model=model)
 
@@ -155,7 +170,7 @@ def _builtin_row():
     check_passed = report.get('state') == 'passed'
     if check_passed and profile_ready:
         status = 'ready'
-        detail = '基础运行库、内置工具与可定位的依赖文件检查通过；不包含可选模型。'
+        detail = '内置分离的工具、模型和关键运行文件已通过文件检查。'
     elif profile_state == 'error':
         status = 'error'
         detail = profile.get('error') or '基础依赖清单无法读取。'
@@ -338,7 +353,7 @@ def _expression_row():
     )
 
 
-def catalog(runtime) -> list[dict]:
+def catalog(runtime, *, check=None) -> list[dict]:
     """Return the four stable component rows for the selected RoFormer runtime.
 
     ``download_bytes`` is the complete fresh-download size, ``installed_bytes``
@@ -349,7 +364,11 @@ def catalog(runtime) -> list[dict]:
     healthy installation of the other target is reported only as context.
     """
     runtime = _runtime(runtime)
-    rows = (_builtin_row(), _roformer_row(runtime), _chinese_row(), _expression_row())
+    rows = []
+    for read in (lambda: _builtin_row(check), lambda: _roformer_row(runtime), _chinese_row, _expression_row):
+        if check is not None and check():
+            raise InterruptedError('已取消组件检查。')
+        rows.append(read())
     return [{key: row[key] for key in ROW_KEYS} for row in rows]
 
 

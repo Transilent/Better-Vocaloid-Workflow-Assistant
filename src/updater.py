@@ -98,11 +98,19 @@ def check_release(source='auto', reader=read_small):
         result = {'version': version, 'notes': release.get('body', ''),
                   'url': RELEASES + '/tag/v' + version, 'available': is_newer(version), 'update': None}
         if result['available']:
-            inventory = json.loads(reader(asset_url(version, 'release-assets.json'), source))
+            try:
+                inventory = json.loads(reader(asset_url(version, 'release-assets.json'), source))
+            except InterruptedError:
+                raise
+            except (OSError, json.JSONDecodeError):
+                # The official release still exists even if it has no compatible update asset.
+                return result
             if inventory.get('version') and inventory['version'] != version:
                 raise ValueError('更新清单与发布版本不一致。')
             result['update'] = compatible_update(inventory)
         return result
+    except InterruptedError:
+        raise
     except (OSError, KeyError, json.JSONDecodeError):
         # The published inventory is a fallback when the public API cannot be
         # reached. It contains the version and update checksum.

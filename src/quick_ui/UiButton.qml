@@ -11,22 +11,23 @@ Button {
 
     font.pixelSize: Math.round(13 * theme.scale)
     font.weight: selected || primary ? Font.DemiBold : Font.Normal
-    leftPadding: 11
-    rightPadding: 11
-    topPadding: 7
-    bottomPadding: 7
-    implicitHeight: Math.max(36, implicitContentHeight + 14)
+    leftPadding: Math.round(11 * theme.scale)
+    rightPadding: leftPadding
+    topPadding: Math.round(7 * theme.scale)
+    bottomPadding: topPadding
+    implicitHeight: Math.max(Math.round(36 * theme.scale), implicitContentHeight + topPadding + bottomPadding)
     focusPolicy: Qt.StrongFocus
     hoverEnabled: true
     Accessible.name: text
 
     background: Rectangle {
-        radius: 7
-        color: control.primary ? (control.down ? "#a48ad9" : control.theme.accent)
-            : control.selected ? "#312940" : control.down ? "#30313d"
-            : control.hovered ? "#262833" : control.quiet ? "transparent" : "#20222b"
-        border.width: control.visualFocus || !control.quiet ? 1 : 0
-        border.color: control.visualFocus ? control.theme.accent : control.selected ? "#564369" : control.theme.line
+        radius: Math.round(7 * control.theme.scale)
+        color: control.primary ? (control.down ? control.theme.accentPressed : control.theme.accent)
+            : control.selected ? control.theme.selected : control.down ? control.theme.pressed
+            : control.hovered ? control.theme.hover : control.quiet ? "transparent" : control.theme.raised
+        border.width: control.visualFocus || control.selected || !control.quiet ? 1 : 0
+        border.color: control.visualFocus ? control.theme.accent : control.selected ? control.theme.selectedLine : control.theme.line
+        opacity: control.enabled ? 1 : 0.55
         Behavior on color {
             enabled: !control.theme.reduceMotion && !control.down
             ColorAnimation { duration: 100 }
@@ -35,7 +36,7 @@ Button {
     contentItem: Text {
         text: control.text
         font: control.font
-        color: control.primary ? "#211930" : control.theme.text
+        color: control.primary ? control.theme.onAccent : control.theme.text
         opacity: control.enabled ? 1 : 0.45
         horizontalAlignment: control.leftAligned ? Text.AlignLeft : Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter

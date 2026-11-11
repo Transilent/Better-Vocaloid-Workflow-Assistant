@@ -87,8 +87,10 @@ ROOT_FILES.update({
     'support_info.py', 'startup_preferences.py', 'update_notice_ui.py', 'onboarding_ui.py',
     'docs/StartupExperience.zh-CN.md',
     'appearance_state.py', 'component_operations.py', 'workspace_controller.py', 'workspace_routes.py',
+    'preparation_commands.py', 'quick_results.py', 'quick_support.py', 'quick_work.py', 'workspace_settings.py',
     'quick_app.py', 'quick_bridge.py', 'quick_runtime.py', 'quick_window_modes.py',
     'quick_ui/ComponentsPage.qml', 'quick_ui/Main.qml', 'quick_ui/PreparationPage.qml', 'quick_ui/UiButton.qml',
+    'quick_ui/ResultsPage.qml', 'quick_ui/SettingsPage.qml', 'quick_ui/StartupDialogs.qml', 'quick_ui/UiComboBox.qml',
 })
 TOOL_FILES = {'tools/update_apply.py', 'tools/Start-Diagnostics.bat',
               'tools/Check-Dependencies.bat', 'tools/Use-CPU.bat', 'tools/Use-GPU.bat',

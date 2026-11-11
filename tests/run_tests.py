@@ -45,6 +45,7 @@ names = ('test_tuning_transforms.py','test_tuning_engine.py','test_tuning_workfl
 # Audit repair regression contracts.
 names = ('test_expression_controls.py', 'test_style_catalog.py', 'test_agent_style_schema.py', 'test_component_health.py') + names
 names = ('test_component_operations.py', 'test_workspace_controller.py', 'test_workspace_routes.py') + names
+names = ('test_preparation_commands.py', 'test_quick_results.py') + names
 names = ('test_runner_contract.py', 'test_pipeline_safety_fixes.py', 'test_tuning_audit_fixes.py') + names
 names = ('test_commit_recovery.py', 'test_component_recovery.py', 'test_delivery_integrity.py', 'test_operation_interlocks.py', 'test_tuning_ui_state.py') + names
 # VWA frontend regression contracts.

@@ -1,4 +1,4 @@
-"""Qt 6 desktop entry for the preparation/Components migration slice."""
+"""Qt 6 desktop entry for the preparation and management workspaces."""
 
 import argparse
 import ctypes
@@ -22,7 +22,7 @@ def _system_reduce_motion():
 
 def create_workspace(app, *, root=ROOT, show=True, viewport=None, scale=None):
     """Construct the same window for interactive launch, smoke and native QA."""
-    from PySide6.QtCore import QSize, QUrl
+    from PySide6.QtCore import QSize, Qt, QUrl
     from PySide6.QtGui import QFont, QIcon
     from PySide6.QtQml import QQmlApplicationEngine
     from PySide6.QtQuickControls2 import QQuickStyle
@@ -52,10 +52,10 @@ def create_workspace(app, *, root=ROOT, show=True, viewport=None, scale=None):
             'assets': QUrl.fromLocalFile(str(assets) + '/'),
             'initialWidth': initial[0],
             'initialHeight': initial[1],
-            'initialScale': (scale or appearance['ui_scale']) / 100,
-            'initialReducedMotion': appearance['reduce_motion'] or _system_reduce_motion(),
+            'initialScale': (scale or 0) / 100,
+            'initialReducedMotion': _system_reduce_motion(),
+            'systemDark': app.styleHints().colorScheme() == Qt.ColorScheme.Dark,
             'showWindow': show,
-            'useArtwork': appearance['material'] == 'glass',
         })
         engine.load(QUrl.fromLocalFile(str(root / 'quick_ui/Main.qml')))
         if not engine.rootObjects():
@@ -79,7 +79,7 @@ def main(argv=None):
     options = parser.parse_args(argv)
     runtime = configure_quick_runtime(ROOT, options.quick_runtime, software=options.software)
 
-    from PySide6.QtCore import QCoreApplication, QEvent, QTimer, QtMsgType, qInstallMessageHandler, qVersion
+    from PySide6.QtCore import QObject, QCoreApplication, QEvent, QTimer, QtMsgType, qInstallMessageHandler, qVersion
     from PySide6.QtGui import QGuiApplication
 
     app = QGuiApplication([sys.argv[0]])
@@ -102,11 +102,17 @@ def main(argv=None):
         engine, window, controller, modes = create_workspace(app, show=not options.check)
         print(f'VWA Quick · Qt {qVersion()} · {runtime}', flush=True)
         if options.check:
-            controller.navigate('components')
-            app.processEvents()
+            loader = window.findChild(QObject, 'pageLoader')
+            for spec in controller.state.routes:
+                # Load each view without starting a task scan or a startup check.
+                controller.state.navigate(spec.page_id)
+                controller.navigationChanged.emit()
+                app.processEvents()
+                if loader is None or loader.property('item') is None:
+                    raise RuntimeError(f'Quick workspace could not load route: {spec.page_id}')
             if warnings:
                 raise RuntimeError('Quick runtime or QML check reported warnings.')
-            print('Quick runtime, assets and both pages are ready.', flush=True)
+            print('Quick runtime, assets, four workspaces and startup dialogs are ready.', flush=True)
             return 0
         controller.refresh()
         if options.smoke_test:
@@ -127,6 +133,8 @@ def main(argv=None):
 
             controller.activityChanged.connect(complete_smoke)
             QTimer.singleShot(150, complete_smoke)
+        else:
+            QTimer.singleShot(0, controller.support.begin_startup)
         return app.exec()
     finally:
         if modes is not None:

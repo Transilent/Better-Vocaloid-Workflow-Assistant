@@ -10,6 +10,10 @@
       "source": "src/component_operations.py"
     },
     {
+      "file": "preparation_commands.py",
+      "source": "src/preparation_commands.py"
+    },
+    {
       "file": "quick_app.py",
       "source": "src/quick_app.py"
     },
@@ -18,12 +22,24 @@
       "source": "src/quick_bridge.py"
     },
     {
+      "file": "quick_results.py",
+      "source": "src/quick_results.py"
+    },
+    {
       "file": "quick_runtime.py",
       "source": "src/quick_runtime.py"
     },
     {
+      "file": "quick_support.py",
+      "source": "src/quick_support.py"
+    },
+    {
       "file": "quick_window_modes.py",
       "source": "src/quick_window_modes.py"
+    },
+    {
+      "file": "quick_work.py",
+      "source": "src/quick_work.py"
     },
     {
       "file": "workspace_controller.py",
@@ -32,6 +48,10 @@
     {
       "file": "workspace_routes.py",
       "source": "src/workspace_routes.py"
+    },
+    {
+      "file": "workspace_settings.py",
+      "source": "src/workspace_settings.py"
     },
     {
       "file": "quick_ui/ComponentsPage.qml",
@@ -46,8 +66,24 @@
       "source": "src/quick_ui/PreparationPage.qml"
     },
     {
+      "file": "quick_ui/ResultsPage.qml",
+      "source": "src/quick_ui/ResultsPage.qml"
+    },
+    {
+      "file": "quick_ui/SettingsPage.qml",
+      "source": "src/quick_ui/SettingsPage.qml"
+    },
+    {
+      "file": "quick_ui/StartupDialogs.qml",
+      "source": "src/quick_ui/StartupDialogs.qml"
+    },
+    {
       "file": "quick_ui/UiButton.qml",
       "source": "src/quick_ui/UiButton.qml"
+    },
+    {
+      "file": "quick_ui/UiComboBox.qml",
+      "source": "src/quick_ui/UiComboBox.qml"
     },
     {
       "file": "context_structure.py",

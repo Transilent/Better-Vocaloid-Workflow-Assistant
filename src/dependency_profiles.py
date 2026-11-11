@@ -28,7 +28,7 @@ def _inside_root(path):
         return False
 
 
-def status(features=None):
+def status(features=None, *, file_filter=None, check=None):
     """Report target-file presence without hashing multi-gigabyte weights.
 
     The Chinese row additionally reports resumable cache bytes. The explicit
@@ -43,8 +43,10 @@ def status(features=None):
                   'missing': [], 'files': 0, 'complete_files': 0,
                   'state': 'missing', 'feature_error': False} for key in chosen}
     for item in dependency_manifest().get('entries', []):
+        if check is not None and check():
+            raise InterruptedError('已取消依赖检查。')
         key = group(item['file'])
-        if key not in chosen:
+        if key not in chosen or (file_filter is not None and not file_filter(item['file'])):
             continue
         row = rows[key]
         row['bytes'] += item['bytes']

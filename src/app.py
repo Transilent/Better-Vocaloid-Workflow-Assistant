@@ -4,7 +4,6 @@ from common import environment_value
 from i18n import tr as _tr
 import json
 import os
-import subprocess
 import sys
 import traceback
 from pathlib import Path
@@ -36,19 +35,8 @@ class Runner(QThread):
 
     def run(self):
         try:
-            python = load_config()["python"]
-            env = os.environ.copy()
-            env.update(PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1")
-            with (self.job / "pipeline.log").open("a", encoding="utf-8") as log:
-                process = subprocess.Popen([python, "-B", "-u", str(ROOT / "pipeline.py"), "--job", str(self.job)],
-                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                           encoding="utf-8", errors="replace", env=env,
-                                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                for line in process.stdout:
-                    log.write(line)
-                    log.flush()
-                    self.line.emit(line.rstrip())
-                self.result.emit(process.wait())
+            from preparation_commands import run_process
+            self.result.emit(run_process(self.job, on_line=self.line.emit))
         except Exception:
             self.line.emit(traceback.format_exc())
             self.result.emit(1)
