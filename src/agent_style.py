@@ -959,7 +959,8 @@ def _validate_proposal(
     return indices, brief, normalized, selected
 
 
-def _components(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def note_components(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group notes joined by positive overlap; adjacent edges stay independent."""
     components: list[dict[str, Any]] = []
     for note in sorted(
         notes,
@@ -981,6 +982,9 @@ def _components(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "note_ids": [note["note_id"]],
             })
     return components
+
+
+_components = note_components
 
 
 def _snap_display_boundary(value: float, boundaries: list[float]) -> float:

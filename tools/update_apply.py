@@ -91,6 +91,10 @@ ROOT_FILES.update({
     'quick_app.py', 'quick_bridge.py', 'quick_runtime.py', 'quick_window_modes.py',
     'quick_ui/ComponentsPage.qml', 'quick_ui/Main.qml', 'quick_ui/PreparationPage.qml', 'quick_ui/UiButton.qml',
     'quick_ui/ResultsPage.qml', 'quick_ui/SettingsPage.qml', 'quick_ui/StartupDialogs.qml', 'quick_ui/UiComboBox.qml',
+    'mixdown_eq_math.py', 'mixdown_realtime_core.py', 'mixdown_workspace_state.py',
+    'quick_mixdown.py', 'quick_mixdown_player.py', 'quick_tuning.py', 'tuning_timeline.py',
+    'quick_ui/MixdownEq.qml', 'quick_ui/MixdownMeter.qml', 'quick_ui/MixdownPage.qml',
+    'quick_ui/TuningPage.qml', 'quick_ui/TuningTimeline.qml',
 })
 TOOL_FILES = {'tools/update_apply.py', 'tools/Start-Diagnostics.bat',
               'tools/Check-Dependencies.bat', 'tools/Use-CPU.bat', 'tools/Use-GPU.bat',

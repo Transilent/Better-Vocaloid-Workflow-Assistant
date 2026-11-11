@@ -476,7 +476,11 @@ class RealtimeServerTests(unittest.TestCase):
         })
         seeked = wait_state(
             events, generation,
-            lambda snapshot: snapshot.get("seek_control_id") == seek_id,
+            lambda snapshot: (
+                snapshot.get("seek_control_id") == seek_id
+                and snapshot.get("media_frame") is not None
+                and (snapshot.get("last_seek") or {}).get("phase") in ("queued", "submitted", "ended")
+            ),
         )
         self.assertEqual(seeked["media_frame"], 2000)
         self.assertEqual(seeked["telemetry"]["status"], "not_submitted")

@@ -34,7 +34,8 @@ def create_workspace(app, *, root=ROOT, show=True, viewport=None, scale=None):
 
     appearance = load_appearance()
     set_language(appearance['ui_language'])
-    QQuickStyle.setStyle('Basic')
+    if QQuickStyle.name() != 'Basic':
+        QQuickStyle.setStyle('Basic')
     app.setFont(QFont('Microsoft YaHei UI'))
     assets = root / 'assets'
     for name in ('app.ico', 'app.png', 'moonlight-background.png'):
@@ -112,7 +113,7 @@ def main(argv=None):
                     raise RuntimeError(f'Quick workspace could not load route: {spec.page_id}')
             if warnings:
                 raise RuntimeError('Quick runtime or QML check reported warnings.')
-            print('Quick runtime, assets, four workspaces and startup dialogs are ready.', flush=True)
+            print(f'Quick runtime, assets, {len(controller.state.routes)} workspaces and startup dialogs are ready.', flush=True)
             return 0
         controller.refresh()
         if options.smoke_test:

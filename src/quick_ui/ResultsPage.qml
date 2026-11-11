@@ -360,13 +360,21 @@ ScrollView {
                             visible: !!page.detail.canDispatch
                             theme: page.theme
                             primary: true
-                            text: page.controller.text(page.detail.handoff === "audio_ready" ? "打开分轨目录"
+                            text: page.controller.text(page.detail.handoff === "audio_ready" ? "分轨送入简易混音"
                                 : page.detail.handoff === "awaiting_tuning"
-                                    ? (page.detail.delivery.openArtifactId ? "打开工程" : "查看工程与 MIDI")
+                                    ? "调音或查看工程"
                                 : page.detail.handoff === "mixdown_ready" ? "打开登记的混音"
                                 : page.detail.handoff === "video_ready" ? "打开登记的视频" : "打开发布资料")
                             enabled: page.idle
                             onClicked: page.controller.dispatchTaskHandoff()
+                        }
+                        UiButton {
+                            objectName: "mixTaskStems"
+                            visible: page.detail.handoff !== "audio_ready" && (page.detail.mixArtifactIds || []).length > 0
+                            theme: page.theme
+                            text: page.controller.text("分轨送入简易混音")
+                            enabled: page.idle
+                            onClicked: page.controller.mixTaskStems()
                         }
                         UiButton {
                             objectName: "openTaskFolder"
@@ -477,6 +485,16 @@ ScrollView {
                                     font.pixelSize: 11 * page.theme.scale
                                     elide: Text.ElideRight
                                     textFormat: Text.PlainText
+                                }
+                                UiButton {
+                                    visible: !!artifactRow.modelData.available
+                                        && (artifactRow.modelData.role === "editor_project" || artifactRow.modelData.role === "tuned_project")
+                                        && String(artifactRow.modelData.path || "").toLowerCase().endsWith(".svp")
+                                    theme: page.theme
+                                    quiet: true
+                                    text: page.controller.text("调音")
+                                    enabled: page.idle
+                                    onClicked: page.controller.tuneArtifact(artifactRow.modelData.id)
                                 }
                                 UiButton {
                                     objectName: "openArtifact_" + (artifactRow.modelData.id || "")

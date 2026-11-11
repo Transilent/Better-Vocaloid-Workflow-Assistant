@@ -1532,6 +1532,8 @@ class AudioMixdownDialog(QDialog):
                             int((self.preview_start.value() + self.preview_duration.value()) * 1000)))
             if not accepted:
                 return False
+            # The explicit request already includes any pending form edits.
+            self._preview_debounce.stop()
             self._set_audition_diagnostic('updating', _tr('正在更新连续试听…'))
             self._sync_controls()
             return True
@@ -1889,8 +1891,6 @@ class AudioMixdownDialog(QDialog):
         if self._preview.pending_seek and self._preview.pending_seek['phase'] == 'queued':
             self._commit_queued_player_seek()
         result = self._start_native_preview()
-        if self._player.ready:
-            self._player.play()
         self._sync_controls()
         return result
 

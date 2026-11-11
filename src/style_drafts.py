@@ -359,6 +359,8 @@ def normalize_draft(input_sha256, data):
     raw_regions = data.get('style_regions', [])
     if not isinstance(raw_regions, list) or len(raw_regions) > MAX_DRAFT_REGIONS:
         _invalid('草稿风格片段数量必须在 0–128 之间。', field='style_regions')
+    if any(isinstance(row, dict) and 'track_index' in row for row in raw_regions):
+        _invalid('逐轨片段必须保存在新版草稿中。', field='style_regions')
     selected_index = data.get('selected_index', -1)
     if type(selected_index) is not int or selected_index < -1 or selected_index >= len(raw_regions):
         _invalid('草稿所选片段索引越界。', field='selected_index')
@@ -558,6 +560,8 @@ def _draft_lock(path, timeout=DEFAULT_LOCK_TIMEOUT):
 class DraftStore:
     """Read and write flat style draft files under one explicit safe root."""
 
+    normalize = staticmethod(normalize_draft)
+
     def __init__(self, root, *, lock_timeout=DEFAULT_LOCK_TIMEOUT):
         if not isinstance(root, (str, os.PathLike)):
             raise DraftError('invalid_root', '草稿根目录必须是显式绝对路径。')
@@ -616,7 +620,7 @@ class DraftStore:
             _check_finite(data)
             if not isinstance(data, dict):
                 raise ValueError('draft root must be a JSON object')
-            normalize_draft(input_sha256, data)
+            self.normalize(input_sha256, data)
             _sync_metadata(data)
         except DraftError as error:
             raise DraftError('draft_corrupt', '共享草稿内容无效。', {
@@ -751,7 +755,7 @@ class DraftStore:
         input_sha256 = _require_sha256(input_sha256)
         expected_revision = _normalise_expected_revision(expected_revision)
         writer = _normalise_writer(writer)
-        incoming = normalize_draft(input_sha256, data)
+        incoming = self.normalize(input_sha256, data)
         path = self._path(input_sha256)
         with _pinned_path(self.root, create=True):
             return self._write_locked(input_sha256, expected_revision, incoming, path, writer)
@@ -772,7 +776,7 @@ class DraftStore:
                     or not hmac.compare_digest(expected_revision, current_revision)):
                 self._conflict(input_sha256, expected_revision, current_revision,
                                current_data, incoming)
-            current = normalize_draft(input_sha256, current_data)
+            current = self.normalize(input_sha256, current_data)
             sync = _sync_metadata(current_data)
             if sync is not None and current == incoming:
                 return self._snapshot(input_sha256, raw, current_data)

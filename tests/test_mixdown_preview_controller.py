@@ -88,6 +88,21 @@ class ControllerTests(unittest.TestCase):
         c.refresh({'gain': 2}, ('source-a',))
         self.assertFalse(c.play_intent)
 
+    def test_play_during_dirty_edit_resumes_existing_session_after_parameters(self):
+        self.prepare()
+        c = self.controller
+        c.dirty = True
+        c.set_playing(True)
+        self.assertEqual([row[0] for row in self.player.commands], ['open'])
+        self.assertTrue(c.refresh({'gain': 2}, ('source-a',)))
+        self.assertEqual([row[0] for row in self.player.commands], ['open', 'parameters', 'play'])
+        c.set_playing(False)
+        c.dirty = True
+        c.set_playing(True)
+        c.set_playing(False)
+        self.assertTrue(c.refresh({'gain': 3}, ('source-a',)))
+        self.assertEqual([row[0] for row in self.player.commands[-2:]], ['pause', 'parameters'])
+
     def test_cursor_stays_local_until_latest_seek_acknowledged(self):
         self.prepare()
         c = self.controller
@@ -97,7 +112,9 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(c.position_ms, 7000)
         c.dragging = False
         self.assertFalse(c.follow_position())  # keyboard debounce not yet sent
+        c.begin_seek()
         c.commit_seek(7000)
+        self.assertFalse(c.dragging)
         c.stage_seek(9000)
         c.commit_seek(9000)
         self.assertFalse(c.follow_position())  # stale native packet

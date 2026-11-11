@@ -436,7 +436,8 @@ def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None,p
             if pending is not None:pending.unlink(missing_ok=True)
 
 
-def register_result(session,*,job=None):
+def verified_result(session):
+    """Verify the latest committed candidate without opening or registering it."""
     path=Path(session).resolve();path=path/'session.json' if Path(native_path(path)).is_dir() else path
     root=path.parent;spec=read_session(path);state=_read(root/'status.json')
     if state.get('state')!='done':raise ValueError('请先完成并核对调音结果，回执待补全时不能登记。')
@@ -465,10 +466,17 @@ def register_result(session,*,job=None):
     verified=_verified_receipt(receipt_path,target,signature,spec,options,dependencies)
     if verified is None or state.get('receipt_verified') is False:
         raise ValueError('调音回执未通过完整验签，不能登记。')
+    return verified
+
+
+def register_result(session,*,job=None):
+    spec=read_session(session)
+    result=verified_result(session)
+    target=Path(result['output'])
     job=Path(job or spec.get('job') or '').resolve()
     if not _isfile(job/'request.json'):raise ValueError('请选择要登记到的已有准备任务。')
     from task_contract import bind
-    bind(job,'project',target)
+    bind(job,'project',target,expected_sha256=result['output_sha256'])
     return target
 
 

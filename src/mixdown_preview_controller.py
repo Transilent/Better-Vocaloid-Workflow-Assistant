@@ -20,6 +20,7 @@ class MixdownPreviewController:
         self.pending_seek = None
         self.last_seek = None
         self._seek_serial = 0
+        self._play_after_refresh = False
 
     @property
     def play_intent(self):
@@ -40,9 +41,12 @@ class MixdownPreviewController:
     def set_playing(self, enabled):
         """Preserve one intent while dirty edits are waiting for GUI debounce."""
         if not enabled:
+            self._play_after_refresh = False
             return self.player.pause()
-        if self.player.ready and not self.dirty:
+        if (self.player.ready or self.player.loading) and not self.dirty:
+            self._play_after_refresh = False
             return self.player.play()
+        self._play_after_refresh = True
         self.player.set_play_intent(True)
         return True
 
@@ -57,7 +61,8 @@ class MixdownPreviewController:
             return False
         changed_source = source_key != self.source_key
         player.set_loop_range(*loop_range)
-        if changed_source or (not player.ready and not player.loading):
+        opening = changed_source or (not player.ready and not player.loading)
+        if opening:
             position = max(0, int(start_ms)) if changed_source else self.position_ms
             self.pending_seek = None
             self.dragging = False
@@ -65,7 +70,10 @@ class MixdownPreviewController:
                                    autoplay=self.play_intent, key=self.requested_key)
         else:
             accepted = player.parameters(request, key=self.requested_key)
+            if accepted and self._play_after_refresh and self.play_intent:
+                accepted = player.play()
         if accepted:
+            self._play_after_refresh = False
             self.source_key = source_key
             self.dirty = False
         return bool(accepted)
@@ -83,6 +91,7 @@ class MixdownPreviewController:
         return target
 
     def commit_seek(self, position):
+        self.dragging = False
         if not self.player.ready:
             return False
         target = max(0, min(int(position), self.player.duration()))
@@ -119,11 +128,13 @@ class MixdownPreviewController:
         self.dragging = False
 
     def failed(self):
+        self._play_after_refresh = False
         self.player.pause()
         self.dirty = True
         self.fail_seek()
 
     def release(self):
+        self._play_after_refresh = False
         self.player.release()
         self.source_key = None
         self.pending_seek = None

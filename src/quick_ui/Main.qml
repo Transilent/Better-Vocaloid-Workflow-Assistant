@@ -18,6 +18,9 @@ ApplicationWindow {
     readonly property bool useArtwork: preferences.material === "glass"
     readonly property var preferences: controller.support.settings
     readonly property bool preparationAway: controller.preparationBusy && controller.route !== "processing"
+    readonly property bool tuningAway: controller.operationKind.indexOf("tuning-") === 0 && controller.route !== "tuning"
+    readonly property bool mixAway: controller.route !== "audio_mixdown"
+        && (controller.mixdown.view.playing || controller.operationKind.indexOf("mixdown-") === 0)
     property bool closingAfterTask: false
     property real entryProgress: 1
 
@@ -225,6 +228,8 @@ ApplicationWindow {
                 case "components": return componentsPage
                 case "results": return resultsPage
                 case "updates": return settingsPage
+                case "tuning": return tuningPage
+                case "audio_mixdown": return mixdownPage
                 default: return preparationPage
                 }
             }
@@ -244,6 +249,51 @@ ApplicationWindow {
         Component {
             id: settingsPage
             SettingsPage { theme: window.tokens; controller: window.controller.support }
+        }
+        Component {
+            id: tuningPage
+            TuningPage { theme: window.tokens; controller: window.controller.tuning }
+        }
+        Component {
+            id: mixdownPage
+            MixdownPage { theme: window.tokens; controller: window.controller.mixdown }
+        }
+
+        Rectangle {
+            objectName: "backgroundStudioActivity"
+            Layout.fillWidth: true
+            Layout.preferredHeight: studioBar.implicitHeight + 12
+            visible: window.tuningAway || window.mixAway
+            color: theme.surface
+            Rectangle { width: parent.width; height: 1; color: theme.line }
+            RowLayout {
+                id: studioBar
+                anchors.fill: parent
+                anchors.leftMargin: 16
+                anchors.rightMargin: 16
+                Text {
+                    Layout.fillWidth: true
+                    color: theme.text
+                    font.pixelSize: 13 * theme.scale
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    text: window.tuningAway ? window.controller.tuning.view.message
+                        : window.controller.mixdown.view.playing ? window.controller.text("简易混音 · 后台试听")
+                        : window.controller.mixdown.view.message || window.controller.text("简易混音")
+                }
+                UiButton {
+                    objectName: "pauseBackgroundMix"
+                    visible: window.mixAway && window.controller.mixdown.view.playing
+                    theme: window.tokens
+                    text: window.controller.text("暂停")
+                    onClicked: window.controller.mixdown.togglePlay()
+                }
+                UiButton {
+                    theme: window.tokens
+                    text: window.controller.text(window.tuningAway ? "返回调音" : "返回混音")
+                    onClicked: window.controller.navigate(window.tuningAway ? "tuning" : "audio_mixdown")
+                }
+            }
         }
 
         Rectangle {

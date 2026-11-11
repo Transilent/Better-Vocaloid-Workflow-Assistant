@@ -28,7 +28,8 @@ assert os.environ.get('BVWA_TESTING') == '1' and APP.parent.name == 'test-sandbo
     'Use tests/run_tests.py isolation'
 )
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QCoreApplication, QEvent, Qt
+from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QDialog, QLineEdit, QSpinBox
 
 import common
@@ -226,7 +227,16 @@ class TuningPresetPageIntegrationTests(unittest.TestCase):
     def tearDownClass(cls):
         if hasattr(cls, 'window'):
             cls.window.close()
-            cls.application.processEvents()
+            # Closing the workspace can wait for its audio transport and task
+            # scan. Process the close retry and destroy children while Qt lives.
+            deadline = time.monotonic() + 5
+            while cls.window.isVisible() and time.monotonic() < deadline:
+                QTest.qWait(20)
+            if cls.window.isVisible():
+                raise AssertionError('The tuning preset test window did not close.')
+            cls.window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            cls.window = None
 
     def setUp(self):
         self.temp_parent = (APP / 'work/temp').resolve()

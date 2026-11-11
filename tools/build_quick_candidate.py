@@ -619,6 +619,8 @@ def select_application_entries(entries: Iterable[tuple[str, str]]):
             wanted = True
         if target in {"config.json", "dependencies/manifest.json", "version.json"}:
             wanted = True
+        if target in {"packaging/requirements-pedalboard.lock.txt", "tools/install_pedalboard_component.py"}:
+            wanted = True
         upper_name = target_path.name.upper()
         if upper_name.startswith(("LICENSE", "NOTICE", "COPYING", "THIRD_PARTY")):
             wanted = True

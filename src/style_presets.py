@@ -154,7 +154,7 @@ def time_range_settings(value):
 
 
 def region_settings(value=None):
-    """Non-overlapping seconds in project time; each region owns its recipe."""
+    """Normalize legacy global regions or explicit regions on individual tracks."""
     if value is None:
         return []
     if not isinstance(value, list):
@@ -162,10 +162,17 @@ def region_settings(value=None):
     if len(value) > 128:
         raise ValueError('风格时间片段过多。')
     regions = []
+    scope = None
     for row in value:
         if (not isinstance(row, dict) or set(row)-{'start','end','preset','strength','detail','pitch',
-                'technique','technique_strength','technique_pitch'}):
+                'technique','technique_strength','technique_pitch','track_index'}):
             raise ValueError('风格时间片段格式无效。')
+        scoped = 'track_index' in row
+        if scope is not None and scope != scoped:
+            raise ValueError('请先把旧的全轨片段展开到各轨。')
+        scope = scoped
+        if scoped and (type(row['track_index']) is not int or row['track_index'] < 0):
+            raise ValueError('风格片段的轨道索引无效。')
         technique=technique_settings({'style_technique':row.get('technique',style_registry.DEFAULT_TECHNIQUE_ID),
             'technique_strength':row.get('technique_strength',.6),'technique_pitch':row.get('technique_pitch',True)})
         if not style_registry.is_visible_style(row.get('preset')) or (
@@ -178,13 +185,16 @@ def region_settings(value=None):
         item={'start':start,'end':end,'preset':preset,'strength':strength,
                         'detail':detail_settings(row.get('detail')),
                         'pitch':row.get('pitch',pitch_default(preset))}
+        if scoped:
+            item['track_index'] = row['track_index']
         if technique['style_technique']!=style_registry.DEFAULT_TECHNIQUE_ID:
             item.update(technique=technique['style_technique'],technique_strength=technique['technique_strength'],
                         technique_pitch=technique['technique_pitch'])
         regions.append(item)
-    regions.sort(key=lambda r:(r['start'],r['end']))
-    if any(b['start'] < a['end'] for a,b in zip(regions,regions[1:])):
-        raise ValueError('风格时间片段不能重叠。')
+    regions.sort(key=lambda r:(r.get('track_index', -1),r['start'],r['end']))
+    for a, b in zip(regions, regions[1:]):
+        if a.get('track_index') == b.get('track_index') and b['start'] < a['end']:
+            raise ValueError('同一演唱轨上的风格时间片段不能重叠。' if scope else '风格时间片段不能重叠。')
     return regions
 
 

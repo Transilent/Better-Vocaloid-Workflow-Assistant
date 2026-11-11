@@ -210,6 +210,9 @@ def process_project(data,options,*,cancel=lambda:None,progress=lambda text:None,
     if not isinstance(data,dict) or not isinstance(data.get('tracks'),list) or not isinstance(data.get('time'),dict):
         raise ValueError('请选择有效的SVP工程。')
     options=settings(options);indices=selected_indices(data,options);source_sha=digest(data)
+    regions=options['style_regions']
+    if any('track_index' in region and region['track_index'] not in indices for region in regions):
+        raise ValueError('风格片段包含本次未选中的演唱轨。')
     output=copy.deepcopy(data);mode=options['expression_mode'];cancel()
     report={'schema':VERSION,'mode':mode,'track_indices':indices,'stages':[],
             'source_content_sha256':source_sha,'semantic_model_used':False,'synthesized':False,'listened':False,
@@ -272,14 +275,14 @@ def process_project(data,options,*,cancel=lambda:None,progress=lambda text:None,
     report['primary_curve_replacements']=replacements
     report['primary']=primary;report['stages'].append('primary')
     style={'status':'not_selected','pitch_changed':False}
-    regions=options['style_regions']
     if regions:
         progress('按时间片段叠加风格增量')
         receipts=[]
         for region in regions:
             cancel()
+            targets = [region['track_index']] if 'track_index' in region else indices
             output,item=_apply_style_layers(output,region['preset'],strength=region['strength'],pitch=region['pitch'],
-                indices=indices,detail=region['detail'],time_range=(region['start'],region['end']),cancel=cancel,
+                indices=targets,detail=region['detail'],time_range=(region['start'],region['end']),cancel=cancel,
                 technique={'style_technique':region.get('technique','none'),
                     'technique_strength':region.get('technique_strength',.6),'technique_pitch':region.get('technique_pitch',True)})
             receipts.append(item)

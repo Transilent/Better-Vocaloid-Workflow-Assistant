@@ -2,6 +2,54 @@
   "format": 1,
   "entries": [
     {
+      "file": "mixdown_eq_math.py",
+      "source": "src/mixdown_eq_math.py"
+    },
+    {
+      "file": "mixdown_realtime_core.py",
+      "source": "src/mixdown_realtime_core.py"
+    },
+    {
+      "file": "mixdown_workspace_state.py",
+      "source": "src/mixdown_workspace_state.py"
+    },
+    {
+      "file": "quick_mixdown.py",
+      "source": "src/quick_mixdown.py"
+    },
+    {
+      "file": "quick_mixdown_player.py",
+      "source": "src/quick_mixdown_player.py"
+    },
+    {
+      "file": "quick_tuning.py",
+      "source": "src/quick_tuning.py"
+    },
+    {
+      "file": "tuning_timeline.py",
+      "source": "src/tuning_timeline.py"
+    },
+    {
+      "file": "quick_ui/MixdownEq.qml",
+      "source": "src/quick_ui/MixdownEq.qml"
+    },
+    {
+      "file": "quick_ui/MixdownMeter.qml",
+      "source": "src/quick_ui/MixdownMeter.qml"
+    },
+    {
+      "file": "quick_ui/MixdownPage.qml",
+      "source": "src/quick_ui/MixdownPage.qml"
+    },
+    {
+      "file": "quick_ui/TuningPage.qml",
+      "source": "src/quick_ui/TuningPage.qml"
+    },
+    {
+      "file": "quick_ui/TuningTimeline.qml",
+      "source": "src/quick_ui/TuningTimeline.qml"
+    },
+    {
       "file": "appearance_state.py",
       "source": "src/appearance_state.py"
     },

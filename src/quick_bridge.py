@@ -13,6 +13,8 @@ from i18n import tr
 import preparation_commands as preparation
 import quick_results
 from quick_support import QuickSupport
+from quick_tuning import QuickTuning
+from quick_mixdown import QuickMixdown
 from quick_work import WorkerLane
 from workspace_controller import WorkspaceController
 import workflow
@@ -124,6 +126,9 @@ class QuickBridge(QObject):
         self._read.changed.connect(self.taskChanged)
         self._details.changed.connect(self.taskChanged)
         self._support = QuickSupport(self, self._work, sources)
+        self._tuning = QuickTuning(self, self._work)
+        self._mixdown = QuickMixdown(self, self._work)
+        self._tuning.presetLibraryChanged.connect(self._mixdown.refresh_presets)
         self.state.set_download_source(self._support.state.values['download_source'])
         saved_workflow = workflow.read_state()
         self._presets = {**workflow.builtins(), **saved_workflow['presets']}
@@ -151,6 +156,18 @@ class QuickBridge(QObject):
     def support(self):
         return self._support
 
+    @Property(QObject, constant=True)
+    def tuning(self):
+        return self._tuning
+
+    @Property(QObject, constant=True)
+    def mixdown(self):
+        return self._mixdown
+
+    @Property(str, notify=activityChanged)
+    def operationKind(self):
+        return self._work.kind
+
     @Property(str, notify=navigationChanged)
     def route(self):
         return self.state.route
@@ -158,7 +175,8 @@ class QuickBridge(QObject):
     @Property('QVariantList', constant=True)
     def routes(self):
         return [{'pageId': spec.page_id, 'title': tr('设置与支持' if spec.page_id == 'updates' else spec.title),
-                 'short': tr({'processing': '准备', 'components': '组件', 'results': '任务', 'updates': '设置'}[spec.page_id])}
+                 'short': tr({'processing': '准备', 'tuning': '调音', 'audio_mixdown': '混音',
+                              'components': '组件', 'results': '任务', 'updates': '设置'}[spec.page_id])}
                 for spec in self.state.routes]
 
     @Property('QVariantMap', notify=draftChanged)
@@ -262,6 +280,11 @@ class QuickBridge(QObject):
             self.refreshTasks()
         elif self.state.route == 'components' and self.state.rows_runtime != self.state.runtime:
             self.refresh()
+        elif self.state.route == 'tuning':
+            self._tuning.refresh_presets()
+        elif self.state.route == 'audio_mixdown':
+            self._mixdown.enter()
+            self._mixdown.refresh_presets()
 
     @Slot()
     def returnToPreparation(self):
@@ -600,18 +623,33 @@ class QuickBridge(QObject):
     def openArtifact(self, artifact_id):
         self._checked_artifact(artifact_id)
 
+    @Slot(str)
+    def tuneArtifact(self, artifact_id):
+        self._checked_artifact(artifact_id, route='tuning')
+
+    @Slot()
+    def mixTaskStems(self):
+        self._checked_artifact(None, route='audio_mixdown')
+
     @Slot()
     def dispatchTaskHandoff(self):
         if self.state.task_detail.get('canDispatch'):
             self._checked_artifact(None)
 
-    def _checked_artifact(self, artifact_id):
+    def _checked_artifact(self, artifact_id, *, route=None):
         job = self.state.selected_task_id
         if self.workBusy or not job:
             return
         shown = self.state.task_detail
         shown_rows = {row['id']: row for row in shown.get('artifacts', ())}
-        wanted = shown.get('delivery', {}).get('artifactIds', ()) if artifact_id is None else [artifact_id]
+        def wanted_ids(detail):
+            if route == 'audio_mixdown':
+                return detail.get('mixArtifactIds', ())
+            if artifact_id is not None:
+                return [artifact_id]
+            return detail.get('delivery', {}).get('artifactIds', ())
+
+        wanted = wanted_ids(shown)
         expected = [_artifact_identity(shown_rows[key]) for key in wanted
                     if key in shown_rows and shown_rows[key]['available']]
         if not expected or len(expected) != len(wanted):
@@ -633,10 +671,25 @@ class QuickBridge(QObject):
                 if not row or not row['openable'] or [_artifact_identity(row)] != expected:
                     self._error(ValueError('该文件已变更、无法核验或不支持直接打开。'))
                     return
+                if route == 'tuning':
+                    if row['role'] not in ('editor_project', 'tuned_project') or Path(row['path']).suffix.casefold() != '.svp':
+                        self._error(ValueError('只能在调音工作台加载已核验的 SVP 工程。'))
+                        return
+                    self.navigate('tuning')
+                    self._tuning.accept_task(job, row)
+                    return
                 self._open_local(Path(row['path']))
                 return
             action = detail.get('handoff')
             delivery = detail['delivery']
+            if route == 'audio_mixdown':
+                rows = [by_id[key] for key in wanted_ids(detail) if key in by_id]
+                if [_artifact_identity(row) for row in rows] != expected:
+                    self._error(ValueError('任务分轨或上游版本已变化，请重新核对。'))
+                    return
+                self.navigate('audio_mixdown')
+                self._mixdown.accept_task(job, rows)
+                return
             rows = [by_id[key] for key in delivery['artifactIds'] if key in by_id]
             if (not detail['canDispatch'] or action != shown.get('handoff')
                     or [_artifact_identity(row) for row in rows] != expected):
@@ -648,7 +701,14 @@ class QuickBridge(QObject):
             destination = Path(row['path']) if row and row['openable'] else directory
             self.state.handoff = {'jobId': job, 'action': action, 'artifacts': rows, 'destination': str(destination)}
             self.taskChanged.emit()
-            self._open_local(destination)
+            if action == 'awaiting_tuning' and row and destination.suffix.casefold() == '.svp':
+                self.navigate('tuning')
+                self._tuning.accept_task(job, row)
+            elif action == 'audio_ready':
+                self.navigate('audio_mixdown')
+                self._mixdown.accept_task(job, rows)
+            else:
+                self._open_local(destination)
 
         self._work.start('artifact-check', lambda stop, _send: quick_results.detail(job, stop.is_set), finish)
 
@@ -685,6 +745,8 @@ class QuickBridge(QObject):
         self.cancelOperation()
         self.cancelPreparation()
         self._support.cancelUpdate()
+        self._tuning.cancel()
+        self._mixdown.cancel()
         if self.workBusy:
             self._work.cancel()
         else:
@@ -697,3 +759,5 @@ class QuickBridge(QObject):
         self._support.close()
         for lane in (self._work, self._catalog, self._read, self._details):
             lane.close()
+        self._tuning.close()
+        self._mixdown.close()

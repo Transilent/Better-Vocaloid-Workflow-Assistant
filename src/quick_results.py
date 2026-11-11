@@ -176,8 +176,11 @@ def _delivery(job, action, rows):
         if project in by_path:
             return [by_path[project]], project
         exports = [row for row in verified if row['producer'] == 'exports' and row['role'] == 'editor_project']
+        svps = [row for row in exports if Path(row['path']).suffix.casefold() == '.svp']
+        baseline = next((row for row in svps if Path(row['path']) == job / 'exports/voices.svp'), None)
         midi = [row for row in verified if row['role'] == 'midi']
-        return exports + midi, Path(exports[0]['path']) if len(exports) == 1 else None
+        selected = baseline or (svps[0] if len(svps) == 1 else exports[0] if len(exports) == 1 else None)
+        return exports + midi, Path(selected['path']) if selected else None
     if action == 'audio_ready':
         from pipeline import requirements
 
@@ -219,13 +222,15 @@ def detail(job, check=None):
     title = _text(row.get('title')) or path.name or tr('未命名任务')
     status_text = _status_text(state)
     action = 'needs_review'
-    artifacts, delivery, open_path = [], [], None
+    artifacts, delivery, mix, open_path = [], [], [], None
     error_message = ''
     try:
         rows = task_contract.inspect(path, check=check)
         _cancelled(check)
         action = task_contract.handoff(path, rows=rows)
         delivery, open_path = _delivery(path, action, rows)
+        if state in ('done', 'partial') and action not in ('needs_review', 'processing'):
+            mix, _ = _delivery(path, 'audio_ready', rows)
         deliver_ids = {item['id'] for item in delivery}
         ordered = sorted(rows, key=lambda row: (
             row['id'] not in deliver_ids,
@@ -260,6 +265,7 @@ def detail(job, check=None):
             'artifactIds': [item['id'] for item in delivery],
             'openArtifactId': next((item['id'] for item in delivery if Path(item['path']) == open_path), ''),
         },
+        'mixArtifactIds': [item['id'] for item in mix] if not locked and not error_message else [],
     }
     recovery = _recovery(row, error_message)
     if recovery is not None:

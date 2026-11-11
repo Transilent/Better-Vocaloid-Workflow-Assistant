@@ -521,7 +521,7 @@ def inspect(job, *, verify=True, check=None):
              'path': str(resolve(job, data['entries'][key]))} for key, value in results.items()]
 
 
-def bind(job, kind, path, *, validate=True, dependencies=None):
+def bind(job, kind, path, *, validate=True, dependencies=None, expected_sha256=None):
     """Explicitly accept a user's completed file without changing automatic outputs."""
     if kind not in ('project', 'mixdown', 'video'):
         raise ContractError('未知人工产物类型。')
@@ -558,6 +558,8 @@ def bind(job, kind, path, *, validate=True, dependencies=None):
         else:
             raise ContractError('请选择 SVP、USTX 或 VSQX 工程。')
     key, entry = _entry(job, path, 'tuned_project' if kind == 'project' else kind, 'human')
+    if expected_sha256 is not None and entry['sha256'] != expected_sha256:
+        raise ContractError('待登记文件与已核验的导出摘要不符。')
     links = _index_project_audio(job, path, accept=True) if kind == 'project' else []
     with _locked(job):
         data, meta = read(job), _metadata(job)
@@ -571,7 +573,12 @@ def bind(job, kind, path, *, validate=True, dependencies=None):
             prior = bindings.get({'mixdown': 'project', 'video': 'mixdown'}.get(kind))
             if prior: deps.append({'id': prior['id'], 'revision': prior['entry']['revision']})
         else:
-            deps = dependencies
+            deps = [dict(dep) for dep in dependencies]
+            for dep in deps:
+                current = data['entries'].get(dep.get('id'))
+                if (not current or not current.get('active', True)
+                        or current['revision'] != dep.get('revision')):
+                    raise ContractError('待登记文件的上游修订已改变。')
         deps.extend({'id': k, 'revision': data['entries'][k]['revision']} for k in links)
         entry['dependencies'] = deps
         old = bindings.get(kind)
