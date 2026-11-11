@@ -22,7 +22,8 @@ ScrollView {
     readonly property real scale: theme.scale || 1
     readonly property bool stacked: availableWidth < (scale > 1.2 ? 1180 : 1040)
     readonly property bool compact: availableWidth < Math.round(720 * scale)
-    readonly property bool busy: view.busy === true
+    readonly property bool draftConflict: textOf(view.draftConflict).length > 0
+    readonly property bool busy: view.busy === true || draftConflict
     readonly property bool hasSource: textOf(view.source).length > 0
     readonly property string activeId: textOf(view.activeTrack)
     readonly property string mode: String(view.mode || "single") === "multi" ? "multi" : "single"
@@ -46,6 +47,7 @@ ScrollView {
     property string selectedPresetKey: ""
     property string inspectorTab: "style"
     property bool showStyleDetails: false
+    signal calibrationRequested()
 
     contentWidth: availableWidth
     clip: true
@@ -709,12 +711,47 @@ ScrollView {
                     onClicked: page.controller.setMode("multi")
                 }
                 EditorButton {
+                    objectName: "openVoiceCalibration"
+                    theme: page.theme
+                    text: "声库校准…"
+                    onClicked: page.calibrationRequested()
+                }
+                EditorButton {
                     objectName: "tuningOpenProject"
                     theme: page.theme
                     text: "打开工程…"
                     primary: true
                     enabled: !page.busy
                     onClicked: projectDialog.open()
+                }
+            }
+        }
+
+        Rectangle {
+            objectName: "tuningDraftConflict"
+            Layout.fillWidth: true
+            Layout.leftMargin: page.contentMargin
+            Layout.rightMargin: page.contentMargin
+            visible: page.draftConflict
+            implicitHeight: conflictRow.implicitHeight + 14 * page.scale
+            radius: 7 * page.scale
+            color: page.theme.raised
+            border.color: page.theme.attention
+            RowLayout {
+                id: conflictRow
+                anchors.fill: parent
+                anchors.margins: 7 * page.scale
+                HelperText {
+                    Layout.fillWidth: true
+                    theme: page.theme
+                    text: "共享草稿有更新。本地编辑已存成副本，请核对后继续。"
+                }
+                EditorButton {
+                    objectName: "reviewDraftConflict"
+                    theme: page.theme
+                    text: "核对草稿"
+                    enabled: !page.view.busy
+                    onClicked: draftRecovery.openReview("")
                 }
             }
         }
@@ -2032,9 +2069,48 @@ ScrollView {
                                         objectName: "openTuningCandidate"
                                         theme: page.theme
                                         text: "打开候选"
-                                        enabled: page.candidatePresent
+                                        enabled: !!page.view.candidateVerified && !page.view.busy
                                         onClicked: page.controller.openCandidate()
                                     }
+                                }
+
+                                HelperText {
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    visible: !!page.view.candidateVerified
+                                    text: {
+                                        const report = page.view.candidateDetails || {}
+                                        const state = {applied:"已处理", partial:"部分处理", unchanged:"无变化"}[report.status] || ""
+                                        return state + " · " + (report.tracks || 0) + " 轨"
+                                            + (report.notesPreserved ? " · 音符与时值保留" : "")
+                                            + (report.pitchChanged ? "\n已修改局部音高" : "")
+                                            + "\nSHA " + page.shortHash(report.sha256)
+                                    }
+                                }
+                                Flow {
+                                    Layout.fillWidth: true
+                                    spacing: page.editorGap
+                                    visible: !!page.view.candidateVerified
+                                    EditorButton {
+                                        objectName: "saveTuningCandidate"
+                                        theme: page.theme
+                                        text: "另存 SVP…"
+                                        enabled: !page.view.busy
+                                        onClicked: candidateSaveDialog.open()
+                                    }
+                                    EditorButton {
+                                        objectName: "openTuningReceipt"
+                                        theme: page.theme
+                                        text: "核验回执"
+                                        enabled: !page.view.busy
+                                        onClicked: page.controller.openResultReceipt()
+                                    }
+                                }
+                                HelperText {
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    visible: !!page.view.savedCopy
+                                    text: "另存：" + page.fileName(page.view.savedCopy)
                                 }
 
                                 HelperText {
@@ -2152,9 +2228,17 @@ ScrollView {
                             Layout.fillWidth: true
                             theme: page.theme
                             text: "取消任务"
-                            visible: page.busy
-                            enabled: page.busy
+                            visible: page.view.busy === true
+                            enabled: visible
                             onClicked: page.controller.cancel()
+                        }
+                        EditorButton {
+                            objectName: "chooseDraftRecovery"
+                            theme: page.theme
+                            text: "草稿副本…"
+                            visible: page.hasSource && !page.draftConflict
+                            enabled: !page.busy
+                            onClicked: draftFile.open()
                         }
                         EditorButton {
                             objectName: "registerTuningResult"
@@ -2170,6 +2254,94 @@ ScrollView {
                 }
             }
         }
+    }
+
+    Dialog {
+        id: draftRecovery
+        objectName: "tuningDraftRecoveryDialog"
+        title: "核对调音草稿"
+        modal: true
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(parent.width - 40, Math.round(590 * page.scale))
+        closePolicy: Popup.NoAutoClose
+        readonly property var review: page.view.draftReview || ({})
+
+        function openReview(url) {
+            open()
+            page.controller.reviewDraftRecovery(url)
+        }
+        onClosed: page.controller.dismissDraftReview()
+        contentItem: ColumnLayout {
+            spacing: Math.round(10 * page.scale)
+            HelperText {
+                Layout.fillWidth: true
+                theme: page.theme
+                text: page.textOf(page.view.message)
+            }
+            HelperText {
+                Layout.fillWidth: true
+                theme: page.theme
+                visible: !!draftRecovery.review.path
+                text: "共享版本 " + page.textOf(draftRecovery.review.revision) + "：" + page.textOf(draftRecovery.review.shared)
+            }
+            HelperText {
+                Layout.fillWidth: true
+                theme: page.theme
+                visible: !!draftRecovery.review.path
+                text: "本地副本：" + page.textOf(draftRecovery.review.local) + "\n"
+                    + page.fileName(draftRecovery.review.path)
+            }
+            HelperText {
+                Layout.fillWidth: true
+                theme: page.theme
+                visible: !!draftRecovery.review.path
+                text: "载入共享草稿会保留本地副本。恢复本地编辑前，也会为当前共享版本另存副本。"
+            }
+        }
+        footer: DialogButtonBox {
+            EditorButton {
+                theme: page.theme
+                text: draftRecovery.review.path ? "稍后处理" : "关闭"
+                enabled: !page.view.busy
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+                onClicked: draftRecovery.close()
+            }
+            EditorButton {
+                objectName: "loadSharedTuningDraft"
+                theme: page.theme
+                text: "载入共享草稿"
+                enabled: !page.view.busy && !!draftRecovery.review.path
+                DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
+                onClicked: page.controller.resolveDraftRecovery(false)
+            }
+            EditorButton {
+                objectName: "restoreLocalTuningDraft"
+                theme: page.theme
+                text: "恢复本地编辑"
+                enabled: !page.view.busy && !!draftRecovery.review.path
+                DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
+                onClicked: page.controller.resolveDraftRecovery(true)
+            }
+        }
+    }
+
+    FileDialog {
+        id: draftFile
+        title: "选择本工程的草稿副本"
+        currentFolder: page.view.draftFolder
+        nameFilters: ["草稿冲突副本 (*.conflict-*.json)"]
+        onAccepted: draftRecovery.openReview(selectedFile)
+    }
+
+    FileDialog {
+        id: candidateSaveDialog
+        objectName: "tuningCandidateSaveDialog"
+        title: "另存已核验的 SVP"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "svp"
+        nameFilters: ["Synthesizer V 工程 (*.svp)"]
+        onAccepted: page.controller.exportCandidate(selectedFile)
     }
 
     Dialog {

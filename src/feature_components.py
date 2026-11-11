@@ -169,7 +169,7 @@ def _read_segment_bytes(folder, item):
         return 0
 
 
-def _cached_bytes(folder, item):
+def resumable_cache_bytes(folder, item):
     """Count only resumable bytes owned by this feature's download cache."""
     if _is_link(folder):
         return 0
@@ -248,7 +248,7 @@ def status(feature, verify=False, check=None, root=None):
             if target.exists() or item['file'] in failed:
                 invalid.append(item['file'])
             try:
-                cache_bytes += _cached_bytes(folder, item)
+                cache_bytes += resumable_cache_bytes(folder, item)
             except OSError:
                 pass
     downloaded = min(spec['bytes'], complete_bytes + cache_bytes)

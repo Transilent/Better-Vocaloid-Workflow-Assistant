@@ -469,6 +469,38 @@ def verified_result(session):
     return verified
 
 
+def export_verified_copy(result, destination, *, cancel=lambda:None):
+    """Publish the verified candidate bytes to a new local SVP path."""
+    source=Path(result['output']);destination=Path(destination).absolute()
+    if destination.suffix.lower()!='.svp' or not _isfile(source):
+        raise ValueError('请选择新 SVP 文件名。')
+    if _exists(destination) or destination.is_symlink():
+        raise FileExistsError('目标文件已存在，请使用新名称。')
+    pending=None
+    try:
+        checksum=hashlib.sha256();size=0
+        with open(native_path(source),'rb') as original, tempfile.NamedTemporaryFile(
+                dir=native_path(destination.parent),prefix='.vwa-svp-',suffix='.pending',delete=False) as stream:
+            pending=stream.name
+            for block in iter(lambda:original.read(1024*1024),b''):
+                cancel();stream.write(block);checksum.update(block);size+=len(block)
+            stream.flush();os.fsync(stream.fileno())
+        if checksum.hexdigest()!=result['output_sha256'] or size!=result['output_bytes']:
+            raise ValueError('候选在另存期间已改变，请重新核对。')
+        cancel()
+        if os.name=='nt':
+            os.rename(pending,native_path(destination))
+            pending=None
+        else:
+            os.link(pending,native_path(destination))
+        if file_hash(destination)!=result['output_sha256']:
+            raise OSError('另存文件读回校验失败，请检查目标文件。')
+        return str(destination)
+    finally:
+        if pending is not None:
+            Path(pending).unlink(missing_ok=True)
+
+
 def register_result(session,*,job=None):
     spec=read_session(session)
     result=verified_result(session)

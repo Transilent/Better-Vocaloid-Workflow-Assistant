@@ -28,7 +28,12 @@ ScrollView {
     readonly property bool canRegister: page.boolValue(view.canRegister, false)
     readonly property bool canPublish: page.boolValue(view.canPublish, false)
     readonly property bool canCancel: page.boolValue(view.canCancel, false)
+    readonly property bool taskScanBusy: page.boolValue(view.taskScanBusy, false)
+    readonly property bool canRefreshTasks: page.boolValue(view.canRefreshTasks, false)
     readonly property bool hasResult: page.resultValue()
+    readonly property string taskTitleText: page.textOf(view.taskTitle)
+    readonly property string restoredSourceBv: page.textOf(view.sourceBv)
+    readonly property string restoreMessageText: page.textOf(view.restoreMessage)
     readonly property bool sideBySide: availableWidth >= Math.round(960 * Math.min(1.2, theme.scale))
     readonly property bool narrow: availableWidth < Math.round(700 * theme.scale)
     readonly property int pageMargin: Math.round((page.narrow ? 14 : 24) * theme.scale)
@@ -36,6 +41,7 @@ ScrollView {
     readonly property string primaryAction: page.choosePrimaryAction()
     readonly property string statusLine: page.textOf(view.message).length > 0
         ? page.textOf(view.message) : page.defaultStatus()
+    property string restoreJobId: ""
 
     contentWidth: availableWidth
     clip: true
@@ -251,6 +257,37 @@ ScrollView {
 
     function isPrimary(action) {
         return page.primaryAction === action
+    }
+
+    function restoreChoices() {
+        const result = [{ label: page.tr("选择已登记任务…"), value: "", sourceIdentity: "" }]
+        const rows = page.view.taskChoices
+        if (rows && rows.length) {
+            for (let index = 0; index < rows.length; ++index) {
+                const row = rows[index]
+                if (!row || String(row.value || "").length === 0)
+                    continue
+                result.push({
+                    label: String(row.label || row.title || row.value),
+                    value: String(row.value),
+                    sourceIdentity: String(row.sourceIdentity || "")
+                })
+            }
+        }
+        return result
+    }
+
+    function chooseRestoreTask(jobId) {
+        page.restoreJobId = String(jobId || "")
+        const rows = page.restoreChoices()
+        let identity = ""
+        for (let index = 0; index < rows.length; ++index) {
+            if (rows[index].value === page.restoreJobId) {
+                identity = rows[index].sourceIdentity || ""
+                break
+            }
+        }
+        sourceIdentityField.text = identity
     }
 
     component StepCard: Rectangle {
@@ -573,6 +610,63 @@ ScrollView {
             title: page.tr("素材")
             description: page.tr("原视频提供画面，Mixdown 提供新音轨；文件可来自任务，也可独立选择。")
 
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 7 * page.theme.scale
+                TextField {
+                    id: sourceIdentityField
+                    objectName: "videoSourceIdentity"
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: Math.round(270 * page.theme.scale)
+                    Layout.minimumWidth: 0
+                    placeholderText: page.tr("BV 号或链接（可选）")
+                    enabled: !page.busy
+                    selectByMouse: true
+                    font.pixelSize: 13 * page.theme.scale
+                    onAccepted: {
+                        page.restoreJobId = ""
+                        page.controller.refreshTaskChoices(text)
+                    }
+                }
+                UiButton {
+                    objectName: "videoFindTask"
+                    theme: page.theme
+                    text: page.tr(page.taskScanBusy ? "查找中…" : "查找任务")
+                    enabled: page.canRefreshTasks
+                    onClicked: {
+                        page.restoreJobId = ""
+                        page.controller.refreshTaskChoices(sourceIdentityField.text)
+                    }
+                }
+                UiComboBox {
+                    objectName: "videoTaskPicker"
+                    theme: page.theme
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: Math.round(290 * page.theme.scale)
+                    Layout.minimumWidth: 0
+                    model: page.restoreChoices()
+                    enabled: !page.busy && model.length > 1
+                    currentIndex: Math.max(0, model.findIndex(row => row.value === page.restoreJobId))
+                    onActivated: page.chooseRestoreTask(currentValue)
+                }
+                UiButton {
+                    objectName: "videoRestoreTask"
+                    theme: page.theme
+                    text: page.tr("载入素材")
+                    enabled: !page.busy && !!page.restoreJobId
+                    onClicked: page.controller.restoreTask(page.restoreJobId, sourceIdentityField.text)
+                }
+            }
+            Text {
+                Layout.fillWidth: true
+                visible: text.length > 0
+                text: page.textOf(page.view.restoreMessage)
+                color: page.theme.muted
+                font.pixelSize: 12 * page.theme.scale
+                wrapMode: Text.Wrap
+                textFormat: Text.PlainText
+            }
+
             Rectangle {
                 Layout.fillWidth: true
                 visible: page.jobText.length > 0
@@ -609,7 +703,8 @@ ScrollView {
                     Text {
                         Layout.fillWidth: true
                         Layout.minimumWidth: 0
-                        text: page.jobText
+                        text: (page.taskTitleText || page.jobText)
+                            + (page.restoredSourceBv ? " · " + page.restoredSourceBv : "")
                         color: page.theme.text
                         font.pixelSize: Math.round(11 * page.theme.scale)
                         elide: Text.ElideMiddle

@@ -13,7 +13,7 @@ from common import ROOT, atomic_json, file_hash, native_path, output_directory
 from i18n import tr
 from preset_library import PresetLibrary
 import style_catalog
-from style_drafts import DraftStore
+from style_drafts import DraftConflict, DraftStore
 from style_presets import DETAIL_DEFAULTS, time_range_settings
 import tuning_engine as engine
 from tuning_timeline import ProjectNotes, TimelineDraftStore, draft_options, freeze_plan
@@ -125,6 +125,7 @@ class QuickTuning(QObject):
         self.project = None
         self.job, self.artifact = '', None
         self.session, self.candidate = None, None
+        self._saved_copy = ''
         self.state, self.message = 'idle', ''
         self._candidate_stale = False
         self._plan = None
@@ -144,6 +145,8 @@ class QuickTuning(QObject):
         self._legacy_revision = None
         self._draft_revision = None
         self._dirty = False
+        self._draft_conflict = None
+        self._draft_review = None
         self._drafts = TimelineDraftStore(self.root / 'cache/style-region-drafts/v2', lock_timeout=.2)
         self._legacy_drafts = DraftStore(self.root / 'cache/style-region-drafts', lock_timeout=.2)
         self._library = PresetLibrary(self.root / 'user-presets')
@@ -227,6 +230,8 @@ class QuickTuning(QObject):
                 'options': options, 'preset': self._preset, 'confirmed': self._confirmed}
 
     def _flush_draft(self):
+        if self._draft_conflict:
+            return False
         if not self._dirty or not self.project:
             return True
         self._autosave.stop()
@@ -240,6 +245,7 @@ class QuickTuning(QObject):
 
     def _dirty_draft(self, *, invalidate=True):
         if self.project and not self._legacy:
+            self._draft_review = None
             self._dirty = True
             self._autosave.start()
         if invalidate:
@@ -250,7 +256,11 @@ class QuickTuning(QObject):
         self.changed.emit()
 
     def _error(self, error):
-        if isinstance(error, SourceChanged):
+        if isinstance(error, DraftConflict):
+            self._draft_conflict = error.details['recovery_path']
+            self._draft_review = None
+            self._preset_review = None
+        if isinstance(error, (SourceChanged, DraftConflict)):
             self._plan, self._summary = None, ''
             self._candidate_stale = bool(self.candidate)
         self.state = 'cancelled' if isinstance(error, InterruptedError) else 'failed'
@@ -288,9 +298,11 @@ class QuickTuning(QObject):
         busy = bool(self.worker.kind)
         project = self.project.project if self.project else {}
         receipt = self.candidate or {}
+        report = receipt.get('report', {})
         missing = ' '.join(self._preset.get('missing', [])) if self._preset else ''
         duration = self.project.maximum - self.project.minimum if self.project else 0.
-        usable = bool(self._regions or self._targets) and not self._legacy and not missing
+        usable = bool(self._regions or self._targets) and not self._legacy and not missing and not self._draft_conflict
+        review = self._draft_review
         return {
             'source': project.get('path', ''), 'title': Path(project['path']).stem if project else '',
             'sha256': project.get('sha256', ''), 'job': self.job,
@@ -309,7 +321,23 @@ class QuickTuning(QObject):
             'canRun': bool(self._plan and not busy), 'canRegister': bool(self.job and receipt.get('receipt_verified')
                        and not self._candidate_stale and not busy and self.state != 'registered'),
             'candidate': receipt.get('output', ''), 'candidateStale': self._candidate_stale,
+            'candidateVerified': bool(receipt.get('receipt_verified')),
+            'candidateDetails': {
+                'sha256': receipt.get('output_sha256', ''), 'bytes': receipt.get('output_bytes', 0),
+                'tracks': len(report.get('track_indices', [])), 'status': receipt.get('status', ''),
+                'mode': report.get('mode', ''), 'pitchChanged': report.get('pitch_changed') is True,
+                'notesPreserved': report.get('notes_and_timing_unchanged') is True,
+            } if receipt.get('receipt_verified') else {},
+            'savedCopy': self._saved_copy,
             'previewSummary': self._summary,
+            'draftConflict': self._draft_conflict or '',
+            'draftFolder': QUrl.fromLocalFile(str(self._drafts.root)),
+            'draftReview': {
+                'path': review['path'],
+                'revision': (review['latest']['revision'] or '—')[:12],
+                'shared': self._draft_description(review['latest']['data']),
+                'local': self._draft_description(review['local']),
+            } if review else {},
             'legacyDraft': ({
                 'summary': tr('发现 {count} 个旧版全轨片段。转换后会另存逐轨草稿。')
                     .format(count=len(self._legacy['style_regions'])),
@@ -405,6 +433,109 @@ class QuickTuning(QObject):
             self._notes = []
         self.notesChanged.emit()
 
+    def _adopt_draft(self, stored):
+        payload = stored['data']
+        if payload:
+            self.project.verify_regions(payload['regions'])
+        self._options = deepcopy(payload['options']) if payload else self._defaults()
+        self._preset = deepcopy(payload['preset']) if payload else None
+        self._confirmed = bool(payload and payload['confirmed'])
+        self._regions = deepcopy(payload['regions']) if payload else []
+        self._preset_review = self._draft_conflict = self._draft_review = None
+        self._region_undo.clear()
+        self._region_redo.clear()
+        self._draft_revision, self._dirty = stored['revision'], False
+        self._plan, self._summary = None, ''
+
+    def _select_saved_tracks(self):
+        project = self.project
+        indices = self._options['track_indices'] or []
+        self._selected = [key for key in project.editable if project.tracks[key]['index'] in indices]
+        if not self._selected:
+            self._selected = list(project.editable[:1])
+        self._active = next(iter(self._selected), next(iter(project.tracks)))
+        self._mode = 'multi' if len(self._selected) > 1 else 'single'
+
+    @staticmethod
+    def _draft_description(payload):
+        if payload is None:
+            return tr('没有共享草稿')
+        options = payload['options']
+        return tr('{count} 个片段 · {style} · 强度 {strength}%{preset}').format(
+            count=len(payload['regions']), style=tr(style_catalog.style_label(options['performance_style'])),
+            strength=round(options['style_strength'] * 100),
+            preset=' · ' + payload['preset']['preset']['name'] if payload['preset'] else '')
+
+    @Slot(QUrl)
+    def reviewDraftRecovery(self, url):
+        if not self.project or self.worker.kind or not (url.isEmpty() or url.isLocalFile()):
+            return
+        if not self._flush_draft() and not self._draft_conflict:
+            return
+        path = self._draft_conflict or url.toLocalFile()
+        if not path:
+            return
+        project = self.project
+        self._draft_review = None
+
+        def work(stop, _send):
+            _verify_input(project, self.job, self.artifact, stop)
+            local = self._drafts.read_recovery(project.sha256, path)
+            project.verify_regions(local['regions'])
+            latest = self._drafts.read(project.sha256)
+            if latest['data']:
+                project.verify_regions(latest['data']['regions'])
+            return {'path': path, 'latest': latest, 'local': local}
+
+        def finish(review):
+            self._draft_review = review
+            self.state, self.message = 'ready', tr('已读回草稿的两个版本，请选择要保留为当前草稿的内容。')
+
+        self._command('draft-review', '正在读取共享草稿与本地副本…', work, finish)
+
+    @Slot(bool)
+    def resolveDraftRecovery(self, use_local):
+        review = self._draft_review
+        if not review or self.worker.kind or (self._dirty and not self._draft_conflict):
+            return
+        project = self.project
+
+        def work(stop, _send):
+            _verify_input(project, self.job, self.artifact, stop)
+            latest = self._drafts.read(project.sha256)
+            if latest['data']:
+                project.verify_regions(latest['data']['regions'])
+            if latest['revision'] != review['latest']['revision']:
+                return latest, False
+            if use_local:
+                latest = self._drafts.resolve_local(project.sha256, latest['revision'], review['local'],
+                                                    writer='vwa-quick', preserve_current=True)
+            return latest, True
+
+        def finish(value):
+            latest, applied = value
+            self.state = 'ready'
+            if not applied:
+                self._draft_review = {**review, 'latest': latest}
+                self.message = tr('共享草稿又有更新。请核对新版本后重新确认。')
+                return
+            self._adopt_draft(latest)
+            self._legacy = self._legacy_revision = None
+            self._select_saved_tracks()
+            self._candidate_stale = bool(self.candidate)
+            self.regionsChanged.emit()
+            self._update_notes()
+            self.message = tr('已恢复本地编辑。原共享版本也保留为草稿副本。' if use_local else
+                              '已载入共享草稿。本地编辑仍保存在冲突副本中。')
+
+        self._command('draft-resolve', '正在核对草稿版本…', work, finish)
+
+    @Slot()
+    def dismissDraftReview(self):
+        if self._draft_review and not self.worker.kind:
+            self._draft_review = None
+            self.changed.emit()
+
     def _load(self, path, job='', artifact=None):
         if self.worker.kind or not self._flush_draft():
             return
@@ -418,25 +549,14 @@ class QuickTuning(QObject):
                 project.verify_regions(payload['regions'])
             self.project, self.job, self.artifact = project, job, deepcopy(artifact)
             self.session, self.candidate = session, receipt
-            self._options = deepcopy(payload['options']) if payload else self._defaults()
-            self._preset = deepcopy(payload['preset']) if payload else None
-            self._preset_review = None
-            self._confirmed = bool(payload and payload['confirmed'])
-            self._regions = deepcopy(payload['regions']) if payload else []
-            self._region_undo.clear()
-            self._region_redo.clear()
+            self._saved_copy = ''
+            self._adopt_draft(stored)
             self._legacy = previous if previous and previous.get('mode') == 'regions' and previous['style_regions'] else None
             self._legacy_revision = old_draft['revision'] if self._legacy else None
             if previous and not self._legacy:
                 self._options.update(deepcopy(previous['tool']))
                 self._options['track_indices'] = previous['track_indices'] or None
-            self._draft_revision, self._dirty = stored['revision'], False
-            active_indices = self._options['track_indices'] or []
-            self._selected = [key for key in project.editable if project.tracks[key]['index'] in active_indices]
-            if not self._selected:
-                self._selected = list(project.editable[:1])
-            self._active = next(iter(self._selected), next(iter(project.tracks)))
-            self._mode = 'multi' if len(self._selected) > 1 else 'single'
+            self._select_saved_tracks()
             self._start = self._end = self._left = project.minimum
             self._span = min(18., max(1., project.maximum - project.minimum))
             self._query, self._matches = '', []
@@ -460,6 +580,10 @@ class QuickTuning(QObject):
                       lambda stop, _send: _load_project(path, job, artifact, self._drafts,
                                                         self._legacy_drafts, sessions, stop), finish)
 
+    @property
+    def _editing_blocked(self):
+        return bool(self.worker.kind or self._draft_conflict)
+
     @Slot(QUrl)
     def chooseProject(self, url):
         if url.isLocalFile():
@@ -471,7 +595,7 @@ class QuickTuning(QObject):
 
     @Slot(str)
     def setMode(self, mode):
-        if self.project and not self.worker.kind and mode in ('single', 'multi') and mode != self._mode:
+        if self.project and not self._editing_blocked and mode in ('single', 'multi') and mode != self._mode:
             old = self._indices()
             self._mode = mode
             self._changed_tracks(old)
@@ -485,14 +609,14 @@ class QuickTuning(QObject):
 
     @Slot(str)
     def focusTrack(self, track):
-        if self.project and track in self.project.tracks and not self.worker.kind and self._active != track:
+        if self.project and track in self.project.tracks and not self._editing_blocked and self._active != track:
             old = self._indices()
             self._active = track
             self._changed_tracks(old)
 
     @Slot(str)
     def toggleTrack(self, track):
-        if self.project and track in self.project.editable and not self.worker.kind:
+        if self.project and track in self.project.editable and not self._editing_blocked:
             old = self._indices()
             if track in self._selected:
                 self._selected.remove(track)
@@ -559,7 +683,7 @@ class QuickTuning(QObject):
         self._set_view_preference('auto_apply_selection', enabled)
 
     def _set_options(self, changes, *, detach=True):
-        if self.worker.kind:
+        if self._editing_blocked:
             return
         try:
             options = draft_options({**self._options, **changes})
@@ -633,6 +757,54 @@ class QuickTuning(QObject):
         if self._options['expression_mode'] == 'calibrated' and (url.isLocalFile() or url.isEmpty()):
             self._set_options({'reference_calibration': url.toLocalFile() or None}, detach=False)
 
+    def calibration_seed(self):
+        if not self.project or self._active not in self.project.editable:
+            return None
+        index = self.project.tracks[self._active]['index']
+        source = next((row for row in self._options['reference_sources'] if row['track_index'] == index), {})
+        voice = 'vocals' if len(self.project.editable) == 1 else 'lead' if self._active == self.project.editable[0] else 'backing'
+        return {'path': self.project.project['path'], 'sha256': self.project.sha256, 'index': index, 'job': self.job,
+                'reference': source.get('path', ''), 'voice': source.get('voice', voice)}
+
+    def can_bind_calibration(self, spec):
+        seed = self.calibration_seed()
+        return bool(spec and seed and not self._editing_blocked and not self._legacy and not self._preset
+                    and self._mode == 'single' and self._indices(segments=True) == [seed['index']]
+                    and (seed['path'], seed['sha256'], seed['index']) ==
+                        (spec['project'], spec['project_sha256'], spec['track_index']))
+
+    def bind_calibration_result(self, session, spec, shown):
+        if not self.can_bind_calibration(spec) or not self._flush_draft():
+            return
+        project, job, artifact = self.project, self.job, self.artifact
+        name = Path(shown['output']).name
+
+        def work(stop, _send):
+            import calibration_session as calibration
+
+            _verify_input(project, job, artifact, stop)
+            current = calibration.read_session(session)
+            keys = ('project', 'project_sha256', 'track_index', 'reference', 'reference_sha256', 'voice')
+            if any(current[key] != spec[key] for key in keys):
+                raise ValueError('校准会话已改变，请重新打开并核对。')
+            result = calibration.verified_fit_result(session, output_name=name, cancel=lambda: _stop_check(stop))
+            if (not result or not result['calibration_fit'].get('voicebank_calibrated')
+                    or any(result[key] != shown[key] for key in ('sha256', 'profile_sha256'))):
+                raise ValueError('校准结果或试音已改变，请重新核对。')
+            return result
+
+        def finish(result):
+            index = spec['track_index']
+            rows = [row for row in self._options['reference_sources'] if row['track_index'] != index]
+            rows.append({'track_index': index, 'voice': spec['voice'], 'path': spec['reference']})
+            self._set_options({'expression_mode': 'calibrated', 'reference_calibration': result['profile'],
+                               'reference_sources': rows, 'dynamics_strength': result['calibration_fit']['strength'],
+                               'retained_project': None, 'retained_sources': []})
+            if self._flush_draft():
+                self.state, self.message = 'ready', tr('已把校准和参考演唱绑定到当前调音轨。请重新预览。')
+
+        self._command('checking-calibration', '正在核验校准与当前调音轨…', work, finish)
+
     @Slot(str, QUrl, int)
     def bindRetained(self, track, url, source_index):
         if (self.project and track in self.project.editable and (url.isLocalFile() or url.isEmpty())
@@ -645,7 +817,7 @@ class QuickTuning(QObject):
 
     @Slot(bool)
     def confirmCandidate(self, value):
-        if not self.worker.kind and self._confirmed != value:
+        if not self._editing_blocked and self._confirmed != value:
             self._confirmed = value
             self._rebind_preset()
             self._dirty_draft()
@@ -654,7 +826,7 @@ class QuickTuning(QObject):
         return {key: deepcopy(self._options[value]) for key, value in _REGION_BRUSH_FIELDS.items()}
 
     def _can_edit_regions(self):
-        return bool(self.project and not self.worker.kind and not self._legacy)
+        return bool(self.project and not self._editing_blocked and not self._legacy)
 
     def _replace_regions(self, rows, notice):
         self._regions = rows
@@ -763,7 +935,7 @@ class QuickTuning(QObject):
 
     @Slot()
     def migrateLegacy(self):
-        if self._legacy and not self.worker.kind:
+        if self._legacy and not self._editing_blocked:
             try:
                 if self._legacy_drafts.read(self.project.sha256)['revision'] != self._legacy_revision:
                     raise ValueError('旧草稿已被更新，请重新载入工程查看最新版。')
@@ -835,6 +1007,7 @@ class QuickTuning(QObject):
         def finish(value):
             receipt, stale = value
             self.candidate, self._candidate_stale = receipt, bool(stale)
+            self._saved_copy = ''
             if stale:
                 self.state, self.message = 'partial', tr('已保留候选，但当前不可登记。') + ' ' + tr(stale)
             elif not receipt.get('receipt_verified'):
@@ -849,7 +1022,8 @@ class QuickTuning(QObject):
 
     @Slot()
     def cancel(self):
-        if self.worker.kind in ('tuning-loading', 'tuning-freezing', 'tuning-running'):
+        if self.worker.kind in ('tuning-loading', 'tuning-freezing', 'tuning-running', 'tuning-checking-calibration',
+                                'tuning-exporting'):
             self.worker.cancel()
             self.message = tr('正在取消…')
             self.changed.emit()
@@ -880,16 +1054,38 @@ class QuickTuning(QObject):
 
     @Slot()
     def openCandidate(self):
+        self._open_result('output')
+
+    @Slot()
+    def openResultReceipt(self):
+        self._open_result('receipt')
+
+    def _open_result(self, key):
         if self.worker.kind or not self.candidate or not self.candidate.get('receipt_verified'):
             return
 
         def finish(result):
             self.state = 'ready' if self._candidate_stale else 'done'
-            self.message = tr('已打开独立候选，请在编辑器中核对。')
-            if not QDesktopServices.openUrl(QUrl.fromLocalFile(result['output'])):
-                raise ValueError('系统未能打开 SVP，请在 Synthesizer V 中选择该工程。')
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(result[key])):
+                raise ValueError('系统未能打开文件，请按路径手动打开。')
+            self.message = tr('已打开独立候选，请在编辑器中核对。' if key == 'output' else '已打开核验回执。')
 
         self._command('checking', '正在核验候选工程…', lambda stop, _send: self._verify_candidate(stop), finish)
+
+    @Slot(QUrl)
+    def exportCandidate(self, url):
+        if self.worker.kind or not self.candidate or not self.candidate.get('receipt_verified') or not url.isLocalFile():
+            return
+
+        def work(stop, _send):
+            return workflow.export_verified_copy(self._verify_candidate(stop), url.toLocalFile(),
+                                                 cancel=lambda: _stop_check(stop))
+
+        def finish(path):
+            self._saved_copy = path
+            self.state, self.message = 'done', tr('已另存并核验独立工程：') + path
+
+        self._command('exporting', '正在核验并另存 SVP…', work, finish)
 
     @Slot()
     def openMixdown(self):
@@ -947,7 +1143,7 @@ class QuickTuning(QObject):
     @Slot()
     def confirmPreset(self):
         review = self._preset_review
-        if not self.project or not review or self.worker.kind:
+        if not self.project or not review or self._editing_blocked:
             return
         row = review['entry']
         self._preset_review = None
@@ -979,7 +1175,7 @@ class QuickTuning(QObject):
 
     @Slot()
     def unbindPreset(self):
-        if self._preset and not self.worker.kind:
+        if self._preset and not self._editing_blocked:
             self._preset = None
             self._preset_review = None
             self._dirty_draft()

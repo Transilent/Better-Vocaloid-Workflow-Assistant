@@ -12,12 +12,14 @@ from mixdown_workspace_state import (
     MixdownWorkspaceState,
     compression_controls,
     default_bands,
+    empty_gr_history,
     eq_curve,
     meters_from_telemetry,
     reverb_curve_from_telemetry,
     spectrum_from_telemetry,
     strength_for_compressor,
     telemetry_identity,
+    update_gr_history,
 )
 
 
@@ -39,6 +41,25 @@ class MixdownWorkspaceStateTests(unittest.TestCase):
         state.set_source('vocal-1', self.vocal)
         state.set_source('instrumental', self.backing)
         return state
+
+    def test_gr_history_keeps_only_measured_peaks_and_resets_at_discontinuity(self):
+        packet = {'schema': TELEMETRY_SCHEMA, 'status': 'ready', 'source': 'realtime_dsp',
+                  'position_ms': 152, 'history_epoch': 3, 'parameter_revision': 4,
+                  'dynamics': {'compressor': {'enabled': True, 'gr_db': 1.0, 'gr_peak_db': 5.0},
+                               'limiter': {'gr_db': 2.0}}}
+        history = update_gr_history(empty_gr_history(), packet)
+        self.assertEqual(history['compressor'], [{'ms': 100, 'db': 5.0}])
+        self.assertEqual(history['limiter'], [])
+        self.assertIsNone(meters_from_telemetry(packet, [])['limiter_peak'])
+        self.assertEqual(update_gr_history(history, {**packet, 'position_ms': 172}), history)
+        next_frame = {**packet, 'position_ms': 240}
+        self.assertEqual(len(update_gr_history(history, next_frame)['compressor']), 2)
+        self.assertEqual(update_gr_history(history, {**next_frame, 'history_epoch': 4})['compressor'],
+                         [{'ms': 200, 'db': 5.0}])
+        bypass = {**next_frame, 'dynamics': {'compressor': {'enabled': False, 'gr_peak_db': 0}}}
+        self.assertEqual(update_gr_history(history, bypass)['compressor'], [])
+        self.assertFalse(meters_from_telemetry(bypass, [])['compressor_enabled'])
+        self.assertEqual(update_gr_history(history, {'status': 'pending'}), empty_gr_history())
 
     def test_request_uses_real_track_and_processing_fields(self):
         state = self.make_state()

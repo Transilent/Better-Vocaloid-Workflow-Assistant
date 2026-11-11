@@ -584,23 +584,26 @@ class DraftStore:
     def _lock_path(self, input_sha256):
         return self.root / ('.' + input_sha256 + '.lock')
 
-    def _read_raw(self, path):
+    def _read_raw(self, path, *, max_bytes=MAX_DRAFT_BYTES):
         info = _lstat(path)
         if info is None:
             return None
         if (not stat.S_ISREG(info.st_mode)
                 or getattr(info, 'st_file_attributes', 0) & _FILE_ATTRIBUTE_REPARSE_POINT):
             raise DraftError('unsafe_path', '草稿文件必须是普通文件。', {'path': str(path)})
-        if info.st_size > MAX_DRAFT_BYTES:
-            raise DraftError('draft_too_large', '草稿文件超过 1 MiB 限额。',
-                             {'path': str(path), 'max_bytes': MAX_DRAFT_BYTES})
+        def too_large():
+            return DraftError('draft_too_large', '草稿文件超过大小限额。',
+                              {'path': str(path), 'max_bytes': max_bytes})
+        if info.st_size > max_bytes:
+            raise too_large()
         try:
             with _open_read_stream(path) as stream:
                 opened = os.fstat(stream.fileno())
-                if opened.st_size > MAX_DRAFT_BYTES:
-                    raise DraftError('draft_too_large', '草稿文件超过 1 MiB 限额。',
-                                     {'path': str(path), 'max_bytes': MAX_DRAFT_BYTES})
-                raw = stream.read(MAX_DRAFT_BYTES + 1)
+                if opened.st_size > max_bytes:
+                    raise too_large()
+                raw = stream.read(max_bytes + 1)
+                if len(raw) > max_bytes:
+                    raise too_large()
         except FileNotFoundError:
             return None
         except DraftError:
@@ -651,6 +654,28 @@ class DraftStore:
             raw = self._read_raw(path)
             data = self._decode(input_sha256, raw, path)
         return self._snapshot(input_sha256, raw, data)
+
+    def read_recovery(self, input_sha256, path):
+        """Read the local side of a conflict for this exact source and store."""
+        input_sha256 = _require_sha256(input_sha256)
+        path = Path(path)
+        if (path.parent != self.root
+                or not re.fullmatch(input_sha256 + r'\.conflict-[0-9]{8}T[0-9]{6}-[a-f0-9]{16}\.json', path.name)):
+            raise DraftError('invalid_recovery', '请选择本工程草稿目录中的冲突副本。')
+        with _pinned_path(self.root, create=False):
+            raw = self._read_raw(path, max_bytes=MAX_RECOVERY_BYTES)
+        try:
+            value = json.loads((raw or b'').decode('utf-8-sig'), object_pairs_hook=_unique_object,
+                               parse_constant=_reject_json_constant)
+            _check_finite(value)
+            if (not isinstance(value, dict) or value.get('schema_version') != 1
+                    or value.get('kind') != 'style_draft_conflict' or value.get('input_sha256') != input_sha256):
+                raise ValueError('草稿冲突副本与当前工程不符。')
+            _normalise_expected_revision(value['expected_revision'])
+            _normalise_expected_revision(value['current_revision'])
+            return self.normalize(input_sha256, value['incoming_data'])
+        except (ValueError, KeyError, TypeError, RecursionError) as error:
+            raise DraftError('invalid_recovery', '无法读取这个草稿冲突副本。', {'path': str(path)}) from error
 
     @staticmethod
     def _encoded(data, *, max_bytes=MAX_DRAFT_BYTES):
@@ -750,7 +775,7 @@ class DraftStore:
         }
         raise DraftConflict('共享草稿已在其他任务中更新；双方内容均已保留。', details)
 
-    def write(self, input_sha256, expected_revision, data, *, writer='unknown'):
+    def write(self, input_sha256, expected_revision, data, *, writer='unknown', preserve_current=False):
         """CAS-write a normalized draft and return the new snapshot."""
         input_sha256 = _require_sha256(input_sha256)
         expected_revision = _normalise_expected_revision(expected_revision)
@@ -758,14 +783,14 @@ class DraftStore:
         incoming = self.normalize(input_sha256, data)
         path = self._path(input_sha256)
         with _pinned_path(self.root, create=True):
-            return self._write_locked(input_sha256, expected_revision, incoming, path, writer)
+            return self._write_locked(input_sha256, expected_revision, incoming, path, writer, preserve_current)
 
-    def _write_locked(self, input_sha256, expected_revision, incoming, path, writer):
+    def _write_locked(self, input_sha256, expected_revision, incoming, path, writer, preserve_current):
         with _draft_lock(self._lock_path(input_sha256), self.lock_timeout):
             return self._write_guarded(input_sha256, expected_revision,
-                                       incoming, path, writer)
+                                       incoming, path, writer, preserve_current)
 
-    def _write_guarded(self, input_sha256, expected_revision, incoming, path, writer):
+    def _write_guarded(self, input_sha256, expected_revision, incoming, path, writer, preserve_current):
         _safe_root(self.root)
         raw = self._read_raw(path)
         current_data = self._decode(input_sha256, raw, path)
@@ -791,12 +816,14 @@ class DraftStore:
         output = copy.deepcopy(incoming)
         output['_sync'] = {'seq': seq, 'writer': writer}
         payload = self._encoded(output)
+        if preserve_current and current_exists:
+            self._write_recovery(input_sha256, expected_revision, current_revision, current_data, current)
         self._atomic_write(path, payload)
         return self._snapshot(input_sha256, payload, output)
 
-    def resolve_local(self, input_sha256, expected_revision, data, *, writer='unknown'):
+    def resolve_local(self, input_sha256, expected_revision, data, *, writer='unknown', preserve_current=False):
         """Explicit local-write entry point; conflicts follow the same safe path."""
-        return self.write(input_sha256, expected_revision, data, writer=writer)
+        return self.write(input_sha256, expected_revision, data, writer=writer, preserve_current=preserve_current)
 
 
 def _replace_file(source, destination):

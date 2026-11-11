@@ -16,6 +16,8 @@ from quick_media_handoff import artifact_identity, verify_publication_bundle, ve
 from quick_publication import QuickPublication
 from quick_subtitles import QuickSubtitles, read_task_midi
 from quick_support import QuickSupport
+from quick_calibration import QuickCalibration
+from quick_preparation_sources import QuickPreparationSources
 from quick_tuning import QuickTuning
 from quick_mixdown import QuickMixdown
 from quick_video import QuickVideo
@@ -69,25 +71,27 @@ def _component_result(request, stop, send):
     if request.action == 'install':
         components.install(request.component_id, runtime=request.runtime, source=request.source,
                            force=request.force, progress=progress, check=stop.is_set)
-        return 'succeeded', '安装完成。'
+        return 'succeeded', '安装完成。', None
     report = components.verify(request.component_id, progress=progress, check=stop.is_set)
     if report.get('verified') is True:
         count = report.get('progress', {}).get('sha256_checked')
-        return 'succeeded', tr('完整校验通过，已核对 {0} 个文件。', count) if count else '组件完整校验通过。'
+        return ('succeeded', tr('完整校验通过，已核对 {0} 个文件。', count) if count else '组件完整校验通过。',
+                report)
     if report.get('state') == 'cancelled':
-        return 'cancelled', '校验已取消。'
+        return 'cancelled', '校验已取消。', report
     problems = report.get('corrupted') or report.get('errors') or report.get('unverified') or []
     detail = next((row.get('message') or row.get('path') for row in problems if isinstance(row, dict)), '')
-    return 'failed', f"未通过完整校验：{report.get('message') or detail or report.get('state', '未知状态')}"
+    return 'failed', f"未通过完整校验：{report.get('message') or detail or report.get('state', '未知状态')}", report
 
 
-def _run_preparation(draft, existing, retry_cpu, stop, send):
+def _run_preparation(draft, existing, retry_cpu, stop, send, *, reuse_job=''):
     from task_store import known_job
     from error_recovery import failure
 
     if stop.is_set():
         raise InterruptedError('已取消任务。')
-    job = known_job(existing) if existing else preparation.create_from_draft(draft)
+    job = (known_job(existing) if existing else
+           preparation.create_from_draft(draft, reuse_job=reuse_job) if reuse_job else preparation.create_from_draft(draft))
     send({'state': 'running', 'job': str(job), 'message': '正在启动准备任务…'})
     try:
         code = preparation.run_process(job, stop=stop, on_progress=send, retry_cpu=retry_cpu)
@@ -136,9 +140,12 @@ class QuickBridge(QObject):
         self._details.changed.connect(self.taskChanged)
         self._support = QuickSupport(self, self._work, sources)
         self._tuning = QuickTuning(self, self._work)
+        self._calibration = QuickCalibration(self, self._tuning)
+        self._calibration.worker.changed.connect(self._work_changed)
         self._mixdown = QuickMixdown(self, self._work)
         self._video = QuickVideo(self, self._work)
         self._publication = QuickPublication(self, self._work)
+        self._sources = QuickPreparationSources(self, self._work)
         self._subtitles = QuickSubtitles(self)
         self._video.publishRequested.connect(self._open_verified_video)
         self._tuning.presetLibraryChanged.connect(self._mixdown.refresh_presets)
@@ -149,6 +156,7 @@ class QuickBridge(QObject):
         self.state.set_draft(draft)
         self._rows = RowsModel(self, (('componentId', 'id'), ('title', 'title'), ('summary', 'summary'),
                                      ('status', 'status'), ('statusText', 'status_text')))
+        self._component_checks = {}
         self._tasks = RowsModel(self, tuple((key, key) for key in ('jobId', 'title', 'statusText', 'summary')))
         self._exit_when_idle = False
         self._closed = False
@@ -164,7 +172,7 @@ class QuickBridge(QObject):
 
     def _work_changed(self):
         self.activityChanged.emit()
-        if self._exit_when_idle and not self.workBusy:
+        if self._exit_when_idle and not self.workBusy and not self._calibration.worker.kind:
             self.closeReady.emit()
 
     @Property(QObject, constant=True)
@@ -174,6 +182,14 @@ class QuickBridge(QObject):
     @Property(QObject, constant=True)
     def tuning(self):
         return self._tuning
+
+    @Property(QObject, constant=True)
+    def calibration(self):
+        return self._calibration
+
+    @Property(QObject, constant=True)
+    def preparationSources(self):
+        return self._sources
 
     @Property(QObject, constant=True)
     def mixdown(self):
@@ -233,7 +249,35 @@ class QuickBridge(QObject):
 
     @Property('QVariantMap', notify=selectionChanged)
     def selected(self):
-        return dict(self.state.selected)
+        row = dict(self.state.selected)
+        if row:
+            key = self._component_check_key(row['id'], self.state.runtime)
+            row['last_check'] = self._component_checks.get(key, {})
+        return row
+
+    @staticmethod
+    def _component_check_key(component_id, runtime):
+        return component_id, runtime if component_id == 'roformer' else ''
+
+    @Property('QVariantMap', notify=draftChanged)
+    def componentTaskPlan(self):
+        draft = self.state.draft_view
+        voice = draft['voice_mode']
+        roformer = voice == 'roformer' or (voice == 'dual' and draft['separator_model'] == 'roformer')
+        separator = 'roformer' if roformer else 'builtin' if voice != 'import' else ''
+        lines = [tr('使用导入的分轨') if not separator else
+                 'BS-RoFormer · ' + {'cpu': 'CPU', 'cuda': 'CUDA', 'auto': tr('自动选择运行库')}[draft['roformer_device']]
+                 if roformer else tr('内置分离')]
+        required = [separator] if separator else []
+        if draft['target'] != 'separation':
+            lines.append('Vocal2Midi ' + ('2.0' if draft['midi_backend'] == 'v2' else '1.0'))
+            if draft['recognize_lyrics']:
+                chinese = draft['language'] == 'zh'
+                lines.append(tr('中文识别') if chinese else tr('日语识别'))
+                lines.append('TiFA' if draft['alignment_engine'] == 'tifa' else 'HubertFA')
+                if chinese:
+                    required.append('chinese')
+        return {'summary': ' · '.join(lines), 'components': required}
 
     @Property(str, notify=selectionChanged)
     def selectedId(self):
@@ -420,6 +464,7 @@ class QuickBridge(QObject):
         if self.workBusy or self._closed:
             return
         draft = self.state.draft
+        reuse_job = '' if existing else self._sources.reusable_job()
         if not draft.view['output_directory'].strip():
             draft = draft.edit('output_directory', self._support.state.values['output_directory'])
         key = uuid4().hex
@@ -469,7 +514,8 @@ class QuickBridge(QObject):
             if not self._exit_when_idle and self.state.route == 'results':
                 self.refreshTasks()
 
-        self._work.start('preparation', lambda stop, send: _run_preparation(draft, existing, retry_cpu, stop, send),
+        self._work.start('preparation', lambda stop, send: _run_preparation(draft, existing, retry_cpu, stop, send,
+                                                                           reuse_job=reuse_job),
                          finish, progress)
 
     @Slot()
@@ -569,8 +615,17 @@ class QuickBridge(QObject):
 
         def finish(value, error):
             if error is not None:
-                value = ('cancelled' if isinstance(error, InterruptedError) else 'failed', str(error)[:1600])
-            self.state.complete(request.operation_id, *value)
+                status = 'cancelled' if isinstance(error, InterruptedError) else 'failed'
+                message = str(error)[:1600]
+                value = status, message, {'state': status, 'errors': [{'message': message}]} if status == 'failed' else None
+            status, message, report = value
+            key = self._component_check_key(request.component_id, request.runtime)
+            if request.action == 'verify' and report is not None:
+                self._component_checks[key] = {**components.verification_summary(report), 'message': message}
+            elif request.action == 'install':
+                self._component_checks.pop(key, None)
+            self.state.complete(request.operation_id, status, message)
+            self.selectionChanged.emit()
             if not self._exit_when_idle:
                 self.refresh()
 
@@ -729,6 +784,118 @@ class QuickBridge(QObject):
             self.refreshTasks()
 
         self._work.start('task-video-register', work, finish)
+
+    @Slot(str, str, QUrl)
+    def registerSelectedTaskFile(self, expected_job, kind, url):
+        job = self.state.selected_task_id
+        detail = self.state.task_detail
+        capability = {'project': 'canRegisterProject', 'mixdown': 'canRegisterMixdown'}.get(kind)
+        if (self.workBusy or self.taskLoading or not job or expected_job != job
+                or detail.get('jobId') != job or not capability or not detail.get(capability)
+                or url.isEmpty() or not url.isLocalFile()):
+            self._error(ValueError('任务已变化或当前不允许登记工程或 Mixdown，请重新选择后确认。'))
+            return
+        bindings = detail.get('bindings') if isinstance(detail.get('bindings'), dict) else {}
+        binding = bindings.get(kind) if isinstance(bindings.get(kind), dict) else {}
+        expected_id = str(binding.get('id') or '')
+        expected_revision = str(binding.get('revision') or '')
+        source = url.toLocalFile()
+        label = 'SVP 工程' if kind == 'project' else 'Mixdown'
+        self._notice = f'正在核验 {label} 内容并登记到当前任务…'
+        self.activityChanged.emit()
+
+        def work(stop, _send):
+            return quick_results.register_external(
+                job, kind, source, expected_binding_id=expected_id,
+                expected_binding_revision=expected_revision, check=stop.is_set)
+
+        def finish(artifact_id, error):
+            if isinstance(error, InterruptedError):
+                return
+            if error is not None:
+                self._error(error)
+                return
+            self._notice = (
+                f'已登记并核验 {label} {str(artifact_id)[:8]}…；原文件仍保留在原位置，'
+                '并已记录当前上游修订。'
+            )
+            self.state.handoff = {}
+            self.activityChanged.emit()
+            self.refreshTasks()
+
+        self._work.start('task-artifact-register', work, finish)
+
+    @Slot(str, str, str, str)
+    def unlinkSelectedTaskBinding(self, expected_job, kind, expected_binding_id,
+                                  expected_binding_revision):
+        job = self.state.selected_task_id
+        detail = self.state.task_detail
+        capability = {
+            'project': 'canUnbindProject', 'mixdown': 'canUnbindMixdown',
+            'video': 'canUnbindVideo',
+        }.get(kind)
+        bindings = detail.get('bindings') if isinstance(detail.get('bindings'), dict) else {}
+        binding = bindings.get(kind) if isinstance(bindings.get(kind), dict) else {}
+        if (self.workBusy or self.taskLoading or not job or expected_job != job
+                or detail.get('jobId') != job or not capability or not detail.get(capability)
+                or not expected_binding_id or str(binding.get('id') or '') != expected_binding_id
+                or str(binding.get('revision') or '') != expected_binding_revision):
+            self._error(ValueError('任务的人工登记已变化，请重新核对后再取消。'))
+            return
+        had_publication = bool(detail.get('hasPublication'))
+        self._notice = '正在取消当前任务的人工登记引用…'
+        self.activityChanged.emit()
+
+        def work(stop, _send):
+            return quick_results.unlink_external(
+                job, kind, expected_binding_id=expected_binding_id,
+                expected_binding_revision=expected_binding_revision, check=stop.is_set)
+
+        def finish(artifact_id, error):
+            if isinstance(error, InterruptedError):
+                return
+            if error is not None:
+                self._error(error)
+                return
+            self._notice = (
+                f'已取消人工登记 {str(artifact_id)[:8]}…；外部文件未被删除或修改。'
+                + (' 成品视频对应的发布关联也已取消。' if kind == 'video' and had_publication else '')
+            )
+            self.state.handoff = {}
+            self.activityChanged.emit()
+            self.refreshTasks()
+
+        self._work.start('task-artifact-unlink', work, finish)
+
+    @Slot(str, str)
+    def rebuildSelectedTaskArtifacts(self, expected_job, expected_index_revision):
+        job = self.state.selected_task_id
+        detail = self.state.task_detail
+        if (self.workBusy or self.taskLoading or not job or expected_job != job
+                or detail.get('jobId') != job or not detail.get('canRebuildArtifacts')
+                or str(detail.get('artifactIndexRevision') or '') != expected_index_revision):
+            self._error(ValueError('任务文件清单已变化，请重新打开确认后再重建。'))
+            return
+        self._notice = '正在根据现有处理记录重建文件清单…'
+        self.activityChanged.emit()
+
+        def work(stop, _send):
+            return quick_results.rebuild_artifacts(
+                job, expected_index_revision=expected_index_revision, check=stop.is_set)
+
+        def finish(backup, error):
+            if isinstance(error, InterruptedError):
+                return
+            if error is not None:
+                self._error(error)
+                return
+            suffix = ('；旧清单已备份为 ' + Path(backup).name) if backup else ''
+            self._notice = '已重建文件清单，人工登记已恢复核验' + suffix + '。外部文件未被修改。'
+            self.state.handoff = {}
+            self.activityChanged.emit()
+            self.refreshTasks()
+
+        self._work.start('task-artifact-rebuild', work, finish)
 
     @Slot(str)
     def openArtifact(self, artifact_id):
@@ -936,9 +1103,10 @@ class QuickBridge(QObject):
         self._mixdown.cancel()
         self._video.cancel()
         self._publication.cancel()
+        self._calibration.cancel()
         if self.workBusy:
             self._work.cancel()
-        else:
+        elif not self._calibration.worker.kind:
             self.closeReady.emit()
 
     def close(self):
@@ -948,6 +1116,7 @@ class QuickBridge(QObject):
         self._support.close()
         self._video.cancel()
         self._publication.cancel()
+        self._calibration.close()
         for lane in (self._work, self._catalog, self._read, self._details):
             lane.close()
         self._tuning.close()

@@ -17,6 +17,8 @@ ScrollView {
     readonly property var values: controller.settings || ({})
     readonly property var updateInfo: controller.startup || ({})
     readonly property var diagnostics: controller.diagnostics || ({})
+    readonly property var storageView: controller.storage || ({})
+    readonly property var presetView: controller.presetLibrary || ({})
     readonly property bool narrow: availableWidth < (theme.scale > 1.2 ? 840 : 680)
     readonly property int pageMargin: Math.round((narrow ? 16 : 24) * theme.scale)
     readonly property string communityNumber: controller.qqGroup || "490619616"
@@ -25,6 +27,36 @@ ScrollView {
     readonly property bool downloading: currentUpdateState === "downloading"
     readonly property bool applying: currentUpdateState === "applying"
     property bool suppressDiagnosticsClose: false
+    property var cacheSelection: ({})
+    property int cacheGeneration: -1
+    property string presetQuery: ""
+    property string presetType: "all"
+    property var selectedPreset: ({})
+    property var presetExportEntry: ({})
+    property var presetRemoveEntry: ({})
+    property var presetTextEntry: ({})
+    property string presetTextMode: ""
+    readonly property var filteredPresets: {
+        var query = presetQuery.trim().toLowerCase()
+        var wanted = presetType
+        var rows = (presetView.entries || []).filter(function(entry) {
+            if (wanted !== "all" && String(entry.type || "") !== wanted)
+                return false
+            if (!query.length)
+                return true
+            return (String(entry.name || "") + " " + String(entry.id || "") + " "
+                    + String(entry.version || "")).toLowerCase().indexOf(query) >= 0
+        })
+        rows.sort(function(left, right) {
+            if (!!left.favorite !== !!right.favorite)
+                return left.favorite ? -1 : 1
+            var typeOrder = String(left.type || "").localeCompare(String(right.type || ""))
+            if (typeOrder !== 0)
+                return typeOrder
+            return String(left.name || "").localeCompare(String(right.name || ""))
+        })
+        return rows
+    }
 
     function tr(source) {
         return controller && typeof controller.text === "function" ? controller.text(source) : source
@@ -57,6 +89,135 @@ ScrollView {
             controller.chooseOutput(url)
         else
             changeSetting("output_directory", url.toLocalFile())
+    }
+
+    function typeLabel(type) {
+        switch (String(type || "")) {
+        case "preparation": return tr("准备")
+        case "mixdown": return tr("简易混音")
+        case "tuning": return tr("调音")
+        case "style_recipe": return tr("风格配方")
+        default: return String(type || tr("未知类型"))
+        }
+    }
+
+    function presetKey(entry) {
+        if (!entry)
+            return ""
+        return String(entry.id || "") + "|" + String(entry.version || "")
+    }
+
+    function isPresetSelected(entry) {
+        return presetKey(entry).length > 0 && presetKey(entry) === presetKey(selectedPreset)
+    }
+
+    function selectPreset(entry) {
+        selectedPreset = entry && typeof entry === "object" ? entry : ({})
+    }
+
+    function syncPresetSelection() {
+        var preferred = presetKey(selectedPreset)
+        if (!preferred.length)
+            preferred = String(presetView.last_entry_key || "")
+        var entries = presetView.entries || []
+        for (var index = 0; index < entries.length; ++index) {
+            if (presetKey(entries[index]) === preferred) {
+                selectedPreset = entries[index]
+                return
+            }
+        }
+        selectedPreset = ({})
+    }
+
+    function toggleCache(path, selected) {
+        var next = Object.assign(({}), cacheSelection)
+        var key = String(path || "")
+        if (!key.length)
+            return
+        if (selected)
+            next[key] = true
+        else
+            delete next[key]
+        cacheSelection = next
+    }
+
+    function cachePathSelected(path) {
+        return !!cacheSelection[String(path || "")]
+    }
+
+    function selectedCacheRows() {
+        var rows = storageView.rows || []
+        return rows.filter(function(row) {
+            return !row.protected && cachePathSelected(row.path)
+        })
+    }
+
+    function selectedCachePaths() {
+        return selectedCacheRows().map(function(row) { return String(row.path) })
+    }
+
+    function selectedCacheBytes() {
+        var rows = selectedCacheRows()
+        var total = 0
+        for (var index = 0; index < rows.length; ++index)
+            total += Number(rows[index].bytes || 0)
+        return total
+    }
+
+    function sizeLabel(bytes) {
+        var value = Number(bytes || 0)
+        var units = ["B", "KiB", "MiB", "GiB"]
+        var unit = 0
+        while (value >= 1024 && unit < units.length - 1) {
+            value /= 1024
+            unit += 1
+        }
+        return value.toFixed(unit === 0 ? 0 : 2) + " " + units[unit]
+    }
+
+    function openPresetText(mode) {
+        if (!selectedPreset || !Object.keys(selectedPreset).length)
+            return
+        presetTextMode = mode
+        presetTextEntry = selectedPreset
+        if (mode === "copy")
+            presetNameField.text = String(selectedPreset.name || "") + tr(" 副本")
+        else
+            presetNameField.text = String(selectedPreset.alias || "")
+        presetTextDialog.open()
+        Qt.callLater(function() {
+            presetNameField.forceActiveFocus()
+            presetNameField.selectAll()
+        })
+    }
+
+    function confirmPresetText() {
+        var value = presetNameField.text.trim()
+        if (!presetTextEntry || !presetKey(presetTextEntry).length)
+            return
+        if (presetTextMode === "copy") {
+            if (!value.length)
+                return
+            if (controller.copyPreset(presetTextEntry.id, presetTextEntry.version, value))
+                presetTextDialog.close()
+        } else if (controller.renamePreset(presetTextEntry.id, presetTextEntry.version, value)) {
+            presetTextDialog.close()
+        }
+    }
+
+    function confirmPresetImport() {
+        var preview = presetView.import_preview || ({})
+        if (!preview.path)
+            return
+        if (controller.importPreset(!!preview.copy_required || presetImportCopy.checked))
+            presetImportPreviewDialog.close()
+    }
+
+    function confirmPresetRemove() {
+        if (!presetRemoveEntry || !presetKey(presetRemoveEntry).length)
+            return
+        if (controller.removePreset(presetRemoveEntry.id, presetRemoveEntry.version))
+            presetRemoveDialog.close()
     }
 
     function delayOptions() {
@@ -164,6 +325,438 @@ ScrollView {
         id: outputDialog
         title: page.tr("选择任务输出目录")
         onAccepted: page.chooseDirectory(selectedFolder)
+    }
+
+    FileDialog {
+        id: presetImportFileDialog
+        objectName: "presetLibraryImportFileDialog"
+        title: page.tr("选择预设文件")
+        fileMode: FileDialog.OpenFile
+        nameFilters: [page.tr("VWA 预设 (*.json)"), page.tr("所有文件 (*)")]
+        onAccepted: {
+            if (page.controller.previewPresetImport(selectedFile))
+                presetImportPreviewDialog.open()
+        }
+    }
+
+    FileDialog {
+        id: presetExportFileDialog
+        objectName: "presetLibraryExportFileDialog"
+        title: page.tr("导出原始预设文件")
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "json"
+        nameFilters: [page.tr("VWA 预设 (*.json)")]
+        onAccepted: {
+            var entry = page.presetExportEntry || ({})
+            if (page.presetKey(entry).length > 0)
+                page.controller.exportPreset(entry.id, entry.version, selectedFile)
+            page.presetExportEntry = ({})
+        }
+    }
+
+    Dialog {
+        id: storageCleanDialog
+        objectName: "storageCleanConfirmDialog"
+        parent: Overlay.overlay
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        anchors.centerIn: parent
+        width: Math.min(parent ? parent.width - Math.round(30 * page.theme.scale) : Math.round(540 * page.theme.scale),
+                        Math.round(540 * page.theme.scale))
+        padding: Math.round(18 * page.theme.scale)
+        property int count: 0
+        property int bytes: 0
+        contentItem: ColumnLayout {
+            spacing: Math.round(10 * page.theme.scale)
+            Text {
+                Layout.fillWidth: true
+                text: page.tr("清理选中缓存")
+                color: page.theme.text
+                font.pixelSize: Math.round(17 * page.theme.scale)
+                font.weight: Font.DemiBold
+            }
+            Text {
+                Layout.fillWidth: true
+                text: page.tr("将清理 %1 项，共 %2。清理前会再次核验任务引用、编辑状态、运行锁和路径边界。")
+                    .arg(storageCleanDialog.count).arg(page.sizeLabel(storageCleanDialog.bytes))
+                color: page.theme.text
+                font.pixelSize: Math.round(13 * page.theme.scale)
+                wrapMode: Text.Wrap
+            }
+            Text {
+                Layout.fillWidth: true
+                text: page.tr("任务结果、成品视频、已修改的发布资料、模型、登录信息和正在使用的内容会保留。")
+                color: page.theme.muted
+                font.pixelSize: Math.round(12 * page.theme.scale)
+                wrapMode: Text.Wrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                UiButton {
+                    theme: page.theme
+                    quiet: true
+                    text: page.tr("取消")
+                    onClicked: storageCleanDialog.close()
+                }
+                UiButton {
+                    objectName: "confirmStorageCleanup"
+                    theme: page.theme
+                    primary: true
+                    text: page.tr("清理选中缓存")
+                    onClicked: {
+                        page.controller.cleanStorage(page.selectedCachePaths())
+                        storageCleanDialog.close()
+                    }
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: presetImportPreviewDialog
+        objectName: "presetImportPreviewDialog"
+        parent: Overlay.overlay
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        anchors.centerIn: parent
+        width: Math.min(parent ? parent.width - Math.round(30 * page.theme.scale) : Math.round(600 * page.theme.scale),
+                        Math.round(600 * page.theme.scale))
+        padding: Math.round(18 * page.theme.scale)
+        readonly property var preview: page.presetView.import_preview || ({})
+        onOpened: presetImportCopy.checked = !!preview.copy_required
+        contentItem: ColumnLayout {
+            spacing: Math.round(10 * page.theme.scale)
+            Text {
+                Layout.fillWidth: true
+                text: page.tr("导入预设预览")
+                color: page.theme.text
+                font.pixelSize: Math.round(18 * page.theme.scale)
+                font.weight: Font.DemiBold
+            }
+            Text {
+                Layout.fillWidth: true
+                text: page.tr("默认附加到本机库，保留已有预设；导入不会应用到当前工程。")
+                color: page.theme.muted
+                font.pixelSize: Math.round(12 * page.theme.scale)
+                wrapMode: Text.Wrap
+            }
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: previewDetails.implicitHeight + Math.round(22 * page.theme.scale)
+                color: page.theme.base
+                radius: Math.round(7 * page.theme.scale)
+                border.color: page.theme.line
+                ColumnLayout {
+                    id: previewDetails
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: Math.round(11 * page.theme.scale)
+                    spacing: 4
+                    Text {
+                        Layout.fillWidth: true
+                        text: String(presetImportPreviewDialog.preview.name || page.tr("未命名预设"))
+                        color: page.theme.text
+                        font.pixelSize: Math.round(14 * page.theme.scale)
+                        font.weight: Font.DemiBold
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: page.typeLabel(presetImportPreviewDialog.preview.type) + "  ·  "
+                            + String(presetImportPreviewDialog.preview.version || "") + "  ·  "
+                            + String(presetImportPreviewDialog.preview.source_name || "")
+                        color: page.theme.muted
+                        font.pixelSize: Math.round(12 * page.theme.scale)
+                        wrapMode: Text.WrapAnywhere
+                        textFormat: Text.PlainText
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: page.tr("来源 ID") + "  " + String(presetImportPreviewDialog.preview.id || "")
+                        color: page.theme.muted
+                        font.pixelSize: Math.round(11 * page.theme.scale)
+                        wrapMode: Text.WrapAnywhere
+                        textFormat: Text.PlainText
+                    }
+                }
+            }
+            CheckBox {
+                id: presetImportCopy
+                objectName: "presetImportAsCopy"
+                Layout.fillWidth: true
+                text: page.tr("创建独立副本（新 ID 与版本 0.1.0）")
+                enabled: !presetImportPreviewDialog.preview.copy_required
+                Accessible.name: text
+            }
+            Text {
+                Layout.fillWidth: true
+                text: presetImportPreviewDialog.preview.copy_required
+                    ? page.tr("内置预设导出文件会始终创建独立本机副本，不会覆盖内置条目。")
+                    : page.tr("若同一 ID 与版本已有不同内容，导入会停止并明确提示冲突；不会覆盖。")
+                color: page.theme.muted
+                font.pixelSize: Math.round(11 * page.theme.scale)
+                wrapMode: Text.Wrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                UiButton {
+                    theme: page.theme
+                    quiet: true
+                    text: page.tr("取消")
+                    onClicked: {
+                        page.controller.cancelPresetImport()
+                        presetImportPreviewDialog.close()
+                    }
+                }
+                UiButton {
+                    objectName: "confirmPresetImport"
+                    theme: page.theme
+                    primary: true
+                    text: page.tr("确认导入")
+                    enabled: !!presetImportPreviewDialog.preview.path && !page.presetView.busy
+                    onClicked: page.confirmPresetImport()
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: presetConflictDialog
+        objectName: "presetVersionConflictDialog"
+        parent: Overlay.overlay
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        anchors.centerIn: parent
+        width: Math.min(parent ? parent.width - Math.round(30 * page.theme.scale) : Math.round(590 * page.theme.scale),
+                        Math.round(590 * page.theme.scale))
+        padding: Math.round(18 * page.theme.scale)
+        contentItem: ColumnLayout {
+            spacing: Math.round(10 * page.theme.scale)
+            Text {
+                Layout.fillWidth: true
+                text: page.tr("预设冲突，未覆盖")
+                color: page.theme.error
+                font.pixelSize: Math.round(18 * page.theme.scale)
+                font.weight: Font.DemiBold
+            }
+            Text {
+                Layout.fillWidth: true
+                text: String(page.presetView.error || page.tr("本机预设库拒绝了本次操作。"))
+                color: page.theme.text
+                font.pixelSize: Math.round(12 * page.theme.scale)
+                wrapMode: Text.Wrap
+                textFormat: Text.PlainText
+            }
+            Text {
+                Layout.fillWidth: true
+                text: page.tr("“创建独立副本”会生成新的本机 ID 与 0.1.0 版本，同时保留本机已有条目和导入文件。")
+                color: page.theme.muted
+                font.pixelSize: Math.round(11 * page.theme.scale)
+                wrapMode: Text.Wrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                UiButton {
+                    theme: page.theme
+                    quiet: true
+                    text: page.tr("关闭")
+                    onClicked: presetConflictDialog.close()
+                }
+                UiButton {
+                    objectName: "retryPresetImportAsCopy"
+                    theme: page.theme
+                    primary: true
+                    visible: page.presetView.error_code === "preset_version_conflict"
+                        && !!page.presetView.import_preview.path
+                    text: page.tr("创建独立副本并重试")
+                    enabled: !page.presetView.busy
+                    onClicked: {
+                        if (page.controller.importPreset(true))
+                            presetConflictDialog.close()
+                    }
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: presetTextDialog
+        objectName: "presetLibraryTextDialog"
+        parent: Overlay.overlay
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        anchors.centerIn: parent
+        width: Math.min(parent ? parent.width - Math.round(30 * page.theme.scale) : Math.round(480 * page.theme.scale),
+                        Math.round(480 * page.theme.scale))
+        padding: Math.round(18 * page.theme.scale)
+        contentItem: ColumnLayout {
+            spacing: Math.round(10 * page.theme.scale)
+            Text {
+                Layout.fillWidth: true
+                text: page.presetTextMode === "copy" ? page.tr("复制内置预设") : page.tr("修改本机别名")
+                color: page.theme.text
+                font.pixelSize: Math.round(17 * page.theme.scale)
+                font.weight: Font.DemiBold
+            }
+            Text {
+                Layout.fillWidth: true
+                text: page.presetTextMode === "copy"
+                    ? page.tr("创建新的本机 ID 与版本，不改写内置文件。")
+                    : page.tr("别名只改变本机显示名称；清空会恢复文件中的名称。")
+                color: page.theme.muted
+                font.pixelSize: Math.round(12 * page.theme.scale)
+                wrapMode: Text.Wrap
+            }
+            TextField {
+                id: presetNameField
+                objectName: "presetLibraryNameField"
+                Layout.fillWidth: true
+                maximumLength: 80
+                selectByMouse: true
+                color: page.theme.text
+                placeholderText: page.tr("显示名称")
+                Accessible.name: placeholderText
+                background: Rectangle {
+                    radius: Math.round(7 * page.theme.scale)
+                    color: page.theme.base
+                    border.color: presetNameField.activeFocus ? page.theme.accent : page.theme.line
+                }
+                onAccepted: page.confirmPresetText()
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                UiButton {
+                    theme: page.theme
+                    quiet: true
+                    text: page.tr("取消")
+                    onClicked: presetTextDialog.close()
+                }
+                UiButton {
+                    objectName: "confirmPresetLibraryText"
+                    theme: page.theme
+                    primary: true
+                    text: page.presetTextMode === "copy" ? page.tr("创建副本") : page.tr("保存别名")
+                    enabled: !page.presetView.busy
+                        && (page.presetTextMode !== "copy" || presetNameField.text.trim().length > 0)
+                    onClicked: page.confirmPresetText()
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: presetRemoveDialog
+        objectName: "presetLibraryRemoveDialog"
+        parent: Overlay.overlay
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        anchors.centerIn: parent
+        width: Math.min(parent ? parent.width - Math.round(30 * page.theme.scale) : Math.round(540 * page.theme.scale),
+                        Math.round(540 * page.theme.scale))
+        padding: Math.round(18 * page.theme.scale)
+        contentItem: ColumnLayout {
+            spacing: Math.round(10 * page.theme.scale)
+            Text {
+                Layout.fillWidth: true
+                text: page.tr("从本机活动列表移除预设")
+                color: page.theme.text
+                font.pixelSize: Math.round(17 * page.theme.scale)
+                font.weight: Font.DemiBold
+            }
+            Text {
+                Layout.fillWidth: true
+                text: String(page.presetRemoveEntry.name || "") + "  "
+                    + String(page.presetRemoveEntry.version || "")
+                color: page.theme.text
+                font.pixelSize: Math.round(13 * page.theme.scale)
+                wrapMode: Text.Wrap
+                textFormat: Text.PlainText
+            }
+            Text {
+                Layout.fillWidth: true
+                text: page.tr("这是逻辑移除：不可变预设文件与上一索引会保留，不会删除任务、素材或内置条目。内置预设不可移除。")
+                color: page.theme.muted
+                font.pixelSize: Math.round(12 * page.theme.scale)
+                wrapMode: Text.Wrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                UiButton {
+                    theme: page.theme
+                    quiet: true
+                    text: page.tr("取消")
+                    onClicked: presetRemoveDialog.close()
+                }
+                UiButton {
+                    objectName: "confirmPresetRemove"
+                    theme: page.theme
+                    primary: true
+                    text: page.tr("从列表移除")
+                    onClicked: page.confirmPresetRemove()
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: presetRecoverDialog
+        objectName: "presetLibraryRecoverDialog"
+        parent: Overlay.overlay
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        anchors.centerIn: parent
+        width: Math.min(parent ? parent.width - Math.round(30 * page.theme.scale) : Math.round(540 * page.theme.scale),
+                        Math.round(540 * page.theme.scale))
+        padding: Math.round(18 * page.theme.scale)
+        contentItem: ColumnLayout {
+            spacing: Math.round(10 * page.theme.scale)
+            Text {
+                Layout.fillWidth: true
+                text: page.tr("恢复上一份有效索引")
+                color: page.theme.text
+                font.pixelSize: Math.round(17 * page.theme.scale)
+                font.weight: Font.DemiBold
+            }
+            Text {
+                Layout.fillWidth: true
+                text: page.tr("当前损坏索引会保留在历史中，引用文件会先重新校验。此操作不会自动应用预设。")
+                color: page.theme.muted
+                font.pixelSize: Math.round(12 * page.theme.scale)
+                wrapMode: Text.Wrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                UiButton {
+                    theme: page.theme
+                    quiet: true
+                    text: page.tr("取消")
+                    onClicked: presetRecoverDialog.close()
+                }
+                UiButton {
+                    objectName: "confirmPresetRecovery"
+                    theme: page.theme
+                    primary: true
+                    text: page.tr("恢复并刷新")
+                    onClicked: {
+                        if (page.controller.recoverPresetLibrary())
+                            presetRecoverDialog.close()
+                    }
+                }
+            }
+        }
     }
 
     Dialog {
@@ -314,6 +907,17 @@ ScrollView {
     Connections {
         target: page.controller
         function onDiagnosticsChanged() { page.syncDiagnostics() }
+        function onStorageChanged() {
+            if (page.storageView.generation !== page.cacheGeneration) {
+                page.cacheGeneration = page.storageView.generation
+                page.cacheSelection = ({})
+            }
+        }
+        function onPresetLibraryChanged() {
+            page.syncPresetSelection()
+            if (page.presetView.conflict && !presetConflictDialog.visible)
+                presetConflictDialog.open()
+        }
     }
     Component.onCompleted: syncDiagnostics()
     onDiagnosticsChanged: syncDiagnostics()
@@ -650,6 +1254,227 @@ ScrollView {
                         color: page.theme.muted
                         font.pixelSize: Math.round(11 * page.theme.scale)
                         wrapMode: Text.Wrap
+                    }
+                }
+            }
+        }
+        Rectangle {
+            objectName: "storageSection"
+            Layout.fillWidth: true
+            Layout.leftMargin: page.pageMargin
+            Layout.rightMargin: page.pageMargin
+            Layout.preferredHeight: storageContent.implicitHeight + 30 * page.theme.scale
+            color: page.theme.surface
+            border.color: page.theme.line
+            radius: 9 * page.theme.scale
+            ColumnLayout {
+                id: storageContent
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 15 * page.theme.scale
+                spacing: 8 * page.theme.scale
+                RowLayout {
+                    Layout.fillWidth: true
+                    Text {
+                        Layout.fillWidth: true
+                        text: page.tr("存储与缓存")
+                        color: page.theme.text
+                        font.pixelSize: 17 * page.theme.scale
+                        font.weight: Font.DemiBold
+                    }
+                    UiButton {
+                        objectName: "scanStorage"
+                        theme: page.theme
+                        text: page.tr("扫描占用")
+                        enabled: !page.storageView.busy
+                        onClicked: page.controller.refreshStorage()
+                    }
+                    UiButton {
+                        objectName: "reviewStorageCleanup"
+                        theme: page.theme
+                        text: page.tr("清理所选…")
+                        enabled: !page.storageView.busy && !page.workBusy && page.selectedCachePaths().length > 0
+                        onClicked: storageCleanDialog.open()
+                    }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    visible: !!page.storageView.scanned
+                    text: page.tr("输出盘可用") + " " + page.storageView.free_label
+                        + "  ·  " + page.tr("任务") + " " + page.storageView.tasks_label
+                        + "  ·  " + page.tr("发布资料") + " " + page.storageView.publication_label
+                        + "  ·  " + page.tr("依赖与模型") + " " + page.storageView.dependencies_label
+                    color: page.theme.muted
+                    font.pixelSize: 12 * page.theme.scale
+                    wrapMode: Text.Wrap
+                    textFormat: Text.PlainText
+                }
+                ListView {
+                    id: cacheRows
+                    objectName: "storageCacheRows"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Math.min(count, 5) * 37 * page.theme.scale
+                    visible: count > 0
+                    clip: true
+                    model: page.storageView.rows || []
+                    ScrollBar.vertical: ScrollBar {}
+                    delegate: CheckDelegate {
+                        required property var modelData
+                        width: cacheRows.width
+                        height: 37 * page.theme.scale
+                        text: modelData.title + "  ·  " + modelData.size
+                              + (modelData.protected ? "  ·  " + modelData.protected : "")
+                        checked: page.cachePathSelected(modelData.path)
+                        enabled: !page.storageView.busy && !modelData.protected
+                        onToggled: page.toggleCache(modelData.path, checked)
+                        ToolTip.visible: hovered
+                        ToolTip.text: modelData.path
+                    }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: page.storageView.error || page.storageView.message || ""
+                    color: page.storageView.error ? page.theme.error : page.theme.muted
+                    font.pixelSize: 12 * page.theme.scale
+                    wrapMode: Text.Wrap
+                    textFormat: Text.PlainText
+                }
+            }
+        }
+        Rectangle {
+            objectName: "presetLibrarySection"
+            Layout.fillWidth: true
+            Layout.leftMargin: page.pageMargin
+            Layout.rightMargin: page.pageMargin
+            Layout.preferredHeight: presetContent.implicitHeight + 30 * page.theme.scale
+            color: page.theme.surface
+            border.color: page.theme.line
+            radius: 9 * page.theme.scale
+            ColumnLayout {
+                id: presetContent
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 15 * page.theme.scale
+                spacing: 8 * page.theme.scale
+                RowLayout {
+                    Layout.fillWidth: true
+                    Text {
+                        Layout.fillWidth: true
+                        text: page.tr("本机预设库")
+                        color: page.theme.text
+                        font.pixelSize: 17 * page.theme.scale
+                        font.weight: Font.DemiBold
+                    }
+                    UiButton {
+                        objectName: "refreshPresetLibrary"
+                        theme: page.theme
+                        text: page.tr(page.presetView.loaded ? "刷新预设库" : "载入预设库")
+                        enabled: !page.presetView.busy
+                        onClicked: page.controller.refreshPresetLibrary()
+                    }
+                    UiButton {
+                        objectName: "importPresetLibrary"
+                        theme: page.theme
+                        text: page.tr("附加导入…")
+                        enabled: !!page.presetView.loaded && !page.presetView.busy
+                        onClicked: presetImportFileDialog.open()
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: !!page.presetView.loaded
+                    TextField {
+                        Layout.fillWidth: true
+                        placeholderText: page.tr("搜索名称、ID 或版本")
+                        text: page.presetQuery
+                        onTextEdited: page.presetQuery = text
+                    }
+                    UiComboBox {
+                        theme: page.theme
+                        model: ["all", "preparation", "mixdown", "tuning", "style_recipe"].map(
+                                   value => ({label:value === "all" ? page.tr("全部类型") : page.typeLabel(value), value:value}))
+                        currentIndex: page.indexOfValue(model, page.presetType)
+                        onActivated: page.presetType = currentValue
+                    }
+                }
+                ListView {
+                    id: presetRows
+                    objectName: "presetLibraryRows"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Math.min(count, 5) * 38 * page.theme.scale
+                    visible: count > 0
+                    clip: true
+                    model: page.filteredPresets
+                    ScrollBar.vertical: ScrollBar {}
+                    delegate: ItemDelegate {
+                        required property var modelData
+                        width: presetRows.width
+                        height: 38 * page.theme.scale
+                        highlighted: page.isPresetSelected(modelData)
+                        text: (modelData.favorite ? "★ " : "") + modelData.name + "  ·  "
+                            + page.typeLabel(modelData.type) + "  ·  " + modelData.version
+                            + (modelData.builtin ? "  ·  " + page.tr("内置") : "")
+                        onClicked: page.selectPreset(modelData)
+                    }
+                }
+                Flow {
+                    Layout.fillWidth: true
+                    visible: page.presetKey(page.selectedPreset).length > 0
+                    spacing: 6 * page.theme.scale
+                    UiButton {
+                        theme: page.theme
+                        text: page.tr("导出原文件…")
+                        enabled: !page.presetView.busy
+                        onClicked: {
+                            page.presetExportEntry = page.selectedPreset
+                            presetExportFileDialog.open()
+                        }
+                    }
+                    UiButton {
+                        theme: page.theme
+                        text: page.tr("创建副本…")
+                        enabled: !page.presetView.busy
+                        onClicked: page.openPresetText("copy")
+                    }
+                    UiButton {
+                        theme: page.theme
+                        text: page.tr("修改别名…")
+                        enabled: !page.presetView.busy && !page.selectedPreset.builtin
+                        onClicked: page.openPresetText("alias")
+                    }
+                    UiButton {
+                        theme: page.theme
+                        text: page.tr(page.selectedPreset.favorite ? "取消收藏" : "收藏")
+                        enabled: !page.presetView.busy && !page.selectedPreset.builtin
+                        onClicked: page.controller.setPresetFavorite(page.selectedPreset.id, page.selectedPreset.version,
+                                                                     !page.selectedPreset.favorite)
+                    }
+                    UiButton {
+                        theme: page.theme
+                        text: page.tr("移除…")
+                        enabled: !page.presetView.busy && !page.selectedPreset.builtin
+                        onClicked: { page.presetRemoveEntry = page.selectedPreset; presetRemoveDialog.open() }
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Text {
+                        Layout.fillWidth: true
+                        text: page.presetView.error || (page.presetView.loaded ? page.presetView.message
+                              : page.tr("四类预设共用本机库。导入默认附加；同版本冲突时可另存副本。"))
+                        color: page.presetView.error ? page.theme.error : page.theme.muted
+                        font.pixelSize: 12 * page.theme.scale
+                        wrapMode: Text.Wrap
+                        textFormat: Text.PlainText
+                    }
+                    UiButton {
+                        theme: page.theme
+                        text: page.tr("恢复索引…")
+                        enabled: !page.presetView.busy
+                        visible: !!page.presetView.error && !page.presetView.conflict
+                        onClicked: presetRecoverDialog.open()
                     }
                 }
             }

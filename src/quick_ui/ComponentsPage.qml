@@ -12,7 +12,11 @@ ScrollView {
     ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
     readonly property bool stacked: availableWidth < (theme.scale > 1.2 ? 1050 : 875)
     readonly property var component: controller.selected
+    readonly property var health: component.health || ({})
+    readonly property var lastCheck: component.last_check || ({})
+    readonly property var taskPlan: controller.componentTaskPlan
     readonly property bool idle: !controller.workBusy && !controller.loading
+    property bool showCheckIssues: false
 
     function sizeLabel(bytes) {
         if (typeof bytes !== "number" || !isFinite(bytes) || bytes < 0)
@@ -84,6 +88,17 @@ ScrollView {
                 onClicked: page.controller.refresh()
             }
             Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
+        }
+        Text {
+            objectName: "componentTaskPlan"
+            Layout.fillWidth: true
+            Layout.leftMargin: 20
+            Layout.rightMargin: 20
+            text: page.controller.text("当前准备") + " · " + page.taskPlan.summary
+            color: page.theme.muted
+            font.pixelSize: 13 * page.theme.scale
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
         }
 
         GridLayout {
@@ -212,7 +227,7 @@ ScrollView {
             Rectangle {
                 objectName: "componentDetail"
                 Layout.fillWidth: page.stacked
-                Layout.preferredWidth: Math.round(312 * page.theme.scale)
+                Layout.preferredWidth: Math.round(420 * page.theme.scale)
                 Layout.alignment: Qt.AlignTop
                 Layout.preferredHeight: details.implicitHeight + 30
                 color: page.theme.surface
@@ -231,6 +246,15 @@ ScrollView {
                         color: page.theme.text
                         font.pixelSize: 18 * page.theme.scale
                         font.weight: Font.DemiBold
+                        wrapMode: Text.Wrap
+                        textFormat: Text.PlainText
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        visible: !!page.component.id && page.taskPlan.components.indexOf(page.component.id) >= 0
+                        text: page.controller.text("当前准备选用了此组件")
+                        color: page.theme.accent
+                        font.pixelSize: 12 * page.theme.scale
                         wrapMode: Text.Wrap
                         textFormat: Text.PlainText
                     }
@@ -278,6 +302,34 @@ ScrollView {
                         font.pixelSize: 12 * page.theme.scale
                         wrapMode: Text.Wrap
                     }
+                    Text {
+                        objectName: "componentHealth"
+                        Layout.fillWidth: true
+                        visible: !!page.component.id
+                        color: page.theme.muted
+                        font.pixelSize: 12 * page.theme.scale
+                        wrapMode: Text.Wrap
+                        textFormat: Text.PlainText
+                        text: {
+                            const health = page.health
+                            const rows = []
+                            if (health.runtime)
+                                rows.push(page.controller.text("已装运行库") + "  " + health.runtime.toUpperCase())
+                            if (page.component.installed_bytes > 0)
+                                rows.push(page.controller.text(health.installed_estimate ? "安装体积（清单估算）" : "已安装")
+                                          + "  " + page.sizeLabel(page.component.installed_bytes))
+                            if (typeof health.cache_bytes === "number")
+                                rows.push(page.controller.text("可复用下载缓存") + "  " + page.sizeLabel(health.cache_bytes))
+                            if (health.expected_files > 0)
+                                rows.push(page.controller.text("完整文件") + "  " + health.complete_files + " / " + health.expected_files)
+                            if (health.source)
+                                rows.push(page.controller.text("来源依据") + "  " + page.controller.text(health.source)
+                                          + (health.version ? " · " + health.version : ""))
+                            if (health.scope)
+                                rows.push(page.controller.text(health.scope))
+                            return rows.join("\n")
+                        }
+                    }
                     Flow {
                         Layout.fillWidth: true
                         spacing: 6
@@ -306,6 +358,37 @@ ScrollView {
                             enabled: page.idle
                             text: page.controller.text("完整校验")
                             onClicked: page.controller.verifySelected()
+                        }
+                    }
+                    Text {
+                        objectName: "componentLastVerification"
+                        Layout.fillWidth: true
+                        visible: !!page.lastCheck.message
+                        text: page.controller.text("最近一次完整校验") + " · " + (page.lastCheck.message || "")
+                        color: page.lastCheck.verified ? page.theme.success : page.theme.attention
+                        font.pixelSize: 13 * page.theme.scale
+                        wrapMode: Text.Wrap
+                        textFormat: Text.PlainText
+                    }
+                    UiButton {
+                        objectName: "componentVerificationIssues"
+                        theme: page.theme
+                        quiet: true
+                        visible: page.lastCheck.issue_count > 0
+                        text: page.controller.text(page.showCheckIssues ? "收起检查详情" : "查看检查详情")
+                            + " (" + (page.lastCheck.issue_count || 0) + ")"
+                        onClicked: page.showCheckIssues = !page.showCheckIssues
+                    }
+                    Repeater {
+                        model: page.showCheckIssues ? page.lastCheck.issues || [] : []
+                        delegate: Text {
+                            required property string modelData
+                            Layout.fillWidth: true
+                            text: modelData
+                            color: page.theme.muted
+                            font.pixelSize: 12 * page.theme.scale
+                            wrapMode: Text.WrapAnywhere
+                            textFormat: Text.PlainText
                         }
                     }
                 }

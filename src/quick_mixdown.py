@@ -37,11 +37,13 @@ from mixdown_runtime import (
 )
 from mixdown_workspace_state import (
     MixdownWorkspaceState,
+    empty_gr_history,
     eq_curve,
     meters_from_telemetry,
     reverb_curve_from_telemetry,
     spectrum_from_telemetry,
     telemetry_identity,
+    update_gr_history,
 )
 from preset_library import PresetLibrary
 from common import ROOT
@@ -90,6 +92,7 @@ class QuickMixdown(QObject):
     metersChanged = Signal()
     spectrumChanged = Signal()
     reverbCurveChanged = Signal()
+    grHistoryChanged = Signal()
     presetsChanged = Signal()
 
     def __init__(self, parent, worker):
@@ -113,11 +116,23 @@ class QuickMixdown(QObject):
         self._eq_curve = []
         self._meters = {
             'lanes': [{'id': row['id'], 'rms': None, 'peak': None} for row in self._tracks],
-            'gr': None, 'limiter': None, 'tail': None, 'source': '',
+            'gr': None, 'gr_peak': None,
+            'compressor_available': False, 'compressor_enabled': None,
+            'limiter': None, 'limiter_peak': None,
+            'limiter_available': False, 'limiter_enabled': None,
+            'reverb': {
+                'available': False, 'enabled': None,
+                'send_rms': None, 'send_peak': None,
+                'return_rms': None, 'return_peak': None, 'dry_rms': None,
+                'wet_fraction': None, 'wet_to_dry': None, 'method': '', 'source': '',
+                'edc_available': False, 'edc_measured': False, 'edc_reason': '',
+            },
+            'tail': None, 'source': '',
         }
         self._meters['lanes'].append({'id': 'master', 'rms': None, 'peak': None})
         self._spectrum = {'before': [], 'after': [], 'freqs': [], 'source': ''}
         self._reverb_curve = []
+        self._gr_history = empty_gr_history()
         self._support_ready = False
         self._support = {
             'visible': False, 'ready': False, 'busy': False, 'canInstall': False,
@@ -245,6 +260,10 @@ class QuickMixdown(QObject):
     @Property('QVariantMap', notify=metersChanged)
     def meters(self):
         return copy.deepcopy(self._meters)
+
+    @Property('QVariantMap', notify=grHistoryChanged)
+    def grHistory(self):
+        return copy.deepcopy(self._gr_history)
 
     @Property('QVariantMap', notify=spectrumChanged)
     def spectrum(self):
@@ -471,12 +490,27 @@ class QuickMixdown(QObject):
             for row in self._tracks:
                 counters.append({'id': row['id'], 'rms': None, 'peak': None})
             counters.append({'id': 'master', 'rms': None, 'peak': None})
-            self._meters = {'lanes': counters, 'gr': None, 'limiter': None,
-                            'tail': None, 'source': ''}
+            self._meters = {
+                'lanes': counters, 'gr': None, 'gr_peak': None,
+                'compressor_available': False, 'compressor_enabled': None,
+                'limiter': None, 'limiter_peak': None,
+                'limiter_available': False, 'limiter_enabled': None,
+                'reverb': {
+                    'available': False, 'enabled': None,
+                    'send_rms': None, 'send_peak': None,
+                    'return_rms': None, 'return_peak': None, 'dry_rms': None,
+                    'wet_fraction': None, 'wet_to_dry': None, 'method': '', 'source': '',
+                    'edc_available': False, 'edc_measured': False, 'edc_reason': '',
+                },
+                'tail': None, 'source': '',
+            }
             self._spectrum = {'before': [], 'after': [], 'freqs': [], 'source': ''}
             self._reverb_curve = []
+            self._gr_history = empty_gr_history()
             self._last_telemetry_identity = None
+            self._last_reverb_key = None
         self.metersChanged.emit()
+        self.grHistoryChanged.emit()
         self.spectrumChanged.emit()
         self.reverbCurveChanged.emit()
 
@@ -676,6 +710,27 @@ class QuickMixdown(QObject):
             self._state.message = str(message)[:1600]
         self._recompute_and_emit()
 
+    def _apply_reverb_measurement(self, data, revision, epoch):
+        reverb = data.get('reverb') if isinstance(data.get('reverb'), dict) else {}
+        kernel = reverb.get('kernel_edc') if isinstance(reverb.get('kernel_edc'), dict) else {}
+        enabled = reverb.get('enabled') is True
+        ready = enabled and kernel.get('available') is True and kernel.get('measured') is True
+        if not ready:
+            if self._reverb_curve or self._last_reverb_key is not None:
+                self._reverb_curve = []
+                self._last_reverb_key = None
+                self.reverbCurveChanged.emit()
+            return
+        key = (kernel.get('key'), kernel.get('signature'),
+               self._player.generation if self._player else None, revision, epoch)
+        if key == self._last_reverb_key and self._reverb_curve:
+            return
+        curve = reverb_curve_from_telemetry(data)
+        self._last_reverb_key = key
+        if curve != self._reverb_curve:
+            self._reverb_curve = curve
+            self.reverbCurveChanged.emit()
+
     def _telemetry(self, snapshot):
         if not isinstance(snapshot, dict) or self._closed:
             return
@@ -701,6 +756,13 @@ class QuickMixdown(QObject):
         except (TypeError, ValueError):
             return
         if identity == self._last_telemetry_identity:
+            # EDC measurement can finish while playback is paused and the media
+            # frame remains unchanged. Keep that distinct from live send/return.
+            try:
+                _frame, revision, epoch, _source = identity
+            except ValueError:
+                return
+            self._apply_reverb_measurement(data, revision, epoch)
             return
         self._last_telemetry_identity = identity
         media_frame, revision, epoch, telemetry_source = identity
@@ -711,30 +773,17 @@ class QuickMixdown(QObject):
             self._last_meter_at = now
             self._meters = meters_from_telemetry(data, vocal_ids)
             self.metersChanged.emit()
+        history = update_gr_history(self._gr_history, data)
+        if history != self._gr_history:
+            self._gr_history = history
+            self.grHistoryChanged.emit()
         if now - self._last_spectrum_at >= 0.10:
             self._last_spectrum_at = now
             spectrum = spectrum_from_telemetry(data)
             if spectrum != self._spectrum:
                 self._spectrum = spectrum
                 self.spectrumChanged.emit()
-        reverb = data.get('reverb') if isinstance(data.get('reverb'), dict) else {}
-        kernel = reverb.get('kernel_edc') if isinstance(reverb.get('kernel_edc'), dict) else {}
-        key = (kernel.get('key'), kernel.get('signature'), self._player.generation if self._player else None,
-               revision, epoch)
-        if (self._state.reverb_enabled and kernel.get('available') is True
-                and kernel.get('measured') is True and key != self._last_reverb_key
-                and now - self._last_reverb_at >= 0.5):
-            curve = reverb_curve_from_telemetry(data)
-            self._last_reverb_key = key
-            self._last_reverb_at = now
-            if curve != self._reverb_curve:
-                self._reverb_curve = curve
-                self.reverbCurveChanged.emit()
-        elif not self._state.reverb_enabled and self._reverb_curve:
-            self._reverb_curve = []
-            self._last_reverb_key = None
-            self.reverbCurveChanged.emit()
-
+        self._apply_reverb_measurement(data, revision, epoch)
     def _poll_player(self):
         if self._closed or self._player is None:
             return

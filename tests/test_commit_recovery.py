@@ -135,7 +135,7 @@ class TuningCommitRecoveryTests(unittest.TestCase):
             with patch('task_contract.bind') as binder:
                 registered = register_result(deep_session, job=job)
             self.assertEqual(registered, Path(repaired['output']))
-            binder.assert_called_once_with(job, 'project', registered)
+            binder.assert_called_once_with(job, 'project', registered, expected_sha256=file_hash(registered))
             created = create_session(source, deep / 'created-session' / ('x' * 48))
             self.assertGreater(len(str(created)), 260)
             with patch.object(tuning_workflow, 'process_project', side_effect=fake_tuning):

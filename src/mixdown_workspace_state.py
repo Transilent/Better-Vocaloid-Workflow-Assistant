@@ -55,6 +55,9 @@ ANALYSES = frozenset(('eq', 'gr', 'reverb'))
 EQ_CURVE_POINTS = RESPONSE_POINTS
 MAX_SPECTRUM_POINTS = 256
 MAX_REVERB_POINTS = 256
+GR_HISTORY_SECONDS = 30.0
+GR_HISTORY_BUCKET_MS = 100.0
+MAX_GR_HISTORY_POINTS = 301
 
 _ROOM_MAP = {
     'small': 'small', 'short': 'small', '短空间': 'small',
@@ -205,6 +208,103 @@ def telemetry_identity(telemetry: Any, snapshot: Any) -> tuple[int, int, int, st
     return int(frame), parameter_revision, history_epoch, source
 
 
+def empty_gr_history() -> dict[str, Any]:
+    """Return an empty 30-second observed-peak GR history."""
+    return {
+        'compressor': [], 'limiter': [],
+        'compressorMeasured': False, 'compressorEnabled': None,
+        'limiterMeasured': False, 'limiterEnabled': None,
+        'windowMs': int(GR_HISTORY_SECONDS * 1000),
+        'positionMs': 0.0, 'epoch': 0, 'revision': 0, 'source': '',
+    }
+
+
+def update_gr_history(previous: Any, telemetry: Mapping[str, Any]) -> dict[str, Any]:
+    """Append one realtime frame's peak GR to playback-aligned 100 ms buckets.
+
+    The renderer reports ``gr_peak_db`` from aligned input/output peaks.  We
+    retain the strongest observed value in each time bucket; no interpolation,
+    report import or zero-filled history is created when telemetry is absent.
+    """
+    current = dict(previous) if isinstance(previous, Mapping) else empty_gr_history()
+    if (not isinstance(telemetry, Mapping) or telemetry.get('status') != 'ready'
+            or telemetry.get('source') != TELEMETRY_SOURCE):
+        return empty_gr_history()
+    dynamics = telemetry.get('dynamics') if isinstance(telemetry.get('dynamics'), Mapping) else {}
+    compressor = dynamics.get('compressor') if isinstance(dynamics.get('compressor'), Mapping) else {}
+    limiter = dynamics.get('limiter') if isinstance(dynamics.get('limiter'), Mapping) else {}
+    source = str(telemetry.get('source') or '')
+    try:
+        epoch = int(telemetry.get('history_epoch', 0) or 0)
+        revision = int(telemetry.get('parameter_revision', 0) or 0)
+    except (TypeError, ValueError):
+        return empty_gr_history()
+    position = _finite_or_none(telemetry.get('position_ms'))
+    if position is None:
+        frame = _finite_or_none(telemetry.get('media_frame'))
+        sample_rate = _finite_or_none(telemetry.get('sample_rate'))
+        position = (frame * 1000.0 / sample_rate
+                    if frame is not None and sample_rate and sample_rate > 0.0 else 0.0)
+    position = max(0.0, float(position))
+
+    compressor_peak = _finite_or_none(compressor.get('gr_peak_db'))
+    limiter_peak = _finite_or_none(limiter.get('gr_peak_db'))
+    enabled_value = compressor.get('enabled')
+    compressor_enabled = enabled_value if type(enabled_value) is bool else None
+    limiter_enabled_value = limiter.get('enabled')
+    limiter_enabled = (limiter_enabled_value if type(limiter_enabled_value) is bool
+                       else (True if limiter_peak is not None else None))
+    compressor_measured = compressor_peak is not None or compressor_enabled is not None
+    limiter_measured = limiter_peak is not None
+
+    identity = (source, epoch, revision)
+    old_identity = (str(current.get('source') or ''), int(current.get('epoch', 0) or 0),
+                    int(current.get('revision', 0) or 0))
+    old_position = _finite_or_none(current.get('positionMs')) or 0.0
+    if identity != old_identity or position + 0.5 < old_position:
+        current = empty_gr_history()
+    if (current.get('compressorEnabled') is not None
+            and compressor_enabled != current.get('compressorEnabled')):
+        current['compressor'] = []
+    if not compressor_measured:
+        current['compressor'] = []
+    if (current.get('limiterMeasured') and not limiter_measured):
+        current['limiter'] = []
+
+    bucket_ms = int(math.floor(position / GR_HISTORY_BUCKET_MS) * GR_HISTORY_BUCKET_MS)
+    for key, value in (('compressor', compressor_peak), ('limiter', limiter_peak)):
+        if value is None or (key == 'compressor' and compressor_enabled is False):
+            continue
+        points = current.get(key, [])
+        peak = max(0.0, float(value))
+        if points and int(points[-1].get('ms', -1)) == bucket_ms:
+            if peak > float(points[-1].get('db', 0.0)):
+                current[key] = [*points[:-1], {'ms': bucket_ms, 'db': round(peak, 4)}]
+        else:
+            current[key] = [*points, {'ms': bucket_ms, 'db': round(peak, 4)}]
+
+    cutoff = bucket_ms - GR_HISTORY_SECONDS * 1000.0
+    for key in ('compressor', 'limiter'):
+        points = current.get(key, [])
+        if points and points[0]['ms'] < cutoff:
+            points = [row for row in points if row['ms'] >= cutoff]
+        if len(points) > MAX_GR_HISTORY_POINTS:
+            points = points[-MAX_GR_HISTORY_POINTS:]
+        current[key] = points
+    current.update({
+        'compressorMeasured': bool(compressor_measured),
+        'compressorEnabled': compressor_enabled,
+        'limiterMeasured': bool(limiter_measured),
+        'limiterEnabled': limiter_enabled,
+        'windowMs': int(GR_HISTORY_SECONDS * 1000),
+        'positionMs': bucket_ms,
+        'epoch': epoch,
+        'revision': revision,
+        'source': source,
+    })
+    return current
+
+
 def meters_from_telemetry(telemetry: Mapping[str, Any], vocal_ids: Sequence[str],
                           instrumental_id: str = 'instrumental') -> dict[str, Any]:
     rows = telemetry.get('tracks') if isinstance(telemetry.get('tracks'), list) else []
@@ -226,26 +326,71 @@ def meters_from_telemetry(telemetry: Mapping[str, Any], vocal_ids: Sequence[str]
     row = by_key.get(('backing', 0), {})
     lanes.append({'id': str(instrumental_id), 'rms': _finite_or_none(row.get('rms_dbfs')),
                   'peak': _finite_or_none(row.get('peak_dbfs'))})
-    bus_for_master = telemetry.get('bus') if isinstance(telemetry.get('bus'), Mapping) else {}
-    final_output = (bus_for_master.get('final_output')
-                    if isinstance(bus_for_master.get('final_output'), Mapping) else {})
+    bus = telemetry.get('bus') if isinstance(telemetry.get('bus'), Mapping) else {}
+    final_output = bus.get('final_output') if isinstance(bus.get('final_output'), Mapping) else {}
     lanes.append({
         'id': 'master',
-        'rms': _finite_or_none(final_output.get('rms_dbfs', bus_for_master.get('rms_dbfs'))),
-        'peak': _finite_or_none(final_output.get('peak_dbfs', bus_for_master.get('peak_dbfs'))),
+        'rms': _finite_or_none(final_output.get('rms_dbfs', bus.get('rms_dbfs'))),
+        'peak': _finite_or_none(final_output.get('peak_dbfs', bus.get('peak_dbfs'))),
     })
+
     dynamics = telemetry.get('dynamics') if isinstance(telemetry.get('dynamics'), Mapping) else {}
     compressor = dynamics.get('compressor') if isinstance(dynamics.get('compressor'), Mapping) else {}
-    bus = telemetry.get('bus') if isinstance(telemetry.get('bus'), Mapping) else {}
+    limiter = dynamics.get('limiter') if isinstance(dynamics.get('limiter'), Mapping) else {}
+    compressor_gr = _finite_or_none(compressor.get('gr_db'))
+    compressor_peak = _finite_or_none(compressor.get('gr_peak_db'))
+    enabled_value = compressor.get('enabled')
+    compressor_enabled = enabled_value if type(enabled_value) is bool else None
+    compressor_available = compressor_gr is not None or compressor_peak is not None or compressor_enabled is not None
+    limiter_gr = _finite_or_none(bus.get('limiter_gr_db'))
+    if limiter_gr is None:
+        limiter_gr = _finite_or_none(limiter.get('gr_db'))
+    limiter_peak = _finite_or_none(limiter.get('gr_peak_db'))
+    limiter_available = limiter_gr is not None or limiter_peak is not None
+    limiter_enabled_value = limiter.get('enabled')
+    limiter_enabled = (limiter_enabled_value if type(limiter_enabled_value) is bool
+                       else (True if limiter_available else None))
+
     reverb = telemetry.get('reverb') if isinstance(telemetry.get('reverb'), Mapping) else {}
+    live = reverb.get('live') if isinstance(reverb.get('live'), Mapping) else {}
+    kernel = reverb.get('kernel_edc') if isinstance(reverb.get('kernel_edc'), Mapping) else {}
+    reverb_enabled_value = reverb.get('enabled')
+    reverb_enabled = reverb_enabled_value if type(reverb_enabled_value) is bool else None
+    reverb_fields = (
+        reverb.get('send_rms_dbfs'), reverb.get('return_rms_dbfs'),
+        reverb.get('dry_rms_dbfs'), reverb.get('measured_wet_fraction'),
+    )
+    reverb_available = bool(reverb) and (reverb_enabled is not None
+                                         or any(_finite_or_none(value) is not None for value in reverb_fields))
     return {
         'lanes': lanes,
-        'gr': _finite_or_none(compressor.get('gr_db')),
-        'limiter': _finite_or_none(bus.get('limiter_gr_db')),
+        'gr': compressor_gr,
+        'gr_peak': compressor_peak,
+        'compressor_available': bool(compressor_available),
+        'compressor_enabled': compressor_enabled,
+        'limiter': limiter_gr,
+        'limiter_peak': limiter_peak,
+        'limiter_available': bool(limiter_available),
+        'limiter_enabled': limiter_enabled,
+        'reverb': {
+            'available': bool(reverb_available), 'enabled': reverb_enabled,
+            'send_rms': _finite_or_none(reverb.get('send_rms_dbfs')),
+            'send_peak': _finite_or_none(reverb.get('send_peak_dbfs')),
+            'return_rms': _finite_or_none(reverb.get('return_rms_dbfs')),
+            'return_peak': _finite_or_none(reverb.get('return_peak_dbfs')),
+            'dry_rms': _finite_or_none(reverb.get('dry_rms_dbfs')),
+            'wet_fraction': _finite_or_none(reverb.get('measured_wet_fraction')),
+            'wet_to_dry': _finite_or_none(reverb.get('wet_to_dry_db')),
+            'method': str(live.get('method') or ''),
+            'source': str(live.get('source') or ''),
+            'edc_available': kernel.get('available') is True,
+            'edc_measured': kernel.get('measured') is True,
+            'edc_reason': str(kernel.get('reason') or ''),
+        },
+        # Kept as an explicit measured return alias for older Quick callers.
         'tail': _finite_or_none(reverb.get('return_rms_dbfs')),
         'source': str(telemetry.get('source') or ''),
     }
-
 
 def spectrum_from_telemetry(telemetry: Mapping[str, Any]) -> dict[str, Any]:
     source = telemetry.get('spectrum') if isinstance(telemetry.get('spectrum'), Mapping) else {}
@@ -296,17 +441,20 @@ def reverb_curve_from_telemetry(telemetry: Mapping[str, Any]) -> list[dict[str, 
             points.append((float(stamp), float(level)))
     if len(points) < 2:
         return []
+    points.sort(key=lambda item: item[0])
     if len(points) > MAX_REVERB_POINTS:
         step = (len(points) - 1) / (MAX_REVERB_POINTS - 1.0)
         indexes = sorted({int(round(index * step)) for index in range(MAX_REVERB_POINTS)})
         points = [points[index] for index in indexes]
-    maximum = max(point[0] for point in points) or 1.0
-    # The QML canvas uses normalized 1..0 amplitude; the values still come
-    # exclusively from the measured EDC in decibels.
-    return [{'x': round(point[0] / maximum, 7),
-             'y': round(max(0.0, min(1.0, 10.0 ** (point[1] / 20.0))), 7)}
-            for point in points]
-
+    last_time = points[-1][0]
+    maximum = last_time if last_time > 0.0 else 1.0
+    return [{
+        'x': round(point[0] / maximum, 7),
+        'seconds': round(point[0], 7),
+        'db': round(point[1], 6),
+        # Compatibility for compact consumers that only plot normalized gain.
+        'y': round(max(0.0, min(1.0, 10.0 ** (point[1] / 20.0))), 7),
+    } for point in points]
 
 class MixdownWorkspaceState:
     """Own editable mix state independently of a page, widget or QML object."""

@@ -14,6 +14,12 @@ Item {
     readonly property var bands: controller.bands || []
     readonly property var eqCurve: controller.eqCurve || []
     readonly property var meters: controller.meters || ({})
+    readonly property var grHistory: controller.grHistory || ({})
+    readonly property var reverbTelemetry: meters && meters.reverb ? meters.reverb : ({})
+    readonly property bool compressorMeasured: !!meters && meters.compressor_available === true
+    readonly property bool compressorEnabledMeasured: !!meters && meters.compressor_enabled === true
+    readonly property bool limiterMeasured: !!meters && meters.limiter_available === true
+    readonly property bool limiterEnabledMeasured: !!meters && meters.limiter_enabled === true
     readonly property var spectrum: controller.spectrum || ({})
     readonly property var reverbCurve: controller.reverbCurve || []
     readonly property var presets: controller.presets || []
@@ -706,8 +712,8 @@ Item {
                     clip: true
                     boundsBehavior: Flickable.StopAtBounds
                     interactive: contentHeight > height
-                    readonly property int analysisContentMinimum: page.analysisMode === "reverb" ? 374
-                        : page.analysisMode === "gr" ? 326
+                    readonly property int analysisContentMinimum: page.analysisMode === "reverb" ? 426
+                        : page.analysisMode === "gr" ? 486
                         : page.compact ? (page.showCompactEqDetails ? 440 : 112) : 408
                     ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
@@ -737,15 +743,22 @@ Item {
                             theme: page.theme
                             controller: page.controller
                             gr: page.number(page.meters.gr, NaN)
+                            grPeak: page.number(page.meters.gr_peak, NaN)
                             limiter: page.number(page.meters.limiter, NaN)
+                            limiterPeak: page.number(page.meters.limiter_peak, NaN)
                             source: page.meters && page.meters.source ? String(page.meters.source) : ""
-                            compressionEnabled: page.boolOption("compressionEnabled", false)
+                            compressorMeasured: page.compressorMeasured
+                            compressionEnabled: page.compressorEnabledMeasured
+                            configuredCompressionEnabled: page.boolOption("compressionEnabled", false)
+                            limiterMeasured: page.limiterMeasured
+                            limiterEnabled: page.limiterEnabledMeasured
+                            processingSelection: page.selectionMode
+                            history: page.grHistory
                             compressionStrength: page.number(page.view.compressionStrength, 0)
                             compressionThreshold: page.number(page.view.compressionThreshold, -18)
                             compressionRatio: page.number(page.view.compressionRatio, 3)
                             compressorAttack: page.number(page.view.compressorAttack, 10)
                             compressorRelease: page.number(page.view.compressorRelease, 100)
-                            limiterEnabled: page.boolOption("limiterEnabled", false)
                             compressorCeiling: page.number(page.view.limiterCeiling, -1)
                         }
 
@@ -754,10 +767,21 @@ Item {
                             Layout.fillHeight: true
                             theme: page.theme
                             controller: page.controller
-                            tail: page.number(page.meters.tail, NaN)
+                            telemetryAvailable: page.reverbTelemetry && page.reverbTelemetry.available === true
+                            sendLevel: page.number(page.reverbTelemetry.send_rms, NaN)
+                            sendPeak: page.number(page.reverbTelemetry.send_peak, NaN)
+                            returnLevel: page.number(page.reverbTelemetry.return_rms, NaN)
+                            returnPeak: page.number(page.reverbTelemetry.return_peak, NaN)
+                            dryLevel: page.number(page.reverbTelemetry.dry_rms, NaN)
+                            wetFraction: page.number(page.reverbTelemetry.wet_fraction, NaN)
+                            edcAvailable: page.reverbTelemetry && page.reverbTelemetry.edc_available === true
+                            edcMeasured: page.reverbTelemetry && page.reverbTelemetry.edc_measured === true
+                            edcReason: page.reverbTelemetry && page.reverbTelemetry.edc_reason ? String(page.reverbTelemetry.edc_reason) : ""
                             source: page.meters && page.meters.source ? String(page.meters.source) : ""
                             curve: page.reverbCurve
-                            effectEnabled: page.boolOption("reverbEnabled", false)
+                            effectEnabled: page.reverbTelemetry && page.reverbTelemetry.enabled === true
+                            configuredEnabled: page.boolOption("reverbEnabled", false)
+                            processingSelection: page.selectionMode
                             room: String(page.view.reverbRoom || "natural")
                             mix: page.number(page.view.reverbMix, 0)
                             predelay: page.number(page.view.reverbPredelay, 0)
@@ -1672,12 +1696,77 @@ Item {
         }
     }
 
+    component SignalReadout: ColumnLayout {
+        id: readout
+        required property QtObject theme
+        property string label: ""
+        property string emptyLabel: "等待实测"
+        property string unit: " dBFS"
+        property real rms: NaN
+        property real peak: NaN
+        property real minimum: -72
+        property real maximum: 0
+        property color ink: theme.success
+        readonly property bool measured: isFinite(rms) || isFinite(peak)
+
+        function fraction(value) {
+            return isFinite(value) ? Math.min(1, Math.max(0, (value - minimum) / (maximum - minimum))) : 0;
+        }
+
+        Layout.fillWidth: true
+        spacing: 4 * theme.scale
+        Text {
+            Layout.fillWidth: true
+            text: readout.label
+            color: readout.theme.text
+            font.pixelSize: 12 * readout.theme.scale
+            elide: Text.ElideRight
+        }
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 7 * readout.theme.scale
+            radius: height / 2
+            color: readout.theme.line
+            Rectangle {
+                width: parent.width * readout.fraction(readout.rms)
+                height: parent.height
+                radius: height / 2
+                color: readout.ink
+            }
+            Rectangle {
+                visible: isFinite(readout.peak)
+                width: 2
+                height: parent.height
+                x: Math.min(parent.width - width, Math.max(0, parent.width * readout.fraction(readout.peak) - width))
+                color: readout.theme.text
+            }
+        }
+        Text {
+            Layout.fillWidth: true
+            text: readout.measured
+                ? (isFinite(readout.rms) ? "RMS " + readout.rms.toFixed(1) + readout.unit : "")
+                    + (isFinite(readout.peak) ? "  ·  峰值 " + readout.peak.toFixed(1) + readout.unit : "")
+                : readout.emptyLabel
+            color: readout.measured ? readout.theme.muted : readout.theme.attention
+            font.pixelSize: 11 * readout.theme.scale
+            elide: Text.ElideRight
+            textFormat: Text.PlainText
+        }
+    }
+
     component GrAnalysis: Item {
         id: grPage
         required property QtObject theme
         required property QtObject controller
         property real gr: NaN
         property real limiter: NaN
+        property real grPeak: NaN
+        property real limiterPeak: NaN
+        property bool compressorMeasured: false
+        property bool limiterMeasured: false
+        property bool configuredCompressionEnabled: false
+        property string processingSelection: "B"
+        property var history: ({})
         property string source: ""
         property bool compressionEnabled: false
         property real compressionStrength: 0
@@ -1687,27 +1776,15 @@ Item {
         property real compressorRelease: 100
         property bool limiterEnabled: false
         property real compressorCeiling: -1
-        property bool paintQueued: false
         readonly property int gridColumns: width > Math.round(640 * theme.scale) ? 4 : 2
 
-        onGrChanged: schedulePaint()
-        onLimiterChanged: schedulePaint()
-        onCompressionEnabledChanged: schedulePaint()
-        onLimiterEnabledChanged: schedulePaint()
-
-        function isLevel(value) {
-            const parsed = Number(value);
-            return isFinite(parsed);
-        }
-
-        function schedulePaint() {
-            if (paintQueued)
-                return;
-            paintQueued = true;
-            Qt.callLater(function () {
-                grPage.paintQueued = false;
-                grCanvas.requestPaint();
-            });
+        onHistoryChanged: if (visible && !historyPaint.running) historyPaint.start()
+        onVisibleChanged: if (visible) grCanvas.requestPaint()
+        Timer {
+            id: historyPaint
+            interval: 120
+            repeat: false
+            onTriggered: if (grPage.visible) grCanvas.requestPaint()
         }
 
         ColumnLayout {
@@ -1733,55 +1810,88 @@ Item {
                 }
             }
 
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 18 * grPage.theme.scale
+                SignalReadout {
+                    objectName: "mixdownCompressionMeasurement"
+                    theme: grPage.theme
+                    label: "人声压缩"
+                    unit: " dB"
+                    minimum: 0
+                    maximum: 24
+                    rms: grPage.processingSelection === "B" && grPage.compressionEnabled ? grPage.gr : NaN
+                    peak: grPage.processingSelection === "B" && grPage.compressionEnabled ? grPage.grPeak : NaN
+                    emptyLabel: grPage.processingSelection === "A" ? "A · 旁路"
+                        : grPage.compressorMeasured && !grPage.compressionEnabled ? "压缩旁路" : "等待真实 GR"
+                }
+                SignalReadout {
+                    objectName: "mixdownLimiterMeasurement"
+                    theme: grPage.theme
+                    label: "总线限制"
+                    unit: " dB"
+                    minimum: 0
+                    maximum: 24
+                    rms: grPage.limiterMeasured ? grPage.limiter : NaN
+                    peak: grPage.limiterMeasured ? grPage.limiterPeak : NaN
+                    ink: grPage.theme.accent
+                }
+            }
+            Text {
+                Layout.fillWidth: true
+                text: "峰值衰减 · 最近 30 秒 · 绿：压缩  紫：限制"
+                color: grPage.theme.muted
+                font.pixelSize: 11 * grPage.theme.scale
+            }
             Rectangle {
                 Layout.fillWidth: true
-                Layout.preferredHeight: Math.round(130 * grPage.theme.scale)
-                radius: Math.round(8 * grPage.theme.scale)
+                Layout.preferredHeight: 86 * grPage.theme.scale
+                radius: 8 * grPage.theme.scale
                 color: grPage.theme.base
                 border.color: grPage.theme.line
-
                 Canvas {
                     id: grCanvas
+                    objectName: "mixdownGrHistoryCanvas"
                     anchors.fill: parent
-                    renderTarget: Canvas.FramebufferObject
+                    anchors.margins: 5 * grPage.theme.scale
                     onWidthChanged: requestPaint()
                     onHeightChanged: requestPaint()
                     onPaint: {
                         const ctx = getContext("2d");
                         ctx.clearRect(0, 0, width, height);
-                        ctx.globalAlpha = 1;
-                        const scale = grPage.theme.scale;
-                        const left = Math.round(104 * scale);
-                        const right = width - Math.round(48 * scale);
-                        const barWidth = Math.max(1, right - left);
-                        ctx.font = Math.round(10 * scale) + "px sans-serif";
-                        ctx.textBaseline = "middle";
-                        ctx.textAlign = "left";
-
-                        function row(label, value, y, color, enabled) {
-                            ctx.fillStyle = grPage.theme.muted;
-                            ctx.fillText(label, Math.round(12 * scale), y);
-                            ctx.fillStyle = grPage.theme.line;
-                            ctx.fillRect(left, y - Math.round(5 * scale), barWidth, Math.round(10 * scale));
-                            if (grPage.isLevel(value)) {
-                                const amount = Math.max(0, Math.min(24, Number(value)));
-                                ctx.fillStyle = color;
-                                ctx.globalAlpha = enabled ? 0.9 : 0.35;
-                                ctx.fillRect(left, y - Math.round(5 * scale), barWidth * amount / 24, Math.round(10 * scale));
-                                ctx.globalAlpha = 1;
-                                ctx.fillStyle = grPage.theme.text;
-                                ctx.textAlign = "right";
-                                ctx.fillText(amount.toFixed(1) + " dB", width - Math.round(10 * scale), y);
-                            } else {
-                                ctx.fillStyle = grPage.theme.attention;
-                                ctx.textAlign = "right";
-                                ctx.fillText("等待测量", width - Math.round(10 * scale), y);
-                            }
-                            ctx.textAlign = "left";
+                        const h = grPage.history;
+                        const end = Number(h.positionMs || 0) + 100;
+                        const span = Number(h.windowMs || 30000);
+                        ctx.strokeStyle = grPage.theme.line;
+                        ctx.lineWidth = 1;
+                        for (let row = 1; row <= 3; ++row) {
+                            const y = row * height / 4;
+                            ctx.beginPath();
+                            ctx.moveTo(0, y);
+                            ctx.lineTo(width, y);
+                            ctx.stroke();
                         }
-
-                        row("人声压缩 GR", grPage.gr, Math.round(42 * scale), grPage.theme.success, grPage.compressionEnabled);
-                        row("总线限制 GR", grPage.limiter, Math.round(92 * scale), grPage.theme.accent, grPage.limiterEnabled);
+                        function draw(rows, ink) {
+                            let previous = -Infinity;
+                            ctx.beginPath();
+                            ctx.lineWidth = 1.5 * grPage.theme.scale;
+                            ctx.strokeStyle = ink;
+                            for (const row of rows) {
+                                const x = width * (1 - (end - row.ms) / span);
+                                const y = 2 + Math.min(24, Math.max(0, row.db)) / 24 * Math.max(1, height - 4);
+                                if (row.ms - previous > 150) {
+                                    ctx.moveTo(x, y);
+                                    ctx.lineTo(x + 1, y);
+                                } else {
+                                    ctx.lineTo(x, y);
+                                }
+                                previous = row.ms;
+                            }
+                            ctx.stroke();
+                        }
+                        if (grPage.processingSelection === "B")
+                            draw(h.compressor || [], grPage.theme.success);
+                        draw(h.limiter || [], grPage.theme.accent);
                     }
                 }
             }
@@ -1803,9 +1913,9 @@ Item {
                     UiButton {
                         Layout.columnSpan: grPage.gridColumns
                         theme: grPage.theme
-                        selected: grPage.compressionEnabled
-                        text: grPage.compressionEnabled ? "人声压缩已启用" : "人声压缩已关闭"
-                        onClicked: grPage.controller.setOption("compressionEnabled", !grPage.compressionEnabled)
+                        selected: grPage.configuredCompressionEnabled
+                        text: grPage.configuredCompressionEnabled ? "人声压缩已启用" : "人声压缩已关闭"
+                        onClicked: grPage.controller.setOption("compressionEnabled", !grPage.configuredCompressionEnabled)
                     }
                     ParameterSlider {
                         objectName: "mixdownCompressionStrength"
@@ -1817,7 +1927,7 @@ Item {
                         displayFactor: 100
                         unit: "%"
                         step: 0.01
-                        interactive: grPage.compressionEnabled
+                        interactive: grPage.configuredCompressionEnabled
                         onMoved: (amount) => grPage.controller.setOption("compressionStrength", amount)
                     }
                     Text {
@@ -1834,9 +1944,9 @@ Item {
                     Text {
                         Layout.columnSpan: grPage.gridColumns
                         Layout.fillWidth: true
-                        text: grPage.limiterEnabled
+                        text: grPage.limiterMeasured && grPage.limiterEnabled
                             ? "总线安全限制 · " + grPage.compressorCeiling.toFixed(1) + " dBFS"
-                            : "安全限制状态异常"
+                            : "总线限制 · 等待实测"
                         color: grPage.theme.muted
                         font.pixelSize: Math.round(10 * grPage.theme.scale)
                     }
@@ -1849,7 +1959,18 @@ Item {
         id: reverbPage
         required property QtObject theme
         required property QtObject controller
-        property real tail: NaN
+        property bool telemetryAvailable: false
+        property real sendLevel: NaN
+        property real sendPeak: NaN
+        property real returnLevel: NaN
+        property real returnPeak: NaN
+        property real dryLevel: NaN
+        property real wetFraction: NaN
+        property bool edcAvailable: false
+        property bool edcMeasured: false
+        property string edcReason: ""
+        property bool configuredEnabled: false
+        property string processingSelection: "B"
         property string source: ""
         property var curve: []
         property bool effectEnabled: false
@@ -1858,12 +1979,11 @@ Item {
         property real predelay: 0
         property bool paintQueued: false
 
-        onTailChanged: schedulePaint()
         onCurveChanged: schedulePaint()
-        onEffectEnabledChanged: schedulePaint()
+        onVisibleChanged: if (visible) schedulePaint()
 
         function schedulePaint() {
-            if (paintQueued)
+            if (!visible || paintQueued)
                 return;
             paintQueued = true;
             Qt.callLater(function () {
@@ -1928,56 +2048,35 @@ Item {
 
             RowLayout {
                 Layout.fillWidth: true
-                Rectangle {
-                    Layout.fillWidth: true
-                    implicitHeight: Math.round(56 * reverbPage.theme.scale)
-                    radius: Math.round(8 * reverbPage.theme.scale)
-                    color: reverbPage.theme.base
-                    border.color: reverbPage.theme.line
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.margins: Math.round(10 * reverbPage.theme.scale)
-                        Text {
-                            text: "实时尾音"
-                            color: reverbPage.theme.muted
-                            font.pixelSize: Math.round(10 * reverbPage.theme.scale)
-                        }
-                        Item {
-                            Layout.fillWidth: true
-                        }
-                        Text {
-                            text: reverbPage.finite(reverbPage.tail) ? Number(reverbPage.tail).toFixed(1) + " dBFS" : "等待播放"
-                            color: reverbPage.finite(reverbPage.tail) ? reverbPage.theme.text : reverbPage.theme.attention
-                            font.pixelSize: Math.round(15 * reverbPage.theme.scale)
-                            font.weight: Font.DemiBold
-                        }
-                    }
+                spacing: 18 * reverbPage.theme.scale
+                SignalReadout {
+                    objectName: "mixdownReverbSend"
+                    theme: reverbPage.theme
+                    label: "实时发送"
+                    rms: reverbPage.processingSelection === "B" && reverbPage.effectEnabled ? reverbPage.sendLevel : NaN
+                    peak: reverbPage.processingSelection === "B" && reverbPage.effectEnabled ? reverbPage.sendPeak : NaN
+                    emptyLabel: reverbPage.processingSelection === "A" ? "A · 旁路"
+                        : reverbPage.telemetryAvailable && !reverbPage.effectEnabled ? "混响旁路" : "等待实测"
                 }
-                Rectangle {
-                    Layout.fillWidth: true
-                    implicitHeight: Math.round(56 * reverbPage.theme.scale)
-                    radius: Math.round(8 * reverbPage.theme.scale)
-                    color: reverbPage.theme.base
-                    border.color: reverbPage.theme.line
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.margins: Math.round(10 * reverbPage.theme.scale)
-                        Text {
-                            text: "当前混合"
-                            color: reverbPage.theme.muted
-                            font.pixelSize: Math.round(10 * reverbPage.theme.scale)
-                        }
-                        Item {
-                            Layout.fillWidth: true
-                        }
-                        Text {
-                            text: Math.round(Math.max(0, Math.min(1, reverbPage.mix)) * 100) + "%"
-                            color: reverbPage.theme.text
-                            font.pixelSize: Math.round(15 * reverbPage.theme.scale)
-                            font.weight: Font.DemiBold
-                        }
-                    }
+                SignalReadout {
+                    objectName: "mixdownReverbReturn"
+                    theme: reverbPage.theme
+                    label: "实时返回"
+                    rms: reverbPage.processingSelection === "B" && reverbPage.effectEnabled ? reverbPage.returnLevel : NaN
+                    peak: reverbPage.processingSelection === "B" && reverbPage.effectEnabled ? reverbPage.returnPeak : NaN
+                    ink: reverbPage.theme.accent
+                    emptyLabel: reverbPage.processingSelection === "A" ? "A · 旁路"
+                        : reverbPage.telemetryAvailable && !reverbPage.effectEnabled ? "混响旁路" : "等待实测"
                 }
+            }
+            Text {
+                Layout.fillWidth: true
+                text: "空间单位脉冲衰减（EDC）" + (reverbPage.edcAvailable && reverbPage.edcMeasured ? " · 已测量" : "")
+                color: reverbPage.theme.muted
+                font.pixelSize: 11 * reverbPage.theme.scale
+                ToolTip.visible: edcHover.hovered && !!reverbPage.edcReason
+                ToolTip.text: reverbPage.edcReason
+                HoverHandler { id: edcHover }
             }
 
             Rectangle {
@@ -2077,9 +2176,9 @@ Item {
                     UiButton {
                         objectName: "mixdownToggleReverb"
                         theme: reverbPage.theme
-                        selected: reverbPage.effectEnabled
-                        text: reverbPage.effectEnabled ? "混响已启用" : "混响已关闭"
-                        onClicked: reverbPage.controller.setOption("reverbEnabled", !reverbPage.effectEnabled)
+                        selected: reverbPage.configuredEnabled
+                        text: reverbPage.configuredEnabled ? "混响已启用" : "混响已关闭"
+                        onClicked: reverbPage.controller.setOption("reverbEnabled", !reverbPage.configuredEnabled)
                     }
                     UiComboBox {
                         Layout.fillWidth: true
@@ -2103,7 +2202,7 @@ Item {
                         displayFactor: 100
                         unit: "%"
                         step: 0.01
-                        interactive: reverbPage.effectEnabled
+                        interactive: reverbPage.configuredEnabled
                         onMoved: (amount) => reverbPage.controller.setOption("reverbMix", amount)
                     }
                     ParameterSlider {
@@ -2114,7 +2213,7 @@ Item {
                         toValue: 120
                         displayValue: reverbPage.predelay
                         unit: " ms"
-                        interactive: reverbPage.effectEnabled
+                        interactive: reverbPage.configuredEnabled
                         onMoved: (milliseconds) => reverbPage.controller.setOption("reverbPredelay", milliseconds)
                     }
                 }

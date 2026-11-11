@@ -53,6 +53,63 @@ ScrollView {
         ]
     }
 
+    function bindingInfo(kind) {
+        const all = page.detail.bindings
+        return all && all[kind] ? all[kind] : null
+    }
+
+    function bindingRows() {
+        const result = []
+        const kinds = ["project", "mixdown", "video"]
+        for (let index = 0; index < kinds.length; ++index) {
+            const row = page.bindingInfo(kinds[index])
+            if (row && String(row.id || "").length > 0)
+                result.push(row)
+        }
+        return result
+    }
+
+    function bindingId(kind) {
+        const row = page.bindingInfo(kind)
+        return row ? String(row.id || "") : ""
+    }
+
+    function bindingRevision(kind) {
+        const row = page.bindingInfo(kind)
+        return row ? String(row.revision || "") : ""
+    }
+
+    function beginArtifactRegistration(kind) {
+        const current = page.bindingInfo(kind)
+        registerArtifactDialog.expectedBindingJobId = page.controller.selectedTaskId
+        registerArtifactDialog.expectedBindingTitle = page.detail.title || ""
+        registerArtifactDialog.expectedBindingKind = kind
+        registerArtifactDialog.expectedBindingId = current ? String(current.id || "") : ""
+        registerArtifactDialog.expectedBindingRevision = current ? String(current.revision || "") : ""
+        registerArtifactDialog.expectedOldPath = current ? String(current.path || "") : ""
+        registerArtifactDialog.pendingArtifactUrl = ""
+        registerArtifactFileDialog.bindingKind = kind
+        registerArtifactFileDialog.open()
+    }
+
+    function beginArtifactUnlink(row) {
+        unlinkBindingDialog.expectedBindingJobId = page.controller.selectedTaskId
+        unlinkBindingDialog.expectedBindingTitle = page.detail.title || ""
+        unlinkBindingDialog.expectedBindingKind = String(row.kind || "")
+        unlinkBindingDialog.expectedBindingId = String(row.id || "")
+        unlinkBindingDialog.expectedBindingRevision = String(row.revision || "")
+        unlinkBindingDialog.expectedBindingPath = String(row.path || "")
+        unlinkBindingDialog.hasRelatedPublication = !!page.detail.hasPublication
+        unlinkBindingDialog.open()
+    }
+
+    function beginArtifactRebuild() {
+        rebuildArtifactsDialog.expectedRebuildJobId = page.controller.selectedTaskId
+        rebuildArtifactsDialog.expectedRebuildTitle = page.detail.title || ""
+        rebuildArtifactsDialog.expectedIndexRevision = String(page.detail.artifactIndexRevision || "")
+        rebuildArtifactsDialog.open()
+    }
+
     ColumnLayout {
         width: page.availableWidth
         spacing: 12
@@ -584,6 +641,140 @@ ScrollView {
                     }
 
                     Rectangle {
+                        objectName: "manualBindingsPanel"
+                        Layout.fillWidth: true
+                        visible: !!page.controller.selectedTaskId
+                        implicitHeight: manualBindings.implicitHeight + 18
+                        radius: 6
+                        color: page.theme.base
+                        border.color: page.theme.line
+
+                        ColumnLayout {
+                            id: manualBindings
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: 9
+                            spacing: 7
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: page.controller.text("人工登记")
+                                    color: page.theme.text
+                                    font.pixelSize: 12 * page.theme.scale
+                                    font.weight: Font.DemiBold
+                                }
+                                Text {
+                                    text: page.bindingRows().length.toString()
+                                    color: page.theme.muted
+                                    font.pixelSize: 11 * page.theme.scale
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: page.controller.text("登记后会核验文件与当前上游修订。取消登记和重建只修改任务记录，外部 SVP、音频或视频保留在原位置。")
+                                color: page.theme.muted
+                                font.pixelSize: 10 * page.theme.scale
+                                wrapMode: Text.Wrap
+                            }
+
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: 7
+                                UiButton {
+                                    objectName: "registerTaskProject"
+                                    theme: page.theme
+                                    text: page.controller.text(page.bindingId("project").length > 0
+                                        ? "替换 SVP 工程…" : "登记 SVP 工程…")
+                                    enabled: page.idle && !!page.detail.canRegisterProject
+                                    onClicked: page.beginArtifactRegistration("project")
+                                }
+                                UiButton {
+                                    objectName: "registerTaskMixdown"
+                                    theme: page.theme
+                                    text: page.controller.text(page.bindingId("mixdown").length > 0
+                                        ? "替换 Mixdown…" : "登记 Mixdown…")
+                                    enabled: page.idle && !!page.detail.canRegisterMixdown
+                                    onClicked: page.beginArtifactRegistration("mixdown")
+                                }
+                                UiButton {
+                                    objectName: "rebuildTaskArtifacts"
+                                    theme: page.theme
+                                    quiet: true
+                                    text: page.controller.text("重建文件清单…")
+                                    enabled: page.idle && !!page.detail.canRebuildArtifacts
+                                    onClicked: page.beginArtifactRebuild()
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                visible: page.bindingRows().length === 0
+                                text: page.controller.text("此任务还没有人工登记。自动生成并核验通过的产物仍会显示在下方。")
+                                color: page.theme.muted
+                                font.pixelSize: 10 * page.theme.scale
+                                wrapMode: Text.Wrap
+                            }
+
+                            Repeater {
+                                model: page.bindingRows()
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    spacing: 7
+
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 1
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: (modelData.label || "") + " · " + (modelData.fileName || "")
+                                            color: page.theme.text
+                                            font.pixelSize: 11 * page.theme.scale
+                                            elide: Text.ElideRight
+                                            textFormat: Text.PlainText
+                                        }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: (modelData.displayPath || "") + "  ·  "
+                                                + page.controller.text("修订") + " " + page.shortRevision(modelData.revision)
+                                            color: page.theme.muted
+                                            font.pixelSize: 10 * page.theme.scale
+                                            elide: Text.ElideMiddle
+                                            textFormat: Text.PlainText
+                                            ToolTip.visible: bindingHover.hovered && truncated
+                                            ToolTip.text: modelData.path || text
+                                            HoverHandler { id: bindingHover }
+                                        }
+                                    }
+                                    Text {
+                                        text: modelData.statusText || ""
+                                        color: page.statusColor(!!modelData.available)
+                                        font.pixelSize: 10 * page.theme.scale
+                                        textFormat: Text.PlainText
+                                    }
+                                    UiButton {
+                                        objectName: "unlinkTaskBinding_" + String(modelData.kind || "")
+                                        theme: page.theme
+                                        quiet: true
+                                        text: page.controller.text("取消登记…")
+                                        enabled: page.idle && (modelData.kind === "project"
+                                            ? !!page.detail.canUnbindProject
+                                            : modelData.kind === "mixdown"
+                                                ? !!page.detail.canUnbindMixdown
+                                                : !!page.detail.canUnbindVideo)
+                                        onClicked: page.beginArtifactUnlink(modelData)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
                         Layout.fillWidth: true
                         height: 1
                         visible: !!page.controller.selectedTaskId
@@ -795,6 +986,292 @@ ScrollView {
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    FileDialog {
+        id: registerArtifactFileDialog
+        objectName: "registerTaskArtifactFileDialog"
+        property string bindingKind: "project"
+        title: page.controller.text(bindingKind === "project" ? "选择 SVP 工程" : "选择 Mixdown 音频")
+        fileMode: FileDialog.OpenFile
+        nameFilters: bindingKind === "project"
+            ? [page.controller.text("VOCALOID 工程 (*.svp)")]
+            : [page.controller.text("音频 (*.wav *.flac *.ogg *.mp3 *.m4a)")]
+        onAccepted: {
+            registerArtifactDialog.pendingArtifactUrl = selectedFile
+            registerArtifactDialog.open()
+        }
+    }
+
+    Dialog {
+        id: registerArtifactDialog
+        objectName: "registerTaskArtifactDialog"
+        property string expectedBindingJobId: ""
+        property string expectedBindingTitle: ""
+        property string expectedBindingKind: "project"
+        property string expectedBindingId: ""
+        property string expectedBindingRevision: ""
+        property string expectedOldPath: ""
+        property url pendingArtifactUrl
+
+        parent: Overlay.overlay
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        x: parent ? Math.max(18, (parent.width - width) / 2) : 18
+        y: parent ? Math.max(18, (parent.height - height) / 2) : 18
+        width: Math.min(parent ? parent.width - 36 : 520, 600)
+        padding: 18
+
+        contentItem: ColumnLayout {
+            spacing: 10
+            Text {
+                Layout.fillWidth: true
+                text: page.controller.text(registerArtifactDialog.expectedBindingKind === "project"
+                    ? "登记外部 SVP 工程" : "登记外部 Mixdown")
+                color: page.theme.text
+                font.pixelSize: 17 * page.theme.scale
+                font.weight: Font.DemiBold
+            }
+            Text {
+                Layout.fillWidth: true
+                text: registerArtifactDialog.expectedBindingTitle || page.controller.text("未命名任务")
+                color: page.theme.text
+                font.pixelSize: 13 * page.theme.scale
+                font.weight: Font.DemiBold
+                wrapMode: Text.Wrap
+                textFormat: Text.PlainText
+            }
+            Text {
+                Layout.fillWidth: true
+                text: String(registerArtifactDialog.pendingArtifactUrl)
+                color: page.theme.text
+                font.pixelSize: 11 * page.theme.scale
+                wrapMode: Text.WrapAnywhere
+                textFormat: Text.PlainText
+            }
+            Text {
+                Layout.fillWidth: true
+                visible: registerArtifactDialog.expectedBindingId.length > 0
+                text: page.controller.text("这会替换当前任务中的同类人工登记：")
+                    + "\n" + (registerArtifactDialog.expectedOldPath || "")
+                color: page.theme.accent
+                font.pixelSize: 11 * page.theme.scale
+                wrapMode: Text.WrapAnywhere
+                textFormat: Text.PlainText
+            }
+            Text {
+                Layout.fillWidth: true
+                text: page.controller.text("登记时会完整核验文件内容和可用的上游修订；不会移动或改写所选文件。替换时旧登记会失效，但旧文件仍保留在原位置。")
+                color: page.theme.muted
+                font.pixelSize: 12 * page.theme.scale
+                wrapMode: Text.Wrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                UiButton {
+                    theme: page.theme
+                    text: page.controller.text("取消")
+                    quiet: true
+                    onClicked: registerArtifactDialog.close()
+                }
+                UiButton {
+                    objectName: "confirmRegisterTaskArtifact"
+                    theme: page.theme
+                    primary: true
+                    text: page.controller.text("核验并登记")
+                    enabled: page.idle
+                        && registerArtifactDialog.expectedBindingJobId === page.controller.selectedTaskId
+                        && (registerArtifactDialog.expectedBindingKind === "project"
+                            ? !!page.detail.canRegisterProject : !!page.detail.canRegisterMixdown)
+                        && registerArtifactDialog.expectedBindingId
+                            === page.bindingId(registerArtifactDialog.expectedBindingKind)
+                        && registerArtifactDialog.expectedBindingRevision
+                            === page.bindingRevision(registerArtifactDialog.expectedBindingKind)
+                        && String(registerArtifactDialog.pendingArtifactUrl).length > 0
+                    onClicked: {
+                        page.controller.registerSelectedTaskFile(
+                            registerArtifactDialog.expectedBindingJobId,
+                            registerArtifactDialog.expectedBindingKind,
+                            registerArtifactDialog.pendingArtifactUrl)
+                        registerArtifactDialog.close()
+                    }
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: unlinkBindingDialog
+        objectName: "unlinkTaskBindingDialog"
+        property string expectedBindingJobId: ""
+        property string expectedBindingTitle: ""
+        property string expectedBindingKind: ""
+        property string expectedBindingId: ""
+        property string expectedBindingRevision: ""
+        property string expectedBindingPath: ""
+        property bool hasRelatedPublication: false
+
+        parent: Overlay.overlay
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        x: parent ? Math.max(18, (parent.width - width) / 2) : 18
+        y: parent ? Math.max(18, (parent.height - height) / 2) : 18
+        width: Math.min(parent ? parent.width - 36 : 500, 580)
+        padding: 18
+
+        contentItem: ColumnLayout {
+            spacing: 10
+            Text {
+                Layout.fillWidth: true
+                text: page.controller.text("取消人工登记")
+                color: page.theme.text
+                font.pixelSize: 17 * page.theme.scale
+                font.weight: Font.DemiBold
+            }
+            Text {
+                Layout.fillWidth: true
+                text: unlinkBindingDialog.expectedBindingTitle || page.controller.text("未命名任务")
+                color: page.theme.text
+                font.pixelSize: 13 * page.theme.scale
+                font.weight: Font.DemiBold
+                wrapMode: Text.Wrap
+                textFormat: Text.PlainText
+            }
+            Text {
+                Layout.fillWidth: true
+                text: unlinkBindingDialog.expectedBindingPath
+                color: page.theme.muted
+                font.pixelSize: 11 * page.theme.scale
+                wrapMode: Text.WrapAnywhere
+                textFormat: Text.PlainText
+            }
+            Text {
+                Layout.fillWidth: true
+                text: page.controller.text("只会从此任务移除当前登记的引用，不会删除、移动或改写外部文件。自动产出的文件和其他登记不受影响。")
+                color: page.theme.muted
+                font.pixelSize: 12 * page.theme.scale
+                wrapMode: Text.Wrap
+            }
+            Text {
+                Layout.fillWidth: true
+                visible: unlinkBindingDialog.expectedBindingKind === "video"
+                    && unlinkBindingDialog.hasRelatedPublication
+                text: page.controller.text("此任务还关联发布准备资料；取消成品视频登记时也会取消该发布关联。发布包中的文件仍保留。")
+                color: page.theme.accent
+                font.pixelSize: 12 * page.theme.scale
+                wrapMode: Text.Wrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                UiButton {
+                    theme: page.theme
+                    text: page.controller.text("保留登记")
+                    quiet: true
+                    onClicked: unlinkBindingDialog.close()
+                }
+                UiButton {
+                    objectName: "confirmUnlinkTaskBinding"
+                    theme: page.theme
+                    text: page.controller.text("取消此项登记")
+                    enabled: page.idle
+                        && unlinkBindingDialog.expectedBindingJobId === page.controller.selectedTaskId
+                        && unlinkBindingDialog.expectedBindingKind.length > 0
+                        && unlinkBindingDialog.expectedBindingId
+                            === page.bindingId(unlinkBindingDialog.expectedBindingKind)
+                        && unlinkBindingDialog.expectedBindingRevision
+                            === page.bindingRevision(unlinkBindingDialog.expectedBindingKind)
+                    onClicked: {
+                        page.controller.unlinkSelectedTaskBinding(
+                            unlinkBindingDialog.expectedBindingJobId,
+                            unlinkBindingDialog.expectedBindingKind,
+                            unlinkBindingDialog.expectedBindingId,
+                            unlinkBindingDialog.expectedBindingRevision)
+                        unlinkBindingDialog.close()
+                    }
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: rebuildArtifactsDialog
+        objectName: "rebuildTaskArtifactsDialog"
+        property string expectedRebuildJobId: ""
+        property string expectedRebuildTitle: ""
+        property string expectedIndexRevision: ""
+
+        parent: Overlay.overlay
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        x: parent ? Math.max(18, (parent.width - width) / 2) : 18
+        y: parent ? Math.max(18, (parent.height - height) / 2) : 18
+        width: Math.min(parent ? parent.width - 36 : 500, 580)
+        padding: 18
+
+        contentItem: ColumnLayout {
+            spacing: 10
+            Text {
+                Layout.fillWidth: true
+                text: page.controller.text("重建任务文件清单")
+                color: page.theme.text
+                font.pixelSize: 17 * page.theme.scale
+                font.weight: Font.DemiBold
+            }
+            Text {
+                Layout.fillWidth: true
+                text: rebuildArtifactsDialog.expectedRebuildTitle || page.controller.text("未命名任务")
+                color: page.theme.text
+                font.pixelSize: 13 * page.theme.scale
+                font.weight: Font.DemiBold
+                wrapMode: Text.Wrap
+                textFormat: Text.PlainText
+            }
+            Text {
+                Layout.fillWidth: true
+                text: page.controller.text("将根据现有处理记录重新核验文件清单，并保留旧清单备份。人工登记的工程、Mixdown、视频和发布选择会从任务记录恢复。旧任务缺少校验记录的文件会按当前内容登记。")
+                color: page.theme.muted
+                font.pixelSize: 12 * page.theme.scale
+                wrapMode: Text.Wrap
+            }
+            Text {
+                Layout.fillWidth: true
+                text: page.controller.text("重建不会删除或改写任务内外的音视频、工程或其他用户文件。")
+                color: page.theme.muted
+                font.pixelSize: 12 * page.theme.scale
+                wrapMode: Text.Wrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                UiButton {
+                    theme: page.theme
+                    text: page.controller.text("取消")
+                    quiet: true
+                    onClicked: rebuildArtifactsDialog.close()
+                }
+                UiButton {
+                    objectName: "confirmRebuildTaskArtifacts"
+                    theme: page.theme
+                    primary: true
+                    text: page.controller.text("重建清单")
+                    enabled: page.idle && !!page.detail.canRebuildArtifacts
+                        && rebuildArtifactsDialog.expectedRebuildJobId === page.controller.selectedTaskId
+                        && rebuildArtifactsDialog.expectedIndexRevision
+                            === String(page.detail.artifactIndexRevision || "")
+                    onClicked: {
+                        page.controller.rebuildSelectedTaskArtifacts(
+                            rebuildArtifactsDialog.expectedRebuildJobId,
+                            rebuildArtifactsDialog.expectedIndexRevision)
+                        rebuildArtifactsDialog.close()
                     }
                 }
             }

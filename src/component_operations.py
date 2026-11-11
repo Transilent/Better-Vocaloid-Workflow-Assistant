@@ -22,7 +22,7 @@ COMPONENT_IDS = ('builtin', 'roformer', 'chinese', 'expression')
 ROW_KEYS = (
     'id', 'title', 'summary', 'status', 'status_text', 'detail',
     'download_bytes', 'installed_bytes', 'required_bytes',
-    'can_install', 'can_verify', 'can_use', 'model',
+    'can_install', 'can_verify', 'can_use', 'model', 'health',
 )
 STATUSES = ('ready', 'missing', 'partial', 'damaged', 'error')
 _STATUS_TEXT = {
@@ -85,7 +85,7 @@ def _progress(callback):
 
 def _row(component_id, status, *, detail, download=0, installed=0,
          required=0, can_install=False, can_verify=False, can_use=False,
-         model=None, status_text=None):
+         model=None, status_text=None, health=None):
     if status not in STATUSES:
         raise ValueError('无效的组件状态。')
     return {
@@ -112,6 +112,7 @@ def _row(component_id, status, *, detail, download=0, installed=0,
         'can_verify': bool(can_verify),
         'can_use': bool(can_use),
         'model': model,
+        'health': health or {},
     }
 
 
@@ -228,6 +229,20 @@ def _roformer_row(runtime):
     ready = bool(state.get('ready'))
     installed_runtime = state.get('runtime') if state.get('runtime') in ('cpu', 'cuda') else None
     verification = state.get('verification') if isinstance(state.get('verification'), dict) else {}
+    cached = 0
+    for item in items:
+        name = item.get('name')
+        if not isinstance(name, str) or not name or Path(name).name != name:
+            continue
+        try:
+            cached += feature_components.resumable_cache_bytes(optional_components.COMPONENT / 'downloads', item)
+        except OSError:
+            cached = None
+            break
+    health = {'runtime': installed_runtime or '', 'cache_bytes': cached,
+              'installed_estimate': bool(ready and installed_runtime == runtime),
+              'scope': '安装收据、文件路径与大小；完整校验另行执行',
+              'source': '当前固定组件清单'}
     if ready and installed_runtime == runtime:
         installed = expanded
         if verification.get('content_verified') or verification.get('sha256_checked'):
@@ -237,7 +252,7 @@ def _roformer_row(runtime):
         return _row(
             'roformer', 'ready', detail=detail,
             download=download, installed=installed, required=required,
-            can_install=True, can_verify=True, can_use=True, model=model,
+            can_install=True, can_verify=True, can_use=True, model=model, health=health,
         )
 
     if ready and installed_runtime is not None:
@@ -249,7 +264,7 @@ def _roformer_row(runtime):
             detail=f'已安装另一档 {installed_name} 运行库；当前选择的 {selected_name} 尚未安装。'
                    f' 安装 {selected_name} 会切换到该运行库。',
             download=download, installed=0, required=required,
-            can_install=True, can_verify=False, can_use=False, model=model,
+            can_install=True, can_verify=False, can_use=False, model=model, health=health,
         )
 
     state_value = state.get('state') or verification.get('state')
@@ -277,7 +292,7 @@ def _roformer_row(runtime):
         'roformer', status, detail=detail,
         download=download, installed=0, required=required,
         can_install=status != 'error', can_verify=can_verify, can_use=False,
-        model=model,
+        model=model, health=health,
     )
 
 
@@ -315,6 +330,9 @@ def _chinese_row():
         download=total, installed=installed, required=total,
         can_install=status != 'error', can_verify=can_verify,
         can_use=status == 'ready', model=None,
+        health={'version': str(state.get('revision') or '')[:16], 'cache_bytes': cached,
+                'complete_files': complete, 'expected_files': files,
+                'scope': '清单与本地文件检查；完整校验另行执行', 'source': '固定模型版本'},
     )
 
 
@@ -350,6 +368,8 @@ def _expression_row():
         download=download, installed=installed, required=max(16 * 1024**2, download, installed),
         can_install=status != 'error', can_verify=can_verify,
         can_use=status == 'ready', model=None,
+        health={'version': str(state.get('version') or ''), 'scope': '安装收据和列出的文件摘要',
+                'source': '固定 PyPI 组件'},
     )
 
 
@@ -420,6 +440,27 @@ def verify(component_id, *, progress=None, check=None):
             'state': 'verified' if verified else 'corrupt',
         }
     raise ValueError('未知的组件标识。')
+
+
+def verification_summary(report):
+    """Small user-facing snapshot from the most recent explicit check."""
+    if not isinstance(report, dict):
+        return {}
+    rows = []
+    for key in ('corrupted', 'errors', 'unverified'):
+        for row in report.get(key) or ():
+            if isinstance(row, dict):
+                path = row.get('path') or row.get('file') or ''
+                reason = row.get('message') or row.get('reason') or row.get('code') or ''
+                if path or reason:
+                    label = ' · '.join(str(part) for part in (path, reason) if part)[:480]
+                    if label not in rows:
+                        rows.append(label)
+    count = (report.get('progress') or {}).get('sha256_checked', report.get('checked_files'))
+    if count is None and report.get('verified') and report.get('feature') == 'chinese':
+        count = report.get('complete_files')
+    return {'state': str(report.get('state') or ''), 'verified': report.get('verified') is True,
+            'checked': count if type(count) is int else None, 'issues': rows[:8], 'issue_count': len(rows)}
 
 
 __all__ = [

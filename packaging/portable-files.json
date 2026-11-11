@@ -22,6 +22,14 @@
       "source": "src/quick_mixdown_player.py"
     },
     {
+      "file": "quick_calibration.py",
+      "source": "src/quick_calibration.py"
+    },
+    {
+      "file": "quick_preparation_sources.py",
+      "source": "src/quick_preparation_sources.py"
+    },
+    {
       "file": "quick_tuning.py",
       "source": "src/quick_tuning.py"
     },
@@ -68,6 +76,14 @@
     {
       "file": "quick_ui/MixdownPage.qml",
       "source": "src/quick_ui/MixdownPage.qml"
+    },
+    {
+      "file": "quick_ui/CalibrationDialog.qml",
+      "source": "src/quick_ui/CalibrationDialog.qml"
+    },
+    {
+      "file": "quick_ui/PreparationSourcesDialog.qml",
+      "source": "src/quick_ui/PreparationSourcesDialog.qml"
     },
     {
       "file": "quick_ui/TuningPage.qml",

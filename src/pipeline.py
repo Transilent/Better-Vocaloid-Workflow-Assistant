@@ -215,12 +215,34 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
     return job.resolve()
 
 
-def reuse_download(previous, **options):
+def verified_download_reuse(previous, bv):
+    """Check exact same-BV acquisition receipts without changing either task."""
+    from artifact_cache import valid_receipt
+    previous = Path(previous)
+    try:
+        request = json.loads((previous / 'request.json').read_text(encoding='utf-8-sig'))
+        status = json.loads((previous / 'status.json').read_text(encoding='utf-8-sig'))
+        if request.get('source_kind') != 'bilibili' or request.get('bv') != bv:
+            return False
+        for stage in ('metadata', 'download'):
+            step = status['steps'].get(stage, {})
+            saved = step.get('receipt')
+            files = requirements(stage, request)
+            if step.get('state') != 'done' or not saved or not valid_receipt(previous, request, stage, files, saved):
+                return False
+        return True
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def reuse_download(previous, *, expected_bv=None, **options):
     """Create a new job from a stable view of the old task's acquisition files."""
     previous = app_path(previous)
     if not Path(native_path(previous / 'request.json')).is_file():
         raise FileNotFoundError('没有找到上次任务。请先新建一个任务。')
     with job_lock(previous):
+        if expected_bv is not None and not verified_download_reuse(previous, expected_bv):
+            raise ValueError('同一 BV 的下载回执已变化；请重新查找可复用素材。')
         return _reuse_download_locked(previous, **options)
 
 

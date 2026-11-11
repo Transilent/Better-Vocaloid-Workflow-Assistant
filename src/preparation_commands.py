@@ -131,27 +131,60 @@ class PreparationDraft:
         return workflow.validate_options(values)
 
 
-def create_from_draft(draft):
+def selected_component_issues(draft):
+    """Check only the optional components selected for this preparation."""
+    data = draft.view
+    issues = []
+    if draft.voice_mode == 'roformer' or (draft.voice_mode == 'dual' and draft.separator_model == 'roformer'):
+        import optional_components
+        if not optional_components.status()['ready']:
+            issues.append('BS-RoFormer 尚未就绪。请安装组件，或改用内置分离。')
+    if data['target'] != 'separation' and data['alignment_engine'] == 'tifa':
+        if data['midi_backend'] != 'v2':
+            issues.append('TiFA 需要 Vocal2Midi 2.0；也可以切回 HubertFA。')
+        elif not (ROOT / 'dependencies/vocal2midi2/models/tifa-1.0-onnx').is_dir():
+            issues.append('TiFA 模型尚未安装。请安装模型，或切回 HubertFA。')
+    return issues
+
+
+def bilibili_draft_bv(draft):
+    from common import extract_bv
+    from source_contract import reject_unsupported_bilibili_subpage
+    data = draft.view
+    if data['input_mode'] != 'bilibili':
+        raise ValueError('当前准备未选择 B站来源。')
+    reject_unsupported_bilibili_subpage(data['source'])
+    return extract_bv(data['source'])
+
+
+def create_from_draft(draft, *, reuse_job=''):
     """Compile once with the same preparation policy and task writer as Widgets."""
-    from pipeline import create_job
+    from pipeline import create_job, reuse_download
 
     data = draft.view
     options = draft.preferences()
     graph = graph_for(data['target'])
+    issues = selected_component_issues(draft)
+    if issues:
+        raise ValueError(' '.join(issues))
     if (options['reference_mode'] == 'netease' and data['target'] != 'separation'
             and options['recognize_lyrics'] and
             (not (draft.lyric_reference or {}).get('origin', {}).get('provider') == 'netease' or not data['lyrics'].strip())):
         raise ValueError('请先获取网易云歌词，或切换为本地填写。')
     reference = (draft.lyric_reference or {}).get('origin')
-    return create_job(
-        data['source'] if data['input_mode'] == 'bilibili' else '',
-        local_music=draft.music_path if data['input_mode'] == 'local' else None,
+    arguments = dict(
         lyrics=data['lyrics'], backing_lyrics=data['backing_lyrics'],
         imported_stems=data['imported_stems'], parent=data['output_directory'] or None,
-        remember=False, workflow_graph=graph, export_preferences=workflow.export_preferences(options),
+        workflow_graph=graph, export_preferences=workflow.export_preferences(options),
         lyric_reference={'origin': reference} if reference else None,
         **workflow.execution_options(options, midi_enabled=data['target'] != 'separation'),
     )
+    if reuse_job:
+        from task_store import known_job
+        return reuse_download(known_job(reuse_job), expected_bv=bilibili_draft_bv(draft), **arguments)
+    return create_job(data['source'] if data['input_mode'] == 'bilibili' else '',
+                      local_music=draft.music_path if data['input_mode'] == 'local' else None,
+                      remember=False, **arguments)
 
 
 def progress_view(job):

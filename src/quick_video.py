@@ -17,20 +17,25 @@ import re
 import shutil
 import uuid
 from typing import Any
+from urllib.parse import urlsplit
 
 from PySide6.QtCore import QObject, Property, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
 import publication
+import quick_results
+import source_contract
 import video_mixdown
 from common import ROOT, file_hash
 from i18n import tr
 
 _VIDEO_KINDS = frozenset(('video-analyze', 'video-adopt', 'video-render', 'video-register',
-                          'video-preview', 'video-publish'))
+                          'video-preview', 'video-publish', 'video-restore', 'video-task-scan'))
 _ACTIVE_STATES = {'video-analyze': 'analyzing', 'video-render': 'rendering',
-                  'video-preview': 'previewing', 'video-adopt': 'adopting'}
+                  'video-preview': 'previewing', 'video-adopt': 'adopting',
+                  'video-restore': 'restoring'}
 _OWNED_JOB = re.compile(r'task-[0-9a-f]{32}\Z')
+_BVID = re.compile(r'BV1[A-Za-z0-9]{9}\Z')
 
 
 def _local_path(value: Any, *, allow_empty: bool = False) -> Path | None:
@@ -64,6 +69,54 @@ def _path_key(value: Any) -> str:
 
 def _same_path(left: Any, right: Any) -> bool:
     return bool(left and right and _path_key(left) == _path_key(right))
+
+
+def _bilibili_identity(value: Any) -> tuple[str, str]:
+    """Return one canonical BV identity without resolving links or using the network."""
+    text = str(value or '').strip().strip('"').strip()
+    if not text:
+        return '', ''
+    if _BVID.fullmatch(text):
+        return text, f'https://www.bilibili.com/video/{text}/'
+    parts = urlsplit(text)
+    try:
+        port = parts.port
+    except ValueError as error:
+        raise ValueError('Bilibili 来源端口无效。') from error
+    if (parts.scheme.casefold() not in ('http', 'https')
+            or (parts.hostname or '').casefold() not in ('bilibili.com', 'www.bilibili.com')
+            or parts.username is not None or parts.password is not None
+            or port not in (None, 80, 443) or parts.fragment):
+        raise ValueError('来源身份必须是 BV 号或明确的 Bilibili 视频链接。')
+    source_contract.bilibili_query_pairs(parts.query)
+    match = re.fullmatch(r'/video/(BV1[A-Za-z0-9]{9})/?', parts.path)
+    if match is None:
+        raise ValueError('来源身份必须指向一个 Bilibili /video/BV… 视频。')
+    bv = match.group(1)
+    return bv, f'https://www.bilibili.com/video/{bv}/'
+
+
+def _task_source_identity(job: Any) -> dict[str, str]:
+    """Read the task's current BV declaration and refuse conflicting evidence."""
+    from task_store import read_json
+
+    root = Path(job).expanduser().resolve()
+    request = read_json(root / 'request.json')
+    info = read_json(root / 'source-info.json')
+    declared = []
+    for value in (request.get('bv'), info.get('bvid'), request.get('url') if request.get('bv') else None):
+        if isinstance(value, str) and value.strip():
+            declared.append(_bilibili_identity(value))
+    if declared and any(item != declared[0] for item in declared[1:]):
+        raise ValueError('任务请求与来源证据中的 BV 身份不一致，不能恢复视频输入。')
+    bv, url = declared[0] if declared else ('', '')
+    kind = str(request.get('source_kind') or info.get('kind') or ('bilibili' if bv else 'local')).strip()
+    if kind.casefold() == 'bilibili' and not bv:
+        raise ValueError('任务声明为 Bilibili 来源，但没有可核验的 BV 身份。')
+    if bv and kind.casefold() not in ('bilibili', 'video'):
+        raise ValueError('任务声明为本地来源，但记录了 Bilibili 视频身份，请先核对任务。')
+    title = str(info.get('title') or request.get('source_title') or '').strip()[:500]
+    return {'bv': bv, 'url': url, 'kind': kind or ('bilibili' if bv else 'local'), 'title': title}
 
 
 def _stop_check(stop) -> None:
@@ -155,6 +208,12 @@ class QuickVideo(QObject):
         self._result_receipt: dict[str, Any] | None = None
         self._registered_row: dict[str, Any] | None = None
         self._registered_sha256 = ''
+        self._task_choices: list[dict[str, Any]] = []
+        self._task_title = ''
+        self._task_source_bv = ''
+        self._task_source_url = ''
+        self._restore_message = ''
+        self._task_scan_busy = False
         self._worker.changed.connect(self._emit)
 
     @Property('QVariantMap', notify=changed)
@@ -203,6 +262,13 @@ class QuickVideo(QObject):
             'canAdoptSuggestion': self._can_adopt_suggestion(),
             'resultSha256': self._result_sha256,
             'receipt': deepcopy(self._result_receipt) if self._result_receipt else {},
+            'taskChoices': deepcopy(self._task_choices),
+            'taskTitle': self._task_title,
+            'sourceBv': self._task_source_bv,
+            'sourceUrl': self._task_source_url,
+            'restoreMessage': self._restore_message,
+            'taskScanBusy': bool(self._task_scan_busy and self._worker.kind == 'video-task-scan'),
+            'canRefreshTasks': not busy,
         }
 
     @Slot(str, result=str)
@@ -304,6 +370,8 @@ class QuickVideo(QObject):
         if key == 'sourceVideo':
             media_changed = not _same_path(self._source_video, text)
             self._source_video = text
+            if media_changed:
+                self._task_source_bv = self._task_source_url = self._restore_message = ''
         elif key == 'mixdown':
             media_changed = not _same_path(self._mixdown, text)
             self._mixdown = text
@@ -349,6 +417,145 @@ class QuickVideo(QObject):
                          if self._is_result_stale() else '设置已更新。')
         self._emit()
 
+    @Slot()
+    @Slot(str)
+    def refreshTaskChoices(self, source_filter=''):
+        """Refresh the explicit task picker without claiming its rows are still verified."""
+        if self._closed:
+            return
+        if self._worker.kind or self._active_kind:
+            self._notice('已有后台操作正在运行，暂时无法刷新任务。')
+            return
+        try:
+            filter_bv, _ = _bilibili_identity(source_filter)
+        except ValueError as error:
+            self._task_choices = []
+            self._restore_message = str(error)
+            self._emit()
+            return
+        self._task_scan_busy = True
+        self._restore_message = '正在读取已登记任务…'
+        self._emit()
+
+        def work(stop, send):
+            choices, skipped = [], 0
+            rows = quick_results.scan(stop.is_set)
+            for item in rows:
+                _stop_check(stop)
+                try:
+                    job = Path(item['jobId']).resolve()
+                    if not (job / 'video' / 'source.mp4').is_file():
+                        continue
+                    identity = _task_source_identity(job)
+                except (OSError, TypeError, ValueError):
+                    skipped += 1
+                    continue
+                if filter_bv and identity['bv'] != filter_bv:
+                    continue
+                label = str(item.get('title') or job.name)
+                identity_text = identity['bv'] or '本地原视频'
+                label = f'{label} · {identity_text} · 待载入复核'
+                choices.append({
+                    'label': label,
+                    'value': str(job),
+                    'jobId': str(job),
+                    'title': str(item.get('title') or job.name),
+                    'sourceIdentity': identity['url'],
+                    'sourceBv': identity['bv'],
+                    'sourceTitle': identity['title'],
+                })
+                if len(choices) >= 100:
+                    break
+            send('任务列表已读取；载入时仍会重新核验。')
+            return {'choices': choices, 'skipped': skipped}
+
+        def finish(value, error):
+            self._task_scan_busy = False
+            if self._closed:
+                return
+            if error is not None:
+                if not isinstance(error, InterruptedError):
+                    self._restore_message = '无法读取任务来源：' + (str(error) or error.__class__.__name__)
+            else:
+                self._task_choices = list(value.get('choices') or ())
+                skipped = int(value.get('skipped') or 0)
+                if not self._task_choices:
+                    self._restore_message = ('没有找到该 BV 对应的本地原视频任务。' if filter_bv else
+                                             '没有找到带原视频的任务；可直接选择本地素材。')
+                elif skipped:
+                    self._restore_message = (f'已列出 {len(self._task_choices)} 个候选任务；'
+                                             f'另有 {skipped} 个任务因来源证据不明确已跳过。')
+                else:
+                    self._restore_message = f'已列出 {len(self._task_choices)} 个候选任务；载入前会再次核验。'
+            self._emit()
+
+        if not self._worker.start('video-task-scan', work, finish):
+            self._task_scan_busy = False
+            self._restore_message = '工作通道正被其他后台操作占用，请稍后刷新任务。'
+            self._emit()
+
+    @Slot(str, str)
+    def restoreTask(self, job, expected_source):
+        """Restore exact task inputs after a fresh task-contract verification."""
+        if self._closed or self._worker.kind or self._active_kind:
+            self._notice('已有后台操作正在运行，暂时不能载入任务。')
+            return
+        job_text = str(job or '').strip()
+        if not job_text:
+            self._notice('请先从任务列表选择一个任务。')
+            return
+        try:
+            expected_bv, _expected_url = _bilibili_identity(expected_source)
+        except (TypeError, ValueError) as error:
+            self._notice(str(error))
+            return
+        self._restore_message = ''
+
+        def work(stop, send):
+            from task_store import known_job
+
+            job_path = known_job(job_text)
+            identity = _task_source_identity(job_path)
+            if identity['bv']:
+                if not expected_bv:
+                    raise ValueError('该任务有 Bilibili 来源；请填写并核对 BV 或来源链接。')
+                if expected_bv != identity['bv']:
+                    raise ValueError('填写的 BV/来源与当前任务不一致，不能恢复视频输入。')
+            elif expected_bv:
+                raise ValueError('当前任务是本地来源，不能套用另一个 Bilibili BV 身份。')
+            send('正在重新核验任务、Mixdown、原视频及其修订…')
+            detail = quick_results.detail(job_path, stop.is_set)
+            ids = detail.get('studioTargets', {}).get('video_mixdown', ())
+            by_id = {row.get('id'): row for row in detail.get('artifacts', ())}
+            target_rows = [by_id.get(identifier) for identifier in ids]
+            if (not ids or any(row is None or row.get('state') != 'verified'
+                               or row.get('available') is False for row in target_rows)):
+                raise ValueError('当前任务没有一组完整、已核验的 Mixdown 与原视频。')
+            mixes = [row for row in target_rows if row.get('role') == 'mixdown']
+            sources = [row for row in target_rows if row.get('role') == 'source_video']
+            if len(mixes) != 1 or len(sources) != 1:
+                raise ValueError('任务视频输入不是唯一的 Mixdown 与原视频组合，已拒绝猜测。')
+            canonical_source = (job_path / 'video' / 'source.mp4').resolve()
+            if not _same_path(sources[0].get('path'), canonical_source):
+                raise ValueError('任务原视频不是规范的 video/source.mp4；请手动选择本地原视频。')
+            _stop_check(stop)
+            return {'job': job_path, 'mix': mixes[0], 'source': sources[0],
+                    'identity': identity, 'title': str(detail.get('title') or job_path.name)}
+
+        def finish(value):
+            if not self.accept_task(value['job'], value['mix'], value['source']):
+                raise ValueError(self._message)
+            self._task_title = value['title']
+            self._task_source_bv = value['identity']['bv']
+            self._task_source_url = value['identity']['url']
+            identity_text = self._task_source_bv or '本地原视频'
+            self._restore_message = f'已载入 {self._task_title} · {identity_text}；输入修订已冻结。'
+            self._state = 'ready'
+            self._message = ('已从当前任务恢复并冻结原视频与 Mixdown；'
+                             '合成与登记仍会重新核验同一修订。')
+
+        self._start('video-restore', '正在核验任务来源与冻结素材…', work, finish)
+
     def accept_task(self, job, mix_row, source_row=None) -> bool:
         """Freeze task rows reverified by the shared worker lane."""
         if self._closed or self._worker.kind or self._active_kind:
@@ -360,15 +567,26 @@ class QuickVideo(QObject):
             if Path(mix['path']).suffix.casefold() != '.wav':
                 raise ValueError('任务 Mixdown 必须是已核验的 WAV。')
             source = _freeze_row(source_row, 'source_video') if source_row is not None else None
+            identity = _task_source_identity(job_path)
         except (OSError, TypeError, ValueError) as error:
             self._notice('无法载入任务视频参数：' + str(error))
             return False
         if (job_path == self._job_path and _row_identity(mix) == _row_identity(self._mix_pin)
-                and _row_identity(source) == _row_identity(self._source_pin)):
+                and _row_identity(source) == _row_identity(self._source_pin)
+                and identity['bv'] == self._task_source_bv
+                and identity['url'] == self._task_source_url):
             return True
         self._job_path = job_path
         self._mix_pin = mix
         self._source_pin = source
+        self._task_source_bv = identity['bv']
+        self._task_source_url = identity['url']
+        try:
+            from task_store import read_json
+            task = read_json(job_path / 'task.json')
+            self._task_title = str(task.get('name') or identity['title'] or job_path.name)
+        except (OSError, TypeError, ValueError):
+            self._task_title = identity['title'] or job_path.name
         self._mixdown = mix['path']
         self._source_video = source['path'] if source else ''
         output = job_path / 'rendered' / 'cover-mixdown.mp4'
@@ -386,7 +604,9 @@ class QuickVideo(QObject):
         self._registered_row = None
         self._registered_sha256 = ''
         self._state = 'ready'
-        self._message = '已冻结任务当前绑定的 Mixdown；合成与登记将再次核验同一产物。'
+        identity_text = f'；来源 {identity["bv"]}' if identity['bv'] else ''
+        self._message = ('已冻结任务当前绑定的 Mixdown 与原视频' + identity_text +
+                         '；合成与登记将再次核验同一产物。')
         self._emit()
         return True
 
@@ -490,6 +710,9 @@ class QuickVideo(QObject):
                                      check=stop.is_set), 'mixdown')
         _stop_check(stop)
         if self._source_pin is not None and _same_path(self._source_video, self._source_pin['path']):
+            identity = _task_source_identity(self._job_path)
+            if self._task_source_bv and identity['bv'] != self._task_source_bv:
+                raise ValueError('任务的 BV 来源已变化，请重新核对视频输入。')
             source = _freeze_row(verify(str(self._job_path), deepcopy(self._source_pin), 'source_video',
                                         check=stop.is_set), 'source_video')
         _stop_check(stop)
@@ -971,6 +1194,7 @@ class QuickVideo(QObject):
         if self._closed:
             return
         self._closed = True
+        self._task_scan_busy = False
         if self._worker.kind in _VIDEO_KINDS:
             self.cancel()
         else:

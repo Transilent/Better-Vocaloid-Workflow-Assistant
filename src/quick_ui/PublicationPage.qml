@@ -26,7 +26,7 @@ Item {
     readonly property bool verified: !!view.verified
     readonly property bool canPrepare: !!view.canPrepare && !busy
     readonly property bool canCheck: !!view.canCheck && !busy && bundleText.length > 0 && !bundleStale
-    readonly property bool canHandoff: verified && bundleText.length > 0 && !bundleStale && !busy
+    readonly property bool canHandoff: !busy && page.handoffReady(page.platform)
     readonly property string stateName: page.textOf(view.state).toLowerCase()
     readonly property string messageText: page.textOf(view.message)
     readonly property color stateColor: page.colorForState()
@@ -34,6 +34,20 @@ Item {
     readonly property var actionItems: page.actionsFrom(view.actions)
     readonly property string coverPreviewUrl: page.textOf(view.coverPreview)
     readonly property int coverSeconds: Math.max(0, Math.floor(page.number(view.coverSeconds, 20)))
+    readonly property var selectedPlatforms: page.platformList(view.selectedPlatforms)
+    readonly property bool bilibiliSelected: page.platformSelected("bilibili")
+    readonly property bool xiaohongshuSelected: page.platformSelected("xiaohongshu")
+    readonly property var handoffs: page.objectOf(view.handoffs)
+    readonly property var browserSession: page.objectOf(view.browserSession)
+    readonly property var browserChecks: page.objectOf(page.browserSession.checks)
+    readonly property string coverRatio: page.textOf(view.coverRatio || "16:9") === "4:3" ? "4:3" : "16:9"
+    readonly property var coverVariants: page.arrayOf(view.coverVariants)
+    readonly property var selectedCoverVariant: page.coverVariantFor(page.coverRatio)
+    readonly property string resolvedCoverPreview: page.platform === "bilibili"
+        && page.selectedCoverVariant.preview
+        ? page.textOf(page.selectedCoverVariant.preview) : page.coverPreviewUrl
+    readonly property real coverAspect: page.coverRatio === "4:3" ? 4 / 3 : 16 / 9
+    readonly property int coverCanvasHeight: Math.round((page.dense ? 150 : 226) * page.theme.scale)
 
     function number(value, fallback) {
         if (value === undefined || value === null || value === "")
@@ -136,8 +150,10 @@ Item {
 
     function contextLine() {
         const parts = [];
-        if (page.jobText.length > 0)
+        if (page.jobText.length > 0) {
             parts.push(page.controller.text("任务") + " · " + page.fileName(page.jobText));
+            parts.push(page.selectedPlatformSummary() + " · " + page.platformName() + page.controller.text("文稿"));
+        }
         if (page.titleText.length > 0)
             parts.push(page.titleText);
         if (page.videoText.length > 0)
@@ -225,6 +241,108 @@ Item {
     function summaryValue(value, fallback) {
         const text = page.textOf(value);
         return text.length > 0 ? text : page.controller.text(fallback);
+    }
+
+    function arrayOf(value) {
+        return value && typeof value.length === "number" ? value : [];
+    }
+
+    function objectOf(value) {
+        return value && typeof value === "object" && typeof value.length !== "number" ? value : ({});
+    }
+
+    function platformList(value) {
+        const items = page.arrayOf(value);
+        return items.length > 0 ? items : ["bilibili"];
+    }
+
+    function platformSelected(id) {
+        return page.selectedPlatforms.indexOf(id) >= 0;
+    }
+
+    function platformLabel(id) {
+        return id === "xiaohongshu" ? page.controller.text("小红书") : page.controller.text("B站");
+    }
+
+    function selectedPlatformSummary() {
+        const labels = [];
+        for (let index = 0; index < page.selectedPlatforms.length; ++index)
+            labels.push(page.platformLabel(page.selectedPlatforms[index]));
+        return labels.join(page.controller.text("、"));
+    }
+
+    function handoffFor(id) {
+        const value = page.handoffs[id];
+        return value && typeof value === "object" ? value : ({});
+    }
+
+    function handoffReady(id) {
+        const value = page.handoffFor(id);
+        return page.verified && !page.bundleStale && value.ready === true;
+    }
+
+    function coverVariantFor(ratio) {
+        for (let index = 0; index < page.coverVariants.length; ++index) {
+            const item = page.coverVariants[index];
+            if (item && page.textOf(item.ratio) === ratio)
+                return item;
+        }
+        return ({});
+    }
+
+    function coverRatioSize() {
+        return page.coverRatio === "4:3" ? "1440 × 1080" : "1920 × 1080";
+    }
+
+    function browserCheck(key, label) {
+        return {
+            key: key,
+            label: page.controller.text(label),
+            ready: page.browserChecks[key] === true
+        };
+    }
+
+    function browserChecksModel() {
+        return [
+            page.browserCheck("video_selected", "已选择视频"),
+            page.browserCheck("upload_complete", "上传完成"),
+            page.browserCheck("title_filled", "标题已填写"),
+            page.browserCheck("description_filled", "简介已填写"),
+            page.browserCheck("cover_filled", "封面已填写")
+        ];
+    }
+
+    function handoffAiLabel(id) {
+        const fields = page.objectOf(page.handoffFor(id).fields);
+        if (fields.ai_generated === true)
+            return page.controller.text("含 AI 生成或合成内容");
+        if (fields.ai_generated === false)
+            return page.controller.text("不含 AI 生成或合成内容");
+        return page.controller.text("未记录 AI 声明");
+    }
+
+    function browserStateLabel() {
+        const state = page.textOf(page.browserSession.state).toLowerCase();
+        if (state === "waiting_login") return page.controller.text("等待网页登录");
+        if (state === "login_window_closed") return page.controller.text("登录窗口已关闭");
+        if (state === "opening_browser" || state === "starting") return page.controller.text("正在打开会话");
+        if (state === "opening_editor") return page.controller.text("正在载入填写页");
+        if (state === "uploading") return page.controller.text("正在上传视频");
+        if (state === "needs_manual") return page.controller.text("需要人工处理");
+        if (state === "cancelled") return page.controller.text("填写已停止");
+        if (state === "failed") return page.controller.text("会话失败");
+        if (state === "stopping") return page.controller.text("正在停止");
+        if (page.browserSession.active) return page.controller.text("会话进行中");
+        if (state === "closed") return page.controller.text("会话已关闭");
+        return page.controller.text("尚未启动");
+    }
+
+    function browserStateColor() {
+        const state = page.textOf(page.browserSession.state).toLowerCase();
+        if (state === "failed" || state === "needs_manual") return page.theme.error;
+        if (state === "cancelled" || state === "closed" || state === "login_window_closed") return page.theme.muted;
+        if (page.browserSession.active || state === "starting" || state === "stopping") return page.theme.accent;
+        return page.theme.muted;
     }
 
     FileDialog {
@@ -581,6 +699,7 @@ Item {
 
         ScrollView {
             id: contentScroll
+            objectName: "publicationContentScroll"
             Layout.fillWidth: true
             Layout.fillHeight: true
             contentWidth: availableWidth
@@ -660,7 +779,56 @@ Item {
                             Layout.fillWidth: true
                             Layout.alignment: Qt.AlignTop
                             theme: page.theme
-                            heading: page.controller.text("平台")
+                            heading: page.controller.text("平台选择")
+                            explanation: page.controller.text("选中的平台共用这一份冻结成品与封面，但各自保留独立文稿和交接状态。")
+
+                            LabelText {
+                                theme: page.theme
+                                text: page.controller.text("加入同一个发布包")
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Math.round(7 * page.theme.scale)
+
+                                UiButton {
+                                    objectName: "publicationPlatformBilibili"
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    text: page.controller.text("B站")
+                                    selected: page.bilibiliSelected
+                                    enabled: !page.busy
+                                    Accessible.checkable: true
+                                    Accessible.checked: page.bilibiliSelected
+                                    onClicked: page.controller.togglePlatform("bilibili", !page.bilibiliSelected)
+                                }
+
+                                UiButton {
+                                    objectName: "publicationPlatformXiaohongshu"
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    text: page.controller.text("小红书")
+                                    selected: page.xiaohongshuSelected
+                                    enabled: !page.busy
+                                    Accessible.checkable: true
+                                    Accessible.checked: page.xiaohongshuSelected
+                                    onClicked: page.controller.togglePlatform("xiaohongshu", !page.xiaohongshuSelected)
+                                }
+                            }
+
+                            HelperText {
+                                Layout.fillWidth: true
+                                theme: page.theme
+                                text: page.controller.text("当前包：") + page.selectedPlatformSummary()
+                                    + (page.selectedPlatforms.length > 1
+                                        ? page.controller.text("。两段文稿会分别核对。")
+                                        : page.controller.text("。可再加入另一平台。"))
+                            }
+
+                            LabelText {
+                                theme: page.theme
+                                text: page.controller.text("正在编辑的独立文稿")
+                            }
 
                             UiComboBox {
                                 id: platformCombo
@@ -668,21 +836,21 @@ Item {
                                 Layout.fillWidth: true
                                 theme: page.theme
                                 model: [
-                                    { label: page.controller.text("B站"), value: "bilibili" },
-                                    { label: page.controller.text("小红书"), value: "xiaohongshu" }
+                                    { label: page.controller.text("B站文稿"), value: "bilibili" },
+                                    { label: page.controller.text("小红书文稿"), value: "xiaohongshu" }
                                 ]
                                 currentIndex: page.platformIndex()
                                 enabled: !page.busy
-                                Accessible.name: page.controller.text("发布平台")
-                                onActivated: page.controller.setField("platform", currentValue)
+                                Accessible.name: page.controller.text("当前编辑平台")
+                                onActivated: page.controller.editPlatform(currentValue)
                             }
 
                             HelperText {
                                 Layout.fillWidth: true
                                 theme: page.theme
                                 text: page.platform === "xiaohongshu"
-                                    ? page.controller.text("小红书仅生成手动投稿资料，不自动登录或发布。")
-                                    : page.controller.text("B站资料会生成 4:3 与 16:9 补边封面，最终仍在网页确认。")
+                                    ? page.controller.text("小红书继续使用复制文稿、本地素材和官方创作中心手动投稿。")
+                                    : page.controller.text("B站会生成 4:3 与 16:9 补边封面；网页登录、继续填写和最终发布均由你操作。")
                             }
                         }
 
@@ -966,56 +1134,104 @@ Item {
                             heading: page.controller.text("封面预览")
                             explanation: page.coverModeName()
 
-                            Rectangle {
+                            RowLayout {
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: Math.round((page.dense ? 148 : 230) * page.theme.scale)
+                                visible: page.bilibiliSelected
+                                spacing: Math.round(7 * page.theme.scale)
+
+                                LabelText {
+                                    Layout.alignment: Qt.AlignVCenter
+                                    theme: page.theme
+                                    text: page.controller.text("B站比例")
+                                }
+
+                                UiButton {
+                                    objectName: "publicationBilibiliCover43"
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    text: "4:3"
+                                    selected: page.coverRatio === "4:3"
+                                    enabled: !page.busy
+                                    Accessible.checkable: true
+                                    Accessible.checked: page.coverRatio === "4:3"
+                                    onClicked: page.controller.setCoverRatio("4:3")
+                                }
+
+                                UiButton {
+                                    objectName: "publicationBilibiliCover169"
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    text: "16:9"
+                                    selected: page.coverRatio === "16:9"
+                                    enabled: !page.busy
+                                    Accessible.checkable: true
+                                    Accessible.checked: page.coverRatio === "16:9"
+                                    onClicked: page.controller.setCoverRatio("16:9")
+                                }
+                            }
+
+                            Rectangle {
+                                id: coverPreviewPanel
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: page.coverCanvasHeight
                                 color: page.theme.base
                                 radius: Math.round(7 * page.theme.scale)
                                 border.width: 1
                                 border.color: page.theme.line
                                 clip: true
 
-                                Image {
-                                    anchors.fill: parent
-                                    anchors.margins: Math.round(5 * page.theme.scale)
-                                    source: page.coverPreviewUrl
-                                    visible: page.coverPreviewUrl.length > 0 && status === Image.Ready
-                                    fillMode: Image.PreserveAspectFit
-                                    asynchronous: true
-                                    cache: false
-                                }
-
-                                ColumnLayout {
+                                Rectangle {
+                                    id: coverPreviewCanvas
+                                    objectName: "publicationCoverCanvas"
+                                    width: Math.min(coverPreviewPanel.width - Math.round(10 * page.theme.scale),
+                                                    (coverPreviewPanel.height - Math.round(10 * page.theme.scale)) * page.coverAspect)
+                                    height: width / page.coverAspect
                                     anchors.centerIn: parent
-                                    width: Math.min(parent.width - Math.round(24 * page.theme.scale), Math.round(260 * page.theme.scale))
-                                    visible: page.coverPreviewUrl.length === 0 || coverImage.status !== Image.Ready
-                                    spacing: Math.round(4 * page.theme.scale)
+                                    radius: Math.round(4 * page.theme.scale)
+                                    color: "#050506"
+                                    clip: true
 
-                                    Text {
-                                        Layout.fillWidth: true
-                                        text: page.coverPreviewUrl.length === 0
-                                            ? page.controller.text("尚未生成预览")
-                                            : coverImage.status === Image.Error
-                                                ? page.controller.text("预览无法读取") : page.controller.text("正在读取预览")
-                                        color: page.coverPreviewUrl.length > 0 && coverImage.status === Image.Error
-                                            ? page.theme.error : page.theme.muted
-                                        font.pixelSize: Math.round(12 * page.theme.scale)
-                                        horizontalAlignment: Text.AlignHCenter
-                                        wrapMode: Text.Wrap
-                                        textFormat: Text.PlainText
+                                    Image {
+                                        anchors.fill: parent
+                                        source: page.resolvedCoverPreview
+                                        visible: page.resolvedCoverPreview.length > 0 && status === Image.Ready
+                                        fillMode: Image.PreserveAspectFit
+                                        asynchronous: true
+                                        cache: false
                                     }
 
-                                    HelperText {
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.controller.text("控制器返回本地 URL 后在此显示；不会上传素材。")
-                                        horizontalAlignment: Text.AlignHCenter
+                                    ColumnLayout {
+                                        anchors.centerIn: parent
+                                        width: Math.min(parent.width - Math.round(20 * page.theme.scale), Math.round(260 * page.theme.scale))
+                                        visible: page.resolvedCoverPreview.length === 0 || coverImage.status !== Image.Ready
+                                        spacing: Math.round(4 * page.theme.scale)
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: page.resolvedCoverPreview.length === 0
+                                                ? page.controller.text("尚未生成预览")
+                                                : coverImage.status === Image.Error
+                                                    ? page.controller.text("预览无法读取") : page.controller.text("正在读取预览")
+                                            color: page.resolvedCoverPreview.length > 0 && coverImage.status === Image.Error
+                                                ? page.theme.error : page.theme.muted
+                                            font.pixelSize: Math.round(12 * page.theme.scale)
+                                            horizontalAlignment: Text.AlignHCenter
+                                            wrapMode: Text.Wrap
+                                            textFormat: Text.PlainText
+                                        }
+
+                                        HelperText {
+                                            Layout.fillWidth: true
+                                            theme: page.theme
+                                            text: page.controller.text("本地预览；不会上传素材。")
+                                            horizontalAlignment: Text.AlignHCenter
+                                        }
                                     }
                                 }
 
                                 Image {
                                     id: coverImage
-                                    source: page.coverPreviewUrl
+                                    source: page.resolvedCoverPreview
                                     visible: false
                                 }
                             }
@@ -1023,9 +1239,21 @@ Item {
                             HelperText {
                                 Layout.fillWidth: true
                                 theme: page.theme
-                                text: page.platform === "bilibili"
-                                    ? page.controller.text("生成发布包时，B站 4:3 与 16:9 封面会按比例补边，完整保留原图。")
+                                text: page.bilibiliSelected
+                                    ? page.controller.text("当前画布为 B站 ") + page.coverRatio
+                                        + page.controller.text("，生成文件 ") + page.coverRatioSize()
+                                        + page.controller.text("；比例不同时补黑边，完整保留原图。")
                                     : page.controller.text("小红书使用同一张封面上传；平台尺寸与裁切请在发布页亲自检查。")
+                            }
+
+                            HelperText {
+                                Layout.fillWidth: true
+                                visible: page.bilibiliSelected && page.coverVariants.length > 0
+                                theme: page.theme
+                                text: (page.selectedCoverVariant.path
+                                    ? page.controller.text("当前显示发布包内的 ") + page.coverRatio
+                                        + page.controller.text(" 适配文件：") + page.fileName(page.selectedCoverVariant.file)
+                                    : page.controller.text("发布包缺少当前比例适配文件；请在生成后重新核对。"))
                             }
                         }
                     }
@@ -1117,6 +1345,112 @@ Item {
                         }
                     }
 
+                    SurfaceCard {
+                        Layout.fillWidth: true
+                        theme: page.theme
+                        heading: page.controller.text("平台交接")
+                        explanation: page.controller.text("同一冻结发布包内，各平台分别核验、分别交接；一个平台的操作不会提交另一个平台。")
+
+                        Repeater {
+                            model: page.selectedPlatforms
+                            delegate: Rectangle {
+                                id: handoffPlate
+                                required property string modelData
+                                readonly property var handoff: page.handoffFor(modelData)
+                                readonly property bool ready: page.handoffReady(modelData)
+
+                                Layout.fillWidth: true
+                                implicitHeight: handoffColumn.implicitHeight + Math.round(20 * page.theme.scale)
+                                radius: Math.round(7 * page.theme.scale)
+                                color: page.platform === modelData ? page.theme.selected : page.theme.raised
+                                border.width: 1
+                                border.color: page.platform === modelData ? page.theme.selectedLine : page.theme.line
+
+                                ColumnLayout {
+                                    id: handoffColumn
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    anchors.margins: Math.round(10 * page.theme.scale)
+                                    spacing: Math.round(6 * page.theme.scale)
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: Math.round(7 * page.theme.scale)
+
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: page.platformLabel(modelData)
+                                            color: page.theme.text
+                                            font.pixelSize: Math.round(13 * page.theme.scale)
+                                            font.weight: Font.DemiBold
+                                            textFormat: Text.PlainText
+                                        }
+
+                                        HelperText {
+                                            Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
+                                            theme: page.theme
+                                            text: page.bundleStale
+                                                ? page.controller.text("输入已变化")
+                                                : handoffPlate.ready
+                                                    ? page.controller.text("已独立核验")
+                                                    : page.verified
+                                                        ? page.controller.text("交接不可用")
+                                                        : page.controller.text("等待本地核对")
+                                            color: handoffPlate.ready ? page.theme.success
+                                                : page.bundleStale ? page.theme.error : page.theme.muted
+                                        }
+                                    }
+
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: page.textOf(handoffPlate.handoff.fields
+                                            ? handoffPlate.handoff.fields.title : "")
+                                            || page.controller.text("核验后显示该平台冻结文稿")
+                                        color: page.theme.text
+                                        font.pixelSize: Math.round(11 * page.theme.scale)
+                                        elide: Text.ElideRight
+                                        textFormat: Text.PlainText
+                                    }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: Math.round(6 * page.theme.scale)
+
+                                        UiButton {
+                                            objectName: "publicationHandoff_" + modelData
+                                            Layout.fillWidth: true
+                                            theme: page.theme
+                                            text: page.platform === modelData
+                                                ? page.controller.text("正在查看")
+                                                : page.controller.text("查看该平台")
+                                            selected: page.platform === modelData
+                                            enabled: !page.busy
+                                            onClicked: page.controller.editPlatform(modelData)
+                                        }
+
+                                        UiButton {
+                                            Layout.fillWidth: true
+                                            theme: page.theme
+                                            text: page.controller.text("复制该平台全部")
+                                            enabled: !page.busy && handoffPlate.ready
+                                            onClicked: page.controller.copyFieldFor(modelData, "all")
+                                        }
+
+                                        UiButton {
+                                            Layout.fillWidth: true
+                                            visible: modelData === "xiaohongshu"
+                                            theme: page.theme
+                                            text: page.controller.text("打开创作中心")
+                                            enabled: !page.busy && handoffPlate.ready
+                                            onClicked: page.controller.openCreatorFor(modelData)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     GridLayout {
                         Layout.fillWidth: true
                         columns: page.compact ? 1 : 2
@@ -1144,7 +1478,8 @@ Item {
                             SummaryRow {
                                 theme: page.theme
                                 caption: page.controller.text("平台")
-                                value: page.platformName()
+                                value: page.selectedPlatformSummary()
+                                    + page.controller.text("；当前编辑 ") + page.platformName()
                             }
                             SummaryRow {
                                 theme: page.theme
@@ -1184,8 +1519,9 @@ Item {
                             Layout.fillWidth: true
                             Layout.alignment: Qt.AlignTop
                             theme: page.theme
-                            heading: page.controller.text("本地文件与复制")
-                            explanation: page.controller.text("只操作本机资料；复制内容由你粘贴到官方平台。")
+                            heading: page.controller.text("当前平台本地文件与复制")
+                            explanation: page.controller.text("当前编辑：") + page.platformName()
+                                + page.controller.text("。只操作本机资料；每个平台的交接按钮仍独立可用。")
 
                             LabelText {
                                 theme: page.theme
@@ -1305,16 +1641,150 @@ Item {
 
                     SurfaceCard {
                         Layout.fillWidth: true
+                        visible: page.bilibiliSelected
                         theme: page.theme
-                        heading: page.platform === "xiaohongshu"
-                            ? page.controller.text("小红书手动投稿")
-                            : page.controller.text("到平台人工确认")
+                        heading: page.controller.text("B站填写会话")
+                        explanation: page.controller.text("只在你点击后启动现有隔离填写服务。页面登录、验证码、字段核对与最终投稿都由你完成。")
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Math.round(8 * page.theme.scale)
+
+                            Rectangle {
+                                Layout.preferredWidth: Math.round(8 * page.theme.scale)
+                                Layout.preferredHeight: Layout.preferredWidth
+                                radius: width / 2
+                                color: page.browserStateColor()
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                text: page.browserStateLabel()
+                                color: page.browserStateColor()
+                                font.pixelSize: Math.round(12 * page.theme.scale)
+                                font.weight: Font.DemiBold
+                                wrapMode: Text.Wrap
+                                textFormat: Text.PlainText
+                            }
+
+                            HelperText {
+                                Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
+                                theme: page.theme
+                                text: page.browserSession.active && page.browserSession.pid > 0
+                                    ? "PID " + String(page.browserSession.pid) : ""
+                            }
+                        }
 
                         Text {
                             Layout.fillWidth: true
-                            text: page.platform === "xiaohongshu"
-                                ? page.controller.text("请在官方网页或 App 中手动上传成品和封面，粘贴标题、正文与标签，并亲自设置 AI 内容声明、原创/转载和授权后，再决定是否发布。")
-                                : page.controller.text("请在上传页亲自核对封面比例、分区、标签、AI 与其他声明、原创/转载和授权后，再决定是否发布。助手不会提交最终投稿。")
+                            text: page.textOf(page.browserSession.message)
+                                || page.controller.text("尚未启动。可先打开隔离登录窗口，或核对资料后直接打开填写。")
+                            color: page.theme.muted
+                            font.pixelSize: Math.round(11 * page.theme.scale)
+                            wrapMode: Text.Wrap
+                            textFormat: Text.PlainText
+                        }
+
+                        Flow {
+                            Layout.fillWidth: true
+                            spacing: Math.round(6 * page.theme.scale)
+
+                            Repeater {
+                                model: page.browserChecksModel()
+                                delegate: Rectangle {
+                                    required property var modelData
+                                    implicitWidth: checkText.implicitWidth + Math.round(12 * page.theme.scale)
+                                    implicitHeight: Math.round(24 * page.theme.scale)
+                                    radius: height / 2
+                                    color: modelData.ready
+                                        ? Qt.rgba(page.theme.success.r, page.theme.success.g, page.theme.success.b, 0.12)
+                                        : page.theme.raised
+                                    border.width: 1
+                                    border.color: modelData.ready ? page.theme.success : page.theme.line
+
+                                    Text {
+                                        id: checkText
+                                        anchors.centerIn: parent
+                                        text: (modelData.ready ? page.controller.text("已 ") : page.controller.text("未 ")) + modelData.label
+                                        color: modelData.ready ? page.theme.success : page.theme.muted
+                                        font.pixelSize: Math.round(10 * page.theme.scale)
+                                        textFormat: Text.PlainText
+                                    }
+                                }
+                            }
+                        }
+
+                        GridLayout {
+                            Layout.fillWidth: true
+                            columns: page.compact ? 1 : 2
+                            columnSpacing: Math.round(6 * page.theme.scale)
+                            rowSpacing: Math.round(6 * page.theme.scale)
+
+                            UiButton {
+                                objectName: "publicationBilibiliLogin"
+                                Layout.fillWidth: true
+                                theme: page.theme
+                                text: page.controller.text("打开隔离登录会话")
+                                enabled: !page.busy && page.browserSession.canLogin === true
+                                onClicked: page.controller.loginBilibili()
+                            }
+
+                            UiButton {
+                                objectName: "publicationCreator"
+                                Layout.fillWidth: true
+                                theme: page.theme
+                                primary: page.handoffReady("bilibili")
+                                    && page.browserSession.canOpen === true
+                                text: page.controller.text("打开 B站并填写")
+                                enabled: !page.busy && page.handoffReady("bilibili")
+                                    && page.browserSession.canOpen === true
+                                onClicked: page.controller.openCreatorFor("bilibili")
+                            }
+
+                            UiButton {
+                                objectName: "publicationBilibiliContinue"
+                                Layout.fillWidth: true
+                                theme: page.theme
+                                text: page.controller.text("继续填写")
+                                enabled: !page.busy && page.browserSession.canContinue === true
+                                onClicked: page.controller.continueFill()
+                            }
+
+                            UiButton {
+                                objectName: "publicationBilibiliStop"
+                                Layout.fillWidth: true
+                                theme: page.theme
+                                quiet: true
+                                text: page.browserSession.mode === "login"
+                                    ? page.controller.text("停止登录会话")
+                                    : page.controller.text("停止填写")
+                                enabled: !page.busy && page.browserSession.canStop === true
+                                onClicked: page.controller.stopFill()
+                            }
+                        }
+
+                        HelperText {
+                            Layout.fillWidth: true
+                            theme: page.theme
+                            text: page.browserSession.active
+                                ? page.controller.text("“继续填写”只更新标题、简介与封面；必须先在网页选择视频。停止操作不会保存草稿或投稿。")
+                                : page.handoffReady("bilibili")
+                                    ? page.controller.text("资料已独立核验。启动会话后仍需人工登录、选择视频、核对声明并确认发布。")
+                                    : page.controller.text("生成并核对 B站交接后，才能启动填写会话。")
+                        }
+                    }
+
+                    SurfaceCard {
+                        Layout.fillWidth: true
+                        visible: page.xiaohongshuSelected
+                        theme: page.theme
+                        heading: page.controller.text("小红书手动投稿")
+                        explanation: page.controller.text("小红书始终使用复制与本地文件交接，不启动自动登录或自动填写。")
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: page.controller.text("请在官方网页或 App 中手动上传成品和封面，粘贴标题、正文与标签，并亲自设置 AI 内容声明、原创/转载和授权后，再决定是否发布。")
                             color: page.theme.text
                             font.pixelSize: Math.round(11 * page.theme.scale)
                             lineHeight: 1.2
@@ -1324,22 +1794,19 @@ Item {
 
                         Rectangle {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: disclosureText.implicitHeight + Math.round(12 * page.theme.scale)
+                            Layout.preferredHeight: xhsDisclosure.implicitHeight + Math.round(12 * page.theme.scale)
                             color: Qt.rgba(page.theme.attention.r, page.theme.attention.g, page.theme.attention.b, 0.1)
                             radius: Math.round(6 * page.theme.scale)
 
                             Text {
-                                id: disclosureText
+                                id: xhsDisclosure
                                 anchors.left: parent.left
                                 anchors.right: parent.right
                                 anchors.verticalCenter: parent.verticalCenter
                                 anchors.leftMargin: Math.round(9 * page.theme.scale)
                                 anchors.rightMargin: Math.round(9 * page.theme.scale)
-                                text: page.aiIndex() === 1
-                                    ? page.aiLabel() + page.controller.text("。本地记录不会同步平台，请在发布页实际选择 AI 声明。")
-                                    : page.aiIndex() === 2
-                                        ? page.controller.text("本地记录为不含 AI 内容；若素材或文案有变，请在平台重新核对声明。")
-                                        : page.controller.text("尚未确认是否含 AI 内容。请先核对素材与文案，再在平台设置实际声明。")
+                                text: page.handoffAiLabel("xiaohongshu")
+                                    + page.controller.text("。本地记录不会同步平台，请在发布页实际选择声明。")
                                 color: page.theme.attention
                                 font.pixelSize: Math.round(11 * page.theme.scale)
                                 wrapMode: Text.Wrap
@@ -1347,28 +1814,54 @@ Item {
                             }
                         }
 
-                        UiButton {
-                            objectName: "publicationCreator"
+                        GridLayout {
                             Layout.fillWidth: true
-                            theme: page.theme
-                            primary: page.canHandoff
-                            text: page.platform === "xiaohongshu"
-                                ? page.controller.text("打开小红书创作中心，手动投稿")
-                                : page.controller.text("打开 B站创作中心，手动核对")
-                            enabled: page.canHandoff
-                            onClicked: page.controller.openCreator()
+                            columns: page.compact ? 1 : 2
+                            columnSpacing: Math.round(6 * page.theme.scale)
+                            rowSpacing: Math.round(6 * page.theme.scale)
+
+                            UiButton {
+                                objectName: "publicationXiaohongshuCopyAll"
+                                Layout.fillWidth: true
+                                theme: page.theme
+                                text: page.controller.text("复制小红书全部文稿")
+                                enabled: !page.busy && page.handoffReady("xiaohongshu")
+                                onClicked: page.controller.copyFieldFor("xiaohongshu", "all")
+                            }
+
+                            UiButton {
+                                Layout.fillWidth: true
+                                theme: page.theme
+                                text: page.controller.text("复制成品路径")
+                                enabled: !page.busy && page.handoffReady("xiaohongshu")
+                                onClicked: page.controller.copyFieldFor("xiaohongshu", "video")
+                            }
+
+                            UiButton {
+                                Layout.fillWidth: true
+                                theme: page.theme
+                                text: page.controller.text("复制封面路径")
+                                enabled: !page.busy && page.handoffReady("xiaohongshu")
+                                onClicked: page.controller.copyFieldFor("xiaohongshu", "cover")
+                            }
+
+                            UiButton {
+                                objectName: "publicationXiaohongshuCreator"
+                                Layout.fillWidth: true
+                                theme: page.theme
+                                primary: page.handoffReady("xiaohongshu")
+                                text: page.controller.text("打开小红书创作中心")
+                                enabled: !page.busy && page.handoffReady("xiaohongshu")
+                                onClicked: page.controller.openCreatorFor("xiaohongshu")
+                            }
                         }
 
                         HelperText {
                             Layout.fillWidth: true
                             theme: page.theme
-                            text: page.canHandoff
-                                ? page.controller.text("本地文件已核对。打开入口后仍由你人工填写并确认发布。")
-                                : page.bundleStale
-                                    ? page.controller.text("输入已变化，请重新生成并核对发布资料。")
-                                    : page.verified
-                                        ? page.controller.text("请先打开并核验当前发布包。")
-                                        : page.controller.text("生成发布资料并通过本地核对后，才能打开平台入口。")
+                            text: page.handoffReady("xiaohongshu")
+                                ? page.controller.text("小红书文稿、成品和封面已独立核验。最终上传、声明与发布仍由你手动完成。")
+                                : page.controller.text("生成并核对小红书交接后，复制与官方入口才会启用。")
                         }
                     }
                 }

@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 import time
 import uuid
-from common import atomic_json,file_hash,native_path
+from common import SidecarBusy,atomic_json,exclusive_sidecar,file_hash,native_path
 from expression_calibration import CONTROLS,create_probe_set,score_identity
 
 COMMIT_SCHEMA=1
@@ -23,7 +23,7 @@ def project_data(path):
     return json.loads(Path(native_path(path)).read_bytes().removesuffix(b'\x00').decode('utf-8-sig'))
 
 
-def create_session(project,reference,destination,*,voice='lead',track_index=0,strength=.6,render_folder=None):
+def create_session(project,reference,destination,*,voice='lead',track_index=0,strength=.6,render_folder=None,register=True):
     import soundfile as sf
     from vocal_expression import TempoMap
     from pitch_accuracy import audit_svp_pitch
@@ -64,8 +64,9 @@ def create_session(project,reference,destination,*,voice='lead',track_index=0,st
     if source_hash!=file_hash(project) or reference_hash!=file_hash(reference):raise ValueError('准备校准时输入发生变化，请重新生成。')
     atomic_json(destination/'session.json',session)
     for name in ('neutral',*CONTROLS):(destination/(voice+'-'+name+'.svp')).unlink()
-    from task_contract import register_session
-    register_session(destination/'session.json')
+    if register:
+        from task_contract import register_session
+        register_session(destination/'session.json')
     return destination/'session.json'
 
 
@@ -224,6 +225,55 @@ def _write_fit_report(path,report,*,recovered=False):
     return candidate
 
 
+def verified_fit_result(session, *, output_name=None, cancel=lambda:None):
+    """Find a reported result still bound to these exact inputs and trial audio."""
+    session=Path(session).resolve();root=session.parent
+    spec=read_session(session)
+    cancel();unchanged_inputs(spec)
+    receipt=_object(root/'render-receipt.json')
+    renders=receipt.get('renders') if receipt else None
+    if not isinstance(renders,dict) or set(renders)!=set(spec['outputs']):return None
+    try:
+        for row in renders.values():
+            cancel()
+            if file_hash(row['path'])!=row['sha256']:return None
+        profile=root/'calibration.json';profile_hash=file_hash(profile)
+    except (OSError,ValueError,KeyError,TypeError):return None
+    if output_name is not None:
+        if not _valid_fit_output_name(output_name):raise ValueError('校准结果文件名无效。')
+        reports=[_fit_report_path(root,output_name)]
+    else:
+        paths=[root/'fit-report.json',*root.glob('*.fit-report.json')]
+        reports=sorted((p for p in paths if p.is_file()),key=lambda p:p.stat().st_mtime_ns,reverse=True)
+    for path in reports:
+        cancel()
+        report=_object(path)
+        if not report or report.get('report_verified') is not True or report.get('commit_state')!='reported':continue
+        try:
+            output=Path(report['output'])
+            if (output.parent!=root or output.is_symlink() or not _valid_fit_output_name(output.name)
+                    or path!=_fit_report_path(root,output.name)):continue
+            strength=report['calibration_fit']['strength']
+            binding=_fit_binding(session,spec,receipt,profile,profile_hash,output.name,strength)
+            intent=_fit_intent(_fit_intent_path(root,output.name),session,binding,output.name,output,path)
+            if not intent:continue
+            expected={**intent['report'],'commit_state':'reported','report_verified':True,'report_pending':False,
+                      'recovered_report':report.get('recovered_report'),'report_path':str(path)}
+            if report!=expected or Path(report['profile'])!=profile:continue
+            neutral=root/'neutral-receipt.json';proof=_object(neutral) or {}
+            neutral_path=Path(report['neutral'])
+            try:
+                neutral_valid=(neutral_path.parent==root and proof.get('file')==neutral_path.name
+                    and proof.get('source_sha256')==spec['project_sha256']
+                    and file_hash(neutral_path)==proof.get('sha256'))
+            except OSError:
+                neutral_valid=False
+            return {**report,'neutral':str(neutral_path) if neutral_valid else '',
+                    'profile_sha256':profile_hash}
+        except (OSError,ValueError,TypeError,KeyError):continue
+    return None
+
+
 def matches_task(profile,job):
     """Only opt the current task into a calibration of that task's own score/audio."""
     if not job:return False
@@ -326,7 +376,17 @@ class RenderCollector:
         return measured,[]
 
 
-def fit_session(session,*,cancel=lambda:None,progress=lambda text:None,output_name='calibrated.svp',strength=None):
+def fit_session(session,*,cancel=lambda:None,progress=lambda text:None,output_name='calibrated.svp',strength=None,register=True):
+    session=Path(session).resolve()
+    if not session.is_file():raise FileNotFoundError('请选择已有的校准会话。')
+    try:
+        with exclusive_sidecar(session.parent/'.fit.lock'):
+            return _fit_session(session,cancel=cancel,progress=progress,output_name=output_name,strength=strength,register=register)
+    except SidecarBusy as error:
+        raise ValueError('此校准会话正在其他窗口拟合，请稍后继续。') from error
+
+
+def _fit_session(session,*,cancel,progress,output_name,strength,register):
     from tuning_engine import process_project,primary_report
     session=Path(session).resolve();root=session.parent;spec=read_session(session)
     if not _valid_fit_output_name(output_name):
@@ -405,7 +465,7 @@ def fit_session(session,*,cancel=lambda:None,progress=lambda text:None,output_na
         if (not output.is_file() or file_hash(output)!=output_hash or output.stat().st_size!=output_bytes
                 or project_data(output)!=original):
             raise OSError('校准工程发布后哈希校验失败。')
-        if result['voicebank_calibrated']:
+        if register and result['voicebank_calibrated']:
             from calibration_workflow import register_expression
             reference=Path(spec['reference']).resolve();job=reference.parent.parent
             if reference==job/'audio'/(spec['voice']+'.wav'):
@@ -424,7 +484,18 @@ def fit_session(session,*,cancel=lambda:None,progress=lambda text:None,output_na
 
 
 def wait_and_fit(session,folder=None,*,cancel=lambda:None,progress=lambda text:None,timeout=1800,interval=.5,channel_mode=None,
-                 output_name='calibrated.svp',strength=None,on_state=lambda state:None):
+                 output_name='calibrated.svp',strength=None,on_state=lambda state:None,register=True):
+    session=Path(session).resolve()
+    if not session.is_file():raise FileNotFoundError('请选择已有的校准会话。')
+    try:
+        with exclusive_sidecar(session.parent/'.fit.lock'):
+            return _wait_and_fit(session,folder,cancel=cancel,progress=progress,timeout=timeout,interval=interval,
+                channel_mode=channel_mode,output_name=output_name,strength=strength,on_state=on_state,register=register)
+    except SidecarBusy as error:
+        raise ValueError('此校准会话正在其他窗口等待试音或拟合，请稍后继续。') from error
+
+
+def _wait_and_fit(session,folder,*,cancel,progress,timeout,interval,channel_mode,output_name,strength,on_state,register):
     if any(type(v) not in (int,float) or not math.isfinite(v) or v<=0 for v in (timeout,interval)):
         raise ValueError('等待时间无效。')
     collector=RenderCollector(session,folder,channel_mode=channel_mode);started=time.monotonic();last=None;last_state=None
@@ -438,7 +509,7 @@ def wait_and_fit(session,folder=None,*,cancel=lambda:None,progress=lambda text:N
             receipt,waiting=collector.collect(cancel)
             if receipt:
                 on_state({'phase':'fitting','files':{name:'validated' for name in receipt},'done':7,'total':7})
-                return fit_session(session,cancel=cancel,progress=progress,output_name=output_name,strength=strength)
+                return _fit_session(session,cancel=cancel,progress=progress,output_name=output_name,strength=strength,register=register)
         if time.monotonic()-started>=timeout:raise TimeoutError('等待试音超时。已保留会话，可完成分轨导出后继续。')
         # Cancellation stays responsive even with a longer caller polling interval.
         until=time.monotonic()+interval

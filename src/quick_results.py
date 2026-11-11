@@ -83,6 +83,12 @@ PRODUCER_LABELS = {
     'calibration_result': '声库校准',
     'project_reference': '工程附件',
 }
+BINDING_KINDS = ('project', 'mixdown', 'video')
+BINDING_LABELS = {
+    'project': 'SVP 工程',
+    'mixdown': 'Mixdown',
+    'video': '成品视频',
+}
 _RESUMABLE_ACTIONS = frozenset(('retry', 'continue', 'ready'))
 OPENABLE_SUFFIXES = frozenset(('.wav', '.flac', '.ogg', '.mp3', '.m4a', '.mp4', '.mkv', '.webm',
                                '.mid', '.midi', '.svp', '.ustx', '.vsqx', '.srt', '.vtt', '.ass', '.lrc',
@@ -220,6 +226,66 @@ def _artifact_details(row, by_id):
     }
 
 
+def _binding_projection(job, rows):
+    """Project active manual selections without treating them as inferred outputs."""
+    metadata = task_store.read_json(Path(job) / 'task.json')
+    bindings = metadata.get('bindings') if isinstance(metadata.get('bindings'), dict) else {}
+    by_id = {row['id']: row for row in rows}
+    projected = {}
+    for kind in BINDING_KINDS:
+        binding = bindings.get(kind)
+        if not isinstance(binding, dict):
+            continue
+        key = _text(binding.get('id'))
+        row = by_id.get(key)
+        if row is None:
+            continue
+        artifact = _artifact(job, row)
+        projected[kind] = {
+            'kind': kind,
+            'label': tr(BINDING_LABELS[kind]),
+            'id': key,
+            'path': artifact['path'],
+            'fileName': Path(artifact['path']).name,
+            'displayPath': artifact['displayPath'],
+            'state': artifact['state'],
+            'statusText': artifact['statusText'],
+            'available': artifact['available'],
+            'openable': artifact['openable'],
+            'sha256': artifact['sha256'],
+            'revision': artifact['revision'],
+        }
+    return projected
+
+
+def _binding_identity(job, kind):
+    metadata = task_store.read_json(Path(job) / 'task.json')
+    bindings = metadata.get('bindings') if isinstance(metadata.get('bindings'), dict) else {}
+    binding = bindings.get(kind) if isinstance(bindings, dict) else None
+    if not isinstance(binding, dict):
+        return '', ''
+    entry = binding.get('entry') if isinstance(binding.get('entry'), dict) else {}
+    return _text(binding.get('id')), _text(entry.get('revision'))
+
+
+def _require_binding_identity(job, kind, expected_id, expected_revision):
+    actual = _binding_identity(job, kind)
+    expected = (_text(expected_id), _text(expected_revision))
+    if actual != expected:
+        raise task_contract.ContractError('任务的人工登记已变化，请重新核对后再试。')
+    return actual
+
+
+def _artifact_index_revision(job):
+    """Return a cheap snapshot token for an explicit rebuild confirmation."""
+    path = Path(job) / 'artifacts.json'
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return ''
+    return f'{stat.st_size}:{stat.st_mtime_ns}'
+
+
 def _request_summary(row):
     request = row.get('request') if isinstance(row.get('request'), dict) else {}
     source_title = _text(request.get('source_title'))
@@ -321,6 +387,7 @@ def detail(job, check=None):
     status_text = _status_text(state)
     action = 'needs_review'
     artifacts, artifact_details, delivery, mix, open_path, targets = [], {}, [], [], None, {}
+    binding_rows = {}
     error_message = ''
     try:
         rows = task_contract.inspect(path, check=check)
@@ -340,6 +407,7 @@ def detail(job, check=None):
         artifacts = [_artifact(path, item) for item in ordered]
         by_id = {item['id']: item for item in rows}
         artifact_details = {item['id']: _artifact_details(item, by_id) for item in ordered}
+        binding_rows = _binding_projection(path, rows)
         if action == 'audio_ready' and not delivery:
             action = 'needs_review'
     except InterruptedError:
@@ -354,6 +422,8 @@ def detail(job, check=None):
     metadata = task_store.read_json(path / 'task.json')
     bindings = metadata.get('bindings') if isinstance(metadata.get('bindings'), dict) else {}
     has_video_binding = bool(bindings.get('video'))
+    has_project_binding = bool(bindings.get('project'))
+    has_mixdown_binding = bool(bindings.get('mixdown'))
     has_publication = bool(metadata.get('publication'))
     log_path = _task_log_path(path)
     request = _request_summary(row)
@@ -367,11 +437,21 @@ def detail(job, check=None):
         'canDispatch': not locked and not error_message and bool(delivery),
         'canRename': manageable,
         'canDelete': manageable,
+        'canRegisterProject': manageable,
+        'canRegisterMixdown': manageable,
+        'canUnbindProject': manageable and has_project_binding,
+        'canUnbindMixdown': manageable and has_mixdown_binding,
+        'canUnbindVideo': manageable and has_video_binding,
+        'canRebuildArtifacts': manageable,
         'canRegisterVideo': manageable and not has_video_binding and not has_publication,
+        'hasProjectBinding': has_project_binding,
+        'hasMixdownBinding': has_mixdown_binding,
         'hasVideoBinding': has_video_binding,
         'hasPublication': has_publication,
         'hasLog': log_path is not None,
         'logPath': str(log_path or ''),
+        'artifactIndexRevision': _artifact_index_revision(path),
+        'bindings': binding_rows if manageable else {},
         **request,
         'artifacts': artifacts,
         'artifactDetails': artifact_details,
@@ -410,6 +490,48 @@ def task_log(job):
     return path
 
 
+def register_external(job, kind, path, *, expected_binding_id, expected_binding_revision, check=None):
+    """Validate and bind an external SVP project or Mixdown without moving it."""
+    if kind not in ('project', 'mixdown'):
+        raise ValueError('Quick 只从此入口登记 SVP 工程或 Mixdown。')
+    from pipeline import job_lock
+
+    job = task_store.known_job(job)
+    source = Path(path).resolve()
+    with job_lock(job):
+        _cancelled(check)
+        _require_binding_identity(job, kind, expected_binding_id, expected_binding_revision)
+        return task_contract.bind(job, kind, source, validate=True, dependencies=None, check=check)
+
+
+def unlink_external(job, kind, *, expected_binding_id, expected_binding_revision, check=None):
+    """Remove one task reference while leaving the referenced file untouched."""
+    if kind not in BINDING_KINDS:
+        raise ValueError('未知的人工登记类型。')
+    from pipeline import job_lock
+
+    job = task_store.known_job(job)
+    with job_lock(job):
+        _cancelled(check)
+        artifact_id, revision = _require_binding_identity(
+            job, kind, expected_binding_id, expected_binding_revision)
+        if not artifact_id or not revision:
+            raise task_contract.ContractError('任务当前没有此项人工登记。')
+        task_contract.unbind(job, kind)
+        return artifact_id
+
+
+def rebuild_artifacts(job, *, expected_index_revision, check=None):
+    """Rebuild the task index after explicit confirmation, preserving its backup."""
+    job = task_store.known_job(job)
+    _cancelled(check)
+    if (_text(expected_index_revision) != _artifact_index_revision(job)):
+        raise task_contract.ContractError('任务文件清单已变化，请重新打开确认后再重建。')
+    _cancelled(check)
+    backup = task_contract.rebuild(job)
+    return str(backup or '')
+
+
 def register_existing_video(job, path, check=None):
     """Explicitly bind an independent local video without inferred upstreams."""
     from pipeline import job_lock
@@ -422,6 +544,7 @@ def register_existing_video(job, path, check=None):
 
 
 __all__ = (
-    'ARTIFACT_ROLES', 'ARTIFACT_STATES', 'TASK_STATES', 'OPENABLE_SUFFIXES',
-    'scan', 'detail', 'rename', 'delete', 'task_log', 'register_existing_video',
+    'ARTIFACT_ROLES', 'ARTIFACT_STATES', 'BINDING_KINDS', 'BINDING_LABELS', 'TASK_STATES',
+    'OPENABLE_SUFFIXES', 'scan', 'detail', 'rename', 'delete', 'task_log',
+    'register_existing_video', 'register_external', 'unlink_external', 'rebuild_artifacts',
 )

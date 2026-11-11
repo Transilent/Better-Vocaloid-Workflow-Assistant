@@ -80,7 +80,7 @@ ApplicationWindow {
     }
 
     onClosing: function(event) {
-        if (controller.workBusy && !closingAfterTask) {
+        if ((controller.workBusy || controller.calibration.view.busy) && !closingAfterTask) {
             event.accepted = false
             exitDialog.open()
         }
@@ -293,7 +293,11 @@ ApplicationWindow {
         }
         Component {
             id: tuningPage
-            TuningPage { theme: window.tokens; controller: window.controller.tuning }
+            TuningPage {
+                theme: window.tokens
+                controller: window.controller.tuning
+                onCalibrationRequested: voiceCalibration.open()
+            }
         }
         Component {
             id: mixdownPage
@@ -306,6 +310,35 @@ ApplicationWindow {
         Component {
             id: publicationPage
             PublicationPage { theme: window.tokens; controller: window.controller.publication }
+        }
+
+        Rectangle {
+            objectName: "backgroundCalibration"
+            Layout.fillWidth: true
+            Layout.preferredHeight: calibrationBar.implicitHeight + 10
+            visible: !voiceCalibration.visible && window.controller.calibration.view.busy
+            color: theme.surface
+            Rectangle { width: parent.width; height: 1; color: theme.line }
+            RowLayout {
+                id: calibrationBar
+                anchors.fill: parent
+                anchors.leftMargin: 16
+                anchors.rightMargin: 16
+                Text {
+                    Layout.fillWidth: true
+                    text: window.controller.text("声库校准") + " · " + window.controller.calibration.view.message
+                    elide: Text.ElideRight
+                    color: theme.text
+                    font.pixelSize: 13 * theme.scale
+                    textFormat: Text.PlainText
+                }
+                UiButton {
+                    objectName: "returnBackgroundCalibration"
+                    theme: window.tokens
+                    text: window.controller.text("查看校准")
+                    onClicked: voiceCalibration.open()
+                }
+            }
         }
 
         Rectangle {
@@ -415,6 +448,13 @@ ApplicationWindow {
                 }
             }
         }
+    }
+
+    CalibrationDialog {
+        id: voiceCalibration
+        theme: window.tokens
+        controller: window.controller.calibration
+        onBindingRequested: window.controller.navigate("tuning")
     }
 
     SubtitleDialog {

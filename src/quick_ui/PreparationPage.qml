@@ -318,6 +318,13 @@ ScrollView {
         }
     }
 
+    PreparationSourcesDialog {
+        id: sourceTools
+        theme: page.theme
+        controller: page.controller.preparationSources
+        onComponentsRequested: page.controller.navigate("components")
+    }
+
     FileDialog {
         id: musicDialog
         title: page.controller.text("选择本地音频")
@@ -573,10 +580,22 @@ ScrollView {
                         onTextEdited: page.controller.setPreparationField("source", text)
                     }
 
-                    HelperText {
+                    RowLayout {
                         Layout.fillWidth: true
-                        theme: page.theme
-                        text: page.controller.text("下载会保留原视频资料；登录与下载网络设置沿用现有任务逻辑。")
+                        UiButton {
+                            objectName: "bilibiliDownloadOptions"
+                            theme: page.theme
+                            text: "下载与账号…"
+                            enabled: !page.editLocked
+                            onClicked: sourceTools.openPane("download")
+                        }
+                        HelperText {
+                            Layout.fillWidth: true
+                            theme: page.theme
+                            text: page.controller.preparationSources.view.selectedDownload
+                                ? "复用 " + page.controller.preparationSources.view.selectedDownload
+                                : "保留原视频，也可复用同 BV 的已核验素材。"
+                        }
                     }
                 }
             }
@@ -869,6 +888,13 @@ ScrollView {
                         enabled: !page.editLocked && Boolean(page.field("recognize_lyrics"))
                             && String(page.field("lyrics_lookup")).trim().length > 0
                         onClicked: page.controller.fetchLyrics(String(page.field("lyrics_lookup")))
+                    }
+                    UiButton {
+                        objectName: "browseNeteaseVersions"
+                        theme: page.theme
+                        text: "查找版本…"
+                        enabled: !page.editLocked && Boolean(page.field("recognize_lyrics"))
+                        onClicked: sourceTools.openPane("lyrics")
                     }
                 }
             }
@@ -1580,6 +1606,14 @@ ScrollView {
                         visible: !page.taskRunning
                         enabled: !page.editLocked
                         onClicked: page.controller.startPreparation()
+                    }
+                    UiButton {
+                        objectName: "checkPreparationComponents"
+                        theme: page.theme
+                        text: "检查组件…"
+                        enabled: !page.editLocked
+                        visible: !page.taskRunning
+                        onClicked: sourceTools.openPane("check")
                     }
 
                     UiButton {
