@@ -33,7 +33,7 @@ Item {
     readonly property string stateLabel: page.labelForState()
     readonly property var actionItems: page.actionsFrom(view.actions)
     readonly property string coverPreviewUrl: page.textOf(view.coverPreview)
-    readonly property int coverSeconds: Math.max(0, Math.floor(page.number(view.coverSeconds, 20)))
+    readonly property real coverSeconds: Math.max(0, page.number(view.coverSeconds, 20))
     readonly property var selectedPlatforms: page.platformList(view.selectedPlatforms)
     readonly property bool bilibiliSelected: page.platformSelected("bilibili")
     readonly property bool xiaohongshuSelected: page.platformSelected("xiaohongshu")
@@ -90,21 +90,113 @@ Item {
 
     function coverModeValue(value) {
         const normalized = page.textOf(value).toLowerCase();
-        return normalized === "frame" || normalized === "custom" ? normalized : "original";
+        return normalized === "frame" || normalized === "custom" || normalized === "original-frame" ? normalized : "original";
     }
 
     function coverModeIndex() {
         const mode = page.coverModeValue(page.view.coverMode);
-        return mode === "frame" ? 1 : mode === "custom" ? 2 : 0;
+        return mode === "frame" ? 1 : mode === "custom" ? 2 : mode === "original-frame" ? 3 : 0;
     }
 
     function coverModeName() {
         const mode = page.coverModeValue(page.view.coverMode);
         if (mode === "frame")
             return page.controller.text("成品视频截帧");
+        if (mode === "original-frame")
+            return page.controller.text("本家原视频截帧");
         if (mode === "custom")
             return page.controller.text("自选图片");
         return page.controller.text("本家原始封面");
+    }
+
+    Dialog {
+        id: creditDialog
+        objectName: "publicationCreditDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(parent.width - 32, 490 * page.theme.scale)
+        modal: true
+        title: page.controller.text("生成标题和署名")
+        ColumnLayout {
+            anchors.fill: parent
+            ThemedTextField {
+                id: creditSong
+                objectName: "publicationCreditSong"
+                Layout.fillWidth: true
+                theme: page.theme
+                placeholderText: page.controller.text("歌名")
+                maximumLength: 80
+            }
+            ThemedTextField {
+                id: creditVoice
+                objectName: "publicationCreditVoice"
+                Layout.fillWidth: true
+                theme: page.theme
+                placeholderText: page.controller.text("本次歌姬")
+                maximumLength: 80
+            }
+            ThemedTextField {
+                id: creditName
+                objectName: "publicationCreditName"
+                Layout.fillWidth: true
+                theme: page.theme
+                placeholderText: page.controller.text("本次调音署名")
+                maximumLength: 80
+            }
+            CheckBox {
+                id: creditAll
+                visible: page.selectedPlatforms.length > 1
+                text: page.controller.text("同时应用到已选平台")
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                UiButton {
+                    theme: page.theme
+                    text: page.controller.text("仅添加署名")
+                    enabled: !!(creditVoice.text.trim() || creditName.text.trim())
+                    onClicked: {
+                        if (page.controller.applyTitleCredits("", creditVoice.text, creditName.text, false, creditAll.checked))
+                            creditDialog.close()
+                    }
+                }
+                UiButton {
+                    objectName: "publicationApplyCredits"
+                    theme: page.theme
+                    primary: true
+                    text: page.controller.text("应用标题和署名")
+                    enabled: !!creditSong.text.trim()
+                    onClicked: {
+                        if (page.controller.applyTitleCredits(creditSong.text, creditVoice.text, creditName.text, true, creditAll.checked))
+                            creditDialog.close()
+                    }
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: browserLog
+        objectName: "publicationBrowserLogDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(parent.width - 36, 760 * page.theme.scale)
+        height: Math.min(parent.height - 40, 450 * page.theme.scale)
+        modal: true
+        title: page.controller.text("B站填写日志")
+        standardButtons: Dialog.Close
+        onAboutToShow: logText.text = page.controller.browserLogTail()
+        ScrollView {
+            anchors.fill: parent
+            TextArea {
+                id: logText
+                objectName: "publicationBrowserLogText"
+                readOnly: true
+                selectByMouse: true
+                wrapMode: TextEdit.Wrap
+                textFormat: TextEdit.PlainText
+                color: page.theme.text
+            }
+        }
     }
 
     function aiIndex() {
@@ -817,6 +909,27 @@ Item {
                                 || page.controller.text("可先刷新任务，再单独选择成品视频或导入已有发布资料。")
                         }
 
+                        RowLayout {
+                            Layout.fillWidth: true
+                            ThemedTextField {
+                                id: publicationBv
+                                objectName: "publicationBv"
+                                theme: page.theme
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                placeholderText: page.controller.text("BV 号或本家视频链接")
+                                enabled: !page.busy
+                                onAccepted: if (text.trim()) page.controller.fetchSourceMetadata(text)
+                            }
+                            UiButton {
+                                objectName: "publicationFetchBv"
+                                theme: page.theme
+                                text: page.controller.text("读取本家资料")
+                                enabled: !page.busy && !!publicationBv.text.trim()
+                                onClicked: page.controller.fetchSourceMetadata(publicationBv.text)
+                            }
+                        }
+
                         SummaryRow {
                             theme: page.theme
                             caption: page.controller.text("任务")
@@ -1027,6 +1140,15 @@ Item {
                             theme: page.theme
                             heading: page.controller.text("标题")
 
+                            UiButton {
+                                objectName: "publicationTitleHelper"
+                                theme: page.theme
+                                quiet: true
+                                text: page.controller.text("标题与署名…")
+                                enabled: !page.busy && !page.view.bundleOnly
+                                onClicked: creditDialog.open()
+                            }
+
                             ThemedTextField {
                                 objectName: "publicationTitle"
                                 Layout.fillWidth: true
@@ -1209,33 +1331,48 @@ Item {
                                     { label: page.controller.text("本家原始封面"), value: "original" },
                                     { label: page.controller.text("成品视频截帧"), value: "frame" },
                                     { label: page.controller.text("自选图片"), value: "custom" }
-                                ]
+                                ].concat(page.view.canFetchOriginalCover || page.coverModeIndex() === 3
+                                    ? [{ label: page.controller.text("本家原视频截帧"), value: "original-frame" }] : [])
                                 currentIndex: page.coverModeIndex()
                                 enabled: !page.busy
                                 Accessible.name: page.controller.text("封面来源")
                                 onActivated: page.controller.setField("coverMode", currentValue)
                             }
 
+                            UiButton {
+                                objectName: "publicationFetchOriginalCover"
+                                theme: page.theme
+                                quiet: true
+                                visible: !!page.view.canFetchOriginalCover
+                                text: page.controller.text("获取或刷新本家封面")
+                                enabled: !page.busy
+                                onClicked: page.controller.refreshOriginalCover()
+                            }
+
                             RowLayout {
                                 Layout.fillWidth: true
-                                visible: page.coverModeValue(page.view.coverMode) === "frame"
+                                visible: ["frame", "original-frame"].indexOf(page.coverModeValue(page.view.coverMode)) >= 0
                                 spacing: Math.round(8 * page.theme.scale)
                                 LabelText {
                                     Layout.alignment: Qt.AlignVCenter
                                     theme: page.theme
                                     text: page.controller.text("截图时间")
                                 }
-                                SpinBox {
+                                ThemedTextField {
                                     id: coverSecondsInput
+                                    objectName: "publicationCoverSeconds"
                                     Layout.fillWidth: true
-                                    from: 0
-                                    to: 86400
-                                    stepSize: 1
-                                    editable: true
-                                    value: page.coverSeconds
+                                    theme: page.theme
+                                    text: page.coverSeconds.toFixed(2)
+                                    validator: DoubleValidator { bottom: 0; top: 86399.99; decimals: 2; notation: DoubleValidator.StandardNotation }
                                     enabled: !page.busy
                                     Accessible.name: page.controller.text("封面截图时间（秒）")
-                                    onValueModified: page.controller.setField("coverSeconds", value)
+                                    onEditingFinished: {
+                                        const seconds = Number.fromLocaleString(Qt.locale(), text)
+                                        if (acceptableInput && isFinite(seconds))
+                                            page.controller.setField("coverSeconds", seconds)
+                                        text = page.coverSeconds.toFixed(2)
+                                    }
                                 }
                                 Text {
                                     Layout.alignment: Qt.AlignVCenter
@@ -1280,6 +1417,8 @@ Item {
                                     ? page.controller.text("使用来源任务登记的本家封面；本地任务没有原封面时会由控制器拒绝。")
                                     : page.coverModeValue(page.view.coverMode) === "frame"
                                         ? page.controller.text("从当前已核验成品视频截取画面；成品不可读取时会由控制器拒绝。")
+                                        : page.coverModeValue(page.view.coverMode) === "original-frame"
+                                        ? page.controller.text("从本家原视频截帧。缺少原视频时，预览或生成会先补齐。")
                                         : page.controller.text("支持 JPG、PNG 或 WebP；生成发布包时会统一为可用封面。")
                             }
 
@@ -1573,6 +1712,7 @@ Item {
                                         Layout.fillWidth: true
                                         text: page.textOf(handoffPlate.handoff.fields
                                             ? handoffPlate.handoff.fields.title : "")
+                                            || page.textOf(handoffPlate.handoff.error)
                                             || page.controller.text("核验后显示该平台冻结文稿")
                                         color: page.theme.text
                                         font.pixelSize: Math.round(11 * page.theme.scale)
@@ -1928,6 +2068,14 @@ Item {
                                     : page.controller.text("停止填写")
                                 enabled: !page.busy && page.browserSession.canStop === true
                                 onClicked: page.controller.stopFill()
+                            }
+                            UiButton {
+                                objectName: "publicationOpenBrowserLog"
+                                theme: page.theme
+                                quiet: true
+                                text: page.controller.text("查看填写日志")
+                                enabled: page.browserSession.hasLog === true
+                                onClicked: browserLog.open()
                             }
                         }
 

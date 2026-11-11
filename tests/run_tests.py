@@ -50,11 +50,13 @@ names = ('test_mixdown_realtime_core.py', 'test_quick_mixdown_state.py', 'test_t
 qt6_tests = ('test_quick_video.py', 'test_quick_publication.py', 'test_quick_mixdown_state.py',
              'test_quick_tuning_capabilities.py', 'test_quick_workspace_capabilities.py',
              'test_quick_publication_platform_handoffs_20261111.py',
+             'test_quick_publication_controls.py',
              'test_quick_calibration_subtitle_recovery.py', 'test_quick_support_parity.py',
              'test_quick_task_safety.py', 'test_quick_tuning_session_parity_20261111.py')
 names = ('test_quick_video.py', 'test_quick_publication.py', 'test_quick_tuning_capabilities.py',
          'test_quick_workspace_capabilities.py', 'test_quick_results_external_bindings.py',
          'test_quick_publication_platform_handoffs_20261111.py', 'test_quick_media_handoff.py') + names
+names = ('test_quick_publication_controls.py',) + names
 names = ('test_preparation_presets.py', 'test_quick_calibration_subtitle_recovery.py',
          'test_quick_support_parity.py', 'test_quick_task_safety.py', 'test_quick_tuning_session_parity_20261111.py') + names
 names = ('test_runner_contract.py', 'test_pipeline_safety_fixes.py', 'test_tuning_audit_fixes.py') + names

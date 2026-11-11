@@ -31,6 +31,7 @@ except ModuleNotFoundError as error:
     unittest.main(exit=True)
 
 import publication
+import task_contract
 import quick_publication
 from quick_publication import QuickPublication
 
@@ -80,7 +81,7 @@ class Owner(QObject):
         self.copied = []
         self.verified_roles = []
 
-    def verify_task_artifact(self, job, row, role, check=None):
+    def verify_task_artifact(self, job, row, role, check=None, *, platform=None):
         if check is not None and check():
             raise InterruptedError('cancelled')
         self.verified_roles.append(role)
@@ -138,7 +139,11 @@ class PublicationFixture(unittest.TestCase):
         }), encoding='utf-8')
         self.video = self.job / 'final.mp4'
         self.video.write_bytes(b'quick-publication-platform-fixture-video')
-        self.video_row = artifact_row(self.video, 'video')
+        known = patch('task_store.job_directories', return_value=[self.job])
+        known.start()
+        self.addCleanup(known.stop)
+        artifact = task_contract.bind(self.job, 'video', self.video, validate=False, dependencies=[])
+        self.video_row = next(row for row in task_contract.inspect(self.job) if row['id'] == artifact)
         self.owner = Owner(self.root / 'draft.json', self.root / 'cache/publish-browser')
         self.worker = FakeWorker()
         self.controller = QuickPublication(self.owner, self.worker)
@@ -198,6 +203,10 @@ class PublicationFixture(unittest.TestCase):
             'final_publish': 'human_only',
         }
         (bundle / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False), encoding='utf-8')
+        (bundle / 'cleanup-inventory.json').write_text(json.dumps({'entries': [
+            {'file': path.name, 'sha256': publication.file_hash(path)}
+            for path in bundle.iterdir() if path.name != 'manifest.json'
+        ]}), encoding='utf-8')
         return bundle, manifest
 
     def prepare(self, both=False):

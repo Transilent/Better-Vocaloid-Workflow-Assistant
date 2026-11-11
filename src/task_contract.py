@@ -478,9 +478,29 @@ def rebuild(job):
     return backup if backup.exists() else None
 
 
-def inspect(job, *, verify=True, check=None, artifact_ids=None):
+def inspect(job, *, verify=True, check=None, artifact_ids=None, publication_platform=None):
     data = read(job)
     entries = data['entries']
+    if publication_platform is not None and publication_platform not in ('bilibili', 'xiaohongshu'):
+        raise ContractError('未知发布平台。')
+
+    def dependencies(entry):
+        for dep in entry['dependencies']:
+            if publication_platform is not None and entry['role'] == 'publication':
+                asset = entries.get(dep['id'])
+                if asset and asset['role'] == 'publication_asset':
+                    name = resolve(job, asset).name
+                    # Only the fixed, generated assets of the other platform are
+                    # optional. A bad manifest, video, base cover or source is
+                    # a failure on both paths.
+                    other = 'xiaohongshu' if publication_platform == 'bilibili' else 'bilibili'
+                    other_names = {other + '_标题.txt', other + '_简介.txt'}
+                    if other == 'bilibili':
+                        other_names.update(('cover-bilibili-4-3.jpg', 'cover-bilibili-16-9.jpg'))
+                    if name in other_names:
+                        continue
+            yield dep
+
     scope = None
     if artifact_ids is not None:
         scope, pending = set(), list(artifact_ids)
@@ -488,7 +508,7 @@ def inspect(job, *, verify=True, check=None, artifact_ids=None):
             key = pending.pop()
             if key not in scope and key in entries:
                 scope.add(key)
-                pending.extend(dep['id'] for dep in entries[key]['dependencies'])
+                pending.extend(dep['id'] for dep in dependencies(entries[key]))
     results, own = {}, {}
     hashes = {}
     for key, entry in entries.items():
@@ -527,7 +547,7 @@ def inspect(job, *, verify=True, check=None, artifact_ids=None):
         if stage.get('state') == 'invalidated' or (stage.get('generation')
                 and stage.get('generation') != entry.get('generation')):
             value = 'stale'
-        for dep in entry['dependencies']:
+        for dep in dependencies(entry):
             other = data['entries'].get(dep['id'])
             if (not other or other['revision'] != dep['revision']
                     or state(dep['id'], visiting | {key}) not in ('verified', 'unchecked')):
@@ -745,7 +765,7 @@ def handoff(job, *, verify=False, rows=None):
     return 'ready'
 
 
-def register_publication(job, bundle, *, expected_video=None, check=None):
+def register_publication(job, bundle, *, expected_video=None, new_video_binding=None, check=None):
     job = Path(job).resolve()
     bundle = _safe(bundle)
     manifest = _json(bundle / 'manifest.json')
@@ -753,8 +773,15 @@ def register_publication(job, bundle, *, expected_video=None, check=None):
         raise ContractError('发布资料与来源任务不一致。')
     video = _safe(manifest['video']['path'])
     video_sha = manifest['video']['sha256']
+    video_stat = video.stat()
     if file_hash(video, check=check) != video_sha:
         raise ContractError('成品视频在准备发布期间发生变化。')
+    new_entry = None
+    if new_video_binding is not None:
+        if (expected_video is not None or not isinstance(new_video_binding, tuple)
+                or len(new_video_binding) != 2):
+            raise ContractError('待登记成品的原绑定版本无效。')
+        new_entry = _entry(job, video, 'video', 'human', expected=video_sha, check=check)
     if expected_video is not None:
         if (expected_video.get('role') != 'video' or expected_video.get('sha256') != video_sha
                 or Path(expected_video.get('path', '')).resolve() != video):
@@ -765,7 +792,10 @@ def register_publication(job, bundle, *, expected_video=None, check=None):
         name = item['file']
         if Path(name).name != name or name in ('.', '..'): raise ContractError('发布产物路径无效。')
         if name == 'manifest.json': continue
-        assets.append(_entry(job, bundle / name, 'publication_asset', 'publication', expected=item['sha256']))
+        row = _entry(job, bundle / name, 'publication_asset', 'publication', check=check)
+        if row[1]['sha256'] != item['sha256']:
+            raise ContractError('发布文件在登记前已改变：' + name)
+        assets.append(row)
     sources = []
     for name in ('source-info.json', 'upstream-info.json', '发布简介草稿.txt'):
         path = Path(job) / name
@@ -785,17 +815,32 @@ def register_publication(job, bundle, *, expected_video=None, check=None):
     # Older clients can deliberately prepare an unregistered local clip. If a
     # matching binding exists, preserve its exact producer dependencies.
     before = _metadata(job).get('bindings', {}).get('video')
-    if expected_video is None and not matching_video(before):
+    if expected_video is None and new_entry is None and not matching_video(before):
         bind(job, 'video', video, validate=False, expected_sha256=video_sha)
     with _locked(job):
         data, meta = read(job), _metadata(job)
         binding = meta.get('bindings', {}).get('video')
-        if not matching_video(binding):
-            raise ContractError('登记前成品视频或上游修订已变化，请重新交接。')
-        current = inspect(job, verify=False, check=check, artifact_ids=(binding['id'],))
-        if not any(row['id'] == binding['id'] and row['state'] == 'unchecked'
-                   and row['revision'] == binding['entry']['revision'] for row in current):
-            raise ContractError('登记前成品视频已失效，请重新交接。')
+        now = video.stat()
+        if (now.st_size, now.st_mtime_ns, now.st_ctime_ns, now.st_ino) != (
+                video_stat.st_size, video_stat.st_mtime_ns, video_stat.st_ctime_ns, video_stat.st_ino):
+            raise ContractError('成品在登记前已改变，请重新选择。')
+        if new_entry is not None:
+            actual = (binding['id'], binding['entry']['revision']) if binding else ('', '')
+            if actual != new_video_binding:
+                raise ContractError('已有成品登记在准备期间变化，请重新选择。')
+            video_id, video_row = new_entry
+            if binding and binding['id'] != video_id and binding['id'] in data['entries']:
+                data['entries'][binding['id']]['active'] = False
+            binding = {'id': video_id, 'entry': video_row, 'files': {}}
+            data['entries'][video_id] = video_row
+            meta.setdefault('bindings', {})['video'] = binding
+        else:
+            if not matching_video(binding):
+                raise ContractError('登记前成品视频或上游修订已变化，请重新交接。')
+            current = inspect(job, verify=False, check=check, artifact_ids=(binding['id'],))
+            if not any(row['id'] == binding['id'] and row['state'] == 'unchecked'
+                       and row['revision'] == binding['entry']['revision'] for row in current):
+                raise ContractError('登记前成品视频已失效，请重新交接。')
         if check and check():
             raise InterruptedError('已取消发布资料登记。')
         entry['dependencies'] = [{'id': binding['id'], 'revision': binding['entry']['revision']}]
@@ -808,8 +853,12 @@ def register_publication(job, bundle, *, expected_video=None, check=None):
         data['entries'][key] = entry
         meta['publication'] = {'id': key, 'entry': entry, 'platforms': {}, 'final_publish': 'human_only',
                                'files': dict(assets + sources)}
+        if len(data['entries']) > MAX_ENTRIES:
+            raise ContractError('产物条目过多，请另建任务。')
         atomic_json(Path(job) / 'task.json', meta)
         _write(job, data)
+    return {'video': {'id': binding['id'], **binding['entry'], 'path': str(video), 'state': 'verified'},
+            'bundle': {'id': key, **entry, 'path': str(bundle / 'manifest.json'), 'state': 'verified'}}
 
 
 def publication_state(bundle, platform, state):

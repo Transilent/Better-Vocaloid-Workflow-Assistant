@@ -43,6 +43,7 @@
     "tests/test_quick_workspace_capabilities.py",
     "tests/test_quick_results_external_bindings.py",
     "tests/test_quick_publication_platform_handoffs_20261111.py",
+    "tests/test_quick_publication_controls.py",
     "tests/test_preparation_presets.py",
     "tests/test_quick_calibration_subtitle_recovery.py",
     "tests/test_quick_support_parity.py",

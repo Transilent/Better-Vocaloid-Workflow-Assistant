@@ -28,7 +28,9 @@ except ModuleNotFoundError as error:
 
 import publication
 import quick_publication
+import task_contract
 from quick_publication import QuickPublication
+from quick_media_handoff import verify_task_artifact
 
 
 APP = QCoreApplication.instance() or QCoreApplication([])
@@ -72,11 +74,11 @@ class Owner(QObject):
         self.copied = []
         self.verified_roles = []
 
-    def verify_task_artifact(self, job, row, role, check=None):
+    def verify_task_artifact(self, job, row, role, check=None, *, platform=None):
         if check is not None and check():
             raise InterruptedError('cancelled')
         self.verified_roles.append(role)
-        return dict(row)
+        return verify_task_artifact(job, row, role, check=check, platform=platform)
 
     def verify_publication_bundle(self, job, bundle, check=None):
         if check is not None and check():
@@ -115,7 +117,11 @@ class QuickPublicationTests(unittest.TestCase):
         }), encoding='utf-8')
         self.video = self.job / 'final.mp4'
         self.video.write_bytes(b'fake-mp4-registered-video')
-        self.video_row = artifact_row(self.video, 'video')
+        known = patch('task_store.job_directories', return_value=[self.job])
+        known.start()
+        self.addCleanup(known.stop)
+        video_id = task_contract.bind(self.job, 'video', self.video, validate=False, dependencies=[])
+        self.video_row = next(row for row in task_contract.inspect(self.job) if row['id'] == video_id)
         self.owner = Owner(self.root / 'quick-draft.json')
         self.worker = FakeWorker()
         self.controller = QuickPublication(self.owner, self.worker)
@@ -176,6 +182,7 @@ class QuickPublicationTests(unittest.TestCase):
             self.assertEqual(kwargs['expected_video']['id'], self.video_row['id'])
             self.assertEqual(kwargs['cover_mode'], 'frame')
             self.assertTrue(callable(kwargs['check']))
+            self.assertFalse(kwargs['register'])
             return bundle
 
         with patch.object(quick_publication.publication, 'prepare', side_effect=make) as prepare, \
@@ -183,7 +190,8 @@ class QuickPublicationTests(unittest.TestCase):
             self.assertTrue(self.controller.prepareBundle())
         prepare.assert_called_once()
         self.assertIn('video', self.owner.verified_roles)
-        self.assertIn('publication', self.owner.verified_roles)
+        self.assertEqual(task_contract.inspect(self.job, artifact_ids=(
+            self.controller._state.bundle_ref.id,))[-1]['state'], 'verified')
         self.assertEqual(self.controller.view['bundle'], str(bundle.resolve()))
         self.assertTrue(self.controller.view['verified'])
         self.assertFalse(self.controller.view['bundleStale'])
@@ -214,8 +222,8 @@ class QuickPublicationTests(unittest.TestCase):
             'final_publish': 'human_only',
         }
         (bundle / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False), encoding='utf-8')
-        bundle_row = artifact_row(bundle / 'manifest.json', 'publication',
-                                  identifier='3' * 32, revision='4' * 64)
+        bundle_row = task_contract.register_publication(self.job, bundle,
+                                                        expected_video=self.video_row)['bundle']
         handoff = {
             'fields': manifest['content']['xiaohongshu'],
             'video': self.video.resolve(), 'cover': cover.resolve(), 'stamps': {},
@@ -286,26 +294,14 @@ class QuickPublicationTests(unittest.TestCase):
             'kind': 'local', 'title': '显式绑定歌', 'owner': {},
         }, ensure_ascii=False), encoding='utf-8')
         (self.job / '发布简介草稿.txt').write_text('本家与 STAFF 草稿', encoding='utf-8')
-        bind_calls = []
-        registered = {
-            'id': 'a' * 32, 'revision': 'b' * 64,
-            'sha256': publication.file_hash(self.video), 'path': str(self.video.resolve()),
-            'bytes': self.video.stat().st_size, 'role': 'video', 'state': 'verified',
-            'available': True, 'dependencies': [],
-        }
-
-        def fake_bind(job, kind, path, **kwargs):
-            bind_calls.append((Path(job), kind, Path(path), kwargs))
-            return registered['id']
-
-        with patch('task_store.known_job', side_effect=lambda value: Path(value).resolve()), \
-                patch('task_store.locked', return_value=False), \
-                patch('task_contract.bind', side_effect=fake_bind), \
-                patch('task_contract.inspect', return_value=[registered]), \
-                patch.object(quick_publication.publication, 'inspect_video', return_value={'duration': 10.0}):
+        new_video = self.job / 'new.mp4'
+        new_video.write_bytes(b'new chosen video')
+        old_meta = (self.job / 'task.json').read_bytes()
+        registered = {'sha256': publication.file_hash(new_video), 'bytes': new_video.stat().st_size}
+        with patch.object(quick_publication.publication, 'inspect_video', return_value={'duration': 10.0}):
             self.assertTrue(self.controller.chooseTask(str(self.job)))
-            self.assertTrue(self.controller.chooseVideo(QUrl.fromLocalFile(str(self.video))))
-            self.assertEqual(bind_calls, [], 'choosing a file mutated the task binding')
+            self.assertTrue(self.controller.chooseVideo(QUrl.fromLocalFile(str(new_video))))
+            self.assertEqual((self.job / 'task.json').read_bytes(), old_meta)
             self.configure_content()
             self.assertTrue(self.controller.nextStep())
             self.assertTrue(self.controller.nextStep())
@@ -320,7 +316,7 @@ class QuickPublicationTests(unittest.TestCase):
                 manifest = {
                     'version': 2, 'state': 'prepared', 'source_job': str(self.job.resolve()),
                     'source_bv': None,
-                    'video': {'path': str(self.video.resolve()), 'sha256': registered['sha256'],
+                    'video': {'path': str(new_video.resolve()), 'sha256': registered['sha256'],
                               'bytes': registered['bytes'], 'duration': 10.0},
                     'cover': {'kind': 'frame', 'seconds': float(seconds),
                               'sha256': publication.file_hash(cover)},
@@ -334,14 +330,62 @@ class QuickPublicationTests(unittest.TestCase):
             with patch.object(quick_publication.publication, 'prepare', side_effect=prepare), \
                     patch.object(quick_publication.publication, 'load_bundle',
                                  side_effect=lambda *args, **kwargs: captured['manifest']):
-                self.assertTrue(self.controller.prepareBundle())
-        self.assertEqual(len(bind_calls), 1)
-        self.assertEqual(bind_calls[0][1], 'video')
-        self.assertEqual(bind_calls[0][2], self.video.resolve())
-        self.assertEqual(bind_calls[0][3]['dependencies'], [])
-        self.assertEqual(captured['expected_video']['id'], registered['id'])
-        self.assertEqual(self.controller.view['video'], str(self.video.resolve()))
+                original = self.controller._handoffs_for_snapshot
+                def cancel_before(*args, **kwargs):
+                    result = original(*args, **kwargs)
+                    self.worker.cancel()
+                    return result
+                with patch.object(self.controller, '_handoffs_for_snapshot', side_effect=cancel_before):
+                    self.assertTrue(self.controller.prepareBundle())
+                    self.assertEqual(self.controller.view['state'], 'cancelled')
+                    self.assertEqual((self.job / 'task.json').read_bytes(), old_meta)
+                original_commit = task_contract.register_publication
+                def stop_after(*args, **kwargs):
+                    value = original_commit(*args, **kwargs)
+                    self.worker.cancel()
+                    return value
+                with patch.object(task_contract, 'register_publication', side_effect=stop_after):
+                    self.assertTrue(self.controller.prepareBundle())
+        self.assertEqual(task_contract.selected(self.job, 'video'), new_video.resolve())
+        self.assertFalse(captured['register'])
+        self.assertEqual(captured['expected_video']['sha256'], registered['sha256'])
+        self.assertEqual(self.controller.view['video'], str(new_video.resolve()))
         self.assertTrue(self.controller.view['verified'])
+
+    def test_platform_variant_failure_keeps_other_handoff_ready(self):
+        bundle = self.root / 'two-platforms'
+        bundle.mkdir()
+        cover = bundle / 'cover.jpg'
+        cover.write_bytes(b'common-cover')
+        variant = bundle / 'cover-bilibili-4-3.jpg'
+        variant.write_bytes(b'bilibili-cover')
+        content = {platform: {'title': '离线测试', 'description': '本家和 STAFF',
+                   'tags': [], 'ai_generated': False, 'rights': '已核对'}
+                   for platform in ('bilibili', 'xiaohongshu')}
+        manifest = bundle / 'manifest.json'
+        manifest.write_text(json.dumps({
+            'version': 2, 'state': 'prepared', 'source_job': str(self.job),
+            'final_publish': 'human_only', 'video': dict(self.video_row),
+            'cover': {'sha256': publication.file_hash(cover), 'kind': 'frame'},
+            'content': content, 'platform_covers': {'bilibili': {'4:3': {
+                'file': variant.name, 'sha256': publication.file_hash(variant)}}},
+        }, ensure_ascii=False), encoding='utf-8')
+        (bundle / 'cleanup-inventory.json').write_text(json.dumps({'entries': [
+            {'file': p.name, 'sha256': publication.file_hash(p)} for p in (cover, variant)
+        ]}), encoding='utf-8')
+        receipt = task_contract.register_publication(self.job, bundle, expected_video=self.video_row)
+        self.assertTrue(self.controller.accept_task(self.job, self.video_row, receipt['bundle']))
+        self.assertTrue(self.controller.checkBundle())
+        self.assertTrue(self.controller.view['handoffs']['bilibili']['ready'])
+        self.assertTrue(self.controller.view['handoffs']['xiaohongshu']['ready'])
+        variant.write_bytes(b'changed variant')
+        self.assertTrue(self.controller.checkBundle())
+        self.assertFalse(self.controller.view['handoffs']['bilibili']['ready'])
+        self.assertTrue(self.controller.view['handoffs']['xiaohongshu']['ready'])
+        self.assertTrue(self.controller.copyFieldFor('xiaohongshu', 'title'))
+        self.assertFalse(self.controller.copyFieldFor('bilibili', 'title'))
+        cover.write_bytes(b'changed shared cover')
+        self.assertFalse(self.controller.copyFieldFor('xiaohongshu', 'title'))
 
     def test_imported_bundle_checks_without_source_task_and_keeps_human_only_gate(self):
         bundle = self.root / 'standalone-bundle'

@@ -37,8 +37,9 @@ BILIBILI = 'bilibili'
 XIAOHONGSHU = 'xiaohongshu'
 PLATFORMS = (BILIBILI, XIAOHONGSHU)
 PLATFORM_LABELS = {BILIBILI: 'B站', XIAOHONGSHU: '小红书'}
-COVER_MODES = ('original', 'custom', 'frame')
-COVER_LABELS = {'original': '本家原封面', 'custom': '本地图片', 'frame': '视频画面'}
+COVER_MODES = ('original', 'custom', 'frame', 'original-frame')
+COVER_LABELS = {'original': '本家原封面', 'custom': '本地图片', 'frame': '成品视频截帧',
+                'original-frame': '本家原视频截帧'}
 TAG_LIMITS = {BILIBILI: (10, 20), XIAOHONGSHU: (10, 20)}
 RIGHTS_MAX_CHARS = 500
 IMAGE_SUFFIXES = frozenset(('.jpg', '.jpeg', '.png', '.webp'))
@@ -290,6 +291,7 @@ class _PublicationState:
     source_stamp: tuple = ()
     bundle_stamp: tuple = ()
     handoffs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    platform_errors: dict[str, str] = field(default_factory=dict)
     cover_ratio: str = '16:9'
     cover_variants: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     browser: _BrowserSession = field(default_factory=_BrowserSession)
@@ -297,7 +299,6 @@ class _PublicationState:
     bundle_only: bool = False
     task_choices: list[dict[str, Any]] = field(default_factory=list)
     task_message: str = '尚未读取任务列表。'
-    browser_log: str = ''
 
     def draft(self) -> _PlatformDraft:
         if self.platform not in self.drafts:
@@ -488,7 +489,8 @@ class QuickPublication(QObject):
                         draft.ai = fields.get('ai_generated') if type(fields.get('ai_generated')) is bool else None
                         draft.rights = _text(fields.get('rights')) or None
                         cover = data.get('cover') if isinstance(data.get('cover'), dict) else {}
-                        draft.cover_mode = _text(cover.get('kind')) or 'frame'
+                        draft.cover_mode = ('original-frame' if cover.get('frame_source') == 'original'
+                                            else _text(cover.get('kind')) or 'frame')
                         if draft.cover_mode not in COVER_MODES:
                             raise ValueError('发布资料包含未知封面来源。')
                         seconds = cover.get('seconds')
@@ -614,13 +616,39 @@ class QuickPublication(QObject):
         if not job_text:
             self._notice('请先选择一个来源任务。')
             return False
+        return self._load_source_task(job_text)
+
+    @Slot(str, result=bool)
+    def fetchSourceMetadata(self, source):
+        try:
+            from common import extract_bv
+            from source_contract import reject_unsupported_bilibili_subpage
+            value = _text(source).strip()
+            reject_unsupported_bilibili_subpage(value)
+            bv = extract_bv(value)
+        except (OSError, ValueError) as exc:
+            self._notice(str(exc))
+            return False
+        return self._load_source_task('', bv=bv)
+
+    def _load_source_task(self, job_text, *, bv=''):
         with self._lock:
             if self._closed or self._active_kind or self._worker.kind:
                 self._notice('发布操作正在运行，暂时不能切换任务。')
                 return False
         def work(stop, send):
             from task_store import known_job
-            job_path = known_job(job_text)
+            if bv:
+                from common import remember_job
+                from pipeline import create_job, run
+                from preparation_commands import graph_for
+                _check_stop(stop)
+                send({'message': '正在读取本家资料；这一步只准备来源，不下载视频。'})
+                job_path = create_job(bv, remember=False, workflow_graph=graph_for('separation'))
+                run(job_path, until='metadata')
+                remember_job(job_path)
+            else:
+                job_path = known_job(job_text)
             _check_stop(stop)
             request = _optional_json(job_path / 'request.json')
             if not isinstance(request, dict):
@@ -693,6 +721,47 @@ class QuickPublication(QObject):
             self._emit()
 
         return self._start_work('publication-task-load', work, finish)
+
+    @Slot(result=bool)
+    def refreshOriginalCover(self):
+        with self._lock:
+            if self._closed or self._state.busy or self._worker.kind or self._state.source_mode != 'bilibili':
+                return False
+            job = self._state.job
+            if not job:
+                return False
+
+        def work(stop, send):
+            from cover_art import job_cover, cached_cover
+            from pipeline import job_lock
+            from task_store import known_job
+            path = known_job(job)
+            send({'message': '正在获取本家原始封面…'})
+            _check_stop(stop)
+            with job_lock(path):
+                info = publication.read_source_info(path)
+                job_cover(path, refresh=True)
+                checked = cached_cover(info, path)
+            if not checked:
+                raise ValueError('无法核验下载后的封面。')
+            return checked[0]
+
+        def finish(value, error):
+            if error is not None:
+                self._notice(str(error))
+                return
+            with self._lock:
+                self._state.original_cover = str(value)
+                for draft in self._state.drafts.values():
+                    if draft.cover_mode == 'original':
+                        draft.cover_preview = _local_url(value)
+                if self._state.video_ref:
+                    self._state.source_stamp = self._source_stamp(Path(job), self._state.video_ref.path, value)
+                self._state.message = '本家封面已核验，可以在封面来源中选择。'
+                self._recompute_locked()
+            self._emit()
+
+        return self._start_work('publication-original-cover', work, finish)
 
     @Slot(QUrl)
     def chooseVideo(self, url):
@@ -922,7 +991,8 @@ class QuickPublication(QObject):
                 tags=_tags_text(fields.get('tags')),
                 ai=fields.get('ai_generated') if type(fields.get('ai_generated')) is bool else None,
                 rights=_text(fields.get('rights')) or None,
-                cover_mode=_text(cover.get('kind')) or 'frame',
+                cover_mode=('original-frame' if cover.get('frame_source') == 'original'
+                            else _text(cover.get('kind')) or 'frame'),
                 cover_seconds=float(cover.get('seconds')) if isinstance(cover.get('seconds'), (int, float)) else 20.0,
                 cover_file=_text(cover.get('source')) if _text(cover.get('kind')) == 'custom' else '',
                 cover_preview=_local_url(bundle / 'cover.jpg'))
@@ -1041,6 +1111,8 @@ class QuickPublication(QObject):
                         raise ValueError('未知封面来源。')
                     if mode == 'original' and not Path(self._state.original_cover).is_file():
                         raise ValueError('没有可核验的本家原封面；请选择本地图片或视频画面。')
+                    if mode == 'original-frame' and self._state.source_mode != 'bilibili':
+                        raise ValueError('只有 B站来源任务可以截取本家原视频。')
                     if mode != draft.cover_mode:
                         for item in self._state.drafts.values():
                             item.cover_mode = mode
@@ -1080,6 +1152,33 @@ class QuickPublication(QObject):
         except Exception as exc:
             self._notice(str(exc))
             return False
+
+    @Slot(str, str, str, bool, bool, result=bool)
+    def applyTitleCredits(self, song, voice, credit, include_title, all_platforms):
+        song, voice, credit = (_text(value).strip() for value in (song, voice, credit))
+        if (include_title and not song) or (not include_title and not (voice or credit)):
+            return False
+        if any(len(value) > 80 or '\n' in value or '\r' in value for value in (song, voice, credit)):
+            self._notice('歌名、歌姬和调音署名请分别填写一行（最多 80 字）。')
+            return False
+        with self._lock:
+            if self._closed or self._active_kind or self._state.bundle_only:
+                return False
+            platforms = self._state.selected_platforms if all_platforms else (self._state.platform,)
+            for platform in platforms:
+                draft = self._state.drafts[platform]
+                if include_title:
+                    draft.title = f'【{voice}翻唱】{song}' if voice else f'【翻唱】{song}'
+                lines = ([f'本次翻唱歌姬：{voice}'] if voice else []) + ([f'本次调音：{credit}'] if credit else [])
+                missing = [line for line in lines if line not in draft.description.splitlines()]
+                if missing:
+                    draft.description = '\n'.join(missing) + ('\n\n' + draft.description if draft.description else '')
+            self._mark_stale_locked('文稿已修改；原发布资料已过期。')
+            self._state.message = '已应用标题和署名。请按平台核对内容与字数。'
+            self._recompute_locked()
+            self._save_draft_safe_locked()
+        self._emit()
+        return True
 
     @Slot(str)
     def editPlatform(self, platform):
@@ -1207,21 +1306,38 @@ class QuickPublication(QObject):
                 if path is None:
                     raise ValueError('没有可核验的本家原封面。')
                 return {'path': str(path), 'temporary': False, 'message': '已校验本家原封面。'}
-            if request.mode != 'frame':
+            if request.mode not in ('frame', 'original-frame'):
                 raise ValueError('未知封面来源。')
             _check_stop(stop)
             directory = Path(tempfile.mkdtemp(prefix='vwa-quick-publication-'))
             destination = directory / 'cover-preview.jpg'
             try:
-                publication.extract_cover(request.video.path, destination, request.seconds)
+                source = (self._original_video(request.job, stop)
+                          if request.mode == 'original-frame' else request.video.path)
+                stamp = publication.publication_file_stamp(source)
+                publication.extract_cover(source, destination, request.seconds)
+                if publication.publication_file_stamp(source) != stamp:
+                    raise ValueError('截图期间视频已变化，请重新预览。')
                 _check_stop(stop)
             except Exception:
                 shutil.rmtree(directory, ignore_errors=True)
                 raise
             return {'path': str(destination), 'temporary': True,
-                    'directory': str(directory), 'message': '已从已核验成品截取封面预览。'}
+                    'directory': str(directory),
+                    'message': '已从本家原视频截取封面。' if request.mode == 'original-frame' else '已从成品视频截取封面。'}
 
         return self._start_work('publication-preview-cover', work, self._finish_preview)
+
+    def _original_video(self, job, stop):
+        from pipeline import ensure_source_video
+        from task_store import known_job
+        path = known_job(job)
+        _check_stop(stop)
+        source = Path(ensure_source_video(path)).resolve(strict=True)
+        if source != path / 'video/source.mp4':
+            raise ValueError('本家原视频路径与当前任务不一致。')
+        _check_stop(stop)
+        return source
 
     @Slot()
     def nextStep(self):
@@ -1278,14 +1394,21 @@ class QuickPublication(QObject):
 
         def work(stop, send):
             _check_stop(stop)
-            if isinstance(snapshot.video, _LocalVideoRef):
-                send({'message': '正在核验明确选择的本地成品…'})
-                verified_video = self._bind_local_video(snapshot, stop, send)
-            else:
-                send({'message': '正在核验已登记的成品视频…'})
-                verified_video = self._verify_video(snapshot.job, snapshot.video, stop)
+            from task_contract import register_publication
+            from pipeline import job_lock
+            from task_store import known_job, read_json
+
+            job = known_job(snapshot.job)
+            local = isinstance(snapshot.video, _LocalVideoRef)
+            binding = read_json(job / 'task.json').get('bindings', {}).get('video')
+            previous = (binding['id'], binding['entry']['revision']) if binding else ('', '')
+            send({'message': '正在核验选定的成品视频…'})
+            verified_video = self._verify_video(snapshot.job, snapshot.video, stop)
+            if snapshot.cover_mode == 'original-frame':
+                send({'message': '正在核验本家原视频；必要时仅补齐原视频文件…'})
+                self._original_video(snapshot.job, stop)
             _check_stop(stop)
-            send({'message': '正在生成文稿、封面并登记来源依赖…'})
+            send({'message': '正在生成文稿和封面…'})
             content = {
                 platform: copy.deepcopy(dict(snapshot.contents[platform]))
                 for platform in snapshot.selected_platforms
@@ -1297,8 +1420,9 @@ class QuickPublication(QObject):
                 snapshot.cover_seconds,
                 snapshot.cover_file or None,
                 cover_mode=snapshot.cover_mode,
-                expected_video=verified_video.as_row(),
+                expected_video=(verified_video.as_row() if not local else {'sha256': verified_video.sha256}),
                 check=stop.is_set,
+                register=False,
             )
             _check_stop(stop)
             bundle = Path(publication.clean_path(bundle)).resolve()
@@ -1314,14 +1438,23 @@ class QuickPublication(QObject):
                 raise ValueError('生成后的发布资料没有绑定已核验视频。')
             send({'message': '正在完整校验新发布资料与各平台交接…'})
             self._assert_snapshot_content(snapshot, data)
-            handoffs = self._handoffs_for_snapshot(snapshot, bundle, data, stop)
+            handoffs, errors = self._handoffs_for_snapshot(snapshot, bundle, data, stop)
+            if errors:
+                raise ValueError('；'.join(errors.values()))
+            variants = self._cover_variants(bundle, data)
+            if snapshot.source_stamp != self._source_stamp(
+                    job, verified_video.path, Path(self._state.original_cover) if self._state.original_cover else None):
+                raise ValueError('来源资料在准备期间变化，请重新核对。')
             _check_stop(stop)
-            verifier = getattr(self._owner, 'verify_publication_bundle', None)
-            bundle_ref = verifier(snapshot.job, str(bundle), check=stop.is_set) if callable(verifier) else None
+            with job_lock(job):
+                receipt = register_publication(job, bundle,
+                    expected_video=None if local else verified_video.as_row(),
+                    new_video_binding=previous if local else None, check=stop.is_set)
+            # The task now owns both files. A late Stop cannot undo the commit
+            # or make the GUI report that nothing was registered.
             return {'bundle': str(bundle), 'data': data, 'handoffs': handoffs,
-                    'cover_variants': self._cover_variants(bundle, data),
-                    'bundle_ref': bundle_ref, 'source_stamp': snapshot.source_stamp,
-                    'video_ref': verified_video.as_row()}
+                    'cover_variants': variants, 'bundle_ref': receipt['bundle'],
+                    'video_ref': receipt['video']}
 
         return self._start_work('publication-prepare', work, self._finish_prepare)
 
@@ -1436,7 +1569,7 @@ class QuickPublication(QObject):
         self._emit()
 
         def work(stop, _send):
-            verified = self._verify_current_bundle(snapshot, bundle_ref, stop)
+            verified = self._verify_current_bundle(snapshot, bundle_ref, stop, platform=platform)
             bundle = Path(snapshot.bundle).resolve()
             handoff = verified['handoffs'][platform]
             if name == 'video':
@@ -1494,7 +1627,7 @@ class QuickPublication(QObject):
         self._emit()
 
         def work(stop, _send):
-            verified = self._verify_current_bundle(snapshot, bundle_ref, stop)
+            verified = self._verify_current_bundle(snapshot, bundle_ref, stop, platform=platform)
             return {'platform': platform, 'bundle': snapshot.bundle,
                     'handoff': verified['handoffs'][platform],
                     'data': verified['data']}
@@ -1564,7 +1697,7 @@ class QuickPublication(QObject):
 
         def work(stop, _send):
             _check_stop(stop)
-            verified = self._verify_current_bundle(snapshot, bundle_ref, stop)
+            verified = self._verify_current_bundle(snapshot, bundle_ref, stop, platform=BILIBILI)
             active = self._read_active_browser_record()
             if not isinstance(active, dict):
                 raise ValueError('B站填写会话已关闭。')
@@ -1756,7 +1889,7 @@ class QuickPublication(QObject):
             if error is not None:
                 if isinstance(error, InterruptedError) or self._cancel_requested:
                     self._state.state = 'cancelled'
-                    self._state.message = '已取消生成发布资料；已完成磁盘写入的旧包不会修改。'
+                    self._state.message = '已在登记前停止；任务原有成品和发布资料保留。'
                 else:
                     self._state.state = 'failed'
                     self._state.message = '生成发布资料失败：' + str(error)
@@ -1785,6 +1918,7 @@ class QuickPublication(QObject):
             self._state.source_drift = False
             handoffs = value.get('handoffs')
             self._state.handoffs = copy.deepcopy(handoffs) if isinstance(handoffs, dict) else {}
+            self._state.platform_errors = {}
             variants = value.get('cover_variants')
             self._state.cover_variants = (copy.deepcopy(variants)
                                           if isinstance(variants, dict)
@@ -1830,6 +1964,7 @@ class QuickPublication(QObject):
                 self._recompute_locked()
                 return
             self._state.handoffs = copy.deepcopy(handoffs)
+            self._state.platform_errors = dict(value['platform_errors'])
             variants = value.get('cover_variants')
             self._state.cover_variants = (copy.deepcopy(variants)
                                           if isinstance(variants, dict)
@@ -1839,10 +1974,11 @@ class QuickPublication(QObject):
             self._state.source_stamp = self._source_stamp(Path(self._state.job), Path(self._state.video), Path(self._state.original_cover) if self._state.original_cover else None)
             self._state.source_drift = False
             self._state.bundle_stale = False
-            self._state.verified = True
-            self._state.state = 'ready'
-            labels = '、'.join(PLATFORM_LABELS[item] for item in self._state.selected_platforms)
-            self._state.message = f'{labels}交接已分别核验；请按平台使用对应本地资料或填写会话。'
+            self._state.verified = bool(handoffs)
+            self._state.state = 'ready' if handoffs else 'failed'
+            labels = '、'.join(PLATFORM_LABELS[item] for item in handoffs)
+            failures = '；'.join(self._state.platform_errors.values())
+            self._state.message = '；'.join(filter(None, (f'{labels}交接已核验' if labels else '', failures)))
             self._recompute_locked()
 
     def _finish_open_material(self, value, error):
@@ -2043,6 +2179,34 @@ class QuickPublication(QObject):
                     paths.append(path)
         return paths
 
+    def _browser_log_locked(self):
+        session = self._state.browser
+        profile = self._browser_profile_path()
+        for directory in (session.output, self._state.bundle, str(profile)):
+            if not directory:
+                continue
+            try:
+                folder = Path(directory).resolve(strict=True)
+                if not self._browser_output_allowed(folder):
+                    continue
+                path = folder / (BILIBILI + '_浏览器.log')
+                if (path.is_file() and path.resolve(strict=True) == path and not path.is_symlink()
+                        and not getattr(path.lstat(), 'st_file_attributes', 0) & 1024):
+                    return path
+            except (OSError, ValueError):
+                continue
+        return None
+
+    @Slot(result=str)
+    def browserLogTail(self):
+        from preparation_commands import read_log_tail
+        try:
+            with self._lock:
+                path = self._browser_log_locked()
+            return read_log_tail(path) if path is not None else '当前会话没有可读取的填写日志。'
+        except OSError as exc:
+            return '无法读取填写日志：' + str(exc)[:500]
+
     def _refresh_browser_locked(self):
         session = self._state.browser
         active = self._read_active_browser_record()
@@ -2131,6 +2295,7 @@ class QuickPublication(QObject):
             'controlBundle': session.control_bundle,
             'returncode': session.returncode,
             'finalPublish': 'human_only',
+            'hasLog': self._browser_log_locked() is not None,
             'canLogin': bool(not live and not self._state.busy and not active),
             'canOpen': bool(verified and not live and not self._state.busy and not active),
             'canContinue': bool(verified and live and session.mode == 'fill'
@@ -2182,53 +2347,22 @@ class QuickPublication(QObject):
             raise ValueError('成品视频在核验期间发生变化。')
         return verified
 
-    def _verify_bundle_row(self, job: str, expected: _ArtifactRef, stop) -> _ArtifactRef:
+    def _verify_bundle_row(self, job: str, expected: _ArtifactRef, stop, *, platform: str) -> _ArtifactRef:
         verifier = getattr(self._owner, 'verify_task_artifact', None)
         if not callable(verifier):
             raise RuntimeError('主控制器未提供任务产物核验入口。')
         _check_stop(stop)
-        row = verifier(job, expected.as_row(), 'publication', check=stop.is_set)
+        row = verifier(job, expected.as_row(), 'publication', check=stop.is_set, platform=platform)
         _check_stop(stop)
         verified = _artifact_ref(row, 'publication')
         if not expected.same_identity(verified):
             raise ValueError('发布资料 manifest 在核验期间发生变化。')
         return verified
 
-    def _bind_local_video(self, snapshot: _Snapshot, stop, send):
-        """Explicitly bind the separately selected video before publication preparation."""
-        from pipeline import job_lock
-        from task_store import known_job, locked
-        import task_contract
-
-        expected = snapshot.video
-        if not isinstance(expected, _LocalVideoRef):
-            raise ValueError('当前成品不需要本地绑定。')
-        job = known_job(snapshot.job)
-        if locked(job):
-            raise ValueError('任务仍在处理占用中，不能登记所选成品。')
-        send({'message': '正在把明确选择的本地成品登记到任务…'})
-        with job_lock(job):
-            publication.inspect_video(expected.path)
-            if (not expected.path.is_file() or expected.path.stat().st_size != expected.bytes
-                    or file_hash(expected.path, check=stop.is_set) != expected.sha256):
-                raise ValueError('所选成品在登记前发生变化，请重新选择。')
-            artifact_id = task_contract.bind(
-                job, 'video', expected.path, validate=False, dependencies=[],
-                expected_sha256=expected.sha256, check=stop.is_set)
-            rows = task_contract.inspect(job, artifact_ids=(artifact_id,))
-            row = next((item for item in rows if item.get('id') == artifact_id), None)
-            if row is None or row.get('state') != 'verified':
-                raise ValueError('所选成品登记后未通过任务校验。')
-            return _artifact_ref(row, 'video')
-
-    def _verify_current_bundle(self, snapshot: _Snapshot, bundle_ref: _ArtifactRef | None, stop):
+    def _verify_current_bundle(self, snapshot: _Snapshot, bundle_ref: _ArtifactRef | None, stop, *, platform=None):
         _check_stop(stop)
         verified_video = (self._verify_video(snapshot.job, snapshot.video, stop)
                           if snapshot.video is not None else None)
-        if bundle_ref is not None:
-            if not snapshot.job:
-                raise ValueError('独立导入的发布资料不能使用任务登记入口。')
-            self._verify_bundle_row(snapshot.job, bundle_ref, stop)
         bundle = Path(snapshot.bundle).resolve() if snapshot.bundle else None
         if bundle is None or not bundle.is_dir():
             raise ValueError('当前没有可核对的发布资料。')
@@ -2251,15 +2385,18 @@ class QuickPublication(QObject):
                 raise ValueError('当前发布资料没有可核验的成品视频。')
         if bundle_ref is not None:
             expected_manifest = bundle / 'manifest.json'
-            if bundle_ref.path.resolve() != expected_manifest.resolve():
+            if not snapshot.job or bundle_ref.path.resolve() != expected_manifest.resolve():
                 raise ValueError('登记的发布资料入口与当前目录不一致。')
         content = data.get('content') if isinstance(data.get('content'), dict) else {}
         if set(snapshot.selected_platforms) != set(content):
             raise ValueError('发布资料平台集合与当前选择不一致，请重新生成同一发布包。')
         self._assert_snapshot_content(snapshot, data)
-        handoffs = self._handoffs_for_snapshot(snapshot, bundle, data, stop)
-        return {'data': data, 'handoffs': handoffs,
-                'cover_variants': self._cover_variants(bundle, data)}
+        handoffs, errors = self._handoffs_for_snapshot(
+            snapshot, bundle, data, stop, bundle_ref=bundle_ref, only=platform)
+        if platform and platform not in handoffs:
+            raise ValueError(errors.get(platform, '该平台没有可用交接。'))
+        return {'data': data, 'handoffs': handoffs, 'platform_errors': errors,
+                'cover_variants': self._cover_variants(bundle, data) if BILIBILI in handoffs else {}}
 
     def _assert_snapshot_content(self, snapshot: _Snapshot, data: Mapping[str, Any]):
         content = data.get('content') if isinstance(data, Mapping) else None
@@ -2278,18 +2415,33 @@ class QuickPublication(QObject):
                 raise ValueError(
                     f'{PLATFORM_LABELS[platform]}文稿与当前编辑内容不一致，请重新生成。')
 
-    def _handoffs_for_snapshot(self, snapshot: _Snapshot, bundle: Path, data: dict, stop):
-        handoffs = {}
-        for platform in snapshot.selected_platforms:
+    def _handoffs_for_snapshot(self, snapshot: _Snapshot, bundle: Path, data: dict, stop, *,
+                               bundle_ref=None, only=None):
+        handoffs, errors = {}, {}
+        for platform in ((only,) if only else snapshot.selected_platforms):
             _check_stop(stop)
-            handoff = (publication.xiaohongshu_handoff(bundle)
-                       if platform == XIAOHONGSHU else
-                       self._handoff_for_bilibili(bundle, data, stop))
-            fields = handoff.get('fields') if isinstance(handoff, dict) else None
-            if not isinstance(fields, dict):
-                raise ValueError(f'{PLATFORM_LABELS[platform]}平台文稿无效。')
-            handoffs[platform] = handoff
-        return handoffs
+            try:
+                if platform not in snapshot.selected_platforms:
+                    raise ValueError('该平台未被选中。')
+                if bundle_ref is not None:
+                    self._verify_bundle_row(snapshot.job, bundle_ref, stop, platform=platform)
+                handoff = (publication.xiaohongshu_handoff(bundle)
+                           if platform == XIAOHONGSHU else self._handoff_for_bilibili(bundle, data, stop))
+                fields = handoff.get('fields') if isinstance(handoff, dict) else None
+                if fields != data['content'][platform]:
+                    raise ValueError('平台文稿在核对期间已变化。')
+                # These files are optional for imported historical bundles, but
+                # if present their removal invalidates the affected handoff.
+                for suffix in ('标题.txt', '简介.txt'):
+                    path = bundle / (platform + '_' + suffix)
+                    if path.is_file():
+                        handoff['stamps'][path] = publication.publication_file_stamp(path)
+                handoffs[platform] = handoff
+            except InterruptedError:
+                raise
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                errors[platform] = PLATFORM_LABELS[platform] + '核对失败：' + str(exc)[:500]
+        return handoffs, errors
 
     def _handoff_for_bilibili(self, bundle: Path, data: dict, stop) -> dict[str, Any]:
         bundle = Path(bundle).resolve()
@@ -2459,6 +2611,9 @@ class QuickPublication(QObject):
         elif draft.cover_mode == 'frame':
             if self._state.video_ref is None or not Path(self._state.video).is_file():
                 return '没有可截取封面的已核验成品。'
+        elif draft.cover_mode == 'original-frame':
+            if self._state.source_mode != 'bilibili':
+                return '只有 B站来源任务可以截取本家原视频。'
         else:
             return '请选择封面来源。'
         if not math.isfinite(float(draft.cover_seconds)) or not 0 <= float(draft.cover_seconds) < 86400:
@@ -2488,6 +2643,8 @@ class QuickPublication(QObject):
                     problem = str(exc)
             elif draft.cover_mode == 'frame' and not Path(self._state.video).is_file():
                 problem = '没有可截取封面的已核验成品。'
+            elif draft.cover_mode == 'original-frame' and self._state.source_mode != 'bilibili':
+                problem = '只有 B站来源任务可以截取本家原视频。'
             elif draft.cover_mode not in COVER_MODES:
                 problem = '请选择封面来源。'
         if problem and raise_error:
@@ -2497,6 +2654,7 @@ class QuickPublication(QObject):
     def _mark_stale_locked(self, reason: str):
         self._state.verified = False
         self._state.handoffs = {}
+        self._state.platform_errors = {}
         self._state.cover_variants = {}
         if self._state.bundle:
             self._state.bundle_stale = True
@@ -2539,6 +2697,9 @@ class QuickPublication(QObject):
                 'baseCover': str(handoff.get('cover') or ''),
                 'ready': True,
             }
+        for platform, message in self._state.platform_errors.items():
+            if platform not in result and platform in self._state.selected_platforms:
+                result[platform] = {'platform': platform, 'ready': False, 'error': message}
         return result
 
     def _recompute_view_locked(self):
@@ -2578,6 +2739,7 @@ class QuickPublication(QObject):
             selected = list(self._state.selected_platforms)
             view.update({
                 'selectedPlatforms': selected,
+                'canFetchOriginalCover': self._state.source_mode == 'bilibili',
                 'platformLabels': {platform: PLATFORM_LABELS[platform] for platform in selected},
                 'coverRatio': self._state.cover_ratio,
                 'coverVariants': copy.deepcopy(self._state.cover_variants.get(BILIBILI, [])),
@@ -2615,14 +2777,6 @@ class QuickPublication(QObject):
                 paths.append(Path(publication.clean_path(video['path'])).resolve())
             except (OSError, ValueError):
                 pass
-        variants = data.get('platform_covers') if isinstance(data, Mapping) else None
-        if isinstance(variants, Mapping):
-            for values in variants.values():
-                if not isinstance(values, Mapping):
-                    continue
-                for asset in values.values():
-                    if isinstance(asset, Mapping) and isinstance(asset.get('file'), str):
-                        paths.append(bundle / asset['file'])
         return tuple(_stat_stamp(path) for path in paths)
 
     def _bundle_platforms_locked(self) -> set[str]:
@@ -2667,6 +2821,22 @@ class QuickPublication(QObject):
                 self._mark_stale_locked('发布资料或本地素材已发生变化，请重新生成。')
                 self._state.state = 'outdated'
                 drift = True
+            else:
+                for platform, handoff in tuple(self._state.handoffs.items()):
+                    stamps = handoff['stamps']
+                    try:
+                        unchanged = all(publication.publication_file_stamp(path) == stamp
+                                        for path, stamp in stamps.items())
+                    except OSError:
+                        unchanged = False
+                    if not unchanged:
+                        self._state.handoffs.pop(platform, None)
+                        self._state.platform_errors[platform] = PLATFORM_LABELS[platform] + '资料已变化，请重新核对。'
+                        self._state.cover_variants.pop(platform, None)
+                        drift = True
+                if drift and not self._state.bundle_stale:
+                    self._state.verified = bool(self._state.handoffs)
+                    self._state.message = '；'.join(self._state.platform_errors.values())
         if drift:
             self._recompute_locked()
         return drift

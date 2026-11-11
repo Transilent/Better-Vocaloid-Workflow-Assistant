@@ -9,12 +9,14 @@ def artifact_identity(row):
     return tuple(row.get(key) for key in ('id', 'revision', 'sha256', 'path', 'role'))
 
 
-def verify_task_artifact(job, row, role, check=None):
+def verify_task_artifact(job, row, role, check=None, *, platform=None):
     """Recheck one published identity and its complete dependency chain."""
     if not isinstance(row, dict) or row.get('role') != role or not row.get('id'):
         raise ValueError('交接产物的类型或身份不匹配。')
     job = task_store.known_job(job)
-    rows = task_contract.inspect(job, check=check, artifact_ids=(row['id'],))
+    if platform is not None and role != 'publication':
+        raise ValueError('只有发布资料支持按平台核验。')
+    rows = task_contract.inspect(job, check=check, artifact_ids=(row['id'],), publication_platform=platform)
     actual = next((item for item in rows if item['id'] == row['id']), None)
     if (not actual or actual['state'] != 'verified'
             or artifact_identity(actual) != artifact_identity(row)):
