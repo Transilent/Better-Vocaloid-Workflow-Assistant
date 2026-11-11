@@ -22,33 +22,50 @@ Item {
         {
             pageId: "processing",
             title: tr("欢迎与准备"),
-            body: tr("从本地音频开始：选择素材，检查分离方案和当前组件状态。准备草稿保存在工作区中，切换页面后会继续保留。")
+            body: tr("从一首歌开始：选择哔哩哔哩链接或本地音频，按需填写歌词和准备选项。VWA 会把准备、调音、混音与发布串成可复查的本地工作流。")
         },
         {
             pageId: "components",
             title: tr("模型与组件"),
-            body: tr("在这里检查分离模型和本地组件。安装或校验时可以切到其他页面，返回后还能查看进度。")
+            body: tr("在这里查看语音分离模型和本地运行组件的状态。缺少必要组件时，页面会给出安装入口；内置功能不需要额外下载。")
         },
         {
-            pageId: "results",
-            title: tr("任务与结果"),
-            body: tr("在这里查找任务和已核验的文件。登记混音后可继续合成视频，登记视频后可准备封面、文案和发布资料。")
+            pageId: "tuning",
+            title: tr("调音"),
+            body: tr("打开 SVP 工程，选择演唱轨与参数来源，预览风格与参数变化后另存新工程。歌声合成和完整听感确认在对应编辑器中完成。")
+        },
+        {
+            pageId: "audio_mixdown",
+            title: tr("简易混音"),
+            body: tr("简易混音用于平衡人声、和声与伴奏。调整电平和声像后先试听，确认无误再导出音频。")
+        },
+        {
+            pageId: "video_mixdown",
+            title: tr("合成视频"),
+            body: tr("将音频、画面或字幕合成为视频。导出前可在预览区检查时间、画面和成片参数。")
+        },
+        {
+            pageId: "publishing",
+            title: tr("发布"),
+            body: tr("发布页整理成片、封面和说明，并在提交平台前显示待核对内容。平台操作始终由你确认。")
         },
         {
             pageId: "updates",
             title: tr("设置与支持"),
-            body: tr("设置页集中管理外观、缩放、语言、下载来源、任务目录和程序更新。需要帮助时，可以复制用户群号、提交 GitHub 反馈或重新查看本教程。")
+            body: tr("设置页提供界面外观、组件、更新与运行状态。需要帮助时，可从本页的社区信息找到交流渠道。")
         }
     ]
     readonly property var tourSteps: allTourSteps.filter(step => routeIds.indexOf(step.pageId) >= 0)
+    readonly property int tourLength: Math.max(0, Number(controller.tutorialStepCount || tourSteps.length || 0))
     readonly property int currentTourStep: {
         const requested = Number(snapshot.tour_step || 0)
         if (!tourSteps.length)
             return 0
-        return Math.max(0, Math.min(tourSteps.length - 1, isFinite(requested) ? Math.trunc(requested) : 0))
+        const high = Math.min(tourSteps.length, tourLength) - 1
+        return Math.max(0, Math.min(high, isFinite(requested) ? Math.trunc(requested) : 0))
     }
     readonly property var currentStepData: tourSteps.length > 0 ? tourSteps[currentTourStep] : ({})
-    readonly property bool finalTourStep: tourSteps.length > 0 && currentTourStep >= tourSteps.length - 1
+    readonly property bool finalTourStep: tourSteps.length > 0 && currentTourStep >= tourLength - 1
     readonly property bool updateWanted: !!snapshot.update_open && !snapshot.tour_open
     readonly property string updateState: String(snapshot.update_state || "idle").toLowerCase()
     readonly property string communityNumber: controller.qqGroup || "490619616"
@@ -137,10 +154,10 @@ Item {
     }
 
     function updatePrimaryLabel() {
-        if (snapshot.apply_ready)
-            return tr("重启并安装")
         if (updateState === "downloading" || updateState === "applying")
             return updateStateLabel(updateState)
+        if (snapshot.apply_ready)
+            return tr("重启并安装")
         if (snapshot.can_update)
             return tr("立即更新")
         if (String(snapshot.url || "").length > 0)
@@ -178,6 +195,11 @@ Item {
     function requestTutorialAdvance() {
         if (snapshot.tour_open && tourSteps.length > 0)
             controller.advanceTutorial()
+    }
+
+    function requestTutorialPrevious() {
+        if (snapshot.tour_open && tourSteps.length > 0)
+            controller.previousTutorial()
     }
 
     function requestTutorialSkip() {
@@ -300,6 +322,19 @@ Item {
     Component.onCompleted: Qt.callLater(syncDialogs)
     onSnapshotChanged: syncDialogs()
 
+    Shortcut {
+        sequence: "Left"
+        context: Qt.WindowShortcut
+        enabled: tutorialDialog.opened
+        onActivated: root.requestTutorialPrevious()
+    }
+    Shortcut {
+        sequence: "Right"
+        context: Qt.WindowShortcut
+        enabled: tutorialDialog.opened
+        onActivated: root.requestTutorialAdvance()
+    }
+
     Dialog {
         id: tutorialDialog
         objectName: "tutorialDialog"
@@ -395,7 +430,7 @@ Item {
                         Text {
                             objectName: "tutorialProgress"
                             text: root.tourSteps.length > 0
-                                ? root.stepCounter(root.currentTourStep, root.tourSteps.length)
+                                ? root.stepCounter(root.currentTourStep, root.tourLength)
                                 : root.tr("暂无可展示的页面")
                             color: root.theme.muted
                             font.pixelSize: Math.round(11 * root.theme.scale)
@@ -503,7 +538,7 @@ Item {
                     Layout.bottomMargin: Math.round(16 * root.theme.scale)
                     spacing: Math.round(8 * root.theme.scale)
                     Repeater {
-                        model: root.tourSteps.length
+                        model: root.tourLength
                         Rectangle {
                             width: Math.round(6 * root.theme.scale)
                             height: width
@@ -512,6 +547,14 @@ Item {
                         }
                     }
                     Item { Layout.fillWidth: true }
+                    UiButton {
+                        objectName: "tutorialPrevious"
+                        theme: root.theme
+                        quiet: true
+                        visible: root.currentTourStep > 0
+                        text: root.tr("上一步")
+                        onClicked: root.requestTutorialPrevious()
+                    }
                     UiButton {
                         objectName: "tutorialNext"
                         theme: root.theme
@@ -796,8 +839,9 @@ Item {
                         objectName: "updateCancelDownload"
                         theme: root.theme
                         quiet: true
-                        visible: root.updateState === "downloading" && root.snapshot.can_cancel
-                        text: root.tr("取消下载")
+                        visible: (root.updateState === "downloading" || !!root.snapshot.auto_restart_active)
+                            && root.snapshot.can_cancel
+                        text: root.snapshot.auto_restart_active ? root.tr("暂缓安装") : root.tr("取消下载")
                         onClicked: root.controller.cancelUpdate()
                     }
                     UiButton {

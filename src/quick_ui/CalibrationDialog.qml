@@ -9,6 +9,7 @@ Dialog {
     required property QtObject theme
     required property QtObject controller
     signal bindingRequested()
+    property string selectedSession: ""
 
     readonly property var view: controller.view
     readonly property bool hasSession: !!view.session
@@ -76,6 +77,24 @@ Dialog {
                 onClicked: sessionFile.open()
             }
             UiButton {
+                objectName: "calibrationFindTaskSessions"
+                theme: dialog.theme
+                quiet: true
+                text: "从任务查找"
+                enabled: !dialog.busy
+                onClicked: {
+                    dialog.selectedSession = ""
+                    dialog.controller.findSessions("")
+                }
+            }
+            UiButton {
+                theme: dialog.theme
+                quiet: true
+                text: "查找文件夹…"
+                enabled: !dialog.busy
+                onClicked: sessionFolder.open()
+            }
+            UiButton {
                 objectName: "calibrationNewSession"
                 visible: dialog.hasSession
                 theme: dialog.theme
@@ -83,6 +102,27 @@ Dialog {
                 text: "新建会话"
                 enabled: !dialog.busy
                 onClicked: dialog.controller.newSession()
+            }
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            visible: dialog.view.sessionChoices.length > 0
+            UiComboBox {
+                objectName: "calibrationSessionChoices"
+                Layout.fillWidth: true
+                theme: dialog.theme
+                model: dialog.view.sessionChoices
+                valueRole: "path"
+                currentIndex: model.findIndex(row => row.path === dialog.selectedSession)
+                enabled: !dialog.busy
+                onActivated: dialog.selectedSession = currentValue
+            }
+            UiButton {
+                objectName: "calibrationResumeListedSession"
+                theme: dialog.theme
+                text: "继续此会话"
+                enabled: !dialog.busy && !!dialog.selectedSession
+                onClicked: dialog.controller.resumeListedSession(dialog.selectedSession)
             }
         }
         ScrollView {
@@ -166,6 +206,44 @@ Dialog {
                 }
                 RowLayout {
                     Layout.fillWidth: true
+                    visible: !dialog.hasSession
+                    Copy { text: "SV 导出目录"; Layout.fillWidth: false }
+                    PathLabel { text: dialog.view.renders || "使用会话下的 renders 文件夹" }
+                    UiButton {
+                        objectName: "calibrationCustomRenderFolder"
+                        theme: dialog.theme
+                        text: "选择…"
+                        enabled: !dialog.busy
+                        onClicked: renderFolder.open()
+                    }
+                }
+                Flow {
+                    Layout.fillWidth: true
+                    visible: !dialog.hasSession
+                    spacing: 6 * dialog.theme.scale
+                    UiButton {
+                        objectName: "calibrationCopyBank"
+                        theme: dialog.theme
+                        text: "从 SVP 复制声库设置…"
+                        enabled: !dialog.busy && dialog.view.canInspect && !!dialog.view.folder
+                        onClicked: templateFile.open()
+                    }
+                    UiButton {
+                        objectName: "calibrationRepairPitch"
+                        theme: dialog.theme
+                        text: "另存并重建连续音高"
+                        enabled: !dialog.busy && dialog.view.canInspect && !!dialog.view.folder
+                        onClicked: dialog.controller.prepareInputs("", true)
+                    }
+                    UiButton {
+                        theme: dialog.theme
+                        text: dialog.view.prepared.project ? "打开工程副本" : "在 SV 打开源工程"
+                        enabled: !dialog.busy && !!dialog.view.project
+                        onClicked: dialog.controller.openFile("source")
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
                     Copy { text: "拟合强度"; Layout.fillWidth: false }
                     Slider {
                         objectName: "calibrationStrength"
@@ -200,6 +278,8 @@ Dialog {
                     Copy {
                         text: (dialog.view.review.bank ? "声库：" + dialog.view.review.bank + " · " : "")
                             + (dialog.view.review.notes || 0) + " 个音符"
+                            + (dialog.view.review.minimum_duration
+                               ? " · 参考演唱需覆盖至 " + dialog.view.review.minimum_duration.toFixed(2) + " 秒" : "")
                     }
                     Repeater {
                         model: dialog.view.review.issues || []
@@ -213,6 +293,18 @@ Dialog {
                         visible: dialog.view.review.fit_ready === false
                         color: dialog.theme.attention
                         text: "拟合需要 WORLD 分析器，可在“模型与组件”安装。可以先准备试音工程。"
+                    }
+                    Copy {
+                        visible: !!dialog.view.review.lyrics && dialog.view.review.lyrics.status === "different_script"
+                        text: "歌词文字体系不同，未做逐字比较。"
+                    }
+                    Repeater {
+                        model: dialog.view.review.lyrics ? dialog.view.review.lyrics.candidates : []
+                        delegate: Copy {
+                            required property var modelData
+                            text: modelData.start.toFixed(2) + "–" + modelData.end.toFixed(2) + " 秒 · 参考「"
+                                + (modelData.expected || "无") + "」／乐谱「" + (modelData.actual || "无") + "」"
+                        }
                     }
                 }
                 ColumnLayout {
@@ -231,6 +323,12 @@ Dialog {
                             theme: dialog.theme
                             text: "打开导出目录"
                             onClicked: dialog.controller.openFile("renders")
+                        }
+                        UiButton {
+                            objectName: "calibrationCopyRenderPath"
+                            theme: dialog.theme
+                            text: "复制导出目录"
+                            onClicked: dialog.controller.copyRenderFolder()
                         }
                         UiButton {
                             theme: dialog.theme
@@ -282,8 +380,9 @@ Dialog {
                         text: dialog.view.measured ? "拟合工程已核验" : "未取得可用的声库拟合"
                     }
                     PathLabel { text: dialog.view.result }
-                    RowLayout {
+                    Flow {
                         Layout.fillWidth: true
+                        spacing: 6 * dialog.theme.scale
                         UiButton {
                             theme: dialog.theme
                             text: "打开校准工程"
@@ -301,6 +400,14 @@ Dialog {
                             text: "查看回执"
                             enabled: !dialog.busy
                             onClicked: dialog.controller.openFile("report_path")
+                        }
+                        UiButton {
+                            objectName: "calibrationRegisterTask"
+                            theme: dialog.theme
+                            text: "登记到任务"
+                            visible: dialog.view.canRegisterTask
+                            enabled: !dialog.busy
+                            onClicked: dialog.controller.registerResult()
                         }
                         UiButton {
                             objectName: "calibrationBindResult"
@@ -384,6 +491,12 @@ Dialog {
         onAccepted: dialog.controller.chooseProject(selectedFile)
     }
     FileDialog {
+        id: templateFile
+        title: "选择含目标声库的 SVP"
+        nameFilters: ["Synthesizer V 工程 (*.svp)"]
+        onAccepted: dialog.controller.prepareInputs(selectedFile, false)
+    }
+    FileDialog {
         id: referenceFile
         title: "选择参考演唱 WAV"
         nameFilters: ["WAV 音频 (*.wav)"]
@@ -404,5 +517,13 @@ Dialog {
         id: renderFolder
         title: "选择七份试音的导出目录"
         onAccepted: dialog.controller.chooseRenders(selectedFolder)
+    }
+    FolderDialog {
+        id: sessionFolder
+        title: "查找本地校准记录"
+        onAccepted: {
+            dialog.selectedSession = ""
+            dialog.controller.findSessions(selectedFolder)
+        }
     }
 }

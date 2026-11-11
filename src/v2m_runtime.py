@@ -48,7 +48,7 @@ def validate_backend_contract():
     return {'schema': 1, 'checked_hooks': len(required)+1}
 
 
-def configure(root):
+def configure(root, *, pitch_only=False):
     root = Path(root).resolve()
     sys.path.insert(0, str(root))
     # Both backends use the assistant's one FFmpeg installation.
@@ -66,6 +66,9 @@ def configure(root):
     os.environ["TMP"] = os.environ["TEMP"] = str(temp)
     # Libraries may have queried tempfile before the runtime was configured.
     tempfile.tempdir = str(temp)
+    if pitch_only:
+        # RMVPE has no ASR or Qwen DLL dependency.
+        return
     # Native libraries are loaded read-only. Share the existing DLL directory
     # instead of creating another 100 MiB copy for every installation.
     source = root / "inference/qwen3asr_dml/bin"

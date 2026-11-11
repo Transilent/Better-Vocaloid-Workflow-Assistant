@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from mixdown_workspace_state import (
     TELEMETRY_SCHEMA,
     MixdownWorkspaceState,
+    classic_default_bands,
     compression_controls,
     default_bands,
     empty_gr_history,
@@ -109,6 +110,44 @@ class MixdownWorkspaceStateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '伴奏提供时间基准'):
             state.set_track('instrumental', 'offset', .2)
 
+    def test_classic_eq_width_preview_range_and_export_progress_are_editor_state(self):
+        state = self.make_state()
+        classic = classic_default_bands()
+        self.assertEqual(state.bands[0]['freq_hz'], classic[0]['freq_hz'])
+        self.assertEqual(state.bands[2]['gain_db'], classic[2]['gain_db'])
+        self.assertEqual(state.bands[2]['q'], classic[2]['q'])
+        self.assertEqual(state.view(can_export=True, can_register=False, can_play=True)['width'], 1.0)
+
+        render = state.render_fingerprint()
+        state.set_option('width', 1.35)
+        view = state.view(can_export=True, can_register=False, can_play=True)
+        self.assertEqual(view['width'], 1.35)
+        self.assertEqual(state.request(self.output)['width'], 1.35)
+        self.assertNotEqual(state.render_fingerprint(), render)
+
+        render = state.render_fingerprint()
+        self.assertTrue(state.set_preview_range(4.25, 7.5))
+        view = state.view(can_export=True, can_register=False, can_play=True)
+        self.assertEqual(view['previewStart'], 4.25)
+        self.assertEqual(view['previewDuration'], 7.5)
+        self.assertEqual(state.preview_range_ms(20000), (4250, 11750))
+        self.assertEqual(state.render_fingerprint(), render)
+
+        state.set_export_progress({'fraction': .5, 'phase': 'mix', 'message': 'mixing'})
+        self.assertEqual(state.view(can_export=True, can_register=False, can_play=True)['exportProgress'],
+                         {'fraction': .5, 'phase': 'mix', 'message': 'mixing'})
+        self.assertEqual(state.render_fingerprint(), render)
+
+    def test_existing_preset_eq_values_override_only_the_editor_defaults(self):
+        state = self.make_state()
+        payload = state.processing_state()
+        payload['eq_bands'] = default_bands()
+        payload['eq_enabled'] = True
+        state.write_processing(payload)
+        self.assertEqual([row for row in state.bands], default_bands())
+        request = state.request(self.output)
+        self.assertEqual(request['eq_low_cut_hz'], default_bands()[0]['freq_hz'])
+        self.assertEqual(request['eq_presence_db'], default_bands()[2]['gain_db'])
     def test_factory_band_reset_does_not_touch_other_bands_or_global_bypass(self):
         state = self.make_state()
         state.set_band(0, 'freq_hz', 500)
@@ -213,6 +252,17 @@ class MixdownWorkspaceStateTests(unittest.TestCase):
 
 
 class QuickMixdownLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(dir=Path.cwd() / 'tests')
+        self.root = Path(self.temp.name)
+        self.vocal = self.root / 'vocals.wav'
+        self.backing = self.root / 'instrumental.wav'
+        self.output = self.root / 'mix.wav'
+        self.vocal.write_bytes(b'RIFF-vocal-fixture')
+        self.backing.write_bytes(b'RIFF-backing-fixture')
+
+    def tearDown(self):
+        self.temp.cleanup()
     def test_constructor_is_read_only_until_enter(self):
         try:
             from PySide6.QtCore import QCoreApplication
@@ -299,6 +349,168 @@ class QuickMixdownLifecycleTests(unittest.TestCase):
                 controller.close()
                 worker.close()
 
+    def test_ab_selection_auditions_and_loop_uses_the_configured_range(self):
+        try:
+            from unittest.mock import patch
+            from PySide6.QtCore import QCoreApplication, QObject
+            from mixdown_preview_controller import MixdownPreviewController
+            from quick_mixdown import QuickMixdown
+            from quick_work import WorkerLane
+        except ImportError as error:
+            self.skipTest(str(error))
+
+        class Player:
+            available = True
+            failed = False
+            seek_pending = False
+
+            def __init__(self):
+                self.ready = True
+                self.loading = False
+                self.play_intent = False
+                self.cursor = 0
+                self.length = 20000
+                self.loop_range = (0, 0)
+                self.commands = []
+
+            def position(self): return self.cursor
+            def duration(self): return self.length
+            def set_play_intent(self, enabled): self.play_intent = bool(enabled)
+            def set_loop(self, enabled): self.loop = bool(enabled)
+            def set_loop_range(self, start, end): self.loop_range = (start, end)
+            def open(self, request, **options):
+                self.cursor = options['position_ms']
+                self.play_intent = bool(options['autoplay'])
+                self.ready, self.loading = True, False
+                self.commands.append(('open', options['key']))
+                return True
+            def parameters(self, request, **options):
+                self.commands.append(('parameters', options['key']))
+                return True
+            def seek(self, position, autoplay):
+                self.cursor = int(position)
+                self.play_intent = bool(autoplay)
+                self.commands.append(('seek', self.cursor, self.play_intent))
+                return True
+            def play(self): self.play_intent = True; return True
+            def pause(self): self.play_intent = False; return True
+            def release(self): self.play_intent = False
+            def close(self, timeout=3.0): pass
+
+        app = QCoreApplication.instance() or QCoreApplication([])
+        worker = WorkerLane(app, 'quick-mixdown-range-test')
+        controller = QuickMixdown(app, worker)
+        player = Player()
+        try:
+            controller._state.set_source('vocal-1', self.vocal)
+            controller._state.set_source('instrumental', self.backing)
+            controller._support_ready = True
+            controller._cache_dir = self.root / 'preview-cache'
+            controller._cache_dir.mkdir()
+            controller._player = player
+            controller._preview = MixdownPreviewController(player)
+            with patch.object(controller, '_ensure_entered', return_value=True):
+                self.assertTrue(controller.setPreviewRange(4, 6))
+                controller.setLoop(True)
+                player.commands.clear()
+                controller.selectMix('A')
+                self.assertTrue(player.play_intent)
+                self.assertTrue(controller._refresh_preview(), controller.view['message'])
+            self.assertEqual(controller._state.selection, 'A')
+            self.assertEqual(player.loop_range, (4000, 10000))
+            self.assertEqual(player.commands[-1], ('open', 'before'))
+        finally:
+            controller._preview_timer.stop()
+            controller.close()
+            worker.close()
+
+    def test_standalone_video_handoff_is_enabled_only_with_a_fresh_verified_export(self):
+        try:
+            from PySide6.QtCore import QObject, QCoreApplication
+            from quick_mixdown import QuickMixdown
+            from quick_work import WorkerLane
+        except ImportError as error:
+            self.skipTest(str(error))
+
+        class Parent(QObject):
+            def __init__(self):
+                super().__init__()
+                self.calls = []
+            def open_independent_mix(self, path, sha256):
+                self.calls.append(('independent', path, sha256))
+            def open_registered_mix(self, job, artifact_id, path, sha256):
+                self.calls.append(('registered', job, artifact_id, path, sha256))
+
+        app = QCoreApplication.instance() or QCoreApplication([])
+        worker = WorkerLane(app, 'quick-mixdown-handoff-test')
+        parent = Parent()
+        controller = QuickMixdown(parent, worker)
+        try:
+            export = self.root / 'candidate.wav'
+            export.write_bytes(b'fresh export')
+            controller._state.result = str(export)
+            controller._state.result_stale = False
+            controller._export_receipt = {'output': {'sha256': 'a' * 64}}
+            controller._recompute_and_emit()
+            self.assertTrue(controller.view['canComposeVideo'])
+            self.assertEqual(controller.view['videoHandoffMode'], 'independent')
+            controller.composeVideo()
+            self.assertEqual(parent.calls, [('independent', str(export), 'a' * 64)])
+
+            controller._state.job = str(self.root / 'job')
+            controller._registered_mix_id = ''
+            controller._recompute_and_emit()
+            self.assertFalse(controller.view['canComposeVideo'])
+            controller._registered_mix_id = 'artifact-1'
+            controller._recompute_and_emit()
+            self.assertEqual(controller.view['videoHandoffMode'], 'registered')
+            controller.composeVideo()
+            self.assertEqual(parent.calls[-1], ('registered', controller._state.job,
+                                                'artifact-1', str(export), 'a' * 64))
+        finally:
+            controller._preview_timer.stop()
+            controller.close()
+            worker.close()
+
+    def test_export_mix_publishes_backend_progress_to_the_view(self):
+        try:
+            from types import SimpleNamespace
+            from unittest.mock import patch
+            from PySide6.QtCore import QCoreApplication
+            from quick_mixdown import QuickMixdown
+            from quick_work import WorkerLane
+        except ImportError as error:
+            self.skipTest(str(error))
+        app = QCoreApplication.instance() or QCoreApplication([])
+        worker = WorkerLane(app, 'quick-mixdown-progress-test')
+        controller = QuickMixdown(app, worker)
+        captured = {}
+
+        def start(kind, work, finish, progress=None):
+            captured.update(kind=kind, work=work, finish=finish, progress=progress)
+            return True
+
+        state = controller._state
+        state.set_source('vocal-1', self.vocal)
+        state.set_source('instrumental', self.backing)
+        state.set_output(self.output)
+        controller._support_ready = True
+        plan = SimpleNamespace(receipt_context=lambda: {}, signatures_unchanged=lambda: True,
+                               destination=self.output)
+        try:
+            with patch.object(controller, '_ensure_entered', return_value=True), \
+                    patch.object(controller, '_start_owned', side_effect=start), \
+                    patch('quick_mixdown.mixdown_export.plan_export', return_value=plan):
+                controller.exportMix()
+            self.assertEqual(captured['kind'], 'mixdown-export')
+            self.assertTrue(callable(captured['progress']))
+            captured['progress']({'fraction': .625, 'phase': 'mix', 'message': 'mixing'})
+            self.assertEqual(controller.view['exportProgress'],
+                             {'fraction': .625, 'phase': 'mix', 'message': 'mixing'})
+        finally:
+            controller._preview_timer.stop()
+            controller.close()
+            worker.close()
     def test_presets_preview_scope_then_confirm_undo_and_reject_a_stale_plan(self):
         try:
             from unittest.mock import patch

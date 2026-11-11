@@ -9,7 +9,7 @@ from time import monotonic
 from uuid import uuid4
 
 import workflow
-from common import ROOT, app_path, load_config, native_path
+from common import ROOT, app_path, atomic_json, load_config, native_path, workspace_state
 
 
 _STEMS = ('lead', 'backing', 'instrumental')
@@ -29,10 +29,159 @@ _FORMATS = {'project_formats': ('ustx', 'vsqx', 'svp'), 'audio_formats': ('wav',
 _FIELDS = {'source': '', 'lyrics': '', 'backing_lyrics': '', 'target': 'midi', 'input_mode': 'local',
            'output_directory': '', 'bpm': '', 'reference_mode': 'local',
            'lyrics_lookup': '', 'advanced_expanded': False}
+_PERSIST_OPTION_KEYS = (
+    'language', 'recognize_lyrics', 'zh_lyric_mode', 'midi_steps', 'midi_backend',
+    'alignment_engine', 'separation_flow', 'separation_device', 'midi_device',
+    'roformer_device', 'dml_adapter', 'cpu_threads', 'bpm', 'project_formats',
+    'audio_formats', 'project_export_enabled', 'audio_export_enabled', 'export_pitch',
+    'include_instrumental', 'subtitles_mode',
+)
 
 
 def _default_fields():
     return {**deepcopy(workflow.DEFAULT_OPTIONS), **_FIELDS, 'imported_stems': {}}
+
+
+_PREPARATION_PRESET_VERSION = '0.1.0'
+_PREPARATION_CAPABILITY = 'preparation.parameters'
+
+
+def _preset_label(name):
+    label = name.strip() if isinstance(name, str) else ''
+    if not label or len(label) > 80 or label.startswith('内置') or label == '自定义':
+        raise ValueError('请填写 1–80 字的名称，不以“内置”开头。')
+    return label
+
+
+def make_preset_document(draft, name):
+    """Build a portable preparation preset without song, lyric or machine data."""
+    from preset_documents import CONTRACTS, PREPARATION_KEYS, validate_document
+
+    label = _preset_label(name)
+    values = draft.preferences()
+    options = {key: deepcopy(values[key]) for key in PREPARATION_KEYS}
+    slots = []
+    if options['voice_mode'] == 'import':
+        slots.append({'id': 'stems', 'kind': 'separated_stems', 'required': True})
+    document = {
+        'format': 'vwa.preset',
+        'format_version': 1,
+        'id': 'user.preparation.' + uuid4().hex,
+        'type': 'preparation',
+        'version': _PREPARATION_PRESET_VERSION,
+        'metadata': {
+            'name': label,
+            'description': '保存自 Quick 准备页；只包含处理参数和工作流步骤，不包含歌曲、歌词、路径或设备选择。',
+        },
+        'requires': {
+            'preset_api': 1,
+            'engine_contract': CONTRACTS['preparation'],
+            'capabilities': [_PREPARATION_CAPABILITY],
+        },
+        'binding_slots': slots,
+        'payload': {'graph': graph_for(draft.view['target']), 'options': options},
+    }
+    return validate_document(document)
+
+
+def append_preset(library, draft, name):
+    """Append one uniquely identified user preset without replacing library rows."""
+    document = make_preset_document(draft, name)
+    revision = library.snapshot()['revision']
+    return library.put_document(document, expected_revision=revision)
+
+
+def remove_preset(library, identifier, version):
+    """Remove one active user-library row while retaining immutable history bytes."""
+    revision = library.snapshot()['revision']
+    return library.delete(identifier, version, expected_revision=revision)
+
+
+def apply_preset(draft, payload):
+    """Apply preparation choices while retaining the draft's media and device choices."""
+    if not isinstance(payload, dict) or not isinstance(payload.get('options'), dict):
+        raise ValueError('准备预设参数格式无效。')
+    graph = deepcopy(payload.get('graph'))
+    if not isinstance(graph, dict):
+        raise ValueError('准备预设工作流格式无效。')
+    values = {**draft.preferences(), **deepcopy(payload['options'])}
+    return draft.with_options(workflow.validate_options(values), graph)
+
+
+def preset_catalog(snapshot, legacy_presets):
+    """Merge shared-library preparation entries with readable legacy workflow saves."""
+    entries = []
+    values = snapshot.get('entries', []) if isinstance(snapshot, dict) else []
+    for row in values:
+        if not isinstance(row, dict) or row.get('type') != 'preparation':
+            continue
+        identifier = row.get('id')
+        version = row.get('version')
+        if not isinstance(identifier, str) or not isinstance(version, str):
+            continue
+        name = row.get('name') if isinstance(row.get('name'), str) else identifier
+        entries.append({
+            'key': 'library:' + identifier + '@' + version,
+            'name': name,
+            'preset_name': name,
+            'id': identifier,
+            'version': version,
+            'source': 'library',
+            'builtin': bool(row.get('builtin')),
+            'removable': not bool(row.get('builtin')),
+        })
+    known_names = {row['name'] for row in entries}
+    legacy = legacy_presets if isinstance(legacy_presets, dict) else {}
+    for name, preset in legacy.items():
+        if (not isinstance(name, str) or not isinstance(preset, dict)
+                or not isinstance(preset.get('graph'), dict)
+                or not isinstance(preset.get('options'), dict)):
+            continue
+        entries.append({
+            'key': 'legacy:' + name,
+            'name': name + ' · 旧版' if name in known_names else name,
+            'preset_name': name,
+            'id': '',
+            'version': '',
+            'source': 'legacy',
+            'builtin': False,
+            'removable': True,
+        })
+    return entries
+
+
+def fallback_preset_catalog(legacy_presets):
+    """Keep built-ins and legacy saves available if the shared library is unreadable."""
+    entries = []
+    for name in workflow.builtins():
+        entries.append({
+            'key': 'workflow:' + name,
+            'name': name,
+            'preset_name': name,
+            'id': '',
+            'version': '',
+            'source': 'workflow',
+            'builtin': True,
+            'removable': False,
+        })
+    known_names = {row['name'] for row in entries}
+    legacy = legacy_presets if isinstance(legacy_presets, dict) else {}
+    for name, preset in legacy.items():
+        if (not isinstance(name, str) or not isinstance(preset, dict)
+                or not isinstance(preset.get('graph'), dict)
+                or not isinstance(preset.get('options'), dict)):
+            continue
+        entries.append({
+            'key': 'legacy:' + name,
+            'name': name + ' · 旧版' if name in known_names else name,
+            'preset_name': name,
+            'id': '',
+            'version': '',
+            'source': 'legacy',
+            'builtin': False,
+            'removable': True,
+        })
+    return entries
 
 
 def graph_for(target):
@@ -85,6 +234,12 @@ class PreparationDraft:
             if not isinstance(value, list) or any(item not in _FORMATS[name] for item in value):
                 raise ValueError('导出格式无效。')
             value = [item for item in _FORMATS[name] if item in value]
+        elif name == 'dml_adapter':
+            if value != 'auto' and (type(value) is not int or value < 0):
+                raise ValueError('DirectML 显卡选择无效。')
+        elif name == 'cpu_threads':
+            if type(value) is not int or not 0 <= value <= 64:
+                raise ValueError('CPU 线程数应为自动或 1–64。')
         else:
             raise ValueError('未知的准备选项。')
         if name in ('voice_mode', 'separator_model', 'roformer_device'):
@@ -131,6 +286,87 @@ class PreparationDraft:
         return workflow.validate_options(values)
 
 
+def save_draft_settings(draft):
+    """Persist reusable preparation choices in common workspace settings."""
+    try:
+        values = draft.preferences()
+    except (TypeError, ValueError, OverflowError):
+        # Intermediate text such as a partially typed BPM is allowed in the
+        # draft; retain the last valid persisted choices until it becomes valid.
+        return
+    options = {key: deepcopy(values[key]) for key in _PERSIST_OPTION_KEYS}
+    options['target'] = draft.view['target']
+    state = workspace_state()
+    state['quick_preparation'] = {
+        'version': 1,
+        'options': options,
+        'input_mode': draft.view['input_mode'],
+        'output_directory': str(draft.view['output_directory'])[:4096],
+        'advanced_expanded': bool(draft.view['advanced_expanded']),
+    }
+    atomic_json(ROOT / 'cache/workspace.json', state)
+
+
+def restore_draft_settings(draft):
+    """Restore reusable choices without loading song, lyric, path or account data."""
+    record = workspace_state().get('quick_preparation', {})
+    if not isinstance(record, dict) or record.get('version') != 1:
+        return draft
+    saved = record.get('options', {})
+    if not isinstance(saved, dict):
+        return draft
+    try:
+        options = {key: deepcopy(saved[key]) for key in (*_PERSIST_OPTION_KEYS, 'target') if key in saved}
+        target = options.get('target', 'midi')
+        if target not in ('separation', 'midi', 'subtitles'):
+            raise ValueError('保存的准备步骤无效。')
+        values = {**draft.preferences(), **options}
+        restored = draft.with_options(workflow.validate_options(values), graph_for(target))
+        input_mode = record.get('input_mode', 'local')
+        if input_mode not in ('local', 'bilibili'):
+            raise ValueError('保存的来源模式无效。')
+        restored = restored.edit('input_mode', input_mode)
+        output = record.get('output_directory', '')
+        if isinstance(output, str):
+            restored = restored.edit('output_directory', output[:4096])
+        advanced = record.get('advanced_expanded', False)
+        if type(advanced) is bool:
+            restored = restored.edit('advanced_expanded', advanced)
+        return restored
+    except (KeyError, TypeError, ValueError):
+        return draft
+
+
+def validate_imported_stems(draft):
+    """Validate the complete external WAV set before any preparation job is written."""
+    if draft.voice_mode != 'import':
+        return {}
+    labels = {'lead': '主唱', 'backing': '和声', 'instrumental': '伴奏'}
+    paths = {}
+    values = draft.view['imported_stems']
+    for key in _STEMS:
+        raw = values.get(key) if isinstance(values, dict) else None
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError('请分别选择主唱、和声、伴奏的完整 WAV 文件。')
+        path = app_path(raw)
+        if path.suffix.casefold() != '.wav':
+            raise ValueError(labels[key] + '分轨须为 WAV 文件。')
+        try:
+            if not path.is_file() or path.stat().st_size == 0:
+                raise OSError
+            import soundfile as sf
+            info = sf.info(str(path))
+        except (ImportError, OSError, RuntimeError, ValueError) as error:
+            raise ValueError(labels[key] + '分轨不是可读取的完整 WAV 文件。') from error
+        if (str(info.format).upper() != 'WAV' or info.frames <= 0
+                or info.channels not in (1, 2) or info.samplerate <= 0):
+            raise ValueError(labels[key] + '分轨不是可用的单/双声道 WAV 文件。')
+        paths[key] = path
+    if len(set(paths.values())) != len(_STEMS):
+        raise ValueError('主唱、和声、伴奏须为三个不同的完整 WAV 文件。')
+    return paths
+
+
 def selected_component_issues(draft):
     """Check only the optional components selected for this preparation."""
     data = draft.view
@@ -157,10 +393,7 @@ def bilibili_draft_bv(draft):
     return extract_bv(data['source'])
 
 
-def create_from_draft(draft, *, reuse_job=''):
-    """Compile once with the same preparation policy and task writer as Widgets."""
-    from pipeline import create_job, reuse_download
-
+def _job_arguments(draft):
     data = draft.view
     options = draft.preferences()
     graph = graph_for(data['target'])
@@ -172,13 +405,21 @@ def create_from_draft(draft, *, reuse_job=''):
             (not (draft.lyric_reference or {}).get('origin', {}).get('provider') == 'netease' or not data['lyrics'].strip())):
         raise ValueError('请先获取网易云歌词，或切换为本地填写。')
     reference = (draft.lyric_reference or {}).get('origin')
-    arguments = dict(
+    return dict(
         lyrics=data['lyrics'], backing_lyrics=data['backing_lyrics'],
         imported_stems=data['imported_stems'], parent=data['output_directory'] or None,
         workflow_graph=graph, export_preferences=workflow.export_preferences(options),
         lyric_reference={'origin': reference} if reference else None,
         **workflow.execution_options(options, midi_enabled=data['target'] != 'separation'),
     )
+
+
+def create_from_draft(draft, *, reuse_job=''):
+    """Compile the draft with the shared preparation policy and task writer."""
+    validate_imported_stems(draft)
+    from pipeline import create_job, reuse_download
+    data = draft.view
+    arguments = _job_arguments(draft)
     if reuse_job:
         from task_store import known_job
         return reuse_download(known_job(reuse_job), expected_bv=bilibili_draft_bv(draft), **arguments)
@@ -187,14 +428,44 @@ def create_from_draft(draft, *, reuse_job=''):
                       remember=False, **arguments)
 
 
+def reprocess_task(draft, previous):
+    """Use a known task's source with the current draft, creating a new job."""
+    validate_imported_stems(draft)
+    from pipeline import reuse_download
+    from task_store import known_job
+    return reuse_download(known_job(previous), **_job_arguments(draft))
+
+
 def progress_view(job):
     from progress_state import TITLES, snapshot
 
     data = snapshot(job)
     state = data['status'].get('state', 'ready')
     message = data['event'].get('detail') or TITLES.get(data['current'], '')
+    steps = data['status'].get('steps', {})
+    stages = [{'key': key, 'label': TITLES.get(key, key), 'state': steps.get(key, {}).get('state', 'pending')}
+              for key in data['stages']]
     return {'state': state, 'job': str(job), 'current': data['current'] or '', 'message': message,
-            'completed': data['completed'], 'total': len(data['stages']), 'elapsed': data['elapsed']}
+            'completed': data['completed'], 'total': len(stages), 'elapsed': data['elapsed'], 'stages': stages}
+
+
+def recovery_view(job):
+    from error_recovery import failure
+
+    detail = failure(job)
+    return {'message': detail['raw'][:1600], 'recovery_action': detail['action'],
+            'recovery_message': detail['message']}
+
+
+def read_log_tail(path, size=16384):
+    """Read recent diagnostics without loading or watching the entire log."""
+    with Path(native_path(path)).open('rb') as stream:
+        end = stream.seek(0, 2)
+        stream.seek(max(0, end - size))
+        data = stream.read(size)
+    if end > size and b'\n' in data:
+        data = data.split(b'\n', 1)[1]
+    return data.decode('utf-8', errors='replace').replace('\x00', '')
 
 
 def run_process(job, *, stop=None, on_progress=None, on_line=None, retry_cpu=False):

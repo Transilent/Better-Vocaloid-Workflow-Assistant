@@ -48,6 +48,8 @@ Item {
         ? page.textOf(page.selectedCoverVariant.preview) : page.coverPreviewUrl
     readonly property real coverAspect: page.coverRatio === "4:3" ? 4 / 3 : 16 / 9
     readonly property int coverCanvasHeight: Math.round((page.dense ? 150 : 226) * page.theme.scale)
+    readonly property var taskChoices: page.arrayOf(view.taskChoices)
+    property string taskSelection: ""
 
     function number(value, fallback) {
         if (value === undefined || value === null || value === "")
@@ -125,6 +127,22 @@ Item {
         if (index === 2)
             return false;
         return null;
+    }
+
+    function taskModel() {
+        const rows = [{ label: page.controller.text("选择来源任务…"), value: "" }]
+        for (let index = 0; index < page.taskChoices.length; ++index) {
+            const row = page.taskChoices[index]
+            if (row && String(row.value || "").length > 0)
+                rows.push({ label: String(row.label || row.value), value: String(row.value) })
+        }
+        return rows
+    }
+
+    function taskLabel() {
+        if (page.jobText.length === 0)
+            return page.controller.text("尚未选择来源任务")
+        return page.fileName(page.jobText)
     }
 
     function aiLabel() {
@@ -343,6 +361,25 @@ Item {
         if (state === "cancelled" || state === "closed" || state === "login_window_closed") return page.theme.muted;
         if (page.browserSession.active || state === "starting" || state === "stopping") return page.theme.accent;
         return page.theme.muted;
+    }
+
+    FileDialog {
+        id: publicationVideoFileDialog
+        objectName: "publicationVideoFileDialog"
+        title: page.controller.text("选择成品视频")
+        nameFilters: [
+            page.controller.text("视频 (*.mp4 *.mov *.mkv *.webm)"),
+            page.controller.text("所有文件 (*)")
+        ]
+        fileMode: FileDialog.OpenFile
+        onAccepted: page.controller.chooseVideo(selectedFile)
+    }
+
+    FolderDialog {
+        id: publicationBundleFolderDialog
+        objectName: "publicationBundleFolderDialog"
+        title: page.controller.text("选择发布资料文件夹")
+        onAccepted: page.controller.importBundle(selectedFolder)
     }
 
     FileDialog {
@@ -717,6 +754,136 @@ Item {
                     Layout.bottomMargin: Math.round(10 * page.theme.scale)
                     visible: page.step === 0
                     spacing: Math.round(10 * page.theme.scale)
+
+                    SurfaceCard {
+                        Layout.fillWidth: true
+                        theme: page.theme
+                        heading: page.controller.text("来源任务与素材")
+                        explanation: page.controller.text("任务字段、成品视频和已有发布资料分别选择；导入发布资料不会改写任务。")
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Math.round(7 * page.theme.scale)
+
+                            TextField {
+                                id: publicationTaskFilter
+                                objectName: "publicationTaskFilter"
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                placeholderText: page.controller.text("搜索任务名或 BV")
+                                selectByMouse: true
+                                enabled: !page.busy
+                                onAccepted: page.controller.refreshTaskChoices(text)
+                                font.pixelSize: 12 * page.theme.scale
+                            }
+
+                            UiButton {
+                                objectName: "publicationTaskRefresh"
+                                theme: page.theme
+                                text: page.controller.text(page.view.taskScanBusy ? "读取中…" : "刷新任务")
+                                enabled: !page.busy
+                                onClicked: page.controller.refreshTaskChoices(publicationTaskFilter.text)
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Math.round(7 * page.theme.scale)
+
+                            UiComboBox {
+                                id: publicationTaskPicker
+                                objectName: "publicationTaskPicker"
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                theme: page.theme
+                                model: page.taskModel()
+                                enabled: !page.busy && model.length > 1
+                                onActivated: page.taskSelection = String(currentValue || "")
+                            }
+
+                            UiButton {
+                                objectName: "publicationTaskLoad"
+                                theme: page.theme
+                                text: page.controller.text("载入任务字段")
+                                enabled: !page.busy && page.taskSelection.length > 0
+                                onClicked: page.controller.chooseTask(page.taskSelection)
+                            }
+                        }
+
+                        HelperText {
+                            Layout.fillWidth: true
+                            theme: page.theme
+                            text: page.textOf(page.view.taskMessage)
+                                || page.controller.text("可先刷新任务，再单独选择成品视频或导入已有发布资料。")
+                        }
+
+                        SummaryRow {
+                            theme: page.theme
+                            caption: page.controller.text("任务")
+                            value: page.jobText.length > 0 ? page.jobText : page.controller.text("未关联任务")
+                            pathValue: true
+                            valueColor: page.jobText.length > 0 ? page.theme.text : page.theme.muted
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Math.round(7 * page.theme.scale)
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                text: page.videoText.length > 0
+                                    ? page.controller.text("成品视频") + " · " + page.fileName(page.videoText)
+                                    : page.controller.text("尚未单独选择成品视频")
+                                color: page.videoText.length > 0 ? page.theme.text : page.theme.muted
+                                font.pixelSize: Math.round(11.5 * page.theme.scale)
+                                elide: Text.ElideMiddle
+                                textFormat: Text.PlainText
+                            }
+
+                            UiButton {
+                                objectName: "publicationVideoChoose"
+                                theme: page.theme
+                                text: page.videoText.length > 0
+                                    ? page.controller.text("更换视频…") : page.controller.text("选择视频…")
+                                enabled: !page.busy && page.jobText.length > 0
+                                onClicked: publicationVideoFileDialog.open()
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Math.round(7 * page.theme.scale)
+
+                            Text {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                text: page.bundleText.length > 0
+                                    ? page.controller.text("发布资料") + " · " + page.fileName(page.bundleText)
+                                    : page.controller.text("尚未导入已有发布资料")
+                                color: page.bundleText.length > 0 ? page.theme.text : page.theme.muted
+                                font.pixelSize: Math.round(11.5 * page.theme.scale)
+                                elide: Text.ElideMiddle
+                                textFormat: Text.PlainText
+                            }
+
+                            UiButton {
+                                objectName: "publicationBundleImport"
+                                theme: page.theme
+                                text: page.controller.text("导入发布资料…")
+                                enabled: !page.busy
+                                onClicked: publicationBundleFolderDialog.open()
+                            }
+                        }
+
+                        HelperText {
+                            Layout.fillWidth: true
+                            theme: page.theme
+                            text: page.view.bundleOnly === true
+                                ? page.controller.text("当前是独立导入资料：可核对和手动交接，生成新包前仍需选择来源任务与成品。")
+                                : page.controller.text("从任务载入和单独选择成品互不代替；导入既有资料不会关联或改写来源任务。")
+                        }
+                    }
 
                     SurfaceCard {
                         Layout.fillWidth: true
@@ -1112,7 +1279,7 @@ Item {
                                 text: page.coverModeValue(page.view.coverMode) === "original"
                                     ? page.controller.text("使用来源任务登记的本家封面；本地任务没有原封面时会由控制器拒绝。")
                                     : page.coverModeValue(page.view.coverMode) === "frame"
-                                        ? page.controller.text("从来源任务原视频截取画面；没有原视频时会由控制器拒绝。")
+                                        ? page.controller.text("从当前已核验成品视频截取画面；成品不可读取时会由控制器拒绝。")
                                         : page.controller.text("支持 JPG、PNG 或 WebP；生成发布包时会统一为可用封面。")
                             }
 

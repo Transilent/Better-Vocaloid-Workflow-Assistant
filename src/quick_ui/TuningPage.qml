@@ -25,6 +25,9 @@ ScrollView {
     readonly property bool draftConflict: textOf(view.draftConflict).length > 0
     readonly property bool busy: view.busy === true || draftConflict
     readonly property bool hasSource: textOf(view.source).length > 0
+    readonly property bool sessionExists: boolOr(view.sessionExists, false)
+    readonly property bool candidateOpenable: candidatePresent
+        && (boolOr(view.candidateVerified, false) || boolOr(view.candidateHistorical, false))
     readonly property string activeId: textOf(view.activeTrack)
     readonly property string mode: String(view.mode || "single") === "multi" ? "multi" : "single"
     readonly property var activeTrackData: findTrack(activeId)
@@ -47,6 +50,7 @@ ScrollView {
     property string selectedPresetKey: ""
     property string inspectorTab: "style"
     property bool showStyleDetails: false
+    property bool editorFocus: false
     signal calibrationRequested()
 
     contentWidth: availableWidth
@@ -81,6 +85,79 @@ ScrollView {
                 return true
         }
         return false
+    }
+
+    function toggleEditorFocus() {
+        if (hasSource)
+            editorFocus = !editorFocus
+    }
+
+    function focusBlocksEditorShortcut(item) {
+        let current = item
+        while (current) {
+            if (current instanceof TextInput || current instanceof TextEdit
+                    || current instanceof TextField || current instanceof TextArea
+                    || current instanceof SpinBox || current instanceof ComboBox
+                    || current instanceof Popup || current instanceof Dialog)
+                return true
+            current = current.parent
+        }
+        return false
+    }
+
+    Shortcut {
+        objectName: "tuningUndoShortcut"
+        sequence: "Ctrl+Z"
+        context: Qt.WindowShortcut
+        autoRepeat: false
+        enabled: page.visible && !page.busy && boolOr(page.view.canUndoRegions, false)
+            && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
+        onActivated: page.controller.undoRegions()
+    }
+
+    Shortcut {
+        objectName: "tuningRedoShortcut"
+        sequence: "Ctrl+Y"
+        context: Qt.WindowShortcut
+        autoRepeat: false
+        enabled: page.visible && !page.busy && boolOr(page.view.canRedoRegions, false)
+            && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
+        onActivated: page.controller.redoRegions()
+    }
+
+    Shortcut {
+        objectName: "tuningRedoShiftShortcut"
+        sequence: "Ctrl+Shift+Z"
+        context: Qt.WindowShortcut
+        autoRepeat: false
+        enabled: page.visible && !page.busy && boolOr(page.view.canRedoRegions, false)
+            && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
+        onActivated: page.controller.redoRegions()
+    }
+
+    Shortcut {
+        objectName: "tuningDeleteRegionShortcut"
+        sequence: "Delete"
+        context: Qt.WindowShortcut
+        autoRepeat: false
+        enabled: page.visible && !page.busy && page.textOf(page.view.selectedRegion).length > 0
+            && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
+        onActivated: page.controller.removeSelectedRegion()
+    }
+
+    Shortcut {
+        objectName: "tuningEscapeShortcut"
+        sequence: "Escape"
+        context: Qt.WindowShortcut
+        autoRepeat: false
+        enabled: page.visible && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
+            && (page.editorFocus || page.hasRange)
+        onActivated: {
+            if (page.editorFocus)
+                page.editorFocus = false
+            else
+                page.controller.clearSelection()
+        }
     }
 
     function findTrack(trackId) {
@@ -484,6 +561,7 @@ ScrollView {
 
     onActiveIdChanged: syncRetainedDraft()
     onPresetsChanged: syncPresetChoice()
+    onVisibleChanged: if (!page.visible) page.editorFocus = false
     onViewChanged: {
         syncPresetChoice()
         syncPreciseSelection(false)
@@ -657,8 +735,41 @@ ScrollView {
         width: page.availableWidth
         spacing: page.editorPadding
 
+        Rectangle {
+            id: editorFocusBar
+            objectName: "tuningEditorFocusBar"
+            Layout.fillWidth: true
+            Layout.leftMargin: page.contentMargin
+            Layout.rightMargin: page.contentMargin
+            Layout.topMargin: page.editorPadding
+            visible: page.editorFocus
+            implicitHeight: focusBarRow.implicitHeight + 12 * page.scale
+            radius: Math.round(7 * page.scale)
+            color: page.theme.surface
+            border.width: 1
+            border.color: page.theme.line
+            RowLayout {
+                id: focusBarRow
+                anchors.fill: parent
+                anchors.margins: 6 * page.scale
+                spacing: page.editorGap
+                PanelLabel {
+                    Layout.fillWidth: true
+                    theme: page.theme
+                    text: "调音专注编辑 · 时间轴与参数栏"
+                }
+                EditorButton {
+                    objectName: "exitTuningEditorFocus"
+                    theme: page.theme
+                    text: "退出专注 (Esc)"
+                    onClicked: page.editorFocus = false
+                }
+            }
+        }
+
         GridLayout {
             id: projectToolbar
+            visible: !page.editorFocus
             Layout.fillWidth: true
             Layout.topMargin: page.editorPadding
             Layout.leftMargin: page.contentMargin
@@ -723,6 +834,63 @@ ScrollView {
                     primary: true
                     enabled: !page.busy
                     onClicked: projectDialog.open()
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.columnSpan: projectToolbar.columns
+                spacing: page.editorGap
+                EditorButton {
+                    objectName: "tuningOpenTask"
+                    theme: page.theme
+                    text: "从任务载入…"
+                    enabled: !page.busy
+                    onClicked: {
+                        page.controller.refreshTuningTasks()
+                        taskPickerDialog.open()
+                    }
+                }
+                EditorButton {
+                    objectName: "tuningReloadProject"
+                    theme: page.theme
+                    text: "重新读取当前工程"
+                    enabled: !page.busy && boolOr(page.view.canReload, false)
+                    onClicked: page.controller.reloadProject()
+                }
+                EditorButton {
+                    objectName: "tuningResumeSession"
+                    theme: page.theme
+                    text: "继续会话…"
+                    enabled: !page.busy
+                    onClicked: sessionDialog.open()
+                }
+                EditorButton {
+                    objectName: "tuningChooseSessionLocation"
+                    theme: page.theme
+                    text: "会话位置…"
+                    visible: !page.textOf(page.view.job).length
+                    enabled: !page.busy && boolOr(page.view.canChooseSessionLocation, false)
+                    onClicked: sessionLocationDialog.open()
+                }
+                EditorButton {
+                    objectName: "tuningEditorFocus"
+                    theme: page.theme
+                    text: "专注编辑"
+                    enabled: page.hasSource && !page.draftConflict
+                    onClicked: page.toggleEditorFocus()
+                }
+                Text {
+                    objectName: "tuningSessionLocation"
+                    Layout.fillWidth: true
+                    text: page.textOf(page.view.sessionLocation)
+                    color: page.theme.muted
+                    font.pixelSize: Math.round(10 * page.scale)
+                    elide: Text.ElideMiddle
+                    textFormat: Text.PlainText
+                    HoverHandler { id: sessionLocationHover }
+                    ToolTip.visible: sessionLocationHover.hovered && text.length > 0
+                    ToolTip.text: text + "\n候选目录：" + page.textOf(page.view.sessionOutput)
                 }
             }
         }
@@ -819,7 +987,8 @@ ScrollView {
                 Layout.alignment: Qt.AlignTop
                 Layout.preferredHeight: Math.max(chromeHeight + page.minimumRollHeight,
                     Math.min(Math.round(920 * page.scale), page.availableHeight
-                        - projectToolbar.height - 3 * page.editorPadding
+                        - (projectToolbar.visible ? projectToolbar.height : editorFocusBar.height)
+                        - 3 * page.editorPadding
                         - (legacyDraftBanner.visible ? legacyDraftBanner.height + page.editorPadding : 0)))
                 readonly property real chromeHeight: editorTools.implicitHeight
                     + selectionToolbar.implicitHeight + viewportStrip.implicitHeight
@@ -2069,7 +2238,7 @@ ScrollView {
                                         objectName: "openTuningCandidate"
                                         theme: page.theme
                                         text: "打开候选"
-                                        enabled: !!page.view.candidateVerified && !page.view.busy
+                                        enabled: page.candidateOpenable && !page.view.busy
                                         onClicked: page.controller.openCandidate()
                                     }
                                 }
@@ -2077,8 +2246,13 @@ ScrollView {
                                 HelperText {
                                     Layout.fillWidth: true
                                     theme: page.theme
-                                    visible: !!page.view.candidateVerified
+                                    visible: page.candidatePresent
                                     text: {
+                                        if (boolOr(page.view.candidateHistorical, false)) {
+                                            const reason = page.textOf(page.view.message)
+                                            return "这是安全保留的历史候选；当前完整回执核验失败，因此不能登记。"
+                                                + (reason.length > 0 ? "\n" + reason : "")
+                                        }
                                         const report = page.view.candidateDetails || {}
                                         const state = {applied:"已处理", partial:"部分处理", unchanged:"无变化"}[report.status] || ""
                                         return state + " · " + (report.tracks || 0) + " 轨"
@@ -2101,7 +2275,9 @@ ScrollView {
                                     EditorButton {
                                         objectName: "openTuningReceipt"
                                         theme: page.theme
-                                        text: "核验回执"
+                                        text: boolOr(page.view.candidateHistorical, false) ? "查看原回执" : "核验回执"
+                                        visible: !!page.view.candidateVerified
+                                            || page.textOf(page.view.candidateReceipt).length > 0
                                         enabled: !page.view.busy
                                         onClicked: page.controller.openResultReceipt()
                                     }
@@ -2241,6 +2417,24 @@ ScrollView {
                             onClicked: draftFile.open()
                         }
                         EditorButton {
+                            objectName: "reloadLatestTuningDraft"
+                            Layout.fillWidth: true
+                            theme: page.theme
+                            text: "载入最新草稿"
+                            visible: page.hasSource && !page.draftConflict
+                            enabled: !page.busy && boolOr(page.view.canReloadDraft, false)
+                            onClicked: page.controller.reloadLatestDraft()
+                        }
+                        EditorButton {
+                            objectName: "saveTuningDraftRevision"
+                            Layout.fillWidth: true
+                            theme: page.theme
+                            text: "保存新修订"
+                            visible: page.hasSource && !page.draftConflict
+                            enabled: !page.busy && boolOr(page.view.canSaveDraftRevision, false)
+                            onClicked: page.controller.saveDraftRevision()
+                        }
+                        EditorButton {
                             objectName: "registerTuningResult"
                             Layout.fillWidth: true
                             theme: page.theme
@@ -2369,6 +2563,125 @@ ScrollView {
             "所有文件 (*)"
         ]
         onAccepted: page.controller.chooseProject(selectedFile)
+    }
+
+    FileDialog {
+        id: sessionDialog
+        objectName: "tuningSessionDialog"
+        title: "继续已有调音会话"
+        currentFolder: page.view.sessionFolder || ""
+        fileMode: FileDialog.OpenFile
+        nameFilters: [
+            "调音处理记录 (session.json)",
+            "所有文件 (*)"
+        ]
+        onAccepted: page.controller.resumeSession(selectedFile)
+    }
+
+    FolderDialog {
+        id: sessionLocationDialog
+        objectName: "tuningSessionLocationDialog"
+        title: "选择独立调音会话位置"
+        currentFolder: page.view.sessionFolder || ""
+        onAccepted: page.controller.setSessionLocation(selectedFolder)
+    }
+
+    Dialog {
+        id: taskPickerDialog
+        objectName: "tuningTaskPickerDialog"
+        title: "从任务与结果载入工程"
+        modal: true
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(parent.width - 40, Math.round(580 * page.scale))
+        closePolicy: Popup.CloseOnEscape
+        property string jobId: ""
+        property string artifactId: ""
+        readonly property var taskRows: page.controller.tuningTasks || []
+        readonly property var projectRows: page.controller.tuningTaskProjects || []
+
+        contentItem: ColumnLayout {
+            spacing: Math.round(9 * page.scale)
+            HelperText {
+                Layout.fillWidth: true
+                theme: page.theme
+                text: page.textOf(page.controller.tuningTaskMessage)
+            }
+            UiComboBox {
+                objectName: "tuningTaskPickerJob"
+                Layout.fillWidth: true
+                theme: page.theme
+                model: taskPickerDialog.taskRows
+                textRole: "title"
+                valueRole: "jobId"
+                Accessible.name: "准备任务"
+                function syncChoice() {
+                    if (count > 0 && taskPickerDialog.jobId.length === 0) {
+                        currentIndex = 0
+                        taskPickerDialog.jobId = String(taskPickerDialog.taskRows[0].jobId)
+                        page.controller.selectTuningTask(taskPickerDialog.jobId)
+                    }
+                }
+                onActivated: function(index) {
+                    if (index >= 0 && index < taskPickerDialog.taskRows.length) {
+                        taskPickerDialog.jobId = String(taskPickerDialog.taskRows[index].jobId)
+                        taskPickerDialog.artifactId = ""
+                        page.controller.selectTuningTask(taskPickerDialog.jobId)
+                    }
+                }
+                onCountChanged: syncChoice()
+                onModelChanged: syncChoice()
+            }
+            UiComboBox {
+                objectName: "tuningTaskPickerProject"
+                Layout.fillWidth: true
+                theme: page.theme
+                model: taskPickerDialog.projectRows
+                textRole: "label"
+                valueRole: "artifactId"
+                Accessible.name: "任务中的调音工程"
+                function syncChoice() {
+                    if (count > 0)
+                        currentIndex = 0
+                    taskPickerDialog.artifactId = count > 0
+                        ? String(taskPickerDialog.projectRows[0].artifactId) : ""
+                }
+                onActivated: function(index) {
+                    if (index >= 0 && index < taskPickerDialog.projectRows.length)
+                        taskPickerDialog.artifactId = String(taskPickerDialog.projectRows[index].artifactId)
+                }
+                onCountChanged: syncChoice()
+                onModelChanged: syncChoice()
+            }
+            HelperText {
+                Layout.fillWidth: true
+                theme: page.theme
+                text: "载入前会按任务与结果页面的同一文件清单重新核验路径、SHA 和上游版本；变更后会拒绝载入。"
+            }
+        }
+
+        footer: RowLayout {
+            spacing: Math.round(7 * page.scale)
+            Item { Layout.fillWidth: true }
+            UiButton {
+                theme: page.theme
+                text: "取消"
+                quiet: true
+                onClicked: taskPickerDialog.close()
+            }
+            UiButton {
+                objectName: "loadTuningTaskProject"
+                theme: page.theme
+                text: "核验并载入"
+                primary: true
+                enabled: !page.busy && taskPickerDialog.jobId.length > 0
+                    && taskPickerDialog.artifactId.length > 0
+                onClicked: {
+                    page.controller.loadTuningTaskArtifact(taskPickerDialog.jobId, taskPickerDialog.artifactId)
+                    taskPickerDialog.close()
+                }
+            }
+        }
     }
 
     FileDialog {

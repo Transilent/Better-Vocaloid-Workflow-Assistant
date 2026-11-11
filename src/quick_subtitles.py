@@ -5,13 +5,13 @@ MIDI is accepted only through the same verified artifact identity used by the
 Quick handoff pages.  Export reuses the media publisher's complete-file,
 no-overwrite transaction.
 
-Limits are explicit: MIDI Type 0/1 with lyric events, UTF-8 LRC, and SRT or
-WebVTT output only.  MIDI Type 2 is rejected by the existing subtitle engine.
-The tool performs no network lookup and does not register exports back into a
-task contract.
+Accepts MIDI Type 0/1 with lyric events, timed LRC, and a selected NetEase
+version. The shared lookup controller supplies network references; exports
+are independent SRT or WebVTT files.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 import math
 import os
 from pathlib import Path
@@ -165,6 +165,11 @@ class QuickSubtitles(QObject):
 
     changed = Signal()
     cuesChanged = Signal()
+    _DRAFT_FIELDS = (
+        '_cues', '_tracks', '_selected_track', '_source_kind', '_source_origin', '_source_path',
+        '_source_label', '_source_message', '_source_sha256', '_task_job_id', '_task_artifact_id',
+        '_offset', '_format', '_message', '_error', '_exported_path', '_dirty',
+    )
 
     def __init__(self, owner: QObject | None = None):
         super().__init__(owner if isinstance(owner, QObject) else None)
@@ -185,6 +190,8 @@ class QuickSubtitles(QObject):
         self._error = ''
         self._exported_path = ''
         self._dirty = False
+        self._drafts = {}
+        self.revision = 0
 
     def _view_map(self) -> dict[str, Any]:
         problem = ''
@@ -214,6 +221,7 @@ class QuickSubtitles(QObject):
             'hasCues': bool(self._cues),
             'canExport': bool(self._cues) and not problem,
             'cueCount': len(self._cues),
+            'draftKinds': sorted(set(self._drafts) | ({self._source_kind} if self._source_kind else set())),
         }
 
     @Property('QVariantMap', notify=changed)
@@ -234,6 +242,7 @@ class QuickSubtitles(QObject):
         return tr(source)
 
     def _touch(self, *, cues: bool = False) -> None:
+        self.revision += 1
         self.changed.emit()
         if cues:
             self.cuesChanged.emit()
@@ -247,7 +256,23 @@ class QuickSubtitles(QObject):
     def _success(self, message: str) -> None:
         self._error = ''
         self._message = message
-        self.changed.emit()
+        self._touch()
+
+    def _stash(self):
+        if self._source_kind:
+            self._drafts[self._source_kind] = {name: deepcopy(getattr(self, name)) for name in self._DRAFT_FIELDS}
+
+    @Slot(str, result=bool)
+    def restoreSource(self, kind):
+        if kind == self._source_kind:
+            return True
+        if kind not in self._drafts:
+            return False
+        self._stash()
+        for name, value in self._drafts[kind].items():
+            setattr(self, name, deepcopy(value))
+        self._touch(cues=True)
+        return True
 
     def _check_source_hash(self) -> None:
         if not self._source_sha256 or not self._source_path:
@@ -259,6 +284,7 @@ class QuickSubtitles(QObject):
     def accept_midi(self, data, *, job: str = '', artifact_id: str = '') -> None:
         path, tracks, cues, digest = data
         track = tracks[0]
+        self._stash()
         self._cues = list(cues)
         self._tracks = tracks
         self._selected_track = int(track['id'])
@@ -277,6 +303,29 @@ class QuickSubtitles(QObject):
         self._success(tr('已载入 {0} 行，共 {1} 个可用 MIDI 声部。', len(self._cues), len(tracks)))
         self.cuesChanged.emit()
 
+    def accept_reference(self, reference):
+        from lyrics_sources import song_id
+        try:
+            if reference.origin.get('provider') != 'netease' or not reference.cues:
+                raise SubtitleEditError('这个版本没有可用的网易云字幕时间轴。')
+            identifier = song_id(reference.origin.get('song_id', ''))
+            cues = list(reference.cues)
+            subtitles.validate(cues)
+            if any(len(cue.text) > _MAX_CUE_TEXT for cue in cues):
+                raise SubtitleEditError('网易云歌词单行超过 4096 个字符。')
+        except (TypeError, ValueError, AttributeError) as exc:
+            return self._fail(exc)
+        self._stash()
+        self._cues, self._tracks, self._selected_track = cues, [], -1
+        self._source_kind = self._source_origin = 'netease'
+        self._source_path = self._source_sha256 = self._task_job_id = self._task_artifact_id = ''
+        self._source_label = f'网易云歌曲 #{identifier}'
+        self._source_message = tr('采用所选歌曲版本的时间轴，请核对演唱版本与整体偏移。')
+        self._offset, self._format, self._exported_path, self._dirty = 0., 'srt', '', False
+        self._success(tr('已载入 {0} 行定时歌词。', len(cues)))
+        self.cuesChanged.emit()
+        return True
+
     @Slot(QUrl, result=bool)
     def loadLocal(self, url):
         try:
@@ -288,6 +337,7 @@ class QuickSubtitles(QObject):
             if suffix != '.lrc':
                 raise SubtitleEditError('只接受 MIDI（.mid/.midi）或定时 LRC（.lrc）。')
             cues = subtitles.lrc(_read_lrc(path))
+            self._stash()
             self._cues = list(cues)
             self._tracks = []
             self._selected_track = -1
@@ -398,7 +448,7 @@ class QuickSubtitles(QObject):
             self._dirty = True
             self._error = ''
             self._message = tr('整体偏移已更新；原始时间不会被改写。')
-            self.changed.emit()
+            self._touch()
             return True
         except Exception as exc:
             return self._fail(exc)
@@ -413,7 +463,7 @@ class QuickSubtitles(QObject):
             self._exported_path = ''
             self._error = ''
             self._message = tr('导出格式已切换为 {0}。', value.upper())
-            self.changed.emit()
+            self._touch()
             return True
         except Exception as exc:
             return self._fail(exc)

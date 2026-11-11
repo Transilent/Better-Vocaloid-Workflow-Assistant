@@ -237,7 +237,9 @@ Item {
         const ctrl = (event.modifiers & Qt.ControlModifier) !== 0;
         const locked = root.bandValue(index, "type", "") === "highpass";
         const key = event.key;
-        if (key === Qt.Key_Return || key === Qt.Key_Enter) {
+        if (key === Qt.Key_Space) {
+            root.controller.setBand(index, "enabled", !root.isBandEnabled(index));
+        } else if (key === Qt.Key_Return || key === Qt.Key_Enter) {
             root.controller.resetBand(index);
         } else if (!ctrl && (key === Qt.Key_Left || key === Qt.Key_Right)) {
             const ratio = Math.pow(2, (key === Qt.Key_Right ? 1 : -1) / (fine ? 240 : 24));
@@ -307,7 +309,7 @@ Item {
             activeFocusOnTab: true
             Accessible.role: Accessible.Pane
             Accessible.name: "混音 EQ 曲线"
-            Accessible.description: "拖动改频率和增益，滚轮调 Q，Alt 点击旁路，双击恢复。焦点在图内时方向键精调，Enter 恢复。"
+            Accessible.description: "拖动改频率和增益，滚轮调 Q，Alt 点击旁路，双击恢复。焦点在图内时方向键精调，Space 启停当前频段，Enter 恢复。"
             Keys.onPressed: event => root.editBandWithKey(event)
 
             Canvas {

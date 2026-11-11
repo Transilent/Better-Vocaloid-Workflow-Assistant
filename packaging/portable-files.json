@@ -26,6 +26,10 @@
       "source": "src/quick_calibration.py"
     },
     {
+      "file": "calibration_preparation.py",
+      "source": "src/calibration_preparation.py"
+    },
+    {
       "file": "quick_preparation_sources.py",
       "source": "src/quick_preparation_sources.py"
     },

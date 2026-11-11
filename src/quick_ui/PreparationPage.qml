@@ -26,8 +26,13 @@ ScrollView {
     readonly property real taskTotal: task && task.total !== undefined ? Number(task.total) : 0
     readonly property real taskCompleted: task && task.completed !== undefined ? Number(task.completed) : 0
     readonly property int contentMargin: narrow ? 14 : 24
-    readonly property var presetChoices: [{name: controller.text("选择工作流预设")}]
+    readonly property var presetChoices: [{name: controller.text("选择工作流预设"), key: ""}]
         .concat(controller.preparationPresets || [])
+    readonly property bool selectedPresetRemovable: {
+        const index = preparationPreset.currentIndex - 1
+        const values = controller.preparationPresets || []
+        return index >= 0 && index < values.length && values[index].removable === true
+    }
 
     contentWidth: availableWidth
     clip: true
@@ -325,6 +330,125 @@ ScrollView {
         onComponentsRequested: page.controller.navigate("components")
     }
 
+    Dialog {
+        id: savePreparationPresetDialog
+        objectName: "preparationPresetNameDialog"
+        title: page.controller.text("保存到本机预设库")
+        parent: Overlay.overlay
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        x: parent ? Math.max(18, (parent.width - width) / 2) : 18
+        y: parent ? Math.max(18, (parent.height - height) / 2) : 18
+        width: Math.min(parent ? parent.width - 36 : 420, Math.round(430 * page.theme.scale))
+        padding: Math.round(18 * page.theme.scale)
+
+        contentItem: ColumnLayout {
+            spacing: Math.round(8 * page.theme.scale)
+            Text {
+                Layout.fillWidth: true
+                text: page.controller.text("预设名称")
+                color: page.theme.text
+                font.pixelSize: Math.round(12 * page.theme.scale)
+                font.weight: Font.DemiBold
+                textFormat: Text.PlainText
+            }
+            ThemedTextField {
+                id: preparationPresetNameField
+                objectName: "preparationPresetName"
+                Layout.fillWidth: true
+                theme: page.theme
+                placeholderText: page.controller.text("例如：中文双轨 · 当前输出")
+                Accessible.name: page.controller.text("准备预设名称")
+            }
+            HelperText {
+                Layout.fillWidth: true
+                theme: page.theme
+                text: page.controller.text("只保存处理参数和工作流步骤；歌曲、歌词、路径与设备设置不会写入预设。")
+            }
+        }
+
+        footer: RowLayout {
+            spacing: Math.round(7 * page.theme.scale)
+            Item { Layout.fillWidth: true }
+            UiButton {
+                objectName: "cancelPreparationPresetSave"
+                theme: page.theme
+                text: page.controller.text("取消")
+                quiet: true
+                onClicked: savePreparationPresetDialog.close()
+            }
+            UiButton {
+                objectName: "confirmPreparationPresetSave"
+                theme: page.theme
+                text: page.controller.text("保存")
+                primary: true
+                enabled: preparationPresetNameField.text.trim().length > 0 && !page.editLocked
+                onClicked: {
+                    if (page.controller.savePreparationPreset(preparationPresetNameField.text.trim()))
+                        savePreparationPresetDialog.close()
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: removePreparationPresetDialog
+        objectName: "preparationPresetRemoveDialog"
+        property string presetKey: ""
+        property string presetLabel: ""
+        title: page.controller.text("移除自定义预设")
+        parent: Overlay.overlay
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        x: parent ? Math.max(18, (parent.width - width) / 2) : 18
+        y: parent ? Math.max(18, (parent.height - height) / 2) : 18
+        width: Math.min(parent ? parent.width - 36 : 420, Math.round(430 * page.theme.scale))
+        padding: Math.round(18 * page.theme.scale)
+
+        contentItem: ColumnLayout {
+            spacing: Math.round(8 * page.theme.scale)
+            Text {
+                Layout.fillWidth: true
+                text: page.controller.text("移除预设“") + removePreparationPresetDialog.presetLabel + "”？"
+                color: page.theme.text
+                font.pixelSize: Math.round(13 * page.theme.scale)
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+            }
+            HelperText {
+                Layout.fillWidth: true
+                theme: page.theme
+                text: page.controller.text("只会从当前预设列表移除；本机不可变历史文件与其他预设不会改动。")
+            }
+        }
+
+        footer: RowLayout {
+            spacing: Math.round(7 * page.theme.scale)
+            Item { Layout.fillWidth: true }
+            UiButton {
+                objectName: "cancelPreparationPresetRemove"
+                theme: page.theme
+                text: page.controller.text("取消")
+                quiet: true
+                onClicked: removePreparationPresetDialog.close()
+            }
+            UiButton {
+                objectName: "confirmPreparationPresetRemove"
+                theme: page.theme
+                text: page.controller.text("移除")
+                primary: true
+                onClicked: {
+                    if (page.controller.removePreparationPreset(removePreparationPresetDialog.presetKey)) {
+                        removePreparationPresetDialog.close()
+                        preparationPreset.currentIndex = 0
+                    }
+                }
+            }
+        }
+    }
+
     FileDialog {
         id: musicDialog
         title: page.controller.text("选择本地音频")
@@ -427,18 +551,57 @@ ScrollView {
                     text: page.controller.text("沿用工作流预设")
                 }
 
-                UiComboBox {
-                    objectName: "preparationPreset"
+                RowLayout {
                     Layout.fillWidth: true
-                    theme: page.theme
-                    model: page.presetChoices
-                    textRole: "name"
-                    currentIndex: 0
-                    enabled: !page.editLocked && (page.controller.preparationPresets || []).length > 0
-                    Accessible.name: page.controller.text("工作流预设")
-                    onActivated: {
-                        if (index > 0)
-                            page.controller.applyPreparationPreset(currentText)
+                    spacing: Math.round(7 * page.theme.scale)
+
+                    UiComboBox {
+                        id: preparationPreset
+                        objectName: "preparationPreset"
+                        Layout.fillWidth: true
+                        theme: page.theme
+                        model: page.presetChoices
+                        textRole: "name"
+                        currentIndex: 0
+                        enabled: !page.editLocked && (page.controller.preparationPresets || []).length > 0
+                        Accessible.name: page.controller.text("工作流预设")
+                        onActivated: {
+                            if (index > 0)
+                                page.controller.applyPreparationPreset(currentValue)
+                        }
+                    }
+
+                    UiButton {
+                        objectName: "savePreparationPreset"
+                        theme: page.theme
+                        text: page.controller.text("保存当前")
+                        enabled: !page.editLocked
+                        Accessible.name: page.controller.text("保存当前准备设置为预设")
+                        onClicked: {
+                            const index = preparationPreset.currentIndex - 1
+                            const values = page.controller.preparationPresets || []
+                            preparationPresetNameField.text = index >= 0 && index < values.length
+                                ? String(values[index].preset_name || "") : ""
+                            savePreparationPresetDialog.open()
+                        }
+                    }
+
+                    UiButton {
+                        objectName: "removePreparationPreset"
+                        theme: page.theme
+                        text: page.controller.text("移除所选")
+                        quiet: true
+                        enabled: !page.editLocked && page.selectedPresetRemovable
+                        Accessible.name: page.controller.text("移除所选自定义准备预设")
+                        onClicked: {
+                            const index = preparationPreset.currentIndex - 1
+                            const values = page.controller.preparationPresets || []
+                            if (index < 0 || index >= values.length)
+                                return
+                            removePreparationPresetDialog.presetKey = String(values[index].key || "")
+                            removePreparationPresetDialog.presetLabel = String(values[index].name || "")
+                            removePreparationPresetDialog.open()
+                        }
                     }
                 }
             }
@@ -528,6 +691,66 @@ ScrollView {
                             ToolTip.text: page.field("input_mode") === "local" ? page.field("music_path") : page.field("source")
                             HoverHandler { id: musicHover }
                         }
+                    }
+
+                    DropArea {
+                        objectName: "localMusicDropArea"
+                        anchors.fill: parent
+                        enabled: !page.editLocked
+                        onEntered: function(drag) {
+                            if (drag.hasUrls || String(drag.text || "").trim().length > 0)
+                                drag.accept(Qt.CopyAction)
+                        }
+                        onDropped: function(drop) {
+                            const urls = drop.urls || []
+                            if (urls.length > 0) {
+                                for (let index = 0; index < urls.length; ++index) {
+                                    if (urls[index] && urls[index].isLocalFile()) {
+                                        page.controller.setPreparationField("input_mode", "local")
+                                        page.controller.setPreparationMusicPath(urls[index].toLocalFile())
+                                        drop.acceptProposedAction()
+                                        return
+                                    }
+                                }
+                            }
+                            const text = String(drop.text || "").trim().replace(/^"|"$/g, "")
+                            if (text.length > 0) {
+                                page.controller.setPreparationField("input_mode", "local")
+                                page.controller.setPreparationMusicPath(text)
+                                drop.acceptProposedAction()
+                            }
+                        }
+                    }
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    visible: page.field("input_mode") === "local"
+                    spacing: Math.round(5 * page.theme.scale)
+
+                    LabelText {
+                        theme: page.theme
+                        text: page.controller.text("本地音频路径")
+                    }
+
+                    ThemedTextField {
+                        objectName: "localMusicPath"
+                        Layout.fillWidth: true
+                        theme: page.theme
+                        text: page.field("music_path")
+                        placeholderText: page.controller.text("粘贴文件路径，或拖入上方素材卡片")
+                        enabled: !page.editLocked
+                        onEditingFinished: {
+                            const value = text.trim()
+                            if (value !== String(page.field("music_path")))
+                                page.controller.setPreparationMusicPath(value)
+                        }
+                    }
+
+                    HelperText {
+                        Layout.fillWidth: true
+                        theme: page.theme
+                        text: page.controller.text("路径在确认后校验；歌曲路径不会写入重启设置。")
                     }
                 }
 
@@ -1321,6 +1544,66 @@ ScrollView {
 
                             LabelText {
                                 theme: page.theme
+                                text: page.controller.text("DirectML 显卡")
+                            }
+
+                            UiComboBox {
+                                objectName: "dmlAdapter"
+                                Layout.fillWidth: true
+                                theme: page.theme
+                                model: [
+                                    {label: page.controller.text("自动选择"), value: "auto"},
+                                    {label: page.controller.text("适配器") + " 0", value: 0},
+                                    {label: page.controller.text("适配器") + " 1", value: 1},
+                                    {label: page.controller.text("适配器") + " 2", value: 2},
+                                    {label: page.controller.text("适配器") + " 3", value: 3},
+                                    {label: page.controller.text("适配器") + " 4", value: 4},
+                                    {label: page.controller.text("适配器") + " 5", value: 5},
+                                    {label: page.controller.text("适配器") + " 6", value: 6},
+                                    {label: page.controller.text("适配器") + " 7", value: 7}
+                                ]
+                                textRole: "label"
+                                valueRole: "value"
+                                currentIndex: Math.max(0, indexOfValue(page.field("dml_adapter")))
+                                enabled: !page.editLocked
+                                onActivated: page.controller.setPreparationField("dml_adapter", currentValue)
+                            }
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Math.round(5 * page.theme.scale)
+
+                            LabelText {
+                                theme: page.theme
+                                text: page.controller.text("CPU 推理线程")
+                            }
+
+                            UiComboBox {
+                                objectName: "cpuThreads"
+                                Layout.fillWidth: true
+                                theme: page.theme
+                                model: [
+                                    {label: page.controller.text("自动 · 引擎默认"), value: 0},
+                                    {label: "2", value: 2},
+                                    {label: "4", value: 4},
+                                    {label: "8", value: 8},
+                                    {label: "16", value: 16}
+                                ]
+                                textRole: "label"
+                                valueRole: "value"
+                                currentIndex: Math.max(0, indexOfValue(Number(page.field("cpu_threads"))))
+                                enabled: !page.editLocked
+                                onActivated: page.controller.setPreparationField("cpu_threads", currentValue)
+                            }
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Math.round(5 * page.theme.scale)
+
+                            LabelText {
+                                theme: page.theme
                                 text: page.controller.text("MIDI 后端")
                             }
 
@@ -1590,7 +1873,38 @@ ScrollView {
                     Layout.fillWidth: true
                     visible: page.taskFailed && String(page.task.recovery_action || "").length > 0
                     theme: page.theme
-                    text: page.controller.text("恢复建议") + " · " + page.controller.text(String(page.task.recovery_action || ""))
+                    text: page.controller.text(String(page.task.recovery_message || ""))
+                }
+
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: 8 * page.theme.scale
+                    visible: (page.task.stages || []).length > 0
+                    Repeater {
+                        model: page.task.stages || []
+                        delegate: Label {
+                            required property var modelData
+                            color: modelData.state === "done" ? page.theme.accent : page.theme.muted
+                            font.pixelSize: 12 * page.theme.scale
+                            text: (modelData.state === "done" ? "✓ " : modelData.key === page.task.current ? "• " : "")
+                                  + page.controller.text(modelData.label)
+                        }
+                    }
+                }
+
+                ScrollView {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 148 * page.theme.scale
+                    visible: String(page.task.log_tail || "").length > 0
+                    TextArea {
+                        objectName: "preparationLogTail"
+                        readOnly: true
+                        selectByMouse: true
+                        wrapMode: TextEdit.Wrap
+                        textFormat: TextEdit.PlainText
+                        color: page.theme.muted
+                        text: String(page.task.log_tail || "")
+                    }
                 }
 
                 Flow {
@@ -1651,6 +1965,29 @@ ScrollView {
                         theme: page.theme
                         text: page.controller.text("检查模型与组件")
                         onClicked: page.controller.navigate("components")
+                    }
+
+                    UiButton {
+                        theme: page.theme
+                        visible: page.taskFailed && page.task.recovery_action === "storage"
+                        text: page.controller.text("前往设置与支持")
+                        onClicked: page.controller.navigate("updates")
+                    }
+
+                    UiButton {
+                        theme: page.theme
+                        visible: page.taskFailed && page.task.recovery_action === "subtitles"
+                        text: page.controller.text("打开字幕工具")
+                        onClicked: page.controller.openSubtitleTool()
+                    }
+
+                    UiButton {
+                        objectName: "refreshPreparationLog"
+                        visible: String(page.task.job || "").length > 0
+                        theme: page.theme
+                        quiet: true
+                        text: page.controller.text("读取最近日志")
+                        onClicked: page.controller.refreshPreparationLog()
                     }
 
                     UiButton {

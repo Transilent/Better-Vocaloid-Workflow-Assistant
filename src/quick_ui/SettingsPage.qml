@@ -26,6 +26,8 @@ ScrollView {
     readonly property bool workBusy: !!controller.workBusy
     readonly property bool downloading: currentUpdateState === "downloading"
     readonly property bool applying: currentUpdateState === "applying"
+    readonly property bool restartPending: !!updateInfo.restart_pending
+    readonly property string operationBlockerText: (controller.operationBlockers || []).join("、")
     property bool suppressDiagnosticsClose: false
     property var cacheSelection: ({})
     property int cacheGeneration: -1
@@ -113,6 +115,9 @@ ScrollView {
 
     function selectPreset(entry) {
         selectedPreset = entry && typeof entry === "object" ? entry : ({})
+        var key = presetKey(selectedPreset)
+        if (key.length > 0 && controller && typeof controller.inspectPreset === "function")
+            controller.inspectPreset(selectedPreset.id, selectedPreset.version)
     }
 
     function syncPresetSelection() {
@@ -123,6 +128,9 @@ ScrollView {
         for (var index = 0; index < entries.length; ++index) {
             if (presetKey(entries[index]) === preferred) {
                 selectedPreset = entries[index]
+                if (!presetView.inspect_busy && String(presetView.inspect_key || "") !== preferred
+                        && controller && typeof controller.inspectPreset === "function")
+                    controller.inspectPreset(selectedPreset.id, selectedPreset.version)
                 return
             }
         }
@@ -264,10 +272,10 @@ ScrollView {
     }
 
     function updatePrimaryLabel() {
-        if (updateInfo.apply_ready)
-            return tr("重启并安装")
         if (downloading || applying)
             return updateStateLabel(currentUpdateState)
+        if (updateInfo.apply_ready)
+            return tr("重启并安装")
         if (updateInfo.can_update)
             return tr("立即更新")
         if (String(updateInfo.url || "").length > 0)
@@ -276,6 +284,8 @@ ScrollView {
     }
 
     function updatePrimaryAction() {
+        if (downloading || applying)
+            return
         if (updateInfo.apply_ready)
             controller.applyUpdate()
         else if (updateInfo.can_update)
@@ -919,7 +929,19 @@ ScrollView {
                 presetConflictDialog.open()
         }
     }
-    Component.onCompleted: syncDiagnostics()
+    Timer {
+        objectName: "supportActivityMonitor"
+        interval: 500
+        repeat: true
+        running: true
+        onTriggered: controller.refreshActivityNow()
+    }
+
+    Component.onCompleted: {
+        controller.setMonitorActive(true)
+        syncDiagnostics()
+    }
+    Component.onDestruction: controller.setMonitorActive(false)
     onDiagnosticsChanged: syncDiagnostics()
 
     ColumnLayout {
@@ -1458,6 +1480,67 @@ ScrollView {
                         onClicked: { page.presetRemoveEntry = page.selectedPreset; presetRemoveDialog.open() }
                     }
                 }
+                Rectangle {
+                    objectName: "presetInspectPanel"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Math.min(Math.round(230 * page.theme.scale),
+                                                     inspectContent.implicitHeight + Math.round(24 * page.theme.scale))
+                    visible: page.presetKey(page.selectedPreset).length > 0
+                    color: page.theme.base
+                    radius: 7 * page.theme.scale
+                    border.color: page.theme.line
+                    ColumnLayout {
+                        id: inspectContent
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: Math.round(11 * page.theme.scale)
+                        spacing: 6 * page.theme.scale
+                        Text {
+                            Layout.fillWidth: true
+                            text: page.tr("预设内容（只读）")
+                            color: page.theme.text
+                            font.pixelSize: 12 * page.theme.scale
+                            font.weight: Font.DemiBold
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            visible: !!page.presetView.inspect_error
+                            text: String(page.presetView.inspect_error || "")
+                            color: page.theme.error
+                            font.pixelSize: 11 * page.theme.scale
+                            wrapMode: Text.Wrap
+                        }
+                        ScrollView {
+                            id: presetInspectScroll
+                            objectName: "presetInspectScroll"
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: Math.round(160 * page.theme.scale)
+                            clip: true
+                            contentWidth: availableWidth
+                            ScrollBar.horizontal.policy: ScrollBar.AsNeeded
+                            TextArea {
+                                objectName: "presetInspectText"
+                                width: presetInspectScroll.availableWidth
+                                text: page.presetView.inspect_busy
+                                    ? page.tr("正在读取预设内容…")
+                                    : String(page.presetView.inspect_text || "")
+                                readOnly: true
+                                selectByMouse: true
+                                selectByKeyboard: true
+                                wrapMode: TextEdit.NoWrap
+                                textFormat: TextEdit.PlainText
+                                color: page.theme.text
+                                selectionColor: page.theme.accent
+                                selectedTextColor: page.theme.base
+                                font.family: "Consolas"
+                                font.pixelSize: 11 * page.theme.scale
+                                background: Rectangle { color: "transparent" }
+                                Accessible.name: page.tr("预设 JSON 内容")
+                            }
+                        }
+                    }
+                }
                 RowLayout {
                     Layout.fillWidth: true
                     Text {
@@ -1578,6 +1661,57 @@ ScrollView {
                     wrapMode: Text.Wrap
                     textFormat: Text.PlainText
                 }
+                Text {
+                    objectName: "updateOperationBlockers"
+                    Layout.fillWidth: true
+                    visible: page.operationBlockerText.length > 0
+                    text: page.tr("正在运行") + "  " + page.operationBlockerText
+                    color: page.theme.accent
+                    font.pixelSize: Math.round(11 * page.theme.scale)
+                    wrapMode: Text.Wrap
+                    textFormat: Text.PlainText
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    visible: String(page.updateInfo.notes || "").length > 0
+                    spacing: Math.round(4 * page.theme.scale)
+                    Text {
+                        text: page.tr("更新说明")
+                        color: page.theme.text
+                        font.pixelSize: Math.round(12 * page.theme.scale)
+                        font.weight: Font.DemiBold
+                    }
+                    ScrollView {
+                        id: updateReleaseNotesScroll
+                        objectName: "updateReleaseNotesScroll"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.round(150 * page.theme.scale)
+                        clip: true
+                        contentWidth: availableWidth
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                        background: Rectangle {
+                            color: page.theme.base
+                            radius: Math.round(7 * page.theme.scale)
+                            border.color: page.theme.line
+                        }
+                        TextArea {
+                            objectName: "updateReleaseNotes"
+                            width: updateReleaseNotesScroll.availableWidth
+                            text: String(page.updateInfo.notes || "")
+                            readOnly: true
+                            selectByMouse: true
+                            selectByKeyboard: true
+                            wrapMode: TextEdit.Wrap
+                            textFormat: TextEdit.PlainText
+                            color: page.theme.text
+                            selectionColor: page.theme.accent
+                            selectedTextColor: page.theme.base
+                            font.pixelSize: Math.round(11 * page.theme.scale)
+                            background: Rectangle { color: "transparent" }
+                            Accessible.name: page.tr("更新说明")
+                        }
+                    }
+                }
 
                 ProgressBar {
                     id: updateProgress
@@ -1620,15 +1754,15 @@ ScrollView {
                         primary: true
                         text: page.updatePrimaryLabel()
                         enabled: !page.downloading && !page.applying
-                            && !(page.workBusy && page.updateInfo.apply_ready)
                         onClicked: page.updatePrimaryAction()
                     }
                     UiButton {
                         objectName: "updateCancel"
                         theme: page.theme
                         quiet: true
-                        visible: page.downloading && page.updateInfo.can_cancel
-                        text: page.tr("取消下载")
+                        visible: (page.downloading || page.updateInfo.auto_restart_active)
+                            && page.updateInfo.can_cancel
+                        text: page.updateInfo.auto_restart_active ? page.tr("暂缓安装") : page.tr("取消下载")
                         onClicked: page.controller.cancelUpdate()
                     }
                     UiButton {

@@ -58,6 +58,12 @@ MAX_REVERB_POINTS = 256
 GR_HISTORY_SECONDS = 30.0
 GR_HISTORY_BUCKET_MS = 100.0
 MAX_GR_HISTORY_POINTS = 301
+PREVIEW_MIN_SECONDS = 2.0
+PREVIEW_MAX_SECONDS = 30.0
+PREVIEW_MAX_START_SECONDS = 86400.0
+CLASSIC_EQ_LOW_CUT_HZ = 80.0
+CLASSIC_EQ_PRESENCE_DB = 1.0
+CLASSIC_EQ_PRESENCE_Q = 0.75
 
 _ROOM_MAP = {
     'small': 'small', 'short': 'small', '短空间': 'small',
@@ -92,6 +98,22 @@ def _path_text(value: Any, label: str) -> str:
 
 def default_bands() -> list[dict[str, Any]]:
     return _shared_default_bands()
+
+
+def classic_default_bands() -> list[dict[str, Any]]:
+    """Return the enabled-EQ defaults used by the established Widgets mixer.
+
+    These values are editor defaults only. Preset documents carry and apply
+    their own complete four-band payloads, so existing presets are unaffected.
+    """
+    bands = default_bands()
+    for band in bands:
+        if band['type'] == 'highpass':
+            band['freq_hz'] = CLASSIC_EQ_LOW_CUT_HZ
+        elif band['type'] == 'bell':
+            band['gain_db'] = CLASSIC_EQ_PRESENCE_DB
+            band['q'] = CLASSIC_EQ_PRESENCE_Q
+    return bands
 
 
 def normalize_bands(value: Any, sample_rate: Any = DEFAULT_SAMPLE_RATE) -> list[dict[str, Any]]:
@@ -485,6 +507,11 @@ class MixdownWorkspaceState:
         self.reverb_mix = 0.10
         self.reverb_predelay_ms = 0.0
         self.width = 1.0
+        self.preview_start = 0.0
+        self.preview_duration = 12.0
+        self.export_progress = {
+            'fraction': 0.0, 'phase': '', 'message': '',
+        }
         self.preset_name = '自定义'
         self._tracks = [
             {'id': 'vocal-1', 'label': '歌声 1', 'path': '', 'name': '', 'gain': 0.0,
@@ -492,7 +519,7 @@ class MixdownWorkspaceState:
             {'id': 'instrumental', 'label': '伴奏', 'path': '', 'name': '', 'gain': 0.0,
              'muted': False, 'solo': False, 'pan': 0.0, 'offset': 0.0, 'send': 0.0, '_artifact': None},
         ]
-        self._bands = default_bands()
+        self._bands = classic_default_bands()
 
     def copy(self) -> 'MixdownWorkspaceState':
         return copy.deepcopy(self)
@@ -712,6 +739,54 @@ class MixdownWorkspaceState:
 
     def set_loop(self, value: Any) -> None:
         self.loop = bool(value)
+
+    def set_preview_range(self, start: Any, duration: Any) -> bool:
+        start_seconds = _clamp(
+            start, 0.0, PREVIEW_MAX_START_SECONDS, 'preview_start')
+        duration_seconds = _clamp(
+            duration, PREVIEW_MIN_SECONDS, PREVIEW_MAX_SECONDS,
+            'preview_duration')
+        if (start_seconds, duration_seconds) == (
+                self.preview_start, self.preview_duration):
+            return False
+        self.preview_start = start_seconds
+        self.preview_duration = duration_seconds
+        return True
+
+    def preview_range_ms(self, duration_ms: Any = None) -> tuple[int, int]:
+        """Return the current loop range, bounded to known media duration."""
+
+        try:
+            total = max(0, int(round(finite_number(
+                self.duration if duration_ms is None else duration_ms,
+                'duration'))))
+        except ValueError:
+            total = 0
+        start = max(0, int(round(self.preview_start * 1000.0)))
+        length = max(1, int(round(self.preview_duration * 1000.0)))
+        if total > 0:
+            start = min(start, max(0, total - 1))
+            length = min(length, max(1, total - start))
+        return start, start + length
+
+    def set_export_progress(self, event: Any) -> bool:
+        if not isinstance(event, Mapping):
+            return False
+        try:
+            fraction = _clamp(event.get('fraction', 0.0), 0.0, 1.0,
+                              'export fraction')
+        except ValueError:
+            return False
+        phase = str(event.get('phase') or '')[:64]
+        message = str(event.get('message') or '')[:1600]
+        progress = {'fraction': fraction, 'phase': phase, 'message': message}
+        if progress == self.export_progress:
+            return False
+        self.export_progress = progress
+        return True
+
+    def clear_export_progress(self) -> None:
+        self.export_progress = {'fraction': 0.0, 'phase': '', 'message': ''}
 
     def set_sample_rate(self, value: Any) -> bool:
         """Record the real stream rate for display; the renderer follows the backing."""
@@ -1000,13 +1075,20 @@ class MixdownWorkspaceState:
             'maxHz': round(float(max_hz), 5),
             'sampleRate': float(self.sample_rate),
             'presetName': str(self.preset_name),
+            'width': float(self.width),
+            'previewStart': float(self.preview_start),
+            'previewDuration': float(self.preview_duration),
+            'previewRangeStartMs': self.preview_range_ms()[0],
+            'previewRangeEndMs': self.preview_range_ms()[1],
+            'exportProgress': copy.deepcopy(self.export_progress),
         }
 
 
 __all__ = [
     'AUDIO_SUFFIXES', 'DEFAULT_BANDS', 'EQ_CURVE_POINTS', 'MAX_REVERB_POINTS',
     'MAX_SPECTRUM_POINTS', 'MixdownWorkspaceState', 'TELEMETRY_SCHEMA',
-    'TELEMETRY_SOURCE', 'compression_controls', 'default_bands', 'eq_curve',
+    'TELEMETRY_SOURCE', 'compression_controls', 'default_bands',
+    'classic_default_bands', 'eq_curve',
     'fresh_output_path', 'meters_from_telemetry', 'normalize_bands',
     'reverb_curve_from_telemetry', 'spectrum_from_telemetry',
     'strength_for_compressor', 'telemetry_identity',

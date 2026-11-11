@@ -249,7 +249,9 @@ def reuse_download(previous, *, expected_bv=None, **options):
 def _reuse_download_locked(previous, **options):
     import shutil
     old = json.loads((previous / "request.json").read_text(encoding="utf-8"))
-    prior_status = json.loads((previous / "status.json").read_text(encoding="utf-8"))
+    from task_store import read_json
+    prior_steps = read_json(previous / "status.json").get("steps")
+    prior_steps = prior_steps if isinstance(prior_steps, dict) else {}
     local = old.get("source_kind") == "local"
     copied_input_sha = None
     if local:
@@ -283,12 +285,13 @@ def _reuse_download_locked(previous, **options):
     from artifact_cache import valid_receipt, receipt
     copied = {"steps": {}}
     for stage in ("metadata", "download", "audio"):
-        if prior_status["steps"].get(stage, {}).get("state") != "done":
+        prior_step = prior_steps.get(stage)
+        if not isinstance(prior_step, dict) or prior_step.get("state") != "done":
             break
         files = list(requirements(stage, old))
         if not all((previous / path).is_file() and (previous / path).stat().st_size > 0 for path in files):
             break
-        if not valid_receipt(previous,old,stage,files,prior_status['steps'][stage].get('receipt')):
+        if not valid_receipt(previous,old,stage,files,prior_step.get('receipt')):
             break
         if stage == 'download' and local and not copied_input_sha:
             break

@@ -10,13 +10,17 @@ from PySide6.QtGui import QDesktopServices, QGuiApplication
 import startup_preferences
 import storage
 import updater
-from common import ROOT, job_directories, output_directory
+from common import ROOT, environment_value, job_directories, output_directory
 from download_sources import read_small
 from i18n import tr
 from quick_work import WorkerLane
 from support_info import FEEDBACK_URL, QQ_GROUP
 from task_store import format_size, size
-from workspace_settings import SettingsState
+from workspace_settings import SettingsState, load_update_recovery
+
+
+TOUR_STEP_COUNT = 7
+MAX_PRESET_INSPECT_CHARS = 256 * 1024
 
 
 def _existing_directory(value):
@@ -89,6 +93,38 @@ def _scan_storage(output_path=None):
     }
 
 
+def _operation_label(kind):
+    if kind == 'preparation':
+        return '音乐处理'
+    if kind == 'component':
+        return '组件安装'
+    if kind.startswith('tuning-'):
+        return '调音'
+    if kind.startswith('mixdown-'):
+        return '简易混音'
+    if kind.startswith('video-'):
+        return '视频处理'
+    if kind.startswith('publication-'):
+        return '发布准备'
+    if kind == 'artifact-check':
+        return '任务文件核验'
+    if kind.startswith('task-'):
+        return '任务修改'
+    if kind == 'storage-clean':
+        return '缓存管理'
+    if kind == 'update-download':
+        return '更新下载'
+    return '后台操作'
+
+
+def _view_busy(controller):
+    try:
+        value = controller.view
+        return bool(isinstance(value, dict) and value.get('busy'))
+    except (AttributeError, RuntimeError, TypeError):
+        return False
+
+
 class QuickSupport(QObject):
     settingsChanged = Signal()
     startupChanged = Signal()
@@ -104,13 +140,27 @@ class QuickSupport(QObject):
         self.discovery = WorkerLane(self, 'vwa-update-discovery')
         self.storage_lane = WorkerLane(self, 'vwa-storage-management')
         self.preset_lane = WorkerLane(self, 'vwa-preset-library')
+        self.inspect_lane = WorkerLane(self, 'vwa-preset-inspect')
         self.state = SettingsState(sources)
+        self.state.restore_update_recovery(load_update_recovery(ROOT))
         self.sources = sources
         self.version = updater.current_version()
         self._can_apply_updates = self.state.installed_quick_frontend()
         self.worker.changed.connect(self.workChanged)
         self.discovery.changed.connect(self.workChanged)
+        self.storage_lane.changed.connect(self.workChanged)
+        self.preset_lane.changed.connect(self.workChanged)
+        self.inspect_lane.changed.connect(self.workChanged)
         self._auto_check = False
+        self._last_operation_names = ()
+        self._monitor_active = False
+        self._activity_timer = QTimer(self)
+        self._activity_timer.setSingleShot(True)
+        self._activity_timer.setInterval(60)
+        self._activity_timer.timeout.connect(self._refresh_activity_now)
+        self._restart_timer = QTimer(self)
+        self._restart_timer.setInterval(1000)
+        self._restart_timer.timeout.connect(self._tick_auto_restart)
         self._diagnostics = {'open': False, 'text': ''}
         self._storage_view = {
             'busy': False,
@@ -141,6 +191,10 @@ class QuickSupport(QObject):
             'conflict': False,
             'import_preview': {},
             'last_entry_key': '',
+            'inspect_busy': False,
+            'inspect_key': '',
+            'inspect_text': '',
+            'inspect_error': '',
         }
 
     @Property('QVariantMap', notify=settingsChanged)
@@ -155,6 +209,10 @@ class QuickSupport(QObject):
     def qqGroup(self):
         return QQ_GROUP
 
+    @Property(int, constant=True)
+    def tutorialStepCount(self):
+        return TOUR_STEP_COUNT
+
     @Property(str, constant=True)
     def currentVersion(self):
         return self.version
@@ -165,7 +223,159 @@ class QuickSupport(QObject):
 
     @Property(bool, notify=workChanged)
     def workBusy(self):
-        return bool(self.worker.kind or self.discovery.kind)
+        return bool(self._last_operation_names)
+
+    @Property('QStringList', notify=workChanged)
+    def operationBlockers(self):
+        return list(self._last_operation_names)
+
+    def _active_operation_names(self):
+        names = []
+        seen = set()
+
+        def add(name):
+            label = str(name or '').strip()
+            if label and label not in seen:
+                seen.add(label)
+                names.append(label)
+
+        try:
+            kind = str(self.owner.operationKind or '')
+        except (AttributeError, RuntimeError, TypeError):
+            kind = ''
+        if kind:
+            add(_operation_label(kind))
+        try:
+            if bool(self.owner.taskMutationBusy):
+                add('任务修改')
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        if self.storage_lane.kind:
+            add('缓存管理')
+        if self.preset_lane.kind or self.inspect_lane.kind:
+            add('预设库')
+        if self.discovery.kind:
+            add('更新检查')
+        try:
+            calibration = self.owner.calibration
+            if _view_busy(calibration):
+                add('校准')
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        try:
+            if _view_busy(self.owner.tuning):
+                add('调音')
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        try:
+            mixdown = self.owner.mixdown
+            mixdown_view = mixdown.view
+            if isinstance(mixdown_view, dict) and mixdown_view.get('busy'):
+                add('简易混音')
+            if isinstance(mixdown_view, dict) and mixdown_view.get('playing'):
+                add('简易混音试听')
+            if getattr(mixdown, '_preview', None) is not None:
+                add('简易混音试听会话')
+            preview_timer = getattr(mixdown, '_preview_timer', None)
+            if getattr(mixdown, '_preview_pending', False) or (
+                    preview_timer is not None and preview_timer.isActive()):
+                add('简易混音试听准备')
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        try:
+            if _view_busy(self.owner.video):
+                add('视频处理')
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        try:
+            publication = self.owner.publication
+            if _view_busy(publication):
+                add('发布准备')
+            publication_view = publication.view
+            browser = publication_view.get('browserSession', {}) if isinstance(publication_view, dict) else {}
+            if isinstance(browser, dict) and browser.get('active'):
+                add('登录或上传浏览器')
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        return tuple(names)
+
+    @Slot()
+    def refreshActivity(self):
+        if not self._monitor_active and not self.state.auto_restart_active:
+            return False
+        if not self._activity_timer.isActive():
+            self._activity_timer.start()
+        return True
+
+    @Slot(bool)
+    def setMonitorActive(self, active):
+        self._monitor_active = bool(active)
+        if self._monitor_active:
+            self._refresh_activity_now()
+        else:
+            self._activity_timer.stop()
+        return self._monitor_active
+
+    def _refresh_activity_now(self):
+        names = self._active_operation_names()
+        if names != self._last_operation_names:
+            self._last_operation_names = names
+            self.workChanged.emit()
+        return bool(names)
+
+    @Slot()
+    def refreshActivityNow(self):
+        if not self._monitor_active and not self.state.auto_restart_active:
+            return False
+        return self._refresh_activity_now()
+
+    def _apply_restart_plan(self):
+        if self.state.update_plan is None:
+            self._error(ValueError('没有已校验的更新计划。'))
+            return False
+        if not self.state.installed_quick_frontend():
+            self.state.update.update(
+                update_state='downloaded',
+                message='当前运行入口未声明为 Quick 官方更新目标，请从发布页获取适用完整包。',
+            )
+            self.startupChanged.emit()
+            return False
+        blockers = self._active_operation_names()
+        if blockers:
+            self.state.block_manual_restart(blockers)
+            self.startupChanged.emit()
+            return False
+        if environment_value('VWA_TESTING') == '1':
+            self.state.update.update(
+                update_state='downloaded',
+                message='测试模式已阻止重启与安装；更新计划保持不变。',
+            )
+            self.startupChanged.emit()
+            return False
+        try:
+            updater.restart_to_apply(self.state.update_plan)
+        except (OSError, ValueError) as exc:
+            self._error(exc)
+            return False
+        self.owner.closeReady.emit()
+        return True
+
+    def _tick_auto_restart(self):
+        if not self.state.auto_restart_active:
+            self._restart_timer.stop()
+            return False
+        names = self._active_operation_names()
+        if names != self._last_operation_names:
+            self._last_operation_names = names
+            self.workChanged.emit()
+        apply_now = self.state.tick_auto_restart(names)
+        self.startupChanged.emit()
+        if self.state.auto_restart_active:
+            return False
+        self._restart_timer.stop()
+        if apply_now:
+            self._apply_restart_plan()
+        return apply_now
 
     @Property('QVariantMap', notify=diagnosticsChanged)
     def diagnostics(self):
@@ -364,11 +574,67 @@ class QuickSupport(QObject):
             error='',
             error_code='',
             conflict=False,
+            inspect_busy=False,
+            inspect_key='',
+            inspect_text='',
+            inspect_error='',
         )
         self.presetLibraryChanged.emit()
         if not self.preset_lane.start(
                 'preset-refresh', lambda _stop, _send: library.snapshot(), self._preset_refreshed):
             self._set_preset_error(ValueError('预设库正在执行其他操作。'))
+
+    @Slot(str, str, result=bool)
+    def inspectPreset(self, identifier, version):
+        if self.inspect_lane.kind:
+            return False
+        if not self._preset_view.get('loaded'):
+            self._set_preset_error(ValueError('请先载入预设库。'))
+            return False
+        key = f'{identifier}|{version}'
+        try:
+            library = self._library()
+        except Exception as exc:
+            self._set_preset_error(exc)
+            return False
+        self._preset_view.update(
+            inspect_busy=True,
+            inspect_key=key,
+            inspect_text='',
+            inspect_error='',
+        )
+        self.presetLibraryChanged.emit()
+
+        def work(_stop, _send):
+            snapshot = library.get_snapshot(identifier, version)
+            raw = snapshot.get('raw')
+            if not isinstance(raw, bytes):
+                raise ValueError('预设文档内容不可用。')
+            text = raw.decode('utf-8-sig')
+            return {'key': key, 'text': text[:MAX_PRESET_INSPECT_CHARS],
+                    'truncated': len(text) > MAX_PRESET_INSPECT_CHARS, 'bytes': len(raw)}
+
+        def finish(value, error):
+            if error is not None:
+                self._preset_view.update(
+                    inspect_busy=False,
+                    inspect_error='无法读取预设内容：' + str(error)[:1600],
+                )
+            else:
+                self._preset_view.update(
+                    inspect_busy=False,
+                    inspect_key=str(value.get('key') or key),
+                    inspect_text=str(value.get('text') or ''),
+                    inspect_error=('内容超过查看上限，仅显示前 256 KiB 字符。'
+                                   if value.get('truncated') else ''),
+                )
+            self.presetLibraryChanged.emit()
+
+        if not self.inspect_lane.start('preset-inspect', work, finish):
+            self._preset_view.update(inspect_busy=False, inspect_error='预设查看已在运行。')
+            self.presetLibraryChanged.emit()
+            return False
+        return True
 
     def _preset_refreshed(self, snapshot, error):
         if error is not None:
@@ -389,6 +655,10 @@ class QuickSupport(QObject):
             error='',
             error_code='',
             conflict=False,
+            inspect_busy=False,
+            inspect_key='',
+            inspect_text='',
+            inspect_error='',
         )
         self.presetLibraryChanged.emit()
 
@@ -476,6 +746,10 @@ class QuickSupport(QObject):
             conflict=False,
             import_preview={},
             last_entry_key=self._entry_key(entry),
+            inspect_busy=False,
+            inspect_key='',
+            inspect_text='',
+            inspect_error='',
         )
         self.presetLibraryChanged.emit()
 
@@ -656,12 +930,18 @@ class QuickSupport(QObject):
 
     @Slot(str, 'QVariant')
     def setSetting(self, name, value):
-        if self.worker.kind in ('component-install', 'update-download') and name in ('download_source', 'download_workers'):
+        if name in ('download_source', 'download_workers') and self._active_operation_names():
+            self.state.update.update(message='请等待当前操作结束后再修改下载设置。')
+            self.startupChanged.emit()
             return
         try:
             if self.state.save(name, value):
                 if name == 'download_source':
                     self.owner.set_component_source(value)
+                if name == 'auto_restart_updates' and value is False and self.state.auto_restart_active:
+                    self._restart_timer.stop()
+                    self.state.defer_auto_restart('已关闭自动重启。')
+                    self.startupChanged.emit()
                 self.settingsChanged.emit()
         except (OSError, ValueError, TypeError) as exc:
             self._error(exc)
@@ -677,6 +957,8 @@ class QuickSupport(QObject):
     def begin_startup(self):
         if startup_preferences.tour_due(self.state.preferences):
             self.showTutorial()
+        if self.state.open_recovered_pending():
+            self.startupChanged.emit()
         self._auto_check = self.state.values['check_for_updates']
         if self._auto_check:
             QTimer.singleShot(800, self._startup_check)
@@ -715,9 +997,12 @@ class QuickSupport(QObject):
 
     def close(self):
         self._auto_check = False
+        self._activity_timer.stop()
+        self._restart_timer.stop()
         self.discovery.close()
         self.storage_lane.close()
         self.preset_lane.close()
+        self.inspect_lane.close()
 
     @Slot(int)
     def deferUpdate(self, seconds):
@@ -742,7 +1027,20 @@ class QuickSupport(QObject):
 
     @Slot()
     def downloadUpdate(self):
-        if self.workBusy or not self.state.release.get('update') or not self.state.installed_quick_frontend():
+        blockers = self._active_operation_names()
+        if blockers:
+            self.state.block_manual_restart(blockers)
+            self.state.update.update(message='请等待' + '、'.join(blockers) + '结束后再下载程序更新。')
+            self.startupChanged.emit()
+            return
+        if not self.state.release.get('update'):
+            return
+        if not self.state.installed_quick_frontend():
+            self.state.update.update(
+                update_state='available',
+                message='当前运行入口未声明为 Quick 官方更新目标，请从发布页获取适用完整包。',
+            )
+            self.startupChanged.emit()
             return
         release = dict(self.state.release)
         source = self.state.values['download_source']
@@ -767,16 +1065,21 @@ class QuickSupport(QObject):
                 self._error(error)
                 return
             else:
-                self.state.update_plan = Path(plan)
-                self.state.update.update(update_state='downloaded', message='下载完成，可重启安装更新。')
-            self.startupChanged.emit()
+                self.state.set_update_plan(plan, release.get('version'))
             if error is None and self.state.values['auto_restart_updates']:
-                self.applyUpdate()
+                self.state.begin_auto_restart()
+                self._restart_timer.start()
+            self.startupChanged.emit()
 
         self.worker.start('update-download', work, complete, progress)
 
     @Slot()
     def cancelUpdate(self):
+        if self.state.auto_restart_active:
+            self._restart_timer.stop()
+            self.state.defer_auto_restart('已暂缓自动安装。')
+            self.startupChanged.emit()
+            return
         if self.worker.kind == 'update-download':
             self.state.update.update(update_state='cancelling', message='正在取消更新下载…')
             self.worker.cancel()
@@ -784,13 +1087,13 @@ class QuickSupport(QObject):
 
     @Slot()
     def applyUpdate(self):
-        if self.workBusy or self.state.update_plan is None or not self.state.installed_quick_frontend():
+        if self.state.update_plan is None:
+            self.state.update.update(message='没有可安装的已校验更新计划。')
+            self.startupChanged.emit()
             return
-        try:
-            updater.restart_to_apply(self.state.update_plan)
-            self.owner.closeReady.emit()
-        except (OSError, ValueError) as exc:
-            self._error(exc)
+        self._restart_timer.stop()
+        self.state.auto_restart_active = False
+        self._apply_restart_plan()
 
     @Slot()
     def openRelease(self):
@@ -831,8 +1134,14 @@ class QuickSupport(QObject):
 
     @Slot()
     def showTutorial(self):
+        blockers = self._active_operation_names()
+        if blockers:
+            self.state.update.update(message='请先完成 ' + '、'.join(blockers) + '，再查看入门教程。')
+            self.startupChanged.emit()
+            return False
         self.state.show_tour()
         self.startupChanged.emit()
+        return True
 
     def _finish_tutorial(self, outcome):
         try:
@@ -846,10 +1155,18 @@ class QuickSupport(QObject):
     def advanceTutorial(self):
         if not self.state.tour_open:
             return
-        if self.state.tour_step >= 3:
+        if self.state.tour_step >= self.tutorialStepCount - 1:
             self._finish_tutorial('completed')
         else:
             self.state.tour_step += 1
+            self.startupChanged.emit()
+
+    @Slot()
+    def previousTutorial(self):
+        if not self.state.tour_open:
+            return
+        if self.state.tour_step > 0:
+            self.state.tour_step -= 1
             self.startupChanged.emit()
 
     @Slot()

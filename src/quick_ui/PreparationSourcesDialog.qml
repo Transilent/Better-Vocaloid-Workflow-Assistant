@@ -4,11 +4,12 @@ import QtQuick.Layouts
 
 Dialog {
     id: dialog
-    objectName: "preparationSourcesDialog"
+    objectName: lyricPurpose === "subtitles" ? "subtitleSourcesDialog" : "preparationSourcesDialog"
     required property QtObject theme
     required property QtObject controller
     signal componentsRequested()
     property string pane: "lyrics"
+    property string lyricPurpose: "preparation"
     property string selectedSong: ""
     property string selectedJob: ""
     readonly property var view: controller.view
@@ -23,6 +24,8 @@ Dialog {
     padding: Math.round(15 * theme.scale)
 
     function openPane(name) {
+        if (name === "lyrics" && !controller.selectLyricPurpose(lyricPurpose))
+            return
         pane = name
         open()
         if (name === "download")
@@ -89,8 +92,8 @@ Dialog {
                 UiButton {
                     theme: dialog.theme
                     text: "打开歌曲试听"
-                    enabled: !!(dialog.selectedSong || dialog.view.previewId) && !dialog.view.busy
-                    onClicked: dialog.controller.auditionSong(dialog.selectedSong || dialog.view.previewId)
+                    enabled: (versions.currentIndex >= 0 || !!dialog.view.previewId) && !dialog.view.busy
+                    onClicked: dialog.controller.auditionSong(versions.currentIndex >= 0 ? versions.currentValue : dialog.view.previewId)
                 }
             }
             ScrollView {
@@ -213,7 +216,7 @@ Dialog {
             UiButton {
                 objectName: "applyNeteaseLyrics"
                 theme: dialog.theme
-                text: "填入主唱歌词"
+                text: dialog.lyricPurpose === "subtitles" ? "采用字幕时间轴" : "填入主唱歌词"
                 primary: true
                 visible: dialog.pane === "lyrics"
                 enabled: !dialog.view.busy && dialog.view.canApply

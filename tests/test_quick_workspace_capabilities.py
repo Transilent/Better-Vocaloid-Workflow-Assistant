@@ -140,6 +140,7 @@ try:
             fetch.assert_called_once_with('456')
         check('apply preserves lyric origin and draft version',
               bridge.state.draft.view['lyrics'] == '春风' and bridge.state.draft.lyric_reference['origin']['song_id'] == '456')
+        bridge.setPreparationField('target', 'midi')
         bridge.setPreparationField('midi_backend', 'v1')
         bridge.setPreparationField('alignment_engine', 'tifa')
         click('checkPreparationComponents')

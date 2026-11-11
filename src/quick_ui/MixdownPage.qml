@@ -23,6 +23,7 @@ Item {
     readonly property var spectrum: controller.spectrum || ({})
     readonly property var reverbCurve: controller.reverbCurve || []
     readonly property var presets: controller.presets || []
+    readonly property var exportProgress: view.exportProgress || ({})
 
     readonly property string analysisMode: String(view.analysis || "eq").toLowerCase()
     readonly property string selectionMode: String(view.selection || "B").toUpperCase() === "A" ? "A" : "B"
@@ -47,6 +48,7 @@ Item {
     property string compactPanel: "analysis"
     property bool showCompactEqDetails: false
     property bool showCompactPresets: false
+    property bool showPreviewRange: false
     function number(value, fallback) {
         if (value === undefined || value === null || value === "")
             return fallback;
@@ -271,11 +273,30 @@ Item {
     function focusBlocksSpace(item) {
         let current = item;
         while (current) {
+            if (String(current.objectName || "") === "mixdownEqPlot")
+                return true
             if (current instanceof TextInput || current instanceof TextEdit || current instanceof TextField || current instanceof TextArea || current instanceof SpinBox || current instanceof ComboBox || current instanceof Popup || current instanceof Dialog)
                 return true;
             current = current.parent;
         }
         return false;
+    }
+
+    function previewTimeText(milliseconds) {
+        return (Number(milliseconds || 0) / 1000).toFixed(3);
+    }
+
+    function exportPhaseText(phase) {
+        const labels = {prepare: "准备", decode: "解码", mix: "混音", encode: "编码",
+                        loudness: "响度分析", done: "完成", cancelled: "已取消", failed: "失败"};
+        return labels[String(phase || "")] || String(phase || "处理中");
+    }
+
+    function commitPreviewRange() {
+        if (!page.hasMedia || page.loading)
+            return;
+        page.controller.setPreviewRange(Number(previewStartInput.value) / 1000,
+                                        Number(previewDurationInput.value) / 1000);
     }
 
     function reviewPreset(key) {
@@ -615,6 +636,24 @@ Item {
                         }
                     }
                 }
+
+                ParameterSlider {
+                    objectName: "mixdownWidth"
+                    Layout.fillWidth: true
+                    theme: page.theme
+                    label: "立体声宽度"
+                    fromValue: 0
+                    toValue: 2
+                    displayValue: page.number(page.view.width, 1)
+                    decimals: 2
+                    step: 0.01
+                    unit: "×"
+                    resetValue: 1
+                    interactive: !page.busy && !page.loading
+                    onMoved: amount => page.controller.setOption("width", amount)
+                    onResetRequested: page.controller.setOption("width", 1)
+                    Accessible.name: "立体声宽度"
+                }
             }
         }
 
@@ -841,8 +880,18 @@ Item {
                     Accessible.checkable: true
                     Accessible.checked: !!page.view.loop
                     ToolTip.visible: hovered
-                    ToolTip.text: "循环试听 · Ctrl+Shift+L"
+                    ToolTip.text: "循环所选试听范围 · Ctrl+Shift+L"
                     onClicked: page.controller.setLoop(!page.view.loop)
+                }
+                UiButton {
+                    objectName: "mixdownPreviewRangeToggle"
+                    theme: page.theme
+                    quiet: true
+                    selected: page.showPreviewRange
+                    text: page.compact ? "范围" : "试听范围"
+                    Accessible.checkable: true
+                    Accessible.checked: page.showPreviewRange
+                    onClicked: page.showPreviewRange = !page.showPreviewRange
                 }
                 UiButton {
                     objectName: "mixdownBefore"
@@ -851,7 +900,7 @@ Item {
                     text: page.compact ? "A" : "A 处理前"
                     Accessible.name: "A 处理前"
                     ToolTip.visible: hovered
-                    ToolTip.text: "处理前 · Ctrl+Shift+A"
+                    ToolTip.text: "切换并试听处理前 · Ctrl+Shift+A"
                     onClicked: page.controller.selectMix("A")
                 }
                 UiButton {
@@ -861,7 +910,7 @@ Item {
                     text: page.compact ? "B" : "B 处理后"
                     Accessible.name: "B 处理后"
                     ToolTip.visible: hovered
-                    ToolTip.text: "处理后 · Ctrl+Shift+B"
+                    ToolTip.text: "切换并试听处理后 · Ctrl+Shift+B"
                     onClicked: page.controller.selectMix("B")
                 }
                 Text {
@@ -921,7 +970,7 @@ Item {
                     objectName: "mixdownComposeVideo"
                     theme: page.theme
                     visible: !!page.view.canComposeVideo
-                    text: page.compact ? "合成" : "合成视频"
+                    text: page.compact ? (page.view.videoHandoffMode === "independent" ? "进入" : "合成") : (page.view.videoHandoffMode === "independent" ? "进入视频合成" : "合成视频")
                     primary: true
                     enabled: !page.busy
                     onClicked: page.controller.composeVideo()
@@ -934,6 +983,119 @@ Item {
                     text: page.view.resultStale ? "打开上次导出的 WAV" : "打开导出结果"
                     visible: page.resultText(page.view.result).length > 0
                     onClicked: page.controller.openResult()
+                }
+            }
+
+            RowLayout {
+                id: exportProgressRow
+                Layout.fillWidth: true
+                visible: String(page.view.state || "") === "exporting"
+                spacing: Math.round(7 * page.theme.scale)
+
+                Text {
+                    Layout.preferredWidth: Math.round(62 * page.theme.scale)
+                    text: page.exportPhaseText(page.exportProgress.phase)
+                    color: page.theme.text
+                    font.pixelSize: Math.round(10 * page.theme.scale)
+                    font.weight: Font.DemiBold
+                    textFormat: Text.PlainText
+                }
+                ProgressBar {
+                    objectName: "mixdownExportProgress"
+                    Layout.fillWidth: true
+                    from: 0
+                    to: 1
+                    value: page.clamp(page.number(page.exportProgress.fraction, 0), 0, 1)
+                    indeterminate: false
+                    Accessible.name: "导出进度"
+                }
+                Text {
+                    Layout.preferredWidth: Math.round(40 * page.theme.scale)
+                    horizontalAlignment: Text.AlignRight
+                    text: Math.round(page.number(page.exportProgress.fraction, 0) * 100) + "%"
+                    color: page.theme.muted
+                    font.pixelSize: Math.round(10 * page.theme.scale)
+                    font.family: "Consolas"
+                }
+            }
+
+            RowLayout {
+                id: previewRangeRow
+                Layout.fillWidth: true
+                visible: page.showPreviewRange
+                spacing: Math.round(7 * page.theme.scale)
+
+                Text {
+                    text: "试听范围"
+                    color: page.theme.muted
+                    font.pixelSize: Math.round(10 * page.theme.scale)
+                }
+                Text {
+                    text: "开始"
+                    color: page.theme.muted
+                    font.pixelSize: Math.round(10 * page.theme.scale)
+                }
+                SpinBox {
+                    id: previewStartInput
+                    objectName: "mixdownPreviewStart"
+                    Layout.preferredWidth: Math.round(112 * page.theme.scale)
+                    from: 0
+                    to: Math.max(1, page.durationMs)
+                    stepSize: 100
+                    editable: true
+                    enabled: page.hasMedia && !page.loading
+                    textFromValue: value => page.previewTimeText(value)
+                    valueFromText: text => Math.round(Number(String(text).trim().replace(",", ".")) * 1000)
+                    onValueModified: page.commitPreviewRange()
+                    Accessible.name: "试听起点，秒"
+                    Binding {
+                        target: previewStartInput
+                        property: "value"
+                        when: !previewStartInput.activeFocus
+                        value: Math.round(page.number(page.view.previewStart, 0) * 1000)
+                        restoreMode: Binding.RestoreBindingOrValue
+                    }
+                }
+                Text {
+                    text: "时长"
+                    color: page.theme.muted
+                    font.pixelSize: Math.round(10 * page.theme.scale)
+                }
+                SpinBox {
+                    id: previewDurationInput
+                    objectName: "mixdownPreviewDuration"
+                    Layout.preferredWidth: Math.round(104 * page.theme.scale)
+                    from: 2000
+                    to: 30000
+                    stepSize: 500
+                    editable: true
+                    enabled: page.hasMedia && !page.loading
+                    textFromValue: value => page.previewTimeText(value)
+                    valueFromText: text => Math.round(Number(String(text).trim().replace(",", ".")) * 1000)
+                    onValueModified: page.commitPreviewRange()
+                    Accessible.name: "试听范围时长，秒"
+                    Binding {
+                        target: previewDurationInput
+                        property: "value"
+                        when: !previewDurationInput.activeFocus
+                        value: Math.round(page.number(page.view.previewDuration, 12) * 1000)
+                        restoreMode: Binding.RestoreBindingOrValue
+                    }
+                }
+                UiButton {
+                    objectName: "mixdownPreviewRangeReset"
+                    theme: page.theme
+                    quiet: true
+                    text: "重置 0–12 秒"
+                    enabled: page.hasMedia && !page.loading
+                    onClicked: page.controller.setPreviewRange(0, 12)
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: page.view.loop ? "循环仅播放此范围" : "启用循环后重复此范围"
+                    color: page.theme.muted
+                    font.pixelSize: Math.round(10 * page.theme.scale)
+                    elide: Text.ElideRight
                 }
             }
 
@@ -1487,7 +1649,18 @@ Item {
                             page.controller.setTrack(channel.trackId, "gain", value);
                     }
                     Accessible.name: channel.label + "增益"
-                    Accessible.description: value.toFixed(1) + " dB"
+                    Accessible.description: value.toFixed(1) + " dB；双击恢复 0 dB"
+                    TapHandler {
+                        acceptedButtons: Qt.LeftButton
+                        gesturePolicy: TapHandler.ReleaseWithinBounds
+                        onDoubleTapped: function(event) {
+                            if (channel.monitor)
+                                page.controller.setOption("masterGain", 0);
+                            else
+                                page.controller.setTrack(channel.trackId, "gain", 0);
+                            event.accepted = true;
+                        }
+                    }
                     background: Rectangle {
                         x: Math.round((fader.width - width) / 2)
                         y: Math.round(fader.topPadding)
@@ -1641,7 +1814,9 @@ Item {
         property string unit: ""
         property int decimals: 0
         property real step: 1
+        property real resetValue: Number.NaN
         signal moved(real value)
+        signal resetRequested()
 
         spacing: Math.round(2 * parameter.theme.scale)
 
@@ -1671,6 +1846,15 @@ Item {
             stepSize: parameter.step
             snapMode: Slider.SnapAlways
             onMoved: parameter.moved(value)
+            TapHandler {
+                acceptedButtons: Qt.LeftButton
+                gesturePolicy: TapHandler.ReleaseWithinBounds
+                enabled: parameter.interactive && isFinite(parameter.resetValue)
+                onDoubleTapped: function(event) {
+                    parameter.resetRequested();
+                    event.accepted = true;
+                }
+            }
             Accessible.name: parameter.label
             background: Rectangle {
                 y: Math.round((parent.height - height) / 2)

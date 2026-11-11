@@ -461,6 +461,14 @@ ApplicationWindow {
         id: subtitleDialog
         theme: window.tokens
         controller: window.controller.subtitles
+        onNeteaseRequested: subtitleSources.openPane("lyrics")
+    }
+
+    PreparationSourcesDialog {
+        id: subtitleSources
+        theme: window.tokens
+        controller: window.controller.preparationSources
+        lyricPurpose: "subtitles"
     }
 
     Connections {

@@ -5,11 +5,12 @@ from pathlib import Path
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, QUrl, Signal, Slot
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QGuiApplication
 
 import calibration_session as sessions
 import expression_component
 from calibration_workflow import inspect_inputs, recovery_hint
+from calibration_preparation import prepare_in_worker
 from common import file_hash
 from expression_calibration import CONTROLS
 from i18n import tr
@@ -52,6 +53,64 @@ def _resume(path, stop):
     return path, spec, tracks, track, result
 
 
+def _reference_job(reference, voice):
+    path = Path(reference).resolve()
+    job = path.parent.parent
+    return job if path == job / 'audio' / (voice + '.wav') and (job / 'request.json').is_file() else None
+
+
+def _session_catalog(folder=None, *, stop):
+    """Discover task-owned or explicitly selected local calibration sessions."""
+    from task_contract import resolve
+    from task_store import read_json, records
+
+    rows = ([{'path': folder, 'title': ''}] if folder is not None else records(check=stop.is_set))
+    results = {}
+    for row in rows:
+        _check_stop(stop)
+        try:
+            root = Path(row['path']).resolve(strict=True)
+        except OSError:
+            if folder is not None:
+                raise
+            continue
+        if not root.is_dir():
+            continue
+        candidates = set()
+        for candidate in root.glob('calibration*/session.json'):
+            try:
+                resolved = candidate.resolve(strict=True)
+                if not candidate.is_symlink() and resolved.parent.parent == root:
+                    candidates.add(resolved)
+            except (OSError, RuntimeError):
+                continue
+        if folder is not None:
+            candidates.add(root / 'session.json')
+        else:
+            entries = read_json(root / 'task.json').get('calibration_sessions', {})
+            for saved in entries.values() if isinstance(entries, dict) else ():
+                try:
+                    candidates.add(resolve(root, saved['entry']).resolve())
+                except (OSError, ValueError, KeyError, TypeError):
+                    continue
+        for path in candidates:
+            _check_stop(stop)
+            try:
+                spec = sessions.read_session(path)
+                # Explicit local folders may contain a portable session; task
+                # rows may only point to their own reference or a direct child.
+                if folder is None and path.parent.parent != root and _reference_job(spec['reference'], spec['voice']) != root:
+                    continue
+                results[str(path)] = {
+                    'path': str(path), 'label': ' · '.join(filter(None, (row.get('title'), path.parent.name,
+                                                                       spec['voice']))),
+                    'stamp': path.stat().st_mtime_ns, 'sha256': file_hash(path),
+                }
+            except (OSError, ValueError, TypeError, KeyError):
+                continue
+    return sorted(results.values(), key=lambda item: (-item['stamp'], item['path']))
+
+
 class QuickCalibration(QObject):
     changed = Signal()
 
@@ -65,6 +124,7 @@ class QuickCalibration(QObject):
         self.tracks, self.track = [], 0
         self.voice, self.channels, self.strength = 'lead', 'standard', .6
         self.session, self.spec, self.result, self.review = None, None, None, None
+        self.prepared, self.session_choices = None, []
         self.message, self.hint = '', ''
         self.phase, self.files = 'setup', {}
 
@@ -82,6 +142,9 @@ class QuickCalibration(QObject):
                 'canUseTrack': bool(self.tuning.calibration_seed()),
                 'canInspect': bool(self.project and self.reference and self.tracks),
                 'review': self.review or {}, 'result': (self.result or {}).get('output', ''),
+                'prepared': self.prepared or {}, 'sessionChoices': self.session_choices,
+                'canRegisterTask': bool(self.result and fit.get('voicebank_calibrated')
+                                        and _reference_job(self.spec['reference'], self.spec['voice'])),
                 'neutral': (self.result or {}).get('neutral', ''), 'measured': fit.get('voicebank_calibrated') is True,
                 'canBind': bool(fit.get('voicebank_calibrated') is True and self.tuning.can_bind_calibration(self.spec)),
                 'report': (self.result or {}).get('report_path', '')}
@@ -129,6 +192,7 @@ class QuickCalibration(QObject):
         def finish(rows):
             self.project, self.tracks = path, rows
             self.track, self.job, self.review = 0, '', None
+            self.prepared = None
             self.reference = ''
             self.voice = 'vocals' if len(rows) == 1 else 'lead'
             if seed:
@@ -163,7 +227,7 @@ class QuickCalibration(QObject):
 
     @Slot(QUrl)
     def chooseRenders(self, url):
-        if self.session and not self.worker.kind and url.isLocalFile():
+        if not self.worker.kind and url.isLocalFile():
             self.renders, self.files = url.toLocalFile(), {}
             self.changed.emit()
 
@@ -212,11 +276,11 @@ class QuickCalibration(QObject):
         if self.session or self.worker.kind or not self.view['canInspect'] or prepare and not self.folder:
             return
         project, reference, track, voice = self.project, self.reference, self.track, self.voice
-        job, strength, folder = self.job, self.strength, self.folder
+        strength, folder, renders = self.strength, self.folder, self.renders
 
         def work(stop, _send):
             _check_stop(stop)
-            check = inspect_inputs(project, reference, track_index=track, job=job or None, voice=voice)
+            check = inspect_inputs(project, reference, track_index=track, job=_reference_job(reference, voice), voice=voice)
             check['fit_ready'] = expression_component.status()['ready']
             _check_stop(stop)
             if not prepare or not check['ready']:
@@ -226,7 +290,7 @@ class QuickCalibration(QObject):
                 raise ValueError('请选择已存在的输出文件夹。')
             dest = parent / f"calibration-{datetime.now():%Y%m%d-%H%M%S}-{uuid4().hex[:8]}"
             path = sessions.create_session(project, reference, dest, track_index=track, voice=voice,
-                                           strength=strength, register=False)
+                                           strength=strength, render_folder=renders or None, register=False)
             # A completed session is adopted even if Stop was pressed during its short commit.
             return check, _resume(path, None)
 
@@ -240,21 +304,78 @@ class QuickCalibration(QObject):
 
         self._command('preparing', '正在检查乐谱、歌词和参考演唱…', work, finish)
 
+    @Slot(QUrl, bool)
+    def prepareInputs(self, template, repair):
+        if self.session or self.worker.kind or not self.view['canInspect'] or not self.folder:
+            return
+        if not repair and not template.isLocalFile():
+            return
+        project, reference, track, voice = self.project, self.reference, self.track, self.voice
+        folder = self.folder
+
+        def work(stop, send):
+            from task_store import read_json
+            parent = Path(folder).resolve(strict=True)
+            if not parent.is_dir():
+                raise ValueError('请选择已存在的输出文件夹。')
+            dest = parent / f"calibration-preparation-{datetime.now():%Y%m%d-%H%M%S}-{uuid4().hex[:8]}"
+            job = _reference_job(reference, voice)
+            language = read_json(job / 'request.json').get('language') if job else None
+            result = prepare_in_worker(project, reference, dest, stop=stop, progress=send, track_index=track,
+                template=template.toLocalFile() or None, repair_pitch=repair, language=language)
+            return result, _tracks(result['project'])
+
+        def finish(value):
+            self.prepared, self.tracks = value
+            self.project = self.prepared['project']
+            self.review = None
+            self.message = tr('校准副本已写入并核验。请检查后准备七轨试音；原工程保留。')
+
+        self._command('preparing-copy', '正在单独准备校准工程副本…', work, finish)
+
+    @Slot(QUrl)
+    def findSessions(self, folder):
+        if self.worker.kind or not (folder.isEmpty() or folder.isLocalFile()):
+            return
+        self.session_choices = []
+
+        def finish(rows):
+            self.session_choices = rows
+            self.message = tr('选择一条校准记录后继续。' if rows else '没有找到可读取的校准记录。')
+
+        self._command('session-scan', '正在查找校准记录…',
+                      lambda stop, _send: _session_catalog(folder.toLocalFile() or None, stop=stop), finish)
+
+    @Slot(str)
+    def resumeListedSession(self, path):
+        row = next((row for row in self.session_choices if row['path'] == path), None)
+        if row:
+            self._resume_path(Path(path), row['sha256'])
+
     @Slot(QUrl)
     def resumeSession(self, url):
         if not url.isLocalFile() or self.worker.kind:
             return
-        path = Path(url.toLocalFile()).resolve()
+        self._resume_path(Path(url.toLocalFile()).resolve())
+
+    def _resume_path(self, path, expected=None):
+        if self.worker.kind:
+            return
         if path.name != 'session.json':
             self.message = tr('请选择校准目录中的 session.json。')
             self.changed.emit()
             return
 
         def finish(value):
-            self.review = None
+            self.review = self.prepared = None
             self._adopt(value)
 
-        self._command('resuming', '正在核对会话、试音和已有结果…', lambda stop, _send: _resume(path, stop), finish)
+        def work(stop, _send):
+            if expected and file_hash(path, check=stop.is_set) != expected:
+                raise ValueError('校准记录已变化，请重新查找并选择。')
+            return _resume(path, stop)
+
+        self._command('resuming', '正在核对会话、试音和已有结果…', work, finish)
 
     @Slot()
     def fit(self):
@@ -323,12 +444,12 @@ class QuickCalibration(QObject):
 
     @Slot(str)
     def openFile(self, kind):
-        if not self.session:
-            return
         session = self.session
-        if kind in ('trial', 'renders', 'folder'):
-            path = {'trial': session.parent / 'calibration.svp', 'renders': Path(self.renders),
-                    'folder': session.parent}[kind]
+        local = {'source': self.project, 'renders': self.renders}
+        if session:
+            local.update(trial=session.parent / 'calibration.svp', folder=session.parent)
+        if local.get(kind):
+            path = Path(local[kind])
             if not path.exists() or not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
                 self.message = tr('系统无法打开，请按显示的路径手动打开。')
                 self.changed.emit()
@@ -346,6 +467,40 @@ class QuickCalibration(QObject):
             self._command('checking', '正在核验文件…',
                           lambda stop, _send: sessions.verified_fit_result(session, output_name=name,
                                                                           cancel=lambda: _check_stop(stop)), finish)
+
+    @Slot()
+    def copyRenderFolder(self):
+        if self.renders:
+            QGuiApplication.clipboard().setText(self.renders)
+            self.message = tr('已复制 SV 导出目录。')
+            self.changed.emit()
+
+    @Slot()
+    def registerResult(self):
+        if self.worker.kind or not self.view['canRegisterTask']:
+            return
+        session, spec, result, track = self.session, self.spec, self.result, self.track
+
+        def work(stop, _send):
+            from calibration_workflow import register_expression
+            from pipeline import job_lock
+            from task_contract import register_session
+            from task_store import known_job
+            job = known_job(_reference_job(spec['reference'], spec['voice']))
+            with job_lock(job):
+                verified = sessions.verified_fit_result(session, output_name=Path(result['output']).name,
+                                                        cancel=lambda: _check_stop(stop))
+                if not verified or verified['sha256'] != result['sha256'] or not verified['calibration_fit']['voicebank_calibrated']:
+                    raise ValueError('校准结果已变化，请重新核验。')
+                if not register_expression(job, verified['output'], spec['voice'], track):
+                    raise ValueError('没有可登记的校准曲线或任务源音频。')
+                register_session(session)
+            return job
+
+        def finish(job):
+            self.message = tr('已登记校准工程及会话到任务：') + job.name
+
+        self._command('registering', '正在核验并登记校准结果…', work, finish)
 
     @Slot()
     def bindResult(self):

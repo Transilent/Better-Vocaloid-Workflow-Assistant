@@ -7,6 +7,7 @@ Dialog {
     id: page
     objectName: "subtitleDialog"
     required property QtObject controller
+    signal neteaseRequested()
     required property QtObject theme
 
     parent: Overlay.overlay
@@ -152,8 +153,32 @@ Dialog {
                     text: page.tr("导入定时 LRC…")
                     onClicked: lrcDialog.open()
                 }
+                UiButton {
+                    objectName: "importSubtitleNetease"
+                    theme: page.theme
+                    text: page.tr("搜索网易云时间轴…")
+                    onClicked: page.neteaseRequested()
+                }
 
                 Item { Layout.fillWidth: true }
+            }
+
+            Flow {
+                Layout.fillWidth: true
+                visible: (page.snapshot.draftKinds || []).length > 1
+                spacing: 6 * page.theme.scale
+                Repeater {
+                    model: page.snapshot.draftKinds || []
+                    delegate: UiButton {
+                        required property string modelData
+                        objectName: "restoreSubtitle_" + modelData
+                        theme: page.theme
+                        quiet: true
+                        selected: page.snapshot.sourceKind === modelData
+                        text: ({midi: "MIDI 草稿", lrc: "LRC 草稿", netease: "网易云草稿"})[modelData]
+                        onClicked: page.controller.restoreSource(modelData)
+                    }
+                }
             }
 
             Rectangle {

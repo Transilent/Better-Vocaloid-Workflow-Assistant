@@ -151,7 +151,7 @@ class QuickMixdown(QObject):
         self._last_meter_at = 0.0
         self._last_reverb_key = None
         self._last_reverb_at = 0.0
-        self._resume_position_ms = 0
+        self._resume_position_ms = None
         self._resume_play_intent = False
         self._cache_dir = None
         self._player = None
@@ -563,9 +563,16 @@ class QuickMixdown(QObject):
             and not self._active_kind and not support_probe_busy)
         view = self._state.view(can_export=can_export, can_register=can_register,
                                 can_play=can_play)
-        view['canComposeVideo'] = bool(self._registered_mix_id and self._export_receipt
-                                       and self._state.result and not self._state.result_stale
-                                       and not self._active_kind)
+        receipt_output = ((self._export_receipt or {}).get('output')
+                          if isinstance(self._export_receipt, dict) else {})
+        export_sha = str((receipt_output or {}).get('sha256') or '')
+        export_fresh = bool(self._state.result and export_sha
+                            and not self._state.result_stale and not self._active_kind)
+        registered_video = bool(export_fresh and self._state.job and self._registered_mix_id)
+        independent_video = bool(export_fresh and not self._state.job)
+        view['canComposeVideo'] = registered_video or independent_video
+        view['videoHandoffMode'] = ('registered' if registered_video else
+                                    'independent' if independent_video else '')
         view['support'] = copy.deepcopy(self._support)
         view['supportVisible'] = bool(self._support['visible'])
         view['componentMissing'] = bool(self._initialized and not self._support_ready)
@@ -597,6 +604,11 @@ class QuickMixdown(QObject):
             self._eq_timer.start()
         if changed:
             self.viewChanged.emit()
+
+    def _preview_loop_range_ms(self, duration=None):
+        total = (self._player.duration() if duration is None and self._player is not None
+                 else self._state.duration if duration is None else duration)
+        return self._state.preview_range_ms(total)
 
     def _sync_position(self):
         position = self._preview.position_ms if self._preview is not None else 0
@@ -662,16 +674,21 @@ class QuickMixdown(QObject):
                     bypass_processing=bypass)
                 source_key = self._state.source_key()
             duration = self._player.duration()
-            loop_range = (0, duration) if self._state.loop else (0, 0)
+            loop_range = self._preview_loop_range_ms(duration) if self._state.loop else (0, 0)
             self._preview_pending = True
-            start_ms = self._resume_position_ms or self._preview.position_ms
+            opening = (self._preview.source_key != source_key
+                       or (not self._player.ready and not self._player.loading))
+            start_ms = (self._resume_position_ms if self._resume_position_ms is not None
+                        else self._preview.position_ms)
+            if opening and self._state.loop:
+                start_ms = loop_range[0]
             accepted = self._preview.refresh(
                 request, source_key, start_ms=start_ms,
                 loop_range=loop_range)
             if not accepted:
                 self._preview_pending = False
                 return False
-            self._resume_position_ms = 0
+            self._resume_position_ms = None
             self._clear_hotspots()
             if not self._player.ready:
                 with self._lock:
@@ -959,13 +976,17 @@ class QuickMixdown(QObject):
             with self._lock:
                 self._state.set_selection(value)
                 selection = self._state.selection
+                can_audition = bool(self._support_ready and self._player is not None
+                                    and self._player.available and self._state.has_media())
             if self._preview is not None:
                 self._preview.select('before' if selection == 'A' else 'after')
-            self._schedule_preview(0)
+                if can_audition:
+                    self._preview.set_playing(True)
+            if can_audition and (self._preview.dirty or not self._player.ready):
+                self._schedule_preview(0)
             self._recompute_and_emit()
         except Exception as error:
             self._notice(error)
-
     @Slot()
     def togglePlay(self):
         if not self._ensure_entered():
@@ -1017,18 +1038,38 @@ class QuickMixdown(QObject):
         self._preview.dragging = False
         self._recompute_and_emit()
 
+    @Slot(float, float)
+    def setPreviewRange(self, start, duration):
+        if not self._ensure_entered():
+            return False
+        with self._lock:
+            changed = self._state.set_preview_range(start, duration)
+            loop_range = self._preview_loop_range_ms()
+        if self._player is not None:
+            self._player.set_loop_range(*loop_range)
+        if changed and self._preview is not None and self._player is not None and self._player.ready:
+            self._preview.commit_seek(loop_range[0])
+        self._recompute_and_emit()
+        return changed
+
     @Slot(bool)
     def setLoop(self, enabled):
         if not self._ensure_entered():
             return
         with self._lock:
             self._state.set_loop(enabled)
-            duration = self._player.duration() if self._player is not None else 0
+            loop_range = self._preview_loop_range_ms()
         if self._player is not None:
             self._player.set_loop(bool(enabled))
-            self._player.set_loop_range(0, duration)
+            if enabled:
+                self._player.set_loop_range(*loop_range)
+                position = self._player.position()
+                if self._preview is not None and self._player.ready and not (
+                        loop_range[0] <= position < loop_range[1]):
+                    self._preview.commit_seek(loop_range[0])
+            else:
+                self._player.set_loop_range(0, 0)
         self._recompute_and_emit()
-
     @Slot(QUrl)
     def chooseOutput(self, url):
         if not self._ensure_entered():
@@ -1119,6 +1160,13 @@ class QuickMixdown(QObject):
             return
         with self._lock:
             self._state.message = '正在后台导出新的 WAV；现有源文件不会被覆盖。'
+            self._state.set_export_progress(
+                {'fraction': 0.0, 'phase': 'prepare', 'message': '准备导出'})
+
+        def progress(event):
+            with self._lock:
+                self._state.set_export_progress(event)
+            self._recompute_and_emit()
 
         def work(stop, send):
             report = mixdown_export.execute(plan, stop.is_set, progress=send)
@@ -1128,9 +1176,15 @@ class QuickMixdown(QObject):
 
         def finish(report, error):
             if isinstance(error, (InterruptedError, MixdownCancelled)):
+                with self._lock:
+                    self._state.set_export_progress(
+                        {'fraction': 0.0, 'phase': 'cancelled', 'message': '导出已取消'})
                 self._notice('导出已取消；临时 WAV 已清理，目标文件未被写入。')
                 return
             if error is not None:
+                with self._lock:
+                    self._state.set_export_progress(
+                        {'fraction': 0.0, 'phase': 'failed', 'message': str(error)})
                 self._notice('导出失败：' + str(error))
                 return
             try:
@@ -1142,6 +1196,8 @@ class QuickMixdown(QObject):
                     self._result_fingerprint = fingerprint
                     self._state.result = str(Path(report['output_path']).resolve())
                     self._state.result_stale = not fresh or not plan.signatures_unchanged()
+                    self._state.set_export_progress(
+                        {'fraction': 1.0, 'phase': 'done', 'message': '导出完成'})
                     if self._state.result_stale:
                         self._state.message = '已保留导出 WAV；当前输入或参数已变化，请重新导出后登记。'
                     else:
@@ -1151,7 +1207,9 @@ class QuickMixdown(QObject):
                 self._recompute_and_emit()
             except Exception as exc:
                 self._notice('导出完成但结果回执无效：' + str(exc))
-        if not self._start_owned('mixdown-export', work, finish):
+        if not self._start_owned('mixdown-export', work, finish, progress=progress):
+            with self._lock:
+                self._state.clear_export_progress()
             self._notice('工作通道正被其他后台操作占用，未开始导出。')
             return
         self._recompute_and_emit()
@@ -1265,9 +1323,15 @@ class QuickMixdown(QObject):
     def composeVideo(self):
         if not self._view.get('canComposeVideo'):
             return
-        self.parent().open_registered_mix(
-            self._state.job, self._registered_mix_id, self._state.result,
-            self._export_receipt['output']['sha256'])
+        output = (self._export_receipt or {}).get('output')
+        sha256 = str((output or {}).get('sha256') or '')
+        if not sha256:
+            return
+        if self._state.job:
+            self.parent().open_registered_mix(
+                self._state.job, self._registered_mix_id, self._state.result, sha256)
+        else:
+            self.parent().open_independent_mix(self._state.result, sha256)
 
     @Slot()
     def cancel(self):
@@ -1605,6 +1669,7 @@ class QuickMixdown(QObject):
                 self._result_fingerprint = ''
                 self._export_plan, self._export_receipt, self._export_task_artifacts = None, None, []
                 self._registered_mix_id = ''
+                self._state.clear_export_progress()
                 self._state.message = '已载入任务原分轨；它们不是调音后或合成歌声。'
             if old_has_media and self._preview is not None:
                 self._preview.release()

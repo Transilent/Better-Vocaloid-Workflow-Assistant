@@ -14,6 +14,7 @@ ScrollView {
 
     readonly property bool stacked: availableWidth < (theme.scale > 1.2 ? 980 : 840)
     readonly property bool idle: !controller.taskLoading && !controller.workBusy
+    readonly property bool mutationIdle: !controller.taskLoading && !controller.taskMutationBusy
     readonly property var detail: controller.taskDetail
     readonly property real wideCardHeight: Math.max(430, availableHeight * 0.66)
     property bool requestExpanded: false
@@ -542,6 +543,16 @@ ScrollView {
                         textFormat: Text.PlainText
                     }
 
+                    Text {
+                        Layout.fillWidth: true
+                        visible: String(page.detail.taskBlockReason || "").length > 0
+                        text: String(page.detail.taskBlockReason || "")
+                        color: page.theme.attention
+                        font.pixelSize: 12 * page.theme.scale
+                        wrapMode: Text.Wrap
+                        textFormat: Text.PlainText
+                    }
+
                     Flow {
                         Layout.fillWidth: true
                         visible: !!page.controller.selectedTaskId
@@ -554,6 +565,25 @@ ScrollView {
                             text: page.controller.text("继续 / 重试")
                             enabled: page.idle && !!page.detail.canResume
                             onClicked: page.controller.resumeSelectedTask()
+                        }
+                        UiButton {
+                            objectName: "inspectTaskProgress"
+                            theme: page.theme
+                            text: page.controller.text("查看进度与错误")
+                            enabled: page.idle || (page.controller.preparationBusy
+                                && page.controller.preparationTask.job === page.controller.selectedTaskId)
+                            onClicked: page.controller.inspectTaskProgress(page.controller.selectedTaskId)
+                        }
+                        UiButton {
+                            objectName: "reprocessTask"
+                            theme: page.theme
+                            text: page.controller.text("按当前设置重做…")
+                            enabled: page.idle && !!page.detail.canReprocess
+                            onClicked: {
+                                reprocessConfirm.job = page.controller.selectedTaskId
+                                reprocessConfirm.taskTitle = page.detail.title
+                                reprocessConfirm.open()
+                            }
                         }
                         UiButton {
                             objectName: "handoffTask"
@@ -615,7 +645,7 @@ ScrollView {
                             visible: !page.detail.hasVideoBinding && !page.detail.hasPublication
                             theme: page.theme
                             text: page.controller.text("登记已有视频…")
-                            enabled: page.idle && !!page.detail.canRegisterVideo
+                            enabled: page.mutationIdle && !!page.detail.canRegisterVideo
                             onClicked: {
                                 registerVideoDialog.expectedVideoJobId = page.controller.selectedTaskId
                                 registerVideoDialog.expectedVideoTitle = page.detail.title || ""
@@ -627,7 +657,7 @@ ScrollView {
                             theme: page.theme
                             quiet: true
                             text: page.controller.text("重命名")
-                            enabled: page.idle && !!page.detail.canRename
+                            enabled: page.mutationIdle && !!page.detail.canRename
                             onClicked: renameDialog.open()
                         }
                         UiButton {
@@ -635,7 +665,7 @@ ScrollView {
                             theme: page.theme
                             quiet: true
                             text: page.controller.text("删除…")
-                            enabled: page.idle && !!page.detail.canDelete
+                            enabled: page.mutationIdle && !!page.detail.canDelete
                             onClicked: deleteDialog.open()
                         }
                     }
@@ -676,7 +706,7 @@ ScrollView {
 
                             Text {
                                 Layout.fillWidth: true
-                                text: page.controller.text("登记后会核验文件与当前上游修订。取消登记和重建只修改任务记录，外部 SVP、音频或视频保留在原位置。")
+                                text: page.controller.text("登记后会核验文件与当前上游修订。取消登记和重建只修改任务记录，外部工程、音频或视频保留在原位置。")
                                 color: page.theme.muted
                                 font.pixelSize: 10 * page.theme.scale
                                 wrapMode: Text.Wrap
@@ -689,8 +719,8 @@ ScrollView {
                                     objectName: "registerTaskProject"
                                     theme: page.theme
                                     text: page.controller.text(page.bindingId("project").length > 0
-                                        ? "替换 SVP 工程…" : "登记 SVP 工程…")
-                                    enabled: page.idle && !!page.detail.canRegisterProject
+                                        ? "替换编辑器工程…" : "登记编辑器工程…")
+                                    enabled: page.mutationIdle && !!page.detail.canRegisterProject
                                     onClicked: page.beginArtifactRegistration("project")
                                 }
                                 UiButton {
@@ -698,7 +728,7 @@ ScrollView {
                                     theme: page.theme
                                     text: page.controller.text(page.bindingId("mixdown").length > 0
                                         ? "替换 Mixdown…" : "登记 Mixdown…")
-                                    enabled: page.idle && !!page.detail.canRegisterMixdown
+                                    enabled: page.mutationIdle && !!page.detail.canRegisterMixdown
                                     onClicked: page.beginArtifactRegistration("mixdown")
                                 }
                                 UiButton {
@@ -706,7 +736,7 @@ ScrollView {
                                     theme: page.theme
                                     quiet: true
                                     text: page.controller.text("重建文件清单…")
-                                    enabled: page.idle && !!page.detail.canRebuildArtifacts
+                                    enabled: page.mutationIdle && !!page.detail.canRebuildArtifacts
                                     onClicked: page.beginArtifactRebuild()
                                 }
                             }
@@ -762,7 +792,7 @@ ScrollView {
                                         theme: page.theme
                                         quiet: true
                                         text: page.controller.text("取消登记…")
-                                        enabled: page.idle && (modelData.kind === "project"
+                                        enabled: page.mutationIdle && (modelData.kind === "project"
                                             ? !!page.detail.canUnbindProject
                                             : modelData.kind === "mixdown"
                                                 ? !!page.detail.canUnbindMixdown
@@ -992,14 +1022,35 @@ ScrollView {
         }
     }
 
+    Dialog {
+        id: reprocessConfirm
+        objectName: "reprocessTaskConfirm"
+        property string job: ""
+        property string taskTitle: ""
+        title: page.controller.text("用当前准备设置另建任务")
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        width: Math.min(parent.width - 40, 470 * page.theme.scale)
+        standardButtons: Dialog.Cancel | Dialog.Ok
+        onAccepted: page.controller.reprocessSelectedTask(job)
+        contentItem: Text {
+            text: reprocessConfirm.taskTitle + "\n" + page.controller.text("复用可用的原素材，按当前准备页设置处理；原任务及产物保留。")
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
+            color: page.theme.text
+            font.pixelSize: 13 * page.theme.scale
+        }
+    }
+
     FileDialog {
         id: registerArtifactFileDialog
         objectName: "registerTaskArtifactFileDialog"
         property string bindingKind: "project"
-        title: page.controller.text(bindingKind === "project" ? "选择 SVP 工程" : "选择 Mixdown 音频")
+        title: page.controller.text(bindingKind === "project" ? "选择编辑器工程" : "选择 Mixdown 音频")
         fileMode: FileDialog.OpenFile
         nameFilters: bindingKind === "project"
-            ? [page.controller.text("VOCALOID 工程 (*.svp)")]
+            ? [page.controller.text("编辑器工程 (*.svp *.ustx *.vsqx)")]
             : [page.controller.text("音频 (*.wav *.flac *.ogg *.mp3 *.m4a)")]
         onAccepted: {
             registerArtifactDialog.pendingArtifactUrl = selectedFile
@@ -1032,7 +1083,7 @@ ScrollView {
             Text {
                 Layout.fillWidth: true
                 text: page.controller.text(registerArtifactDialog.expectedBindingKind === "project"
-                    ? "登记外部 SVP 工程" : "登记外部 Mixdown")
+                    ? "登记外部编辑器工程" : "登记外部 Mixdown")
                 color: page.theme.text
                 font.pixelSize: 17 * page.theme.scale
                 font.weight: Font.DemiBold
@@ -1085,7 +1136,7 @@ ScrollView {
                     theme: page.theme
                     primary: true
                     text: page.controller.text("核验并登记")
-                    enabled: page.idle
+                    enabled: page.mutationIdle
                         && registerArtifactDialog.expectedBindingJobId === page.controller.selectedTaskId
                         && (registerArtifactDialog.expectedBindingKind === "project"
                             ? !!page.detail.canRegisterProject : !!page.detail.canRegisterMixdown)
@@ -1181,7 +1232,7 @@ ScrollView {
                     objectName: "confirmUnlinkTaskBinding"
                     theme: page.theme
                     text: page.controller.text("取消此项登记")
-                    enabled: page.idle
+                    enabled: page.mutationIdle
                         && unlinkBindingDialog.expectedBindingJobId === page.controller.selectedTaskId
                         && unlinkBindingDialog.expectedBindingKind.length > 0
                         && unlinkBindingDialog.expectedBindingId
@@ -1263,7 +1314,7 @@ ScrollView {
                     theme: page.theme
                     primary: true
                     text: page.controller.text("重建清单")
-                    enabled: page.idle && !!page.detail.canRebuildArtifacts
+                    enabled: page.mutationIdle && !!page.detail.canRebuildArtifacts
                         && rebuildArtifactsDialog.expectedRebuildJobId === page.controller.selectedTaskId
                         && rebuildArtifactsDialog.expectedIndexRevision
                             === String(page.detail.artifactIndexRevision || "")
@@ -1325,7 +1376,7 @@ ScrollView {
                 maximumLength: 120
                 Accessible.name: placeholderText
                 onAccepted: {
-                    if (page.idle && text.trim().length > 0) {
+                    if (page.mutationIdle && text.trim().length > 0) {
                         page.controller.renameSelectedTask(text.trim(), renameDialog.expectedJobId)
                         renameDialog.close()
                     }
@@ -1345,7 +1396,7 @@ ScrollView {
                     theme: page.theme
                     primary: true
                     text: page.controller.text("保存名称")
-                    enabled: page.idle && renameDialog.expectedJobId.length > 0 && renameField.text.trim().length > 0
+                    enabled: page.mutationIdle && renameDialog.expectedJobId.length > 0 && renameField.text.trim().length > 0
                     onClicked: {
                         page.controller.renameSelectedTask(renameField.text.trim(), renameDialog.expectedJobId)
                         renameDialog.close()
@@ -1420,7 +1471,7 @@ ScrollView {
                     objectName: "confirmDeleteTask"
                     theme: page.theme
                     text: page.controller.text("永久删除")
-                    enabled: page.idle && !!page.detail.canDelete && deleteDialog.expectedJobId.length > 0
+                    enabled: page.mutationIdle && !!page.detail.canDelete && deleteDialog.expectedJobId.length > 0
                     onClicked: {
                         page.controller.deleteSelectedTask(deleteDialog.expectedJobId)
                         deleteDialog.close()
@@ -1505,7 +1556,7 @@ ScrollView {
                     theme: page.theme
                     primary: true
                     text: page.controller.text("登记到当前任务")
-                    enabled: page.idle
+                    enabled: page.mutationIdle
                         && !!page.detail.canRegisterVideo
                         && registerVideoDialog.expectedVideoJobId === page.controller.selectedTaskId
                         && String(registerVideoDialog.pendingVideoUrl).length > 0

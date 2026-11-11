@@ -1,10 +1,11 @@
 """Qt projections of the shared workspace, task library and worker commands."""
 
 from dataclasses import replace
+import os
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, QObject, Property, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import QAbstractListModel, QModelIndex, QObject, Property, Qt, QUrl, Signal, Slot, QTimer
 from PySide6.QtGui import QDesktopServices
 
 import component_operations as components
@@ -84,13 +85,12 @@ def _component_result(request, stop, send):
     return 'failed', f"未通过完整校验：{report.get('message') or detail or report.get('state', '未知状态')}", report
 
 
-def _run_preparation(draft, existing, retry_cpu, stop, send, *, reuse_job=''):
+def _run_preparation(draft, existing, retry_cpu, stop, send, *, reuse_job='', reprocess=''):
     from task_store import known_job
-    from error_recovery import failure
 
     if stop.is_set():
         raise InterruptedError('已取消任务。')
-    job = (known_job(existing) if existing else
+    job = (known_job(existing) if existing else preparation.reprocess_task(draft, reprocess) if reprocess else
            preparation.create_from_draft(draft, reuse_job=reuse_job) if reuse_job else preparation.create_from_draft(draft))
     send({'state': 'running', 'job': str(job), 'message': '正在启动准备任务…'})
     try:
@@ -99,9 +99,10 @@ def _run_preparation(draft, existing, retry_cpu, stop, send, *, reuse_job=''):
         if code and view['state'] not in ('cancelled', 'failed'):
             view.update(state='failed', message=f'准备进程退出（{code}）。请查看任务日志。')
         if view['state'] == 'failed':
-            recovery = failure(job)
-            view.update(message=(recovery.get('cause') or view['message'] or recovery['raw'])[:1600],
-                        recovery_action=recovery.get('action', ''))
+            recovery = preparation.recovery_view(job)
+            if code and recovery['message'] == '处理进程提前结束，请查看 pipeline.log。':
+                recovery['message'] = view['message']
+            view.update(recovery)
         elif view['state'] == 'cancelled':
             view['message'] = '准备已取消，可以继续此任务。'
         elif view['state'] in ('done', 'partial'):
@@ -110,6 +111,96 @@ def _run_preparation(draft, existing, retry_cpu, stop, send, *, reuse_job=''):
     except Exception as exc:
         return {'job': str(job), 'state': 'failed', 'message': str(exc)[:1600]}
 
+
+def _controller_view(controller):
+    if controller is None:
+        return {}
+    value = getattr(controller, 'view', {})
+    if not isinstance(value, dict):
+        raise TypeError('task controller view is not a mapping')
+    return dict(value)
+
+
+def _reference_paths(values):
+    """Extract only local path-shaped values from a selected controller view."""
+    result = []
+    for value in values:
+        if isinstance(value, QUrl):
+            if value.isLocalFile():
+                result.append(value.toLocalFile())
+            continue
+        if not isinstance(value, (str, os.PathLike)):
+            continue
+        text = os.fspath(value).strip().strip('"').strip()
+        if not text or ('://' in text and not text.casefold().startswith('file:')):
+            continue
+        if text.casefold().startswith('file:'):
+            url = QUrl(text)
+            text = url.toLocalFile() if url.isLocalFile() else ''
+        if text:
+            result.append(text)
+    return list(dict.fromkeys(result))
+
+
+def _task_reference_groups(*, mixdown=None, mixdown_tracks=(), tuning=None, video=None,
+                           publication=None, calibration=None, subtitles=None, subtitle_drafts=None,
+                           preparation=None, operation=None, operations=None):
+    """Build task-reference groups without coupling task safety to any one page."""
+    groups = []
+
+    def add(label, *values):
+        paths = _reference_paths(values)
+        if paths:
+            groups.append({'label': label, 'paths': paths})
+
+    mix = _controller_view(mixdown)
+    track_rows = mixdown_tracks if isinstance(mixdown_tracks, (list, tuple)) else ()
+    mix_label = ('简易混音 · 正在播放' if mix.get('playing') else
+                 '简易混音 · 后台处理中' if mix.get('busy') else '简易混音 · 已载入')
+    add(mix_label, mix.get('job'), mix.get('output'), mix.get('result'),
+        *(row.get('path') for row in track_rows if isinstance(row, dict)))
+
+    tune = _controller_view(tuning)
+    add('调音 · ' + ('正在处理' if tune.get('busy') else '已载入'),
+        tune.get('job'), tune.get('source'), tune.get('candidate'), tune.get('savedCopy'))
+
+    vid = _controller_view(video)
+    add('视频 · ' + ('正在处理' if vid.get('busy') else '已载入'),
+        vid.get('job'), vid.get('sourceVideo'), vid.get('mixdown'), vid.get('output'),
+        vid.get('preview'), vid.get('result'))
+
+    publish = _controller_view(publication)
+    add('发布 · ' + ('正在处理' if publish.get('busy') else '已载入'),
+        publish.get('job'), publish.get('video'), publish.get('bundle'), publish.get('coverFile'))
+
+    calibrate = _controller_view(calibration)
+    add('声库校准 · ' + ('正在处理' if calibrate.get('busy') else '已载入'),
+        calibrate.get('job'), calibrate.get('project'), calibrate.get('reference'),
+        calibrate.get('folder'), calibrate.get('renders'), calibrate.get('session'),
+        calibrate.get('result'), calibrate.get('report'))
+
+    subtitle_view = _controller_view(subtitles)
+    add('字幕工具 · 已载入来源', subtitle_view.get('taskJobId'), subtitle_view.get('sourcePath'),
+        subtitle_view.get('exportedPath'))
+    drafts = subtitle_drafts if isinstance(subtitle_drafts, dict) else {}
+    for kind in sorted(drafts):
+        row = drafts.get(kind) if isinstance(drafts.get(kind), dict) else {}
+        add('字幕工具 · ' + str(kind).upper() + ' 草稿', row.get('_task_job_id'),
+            row.get('_source_path'), row.get('_exported_path'))
+
+    prep = preparation if isinstance(preparation, dict) else {}
+    if prep.get('job'):
+        add('准备任务 · 正在运行', prep.get('job'))
+
+    active_rows = []
+    if isinstance(operation, dict):
+        active_rows.append(operation)
+    if isinstance(operations, (list, tuple)):
+        active_rows.extend(row for row in operations if isinstance(row, dict))
+    for active in active_rows:
+        if active.get('paths'):
+            add(str(active.get('label') or '任务操作 · 进行中'), *active.get('paths', ()))
+    return groups
 
 class QuickBridge(QObject):
     verify_task_artifact = staticmethod(verify_task_artifact)
@@ -122,7 +213,9 @@ class QuickBridge(QObject):
     optionsChanged = Signal()
     activityChanged = Signal()
     preparationTaskChanged = Signal()
+    preparationPresetsChanged = Signal()
     taskChanged = Signal()
+    taskSafetyChanged = Signal()
     subtitlesRequested = Signal()
     closeReady = Signal()
 
@@ -134,10 +227,14 @@ class QuickBridge(QObject):
         self._catalog = WorkerLane(self, 'vwa-components')
         self._read = WorkerLane(self, 'vwa-task-library')
         self._details = WorkerLane(self, 'vwa-task-detail')
+        self._task_work = WorkerLane(self, 'vwa-task-mutations')
         self._work.changed.connect(self._work_changed)
+        self._task_work.changed.connect(self._work_changed)
         self._catalog.changed.connect(self.activityChanged)
         self._read.changed.connect(self.taskChanged)
         self._details.changed.connect(self.taskChanged)
+        self._task_work.changed.connect(self.taskChanged)
+        self.taskChanged.connect(self._task_changed_safety)
         self._support = QuickSupport(self, self._work, sources)
         self._tuning = QuickTuning(self, self._work)
         self._calibration = QuickCalibration(self, self._tuning)
@@ -145,14 +242,33 @@ class QuickBridge(QObject):
         self._mixdown = QuickMixdown(self, self._work)
         self._video = QuickVideo(self, self._work)
         self._publication = QuickPublication(self, self._work)
-        self._sources = QuickPreparationSources(self, self._work)
         self._subtitles = QuickSubtitles(self)
+        self._sources = QuickPreparationSources(self, self._work)
         self._video.publishRequested.connect(self._open_verified_video)
         self._tuning.presetLibraryChanged.connect(self._mixdown.refresh_presets)
+        for signal in (self._mixdown.viewChanged, self._mixdown.tracksChanged, self._tuning.changed,
+                       self._video.changed, self._publication.viewChanged, self._calibration.changed,
+                       self._subtitles.changed, self.preparationTaskChanged):
+            signal.connect(self._schedule_task_safety)
+        # Settings observes the actual cross-page operation owners used by the
+        # deferred update restart, not just the preparation/component lane.
+        for signal in (self._tuning.changed, self._video.changed,
+                       self._publication.viewChanged, self._calibration.changed,
+                       self._catalog.changed, self._read.changed, self._details.changed,
+                       self._task_work.changed, self.preparationTaskChanged):
+            signal.connect(self._support.refreshActivity)
         self.state.set_download_source(self._support.state.values['download_source'])
         saved_workflow = workflow.read_state()
-        self._presets = {**workflow.builtins(), **saved_workflow['presets']}
+        self._legacy_workflow = saved_workflow
+        self._legacy_workflow_presets = dict(saved_workflow['presets'])
+        from preset_library import PresetLibrary
+        self._preparation_preset_library = PresetLibrary(ROOT / 'user-presets')
+        self._preparation_presets = []
+        self._preparation_preset_rows = {}
+        self._preparation_preset_failure = ''
+        self._refresh_preparation_presets()
         draft = self.state.draft.with_options(saved_workflow['options'], saved_workflow['graph'])
+        draft = preparation.restore_draft_settings(draft)
         self.state.set_draft(draft)
         self._rows = RowsModel(self, (('componentId', 'id'), ('title', 'title'), ('summary', 'summary'),
                                      ('status', 'status'), ('statusText', 'status_text')))
@@ -161,10 +277,18 @@ class QuickBridge(QObject):
         self._exit_when_idle = False
         self._closed = False
         self._notice = ''
+        self._work_task_lock = None
+        self._task_mutation_job = ''
+        self._detail_job_id = ''
         self._next_detail = None
         self._rescan = False
         self._task_state_filter = 'all'
         self._task_sort = 'recent'
+        self._task_safety_timer = QTimer(self)
+        self._task_safety_timer.setSingleShot(True)
+        self._task_safety_timer.setInterval(140)
+        self._task_safety_timer.timeout.connect(self._refresh_task_safety)
+        self._task_safety_cache = {'job': '', 'groups': (), 'blockers': [], 'signature': ()}
 
     def _error(self, error):
         self._notice = str(error)[:1600] or error.__class__.__name__
@@ -174,6 +298,127 @@ class QuickBridge(QObject):
         self.activityChanged.emit()
         if self._exit_when_idle and not self.workBusy and not self._calibration.worker.kind:
             self.closeReady.emit()
+
+    def _task_reference_groups(self):
+        tracks = self._mixdown.tracks
+        preparation = self.state.preparation_task if self.preparationBusy else {}
+        operations = []
+        if self._work_task_lock:
+            operations.append(self._work_task_lock)
+        if self._detail_job_id:
+            operations.append({'label': '任务文件 · 正在核验', 'paths': (self._detail_job_id,)})
+        if self._task_mutation_job:
+            operations.append({'label': '任务记录操作 · 进行中', 'paths': (self._task_mutation_job,)})
+        tuning_kind = self._tuning.worker.kind
+        tuning_job = str(getattr(self._tuning, '_selected_tuning_task', '') or '')
+        if tuning_job and tuning_kind in ('task-picker-detail', 'task-picker-load'):
+            operations.append({'label': '调音 · 正在核验所选任务', 'paths': (tuning_job,)})
+        drafts = self._subtitles._drafts
+        return _task_reference_groups(
+            mixdown=self._mixdown, mixdown_tracks=tracks, tuning=self._tuning, video=self._video,
+            publication=self._publication, calibration=self._calibration, subtitles=self._subtitles,
+            subtitle_drafts=drafts, preparation=preparation, operations=operations,
+        )
+
+    def _task_blockers(self, job, *, canonical=False):
+        try:
+            return quick_results.task_reference_blockers(
+                job, self._task_reference_groups(), canonical=canonical)
+        except Exception as exc:
+            return quick_results.task_projection_failure(job, exc)
+
+    @staticmethod
+    def _task_safety_signature(job, groups, blockers):
+        return (str(job or ''), tuple((row.get('label', ''), tuple(row.get('paths', ())))
+                                     for row in groups), tuple((row.get('label', ''),
+                                                               tuple(row.get('paths', ()))) for row in blockers))
+
+    def _invalidate_task_safety(self, *, emit=True):
+        self._task_safety_cache.update(job='', groups=(), blockers=[], signature=None)
+        if emit and self.state.route == 'results':
+            self.taskSafetyChanged.emit()
+
+    def _task_changed_safety(self):
+        self._invalidate_task_safety()
+
+    def _task_blockers_cached(self, job):
+        cache = self._task_safety_cache
+        if cache.get('job') == job and cache.get('signature') is not None:
+            return [dict(row) for row in cache.get('blockers', ())]
+        groups = self._task_reference_groups()
+        blockers = quick_results.task_reference_blockers(job, groups)
+        cache.update(job=job, groups=groups, blockers=blockers,
+                     signature=self._task_safety_signature(job, groups, blockers))
+        return [dict(row) for row in blockers]
+
+    def _schedule_task_safety(self, *_args):
+        if self._closed or self.state.route != 'results':
+            return
+        if not self._task_safety_timer.isActive():
+            self._task_safety_timer.start()
+
+    def _refresh_task_safety(self):
+        if self._closed or self.state.route != 'results':
+            return
+        job = self.state.selected_task_id
+        groups = self._task_reference_groups()
+        blockers = quick_results.task_reference_blockers(job, groups)
+        signature = self._task_safety_signature(job, groups, blockers)
+        cache = self._task_safety_cache
+        if cache.get('signature') == signature and cache.get('job') == job:
+            return
+        cache.update(job=job, groups=groups, blockers=blockers, signature=signature)
+        self.taskSafetyChanged.emit()
+
+    def _set_work_task_lock(self, label, *paths):
+        values = tuple(str(path) for path in paths if path)
+        self._work_task_lock = {'label': label, 'paths': values} if values else None
+        self._invalidate_task_safety()
+
+    def _clear_work_task_lock(self):
+        if self._work_task_lock is not None:
+            self._work_task_lock = None
+            self._invalidate_task_safety()
+
+    def _mutation_job(self, expected_job, capability, action):
+        job = self.state.selected_task_id
+        detail = self.state.task_detail
+        if self._closed or not job or expected_job != job or detail.get('jobId') != job:
+            self._error(ValueError('任务已变化，请重新选择后确认。'))
+            return None
+        blockers = self._task_blockers(job, canonical=True)
+        if blockers:
+            self._error(ValueError(quick_results.task_mutation_error(action, blockers)))
+            self._invalidate_task_safety()
+            return None
+        if self._detail_job_id == job:
+            self._error(ValueError('任务文件正在核验，请等待完成后再修改。'))
+            return None
+        if self._task_work.kind:
+            self._error(ValueError('另一项任务记录操作仍在进行，请等待完成。'))
+            return None
+        if not detail.get(capability):
+            self._error(ValueError('当前任务状态不允许' + action + '。'))
+            return None
+        return job
+
+    def _start_task_mutation(self, kind, job, message, work, finish):
+        self._task_mutation_job = job
+        self._notice = message
+        self.activityChanged.emit()
+        self._invalidate_task_safety()
+
+        def complete(value, error):
+            self._task_mutation_job = ''
+            self._invalidate_task_safety()
+            finish(value, error)
+
+        if not self._task_work.start(kind, work, complete):
+            self._task_mutation_job = ''
+            self._invalidate_task_safety()
+            self._error(ValueError('任务记录操作未能启动，请稍后重试。'))
+            return False
+        return True
 
     @Property(QObject, constant=True)
     def support(self):
@@ -209,7 +454,7 @@ class QuickBridge(QObject):
 
     @Property(str, notify=activityChanged)
     def operationKind(self):
-        return self._work.kind
+        return self._task_work.kind or self._work.kind
 
     @Property(str, notify=navigationChanged)
     def route(self):
@@ -227,9 +472,24 @@ class QuickBridge(QObject):
     def preparation(self):
         return self.state.draft_view
 
-    @Property('QVariantList', constant=True)
+    @Property('QVariantList', notify=preparationPresetsChanged)
     def preparationPresets(self):
-        return [{'name': name} for name in self._presets]
+        return [dict(row) for row in self._preparation_presets]
+
+    def _refresh_preparation_presets(self):
+        try:
+            snapshot = self._preparation_preset_library.snapshot()
+            entries = preparation.preset_catalog(snapshot, self._legacy_workflow_presets)
+            self._preparation_preset_failure = ''
+            loaded = True
+        except Exception as exc:
+            entries = preparation.fallback_preset_catalog(self._legacy_workflow_presets)
+            self._preparation_preset_failure = str(exc)[:1600] or exc.__class__.__name__
+            loaded = False
+        self._preparation_presets = entries
+        self._preparation_preset_rows = {row['key']: dict(row) for row in entries}
+        self.preparationPresetsChanged.emit()
+        return loaded
 
     @Property('QVariantMap', notify=preparationTaskChanged)
     def preparationTask(self):
@@ -241,7 +501,11 @@ class QuickBridge(QObject):
 
     @Property(bool, notify=activityChanged)
     def workBusy(self):
-        return bool(self._work.kind)
+        return bool(self._work.kind or self._task_work.kind)
+
+    @Property(bool, notify=taskChanged)
+    def taskMutationBusy(self):
+        return bool(self._task_work.kind)
 
     @Property(QObject, constant=True)
     def componentModel(self):
@@ -335,9 +599,11 @@ class QuickBridge(QObject):
     def taskSort(self):
         return self._task_sort
 
-    @Property('QVariantMap', notify=taskChanged)
+    @Property('QVariantMap', notify=taskSafetyChanged)
     def taskDetail(self):
-        return dict(self.state.task_detail)
+        detail = dict(self.state.task_detail)
+        job = detail.get('jobId') or self.state.selected_task_id
+        return quick_results.protect_task_detail(detail, self._task_blockers_cached(job))
 
     @Property('QVariantMap', notify=taskChanged)
     def taskHandoff(self):
@@ -345,7 +611,7 @@ class QuickBridge(QObject):
 
     @Property(bool, notify=taskChanged)
     def taskLoading(self):
-        return bool(self._read.kind or self._details.kind)
+        return bool(self._read.kind or self._details.kind or self._task_work.kind)
 
     @Slot(str, result=str)
     def text(self, source):
@@ -357,6 +623,8 @@ class QuickBridge(QObject):
             return
         self.navigationChanged.emit()
         if self.state.route == 'results':
+            self._invalidate_task_safety(emit=False)
+            self._schedule_task_safety()
             self.refreshTasks()
         elif self.state.route == 'components' and self.state.rows_runtime != self.state.runtime:
             self.refresh()
@@ -365,15 +633,21 @@ class QuickBridge(QObject):
         elif self.state.route == 'audio_mixdown':
             self._mixdown.enter()
             self._mixdown.refresh_presets()
+        elif self.state.route == 'processing':
+            self._refresh_preparation_presets()
+        elif self.state.route == 'updates' and self._support.presetLibrary['loaded']:
+            self._support.refreshPresetLibrary()
 
     @Slot()
     def returnToPreparation(self):
         self.navigate(self.state.return_route)
 
-    def _update_draft(self, call):
+    def _update_draft(self, call, *, persist=False):
         try:
             if call():
                 self.draftChanged.emit()
+                if persist:
+                    preparation.save_draft_settings(self.state.draft)
         except (OSError, ValueError, TypeError) as exc:
             self._error(exc)
 
@@ -410,14 +684,83 @@ class QuickBridge(QObject):
 
     @Slot(str, 'QVariant')
     def setPreparationField(self, name, value):
-        self._update_draft(lambda: self.state.set_preparation_field(name, value))
+        self._update_draft(lambda: self.state.set_preparation_field(name, value), persist=True)
 
     @Slot(str)
-    def applyPreparationPreset(self, name):
-        preset = self._presets.get(name)
-        if preset:
-            self._update_draft(lambda: self.state.set_draft(
-                self.state.draft.with_options(preset['options'], preset['graph'])))
+    def setPreparationMusicPath(self, path):
+        try:
+            value = str(path).strip().strip('"')
+            if self.state.set_music(value):
+                self.draftChanged.emit()
+        except (OSError, ValueError, TypeError) as exc:
+            self._error(exc)
+
+    @Slot(str)
+    def applyPreparationPreset(self, key):
+        row = self._preparation_preset_rows.get(str(key))
+        if not row:
+            return
+        try:
+            if row['source'] == 'library':
+                document = self._preparation_preset_library.get_document(row['id'], row['version'])
+                payload = document['payload']
+            elif row['source'] == 'legacy':
+                payload = self._legacy_workflow_presets[row['preset_name']]
+            else:
+                payload = workflow.builtins()[row['preset_name']]
+            draft = preparation.apply_preset(self.state.draft, payload)
+        except Exception as exc:
+            self._error(exc)
+            return
+        self._update_draft(lambda: self.state.set_draft(draft), persist=True)
+
+    @Slot(str, result=bool)
+    def savePreparationPreset(self, name):
+        if self.workBusy:
+            return False
+        try:
+            preparation.append_preset(self._preparation_preset_library, self.state.draft, name)
+            self._refresh_preparation_presets()
+        except Exception as exc:
+            self._error(exc)
+            return False
+        self._notice = '准备预设已追加到本机预设库。'
+        self.activityChanged.emit()
+        return True
+
+    @Slot(str, result=bool)
+    def removePreparationPreset(self, key):
+        row = self._preparation_preset_rows.get(str(key))
+        if not row:
+            return False
+        if not row.get('removable'):
+            self._error(ValueError('内置预设不可删除；可以另存为自定义预设。'))
+            return False
+        try:
+            if row['source'] == 'library':
+                preparation.remove_preset(
+                    self._preparation_preset_library, row['id'], row['version'])
+            elif row['source'] == 'legacy':
+                presets = dict(self._legacy_workflow_presets)
+                presets.pop(row['preset_name'], None)
+                selected = self._legacy_workflow.get('preset', '自定义')
+                if selected == row['preset_name']:
+                    selected = '自定义'
+                workflow.save_state(
+                    self._legacy_workflow['graph'], self._legacy_workflow['options'],
+                    presets, selected)
+                self._legacy_workflow_presets = presets
+                self._legacy_workflow = {
+                    **self._legacy_workflow, 'presets': presets, 'preset': selected}
+            else:
+                raise ValueError('该预设不可删除。')
+            self._refresh_preparation_presets()
+        except Exception as exc:
+            self._error(exc)
+            return False
+        self._notice = '自定义准备预设已移除；本机历史文件仍保留。'
+        self.activityChanged.emit()
+        return True
 
     @Slot(str, QUrl)
     def importLyrics(self, voice, url):
@@ -460,19 +803,22 @@ class QuickBridge(QObject):
         if job and self.state.preparation_task.get('can_retry'):
             self._start_preparation(job, use_cpu)
 
-    def _start_preparation(self, existing=None, retry_cpu=False):
+    def _start_preparation(self, existing=None, retry_cpu=False, *, reprocess=''):
         if self.workBusy or self._closed:
             return
         draft = self.state.draft
-        reuse_job = '' if existing else self._sources.reusable_job()
+        reuse_job = '' if existing or reprocess else self._sources.reusable_job()
         if not draft.view['output_directory'].strip():
             draft = draft.edit('output_directory', self._support.state.values['output_directory'])
         key = uuid4().hex
         task = self.state.preparation_task
         task.update(id=key, state='running', job=existing or '', message='正在准备任务…',
-                    completed=0, total=0, current='', elapsed=0, can_retry=False, recovery_action='')
+                    completed=0, total=0, current='', elapsed=0, can_retry=False,
+                    stages=[], log_tail='', recovery_action='', recovery_message='')
         self.state.handoff = {}
         self._notice = ''
+        if existing or reprocess:
+            self._set_work_task_lock('准备任务 · 正在运行', existing or reprocess)
         self.preparationTaskChanged.emit()
         self.navigate('processing')
         registered = False
@@ -495,6 +841,8 @@ class QuickBridge(QObject):
             else:
                 value = {**value, 'state': 'running'}
             task.update(value)
+            if value.get('job'):
+                self._set_work_task_lock('准备任务 · 正在运行', value['job'])
             was_registered = registered
             register_job()
             self.preparationTaskChanged.emit()
@@ -502,6 +850,7 @@ class QuickBridge(QObject):
                 self.refreshTasks()
 
         def finish(value, error):
+            self._clear_work_task_lock()
             if task['id'] != key:
                 return
             if error is not None:
@@ -514,9 +863,10 @@ class QuickBridge(QObject):
             if not self._exit_when_idle and self.state.route == 'results':
                 self.refreshTasks()
 
-        self._work.start('preparation', lambda stop, send: _run_preparation(draft, existing, retry_cpu, stop, send,
-                                                                           reuse_job=reuse_job),
-                         finish, progress)
+        started = self._work.start('preparation', lambda stop, send: _run_preparation(
+            draft, existing, retry_cpu, stop, send, reuse_job=reuse_job, reprocess=reprocess), finish, progress)
+        if not started:
+            self._clear_work_task_lock()
 
     @Slot()
     def cancelPreparation(self):
@@ -534,6 +884,8 @@ class QuickBridge(QObject):
         self.state.task_detail = {}
         self.state.task_query = ''
         if self.state.route == 'results':
+            self._invalidate_task_safety(emit=False)
+            self._schedule_task_safety()
             self.refreshTasks()
         else:
             self.navigate('results')
@@ -722,6 +1074,7 @@ class QuickBridge(QObject):
             return
 
         def finish(value, error):
+            self._detail_job_id = ''
             if error is None:
                 self.state.set_task_detail(job_id, value)
             elif not isinstance(error, InterruptedError) and self.state.selected_task_id == job_id:
@@ -731,12 +1084,81 @@ class QuickBridge(QObject):
             if next_job is not None:
                 self._request_detail(next_job)
 
-        self._details.start('detail', lambda stop, _send: quick_results.detail(job_id, stop.is_set), finish)
+        self._detail_job_id = job_id
+        if not self._details.start('detail', lambda stop, _send: quick_results.detail(job_id, stop.is_set), finish):
+            self._detail_job_id = ''
 
     @Slot()
     def resumeSelectedTask(self):
         if self.state.task_detail.get('canResume'):
             self._start_preparation(self.state.selected_task_id)
+
+    @Slot(str)
+    def reprocessSelectedTask(self, expected_job):
+        if (expected_job and expected_job == self.state.selected_task_id == self.state.task_detail.get('jobId')
+                and self.state.task_detail.get('canReprocess')):
+            self._start_preparation(reprocess=expected_job)
+
+    @Slot(str)
+    def inspectTaskProgress(self, expected_job):
+        if not expected_job or expected_job != self.state.selected_task_id:
+            return
+        if self.preparationBusy and self.state.preparation_task['job'] == expected_job:
+            self.navigate('processing')
+            return
+        if self.workBusy:
+            return
+
+        def work(stop, _send):
+            from task_store import known_job
+            if stop.is_set():
+                raise InterruptedError('已停止读取任务进度。')
+            job = known_job(expected_job)
+            view = preparation.progress_view(job)
+            if view['state'] in ('failed', 'cancelled', 'interrupted'):
+                view.update(preparation.recovery_view(job))
+            try:
+                view['log_tail'] = preparation.read_log_tail(quick_results.task_log(job))
+            except (OSError, ValueError):
+                pass
+            return view
+
+        def finish(view, error):
+            self._clear_work_task_lock()
+            if self.state.selected_task_id != expected_job:
+                return
+            if error is not None:
+                self._error(error)
+                return
+            self.state.preparation_task.update(id='', recovery_action='', recovery_message='', log_tail='')
+            self.state.preparation_task.update(view)
+            self.state.preparation_task['can_retry'] = view['state'] in ('failed', 'cancelled', 'interrupted', 'partial')
+            self.preparationTaskChanged.emit()
+            self.navigate('processing')
+
+        self._set_work_task_lock('任务进度 · 正在读取', expected_job)
+        if not self._work.start('preparation-inspect', work, finish):
+            self._clear_work_task_lock()
+
+    @Slot()
+    def refreshPreparationLog(self):
+        task = self.state.preparation_task
+        job, revision = task.get('job'), task.get('id')
+        if not job or self._read.kind:
+            return
+
+        def finish(text, error):
+            if (task.get('id'), task.get('job')) != (revision, job):
+                return
+            task['log_tail'] = str(error) if error else text
+            self.preparationTaskChanged.emit()
+
+        self._read.start('preparation-log', lambda _stop, _send: preparation.read_log_tail(quick_results.task_log(job)),
+                         finish)
+
+    @Slot()
+    def openSubtitleTool(self):
+        self.subtitlesRequested.emit()
 
     @Slot()
     def openSelectedTaskFolder(self):
@@ -756,12 +1178,11 @@ class QuickBridge(QObject):
 
     @Slot(str, QUrl)
     def registerSelectedTaskVideo(self, expected_job, url):
-        job = self.state.selected_task_id
-        detail = self.state.task_detail
-        if (self.workBusy or self.taskLoading or not job or expected_job != job
-                or detail.get('jobId') != job or not detail.get('canRegisterVideo')
-                or not url.isLocalFile()):
-            self._error(ValueError('任务已变化或当前不允许登记已有视频，请重新选择后确认。'))
+        job = self._mutation_job(expected_job, 'canRegisterVideo', '登记已有成品视频')
+        if job is None:
+            return
+        if not url.isLocalFile():
+            self._error(ValueError('只能登记本机视频文件。'))
             return
         source = url.toLocalFile()
         self._notice = '正在核验视频内容并登记到当前任务…'
@@ -783,24 +1204,27 @@ class QuickBridge(QObject):
             self.activityChanged.emit()
             self.refreshTasks()
 
-        self._work.start('task-video-register', work, finish)
+        self._start_task_mutation('task-video-register', job, '正在核验视频内容并登记到当前任务…', work, finish)
 
     @Slot(str, str, QUrl)
     def registerSelectedTaskFile(self, expected_job, kind, url):
-        job = self.state.selected_task_id
-        detail = self.state.task_detail
         capability = {'project': 'canRegisterProject', 'mixdown': 'canRegisterMixdown'}.get(kind)
-        if (self.workBusy or self.taskLoading or not job or expected_job != job
-                or detail.get('jobId') != job or not capability or not detail.get(capability)
-                or url.isEmpty() or not url.isLocalFile()):
-            self._error(ValueError('任务已变化或当前不允许登记工程或 Mixdown，请重新选择后确认。'))
+        if not capability:
+            self._error(ValueError('未知的工程登记类型。'))
             return
+        job = self._mutation_job(expected_job, capability, '登记工程' if kind == 'project' else '登记 Mixdown')
+        if job is None:
+            return
+        if url.isEmpty() or not url.isLocalFile():
+            self._error(ValueError('只能登记本机工程或 Mixdown 文件。'))
+            return
+        detail = self.state.task_detail
         bindings = detail.get('bindings') if isinstance(detail.get('bindings'), dict) else {}
         binding = bindings.get(kind) if isinstance(bindings.get(kind), dict) else {}
         expected_id = str(binding.get('id') or '')
         expected_revision = str(binding.get('revision') or '')
         source = url.toLocalFile()
-        label = 'SVP 工程' if kind == 'project' else 'Mixdown'
+        label = '工程' if kind == 'project' else 'Mixdown'
         self._notice = f'正在核验 {label} 内容并登记到当前任务…'
         self.activityChanged.emit()
 
@@ -823,22 +1247,25 @@ class QuickBridge(QObject):
             self.activityChanged.emit()
             self.refreshTasks()
 
-        self._work.start('task-artifact-register', work, finish)
+        self._start_task_mutation('task-artifact-register', job, f'正在核验 {label} 内容并登记到当前任务…', work, finish)
 
     @Slot(str, str, str, str)
     def unlinkSelectedTaskBinding(self, expected_job, kind, expected_binding_id,
                                   expected_binding_revision):
-        job = self.state.selected_task_id
-        detail = self.state.task_detail
         capability = {
             'project': 'canUnbindProject', 'mixdown': 'canUnbindMixdown',
             'video': 'canUnbindVideo',
         }.get(kind)
+        if not capability:
+            self._error(ValueError('未知的人工登记类型。'))
+            return
+        job = self._mutation_job(expected_job, capability, '取消人工登记')
+        if job is None:
+            return
+        detail = self.state.task_detail
         bindings = detail.get('bindings') if isinstance(detail.get('bindings'), dict) else {}
         binding = bindings.get(kind) if isinstance(bindings.get(kind), dict) else {}
-        if (self.workBusy or self.taskLoading or not job or expected_job != job
-                or detail.get('jobId') != job or not capability or not detail.get(capability)
-                or not expected_binding_id or str(binding.get('id') or '') != expected_binding_id
+        if (not expected_binding_id or str(binding.get('id') or '') != expected_binding_id
                 or str(binding.get('revision') or '') != expected_binding_revision):
             self._error(ValueError('任务的人工登记已变化，请重新核对后再取消。'))
             return
@@ -865,15 +1292,15 @@ class QuickBridge(QObject):
             self.activityChanged.emit()
             self.refreshTasks()
 
-        self._work.start('task-artifact-unlink', work, finish)
+        self._start_task_mutation('task-artifact-unlink', job, '正在取消当前任务的人工登记引用…', work, finish)
 
     @Slot(str, str)
     def rebuildSelectedTaskArtifacts(self, expected_job, expected_index_revision):
-        job = self.state.selected_task_id
+        job = self._mutation_job(expected_job, 'canRebuildArtifacts', '重建文件清单')
+        if job is None:
+            return
         detail = self.state.task_detail
-        if (self.workBusy or self.taskLoading or not job or expected_job != job
-                or detail.get('jobId') != job or not detail.get('canRebuildArtifacts')
-                or str(detail.get('artifactIndexRevision') or '') != expected_index_revision):
+        if str(detail.get('artifactIndexRevision') or '') != expected_index_revision:
             self._error(ValueError('任务文件清单已变化，请重新打开确认后再重建。'))
             return
         self._notice = '正在根据现有处理记录重建文件清单…'
@@ -895,7 +1322,7 @@ class QuickBridge(QObject):
             self.activityChanged.emit()
             self.refreshTasks()
 
-        self._work.start('task-artifact-rebuild', work, finish)
+        self._start_task_mutation('task-artifact-rebuild', job, '正在根据现有处理记录重建文件清单…', work, finish)
 
     @Slot(str)
     def openArtifact(self, artifact_id):
@@ -916,6 +1343,7 @@ class QuickBridge(QObject):
             return
 
         def finish(data, error):
+            self._clear_work_task_lock()
             if (self._exit_when_idle or self.route != 'results' or self.state.selected_task_id != job
                     or isinstance(error, InterruptedError)):
                 return
@@ -925,7 +1353,9 @@ class QuickBridge(QObject):
             self._subtitles.accept_midi(data, job=job, artifact_id=artifact_id)
             self.subtitlesRequested.emit()
 
-        self._work.start('artifact-check', lambda stop, _send: read_task_midi(job, row, stop.is_set), finish)
+        self._set_work_task_lock('字幕工具 · 正在读取任务 MIDI', job)
+        if not self._work.start('artifact-check', lambda stop, _send: read_task_midi(job, row, stop.is_set), finish):
+            self._clear_work_task_lock()
 
     @Slot()
     def mixTaskStems(self):
@@ -972,6 +1402,7 @@ class QuickBridge(QObject):
             return rows
 
         def finish(rows, error):
+            self._clear_work_task_lock()
             if self._exit_when_idle or isinstance(error, InterruptedError):
                 return
             if error:
@@ -979,8 +1410,78 @@ class QuickBridge(QObject):
             else:
                 self._accept_media('video_mixdown', job, rows)
 
-        self._work.start('artifact-check', work, finish)
+        self._set_work_task_lock('任务产物 · 正在核验', job)
+        if not self._work.start('artifact-check', work, finish):
+            self._clear_work_task_lock()
 
+    def _hold_tuning_handoff_lock(self, job):
+        """Keep a handoff lock until Tuning exposes the same loaded task."""
+        if not self._work_task_lock or self._closed:
+            self._clear_work_task_lock()
+            return
+        try:
+            loaded = str(getattr(self._tuning, 'job', '') or '') == str(job)
+        except (RuntimeError, TypeError, ValueError):
+            loaded = False
+        if loaded or self._work.kind not in ('tuning-loading', 'tuning-load'):
+            self._clear_work_task_lock()
+            return
+        QTimer.singleShot(100, lambda: self._hold_tuning_handoff_lock(job))
+    @Slot(str, str)
+    def open_independent_mix(self, path, sha256):
+        """Send one verified standalone WAV to Video without claiming a task."""
+        if self.workBusy:
+            return
+        try:
+            candidate = Path(path).expanduser().resolve()
+            expected = str(sha256 or '').strip().lower()
+            if not candidate.is_file() or not expected:
+                raise ValueError('独立 Mixdown 文件或摘要无效。')
+            view = self._video.view
+            current = str(view.get('mixdown') or '')
+            current_path = Path(current).expanduser().resolve() if current else None
+            if view.get('job'):
+                raise ValueError('视频页仍关联任务；请先回到任务与结果切换输入，未覆盖现有 Mixdown。')
+            if current_path is not None and current_path != candidate:
+                raise ValueError('视频页已选择另一份 Mixdown；为避免覆盖，请先在视频页处理现有输入。')
+        except (OSError, TypeError, ValueError) as error:
+            self._error(error)
+            return
+
+        def work(stop, _send):
+            from common import file_hash
+
+            if not candidate.is_file():
+                raise ValueError('独立 Mixdown 已不存在，请从简易混音重新导出。')
+            if file_hash(candidate, check=stop.is_set) != expected:
+                raise ValueError('独立 Mixdown 在交接前发生变化，请重新导出。')
+            return str(candidate)
+
+        def finish(verified, error):
+            if self._exit_when_idle or isinstance(error, InterruptedError):
+                return
+            if error is not None:
+                self._error(error)
+                return
+            try:
+                view = self._video.view
+                current = str(view.get('mixdown') or '')
+                current_path = Path(current).expanduser().resolve() if current else None
+                target = Path(verified).resolve()
+                if view.get('job'):
+                    raise ValueError('视频页在交接期间关联了任务；本次未覆盖 Mixdown。')
+                if current_path is not None and current_path != target:
+                    raise ValueError('视频页在交接期间选择了另一份 Mixdown；本次未覆盖。')
+                self._video.chooseFile('mixdown', QUrl.fromLocalFile(str(target)))
+                selected = str(self._video.view.get('mixdown') or '')
+                if not selected or Path(selected).expanduser().resolve() != target:
+                    raise ValueError('视频页未能接受独立 Mixdown。')
+            except (OSError, TypeError, ValueError) as failure:
+                self._error(failure)
+                return
+            self.navigate('video_mixdown')
+
+        self._work.start('mixdown-handoff', work, finish)
     def _checked_artifact(self, artifact_id, *, route=None):
         job = self.state.selected_task_id
         if self.workBusy or not job:
@@ -1003,12 +1504,17 @@ class QuickBridge(QObject):
             return
 
         def finish(detail, error):
+            if route != 'tuning':
+                self._clear_work_task_lock()
             if self._exit_when_idle or isinstance(error, InterruptedError):
+                self._clear_work_task_lock()
                 return
             if error is not None:
+                self._clear_work_task_lock()
                 self._error(error)
                 return
             if self.state.selected_task_id != job:
+                self._clear_work_task_lock()
                 return
             self.state.set_task_detail(job, detail)
             self.taskChanged.emit()
@@ -1016,14 +1522,17 @@ class QuickBridge(QObject):
             if artifact_id is not None:
                 row = by_id.get(artifact_id)
                 if not row or not row['openable'] or [artifact_identity(row)] != expected:
+                    self._clear_work_task_lock()
                     self._error(ValueError('该文件已变更、无法核验或不支持直接打开。'))
                     return
                 if route == 'tuning':
-                    if row['role'] not in ('editor_project', 'tuned_project') or Path(row['path']).suffix.casefold() != '.svp':
+                    if not quick_results.is_svp_project(row):
+                        self._clear_work_task_lock()
                         self._error(ValueError('只能在调音工作台加载已核验的 SVP 工程。'))
                         return
                     self.navigate('tuning')
                     self._tuning.accept_task(job, row)
+                    self._hold_tuning_handoff_lock(job)
                     return
                 self._open_local(Path(row['path']))
                 return
@@ -1055,16 +1564,21 @@ class QuickBridge(QObject):
             destination = Path(row['path']) if row and row['openable'] else directory
             self.state.handoff = {'jobId': job, 'action': action, 'artifacts': rows, 'destination': str(destination)}
             self.taskChanged.emit()
-            if action == 'awaiting_tuning' and row and destination.suffix.casefold() == '.svp':
+            if action == 'awaiting_tuning' and quick_results.is_svp_project(row):
+                self._set_work_task_lock('调音工程 · 正在载入', job)
                 self.navigate('tuning')
                 self._tuning.accept_task(job, row)
+                self._hold_tuning_handoff_lock(job)
             elif action == 'audio_ready':
                 self.navigate('audio_mixdown')
                 self._mixdown.accept_task(job, rows)
             else:
                 self._open_local(destination)
 
-        self._work.start('artifact-check', lambda stop, _send: quick_results.detail(job, stop.is_set), finish)
+        label = '调音工程 · 正在核验' if route == 'tuning' else '任务产物 · 正在核验'
+        self._set_work_task_lock(label, job)
+        if not self._work.start('artifact-check', lambda stop, _send: quick_results.detail(job, stop.is_set), finish):
+            self._clear_work_task_lock()
 
     def _open_local(self, path):
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
@@ -1073,16 +1587,16 @@ class QuickBridge(QObject):
     @Slot(str)
     @Slot(str, str)
     def renameSelectedTask(self, name, expected_id=''):
-        self._mutate_task('canRename', expected_id, lambda job: quick_results.rename(job, name))
+        self._mutate_task('canRename', expected_id, lambda job: quick_results.rename(job, name), '重命名任务')
 
     @Slot(str)
     def deleteSelectedTask(self, expected_id):
         if expected_id:
-            self._mutate_task('canDelete', expected_id, quick_results.delete)
+            self._mutate_task('canDelete', expected_id, quick_results.delete, '删除任务')
 
-    def _mutate_task(self, capability, expected_id, command):
-        job = self.state.selected_task_id
-        if self.workBusy or not job or expected_id and job != expected_id or not self.state.task_detail.get(capability):
+    def _mutate_task(self, capability, expected_id, command, action):
+        job = self._mutation_job(expected_id, capability, action)
+        if job is None:
             return
 
         def finish(_value, error):
@@ -1091,7 +1605,7 @@ class QuickBridge(QObject):
             if not self._exit_when_idle:
                 self.refreshTasks()
 
-        self._work.start('task-edit', lambda _stop, _send: command(job), finish)
+        self._start_task_mutation('task-edit', job, action + '…', lambda _stop, _send: command(job), finish)
 
     @Slot()
     def cancelAndClose(self):
@@ -1104,20 +1618,22 @@ class QuickBridge(QObject):
         self._video.cancel()
         self._publication.cancel()
         self._calibration.cancel()
-        if self.workBusy:
+        self._task_work.cancel()
+        if self._work.kind:
             self._work.cancel()
-        elif not self._calibration.worker.kind:
+        if not self.workBusy and not self._calibration.worker.kind:
             self.closeReady.emit()
 
     def close(self):
         if self._closed:
             return
         self._closed = True
+        self._task_safety_timer.stop()
         self._support.close()
         self._video.cancel()
         self._publication.cancel()
         self._calibration.close()
-        for lane in (self._work, self._catalog, self._read, self._details):
+        for lane in (self._work, self._task_work, self._catalog, self._read, self._details):
             lane.close()
         self._tuning.close()
         self._mixdown.close()

@@ -445,7 +445,7 @@ def _infer_pitch(reference,cancel,progress):
     import soundfile as sf
     from pitch_accuracy import prepare_audio,supported_pitch
     from v2m_runtime import configure
-    configure(ROOT/'dependencies/vocal2midi2')
+    configure(ROOT/'dependencies/vocal2midi2', pitch_only=True)
     from runtime_devices import prepare_environment
     from inference.API.rmvpe_api import RmvpeTranscriber
     model=ROOT/'dependencies/vocal2midi/experiments/RMVPE/rmvpe.onnx'
@@ -538,7 +538,7 @@ def prepare_copy(project,reference,destination,*,track_index=0,template=None,rep
         if any(file_hash(p)!=digest for p,digest in originals.items()):raise ValueError('准备期间输入发生变化，请重新检查。')
         output=destination/'prepared.svp';atomic_json(output,data)
         report={'project':str(output),'source':str(project),'repair_pitch':repair_pitch,'template':str(template) if template else None,
-                'track_index':track_index,'source_hashes':originals}
+                'track_index':track_index,'source_hashes':originals,'sha256':file_hash(output)}
         atomic_json(destination/'preparation.json',report);return report
     finally:
         pending.unlink(missing_ok=True);source.unlink(missing_ok=True)

@@ -6,6 +6,7 @@ Task directories are the stable public identifiers used by ``jobId``; every
 path is resolved by :mod:`task_contract` before it reaches the page.
 """
 from datetime import datetime
+import os
 from pathlib import Path
 
 from i18n import tr
@@ -85,15 +86,119 @@ PRODUCER_LABELS = {
 }
 BINDING_KINDS = ('project', 'mixdown', 'video')
 BINDING_LABELS = {
-    'project': 'SVP 工程',
+    'project': '编辑器工程',
     'mixdown': 'Mixdown',
     'video': '成品视频',
 }
+TASK_MUTATION_CAPABILITIES = frozenset({
+    'canRename', 'canDelete', 'canRegisterProject', 'canRegisterMixdown',
+    'canRegisterVideo', 'canUnbindProject', 'canUnbindMixdown', 'canUnbindVideo',
+    'canRebuildArtifacts',
+})
 _RESUMABLE_ACTIONS = frozenset(('retry', 'continue', 'ready'))
 OPENABLE_SUFFIXES = frozenset(('.wav', '.flac', '.ogg', '.mp3', '.m4a', '.mp4', '.mkv', '.webm',
                                '.mid', '.midi', '.svp', '.ustx', '.vsqx', '.srt', '.vtt', '.ass', '.lrc',
                                '.txt', '.log', '.csv', '.json', '.png', '.jpg', '.jpeg', '.webp'))
 
+
+def is_svp_project(row):
+    """True only for an available Quick-editable Synthesizer V project."""
+    if not isinstance(row, dict) or row.get('available') is not True:
+        return False
+    if row.get('role') not in ('editor_project', 'tuned_project'):
+        return False
+    try:
+        return Path(row.get('path') or '').suffix.casefold() == '.svp'
+    except (TypeError, ValueError):
+        return False
+
+def _task_path(value, job, *, canonical=False):
+    """Resolve a controller reference for task-bound comparison, if it can be a path."""
+    if not isinstance(value, (str, os.PathLike)):
+        return None
+    text = os.fspath(value).strip().strip('"').strip()
+    if not text or '://' in text:
+        return None
+    if text.startswith('@/'):
+        from common import app_path
+        path = app_path(text)
+    else:
+        path = Path(text).expanduser()
+        if not path.is_absolute():
+            path = Path(job) / path
+    if canonical:
+        try:
+            return path.resolve()
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise ValueError('无法规范化任务引用路径。') from exc
+    try:
+        return Path(os.path.abspath(os.fspath(path)))
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def task_reference_blockers(job, groups, *, canonical=False):
+    """Return live labels whose paths belong to exactly one task directory.
+
+    ``groups`` is a sequence of ``{'label': str, 'paths': iterable[str]}``.
+    Relative references are interpreted from the task root. The projection is
+    intentionally task-scoped so another task remains independently manageable.
+    """
+    if not job:
+        return []
+    try:
+        value = Path(os.path.expanduser(os.fspath(job)))
+        root = value.resolve() if canonical else Path(os.path.abspath(os.fspath(value)))
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise ValueError('无法解析目标任务路径。') from exc
+    blocked = {}
+    for group in groups or ():
+        if not isinstance(group, dict):
+            continue
+        label = str(group.get('label') or '').strip()
+        if not label:
+            continue
+        matches = []
+        for value in group.get('paths', ()) or ():
+            path = _task_path(value, root, canonical=canonical)
+            if path is not None and (path == root or path.is_relative_to(root)):
+                matches.append(str(path))
+        if matches:
+            row = blocked.setdefault(label, [])
+            row.extend(path for path in matches if path not in row)
+    return [{'label': label, 'paths': blocked[label]} for label in sorted(blocked)]
+
+
+def task_projection_failure(job, error):
+    """Fail closed when a live task-reference projection cannot be read."""
+    detail = str(error or '未知错误')[:500]
+    return [{'label': '任务引用状态读取失败，已安全阻止修改', 'paths': [str(job)] if job else [],
+             'error': detail}]
+
+def task_blocker_text(blockers):
+    return '、'.join(row['label'] for row in blockers or () if row.get('label'))
+
+
+def task_mutation_error(action, blockers):
+    text = task_blocker_text(blockers)
+    if not text:
+        return ''
+    return f'任务仍被{text}使用，不能{action}。请先切换到另一任务或关闭相关页面操作。'
+
+
+def protect_task_detail(detail, blockers=()):
+    """Decorate a task projection and disable task-record mutations in-use elsewhere."""
+    result = dict(detail or {})
+    rows = [dict(row) for row in blockers or ()]
+    reason = task_blocker_text(rows)
+    result['taskBlockers'] = rows
+    result['taskBlocked'] = bool(rows)
+    result['taskBlockReason'] = (f'当前任务仍被{reason}使用；相关登记与管理操作已禁用。'
+                                 if reason else '')
+    if rows:
+        for capability in TASK_MUTATION_CAPABILITIES:
+            result[capability] = False
+    return result
 
 def _cancelled(check):
     if check is not None and check():
@@ -434,6 +539,7 @@ def detail(job, check=None):
         'statusText': status_text,
         'nextAction': _next_text(action),
         'canResume': not locked and not error_message and action in _RESUMABLE_ACTIONS,
+        'canReprocess': not locked and known_state and row['request'].get('source_kind') in ('local', 'bilibili'),
         'canDispatch': not locked and not error_message and bool(delivery),
         'canRename': manageable,
         'canDelete': manageable,
@@ -491,9 +597,9 @@ def task_log(job):
 
 
 def register_external(job, kind, path, *, expected_binding_id, expected_binding_revision, check=None):
-    """Validate and bind an external SVP project or Mixdown without moving it."""
+    """Validate and bind an external SVP/USTX/VSQX project or Mixdown without moving it."""
     if kind not in ('project', 'mixdown'):
-        raise ValueError('Quick 只从此入口登记 SVP 工程或 Mixdown。')
+        raise ValueError('Quick 只从此入口登记 SVP/USTX/VSQX 工程或 Mixdown。')
     from pipeline import job_lock
 
     job = task_store.known_job(job)
@@ -545,6 +651,8 @@ def register_existing_video(job, path, check=None):
 
 __all__ = (
     'ARTIFACT_ROLES', 'ARTIFACT_STATES', 'BINDING_KINDS', 'BINDING_LABELS', 'TASK_STATES',
+    'TASK_MUTATION_CAPABILITIES', 'task_reference_blockers', 'task_projection_failure',
+    'task_blocker_text', 'task_mutation_error', 'protect_task_detail', 'is_svp_project',
     'OPENABLE_SUFFIXES', 'scan', 'detail', 'rename', 'delete', 'task_log',
     'register_existing_video', 'register_external', 'unlink_external', 'rebuild_artifacts',
 )

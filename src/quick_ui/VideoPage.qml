@@ -657,6 +657,33 @@ ScrollView {
                     onClicked: page.controller.restoreTask(page.restoreJobId, sourceIdentityField.text)
                 }
             }
+
+            Flow {
+                Layout.fillWidth: true
+                spacing: Math.round(8 * page.theme.scale)
+
+                UiButton {
+                    objectName: "videoRestoreTaskSource"
+                    theme: page.theme
+                    quiet: true
+                    text: page.tr("仅载入任务原视频…")
+                    enabled: !page.busy && !!page.restoreJobId
+                    Accessible.name: text
+                    onClicked: sourceOnlyDialog.open()
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: Math.round(360 * page.theme.scale)
+                    Layout.minimumWidth: 0
+                    verticalAlignment: Text.AlignVCenter
+                    text: page.tr("没有已登记 Mixdown 的任务可只载入已核验原视频；随后需要手动选择音轨。不会猜测或自动配对。")
+                    color: page.theme.muted
+                    font.pixelSize: Math.round(10.5 * page.theme.scale)
+                    wrapMode: Text.Wrap
+                    textFormat: Text.PlainText
+                }
+            }
             Text {
                 Layout.fillWidth: true
                 visible: text.length > 0
@@ -1331,6 +1358,26 @@ ScrollView {
         Item {
             Layout.fillWidth: true
             Layout.preferredHeight: Math.round(24 * page.theme.scale)
+        }
+    }
+
+    Dialog {
+        id: sourceOnlyDialog
+        objectName: "videoRestoreSourceConfirm"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        title: page.tr("只载入任务原视频？")
+        width: Math.min(parent.width - 36, Math.round(500 * page.theme.scale))
+        standardButtons: Dialog.Cancel | Dialog.Ok
+        onAccepted: page.controller.restoreTaskSource(page.restoreJobId, sourceIdentityField.text)
+
+        contentItem: Text {
+            text: page.tr("将只冻结任务中已核验的 video/source.mp4，并清空已绑定 Mixdown。请手动选择与任务对应的音轨；登记成品前仍会重新核验任务当前绑定。")
+            color: page.theme.text
+            font.pixelSize: Math.round(12 * page.theme.scale)
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
         }
     }
 

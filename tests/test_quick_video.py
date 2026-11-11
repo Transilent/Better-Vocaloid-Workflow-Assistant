@@ -273,5 +273,58 @@ class QuickVideoTests(unittest.TestCase):
         self.assertEqual(self.controller.view['result'], '')
 
 
+    def test_verified_task_source_can_load_without_registered_mix(self):
+        detail = {
+            'title': 'source-only fixture',
+            'artifacts': [dict(self.source_row)],
+            'studioTargets': {},
+        }
+        with patch('quick_results.detail', return_value=detail), \
+                patch('task_store.known_job', side_effect=lambda value: Path(value).resolve()):
+            self.controller.restoreTaskSource(str(self.job), '')
+            wait_for(self.application, lambda: not self.controller.view['busy'])
+
+        view = self.controller.view
+        self.assertEqual(view['job'], str(self.job.resolve()))
+        self.assertEqual(view['sourceVideo'], str(self.source.resolve()))
+        self.assertEqual(view['mixdown'], '')
+        self.assertFalse(view['canAnalyze'] or view['canRender'] or view['canRegister'])
+        self.assertEqual(view['state'], 'ready')
+        self.assertEqual(view['receipt'], {})
+        self.assertFalse(view['canRegister'])
+
+        output = self.job / 'rendered' / 'manual-source.mp4'
+        self.controller.chooseFile('mixdown', self.QUrl.fromLocalFile(str(self.external_mix)))
+        self.controller.chooseFile('output', self.QUrl.fromLocalFile(str(output)))
+        view = self.controller.view
+        self.assertTrue(view['canAnalyze'] and view['canRender'])
+        self.assertFalse(view['canRegister'])
+
+        bind_calls = []
+        def fake_render(job, source, mixdown, output, **options):
+            output = Path(output)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b'source-only-standalone-mp4')
+            return {
+                'output': str(output.resolve()),
+                'sha256': digest(output.read_bytes()),
+                'inputs': {
+                    str(Path(source).resolve()): digest(Path(source).read_bytes()),
+                    str(Path(mixdown).resolve()): digest(Path(mixdown).read_bytes()),
+                },
+                'alignment': {}, 'normalized': False, 'loudness_measurement': None,
+            }
+
+        with patch.object(self.quick_video.video_mixdown, 'render', side_effect=fake_render), \
+                patch.object(task_contract, 'bind', side_effect=lambda *args, **kwargs: bind_calls.append((args, kwargs))):
+            self.controller.render()
+            wait_for(self.application, lambda: not self.controller.view['busy'])
+        self.assertTrue(output.is_file())
+        self.assertEqual(self.controller.view['state'], 'done')
+        self.assertFalse(self.controller.view['canRegister'])
+        self.assertEqual(bind_calls, [])
+        self.assertFalse(self.controller.view['receipt']['mixdown']['artifact'])
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

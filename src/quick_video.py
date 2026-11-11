@@ -495,6 +495,61 @@ class QuickVideo(QObject):
             self._emit()
 
     @Slot(str, str)
+    def restoreTaskSource(self, job, expected_source):
+        """Load only a verified task source video when no Mixdown is registered."""
+        if self._closed or self._worker.kind or self._active_kind:
+            self._notice('已有后台操作正在运行，暂时不能载入任务。')
+            return
+        job_text = str(job or '').strip()
+        if not job_text:
+            self._notice('请先从任务列表选择一个任务。')
+            return
+        try:
+            expected_bv, _expected_url = _bilibili_identity(expected_source)
+        except (TypeError, ValueError) as error:
+            self._notice(str(error))
+            return
+
+        def work(stop, send):
+            from task_store import known_job
+
+            job_path = known_job(job_text)
+            identity = _task_source_identity(job_path)
+            if identity['bv']:
+                if not expected_bv:
+                    raise ValueError('该任务有 Bilibili 来源；请填写并核对 BV 或来源链接。')
+                if expected_bv != identity['bv']:
+                    raise ValueError('填写的 BV/来源与当前任务不一致，不能恢复视频输入。')
+            elif expected_bv:
+                raise ValueError('当前任务是本地来源，不能套用另一个 Bilibili BV 身份。')
+            send('正在重新核验任务原视频及其修订…')
+            detail = quick_results.detail(job_path, stop.is_set)
+            canonical = (job_path / 'video' / 'source.mp4').resolve()
+            sources = [row for row in detail.get('artifacts', ())
+                       if row.get('role') == 'source_video'
+                       and row.get('state') == 'verified'
+                       and row.get('available') is not False
+                       and _same_path(row.get('path'), canonical)]
+            if len(sources) != 1:
+                raise ValueError('当前任务没有唯一、已核验的规范原视频 video/source.mp4。')
+            _stop_check(stop)
+            return {'job': job_path, 'source': sources[0],
+                    'identity': identity, 'title': str(detail.get('title') or job_path.name)}
+
+        def finish(value):
+            if not self.accept_task_source(value['job'], value['source']):
+                raise ValueError(self._message)
+            self._task_title = value['title']
+            identity_text = value['identity']['bv'] or '本地原视频'
+            self._restore_message = (
+                f'已只载入 {self._task_title} · {identity_text}；该任务没有匹配的 Mixdown，'
+                '请手动选择可读取的音频后再合成。')
+            self._message = ('任务原视频已冻结；当前未绑定任务 Mixdown，'
+                             '可以生成独立 MP4，但登记前必须使用当前任务登记的音轨。')
+
+        self._start('video-restore', '正在核验任务原视频…', work, finish)
+
+    @Slot(str, str)
     def restoreTask(self, job, expected_source):
         """Restore exact task inputs after a fresh task-contract verification."""
         if self._closed or self._worker.kind or self._active_kind:
@@ -530,7 +585,7 @@ class QuickVideo(QObject):
             target_rows = [by_id.get(identifier) for identifier in ids]
             if (not ids or any(row is None or row.get('state') != 'verified'
                                or row.get('available') is False for row in target_rows)):
-                raise ValueError('当前任务没有一组完整、已核验的 Mixdown 与原视频。')
+                raise ValueError('当前任务没有一组完整、已核验的 Mixdown 与原视频；可改用“仅载入任务原视频”并手动选择音轨。')
             mixes = [row for row in target_rows if row.get('role') == 'mixdown']
             sources = [row for row in target_rows if row.get('role') == 'source_video']
             if len(mixes) != 1 or len(sources) != 1:
@@ -557,16 +612,26 @@ class QuickVideo(QObject):
         self._start('video-restore', '正在核验任务来源与冻结素材…', work, finish)
 
     def accept_task(self, job, mix_row, source_row=None) -> bool:
-        """Freeze task rows reverified by the shared worker lane."""
+        """Freeze verified task rows supplied by the shared worker lane."""
+        return self._accept_task_inputs(job, mix_row, source_row)
+
+    @Slot(str, dict)
+    def accept_task_source(self, job, source_row) -> bool:
+        """Freeze only a verified task source; the user selects Mixdown manually."""
+        return self._accept_task_inputs(job, None, source_row)
+
+    def _accept_task_inputs(self, job, mix_row, source_row=None) -> bool:
         if self._closed or self._worker.kind or self._active_kind:
             self._notice('后台视频操作进行中，暂时不能切换任务。')
             return False
         try:
             job_path = Path(job).expanduser().resolve()
-            mix = _freeze_row(mix_row, 'mixdown')
-            if Path(mix['path']).suffix.casefold() != '.wav':
+            mix = _freeze_row(mix_row, 'mixdown') if mix_row is not None else None
+            if mix is not None and Path(mix['path']).suffix.casefold() != '.wav':
                 raise ValueError('任务 Mixdown 必须是已核验的 WAV。')
             source = _freeze_row(source_row, 'source_video') if source_row is not None else None
+            if mix is None and source is None:
+                raise ValueError('任务没有可载入的 Mixdown 或原视频。')
             identity = _task_source_identity(job_path)
         except (OSError, TypeError, ValueError) as error:
             self._notice('无法载入任务视频参数：' + str(error))
@@ -587,7 +652,7 @@ class QuickVideo(QObject):
             self._task_title = str(task.get('name') or identity['title'] or job_path.name)
         except (OSError, TypeError, ValueError):
             self._task_title = identity['title'] or job_path.name
-        self._mixdown = mix['path']
+        self._mixdown = mix['path'] if mix else ''
         self._source_video = source['path'] if source else ''
         output = job_path / 'rendered' / 'cover-mixdown.mp4'
         if output.exists():
@@ -605,8 +670,12 @@ class QuickVideo(QObject):
         self._registered_sha256 = ''
         self._state = 'ready'
         identity_text = f'；来源 {identity["bv"]}' if identity['bv'] else ''
-        self._message = ('已冻结任务当前绑定的 Mixdown 与原视频' + identity_text +
-                         '；合成与登记将再次核验同一产物。')
+        if mix is None:
+            self._message = ('已冻结任务原视频' + identity_text +
+                             '；未绑定任务 Mixdown，请手动选择音轨后再合成。')
+        else:
+            self._message = ('已冻结任务当前绑定的 Mixdown 与原视频' + identity_text +
+                             '；合成与登记将再次核验同一产物。')
         self._emit()
         return True
 

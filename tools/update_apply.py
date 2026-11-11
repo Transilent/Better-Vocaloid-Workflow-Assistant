@@ -95,6 +95,11 @@ ROOT_FILES.update({
     'quick_mixdown.py', 'quick_mixdown_player.py', 'quick_tuning.py', 'tuning_timeline.py',
     'quick_ui/MixdownEq.qml', 'quick_ui/MixdownMeter.qml', 'quick_ui/MixdownPage.qml',
     'quick_ui/TuningPage.qml', 'quick_ui/TuningTimeline.qml',
+    'calibration_preparation.py', 'quick_calibration.py', 'quick_media_handoff.py',
+    'quick_preparation_sources.py', 'quick_publication.py', 'quick_subtitles.py', 'quick_video.py',
+    'quick_ui/CalibrationDialog.qml', 'quick_ui/PreparationSourcesDialog.qml',
+    'quick_ui/PublicationPage.qml', 'quick_ui/SubtitleDialog.qml', 'quick_ui/VideoPage.qml',
+    'quick_ui/TuningViewportStrip.qml', 'quick_ui/UiIcon.qml',
 })
 TOOL_FILES = {'tools/update_apply.py', 'tools/Start-Diagnostics.bat',
               'tools/Check-Dependencies.bat', 'tools/Use-CPU.bat', 'tools/Use-GPU.bat',

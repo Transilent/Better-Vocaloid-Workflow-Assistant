@@ -9,14 +9,15 @@ from uuid import uuid4
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
-from common import ROOT, atomic_json, file_hash, native_path, output_directory
+from common import ROOT, atomic_json, file_hash, native_path, output_directory, workspace_state
 from i18n import tr
 from preset_library import PresetLibrary
 import style_catalog
 from style_drafts import DraftConflict, DraftStore
 from style_presets import DETAIL_DEFAULTS, time_range_settings
 import tuning_engine as engine
-from tuning_timeline import ProjectNotes, TimelineDraftStore, draft_options, freeze_plan
+from tuning_timeline import (ProjectNotes, TimelineDraftStore, draft_options, freeze_plan,
+                             normalize_timeline_draft)
 from tuning_preset_documents import make_document, plan_application
 import tuning_workflow as workflow
 
@@ -25,6 +26,7 @@ _REFERENCE_FLAGS = ('reference_dynamics', 'reference_tension', 'reference_breath
 _SOURCES = ('preserve', 'reference', 'calibrated', 'retained')
 _BRUSH_KEYS = ('performance_style', 'style_strength', 'style_pitch', 'style_detail',
                'style_technique', 'technique_strength', 'technique_pitch')
+_PORTABLE_PREFERENCE_KEYS = frozenset(_BRUSH_KEYS + ('dynamics_strength', 'expression_density'))
 _SETTING_KEYS = _REFERENCE_FLAGS + ('dynamics_strength', 'expression_density', 'style_technique',
                                    'technique_strength', 'technique_pitch')
 _REGION_UNDO_LIMIT = 32
@@ -37,6 +39,89 @@ _REGION_BRUSH_FIELDS = {
 
 class SourceChanged(ValueError):
     """The loaded source or its task revision is no longer current."""
+
+
+def _read_json_file(path, *, limit=2 * 1024 * 1024):
+    """Read a small workflow sidecar without trusting its size or schema."""
+    path = Path(path)
+    try:
+        if not path.is_file() or not 0 < path.stat().st_size <= limit:
+            return None
+        value = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _session_candidate(session, reason=''):
+    """Return the reverified result, or preserve a safe historical output."""
+    try:
+        return workflow.verified_result(session), ''
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        reason = str(error)
+    root = Path(session).resolve().parent
+    state = _read_json_file(root / 'status.json')
+    if not state or not isinstance(state.get('output'), str):
+        return None, reason
+    try:
+        declared = Path(state['output'])
+        output = workflow._owned(root, declared if declared.is_absolute() else root / declared)
+        if not output.is_file():
+            return None, reason
+        output_sha256 = file_hash(output)
+        output_bytes = output.stat().st_size
+        receipt_path = workflow._owned(root, output.with_suffix('.svp.tuning.json'))
+    except (OSError, ValueError):
+        return None, reason
+    receipt = _read_json_file(receipt_path)
+    if receipt and (receipt.get('session') not in (None, str(Path(session).resolve()))
+                    or receipt.get('output') not in (None, str(output))):
+        return None, reason
+    report = receipt.get('report', {}) if receipt else {}
+    return {
+        'output': str(output), 'output_sha256': output_sha256, 'output_bytes': output_bytes,
+        'receipt': str(receipt_path) if receipt_path.is_file() else '',
+        'report': report if isinstance(report, dict) else {}, 'status': state.get('state', 'historical'),
+        'receipt_verified': False, 'historical': True, 'historical_reason': reason,
+    }, reason
+
+
+def _session_intent(session, project):
+    """Recover the last execution options and note identity where they are representable."""
+    root = Path(session).resolve().parent
+    warning = ''
+    options = QuickTuning._defaults()
+    raw_options = _read_json_file(root / 'last-options.json')
+    if raw_options is not None:
+        try:
+            options = draft_options(raw_options)
+        except (TypeError, ValueError) as error:
+            warning = str(error)
+    recipes = options.get('style_regions', []) if isinstance(options, dict) else []
+    by_index = {row['index']: key for key, row in project.tracks.items() if key in project.editable}
+    regions = []
+    for recipe in recipes if isinstance(recipes, list) else []:
+        try:
+            track = by_index[recipe['track_index']]
+            brush = {key: deepcopy(recipe.get(value, engine.DEFAULTS[value]))
+                     for key, value in _REGION_BRUSH_FIELDS.items()}
+            region = project.region(track, recipe['start'], recipe['end'], brush)
+            if region is not None:
+                regions.append(region)
+        except (KeyError, TypeError, ValueError) as error:
+            warning = warning or str(error)
+    options = draft_options({**options, 'style_regions': []})
+    preset = None
+    if not regions:
+        try:
+            preset = workflow.read_preset_binding(session)
+        except (OSError, TypeError, ValueError) as error:
+            warning = warning or str(error)
+    payload = normalize_timeline_draft(project.sha256, {
+        'schema_version': 2, 'input_sha256': project.sha256, 'regions': regions,
+        'options': options, 'preset': preset, 'confirmed': False,
+    })
+    return payload, warning
 
 
 def _stop_check(stop):
@@ -72,16 +157,41 @@ def _load_project(path, job, artifact, drafts, legacy, sessions, stop):
         data = workflow.read_session(session)
         if (data['input_sha256'], data['source'], data['job']) != (project.sha256, project.project['path'], job or None):
             raise ValueError('已有调音会话的源文件或任务不匹配。')
-        try:
-            result = workflow.verified_result(session)
-        except (ValueError, OSError):
-            result = None
+        result, warning = _session_candidate(session)
     else:
         # An interrupted creation can leave a directory without a valid session.
         if Path(native_path(root)).exists():
             session = root.with_name(key + '-' + uuid4().hex[:8]) / 'session.json'
-        result = None
-    return project, restored, previous, session, result
+        result, warning = None, ''
+    return project, restored, previous, session, result, warning
+
+
+def _resume_project(session, drafts, legacy, stop):
+    """Load any existing session from its immutable input snapshot."""
+    path = Path(session).resolve()
+    path = path / 'session.json' if path.is_dir() else path
+    spec = workflow.read_session(path)
+    # The snapshot is the editable baseline. A changed original is reported
+    # by the run/registration checks and never replaces that baseline.
+    source_warning = ''
+    try:
+        workflow.inspect_session_project(path)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        source_warning = str(error)
+    snapshot = path.parent / spec['input_file']
+    project = ProjectNotes.load(snapshot, expected_sha256=spec['input_sha256'])
+    project.project['candidate_origin'] = deepcopy(spec.get('input_origin'))
+    _verify_input(project, '', None, stop)
+    restored = drafts.read(project.sha256)
+    previous = legacy.read(project.sha256) if not restored['exists'] else {'data': None, 'revision': None}
+    if restored['exists']:
+        intent, warning = restored, ''
+    else:
+        payload, warning = _session_intent(path, project)
+        intent = {'data': payload, 'revision': None, 'recoveries': []}
+    result, result_warning = _session_candidate(path)
+    warning = ' '.join(value for value in (source_warning, warning, result_warning if result else '') if value)
+    return project, intent, previous, path, result, warning, spec['source'], spec.get('job') or ''
 
 
 def _preview(project, options, stop, send):
@@ -125,6 +235,15 @@ class QuickTuning(QObject):
         self.project = None
         self.job, self.artifact = '', None
         self.session, self.candidate = None, None
+        self._session_parent = (output_directory() / 'tuning-sessions').resolve()
+        self._display_source = ''
+        self._session_warning = ''
+        self._portable_preferences_imported = False
+        self._reload_session = None
+        self._tuning_tasks = []
+        self._tuning_task_projects = []
+        self._selected_tuning_task = ''
+        self._task_picker_message = ''
         self._saved_copy = ''
         self.state, self.message = 'idle', ''
         self._candidate_stale = False
@@ -135,6 +254,7 @@ class QuickTuning(QObject):
         self._preset_review = None
         self._mode, self._active, self._selected = 'single', '', []
         self._start, self._end, self._left, self._span = 0., 0., 0., 18.
+        self._selected_region = ''
         self._query = ''
         self._matches, self._notes, self._regions = [], [], []
         self._region_undo, self._region_redo = [], []
@@ -156,11 +276,33 @@ class QuickTuning(QObject):
         self._autosave.setSingleShot(True)
         self._autosave.timeout.connect(self._flush_draft)
         self.worker.changed.connect(self.changed)
+        bridge_task_changed = getattr(parent, 'taskChanged', None)
+        if bridge_task_changed is not None:
+            bridge_task_changed.connect(self._bridge_tasks_changed)
 
     @staticmethod
     def _defaults():
         return engine.settings({'performance_style': style_catalog.DEFAULT_NEW_STYLE_ID, 'style_pitch': False,
                                 'expression_density': 'original'})
+
+    def _new_project_defaults(self):
+        """Import only portable legacy style/expression preferences for a new project."""
+        self._portable_preferences_imported = False
+        try:
+            legacy = workspace_state().get('tuning', {}).get('preferences', {})
+        except (AttributeError, OSError, TypeError, ValueError):
+            legacy = {}
+        portable = ({key: deepcopy(legacy[key]) for key in _PORTABLE_PREFERENCE_KEYS
+                     if key in legacy} if isinstance(legacy, dict) else {})
+        options = self._defaults()
+        if not portable:
+            return options
+        try:
+            options = engine.settings({**options, **portable})
+        except (KeyError, TypeError, ValueError):
+            return self._defaults()
+        self._portable_preferences_imported = True
+        return options
 
     def _load_view_preferences(self):
         try:
@@ -303,11 +445,23 @@ class QuickTuning(QObject):
         duration = self.project.maximum - self.project.minimum if self.project else 0.
         usable = bool(self._regions or self._targets) and not self._legacy and not missing and not self._draft_conflict
         review = self._draft_review
+        session_exists = bool(self.session and Path(native_path(self.session)).is_file())
+        session_root = (Path(self.session).parent if session_exists else
+                        ((Path(self.job) / 'tuning-sessions') if self.job else self._session_parent))
         return {
-            'source': project.get('path', ''), 'title': Path(project['path']).stem if project else '',
+            'source': self._display_source or project.get('path', ''),
+            'title': Path(self._display_source or project.get('path', '')).stem if project else '',
             'sha256': project.get('sha256', ''), 'job': self.job,
-            'session': str(self.session) if self.session and receipt else '',
+            'session': str(self.session) if self.session else '',
+            'sessionExists': session_exists,
+            'sessionLocation': str(session_root),
+            'sessionOutput': str(session_root / 'outputs'),
+            'sessionFolder': QUrl.fromLocalFile(str(session_root)),
+            'canChooseSessionLocation': bool(project and not self.job and not session_exists
+                                              and not receipt and not busy),
+            'canReload': bool(project and not busy),
             'mode': self._mode, 'activeTrack': self._active, 'selectedTracks': list(self._selected),
+            'selectedRegion': self._selected_region,
             'query': self._query, 'start': self._start, 'end': self._end,
             'viewportStart': self._left, 'viewportSpan': self._span, 'duration': duration,
             'timelineStart': self.project.minimum if self.project else 0.,
@@ -315,6 +469,8 @@ class QuickTuning(QObject):
             'styleDetail': dict(self._options['style_detail']),
             'stylePitch': self._options['style_pitch'], 'busy': busy, 'state': self.state, 'message': self.message,
             'canUndoRegions': bool(self._region_undo), 'canRedoRegions': bool(self._region_redo),
+            'canReloadDraft': bool(project and not busy and not self._legacy),
+            'canSaveDraftRevision': bool(project and not busy and not self._legacy),
             'snapEnabled': self._view_preferences['snap'],
             'autoApplySelection': self._view_preferences['auto_apply_selection'],
             'canFreeze': bool(project and not busy and usable and (not self._origin or self._confirmed)),
@@ -322,12 +478,14 @@ class QuickTuning(QObject):
                        and not self._candidate_stale and not busy and self.state != 'registered'),
             'candidate': receipt.get('output', ''), 'candidateStale': self._candidate_stale,
             'candidateVerified': bool(receipt.get('receipt_verified')),
+            'candidateHistorical': bool(receipt.get('historical')),
+            'candidateReceipt': receipt.get('receipt', ''),
             'candidateDetails': {
                 'sha256': receipt.get('output_sha256', ''), 'bytes': receipt.get('output_bytes', 0),
                 'tracks': len(report.get('track_indices', [])), 'status': receipt.get('status', ''),
                 'mode': report.get('mode', ''), 'pitchChanged': report.get('pitch_changed') is True,
                 'notesPreserved': report.get('notes_and_timing_unchanged') is True,
-            } if receipt.get('receipt_verified') else {},
+            } if receipt else {},
             'savedCopy': self._saved_copy,
             'previewSummary': self._summary,
             'draftConflict': self._draft_conflict or '',
@@ -380,6 +538,185 @@ class QuickTuning(QObject):
                  'retained': retained.get(index, {}).get('project', ''),
                  'retainedIndex': retained.get(index, {}).get('source_track_index', 0)}
                 for key in self.project.editable if (index := self.project.tracks[key]['index']) in self._indices(segments=True)]
+
+    @Property('QVariantList', notify=changed)
+    def tuningTasks(self):
+        return list(self._tuning_tasks)
+
+    @Property('QVariantList', notify=changed)
+    def tuningTaskProjects(self):
+        return list(self._tuning_task_projects)
+
+    @Property(str, notify=changed)
+    def tuningTaskMessage(self):
+        return self._task_picker_message
+
+    def _bridge_task_projects(self, detail):
+        rows = []
+        for row in (detail or {}).get('artifacts', []):
+            if (row.get('role') in ('editor_project', 'tuned_project') and row.get('available')
+                    and row.get('openable') and Path(row.get('path', '')).suffix.casefold() == '.svp'):
+                rows.append({
+                    'artifactId': str(row.get('id') or ''),
+                    'label': str(row.get('displayPath') or Path(row['path']).name),
+                    'path': str(row.get('path') or ''), 'sha256': str(row.get('sha256') or ''),
+                    'role': str(row.get('role') or ''),
+                })
+        return rows
+
+    def _bridge_tasks_changed(self):
+        bridge = self.parent()
+        model = getattr(bridge, 'taskModel', None) if bridge is not None else None
+        rows = list(getattr(model, 'rows', ()) or ())
+        if model is not None:
+            self._tuning_tasks = [
+                {'jobId': str(row.get('jobId') or ''), 'title': str(row.get('title') or row.get('jobId') or ''),
+                 'statusText': str(row.get('statusText') or '')}
+                for row in rows if isinstance(row, dict) and row.get('jobId')
+            ]
+        if bridge is not None:
+            selected = str(getattr(bridge, 'selectedTaskId', '') or '')
+            detail = getattr(bridge, 'taskDetail', {}) or {}
+            if selected and detail.get('jobId') == selected:
+                self._selected_tuning_task = selected
+                self._tuning_task_projects = self._bridge_task_projects(detail)
+                self._task_picker_message = (tr('共 {count} 个已核验 SVP；载入会复用任务与结果页面的核验。')
+                                             .format(count=len(self._tuning_task_projects))
+                                             if self._tuning_task_projects else
+                                             tr('此任务没有可载入的已核验 SVP 工程。'))
+        self.changed.emit()
+
+    @Slot()
+    def refreshTuningTasks(self):
+        if self.worker.kind:
+            return
+        self._task_picker_message = tr('正在读取任务与结果…')
+        bridge = self.parent()
+        refresh = getattr(bridge, 'refreshTasks', None) if bridge is not None else None
+        if callable(refresh):
+            refresh()
+            self._bridge_tasks_changed()
+            return
+        self.changed.emit()
+
+        def work(stop, _send):
+            import quick_results
+
+            return quick_results.scan(stop.is_set)
+
+        def finish(rows):
+            self._tuning_tasks = [
+                {'jobId': str(row.get('jobId') or ''), 'title': str(row.get('title') or row.get('jobId') or ''),
+                 'statusText': str(row.get('statusText') or '')}
+                for row in rows if isinstance(row, dict) and row.get('jobId')
+            ]
+            known = {row['jobId'] for row in self._tuning_tasks}
+            if self._selected_tuning_task not in known:
+                self._selected_tuning_task = self._tuning_tasks[0]['jobId'] if self._tuning_tasks else ''
+            self._tuning_task_projects = []
+            self._task_picker_message = (tr('共 {count} 个任务；请选择任务后再选择已核验的 SVP。')
+                                         .format(count=len(self._tuning_tasks)) if self._tuning_tasks
+                                         else tr('没有可读取的任务。'))
+            if self._selected_tuning_task:
+                QTimer.singleShot(0, lambda: self.selectTuningTask(self._selected_tuning_task))
+
+        self._worker_command('task-picker-scan', '正在读取任务列表…', work, finish)
+
+    @Slot(str)
+    def selectTuningTask(self, job):
+        job = str(job or '')
+        if not job:
+            return
+        self._selected_tuning_task = job
+        self._tuning_task_projects = []
+        self._task_picker_message = tr('正在核验任务文件清单…')
+        bridge = self.parent()
+        select = getattr(bridge, 'selectTask', None) if bridge is not None else None
+        if callable(select):
+            select(job)
+            self._bridge_tasks_changed()
+            return
+        if self.worker.kind:
+            return
+        self.changed.emit()
+
+        def work(stop, _send):
+            import quick_results
+
+            return quick_results.detail(job, stop.is_set)
+
+        def finish(detail):
+            if job != self._selected_tuning_task or detail.get('jobId') != job:
+                return
+            rows = []
+            for row in detail.get('artifacts', []):
+                if (row.get('role') in ('editor_project', 'tuned_project') and row.get('available')
+                        and row.get('openable') and Path(row.get('path', '')).suffix.casefold() == '.svp'):
+                    rows.append({
+                        'artifactId': str(row.get('id') or ''), 'label': str(row.get('displayPath') or
+                        Path(row['path']).name), 'path': str(row.get('path') or ''),
+                        'sha256': str(row.get('sha256') or ''), 'role': str(row.get('role') or ''),
+                    })
+            self._tuning_task_projects = rows
+            self._task_picker_message = (tr('共 {count} 个已核验 SVP；载入时会再次核对文件身份。')
+                                         .format(count=len(rows)) if rows
+                                         else tr('此任务没有可载入的已核验 SVP 工程。'))
+
+        self._worker_command('task-picker-detail', '正在核验任务中的调音工程…', work, finish)
+
+    @Slot(str, str)
+    def loadTuningTaskArtifact(self, job, artifact_id):
+        job, artifact_id = str(job or ''), str(artifact_id or '')
+        if not job or job != self._selected_tuning_task or not artifact_id:
+            return
+        bridge = self.parent()
+        tune_artifact = getattr(bridge, 'tuneArtifact', None) if bridge is not None else None
+        selected = str(getattr(bridge, 'selectedTaskId', '') or '') if bridge is not None else ''
+        if callable(tune_artifact) and selected == job:
+            self._task_picker_message = tr('正在复用任务与结果页面的文件核验…')
+            self.changed.emit()
+            tune_artifact(artifact_id)
+            return
+        if self.worker.kind:
+            return
+
+        def work(stop, _send):
+            import quick_results
+
+            detail = quick_results.detail(job, stop.is_set)
+            row = next((item for item in detail.get('artifacts', ())
+                        if item.get('id') == artifact_id and item.get('available') and item.get('openable')
+                        and item.get('role') in ('editor_project', 'tuned_project')
+                        and Path(item.get('path', '')).suffix.casefold() == '.svp'), None)
+            if detail.get('jobId') != job or row is None:
+                raise ValueError('所选任务工程已变更、不可核验或不再是 SVP。')
+            return row
+
+        def finish(row):
+            self._task_picker_message = tr('已核验任务工程，正在读取…')
+            QTimer.singleShot(0, lambda: self.accept_task(job, row))
+
+        self._worker_command('task-picker-load', '正在重新核验所选任务工程…', work, finish)
+
+    def _worker_command(self, kind, label, work, finish):
+        if self.worker.kind:
+            return False
+        self.state, self.message = kind, tr(label)
+        self.changed.emit()
+
+        def complete(value, error):
+            if isinstance(error, InterruptedError):
+                return
+            if error is not None:
+                self._error(error)
+                return
+            try:
+                finish(value)
+            except (OSError, TypeError, ValueError, KeyError) as failure:
+                self._error(failure)
+            self.changed.emit()
+
+        return self.worker.start('tuning-' + kind, work, complete)
 
     @Property('QVariantList', notify=regionsChanged)
     def regions(self):
@@ -437,7 +774,8 @@ class QuickTuning(QObject):
         payload = stored['data']
         if payload:
             self.project.verify_regions(payload['regions'])
-        self._options = deepcopy(payload['options']) if payload else self._defaults()
+        self._portable_preferences_imported = False
+        self._options = deepcopy(payload['options']) if payload else self._new_project_defaults()
         self._preset = deepcopy(payload['preset']) if payload else None
         self._confirmed = bool(payload and payload['confirmed'])
         self._regions = deepcopy(payload['regions']) if payload else []
@@ -536,53 +874,187 @@ class QuickTuning(QObject):
             self._draft_review = None
             self.changed.emit()
 
+    @Slot()
+    def reloadLatestDraft(self):
+        if not self.project or self.worker.kind:
+            return
+        local_recovery = ''
+        if self._dirty and not self._flush_draft():
+            if not self._draft_conflict:
+                return
+            local_recovery = self._draft_conflict
+        project = self.project
+
+        def work(stop, _send):
+            _verify_input(project, self.job, self.artifact, stop)
+            latest = self._drafts.read(project.sha256)
+            if latest['data']:
+                project.verify_regions(latest['data']['regions'])
+            return latest
+
+        def finish(latest):
+            if not latest['data']:
+                raise ValueError('当前工程尚无共享草稿可载入。')
+            self._adopt_draft(latest)
+            self._legacy = self._legacy_revision = None
+            self._select_saved_tracks()
+            self._candidate_stale = bool(self.candidate)
+            self.regionsChanged.emit()
+            self._update_notes()
+            self.state = 'ready'
+            self.message = tr('已载入最新共享草稿。')
+            if local_recovery:
+                self.message += ' ' + tr('此前本地修改已保留在草稿副本中：') + local_recovery
+
+        self._command('draft-reload', '正在读取最新共享草稿…', work, finish)
+
+    @Slot()
+    def saveDraftRevision(self):
+        if not self.project or self.worker.kind or not self._flush_draft():
+            return
+        self._autosave.stop()
+        project = self.project
+        expected = self._draft_revision
+        payload = self._draft()
+
+        def work(stop, _send):
+            _verify_input(project, self.job, self.artifact, stop)
+            receipt = self._drafts.write(project.sha256, expected, payload,
+                                         writer='vwa-quick', preserve_current=True)
+            latest = self._drafts.read(project.sha256)
+            if latest['data']:
+                project.verify_regions(latest['data']['regions'])
+            return receipt
+
+        def finish(receipt):
+            self._draft_revision, self._dirty = receipt['revision'], False
+            self._draft_conflict = self._draft_review = None
+            self.state = 'ready'
+            self.message = tr('已用当前调音内容保存新的共享草稿修订。')
+
+        self._command('draft-save', '正在保存新的共享草稿修订…', work, finish)
+
     def _load(self, path, job='', artifact=None):
         if self.worker.kind or not self._flush_draft():
             return
-        sessions = (Path(job) if job else output_directory()) / 'tuning-sessions'
+        sessions = (Path(job) / 'tuning-sessions') if job else self._session_parent
 
         def finish(value):
-            project, stored, old_draft, session, receipt = value
-            previous = old_draft['data']
-            payload = stored['data']
-            if payload:
-                project.verify_regions(payload['regions'])
-            self.project, self.job, self.artifact = project, job, deepcopy(artifact)
-            self.session, self.candidate = session, receipt
-            self._saved_copy = ''
-            self._adopt_draft(stored)
-            self._legacy = previous if previous and previous.get('mode') == 'regions' and previous['style_regions'] else None
-            self._legacy_revision = old_draft['revision'] if self._legacy else None
-            if previous and not self._legacy:
-                self._options.update(deepcopy(previous['tool']))
-                self._options['track_indices'] = previous['track_indices'] or None
-            self._select_saved_tracks()
-            self._start = self._end = self._left = project.minimum
-            self._span = min(18., max(1., project.maximum - project.minimum))
-            self._query, self._matches = '', []
-            self._plan, self._summary = None, ''
-            self.state, self.message = 'ready', tr('点击歌词或拖出时间范围，再为选中的轨道添加风格。')
-            self._candidate_stale = bool(receipt)
-            if receipt:
-                try:
-                    options, preset = self._execution()
-                    old_preset = receipt.get('preset_binding')
-                    self._candidate_stale = (engine.settings(receipt['options']) != options
-                                             or old_preset != preset)
-                except ValueError:
-                    pass
-            self.tracksChanged.emit()
-            self.matchesChanged.emit()
-            self.regionsChanged.emit()
-            self._update_notes()
+            self._install_loaded(value, job=job, artifact=artifact, display_source=path, reload_session=None)
 
         self._command('loading', '正在读取工程、歌词和草稿…',
                       lambda stop, _send: _load_project(path, job, artifact, self._drafts,
                                                         self._legacy_drafts, sessions, stop), finish)
 
+    def _install_loaded(self, value, *, job, artifact, display_source, reload_session):
+        project, stored, old_draft, session, receipt, warning = value
+        previous = old_draft['data']
+        payload = stored['data']
+        if payload:
+            project.verify_regions(payload['regions'])
+        self.project, self.job, self.artifact = project, job, deepcopy(artifact)
+        self.session, self.candidate = session, receipt
+        self._display_source = str(display_source or project.project['path'])
+        self._reload_session = Path(reload_session).resolve() if reload_session else None
+        self._session_warning = warning
+        self._saved_copy = ''
+        self._adopt_draft(stored)
+        self._legacy = previous if previous and previous.get('mode') == 'regions' and previous['style_regions'] else None
+        self._legacy_revision = old_draft['revision'] if self._legacy else None
+        if previous and not self._legacy:
+            self._options.update(deepcopy(previous['tool']))
+            self._options['track_indices'] = previous['track_indices'] or None
+        self._select_saved_tracks()
+        self._start = self._end = self._left = project.minimum
+        self._span = min(18., max(1., project.maximum - project.minimum))
+        self._query, self._matches = '', []
+        self._plan, self._summary = None, ''
+        self.state = 'ready'
+        self._candidate_stale = bool(receipt)
+        if receipt:
+            try:
+                options, preset = self._execution()
+                old_preset = receipt.get('preset_binding')
+                self._candidate_stale = (receipt.get('historical') is True
+                                         or engine.settings(receipt.get('options', {})) != options
+                                         or old_preset != preset)
+            except (ValueError, TypeError, KeyError):
+                self._candidate_stale = True
+        if warning and receipt and receipt.get('historical'):
+            self.message = tr('历史候选已安全保留，但回执或来源未通过当前核验；可打开核对，不能登记。') + ' ' + tr(warning[:900])
+        elif warning:
+            self.message = tr('已恢复会话；部分编辑意图无法在当前工程中完整表达。') + ' ' + tr(warning[:900])
+        elif receipt and self._candidate_stale:
+            self.message = tr('已恢复会话；当前编辑意图与原候选不同，原候选文件仍保留。')
+        elif self._portable_preferences_imported:
+            self.message = tr('已沿用旧版可移植调音偏好；参考音频、校准、路径和轨道选择不会跨工程带入。')
+        elif reload_session:
+            self.message = tr('已恢复保存的处理记录和可表达的编辑设置，可继续生成工程。')
+        else:
+            self.message = tr('点击歌词或拖出时间范围，再为选中的轨道添加风格。')
+        self.tracksChanged.emit()
+        self.matchesChanged.emit()
+        self.regionsChanged.emit()
+        self._update_notes()
+
     @property
     def _editing_blocked(self):
         return bool(self.worker.kind or self._draft_conflict)
+
+    def _resume(self, session):
+        if self.worker.kind or not self._flush_draft():
+            return
+
+        def finish(value):
+            display_source = value[6]
+            session_job = value[7]
+            self._install_loaded(value[:6], job=session_job, artifact=None,
+                                 display_source=display_source, reload_session=value[3])
+
+        self._command('loading-session', '正在核验调音会话、来源、回执和编辑意图…',
+                      lambda stop, _send: _resume_project(session, self._drafts, self._legacy_drafts, stop),
+                      finish)
+
+    @Slot(QUrl)
+    def resumeSession(self, url):
+        if self.worker.kind or not (url.isLocalFile() or url.isEmpty()):
+            return
+        if url.isEmpty():
+            return
+        path = Path(url.toLocalFile()).resolve()
+        self._resume(path / 'session.json' if path.is_dir() else path)
+
+    @Slot(QUrl)
+    def setSessionLocation(self, url):
+        if self.worker.kind or not url.isLocalFile():
+            return
+        try:
+            path = Path(url.toLocalFile()).resolve(strict=True)
+            if not path.is_dir():
+                raise ValueError('调音会话保存位置必须是已有目录。')
+            if self.job:
+                raise ValueError('关联准备任务的调音会话固定在任务目录中。')
+            if self.session and Path(native_path(self.session)).is_file():
+                raise ValueError('当前调音会话已创建；请继续该会话，或从其他会话中明确恢复。')
+            if self.candidate:
+                raise ValueError('当前结果仍保留在原会话中；请明确恢复该会话后再处理。')
+            self._session_parent = path
+            if self.project:
+                key = engine.digest([self.project.project['path'], self.project.sha256, None])[:24]
+                self.session = path / key / 'session.json'
+            self.state, self.message = 'ready', tr('已设置独立调音会话位置；首次生成时会在该目录下创建唯一子目录。')
+            self.changed.emit()
+        except (OSError, ValueError) as error:
+            self._error(error)
+
+    @Slot()
+    def reloadProject(self):
+        if not self.project or self.worker.kind or not self._flush_draft():
+            return
+        if self._reload_session:
+            self._resume(self._reload_session)
+        else:
+            self._load(self.project.project['path'], self.job, self.artifact)
 
     @Slot(QUrl)
     def chooseProject(self, url):
@@ -650,6 +1122,12 @@ class QuickTuning(QObject):
             a, b = sorted((first, last))
             self._start = min(max(a, self.project.minimum), self.project.maximum)
             self._end = min(max(b, self.project.minimum), self.project.maximum)
+            self.changed.emit()
+
+    @Slot()
+    def clearSelection(self):
+        if self.project and not self.worker.kind:
+            self._start = self._end = self.project.minimum
             self.changed.emit()
 
     @Slot(float, float)
@@ -830,6 +1308,8 @@ class QuickTuning(QObject):
 
     def _replace_regions(self, rows, notice):
         self._regions = rows
+        if self._selected_region not in {row['id'] for row in rows}:
+            self._selected_region = ''
         self._preset = None
         self.state, self.message = 'ready', tr(notice)
         self.regionsChanged.emit()
@@ -857,6 +1337,7 @@ class QuickTuning(QObject):
                 raise ValueError('选区内没有所选演唱轨的音符。')
             updated = self._regions + applied
             self._commit_regions(updated, '已添加逐轨片段。')
+            self._selected_region = applied[-1]['id']
             self._start = min(float(row['recipe']['start']) for row in applied)
             self._end = max(float(row['recipe']['end']) for row in applied)
             self.message = tr('已添加 {count} 个逐轨片段。').format(count=len(applied))
@@ -880,6 +1361,7 @@ class QuickTuning(QObject):
             current = next((row for row in self._regions if row['id'] == identity), None)
             if current is None:
                 raise ValueError('该片段已不存在。')
+            self._selected_region = identity
             track = current['track_id']
             time_range_settings((start, end))
             brush = self._brush() if use_current_brush else {
@@ -900,7 +1382,14 @@ class QuickTuning(QObject):
     @Slot(str)
     def removeRegion(self, identity):
         if self._can_edit_regions():
+            if self._selected_region == identity:
+                self._selected_region = ''
             self._commit_regions([row for row in self._regions if row['id'] != identity], '已移除片段。')
+
+    @Slot()
+    def removeSelectedRegion(self):
+        if self._selected_region:
+            self.removeRegion(self._selected_region)
 
     @Slot()
     def clearRegions(self):
@@ -926,6 +1415,7 @@ class QuickTuning(QObject):
         row = next((item for item in self._regions if item['id'] == identity), None)
         if row is None:
             return
+        self._selected_region = identity
         recipe = row['recipe']
         self.focusTrack(row['track_id'])
         self.selectSpan(recipe['start'], recipe['end'])
@@ -1036,6 +1526,24 @@ class QuickTuning(QObject):
             raise ValueError('候选身份已变化，请重新生成或载入。')
         return verified
 
+    def _verify_historical_candidate(self, stop):
+        """Recheck a preserved output without promoting it to a verified result."""
+        _verify_input(self.project, self.job, self.artifact, stop)
+        if not self.candidate or self.candidate.get('historical') is not True:
+            raise ValueError('当前不是可核对的保留候选。')
+        spec = workflow.read_session(self.session)
+        if spec['input_sha256'] != self.project.sha256:
+            raise ValueError('保留候选的输入快照与当前调音会话不一致。')
+        root = Path(self.session).resolve().parent
+        output = workflow._owned(root, Path(self.candidate.get('output', '')))
+        receipt = workflow._owned(root, Path(self.candidate.get('receipt', ''))) if self.candidate.get('receipt') else None
+        if (not output.is_file() or file_hash(output) != self.candidate.get('output_sha256')
+                or output.stat().st_size != self.candidate.get('output_bytes')):
+            raise ValueError('保留的历史候选已改变或缺失；未打开文件。')
+        if receipt is not None and not receipt.is_file():
+            raise ValueError('保留候选的原回执已缺失；未把它当作核验结果。')
+        return {'output': str(output), 'receipt': str(receipt) if receipt is not None else ''}
+
     @Slot()
     def registerResult(self):
         if not self.view['canRegister']:
@@ -1061,16 +1569,28 @@ class QuickTuning(QObject):
         self._open_result('receipt')
 
     def _open_result(self, key):
-        if self.worker.kind or not self.candidate or not self.candidate.get('receipt_verified'):
+        if (self.worker.kind or not self.candidate
+                or not (self.candidate.get('receipt_verified') or self.candidate.get('historical'))):
             return
 
         def finish(result):
+            if not result.get(key):
+                raise ValueError('保留结果没有可打开的回执文件。')
             self.state = 'ready' if self._candidate_stale else 'done'
             if not QDesktopServices.openUrl(QUrl.fromLocalFile(result[key])):
                 raise ValueError('系统未能打开文件，请按路径手动打开。')
-            self.message = tr('已打开独立候选，请在编辑器中核对。' if key == 'output' else '已打开核验回执。')
+            historical = self.candidate.get('historical') is True
+            if key == 'output':
+                self.message = tr('已打开保留的历史候选，请人工核对；它仍未通过当前完整回执核验。'
+                                  if historical else '已打开独立候选，请在编辑器中核对。')
+            else:
+                self.message = tr('已打开保留候选的原回执，供人工核对。'
+                                  if historical else '已打开核验回执。')
 
-        self._command('checking', '正在核验候选工程…', lambda stop, _send: self._verify_candidate(stop), finish)
+        verify = (lambda stop, _send: self._verify_historical_candidate(stop)
+                  if self.candidate.get('historical') is True
+                  else self._verify_candidate(stop))
+        self._command('checking', '正在核验候选工程…', verify, finish)
 
     @Slot(QUrl)
     def exportCandidate(self, url):

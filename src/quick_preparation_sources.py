@@ -18,6 +18,7 @@ class QuickPreparationSources(QObject):
         self._songs, self._downloads, self._issues = [], [], []
         self._reference = None
         self._reference_revision = None
+        self._lyric_purpose = 'preparation'
         self._checked_bv = self._selected_job = self._selected_bv = ''
         self._message = ''
         self._login = ''
@@ -25,10 +26,27 @@ class QuickPreparationSources(QObject):
         self._network_loaded = False
         worker.changed.connect(self.changed)
         owner.draftChanged.connect(self.changed)
+        owner.subtitles.changed.connect(self.changed)
 
     @property
     def draft(self):
         return self.owner.state.draft
+
+    def _lyric_revision(self):
+        return (self._lyric_purpose, self.owner.subtitles.revision if self._lyric_purpose == 'subtitles'
+                else self.draft.revision)
+
+    @Slot(str, result=bool)
+    def selectLyricPurpose(self, purpose):
+        if purpose not in ('preparation', 'subtitles') or self.worker.kind:
+            return False
+        if purpose != self._lyric_purpose:
+            self._lyric_purpose = purpose
+            self._reference = None
+            self._songs = []
+            self._message = ''
+            self.changed.emit()
+        return True
 
     def reusable_job(self):
         if self._selected_job:
@@ -45,7 +63,8 @@ class QuickPreparationSources(QObject):
         return {'busy': bool(self.worker.kind), 'songs': self._songs, 'downloads': self._downloads,
                 'preview': '\n'.join(cue.text for cue in reference.cues) if reference else '',
                 'previewId': reference.origin.get('song_id', '') if reference else '',
-                'canApply': bool(reference and self._reference_revision == self.draft.revision),
+                'canApply': bool(reference and self._reference_revision == self._lyric_revision()
+                                 and (self._lyric_purpose != 'subtitles' or reference.cues)),
                 'selectedDownload': Path(self.reusable_job()).name if self.reusable_job() else '',
                 'message': self._message, 'issues': self._issues, 'network': self._network,
                 'networkLoaded': self._network_loaded, 'login': self._login}
@@ -94,7 +113,7 @@ class QuickPreparationSources(QObject):
         if self.worker.kind:
             return
         self._reference = None
-        revision = self.draft.revision
+        revision = self._lyric_revision()
 
         def accept(reference):
             self._reference, self._reference_revision = reference, revision
@@ -116,8 +135,14 @@ class QuickPreparationSources(QObject):
     def applyLyrics(self):
         if self.worker.kind or not self.view['canApply']:
             return False
-        draft = self.draft.apply_lyrics('lead', self._reference).edit('reference_mode', 'netease')
-        self.owner._update_draft(lambda: self.owner.state.set_draft(draft))
+        if self._lyric_purpose == 'subtitles':
+            if not self.owner.subtitles.accept_reference(self._reference):
+                self._message = self.owner.subtitles.view['error']
+                self.changed.emit()
+                return False
+        else:
+            draft = self.draft.apply_lyrics('lead', self._reference).edit('reference_mode', 'netease')
+            self.owner._update_draft(lambda: self.owner.state.set_draft(draft))
         self._reference = None
         self.changed.emit()
         return True
