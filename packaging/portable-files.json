@@ -78,6 +78,10 @@
       "source": "src/quick_ui/TuningTimeline.qml"
     },
     {
+      "file": "quick_ui/TuningViewportStrip.qml",
+      "source": "src/quick_ui/TuningViewportStrip.qml"
+    },
+    {
       "file": "appearance_state.py",
       "source": "src/appearance_state.py"
     },

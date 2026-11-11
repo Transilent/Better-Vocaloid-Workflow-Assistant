@@ -1,4 +1,6 @@
 import QtQuick
+import QtQuick.Controls
+
 Item {
     id: timeline
     objectName: "tuningTimelineCanvas"
@@ -8,31 +10,68 @@ Item {
     required property var tracks
     required property var notes
     required property var regions
+    property bool compact: false
 
     readonly property real scale: theme.scale || 1
+    readonly property bool dark: theme.dark
+    readonly property string sourceKey: String(view.source || "") + "|" + String(view.sha256 || "")
+    readonly property bool hasSource: !!view.source
+    readonly property bool multi: view.mode === "multi"
+    readonly property string activeTrack: String(view.activeTrack || "")
+    readonly property string selectedTrackKey: JSON.stringify(view.selectedTracks || [])
+    readonly property var targetTracks: resolveTracks()
+    readonly property string targetKey: JSON.stringify(Object.keys(targetTracks))
+
     readonly property real origin: numberOr(view.timelineStart, 0)
     readonly property real fullSpan: Math.max(0.001, numberOr(view.duration, 1))
     readonly property real fullEnd: origin + fullSpan
-    readonly property real visibleStart: clamp(numberOr(view.viewportStart, origin),
-        origin, Math.max(origin, fullEnd - 0.001))
     readonly property real visibleSpan: clamp(numberOr(view.viewportSpan, fullSpan),
-        Math.max(0.001, Math.min(fullSpan, 0.5)), fullSpan)
-    readonly property real visibleEnd: Math.min(fullEnd, visibleStart + visibleSpan)
-    readonly property real gutter: Math.min(width * 0.34,
-        Math.round((width < Math.round(520 * scale) ? 70 : 104) * scale))
-    readonly property real plotLeft: gutter
-    readonly property real plotRight: Math.max(plotLeft, width - Math.round(10 * scale))
-    readonly property real plotTop: Math.round(28 * scale)
-    readonly property real plotBottom: Math.max(plotTop, height - Math.round(28 * scale))
-    readonly property real plotWidth: Math.max(1, plotRight - plotLeft)
-    readonly property real plotHeight: Math.max(1, plotBottom - plotTop)
-    readonly property var laneTracks: resolvedLaneTracks()
-    readonly property int visibleNoteCount: countVisibleNotes()
-    readonly property string emptyText: emptyMessage()
+        Math.min(fullSpan, 0.5), fullSpan)
+    readonly property real visibleStart: clamp(numberOr(view.viewportStart, origin),
+        origin, fullEnd - visibleSpan)
+    readonly property real visibleEnd: visibleStart + visibleSpan
+    readonly property real selectionStart: numberOr(view.start, Number.NaN)
+    readonly property real selectionEnd: numberOr(view.end, Number.NaN)
 
+    // The Widgets roll uses 40 px per semitone, with a 32 px compact setting.
+    readonly property int pitchRowHeight: Math.round((compact ? 32 : 40) * scale)
+    readonly property real rulerHeight: Math.round(25 * scale)
+    readonly property real regionRowHeight: Math.round(5 * scale)
+    readonly property real plotLeft: Math.round((compact ? 48 : 60) * scale)
+    readonly property real plotRight: Math.max(plotLeft + 1, width - Math.round(13 * scale))
+    readonly property real plotTop: rulerHeight + regionRowCount * regionRowHeight
+    readonly property real plotBottom: Math.max(plotTop + 1, height)
+    readonly property real plotWidth: plotRight - plotLeft
+    readonly property real plotHeight: plotBottom - plotTop
+    readonly property real rowsInView: Math.min(128, plotHeight / pitchRowHeight)
+    readonly property real pitchOffset: clamp(topRow, 0, 128 - rowsInView)
+    readonly property var visibleNotes: collectNotes()
+    readonly property var styleSpans: collectRegions()
+    readonly property int regionRowCount: Object.keys(styleSpans).length
+        ? Math.min(3, Object.keys(targetTracks).length) : 0
+    readonly property var noteRects: layoutNotes()
+    readonly property int visibleNoteCount: visibleNotes.length
+    readonly property var focusedNote: visibleNotes.find(entry =>
+        entry.trackId === focusedTrackId && entry.id === focusedNoteId)
+    readonly property var hoveredNote: scoreMouse.containsMouse
+        ? noteAt(scoreMouse.mouseX + plotLeft, scoreMouse.mouseY + plotTop) : null
+    readonly property string instructions: "点击音符选段，拖拽选择时间。左右键找音符，回车选择；上下键或键轨滚轮移动音高。滚轮缩放，Shift 加滚轮平移。"
+
+    property real topRow: 63
+    property bool centerOnSource: true
+    property bool checkTargetPitch: true
+    property string focusedTrackId: ""
+    property string focusedNoteId: ""
     property real pressX: -1
+    property real pressY: -1
     property real pressTime: Number.NaN
     property real dragTime: Number.NaN
+
+    activeFocusOnTab: hasSource
+    Accessible.role: Accessible.Pane
+    Accessible.name: multi ? "多轨钢琴卷帘" : "单轨钢琴卷帘"
+    Accessible.description: focusedNote ? noteDescription(focusedNote) + "。" + instructions
+        : instructions
 
     function numberOr(value, fallback) {
         if (value === undefined || value === null || value === "")
@@ -42,103 +81,121 @@ Item {
     }
 
     function clamp(value, low, high) {
-        if (high < low)
-            return low
-        return Math.max(low, Math.min(high, value))
+        return Math.max(low, Math.min(Math.max(low, high), value))
     }
 
-    function listContains(values, value) {
-        if (!values || values.length === undefined)
-            return false
-        for (let index = 0; index < values.length; ++index) {
-            if (String(values[index]) === String(value))
-                return true
-        }
-        return false
+    function trackColor(index) {
+        const colors = ["#4e9af1", "#e0715b", "#51ad72", "#b179d6", "#d2a347", "#42aeb3"]
+        return index <= 0 ? theme.accent : colors[index % colors.length]
     }
 
-    function targetTrackIds() {
-        const result = []
-        if (String(view.mode || "single") === "multi") {
-            const selected = view.selectedTracks || []
-            for (let index = 0; index < selected.length; ++index)
-                result.push(String(selected[index]))
-        } else if (view.activeTrack !== undefined && view.activeTrack !== null
-                   && String(view.activeTrack).length > 0) {
-            result.push(String(view.activeTrack))
+    function resolveTracks() {
+        const ids = multi ? JSON.parse(selectedTrackKey) : [activeTrack]
+        const result = Object.create(null)
+        let order = 0
+        for (let i = 0; i < tracks.length; ++i) {
+            const track = tracks[i]
+            if (ids.indexOf(String(track.id)) >= 0)
+                result[String(track.id)] = { track: track, index: i, order: order++ }
         }
         return result
     }
 
-    function resolvedLaneTracks() {
-        const ids = targetTrackIds()
+    function collectNotes() {
         const result = []
-        for (let index = 0; index < tracks.length; ++index) {
-            if (listContains(ids, tracks[index].id))
-                result.push(tracks[index])
+        for (const note of notes) {
+            const trackId = String(note.trackId)
+            const lane = targetTracks[trackId]
+            if (!lane)
+                continue
+            const start = numberOr(note.start, Number.NaN)
+            const end = numberOr(note.end, Number.NaN)
+            const pitch = numberOr(note.pitch, Number.NaN)
+            if (!(end > start && end > visibleStart && start < visibleEnd
+                    && Number.isInteger(pitch) && pitch >= 0 && pitch <= 127))
+                continue
+            result.push({ id: String(note.id), trackId: trackId, lane: lane,
+                lyric: String(note.lyric || "").trim(), pitch: pitch, start: start, end: end })
         }
-        return result
+        return result.sort((a, b) => a.start - b.start || a.lane.order - b.lane.order
+            || a.pitch - b.pitch || a.end - b.end || a.id.localeCompare(b.id))
     }
 
-    function trackById(trackId) {
-        for (let index = 0; index < laneTracks.length; ++index) {
-            if (String(laneTracks[index].id) === String(trackId))
-                return laneTracks[index]
-        }
-        return null
-    }
-
-    function withinView(item) {
-        const start = numberOr(item.start, Number.NaN)
-        const end = numberOr(item.end, start)
-        return isFinite(start) && end >= visibleStart && start <= visibleEnd
-    }
-
-    function countVisibleNotes() {
-        let count = 0
-        for (let laneIndex = 0; laneIndex < laneTracks.length; ++laneIndex) {
-            const trackId = String(laneTracks[laneIndex].id)
-            for (let noteIndex = 0; noteIndex < notes.length; ++noteIndex) {
-                const note = notes[noteIndex]
-                if (String(note.trackId) === trackId && withinView(note))
-                    ++count
+    function collectRegions() {
+        const result = Object.create(null)
+        for (const region of regions) {
+            const id = String(region.trackId)
+            if (targetTracks[id]) {
+                if (!result[id])
+                    result[id] = []
+                result[id].push(region)
             }
         }
-        return count
+        for (const id of Object.keys(result))
+            result[id].sort((a, b) => Number(a.start) - Number(b.start))
+        return result
     }
 
-    function emptyMessage() {
-        if (String(view.source || "").length === 0)
-            return "载入调音工程后显示真实音符"
-        if (tracks.length === 0)
-            return "工程没有可显示的演唱轨"
-        if (laneTracks.length === 0)
-            return String(view.mode || "single") === "multi"
-                ? "至少勾选一条轨道以查看和编辑"
-                : "选择一条轨道以查看音符"
-        if (visibleNoteCount === 0)
-            return "当前视口没有可见音符，可缩放或平移"
-        return ""
+    function styleForNote(note) {
+        const spans = styleSpans[note.trackId]
+        if (!spans)
+            return null
+        let first = 0
+        let last = spans.length
+        while (first < last) {
+            const middle = (first + last) >> 1
+            if (Number(spans[middle].end) <= note.start + 0.000001)
+                first = middle + 1
+            else
+                last = middle
+        }
+        return first < spans.length && Number(spans[first].start) < note.end - 0.000001
+            ? spans[first] : null
     }
 
-    function colorText(value, fallback) {
-        if (value === undefined || value === null || value === "")
-            return fallback
-        return String(value)
+    function pitchName(pitch) {
+        const names = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"]
+        return names[pitch % 12] + String(Math.floor(pitch / 12) - 1)
     }
 
-    function shortText(value, limit) {
-        const text = String(value === undefined || value === null ? "" : value)
-        return text.length <= limit ? text : text.slice(0, Math.max(1, limit - 1)) + "…"
+    function isSharp(pitch) {
+        return [1, 3, 6, 8, 10].indexOf(pitch % 12) >= 0
+    }
+
+    function yForPitch(pitch) {
+        return plotTop + (127 - pitch - pitchOffset) * pitchRowHeight
+    }
+
+    function xForTime(value) {
+        return plotLeft + (value - visibleStart) / visibleSpan * plotWidth
+    }
+
+    function timeForPlotX(value) {
+        return visibleStart + clamp(value, 0, plotWidth) / plotWidth * visibleSpan
+    }
+
+    function noteDescription(note) {
+        return (note.lyric || "空歌词") + " · " + pitchName(note.pitch)
+            + " · " + String(note.lane.track.name || note.trackId) + "\n"
+            + formatTime(note.start, 3) + "–" + formatTime(note.end, 3)
+    }
+
+    function formatTime(value, decimals) {
+        const factor = Math.pow(10, decimals)
+        const units = Math.round(Math.abs(value) * factor)
+        const seconds = Math.floor(units / factor)
+        const fraction = decimals > 0
+            ? "." + String(units % factor).padStart(decimals, "0") : ""
+        return (value < 0 ? "−" : "") + String(Math.floor(seconds / 60)).padStart(2, "0")
+            + ":" + String(seconds % 60).padStart(2, "0") + fraction
     }
 
     function fittedText(context, value, maxWidth) {
-        const text = String(value === undefined || value === null ? "" : value).trim()
-        if (!text || maxWidth <= 0)
+        if (!value || maxWidth <= 0)
             return ""
-        if (context.measureText(text).width <= maxWidth)
-            return text
-        const characters = Array.from(text)
+        if (context.measureText(value).width <= maxWidth)
+            return value
+        const characters = Array.from(value)
         let low = 0
         let high = characters.length
         while (low < high) {
@@ -151,394 +208,498 @@ Item {
         return low > 0 ? characters.slice(0, low).join("") + "…" : ""
     }
 
-    function formatTime(value) {
-        const seconds = numberOr(value, 0)
-        const negative = seconds < 0
-        const absolute = Math.abs(seconds)
-        const whole = Math.floor(absolute)
-        const minutes = Math.floor(whole / 60)
-        const rest = whole % 60
-        const tenths = Math.floor((absolute - whole) * 10)
-        return (negative ? "-" : "") + String(minutes).padStart(2, "0") + ":"
-            + String(rest).padStart(2, "0") + "." + String(tenths)
+    function appendNoteRects(result, cluster, slots, rowTop) {
+        const inset = Math.max(2, Math.round(2 * scale))
+        const step = (pitchRowHeight - 2 * inset) / slots
+        for (const entry of cluster) {
+            const top = rowTop + inset + entry.slot * step
+            const bottom = top + step - (slots > 1 ? 1 : 0)
+            const y = Math.max(plotTop, top)
+            const endY = Math.min(plotBottom, bottom)
+            if (endY > y) {
+                result.push({ note: entry.note, x: entry.left, y: y,
+                    width: entry.right - entry.left, height: endY - y,
+                    full: entry.full && y === top && endY === bottom })
+            }
+        }
     }
 
-    function xForTime(value) {
-        return plotLeft + (numberOr(value, visibleStart) - visibleStart) / visibleSpan * plotWidth
+    function layoutNotes() {
+        // Reserve subrows only where notes collide on the same semitone. Paint
+        // and hit testing both use the resulting, clipped rectangles.
+        const buckets = Object.create(null)
+        for (const note of visibleNotes) {
+            const top = yForPitch(note.pitch)
+            if (top + pitchRowHeight <= plotTop || top >= plotBottom)
+                continue
+            if (!buckets[note.pitch])
+                buckets[note.pitch] = []
+            buckets[note.pitch].push(note)
+        }
+        const result = []
+        const maxSlots = Math.max(1, Math.floor((pitchRowHeight - 4) / 5))
+        for (const key of Object.keys(buckets)) {
+            const rowTop = yForPitch(Number(key))
+            let cluster = []
+            let ends = []
+            let clusterEnd = -Infinity
+            for (const note of buckets[key]) {
+                const rawLeft = xForTime(note.start)
+                const rawRight = xForTime(note.end)
+                const left = Math.max(plotLeft, rawLeft)
+                const right = Math.min(plotRight, Math.max(rawLeft + 2, rawRight))
+                if (right <= left)
+                    continue
+                if (left >= clusterEnd && cluster.length) {
+                    appendNoteRects(result, cluster, ends.length, rowTop)
+                    cluster = []
+                    ends = []
+                    clusterEnd = -Infinity
+                }
+                let slot = ends.findIndex(end => end <= left)
+                if (slot < 0)
+                    slot = ends.length < maxSlots ? ends.length : ends.indexOf(Math.min(...ends))
+                ends[slot] = Math.max(ends[slot] || -Infinity, right)
+                clusterEnd = Math.max(clusterEnd, right)
+                cluster.push({ note: note, left: left, right: right, slot: slot,
+                    full: rawLeft >= plotLeft - 0.5 && rawRight <= plotRight + 0.5 })
+            }
+            appendNoteRects(result, cluster, ends.length || 1, rowTop)
+        }
+        return result
     }
 
-    function timeForPlotX(value) {
-        return visibleStart + clamp(value, 0, plotWidth) / plotWidth * visibleSpan
+    function noteAt(x, y) {
+        for (let i = noteRects.length - 1; i >= 0; --i) {
+            const box = noteRects[i]
+            if (x >= box.x && x < box.x + box.width && y >= box.y && y < box.y + box.height)
+                return box.note
+        }
+        return null
     }
 
-    function clampViewport(start, span) {
-        const boundedSpan = clamp(numberOr(span, fullSpan),
-            Math.max(0.001, Math.min(fullSpan, 0.5)), fullSpan)
-        const boundedStart = clamp(numberOr(start, origin), origin,
-            Math.max(origin, fullEnd - boundedSpan))
-        return { start: boundedStart, span: boundedSpan }
+    function movePitch(rows) {
+        const next = clamp(pitchOffset + rows, 0, 128 - rowsInView)
+        if (next === pitchOffset)
+            return false
+        topRow = next
+        return true
+    }
+
+    function revealPitch(pitch, trackId, noteId) {
+        const midi = numberOr(pitch, Number.NaN)
+        if (!isFinite(midi) || midi < 0 || midi > 127)
+            return
+        const row = 127 - midi
+        if (row < pitchOffset || row + 1 > pitchOffset + rowsInView)
+            topRow = clamp(Math.round(row - (rowsInView - 1) / 2), 0, 128 - rowsInView)
+        if (noteId !== undefined) {
+            focusedTrackId = String(trackId)
+            focusedNoteId = String(noteId)
+        }
+        centerOnSource = false
+        checkTargetPitch = false
+    }
+
+    function suggestPitch() {
+        if (!visibleNotes.length || (!centerOnSource && !checkTargetPitch))
+            return
+        if (centerOnSource || !noteRects.length) {
+            const first = visibleNotes.find(note => note.trackId === activeTrack) || visibleNotes[0]
+            topRow = clamp(Math.round(127 - first.pitch - (rowsInView - 1) / 2), 0, 128 - rowsInView)
+        }
+        centerOnSource = false
+        checkTargetPitch = false
+    }
+
+    function moveNoteCursor(direction) {
+        if (!visibleNotes.length)
+            return false
+        let index = focusedNote ? visibleNotes.indexOf(focusedNote) : -1
+        if (index < 0 && isFinite(selectionStart)) {
+            index = visibleNotes.findIndex(note => note.start >= selectionStart - 0.000001)
+            if (index < 0)
+                index = visibleNotes.length - 1
+        } else if (index < 0) {
+            index = direction > 0 ? 0 : visibleNotes.length - 1
+        } else {
+            index = clamp(index + direction, 0, visibleNotes.length - 1)
+        }
+        const next = visibleNotes[index]
+        revealPitch(next.pitch, next.trackId, next.id)
+        return true
+    }
+
+    function selectNote(note) {
+        if (!note || view.busy === true)
+            return
+        revealPitch(note.pitch, note.trackId, note.id)
+        if (note.trackId !== activeTrack)
+            controller.focusTrack(note.trackId)
+        // A search hit can span several syllables. A roll hit always uses this
+        // exact note's own bounds, even if it is also the first search hit.
+        controller.selectSpan(note.start, note.end)
     }
 
     function zoomAt(factor, anchorTime) {
-        const next = clampViewport(0, visibleSpan * factor)
-        const ratio = clamp((numberOr(anchorTime, visibleStart + visibleSpan / 2) - visibleStart)
-            / visibleSpan, 0, 1)
-        const start = clampViewport(visibleStart + ratio * (visibleSpan - next.span),
-            next.span)
-        controller.setViewport(start.start, start.span)
+        const next = clamp(visibleSpan * factor, Math.min(fullSpan, 0.5), fullSpan)
+        const ratio = clamp((anchorTime - visibleStart) / visibleSpan, 0, 1)
+        controller.setViewport(clamp(anchorTime - next * ratio, origin, fullEnd - next), next)
     }
 
     function panBy(seconds) {
-        const next = clampViewport(visibleStart + seconds, visibleSpan)
-        controller.setViewport(next.start, next.span)
+        controller.setViewport(clamp(visibleStart + seconds, origin, fullEnd - visibleSpan), visibleSpan)
     }
 
-    function fitTimeline() {
-        controller.setViewport(origin, fullSpan)
-    }
-
-    function beginSelection(plotX) {
-        pressX = plotX
-        pressTime = timeForPlotX(plotX)
-        dragTime = pressTime
-    }
-
-    function updateSelection(plotX) {
-        if (pressX >= 0)
-            dragTime = timeForPlotX(plotX)
-    }
-
-    function finishSelection(plotX) {
-        if (pressX < 0)
-            return
-        const endTime = timeForPlotX(plotX)
-        const moved = Math.abs(plotX - pressX)
-        const first = Math.min(pressTime, endTime)
-        const last = Math.max(pressTime, endTime)
+    function clearGesture() {
         pressX = -1
+        pressY = -1
         pressTime = Number.NaN
         dragTime = Number.NaN
-        if (moved >= 2 && last > first)
-            controller.selectSpan(first, last)
     }
 
-    onTracksChanged: canvas.requestPaint()
-    onNotesChanged: canvas.requestPaint()
-    onRegionsChanged: canvas.requestPaint()
-    onViewChanged: canvas.requestPaint()
-    onWidthChanged: canvas.requestPaint()
-    onHeightChanged: canvas.requestPaint()
-    Component.onCompleted: canvas.requestPaint()
+    function emptyMessage() {
+        if (!hasSource)
+            return "载入调音工程后显示钢琴卷帘"
+        if (!Object.keys(targetTracks).length)
+            return multi ? "至少勾选一条轨道以查看音符" : "选择一条轨道以查看音符"
+        if (!visibleNoteCount)
+            return "当前时间没有音符，可搜索歌词或平移"
+        return ""
+    }
+
+    onSourceKeyChanged: {
+        focusedTrackId = ""
+        focusedNoteId = ""
+        centerOnSource = true
+        Qt.callLater(suggestPitch)
+    }
+    onTargetKeyChanged: {
+        checkTargetPitch = true
+        Qt.callLater(suggestPitch)
+    }
+    onVisibleNotesChanged: Qt.callLater(suggestPitch)
+    onNoteRectsChanged: score.requestPaint()
+    onStyleSpansChanged: score.requestPaint()
+    onVisibleStartChanged: score.requestPaint()
+    onVisibleSpanChanged: score.requestPaint()
+    onPitchOffsetChanged: score.requestPaint()
+    onPitchRowHeightChanged: score.requestPaint()
+    onSelectionStartChanged: score.requestPaint()
+    onSelectionEndChanged: score.requestPaint()
+    onDragTimeChanged: score.requestPaint()
+    onFocusedNoteChanged: score.requestPaint()
+    onHoveredNoteChanged: score.requestPaint()
+    onActiveFocusChanged: score.requestPaint()
+    onDarkChanged: score.requestPaint()
+    onWidthChanged: score.requestPaint()
+    onHeightChanged: score.requestPaint()
+    Component.onCompleted: {
+        Qt.callLater(suggestPitch)
+        score.requestPaint()
+    }
+
+    Keys.onLeftPressed: event => event.accepted = moveNoteCursor(-1)
+    Keys.onRightPressed: event => event.accepted = moveNoteCursor(1)
+    Keys.onUpPressed: event => event.accepted = movePitch(-1)
+    Keys.onDownPressed: event => event.accepted = movePitch(1)
+    Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_PageUp || event.key === Qt.Key_PageDown) {
+            event.accepted = movePitch((event.key === Qt.Key_PageUp ? -1 : 1)
+                * Math.max(1, Math.floor(rowsInView) - 1))
+        } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter
+                   || event.key === Qt.Key_Space) {
+            if (!focusedNote)
+                moveNoteCursor(1)
+            if (focusedNote) {
+                selectNote(focusedNote)
+                event.accepted = true
+            }
+        }
+    }
 
     Canvas {
-        id: canvas
+        id: score
         anchors.fill: parent
         antialiasing: true
+
+        function fill(ctx, color, x, y, width, height) {
+            ctx.fillStyle = color
+            ctx.fillRect(x, y, width, height)
+        }
+
+        function paintKeysAndRows(ctx) {
+            const keyWidth = timeline.plotLeft
+            const height = timeline.pitchRowHeight
+            const font = Math.round(11 * timeline.scale)
+            ctx.save()
+            ctx.beginPath()
+            ctx.rect(0, timeline.plotTop, timeline.plotRight, timeline.plotHeight)
+            ctx.clip()
+            ctx.textAlign = "left"
+            ctx.textBaseline = "middle"
+            for (let row = Math.floor(timeline.pitchOffset); row < 128; ++row) {
+                const pitch = 127 - row
+                const y = timeline.yForPitch(pitch)
+                if (y >= timeline.plotBottom)
+                    break
+                const sharp = timeline.isSharp(pitch)
+                const octave = pitch % 12 === 0
+                fill(ctx, sharp ? (timeline.dark ? "#20212b" : "#eeedf4") : timeline.theme.base,
+                    keyWidth, y, timeline.plotWidth, height)
+                fill(ctx, timeline.dark ? "#cbced8" : "#f9f9fc", 0, y, keyWidth, height)
+                if (sharp) {
+                    fill(ctx, "#303440", 0, y + 1, Math.round(keyWidth * 0.77), height - 2)
+                    fill(ctx, "#454a5b", Math.round(keyWidth * 0.77) - 3, y + 1, 3, height - 2)
+                }
+                fill(ctx, octave ? "#7f8193" : "#a7a9b8", 0, y, keyWidth, 1)
+                fill(ctx, octave ? timeline.theme.muted : timeline.theme.line,
+                    keyWidth, y, timeline.plotWidth, octave ? 1.5 : 1)
+                ctx.font = (octave ? "bold " : "") + font + "px sans-serif"
+                ctx.fillStyle = sharp ? "#fbfbff" : octave ? "#202236" : "#505266"
+                ctx.fillText(timeline.pitchName(pitch), Math.round(6 * timeline.scale), y + height / 2)
+            }
+            fill(ctx, timeline.theme.line, keyWidth - 1, timeline.plotTop, 1, timeline.plotHeight)
+            ctx.restore()
+        }
+
+        function paintRuler(ctx) {
+            const desired = timeline.visibleSpan * Math.round(74 * timeline.scale) / timeline.plotWidth
+            const unit = Math.pow(10, Math.floor(Math.log10(desired)))
+            const ratio = desired / unit
+            const step = (ratio <= 1 ? 1 : ratio <= 2 ? 2 : ratio <= 5 ? 5 : 10) * unit
+            const minor = step / 2
+            const first = Math.ceil((timeline.visibleStart - 0.000001) / minor)
+            const last = Math.floor((timeline.visibleEnd + 0.000001) / minor)
+            const decimals = Math.max(0, Math.min(3, -Math.floor(Math.log10(step) + 0.000001)))
+            const font = Math.round(11 * timeline.scale)
+            ctx.font = font + "px sans-serif"
+            ctx.textBaseline = "middle"
+            ctx.fillStyle = timeline.theme.muted
+            ctx.fillText("音高", Math.round(7 * timeline.scale), timeline.rulerHeight / 2)
+            for (let tick = first; tick <= last; ++tick) {
+                const x = Math.round(timeline.xForTime(tick * minor))
+                if (x < timeline.plotLeft || x >= timeline.plotRight)
+                    continue
+                const major = tick % 2 === 0
+                ctx.globalAlpha = major ? 0.9 : 0.5
+                fill(ctx, timeline.theme.line, x, timeline.plotTop, 1, timeline.plotHeight)
+                ctx.globalAlpha = 1
+                if (major) {
+                    const label = timeline.formatTime(tick * minor, decimals)
+                    const textWidth = ctx.measureText(label).width
+                    if (x + textWidth + 4 <= timeline.plotRight) {
+                        ctx.fillStyle = timeline.theme.muted
+                        ctx.fillText(label, x + 4, timeline.rulerHeight / 2)
+                    }
+                }
+                fill(ctx, timeline.theme.line, x, timeline.rulerHeight - (major ? 6 : 3),
+                    1, major ? 6 : 3)
+            }
+            fill(ctx, timeline.theme.line, 0, timeline.rulerHeight - 1, width, 1)
+        }
+
+        function paintRegions(ctx) {
+            const rowHeight = timeline.regionRowHeight
+            const spans = timeline.styleSpans
+            for (const id of Object.keys(spans)) {
+                const row = Math.min(timeline.targetTracks[id].order, timeline.regionRowCount - 1)
+                const y = timeline.rulerHeight + row * rowHeight
+                for (const region of spans[id]) {
+                    const x = Math.max(timeline.plotLeft, timeline.xForTime(Number(region.start)))
+                    const end = Math.min(timeline.plotRight, timeline.xForTime(Number(region.end)))
+                    if (end > x)
+                        fill(ctx, region.color || timeline.theme.accent, x, y, end - x, rowHeight - 1)
+                }
+            }
+        }
+
+        function paintSelection(ctx, first, last, drag) {
+            if (!(last > first))
+                return
+            const x = Math.max(timeline.plotLeft, timeline.xForTime(first))
+            const end = Math.min(timeline.plotRight, timeline.xForTime(last))
+            if (end <= x)
+                return
+            ctx.globalAlpha = drag ? 0.19 : 0.12
+            fill(ctx, timeline.theme.accent, x, timeline.plotTop, end - x, timeline.plotHeight)
+            ctx.globalAlpha = drag ? 0.95 : 0.7
+            fill(ctx, timeline.theme.accent, x, timeline.plotTop, 1, timeline.plotHeight)
+            fill(ctx, timeline.theme.accent, Math.max(x, end - 1), timeline.plotTop, 1, timeline.plotHeight)
+            ctx.globalAlpha = 1
+        }
+
+        function paintNotes(ctx) {
+            const font = Math.round(12 * timeline.scale)
+            const pad = Math.round(5 * timeline.scale)
+            ctx.font = font + "px sans-serif"
+            for (const box of timeline.noteRects) {
+                const note = box.note
+                const track = timeline.trackColor(note.lane.index)
+                const style = timeline.styleForNote(note)
+                const color = style && style.color ? style.color : track
+                ctx.globalAlpha = note.lane.track.editable === false ? 0.55 : 1
+                fill(ctx, color, box.x, box.y, box.width, box.height)
+                if (timeline.multi && style)
+                    fill(ctx, track, box.x, box.y, Math.min(box.width, 3 * timeline.scale), box.height)
+                ctx.globalAlpha = 1
+                if (box.full && box.height >= font + 2 && box.width >= Math.round(18 * timeline.scale)) {
+                    const label = timeline.fittedText(ctx, note.lyric, box.width - 2 * pad)
+                    if (label) {
+                        const rgb = Qt.darker(color, 1)
+                        ctx.fillStyle = 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b > 0.58
+                            ? "#121522" : "#ffffff"
+                        ctx.fillText(label, box.x + pad, box.y + box.height / 2)
+                    }
+                }
+                if ((timeline.activeFocus && note === timeline.focusedNote) || note === timeline.hoveredNote) {
+                    ctx.strokeStyle = timeline.theme.text
+                    ctx.lineWidth = 1
+                    ctx.strokeRect(box.x + 0.5, box.y + 0.5,
+                        Math.max(0, box.width - 1), Math.max(0, box.height - 1))
+                }
+            }
+        }
+
         onPaint: {
             const ctx = getContext("2d")
-            ctx.clearRect(0, 0, canvas.width, canvas.height)
-
-            const surface = timeline.colorText(timeline.theme.surface, "#191b23")
-            const base = timeline.colorText(timeline.theme.base, "#13141a")
-            const raised = timeline.colorText(timeline.theme.raised, "#20222b")
-            const line = timeline.colorText(timeline.theme.line, "#30323d")
-            const textColor = timeline.colorText(timeline.theme.text, "#eeeef5")
-            const muted = timeline.colorText(timeline.theme.muted, "#a6a9ba")
-            const accent = timeline.colorText(timeline.theme.accent, "#c2a8ff")
-            const lyricColor = timeline.theme.dark ? "#171420" : "#fffaff"
-            const smallFont = Math.max(10, Math.round(10 * timeline.scale))
-            const labelFont = Math.max(11, Math.round(11 * timeline.scale))
-            const timeFont = Math.max(10, Math.round(10 * timeline.scale))
-
-            ctx.fillStyle = surface
-            ctx.fillRect(0, 0, canvas.width, canvas.height)
-            ctx.fillStyle = base
-            ctx.globalAlpha = 0.58
-            ctx.fillRect(timeline.plotLeft, timeline.plotTop,
-                timeline.plotWidth, timeline.plotHeight)
-            ctx.globalAlpha = 1
-
-            const lanes = timeline.laneTracks
-            const laneCount = Math.max(1, lanes.length)
-            const laneHeight = timeline.plotHeight / laneCount
-            const visibleNotesByTrack = Object.create(null)
-            for (let noteIndex = 0; noteIndex < timeline.notes.length; ++noteIndex) {
-                const note = timeline.notes[noteIndex]
-                if (!timeline.withinView(note))
-                    continue
-                const key = String(note.trackId)
-                if (!visibleNotesByTrack[key])
-                    visibleNotesByTrack[key] = []
-                visibleNotesByTrack[key].push(note)
-            }
-
-            ctx.font = String(timeFont) + "px sans-serif"
+            ctx.clearRect(0, 0, width, height)
+            fill(ctx, timeline.theme.surface, 0, 0, width, height)
             ctx.textBaseline = "middle"
-            ctx.fillStyle = muted
-            ctx.strokeStyle = line
-            ctx.lineWidth = 1
-
-            for (let tick = 0; tick <= 5; ++tick) {
-                const ratio = tick / 5
-                const x = timeline.plotLeft + ratio * timeline.plotWidth
-                ctx.globalAlpha = tick === 0 || tick === 5 ? 0.7 : 0.42
-                ctx.beginPath()
-                ctx.moveTo(x, timeline.plotTop)
-                ctx.lineTo(x, timeline.plotBottom)
-                ctx.stroke()
-                ctx.globalAlpha = 1
-                ctx.fillStyle = muted
-                const tickText = timeline.formatTime(timeline.visibleStart
-                    + timeline.visibleSpan * ratio)
-                const textWidth = ctx.measureText(tickText).width
-                const textX = Math.max(timeline.plotLeft,
-                    Math.min(timeline.plotRight - textWidth,
-                        x - textWidth / 2))
-                ctx.fillText(tickText, textX, Math.round(14 * timeline.scale))
-            }
-
-            for (let laneIndex = 0; laneIndex < lanes.length; ++laneIndex) {
-                const lane = lanes[laneIndex]
-                const laneTop = timeline.plotTop + laneIndex * laneHeight
-                const laneBottom = laneTop + laneHeight
-                const trackId = String(lane.id)
-                const active = String(lane.id) === String(timeline.view.activeTrack)
-
-                if (laneIndex % 2 === 0) {
-                    ctx.fillStyle = raised
-                    ctx.globalAlpha = 0.2
-                    ctx.fillRect(timeline.plotLeft, laneTop,
-                        timeline.plotWidth, laneHeight)
-                    ctx.globalAlpha = 1
-                }
-
-                ctx.strokeStyle = line
-                ctx.globalAlpha = laneIndex === 0 ? 0 : 0.62
-                ctx.beginPath()
-                ctx.moveTo(timeline.plotLeft, laneTop)
-                ctx.lineTo(timeline.plotRight, laneTop)
-                ctx.stroke()
-                ctx.globalAlpha = 1
-
-                ctx.font = String(labelFont) + "px sans-serif"
-                ctx.fillStyle = active ? textColor : muted
-                ctx.globalAlpha = lane.editable === false ? 0.58 : 1
-                const label = timeline.shortText(lane.name || lane.id, 12)
-                ctx.fillText(label, Math.round(10 * timeline.scale),
-                    laneTop + Math.max(12, Math.min(laneHeight * 0.38, 22)))
-                ctx.font = String(smallFont) + "px sans-serif"
-                ctx.fillStyle = muted
-                const countText = String(lane.noteCount === undefined ? "" : lane.noteCount)
-                    + (lane.editable === false ? " · 只读" : "")
-                ctx.fillText(timeline.shortText(countText, 16),
-                    Math.round(10 * timeline.scale),
-                    laneTop + Math.max(27, Math.min(laneHeight - 8, 43)))
-                ctx.globalAlpha = 1
-
-                for (let regionIndex = 0; regionIndex < timeline.regions.length; ++regionIndex) {
-                    const region = timeline.regions[regionIndex]
-                    if (String(region.trackId) !== trackId || !timeline.withinView(region))
-                        continue
-                    const startX = timeline.xForTime(region.start)
-                    const endX = timeline.xForTime(region.end)
-                    const left = Math.max(timeline.plotLeft, Math.min(startX, endX))
-                    const right = Math.min(timeline.plotRight, Math.max(startX, endX))
-                    if (right <= left)
-                        continue
-                    ctx.fillStyle = timeline.colorText(region.color, accent)
-                    ctx.globalAlpha = 0.26
-                    ctx.fillRect(left, laneTop + Math.round(3 * timeline.scale),
-                        Math.max(1, right - left), Math.max(1, laneHeight - Math.round(6 * timeline.scale)))
-                    ctx.globalAlpha = 0.72
-                    ctx.fillRect(left, laneTop + Math.round(3 * timeline.scale),
-                        Math.max(1, right - left), Math.max(1, Math.round(2 * timeline.scale)))
-                    ctx.globalAlpha = 1
-                }
-
-                const laneNotes = visibleNotesByTrack[trackId] || []
-                let minPitch = Number.POSITIVE_INFINITY
-                let maxPitch = Number.NEGATIVE_INFINITY
-                for (let noteIndex = 0; noteIndex < laneNotes.length; ++noteIndex) {
-                    const pitch = Number(laneNotes[noteIndex].pitch)
-                    if (isFinite(pitch)) {
-                        minPitch = Math.min(minPitch, pitch)
-                        maxPitch = Math.max(maxPitch, pitch)
-                    }
-                }
-                const hasPitch = isFinite(minPitch) && isFinite(maxPitch)
-                const innerTop = laneTop + Math.round(8 * timeline.scale)
-                const innerHeight = Math.max(1, laneHeight - Math.round(16 * timeline.scale))
-                const lyricFont = Math.max(9, Math.min(Math.round(11 * timeline.scale),
-                    Math.round(innerHeight * 0.18)))
-                const noteHeight = Math.max(lyricFont + 2, Math.min(Math.round(14 * timeline.scale),
-                    innerHeight * 0.3))
-                const lyricMinWidth = Math.max(Math.round(28 * timeline.scale), lyricFont * 3)
-
-                for (let noteIndex = 0; noteIndex < laneNotes.length; ++noteIndex) {
-                    const note = laneNotes[noteIndex]
-                    const noteStart = Number(note.start)
-                    const noteEnd = Number(note.end)
-                    if (!isFinite(noteStart) || !isFinite(noteEnd) || noteEnd < noteStart)
-                        continue
-                    const startX = timeline.xForTime(noteStart)
-                    const endX = timeline.xForTime(noteEnd)
-                    const left = Math.max(timeline.plotLeft, startX)
-                    const right = Math.min(timeline.plotRight, Math.max(startX + 2,
-                        endX))
-                    if (right <= left)
-                        continue
-                    let centerY = laneTop + laneHeight / 2
-                    const pitch = Number(note.pitch)
-                    if (hasPitch && isFinite(pitch)) {
-                        const ratio = maxPitch === minPitch ? 0.5
-                            : (maxPitch - pitch) / (maxPitch - minPitch)
-                        centerY = innerTop + ratio * innerHeight
-                    }
-                    const noteWidth = Math.max(2, right - left)
-                    ctx.fillStyle = active ? accent : muted
-                    ctx.globalAlpha = lane.editable === false ? 0.46 : 0.78
-                    ctx.fillRect(left, centerY - noteHeight / 2, noteWidth, noteHeight)
-
-                    const lyric = String(note.lyric === undefined || note.lyric === null
-                        ? "" : note.lyric).trim()
-                    const fullyVisible = startX >= timeline.plotLeft - 0.5
-                        && endX <= timeline.plotRight + 0.5
-                    if (lyric && fullyVisible && noteWidth >= lyricMinWidth) {
-                        ctx.save()
-                        ctx.globalAlpha = 1
-                        ctx.font = String(lyricFont) + "px sans-serif"
-                        ctx.fillStyle = lyricColor
-                        ctx.textAlign = "center"
-                        ctx.textBaseline = "middle"
-                        const label = timeline.fittedText(ctx, lyric,
-                            Math.max(0, noteWidth - Math.round(6 * timeline.scale)))
-                        if (label)
-                            ctx.fillText(label, left + noteWidth / 2, centerY)
-                        ctx.restore()
-                    }
-                }
-                ctx.globalAlpha = 1
-            }
-
-            ctx.font = String(smallFont) + "px sans-serif"
-            ctx.fillStyle = muted
-            ctx.fillText(timeline.formatTime(timeline.origin),
-                Math.round(10 * timeline.scale),
-                Math.round(canvas.height - 12 * timeline.scale))
-            const endText = timeline.formatTime(timeline.fullEnd)
-            const endWidth = ctx.measureText(endText).width
-            ctx.fillText(endText, Math.max(timeline.plotLeft,
-                canvas.width - endWidth - Math.round(10 * timeline.scale)),
-                Math.round(canvas.height - 12 * timeline.scale))
-        }
-    }
-
-    Item {
-        id: selectionLayer
-        x: timeline.plotLeft
-        y: timeline.plotTop
-        width: timeline.plotWidth
-        height: timeline.plotHeight
-        clip: true
-        visible: timeline.visibleNoteCount > 0
-
-        Rectangle {
-            readonly property real startValue: timeline.numberOr(timeline.view.start, Number.NaN)
-            readonly property real endValue: timeline.numberOr(timeline.view.end, Number.NaN)
-            readonly property real fromTime: Math.min(startValue, endValue)
-            readonly property real toTime: Math.max(startValue, endValue)
-            readonly property bool valid: isFinite(startValue) && isFinite(endValue)
-            x: valid ? Math.max(0, timeline.xForTime(fromTime) - timeline.plotLeft) : 0
-            y: 0
-            width: valid ? Math.max(0, Math.min(timeline.plotWidth,
-                timeline.xForTime(toTime) - timeline.xForTime(fromTime))) : 0
-            height: parent.height
-            visible: valid && width > 0
-            color: Qt.rgba(timeline.theme.accent.r, timeline.theme.accent.g,
-                timeline.theme.accent.b, 0.12)
-            border.color: Qt.rgba(timeline.theme.accent.r, timeline.theme.accent.g,
-                timeline.theme.accent.b, 0.7)
-            border.width: 1
-        }
-
-        Rectangle {
-            readonly property real fromTime: Math.min(timeline.pressTime, timeline.dragTime)
-            readonly property real toTime: Math.max(timeline.pressTime, timeline.dragTime)
-            readonly property bool valid: timeline.pressX >= 0 && isFinite(fromTime)
-                && isFinite(toTime)
-            x: valid ? Math.max(0, timeline.xForTime(fromTime) - timeline.plotLeft) : 0
-            width: valid ? Math.max(0, Math.min(timeline.plotWidth,
-                timeline.xForTime(toTime) - timeline.xForTime(fromTime))) : 0
-            height: parent.height
-            visible: valid
-            color: Qt.rgba(timeline.theme.accent.r, timeline.theme.accent.g,
-                timeline.theme.accent.b, 0.18)
-            border.color: timeline.theme.accent
-            border.width: 1
+            ctx.textAlign = "left"
+            paintKeysAndRows(ctx)
+            paintRuler(ctx)
+            paintRegions(ctx)
+            paintSelection(ctx, timeline.selectionStart, timeline.selectionEnd, false)
+            paintSelection(ctx, Math.min(timeline.pressTime, timeline.dragTime),
+                Math.max(timeline.pressTime, timeline.dragTime), true)
+            paintNotes(ctx)
         }
     }
 
     MouseArea {
+        width: timeline.plotLeft
+        y: timeline.plotTop
+        height: timeline.plotHeight
+        acceptedButtons: Qt.NoButton
+        hoverEnabled: true
+        enabled: timeline.hasSource
+        ToolTip.visible: containsMouse
+        ToolTip.delay: 600
+        ToolTip.text: "在键轨滚动查看其他音高"
+        onWheel: function(wheel) {
+            const delta = wheel.pixelDelta.y || wheel.angleDelta.y
+            wheel.accepted = delta !== 0 && timeline.movePitch(delta > 0 ? -2 : 2)
+        }
+    }
+
+    MouseArea {
+        id: scoreMouse
         x: timeline.plotLeft
         y: timeline.plotTop
         width: timeline.plotWidth
         height: timeline.plotHeight
         acceptedButtons: Qt.LeftButton
+        preventStealing: true
         hoverEnabled: true
-        cursorShape: Qt.CrossCursor
-        enabled: timeline.laneTracks.length > 0 && timeline.visibleNoteCount > 0
+        enabled: Object.keys(timeline.targetTracks).length > 0
+        cursorShape: timeline.hoveredNote ? Qt.PointingHandCursor : Qt.CrossCursor
+        ToolTip.visible: !!timeline.hoveredNote && !pressed
+        ToolTip.delay: 500
+        ToolTip.text: timeline.hoveredNote ? timeline.noteDescription(timeline.hoveredNote) : ""
         onPressed: function(mouse) {
-            timeline.beginSelection(mouse.x)
+            timeline.forceActiveFocus(Qt.MouseFocusReason)
+            if (timeline.view.busy === true || !timeline.visibleNoteCount) {
+                mouse.accepted = false
+                return
+            }
+            timeline.pressX = mouse.x
+            timeline.pressY = mouse.y
+            timeline.pressTime = timeline.timeForPlotX(mouse.x)
+            timeline.dragTime = timeline.pressTime
         }
         onPositionChanged: function(mouse) {
-            if (pressed)
-                timeline.updateSelection(mouse.x)
+            if (pressed && timeline.pressX >= 0)
+                timeline.dragTime = timeline.timeForPlotX(mouse.x)
         }
         onReleased: function(mouse) {
-            timeline.finishSelection(mouse.x)
-        }
-        onCanceled: {
-            timeline.pressX = -1
-            timeline.pressTime = Number.NaN
-            timeline.dragTime = Number.NaN
-        }
-        onDoubleClicked: timeline.fitTimeline()
-        onWheel: function(wheel) {
-            if (wheel.angleDelta.y === 0)
+            if (timeline.pressX < 0)
                 return
-            const direction = wheel.angleDelta.y > 0 ? 0.82 : 1.22
-            if (wheel.modifiers & Qt.ShiftModifier)
-                timeline.panBy((wheel.angleDelta.y > 0 ? -1 : 1)
-                    * timeline.visibleSpan * 0.12)
+            const dx = Math.abs(mouse.x - timeline.pressX)
+            const dy = Math.abs(mouse.y - timeline.pressY)
+            const end = timeline.timeForPlotX(mouse.x)
+            const first = Math.min(timeline.pressTime, end)
+            const last = Math.max(timeline.pressTime, end)
+            const note = dx < 2 && dy < 3
+                ? timeline.noteAt(mouse.x + x, mouse.y + y) : null
+            timeline.clearGesture()
+            if (timeline.view.busy === true)
+                return
+            if (dx >= 2 && last > first)
+                timeline.controller.selectSpan(first, last)
+            else if (note)
+                timeline.selectNote(note)
+        }
+        onCanceled: timeline.clearGesture()
+        onDoubleClicked: function(mouse) {
+            if (!timeline.noteAt(mouse.x + x, mouse.y + y))
+                timeline.controller.setViewport(timeline.origin, timeline.fullSpan)
+        }
+        onWheel: function(wheel) {
+            const vertical = wheel.pixelDelta.y || wheel.angleDelta.y
+            const horizontal = wheel.pixelDelta.x || wheel.angleDelta.x
+            if (!vertical && !horizontal) {
+                wheel.accepted = false
+                return
+            }
+            if (wheel.modifiers & Qt.AltModifier) {
+                wheel.accepted = vertical !== 0 && timeline.movePitch(vertical > 0 ? -2 : 2)
+                return
+            }
+            if ((wheel.modifiers & Qt.ShiftModifier) || !vertical)
+                timeline.panBy(((horizontal || vertical) > 0 ? -1 : 1) * timeline.visibleSpan * 0.12)
             else
-                timeline.zoomAt(direction,
-                    timeline.visibleStart + timeline.visibleSpan * 0.5)
+                timeline.zoomAt(vertical > 0 ? 0.82 : 1.22, timeline.timeForPlotX(wheel.x))
             wheel.accepted = true
         }
     }
 
+    ScrollBar {
+        objectName: "tuningPitchScrollBar"
+        x: timeline.plotRight
+        y: timeline.plotTop
+        width: Math.max(1, timeline.width - x)
+        height: timeline.plotHeight
+        orientation: Qt.Vertical
+        policy: ScrollBar.AlwaysOn
+        size: timeline.rowsInView / 128
+        position: timeline.pitchOffset / 128
+        minimumSize: Math.min(1, Math.round(24 * timeline.scale) / height)
+        enabled: timeline.hasSource
+        Accessible.name: "音高滚动"
+        onPositionChanged: {
+            if (pressed)
+                timeline.topRow = timeline.clamp(position * 128, 0, 128 - timeline.rowsInView)
+        }
+    }
+
     Text {
-        visible: timeline.emptyText.length > 0
-        anchors.centerIn: parent
-        width: Math.max(120, timeline.plotWidth - Math.round(36 * timeline.scale))
+        x: timeline.plotLeft
+        y: timeline.plotTop + (timeline.plotHeight - height) / 2
+        width: timeline.plotWidth
+        visible: text.length > 0
         horizontalAlignment: Text.AlignHCenter
-        text: timeline.emptyText
+        text: timeline.emptyMessage()
         color: timeline.theme.muted
         font.pixelSize: Math.round(12 * timeline.scale)
         wrapMode: Text.Wrap
         textFormat: Text.PlainText
     }
 
-    Text {
-        anchors.right: parent.right
-        anchors.bottom: parent.bottom
-        anchors.rightMargin: Math.round(10 * timeline.scale)
-        anchors.bottomMargin: Math.round(7 * timeline.scale)
-        visible: timeline.visibleNoteCount > 0
-        text: "拖拽选区 · 滚轮缩放 · Shift+滚轮平移"
-        color: timeline.theme.muted
-        font.pixelSize: Math.round(10 * timeline.scale)
-        opacity: 0.85
-        textFormat: Text.PlainText
+    Rectangle {
+        anchors.fill: parent
+        color: "transparent"
+        border.color: timeline.theme.accent
+        border.width: timeline.activeFocus ? 1 : 0
     }
 }

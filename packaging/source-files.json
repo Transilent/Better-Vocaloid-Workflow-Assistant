@@ -24,6 +24,7 @@
     "src/quick_ui/MixdownPage.qml",
     "src/quick_ui/TuningPage.qml",
     "src/quick_ui/TuningTimeline.qml",
+    "src/quick_ui/TuningViewportStrip.qml",
     "src/quick_ui/VideoPage.qml",
     "src/quick_ui/PublicationPage.qml",
     "src/quick_ui/SubtitleDialog.qml",

@@ -28,9 +28,8 @@ Item {
     readonly property bool expanded: !!view.expanded
     readonly property int durationMs: Math.max(0, page.number(view.duration, 0))
     readonly property real positionMs: page.clamp(page.number(controller ? controller.position : 0, 0), 0, Math.max(1, durationMs))
-    readonly property bool compact: width < Math.round((theme.scale > 1.2 ? 1120 : 980) * theme.scale)
+    readonly property bool compact: width / theme.scale < 1010 || height / theme.scale < 575
     readonly property int pageMargin: Math.round((compact ? 14 : 20) * theme.scale)
-    readonly property int footerHeight: Math.round((compact ? 148 : 137) * theme.scale)
     readonly property int vocalTrackCount: page.countVocalTracks()
     readonly property int vocalTrackLimit: page.number(view.maxVocalTracks, 0)
     readonly property bool canAddTrack: vocalTrackCount < vocalTrackLimit
@@ -39,6 +38,9 @@ Item {
     property bool seeking: false
     property real pendingPosition: 0
     property int dialogCount: 0
+    property string compactPanel: "analysis"
+    property bool showCompactEqDetails: false
+    property bool showCompactPresets: false
     function number(value, fallback) {
         if (value === undefined || value === null || value === "")
             return fallback;
@@ -275,6 +277,13 @@ Item {
             presetReviewDialog.open();
     }
 
+    function selectAnalysis(mode) {
+        page.compactPanel = "analysis";
+        page.controller.setAnalysis(mode);
+    }
+
+    onAnalysisModeChanged: if (analysisScroll) analysisScroll.contentY = 0
+
     function presetFieldName(field) {
         const labels = {"processing.eq_enabled": "人声 EQ", "processing.eq_bands": "EQ 频段",
             "processing.compression_enabled": "压缩", "processing.compression_strength": "压缩强度",
@@ -331,9 +340,9 @@ Item {
         autoRepeat: false
         enabled: page.visible && !page.spaceBlocked
     }
-    MixShortcut { sequence: "Alt+1"; onActivated: page.controller.setAnalysis("eq") }
-    MixShortcut { sequence: "Alt+2"; onActivated: page.controller.setAnalysis("gr") }
-    MixShortcut { sequence: "Alt+3"; onActivated: page.controller.setAnalysis("reverb") }
+    MixShortcut { sequence: "Alt+1"; onActivated: page.selectAnalysis("eq") }
+    MixShortcut { sequence: "Alt+2"; onActivated: page.selectAnalysis("gr") }
+    MixShortcut { sequence: "Alt+3"; onActivated: page.selectAnalysis("reverb") }
     MixShortcut { sequence: "Ctrl+Shift+A"; enabled: page.visible && !page.spaceBlocked && page.hasMedia && page.canPlay; onActivated: page.controller.selectMix("A") }
     MixShortcut { sequence: "Ctrl+Shift+B"; enabled: page.visible && !page.spaceBlocked && page.hasMedia && page.canPlay; onActivated: page.controller.selectMix("B") }
     MixShortcut { sequence: "Ctrl+Shift+L"; enabled: page.visible && !page.spaceBlocked && page.hasMedia && page.canPlay; onActivated: page.controller.setLoop(!page.view.loop) }
@@ -351,7 +360,7 @@ Item {
         anchors.leftMargin: page.pageMargin
         anchors.rightMargin: page.pageMargin
         anchors.topMargin: page.pageMargin
-        height: Math.round(92 * page.theme.scale)
+        height: implicitHeight
         spacing: Math.round(7 * page.theme.scale)
 
         RowLayout {
@@ -365,6 +374,7 @@ Item {
                 font.weight: Font.DemiBold
             }
             Rectangle {
+                visible: !page.compact
                 width: Math.round(7 * page.theme.scale)
                 height: width
                 radius: width / 2
@@ -372,14 +382,53 @@ Item {
             }
             Text {
                 Layout.fillWidth: true
+                visible: !page.compact
                 text: page.textValue(page.view.job, "独立 WAV · 无需先创建任务")
                 color: page.theme.muted
                 font.pixelSize: Math.round(11 * page.theme.scale)
                 elide: Text.ElideMiddle
             }
+            UiButton {
+                objectName: "mixdownShowMixer"
+                visible: page.compact && !page.expanded
+                theme: page.theme
+                quiet: true
+                selected: page.compactPanel === "mixer"
+                text: "混音台"
+                onClicked: page.compactPanel = "mixer"
+            }
+            UiButton {
+                objectName: "mixdownShowAnalysis"
+                visible: page.compact && !page.expanded
+                theme: page.theme
+                quiet: true
+                selected: page.compactPanel === "analysis"
+                text: "曲线"
+                Accessible.name: "曲线与效果"
+                onClicked: page.compactPanel = "analysis"
+            }
+            UiButton {
+                objectName: "mixdownShowPresets"
+                visible: page.compact && !page.expanded
+                theme: page.theme
+                quiet: true
+                selected: page.showCompactPresets
+                text: "预设"
+                onClicked: page.showCompactPresets = !page.showCompactPresets
+            }
+            UiButton {
+                objectName: "mixdownAddTrackCompact"
+                visible: page.compact && !page.expanded && page.compactPanel === "mixer"
+                theme: page.theme
+                glyph: "plus"
+                text: "添加歌声轨"
+                enabled: page.canAddTrack && !page.busy && !page.loading
+                onClicked: page.controller.addTrack()
+            }
+            Item { visible: page.compact; Layout.fillWidth: true }
             Text {
                 visible: page.resultText(page.view.result).length > 0
-                text: page.view.resultStale ? "旧导出保留 · 设置已变化" : "已有导出结果"
+                text: page.view.resultStale ? "旧结果已过期" : "已有导出结果"
                 color: page.view.resultStale ? page.theme.attention : page.theme.success
                 font.pixelSize: Math.round(11 * page.theme.scale)
             }
@@ -397,6 +446,7 @@ Item {
 
         RowLayout {
             Layout.fillWidth: true
+            visible: !page.expanded && (!page.compact || page.showCompactPresets)
             spacing: Math.round(7 * page.theme.scale)
 
             Text {
@@ -417,6 +467,7 @@ Item {
                 onActivated: page.reviewPreset(String(currentValue || ""))
             }
             Text {
+                visible: !page.compact
                 text: "当前 · " + page.textValue(page.view.presetName, "自定义")
                 color: page.theme.muted
                 font.pixelSize: Math.round(10 * page.theme.scale)
@@ -461,8 +512,8 @@ Item {
         }
     }
 
-    Flickable {
-        id: viewport
+    RowLayout {
+        id: workspace
         objectName: "mixdownViewport"
         anchors.left: parent.left
         anchors.right: parent.right
@@ -470,513 +521,199 @@ Item {
         anchors.bottom: footer.top
         anchors.leftMargin: page.pageMargin
         anchors.rightMargin: page.pageMargin
-        anchors.topMargin: Math.round(4 * page.theme.scale)
+        anchors.topMargin: Math.round(8 * page.theme.scale)
         anchors.bottomMargin: Math.round(8 * page.theme.scale)
-        contentWidth: width
-        contentHeight: Math.max(bodyGrid.implicitHeight, height)
-        clip: true
-        boundsBehavior: Flickable.StopAtBounds
-        ScrollBar.vertical: ScrollBar {
-            policy: ScrollBar.AsNeeded
-        }
+        spacing: Math.round(12 * page.theme.scale)
 
-        GridLayout {
-            id: bodyGrid
-            width: viewport.width
-            height: Math.max(implicitHeight, viewport.height)
-            columns: 1
-            rowSpacing: Math.round(12 * page.theme.scale)
+        Rectangle {
+            id: mixerPanel
+            objectName: "mixdownMixerPanel"
+            visible: !page.expanded && (!page.compact || page.compactPanel === "mixer")
+            Layout.fillWidth: page.compact
+            Layout.fillHeight: true
+            Layout.preferredWidth: page.compact ? workspace.width
+                : Math.round(page.clamp(workspace.width * .35, 372 * page.theme.scale, 590 * page.theme.scale))
+            Layout.minimumWidth: 0
+            Layout.minimumHeight: 0
+            radius: Math.round(9 * page.theme.scale)
+            color: page.theme.surface
+            border.color: page.theme.line
+            clip: true
 
-            Rectangle {
-                id: mixerPanel
-                objectName: "mixdownMixerPanel"
-                visible: !page.expanded
-                Layout.fillWidth: true
-                Layout.preferredHeight: Math.round(275 * page.theme.scale)
-                Layout.minimumHeight: Layout.preferredHeight
-                radius: Math.round(10 * page.theme.scale)
-                color: page.theme.surface
-                border.width: 1
-                border.color: page.theme.line
-
-                ColumnLayout {
-                    anchors.fill: parent
-                    anchors.margins: Math.round(11 * page.theme.scale)
-                    spacing: Math.round(8 * page.theme.scale)
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Text {
-                            text: "混音台"
-                            color: page.theme.text
-                            font.pixelSize: Math.round(14 * page.theme.scale)
-                            font.weight: Font.DemiBold
-                        }
-                        Text {
-                            Layout.fillWidth: true
-                            text: page.vocalTrackCount + " / " + page.vocalTrackLimit + " 路歌声"
-                            color: page.theme.muted
-                            font.pixelSize: Math.round(10 * page.theme.scale)
-                        }
-                        UiButton {
-                            objectName: "mixdownAddTrack"
-                            theme: page.theme
-                            text: "+ 歌声轨"
-                            enabled: page.canAddTrack && !page.busy && !page.loading
-                            onClicked: page.controller.addTrack()
-                        }
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: Math.round(10 * page.theme.scale)
+                spacing: Math.round(8 * page.theme.scale)
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: !page.compact
+                    Text {
+                        text: "混音台"
+                        color: page.theme.text
+                        font.pixelSize: Math.round(14 * page.theme.scale)
+                        font.weight: Font.DemiBold
                     }
-
-                    Flickable {
-                        id: channelViewport
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        Layout.minimumHeight: Math.round(185 * page.theme.scale)
-                        contentWidth: channelRow.implicitWidth
-                        contentHeight: height
-                        clip: true
-                        boundsBehavior: Flickable.StopAtBounds
-                        ScrollBar.horizontal: ScrollBar {
-                            id: channelScroll
-                            policy: ScrollBar.AsNeeded
-                        }
-
-                        Row {
-                            id: channelRow
-                            height: Math.max(0, channelViewport.height - (implicitWidth > channelViewport.width ? channelScroll.height : 0))
-                            spacing: Math.round(8 * page.theme.scale)
-
-                            Repeater {
-                                model: page.controller.trackIds
-                                Rectangle {
-                                    id: channel
-                                    required property int index
-                                    required property string modelData
-                                    objectName: "mixdownTrack_" + String(channel.trackId)
-                                    readonly property string trackId: modelData
-                                    readonly property var track: page.trackById(trackId)
-                                    readonly property bool backing: trackId === "instrumental"
-                                    readonly property string trackLabel: String(page.trackValue(track, "label", backing ? "伴奏" : "歌声 " + (index + 1)))
-                                    readonly property string trackName: String(page.trackValue(track, "name", ""))
-                                    readonly property string trackPath: String(page.trackValue(track, "path", ""))
-                                    readonly property real gainDb: page.number(page.trackValue(track, "gain", 0), 0)
-                                    readonly property real sendLevel: page.clamp(page.number(page.trackValue(track, "send", 0), 0), 0, 1)
-                                    readonly property color channelAccent: backing ? page.theme.attention : page.theme.success
-
-                                    width: Math.round(158 * page.theme.scale)
-                                    height: parent.height
-                                    radius: Math.round(8 * page.theme.scale)
-                                    color: page.theme.base
-                                    border.width: 1
-                                    border.color: page.theme.line
-
-                                    ColumnLayout {
-                                        anchors.fill: parent
-                                        anchors.margins: Math.round(8 * page.theme.scale)
-                                        spacing: Math.round(5 * page.theme.scale)
-
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            Rectangle {
-                                                width: Math.round(7 * page.theme.scale)
-                                                height: width
-                                                radius: width / 2
-                                                color: channel.channelAccent
-                                            }
-                                            Text {
-                                                Layout.fillWidth: true
-                                                text: channel.trackLabel
-                                                color: page.theme.text
-                                                font.pixelSize: Math.round(11 * page.theme.scale)
-                                                font.weight: Font.DemiBold
-                                                elide: Text.ElideRight
-                                            }
-                                            UiButton {
-                                                visible: !channel.backing
-                                                theme: page.theme
-                                                quiet: true
-                                                text: "×"
-                                                implicitWidth: Math.round(25 * page.theme.scale)
-                                                implicitHeight: Math.round(25 * page.theme.scale)
-                                                enabled: !page.busy && !page.loading && page.vocalTrackCount > 1
-                                                onClicked: page.controller.removeTrack(channel.trackId)
-                                                Accessible.name: "移除" + channel.trackLabel
-                                            }
-                                        }
-
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            UiButton {
-                                                Layout.fillWidth: true
-                                                theme: page.theme
-                                                text: channel.trackPath.length > 0 ? "更换…" : "选择…"
-                                                enabled: !page.busy && !page.loading
-                                                onClicked: page.chooseTrackSource(channel.trackId)
-                                            }
-                                            UiButton {
-                                                visible: channel.trackPath.length > 0
-                                                theme: page.theme
-                                                quiet: true
-                                                text: "清除"
-                                                enabled: !page.busy && !page.loading
-                                                onClicked: page.controller.clearSource(channel.trackId)
-                                            }
-                                        }
-
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            spacing: Math.round(3 * page.theme.scale)
-                                            Text {
-                                                Layout.fillWidth: true
-                                                text: channel.trackName.length > 0 ? channel.trackName : channel.backing ? "等待伴奏" : "未选择"
-                                                color: page.theme.muted
-                                                font.pixelSize: Math.round(10 * page.theme.scale)
-                                                elide: Text.ElideRight
-                                                ToolTip.visible: pathHover.hovered && truncated
-                                                ToolTip.text: channel.trackPath
-                                                HoverHandler { id: pathHover }
-                                            }
-                                            UiButton {
-                                                objectName: "mixdownTrackSettings_" + channel.trackId
-                                                theme: page.theme
-                                                quiet: true
-                                                text: channel.backing ? "声像…" : "声像/偏移…"
-                                                font.pixelSize: Math.round(10 * page.theme.scale)
-                                                implicitHeight: Math.round(24 * page.theme.scale)
-                                                leftPadding: Math.round(4 * page.theme.scale)
-                                                topPadding: Math.round(2 * page.theme.scale)
-                                                enabled: !page.busy && !page.loading
-                                                Accessible.name: channel.trackLabel + " 精确增益、声像与位置"
-                                                onClicked: {
-                                                    trackSettingsDialog.trackId = channel.trackId;
-                                                    trackSettingsDialog.open();
-                                                }
-                                            }
-                                        }
-
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            Layout.fillHeight: true
-                                            spacing: Math.round(5 * page.theme.scale)
-
-                                            Slider {
-                                                id: gainSlider
-                                                objectName: "mixdownGain_" + channel.trackId
-                                                Layout.fillHeight: true
-                                                Layout.preferredWidth: Math.round(30 * page.theme.scale)
-                                                Layout.minimumHeight: Math.round(58 * page.theme.scale)
-                                                Layout.preferredHeight: Math.round(92 * page.theme.scale)
-                                                orientation: Qt.Vertical
-                                                from: -60
-                                                to: 12
-                                                stepSize: 0.1
-                                                value: page.clamp(channel.gainDb, -60, 12)
-                                                enabled: !page.busy && !page.loading
-                                                onMoved: page.controller.setTrack(channel.trackId, "gain", value)
-                                                Accessible.name: channel.trackLabel + " 增益"
-                                                Accessible.description: value.toFixed(1) + " dB"
-                                                background: Rectangle {
-                                                    x: Math.round((gainSlider.availableWidth - width) / 2)
-                                                    y: Math.round(gainSlider.topPadding)
-                                                    width: Math.round(5 * page.theme.scale)
-                                                    height: gainSlider.availableHeight
-                                                    radius: width / 2
-                                                    color: page.theme.line
-                                                    Rectangle {
-                                                        width: parent.width
-                                                        height: Math.max(0, parent.height * (gainSlider.value - gainSlider.from) / (gainSlider.to - gainSlider.from))
-                                                        anchors.bottom: parent.bottom
-                                                        radius: parent.radius
-                                                        color: channel.channelAccent
-                                                        opacity: 0.72
-                                                    }
-                                                }
-                                                handle: Rectangle {
-                                                    x: Math.round((gainSlider.availableWidth - width) / 2)
-                                                    y: gainSlider.topPadding + gainSlider.visualPosition * (gainSlider.availableHeight - height)
-                                                    width: Math.round(16 * page.theme.scale)
-                                                    height: Math.round(9 * page.theme.scale)
-                                                    radius: Math.round(4 * page.theme.scale)
-                                                    color: page.theme.text
-                                                    border.width: 1
-                                                    border.color: channel.channelAccent
-                                                }
-                                            }
-
-                                            MixdownMeter {
-                                                Layout.fillHeight: true
-                                                Layout.preferredHeight: Math.round(92 * page.theme.scale)
-                                                theme: page.theme
-                                                rms: page.laneValue(channel.trackId, "rms")
-                                                peak: page.laneValue(channel.trackId, "peak")
-                                                accentColor: channel.channelAccent
-                                                accessibleLabel: channel.trackLabel + " 电平"
-                                            }
-
-                                            ColumnLayout {
-                                                Layout.fillWidth: true
-                                                spacing: Math.round(4 * page.theme.scale)
-                                                Text {
-                                                    Layout.alignment: Qt.AlignHCenter
-                                                    text: channel.gainDb.toFixed(1) + " dB"
-                                                    color: page.theme.text
-                                                    font.pixelSize: Math.round(10 * page.theme.scale)
-                                                    font.weight: Font.DemiBold
-                                                }
-                                                RowLayout {
-                                                    Layout.alignment: Qt.AlignHCenter
-                                                    UiButton {
-                                                        theme: page.theme
-                                                        selected: !!page.trackValue(channel.track, "muted", false)
-                                                        text: "M"
-                                                        implicitWidth: Math.round(30 * page.theme.scale)
-                                                        implicitHeight: Math.round(28 * page.theme.scale)
-                                                        enabled: !page.busy && !page.loading
-                                                        onClicked: page.controller.setTrack(channel.trackId, "muted", !page.trackValue(channel.track, "muted", false))
-                                                        Accessible.name: channel.trackLabel + " 静音"
-                                                    }
-                                                    UiButton {
-                                                        theme: page.theme
-                                                        selected: !!page.trackValue(channel.track, "solo", false)
-                                                        text: "S"
-                                                        implicitWidth: Math.round(30 * page.theme.scale)
-                                                        implicitHeight: Math.round(28 * page.theme.scale)
-                                                        enabled: !page.busy && !page.loading
-                                                        onClicked: page.controller.setTrack(channel.trackId, "solo", !page.trackValue(channel.track, "solo", false))
-                                                        Accessible.name: channel.trackLabel + " 独奏"
-                                                    }
-                                                }
-                                                Text {
-                                                    visible: !channel.backing
-                                                    text: "发送 " + page.percentText(channel.sendLevel)
-                                                    color: page.theme.muted
-                                                    font.pixelSize: Math.round(9 * page.theme.scale)
-                                                }
-                                                Slider {
-                                                    objectName: "mixdownSend_" + channel.trackId
-                                                    visible: !channel.backing
-                                                    Layout.fillWidth: true
-                                                    Layout.preferredHeight: Math.round(18 * page.theme.scale)
-                                                    from: 0
-                                                    to: 1
-                                                    stepSize: 0.01
-                                                    value: channel.sendLevel
-                                                    enabled: !page.busy && !page.loading
-                                                    onMoved: page.controller.setTrack(channel.trackId, "send", value)
-                                                    Accessible.name: channel.trackLabel + " 混响发送"
-                                                    background: Rectangle {
-                                                        y: Math.round((parent.height - height) / 2)
-                                                        width: parent.width
-                                                        height: Math.round(4 * page.theme.scale)
-                                                        radius: height / 2
-                                                        color: page.theme.line
-                                                    }
-                                                    handle: Rectangle {
-                                                        x: parent.visualPosition * (parent.width - width)
-                                                        y: Math.round((parent.height - height) / 2)
-                                                        width: Math.round(13 * page.theme.scale)
-                                                        height: width
-                                                        radius: width / 2
-                                                        color: page.theme.text
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            Rectangle {
-                                objectName: "mixdownMonitorChannel"
-                                width: Math.round(158 * page.theme.scale)
-                                height: parent.height
-                                radius: Math.round(8 * page.theme.scale)
-                                color: page.theme.selected
-                                border.width: 1
-                                border.color: page.theme.selectedLine
-
-                                ColumnLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: Math.round(8 * page.theme.scale)
-                                    spacing: Math.round(5 * page.theme.scale)
-                                    Text {
-                                        text: "试听输出"
-                                        color: page.theme.text
-                                        font.pixelSize: Math.round(11 * page.theme.scale)
-                                        font.weight: Font.DemiBold
-                                    }
-                                    Text {
-                                        Layout.fillWidth: true
-                                        text: "试听音量 · 不写入 WAV"
-                                        color: page.theme.muted
-                                        font.pixelSize: Math.round(9 * page.theme.scale)
-                                    }
-
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        Layout.fillHeight: true
-                                        spacing: Math.round(7 * page.theme.scale)
-                                        Slider {
-                                            id: masterGainSlider
-                                            objectName: "mixdownMonitorVolume"
-                                            Layout.fillHeight: true
-                                            Layout.preferredWidth: Math.round(30 * page.theme.scale)
-                                            Layout.minimumHeight: Math.round(58 * page.theme.scale)
-                                            Layout.preferredHeight: Math.round(92 * page.theme.scale)
-                                            orientation: Qt.Vertical
-                                            from: -60
-                                            to: 0
-                                            stepSize: 0.1
-                                            value: page.clamp(page.number(page.view.masterGain, 0), from, to)
-                                            enabled: !page.busy && !page.loading
-                                            onMoved: page.controller.setOption("masterGain", value)
-                                            Accessible.name: "试听音量"
-                                            background: Rectangle {
-                                                x: Math.round((masterGainSlider.availableWidth - width) / 2)
-                                                y: Math.round(masterGainSlider.topPadding)
-                                                width: Math.round(5 * page.theme.scale)
-                                                height: masterGainSlider.availableHeight
-                                                radius: width / 2
-                                                color: page.theme.line
-                                                Rectangle {
-                                                    width: parent.width
-                                                    height: Math.max(0, parent.height * (masterGainSlider.value - masterGainSlider.from) / (masterGainSlider.to - masterGainSlider.from))
-                                                    anchors.bottom: parent.bottom
-                                                    radius: parent.radius
-                                                    color: page.theme.accent
-                                                }
-                                            }
-                                            handle: Rectangle {
-                                                x: Math.round((masterGainSlider.availableWidth - width) / 2)
-                                                y: masterGainSlider.topPadding + masterGainSlider.visualPosition * (masterGainSlider.availableHeight - height)
-                                                width: Math.round(16 * page.theme.scale)
-                                                height: Math.round(9 * page.theme.scale)
-                                                radius: Math.round(4 * page.theme.scale)
-                                                color: page.theme.text
-                                                border.color: page.theme.accent
-                                            }
-                                        }
-
-                                        MixdownMeter {
-                                            Layout.fillHeight: true
-                                            Layout.preferredHeight: Math.round(92 * page.theme.scale)
-                                            theme: page.theme
-                                            rms: page.laneValue("master", "rms")
-                                            peak: page.laneValue("master", "peak")
-                                            accentColor: page.theme.accent
-                                            accessibleLabel: "总线电平"
-                                        }
-
-                                        ColumnLayout {
-                                            Layout.fillWidth: true
-                                            spacing: Math.round(4 * page.theme.scale)
-                                            Text {
-                                                Layout.alignment: Qt.AlignHCenter
-                                                text: "试听音量"
-                                                color: page.theme.muted
-                                                font.pixelSize: Math.round(9 * page.theme.scale)
-                                            }
-                                            Text {
-                                                Layout.alignment: Qt.AlignHCenter
-                                                text: page.dbText(page.view.masterGain)
-                                                color: page.theme.text
-                                                font.pixelSize: Math.round(10 * page.theme.scale)
-                                                font.weight: Font.DemiBold
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
                     Text {
                         Layout.fillWidth: true
-                        text: page.view.message ? String(page.view.message) : page.busy ? "正在处理；可继续查看当前状态。" : "选择素材后，用 Space 播放或暂停。"
-                        color: page.view.state === "failed" ? page.theme.error : page.theme.muted
-                        font.pixelSize: Math.round(10 * page.theme.scale)
-                        textFormat: Text.PlainText
-                        wrapMode: Text.Wrap
-                        maximumLineCount: 2
-                        elide: Text.ElideRight
-                        ToolTip.visible: messageHover.hovered && truncated
-                        ToolTip.text: text
-                        HoverHandler {
-                            id: messageHover
+                        text: page.vocalTrackCount + " / " + page.vocalTrackLimit + " 路歌声"
+                        color: page.theme.muted
+                        font.pixelSize: Math.round(11 * page.theme.scale)
+                    }
+                    UiButton {
+                        objectName: "mixdownAddTrack"
+                        theme: page.theme
+                        glyph: "plus"
+                        text: "添加歌声轨"
+                        enabled: page.canAddTrack && !page.busy && !page.loading
+                        onClicked: page.controller.addTrack()
+                    }
+                }
+
+                Flickable {
+                    id: channelViewport
+                    objectName: "mixdownChannelViewport"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    contentWidth: Math.max(width, channelRow.implicitWidth)
+                    contentHeight: channelRow.height
+                    boundsBehavior: Flickable.StopAtBounds
+                    interactive: contentWidth > width || contentHeight > height
+                    ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                    Row {
+                        id: channelRow
+                        height: Math.max(channelViewport.height, Math.round((page.compact ? 174 : 330) * page.theme.scale))
+                        spacing: Math.round(5 * page.theme.scale)
+                        readonly property int count: page.controller.trackIds.length + 1
+                        readonly property real stripWidth: Math.floor(page.clamp(
+                            (channelViewport.width - spacing * (count - 1)) / count,
+                            72 * page.theme.scale, 132 * page.theme.scale))
+
+                        Repeater {
+                            model: page.controller.trackIds
+                            ChannelStrip {
+                                required property string modelData
+                                required property int index
+                                trackId: modelData
+                                order: index
+                                width: channelRow.stripWidth
+                                height: channelRow.height
+                            }
+                        }
+                        ChannelStrip {
+                            trackId: "master"
+                            width: channelRow.stripWidth
+                            height: channelRow.height
                         }
                     }
                 }
             }
+        }
 
-            Rectangle {
-                id: analysisPanel
-                objectName: "mixdownAnalysisPanel"
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                Layout.minimumHeight: Math.round(325 * page.theme.scale)
-                Layout.preferredHeight: Layout.minimumHeight
-                radius: Math.round(10 * page.theme.scale)
-                color: page.theme.surface
-                border.width: 1
-                border.color: page.theme.line
+        Rectangle {
+            id: analysisPanel
+            objectName: "mixdownAnalysisPanel"
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.minimumHeight: 0
+            Layout.minimumWidth: 0
+            visible: page.expanded || !page.compact || page.compactPanel === "analysis"
+            clip: true
+            radius: Math.round(10 * page.theme.scale)
+            color: page.theme.surface
+            border.width: 1
+            border.color: page.theme.line
 
-                ColumnLayout {
-                    anchors.fill: parent
-                    anchors.margins: Math.round(11 * page.theme.scale)
-                    spacing: Math.round(8 * page.theme.scale)
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: Math.round(11 * page.theme.scale)
+                spacing: Math.round(8 * page.theme.scale)
 
-                    RowLayout {
+                RowLayout {
+                    Layout.fillWidth: true
+                    UiButton {
+                        objectName: "mixdownAnalysisEq"
+                        theme: page.theme
+                        selected: page.analysisMode === "eq"
+                        text: "EQ"
+                        ToolTip.visible: hovered
+                        ToolTip.text: "EQ 曲线 · Alt+1"
+                            onClicked: page.selectAnalysis("eq")
+                    }
+                    UiButton {
+                        objectName: "mixdownAnalysisGr"
+                        theme: page.theme
+                        selected: page.analysisMode === "gr"
+                        text: "动态 GR"
+                        ToolTip.visible: hovered
+                        ToolTip.text: "压缩与限制器增益衰减 · Alt+2"
+                            onClicked: page.selectAnalysis("gr")
+                    }
+                    UiButton {
+                        objectName: "mixdownAnalysisReverb"
+                        theme: page.theme
+                        selected: page.analysisMode === "reverb"
+                        text: "混响"
+                        ToolTip.visible: hovered
+                        ToolTip.text: "混响空间 · Alt+3"
+                            onClicked: page.selectAnalysis("reverb")
+                    }
+                    Item {
                         Layout.fillWidth: true
-                        UiButton {
-                            objectName: "mixdownAnalysisEq"
-                            theme: page.theme
-                            selected: page.analysisMode === "eq"
-                            text: "EQ"
-                            ToolTip.visible: hovered
-                            ToolTip.text: "EQ 曲线 · Alt+1"
-                            onClicked: page.controller.setAnalysis("eq")
-                        }
-                        UiButton {
-                            objectName: "mixdownAnalysisGr"
-                            theme: page.theme
-                            selected: page.analysisMode === "gr"
-                            text: "动态 GR"
-                            ToolTip.visible: hovered
-                            ToolTip.text: "压缩与限制器增益衰减 · Alt+2"
-                            onClicked: page.controller.setAnalysis("gr")
-                        }
-                        UiButton {
-                            objectName: "mixdownAnalysisReverb"
-                            theme: page.theme
-                            selected: page.analysisMode === "reverb"
-                            text: "混响"
-                            ToolTip.visible: hovered
-                            ToolTip.text: "混响空间 · Alt+3"
-                            onClicked: page.controller.setAnalysis("reverb")
-                        }
-                        Item {
-                            Layout.fillWidth: true
-                        }
-                        Text {
-                            Layout.maximumWidth: Math.round(210 * page.theme.scale)
-                            text: page.meters && page.meters.source ? "实时源 · " + page.meters.source : "等待实时遥测"
-                            color: page.meters && page.meters.source ? page.theme.muted : page.theme.attention
-                            font.pixelSize: Math.round(10 * page.theme.scale)
-                            elide: Text.ElideRight
-                        }
-                        UiButton {
-                            objectName: "mixdownExpand"
-                            theme: page.theme
-                            text: page.expanded ? "返回混音台" : "放大曲线"
-                            glyph: page.expanded ? "restore" : "expand"
-                            selected: page.expanded
-                            onClicked: page.controller.setExpanded(!page.expanded)
+                    }
+                    Text {
+                        visible: !page.compact
+                        Layout.maximumWidth: Math.round(210 * page.theme.scale)
+                        text: page.meters && page.meters.source ? "实时源 · " + page.meters.source : "等待实时遥测"
+                        color: page.meters && page.meters.source ? page.theme.muted : page.theme.attention
+                        font.pixelSize: Math.round(10 * page.theme.scale)
+                        elide: Text.ElideRight
+                    }
+                    UiButton {
+                        objectName: "mixdownCompactEqDetails"
+                        visible: page.compact && page.analysisMode === "eq"
+                        theme: page.theme
+                        glyph: "sliders"
+                        text: page.showCompactEqDetails ? "隐藏 EQ 参数" : "显示 EQ 参数"
+                        selected: page.showCompactEqDetails
+                        onClicked: {
+                            page.showCompactEqDetails = !page.showCompactEqDetails;
+                            Qt.callLater(function() {
+                                analysisScroll.contentY = page.showCompactEqDetails
+                                    ? Math.max(0, analysisScroll.contentHeight - analysisScroll.height) : 0;
+                            });
                         }
                     }
+                    UiButton {
+                        objectName: "mixdownExpand"
+                        theme: page.theme
+                            text: page.expanded ? "还原混音布局" : "放大曲线"
+                        glyph: page.expanded ? "restore" : "expand"
+                        selected: page.expanded
+                        onClicked: page.controller.setExpanded(!page.expanded)
+                    }
+                }
+
+                Flickable {
+                    id: analysisScroll
+                    objectName: "mixdownAnalysisViewport"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    contentWidth: width
+                    contentHeight: Math.max(height, Math.round(analysisContentMinimum * page.theme.scale))
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    interactive: contentHeight > height
+                    readonly property int analysisContentMinimum: page.analysisMode === "reverb" ? 374
+                        : page.analysisMode === "gr" ? 326
+                        : page.compact ? (page.showCompactEqDetails ? 440 : 112) : 408
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
                     StackLayout {
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
+                        width: analysisScroll.width
+                        height: analysisScroll.contentHeight
                         currentIndex: page.analysisMode === "gr" ? 1 : page.analysisMode === "reverb" ? 2 : 0
 
                         MixdownEq {
@@ -989,6 +726,9 @@ Item {
                             spectrum: page.spectrum
                             maxHz: page.number(page.view.maxHz, 20000)
                             selection: page.selectionMode
+                            showBandDetails: !page.compact || page.showCompactEqDetails
+                            showPlotHeader: !page.compact
+                            minimumPlotHeight: Math.round((page.compact ? 112 : 230) * page.theme.scale)
                         }
 
                         GrAnalysis {
@@ -1034,7 +774,7 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        height: page.footerHeight
+        height: transport.implicitHeight + Math.round(12 * page.theme.scale)
         color: page.theme.surface
         border.width: 0
         Rectangle {
@@ -1046,12 +786,13 @@ Item {
         }
 
         ColumnLayout {
+            id: transport
             anchors.fill: parent
             anchors.leftMargin: page.pageMargin
             anchors.rightMargin: page.pageMargin
-            anchors.topMargin: Math.round(8 * page.theme.scale)
-            anchors.bottomMargin: Math.round(8 * page.theme.scale)
-            spacing: Math.round(6 * page.theme.scale)
+            anchors.topMargin: Math.round(6 * page.theme.scale)
+            anchors.bottomMargin: Math.round(6 * page.theme.scale)
+            spacing: 0
 
             RowLayout {
                 Layout.fillWidth: true
@@ -1083,7 +824,8 @@ Item {
                     objectName: "mixdownBefore"
                     theme: page.theme
                     selected: page.selectionMode === "A"
-                    text: "A 处理前"
+                    text: page.compact ? "A" : "A 处理前"
+                    Accessible.name: "A 处理前"
                     ToolTip.visible: hovered
                     ToolTip.text: "处理前 · Ctrl+Shift+A"
                     onClicked: page.controller.selectMix("A")
@@ -1092,7 +834,8 @@ Item {
                     objectName: "mixdownAfter"
                     theme: page.theme
                     selected: page.selectionMode === "B"
-                    text: "B 处理后"
+                    text: page.compact ? "B" : "B 处理后"
+                    Accessible.name: "B 处理后"
                     ToolTip.visible: hovered
                     ToolTip.text: "处理后 · Ctrl+Shift+B"
                     onClicked: page.controller.selectMix("B")
@@ -1105,10 +848,15 @@ Item {
                 }
                 Text {
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 0
                     text: page.textValue(page.view.message, page.loading ? "正在加载真实音频…" : "Space 播放 / 暂停")
                     color: page.view.state === "failed" ? page.theme.error : page.theme.muted
                     font.pixelSize: Math.round(10 * page.theme.scale)
                     elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    ToolTip.visible: transportStatusHover.hovered && truncated
+                    ToolTip.text: text
+                    HoverHandler { id: transportStatusHover }
                 }
                 UiButton {
                     visible: page.busy || page.loading
@@ -1117,54 +865,31 @@ Item {
                     text: "取消"
                     onClicked: page.controller.cancel()
                 }
-            }
-
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: Math.round(6 * page.theme.scale)
-                Text {
-                    text: "WAV"
-                    color: page.theme.muted
-                    font.pixelSize: Math.round(10 * page.theme.scale)
-                    font.weight: Font.DemiBold
-                }
-                Text {
-                    Layout.fillWidth: true
-                    text: page.textValue(page.view.output, "尚未选择导出文件")
-                    color: page.textValue(page.view.output, "").length > 0 ? page.theme.text : page.theme.muted
-                    font.pixelSize: Math.round(10 * page.theme.scale)
-                    elide: Text.ElideMiddle
-                    ToolTip.visible: outputHover.hovered && truncated
-                    ToolTip.text: page.textValue(page.view.output, "")
-                    HoverHandler {
-                        id: outputHover
-                    }
-                }
-                Text {
-                    text: "采样率随伴奏"
-                    color: page.theme.muted
-                    font.pixelSize: Math.round(10 * page.theme.scale)
-                }
                 UiButton {
                     objectName: "mixdownChooseOutput"
                     theme: page.theme
-                    text: "输出…"
+                    glyph: "folder"
+                    quiet: true
+                    text: "选择 WAV 导出位置"
+                    ToolTip.text: "WAV 导出位置 · 采样率随伴奏\n" + page.textValue(page.view.output, "尚未选择文件")
                     enabled: !page.busy && !page.loading
                     onClicked: page.openManagedDialog(outputDialog)
                 }
                 UiButton {
                     objectName: "mixdownExport"
                     theme: page.theme
-                    primary: true
-                    text: "导出新 WAV"
+                    primary: !page.view.canRegister && !page.view.canComposeVideo
+                    text: page.view.resultStale ? (page.compact ? "重导出" : "重新导出 WAV")
+                        : (page.compact ? "导出" : "导出新 WAV")
                     enabled: !!page.view.canExport && !page.busy && !page.loading
                     onClicked: page.controller.exportMix()
                 }
                 UiButton {
                     objectName: "mixdownRegister"
                     theme: page.theme
-                    text: page.view.resultStale ? "旧结果不可登记" : "登记结果"
-                    visible: !page.view.canComposeVideo
+                    text: page.compact ? "登记" : "登记结果"
+                    primary: true
+                    visible: !!page.view.canRegister && !page.view.resultStale && !page.view.canComposeVideo
                     enabled: !!page.view.canRegister && !page.view.resultStale && !page.busy && !page.loading
                     onClicked: page.controller.registerMix()
                 }
@@ -1172,7 +897,8 @@ Item {
                     objectName: "mixdownComposeVideo"
                     theme: page.theme
                     visible: !!page.view.canComposeVideo
-                    text: "合成视频"
+                    text: page.compact ? "合成" : "合成视频"
+                    primary: true
                     enabled: !page.busy
                     onClicked: page.controller.composeVideo()
                 }
@@ -1180,24 +906,19 @@ Item {
                     objectName: "mixdownOpenResult"
                     theme: page.theme
                     quiet: true
-                    text: "打开结果"
-                    enabled: page.resultText(page.view.result).length > 0
+                    glyph: "external"
+                    text: page.view.resultStale ? "打开上次导出的 WAV" : "打开导出结果"
+                    visible: page.resultText(page.view.result).length > 0
                     onClicked: page.controller.openResult()
                 }
-            }
-
-            Text {
-                Layout.fillWidth: true
-                text: page.seeking ? "待定位 " + page.timeText(page.pendingPosition) : page.loading ? "等待播放器确认定位与媒质状态" : "拖到任意位置定位；播放时钟由控制器提供"
-                color: page.theme.muted
-                font.pixelSize: Math.round(9 * page.theme.scale)
-                elide: Text.ElideRight
             }
 
             Slider {
                 id: seekSlider
                 objectName: "mixdownProgress"
                 Layout.fillWidth: true
+                Layout.preferredHeight: Math.round(48 * page.theme.scale)
+                Layout.minimumHeight: Layout.preferredHeight
                 from: 0
                 to: Math.max(1, page.durationMs)
                 stepSize: 1
@@ -1221,7 +942,7 @@ Item {
                     height: Math.round(7 * page.theme.scale)
                     radius: height / 2
                     color: page.theme.base
-                    border.color: page.theme.line
+                    border.color: seekSlider.activeFocus ? page.theme.accent : page.theme.line
                     Rectangle {
                         width: parent.width * (parent.parent ? parent.parent.visualPosition : 0)
                         height: parent.height
@@ -1285,6 +1006,13 @@ Item {
         onClosed: page.noteDialogClosed()
         contentItem: ColumnLayout {
             spacing: Math.round(8 * page.theme.scale)
+            Text {
+                Layout.fillWidth: true
+                text: page.textValue(page.trackValue(trackSettingsDialog.track, "name", ""), "尚未选择素材")
+                color: page.theme.muted
+                elide: Text.ElideMiddle
+                textFormat: Text.PlainText
+            }
             TrackNumber {
                 theme: page.theme
                 inputName: "mixdownTrackGainValue"
@@ -1315,6 +1043,43 @@ Item {
                 digits: 3
                 currentValue: page.number(page.trackValue(trackSettingsDialog.track, "offset", 0), 0)
                 onCommit: value => page.controller.setTrack(trackSettingsDialog.trackId, "offset", value)
+            }
+            ParameterSlider {
+                visible: page.compact && trackSettingsDialog.trackId !== "instrumental"
+                Layout.fillWidth: true
+                theme: page.theme
+                label: "混响发送"
+                displayValue: page.number(page.trackValue(trackSettingsDialog.track, "send", 0), 0)
+                displayFactor: 100
+                step: 0.01
+                unit: "%"
+                onMoved: (amount) => page.controller.setTrack(trackSettingsDialog.trackId, "send", amount)
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                UiButton {
+                    theme: page.theme
+                    quiet: true
+                    text: "清除素材"
+                    enabled: page.textValue(page.trackValue(trackSettingsDialog.track, "path", ""), "").length > 0
+                        && !page.busy && !page.loading
+                    onClicked: {
+                        page.controller.clearSource(trackSettingsDialog.trackId);
+                        trackSettingsDialog.close();
+                    }
+                }
+                UiButton {
+                    theme: page.theme
+                    quiet: true
+                    visible: trackSettingsDialog.trackId !== "instrumental"
+                    enabled: page.vocalTrackCount > 1 && !page.busy && !page.loading
+                    text: "移除歌声轨"
+                    onClicked: {
+                        page.controller.removeTrack(trackSettingsDialog.trackId);
+                        trackSettingsDialog.close();
+                    }
+                }
+                Item { Layout.fillWidth: true }
             }
         }
         footer: DialogButtonBox {
@@ -1577,6 +1342,226 @@ Item {
                 }
             }
         }
+    }
+
+    component ChannelStrip: Rectangle {
+        id: channel
+        required property string trackId
+        property int order: 0
+        readonly property bool monitor: trackId === "master"
+        readonly property bool backing: trackId === "instrumental"
+        readonly property var track: page.trackById(trackId)
+        readonly property string label: monitor ? "试听输出" : String(page.trackValue(track, "label", backing ? "伴奏" : "歌声 " + (order + 1)))
+        readonly property string sourcePath: String(page.trackValue(track, "path", ""))
+        readonly property color accent: monitor ? page.theme.accent : backing ? page.theme.attention
+            : order === 0 ? page.theme.success : order === 1 ? page.theme.accent : page.theme.text
+        readonly property real gainDb: monitor ? page.number(page.view.masterGain, 0)
+            : page.number(page.trackValue(track, "gain", 0), 0)
+        readonly property bool editable: !page.busy && !page.loading
+        objectName: monitor ? "mixdownMonitorChannel" : "mixdownTrack_" + trackId
+        radius: Math.round(6 * page.theme.scale)
+        color: monitor ? page.theme.selected : page.theme.base
+        border.color: monitor ? page.theme.selectedLine : page.theme.line
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: Math.round(5 * page.theme.scale)
+            height: Math.round(2 * page.theme.scale)
+            radius: height / 2
+            color: channel.accent
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.leftMargin: Math.round(5 * page.theme.scale)
+            anchors.rightMargin: Math.round(5 * page.theme.scale)
+            anchors.topMargin: Math.round(11 * page.theme.scale)
+            anchors.bottomMargin: Math.round(6 * page.theme.scale)
+            spacing: Math.round((page.compact ? 3 : 4) * page.theme.scale)
+
+            Text {
+                Layout.fillWidth: true
+                text: channel.label
+                color: page.theme.text
+                font.pixelSize: Math.round(12 * page.theme.scale)
+                font.weight: Font.DemiBold
+                horizontalAlignment: Text.AlignHCenter
+                elide: Text.ElideRight
+                textFormat: Text.PlainText
+                ToolTip.visible: page.compact && channelHeaderHover.hovered
+                    && (channel.sourcePath.length > 0 || channel.monitor)
+                ToolTip.text: channel.monitor ? "仅影响试听音量，不写入 WAV" : channel.sourcePath
+                HoverHandler { id: channelHeaderHover }
+            }
+            Text {
+                visible: !page.compact
+                Layout.fillWidth: true
+                text: channel.monitor ? "仅影响试听" : page.textValue(page.trackValue(channel.track, "name", ""), "未选素材")
+                color: page.theme.muted
+                font.pixelSize: Math.round(10 * page.theme.scale)
+                horizontalAlignment: Text.AlignHCenter
+                elide: Text.ElideMiddle
+                textFormat: Text.PlainText
+                ToolTip.visible: sourceHover.hovered && channel.sourcePath.length > 0
+                ToolTip.text: channel.sourcePath
+                HoverHandler { id: sourceHover }
+            }
+
+            Item {
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.round((page.compact ? 26 : 30) * page.theme.scale)
+                RowLayout {
+                    anchors.centerIn: parent
+                    spacing: Math.round(3 * page.theme.scale)
+                    visible: !channel.monitor
+                    StripButton {
+                        objectName: "mixdownChooseSource_" + channel.trackId
+                        theme: page.theme
+                        glyph: "folder"
+                        text: (channel.sourcePath.length ? "更换" : "选择") + channel.label + "素材"
+                        enabled: channel.editable
+                        onClicked: page.chooseTrackSource(channel.trackId)
+                    }
+                    StripButton {
+                        objectName: "mixdownTrackSettings_" + channel.trackId
+                        theme: page.theme
+                        glyph: "sliders"
+                        text: channel.label + "轨道参数"
+                        Accessible.description: channel.backing ? "精确增益和声像" : "精确增益、声像和时间偏移"
+                        enabled: channel.editable
+                        onClicked: {
+                            trackSettingsDialog.trackId = channel.trackId;
+                            trackSettingsDialog.open();
+                        }
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.alignment: Qt.AlignHCenter
+                Layout.fillHeight: true
+                Layout.minimumHeight: Math.round((page.compact ? 62 : 116) * page.theme.scale)
+                spacing: Math.round(4 * page.theme.scale)
+                Slider {
+                    id: fader
+                    objectName: channel.monitor ? "mixdownMonitorVolume" : "mixdownGain_" + channel.trackId
+                    Layout.preferredWidth: Math.round(28 * page.theme.scale)
+                    Layout.fillHeight: true
+                    orientation: Qt.Vertical
+                    from: -60
+                    to: channel.monitor ? 0 : 12
+                    stepSize: 0.1
+                    value: page.clamp(channel.gainDb, from, to)
+                    enabled: channel.editable
+                    focusPolicy: Qt.StrongFocus
+                    onMoved: {
+                        if (channel.monitor)
+                            page.controller.setOption("masterGain", value);
+                        else
+                            page.controller.setTrack(channel.trackId, "gain", value);
+                    }
+                    Accessible.name: channel.label + "增益"
+                    Accessible.description: value.toFixed(1) + " dB"
+                    background: Rectangle {
+                        x: Math.round((fader.width - width) / 2)
+                        y: Math.round(fader.topPadding)
+                        width: Math.round(5 * page.theme.scale)
+                        height: fader.availableHeight
+                        radius: width / 2
+                        color: page.theme.line
+                        Rectangle {
+                            width: parent.width
+                            height: parent.height * fader.position
+                            anchors.bottom: parent.bottom
+                            radius: parent.radius
+                            color: channel.accent
+                            opacity: 0.7
+                        }
+                    }
+                    handle: Rectangle {
+                        x: Math.round((fader.width - width) / 2)
+                        y: fader.topPadding + fader.visualPosition * (fader.availableHeight - height)
+                        width: Math.round(20 * page.theme.scale)
+                        height: Math.round(11 * page.theme.scale)
+                        radius: Math.round(3 * page.theme.scale)
+                        color: page.theme.text
+                        border.color: channel.accent
+                    }
+                }
+                MixdownMeter {
+                    Layout.fillHeight: true
+                    Layout.preferredWidth: Math.round(22 * page.theme.scale)
+                    theme: page.theme
+                    rms: page.laneValue(channel.trackId, "rms")
+                    peak: page.laneValue(channel.trackId, "peak")
+                    accentColor: channel.accent
+                    accessibleLabel: channel.label + "电平"
+                }
+            }
+
+            Text {
+                Layout.alignment: Qt.AlignHCenter
+                text: page.dbText(channel.gainDb)
+                color: page.theme.text
+                font.pixelSize: Math.round(11 * page.theme.scale)
+                font.weight: Font.DemiBold
+            }
+            Item {
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.round((page.compact ? 26 : 30) * page.theme.scale)
+                RowLayout {
+                    anchors.centerIn: parent
+                    spacing: Math.round(3 * page.theme.scale)
+                    visible: !channel.monitor
+                    Repeater {
+                        model: [{field: "mute", label: "静音", short: "M"}, {field: "solo", label: "独奏", short: "S"}]
+                        StripButton {
+                            required property var modelData
+                            theme: page.theme
+                            text: modelData.short
+                            selected: !!page.trackValue(channel.track, modelData.field, false)
+                            enabled: channel.editable
+                            Accessible.name: channel.label + modelData.label
+                            Accessible.checkable: true
+                            Accessible.checked: selected
+                            ToolTip.visible: hovered || visualFocus
+                            ToolTip.text: channel.label + " · " + modelData.label
+                            onClicked: page.controller.setTrack(channel.trackId, modelData.field, !selected)
+                        }
+                    }
+                }
+            }
+
+            Loader {
+                visible: !page.compact
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.round(38 * page.theme.scale)
+                active: visible && !channel.monitor && !channel.backing
+                sourceComponent: ParameterSlider {
+                    objectName: "mixdownSend_" + channel.trackId
+                    theme: page.theme
+                    label: "发送"
+                    displayValue: page.number(page.trackValue(channel.track, "send", 0), 0)
+                    displayFactor: 100
+                    unit: "%"
+                    step: 0.01
+                    interactive: channel.editable
+                    onMoved: (amount) => page.controller.setTrack(channel.trackId, "send", amount)
+                }
+            }
+        }
+    }
+
+    component StripButton: UiButton {
+        implicitWidth: Math.round(29 * theme.scale)
+        implicitHeight: Math.round((page.compact ? 26 : 30) * theme.scale)
+        leftPadding: 0
+        topPadding: 0
+        bottomPadding: 0
+        quiet: true
+        font.pixelSize: Math.round(11 * theme.scale)
     }
 
     component TrackNumber: RowLayout {

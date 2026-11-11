@@ -27,14 +27,11 @@ ScrollView {
     readonly property string activeId: textOf(view.activeTrack)
     readonly property string mode: String(view.mode || "single") === "multi" ? "multi" : "single"
     readonly property var activeTrackData: findTrack(activeId)
-    readonly property int contentMargin: stacked ? 14 : 24
-    readonly property real railWidth: Math.max(Math.round(330 * scale),
-        Math.min(Math.round(410 * scale), availableWidth * 0.36))
-    readonly property real timelineHeight: stacked
-        ? Math.max(Math.round(268 * scale), Math.min(Math.round(360 * scale),
-            availableHeight * 0.36))
-        : Math.max(Math.round(360 * scale), Math.min(Math.round(540 * scale),
-            availableHeight * 0.58))
+    readonly property int contentMargin: stacked ? 12 : 18
+    readonly property int editorPadding: Math.round(10 * scale)
+    readonly property int editorGap: Math.round(6 * scale)
+    readonly property real railWidth: Math.round(322 * scale)
+    readonly property real minimumRollHeight: Math.round((stacked ? 170 : 220) * scale)
     readonly property bool hasRange: validRange().length > 0
     readonly property bool hasLegacyDraft: hasValue(view.legacyDraft)
     readonly property bool targetEditable: editableTargets()
@@ -196,13 +193,6 @@ ScrollView {
         syncPreciseSelection(true)
     }
 
-    function syncStyleStrengthSlider(force) {
-        const target = Math.round(Math.max(0, Math.min(1, numberOr(view.styleStrength, 0))) * 100)
-        if (force || (!styleStrengthSlider.pressed
-                      && Math.abs(styleStrengthSlider.value - target) > 0.5))
-            styleStrengthSlider.value = target
-    }
-
     function strengthText(value) {
         const strength = numberOr(value, 0)
         return String(Math.round(Math.max(0, Math.min(1, strength)) * 100)) + "%"
@@ -337,11 +327,6 @@ ScrollView {
         controller.setTuningOption(name, !boolOr(optionValue(name, false), false))
     }
 
-    function strengthSelected(name, value) {
-        return optionKnown(name)
-            && Math.abs(numberOr(optionValue(name, 0), 0) - value) < 0.005
-    }
-
     function fileName(value) {
         const source = textOf(value)
         if (source.length === 0)
@@ -453,35 +438,6 @@ ScrollView {
         return Math.max(0.001, numberOr(view.duration, 1))
     }
 
-    function clampViewport(start, span) {
-        const origin = timelineOrigin()
-        const full = timelineSpan()
-        const boundedSpan = Math.max(Math.min(full, 0.5), Math.min(full,
-            numberOr(span, full)))
-        const boundedStart = Math.max(origin, Math.min(origin + full - boundedSpan,
-            numberOr(start, origin)))
-        return { start: boundedStart, span: boundedSpan }
-    }
-
-    function zoomTimeline(factor) {
-        if (!hasSource)
-            return
-        const start = numberOr(view.viewportStart, timelineOrigin())
-        const span = Math.max(0.001, numberOr(view.viewportSpan, timelineSpan()))
-        const centered = clampViewport(start + span * (1 - factor) / 2,
-            span * factor)
-        controller.setViewport(centered.start, centered.span)
-    }
-
-    function panTimeline(fraction) {
-        if (!hasSource)
-            return
-        const start = numberOr(view.viewportStart, timelineOrigin())
-        const span = Math.max(0.001, numberOr(view.viewportSpan, timelineSpan()))
-        const next = clampViewport(start + span * fraction, span)
-        controller.setViewport(next.start, next.span)
-    }
-
     function fitTimelineView() {
         if (hasSource)
             controller.setViewport(timelineOrigin(), timelineSpan())
@@ -497,13 +453,11 @@ ScrollView {
     onViewChanged: {
         syncPresetChoice()
         syncPreciseSelection(false)
-        syncStyleStrengthSlider(false)
     }
     Component.onCompleted: {
         syncRetainedDraft()
         syncPresetChoice()
         syncPreciseSelection(true)
-        syncStyleStrengthSlider(true)
     }
 
     component PanelLabel: Text {
@@ -559,102 +513,98 @@ ScrollView {
         }
     }
 
-    component StrengthButton: UiButton {
-        property real choiceValue: 0
-        property bool knownValue: true
-        property real currentValue: 0
-
-        text: String(Math.round(choiceValue * 100)) + "%"
-        selected: knownValue && Math.abs(currentValue - choiceValue) < 0.005
-        leftPadding: Math.round(8 * theme.scale)
+    component EditorButton: UiButton {
+        implicitHeight: Math.round(30 * theme.scale)
+        leftPadding: Math.round(7 * theme.scale)
         rightPadding: leftPadding
-        implicitWidth: Math.max(Math.round(48 * theme.scale),
-            implicitContentWidth + leftPadding + rightPadding)
+        topPadding: 0
+        bottomPadding: 0
+    }
+
+    component PercentSlider: Slider {
+        id: slider
+        required property real strength
+        readonly property int percent: Math.round(Math.max(0, Math.min(1, strength)) * 100)
+
+        implicitHeight: Math.round(30 * page.scale)
+        from: 0
+        to: 100
+        value: percent
+        stepSize: 1
+        snapMode: Slider.SnapAlways
+        focusPolicy: Qt.StrongFocus
+        wheelEnabled: false
+        Accessible.description: "范围 0% 到 100%，每次调整 1%"
+
+        background: Rectangle {
+            x: slider.leftPadding + slider.handle.width / 2
+            y: Math.round((slider.height - height) / 2)
+            width: Math.max(0, slider.availableWidth - slider.handle.width)
+            height: Math.round(4 * page.scale)
+            radius: height / 2
+            color: page.theme.line
+            Rectangle {
+                width: parent.width * slider.visualPosition
+                height: parent.height
+                radius: parent.radius
+                color: page.theme.accent
+            }
+        }
+        handle: Rectangle {
+            x: slider.leftPadding + slider.visualPosition * (slider.availableWidth - width)
+            y: Math.round((slider.height - height) / 2)
+            width: Math.round(15 * page.scale)
+            height: width
+            radius: width / 2
+            color: slider.visualFocus ? page.theme.accent : page.theme.text
+            border.width: slider.visualFocus ? 2 : 1
+            border.color: slider.visualFocus ? page.theme.text : page.theme.accent
+            opacity: slider.enabled ? 1 : 0.5
+        }
     }
 
     ColumnLayout {
         width: page.availableWidth
-        spacing: page.stacked ? 11 : 14
-
-        ColumnLayout {
-            Layout.fillWidth: true
-            Layout.topMargin: page.stacked ? 15 : 22
-            Layout.leftMargin: page.contentMargin
-            Layout.rightMargin: page.contentMargin
-            spacing: Math.round(6 * page.scale)
-
-            Text {
-                Layout.fillWidth: true
-                text: "逐轨调音"
-                color: page.theme.text
-                font.pixelSize: Math.round(25 * page.scale)
-                font.weight: Font.DemiBold
-                elide: Text.ElideRight
-                textFormat: Text.PlainText
-            }
-            Text {
-                Layout.fillWidth: true
-                visible: !page.stacked || !page.hasSource
-                text: page.hasSource
-                    ? "按歌词定位真实音符，单轨精修或多轨共享区间；风格颜色继续标出已应用片段。"
-                    : "打开 SynthV 工程后，从歌词、轨道和真实音符开始工作。"
-                color: page.theme.muted
-                font.pixelSize: Math.round(13 * page.scale)
-                lineHeight: 1.2
-                wrapMode: Text.Wrap
-                textFormat: Text.PlainText
-            }
-        }
+        spacing: page.editorPadding
 
         GridLayout {
+            id: projectToolbar
             Layout.fillWidth: true
+            Layout.topMargin: page.editorPadding
             Layout.leftMargin: page.contentMargin
             Layout.rightMargin: page.contentMargin
-            columns: page.stacked ? 1 : 2
-            columnSpacing: Math.round(14 * page.scale)
-            rowSpacing: Math.round(8 * page.scale)
+            columns: page.availableWidth < Math.round(480 * page.scale) ? 1 : 2
+            columnSpacing: page.editorPadding
+            rowSpacing: page.editorGap
 
-            ColumnLayout {
+            RowLayout {
                 Layout.fillWidth: true
-                spacing: Math.round(3 * page.scale)
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Math.round(7 * page.scale)
-                    PanelLabel {
-                        theme: page.theme
-                        text: page.hasSource ? page.fileName(page.view.source) : "尚未载入调音工程"
-                        elide: Text.ElideMiddle
-                    }
-                    Text {
-                        visible: page.textOf(page.view.sha256).length > 0
-                        text: "SHA " + page.shortHash(page.view.sha256)
-                        color: page.theme.muted
-                        font.pixelSize: Math.round(10 * page.scale)
-                        font.family: "Consolas"
-                        textFormat: Text.PlainText
-                    }
+                spacing: page.editorPadding
+                Text {
+                    text: "逐轨调音"
+                    color: page.theme.text
+                    font.pixelSize: Math.round(19 * page.scale)
+                    font.weight: Font.DemiBold
+                    textFormat: Text.PlainText
                 }
                 Text {
                     Layout.fillWidth: true
-                    visible: page.hasSource && !page.stacked
-                    text: page.textOf(page.view.source)
+                    text: page.hasSource ? page.fileName(page.view.source) : "尚未载入调音工程"
                     color: page.theme.muted
-                    font.pixelSize: Math.round(11 * page.scale)
+                    font.pixelSize: Math.round(12 * page.scale)
                     elide: Text.ElideMiddle
                     textFormat: Text.PlainText
                     HoverHandler { id: sourcePathHover }
-                    ToolTip.visible: sourcePathHover.hovered
-                    ToolTip.text: page.view.job ? text + "\n任务：" + page.view.job : text
+                    ToolTip.visible: page.hasSource && sourcePathHover.hovered
+                    ToolTip.text: page.textOf(page.view.source)
+                        + (page.view.sha256 ? "\nSHA " + page.shortHash(page.view.sha256) : "")
+                        + (page.view.job ? "\n任务：" + page.view.job : "")
                 }
             }
 
             RowLayout {
-                Layout.fillWidth: page.stacked
-                Layout.alignment: page.stacked ? Qt.AlignLeft : Qt.AlignRight | Qt.AlignVCenter
-                spacing: Math.round(7 * page.scale)
-
-                UiButton {
+                spacing: page.editorGap
+                EditorButton {
                     objectName: "tuningModeSingle"
                     theme: page.theme
                     text: "单轨精修"
@@ -662,7 +612,7 @@ ScrollView {
                     enabled: !page.busy
                     onClicked: page.controller.setMode("single")
                 }
-                UiButton {
+                EditorButton {
                     objectName: "tuningModeMulti"
                     theme: page.theme
                     text: "多轨编排"
@@ -670,7 +620,7 @@ ScrollView {
                     enabled: !page.busy
                     onClicked: page.controller.setMode("multi")
                 }
-                UiButton {
+                EditorButton {
                     objectName: "tuningOpenProject"
                     theme: page.theme
                     text: "打开工程…"
@@ -682,31 +632,7 @@ ScrollView {
         }
 
         Rectangle {
-            Layout.fillWidth: true
-            Layout.leftMargin: page.contentMargin
-            Layout.rightMargin: page.contentMargin
-            visible: !page.hasSource
-            implicitHeight: guideText.implicitHeight + Math.round(16 * page.scale)
-            radius: Math.round(8 * page.scale)
-            color: page.theme.raised
-
-            Text {
-                id: guideText
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.leftMargin: Math.round(12 * page.scale)
-                anchors.rightMargin: Math.round(12 * page.scale)
-                text: "01 搜索并点击歌词  ·  02 选择单轨或多轨共享区间  ·  03 应用风格色并生成候选"
-                color: page.theme.text
-                font.pixelSize: Math.round(12 * page.scale)
-                font.weight: Font.DemiBold
-                wrapMode: Text.Wrap
-                textFormat: Text.PlainText
-            }
-        }
-
-        Rectangle {
+            id: legacyDraftBanner
             objectName: "legacyDraftBanner"
             Layout.fillWidth: true
             Layout.leftMargin: page.contentMargin
@@ -757,204 +683,144 @@ ScrollView {
             Layout.fillWidth: true
             Layout.leftMargin: page.contentMargin
             Layout.rightMargin: page.contentMargin
-            Layout.bottomMargin: page.stacked ? 16 : 24
             columns: page.stacked ? 1 : 2
-            columnSpacing: Math.round(14 * page.scale)
-            rowSpacing: Math.round(12 * page.scale)
+            columnSpacing: page.editorPadding
+            rowSpacing: page.editorPadding
 
             Rectangle {
                 id: workspacePanel
                 objectName: "tuningWorkspacePanel"
                 Layout.fillWidth: true
                 Layout.alignment: Qt.AlignTop
-                implicitHeight: workspaceColumn.implicitHeight + Math.round(28 * page.scale)
-                radius: Math.round(10 * page.scale)
+                Layout.preferredHeight: Math.max(chromeHeight + page.minimumRollHeight,
+                    Math.min(Math.round(920 * page.scale), page.availableHeight
+                        - projectToolbar.height - 3 * page.editorPadding
+                        - (legacyDraftBanner.visible ? legacyDraftBanner.height + page.editorPadding : 0)))
+                readonly property real chromeHeight: editorTools.implicitHeight
+                    + selectionToolbar.implicitHeight + viewportStrip.implicitHeight
+                    + 2 * page.editorPadding + 3 * page.editorGap
+                radius: Math.round(8 * page.scale)
                 color: page.theme.surface
                 border.width: 1
                 border.color: page.theme.line
 
                 ColumnLayout {
-                    id: workspaceColumn
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.margins: Math.round(14 * page.scale)
-                    spacing: Math.round(10 * page.scale)
+                    anchors.fill: parent
+                    anchors.margins: page.editorPadding
+                    spacing: page.editorGap
 
-                    RowLayout {
+                    ColumnLayout {
+                        id: editorTools
                         Layout.fillWidth: true
-                        spacing: Math.round(8 * page.scale)
+                        spacing: page.editorGap
 
-                        ColumnLayout {
+                        RowLayout {
                             Layout.fillWidth: true
-                            spacing: Math.round(2 * page.scale)
-                            PanelLabel {
-                                theme: page.theme
-                                text: "轨道目标"
-                            }
-                            HelperText {
-                                theme: page.theme
-                                visible: !page.stacked
-                                text: page.mode === "multi"
-                                    ? "勾选轨道共享同一时间段；焦点轨独立保留。"
-                                    : "点击轨道切换精修焦点；引用组与异常轨保持只读。"
-                            }
-                        }
-                        Text {
-                            text: page.targetSummary()
-                            color: page.targetEditable ? page.theme.text : page.theme.attention
-                            font.pixelSize: Math.round(11 * page.scale)
-                            font.weight: Font.DemiBold
-                            elide: Text.ElideRight
-                            textFormat: Text.PlainText
-                        }
-                    }
+                            visible: page.tracks.length > 0
+                            spacing: page.editorGap
+                            Flickable {
+                                objectName: "tuningTrackStrip"
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: Math.round(30 * page.scale)
+                                clip: true
+                                contentWidth: Math.max(width, trackStripRow.implicitWidth)
+                                contentHeight: height
+                                flickableDirection: Flickable.HorizontalFlick
+                                boundsBehavior: Flickable.StopAtBounds
+                                visible: page.tracks.length > 0
 
-                    Flickable {
-                        objectName: "tuningTrackStrip"
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: Math.round(43 * page.scale)
-                        clip: true
-                        contentWidth: Math.max(width, trackStripRow.implicitWidth)
-                        contentHeight: height
-                        flickableDirection: Flickable.HorizontalFlick
-                        boundsBehavior: Flickable.StopAtBounds
-                        visible: page.tracks.length > 0
+                                Row {
+                                    id: trackStripRow
+                                    height: parent.height
+                                    spacing: Math.round(7 * page.scale)
 
-                        Row {
-                            id: trackStripRow
-                            height: parent.height
-                            spacing: Math.round(7 * page.scale)
+                                    Repeater {
+                                        model: page.tracks
+                                        delegate: EditorButton {
+                                            id: trackChip
+                                            required property var modelData
+                                            required property int index
 
-                            Repeater {
-                                model: page.tracks
-                                delegate: UiButton {
-                                    id: trackChip
-                                    required property var modelData
-                                    required property int index
+                                            readonly property bool isActive:
+                                                String(modelData.id) === page.activeId
+                                            readonly property bool isSelected: page.mode === "multi"
+                                                ? page.listContains(page.view.selectedTracks, modelData.id)
+                                                : isActive
 
-                                    readonly property bool isActive:
-                                        String(modelData.id) === page.activeId
-                                    readonly property bool isSelected: page.mode === "multi"
-                                        ? page.listContains(page.view.selectedTracks, modelData.id)
-                                        : isActive
-
-                                    theme: page.theme
-                                    text: (isActive ? "● " : "") + page.textOf(modelData.name)
-                                        + (modelData.noteCount !== undefined
-                                            ? "  " + modelData.noteCount : "")
-                                        + (modelData.editable === false ? "  · 只读" : "")
-                                        + (page.mode === "multi" && isSelected ? "  ✓" : "")
-                                    selected: isSelected
-                                    enabled: !page.busy && (page.mode === "single"
-                                        || modelData.editable !== false)
-                                    width: Math.max(Math.round(148 * page.scale),
-                                        implicitWidth)
-                                    Accessible.name: page.textOf(modelData.name)
-                                    ToolTip.visible: hovered
-                                        && page.textOf(modelData.reason).length > 0
-                                    ToolTip.text: page.textOf(modelData.reason)
-                                    onClicked: {
-                                        if (page.mode === "single")
-                                            page.controller.focusTrack(String(modelData.id))
-                                        else
-                                            page.controller.toggleTrack(String(modelData.id))
+                                            theme: page.theme
+                                            text: page.textOf(modelData.name)
+                                                + (modelData.noteCount !== undefined
+                                                    ? "  " + modelData.noteCount : "")
+                                                + (modelData.editable === false ? "  · 只读" : "")
+                                                + (page.mode === "multi" && isSelected ? "  ✓" : "")
+                                            selected: isSelected
+                                            enabled: !page.busy && (page.mode === "single"
+                                                || modelData.editable !== false)
+                                            width: Math.max(Math.round(80 * page.scale),
+                                                Math.min(Math.round(236 * page.scale), implicitWidth))
+                                            leftPadding: Math.round(19 * page.scale)
+                                            Accessible.name: text + (isActive ? "，焦点轨" : "")
+                                            Rectangle {
+                                                x: Math.round(6 * page.scale)
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                width: Math.round(7 * page.scale)
+                                                height: width
+                                                radius: width / 2
+                                                color: timelineRoll.trackColor(trackChip.index)
+                                            }
+                                            ToolTip.visible: hovered
+                                                && page.textOf(modelData.reason).length > 0
+                                            ToolTip.text: page.textOf(modelData.reason)
+                                            onClicked: {
+                                                if (page.mode === "single")
+                                                    page.controller.focusTrack(String(modelData.id))
+                                                else
+                                                    page.controller.toggleTrack(String(modelData.id))
+                                            }
+                                        }
                                     }
                                 }
                             }
-                        }
-                    }
-
-                    Text {
-                        Layout.fillWidth: true
-                        visible: page.tracks.length === 0
-                        text: page.hasSource ? "工程尚未投影出可编辑演唱轨。" : "打开工程后可查看轨道、歌词与音符。"
-                        color: page.theme.muted
-                        font.pixelSize: Math.round(12 * page.scale)
-                        wrapMode: Text.Wrap
-                        textFormat: Text.PlainText
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        visible: page.tracks.length > 0 && page.mode === "multi"
-                        spacing: Math.round(8 * page.scale)
-                        HelperText {
-                            Layout.alignment: Qt.AlignVCenter
-                            theme: page.theme
-                            text: "焦点轨"
-                        }
-                        UiComboBox {
-                            objectName: "tuningFocusTrack"
-                            Layout.fillWidth: true
-                            Layout.maximumWidth: Math.round(360 * page.scale)
-                            theme: page.theme
-                            model: page.tracks
-                            textRole: "name"
-                            valueRole: "id"
-                            currentIndex: page.trackIndex(page.activeId)
-                            enabled: !page.busy && page.tracks.length > 0
-                            Accessible.name: "焦点轨"
-                            onActivated: function(index) {
-                                if (index >= 0 && index < page.tracks.length)
-                                    page.controller.focusTrack(String(page.tracks[index].id))
-                            }
-                        }
-                        Text {
-                            text: page.activeTrackData && page.activeTrackData.editable === false
-                                ? "当前焦点只读" : ""
-                            color: page.theme.attention
-                            font.pixelSize: Math.round(11 * page.scale)
-                            textFormat: Text.PlainText
-                        }
-                    }
-
-                    Divider {}
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: Math.round(8 * page.scale)
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Math.round(8 * page.scale)
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: Math.round(2 * page.scale)
-                                PanelLabel {
-                                    theme: page.theme
-                                    text: "按歌词定位"
+                            UiComboBox {
+                                objectName: "tuningFocusTrack"
+                                Layout.preferredWidth: Math.round(137 * page.scale)
+                                implicitHeight: Math.round(30 * page.scale)
+                                visible: page.mode === "multi"
+                                theme: page.theme
+                                model: page.tracks
+                                textRole: "name"
+                                displayText: "焦点：" + (currentText || "—")
+                                valueRole: "id"
+                                currentIndex: page.trackIndex(page.activeId)
+                                enabled: !page.busy && page.tracks.length > 0
+                                Accessible.name: "焦点轨"
+                                onActivated: function(index) {
+                                    if (index >= 0 && index < page.tracks.length)
+                                        page.controller.focusTrack(String(page.tracks[index].id))
                                 }
-                                HelperText {
-                                    theme: page.theme
-                                    text: "点选一处歌词，时间轴会跳到对应轨道和时间。"
-                                }
-                            }
-                            Text {
-                                text: page.matches.length.toString()
-                                color: page.theme.muted
-                                font.pixelSize: Math.round(11 * page.scale)
-                                textFormat: Text.PlainText
                             }
                         }
 
                         RowLayout {
                             Layout.fillWidth: true
-                            spacing: Math.round(7 * page.scale)
+                            spacing: page.editorGap
 
                             ThemedTextField {
                                 id: lyricSearch
                                 objectName: "tuningLyricSearch"
+                                implicitHeight: Math.round(30 * page.scale)
+                                topPadding: 0
+                                bottomPadding: 0
                                 Layout.fillWidth: true
                                 theme: page.theme
-                                placeholderText: "搜索歌词、音节或重复词…"
+                                placeholderText: "搜索歌词…"
                                 text: page.textOf(page.view.query)
                                 enabled: !page.busy && page.hasSource
                                 Accessible.name: "搜索歌词"
                                 onTextEdited: page.controller.setQuery(text)
                                 onAccepted: page.controller.setQuery(text)
                             }
-                            UiButton {
+                            EditorButton {
                                 objectName: "tuningClearLyricSearch"
                                 theme: page.theme
                                 text: "清空"
@@ -963,11 +829,19 @@ ScrollView {
                                 enabled: !page.busy
                                 onClicked: page.controller.setQuery("")
                             }
+                            EditorButton {
+                                objectName: "timelineFit"
+                                theme: page.theme
+                                text: "全曲"
+                                quiet: true
+                                enabled: page.hasSource
+                                onClicked: page.fitTimelineView()
+                            }
                         }
 
                         Rectangle {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: Math.round(54 * page.scale)
+                            Layout.preferredHeight: Math.round(44 * page.scale)
                             visible: page.textOf(page.view.query).length > 0
                             radius: Math.round(8 * page.scale)
                             color: page.theme.base
@@ -1002,7 +876,7 @@ ScrollView {
                                     id: matchRow
                                     required property var modelData
                                     width: Math.min(Math.round(205 * page.scale), matchList.width)
-                                    height: Math.round(48 * page.scale)
+                                    height: Math.round(41 * page.scale)
                                     hoverEnabled: true
                                     focusPolicy: Qt.StrongFocus
                                     Accessible.name: (page.textOf(modelData.lyric).length > 0
@@ -1010,8 +884,12 @@ ScrollView {
                                         + (modelData.trackName || page.trackName(modelData.trackId))
                                         + "，" + page.formatTime(modelData.start)
 
-                                    onClicked: page.controller.selectMatch(
-                                        String(modelData.trackId), String(modelData.id))
+                                    onClicked: {
+                                        page.controller.selectMatch(String(modelData.trackId),
+                                            String(modelData.id))
+                                        timelineRoll.revealPitch(modelData.pitch,
+                                            modelData.trackId, modelData.id)
+                                    }
 
                                     contentItem: RowLayout {
                                         spacing: Math.round(8 * page.scale)
@@ -1080,114 +958,56 @@ ScrollView {
                         }
                     }
 
-                    Divider {}
-
-                    ColumnLayout {
+                    Rectangle {
+                        id: timelineFrame
+                        objectName: "tuningTimelineFrame"
                         Layout.fillWidth: true
-                        spacing: Math.round(7 * page.scale)
+                        Layout.fillHeight: true
+                        Layout.minimumHeight: page.minimumRollHeight
+                        Layout.preferredHeight: page.minimumRollHeight
+                        radius: Math.round(6 * page.scale)
+                        color: page.theme.base
+                        border.width: 1
+                        border.color: page.theme.line
+                        clip: true
+
+                        TuningTimeline {
+                            id: timelineRoll
+                            anchors.fill: parent
+                            anchors.margins: 1
+                            theme: page.theme
+                            controller: page.controller
+                            view: page.view
+                            tracks: page.tracks
+                            notes: page.notes
+                            regions: page.regions
+                            compact: page.stacked
+                        }
+                    }
+
+                    TuningViewportStrip {
+                        id: viewportStrip
+                        Layout.fillWidth: true
+                        Layout.leftMargin: timelineRoll.x + timelineRoll.plotLeft
+                        Layout.rightMargin: Math.max(0, timelineFrame.width
+                            - timelineRoll.x - timelineRoll.plotRight)
+                        theme: page.theme
+                        timelineStart: page.timelineOrigin()
+                        timelineDuration: page.numberOr(page.view.duration, 0)
+                        viewportStart: page.numberOr(page.view.viewportStart, timelineStart)
+                        viewportSpan: page.numberOr(page.view.viewportSpan, timelineDuration)
+                        onViewportRequested: (start, span) => page.controller.setViewport(start, span)
+                    }
+
+                    GridLayout {
+                        id: selectionToolbar
+                        Layout.fillWidth: true
+                        columns: width < Math.round(520 * page.scale) ? 1 : 3
+                        columnSpacing: page.editorGap
+                        rowSpacing: page.editorGap
 
                         RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Math.round(7 * page.scale)
-
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: Math.round(1 * page.scale)
-                                PanelLabel {
-                                    theme: page.theme
-                                    text: page.mode === "multi"
-                                        ? "多轨共享时间轴" : "当前轨时间轴"
-                                }
-                                HelperText {
-                                    theme: page.theme
-                                    text: page.hasRange
-                                        ? "选区 " + page.validRange() + "  ·  " + page.targetSummary()
-                                        : "拖拽时间轴建立真实音符区间，或在歌词结果中定位。"
-                                }
-                            }
-
-                            UiButton {
-                                objectName: "timelinePanLeft"
-                                theme: page.theme
-                                text: "‹"
-                                quiet: true
-                                enabled: page.hasSource
-                                onClicked: page.panTimeline(-0.35)
-                                ToolTip.visible: hovered
-                                ToolTip.text: "向左平移"
-                            }
-                            UiButton {
-                                objectName: "timelineZoomOut"
-                                theme: page.theme
-                                text: "−"
-                                quiet: true
-                                enabled: page.hasSource
-                                onClicked: page.zoomTimeline(1.25)
-                                ToolTip.visible: hovered
-                                ToolTip.text: "缩小"
-                            }
-                            UiButton {
-                                objectName: "timelineZoomIn"
-                                theme: page.theme
-                                text: "+"
-                                quiet: true
-                                enabled: page.hasSource
-                                onClicked: page.zoomTimeline(0.8)
-                                ToolTip.visible: hovered
-                                ToolTip.text: "放大"
-                            }
-                            UiButton {
-                                objectName: "timelinePanRight"
-                                theme: page.theme
-                                text: "›"
-                                quiet: true
-                                enabled: page.hasSource
-                                onClicked: page.panTimeline(0.35)
-                                ToolTip.visible: hovered
-                                ToolTip.text: "向右平移"
-                            }
-                            UiButton {
-                                objectName: "timelineFit"
-                                theme: page.theme
-                                text: "全曲"
-                                quiet: true
-                                enabled: page.hasSource
-                                onClicked: page.fitTimelineView()
-                            }
-                        }
-
-                        Rectangle {
-                            id: timelineFrame
-                            objectName: "tuningTimelineFrame"
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: page.timelineHeight
-                            radius: Math.round(8 * page.scale)
-                            color: page.theme.base
-                            border.width: 1
-                            border.color: page.theme.line
-                            clip: true
-
-                            TuningTimeline {
-                                anchors.fill: parent
-                                anchors.margins: 1
-                                theme: page.theme
-                                controller: page.controller
-                                view: page.view
-                                tracks: page.tracks
-                                notes: page.notes
-                                regions: page.regions
-                            }
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Math.round(6 * page.scale)
-
-                            HelperText {
-                                Layout.alignment: Qt.AlignVCenter
-                                theme: page.theme
-                                text: "精确选区"
-                            }
+                            spacing: page.editorGap
                             Text {
                                 text: "开始"
                                 color: page.theme.muted
@@ -1197,10 +1017,13 @@ ScrollView {
                             SpinBox {
                                 id: selectionStartInput
                                 objectName: "tuningSelectionStart"
-                                Layout.preferredWidth: Math.round(108 * page.scale)
+                                Layout.minimumWidth: Math.round(142 * page.scale)
+                                Layout.preferredWidth: Layout.minimumWidth
+                                font.pixelSize: Math.round(13 * page.scale)
                                 from: Math.round(page.selectionMinimum() * 1000)
                                 to: Math.round(Math.max(page.selectionMinimum(),
                                     page.selectionMaximum()) * 1000)
+                                Layout.preferredHeight: Math.round(30 * page.scale)
                                 stepSize: 1
                                 editable: true
                                 live: false
@@ -1216,12 +1039,6 @@ ScrollView {
                                 Accessible.name: "选区开始时间，秒"
                             }
                             Text {
-                                text: "秒"
-                                color: page.theme.muted
-                                font.pixelSize: Math.round(11 * page.scale)
-                                textFormat: Text.PlainText
-                            }
-                            Text {
                                 text: "结束"
                                 color: page.theme.muted
                                 font.pixelSize: Math.round(11 * page.scale)
@@ -1230,10 +1047,13 @@ ScrollView {
                             SpinBox {
                                 id: selectionEndInput
                                 objectName: "tuningSelectionEnd"
-                                Layout.preferredWidth: Math.round(108 * page.scale)
+                                Layout.minimumWidth: Math.round(142 * page.scale)
+                                Layout.preferredWidth: Layout.minimumWidth
+                                font.pixelSize: Math.round(13 * page.scale)
                                 from: Math.round(page.selectionMinimum() * 1000)
                                 to: Math.round(Math.max(page.selectionMinimum(),
                                     page.selectionMaximum()) * 1000)
+                                Layout.preferredHeight: Math.round(30 * page.scale)
                                 stepSize: 1
                                 editable: true
                                 live: false
@@ -1248,14 +1068,7 @@ ScrollView {
                                 onValueModified: page.commitPreciseSelection()
                                 Accessible.name: "选区结束时间，秒"
                             }
-                            Text {
-                                text: "秒"
-                                color: page.theme.muted
-                                font.pixelSize: Math.round(11 * page.scale)
-                                textFormat: Text.PlainText
-                            }
-                            Item { Layout.fillWidth: true }
-                            UiButton {
+                            EditorButton {
                                 objectName: "applyTuningSelection"
                                 theme: page.theme
                                 text: "应用时间"
@@ -1264,36 +1077,14 @@ ScrollView {
                                 onClicked: page.commitPreciseSelection()
                             }
                         }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Math.round(8 * page.scale)
-
-                            Rectangle {
-                                implicitWidth: Math.round(9 * page.scale)
-                                implicitHeight: implicitWidth
-                                radius: implicitWidth / 2
-                                color: page.styleColor(page.view.style)
-                            }
-                            Text {
-                                Layout.fillWidth: true
-                                text: page.targetSummary() + "  ·  "
-                                    + (page.hasRange ? page.validRange() : "尚未选择区间")
-                                    + "  ·  " + page.styleLabel(page.view.style)
-                                    + " " + page.strengthText(page.view.styleStrength)
-                                color: page.theme.text
-                                font.pixelSize: Math.round(11 * page.scale)
-                                elide: Text.ElideRight
-                                textFormat: Text.PlainText
-                            }
-                            UiButton {
-                                objectName: "addTuningRegion"
-                                theme: page.theme
-                                text: "应用为片段"
-                                primary: true
-                                enabled: page.canAddRegion
-                                onClicked: page.controller.addRegion()
-                            }
+                        Item { Layout.fillWidth: true; visible: selectionToolbar.columns > 1 }
+                        EditorButton {
+                            objectName: "addTuningRegion"
+                            theme: page.theme
+                            text: "应用为片段"
+                            primary: true
+                            enabled: page.canAddRegion
+                            onClicked: page.controller.addRegion()
                         }
                     }
                 }
@@ -1305,7 +1096,7 @@ ScrollView {
                 Layout.fillWidth: page.stacked
                 Layout.preferredWidth: page.stacked ? 0 : page.railWidth
                 Layout.alignment: Qt.AlignTop
-                implicitHeight: inspectorColumn.implicitHeight + Math.round(28 * page.scale)
+                implicitHeight: inspectorColumn.implicitHeight + 2 * page.editorPadding
                 radius: Math.round(10 * page.scale)
                 color: page.theme.surface
                 border.width: 1
@@ -1316,8 +1107,8 @@ ScrollView {
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.top: parent.top
-                    anchors.margins: Math.round(14 * page.scale)
-                    spacing: Math.round(9 * page.scale)
+                    anchors.margins: page.editorPadding
+                    spacing: page.editorGap
 
                     RowLayout {
                         Layout.fillWidth: true
@@ -1352,141 +1143,52 @@ ScrollView {
                         }
                     }
 
-                    ColumnLayout {
+                    RowLayout {
                         Layout.fillWidth: true
-                        spacing: Math.round(4 * page.scale)
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Math.round(8 * page.scale)
-                            HelperText {
-                                Layout.fillWidth: true
-                                theme: page.theme
-                                text: "风格强度"
-                            }
-                            Text {
-                                objectName: "tuningStyleStrengthPercent"
-                                text: page.strengthText(page.view.styleStrength)
-                                color: page.theme.text
-                                font.pixelSize: Math.round(13 * page.scale)
-                                font.weight: Font.DemiBold
-                                textFormat: Text.PlainText
-                            }
+                        spacing: page.editorGap
+                        HelperText {
+                            theme: page.theme
+                            text: "风格强度"
                         }
-
-                        Slider {
-                            id: styleStrengthSlider
+                        PercentSlider {
                             objectName: "tuningStyleStrengthSlider"
                             Layout.fillWidth: true
-                            from: 0
-                            to: 100
-                            value: Math.round(Math.max(0,
-                                Math.min(1, page.numberOr(page.view.styleStrength, 0))) * 100)
-                            stepSize: 1
-                            snapMode: Slider.SnapAlways
+                            strength: page.numberOr(page.view.styleStrength, 0)
                             enabled: !page.busy && page.hasSource
-                            focusPolicy: Qt.StrongFocus
-                            wheelEnabled: false
-                            onMoved: page.controller.setStyleStrength(value / 100)
                             Accessible.name: "风格强度"
-                            Accessible.description: "范围 0% 到 100%，每次调整 1%"
-
-                            background: Rectangle {
-                                y: Math.round((parent.height - height) / 2)
-                                width: parent.width
-                                height: Math.round(5 * page.scale)
-                                radius: height / 2
-                                color: page.theme.line
-                                Rectangle {
-                                    width: parent.width * parent.parent.visualPosition
-                                    height: parent.height
-                                    radius: parent.radius
-                                    color: page.theme.accent
-                                }
-                            }
-                            handle: Rectangle {
-                                x: parent.visualPosition * (parent.width - width)
-                                y: Math.round((parent.height - height) / 2)
-                                width: Math.round(15 * page.scale)
-                                height: width
-                                radius: width / 2
-                                color: page.theme.text
-                                border.width: 1
-                                border.color: page.theme.accent
-                            }
+                            onMoved: page.controller.setStyleStrength(value / 100)
                         }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Math.round(6 * page.scale)
-                            HelperText {
-                                Layout.alignment: Qt.AlignVCenter
-                                theme: page.theme
-                                text: "快捷"
-                            }
-                            StrengthButton {
-                                theme: page.theme
-                                choiceValue: 0.3
-                                knownValue: true
-                                currentValue: page.numberOr(page.view.styleStrength, 0)
-                                onClicked: page.controller.setStyleStrength(0.3)
-                            }
-                            StrengthButton {
-                                theme: page.theme
-                                choiceValue: 0.6
-                                knownValue: true
-                                currentValue: page.numberOr(page.view.styleStrength, 0)
-                                onClicked: page.controller.setStyleStrength(0.6)
-                            }
-                            StrengthButton {
-                                theme: page.theme
-                                choiceValue: 0.7
-                                knownValue: true
-                                currentValue: page.numberOr(page.view.styleStrength, 0)
-                                onClicked: page.controller.setStyleStrength(0.7)
-                            }
-                            StrengthButton {
-                                theme: page.theme
-                                choiceValue: 1.0
-                                knownValue: true
-                                currentValue: page.numberOr(page.view.styleStrength, 0)
-                                onClicked: page.controller.setStyleStrength(1.0)
-                            }
-                            Item { Layout.fillWidth: true }
-                            UiButton {
-                                objectName: "tuningStylePitch"
-                                theme: page.theme
-                                text: boolOr(page.view.stylePitch, false) ? "音高 · 开" : "音高 · 关"
-                                selected: boolOr(page.view.stylePitch, false)
-                                enabled: !page.busy
-                                onClicked: page.controller.setStylePitch(!boolOr(page.view.stylePitch, false))
-                            }
+                        Text {
+                            objectName: "tuningStyleStrengthPercent"
+                            Layout.minimumWidth: Math.round(32 * page.scale)
+                            horizontalAlignment: Text.AlignRight
+                            text: page.strengthText(page.view.styleStrength)
+                            color: page.theme.text
+                            font.pixelSize: Math.round(12 * page.scale)
+                            font.weight: Font.DemiBold
+                            textFormat: Text.PlainText
                         }
-
-                        HelperText {
-                            Layout.fillWidth: true
+                        EditorButton {
+                            objectName: "tuningStylePitch"
                             theme: page.theme
-                            text: "按 1% 步进；用方向键可键盘调节，0% 不应用。"
+                            text: boolOr(page.view.stylePitch, false) ? "音高 · 开" : "音高 · 关"
+                            selected: boolOr(page.view.stylePitch, false)
+                            enabled: !page.busy
+                            onClicked: page.controller.setStylePitch(!boolOr(page.view.stylePitch, false))
                         }
                     }
 
-                    Text {
+                    HelperText {
                         Layout.fillWidth: true
-                        text: page.hasRange
-                            ? "当前：" + page.validRange() + "  ·  "
-                                + page.styleLabel(page.view.style) + " "
-                                + page.strengthText(page.view.styleStrength)
-                                + "  ·  " + page.targetSummary()
-                            : "先定位歌词或拖拽时间轴选择区间。"
-                        color: page.hasRange ? page.theme.text : page.theme.muted
-                        font.pixelSize: Math.round(11 * page.scale)
-                        wrapMode: Text.Wrap
-                        textFormat: Text.PlainText
+                        visible: page.regionCount === 0
+                        theme: page.theme
+                        text: "选好区间和风格后，应用为片段。"
                     }
 
                     Rectangle {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: Math.round(178 * page.scale)
+                        visible: page.regionCount > 0
+                        Layout.preferredHeight: Math.min(page.regionCount, 3) * Math.round(42 * page.scale) + 2
                         radius: Math.round(8 * page.scale)
                         color: page.theme.base
                         border.width: 1
@@ -1507,7 +1209,7 @@ ScrollView {
                                 id: regionRow
                                 required property var modelData
                                 width: regionList.width
-                                height: Math.round(55 * page.scale)
+                                height: Math.round(42 * page.scale)
                                 color: regionHover.hovered ? page.theme.raised : "transparent"
 
                                 HoverHandler { id: regionHover }
@@ -1554,7 +1256,7 @@ ScrollView {
                                         }
                                     }
 
-                                    UiButton {
+                                    EditorButton {
                                         theme: page.theme
                                         text: "定位"
                                         quiet: true
@@ -1562,7 +1264,7 @@ ScrollView {
                                             Number(regionRow.modelData.start),
                                             Number(regionRow.modelData.end))
                                     }
-                                    UiButton {
+                                    EditorButton {
                                         objectName: "updateTuningRegion_" + String(regionRow.modelData.id)
                                         theme: page.theme
                                         text: "更新"
@@ -1575,7 +1277,7 @@ ScrollView {
                                         ToolTip.visible: hovered
                                         ToolTip.text: "轨道按此片段固定；范围和风格取当前选区"
                                     }
-                                    UiButton {
+                                    EditorButton {
                                         theme: page.theme
                                         text: "移除"
                                         quiet: true
@@ -1595,20 +1297,6 @@ ScrollView {
                                     opacity: 0.7
                                 }
                             }
-                        }
-
-                        Text {
-                            anchors.centerIn: parent
-                            width: parent.width - Math.round(28 * page.scale)
-                            visible: page.regionCount === 0
-                            horizontalAlignment: Text.AlignHCenter
-                            text: page.hasSource
-                                ? "还没有已应用片段。选好区间和风格后应用。"
-                                : "打开工程后可查看逐轨风格片段。"
-                            color: page.theme.muted
-                            font.pixelSize: Math.round(11 * page.scale)
-                            wrapMode: Text.Wrap
-                            textFormat: Text.PlainText
                         }
                     }
 
@@ -1803,8 +1491,34 @@ ScrollView {
                             }
                         }
                     }
+                }
+            }
+        }
 
-                    Divider {}
+        GridLayout {
+            Layout.fillWidth: true
+            Layout.leftMargin: page.contentMargin
+            Layout.rightMargin: page.contentMargin
+            Layout.bottomMargin: page.editorPadding
+            columns: page.stacked ? 1 : 2
+            columnSpacing: page.editorPadding
+            rowSpacing: page.editorPadding
+
+            Rectangle {
+                Layout.fillWidth: page.stacked
+                Layout.preferredWidth: page.railWidth
+                Layout.alignment: Qt.AlignTop
+                implicitHeight: presetColumn.implicitHeight + 2 * page.editorPadding
+                radius: Math.round(8 * page.scale)
+                color: page.theme.surface
+                border.width: 1
+                border.color: page.theme.line
+
+                ColumnLayout {
+                    id: presetColumn
+                    anchors.fill: parent
+                    anchors.margins: page.editorPadding
+                    spacing: page.editorGap
 
                     PanelLabel {
                         theme: page.theme
@@ -1892,8 +1606,23 @@ ScrollView {
                             onClicked: page.fitTimelineView()
                         }
                     }
+                }
+            }
 
-                    Divider {}
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignTop
+                implicitHeight: expressionColumn.implicitHeight + 2 * page.editorPadding
+                radius: Math.round(8 * page.scale)
+                color: page.theme.surface
+                border.width: 1
+                border.color: page.theme.line
+
+                ColumnLayout {
+                    id: expressionColumn
+                    anchors.fill: parent
+                    anchors.margins: page.editorPadding
+                    spacing: page.editorGap
 
                     PanelLabel {
                         theme: page.theme
@@ -2142,26 +1871,20 @@ ScrollView {
                             theme: page.theme
                             text: "动态强度"
                         }
-                        StrengthButton {
-                            theme: page.theme
-                            choiceValue: 0.3
-                            knownValue: page.optionKnown("dynamics_strength")
-                            currentValue: page.numberOr(page.optionValue("dynamics_strength", 0), 0)
-                            onClicked: page.controller.setTuningOption("dynamics_strength", 0.3)
+                        PercentSlider {
+                            Layout.fillWidth: true
+                            objectName: "tuningDynamicsStrengthSlider"
+                            strength: page.numberOr(page.optionValue("dynamics_strength", 0), 0)
+                            enabled: !page.busy && page.optionKnown("dynamics_strength")
+                            Accessible.name: "动态强度"
+                            onMoved: page.controller.setTuningOption("dynamics_strength", value / 100)
                         }
-                        StrengthButton {
+                        HelperText {
                             theme: page.theme
-                            choiceValue: 0.6
-                            knownValue: page.optionKnown("dynamics_strength")
-                            currentValue: page.numberOr(page.optionValue("dynamics_strength", 0), 0)
-                            onClicked: page.controller.setTuningOption("dynamics_strength", 0.6)
-                        }
-                        StrengthButton {
-                            theme: page.theme
-                            choiceValue: 1.0
-                            knownValue: page.optionKnown("dynamics_strength")
-                            currentValue: page.numberOr(page.optionValue("dynamics_strength", 0), 0)
-                            onClicked: page.controller.setTuningOption("dynamics_strength", 1.0)
+                            Layout.minimumWidth: Math.round(34 * page.scale)
+                            horizontalAlignment: Text.AlignRight
+                            text: page.optionKnown("dynamics_strength")
+                                ? page.strengthText(page.optionValue("dynamics_strength", 0)) : "—"
                         }
                     }
 
@@ -2191,26 +1914,20 @@ ScrollView {
                             theme: page.theme
                             text: "唱腔强度"
                         }
-                        StrengthButton {
-                            theme: page.theme
-                            choiceValue: 0.3
-                            knownValue: page.optionKnown("technique_strength")
-                            currentValue: page.numberOr(page.optionValue("technique_strength", 0), 0)
-                            onClicked: page.controller.setTuningOption("technique_strength", 0.3)
+                        PercentSlider {
+                            Layout.fillWidth: true
+                            objectName: "tuningTechniqueStrengthSlider"
+                            strength: page.numberOr(page.optionValue("technique_strength", 0), 0)
+                            enabled: !page.busy && page.optionKnown("technique_strength")
+                            Accessible.name: "唱腔强度"
+                            onMoved: page.controller.setTuningOption("technique_strength", value / 100)
                         }
-                        StrengthButton {
+                        HelperText {
                             theme: page.theme
-                            choiceValue: 0.6
-                            knownValue: page.optionKnown("technique_strength")
-                            currentValue: page.numberOr(page.optionValue("technique_strength", 0), 0)
-                            onClicked: page.controller.setTuningOption("technique_strength", 0.6)
-                        }
-                        StrengthButton {
-                            theme: page.theme
-                            choiceValue: 1.0
-                            knownValue: page.optionKnown("technique_strength")
-                            currentValue: page.numberOr(page.optionValue("technique_strength", 0), 0)
-                            onClicked: page.controller.setTuningOption("technique_strength", 1.0)
+                            Layout.minimumWidth: Math.round(34 * page.scale)
+                            horizontalAlignment: Text.AlignRight
+                            text: page.optionKnown("technique_strength")
+                                ? page.strengthText(page.optionValue("technique_strength", 0)) : "—"
                         }
                         UiButton {
                             objectName: "tuningTechniquePitch"

@@ -13,6 +13,9 @@ Item {
     property var spectrum: ({})
     property real maxHz: 20000
     property string selection: "B"
+    property bool showBandDetails: true
+    property bool showPlotHeader: true
+    property int minimumPlotHeight: Math.round(230 * theme.scale)
 
     property int activeBand: 0
     property int dragBand: -1
@@ -257,6 +260,7 @@ Item {
         spacing: Math.round(9 * root.theme.scale)
 
         RowLayout {
+            visible: root.showPlotHeader
             Layout.fillWidth: true
             spacing: Math.round(8 * root.theme.scale)
 
@@ -294,7 +298,7 @@ Item {
             objectName: "mixdownEqPlot"
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.minimumHeight: Math.round(230 * root.theme.scale)
+            Layout.minimumHeight: root.minimumPlotHeight
             radius: Math.round(9 * root.theme.scale)
             color: root.theme.base
             border.width: 1
@@ -325,11 +329,15 @@ Item {
                     ctx.font = Math.round(10 * scale) + "px sans-serif";
                     ctx.textBaseline = "middle";
 
-                    const frequencyTicks = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
+                    const frequencyTicks = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
+                        .filter(hz => hz <= root.expectedMaxHz);
+                    const lastTick = frequencyTicks[frequencyTicks.length - 1];
+                    const lastLabelStart = root.xForFrequency(lastTick, geometry)
+                        - ctx.measureText(root.frequencyLabel(lastTick)).width;
+                    const labelGap = 5 * scale;
+                    let previousLabelEnd = -Infinity;
                     for (let tick = 0; tick < frequencyTicks.length; ++tick) {
                         const hz = frequencyTicks[tick];
-                        if (hz > root.expectedMaxHz)
-                            continue;
                         const x = root.xForFrequency(hz, geometry);
                         ctx.strokeStyle = root.theme.line;
                         ctx.globalAlpha = 0.55;
@@ -338,9 +346,18 @@ Item {
                         ctx.lineTo(x, geometry.top + geometry.height);
                         ctx.stroke();
                         ctx.globalAlpha = 1;
+                        const label = root.frequencyLabel(hz);
+                        const labelWidth = ctx.measureText(label).width;
+                        const first = tick === 0;
+                        const last = hz === lastTick && !first;
+                        const left = first ? x : last ? x - labelWidth : x - labelWidth / 2;
+                        if (!first && !last && (left < previousLabelEnd + labelGap
+                                || left + labelWidth + labelGap > lastLabelStart))
+                            continue;
                         ctx.fillStyle = root.theme.muted;
-                        ctx.textAlign = tick === 0 ? "left" : tick === frequencyTicks.length - 1 ? "right" : "center";
-                        ctx.fillText(root.frequencyLabel(hz), x, geometry.top + geometry.height + Math.round(14 * scale));
+                        ctx.textAlign = first ? "left" : last ? "right" : "center";
+                        ctx.fillText(label, x, geometry.top + geometry.height + Math.round(14 * scale));
+                        previousLabelEnd = left + labelWidth;
                     }
 
                     const gainTicks = [18, 9, 0, -9, -18];
@@ -534,6 +551,7 @@ Item {
 
         GridLayout {
             id: bandCards
+            visible: root.showBandDetails
             Layout.fillWidth: true
             columns: root.width >= Math.round(660 * root.theme.scale) ? 4 : 2
             columnSpacing: Math.round(7 * root.theme.scale)
@@ -596,7 +614,7 @@ Item {
             radius: Math.round(8 * root.theme.scale)
             color: root.theme.surface
             border.color: root.theme.line
-            visible: root.availableBands > 0
+            visible: root.showBandDetails && root.availableBands > 0
 
             GridLayout {
                 id: detailGrid
