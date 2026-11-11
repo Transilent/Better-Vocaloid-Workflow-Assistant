@@ -12,9 +12,12 @@ from common import ROOT, output_directory, remember_job, save_output_directory
 from i18n import tr
 import preparation_commands as preparation
 import quick_results
+from quick_media_handoff import artifact_identity, verify_publication_bundle, verify_task_artifact
+from quick_publication import QuickPublication
 from quick_support import QuickSupport
 from quick_tuning import QuickTuning
 from quick_mixdown import QuickMixdown
+from quick_video import QuickVideo
 from quick_work import WorkerLane
 from workspace_controller import WorkspaceController
 import workflow
@@ -98,11 +101,10 @@ def _run_preparation(draft, existing, retry_cpu, stop, send):
         return {'job': str(job), 'state': 'failed', 'message': str(exc)[:1600]}
 
 
-def _artifact_identity(row):
-    return row['id'], row['revision'], row['sha256']
-
-
 class QuickBridge(QObject):
+    verify_task_artifact = staticmethod(verify_task_artifact)
+    verify_publication_bundle = staticmethod(verify_publication_bundle)
+
     navigationChanged = Signal()
     draftChanged = Signal()
     selectionChanged = Signal()
@@ -128,6 +130,9 @@ class QuickBridge(QObject):
         self._support = QuickSupport(self, self._work, sources)
         self._tuning = QuickTuning(self, self._work)
         self._mixdown = QuickMixdown(self, self._work)
+        self._video = QuickVideo(self, self._work)
+        self._publication = QuickPublication(self, self._work)
+        self._video.publishRequested.connect(self._open_verified_video)
         self._tuning.presetLibraryChanged.connect(self._mixdown.refresh_presets)
         self.state.set_download_source(self._support.state.values['download_source'])
         saved_workflow = workflow.read_state()
@@ -164,6 +169,14 @@ class QuickBridge(QObject):
     def mixdown(self):
         return self._mixdown
 
+    @Property(QObject, constant=True)
+    def video(self):
+        return self._video
+
+    @Property(QObject, constant=True)
+    def publication(self):
+        return self._publication
+
     @Property(str, notify=activityChanged)
     def operationKind(self):
         return self._work.kind
@@ -176,6 +189,7 @@ class QuickBridge(QObject):
     def routes(self):
         return [{'pageId': spec.page_id, 'title': tr('设置与支持' if spec.page_id == 'updates' else spec.title),
                  'short': tr({'processing': '准备', 'tuning': '调音', 'audio_mixdown': '混音',
+                              'video_mixdown': '视频', 'publishing': '发布',
                               'components': '组件', 'results': '任务', 'updates': '设置'}[spec.page_id])}
                 for spec in self.state.routes]
 
@@ -632,9 +646,54 @@ class QuickBridge(QObject):
         self._checked_artifact(None, route='audio_mixdown')
 
     @Slot()
+    def composeTaskVideo(self):
+        self._checked_artifact(None, route='video_mixdown')
+
+    @Slot()
+    def prepareTaskPublication(self):
+        self._checked_artifact(None, route='publishing')
+
+    @Slot()
     def dispatchTaskHandoff(self):
-        if self.state.task_detail.get('canDispatch'):
-            self._checked_artifact(None)
+        detail = self.state.task_detail
+        if detail.get('canDispatch'):
+            route = {'mixdown_ready': 'video_mixdown', 'video_ready': 'publishing',
+                     'awaiting_upload': 'publishing', 'awaiting_publish': 'publishing'}.get(detail.get('handoff'))
+            self._checked_artifact(None, route=route if route in detail.get('studioTargets', {}) else None)
+
+    def _open_verified_video(self, job, video):
+        self._accept_media('publishing', job, [video])
+
+    def _accept_media(self, route, job, rows):
+        if not rows:
+            return False
+        command = self._video.accept_task if route == 'video_mixdown' else self._publication.accept_task
+        if command(job, *rows) is False:
+            return False
+        self.navigate(route)
+        return True
+
+    def open_registered_mix(self, job, artifact_id, path, sha256):
+        if self.workBusy or not job or not artifact_id:
+            return
+
+        def work(stop, _send):
+            detail = quick_results.detail(job, stop.is_set)
+            by_id = {row['id']: row for row in detail['artifacts'] if row['available']}
+            rows = [by_id[key] for key in detail['studioTargets'].get('video_mixdown', ()) if key in by_id]
+            if not rows or (rows[0]['id'], rows[0]['path'], rows[0]['sha256']) != (artifact_id, path, sha256):
+                raise ValueError('登记的混音已变更，请在任务与结果中重新核对。')
+            return rows
+
+        def finish(rows, error):
+            if self._exit_when_idle or isinstance(error, InterruptedError):
+                return
+            if error:
+                self._error(error)
+            else:
+                self._accept_media('video_mixdown', job, rows)
+
+        self._work.start('artifact-check', work, finish)
 
     def _checked_artifact(self, artifact_id, *, route=None):
         job = self.state.selected_task_id
@@ -645,12 +704,14 @@ class QuickBridge(QObject):
         def wanted_ids(detail):
             if route == 'audio_mixdown':
                 return detail.get('mixArtifactIds', ())
+            if route in ('video_mixdown', 'publishing'):
+                return detail.get('studioTargets', {}).get(route, ())
             if artifact_id is not None:
                 return [artifact_id]
             return detail.get('delivery', {}).get('artifactIds', ())
 
         wanted = wanted_ids(shown)
-        expected = [_artifact_identity(shown_rows[key]) for key in wanted
+        expected = [artifact_identity(shown_rows[key]) for key in wanted
                     if key in shown_rows and shown_rows[key]['available']]
         if not expected or len(expected) != len(wanted):
             return
@@ -668,7 +729,7 @@ class QuickBridge(QObject):
             by_id = {row['id']: row for row in detail['artifacts'] if row['available']}
             if artifact_id is not None:
                 row = by_id.get(artifact_id)
-                if not row or not row['openable'] or [_artifact_identity(row)] != expected:
+                if not row or not row['openable'] or [artifact_identity(row)] != expected:
                     self._error(ValueError('该文件已变更、无法核验或不支持直接打开。'))
                     return
                 if route == 'tuning':
@@ -682,9 +743,16 @@ class QuickBridge(QObject):
                 return
             action = detail.get('handoff')
             delivery = detail['delivery']
+            if route in ('video_mixdown', 'publishing'):
+                rows = [by_id[key] for key in wanted_ids(detail) if key in by_id]
+                if [artifact_identity(row) for row in rows] != expected:
+                    self._error(ValueError('文件或上游版本已变化，请重新核对。'))
+                    return
+                self._accept_media(route, job, rows)
+                return
             if route == 'audio_mixdown':
                 rows = [by_id[key] for key in wanted_ids(detail) if key in by_id]
-                if [_artifact_identity(row) for row in rows] != expected:
+                if [artifact_identity(row) for row in rows] != expected:
                     self._error(ValueError('任务分轨或上游版本已变化，请重新核对。'))
                     return
                 self.navigate('audio_mixdown')
@@ -692,7 +760,7 @@ class QuickBridge(QObject):
                 return
             rows = [by_id[key] for key in delivery['artifactIds'] if key in by_id]
             if (not detail['canDispatch'] or action != shown.get('handoff')
-                    or [_artifact_identity(row) for row in rows] != expected):
+                    or [artifact_identity(row) for row in rows] != expected):
                 self._error(ValueError('产物或上游版本已变化，请核对结果后再交接。'))
                 return
             row = by_id.get(delivery['openArtifactId'])
@@ -747,6 +815,8 @@ class QuickBridge(QObject):
         self._support.cancelUpdate()
         self._tuning.cancel()
         self._mixdown.cancel()
+        self._video.cancel()
+        self._publication.cancel()
         if self.workBusy:
             self._work.cancel()
         else:
@@ -757,7 +827,11 @@ class QuickBridge(QObject):
             return
         self._closed = True
         self._support.close()
+        self._video.cancel()
+        self._publication.cancel()
         for lane in (self._work, self._catalog, self._read, self._details):
             lane.close()
         self._tuning.close()
         self._mixdown.close()
+        self._video.close()
+        self._publication.close()

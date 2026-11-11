@@ -153,24 +153,42 @@ def prepare_bilibili_covers(bundle):
     return variants
 
 
-def prepare(job, video, content, cover_seconds=20, cover_file=None, parent=None, cover_mode="original"):
+def prepare(job, video, content, cover_seconds=20, cover_file=None, parent=None, cover_mode="original",
+            *, expected_video=None, check=None):
     """Snapshot only deliberate inputs; finished video stays in its location."""
-    source_draft(job)
+    if expected_video is None:
+        source_draft(job)
     job = clean_path(job)
     request = json.loads((job / "request.json").read_text(encoding="utf-8"))
+    bv = str(request.get('bv') or '')
+    if expected_video is not None and bv:
+        source_draft(job)
+
+    def cancelled():
+        if check and check():
+            raise InterruptedError('已取消准备发布资料。')
+
+    cancelled()
     if not content:
         raise ValueError("至少选择一个发布平台。")
     for platform, fields in content.items():
         validate_content(fields, platform, require_ai=True)
     info = inspect_video(video)
     stamp = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime("%Y%m%d-%H%M%S-%f")
-    bundle = Path(parent or ROOT / "publish-packages") / f"{request.get('bv') or 'Local'}_{stamp}"
+    prefix = bv if re.fullmatch(r'BV[0-9a-zA-Z]{10}', bv) else 'Local'
+    bundle = Path(parent or ROOT / "publish-packages") / f"{prefix}_{stamp}"
     bundle.mkdir(parents=True)
     try:
         if cover_file or cover_mode == "original":
             art = None
             if cover_file:
                 image = clean_path(cover_file)
+            elif expected_video is not None:
+                from cover_art import cached_cover
+                found = cached_cover(read_source_info(job), job)
+                if found is None:
+                    raise ValueError('任务中的本家原封面已失效，请改用成品截图或选择图片。')
+                image, art = found
             else:
                 from cover_art import job_cover
                 image, art = job_cover(job)
@@ -187,23 +205,26 @@ def prepare(job, video, content, cover_seconds=20, cover_file=None, parent=None,
                 shutil.copy2(image, destination)
             if result.returncode or not (bundle / "cover.jpg").is_file():
                 raise ValueError("封面图片无法读取。")
+            if expected_video is not None and art and file_hash(image, check=check) != art['sha256']:
+                raise ValueError('本家原封面在生成期间已变化，请重新选择。')
             cover = {"kind": "original" if art else "custom", "source": str(image), "seconds": None,
                      "url": art["url"] if art else None, "sha256": file_hash(destination)}
         elif cover_mode == "frame":
-            original = job / "video/source.mp4"
+            original = Path(info['path']) if expected_video is not None else job / "video/source.mp4"
             if not original.is_file():
                 raise ValueError("任务中没有原视频；请先完成下载，或选择封面图片。")
             cover = extract_cover(original, bundle / "cover.jpg", cover_seconds)
             cover["kind"] = "frame"
         else:
             raise ValueError("未知封面来源。")
+        cancelled()
         for name in ("source-info.json", "upstream-info.json", "发布简介草稿.txt"):
             path = job / name
             if path.exists():
                 shutil.copy2(path, bundle / name)
         platform_covers = {"bilibili": prepare_bilibili_covers(bundle)} if "bilibili" in content else {}
-        manifest = {"version": 2, "state": "prepared", "source_job": str(job), "source_bv": request["bv"],
-                    "video": {**info, "sha256": file_hash(info["path"])}, "cover": cover,
+        manifest = {"version": 2, "state": "prepared", "source_job": str(job), "source_bv": bv,
+                    "video": {**info, "sha256": file_hash(info["path"], check=check)}, "cover": cover,
                     "platform_covers": platform_covers,
                     "content": content, "created_at": stamp, "final_publish": "human_only"}
         atomic_json(bundle / "manifest.json", manifest)
@@ -236,7 +257,11 @@ def prepare(job, video, content, cover_seconds=20, cover_file=None, parent=None,
             'entries':[{'file':path.name,'bytes':path.stat().st_size,'sha256':file_hash(path)}
                        for path in sorted(bundle.iterdir()) if path.is_file()]})
         from task_contract import register_publication
-        register_publication(job, bundle)
+        cancelled()
+        if expected_video is None and check is None:
+            register_publication(job, bundle)
+        else:
+            register_publication(job, bundle, expected_video=expected_video, check=check)
         return bundle.resolve()
     except BaseException:
         # Preserve diagnostics without presenting an incomplete bundle as ready.

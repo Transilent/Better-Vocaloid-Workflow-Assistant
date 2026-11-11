@@ -21,7 +21,8 @@ class ComponentRequest:
 class WorkspaceController:
     """All mutable state belongs to the application, independent of a page instance."""
 
-    available_routes = ('processing', 'tuning', 'audio_mixdown', 'components', 'results', 'updates')
+    available_routes = ('processing', 'tuning', 'audio_mixdown', 'video_mixdown', 'publishing',
+                        'components', 'results', 'updates')
 
     def __init__(self, sources):
         self.draft = PreparationDraft()

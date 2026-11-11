@@ -21,6 +21,10 @@ ApplicationWindow {
     readonly property bool tuningAway: controller.operationKind.indexOf("tuning-") === 0 && controller.route !== "tuning"
     readonly property bool mixAway: controller.route !== "audio_mixdown"
         && (controller.mixdown.view.playing || controller.operationKind.indexOf("mixdown-") === 0)
+    readonly property bool videoAway: controller.operationKind.indexOf("video-") === 0 && controller.route !== "video_mixdown"
+    readonly property bool publicationAway: controller.operationKind.indexOf("publication-") === 0 && controller.route !== "publishing"
+    readonly property string studioRoute: videoAway ? "video_mixdown" : publicationAway ? "publishing"
+        : tuningAway ? "tuning" : mixAway ? "audio_mixdown" : ""
     property bool closingAfterTask: false
     property real entryProgress: 1
 
@@ -230,6 +234,8 @@ ApplicationWindow {
                 case "updates": return settingsPage
                 case "tuning": return tuningPage
                 case "audio_mixdown": return mixdownPage
+                case "video_mixdown": return videoPage
+                case "publishing": return publicationPage
                 default: return preparationPage
                 }
             }
@@ -258,12 +264,20 @@ ApplicationWindow {
             id: mixdownPage
             MixdownPage { theme: window.tokens; controller: window.controller.mixdown }
         }
+        Component {
+            id: videoPage
+            VideoPage { theme: window.tokens; controller: window.controller.video }
+        }
+        Component {
+            id: publicationPage
+            PublicationPage { theme: window.tokens; controller: window.controller.publication }
+        }
 
         Rectangle {
             objectName: "backgroundStudioActivity"
             Layout.fillWidth: true
             Layout.preferredHeight: studioBar.implicitHeight + 12
-            visible: window.tuningAway || window.mixAway
+            visible: window.studioRoute.length > 0
             color: theme.surface
             Rectangle { width: parent.width; height: 1; color: theme.line }
             RowLayout {
@@ -277,7 +291,9 @@ ApplicationWindow {
                     font.pixelSize: 13 * theme.scale
                     elide: Text.ElideRight
                     textFormat: Text.PlainText
-                    text: window.tuningAway ? window.controller.tuning.view.message
+                    text: window.videoAway ? window.controller.video.view.message
+                        : window.publicationAway ? window.controller.publication.view.message
+                        : window.tuningAway ? window.controller.tuning.view.message
                         : window.controller.mixdown.view.playing ? window.controller.text("简易混音 · 后台试听")
                         : window.controller.mixdown.view.message || window.controller.text("简易混音")
                 }
@@ -289,9 +305,11 @@ ApplicationWindow {
                     onClicked: window.controller.mixdown.togglePlay()
                 }
                 UiButton {
+                    objectName: "returnBackgroundStudio"
                     theme: window.tokens
-                    text: window.controller.text(window.tuningAway ? "返回调音" : "返回混音")
-                    onClicked: window.controller.navigate(window.tuningAway ? "tuning" : "audio_mixdown")
+                    text: window.controller.text(window.videoAway ? "返回视频" : window.publicationAway ? "返回发布"
+                                                 : window.tuningAway ? "返回调音" : "返回混音")
+                    onClicked: window.controller.navigate(window.studioRoute)
                 }
             }
         }

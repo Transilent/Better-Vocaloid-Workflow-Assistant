@@ -47,6 +47,9 @@ names = ('test_expression_controls.py', 'test_style_catalog.py', 'test_agent_sty
 names = ('test_component_operations.py', 'test_workspace_controller.py', 'test_workspace_routes.py') + names
 names = ('test_preparation_commands.py', 'test_quick_results.py') + names
 names = ('test_mixdown_realtime_core.py', 'test_quick_mixdown_state.py', 'test_tuning_timeline.py') + names
+qt6_tests = ('test_quick_video.py', 'test_quick_publication.py', 'test_quick_mixdown_state.py')
+names = ('test_quick_video.py', 'test_quick_publication.py',
+         'test_quick_media_handoff.py') + names
 names = ('test_runner_contract.py', 'test_pipeline_safety_fixes.py', 'test_tuning_audit_fixes.py') + names
 names = ('test_commit_recovery.py', 'test_component_recovery.py', 'test_delivery_integrity.py', 'test_operation_interlocks.py', 'test_tuning_ui_state.py') + names
 # VWA frontend regression contracts.
@@ -83,7 +86,16 @@ with application_copy(APP, APP / 'work/test-sandboxes') as sandbox:
             reset_state(sandbox)
             test_env = dict(env, TEMP=str(sandbox / 'work/temp'), TMP=str(sandbox / 'work/temp'),
                             NUMBA_CACHE_DIR=native_path(sandbox / 'cache/numba'))
-            result = run_bounded_process([sys.executable, '-B', '-u', str(sandbox / 'tests' / name)],
+            test_file = str(sandbox / 'tests' / name)
+            command = [sys.executable, '-B', '-u', test_file]
+            if name in qt6_tests and test_env.get('VWA_TEST_QT6_ROOT'):
+                # Each Qt 6 test gets its own process, with an explicit verified runtime.
+                bootstrap = ('import os,runpy,sys; sys.path.insert(0,os.getcwd()); '
+                             'from quick_runtime import configure_quick_runtime; '
+                             'configure_quick_runtime(os.getcwd(),os.environ["VWA_TEST_QT6_ROOT"],software=True); '
+                             'runpy.run_path(sys.argv.pop(1),run_name="__main__")')
+                command = [sys.executable, '-B', '-u', '-c', bootstrap, test_file]
+            result = run_bounded_process(command,
                                          cwd=sandbox, env=test_env, timeout=180)
             output = result.stdout + result.stderr
             code = 1 if result.timed_out or result.returncode is None else result.returncode

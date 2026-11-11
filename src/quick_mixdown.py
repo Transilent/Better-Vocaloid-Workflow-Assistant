@@ -125,6 +125,7 @@ class QuickMixdown(QObject):
         }
         self._export_plan = None
         self._export_receipt = None
+        self._registered_mix_id = ''
         self._export_task_artifacts = []
         self._result_fingerprint = ''
         self._preview_pending = False
@@ -495,7 +496,7 @@ class QuickMixdown(QObject):
                           and not support_probe_busy)
         can_register = bool(self._state.job and self._state.result and not self._state.result_stale
                             and self._export_receipt and not self._active_kind
-                            and not support_probe_busy)
+                            and not support_probe_busy and not self._registered_mix_id)
         if self._active_kind == 'mixdown-export':
             state_name = 'exporting'
         elif self._active_kind == 'mixdown-register':
@@ -526,6 +527,9 @@ class QuickMixdown(QObject):
             and not self._active_kind and not support_probe_busy)
         view = self._state.view(can_export=can_export, can_register=can_register,
                                 can_play=can_play)
+        view['canComposeVideo'] = bool(self._registered_mix_id and self._export_receipt
+                                       and self._state.result and not self._state.result_stale
+                                       and not self._active_kind)
         view['support'] = copy.deepcopy(self._support)
         view['supportVisible'] = bool(self._support['visible'])
         view['componentMissing'] = bool(self._initialized and not self._support_ready)
@@ -1067,6 +1071,7 @@ class QuickMixdown(QObject):
                 with self._lock:
                     fresh = self._state.render_fingerprint() == fingerprint
                     self._export_plan, self._export_receipt, self._export_task_artifacts = plan, receipt, task_artifacts
+                    self._registered_mix_id = ''
                     self._result_fingerprint = fingerprint
                     self._state.result = str(Path(report['output_path']).resolve())
                     self._state.result_stale = not fresh or not plan.signatures_unchanged()
@@ -1101,6 +1106,8 @@ class QuickMixdown(QObject):
     @Slot()
     def registerMix(self):
         if not self._ensure_entered():
+            return
+        if self._registered_mix_id:
             return
         if self._active_kind:
             self._notice('已有混音后台操作正在运行。')
@@ -1146,7 +1153,8 @@ class QuickMixdown(QObject):
             if file_sha256(destination, stop.is_set) != expected_sha:
                 raise ValueError('导出 WAV 在登记前发生变化；请重新导出后再登记。')
             if expected_artifacts:
-                rows = inspect(job, check=stop.is_set)
+                rows = inspect(job, check=stop.is_set,
+                               artifact_ids=[identifier for identifier, _, _ in expected_artifacts])
                 by_id = {str(row.get('id') or ''): row for row in rows}
                 for identifier, revision, digest in expected_artifacts:
                     row = by_id.get(identifier)
@@ -1167,7 +1175,7 @@ class QuickMixdown(QObject):
             saved['artifact_id'] = artifact_id
             saved['registered_at'] = datetime.now().astimezone().isoformat(timespec='seconds')
             update_metadata(job, audio_mixdown=saved)
-            return str(destination)
+            return artifact_id, str(destination)
 
         def finish(value, error):
             if isinstance(error, (InterruptedError, MixdownCancelled)):
@@ -1176,13 +1184,23 @@ class QuickMixdown(QObject):
             if error is not None:
                 self._notice('登记失败：' + str(error))
                 return
+            artifact_id, destination = value
             with self._lock:
-                self._state.message = '已人工登记为任务 Mixdown：' + str(value)
+                self._registered_mix_id = artifact_id
+                self._state.message = '已登记混音，可以继续合成视频。'
                 self._state.result_stale = False
             self._recompute_and_emit()
 
         if not self._start_owned('mixdown-register', work, finish):
             self._notice('工作通道正被其他后台操作占用，未开始登记。')
+
+    @Slot()
+    def composeVideo(self):
+        if not self._view.get('canComposeVideo'):
+            return
+        self.parent().open_registered_mix(
+            self._state.job, self._registered_mix_id, self._state.result,
+            self._export_receipt['output']['sha256'])
 
     @Slot()
     def cancel(self):
@@ -1471,6 +1489,7 @@ class QuickMixdown(QObject):
                 self._state.preset_name = '自定义'
                 self._result_fingerprint = ''
                 self._export_plan, self._export_receipt, self._export_task_artifacts = None, None, []
+                self._registered_mix_id = ''
                 self._state.message = '已载入任务原分轨；它们不是调音后或合成歌声。'
             if old_has_media and self._preview is not None:
                 self._preview.release()

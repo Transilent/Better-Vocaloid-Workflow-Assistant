@@ -363,8 +363,8 @@ ScrollView {
                             text: page.controller.text(page.detail.handoff === "audio_ready" ? "分轨送入简易混音"
                                 : page.detail.handoff === "awaiting_tuning"
                                     ? "调音或查看工程"
-                                : page.detail.handoff === "mixdown_ready" ? "打开登记的混音"
-                                : page.detail.handoff === "video_ready" ? "打开登记的视频" : "打开发布资料")
+                                : page.detail.handoff === "mixdown_ready" ? "合成视频"
+                                : page.detail.handoff === "video_ready" ? "准备发布" : "打开发布资料")
                             enabled: page.idle
                             onClicked: page.controller.dispatchTaskHandoff()
                         }
@@ -375,6 +375,24 @@ ScrollView {
                             text: page.controller.text("分轨送入简易混音")
                             enabled: page.idle
                             onClicked: page.controller.mixTaskStems()
+                        }
+                        UiButton {
+                            objectName: "composeTaskVideo"
+                            visible: page.detail.handoff !== "mixdown_ready" && !!page.detail.studioTargets
+                                     && (page.detail.studioTargets.video_mixdown || []).length > 0
+                            theme: page.theme
+                            text: page.controller.text("从混音合成视频")
+                            enabled: page.idle
+                            onClicked: page.controller.composeTaskVideo()
+                        }
+                        UiButton {
+                            objectName: "prepareTaskPublication"
+                            visible: !page.detail.canDispatch && !!page.detail.studioTargets
+                                     && (page.detail.studioTargets.publishing || []).length > 0
+                            theme: page.theme
+                            text: page.controller.text("重新准备发布")
+                            enabled: page.idle
+                            onClicked: page.controller.prepareTaskPublication()
                         }
                         UiButton {
                             objectName: "openTaskFolder"

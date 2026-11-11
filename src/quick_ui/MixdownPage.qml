@@ -1039,8 +1039,17 @@ Item {
                     objectName: "mixdownRegister"
                     theme: page.theme
                     text: page.view.resultStale ? "旧结果不可登记" : "登记结果"
+                    visible: !page.view.canComposeVideo
                     enabled: !!page.view.canRegister && !page.view.resultStale && !page.busy && !page.loading
                     onClicked: page.controller.registerMix()
+                }
+                UiButton {
+                    objectName: "mixdownComposeVideo"
+                    theme: page.theme
+                    visible: !!page.view.canComposeVideo
+                    text: "合成视频"
+                    enabled: !page.busy
+                    onClicked: page.controller.composeVideo()
                 }
                 UiButton {
                     objectName: "mixdownOpenResult"

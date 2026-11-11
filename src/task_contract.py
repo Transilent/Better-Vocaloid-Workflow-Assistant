@@ -193,7 +193,7 @@ def _dependencies(data, producers):
             and entry['role'] not in ('report', 'description_draft', 'publication_asset')]
 
 
-def _entry(job, path, role, producer, *, expected=None, signature=None, retention='result'):
+def _entry(job, path, role, producer, *, expected=None, signature=None, retention='result', check=None):
     path = _safe(path)
     if producer in STAGES and not path.is_relative_to(Path(job).resolve()):
         raise ContractError('自动产物必须位于任务目录内。')
@@ -201,7 +201,7 @@ def _entry(job, path, role, producer, *, expected=None, signature=None, retentio
     if not exists and not expected:
         raise FileNotFoundError(str(path))
     before = path.stat() if exists else None
-    digest = expected or file_hash(path)
+    digest = expected or (file_hash(path, check=check) if check is not None else file_hash(path))
     if expected is None:
         after = path.stat()
         if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
@@ -478,19 +478,37 @@ def rebuild(job):
     return backup if backup.exists() else None
 
 
-def inspect(job, *, verify=True, check=None):
+def inspect(job, *, verify=True, check=None, artifact_ids=None):
     data = read(job)
+    entries = data['entries']
+    scope = None
+    if artifact_ids is not None:
+        scope, pending = set(), list(artifact_ids)
+        while pending:
+            key = pending.pop()
+            if key not in scope and key in entries:
+                scope.add(key)
+                pending.extend(dep['id'] for dep in entries[key]['dependencies'])
     results, own = {}, {}
-    for key, entry in data['entries'].items():
+    hashes = {}
+    for key, entry in entries.items():
+        if scope is not None and key not in scope:
+            continue
         if check is not None and check():
             raise InterruptedError('已取消产物校验。')
         if not entry.get('active', True): continue
         try:
             path = resolve(job, entry)
             stat = path.stat()
-            own[key] = ('modified' if not path.is_file() or (verify and file_hash(path, check=check) != entry['sha256'])
-                        else 'verified' if verify else 'unchecked')
-            if not verify and stat.st_size != entry['bytes']: own[key] = 'modified'
+            if not path.is_file() or stat.st_size != entry['bytes']:
+                own[key] = 'modified'
+            elif not verify:
+                own[key] = 'unchecked'
+            else:
+                fingerprint = (path, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
+                if fingerprint not in hashes:
+                    hashes[fingerprint] = file_hash(path, check=check)
+                own[key] = 'verified' if hashes[fingerprint] == entry['sha256'] else 'modified'
         except FileNotFoundError:
             own[key] = 'missing'
         except InterruptedError:
@@ -521,7 +539,8 @@ def inspect(job, *, verify=True, check=None):
              'path': str(resolve(job, data['entries'][key]))} for key, value in results.items()]
 
 
-def bind(job, kind, path, *, validate=True, dependencies=None, expected_sha256=None):
+def bind(job, kind, path, *, validate=True, dependencies=None, expected_sha256=None,
+         video_source=None, check=None):
     """Explicitly accept a user's completed file without changing automatic outputs."""
     if kind not in ('project', 'mixdown', 'video'):
         raise ContractError('未知人工产物类型。')
@@ -557,12 +576,24 @@ def bind(job, kind, path, *, validate=True, dependencies=None, expected_sha256=N
             if count <= 0: raise ContractError('工程中没有音符。')
         else:
             raise ContractError('请选择 SVP、USTX 或 VSQX 工程。')
-    key, entry = _entry(job, path, 'tuned_project' if kind == 'project' else kind, 'human')
+    key, entry = _entry(job, path, 'tuned_project' if kind == 'project' else kind, 'human', check=check)
     if expected_sha256 is not None and entry['sha256'] != expected_sha256:
         raise ContractError('待登记文件与已核验的导出摘要不符。')
     links = _index_project_audio(job, path, accept=True) if kind == 'project' else []
+    source_entry = None
+    if video_source is not None:
+        if kind != 'video' or not isinstance(video_source, dict) or not _sha(video_source.get('sha256')):
+            raise ContractError('视频来源回执无效。')
+        source = _safe(video_source['path'])
+        if source == path:
+            raise ContractError('视频来源不能是本次成品。')
+        source_entry = _entry(job, source, 'source_video', 'video_source', retention='reference', check=check)
+        if source_entry[1]['sha256'] != video_source['sha256']:
+            raise ContractError('手选原视频与合成回执不一致，请重新合成。')
     with _locked(job):
         data, meta = read(job), _metadata(job)
+        if check and check():
+            raise InterruptedError('已取消产物登记。')
         bindings = meta.setdefault('bindings', {})
         if dependencies is None:
             # A deliberately edited score may replace a generated project. Bind
@@ -579,6 +610,10 @@ def bind(job, kind, path, *, validate=True, dependencies=None, expected_sha256=N
                 if (not current or not current.get('active', True)
                         or current['revision'] != dep.get('revision')):
                     raise ContractError('待登记文件的上游修订已改变。')
+        if source_entry:
+            source_id, source_row = source_entry
+            data['entries'][source_id] = source_row
+            links.append(source_id)
         deps.extend({'id': k, 'revision': data['entries'][k]['revision']} for k in links)
         entry['dependencies'] = deps
         old = bindings.get(kind)
@@ -708,15 +743,20 @@ def handoff(job, *, verify=False, rows=None):
     return 'ready'
 
 
-def register_publication(job, bundle):
+def register_publication(job, bundle, *, expected_video=None, check=None):
+    job = Path(job).resolve()
     bundle = _safe(bundle)
     manifest = _json(bundle / 'manifest.json')
     if Path(manifest['source_job']).resolve() != Path(job).resolve():
         raise ContractError('发布资料与来源任务不一致。')
-    video = Path(manifest['video']['path'])
-    if file_hash(video) != manifest['video']['sha256']:
+    video = _safe(manifest['video']['path'])
+    video_sha = manifest['video']['sha256']
+    if file_hash(video, check=check) != video_sha:
         raise ContractError('成品视频在准备发布期间发生变化。')
-    bind(job, 'video', video, validate=False)
+    if expected_video is not None:
+        if (expected_video.get('role') != 'video' or expected_video.get('sha256') != video_sha
+                or Path(expected_video.get('path', '')).resolve() != video):
+            raise ContractError('发布资料未使用已核验的成品视频。')
     inventory = _json(bundle / 'cleanup-inventory.json')
     assets = []
     for item in inventory.get('entries', []):
@@ -729,9 +769,33 @@ def register_publication(job, bundle):
         path = Path(job) / name
         if path.is_file(): sources.append(_entry(job, path, 'publication_source', 'publication'))
     key, entry = _entry(job, bundle / 'manifest.json', 'publication', 'publication')
+
+    def matching_video(binding):
+        if not binding:
+            return False
+        row = binding['entry']
+        return (resolve(job, row) == video and row['sha256'] == video_sha
+                and (expected_video is None or (binding['id'], row['revision']) ==
+                     (expected_video.get('id'), expected_video.get('revision'))))
+
+    if check and check():
+        raise InterruptedError('已取消发布资料登记。')
+    # Older clients can deliberately prepare an unregistered local clip. If a
+    # matching binding exists, preserve its exact producer dependencies.
+    before = _metadata(job).get('bindings', {}).get('video')
+    if expected_video is None and not matching_video(before):
+        bind(job, 'video', video, validate=False, expected_sha256=video_sha)
     with _locked(job):
         data, meta = read(job), _metadata(job)
-        binding = meta['bindings']['video']
+        binding = meta.get('bindings', {}).get('video')
+        if not matching_video(binding):
+            raise ContractError('登记前成品视频或上游修订已变化，请重新交接。')
+        current = inspect(job, verify=False, check=check, artifact_ids=(binding['id'],))
+        if not any(row['id'] == binding['id'] and row['state'] == 'unchecked'
+                   and row['revision'] == binding['entry']['revision'] for row in current):
+            raise ContractError('登记前成品视频已失效，请重新交接。')
+        if check and check():
+            raise InterruptedError('已取消发布资料登记。')
         entry['dependencies'] = [{'id': binding['id'], 'revision': binding['entry']['revision']}]
         entry['dependencies'].extend({'id': k, 'revision': row['revision']} for k, row in assets)
         entry['dependencies'].extend({'id': k, 'revision': row['revision']} for k, row in sources)

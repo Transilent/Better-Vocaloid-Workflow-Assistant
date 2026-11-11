@@ -26,6 +26,26 @@
       "source": "src/quick_tuning.py"
     },
     {
+      "file": "quick_media_handoff.py",
+      "source": "src/quick_media_handoff.py"
+    },
+    {
+      "file": "quick_publication.py",
+      "source": "src/quick_publication.py"
+    },
+    {
+      "file": "quick_video.py",
+      "source": "src/quick_video.py"
+    },
+    {
+      "file": "quick_ui/VideoPage.qml",
+      "source": "src/quick_ui/VideoPage.qml"
+    },
+    {
+      "file": "quick_ui/PublicationPage.qml",
+      "source": "src/quick_ui/PublicationPage.qml"
+    },
+    {
       "file": "tuning_timeline.py",
       "source": "src/tuning_timeline.py"
     },

@@ -12,6 +12,7 @@ from i18n import tr
 
 import task_contract
 import task_store
+from quick_media_handoff import studio_targets
 
 
 TASK_STATES = {
@@ -222,13 +223,15 @@ def detail(job, check=None):
     title = _text(row.get('title')) or path.name or tr('未命名任务')
     status_text = _status_text(state)
     action = 'needs_review'
-    artifacts, delivery, mix, open_path = [], [], [], None
+    artifacts, delivery, mix, open_path, targets = [], [], [], None, {}
     error_message = ''
     try:
         rows = task_contract.inspect(path, check=check)
         _cancelled(check)
         action = task_contract.handoff(path, rows=rows)
         delivery, open_path = _delivery(path, action, rows)
+        if action != 'processing':
+            targets = studio_targets(path, rows)
         if state in ('done', 'partial') and action not in ('needs_review', 'processing'):
             mix, _ = _delivery(path, 'audio_ready', rows)
         deliver_ids = {item['id'] for item in delivery}
@@ -266,6 +269,7 @@ def detail(job, check=None):
             'openArtifactId': next((item['id'] for item in delivery if Path(item['path']) == open_path), ''),
         },
         'mixArtifactIds': [item['id'] for item in mix] if not locked and not error_message else [],
+        'studioTargets': targets if not locked and not error_message else {},
     }
     recovery = _recovery(row, error_message)
     if recovery is not None:
