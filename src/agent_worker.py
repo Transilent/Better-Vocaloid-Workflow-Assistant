@@ -35,7 +35,7 @@ def fetch_lyric_timeline(song):
 def dispatch(control, action, arguments):
     if action == 'health':
         packages = {}
-        for name in ('mido', 'numpy', 'PyQt5'):
+        for name in ('mido', 'numpy'):
             try:
                 packages[name] = metadata.version(name)
             except metadata.PackageNotFoundError:

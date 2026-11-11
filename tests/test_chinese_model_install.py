@@ -4,7 +4,6 @@ import json
 import sys
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 APP = Path(__file__).resolve().parents[1]
@@ -204,25 +203,6 @@ with tempfile.TemporaryDirectory(prefix='cf-', dir=TEST_TMP) as temporary:
         except ValueError as error:
             assert '路径' in str(error)
     assert never.calls == [] and not (base / 'outside.bin').exists()
-
-from components_ui import blocking_reason, chinese_button_text, download_source_options
-assert chinese_button_text({'ready': False}) == '下载中文模型'
-assert chinese_button_text({'ready': True}) == '校验 / 修复'
-assert chinese_button_text({'ready': False, 'installed': True}) == '校验 / 修复'
-with patch.object(download_sources, 'SOURCE_OPTIONS', (
-        ('官方', 'direct'), ('自动', 'auto'), ('镜像', 'mirror'),
-        ('GitHub', 'github'), ('国内镜像', 'cn'), ('自定义', 'custom'), ('离线', 'offline'))):
-    options = download_source_options()
-assert [value for _, value in options[:3]] == ['auto', 'direct', 'mirror']
-assert len(options) == 7
-assert [value for _, value in download_source_options()[:3]] == ['auto', 'direct', 'mirror']
-busy_owner = SimpleNamespace(
-    processing_active=False, runner=None,
-    storage=SimpleNamespace(busy=lambda: False),
-    updates=SimpleNamespace(busy=lambda: True),
-    publishing=None, video_mixdown=None, tuning=None, calibration_dialog=None,
-)
-assert blocking_reason(busy_owner) == '更新下载'
 
 with tempfile.TemporaryDirectory(prefix='lf-', dir=TEST_TMP) as temporary:
     root = Path(temporary)

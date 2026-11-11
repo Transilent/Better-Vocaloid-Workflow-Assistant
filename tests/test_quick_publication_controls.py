@@ -66,6 +66,7 @@ try:
         with patch.object(pipeline, 'get_view', return_value=fixture) as fetch, \
                 patch.object(pipeline, 'validate_dependencies'):
             item('publicationBv').setProperty('text', fixture['bvid'])
+            app.processEvents()
             click('publicationFetchBv')
             wait('BV lookup makes a metadata-only source', lambda: not pub.view['busy'] and bool(pub.view['job']))
             assert fetch.call_count == 1

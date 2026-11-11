@@ -301,10 +301,8 @@ class SettingsState:
 
     @staticmethod
     def installed_quick_frontend():
-        from task_store import read_json
-
-        version = read_json(ROOT / 'version.json')
-        return version.get('desktop_frontend') == 'quick' and (ROOT / 'VWA.exe').is_file()
+        from quick_runtime import installed_for_program_update
+        return installed_for_program_update(ROOT)
 
     def defer(self, seconds):
         if self.release.get('version'):

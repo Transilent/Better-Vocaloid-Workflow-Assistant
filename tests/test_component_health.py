@@ -1,4 +1,4 @@
-"""Synthetic layered health, installer receipt and ComponentsPage verification tests."""
+"""Synthetic layered component-health, receipt and path-boundary tests."""
 import hashlib
 import json
 import os
@@ -19,9 +19,7 @@ sys.path.insert(1, str(APP))
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 os.environ['BVWA_TESTING'] = '1'
 
-from PyQt5.QtWidgets import QApplication
 import component_health
-import components_ui
 import optional_components as components
 
 
@@ -103,18 +101,6 @@ def make_directory_link(link, target):
         return result.returncode == 0 and link.exists()
 
 
-def wait_until(predicate, timeout=5.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        application.processEvents()
-        if predicate():
-            return True
-        time.sleep(0.01)
-    application.processEvents()
-    return predicate()
-
-
-application = QApplication.instance() or QApplication([])
 passed = []
 with tempfile.TemporaryDirectory(prefix='component-health-', dir=APP / 'work') as temporary:
     base = Path(temporary)
@@ -383,71 +369,6 @@ with tempfile.TemporaryDirectory(prefix='component-health-', dir=APP / 'work') a
         assert error.code == 'not_regular_file'
     passed.append('installer-writes-critical-sha-and-status-compatible')
 
-# UI must discover verification, remain busy while it runs, and defer closing.
-owner = SimpleNamespace(
-    runner=None,
-    processing_active=False,
-    storage=SimpleNamespace(busy=lambda: False),
-    update_component_state=lambda: None,
-)
-ui_manifest = {
-    'weights': [{'bytes': 1}],
-    'shared_wheels': [],
-    'torch_wheels': {'cuda': {'bytes': 1}, 'cpu': {'bytes': 1}},
-    'install_bytes': {'cuda': 1, 'cpu': 1},
-}
-ready_state = {
-    'ready': True, 'runtime': 'cpu', 'probe': {'torch': 'fixture'},
-    'verification': {'level': 'metadata', 'content_verified': False,
-                     'sha256_checked': False, 'state': 'metadata_ready'},
-}
-
-
-def cancelled_verification(progress=None, check=None):
-    progress(0, 1, '正在完整校验 · fixture')
-    while not check():
-        time.sleep(0.005)
-    return {'state': 'cancelled', 'verified': False, 'errors': [], 'missing': [],
-            'unverified': [], 'corrupted': [], 'progress': {'sha256_checked': 0,
-                                                             'total_hash_bytes': 1,
-                                                             'hash_bytes': 0}}
-
-
-with patch.object(components_ui.components, 'manifest', return_value=ui_manifest), \
-     patch.object(components_ui.components, 'status', return_value=ready_state), \
-     patch.object(components_ui.components, 'full_verify', side_effect=cancelled_verification), \
-     patch.object(components_ui, 'load_config', return_value={}), \
-     patch('dependency_profiles.status', return_value={'chinese': {'ready': False, 'bytes': 1}}), \
-     patch('expression_component.status', return_value={'ready': False}), \
-     patch('expression_component.SPEC', {'bytes': 1}):
-    page = components_ui.ComponentsPage(owner)
-    page.show()
-    application.processEvents()
-    assert page.verify.isEnabled()
-    assert '未做 SHA-256' in page.badge.text()
-    page.start_verify()
-    assert wait_until(lambda: page.busy())
-    assert not page.verify.isEnabled() and page.cancel.isVisible()
-    assert page.cancel.text() == '取消校验'
-    page.request_cancel()
-    assert wait_until(lambda: not page.busy() and '已取消' in page.message.text())
-    assert not page.cancel.isVisible()
-    page.verification_completed({'state': 'changed_during_verification', 'verified': False,
-                                 'unverified': [], 'corrupted': [], 'changed': [{}],
-                                 'errors': [], 'progress': {}})
-    assert '发生变化' in page.message.text() and '未确认完整性' in page.message.text()
-    application.processEvents()
-
-    page.verify.setEnabled(True)
-    page.start_verify()
-    assert wait_until(lambda: page.busy())
-    closed_immediately = page.close()
-    assert closed_immediately is False and page.close_pending and page.busy()
-    assert '完成后关闭页面' in page.message.text()
-    assert wait_until(lambda: not page.busy())
-    assert wait_until(lambda: not page.isVisible())
-    assert not page.worker.isRunning()
-    passed.append('ui-discoverable-progress-cancel-and-close-deferred')
-
+# ComponentsPage lifecycle is covered by the Quick component workspace.
 print(json.dumps({'state': 'passed', 'checks': passed}, ensure_ascii=False))
-print('PASS: component metadata/full verification, corruption, cancellation, path boundaries and UI lifecycle')
+print('PASS: component metadata/full verification, corruption, cancellation, install receipt and path boundaries')

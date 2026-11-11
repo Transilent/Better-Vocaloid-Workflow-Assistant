@@ -5,6 +5,9 @@ import QtQuick.Layouts
 
 Dialog {
     id: dialog
+    function vwaTr(message) {
+        return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
+    }
     objectName: "voiceCalibrationDialog"
     required property QtObject theme
     required property QtObject controller
@@ -15,18 +18,18 @@ Dialog {
     readonly property bool hasSession: !!view.session
     readonly property bool busy: !!view.busy
     readonly property var voices: [
-        {value: "lead", label: "主唱"}, {value: "backing", label: "和声"}, {value: "vocals", label: "人声"}
+        {value: "lead", label: dialog.vwaTr("主唱")}, {value: "backing", label: dialog.vwaTr("和声")}, {value: "vocals", label: dialog.vwaTr("人声")}
     ]
     readonly property var channels: [
-        {value: "standard", label: "普通（气声：无）"},
-        {value: "sv-extra", label: "SV 追加气声"},
-        {value: "sv-isolated", label: "SV 隔离气声"}
+        {value: "standard", label: dialog.vwaTr("普通（气声：无）")},
+        {value: "sv-extra", label: dialog.vwaTr("SV 追加气声")},
+        {value: "sv-isolated", label: dialog.vwaTr("SV 隔离气声")}
     ]
 
     parent: Overlay.overlay
     anchors.centerIn: parent
     modal: true
-    title: "声库校准"
+    title: dialog.vwaTr("声库校准")
     width: Math.min(parent.width - 40, Math.round(750 * theme.scale))
     height: Math.min(parent.height - 48, Math.round(650 * theme.scale))
     padding: Math.round(16 * theme.scale)
@@ -64,7 +67,7 @@ Dialog {
         RowLayout {
             Layout.fillWidth: true
             Copy {
-                text: dialog.hasSession ? "2 · 分轨导出与拟合" : "1 · 选择工程和参考演唱"
+                text: dialog.hasSession ? dialog.vwaTr("2 · 分轨导出与拟合") : dialog.vwaTr("1 · 选择工程和参考演唱")
                 color: dialog.theme.accent
                 font.weight: Font.DemiBold
             }
@@ -72,7 +75,7 @@ Dialog {
                 objectName: "calibrationResume"
                 theme: dialog.theme
                 quiet: true
-                text: "继续已有会话…"
+                text: dialog.vwaTr("继续已有会话…")
                 enabled: !dialog.busy
                 onClicked: sessionFile.open()
             }
@@ -80,7 +83,7 @@ Dialog {
                 objectName: "calibrationFindTaskSessions"
                 theme: dialog.theme
                 quiet: true
-                text: "从任务查找"
+                text: dialog.vwaTr("从任务查找")
                 enabled: !dialog.busy
                 onClicked: {
                     dialog.selectedSession = ""
@@ -90,7 +93,7 @@ Dialog {
             UiButton {
                 theme: dialog.theme
                 quiet: true
-                text: "查找文件夹…"
+                text: dialog.vwaTr("查找文件夹…")
                 enabled: !dialog.busy
                 onClicked: sessionFolder.open()
             }
@@ -99,7 +102,7 @@ Dialog {
                 visible: dialog.hasSession
                 theme: dialog.theme
                 quiet: true
-                text: "新建会话"
+                text: dialog.vwaTr("新建会话")
                 enabled: !dialog.busy
                 onClicked: dialog.controller.newSession()
             }
@@ -120,7 +123,7 @@ Dialog {
             UiButton {
                 objectName: "calibrationResumeListedSession"
                 theme: dialog.theme
-                text: "继续此会话"
+                text: dialog.vwaTr("继续此会话")
                 enabled: !dialog.busy && !!dialog.selectedSession
                 onClicked: dialog.controller.resumeListedSession(dialog.selectedSession)
             }
@@ -138,34 +141,34 @@ Dialog {
 
                 Copy {
                     text: dialog.hasSession
-                        ? "在 Synthesizer V 打开七轨试音工程。用同一声库从零秒分轨导出，保留轨名，关闭混合导出。拟合只处理所选演唱轨。"
-                        : "工程需要已指定声库，音符在主音符组。参考演唱应从工程零秒开始，并覆盖所选轨的全部音符。"
+                        ? dialog.vwaTr("在 Synthesizer V 打开七轨试音工程。用同一声库从零秒分轨导出，保留轨名，关闭混合导出。拟合只处理所选演唱轨。")
+                        : dialog.vwaTr("工程需要已指定声库，音符在主音符组。参考演唱应从工程零秒开始，并覆盖所选轨的全部音符。")
                 }
                 GridLayout {
                     Layout.fillWidth: true
                     columns: 3
                     rowSpacing: 6 * dialog.theme.scale
                     columnSpacing: 10 * dialog.theme.scale
-                    Copy { text: "SVP 工程"; Layout.fillWidth: false }
-                    PathLabel { text: dialog.view.project || "未选择" }
+                    Copy { text: dialog.vwaTr("SVP 工程"); Layout.fillWidth: false }
+                    PathLabel { text: dialog.view.project || dialog.vwaTr("未选择") }
                     RowLayout {
                         UiButton {
                             objectName: "calibrationUseTuningTrack"
                             theme: dialog.theme
-                            text: "用当前调音轨"
+                            text: dialog.vwaTr("用当前调音轨")
                             visible: !dialog.hasSession && dialog.view.canUseTrack
                             enabled: !dialog.busy
                             onClicked: dialog.controller.useCurrentTrack()
                         }
                         UiButton {
                             theme: dialog.theme
-                            text: "选择…"
+                            text: dialog.vwaTr("选择…")
                             visible: !dialog.hasSession
                             enabled: !dialog.busy
                             onClicked: projectFile.open()
                         }
                     }
-                    Copy { text: "演唱轨"; Layout.fillWidth: false }
+                    Copy { text: dialog.vwaTr("演唱轨"); Layout.fillWidth: false }
                     UiComboBox {
                         objectName: "calibrationTrack"
                         theme: dialog.theme
@@ -184,22 +187,22 @@ Dialog {
                         enabled: !dialog.busy && !dialog.hasSession
                         onActivated: dialog.controller.selectVoice(currentValue)
                     }
-                    Copy { text: "参考演唱"; Layout.fillWidth: false }
-                    PathLabel { text: dialog.view.reference || "未选择 WAV" }
+                    Copy { text: dialog.vwaTr("参考演唱"); Layout.fillWidth: false }
+                    PathLabel { text: dialog.view.reference || dialog.vwaTr("未选择 WAV") }
                     RowLayout {
                         UiButton {
                             theme: dialog.theme
-                            text: "选择…"
+                            text: dialog.vwaTr("选择…")
                             visible: !dialog.hasSession
                             enabled: !dialog.busy
                             onClicked: referenceFile.open()
                         }
                     }
-                    Copy { text: dialog.hasSession ? "会话位置" : "保存位置"; Layout.fillWidth: false }
-                    PathLabel { text: dialog.view.folder || "未选择文件夹" }
+                    Copy { text: dialog.hasSession ? dialog.vwaTr("会话位置") : dialog.vwaTr("保存位置"); Layout.fillWidth: false }
+                    PathLabel { text: dialog.view.folder || dialog.vwaTr("未选择文件夹") }
                     UiButton {
                         theme: dialog.theme
-                        text: dialog.hasSession ? "打开文件夹" : "选择…"
+                        text: dialog.hasSession ? dialog.vwaTr("打开文件夹") : dialog.vwaTr("选择…")
                         enabled: dialog.hasSession || !dialog.busy
                         onClicked: dialog.hasSession ? dialog.controller.openFile("folder") : outputFolder.open()
                     }
@@ -207,12 +210,12 @@ Dialog {
                 RowLayout {
                     Layout.fillWidth: true
                     visible: !dialog.hasSession
-                    Copy { text: "SV 导出目录"; Layout.fillWidth: false }
-                    PathLabel { text: dialog.view.renders || "使用会话下的 renders 文件夹" }
+                    Copy { text: dialog.vwaTr("SV 导出目录"); Layout.fillWidth: false }
+                    PathLabel { text: dialog.view.renders || dialog.vwaTr("使用会话下的 renders 文件夹") }
                     UiButton {
                         objectName: "calibrationCustomRenderFolder"
                         theme: dialog.theme
-                        text: "选择…"
+                        text: dialog.vwaTr("选择…")
                         enabled: !dialog.busy
                         onClicked: renderFolder.open()
                     }
@@ -224,27 +227,27 @@ Dialog {
                     UiButton {
                         objectName: "calibrationCopyBank"
                         theme: dialog.theme
-                        text: "从 SVP 复制声库设置…"
+                        text: dialog.vwaTr("从 SVP 复制声库设置…")
                         enabled: !dialog.busy && dialog.view.canInspect && !!dialog.view.folder
                         onClicked: templateFile.open()
                     }
                     UiButton {
                         objectName: "calibrationRepairPitch"
                         theme: dialog.theme
-                        text: "另存并重建连续音高"
+                        text: dialog.vwaTr("另存并重建连续音高")
                         enabled: !dialog.busy && dialog.view.canInspect && !!dialog.view.folder
                         onClicked: dialog.controller.prepareInputs("", true)
                     }
                     UiButton {
                         theme: dialog.theme
-                        text: dialog.view.prepared.project ? "打开工程副本" : "在 SV 打开源工程"
+                        text: dialog.view.prepared.project ? dialog.vwaTr("打开工程副本") : dialog.vwaTr("在 SV 打开源工程")
                         enabled: !dialog.busy && !!dialog.view.project
                         onClicked: dialog.controller.openFile("source")
                     }
                 }
                 RowLayout {
                     Layout.fillWidth: true
-                    Copy { text: "拟合强度"; Layout.fillWidth: false }
+                    Copy { text: dialog.vwaTr("拟合强度"); Layout.fillWidth: false }
                     Slider {
                         objectName: "calibrationStrength"
                         Layout.preferredWidth: Math.round(170 * dialog.theme.scale)
@@ -253,7 +256,7 @@ Dialog {
                         stepSize: 0.01
                         value: dialog.view.strength
                         enabled: !dialog.busy
-                        Accessible.name: "拟合强度"
+                        Accessible.name: dialog.vwaTr("拟合强度")
                         onMoved: dialog.controller.setStrength(value)
                     }
                     Copy {
@@ -276,34 +279,34 @@ Dialog {
                     visible: !dialog.hasSession && !!dialog.view.review.issues
                     spacing: 5
                     Copy {
-                        text: (dialog.view.review.bank ? "声库：" + dialog.view.review.bank + " · " : "")
-                            + (dialog.view.review.notes || 0) + " 个音符"
+                        text: (dialog.view.review.bank ? dialog.vwaTr("声库：") + dialog.view.review.bank + " · " : "")
+                            + (dialog.view.review.notes || 0) + dialog.vwaTr(" 个音符")
                             + (dialog.view.review.minimum_duration
-                               ? " · 参考演唱需覆盖至 " + dialog.view.review.minimum_duration.toFixed(2) + " 秒" : "")
+                               ? dialog.vwaTr(" · 参考演唱需覆盖至 ") + dialog.view.review.minimum_duration.toFixed(2) + dialog.vwaTr(" 秒") : "")
                     }
                     Repeater {
                         model: dialog.view.review.issues || []
                         delegate: Copy {
                             required property var modelData
-                            text: (modelData.level === "error" ? "需要处理 · " : "复核 · ") + modelData.message
+                            text: (modelData.level === "error" ? dialog.vwaTr("需要处理 · ") : dialog.vwaTr("复核 · ")) + modelData.message
                             color: modelData.level === "error" ? dialog.theme.error : dialog.theme.attention
                         }
                     }
                     Copy {
                         visible: dialog.view.review.fit_ready === false
                         color: dialog.theme.attention
-                        text: "拟合需要 WORLD 分析器，可在“模型与组件”安装。可以先准备试音工程。"
+                        text: dialog.vwaTr("拟合需要 WORLD 分析器，可在“模型与组件”安装。可以先准备试音工程。")
                     }
                     Copy {
                         visible: !!dialog.view.review.lyrics && dialog.view.review.lyrics.status === "different_script"
-                        text: "歌词文字体系不同，未做逐字比较。"
+                        text: dialog.vwaTr("歌词文字体系不同，未做逐字比较。")
                     }
                     Repeater {
                         model: dialog.view.review.lyrics ? dialog.view.review.lyrics.candidates : []
                         delegate: Copy {
                             required property var modelData
-                            text: modelData.start.toFixed(2) + "–" + modelData.end.toFixed(2) + " 秒 · 参考「"
-                                + (modelData.expected || "无") + "」／乐谱「" + (modelData.actual || "无") + "」"
+                            text: modelData.start.toFixed(2) + "–" + modelData.end.toFixed(2) + dialog.vwaTr(" 秒 · 参考「")
+                                + (modelData.expected || dialog.vwaTr("无")) + dialog.vwaTr("」／乐谱「") + (modelData.actual || dialog.vwaTr("无")) + "」"
                         }
                     }
                 }
@@ -316,23 +319,23 @@ Dialog {
                         UiButton {
                             objectName: "calibrationOpenTrial"
                             theme: dialog.theme
-                            text: "打开七轨试音"
+                            text: dialog.vwaTr("打开七轨试音")
                             onClicked: dialog.controller.openFile("trial")
                         }
                         UiButton {
                             theme: dialog.theme
-                            text: "打开导出目录"
+                            text: dialog.vwaTr("打开导出目录")
                             onClicked: dialog.controller.openFile("renders")
                         }
                         UiButton {
                             objectName: "calibrationCopyRenderPath"
                             theme: dialog.theme
-                            text: "复制导出目录"
+                            text: dialog.vwaTr("复制导出目录")
                             onClicked: dialog.controller.copyRenderFolder()
                         }
                         UiButton {
                             theme: dialog.theme
-                            text: "更换导出目录…"
+                            text: dialog.vwaTr("更换导出目录…")
                             enabled: !dialog.busy
                             onClicked: renderFolder.open()
                         }
@@ -362,7 +365,7 @@ Dialog {
                                     id: trialLabel
                                     anchors.centerIn: parent
                                     text: modelData.name + " · "
-                                        + ({missing:"未收到", writing:"写入中", stable:"已收到", validated:"已核验"}[modelData.state] || "")
+                                        + ({missing:dialog.vwaTr("未收到"), writing:dialog.vwaTr("写入中"), stable:dialog.vwaTr("已收到"), validated:dialog.vwaTr("已核验")}[modelData.state] || "")
                                     color: modelData.state === "validated" || modelData.state === "stable"
                                         ? dialog.theme.success : dialog.theme.muted
                                     font.pixelSize: 12 * dialog.theme.scale
@@ -377,7 +380,7 @@ Dialog {
                     spacing: 6 * dialog.theme.scale
                     Copy {
                         color: dialog.view.measured ? dialog.theme.success : dialog.theme.attention
-                        text: dialog.view.measured ? "拟合工程已核验" : "未取得可用的声库拟合"
+                        text: dialog.view.measured ? dialog.vwaTr("拟合工程已核验") : dialog.vwaTr("未取得可用的声库拟合")
                     }
                     PathLabel { text: dialog.view.result }
                     Flow {
@@ -385,26 +388,26 @@ Dialog {
                         spacing: 6 * dialog.theme.scale
                         UiButton {
                             theme: dialog.theme
-                            text: "打开校准工程"
+                            text: dialog.vwaTr("打开校准工程")
                             enabled: !dialog.busy
                             onClicked: dialog.controller.openFile("output")
                         }
                         UiButton {
                             theme: dialog.theme
-                            text: "打开基准工程"
+                            text: dialog.vwaTr("打开基准工程")
                             enabled: !dialog.busy && !!dialog.view.neutral
                             onClicked: dialog.controller.openFile("neutral")
                         }
                         UiButton {
                             theme: dialog.theme
-                            text: "查看回执"
+                            text: dialog.vwaTr("查看回执")
                             enabled: !dialog.busy
                             onClicked: dialog.controller.openFile("report_path")
                         }
                         UiButton {
                             objectName: "calibrationRegisterTask"
                             theme: dialog.theme
-                            text: "登记到任务"
+                            text: dialog.vwaTr("登记到任务")
                             visible: dialog.view.canRegisterTask
                             enabled: !dialog.busy
                             onClicked: dialog.controller.registerResult()
@@ -412,7 +415,7 @@ Dialog {
                         UiButton {
                             objectName: "calibrationBindResult"
                             theme: dialog.theme
-                            text: "绑定到当前调音轨"
+                            text: dialog.vwaTr("绑定到当前调音轨")
                             enabled: !dialog.busy && dialog.view.canBind
                             onClicked: {
                                 dialog.controller.bindResult()
@@ -423,7 +426,7 @@ Dialog {
                     }
                     Copy {
                         visible: dialog.view.measured && !dialog.view.canBind
-                        text: "要绑定此配置，请在调音中选中同一工程的校准轨，使用单轨精修，并先解除已有预设绑定。"
+                        text: dialog.vwaTr("要绑定此配置，请在调音中选中同一工程的校准轨，使用单轨精修，并先解除已有预设绑定。")
                     }
                 }
             }
@@ -444,7 +447,7 @@ Dialog {
             UiButton {
                 objectName: "calibrationClose"
                 theme: dialog.theme
-                text: dialog.busy ? "转到后台" : "关闭"
+                text: dialog.busy ? dialog.vwaTr("转到后台") : dialog.vwaTr("关闭")
                 onClicked: dialog.close()
             }
             Item { Layout.fillWidth: true }
@@ -452,14 +455,14 @@ Dialog {
                 objectName: "calibrationStop"
                 theme: dialog.theme
                 visible: dialog.busy
-                text: "停止"
+                text: dialog.vwaTr("停止")
                 onClicked: dialog.controller.cancel()
             }
             UiButton {
                 objectName: "calibrationInspect"
                 visible: !dialog.hasSession
                 theme: dialog.theme
-                text: "检查输入"
+                text: dialog.vwaTr("检查输入")
                 enabled: !dialog.busy && dialog.view.canInspect
                 onClicked: dialog.controller.checkInputs(false)
             }
@@ -467,7 +470,7 @@ Dialog {
                 objectName: "calibrationPrepare"
                 visible: !dialog.hasSession
                 theme: dialog.theme
-                text: "准备七轨试音"
+                text: dialog.vwaTr("准备七轨试音")
                 primary: true
                 enabled: !dialog.busy && dialog.view.canInspect && !!dialog.view.folder
                 onClicked: dialog.controller.checkInputs(true)
@@ -476,7 +479,7 @@ Dialog {
                 objectName: "calibrationFit"
                 visible: dialog.hasSession
                 theme: dialog.theme
-                text: dialog.view.result ? "再次拟合" : "等待导出并拟合"
+                text: dialog.view.result ? dialog.vwaTr("再次拟合") : dialog.vwaTr("等待导出并拟合")
                 primary: true
                 enabled: !dialog.busy
                 onClicked: dialog.controller.fit()
@@ -486,41 +489,41 @@ Dialog {
 
     FileDialog {
         id: projectFile
-        title: "选择指定了声库的 SVP 工程"
-        nameFilters: ["Synthesizer V 工程 (*.svp)"]
+        title: dialog.vwaTr("选择指定了声库的 SVP 工程")
+        nameFilters: [dialog.vwaTr("Synthesizer V 工程 (*.svp)")]
         onAccepted: dialog.controller.chooseProject(selectedFile)
     }
     FileDialog {
         id: templateFile
-        title: "选择含目标声库的 SVP"
-        nameFilters: ["Synthesizer V 工程 (*.svp)"]
+        title: dialog.vwaTr("选择含目标声库的 SVP")
+        nameFilters: [dialog.vwaTr("Synthesizer V 工程 (*.svp)")]
         onAccepted: dialog.controller.prepareInputs(selectedFile, false)
     }
     FileDialog {
         id: referenceFile
-        title: "选择参考演唱 WAV"
-        nameFilters: ["WAV 音频 (*.wav)"]
+        title: dialog.vwaTr("选择参考演唱 WAV")
+        nameFilters: [dialog.vwaTr("WAV 音频 (*.wav)")]
         onAccepted: dialog.controller.chooseReference(selectedFile)
     }
     FileDialog {
         id: sessionFile
-        title: "选择校准目录中的 session.json"
-        nameFilters: ["校准会话 (session.json)"]
+        title: dialog.vwaTr("选择校准目录中的 session.json")
+        nameFilters: [dialog.vwaTr("校准会话 (session.json)")]
         onAccepted: dialog.controller.resumeSession(selectedFile)
     }
     FolderDialog {
         id: outputFolder
-        title: "选择校准保存位置"
+        title: dialog.vwaTr("选择校准保存位置")
         onAccepted: dialog.controller.chooseFolder(selectedFolder)
     }
     FolderDialog {
         id: renderFolder
-        title: "选择七份试音的导出目录"
+        title: dialog.vwaTr("选择七份试音的导出目录")
         onAccepted: dialog.controller.chooseRenders(selectedFolder)
     }
     FolderDialog {
         id: sessionFolder
-        title: "查找本地校准记录"
+        title: dialog.vwaTr("查找本地校准记录")
         onAccepted: {
             dialog.selectedSession = ""
             dialog.controller.findSessions(selectedFolder)

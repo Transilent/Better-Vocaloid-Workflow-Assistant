@@ -45,6 +45,7 @@ def create_workspace(app, *, root=ROOT, show=True, viewport=None, scale=None):
     engine = QQmlApplicationEngine()
     controller = QuickBridge()
     try:
+        engine.rootContext().setContextProperty('quickTranslation', controller)
         display = app.primaryScreen().availableGeometry()
         initial = viewport or (max(1, min(1440, display.width() - 42)),
                                max(1, min(900, display.height() - 54)))
@@ -122,10 +123,14 @@ def main(argv=None):
             deadline.setSingleShot(True)
             deadline.timeout.connect(lambda: app.exit(3))
             deadline.start(12000)
+            smoke_finished = False
 
             def complete_smoke():
-                if controller.loading:
+                nonlocal smoke_finished
+                if smoke_finished or controller.loading:
                     return
+                smoke_finished = True
+                deadline.stop()
                 if warnings or controller.notice or controller.componentModel.rowCount() < 1:
                     app.exit(3)
                     return

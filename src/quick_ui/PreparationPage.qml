@@ -5,6 +5,9 @@ import QtQuick.Layouts
 
 ScrollView {
     id: page
+    function vwaTr(message) {
+        return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
+    }
     objectName: "preparationPage"
     required property QtObject theme
     required property QtObject controller
@@ -808,7 +811,7 @@ ScrollView {
                         UiButton {
                             objectName: "bilibiliDownloadOptions"
                             theme: page.theme
-                            text: "下载与账号…"
+                            text: page.vwaTr("下载与账号…")
                             enabled: !page.editLocked
                             onClicked: sourceTools.openPane("download")
                         }
@@ -816,8 +819,8 @@ ScrollView {
                             Layout.fillWidth: true
                             theme: page.theme
                             text: page.controller.preparationSources.view.selectedDownload
-                                ? "复用 " + page.controller.preparationSources.view.selectedDownload
-                                : "保留原视频，也可复用同 BV 的已核验素材。"
+                                ? page.vwaTr("复用 ") + page.controller.preparationSources.view.selectedDownload
+                                : page.vwaTr("保留原视频，也可复用同 BV 的已核验素材。")
                         }
                     }
                 }
@@ -1115,7 +1118,7 @@ ScrollView {
                     UiButton {
                         objectName: "browseNeteaseVersions"
                         theme: page.theme
-                        text: "查找版本…"
+                        text: page.vwaTr("查找版本…")
                         enabled: !page.editLocked && Boolean(page.field("recognize_lyrics"))
                         onClicked: sourceTools.openPane("lyrics")
                     }
@@ -1924,7 +1927,7 @@ ScrollView {
                     UiButton {
                         objectName: "checkPreparationComponents"
                         theme: page.theme
-                        text: "检查组件…"
+                        text: page.vwaTr("检查组件…")
                         enabled: !page.editLocked
                         visible: !page.taskRunning
                         onClicked: sourceTools.openPane("check")

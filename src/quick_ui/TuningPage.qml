@@ -5,6 +5,9 @@ import QtQuick.Layouts
 
 ScrollView {
     id: page
+    function vwaTr(message) {
+        return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
+    }
     objectName: "tuningPage"
     required property QtObject theme
     required property QtObject controller
@@ -702,7 +705,7 @@ ScrollView {
         snapMode: Slider.SnapAlways
         focusPolicy: Qt.StrongFocus
         wheelEnabled: false
-        Accessible.description: "范围 0% 到 100%，每次调整 1%"
+        Accessible.description: page.vwaTr("范围 0% 到 100%，每次调整 1%")
 
         background: Rectangle {
             x: slider.leftPadding + slider.handle.width / 2
@@ -756,12 +759,12 @@ ScrollView {
                 PanelLabel {
                     Layout.fillWidth: true
                     theme: page.theme
-                    text: "调音专注编辑 · 时间轴与参数栏"
+                    text: page.vwaTr("调音专注编辑 · 时间轴与参数栏")
                 }
                 EditorButton {
                     objectName: "exitTuningEditorFocus"
                     theme: page.theme
-                    text: "退出专注 (Esc)"
+                    text: page.vwaTr("退出专注 (Esc)")
                     onClicked: page.editorFocus = false
                 }
             }
@@ -782,7 +785,7 @@ ScrollView {
                 Layout.fillWidth: true
                 spacing: page.editorPadding
                 Text {
-                    text: "逐轨调音"
+                    text: page.vwaTr("逐轨调音")
                     color: page.theme.text
                     font.pixelSize: Math.round(19 * page.scale)
                     font.weight: Font.DemiBold
@@ -790,7 +793,7 @@ ScrollView {
                 }
                 Text {
                     Layout.fillWidth: true
-                    text: page.hasSource ? page.fileName(page.view.source) : "尚未载入调音工程"
+                    text: page.hasSource ? page.fileName(page.view.source) : page.vwaTr("尚未载入调音工程")
                     color: page.theme.muted
                     font.pixelSize: Math.round(12 * page.scale)
                     elide: Text.ElideMiddle
@@ -799,7 +802,7 @@ ScrollView {
                     ToolTip.visible: page.hasSource && sourcePathHover.hovered
                     ToolTip.text: page.textOf(page.view.source)
                         + (page.view.sha256 ? "\nSHA " + page.shortHash(page.view.sha256) : "")
-                        + (page.view.job ? "\n任务：" + page.view.job : "")
+                        + (page.view.job ? page.vwaTr("\n任务：") + page.view.job : "")
                 }
             }
 
@@ -808,7 +811,7 @@ ScrollView {
                 EditorButton {
                     objectName: "tuningModeSingle"
                     theme: page.theme
-                    text: "单轨精修"
+                    text: page.vwaTr("单轨精修")
                     selected: page.mode === "single"
                     enabled: !page.busy
                     onClicked: page.controller.setMode("single")
@@ -816,7 +819,7 @@ ScrollView {
                 EditorButton {
                     objectName: "tuningModeMulti"
                     theme: page.theme
-                    text: "多轨编排"
+                    text: page.vwaTr("多轨编排")
                     selected: page.mode === "multi"
                     enabled: !page.busy
                     onClicked: page.controller.setMode("multi")
@@ -824,13 +827,13 @@ ScrollView {
                 EditorButton {
                     objectName: "openVoiceCalibration"
                     theme: page.theme
-                    text: "声库校准…"
+                    text: page.vwaTr("声库校准…")
                     onClicked: page.calibrationRequested()
                 }
                 EditorButton {
                     objectName: "tuningOpenProject"
                     theme: page.theme
-                    text: "打开工程…"
+                    text: page.vwaTr("打开工程…")
                     primary: true
                     enabled: !page.busy
                     onClicked: projectDialog.open()
@@ -844,7 +847,7 @@ ScrollView {
                 EditorButton {
                     objectName: "tuningOpenTask"
                     theme: page.theme
-                    text: "从任务载入…"
+                    text: page.vwaTr("从任务载入…")
                     enabled: !page.busy
                     onClicked: {
                         page.controller.refreshTuningTasks()
@@ -854,21 +857,21 @@ ScrollView {
                 EditorButton {
                     objectName: "tuningReloadProject"
                     theme: page.theme
-                    text: "重新读取当前工程"
+                    text: page.vwaTr("重新读取当前工程")
                     enabled: !page.busy && boolOr(page.view.canReload, false)
                     onClicked: page.controller.reloadProject()
                 }
                 EditorButton {
                     objectName: "tuningResumeSession"
                     theme: page.theme
-                    text: "继续会话…"
+                    text: page.vwaTr("继续会话…")
                     enabled: !page.busy
                     onClicked: sessionDialog.open()
                 }
                 EditorButton {
                     objectName: "tuningChooseSessionLocation"
                     theme: page.theme
-                    text: "会话位置…"
+                    text: page.vwaTr("会话位置…")
                     visible: !page.textOf(page.view.job).length
                     enabled: !page.busy && boolOr(page.view.canChooseSessionLocation, false)
                     onClicked: sessionLocationDialog.open()
@@ -876,7 +879,7 @@ ScrollView {
                 EditorButton {
                     objectName: "tuningEditorFocus"
                     theme: page.theme
-                    text: "专注编辑"
+                    text: page.vwaTr("专注编辑")
                     enabled: page.hasSource && !page.draftConflict
                     onClicked: page.toggleEditorFocus()
                 }
@@ -890,7 +893,7 @@ ScrollView {
                     textFormat: Text.PlainText
                     HoverHandler { id: sessionLocationHover }
                     ToolTip.visible: sessionLocationHover.hovered && text.length > 0
-                    ToolTip.text: text + "\n候选目录：" + page.textOf(page.view.sessionOutput)
+                    ToolTip.text: text + page.vwaTr("\n候选目录：") + page.textOf(page.view.sessionOutput)
                 }
             }
         }
@@ -912,12 +915,12 @@ ScrollView {
                 HelperText {
                     Layout.fillWidth: true
                     theme: page.theme
-                    text: "共享草稿有更新。本地编辑已存成副本，请核对后继续。"
+                    text: page.vwaTr("共享草稿有更新。本地编辑已存成副本，请核对后继续。")
                 }
                 EditorButton {
                     objectName: "reviewDraftConflict"
                     theme: page.theme
-                    text: "核对草稿"
+                    text: page.vwaTr("核对草稿")
                     enabled: !page.view.busy
                     onClicked: draftRecovery.openReview("")
                 }
@@ -950,7 +953,7 @@ ScrollView {
                     spacing: Math.round(3 * page.scale)
                     PanelLabel {
                         theme: page.theme
-                        text: "检测到旧版全局片段"
+                        text: page.vwaTr("检测到旧版全局片段")
                     }
                     HelperText {
                         theme: page.theme
@@ -964,7 +967,7 @@ ScrollView {
                 UiButton {
                     objectName: "migrateLegacy"
                     theme: page.theme
-                    text: "按原轨道展开旧草稿"
+                    text: page.vwaTr("按原轨道展开旧草稿")
                     primary: true
                     enabled: !page.busy
                     onClicked: page.controller.migrateLegacy()
@@ -1045,7 +1048,7 @@ ScrollView {
                                             text: page.textOf(modelData.name)
                                                 + (modelData.noteCount !== undefined
                                                     ? "  " + modelData.noteCount : "")
-                                                + (modelData.editable === false ? "  · 只读" : "")
+                                                + (modelData.editable === false ? page.vwaTr("  · 只读") : "")
                                                 + (page.mode === "multi" && isSelected ? "  ✓" : "")
                                             selected: isSelected
                                             enabled: !page.busy && (page.mode === "single"
@@ -1053,7 +1056,7 @@ ScrollView {
                                             width: Math.max(Math.round(80 * page.scale),
                                                 Math.min(Math.round(236 * page.scale), implicitWidth))
                                             leftPadding: Math.round(19 * page.scale)
-                                            Accessible.name: text + (isActive ? "，焦点轨" : "")
+                                            Accessible.name: text + (isActive ? page.vwaTr("，焦点轨") : "")
                                             Rectangle {
                                                 x: Math.round(6 * page.scale)
                                                 anchors.verticalCenter: parent.verticalCenter
@@ -1087,7 +1090,7 @@ ScrollView {
                                 valueRole: "id"
                                 currentIndex: page.trackIndex(page.activeId)
                                 enabled: !page.busy && page.tracks.length > 0
-                                Accessible.name: "焦点轨"
+                                Accessible.name: page.vwaTr("焦点轨")
                                 onActivated: function(index) {
                                     if (index >= 0 && index < page.tracks.length)
                                         page.controller.focusTrack(String(page.tracks[index].id))
@@ -1107,17 +1110,17 @@ ScrollView {
                                 bottomPadding: 0
                                 Layout.fillWidth: true
                                 theme: page.theme
-                                placeholderText: "搜索歌词…"
+                                placeholderText: page.vwaTr("搜索歌词…")
                                 text: page.textOf(page.view.query)
                                 enabled: !page.busy && page.hasSource
-                                Accessible.name: "搜索歌词"
+                                Accessible.name: page.vwaTr("搜索歌词")
                                 onTextEdited: page.controller.setQuery(text)
                                 onAccepted: page.controller.setQuery(text)
                             }
                             EditorButton {
                                 objectName: "tuningClearLyricSearch"
                                 theme: page.theme
-                                text: "清空"
+                                text: page.vwaTr("清空")
                                 quiet: true
                                 visible: page.textOf(page.view.query).length > 0
                                 enabled: !page.busy
@@ -1126,7 +1129,7 @@ ScrollView {
                             EditorButton {
                                 objectName: "timelineFit"
                                 theme: page.theme
-                                text: "全曲"
+                                text: page.vwaTr("全曲")
                                 quiet: true
                                 enabled: page.hasSource
                                 onClicked: page.fitTimelineView()
@@ -1134,14 +1137,14 @@ ScrollView {
                             EditorButton {
                                 objectName: "tuningSnapToNotes"
                                 theme: page.theme
-                                text: "吸附"
+                                text: page.vwaTr("吸附")
                                 quiet: true
                                 selected: !!page.view.snapEnabled
                                 enabled: page.hasSource
                                 Accessible.checkable: true
                                 Accessible.checked: selected
                                 ToolTip.visible: hovered || visualFocus
-                                ToolTip.text: "吸附到附近音符边界 · Alt 临时跳过"
+                                ToolTip.text: page.vwaTr("吸附到附近音符边界 · Alt 临时跳过")
                                 onClicked: page.controller.setSnapEnabled(!page.view.snapEnabled)
                             }
                         }
@@ -1187,7 +1190,7 @@ ScrollView {
                                     hoverEnabled: true
                                     focusPolicy: Qt.StrongFocus
                                     Accessible.name: (page.textOf(modelData.lyric).length > 0
-                                        ? modelData.lyric : "空歌词") + "，"
+                                        ? modelData.lyric : page.vwaTr("空歌词")) + "，"
                                         + (modelData.trackName || page.trackName(modelData.trackId))
                                         + "，" + page.formatTime(modelData.start)
 
@@ -1216,7 +1219,7 @@ ScrollView {
                                             Text {
                                                 Layout.fillWidth: true
                                                 text: page.textOf(matchRow.modelData.lyric).length > 0
-                                                    ? matchRow.modelData.lyric : "[空歌词]"
+                                                    ? matchRow.modelData.lyric : page.vwaTr("[空歌词]")
                                                 color: page.theme.text
                                                 font.pixelSize: Math.round(13 * page.scale)
                                                 font.weight: Font.DemiBold
@@ -1231,7 +1234,7 @@ ScrollView {
                                                     + "–" + page.formatTime(matchRow.modelData.end)
                                                     + (matchRow.modelData.pitch !== undefined
                                                         && matchRow.modelData.pitch !== null
-                                                        ? "  ·  音高 " + matchRow.modelData.pitch : "")
+                                                        ? page.vwaTr("  ·  音高 ") + matchRow.modelData.pitch : "")
                                                 color: page.theme.muted
                                                 font.pixelSize: Math.round(10 * page.scale)
                                                 elide: Text.ElideRight
@@ -1253,10 +1256,10 @@ ScrollView {
                                 visible: page.matches.length === 0
                                 horizontalAlignment: Text.AlignHCenter
                                 text: !page.hasSource
-                                    ? "载入工程后可搜索歌词。"
+                                    ? page.vwaTr("载入工程后可搜索歌词。")
                                     : page.textOf(page.view.query).length === 0
-                                        ? "输入歌词查找；重复词会以轨道和时间区分。"
-                                        : "没有找到匹配歌词，可尝试短词或清空搜索。"
+                                        ? page.vwaTr("输入歌词查找；重复词会以轨道和时间区分。")
+                                        : page.vwaTr("没有找到匹配歌词，可尝试短词或清空搜索。")
                                 color: page.theme.muted
                                 font.pixelSize: Math.round(12 * page.scale)
                                 wrapMode: Text.Wrap
@@ -1317,7 +1320,7 @@ ScrollView {
                         RowLayout {
                             spacing: page.editorGap
                             Text {
-                                text: "开始"
+                                text: page.vwaTr("开始")
                                 color: page.theme.muted
                                 font.pixelSize: Math.round(11 * page.scale)
                                 textFormat: Text.PlainText
@@ -1344,10 +1347,10 @@ ScrollView {
                                     return isFinite(parsed) ? Math.round(parsed * 1000) : value
                                 }
                                 onValueModified: page.commitPreciseSelection()
-                                Accessible.name: "选区开始时间，秒"
+                                Accessible.name: page.vwaTr("选区开始时间，秒")
                             }
                             Text {
-                                text: "结束"
+                                text: page.vwaTr("结束")
                                 color: page.theme.muted
                                 font.pixelSize: Math.round(11 * page.scale)
                                 textFormat: Text.PlainText
@@ -1374,12 +1377,12 @@ ScrollView {
                                     return isFinite(parsed) ? Math.round(parsed * 1000) : value
                                 }
                                 onValueModified: page.commitPreciseSelection()
-                                Accessible.name: "选区结束时间，秒"
+                                Accessible.name: page.vwaTr("选区结束时间，秒")
                             }
                             EditorButton {
                                 objectName: "applyTuningSelection"
                                 theme: page.theme
-                                text: "应用时间"
+                                text: page.vwaTr("应用时间")
                                 quiet: true
                                 enabled: page.hasSource && !page.busy
                                 onClicked: page.commitPreciseSelection()
@@ -1410,8 +1413,8 @@ ScrollView {
                         Layout.fillWidth: true
                         spacing: 2
                         Repeater {
-                            model: [{key:"style", label:"风格"}, {key:"source", label:"来源"},
-                                    {key:"presets", label:"预设"}, {key:"result", label:"结果"}]
+                            model: [{key:"style", label:page.vwaTr("风格")}, {key:"source", label:page.vwaTr("来源")},
+                                    {key:"presets", label:page.vwaTr("预设")}, {key:"result", label:page.vwaTr("结果")}]
                             EditorButton {
                                 required property var modelData
                                 objectName: "tuningInspector_" + modelData.key
@@ -1447,11 +1450,11 @@ ScrollView {
                                 spacing: page.editorGap
                                 RowLayout {
                                     Layout.fillWidth: true
-                                    PanelLabel { Layout.fillWidth: true; theme: page.theme; text: "风格" }
+                                    PanelLabel { Layout.fillWidth: true; theme: page.theme; text: page.vwaTr("风格") }
                                     EditorButton {
                                         objectName: "tuningStylePitch"
                                         theme: page.theme
-                                        text: "附加音高"
+                                        text: page.vwaTr("附加音高")
                                         quiet: true
                                         selected: !!page.view.stylePitch
                                         enabled: !page.busy && page.hasSource
@@ -1481,7 +1484,7 @@ ScrollView {
                                     }
                                 }
                                 StrengthRow {
-                                    label: "风格强度"
+                                    label: page.vwaTr("风格强度")
                                     sliderName: "tuningStyleStrengthSlider"
                                     valueName: "tuningStyleStrengthPercent"
                                     amount: page.numberOr(page.view.styleStrength, 0)
@@ -1489,11 +1492,11 @@ ScrollView {
                                 }
                                 RowLayout {
                                     Layout.fillWidth: true
-                                    PanelLabel { Layout.fillWidth: true; theme: page.theme; text: "唱腔" }
+                                    PanelLabel { Layout.fillWidth: true; theme: page.theme; text: page.vwaTr("唱腔") }
                                     EditorButton {
                                         objectName: "tuningTechniquePitch"
                                         theme: page.theme
-                                        text: "倚滑与收腔"
+                                        text: page.vwaTr("倚滑与收腔")
                                         quiet: true
                                         selected: !!page.view.technique_pitch
                                         enabled: !page.busy && page.hasSource && page.view.style_technique !== "none"
@@ -1523,7 +1526,7 @@ ScrollView {
                                     }
                                 }
                                 StrengthRow {
-                                    label: "唱腔强度"
+                                    label: page.vwaTr("唱腔强度")
                                     sliderName: "tuningTechniqueStrengthSlider"
                                     amount: page.numberOr(page.view.technique_strength, 0)
                                     enabled: page.view.style_technique !== "none"
@@ -1532,7 +1535,7 @@ ScrollView {
                                 EditorButton {
                                     objectName: "tuningStyleDetailToggle"
                                     theme: page.theme
-                                    text: page.showStyleDetails ? "收起风格细节" : "起音、持续、衔接、收尾…"
+                                    text: page.showStyleDetails ? page.vwaTr("收起风格细节") : page.vwaTr("起音、持续、衔接、收尾…")
                                     quiet: true
                                     selected: page.showStyleDetails
                                     onClicked: page.showStyleDetails = !page.showStyleDetails
@@ -1542,8 +1545,8 @@ ScrollView {
                                     Layout.fillWidth: true
                                     spacing: 0
                                     Repeater {
-                                        model: [{key:"onset", label:"起音"}, {key:"sustain", label:"持续"},
-                                                {key:"connection", label:"衔接"}, {key:"release", label:"收尾"}]
+                                        model: [{key:"onset", label:page.vwaTr("起音")}, {key:"sustain", label:page.vwaTr("持续")},
+                                                {key:"connection", label:page.vwaTr("衔接")}, {key:"release", label:page.vwaTr("收尾")}]
                                         StrengthRow {
                                             required property var modelData
                                             label: modelData.label
@@ -1558,39 +1561,39 @@ ScrollView {
                                     objectName: "addTuningRegion"
                                     Layout.fillWidth: true
                                     theme: page.theme
-                                    text: "应用为片段"
+                                    text: page.vwaTr("应用为片段")
                                     primary: true
                                     enabled: page.canAddRegion
                                     onClicked: page.controller.addRegion()
                                 }
                                 CheckBox {
                                     objectName: "tuningAutoApplySelection"
-                                    text: "框选即应用"
+                                    text: page.vwaTr("框选即应用")
                                     font.pixelSize: Math.round(12 * page.scale)
                                     checked: !!page.view.autoApplySelection
                                     onClicked: page.controller.setAutoApplySelection(checked)
                                     ToolTip.visible: hovered || visualFocus
-                                    ToolTip.text: "拖选松手后应用当前风格和唱腔并保存草稿；点音符或输入时间仍只选择。"
+                                    ToolTip.text: page.vwaTr("拖选松手后应用当前风格和唱腔并保存草稿；点音符或输入时间仍只选择。")
                                 }
                                 RowLayout {
                                     Layout.fillWidth: true
                                     spacing: 2
-                                    PanelLabel { Layout.fillWidth: true; theme: page.theme; text: "片段" }
+                                    PanelLabel { Layout.fillWidth: true; theme: page.theme; text: page.vwaTr("片段") }
                                     EditorButton {
                                         objectName: "undoTuningRegions"
-                                        theme: page.theme; text: "撤销"; quiet: true
+                                        theme: page.theme; text: page.vwaTr("撤销"); quiet: true
                                         enabled: !page.busy && !!page.view.canUndoRegions
                                         onClicked: page.controller.undoRegions()
                                     }
                                     EditorButton {
                                         objectName: "redoTuningRegions"
-                                        theme: page.theme; text: "重做"; quiet: true
+                                        theme: page.theme; text: page.vwaTr("重做"); quiet: true
                                         enabled: !page.busy && !!page.view.canRedoRegions
                                         onClicked: page.controller.redoRegions()
                                     }
                                     EditorButton {
                                         objectName: "clearTuningRegions"
-                                        theme: page.theme; text: "清空…"; quiet: true
+                                        theme: page.theme; text: page.vwaTr("清空…"); quiet: true
                                         enabled: !page.busy && page.regionCount > 0
                                         onClicked: clearRegionsDialog.open()
                                     }
@@ -1667,7 +1670,7 @@ ScrollView {
                                                 EditorButton {
                                                     theme: page.theme
                                                     glyph: "edit"
-                                                    text: "编辑片段"
+                                                    text: page.vwaTr("编辑片段")
                                                     quiet: true
                                                     enabled: !page.busy
                                                     onClicked: page.controller.editRegion(String(regionRow.modelData.id))
@@ -1676,18 +1679,18 @@ ScrollView {
                                                     objectName: "updateTuningRegion_" + String(regionRow.modelData.id)
                                                     theme: page.theme
                                                     glyph: "check"
-                                                    text: "更新片段"
+                                                    text: page.vwaTr("更新片段")
                                                     quiet: true
                                                     enabled: !page.busy && page.hasRange
                                                         && page.textOf(regionRow.modelData.id).length > 0
                                                     onClicked: page.controller.updateRegion(
                                                         String(regionRow.modelData.id))
-                                                    Accessible.name: "用当前选区和风格更新此逐轨片段"
-                                                    ToolTip.text: "轨道按此片段固定；范围和风格取当前选区"
+                                                    Accessible.name: page.vwaTr("用当前选区和风格更新此逐轨片段")
+                                                    ToolTip.text: page.vwaTr("轨道按此片段固定；范围和风格取当前选区")
                                                 }
                                                 EditorButton {
                                                     theme: page.theme
-                                                    text: "移除"
+                                                    text: page.vwaTr("移除")
                                                     quiet: true
                                                     enabled: !page.busy
                                                         && page.textOf(regionRow.modelData.id).length > 0
@@ -1715,7 +1718,7 @@ ScrollView {
                                 spacing: page.editorGap
                                 PanelLabel {
                                     theme: page.theme
-                                    text: "表达来源与调音选项"
+                                    text: page.vwaTr("表达来源与调音选项")
                                 }
 
                                 GridLayout {
@@ -1728,7 +1731,7 @@ ScrollView {
                                         objectName: "expressionPreserve"
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: "保留原表现"
+                                        text: page.vwaTr("保留原表现")
                                         selected: page.textOf(page.view.expressionMode) === "preserve"
                                         enabled: !page.busy && page.hasSource
                                         onClicked: page.controller.setExpressionMode("preserve")
@@ -1737,7 +1740,7 @@ ScrollView {
                                         objectName: "expressionReference"
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: "参考音频"
+                                        text: page.vwaTr("参考音频")
                                         selected: page.textOf(page.view.expressionMode) === "reference"
                                         enabled: !page.busy && page.hasSource
                                         onClicked: page.controller.setExpressionMode("reference")
@@ -1746,7 +1749,7 @@ ScrollView {
                                         objectName: "expressionCalibrated"
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: "校准 + 参考"
+                                        text: page.vwaTr("校准 + 参考")
                                         selected: page.textOf(page.view.expressionMode) === "calibrated"
                                         enabled: !page.busy && page.hasSource
                                         onClicked: page.controller.setExpressionMode("calibrated")
@@ -1755,7 +1758,7 @@ ScrollView {
                                         objectName: "expressionRetained"
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: "沿用原参数"
+                                        text: page.vwaTr("沿用原参数")
                                         selected: page.textOf(page.view.expressionMode) === "retained"
                                         enabled: !page.busy && page.hasSource
                                         onClicked: page.controller.setExpressionMode("retained")
@@ -1766,14 +1769,14 @@ ScrollView {
                                     Layout.fillWidth: true
                                     theme: page.theme
                                     text: page.expressionModeKnown
-                                        ? "四种来源共用当前轨道与区间；外部声库渲染仍由你手动完成。"
-                                        : "表达来源状态待后端回读；可先选择一种真实来源。"
+                                        ? page.vwaTr("四种来源共用当前轨道与区间；外部声库渲染仍由你手动完成。")
+                                        : page.vwaTr("表达来源状态待后端回读；可先选择一种真实来源。")
                                 }
 
                                 Text {
                                     Layout.fillWidth: true
-                                    text: "焦点轨：" + (page.activeId.length > 0
-                                        ? page.trackName(page.activeId) : "未选择")
+                                    text: page.vwaTr("焦点轨：") + (page.activeId.length > 0
+                                        ? page.trackName(page.activeId) : page.vwaTr("未选择"))
                                     color: page.theme.text
                                     font.pixelSize: Math.round(11 * page.scale)
                                     font.weight: Font.DemiBold
@@ -1790,7 +1793,7 @@ ScrollView {
                                     HelperText {
                                         Layout.alignment: Qt.AlignVCenter
                                         theme: page.theme
-                                        text: "参考音频"
+                                        text: page.vwaTr("参考音频")
                                         visible: page.expressionSourceAllows(["reference", "calibrated"])
                                     }
                                     EditorButton {
@@ -1799,7 +1802,7 @@ ScrollView {
                                         Layout.fillWidth: true
                                         theme: page.theme
                                         text: page.textOf(page.bindingField("reference", "")).length > 0
-                                            ? "更换参考…" : "选择参考…"
+                                            ? page.vwaTr("更换参考…") : page.vwaTr("选择参考…")
                                         enabled: !page.busy && page.activeId.length > 0
                                             && page.activeTrackData !== null
                                             && page.activeTrackData.editable !== false
@@ -1822,14 +1825,14 @@ ScrollView {
                                     HelperText {
                                         theme: page.theme
                                         visible: page.textOf(page.bindingField("reference", "")).length > 0
-                                        text: "参考声部"
+                                        text: page.vwaTr("参考声部")
                                     }
                                     UiComboBox {
                                         theme: page.theme
                                         Layout.fillWidth: true
                                         visible: page.textOf(page.bindingField("reference", "")).length > 0
-                                        model: [{label: "主唱", value: "lead"}, {label: "和声", value: "backing"},
-                                                {label: "合并人声", value: "vocals"}]
+                                        model: [{label: page.vwaTr("主唱"), value: "lead"}, {label: page.vwaTr("和声"), value: "backing"},
+                                                {label: page.vwaTr("合并人声"), value: "vocals"}]
                                         currentIndex: indexOfValue(page.bindingField("referenceVoice", ""))
                                         enabled: !page.busy
                                         onActivated: page.controller.setReferenceVoice(page.activeId, currentValue)
@@ -1838,7 +1841,7 @@ ScrollView {
                                     HelperText {
                                         Layout.alignment: Qt.AlignVCenter
                                         theme: page.theme
-                                        text: "校准配置"
+                                        text: page.vwaTr("校准配置")
                                         visible: page.view.expressionMode === "calibrated"
                                     }
                                     EditorButton {
@@ -1846,7 +1849,7 @@ ScrollView {
                                         visible: page.view.expressionMode === "calibrated"
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: "选择 JSON…"
+                                        text: page.vwaTr("选择 JSON…")
                                         enabled: !page.busy && page.hasSource
                                             && page.textOf(page.view.expressionMode) === "calibrated"
                                         onClicked: calibrationDialog.open()
@@ -1865,7 +1868,7 @@ ScrollView {
                                     HelperText {
                                         Layout.alignment: Qt.AlignVCenter
                                         theme: page.theme
-                                        text: "沿用的原 SVP"
+                                        text: page.vwaTr("沿用的原 SVP")
                                         visible: page.view.expressionMode === "retained"
                                     }
                                     RowLayout {
@@ -1881,7 +1884,7 @@ ScrollView {
                                             value: page.retainedIndexDraft
                                             editable: true
                                             enabled: !page.busy && page.activeId.length > 0
-                                            Accessible.name: "原工程源轨索引"
+                                            Accessible.name: page.vwaTr("原工程源轨索引")
                                             onValueModified: page.retainedIndexDraft = value
                                         }
                                         EditorButton {
@@ -1889,7 +1892,7 @@ ScrollView {
                                             Layout.fillWidth: true
                                             theme: page.theme
                                             text: page.textOf(page.bindingField("retained", "")).length > 0
-                                                ? "更换 SVP…" : "选择 SVP…"
+                                                ? page.vwaTr("更换 SVP…") : page.vwaTr("选择 SVP…")
                                             enabled: !page.busy && page.activeId.length > 0
                                                 && page.activeTrackData !== null
                                                 && page.activeTrackData.editable !== false
@@ -1906,7 +1909,7 @@ ScrollView {
                                         Layout.columnSpan: page.compact ? 1 : 2
                                         visible: page.textOf(page.bindingField("retained", "")).length > 0
                                         text: page.fileName(page.bindingField("retained", ""))
-                                            + "  ·  源轨索引 " + page.retainedIndexDraft
+                                            + page.vwaTr("  ·  源轨索引 ") + page.retainedIndexDraft
                                         color: page.theme.muted
                                         font.pixelSize: Math.round(10 * page.scale)
                                         elide: Text.ElideMiddle
@@ -1925,7 +1928,7 @@ ScrollView {
                                         objectName: "optionReferenceDynamics"
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: page.boolOptionText("reference_dynamics", "参考力度")
+                                        text: page.boolOptionText("reference_dynamics", page.vwaTr("参考力度"))
                                         selected: boolOr(page.optionValue("reference_dynamics", false), false)
                                         enabled: !page.busy
                                         onClicked: page.toggleOption("reference_dynamics")
@@ -1934,7 +1937,7 @@ ScrollView {
                                         objectName: "optionReferenceTension"
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: page.boolOptionText("reference_tension", "参考张力")
+                                        text: page.boolOptionText("reference_tension", page.vwaTr("参考张力"))
                                         selected: boolOr(page.optionValue("reference_tension", false), false)
                                         enabled: !page.busy
                                         onClicked: page.toggleOption("reference_tension")
@@ -1943,7 +1946,7 @@ ScrollView {
                                         objectName: "optionReferenceBreathiness"
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: page.boolOptionText("reference_breathiness", "参考气声")
+                                        text: page.boolOptionText("reference_breathiness", page.vwaTr("参考气声"))
                                         selected: boolOr(page.optionValue("reference_breathiness", false), false)
                                         enabled: !page.busy
                                         onClicked: page.toggleOption("reference_breathiness")
@@ -1952,7 +1955,7 @@ ScrollView {
                                         objectName: "optionReferenceVoicing"
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: page.boolOptionText("reference_voicing", "参考发声")
+                                        text: page.boolOptionText("reference_voicing", page.vwaTr("参考发声"))
                                         selected: boolOr(page.optionValue("reference_voicing", false), false)
                                         enabled: !page.busy
                                         onClicked: page.toggleOption("reference_voicing")
@@ -1965,14 +1968,14 @@ ScrollView {
                                     HelperText {
                                         Layout.alignment: Qt.AlignVCenter
                                         theme: page.theme
-                                        text: "动态强度"
+                                        text: page.vwaTr("动态强度")
                                     }
                                     PercentSlider {
                                         Layout.fillWidth: true
                                         objectName: "tuningDynamicsStrengthSlider"
                                         strength: page.numberOr(page.optionValue("dynamics_strength", 0), 0)
                                         enabled: !page.busy && page.optionKnown("dynamics_strength")
-                                        Accessible.name: "动态强度"
+                                        Accessible.name: page.vwaTr("动态强度")
                                         onMoved: page.controller.setTuningOption("dynamics_strength", value / 100)
                                     }
                                     HelperText {
@@ -1990,13 +1993,13 @@ ScrollView {
                                     HelperText {
                                         Layout.alignment: Qt.AlignVCenter
                                         theme: page.theme
-                                        text: "表达采样"
+                                        text: page.vwaTr("表达采样")
                                     }
                                     EditorButton {
                                         objectName: "tuningDensityDense"
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: "加密采样"
+                                        text: page.vwaTr("加密采样")
                                         selected: page.optionKnown("expression_density")
                                             && String(page.optionValue("expression_density", "")) === "dense"
                                         enabled: !page.busy
@@ -2006,7 +2009,7 @@ ScrollView {
                                         objectName: "tuningDensityOriginal"
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: "原始采样"
+                                        text: page.vwaTr("原始采样")
                                         selected: page.optionKnown("expression_density")
                                             && String(page.optionValue("expression_density", "")) === "original"
                                         enabled: !page.busy
@@ -2017,7 +2020,7 @@ ScrollView {
                                 HelperText {
                                     Layout.fillWidth: true
                                     theme: page.theme
-                                    text: "这里只编辑工程与参数；声库合成、真实听感和外部编辑器中的手动渲染保持独立。"
+                                    text: page.vwaTr("这里只编辑工程与参数；声库合成、真实听感和外部编辑器中的手动渲染保持独立。")
                                 }
                             }
                             ColumnLayout {
@@ -2026,7 +2029,7 @@ ScrollView {
                                 spacing: page.editorGap
                                 PanelLabel {
                                     theme: page.theme
-                                    text: "工程预设"
+                                    text: page.vwaTr("工程预设")
                                 }
 
                                 UiComboBox {
@@ -2039,7 +2042,7 @@ ScrollView {
                                     valueRole: "key"
                                     currentIndex: page.presetKeyIndex(page.selectedPresetKey)
                                     enabled: !page.busy && page.presets.length > 0
-                                    Accessible.name: "工程预设"
+                                    Accessible.name: page.vwaTr("工程预设")
                                     onActivated: function(index) {
                                         if (index >= 0 && index < page.presets.length) {
                                             page.selectedPresetKey = String(page.presets[index].key)
@@ -2054,7 +2057,7 @@ ScrollView {
                                         objectName: "previewTuningPreset"
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: "查看差异"
+                                        text: page.vwaTr("查看差异")
                                         enabled: page.hasSource && !page.busy && page.selectedPresetKey.length > 0
                                         onClicked: page.controller.previewPreset(page.selectedPresetKey)
                                     }
@@ -2062,7 +2065,7 @@ ScrollView {
                                         objectName: "unbindTuningPreset"
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: "解除绑定"
+                                        text: page.vwaTr("解除绑定")
                                         enabled: !page.busy && page.textOf(page.view.presetName).length > 0
                                         onClicked: page.controller.unbindPreset()
                                     }
@@ -2075,7 +2078,7 @@ ScrollView {
                                     HelperText {
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: parent.review.name + (parent.review.brushOnly ? " · 仅下一片段" : " · 绑定当前工程")
+                                        text: parent.review.name + (parent.review.brushOnly ? page.vwaTr(" · 仅下一片段") : page.vwaTr(" · 绑定当前工程"))
                                     }
                                     Repeater {
                                         model: parent.review.changes || []
@@ -2098,7 +2101,7 @@ ScrollView {
                                         objectName: "applyReviewedTuningPreset"
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: parent.review.brushOnly ? "应用到下一片段" : "确认绑定预设"
+                                        text: parent.review.brushOnly ? page.vwaTr("应用到下一片段") : page.vwaTr("确认绑定预设")
                                         enabled: !page.busy
                                         primary: true
                                         onClicked: page.controller.confirmPreset()
@@ -2108,8 +2111,8 @@ ScrollView {
                                 Text {
                                     Layout.fillWidth: true
                                     text: page.textOf(page.view.presetName).length > 0
-                                        ? "当前工程绑定：" + page.view.presetName
-                                        : "当前工程尚未绑定预设。"
+                                        ? page.vwaTr("当前工程绑定：") + page.view.presetName
+                                        : page.vwaTr("当前工程尚未绑定预设。")
                                     color: page.theme.muted
                                     font.pixelSize: Math.round(11 * page.scale)
                                     wrapMode: Text.Wrap
@@ -2135,7 +2138,7 @@ ScrollView {
                                         objectName: "importTuningPresets"
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: "导入附加…"
+                                        text: page.vwaTr("导入附加…")
                                         enabled: !page.busy
                                         onClicked: presetImportDialog.open()
                                     }
@@ -2143,7 +2146,7 @@ ScrollView {
                                         objectName: "exportTuningPreset"
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: "导出预设…"
+                                        text: page.vwaTr("导出预设…")
                                         enabled: !page.busy && page.selectedPresetKey.length > 0
                                         onClicked: presetExportDialog.open()
                                     }
@@ -2151,7 +2154,7 @@ ScrollView {
                                         objectName: "saveTuningPreset"
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: "保存到本机库"
+                                        text: page.vwaTr("保存到本机库")
                                         enabled: !page.busy && page.hasSource
                                         onClicked: {
                                             presetNameField.text = page.textOf(page.view.presetName)
@@ -2170,7 +2173,7 @@ ScrollView {
                                     PanelLabel {
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: "候选与结果"
+                                        text: page.vwaTr("候选与结果")
                                     }
                                     Rectangle {
                                         implicitHeight: Math.round(22 * page.scale)
@@ -2228,7 +2231,7 @@ ScrollView {
                                     }
                                     Text {
                                         visible: boolOr(page.view.candidateStale, false)
-                                        text: "已过期"
+                                        text: page.vwaTr("已过期")
                                         color: page.theme.error
                                         font.pixelSize: Math.round(10 * page.scale)
                                         font.weight: Font.DemiBold
@@ -2237,7 +2240,7 @@ ScrollView {
                                     EditorButton {
                                         objectName: "openTuningCandidate"
                                         theme: page.theme
-                                        text: "打开候选"
+                                        text: page.vwaTr("打开候选")
                                         enabled: page.candidateOpenable && !page.view.busy
                                         onClicked: page.controller.openCandidate()
                                     }
@@ -2250,14 +2253,14 @@ ScrollView {
                                     text: {
                                         if (boolOr(page.view.candidateHistorical, false)) {
                                             const reason = page.textOf(page.view.message)
-                                            return "这是安全保留的历史候选；当前完整回执核验失败，因此不能登记。"
+                                            return page.vwaTr("这是安全保留的历史候选；当前完整回执核验失败，因此不能登记。")
                                                 + (reason.length > 0 ? "\n" + reason : "")
                                         }
                                         const report = page.view.candidateDetails || {}
-                                        const state = {applied:"已处理", partial:"部分处理", unchanged:"无变化"}[report.status] || ""
-                                        return state + " · " + (report.tracks || 0) + " 轨"
-                                            + (report.notesPreserved ? " · 音符与时值保留" : "")
-                                            + (report.pitchChanged ? "\n已修改局部音高" : "")
+                                        const state = {applied:page.vwaTr("已处理"), partial:page.vwaTr("部分处理"), unchanged:page.vwaTr("无变化")}[report.status] || ""
+                                        return state + " · " + (report.tracks || 0) + page.vwaTr(" 轨")
+                                            + (report.notesPreserved ? page.vwaTr(" · 音符与时值保留") : "")
+                                            + (report.pitchChanged ? page.vwaTr("\n已修改局部音高") : "")
                                             + "\nSHA " + page.shortHash(report.sha256)
                                     }
                                 }
@@ -2268,14 +2271,14 @@ ScrollView {
                                     EditorButton {
                                         objectName: "saveTuningCandidate"
                                         theme: page.theme
-                                        text: "另存 SVP…"
+                                        text: page.vwaTr("另存 SVP…")
                                         enabled: !page.view.busy
                                         onClicked: candidateSaveDialog.open()
                                     }
                                     EditorButton {
                                         objectName: "openTuningReceipt"
                                         theme: page.theme
-                                        text: boolOr(page.view.candidateHistorical, false) ? "查看原回执" : "核验回执"
+                                        text: boolOr(page.view.candidateHistorical, false) ? page.vwaTr("查看原回执") : page.vwaTr("核验回执")
                                         visible: !!page.view.candidateVerified
                                             || page.textOf(page.view.candidateReceipt).length > 0
                                         enabled: !page.view.busy
@@ -2286,20 +2289,20 @@ ScrollView {
                                     Layout.fillWidth: true
                                     theme: page.theme
                                     visible: !!page.view.savedCopy
-                                    text: "另存：" + page.fileName(page.view.savedCopy)
+                                    text: page.vwaTr("另存：") + page.fileName(page.view.savedCopy)
                                 }
 
                                 HelperText {
                                     Layout.fillWidth: true
                                     visible: boolOr(page.view.candidateStale, false)
                                     theme: page.theme
-                                    text: "候选基线已变化，请重新冻结、生成或明确确认后再继续。"
+                                    text: page.vwaTr("候选基线已变化，请重新冻结、生成或明确确认后再继续。")
                                 }
                                 EditorButton {
                                     objectName: "tuningOpenMixdown"
                                     theme: page.theme
                                     visible: page.candidatePresent
-                                    text: "导入已合成的歌声…"
+                                    text: page.vwaTr("导入已合成的歌声…")
                                     enabled: !page.busy
                                     onClicked: page.controller.openMixdown()
                                 }
@@ -2325,8 +2328,8 @@ ScrollView {
                                         Text {
                                             Layout.fillWidth: true
                                             text: boolOr(page.view.candidateConfirmed, false)
-                                                ? "候选基线已明确确认。"
-                                                : "候选与当前工程基线不同，需要人工确认。"
+                                                ? page.vwaTr("候选基线已明确确认。")
+                                                : page.vwaTr("候选与当前工程基线不同，需要人工确认。")
                                             color: boolOr(page.view.candidateConfirmed, false)
                                                 ? page.theme.success : page.theme.attention
                                             font.pixelSize: Math.round(11 * page.scale)
@@ -2340,7 +2343,7 @@ ScrollView {
                                                 objectName: "confirmCandidateBaseline"
                                                 Layout.fillWidth: true
                                                 theme: page.theme
-                                                text: "确认候选基线"
+                                                text: page.vwaTr("确认候选基线")
                                                 primary: !boolOr(page.view.candidateConfirmed, false)
                                                 enabled: !page.busy
                                                     && !boolOr(page.view.candidateConfirmed, false)
@@ -2350,7 +2353,7 @@ ScrollView {
                                                 objectName: "unconfirmCandidateBaseline"
                                                 Layout.fillWidth: true
                                                 theme: page.theme
-                                                text: "恢复待确认"
+                                                text: page.vwaTr("恢复待确认")
                                                 enabled: !page.busy
                                                     && boolOr(page.view.candidateConfirmed, false)
                                                 onClicked: page.controller.confirmCandidate(false)
@@ -2386,7 +2389,7 @@ ScrollView {
                             objectName: "freezeTuning"
                             Layout.fillWidth: true
                             theme: page.theme
-                            text: "冻结预览"
+                            text: page.vwaTr("冻结预览")
                             enabled: !page.busy && boolOr(page.view.canFreeze, false)
                             onClicked: { page.inspectorTab = "result"; page.controller.freeze() }
                         }
@@ -2394,7 +2397,7 @@ ScrollView {
                             objectName: "runTuning"
                             Layout.fillWidth: true
                             theme: page.theme
-                            text: "生成候选"
+                            text: page.vwaTr("生成候选")
                             primary: true
                             enabled: !page.busy && boolOr(page.view.canRun, false)
                             onClicked: { page.inspectorTab = "result"; page.controller.run() }
@@ -2403,7 +2406,7 @@ ScrollView {
                             objectName: "cancelTuning"
                             Layout.fillWidth: true
                             theme: page.theme
-                            text: "取消任务"
+                            text: page.vwaTr("取消任务")
                             visible: page.view.busy === true
                             enabled: visible
                             onClicked: page.controller.cancel()
@@ -2411,7 +2414,7 @@ ScrollView {
                         EditorButton {
                             objectName: "chooseDraftRecovery"
                             theme: page.theme
-                            text: "草稿副本…"
+                            text: page.vwaTr("草稿副本…")
                             visible: page.hasSource && !page.draftConflict
                             enabled: !page.busy
                             onClicked: draftFile.open()
@@ -2420,7 +2423,7 @@ ScrollView {
                             objectName: "reloadLatestTuningDraft"
                             Layout.fillWidth: true
                             theme: page.theme
-                            text: "载入最新草稿"
+                            text: page.vwaTr("载入最新草稿")
                             visible: page.hasSource && !page.draftConflict
                             enabled: !page.busy && boolOr(page.view.canReloadDraft, false)
                             onClicked: page.controller.reloadLatestDraft()
@@ -2429,7 +2432,7 @@ ScrollView {
                             objectName: "saveTuningDraftRevision"
                             Layout.fillWidth: true
                             theme: page.theme
-                            text: "保存新修订"
+                            text: page.vwaTr("保存新修订")
                             visible: page.hasSource && !page.draftConflict
                             enabled: !page.busy && boolOr(page.view.canSaveDraftRevision, false)
                             onClicked: page.controller.saveDraftRevision()
@@ -2438,7 +2441,7 @@ ScrollView {
                             objectName: "registerTuningResult"
                             Layout.fillWidth: true
                             theme: page.theme
-                            text: "登记结果"
+                            text: page.vwaTr("登记结果")
                             visible: !!page.view.canRegister
                             enabled: !page.busy && boolOr(page.view.canRegister, false)
                             onClicked: page.controller.registerResult()
@@ -2453,7 +2456,7 @@ ScrollView {
     Dialog {
         id: draftRecovery
         objectName: "tuningDraftRecoveryDialog"
-        title: "核对调音草稿"
+        title: page.vwaTr("核对调音草稿")
         modal: true
         parent: Overlay.overlay
         anchors.centerIn: parent
@@ -2477,26 +2480,26 @@ ScrollView {
                 Layout.fillWidth: true
                 theme: page.theme
                 visible: !!draftRecovery.review.path
-                text: "共享版本 " + page.textOf(draftRecovery.review.revision) + "：" + page.textOf(draftRecovery.review.shared)
+                text: page.vwaTr("共享版本 ") + page.textOf(draftRecovery.review.revision) + "：" + page.textOf(draftRecovery.review.shared)
             }
             HelperText {
                 Layout.fillWidth: true
                 theme: page.theme
                 visible: !!draftRecovery.review.path
-                text: "本地副本：" + page.textOf(draftRecovery.review.local) + "\n"
+                text: page.vwaTr("本地副本：") + page.textOf(draftRecovery.review.local) + "\n"
                     + page.fileName(draftRecovery.review.path)
             }
             HelperText {
                 Layout.fillWidth: true
                 theme: page.theme
                 visible: !!draftRecovery.review.path
-                text: "载入共享草稿会保留本地副本。恢复本地编辑前，也会为当前共享版本另存副本。"
+                text: page.vwaTr("载入共享草稿会保留本地副本。恢复本地编辑前，也会为当前共享版本另存副本。")
             }
         }
         footer: DialogButtonBox {
             EditorButton {
                 theme: page.theme
-                text: draftRecovery.review.path ? "稍后处理" : "关闭"
+                text: draftRecovery.review.path ? page.vwaTr("稍后处理") : page.vwaTr("关闭")
                 enabled: !page.view.busy
                 DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
                 onClicked: draftRecovery.close()
@@ -2504,7 +2507,7 @@ ScrollView {
             EditorButton {
                 objectName: "loadSharedTuningDraft"
                 theme: page.theme
-                text: "载入共享草稿"
+                text: page.vwaTr("载入共享草稿")
                 enabled: !page.view.busy && !!draftRecovery.review.path
                 DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
                 onClicked: page.controller.resolveDraftRecovery(false)
@@ -2512,7 +2515,7 @@ ScrollView {
             EditorButton {
                 objectName: "restoreLocalTuningDraft"
                 theme: page.theme
-                text: "恢复本地编辑"
+                text: page.vwaTr("恢复本地编辑")
                 enabled: !page.view.busy && !!draftRecovery.review.path
                 DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
                 onClicked: page.controller.resolveDraftRecovery(true)
@@ -2522,26 +2525,26 @@ ScrollView {
 
     FileDialog {
         id: draftFile
-        title: "选择本工程的草稿副本"
+        title: page.vwaTr("选择本工程的草稿副本")
         currentFolder: page.view.draftFolder
-        nameFilters: ["草稿冲突副本 (*.conflict-*.json)"]
+        nameFilters: [page.vwaTr("草稿冲突副本 (*.conflict-*.json)")]
         onAccepted: draftRecovery.openReview(selectedFile)
     }
 
     FileDialog {
         id: candidateSaveDialog
         objectName: "tuningCandidateSaveDialog"
-        title: "另存已核验的 SVP"
+        title: page.vwaTr("另存已核验的 SVP")
         fileMode: FileDialog.SaveFile
         defaultSuffix: "svp"
-        nameFilters: ["Synthesizer V 工程 (*.svp)"]
+        nameFilters: [page.vwaTr("Synthesizer V 工程 (*.svp)")]
         onAccepted: page.controller.exportCandidate(selectedFile)
     }
 
     Dialog {
         id: clearRegionsDialog
         objectName: "tuningClearRegionsDialog"
-        title: "清空风格片段"
+        title: page.vwaTr("清空风格片段")
         modal: true
         anchors.centerIn: parent
         width: Math.min(page.width - 28, Math.round(375 * page.scale))
@@ -2549,18 +2552,18 @@ ScrollView {
         onAccepted: page.controller.clearRegions()
         contentItem: HelperText {
             theme: page.theme
-            text: "清空此工程的已应用片段。原工程文件不会改写，可用撤销恢复。"
+            text: page.vwaTr("清空此工程的已应用片段。原工程文件不会改写，可用撤销恢复。")
         }
     }
 
     FileDialog {
         id: projectDialog
         objectName: "tuningProjectDialog"
-        title: "导入调音工程"
+        title: page.vwaTr("导入调音工程")
         fileMode: FileDialog.OpenFile
         nameFilters: [
-            "SynthV 工程 (*.svp)",
-            "所有文件 (*)"
+            page.vwaTr("SynthV 工程 (*.svp)"),
+            page.vwaTr("所有文件 (*)")
         ]
         onAccepted: page.controller.chooseProject(selectedFile)
     }
@@ -2568,12 +2571,12 @@ ScrollView {
     FileDialog {
         id: sessionDialog
         objectName: "tuningSessionDialog"
-        title: "继续已有调音会话"
+        title: page.vwaTr("继续已有调音会话")
         currentFolder: page.view.sessionFolder || ""
         fileMode: FileDialog.OpenFile
         nameFilters: [
-            "调音处理记录 (session.json)",
-            "所有文件 (*)"
+            page.vwaTr("调音处理记录 (session.json)"),
+            page.vwaTr("所有文件 (*)")
         ]
         onAccepted: page.controller.resumeSession(selectedFile)
     }
@@ -2581,7 +2584,7 @@ ScrollView {
     FolderDialog {
         id: sessionLocationDialog
         objectName: "tuningSessionLocationDialog"
-        title: "选择独立调音会话位置"
+        title: page.vwaTr("选择独立调音会话位置")
         currentFolder: page.view.sessionFolder || ""
         onAccepted: page.controller.setSessionLocation(selectedFolder)
     }
@@ -2589,7 +2592,7 @@ ScrollView {
     Dialog {
         id: taskPickerDialog
         objectName: "tuningTaskPickerDialog"
-        title: "从任务与结果载入工程"
+        title: page.vwaTr("从任务与结果载入工程")
         modal: true
         parent: Overlay.overlay
         anchors.centerIn: parent
@@ -2614,7 +2617,7 @@ ScrollView {
                 model: taskPickerDialog.taskRows
                 textRole: "title"
                 valueRole: "jobId"
-                Accessible.name: "准备任务"
+                Accessible.name: page.vwaTr("准备任务")
                 function syncChoice() {
                     if (count > 0 && taskPickerDialog.jobId.length === 0) {
                         currentIndex = 0
@@ -2639,7 +2642,7 @@ ScrollView {
                 model: taskPickerDialog.projectRows
                 textRole: "label"
                 valueRole: "artifactId"
-                Accessible.name: "任务中的调音工程"
+                Accessible.name: page.vwaTr("任务中的调音工程")
                 function syncChoice() {
                     if (count > 0)
                         currentIndex = 0
@@ -2656,7 +2659,7 @@ ScrollView {
             HelperText {
                 Layout.fillWidth: true
                 theme: page.theme
-                text: "载入前会按任务与结果页面的同一文件清单重新核验路径、SHA 和上游版本；变更后会拒绝载入。"
+                text: page.vwaTr("载入前会按任务与结果页面的同一文件清单重新核验路径、SHA 和上游版本；变更后会拒绝载入。")
             }
         }
 
@@ -2665,14 +2668,14 @@ ScrollView {
             Item { Layout.fillWidth: true }
             UiButton {
                 theme: page.theme
-                text: "取消"
+                text: page.vwaTr("取消")
                 quiet: true
                 onClicked: taskPickerDialog.close()
             }
             UiButton {
                 objectName: "loadTuningTaskProject"
                 theme: page.theme
-                text: "核验并载入"
+                text: page.vwaTr("核验并载入")
                 primary: true
                 enabled: !page.busy && taskPickerDialog.jobId.length > 0
                     && taskPickerDialog.artifactId.length > 0
@@ -2688,11 +2691,11 @@ ScrollView {
         id: referenceDialog
         objectName: "tuningReferenceDialog"
         property string trackId: ""
-        title: "绑定参考演唱音频"
+        title: page.vwaTr("绑定参考演唱音频")
         fileMode: FileDialog.OpenFile
         nameFilters: [
-            "音频文件 (*.wav *.flac *.mp3 *.m4a *.ogg *.aac *.opus)",
-            "所有文件 (*)"
+            page.vwaTr("音频文件 (*.wav *.flac *.mp3 *.m4a *.ogg *.aac *.opus)"),
+            page.vwaTr("所有文件 (*)")
         ]
         onAccepted: page.controller.bindReference(trackId, selectedFile)
     }
@@ -2700,11 +2703,11 @@ ScrollView {
     FileDialog {
         id: calibrationDialog
         objectName: "tuningCalibrationDialog"
-        title: "绑定校准配置"
+        title: page.vwaTr("绑定校准配置")
         fileMode: FileDialog.OpenFile
         nameFilters: [
-            "校准配置 (*.json)",
-            "所有文件 (*)"
+            page.vwaTr("校准配置 (*.json)"),
+            page.vwaTr("所有文件 (*)")
         ]
         onAccepted: page.controller.bindCalibration(selectedFile)
     }
@@ -2714,11 +2717,11 @@ ScrollView {
         objectName: "tuningRetainedDialog"
         property string trackId: ""
         property int sourceTrackIndex: 0
-        title: "绑定原参数 SVP"
+        title: page.vwaTr("绑定原参数 SVP")
         fileMode: FileDialog.OpenFile
         nameFilters: [
-            "SynthV 工程 (*.svp)",
-            "所有文件 (*)"
+            page.vwaTr("SynthV 工程 (*.svp)"),
+            page.vwaTr("所有文件 (*)")
         ]
         onAccepted: page.controller.bindRetained(trackId, selectedFile, sourceTrackIndex)
     }
@@ -2726,11 +2729,11 @@ ScrollView {
     FileDialog {
         id: presetImportDialog
         objectName: "tuningPresetImportDialog"
-        title: "导入附加调音预设"
+        title: page.vwaTr("导入附加调音预设")
         fileMode: FileDialog.OpenFile
         nameFilters: [
-            "调音预设 (*.json)",
-            "所有文件 (*)"
+            page.vwaTr("调音预设 (*.json)"),
+            page.vwaTr("所有文件 (*)")
         ]
         onAccepted: page.controller.importPresets(selectedFile)
     }
@@ -2738,11 +2741,11 @@ ScrollView {
     FileDialog {
         id: presetExportDialog
         objectName: "tuningPresetExportDialog"
-        title: "导出调音预设"
+        title: page.vwaTr("导出调音预设")
         fileMode: FileDialog.SaveFile
         nameFilters: [
-            "调音预设 (*.json)",
-            "所有文件 (*)"
+            page.vwaTr("调音预设 (*.json)"),
+            page.vwaTr("所有文件 (*)")
         ]
         onAccepted: {
             if (page.selectedPresetKey.length > 0)
@@ -2753,7 +2756,7 @@ ScrollView {
     Dialog {
         id: presetNameDialog
         objectName: "tuningPresetNameDialog"
-        title: "保存到本机预设库"
+        title: page.vwaTr("保存到本机预设库")
         parent: Overlay.overlay
         modal: true
         focus: true
@@ -2767,7 +2770,7 @@ ScrollView {
             spacing: Math.round(8 * page.scale)
             Text {
                 Layout.fillWidth: true
-                text: "预设名称"
+                text: page.vwaTr("预设名称")
                 color: page.theme.text
                 font.pixelSize: Math.round(12 * page.scale)
                 font.weight: Font.DemiBold
@@ -2777,13 +2780,13 @@ ScrollView {
                 id: presetNameField
                 Layout.fillWidth: true
                 theme: page.theme
-                placeholderText: "例如：主唱轻推 · 当前工程"
-                Accessible.name: "调音预设名称"
+                placeholderText: page.vwaTr("例如：主唱轻推 · 当前工程")
+                Accessible.name: page.vwaTr("调音预设名称")
             }
             HelperText {
                 Layout.fillWidth: true
                 theme: page.theme
-                text: "名称只用于当前明确的保存或导出操作；工程、音频和声库绑定仍保留在本机。"
+                text: page.vwaTr("名称只用于当前明确的保存或导出操作；工程、音频和声库绑定仍保留在本机。")
             }
         }
 
@@ -2792,13 +2795,13 @@ ScrollView {
             Item { Layout.fillWidth: true }
             UiButton {
                 theme: page.theme
-                text: "取消"
+                text: page.vwaTr("取消")
                 quiet: true
                 onClicked: presetNameDialog.close()
             }
             UiButton {
                 theme: page.theme
-                text: "保存"
+                text: page.vwaTr("保存")
                 primary: true
                 enabled: presetNameField.text.trim().length > 0 && !page.busy
                 onClicked: {

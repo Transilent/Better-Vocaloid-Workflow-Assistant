@@ -2,7 +2,8 @@ param([string]$AppRoot = (Split-Path -Parent $PSScriptRoot))
 $ErrorActionPreference = 'Stop'
 $app = [IO.Path]::GetFullPath($AppRoot).TrimEnd('\')
 $catalog = Join-Path $app 'packaging/source-files.json'
-$files = (Get-Content -LiteralPath $catalog -Raw -Encoding UTF8 | ConvertFrom-Json).files
+$mapping = Get-Content -LiteralPath $catalog -Raw -Encoding UTF8 | ConvertFrom-Json
+$files = $mapping.files
 if (($files | Select-Object -Unique).Count -ne $files.Count) { throw 'Source mapping contains duplicate paths.' }
 $sourceDirectory = Join-Path $app 'src'
 $cataloguedSources = @($files | Where-Object { $_ -match '^src/[A-Za-z0-9_]+\.py$' })
@@ -51,6 +52,18 @@ foreach ($copy in $copies) {
         }
     }
     if (!(Test-Path -LiteralPath $copy.Source -PathType Leaf)) { throw 'Source file is missing.' }
+}
+foreach ($name in $mapping.retired_generated) {
+    if ($name -notmatch '^[A-Za-z0-9_]+\.py$' -or $files -contains ('src/' + $name)) {
+        throw 'Invalid retired generated path.'
+    }
+    $old = Join-Path $app $name
+    if (Test-Path -LiteralPath $old -PathType Leaf) {
+        if ((Get-Item -LiteralPath $old).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw 'Refusing to remove a linked generated file.'
+        }
+        Remove-Item -LiteralPath $old
+    }
 }
 foreach ($copy in $copies) {
     $parent = Split-Path -Parent $copy.Destination

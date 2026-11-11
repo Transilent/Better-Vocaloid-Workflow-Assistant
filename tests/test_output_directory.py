@@ -1,4 +1,4 @@
-"""Custom video/WAV destinations, reuse, task discovery and GUI directory selection."""
+"""Custom video/WAV destinations, reuse and remembered task roots."""
 import contextlib
 import io
 import json
@@ -14,20 +14,11 @@ import common
 import cover_art
 import pipeline
 import yt_dlp
-from app import Window
-# Load runtime/UI modules against the real app before isolating private state.
-import workspace_ui
-import components_ui
-import updates_ui
 from publication import load_bundle
 from tests.support import ensure_fixture
-from PyQt5.QtCore import Qt
-from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication, QFileDialog
 
 config = common.load_config()
 fixture = load_bundle(ensure_fixture(APP), 'bilibili')
-application = QApplication([])
 with tempfile.TemporaryDirectory(prefix='output-directory-', dir=APP / 'work') as folder:
     scratch = Path(folder)
     private = scratch / 'assistant'
@@ -65,6 +56,7 @@ with tempfile.TemporaryDirectory(prefix='output-directory-', dir=APP / 'work') a
         metadata = {'title': '测试音乐', 'owner': {'name': '测试作者'}, 'desc': '', 'bvid': request['bv']}
         with patch.object(yt_dlp, 'YoutubeDL', Downloader), \
              patch.object(pipeline, 'get_view', return_value=metadata), \
+             patch.object(pipeline, 'validate_dependencies', return_value=None), \
              patch.object(cover_art, 'job_cover', return_value=(Path(fixture['cover']['source']), {'url': 'fixture'})):
             pipeline.run(job, until='audio')
             assert common.file_hash(job / 'video/source.mp4') == fixture['video']['sha256']
@@ -95,40 +87,4 @@ with tempfile.TemporaryDirectory(prefix='output-directory-', dir=APP / 'work') a
             except ValueError as error:
                 assert '目录权限' in str(error)
 
-        window = Window()
-        window.show()
-        application.processEvents()
-        assert window.output_parent() == chosen
-        for _ in range(300):
-            application.processEvents()
-            if not (window.results.worker and window.results.worker.isRunning()): break
-            QTest.qWait(10)
-        application.processEvents()
-        assert window.results.tree.topLevelItemCount() == 2
-        with patch.object(QFileDialog, 'getExistingDirectory', return_value=str(destination)):
-            QTest.mouseClick(window.choose_output_btn, Qt.LeftButton)
-        assert window.options()['parent'] == destination
-        assert common.output_directory() == destination
-        window.set_running(True)
-        assert not window.output_dir.isEnabled() and not window.choose_output_btn.isEnabled()
-        window.set_running(False)
-        window.close()
-        window = Window()
-        assert window.output_parent() == destination, 'The selected folder must survive a window restart'
-        window.output_dir.clear()
-        assert window.output_parent() == private / 'jobs'
-        window.source.setText('BV1ccWPeAEoZ')
-        with patch.object(window, 'launch') as launch:
-            window.start_new()
-            assert launch.called and window.job.parent == private / 'jobs'
-        window.results.selected_job = job
-        window.output_dir.setText(str(chosen))
-        with patch.object(window, 'launch'):
-            window.resume_last()
-            assert window.job == job
-            window.reprocess_last()
-            assert window.job.parent == chosen
-        assert (job / 'video/source.mp4').is_file()
-        window.close()
-        application.processEvents()
-print('PASS: Unicode/space output directories, real video/WAV files, resume, reuse, remembered task roots, browse UI, restart and invalid destinations')
+print('PASS: Unicode/space output directories, real video/WAV files, resume, reuse, remembered task roots and invalid destinations')

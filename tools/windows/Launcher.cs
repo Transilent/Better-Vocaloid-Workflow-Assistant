@@ -56,7 +56,7 @@ internal static class Launcher
             if (!File.Exists(python))
                 throw new FileNotFoundException("缺少运行库。请下载并解压完整便携包，保留 dependencies 文件夹。\n\nThe portable runtime is missing. Extract the complete package, including dependencies.");
             if (File.Exists(Path.Combine(root, "cache", "runtime-install-in-progress")))
-                throw new InvalidOperationException("运行库安装尚未完成。请运行 tools\\Start-Diagnostics.bat 继续安装。\n\nRuntime installation is incomplete. Run tools\\Start-Diagnostics.bat to resume.");
+                throw new InvalidOperationException("此目录的运行库不完整。请另行解压完整的 Qt Quick 便携包。\n\nThe runtime in this folder is incomplete. Extract a complete Qt Quick portable package to a separate folder.");
             var arguments = new StringBuilder("-B -u ");
             arguments.Append(Quote(Path.Combine(root, "launch.py")));
             arguments.Append(" --desktop");

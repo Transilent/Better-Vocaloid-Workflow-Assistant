@@ -4,6 +4,9 @@ import QtQuick.Layouts
 
 Item {
     id: root
+    function vwaTr(message) {
+        return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
+    }
     objectName: "mixdownEq"
     required property QtObject theme
     required property QtObject controller
@@ -138,19 +141,19 @@ Item {
     function typeOptions() {
         return [
             {
-                label: "高通",
+                label: root.vwaTr("高通"),
                 value: "highpass"
             },
             {
-                label: "低架",
+                label: root.vwaTr("低架"),
                 value: "lowshelf"
             },
             {
-                label: "峰值",
+                label: root.vwaTr("峰值"),
                 value: "bell"
             },
             {
-                label: "高架",
+                label: root.vwaTr("高架"),
                 value: "highshelf"
             }
         ];
@@ -267,7 +270,7 @@ Item {
             spacing: Math.round(8 * root.theme.scale)
 
             Text {
-                text: "四段 EQ"
+                text: root.vwaTr("四段 EQ")
                 color: root.theme.text
                 font.pixelSize: Math.round(16 * root.theme.scale)
                 font.weight: Font.DemiBold
@@ -279,7 +282,7 @@ Item {
                 color: root.theme.accent
             }
             Text {
-                text: root.selection === "A" ? "A · 处理前频谱" : "B · 处理后频谱"
+                text: root.selection === "A" ? root.vwaTr("A · 处理前频谱") : root.vwaTr("B · 处理后频谱")
                 color: root.theme.muted
                 font.pixelSize: Math.round(11 * root.theme.scale)
             }
@@ -288,7 +291,7 @@ Item {
             }
             Text {
                 Layout.maximumWidth: Math.round(230 * root.theme.scale)
-                text: root.spectrumSource.length > 0 ? "实测 · " + root.spectrumSource : "等待真实频谱"
+                text: root.spectrumSource.length > 0 ? root.vwaTr("实测 · ") + root.spectrumSource : root.vwaTr("等待真实频谱")
                 color: root.hasSpectrum ? root.theme.muted : root.theme.attention
                 font.pixelSize: Math.round(10 * root.theme.scale)
                 elide: Text.ElideRight
@@ -308,8 +311,8 @@ Item {
             clip: true
             activeFocusOnTab: true
             Accessible.role: Accessible.Pane
-            Accessible.name: "混音 EQ 曲线"
-            Accessible.description: "拖动改频率和增益，滚轮调 Q，Alt 点击旁路，双击恢复。焦点在图内时方向键精调，Space 启停当前频段，Enter 恢复。"
+            Accessible.name: root.vwaTr("混音 EQ 曲线")
+            Accessible.description: root.vwaTr("拖动改频率和增益，滚轮调 Q，Alt 点击旁路，双击恢复。焦点在图内时方向键精调，Space 启停当前频段，Enter 恢复。")
             Keys.onPressed: event => root.editBandWithKey(event)
 
             Canvas {
@@ -646,7 +649,7 @@ Item {
                             root.ensureEqEnabled();
                         root.controller.setBand(root.activeBand, "type", currentValue);
                     }
-                    Accessible.name: "频段类型"
+                    Accessible.name: root.vwaTr("频段类型")
                 }
 
                 TextField {
@@ -664,7 +667,7 @@ Item {
                         decimals: 0
                     }
                     placeholderText: "Hz"
-                    Accessible.name: "中心频率"
+                    Accessible.name: root.vwaTr("中心频率")
                     background: Rectangle {
                         radius: Math.round(6 * root.theme.scale)
                         color: root.theme.base
@@ -688,7 +691,7 @@ Item {
                         decimals: 1
                     }
                     placeholderText: "dB"
-                    Accessible.name: "频段增益"
+                    Accessible.name: root.vwaTr("频段增益")
                     background: Rectangle {
                         radius: Math.round(6 * root.theme.scale)
                         color: root.theme.base
@@ -712,7 +715,7 @@ Item {
                         decimals: 2
                     }
                     placeholderText: "Q"
-                    Accessible.name: "频段 Q"
+                    Accessible.name: root.vwaTr("频段 Q")
                     background: Rectangle {
                         radius: Math.round(6 * root.theme.scale)
                         color: root.theme.base
@@ -724,13 +727,13 @@ Item {
                 UiButton {
                     theme: root.theme
                     selected: root.activeBand >= 0 && root.isBandEnabled(root.activeBand)
-                    text: selected ? "已启用" : "已旁通"
+                    text: selected ? root.vwaTr("已启用") : root.vwaTr("已旁通")
                     onClicked: {
                         if (root.activeBand >= 0)
                             root.ensureEqEnabled();
                         root.controller.setBand(root.activeBand, "enabled", !root.isBandEnabled(root.activeBand));
                     }
-                    Accessible.name: "启用当前频段"
+                    Accessible.name: root.vwaTr("启用当前频段")
                 }
             }
         }

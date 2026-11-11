@@ -1,67 +1,29 @@
-"""Small bootstrap; failures, including native Qt errors, go to launcher.log."""
-import json
-import os
-import runpy
+"""Start the Qt Quick desktop; write native startup errors for the launcher."""
+from pathlib import Path
 import sys
 import traceback
-from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 sys.dont_write_bytecode = True
 
 
-def main():
-    if "--quick" in sys.argv[1:]:
-        # Dispatch before common/check_dependencies and the legacy Qt 5 paths.
-        # The host owns --check/--smoke-test parsing and Qt 6 initialization.
-        quick_argv = [argument for argument in sys.argv[1:] if argument != "--quick"]
-        from quick_app import main as quick_main
-        return quick_main(quick_argv)
-    from common import load_config
-    from check_dependencies import validate
-    validate()
-    config = load_config()
-    if "--check" in sys.argv:
-        print("Vocaloid Workflow Assistant dependencies ready", flush=True)
-        print("Runtime:", config["python"], flush=True)
-        return
-    runtime = Path(config["python"]).parent
-    qt = runtime / "Lib/site-packages/PyQt5/Qt5"
-    os.environ["QT_PLUGIN_PATH"] = str(qt / "plugins")
-    os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(qt / "plugins/platforms")
-    os.environ["PATH"] = os.pathsep.join([
-        str(runtime), str(runtime / "DLLs"), str(qt / "bin"),
-        os.environ.get("PATH", ""),
-    ])
-    print("Vocaloid Workflow Assistant startup", sys.version, flush=True)
-    from updater import current_version
-    print("Version:", current_version(), flush=True)
-    print("Runtime:", runtime, flush=True)
-    if "--smoke-test" in sys.argv:
-        namespace = runpy.run_path(str(ROOT / "app.py"))
-        if namespace['main'](smoke=True) != 0:
-            raise RuntimeError('The startup smoke test could not acquire the application lock')
-        print("GUI ready; startup smoke test passed", flush=True)
-        return
-    runpy.run_path(str(ROOT / "app.py"), run_name="__main__")
+def main(argv=None):
+    from quick_app import main as start
+    args = sys.argv[1:] if argv is None else argv
+    # Existing shortcut arguments still resolve to the single desktop entry.
+    return start([value for value in args if value != '--quick'])
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     if '--desktop' in sys.argv:
-        # pythonw intentionally has no console streams. Bind them before imports
-        # and keep native-crash diagnostics in the same log as normal startup.
+        import faulthandler
         log = (ROOT / 'launcher.log').open('a', encoding='utf-8', buffering=1)
         sys.stdout = sys.stderr = log
-        import faulthandler
         faulthandler.enable(log)
-        if os.name == 'nt':
-            import ctypes
-            print('Desktop launcher console attached:', bool(ctypes.windll.kernel32.GetConsoleWindow()), flush=True)
     try:
         result = main()
     except Exception:
         traceback.print_exc()
         sys.exit(1)
-    if result is not None:
-        sys.exit(result)
+    sys.exit(result)

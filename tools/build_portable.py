@@ -63,6 +63,29 @@ def inventory_path(name):
     return canonical if canonical.is_file() else ROOT / name
 
 
+def _desktop_identity():
+    from tools.update_apply import desktop_identity
+    return desktop_identity(json.loads(inventory_path('version.json').read_text(encoding='utf-8-sig')))
+
+
+def _quick_runtime_files(runtime):
+    """Take the pinned, isolated runtime, never Qt from the processing Python."""
+    from tools.build_quick_candidate import REQUIRED_QT_FILES
+    identity = _desktop_identity()
+    if not identity:
+        return {}
+    folder = Path(runtime).resolve() / 'runtime/qt6'
+    receipt = folder / 'WHEELS.json'
+    if (not receipt.is_file()
+            or json.loads(receipt.read_text(encoding='utf-8-sig')).get('version') != identity['qt_version']
+            or any(not (folder / file).is_file() for file in REQUIRED_QT_FILES)):
+        raise ValueError('A verified runtime/qt6 candidate is required for a Quick portable build.')
+    return {p.relative_to(folder.parent.parent).as_posix(): p
+            for p in sorted(folder.rglob('*'))
+            if p.is_file() and not p.is_symlink() and p.resolve().is_relative_to(folder.resolve())
+            and p.suffix not in ('.pyc', '.pyo') and '__pycache__' not in p.parts}
+
+
 def release_notes(version):
     changelog = (ROOT / 'CHANGELOG.md').read_text(encoding='utf-8')
     for section in changelog.split('\n## ')[1:]:
@@ -85,6 +108,10 @@ def package_selection(variant='full'):
     expected = {entry['file']: entry for entry in entries}
     if len(expected) != len(entries):
         raise ValueError('Duplicate dependency destination')
+    if _desktop_identity():
+        from quick_runtime import legacy_widget_runtime_file
+        expected = {name: entry for name, entry in expected.items() if not legacy_widget_runtime_file(name)}
+        sources = {name: source for name, source in sources.items() if not legacy_widget_runtime_file(name)}
     omitted = {}
     if variant == 'jpn':
         specification = json.loads((ROOT / 'components/runtime-features.json').read_text(encoding='utf-8'))['features']['chinese']
@@ -108,15 +135,18 @@ def package_selection(variant='full'):
     return sources, expected, list(omitted.values())
 
 
-def portable_plan(variant='full', layout_root=DEFAULT_LAYOUT_ROOT):
+def portable_plan(variant='full', layout_root=DEFAULT_LAYOUT_ROOT, runtime=ROOT):
     """Read-only exact payload plan; no archives, stages or metadata are written."""
     layout_root = _layout_root(layout_root)
     from tools.verify_source_layout import verify
     verify(ROOT)
     sources, dependencies, omitted = package_selection(variant)
+    qt = _quick_runtime_files(runtime)
     entries = []
-    for name in sorted(set(sources) | set(dependencies)):
-        path = checked_path(ROOT, sources.get(name, name))
+    for name in sorted(set(sources) | set(dependencies) | set(qt)):
+        path = qt[name] if name in qt else checked_path(ROOT, sources.get(name, name))
+        if name not in qt and not path.is_file():
+            path = checked_path(runtime, name)
         if not path.is_file():
             raise FileNotFoundError(name)
         entries.append({'file': name, 'source': sources.get(name, name), 'bytes': path.stat().st_size})
@@ -229,11 +259,12 @@ def build(output, runtime, compression=6, variant='full', layout_root=DEFAULT_LA
     verify(ROOT)
     _check_output_variant(output, variant, layout_root)
     source_names, expected, omitted = package_selection(variant)
-    names = sorted(set(source_names) | set(expected))
+    qt = _quick_runtime_files(runtime)
+    names = sorted(set(source_names) | set(expected) | set(qt))
     sources = []
     total = 0
     for name in names:
-        path = checked_path(ROOT, source_names.get(name, name))
+        path = qt[name] if name in qt else checked_path(ROOT, source_names.get(name, name))
         if not path.is_file():
             path = checked_path(runtime, name)
         if not path.is_file():
@@ -319,6 +350,28 @@ def write_release_metadata(report, folder, migration=None):
     from tools.update_apply import validate_destination
     destination = validate_destination(folder, 'release-assets.json')
     existing = json.loads(destination.read_text(encoding='utf-8')) if destination.is_file() else None
+    identity = _desktop_identity()
+    if identity:
+        if migration or (existing is not None and 'updates' in existing):
+            raise ValueError('Publish Quick releases separately from historical Widgets runtime migration catalogs.')
+        from tools.build_app_update import build as build_app_update
+        from tools.update_apply import desktop_identity, validate_quick_program
+        program = folder / 'VWA-Program-Update.zip'
+        if program.is_file():
+            with zipfile.ZipFile(program) as zipped:
+                inventory = json.loads(zipped.read('update-inventory.json'))
+            if (inventory['version'] != version or inventory['runtime_sha256'] != runtime_sha
+                    or desktop_identity(inventory) != identity):
+                raise ValueError('Existing Quick program archive does not match this release.')
+            validate_quick_program(item['file'] for item in inventory['entries'])
+            update = {'name': program.name, 'bytes': program.stat().st_size, 'sha256': digest(program),
+                      'runtime_sha256': runtime_sha, **identity}
+        else:
+            update = build_app_update(program)
+        from common import atomic_json
+        public.update(program_update=update, **identity)
+        atomic_json(destination, public)
+        return public
     if isinstance(existing, dict) and 'updates' in existing:
         # Adding portable downloads must not silently replace a verified
         # multi-runtime catalog with the older two-slot format.
@@ -512,14 +565,14 @@ def _copy_compressed_record(original, destination, source_info, record_end, new_
 
 
 def update_from_zip(output, base, compression=1, variant='full', layout_root=DEFAULT_LAYOUT_ROOT, *, base_layout_root=None, base_sha256=None):
-    if base_layout_root is not None:
-        _layout_root(base_layout_root)
     """Reuse verified compressed runtime members when only source changes.
 
     Compressed data and data descriptors are copied byte-for-byte. Local and
     central filename records are rebuilt when the VWA/BVWA root changes so the
     archive remains valid for UTF-8 names and ZIP64 offsets.
     """
+    if base_layout_root is not None:
+        _layout_root(base_layout_root)
     layout_root = _layout_root(layout_root)
     from tools.verify_source_layout import verify
     verify(ROOT)
@@ -531,6 +584,22 @@ def update_from_zip(output, base, compression=1, variant='full', layout_root=DEF
     if digest(base) != expected_base:
         raise ValueError('Base ZIP checksum mismatch')
     source_names, dependencies, omitted = package_selection(variant)
+    identity = _desktop_identity()
+    if identity:
+        from tools.build_quick_candidate import REQUIRED_QT_FILES
+        from tools.update_apply import desktop_identity
+        # Inspect the already checksum-verified base before creating output.
+        with zipfile.ZipFile(base) as archive:
+            base_root, base_entries = _read_portable_base(archive)
+            version = json.loads(archive.read(base_root + '/version.json'))
+            wheel_receipt = base_root + '/runtime/qt6/WHEELS.json'
+            if (desktop_identity(version) != identity or wheel_receipt not in archive.namelist()
+                    or json.loads(archive.read(wheel_receipt)).get('version') != identity['qt_version']):
+                raise ValueError('Use a complete build when the portable Qt runtime has changed.')
+            qt = {item['file']: item for item in base_entries if item['file'].startswith('runtime/qt6/')}
+            if not all('runtime/qt6/' + file in qt for file in REQUIRED_QT_FILES):
+                raise ValueError('The base ZIP has an incomplete Quick runtime.')
+        dependencies.update(qt)
     names = sorted(set(source_names) | set(dependencies))
     if output.exists():
         raise FileExistsError(output)
@@ -610,7 +679,7 @@ def main(argv=None):
         print(portable_archive_name(args.variant, selected_root))
         return 0
     if args.plan_only:
-        print(json.dumps(portable_plan(args.variant, args.layout_root), ensure_ascii=False, indent=2))
+        print(json.dumps(portable_plan(args.variant, args.layout_root, args.runtime_dir), ensure_ascii=False, indent=2))
         return 0
     if args.plan_profile:
         from dependency_profiles import installation_plan

@@ -1,5 +1,7 @@
-"""Regression cases reproduced in the October 19 audit follow-up."""
+"""Shared backend regressions reproduced in the October 19 audit follow-up."""
 import json
+import struct
+import zlib
 from pathlib import Path
 import sys
 import tempfile
@@ -10,8 +12,6 @@ sys.path.insert(0, str(APP))
 import numpy as np
 import soundfile as sf
 import mido
-from PyQt5.QtGui import QImage, QColor
-from PyQt5.QtWidgets import QApplication
 import check_dependencies
 import common
 import cover_art
@@ -19,75 +19,22 @@ import dependency_profiles
 import pipeline
 import publication
 import workflow
-from app import Window
 from artifact_cache import receipt
 from project_exports import export_job, outputs_intact
 from subtitles import midi_cues
 
-application = QApplication.instance() or QApplication([])
+
+def write_solid_png(path, width=1920, height=1080, rgb=(77, 155, 130)):
+    def chunk(kind, payload):
+        body = kind + payload
+        return struct.pack('>I', len(payload)) + body + struct.pack('>I', zlib.crc32(body) & 0xffffffff)
+    row = b'\x00' + bytes(rgb) * width
+    payload = zlib.compress(row * height, 9)
+    path.write_bytes(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0)) + chunk(b'IDAT', payload) + chunk(b'IEND', b''))
+
+
 with tempfile.TemporaryDirectory(dir=APP/'work', prefix='reproduced-fixes-') as folder:
     root = Path(folder)
-    # Saving a preset and opening a new window must preserve inactive choices.
-    with patch.object(workflow, 'ROOT', root), patch.object(workflow, 'workspace_state', return_value={}):
-        window = Window()
-        window.workflow.choose_preset('内置 · 中文双轨')
-        window.project_checks['vsqx'].setChecked(False)
-        window.audio_checks['wav'].setChecked(False)
-        window.audio_checks['flac'].setChecked(True)
-        window.reference_tension.setChecked(True)
-        window.exports_enabled.setChecked(False)
-        window.audio_enabled.setChecked(False)
-        window.workflow._persist_test = True
-        with patch('processing_workflow.QInputDialog.getText', return_value=('保留选择', True)):
-            window.workflow.save_preset()
-        stored = json.loads((root/'cache/workspace.json').read_text(encoding='utf-8'))
-        saved = stored['workflow']['presets']['保留选择']['options']
-        assert saved['project_formats'] == ['ustx', 'svp'] and saved['audio_formats'] == ['flac']
-        assert not saved['project_export_enabled'] and not saved['audio_export_enabled']
-        assert saved['reference_tension']
-        task_options = window.options()
-        assert task_options['project_formats'] == task_options['audio_formats'] == []
-        assert not task_options['reference_tension']
-        task_options['parent'] = root/'tasks'
-        job = pipeline.create_job('BV1dTNP6QEfE', remember=False, **task_options)
-        request = json.loads((job/'request.json').read_text(encoding='utf-8'))
-        assert request['audio_formats'] == request['project_formats'] == []
-        assert not request['reference_tension']
-        restored_options = workflow.request_options(request)
-        assert restored_options['project_formats'] == ['ustx', 'svp']
-        assert restored_options['audio_formats'] == ['flac'] and restored_options['reference_tension']
-        assert pipeline.planned_steps(request)[2] == 'midi'
-        window.workflow._persist_test = False
-        with patch.object(workflow, 'workspace_state', return_value=stored):
-            reopened = Window()
-            assert not reopened.audio_enabled.isChecked() and not reopened.exports_enabled.isChecked()
-            assert reopened.audio_checks['flac'].isChecked() and reopened.project_checks['svp'].isChecked()
-            assert not reopened.project_checks['vsqx'].isChecked() and reopened.reference_tension.isChecked()
-            reopened.exports_enabled.setChecked(True); reopened.audio_enabled.setChecked(True)
-            assert reopened.options()['project_formats'] == ['ustx', 'svp']
-            assert reopened.options()['audio_formats'] == ['flac']
-            # Preparation keeps the saved preference but never executes tonal
-            # processing. Only the independent tuning mode owns that action.
-            assert reopened.options()['prepare_only'] and not reopened.options()['reference_tension']
-            tuning_source = root/'preference-check.svp'
-            common.atomic_json(tuning_source, {'version':153,
-                'time':{'tempo':[{'position':0,'bpm':120}], 'meter':[{'index':0,'numerator':4,'denominator':4}]},
-                'tracks':[{'name':'Lead','mainRef':{},'groups':[],
-                    'mainGroup':{'uuid':'preference-check','parameters':{},
-                        'notes':[{'onset':0,'duration':705600000,'pitch':60,'lyrics':'la'}]}}]})
-            assert reopened.tuning.load_project(tuning_source), reopened.tuning.status.text()
-            reopened.tuning.mode.setCurrentIndex(reopened.tuning.mode.findData('reference'))
-            assert reopened.tuning.options()['reference_tension']
-            reopened.midi_enabled.setChecked(False)
-            assert reopened.options()['project_formats'] == [] and not reopened.options()['reference_tension']
-            reopened.midi_enabled.setChecked(True)
-            assert not reopened.options()['reference_tension']
-            assert reopened.tuning.options()['reference_tension']
-            reopened.workflow.apply_options(restored_options)
-            assert not reopened.exports_enabled.isChecked() and reopened.reference_tension.isChecked()
-            reopened.close()
-        window.close()
-
     legacy = workflow.validate_options({'project_formats': [], 'audio_formats': ['wav']})
     assert not legacy['project_export_enabled'] and legacy['audio_export_enabled']
     assert not workflow.validate_options({'audio_formats': []})['audio_export_enabled']
@@ -119,8 +66,7 @@ with tempfile.TemporaryDirectory(dir=APP/'work', prefix='reproduced-fixes-') as 
             elif name == 'source-info.json': common.atomic_json(path, info)
             else: path.write_bytes(b'fixture')
     image = old/'original-cover.png'
-    pixels = QImage(64, 36, QImage.Format_RGB32); pixels.fill(QColor('#4d9b82'))
-    assert pixels.save(str(image))
+    write_solid_png(image)
     saved = {'bvid': request['bv'], 'url': info['pic'], 'kind': 'original',
              'file': image.name, 'sha256': common.file_hash(image)}
     common.atomic_json(old/'original-cover.json', saved)
@@ -167,35 +113,15 @@ with tempfile.TemporaryDirectory(dir=APP/'work', prefix='reproduced-fixes-') as 
                 try: check_dependencies.validate(features); raise AssertionError('Missing internal pitch model accepted')
                 except FileNotFoundError as error: assert '音高分析（RMVPE）' in str(error)
             assert 'pitch' not in dependency_profiles.task_features(request, {'separation'})
+    implicit_backend = root/'dependencies/vocal2midi2'
+    implicit_backend.mkdir(parents=True, exist_ok=True)
+    (implicit_backend/'backend-version.json').write_text('{"backend": "v2"}', encoding='utf-8')
     implicit = {'tools': {'vocal2midi': 'dependencies/vocal2midi2'}, 'language': 'ja', 'project_formats': []}
     assert 'pitch' in dependency_profiles.task_features(implicit, {'midi'})
     with patch('os.getcwd', return_value=str(root)):
         assert 'pitch' in dependency_profiles.task_features(implicit, {'midi'})
     native_v1 = root/'legacy-backend'; native_v1.mkdir()
     assert 'pitch' not in dependency_profiles.task_features(dict(implicit, tools={'vocal2midi': str(native_v1)}), {'midi'})
-
-    # Reject a drifted program inventory at build time, before creating a ZIP.
-    from tools import build_runtime_upgrade
-    builder = root/'builder'
-    common.atomic_json(builder/'dependencies/manifest.json', {'entries': []})
-    common.atomic_json(builder/'packaging/version.json', {'version': '9.9.9'})
-    (builder/'src').mkdir()
-    (builder/'src/app.py').write_text('# fixture')
-    (builder/'src/unapproved.py').write_text('# fixture')
-    (builder/'tools').mkdir()
-    (builder/'tools/update_apply.py').write_text('# required helper fixture')
-    with patch.object(build_runtime_upgrade, 'ROOT', builder), \
-            patch('tools.verify_source_layout.verify'), \
-            patch.object(build_runtime_upgrade.subprocess, 'check_output', return_value=b'{"entries": []}'), \
-            patch.object(build_runtime_upgrade, 'package_sources', return_value={
-                'app.py': 'src/app.py', 'version.json': 'packaging/version.json',
-                'tools/update_apply.py': 'tools/update_apply.py', 'unapproved.py': 'src/unapproved.py'}):
-        try:
-            build_runtime_upgrade.build(builder/'output')
-            raise AssertionError('Unapproved program file accepted during runtime build')
-        except ValueError as error:
-            assert 'unapproved.py' in str(error)
-        assert not list((builder/'output').glob('*.zip'))
 
     def score(name, events, extra=None):
         midi = mido.MidiFile(ticks_per_beat=480, charset='utf8')
@@ -228,4 +154,4 @@ with tempfile.TemporaryDirectory(dir=APP/'work', prefix='reproduced-fixes-') as 
     held = events[:3]+[(1920, mido.MetaMessage('lyrics', text='续'))]+events[3:]
     assert [(c.start, c.end) for c in score('held', held)] == [(0, 2), (2, 4), (5, 5.5)]
 
-print('PASS: export preferences/reopen/migration/CLI, offline original-cover reuse/publication, internal pitch dependencies and measured subtitle releases')
+print('PASS: workflow migration/CLI, offline original-cover reuse/publication, internal pitch dependencies and measured subtitle releases')

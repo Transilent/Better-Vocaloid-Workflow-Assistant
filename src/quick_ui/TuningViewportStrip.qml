@@ -3,6 +3,9 @@ import QtQuick.Controls
 
 Item {
     id: strip
+    function vwaTr(message) {
+        return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
+    }
     objectName: "tuningViewportStrip"
     required property QtObject theme
     required property real timelineStart
@@ -15,8 +18,8 @@ Item {
     activeFocusOnTab: true
     enabled: timelineDuration > 0
     Accessible.role: Accessible.ScrollBar
-    Accessible.name: "整曲视野"
-    Accessible.description: strip.rangeText + "。拖中间平移，拖两端缩放。方向键移动，加减键缩放。"
+    Accessible.name: strip.vwaTr("整曲视野")
+    Accessible.description: strip.rangeText + strip.vwaTr("。拖中间平移，拖两端缩放。方向键移动，加减键缩放。")
 
     readonly property real total: Math.max(0.001, timelineDuration)
     readonly property real minimumSpan: Math.min(.5, total)
@@ -215,5 +218,5 @@ Item {
     }
     ToolTip.visible: (pointer.containsMouse || activeFocus) && !pointer.pressed
     ToolTip.delay: 650
-    ToolTip.text: "拖中间移动，拖两端缩放"
+    ToolTip.text: strip.vwaTr("拖中间移动，拖两端缩放")
 }

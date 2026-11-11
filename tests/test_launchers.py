@@ -46,17 +46,18 @@ try:
         pe = struct.unpack_from('<I', data, 0x3c)[0]
         assert data[pe:pe + 4] == b'PE\x00\x00'
         assert struct.unpack_from('<H', data, pe + 24 + 68)[0] == 2, 'The launcher must use the Windows GUI subsystem'
-        result = subprocess.run([str(executable), '--smoke-test'], cwd=APP, env=env, timeout=60)
+        result = subprocess.run([str(executable), '--smoke-test', '--quick-runtime', env['VWA_TEST_QT6_ROOT']],
+                                cwd=APP, env=env, timeout=60)
         assert result.returncode == 0
         text = log.read_text(encoding='utf-8')
-        assert 'GUI ready; startup smoke test passed' in text
-        assert 'console attached: False' in text
-    diagnostic=run('Start-Diagnostics.bat', '--check')
-    assert 'dependencies ready' in diagnostic_log.read_text(encoding='utf-8'), (
+        assert 'VWA Quick' in text and 'Quick GUI ready' in text
+    diagnostic=run('Start-Diagnostics.bat', '--check', '--quick-runtime', env['VWA_TEST_QT6_ROOT'])
+    assert '8 workspaces' in diagnostic_log.read_text(encoding='utf-8'), (
         diagnostic_log.read_text(encoding='utf-8'),diagnostic.stdout.decode(errors='replace'),diagnostic.stderr.decode(errors='replace'))
     original_state = json.loads(before_workspace) if before_workspace else {}
     from workflow import default_graph, DEFAULT_OPTIONS
-    fixture_state = {**original_state, 'workflow': {'graph': default_graph(), 'options': dict(DEFAULT_OPTIONS), 'presets': {}, 'preset': '自定义'}}
+    fixture_state = {**original_state, 'workflow': {'graph': default_graph(), 'options': dict(DEFAULT_OPTIONS), 'presets': {}, 'preset': '自定义'},
+                     'quick_preparation': {'version': 1, 'options': {'separation_device': 'cpu', 'midi_device': 'cpu'}}}
     workspace.parent.mkdir(exist_ok=True)
     workspace.write_text(json.dumps(fixture_state),encoding='utf-8')
     for launcher, device in [('Use-CPU.bat', 'cpu'), ('Use-GPU.bat', 'dml')]:
@@ -65,7 +66,9 @@ try:
         assert actual['separation_device'] == actual['midi_device'] == device
         actual_state = json.loads(workspace.read_text(encoding='utf-8'))
         assert actual_state['workflow']['options']['separation_device'] == actual_state['workflow']['options']['midi_device'] == device
-        assert {k:v for k,v in actual_state.items() if k != 'workflow'} == {k:v for k,v in original_state.items() if k != 'workflow'}
+        assert actual_state['quick_preparation']['options'] == {'separation_device': device, 'midi_device': device}
+        assert {k:v for k,v in actual_state.items() if k not in ('workflow', 'quick_preparation')} == {
+            k:v for k,v in original_state.items() if k not in ('workflow', 'quick_preparation')}
         original = json.loads(before)
         assert {k: v for k, v in actual.items() if k not in {'separation_device', 'midi_device'}} == {
             k: v for k, v in original.items() if k not in {'separation_device', 'midi_device'}}

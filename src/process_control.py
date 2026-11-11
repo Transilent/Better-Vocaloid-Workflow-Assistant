@@ -5,12 +5,6 @@ import subprocess
 import time
 
 
-def application_lock(root):
-    """Hold one desktop owner per installation; dead owners are recoverable."""
-    from tools.update_apply import application_lock as acquire
-    return acquire(root)
-
-
 def terminate_tree(process):
     if os.name != 'nt':
         if process.poll() is None:process.terminate()

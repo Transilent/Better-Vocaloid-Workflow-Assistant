@@ -10,13 +10,13 @@ GR 与混响的实时读数使用固定尺寸的绘制条，数值最多每100ms
 
 ## 组成与边界
 
-- 简易混音的界面、参数快照、预设、试听与导出职责见[整体架构](MixdownArchitecture.zh-CN.md)。`MixdownPreviewController`只维护输入身份、待提交编辑与本地定位手势；播放意图、媒体位置/时长与命令确认统一由`RealtimePreviewPlayer`维护。旧分段区间和重复播放器状态不再保存在界面。
+- 简易混音的界面、参数快照、预设、试听与导出职责见[整体架构](MixdownArchitecture.zh-CN.md)。`MixdownPreviewController`维护输入身份、待提交编辑与本地定位手势；`mixdown_realtime_core`维护播放意图、媒体位置和命令确认，`QuickMixdownPlayer`提供 Qt 信号和计时。
 - `PreLimiterMixSession` 复用当前混音的请求解析、源解码缓存、路由及 EQ/压缩/混响处理核。固定双声道设备总线，mono 源按现有 FFmpeg 转换规则上混；声源、顺序及解码器身份在会话中固定。
 - `RealtimeAuditionSession` 串行执行 DSP 和原生输出控制，使用有界队列与版本化命令。参数的路径/文件校验通过 `prepare_parameters` 在控制侧完成，`apply_parameters` 在供音线程应用。音量、声像、send、mute/solo、width 不重建效果；结构变化会按有限历史重新预热。
 - 当前 Windows/Python 运行库中，`Event.wait(0.002)` 实测会等待约 15.6 ms；供音线程使用短 `time.sleep` 等待并保留命令唤醒标记，避免粗粒度等待耗尽队列。遥测复制仍隔离嵌套状态，但数值历史列表不再递归深拷贝。该调整未修改系统的持久计时设置。
 - `NativeOutput` 使用固定 miniaudio 0.11.26 的 WASAPI shared 输出。C 回调只消费 PCM 和更新计数，不进入 Python。WASAPI 对象必须在创建它的线程控制和关闭，因此会话应接收输出工厂；null 测试输出允许受锁保护的独立模拟消费者。
 - `LimitedMixSession` 封装 PRE-LIMITER 图和独立 `vwa_limiter.dll`，限制器状态跨块保持，前视补偿及曲尾排空后保持媒体帧数。`mixdown_limiter_spec` 统一导出和连续试听的 -1 dBFS、5 ms attack、100 ms release、level=false、asc=false 规则；流式实现来自 FFmpeg n7.1，独立 LGPL-2.1-or-later 组件。PRE-LIMITER 仅用于诊断，会话仍拒绝非有限或越界的最终 PCM。
-- `MixdownRealtimeService` 使用独立的 `mixdown_transport.ResidentProcessClient`，只保留进程传输、运行库加载与退出机制，使用独立会话代次、最多 64 条控制及单槽最新遥测。`mixdown_sources` 只提供源缓存及共享 DSP 构造，不提供分段文件渲染。`RealtimePreviewPlayer` 在 GUI 线程轮询，后台启动/发指令/关闭；只有匹配最新定位的实际回执才放开进度条目标。
+- `MixdownRealtimeService` 使用独立的 `mixdown_transport.ResidentProcessClient`，负责进程传输、运行库加载与退出，使用独立会话代次、最多 64 条控制及单槽最新遥测。`mixdown_sources` 提供源缓存及共享 DSP 构造。播放器在 GUI 线程轮询，后台启动、发指令和关闭；只有匹配最新定位的实际回执才放开进度条目标。
 
 ## 工作线程用法
 
@@ -49,10 +49,10 @@ with RealtimeAuditionSession(renderer, create_output, block_frames=512) as sessi
 会话按已提交的媒体帧选择有界遥测块，`snapshot.telemetry` 的 schema 为 `vwa.audio_mixdown.realtime-telemetry/v1`，包含独立的 `media_frame`、`parameter_revision`、`history_epoch` 及来源。不能用生产线程提前算出的后续音频替换当前显示；尚未提交或定位待确认时明确无当前测量。
 
 - `tracks` 与 `bus` 提供实际音频块 RMS/采样峰值，各轨 mute/solo 直接反映在测量中。总线测量包含输出音量；不是标准 LUFS 或真峰值。
-- `spectrum` 是歌声总线 EQ 前后真实 FFT，频率为对数轴；右轴 dBFS 与左轴 EQ 增益 dB 分开，双阶段均可见。界面使用 `EQCurveView.set_live_spectrum`，不依赖试听文件报告。
+- `spectrum` 是歌声总线 EQ 前后真实 FFT，频率为对数轴；右轴 dBFS 与左轴 EQ 增益 dB 分开。Quick 曲线从当前遥测读取 A/B 频谱。
 - 压缩与限制 GR 来自对齐音频块处理前后的 RMS 差，属于测量推导的估计值；共享歌声总线 GR 不冒充每个插件内部读数。
 - 混响显示实际发送/返回 RMS 与混合分量能量比例。空间衰减使用独立后台单位脉冲测量，未测得时显示未测量；它不是歌曲响度随时间的轨迹。暂停时后台测量完成也必须刷新。
-- `MeterEnvelope.set_live_snapshot` 直接发布当前测量，缺失值为未知；不把旧报告或插值附在新位置。来源、代次、参数或定位变化会切断旧 GR 历史。
+- 电平与 GR 使用当前遥测，缺失值为未知。来源、代次、参数或定位变化会切断旧 GR 历史。
 
 DSP 块采用固定量子，至少 64 帧；原生设备回调长度独立。Pedalboard 0.9.26 对双声道的 1–2 帧输入存在通道推断歧义，因此渲染器拒绝非终块的 1–3 帧请求；最终触及 `duration_frames` 的余块才可安全补零。极短历史无法安全预热时在 `last_warmup` 中明确标记；有限预热不代表从头播放的完整效果历史。
 

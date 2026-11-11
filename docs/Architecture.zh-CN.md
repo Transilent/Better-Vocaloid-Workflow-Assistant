@@ -12,48 +12,46 @@ BV / 链接先读取来源并下载；本地音乐先保存副本。两者统一
 
 可选 BS-RoFormer 使用相同的第一级分离，其原权重从总人声估计主唱，再用总人声减主唱得到和声。不会因为主唱音量小而交换声部。中日文的分离参数相同：44.1 kHz 立体声、20 秒切片、75% 重叠、批量 1、不启用 TTA、不独立归一化声部。
 
-侧栏依次为准备工作流、调音工作流、合成视频、发布，之后为模型与组件、任务与结果、设置与更新。准备步骤展开后使用完整宽度，处理设备在顶部弹窗调整。独立调音选择已有任务或导入SVP，固定输入快照，在内存中组合互斥参数来源及可选风格／音高增量，统一加密并提交一份候选。手动校准拟合及兼容旧任务导出也使用同一引擎，限制与恢复方式见[调音工作流](TuningWorkflow.zh-CN.md)。发布仍为四个可滚动步骤，底部导航与最终主按钮位于滚动区外。封面等比例缩放，缓存管理位于设置页。旧流程记录仍可读取，处理运行在独立子进程，只有工程转换加载LibreSVIP依赖。
+Quick 侧栏包括准备、调音、简易混音、合成视频、发布，以及模型与组件、任务与结果、设置与支持。调音、混音是连续工作区；切页不销毁控制器或正在进行的试听。准备和发布以步骤组织。旧任务和工作流记录继续由共享服务读取，处理任务仍在隔离子进程中运行。
 
 日语保留原 Romaji ASR 权重。集成层保留切片边界的受支持音素、检查 HubertFA 输入，并按片段隔离可恢复的数据错误；对齐报告区分 ASR 为空与对齐失败。日语短音节修复只跨越不超过 150 毫秒的间隙；不发声音节也消耗对应假名，避免后续歌词错位。中文继续使用 Qwen。
 
-VWA外观使用深浅语义配色、共享Qt样式及应用内缓存背景。单选卡适配原combo的值与model变化，外观偏好合并写入工作区的独立命名空间。窗口保留系统边框，未启用原生Windows背景接口。具体见[工作空间说明](Frontend.zh-CN.md)。
+Qt Quick 使用共享主题、语义配色和缓存背景。窗口保留系统边框，常用布局为按屏幕适配的默认档和最大化。见[工作空间说明](Frontend.zh-CN.md)。
 
 ## 代码
 
 | 文件 | 职责 |
 | --- | --- |
-| `audio_mixdown_ui.py`、`mixdown_widgets.py`、`mixdown_request.py`、`mixdown_preview_controller.py`、`mixdown_export.py`、`mixdown_runtime.py` | 简易混音的界面、纯参数投影、试听控制、冻结导出和运行库职责分开；详见[混音架构](MixdownArchitecture.zh-CN.md)。 |
-| [preset_documents.py](../src/preset_documents.py)、`preset_builtin_documents.py`、`preset_library.py`、`preset_library_ui.py`、`preset_cli.py` | 统一格式、本机库附加导入和 CLI；`mixdown_preset_documents.py` / `mixdown_preset_ui.py` 接入混音参数捕获、范围预览、应用和撤销。 |
-| `launch.py`、`app.py` | 启动、界面、后台任务 |
-| `desktop_theme.py`、`workspace_ui.py`、`publishing_layout.py` | 主题、使用稳定页面 ID 并兼容旧跳转的侧栏工作区、发布表单 |
-| `workflow_widgets.py` | 步骤导航及等比例封面预览 |
-| `components_ui.py`、`optional_components.py`、`components/roformer.json` | 下载界面、冻结清单、续传安装与验证 |
+| `quick_mixdown.py`、`mixdown_workspace_state.py`、`mixdown_request.py`、`mixdown_preview_controller.py`、`mixdown_export.py`、`mixdown_runtime.py` | 简易混音的界面、纯参数投影、试听控制、冻结导出和运行库职责分开；详见[混音架构](MixdownArchitecture.zh-CN.md)。 |
+| [preset_documents.py](../src/preset_documents.py)、`preset_builtin_documents.py`、`preset_library.py`、`quick_support.py`、`preset_cli.py` | 统一格式、本机库附加导入和 CLI；`mixdown_preset_documents.py` / `quick_mixdown.py` 接入混音参数捕获、范围预览、应用和撤销。 |
+| `launch.py`、`quick_app.py` | 启动、界面、后台任务 |
+| `appearance_state.py`、`quick_bridge.py`、`quick_ui/PublicationPage.qml` | 主题、使用稳定页面 ID 并兼容旧跳转的侧栏工作区、发布表单 |
+| `component_operations.py`、`optional_components.py`、`components/roformer.json` | 下载界面、冻结清单、续传安装与验证 |
 | [component_health.py](../src/component_health.py) | 将快速元数据检查与显式完整校验分开；约束路径、记录预算、取消和校验期间的文件身份 |
 | [style_catalog.py](../src/style_catalog.py)、[expression_controls.py](../src/expression_controls.py) | GUI、MCP、草稿和执行层共用风格元数据及表现参数规格；旧 ID 配方与各用途步长保留 |
 | [multi_file_commit.py](../src/multi_file_commit.py)、`vocal_partition.py` | 相关输出统一备份、发布、验证和失败恢复；回执完成后才清理恢复副本 |
 | `roformer.py` | 可选 Pymss 推理，保留主唱、和声完整时间线 |
 | `common.py`、`check_dependencies.py` | 路径、配置、进程取消、共享单字节文件锁、依赖校验 |
 | `pipeline.py` | 输入副本、来源、下载、阶段、续跑 |
-| `workflow.py`、`processing_workflow.py`、`processing_ui.py` | 旧预设迁移、步骤卡片与参数复用 |
-| `tuning_ui.py`、`tuning_workflow.py`、`tuning_engine.py` | 独立调音页面、固定输入会话、互斥来源组合、统一加密和候选提交保护 |
+| `workflow.py`、`preparation_commands.py`、`quick_ui/PreparationPage.qml` | 旧预设迁移、步骤卡片与参数复用 |
+| `quick_tuning.py`、`tuning_workflow.py`、`tuning_engine.py` | 独立调音页面、固定输入会话、互斥来源组合、统一加密和候选提交保护 |
 | `progress_state.py`、`error_recovery.py` | 片段进度、已用时间、错误分类与 CPU 恢复 |
-| `task_store.py`、`results_ui.py` | 任务资料、筛选界面、中断判断与受限删除 |
-| `storage.py`、`storage_ui.py` | 可清理目录、异步扫描与确认清理 |
-| `subtitles.py`、`subtitles_ui.py` | 歌词时间、MIDI 变速换算、编辑和 SRT / WebVTT |
+| `task_store.py`、`quick_results.py` | 任务资料、筛选界面、中断判断与受限删除 |
+| `storage.py`、`quick_support.py` | 可清理目录、异步扫描与确认清理 |
+| `subtitles.py`、`quick_subtitles.py` | 歌词时间、MIDI 变速换算、编辑和 SRT / WebVTT |
 | `mdx.py`、`separate_audio.py` | ONNX 分离与命令行入口 |
 | `v2m_runtime.py`、`midi_bridge.py` | 集成转 MIDI 推理 |
 | `midi_checks.py`、`midi_merge.py` | 核对提示、MIDI 校验与合轨 |
 | `cover_art.py`、`publication.py` | 原始封面、补边、发布包 |
-| `publishing_ui.py`、`publish_browser.py` | 登录及上传填写 |
+| `quick_publication.py`、`publish_browser.py` | 登录及上传填写 |
 | `publish-selectors.json` | 平台页面选择器 |
 | `tools/build_portable.py` | 按清单构建 ZIP 和分卷 |
-| `tools/Install-Runtime.ps1` | 固定的旧版源码启动路径；读取 BVWA 根目录兼容元数据与 Release ZIP |
 
 ## 配置与数据
 
 `config.json` 保存应用设置，干净发行包使用相对程序目录的路径。`dependencies/manifest.json` 保存固定依赖和 SHA-256；`source-files.json` 记录仓库，`portable-files.json` 选择入包运行文件，并把简明中英文指南映射为包内 README。ZIP 内另有完整文件清单 `release-inventory.json`。
 
-当前 VWA 包由 `portable_downloads.full` 与 `portable_downloads.jpn` 标识，分卷使用各自对应的便携元数据。顶层 `release-assets.json` 的 `archive` 与 `parts` 字段保留为供固定 `Install-Runtime.ps1` 路径使用的 BVWA 根目录兼容全量包。测试、截图、构建资料留在源码仓库；运行清单移除依赖测试目录与未使用的上游桌面界面。诊断批处理放入 `tools`，新包只保留一个规范启动入口 `VWA.exe`。
+当前开发入口为 `launch.py` → `quick_app.py`。完整 Quick 便携包另含独立的 `runtime/qt6`，处理 Python 中的旧 Qt 5 文件不进入新包。诊断脚本进入同一应用。已发布的 1.1.0 和其首跳协议属于历史发行；它们的制品与冻结客户端保持不变。
 
 `jobs/` 保存任务素材与结果，`cache/` 保存临时文件和平台登录，`publish-packages/` 保存成品文件的路径与哈希、封面和发布文本，不复制完整成品视频。这些运行目录含私人数据，不进入 Git 和干净发行包。分发使用过的程序目录前，需移除运行数据。
 
@@ -67,11 +65,11 @@ VWA外观使用深浅语义配色、共享Qt样式及应用内缓存背景。单
 
 ## 程序更新
 
-`download_sources.py` 管理公共下载源；`updater.py` 检查 VWA 正式版本、基础运行库兼容性和程序文件清单，下载到暂存目录。`updates_ui.py` 提供设置与进度。界面与 `VWA.exe` 退出后，`tools/update_apply.py` 校验并替换程序文件，失败时恢复原文件。配置、任务、浏览器登录和模型环境均不在更新文件白名单内。用户测试确认后，`tools/build_app_update.py` 可生成小型程序更新包。
+`quick_support.py` 提供更新发现、说明、暂缓和恢复。Quick 程序更新要求已安装 Qt 版本、处理运行库摘要和目标界面身份同时匹配，并验证程序白名单。跨界面或 Qt 版本变化使用适用的完整便携包。更新事务复用 `tools/update_apply.py`；旧首跳身份保留供历史记录读取。配置、任务、登录及模型不属于程序更新内容。
 
 任务默认保存到 `jobs/`，也可使用自选父目录。所选目录及以前使用的任务父目录记录在私有的 `cache/workspace.json`，用于跨目录查找任务。请求记录输出父目录；继续任务使用实际已有任务路径，重新处理使用当前所选父目录新建任务。
 
-歌词参考与字幕匹配独立管理来源及草稿。新 GUI 任务固定使用 v2 后端，旧 request 保持原后端。网易云参考默认仅填入主唱，字幕导入不会改写参考歌词。字幕界面只接入网易云时间轴或带歌词的 MIDI；不含时间的文本在转换层即拒绝。来源选择记录到任务与处理预设，歌词正文不进入预设。
+歌词参考与字幕草稿独立。字幕可使用网易云时间轴、带歌词事件的 MIDI 或定时 LRC；三种来源保留各自草稿，字幕导入不会改写准备页歌词。预设只保存可复用选项。
 
 ## 运行与存储边界
 

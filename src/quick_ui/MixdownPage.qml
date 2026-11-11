@@ -5,6 +5,9 @@ import QtQuick.Layouts
 
 Item {
     id: page
+    function vwaTr(message) {
+        return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
+    }
     objectName: "mixdownPage"
     required property QtObject theme
     required property QtObject controller
@@ -395,7 +398,7 @@ Item {
             spacing: Math.round(9 * page.theme.scale)
 
             Text {
-                text: "简易混音"
+                text: page.vwaTr("简易混音")
                 color: page.theme.text
                 font.pixelSize: Math.round(22 * page.theme.scale)
                 font.weight: Font.DemiBold
@@ -410,7 +413,7 @@ Item {
             Text {
                 Layout.fillWidth: true
                 visible: !page.compact
-                text: page.textValue(page.view.job, "独立 WAV · 无需先创建任务")
+                text: page.textValue(page.view.job, page.vwaTr("独立 WAV · 无需先创建任务"))
                 color: page.theme.muted
                 font.pixelSize: Math.round(11 * page.theme.scale)
                 elide: Text.ElideMiddle
@@ -421,7 +424,7 @@ Item {
                 theme: page.theme
                 quiet: true
                 selected: page.compactPanel === "mixer"
-                text: "混音台"
+                text: page.vwaTr("混音台")
                 onClicked: page.compactPanel = "mixer"
             }
             UiButton {
@@ -430,8 +433,8 @@ Item {
                 theme: page.theme
                 quiet: true
                 selected: page.compactPanel === "analysis"
-                text: "曲线"
-                Accessible.name: "曲线与效果"
+                text: page.vwaTr("曲线")
+                Accessible.name: page.vwaTr("曲线与效果")
                 onClicked: page.compactPanel = "analysis"
             }
             UiButton {
@@ -440,7 +443,7 @@ Item {
                 theme: page.theme
                 quiet: true
                 selected: page.showCompactPresets
-                text: "预设"
+                text: page.vwaTr("预设")
                 onClicked: page.showCompactPresets = !page.showCompactPresets
             }
             UiButton {
@@ -448,14 +451,14 @@ Item {
                 visible: page.compact && !page.expanded && page.compactPanel === "mixer"
                 theme: page.theme
                 glyph: "plus"
-                text: "添加歌声轨"
+                text: page.vwaTr("添加歌声轨")
                 enabled: page.canAddTrack && !page.busy && !page.loading
                 onClicked: page.controller.addTrack()
             }
             Item { visible: page.compact; Layout.fillWidth: true }
             Text {
                 visible: page.resultText(page.view.result).length > 0
-                text: page.view.resultStale ? "旧结果已过期" : "已有导出结果"
+                text: page.view.resultStale ? page.vwaTr("旧结果已过期") : page.vwaTr("已有导出结果")
                 color: page.view.resultStale ? page.theme.attention : page.theme.success
                 font.pixelSize: Math.round(11 * page.theme.scale)
             }
@@ -464,10 +467,10 @@ Item {
                 visible: !!page.view.componentMissing && !page.busy
                 theme: page.theme
                 primary: true
-                text: "安装混音组件"
+                text: page.vwaTr("安装混音组件")
                 enabled: !page.busy
                 onClicked: page.controller.installMixdown()
-                Accessible.description: "使用随包 manifest 与安装器离线安装已固定的混音组件"
+                Accessible.description: page.vwaTr("使用随包 manifest 与安装器离线安装已固定的混音组件")
             }
         }
 
@@ -477,7 +480,7 @@ Item {
             spacing: Math.round(7 * page.theme.scale)
 
             Text {
-                text: "方案"
+                text: page.vwaTr("方案")
                 color: page.theme.muted
                 font.pixelSize: Math.round(11 * page.theme.scale)
             }
@@ -490,12 +493,12 @@ Item {
                 model: page.presets
                 currentIndex: page.presetIndex(page.view.presetName)
                 enabled: page.presets.length > 0 && !page.busy && !page.loading
-                Accessible.name: "混音预设"
+                Accessible.name: page.vwaTr("混音预设")
                 onActivated: page.reviewPreset(String(currentValue || ""))
             }
             Text {
                 visible: !page.compact
-                text: "当前 · " + page.textValue(page.view.presetName, "自定义")
+                text: page.vwaTr("当前 · ") + page.textValue(page.view.presetName, page.vwaTr("自定义"))
                 color: page.theme.muted
                 font.pixelSize: Math.round(10 * page.theme.scale)
                 elide: Text.ElideRight
@@ -510,13 +513,13 @@ Item {
                 quiet: true
                 visible: !!page.view.canUndoPreset
                 enabled: !page.busy && !page.loading
-                text: "撤销应用"
+                text: page.vwaTr("撤销应用")
                 onClicked: page.controller.undoPreset()
             }
             UiButton {
                 objectName: "mixdownSavePreset"
                 theme: page.theme
-                text: "另存预设…"
+                text: page.vwaTr("另存预设…")
                 enabled: !page.busy && !page.loading
                 onClicked: savePresetDialog.open()
             }
@@ -524,7 +527,7 @@ Item {
                 objectName: "mixdownImportPresets"
                 theme: page.theme
                 quiet: true
-                text: "导入预设"
+                text: page.vwaTr("导入预设")
                 enabled: !page.busy && !page.loading
                 onClicked: page.openManagedDialog(importPresetDialog)
             }
@@ -532,7 +535,7 @@ Item {
                 objectName: "mixdownExportPreset"
                 theme: page.theme
                 quiet: true
-                text: "导出预设"
+                text: page.vwaTr("导出预设")
                 enabled: !page.busy && !page.loading && page.currentPresetKey().length > 0
                 onClicked: page.openManagedDialog(exportPresetDialog)
             }
@@ -575,14 +578,14 @@ Item {
                     Layout.fillWidth: true
                     visible: !page.compact
                     Text {
-                        text: "混音台"
+                        text: page.vwaTr("混音台")
                         color: page.theme.text
                         font.pixelSize: Math.round(14 * page.theme.scale)
                         font.weight: Font.DemiBold
                     }
                     Text {
                         Layout.fillWidth: true
-                        text: page.vocalTrackCount + " / " + page.vocalTrackLimit + " 路歌声"
+                        text: page.vocalTrackCount + " / " + page.vocalTrackLimit + page.vwaTr(" 路歌声")
                         color: page.theme.muted
                         font.pixelSize: Math.round(11 * page.theme.scale)
                     }
@@ -590,7 +593,7 @@ Item {
                         objectName: "mixdownAddTrack"
                         theme: page.theme
                         glyph: "plus"
-                        text: "添加歌声轨"
+                        text: page.vwaTr("添加歌声轨")
                         enabled: page.canAddTrack && !page.busy && !page.loading
                         onClicked: page.controller.addTrack()
                     }
@@ -641,7 +644,7 @@ Item {
                     objectName: "mixdownWidth"
                     Layout.fillWidth: true
                     theme: page.theme
-                    label: "立体声宽度"
+                    label: page.vwaTr("立体声宽度")
                     fromValue: 0
                     toValue: 2
                     displayValue: page.number(page.view.width, 1)
@@ -652,7 +655,7 @@ Item {
                     interactive: !page.busy && !page.loading
                     onMoved: amount => page.controller.setOption("width", amount)
                     onResetRequested: page.controller.setOption("width", 1)
-                    Accessible.name: "立体声宽度"
+                    Accessible.name: page.vwaTr("立体声宽度")
                 }
             }
         }
@@ -684,25 +687,25 @@ Item {
                         selected: page.analysisMode === "eq"
                         text: "EQ"
                         ToolTip.visible: hovered
-                        ToolTip.text: "EQ 曲线 · Alt+1"
+                        ToolTip.text: page.vwaTr("EQ 曲线 · Alt+1")
                             onClicked: page.selectAnalysis("eq")
                     }
                     UiButton {
                         objectName: "mixdownAnalysisGr"
                         theme: page.theme
                         selected: page.analysisMode === "gr"
-                        text: "动态 GR"
+                        text: page.vwaTr("动态 GR")
                         ToolTip.visible: hovered
-                        ToolTip.text: "压缩与限制器增益衰减 · Alt+2"
+                        ToolTip.text: page.vwaTr("压缩与限制器增益衰减 · Alt+2")
                             onClicked: page.selectAnalysis("gr")
                     }
                     UiButton {
                         objectName: "mixdownAnalysisReverb"
                         theme: page.theme
                         selected: page.analysisMode === "reverb"
-                        text: "混响"
+                        text: page.vwaTr("混响")
                         ToolTip.visible: hovered
-                        ToolTip.text: "混响空间 · Alt+3"
+                        ToolTip.text: page.vwaTr("混响空间 · Alt+3")
                             onClicked: page.selectAnalysis("reverb")
                     }
                     Item {
@@ -711,7 +714,7 @@ Item {
                     Text {
                         visible: !page.compact
                         Layout.maximumWidth: Math.round(210 * page.theme.scale)
-                        text: page.meters && page.meters.source ? "实时源 · " + page.meters.source : "等待实时遥测"
+                        text: page.meters && page.meters.source ? page.vwaTr("实时源 · ") + page.meters.source : page.vwaTr("等待实时遥测")
                         color: page.meters && page.meters.source ? page.theme.muted : page.theme.attention
                         font.pixelSize: Math.round(10 * page.theme.scale)
                         elide: Text.ElideRight
@@ -721,7 +724,7 @@ Item {
                         visible: page.compact && page.analysisMode === "eq"
                         theme: page.theme
                         glyph: "sliders"
-                        text: page.showCompactEqDetails ? "隐藏 EQ 参数" : "显示 EQ 参数"
+                        text: page.showCompactEqDetails ? page.vwaTr("隐藏 EQ 参数") : page.vwaTr("显示 EQ 参数")
                         selected: page.showCompactEqDetails
                         onClicked: {
                             page.showCompactEqDetails = !page.showCompactEqDetails;
@@ -734,7 +737,7 @@ Item {
                     UiButton {
                         objectName: "mixdownExpand"
                         theme: page.theme
-                            text: page.expanded ? "还原混音布局" : "放大曲线"
+                            text: page.expanded ? page.vwaTr("还原混音布局") : page.vwaTr("放大曲线")
                         glyph: page.expanded ? "restore" : "expand"
                         selected: page.expanded
                         onClicked: page.controller.setExpanded(!page.expanded)
@@ -864,23 +867,23 @@ Item {
                     objectName: "mixdownPlayPause"
                     theme: page.theme
                     primary: page.playing
-                    text: page.playing ? "暂停" : "播放"
+                    text: page.playing ? page.vwaTr("暂停") : page.vwaTr("播放")
                     glyph: page.playing ? "pause" : "play"
                     enabled: page.hasMedia && page.canPlay
                     onClicked: page.controller.togglePlay()
                     Accessible.description: "Space"
-                    ToolTip.text: (page.playing ? "暂停试听" : "播放试听") + " · 空格"
+                    ToolTip.text: (page.playing ? page.vwaTr("暂停试听") : page.vwaTr("播放试听")) + page.vwaTr(" · 空格")
                 }
                 UiButton {
                     objectName: "mixdownLoop"
                     theme: page.theme
                     selected: !!page.view.loop
-                    text: "循环"
+                    text: page.vwaTr("循环")
                     glyph: "loop"
                     Accessible.checkable: true
                     Accessible.checked: !!page.view.loop
                     ToolTip.visible: hovered
-                    ToolTip.text: "循环所选试听范围 · Ctrl+Shift+L"
+                    ToolTip.text: page.vwaTr("循环所选试听范围 · Ctrl+Shift+L")
                     onClicked: page.controller.setLoop(!page.view.loop)
                 }
                 UiButton {
@@ -888,7 +891,7 @@ Item {
                     theme: page.theme
                     quiet: true
                     selected: page.showPreviewRange
-                    text: page.compact ? "范围" : "试听范围"
+                    text: page.compact ? page.vwaTr("范围") : page.vwaTr("试听范围")
                     Accessible.checkable: true
                     Accessible.checked: page.showPreviewRange
                     onClicked: page.showPreviewRange = !page.showPreviewRange
@@ -897,20 +900,20 @@ Item {
                     objectName: "mixdownBefore"
                     theme: page.theme
                     selected: page.selectionMode === "A"
-                    text: page.compact ? "A" : "A 处理前"
-                    Accessible.name: "A 处理前"
+                    text: page.compact ? "A" : page.vwaTr("A 处理前")
+                    Accessible.name: page.vwaTr("A 处理前")
                     ToolTip.visible: hovered
-                    ToolTip.text: "切换并试听处理前 · Ctrl+Shift+A"
+                    ToolTip.text: page.vwaTr("切换并试听处理前 · Ctrl+Shift+A")
                     onClicked: page.controller.selectMix("A")
                 }
                 UiButton {
                     objectName: "mixdownAfter"
                     theme: page.theme
                     selected: page.selectionMode === "B"
-                    text: page.compact ? "B" : "B 处理后"
-                    Accessible.name: "B 处理后"
+                    text: page.compact ? "B" : page.vwaTr("B 处理后")
+                    Accessible.name: page.vwaTr("B 处理后")
                     ToolTip.visible: hovered
-                    ToolTip.text: "切换并试听处理后 · Ctrl+Shift+B"
+                    ToolTip.text: page.vwaTr("切换并试听处理后 · Ctrl+Shift+B")
                     onClicked: page.controller.selectMix("B")
                 }
                 Text {
@@ -922,7 +925,7 @@ Item {
                 Text {
                     Layout.fillWidth: true
                     Layout.minimumWidth: 0
-                    text: page.textValue(page.view.message, page.loading ? "正在加载真实音频…" : "Space 播放 / 暂停")
+                    text: page.textValue(page.view.message, page.loading ? page.vwaTr("正在加载真实音频…") : page.vwaTr("Space 播放 / 暂停"))
                     color: page.view.state === "failed" ? page.theme.error : page.theme.muted
                     font.pixelSize: Math.round(10 * page.theme.scale)
                     elide: Text.ElideRight
@@ -935,7 +938,7 @@ Item {
                     visible: page.busy || page.loading
                     theme: page.theme
                     quiet: true
-                    text: "取消"
+                    text: page.vwaTr("取消")
                     onClicked: page.controller.cancel()
                 }
                 UiButton {
@@ -943,8 +946,8 @@ Item {
                     theme: page.theme
                     glyph: "folder"
                     quiet: true
-                    text: "选择 WAV 导出位置"
-                    ToolTip.text: "WAV 导出位置 · 采样率随伴奏\n" + page.textValue(page.view.output, "尚未选择文件")
+                    text: page.vwaTr("选择 WAV 导出位置")
+                    ToolTip.text: page.vwaTr("WAV 导出位置 · 采样率随伴奏\n") + page.textValue(page.view.output, page.vwaTr("尚未选择文件"))
                     enabled: !page.busy && !page.loading
                     onClicked: page.openManagedDialog(outputDialog)
                 }
@@ -952,15 +955,15 @@ Item {
                     objectName: "mixdownExport"
                     theme: page.theme
                     primary: !page.view.canRegister && !page.view.canComposeVideo
-                    text: page.view.resultStale ? (page.compact ? "重导出" : "重新导出 WAV")
-                        : (page.compact ? "导出" : "导出新 WAV")
+                    text: page.view.resultStale ? (page.compact ? page.vwaTr("重导出") : page.vwaTr("重新导出 WAV"))
+                        : (page.compact ? page.vwaTr("导出") : page.vwaTr("导出新 WAV"))
                     enabled: !!page.view.canExport && !page.busy && !page.loading
                     onClicked: page.controller.exportMix()
                 }
                 UiButton {
                     objectName: "mixdownRegister"
                     theme: page.theme
-                    text: page.compact ? "登记" : "登记结果"
+                    text: page.compact ? page.vwaTr("登记") : page.vwaTr("登记结果")
                     primary: true
                     visible: !!page.view.canRegister && !page.view.resultStale && !page.view.canComposeVideo
                     enabled: !!page.view.canRegister && !page.view.resultStale && !page.busy && !page.loading
@@ -970,7 +973,7 @@ Item {
                     objectName: "mixdownComposeVideo"
                     theme: page.theme
                     visible: !!page.view.canComposeVideo
-                    text: page.compact ? (page.view.videoHandoffMode === "independent" ? "进入" : "合成") : (page.view.videoHandoffMode === "independent" ? "进入视频合成" : "合成视频")
+                    text: page.compact ? (page.view.videoHandoffMode === "independent" ? page.vwaTr("进入") : page.vwaTr("合成")) : (page.view.videoHandoffMode === "independent" ? page.vwaTr("进入视频合成") : page.vwaTr("合成视频"))
                     primary: true
                     enabled: !page.busy
                     onClicked: page.controller.composeVideo()
@@ -980,7 +983,7 @@ Item {
                     theme: page.theme
                     quiet: true
                     glyph: "external"
-                    text: page.view.resultStale ? "打开上次导出的 WAV" : "打开导出结果"
+                    text: page.view.resultStale ? page.vwaTr("打开上次导出的 WAV") : page.vwaTr("打开导出结果")
                     visible: page.resultText(page.view.result).length > 0
                     onClicked: page.controller.openResult()
                 }
@@ -1007,7 +1010,7 @@ Item {
                     to: 1
                     value: page.clamp(page.number(page.exportProgress.fraction, 0), 0, 1)
                     indeterminate: false
-                    Accessible.name: "导出进度"
+                    Accessible.name: page.vwaTr("导出进度")
                 }
                 Text {
                     Layout.preferredWidth: Math.round(40 * page.theme.scale)
@@ -1026,12 +1029,12 @@ Item {
                 spacing: Math.round(7 * page.theme.scale)
 
                 Text {
-                    text: "试听范围"
+                    text: page.vwaTr("试听范围")
                     color: page.theme.muted
                     font.pixelSize: Math.round(10 * page.theme.scale)
                 }
                 Text {
-                    text: "开始"
+                    text: page.vwaTr("开始")
                     color: page.theme.muted
                     font.pixelSize: Math.round(10 * page.theme.scale)
                 }
@@ -1047,7 +1050,7 @@ Item {
                     textFromValue: value => page.previewTimeText(value)
                     valueFromText: text => Math.round(Number(String(text).trim().replace(",", ".")) * 1000)
                     onValueModified: page.commitPreviewRange()
-                    Accessible.name: "试听起点，秒"
+                    Accessible.name: page.vwaTr("试听起点，秒")
                     Binding {
                         target: previewStartInput
                         property: "value"
@@ -1057,7 +1060,7 @@ Item {
                     }
                 }
                 Text {
-                    text: "时长"
+                    text: page.vwaTr("时长")
                     color: page.theme.muted
                     font.pixelSize: Math.round(10 * page.theme.scale)
                 }
@@ -1073,7 +1076,7 @@ Item {
                     textFromValue: value => page.previewTimeText(value)
                     valueFromText: text => Math.round(Number(String(text).trim().replace(",", ".")) * 1000)
                     onValueModified: page.commitPreviewRange()
-                    Accessible.name: "试听范围时长，秒"
+                    Accessible.name: page.vwaTr("试听范围时长，秒")
                     Binding {
                         target: previewDurationInput
                         property: "value"
@@ -1086,13 +1089,13 @@ Item {
                     objectName: "mixdownPreviewRangeReset"
                     theme: page.theme
                     quiet: true
-                    text: "重置 0–12 秒"
+                    text: page.vwaTr("重置 0–12 秒")
                     enabled: page.hasMedia && !page.loading
                     onClicked: page.controller.setPreviewRange(0, 12)
                 }
                 Text {
                     Layout.fillWidth: true
-                    text: page.view.loop ? "循环仅播放此范围" : "启用循环后重复此范围"
+                    text: page.view.loop ? page.vwaTr("循环仅播放此范围") : page.vwaTr("启用循环后重复此范围")
                     color: page.theme.muted
                     font.pixelSize: Math.round(10 * page.theme.scale)
                     elide: Text.ElideRight
@@ -1110,9 +1113,9 @@ Item {
                 stepSize: 1
                 enabled: page.hasMedia && !page.loading && page.durationMs > 0
                 focusPolicy: Qt.StrongFocus
-                Accessible.name: "混音播放进度"
+                Accessible.name: page.vwaTr("混音播放进度")
                 Accessible.description: page.timeText(page.positionMs) + " / " + page.timeText(page.durationMs)
-                    + "。方向键定位，Shift 精调，Home / End 到开头或结尾。"
+                    + page.vwaTr("。方向键定位，Shift 精调，Home / End 到开头或结尾。")
                 Keys.onPressed: event => page.keyboardSeek(event)
 
                 Binding {
@@ -1183,7 +1186,7 @@ Item {
         objectName: "mixdownTrackSettings"
         property string trackId: ""
         readonly property var track: page.trackById(trackId)
-        title: "轨道参数 · " + page.trackValue(track, "label", "")
+        title: page.vwaTr("轨道参数 · ") + page.trackValue(track, "label", "")
         modal: true
         anchors.centerIn: parent
         width: Math.min(parent.width - 28, Math.round(390 * page.theme.scale))
@@ -1194,7 +1197,7 @@ Item {
             spacing: Math.round(8 * page.theme.scale)
             Text {
                 Layout.fillWidth: true
-                text: page.textValue(page.trackValue(trackSettingsDialog.track, "name", ""), "尚未选择素材")
+                text: page.textValue(page.trackValue(trackSettingsDialog.track, "name", ""), page.vwaTr("尚未选择素材"))
                 color: page.theme.muted
                 elide: Text.ElideMiddle
                 textFormat: Text.PlainText
@@ -1202,7 +1205,7 @@ Item {
             TrackNumber {
                 theme: page.theme
                 inputName: "mixdownTrackGainValue"
-                label: "精确增益 (dB)"
+                label: page.vwaTr("精确增益 (dB)")
                 lower: -60
                 upper: 12
                 digits: 1
@@ -1212,7 +1215,7 @@ Item {
             TrackNumber {
                 theme: page.theme
                 inputName: "mixdownTrackPan"
-                label: "声像（−100 左 / 0 中 / +100 右）"
+                label: page.vwaTr("声像（−100 左 / 0 中 / +100 右）")
                 lower: -100
                 upper: 100
                 digits: 0
@@ -1223,7 +1226,7 @@ Item {
                 visible: trackSettingsDialog.trackId !== "instrumental"
                 theme: page.theme
                 inputName: "mixdownTrackOffset"
-                label: "位置偏移（秒，正值延后）"
+                label: page.vwaTr("位置偏移（秒，正值延后）")
                 lower: -30
                 upper: 30
                 digits: 3
@@ -1234,7 +1237,7 @@ Item {
                 visible: page.compact && trackSettingsDialog.trackId !== "instrumental"
                 Layout.fillWidth: true
                 theme: page.theme
-                label: "混响发送"
+                label: page.vwaTr("混响发送")
                 displayValue: page.number(page.trackValue(trackSettingsDialog.track, "send", 0), 0)
                 displayFactor: 100
                 step: 0.01
@@ -1246,7 +1249,7 @@ Item {
                 UiButton {
                     theme: page.theme
                     quiet: true
-                    text: "清除素材"
+                    text: page.vwaTr("清除素材")
                     enabled: page.textValue(page.trackValue(trackSettingsDialog.track, "path", ""), "").length > 0
                         && !page.busy && !page.loading
                     onClicked: {
@@ -1259,7 +1262,7 @@ Item {
                     quiet: true
                     visible: trackSettingsDialog.trackId !== "instrumental"
                     enabled: page.vocalTrackCount > 1 && !page.busy && !page.loading
-                    text: "移除歌声轨"
+                    text: page.vwaTr("移除歌声轨")
                     onClicked: {
                         page.controller.removeTrack(trackSettingsDialog.trackId);
                         trackSettingsDialog.close();
@@ -1271,7 +1274,7 @@ Item {
         footer: DialogButtonBox {
             UiButton {
                 theme: page.theme
-                text: "完成"
+                text: page.vwaTr("完成")
                 DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
                 onClicked: trackSettingsDialog.close()
             }
@@ -1282,7 +1285,7 @@ Item {
         id: presetReviewDialog
         objectName: "mixdownPresetReview"
         readonly property var plan: page.view.presetPreview || ({})
-        title: "预览混音预设"
+        title: page.vwaTr("预览混音预设")
         modal: true
         anchors.centerIn: parent
         width: Math.min(parent.width - 28, Math.round(570 * page.theme.scale))
@@ -1297,7 +1300,7 @@ Item {
             Text {
                 Layout.fillWidth: true
                 color: page.theme.text
-                text: presetReviewDialog.plan.name || page.textValue(page.view.message, "需要重新预览。")
+                text: presetReviewDialog.plan.name || page.textValue(page.view.message, page.vwaTr("需要重新预览。"))
                 wrapMode: Text.Wrap
                 font.pixelSize: Math.round(14 * page.theme.scale)
                 font.weight: Font.DemiBold
@@ -1305,7 +1308,7 @@ Item {
             CheckBox {
                 objectName: "mixdownPresetIncludeWidth"
                 visible: !!presetReviewDialog.plan.hasWidth
-                text: "同时应用总输出宽度"
+                text: page.vwaTr("同时应用总输出宽度")
                 checked: !!presetReviewDialog.plan.includeWidth
                 onClicked: page.controller.previewPreset(presetReviewDialog.plan.key, checked, tracksScope.checked)
             }
@@ -1313,14 +1316,14 @@ Item {
                 id: tracksScope
                 objectName: "mixdownPresetIncludeTracks"
                 visible: !!presetReviewDialog.plan.hasTracks
-                text: "同时应用歌声声像与混响发送"
+                text: page.vwaTr("同时应用歌声声像与混响发送")
                 checked: !!presetReviewDialog.plan.includeTracks
                 onClicked: page.controller.previewPreset(presetReviewDialog.plan.key, !!presetReviewDialog.plan.includeWidth, checked)
             }
             Text {
                 Layout.fillWidth: true
-                text: "不更换素材，不改变静音、独奏、增益或位置偏移。" +
-                    (presetReviewDialog.plan.adjusted ? " 数值已按当前采样率与控件精度调整。" : "")
+                text: page.vwaTr("不更换素材，不改变静音、独奏、增益或位置偏移。") +
+                    (presetReviewDialog.plan.adjusted ? page.vwaTr(" 数值已按当前采样率与控件精度调整。") : "")
                 color: page.theme.muted
                 wrapMode: Text.Wrap
                 font.pixelSize: Math.round(11 * page.theme.scale)
@@ -1336,7 +1339,7 @@ Item {
                     spacing: Math.round(6 * page.theme.scale)
                     Text {
                         visible: changesList.count === 0
-                        text: "所选范围内没有参数差异。"
+                        text: page.vwaTr("所选范围内没有参数差异。")
                         color: page.theme.muted
                         font.pixelSize: Math.round(11 * page.theme.scale)
                     }
@@ -1357,7 +1360,7 @@ Item {
                                 Text {
                                     Layout.fillWidth: true
                                     Layout.preferredWidth: 1
-                                    text: "当前 · " + page.presetValueText(modelData.field, modelData.before)
+                                    text: page.vwaTr("当前 · ") + page.presetValueText(modelData.field, modelData.before)
                                     color: page.theme.muted
                                     wrapMode: Text.Wrap
                                     font.pixelSize: Math.round(11 * page.theme.scale)
@@ -1365,7 +1368,7 @@ Item {
                                 Text {
                                     Layout.fillWidth: true
                                     Layout.preferredWidth: 1
-                                    text: "应用后 · " + page.presetValueText(modelData.field, modelData.after)
+                                    text: page.vwaTr("应用后 · ") + page.presetValueText(modelData.field, modelData.after)
                                     color: page.theme.text
                                     wrapMode: Text.Wrap
                                     font.pixelSize: Math.round(11 * page.theme.scale)
@@ -1379,7 +1382,7 @@ Item {
         footer: DialogButtonBox {
             UiButton {
                 theme: page.theme
-                text: "取消"
+                text: page.vwaTr("取消")
                 DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
                 onClicked: presetReviewDialog.close()
             }
@@ -1387,7 +1390,7 @@ Item {
                 objectName: "mixdownConfirmPreset"
                 theme: page.theme
                 primary: true
-                text: "应用预设"
+                text: page.vwaTr("应用预设")
                 enabled: !!presetReviewDialog.plan.key && !page.busy
                 DialogButtonBox.buttonRole: DialogButtonBox.ApplyRole
                 onClicked: {
@@ -1402,9 +1405,9 @@ Item {
         id: sourceDialog
         property string sourceTrackId: ""
         objectName: "mixdownSourceDialog"
-        title: "选择音频轨"
+        title: page.vwaTr("选择音频轨")
         fileMode: FileDialog.OpenFile
-        nameFilters: ["音频文件 (*.wav *.flac *.mp3 *.m4a *.ogg *.aac *.opus *.wma *.aif *.aiff *.ape *.wv)", "所有文件 (*)"]
+        nameFilters: [page.vwaTr("音频文件 (*.wav *.flac *.mp3 *.m4a *.ogg *.aac *.opus *.wma *.aif *.aiff *.ape *.wv)"), page.vwaTr("所有文件 (*)")]
         onAccepted: {
             page.noteDialogClosed();
             if (sourceTrackId.length > 0)
@@ -1416,10 +1419,10 @@ Item {
     FileDialog {
         id: outputDialog
         objectName: "mixdownOutputDialog"
-        title: "选择独立 WAV 输出"
+        title: page.vwaTr("选择独立 WAV 输出")
         fileMode: FileDialog.SaveFile
         defaultSuffix: "wav"
-        nameFilters: ["WAV 音频 (*.wav)"]
+        nameFilters: [page.vwaTr("WAV 音频 (*.wav)")]
         onAccepted: {
             page.noteDialogClosed();
             page.controller.chooseOutput(selectedFile);
@@ -1430,9 +1433,9 @@ Item {
     FileDialog {
         id: importPresetDialog
         objectName: "mixdownImportPresetDialog"
-        title: "导入混音预设"
+        title: page.vwaTr("导入混音预设")
         fileMode: FileDialog.OpenFile
-        nameFilters: ["VWA 混音预设 (*.json)", "所有文件 (*)"]
+        nameFilters: [page.vwaTr("VWA 混音预设 (*.json)"), page.vwaTr("所有文件 (*)")]
         onAccepted: {
             page.noteDialogClosed();
             page.controller.importPresets(selectedFile);
@@ -1443,10 +1446,10 @@ Item {
     FileDialog {
         id: exportPresetDialog
         objectName: "mixdownExportPresetDialog"
-        title: "导出混音预设"
+        title: page.vwaTr("导出混音预设")
         fileMode: FileDialog.SaveFile
         defaultSuffix: "json"
-        nameFilters: ["VWA 混音预设 (*.json)"]
+        nameFilters: [page.vwaTr("VWA 混音预设 (*.json)")]
         onAccepted: {
             page.noteDialogClosed();
             const key = page.currentPresetKey();
@@ -1459,7 +1462,7 @@ Item {
     Dialog {
         id: savePresetDialog
         objectName: "mixdownSavePresetDialog"
-        title: "追加混音预设"
+        title: page.vwaTr("追加混音预设")
         modal: true
         anchors.centerIn: parent
         width: Math.min(parent.width - Math.round(36 * page.theme.scale), Math.round(410 * page.theme.scale))
@@ -1477,7 +1480,7 @@ Item {
             spacing: Math.round(10 * page.theme.scale)
             Text {
                 Layout.fillWidth: true
-                text: "预设会追加到当前预设库；不会覆盖素材、任务或旧导出。"
+                text: page.vwaTr("预设会追加到当前预设库；不会覆盖素材、任务或旧导出。")
                 color: page.theme.muted
                 font.pixelSize: Math.round(11 * page.theme.scale)
                 wrapMode: Text.Wrap
@@ -1486,11 +1489,11 @@ Item {
                 id: presetNameField
                 Layout.fillWidth: true
                 objectName: "mixdownPresetName"
-                placeholderText: "预设名称"
+                placeholderText: page.vwaTr("预设名称")
                 color: page.theme.text
                 font.pixelSize: Math.round(13 * page.theme.scale)
                 selectByMouse: true
-                Accessible.name: "预设名称"
+                Accessible.name: page.vwaTr("预设名称")
                 background: Rectangle {
                     radius: Math.round(7 * page.theme.scale)
                     color: page.theme.base
@@ -1504,7 +1507,7 @@ Item {
             }
             CheckBox {
                 id: saveWidth
-                text: "同时保存总输出宽度"
+                text: page.vwaTr("同时保存总输出宽度")
             }
         }
         footer: RowLayout {
@@ -1514,13 +1517,13 @@ Item {
             }
             UiButton {
                 theme: page.theme
-                text: "取消"
+                text: page.vwaTr("取消")
                 onClicked: savePresetDialog.close()
             }
             UiButton {
                 theme: page.theme
                 primary: true
-                text: "追加"
+                text: page.vwaTr("追加")
                 enabled: presetNameField.text.trim().length > 0
                 onClicked: {
                     if (page.controller.savePreset(presetNameField.text.trim(), saveWidth.checked))
@@ -1537,7 +1540,7 @@ Item {
         readonly property bool monitor: trackId === "master"
         readonly property bool backing: trackId === "instrumental"
         readonly property var track: page.trackById(trackId)
-        readonly property string label: monitor ? "试听输出" : String(page.trackValue(track, "label", backing ? "伴奏" : "歌声 " + (order + 1)))
+        readonly property string label: monitor ? page.vwaTr("试听输出") : String(page.trackValue(track, "label", backing ? page.vwaTr("伴奏") : page.vwaTr("歌声 ") + (order + 1)))
         readonly property string sourcePath: String(page.trackValue(track, "path", ""))
         readonly property color accent: monitor ? page.theme.accent : backing ? page.theme.attention
             : order === 0 ? page.theme.success : order === 1 ? page.theme.accent : page.theme.text
@@ -1578,13 +1581,13 @@ Item {
                 textFormat: Text.PlainText
                 ToolTip.visible: page.compact && channelHeaderHover.hovered
                     && (channel.sourcePath.length > 0 || channel.monitor)
-                ToolTip.text: channel.monitor ? "仅影响试听音量，不写入 WAV" : channel.sourcePath
+                ToolTip.text: channel.monitor ? page.vwaTr("仅影响试听音量，不写入 WAV") : channel.sourcePath
                 HoverHandler { id: channelHeaderHover }
             }
             Text {
                 visible: !page.compact
                 Layout.fillWidth: true
-                text: channel.monitor ? "仅影响试听" : page.textValue(page.trackValue(channel.track, "name", ""), "未选素材")
+                text: channel.monitor ? page.vwaTr("仅影响试听") : page.textValue(page.trackValue(channel.track, "name", ""), page.vwaTr("未选素材"))
                 color: page.theme.muted
                 font.pixelSize: Math.round(10 * page.theme.scale)
                 horizontalAlignment: Text.AlignHCenter
@@ -1606,7 +1609,7 @@ Item {
                         objectName: "mixdownChooseSource_" + channel.trackId
                         theme: page.theme
                         glyph: "folder"
-                        text: (channel.sourcePath.length ? "更换" : "选择") + channel.label + "素材"
+                        text: (channel.sourcePath.length ? page.vwaTr("更换") : page.vwaTr("选择")) + channel.label + page.vwaTr("素材")
                         enabled: channel.editable
                         onClicked: page.chooseTrackSource(channel.trackId)
                     }
@@ -1614,8 +1617,8 @@ Item {
                         objectName: "mixdownTrackSettings_" + channel.trackId
                         theme: page.theme
                         glyph: "sliders"
-                        text: channel.label + "轨道参数"
-                        Accessible.description: channel.backing ? "精确增益和声像" : "精确增益、声像和时间偏移"
+                        text: channel.label + page.vwaTr("轨道参数")
+                        Accessible.description: channel.backing ? page.vwaTr("精确增益和声像") : page.vwaTr("精确增益、声像和时间偏移")
                         enabled: channel.editable
                         onClicked: {
                             trackSettingsDialog.trackId = channel.trackId;
@@ -1648,8 +1651,8 @@ Item {
                         else
                             page.controller.setTrack(channel.trackId, "gain", value);
                     }
-                    Accessible.name: channel.label + "增益"
-                    Accessible.description: value.toFixed(1) + " dB；双击恢复 0 dB"
+                    Accessible.name: channel.label + page.vwaTr("增益")
+                    Accessible.description: value.toFixed(1) + page.vwaTr(" dB；双击恢复 0 dB")
                     TapHandler {
                         acceptedButtons: Qt.LeftButton
                         gesturePolicy: TapHandler.ReleaseWithinBounds
@@ -1694,7 +1697,7 @@ Item {
                     rms: page.laneValue(channel.trackId, "rms")
                     peak: page.laneValue(channel.trackId, "peak")
                     accentColor: channel.accent
-                    accessibleLabel: channel.label + "电平"
+                    accessibleLabel: channel.label + page.vwaTr("电平")
                 }
             }
 
@@ -1713,7 +1716,7 @@ Item {
                     spacing: Math.round(3 * page.theme.scale)
                     visible: !channel.monitor
                     Repeater {
-                        model: [{field: "mute", label: "静音", short: "M"}, {field: "solo", label: "独奏", short: "S"}]
+                        model: [{field: "mute", label: page.vwaTr("静音"), short: "M"}, {field: "solo", label: page.vwaTr("独奏"), short: "S"}]
                         StripButton {
                             required property var modelData
                             theme: page.theme
@@ -1739,7 +1742,7 @@ Item {
                 sourceComponent: ParameterSlider {
                     objectName: "mixdownSend_" + channel.trackId
                     theme: page.theme
-                    label: "发送"
+                    label: page.vwaTr("发送")
                     displayValue: page.number(page.trackValue(channel.track, "send", 0), 0)
                     displayFactor: 100
                     unit: "%"
@@ -1929,7 +1932,7 @@ Item {
             Layout.fillWidth: true
             text: readout.measured
                 ? (isFinite(readout.rms) ? "RMS " + readout.rms.toFixed(1) + readout.unit : "")
-                    + (isFinite(readout.peak) ? "  ·  峰值 " + readout.peak.toFixed(1) + readout.unit : "")
+                    + (isFinite(readout.peak) ? page.vwaTr("  ·  峰值 ") + readout.peak.toFixed(1) + readout.unit : "")
                 : readout.emptyLabel
             color: readout.measured ? readout.theme.muted : readout.theme.attention
             font.pixelSize: 11 * readout.theme.scale
@@ -1978,7 +1981,7 @@ Item {
             RowLayout {
                 Layout.fillWidth: true
                 Text {
-                    text: "动态与限制"
+                    text: page.vwaTr("动态与限制")
                     color: grPage.theme.text
                     font.pixelSize: Math.round(15 * grPage.theme.scale)
                     font.weight: Font.DemiBold
@@ -1987,7 +1990,7 @@ Item {
                     Layout.fillWidth: true
                 }
                 Text {
-                    text: grPage.source.length > 0 ? "实测源 · " + grPage.source : "等待真实 GR 遥测"
+                    text: grPage.source.length > 0 ? page.vwaTr("实测源 · ") + grPage.source : page.vwaTr("等待真实 GR 遥测")
                     color: grPage.source.length > 0 ? grPage.theme.muted : grPage.theme.attention
                     font.pixelSize: Math.round(10 * grPage.theme.scale)
                     elide: Text.ElideRight
@@ -2000,7 +2003,7 @@ Item {
                 SignalReadout {
                     objectName: "mixdownCompressionMeasurement"
                     theme: grPage.theme
-                    label: "人声压缩"
+                    label: page.vwaTr("人声压缩")
                     unit: " dB"
                     minimum: 0
                     maximum: 24
@@ -2012,7 +2015,7 @@ Item {
                 SignalReadout {
                     objectName: "mixdownLimiterMeasurement"
                     theme: grPage.theme
-                    label: "总线限制"
+                    label: page.vwaTr("总线限制")
                     unit: " dB"
                     minimum: 0
                     maximum: 24
@@ -2023,7 +2026,7 @@ Item {
             }
             Text {
                 Layout.fillWidth: true
-                text: "峰值衰减 · 最近 30 秒 · 绿：压缩  紫：限制"
+                text: page.vwaTr("峰值衰减 · 最近 30 秒 · 绿：压缩  紫：限制")
                 color: grPage.theme.muted
                 font.pixelSize: 11 * grPage.theme.scale
             }
@@ -2098,7 +2101,7 @@ Item {
                         Layout.columnSpan: grPage.gridColumns
                         theme: grPage.theme
                         selected: grPage.configuredCompressionEnabled
-                        text: grPage.configuredCompressionEnabled ? "人声压缩已启用" : "人声压缩已关闭"
+                        text: grPage.configuredCompressionEnabled ? page.vwaTr("人声压缩已启用") : page.vwaTr("人声压缩已关闭")
                         onClicked: grPage.controller.setOption("compressionEnabled", !grPage.configuredCompressionEnabled)
                     }
                     ParameterSlider {
@@ -2106,7 +2109,7 @@ Item {
                         Layout.columnSpan: grPage.gridColumns
                         Layout.fillWidth: true
                         theme: grPage.theme
-                        label: "压缩强度"
+                        label: page.vwaTr("压缩强度")
                         displayValue: grPage.compressionStrength
                         displayFactor: 100
                         unit: "%"
@@ -2117,9 +2120,9 @@ Item {
                     Text {
                         Layout.columnSpan: grPage.gridColumns
                         Layout.fillWidth: true
-                        text: "随强度变化：阈值 " + grPage.compressionThreshold.toFixed(1) + " dB · 压缩比 "
-                            + grPage.compressionRatio.toFixed(2) + ":1 · 启动 "
-                            + grPage.compressorAttack.toFixed(1) + " ms · 释放 "
+                        text: page.vwaTr("随强度变化：阈值 ") + grPage.compressionThreshold.toFixed(1) + page.vwaTr(" dB · 压缩比 ")
+                            + grPage.compressionRatio.toFixed(2) + page.vwaTr(":1 · 启动 ")
+                            + grPage.compressorAttack.toFixed(1) + page.vwaTr(" ms · 释放 ")
                             + grPage.compressorRelease.toFixed(0) + " ms"
                         color: grPage.theme.muted
                         wrapMode: Text.Wrap
@@ -2129,8 +2132,8 @@ Item {
                         Layout.columnSpan: grPage.gridColumns
                         Layout.fillWidth: true
                         text: grPage.limiterMeasured && grPage.limiterEnabled
-                            ? "总线安全限制 · " + grPage.compressorCeiling.toFixed(1) + " dBFS"
-                            : "总线限制 · 等待实测"
+                            ? page.vwaTr("总线安全限制 · ") + grPage.compressorCeiling.toFixed(1) + " dBFS"
+                            : page.vwaTr("总线限制 · 等待实测")
                         color: grPage.theme.muted
                         font.pixelSize: Math.round(10 * grPage.theme.scale)
                     }
@@ -2179,15 +2182,15 @@ Item {
         function roomOptions() {
             return [
                 {
-                    label: "小空间",
+                    label: page.vwaTr("小空间"),
                     value: "small"
                 },
                 {
-                    label: "自然空间",
+                    label: page.vwaTr("自然空间"),
                     value: "natural"
                 },
                 {
-                    label: "宽空间",
+                    label: page.vwaTr("宽空间"),
                     value: "wide"
                 }
             ];
@@ -2214,7 +2217,7 @@ Item {
             RowLayout {
                 Layout.fillWidth: true
                 Text {
-                    text: "混响与空间"
+                    text: page.vwaTr("混响与空间")
                     color: reverbPage.theme.text
                     font.pixelSize: Math.round(15 * reverbPage.theme.scale)
                     font.weight: Font.DemiBold
@@ -2223,7 +2226,7 @@ Item {
                     Layout.fillWidth: true
                 }
                 Text {
-                    text: reverbPage.source.length > 0 ? "实测源 · " + reverbPage.source : "等待真实混响遥测"
+                    text: reverbPage.source.length > 0 ? page.vwaTr("实测源 · ") + reverbPage.source : page.vwaTr("等待真实混响遥测")
                     color: reverbPage.source.length > 0 ? reverbPage.theme.muted : reverbPage.theme.attention
                     font.pixelSize: Math.round(10 * reverbPage.theme.scale)
                     elide: Text.ElideRight
@@ -2236,7 +2239,7 @@ Item {
                 SignalReadout {
                     objectName: "mixdownReverbSend"
                     theme: reverbPage.theme
-                    label: "实时发送"
+                    label: page.vwaTr("实时发送")
                     rms: reverbPage.processingSelection === "B" && reverbPage.effectEnabled ? reverbPage.sendLevel : NaN
                     peak: reverbPage.processingSelection === "B" && reverbPage.effectEnabled ? reverbPage.sendPeak : NaN
                     emptyLabel: reverbPage.processingSelection === "A" ? "A · 旁路"
@@ -2245,7 +2248,7 @@ Item {
                 SignalReadout {
                     objectName: "mixdownReverbReturn"
                     theme: reverbPage.theme
-                    label: "实时返回"
+                    label: page.vwaTr("实时返回")
                     rms: reverbPage.processingSelection === "B" && reverbPage.effectEnabled ? reverbPage.returnLevel : NaN
                     peak: reverbPage.processingSelection === "B" && reverbPage.effectEnabled ? reverbPage.returnPeak : NaN
                     ink: reverbPage.theme.accent
@@ -2255,7 +2258,7 @@ Item {
             }
             Text {
                 Layout.fillWidth: true
-                text: "空间单位脉冲衰减（EDC）" + (reverbPage.edcAvailable && reverbPage.edcMeasured ? " · 已测量" : "")
+                text: page.vwaTr("空间单位脉冲衰减（EDC）") + (reverbPage.edcAvailable && reverbPage.edcMeasured ? page.vwaTr(" · 已测量") : "")
                 color: reverbPage.theme.muted
                 font.pixelSize: 11 * reverbPage.theme.scale
                 ToolTip.visible: edcHover.hovered && !!reverbPage.edcReason
@@ -2361,7 +2364,7 @@ Item {
                         objectName: "mixdownToggleReverb"
                         theme: reverbPage.theme
                         selected: reverbPage.configuredEnabled
-                        text: reverbPage.configuredEnabled ? "混响已启用" : "混响已关闭"
+                        text: reverbPage.configuredEnabled ? page.vwaTr("混响已启用") : page.vwaTr("混响已关闭")
                         onClicked: reverbPage.controller.setOption("reverbEnabled", !reverbPage.configuredEnabled)
                     }
                     UiComboBox {
@@ -2373,13 +2376,13 @@ Item {
                             if (currentValue && String(currentValue) !== "custom")
                                 reverbPage.controller.setOption("reverbRoom", currentValue);
                         }
-                        Accessible.name: "混响空间"
+                        Accessible.name: page.vwaTr("混响空间")
                     }
                     ParameterSlider {
                         objectName: "mixdownReverbMix"
                         Layout.fillWidth: true
                         theme: reverbPage.theme
-                        label: "混合"
+                        label: page.vwaTr("混合")
                         fromValue: 0
                         toValue: 1
                         displayValue: reverbPage.mix
@@ -2393,7 +2396,7 @@ Item {
                         objectName: "mixdownReverbPredelay"
                         Layout.fillWidth: true
                         theme: reverbPage.theme
-                        label: "预延迟"
+                        label: page.vwaTr("预延迟")
                         toValue: 120
                         displayValue: reverbPage.predelay
                         unit: " ms"

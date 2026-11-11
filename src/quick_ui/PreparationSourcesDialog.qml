@@ -4,6 +4,9 @@ import QtQuick.Layouts
 
 Dialog {
     id: dialog
+    function vwaTr(message) {
+        return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
+    }
     objectName: lyricPurpose === "subtitles" ? "subtitleSourcesDialog" : "preparationSourcesDialog"
     required property QtObject theme
     required property QtObject controller
@@ -18,7 +21,7 @@ Dialog {
     parent: Overlay.overlay
     anchors.centerIn: parent
     modal: true
-    title: ({lyrics:"核对网易云版本", download:"B站下载与账号", check:"检查准备组件"})[pane]
+    title: ({lyrics:dialog.vwaTr("核对网易云版本"), download:dialog.vwaTr("B站下载与账号"), check:dialog.vwaTr("检查准备组件")})[pane]
     width: Math.min(parent.width - 42, Math.round(720 * theme.scale))
     height: Math.min(parent.height - 48, Math.round((pane === "lyrics" ? 610 : pane === "download" ? 510 : 340) * theme.scale))
     padding: Math.round(15 * theme.scale)
@@ -53,7 +56,7 @@ Dialog {
                     id: keyword
                     objectName: "neteaseSearchQuery"
                     Layout.fillWidth: true
-                    placeholderText: "歌名、歌手或歌曲链接"
+                    placeholderText: dialog.vwaTr("歌名、歌手或歌曲链接")
                     enabled: !dialog.view.busy
                     selectByMouse: true
                     onAccepted: dialog.controller.searchSongs(text)
@@ -61,7 +64,7 @@ Dialog {
                 UiButton {
                     objectName: "searchNeteaseVersions"
                     theme: dialog.theme
-                    text: "查找"
+                    text: dialog.vwaTr("查找")
                     enabled: !dialog.view.busy && !!keyword.text.trim()
                     onClicked: {
                         dialog.selectedSong = ""
@@ -85,13 +88,13 @@ Dialog {
                 UiButton {
                     objectName: "previewNeteaseLyrics"
                     theme: dialog.theme
-                    text: "预览歌词"
+                    text: dialog.vwaTr("预览歌词")
                     enabled: versions.currentIndex >= 0 && !dialog.view.busy
                     onClicked: dialog.controller.previewSong(dialog.selectedSong)
                 }
                 UiButton {
                     theme: dialog.theme
-                    text: "打开歌曲试听"
+                    text: dialog.vwaTr("打开歌曲试听")
                     enabled: (versions.currentIndex >= 0 || !!dialog.view.previewId) && !dialog.view.busy
                     onClicked: dialog.controller.auditionSong(versions.currentIndex >= 0 ? versions.currentValue : dialog.view.previewId)
                 }
@@ -106,7 +109,7 @@ Dialog {
                     selectByMouse: true
                     wrapMode: TextEdit.Wrap
                     textFormat: TextEdit.PlainText
-                    placeholderText: "选择版本后查看实际原文歌词"
+                    placeholderText: dialog.vwaTr("选择版本后查看实际原文歌词")
                 }
             }
         }
@@ -114,22 +117,22 @@ Dialog {
             Layout.fillWidth: true
             Layout.fillHeight: visible
             visible: dialog.pane === "download"
-            Body { text: "可用同一 BV 的本地原视频，或按此处的超时、重试和登录设置下载。" }
+            Body { text: dialog.vwaTr("可用同一 BV 的本地原视频，或按此处的超时、重试和登录设置下载。") }
             CheckBox {
                 id: useLogin
-                text: "下载使用 B站登录状态"
+                text: dialog.vwaTr("下载使用 B站登录状态")
                 checked: dialog.network.use_login
                 enabled: !dialog.view.busy && dialog.view.networkLoaded
             }
             RowLayout {
-                Body { text: "连接超时（秒）"; Layout.fillWidth: false }
+                Body { text: dialog.vwaTr("连接超时（秒）"); Layout.fillWidth: false }
                 SpinBox { id: timeout; from: 5; to: 120; value: dialog.network.timeout; editable: true }
-                Body { text: "重试"; Layout.fillWidth: false }
+                Body { text: dialog.vwaTr("重试"); Layout.fillWidth: false }
                 SpinBox { id: retries; from: 0; to: 10; value: dialog.network.retries; editable: true }
                 UiButton {
                     objectName: "saveBilibiliDownloadSettings"
                     theme: dialog.theme
-                    text: "保存下载设置"
+                    text: dialog.vwaTr("保存下载设置")
                     enabled: !dialog.view.busy && dialog.view.networkLoaded
                     onClicked: dialog.controller.saveDownloadSettings(useLogin.checked, timeout.value, retries.value)
                 }
@@ -138,25 +141,25 @@ Dialog {
                 UiButton {
                     objectName: "openBilibiliDownloadLogin"
                     theme: dialog.theme
-                    text: "登录 / 换账号"
+                    text: dialog.vwaTr("登录 / 换账号")
                     enabled: !dialog.view.busy
                     onClicked: dialog.controller.loginDownload()
                 }
                 UiButton {
                     theme: dialog.theme
-                    text: "刷新登录状态"
+                    text: dialog.vwaTr("刷新登录状态")
                     enabled: !dialog.view.busy
                     onClicked: dialog.controller.refreshDownloadSettings()
                 }
             }
             Body { text: dialog.view.login }
-            Body { text: dialog.view.selectedDownload ? "已选复用：" + dialog.view.selectedDownload : "当前未选择复用素材。" }
+            Body { text: dialog.view.selectedDownload ? dialog.vwaTr("已选复用：") + dialog.view.selectedDownload : dialog.vwaTr("当前未选择复用素材。") }
             RowLayout {
                 Layout.fillWidth: true
                 UiButton {
                     objectName: "findReusableBilibiliDownload"
                     theme: dialog.theme
-                    text: "查找同 BV 素材"
+                    text: dialog.vwaTr("查找同 BV 素材")
                     enabled: !dialog.view.busy
                     onClicked: { dialog.selectedJob = ""; dialog.controller.findDownloads() }
                 }
@@ -171,14 +174,14 @@ Dialog {
                 }
                 UiButton {
                     theme: dialog.theme
-                    text: "采用"
+                    text: dialog.vwaTr("采用")
                     enabled: !!dialog.selectedJob && !dialog.view.busy
                     onClicked: dialog.controller.selectDownload(dialog.selectedJob)
                 }
                 UiButton {
                     theme: dialog.theme
                     quiet: true
-                    text: "取消复用"
+                    text: dialog.vwaTr("取消复用")
                     visible: !!dialog.view.selectedDownload
                     enabled: !dialog.view.busy
                     onClicked: dialog.controller.selectDownload("")
@@ -209,14 +212,14 @@ Dialog {
             Layout.fillWidth: true
             UiButton {
                 theme: dialog.theme
-                text: "关闭"
+                text: dialog.vwaTr("关闭")
                 onClicked: dialog.close()
             }
             Item { Layout.fillWidth: true }
             UiButton {
                 objectName: "applyNeteaseLyrics"
                 theme: dialog.theme
-                text: dialog.lyricPurpose === "subtitles" ? "采用字幕时间轴" : "填入主唱歌词"
+                text: dialog.lyricPurpose === "subtitles" ? dialog.vwaTr("采用字幕时间轴") : dialog.vwaTr("填入主唱歌词")
                 primary: true
                 visible: dialog.pane === "lyrics"
                 enabled: !dialog.view.busy && dialog.view.canApply
@@ -225,7 +228,7 @@ Dialog {
             }
             UiButton {
                 theme: dialog.theme
-                text: "打开模型与组件"
+                text: dialog.vwaTr("打开模型与组件")
                 visible: dialog.pane === "check" && dialog.view.issues.length > 0
                 onClicked: { dialog.close(); dialog.componentsRequested() }
             }

@@ -1123,8 +1123,8 @@ def add_start_launcher(payload: Payload, source_root: Path, entries):
     source = mapping.get(target, "tools/portable/Start-Quick.bat")
     path = checked_source(source_root, source)
     text = path.read_text(encoding="utf-8-sig")
-    if "launch.py" not in text or "--quick" not in text:
-        raise CandidateError("Start-Quick.bat must call the real launch.py --quick")
+    if "launch.py" not in text:
+        raise CandidateError("Start-Quick.bat must call the real launch.py")
     payload.copy_path(path, target, f"portable-files:{source}" if target in mapping else source)
 
 
@@ -1220,7 +1220,7 @@ def write_manifest(stage: Path, source_manifest: Path, lock_path: Path, selected
         "candidate_kind": candidate_kind,
         "accepted_release": False,
         "notice": notice,
-        "entrypoint": {"launcher": "Start-Quick.bat", "python": f"{PYTHON_TARGET}/python.exe", "command": "launch.py --quick"},
+        "entrypoint": {"launcher": "Start-Quick.bat", "python": f"{PYTHON_TARGET}/python.exe", "command": "launch.py"},
         "source_manifest": {"path": SOURCE_MANIFEST, "sha256": digest(source_manifest)},
         "requirements_lock": {"path": LOCK_FILE, "sha256": digest(lock_path)},
         "application": {
@@ -1309,8 +1309,8 @@ def build(args):
     source_manifest, entries = load_source_inventory(source_root)
     selected, quick_apps, qml = select_application_entries(entries)
     launch_source = checked_source(source_root, selected["launch.py"])
-    if "--quick" not in launch_source.read_text(encoding="utf-8-sig"):
-        raise CandidateError("The real launch.py does not dispatch --quick")
+    if "from quick_app import main" not in launch_source.read_text(encoding="utf-8-sig"):
+        raise CandidateError("The real launch.py does not start the Qt Quick frontend")
     lock_path, lock = load_lock(source_root)
     wheels = verify_wheels(wheel_dir, lock)
 

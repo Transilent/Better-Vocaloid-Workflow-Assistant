@@ -86,35 +86,63 @@ ApplicationWindow {
         }
     }
 
-    Dialog {
+    Popup {
         id: exitDialog
-        title: window.controller.text("任务正在运行")
+        objectName: "activeTaskExitDialog"
+        parent: Overlay.overlay
         modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
         anchors.centerIn: parent
-        width: Math.min(parent.width - 36, 390)
-        contentItem: Text {
-            text: window.controller.text("可以继续等待，或取消操作并在收尾后退出。")
-            wrapMode: Text.Wrap
-            color: theme.text
-            font.pixelSize: 14 * theme.scale
+        width: Math.min(parent.width - 36, Math.round(410 * theme.scale))
+        height: exitBody.implicitHeight + topPadding + bottomPadding
+        padding: Math.round(16 * theme.scale)
+        background: Rectangle {
+            color: theme.surface
+            radius: Math.round(10 * theme.scale)
+            border.color: theme.line
         }
-        footer: DialogButtonBox {
-            UiButton {
-                theme: window.tokens
-                text: window.controller.text("继续等待")
-                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
-                onClicked: exitDialog.close()
+        contentItem: Column {
+            id: exitBody
+            spacing: Math.round(12 * theme.scale)
+            Text {
+                width: exitDialog.availableWidth
+                text: window.controller.text("任务正在运行")
+                color: theme.text
+                font.pixelSize: Math.round(16 * theme.scale)
+                font.weight: Font.DemiBold
+                wrapMode: Text.WordWrap
             }
-            UiButton {
-                theme: window.tokens
-                text: window.controller.text("取消并退出")
-                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
-                onClicked: {
-                    exitDialog.close()
-                    window.controller.cancelAndClose()
+            Text {
+                width: exitDialog.availableWidth
+                text: window.controller.text("可以继续等待，或取消操作并在收尾后退出。")
+                wrapMode: Text.WordWrap
+                color: theme.text
+                font.pixelSize: Math.round(14 * theme.scale)
+            }
+            RowLayout {
+                width: exitDialog.availableWidth
+                Item { Layout.fillWidth: true }
+                UiButton {
+                    objectName: "activeTaskCancelAndExit"
+                    theme: window.tokens
+                    text: window.controller.text("取消并退出")
+                    onClicked: {
+                        exitDialog.close()
+                        window.controller.cancelAndClose()
+                    }
+                }
+                UiButton {
+                    id: keepRunning
+                    objectName: "activeTaskKeepRunning"
+                    theme: window.tokens
+                    primary: true
+                    text: window.controller.text("继续等待")
+                    onClicked: exitDialog.close()
                 }
             }
         }
+        onOpened: keepRunning.forceActiveFocus()
     }
 
     Connections {

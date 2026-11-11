@@ -67,19 +67,4 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work',prefix='sv-channels-') as folde
     assert result['tracks'][0]['mainGroup']['parameters']['pitchDelta']==score['tracks'][0]['mainGroup']['parameters']['pitchDelta']
     assert all(file_hash(p)==digest for p,digest in original.items())
     assert not list(session.parent.glob('*.wav')),'No converted audio copies should be created'
-    from PyQt5.QtWidgets import QApplication
-    from app import Window
-    from calibration_ui import CalibrationDialog
-    app=QApplication([]);owner=Window();dialog=CalibrationDialog(owner)
-    assert dialog.strength.value()==60 and dialog.strength.suffix()==' %'
-    with patch('calibration_ui.QFileDialog.getOpenFileName',return_value=(str(session),'')):
-        dialog.resume_session()
-    assert dialog.channels.currentData()=='sv-extra'
-    assert dialog.result and dialog.open_result.isEnabled()
-    assert dialog.rect().contains(dialog.open_result.geometry().bottomRight())
-    dialog.failed('试音有 4 个声道');assert dialog.status.property('role')=='error'
-    dialog.set_status('继续分析');assert dialog.status.property('role')=='muted'
-    dialog.show();app.processEvents()
-    dialog.grab().save(str(ROOT/'work/test-results/calibration-channels.png'))
-    dialog.close();owner.close();app.processEvents()
-print('PASS: interleaved 2/4-channel main/aspiration mapping, no double counting, real WORLD equivalence, cache-mode invalidation, explicit channel errors, real WAVEX fitting, no audio copies and UI restore')
+print('PASS: four-channel routing, real WORLD fitting, receipt and source preservation')

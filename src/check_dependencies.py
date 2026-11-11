@@ -26,6 +26,8 @@ def check(full=False, features=None, *, tool_paths=None):
               'dependencies/vocal2midi2/inference/pipeline/auto_lyric_hybrid.py',
               'dependencies/export/libresvip/__init__.py'}
     files = manifest["entries"] if full else [e for e in manifest["entries"] if "/experiments/" in e["file"] or e['file'] in critical]
+    from quick_runtime import legacy_widget_runtime_file
+    files = [e for e in files if not legacy_widget_runtime_file(e['file'])]
     if selected is not None:
         from dependency_profiles import group
         files = [e for e in files if group(e['file']) in selected]

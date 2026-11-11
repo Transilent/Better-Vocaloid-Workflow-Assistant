@@ -2,13 +2,14 @@
 import argparse
 import hashlib
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tools.update_apply import program_name, validate_file
+from tools.update_apply import (MAX_QUICK_PROGRAM_FILES, desktop_identity, program_name,
+                                validate_file, validate_quick_program)
 
 
 def file_hash(path):
@@ -21,30 +22,15 @@ def inventory_path(name):
     return canonical if canonical.is_file() else ROOT / name
 
 
-def require_compatible_clients(records):
-    """A new installer's allowlist cannot grant capabilities to old clients."""
-    clients = json.loads(inventory_path('update-clients.json').read_text(encoding='utf-8'))['clients']
-    for client in clients:
-        allowed = set(client['ROOT_FILES']) | set(client['TOOL_FILES'])
-        unsupported = []
-        for record in records:
-            name = record['file']
-            path = PurePosixPath(name)
-            asset = len(path.parts) == 2 and path.parts[0] == 'assets' and path.suffix in ('.svg', '.ico', '.png')
-            if name not in allowed and not asset:
-                unsupported.append(name)
-        if unsupported:
-            raise ValueError('Client '+client['version']+' cannot accept these direct-update files: '+', '.join(unsupported)+
-                             '. Build the compatible first hop with build_runtime_upgrade.py --base-ref '+client['commit']+
-                             ' --program-variant '+client['version']+'; install the new helper before new modules.')
-
-
 def build(output):
     from tools.verify_source_layout import verify
     output = Path(output).resolve()
     program_name({'name':output.name})
     verify(ROOT)
-    version = json.loads(inventory_path('version.json').read_text(encoding='utf-8'))['version']
+    version_info = json.loads(inventory_path('version.json').read_text(encoding='utf-8'))
+    version, identity = version_info['version'], desktop_identity(version_info)
+    if not identity:
+        raise ValueError('This tool creates program updates for the Qt Quick desktop.')
     runtime_sha = file_hash(ROOT / 'dependencies/manifest.json')
     entries = json.loads(inventory_path('portable-files.json').read_text(encoding='utf-8'))['entries']
     selected = []
@@ -59,14 +45,17 @@ def build(output):
         record = {'file': entry['file'], 'bytes': source.stat().st_size, 'sha256': file_hash(source)}
         validate_file(record)
         selected.append((record, source))
-    require_compatible_clients([record for record, _ in selected])
+    validate_quick_program(record['file'] for record, _ in selected)
+    if len(selected) + 1 > MAX_QUICK_PROGRAM_FILES:  # Includes update-inventory.json.
+        raise ValueError('Quick update contains too many program entries')
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zipped:
         for entry, source in selected:
             zipped.write(source, entry['file'])
-        zipped.writestr('update-inventory.json', json.dumps({'version': version, 'runtime_sha256': runtime_sha,
+        zipped.writestr('update-inventory.json', json.dumps({'version': version, 'runtime_sha256': runtime_sha, **identity,
                          'entries': [entry for entry, _ in selected]}, ensure_ascii=False, indent=2))
-    return {'name': output.name, 'bytes': output.stat().st_size, 'sha256': file_hash(output), 'runtime_sha256': runtime_sha}
+    return {'name': output.name, 'bytes': output.stat().st_size, 'sha256': file_hash(output),
+            'runtime_sha256': runtime_sha, **identity}
 
 
 if __name__ == '__main__':

@@ -3,6 +3,9 @@ import QtQuick.Controls
 
 Item {
     id: timeline
+    function vwaTr(message) {
+        return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
+    }
     objectName: "tuningTimelineCanvas"
     required property QtObject theme
     required property QtObject controller
@@ -72,7 +75,7 @@ Item {
 
     activeFocusOnTab: hasSource
     Accessible.role: Accessible.Pane
-    Accessible.name: multi ? "多轨钢琴卷帘" : "单轨钢琴卷帘"
+    Accessible.name: multi ? timeline.vwaTr("多轨钢琴卷帘") : timeline.vwaTr("单轨钢琴卷帘")
     Accessible.description: focusedNote ? noteDescription(focusedNote) + "。" + instructions
         : instructions
 
@@ -784,7 +787,7 @@ Item {
         enabled: timeline.hasSource
         ToolTip.visible: containsMouse
         ToolTip.delay: 600
-        ToolTip.text: "在键轨滚动查看其他音高"
+        ToolTip.text: timeline.vwaTr("在键轨滚动查看其他音高")
         onWheel: function(wheel) {
             const delta = wheel.pixelDelta.y || wheel.angleDelta.y
             wheel.accepted = delta !== 0 && timeline.movePitch(delta > 0 ? -2 : 2)
@@ -874,7 +877,7 @@ Item {
         position: timeline.pitchOffset / 128
         minimumSize: Math.min(1, Math.round(24 * timeline.scale) / height)
         enabled: timeline.hasSource
-        Accessible.name: "音高滚动"
+        Accessible.name: timeline.vwaTr("音高滚动")
         onPositionChanged: {
             if (pressed)
                 timeline.topRow = timeline.clamp(position * 128, 0, 128 - timeline.rowsInView)

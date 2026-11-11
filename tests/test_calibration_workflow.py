@@ -13,7 +13,7 @@ from vocal_expression import SV_QUARTER as Q
 from calibration_session import create_session,read_session,project_data,wait_and_fit,fit_session
 from calibration_workflow import inspect_inputs,prepare_copy,latest_result,recovery_hint
 from v2m_runtime import configure
-configure(ROOT/'dependencies/vocal2midi2')
+configure(ROOT/'dependencies/vocal2midi2', pitch_only=True)
 from inference.API.rmvpe_api import RmvpeResult
 
 
@@ -93,33 +93,4 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work',prefix='self-service-') as dire
     assert third['neutral']!=second['neutral'] and Path(second['neutral']).read_text()=='user edited comparison'
     assert '气声输出' in recovery_hint('4 个声道') and '重新准备' in recovery_hint('原工程已改变')
 
-    from PyQt5.QtWidgets import QApplication
-    from app import Window
-    from calibration_ui import CalibrationDialog
-    qt=QApplication([]);owner=Window();owner.job=job;dialog=CalibrationDialog(owner);owner.calibration_dialog=dialog
-    dialog.folder.setText(str(root));dialog.show();qt.processEvents()
-    assert not dialog.review_inputs()['ready']
-    dialog.start_session();assert dialog.worker is None and '准备条件' in dialog.status.text()
-    with patch('calibration_ui.QFileDialog.getOpenFileName',return_value=(str(template),'')):
-        dialog.choose_bank();assert dialog.worker.wait(8000);qt.processEvents()
-    assert project_data(dialog.project.text())['tracks'][0]['mainRef']['database']['name']=='Demo Bank'
-    imported=dialog.project.text()
-    with patch('calibration_workflow._infer_pitch',return_value=measured):
-        dialog.prepare_input(repair=True);assert dialog.worker.wait(8000);qt.processEvents()
-    assert dialog.project.text()!=imported and dialog.review_inputs()['ready']
-    def simulate_sv(*args,**kwargs):
-        kwargs['on_state']({'phase':'fitting','files':{n:'validated' for n in spec['outputs']},'done':7,'total':7})
-        return third
-    with patch('calibration_session.wait_and_fit',side_effect=simulate_sv),patch('calibration_ui.QDesktopServices.openUrl',return_value=True) as opened:
-        dialog.start_session();assert dialog.worker.wait(8000);qt.processEvents()
-        assert dialog.open_neutral.isEnabled() and dialog.open_result.isEnabled()
-        assert all(dialog.file_status.item(i,1).text()=='校验通过' for i in range(7))
-        dialog.show_neutral();assert opened.called
-    dialog.failed('试音有 4 个声道');assert '气声输出' in dialog.recovery.text()
-    with patch('calibration_ui.QFileDialog.getExistingDirectory',return_value=str(session.parent)):
-        dialog.resume_directory()
-    assert dialog.result['output']==third['output'] and dialog.open_neutral.isEnabled() and dialog.recovery.isHidden()
-    assert all(dialog.file_status.item(i,1).text()=='已找到（继续时复核）' for i in range(7))
-    dialog.grab().save(str(ROOT/'work/test-results/calibration-self-service.png'))
-    dialog.close();owner.close();qt.processEvents()
-print('PASS: user preflight and lyric locations, bank-template isolation, real CPU pitch repair, immutable source, per-file states, neutral comparisons, registered parameter result, retry/latest-result recovery and GUI-only operation')
+print('PASS: input review, real CPU pitch repair, source preservation and recovery')

@@ -2,6 +2,9 @@ import QtQuick
 
 Item {
     id: meter
+    function vwaTr(message) {
+        return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
+    }
     required property QtObject theme
     property real rms: NaN
     property real peak: NaN
@@ -12,7 +15,7 @@ Item {
     implicitHeight: Math.round(116 * theme.scale)
     Accessible.role: Accessible.ProgressBar
     Accessible.name: accessibleLabel
-    Accessible.description: validRms ? qsTr("%1 dBFS").arg(rmsText(rms)) : qsTr("等待真实电平")
+    Accessible.description: validRms ? rmsText(rms) + " dBFS" : meter.vwaTr("等待真实电平")
 
     readonly property bool validRms: meter.safeLevel(rms) === meter.safeLevel(rms)
     readonly property bool validPeak: meter.safeLevel(peak) === meter.safeLevel(peak)

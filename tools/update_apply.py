@@ -109,10 +109,26 @@ TOOL_FILES.add('tools/install_pedalboard_component.py')
 RUNTIME_UPDATE_NAME = 'VWA-Runtime-Upgrade.zip'
 MAX_RUNTIME_BYTES = 256 * 1024**2
 MAX_PROGRAM_BYTES = 64 * 1024**2
+MAX_QUICK_PROGRAM_FILES = 384
+QUICK_PROGRAM_REQUIRED = frozenset({'launch.py', 'quick_app.py', 'quick_runtime.py',
+    'quick_ui/Main.qml', 'updater.py', 'tools/update_apply.py', 'version.json'})
+LEGACY_FRONTEND_FILES = frozenset({
+    'app.py', 'audio_mixdown_ui.py', 'calibration_ui.py', 'components_ui.py', 'desktop_theme.py',
+    'lyrics_dialog.py', 'media_preview.py', 'mixdown_control_panel.py', 'mixdown_eq_curve.py',
+    'mixdown_live_meters.py', 'mixdown_preset_ui.py', 'mixdown_realtime_player.py', 'mixdown_widgets.py',
+    'mixdown_workspace.py', 'onboarding_ui.py', 'preset_library_ui.py', 'processing_ui.py',
+    'processing_workflow.py', 'publishing_layout.py', 'publishing_ui.py', 'results_ui.py', 'storage_ui.py',
+    'strength_control.py', 'subtitles_ui.py', 'task_contract_ui.py', 'tuning_form_state.py',
+    'tuning_preset_controller.py', 'tuning_preset_ui.py', 'tuning_ui.py', 'tuning_worker.py',
+    'ui_components.py', 'ui_input.py', 'ui_materials.py', 'ui_preferences.py',
+    'update_notice_ui.py', 'updates_ui.py', 'upgrade_bootstrap.py', 'video_mixdown_ui.py',
+    'workflow_widgets.py', 'workspace_ui.py',
+})
 RUNTIME_PROGRAM_FILES = {'components/roformer.json', 'components/runtime-features.json', 'models/来源说明.md',
                           'components/pedalboard.json', 'components/pedalboard-LICENSE.txt',
                           'components/pedalboard-NOTICE.txt', 'components/pedalboard-THIRD_PARTY_NOTICES.md'}
 ROOT_FILES.add('VWA.exe')
+ROOT_FILES.add('Start-Quick.bat')
 LAUNCHER_MIGRATION = {'from': 'BVWA.exe', 'to': 'VWA.exe', 'legacy_alias': True}
 SOURCE_POLICY_FORMAT = 1
 SOURCE_POLICY_REQUIRED_TARGET = '1.1.0'
@@ -152,11 +168,8 @@ class _ApplicationLock:
             pass
 
 
-def application_lock(root, *, lock_class=None):
+def application_lock(root, *, lock_class):
     """Interlock canonical and released launchers without moving a live lock."""
-    if lock_class is None:
-        from PyQt5.QtCore import QLockFile
-        lock_class = QLockFile
     folder = Path(root) / 'cache'
     folder.mkdir(parents=True, exist_ok=True)
     held = []
@@ -226,6 +239,24 @@ def validate_file(entry):
         raise ValueError('更新文件大小无效。')
     if not re.fullmatch(r'[a-f0-9]{64}', entry.get('sha256', '')):
         raise ValueError('更新文件校验信息无效。')
+
+
+def desktop_identity(data):
+    """Bind a Quick program update to its frontend and installed Qt version."""
+    if isinstance(data, dict) and data.get('desktop_frontend') == 'quick':
+        qt_version = data.get('qt_version')
+        if not isinstance(qt_version, str) or not re.fullmatch(r'6\.\d+\.\d+', qt_version):
+            raise ValueError('Quick 更新缺少有效的 Qt 版本。')
+        return {'desktop_frontend': 'quick', 'qt_version': qt_version}
+    return {}
+
+
+def validate_quick_program(names):
+    names = set(names)
+    if not QUICK_PROGRAM_REQUIRED.issubset(names) or names & LEGACY_FRONTEND_FILES:
+        raise ValueError('程序更新不是完整的 Quick 界面，或仍带有旧界面文件。')
+    if any(name.startswith('runtime/') for name in names):
+        raise ValueError('程序更新不能替换 Qt 运行库。')
 
 
 def validate_destination(root, name):
@@ -679,7 +710,12 @@ def _require_forward_target(root, plan, plan_path):
 def apply_update(plan_path):
     plan_path = Path(plan_path).resolve()
     root, plan = _read_plan(plan_path)
+    current = desktop_identity(json.loads((root / 'version.json').read_text(encoding='utf-8-sig')))
+    if desktop_identity(plan) != current:
+        raise ValueError('更新计划与本机界面或 Qt 运行库不匹配。')
     if plan.get('kind') == 'runtime_upgrade':
+        if current:
+            raise ValueError('Quick 安装不使用历史运行库迁移计划。')
         return apply_runtime_upgrade(plan_path)
     if plan.get('version') == SOURCE_POLICY_REQUIRED_TARGET:
         raise ValueError('目标 1.1.0 不能通过普通程序更新入口安装，必须使用带 source_policy 的运行库更新流程。')
@@ -691,6 +727,11 @@ def apply_update(plan_path):
     stage, entries = plan_path.parent, plan['entries']
     if len(entries) != len({e['file'] for e in entries}):
         raise ValueError('更新计划包含重复文件。')
+    if current:
+        validate_quick_program(e['file'] for e in entries)
+        target = validate_destination(stage / 'files', 'version.json')
+        if desktop_identity(json.loads(target.read_text(encoding='utf-8-sig'))) != current:
+            raise ValueError('待安装程序的界面身份不匹配。')
     for entry in entries:
         validate_file(entry)
         validate_destination(root, entry['file'])
@@ -1218,6 +1259,9 @@ def prepare_program_update(version, item, root, progress=lambda *args: None, che
         raise ValueError('目标 1.1.0 不能通过普通程序更新入口安装，必须使用带 source_policy 的运行库更新流程。')
     _asset_record(item)
     root = Path(root).resolve()
+    identity = desktop_identity(json.loads((root / 'version.json').read_text(encoding='utf-8-sig')))
+    if desktop_identity(item) != identity:
+        raise ValueError('此更新包与当前界面或 Qt 运行库不匹配，请下载适用的完整包。')
     runtime_sha = sha(root / 'dependencies/manifest.json')
     if item.get('runtime_sha256') != runtime_sha:
         raise ValueError('此更新包与当前运行库不匹配，请使用兼容更新工具。')
@@ -1237,15 +1281,21 @@ def prepare_program_update(version, item, root, progress=lambda *args: None, che
     try:
         with zipfile.ZipFile(archive) as zipped:
             infos = zipped.infolist()
-            if (len(infos) > 200 or sum(info.file_size for info in infos) > MAX_PROGRAM_BYTES
+            if (len(infos) > (MAX_QUICK_PROGRAM_FILES if identity else 200)
+                    or sum(info.file_size for info in infos) > MAX_PROGRAM_BYTES
                     or len({info.filename for info in infos}) != len(infos)):
                 raise ValueError('程序更新包内容过大或包含重复文件。')
             inventory = json.loads(zipped.read('update-inventory.json'))
-            if inventory['version'] != version or inventory['runtime_sha256'] != runtime_sha:
+            if (inventory['version'] != version or inventory['runtime_sha256'] != runtime_sha
+                    or desktop_identity(inventory) != identity):
                 raise ValueError('程序更新包版本或运行库不匹配。')
             entries = inventory['entries']
             names = {entry['file'] for entry in entries}
-            if (len(entries) != len(names) or not {'app.py', 'version.json'}.issubset(names)
+            if identity:
+                validate_quick_program(names)
+            elif not {'app.py', 'version.json'}.issubset(names):
+                raise ValueError('历史程序更新包缺少入口。')
+            if (len(entries) != len(names)
                     or {info.filename for info in infos} != names | {'update-inventory.json'}):
                 raise ValueError('程序更新包与文件清单不一致。')
             for entry in entries:
@@ -1262,10 +1312,11 @@ def prepare_program_update(version, item, root, progress=lambda *args: None, che
                     shutil.copyfileobj(src, dst)
                 if sha(target) != entry['sha256']:
                     raise ValueError('程序更新文件校验失败：' + entry['file'])
-        if json.loads((stage / 'files/version.json').read_text(encoding='utf-8'))['version'] != version:
+        target_version = json.loads((stage / 'files/version.json').read_text(encoding='utf-8-sig'))
+        if target_version['version'] != version or desktop_identity(target_version) != identity:
             raise ValueError('更新程序版本信息不匹配。')
         plan = stage / 'plan.json'
-        plan.write_text(json.dumps({'root': str(root), 'version': version, 'runtime_sha256': runtime_sha,
+        plan.write_text(json.dumps({'root': str(root), 'version': version, 'runtime_sha256': runtime_sha, **identity,
                                     'entries': entries, 'state': 'ready'}, ensure_ascii=False, indent=2), encoding='utf-8')
         shutil.copy2(Path(__file__), stage / 'apply_helper.py')
         if register_pending:

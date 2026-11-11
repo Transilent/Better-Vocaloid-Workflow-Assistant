@@ -51,6 +51,14 @@ def legacy_release(inventory):
 
 
 def compatible_update(inventory):
+    from tools.update_apply import desktop_identity
+    installed = desktop_identity(json.loads((ROOT / 'version.json').read_text(encoding='utf-8-sig')))
+    if installed:
+        item = inventory.get('program_update')
+        if (isinstance(item, dict) and desktop_identity(item) == installed
+                and item.get('runtime_sha256') == file_hash(ROOT / 'dependencies/manifest.json')):
+            return item
+        return None
     if 'updates' in inventory:
         from tools.update_apply import select_update_route
         route = select_update_route(inventory, file_hash(ROOT / 'dependencies/manifest.json'))
@@ -210,6 +218,13 @@ def pending_update(root=ROOT):
             _reject_pending(root, plan, receipt, None, 'invalid_plan',
                             '更新计划格式或助手目录无效，已忽略该 pending 回执；暂存文件已保留。')
             return None
+        from tools.update_apply import desktop_identity
+        local_identity = desktop_identity(json.loads((root / 'version.json').read_text(encoding='utf-8-sig')))
+        if desktop_identity(data) != local_identity or (local_identity and (
+                data.get('kind') == 'runtime_upgrade' or receipt.get('plan_sha256') != file_hash(plan))):
+            _reject_pending(root, plan, receipt, None, 'desktop_identity_mismatch',
+                            '待安装计划与当前界面或 Qt 版本不匹配；暂存文件已保留。')
+            return None
         if not isinstance(data.get('version'), str):
             _reject_pending(root, plan, receipt, None, 'missing_plan_version',
                             '更新计划缺少目标版本，已忽略该 pending 回执；暂存文件已保留，请重新检查更新。')
@@ -245,6 +260,9 @@ def restart_to_apply(plan):
     plan = Path(plan).resolve()
     if not plan.is_relative_to(ROOT / 'cache/updates'):
         raise ValueError('更新计划路径无效。')
+    receipt = pending_update(ROOT)
+    if not receipt or Path(receipt['plan']).resolve() != plan:
+        raise ValueError('待安装计划已变化，请重新检查更新。')
     pythonw = Path(load_config()['python']).with_name('pythonw.exe')
     command = [str(pythonw), '-B', str(plan.parent / 'apply_helper.py'), '--plan', str(plan),
                '--parent', str(os.getpid()), '--launcher-parent', environment_value('VWA_LAUNCHER_PID', '0')]

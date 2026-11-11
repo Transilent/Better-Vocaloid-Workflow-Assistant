@@ -5,6 +5,9 @@ import QtQuick.Layouts
 
 ScrollView {
     id: page
+    function vwaTr(message) {
+        return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
+    }
     objectName: "settingsPage"
     required property QtObject theme
     required property QtObject controller
@@ -1111,7 +1114,7 @@ ScrollView {
                             ChoiceChip {
                                 objectName: "settingsLanguageZh"
                                 tokens: page.theme
-                                text: "简体中文"
+                                text: page.vwaTr("简体中文")
                                 selected: String(page.setting("ui_language", "zh-CN")) === "zh-CN"
                                 onClicked: page.changeSetting("ui_language", "zh-CN")
                             }
@@ -1125,7 +1128,7 @@ ScrollView {
                             ChoiceChip {
                                 objectName: "settingsLanguageJa"
                                 tokens: page.theme
-                                text: "日本語"
+                                text: page.vwaTr("日本語")
                                 selected: String(page.setting("ui_language", "zh-CN")) === "ja"
                                 onClicked: page.changeSetting("ui_language", "ja")
                             }

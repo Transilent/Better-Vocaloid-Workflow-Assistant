@@ -11,6 +11,8 @@ Check startup and installed dependencies from the application folder:
 & '.\dependencies\vocal2midi\python\python.exe' -B .\check_dependencies.py --full
 ```
 
+The development source uses Qt 6.10.3. A complete portable installation loads it from `runtime/qt6`. For a development check, pass `--quick-runtime` and the absolute path to a verified runtime to `launch.py --check`.
+
 For regression tests, use a source checkout with its runtime installed:
 
 ```powershell
@@ -27,9 +29,8 @@ The runner rejects stale generated program files, then creates a disposable appl
 | Japanese MIDI | Short mora pauses, kana token positions, supported phones, chunk error isolation, cancellation and atomic track assembly |
 | Chinese MIDI | Real lyric-token selection and MIDI writing in characters/pinyin with a recognition fixture; unchanged note timing and cache invalidation |
 | Test isolation | Fresh per-test state, abrupt failure/exit cleanup, preserved installed files and no account-state imports |
-| Program updates | Version checks, download routes, staging, file allowlist, hash rejection, preserved data, rollback, same-plan retries and malformed-plan failure receipts |
-| VWA update compatibility | Pinned, unmodified 0.3.0/0.4.0/0.4.1 update code; runtime-hash routing; frozen three-file first hop; canonical `VWA-Updater.exe`; preservation of models and private user files; direct/mirror/auto routing; real GUI startup |
-| Desktop UI | Five-page navigation, folded controls, input recovery, active-task display, component state, large-file progress, default 1600×1000 and minimum 1000×680 layouts |
+| Desktop UI | Eight workspaces, the first-run tour, exit during active work, workflow actions and state readback, at normal and maximized viewport sizes |
+| Release acceptance (separate from frontend regression) | Complete portable packages, update staging and rollback, and frozen release routes for historical clients |
 | Workflow and task management | Real input snapshots/FFmpeg and imported stems, graph-controlled termination, inference fixture and real subtitle output, validated resume, processing-page preset selection and actual start, Qt proximity snapping and disconnection, task search, cache boundaries and retry |
 | Subtitles | Repeated/empty/enhanced LRC timestamps, offset tags, SRT/WebVTT time formatting, rejection of untimed text, Unicode MIDI and tempo maps |
 | Optional installer | Local HTTP Range resume, ignored/bad Range responses, SHA-256 mismatch, cancellation, archive traversal and cleanup boundaries |

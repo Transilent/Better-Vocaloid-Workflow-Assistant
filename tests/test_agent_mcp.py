@@ -491,7 +491,7 @@ async def client_contract(configuration):
 
 class MCPContract(unittest.TestCase):
     def test_optional_entry_is_not_imported_by_application(self):
-        self.assertNotIn('import agent_mcp', (APP / 'app.py').read_text(encoding='utf-8'))
+        self.assertNotIn('import agent_mcp', (APP / 'quick_app.py').read_text(encoding='utf-8'))
 
     @unittest.skipUnless(os.environ.get('VWA_MCP_SDK_PYTHON'), 'Dedicated optional SDK not configured')
     def test_preparation_schema_matches_backend_boundaries(self):

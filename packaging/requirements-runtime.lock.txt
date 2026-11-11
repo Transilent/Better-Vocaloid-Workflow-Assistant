@@ -4,7 +4,6 @@ cffi==2.0.0
 charset-normalizer==3.4.7
 click==8.4.1
 colorama==0.4.6
-darkdetect==0.8.0
 decorator==5.3.1
 flatbuffers==25.12.19
 idna==3.17
@@ -25,11 +24,6 @@ pooch==1.9.0
 protobuf==7.35.0
 pycparser==3.0
 pyopenjtalk==0.4.1
-PyQt-Fluent-Widgets==1.11.2
-PyQt5-Frameless-Window==0.8.1
-PyQt5-Qt5==5.15.2
-PyQt5==5.15.11
-PyQt5_sip==12.18.0
 pywin32==311
 PyYAML==6.0.3
 requests==2.34.2

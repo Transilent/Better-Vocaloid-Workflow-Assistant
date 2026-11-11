@@ -5,6 +5,9 @@ import QtQuick.Layouts
 
 Dialog {
     id: page
+    function vwaTr(message) {
+        return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
+    }
     objectName: "subtitleDialog"
     required property QtObject controller
     signal neteaseRequested()
@@ -175,7 +178,7 @@ Dialog {
                         theme: page.theme
                         quiet: true
                         selected: page.snapshot.sourceKind === modelData
-                        text: ({midi: "MIDI 草稿", lrc: "LRC 草稿", netease: "网易云草稿"})[modelData]
+                        text: ({midi: page.vwaTr("MIDI 草稿"), lrc: page.vwaTr("LRC 草稿"), netease: page.vwaTr("网易云草稿")})[modelData]
                         onClicked: page.controller.restoreSource(modelData)
                     }
                 }

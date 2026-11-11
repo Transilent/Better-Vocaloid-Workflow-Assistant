@@ -101,40 +101,4 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work',prefix='auto-calibration-') as 
     assert not (missing.parent/'calibrated.svp').exists()
     sf.write(reference,wave*.2,rate,subtype='FLOAT');raises(ValueError,RenderCollector(missing).collect)
 
-    from PyQt5.QtWidgets import QApplication
-    from PyQt5.QtTest import QTest
-    from app import Window
-    from calibration_ui import CalibrationDialog
-    app=QApplication([]);owner=Window();dialog=CalibrationDialog(owner);owner.calibration_dialog=dialog
-    dialog.project.setText(str(source));dialog.reference.setText(str(reference));dialog.folder.setText(str(root))
-    dialog.show();app.processEvents()
-    dialog.grab().save(str(ROOT/'work/test-results/calibration-dialog.png'))
-    complete={'output':result['output'],'profile':result['profile'],'calibration_fit':{'voicebank_calibrated':True}}
-    def fake_wait(*args,**kwargs):
-        for _ in range(12):time.sleep(.01);kwargs['cancel']()
-        return complete
-    with patch('calibration_session.create_session',return_value=session),patch('calibration_session.wait_and_fit',side_effect=fake_wait),patch('calibration_ui.QDesktopServices.openUrl',return_value=True):
-        dialog.start_session();assert dialog.busy() and not dialog.form.isEnabled()
-        assert owner.updates.active_operations()
-        owner.storage.start();assert owner.storage.worker is None
-        assert dialog.worker.wait(2000);app.processEvents()
-        assert dialog.result and not owner.calibration_enabled.isChecked() and owner.calibration_file.text()==result['profile']
-    dialog.close();app.processEvents()
-    restored=CalibrationDialog(owner)
-    with patch('calibration_ui.QFileDialog.getOpenFileName',return_value=(str(missing),'')):
-        restored.resume_session()
-    assert restored.session==missing and restored.start.text()=='继续等待并拟合'
-    with patch('calibration_ui.QFileDialog.getOpenFileName',return_value=(str(session),'')):
-        restored.resume_session()
-    assert restored.result and restored.open_result.isEnabled() and restored.start.isEnabled()
-    restored.strength.setValue(40)
-    assert restored.session==session and restored.start.text()=='重新拟合 · 复用试音'
-    restored.close()
-    cancelled=CalibrationDialog(owner);owner.calibration_dialog=cancelled
-    cancelled.project.setText(str(source));cancelled.reference.setText(str(reference));cancelled.folder.setText(str(root))
-    with patch('calibration_session.create_session',return_value=session),patch('calibration_session.wait_and_fit',side_effect=fake_wait),patch('calibration_ui.QDesktopServices.openUrl',return_value=True):
-        cancelled.start_session();cancelled.reject()
-        assert cancelled.worker.wait(2000);app.processEvents()
-        assert cancelled.result is None and not cancelled.busy()
-    owner.close();app.processEvents()
-print('PASS: one seven-track project, unique render tokens, stable/closed WAV detection, truncation/duplicate guards, actual WORLD fitting with outro, automatic collection-to-fit, cancellation and UI interlocks')
+print('PASS: seven-track session, stable WAV detection, fitting, retry and cancellation')

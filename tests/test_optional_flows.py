@@ -46,29 +46,4 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work',prefix='independent-') as folde
     except ValueError: pass
     else: raise AssertionError('Empty predictions accepted')
 
-from PyQt5.QtWidgets import QApplication,QPushButton
-from app import Window
-app=QApplication([]);window=Window();window.show();app.processEvents()
-page=window.video_mixdown;window.navigate(8)
-assert window.pages.currentWidget() is page and window.job is None
-assert not any('Mixdown' in action.text() for action in window.publishing.findChildren(QPushButton))
-assert page.start.isEnabled() and not page.to_publish.isEnabled()
-window.grab().save(str(ROOT/'work/test-results/video-assembly.png'))
-with tempfile.TemporaryDirectory(dir=ROOT/'work',prefix='optional-video-') as folder:
-    root=Path(folder);video=root/'source.mp4';audio=root/'mix.wav';output=root/'finished.mp4'
-    video.write_bytes(b'fixture');audio.write_bytes(b'fixture')
-    for key,value in [('video',video),('mixdown',audio),('output',output)]:page.fields[key].setText(str(value))
-    observed=[]
-    def render(job,**options):
-        observed.append((job,options));time.sleep(.15);output.write_bytes(b'rendered')
-        return {'output':str(output)}
-    with patch('video_mixdown.render',side_effect=render):
-        page.render();assert page.busy() and window.updates.active_operations()
-        assert not page.fields['video'].isEnabled() and not page.start.isEnabled()
-        assert page.task.wait(2000);app.processEvents()
-    assert observed[0][1]['reset_cancel'] is False and page.to_publish.isEnabled()
-    assert window.publishing.video.text()!=str(output),'Composition must not trigger publication'
-    page.use_result();assert window.pages.currentIndex()==3 and window.publishing.video.text()==str(output)
-    page.offset.setValue(.1);assert not page.to_publish.isEnabled()
-window.close();app.processEvents()
-print('PASS: optional no-task composition, manual publication handoff, busy interlocks, prediction routing and residual conservation')
+print('PASS: standalone composition, publication handoff and residual conservation')

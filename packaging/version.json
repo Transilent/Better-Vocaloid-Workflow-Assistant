@@ -1,4 +1,6 @@
 {
   "version": "1.1.0",
-  "channel": "stable"
+  "channel": "stable",
+  "desktop_frontend": "quick",
+  "qt_version": "6.10.3"
 }

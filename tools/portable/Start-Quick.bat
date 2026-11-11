@@ -21,7 +21,7 @@ set "QT_QPA_PLATFORM_PLUGIN_PATH=%VWA_QT6%\PySide6\plugins\platforms"
 set "QML2_IMPORT_PATH=%VWA_QT6%\PySide6\qml"
 set "QML_IMPORT_PATH=%VWA_QT6%\PySide6\qml"
 
-"%VWA_PYTHON%" -B -u "%VWA_ROOT%\launch.py" --quick %* > "%VWA_QUICK_LOG%" 2>&1
+"%VWA_PYTHON%" -B -u "%VWA_ROOT%\launch.py" %* > "%VWA_QUICK_LOG%" 2>&1
 set "VWA_EXIT=%ERRORLEVEL%"
 if "%VWA_EXIT%"=="0" exit /b 0
 

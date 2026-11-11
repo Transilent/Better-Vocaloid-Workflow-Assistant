@@ -121,25 +121,6 @@ assert techniques[0] == {
     'pitch_default': False, 'description': '不添加独立唱腔技法。',
 }
 
-# GUI cards consume the registry projections rather than local copies.
-from tuning_ui import (
-    style_card_description, style_card_keys, style_card_label,
-    style_pitch_default, technique_card_keys, technique_card_label,
-    technique_card_description, ui_merged_preset,
-)
-assert style_card_keys() == VISIBLE
-assert technique_card_keys() == TECHNIQUES
-assert style_card_label('bold') == '明亮欢快〔实验〕'
-assert '情绪（悲伤）' in style_card_description('sad')
-assert style_card_label('none') == '不叠加风格'
-assert technique_card_label('none') == '原唱法'
-assert technique_card_label('chinese_opera') == '中文戏腔〔实验〕'
-assert technique_card_description('chinese_opera') == (
-    '字头倚滑、音间衔接、长音颤音与收腔；保留已检测到的原有颤音。')
-assert all(ui_merged_preset(value) == MERGES[value] for value in LEGACY)
-assert all(style_pitch_default(value) == style_catalog.style_pitch_default(value)
-           for value in style_catalog.STYLE_IDS + TECHNIQUES)
-
 # Drafts accept visible style IDs and the independent technique only.
 INPUT_SHA = 'a' * 64
 for value in VISIBLE:
@@ -238,5 +219,4 @@ assert style_presets.apply_style(
         style_presets.apply_style(
             project_data, 'gentle', strength=.6, track_indices=[0], pitch_enabled=False)[0])
 
-print('PASS: pure style registry, canonical GUI/MCP/draft IDs, independent technique, '
-      'legacy UI-only merges, shared expression limits, and frozen old-ID curves')
+print('PASS: pure style registry, canonical Quick/MCP/draft IDs, independent technique, shared expression limits and frozen old-ID curves')

@@ -11,7 +11,12 @@ APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP))
 from tools.verify_source_layout import verify
 shell = Path(os.environ['WINDIR'])/'System32/WindowsPowerShell/v1.0/powershell.exe'
-catalog = json.loads((APP/'packaging/source-files.json').read_text(encoding='utf-8'))['files']
+manifest = json.loads((APP/'packaging/source-files.json').read_text(encoding='utf-8'))
+catalog = manifest['files']
+retired = set(manifest['retired_generated'])
+portable = json.loads((APP/'packaging/portable-files.json').read_text(encoding='utf-8'))['entries']
+assert not (retired & {row['file'] for row in portable})
+assert not any((APP / 'src' / name).exists() for name in retired)
 with tempfile.TemporaryDirectory(prefix='source-layout-', dir=APP/'work') as folder:
     checkout = Path(folder)/'checkout with spaces'
     for name in catalog:
@@ -25,12 +30,15 @@ with tempfile.TemporaryDirectory(prefix='source-layout-', dir=APP/'work') as fol
     (checkout/'jobs/task.json').write_bytes(b'KEEP PROJECT')
     (checkout/'user-presets').mkdir()
     (checkout/'user-presets/library.json').write_bytes(b'KEEP PRESETS')
+    old_generated = checkout / 'app.py'
+    old_generated.write_text('# stale generated Widgets entry', encoding='utf-8')
     assert not (checkout/'launch.py').exists()
     for attempt in range(2):
         result = subprocess.run([str(shell), '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
                                  str(checkout/'tools/Prepare-Source.ps1')], capture_output=True, timeout=30)
         assert result.returncode == 0, (result.stdout+result.stderr).decode(errors='replace')
         assert verify(checkout) > 0
+        assert not old_generated.exists()
         for source in (checkout/'src').glob('*.py'):
             assert (checkout/source.name).read_bytes() == source.read_bytes()
         assert (checkout/'config.json').read_bytes() == b'KEEP SETTINGS'

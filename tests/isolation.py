@@ -12,7 +12,7 @@ import tempfile
 
 
 SHARED_DIRECTORIES = ('dependencies', 'models', 'vendor', 'components')
-PROGRAM_DIRECTORIES = ('src', 'tests', 'tools', 'assets', 'docs', 'packaging')
+PROGRAM_DIRECTORIES = ('src', 'quick_ui', 'tests', 'tools', 'assets', 'docs', 'packaging')
 PROGRAM_FILES = {'VWA.exe', 'BVWA.exe', 'LICENSE', 'README.md', 'README.zh-CN.md', 'CHANGELOG.md',
                  'CONTRIBUTING.md', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.zh-CN.md',
                  'source-files.json', 'portable-files.json', 'config.example.json',

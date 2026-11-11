@@ -242,10 +242,6 @@
       "source": "THIRD_PARTY_NOTICES.zh-CN.md"
     },
     {
-      "file": "app.py",
-      "source": "src/app.py"
-    },
-    {
       "file": "assets/app.ico",
       "source": "assets/app.ico"
     },
@@ -278,10 +274,6 @@
       "source": "components/roformer.json"
     },
     {
-      "file": "components_ui.py",
-      "source": "src/components_ui.py"
-    },
-    {
       "file": "config.json",
       "source": "packaging/config.example.json"
     },
@@ -292,10 +284,6 @@
     {
       "file": "dependencies/manifest.json",
       "source": "dependencies/manifest.json"
-    },
-    {
-      "file": "desktop_theme.py",
-      "source": "src/desktop_theme.py"
     },
     {
       "file": "download_sources.py",
@@ -370,18 +358,6 @@
       "source": "src/publish_browser.py"
     },
     {
-      "file": "publishing_layout.py",
-      "source": "src/publishing_layout.py"
-    },
-    {
-      "file": "publishing_ui.py",
-      "source": "src/publishing_ui.py"
-    },
-    {
-      "file": "results_ui.py",
-      "source": "src/results_ui.py"
-    },
-    {
       "file": "roformer.py",
       "source": "src/roformer.py"
     },
@@ -390,16 +366,8 @@
       "source": "src/storage.py"
     },
     {
-      "file": "storage_ui.py",
-      "source": "src/storage_ui.py"
-    },
-    {
       "file": "subtitles.py",
       "source": "src/subtitles.py"
-    },
-    {
-      "file": "subtitles_ui.py",
-      "source": "src/subtitles_ui.py"
     },
     {
       "file": "task_store.py",
@@ -408,10 +376,6 @@
     {
       "file": "tools/Check-Dependencies.bat",
       "source": "tools/Check-Dependencies.bat"
-    },
-    {
-      "file": "tools/Install-Runtime.ps1",
-      "source": "tools/Install-Runtime.ps1"
     },
     {
       "file": "tools/Start-Diagnostics.bat",
@@ -438,10 +402,6 @@
       "source": "src/updater.py"
     },
     {
-      "file": "updates_ui.py",
-      "source": "src/updates_ui.py"
-    },
-    {
       "file": "v2m_runtime.py",
       "source": "src/v2m_runtime.py"
     },
@@ -452,26 +412,6 @@
     {
       "file": "workflow.py",
       "source": "src/workflow.py"
-    },
-    {
-      "file": "workspace_ui.py",
-      "source": "src/workspace_ui.py"
-    },
-    {
-      "file": "lyrics_dialog.py",
-      "source": "src/lyrics_dialog.py"
-    },
-    {
-      "file": "processing_ui.py",
-      "source": "src/processing_ui.py"
-    },
-    {
-      "file": "processing_workflow.py",
-      "source": "src/processing_workflow.py"
-    },
-    {
-      "file": "workflow_widgets.py",
-      "source": "src/workflow_widgets.py"
     },
     {
       "file": "artifact_cache.py",
@@ -526,10 +466,6 @@
       "source": "src/video_mixdown.py"
     },
     {
-      "file": "video_mixdown_ui.py",
-      "source": "src/video_mixdown_ui.py"
-    },
-    {
       "file": "calibration_workflow.py",
       "source": "src/calibration_workflow.py"
     },
@@ -546,10 +482,6 @@
       "source": "src/calibration_session.py"
     },
     {
-      "file": "calibration_ui.py",
-      "source": "src/calibration_ui.py"
-    },
-    {
       "file": "vocal_partition.py",
       "source": "src/vocal_partition.py"
     },
@@ -560,10 +492,6 @@
     {
       "file": "task_contract.py",
       "source": "src/task_contract.py"
-    },
-    {
-      "file": "task_contract_ui.py",
-      "source": "src/task_contract_ui.py"
     },
     {
       "file": "context_alignment.py",
@@ -590,36 +518,12 @@
       "source": "src/style_pitch.py"
     },
     {
-      "file": "ui_input.py",
-      "source": "src/ui_input.py"
-    },
-    {
       "file": "tuning_engine.py",
       "source": "src/tuning_engine.py"
     },
     {
       "file": "tuning_workflow.py",
       "source": "src/tuning_workflow.py"
-    },
-    {
-      "file": "tuning_ui.py",
-      "source": "src/tuning_ui.py"
-    },
-    {
-      "file": "ui_components.py",
-      "source": "src/ui_components.py"
-    },
-    {
-      "file": "ui_materials.py",
-      "source": "src/ui_materials.py"
-    },
-    {
-      "file": "ui_preferences.py",
-      "source": "src/ui_preferences.py"
-    },
-    {
-      "file": "media_preview.py",
-      "source": "src/media_preview.py"
     },
     {
       "file": "assets/headphone-character.png",
@@ -632,10 +536,6 @@
     {
       "file": "i18n.py",
       "source": "src/i18n.py"
-    },
-    {
-      "file": "strength_control.py",
-      "source": "src/strength_control.py"
     },
     {
       "file": "assets/i18n/en.json",
@@ -826,22 +726,6 @@
       "source": "src/audio_mixdown.py"
     },
     {
-      "file": "audio_mixdown_ui.py",
-      "source": "src/audio_mixdown_ui.py"
-    },
-    {
-      "file": "mixdown_control_panel.py",
-      "source": "src/mixdown_control_panel.py"
-    },
-    {
-      "file": "mixdown_eq_curve.py",
-      "source": "src/mixdown_eq_curve.py"
-    },
-    {
-      "file": "mixdown_live_meters.py",
-      "source": "src/mixdown_live_meters.py"
-    },
-    {
       "file": "mixdown_presets.py",
       "source": "src/mixdown_presets.py"
     },
@@ -888,10 +772,6 @@
     {
       "file": "preset_library.py",
       "source": "src/preset_library.py"
-    },
-    {
-      "file": "preset_library_ui.py",
-      "source": "src/preset_library_ui.py"
     },
     {
       "file": "preset_cli.py",
@@ -958,10 +838,6 @@
       "source": "src/mixdown_preset_documents.py"
     },
     {
-      "file": "mixdown_preset_ui.py",
-      "source": "src/mixdown_preset_ui.py"
-    },
-    {
       "file": "mixdown_native_output.py",
       "source": "src/mixdown_native_output.py"
     },
@@ -988,10 +864,6 @@
     {
       "file": "mixdown_realtime_service.py",
       "source": "src/mixdown_realtime_service.py"
-    },
-    {
-      "file": "mixdown_realtime_player.py",
-      "source": "src/mixdown_realtime_player.py"
     },
     {
       "file": "src/native/vwa_limiter.c",
@@ -1030,10 +902,6 @@
       "source": "docs/RealtimeAudition.zh-CN.md"
     },
     {
-      "file": "mixdown_workspace.py",
-      "source": "src/mixdown_workspace.py"
-    },
-    {
       "file": "mixdown_transport.py",
       "source": "src/mixdown_transport.py"
     },
@@ -1058,10 +926,6 @@
       "source": "src/mixdown_request.py"
     },
     {
-      "file": "mixdown_widgets.py",
-      "source": "src/mixdown_widgets.py"
-    },
-    {
       "file": "mixdown_preview_controller.py",
       "source": "src/mixdown_preview_controller.py"
     },
@@ -1074,28 +938,12 @@
       "source": "src/tuning_execution.py"
     },
     {
-      "file": "tuning_form_state.py",
-      "source": "src/tuning_form_state.py"
-    },
-    {
-      "file": "tuning_preset_controller.py",
-      "source": "src/tuning_preset_controller.py"
-    },
-    {
       "file": "tuning_preset_documents.py",
       "source": "src/tuning_preset_documents.py"
     },
     {
-      "file": "tuning_preset_ui.py",
-      "source": "src/tuning_preset_ui.py"
-    },
-    {
       "file": "tuning_project_identity.py",
       "source": "src/tuning_project_identity.py"
-    },
-    {
-      "file": "tuning_worker.py",
-      "source": "src/tuning_worker.py"
     },
     {
       "file": "docs/TuningPresets.zh-CN.md",
@@ -1110,16 +958,12 @@
       "source": "src/startup_preferences.py"
     },
     {
-      "file": "update_notice_ui.py",
-      "source": "src/update_notice_ui.py"
-    },
-    {
-      "file": "onboarding_ui.py",
-      "source": "src/onboarding_ui.py"
-    },
-    {
       "file": "docs/StartupExperience.zh-CN.md",
       "source": "docs/StartupExperience.zh-CN.md"
+    },
+    {
+      "file": "Start-Quick.bat",
+      "source": "tools/portable/Start-Quick.bat"
     }
   ]
 }

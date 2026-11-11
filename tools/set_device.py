@@ -19,6 +19,12 @@ if state_path.exists():
         if isinstance(options, dict) and options:
             options.update(separation_device=args.device, midi_device=args.device)
             saved['preset'] = '自定义'
+        quick = state.get('quick_preparation', {})
+        quick_options = quick.get('options', {}) if isinstance(quick, dict) else {}
+        if isinstance(quick, dict) and quick.get('version') == 1 and isinstance(quick_options, dict):
+            quick_options.update(separation_device=args.device, midi_device=args.device)
+            quick['options'] = quick_options
+        if isinstance(state, dict):
             temp = state_path.with_suffix('.json.tmp')
             temp.write_text(json.dumps(state, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
             temp.replace(state_path)

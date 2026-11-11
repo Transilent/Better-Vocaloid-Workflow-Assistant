@@ -5,7 +5,11 @@ from pathlib import Path
 
 def verify(root):
     root = Path(root).resolve()
-    catalog = json.loads((root / 'packaging/source-files.json').read_text(encoding='utf-8'))['files']
+    manifest = json.loads((root / 'packaging/source-files.json').read_text(encoding='utf-8'))
+    catalog = manifest['files']
+    retired = manifest.get('retired_generated', ())
+    if any((root / name).exists() for name in retired):
+        raise ValueError('A generated Widgets file remains in the development layout; run tools/Prepare-Source.ps1.')
     if len(catalog) != len(set(catalog)):
         raise ValueError('packaging/source-files.json contains duplicate paths')
     catalogued_sources = {name for name in catalog

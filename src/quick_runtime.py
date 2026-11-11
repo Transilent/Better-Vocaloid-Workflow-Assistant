@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 import sys
 from types import ModuleType
@@ -11,6 +12,26 @@ from typing import Any
 
 QT6_VERSION = "6.10.3"
 DEFAULT_RUNTIME = Path("runtime/qt6")
+_QT5_PREFIX = 'dependencies/vocal2midi/python/lib/site-packages/'
+_QT5_PACKAGES = ('pyqt5', 'pyqt_fluent_widgets-', 'qfluentwidgets', 'qframelesswindow', 'darkdetect')
+
+
+def legacy_widget_runtime_file(name: str) -> bool:
+    """The frozen inference manifest may still describe a published Qt 5 payload."""
+    name = name.casefold()
+    return name.startswith(_QT5_PREFIX) and name[len(_QT5_PREFIX):].split('/', 1)[0].startswith(_QT5_PACKAGES)
+
+
+def installed_for_program_update(root) -> bool:
+    """Only a canonical, installed Quick launcher can restart into an update."""
+    root = Path(root)
+    try:
+        version = json.loads((root / 'version.json').read_text(encoding='utf-8-sig'))
+        return (version.get('desktop_frontend') == 'quick' and version.get('qt_version') == QT6_VERSION
+                and (root / 'VWA.exe').is_file()
+                and (root / DEFAULT_RUNTIME / 'PySide6/plugins/platforms/qwindows.dll').is_file())
+    except (OSError, ValueError, AttributeError):
+        return False
 
 # These modules form the Quick host baseline. Keep the list limited to imports
 # used by the application host so a trimmed runtime still fails for a concrete
@@ -156,11 +177,11 @@ def configure_quick_runtime(root, override=None, *, software: bool = False) -> P
 
 
 def acquire_application_lock(root):
-    """Acquire the legacy updater locks through the configured Qt 6 runtime.
+    """Acquire the two released instance lock names through the Qt 6 runtime.
 
     The file names, stale-lock policy and rollback remain owned by
     ``tools.update_apply.application_lock``. Only the QLockFile implementation
-    is injected so a Quick host coordinates with the existing Qt 5 updater.
+    is injected; the standalone transaction helper needs no GUI library.
     """
 
     from PySide6.QtCore import QLockFile

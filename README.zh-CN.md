@@ -10,7 +10,7 @@ VWA 是面向 Windows 的歌声合成工作流助手，提供歌曲准备、SVP 
 
 [问题反馈与建议](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues/new/choose) · [Issue 与 PR 贡献规范](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/blob/main/CONTRIBUTING.zh-CN.md)
 
-当前开发版提供可跳过的首次使用教程，以及包含更新说明和延后选项的启动更新提醒；设置中也可复制群号。详见[启动提醒与教程说明](docs/StartupExperience.zh-CN.md)。源码改动与已发布的 1.1.0 安装包分开。
+当前开发源码采用 Qt 6 和 Qt Quick，提供可跳过的首次使用教程和可延后的启动更新提醒；设置中可复制群号。详见[启动提醒与教程说明](docs/StartupExperience.zh-CN.md)。已发布的 1.1.0 安装包未变。
 
 ## 功能
 
@@ -94,7 +94,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Merge-PortableParts.ps1
 | [FFmpeg](https://ffmpeg.org/)／[Jellyfin FFmpeg](https://github.com/jellyfin/jellyfin-ffmpeg) | 音视频处理。 |
 | [Playwright for Python](https://github.com/microsoft/playwright-python) | 浏览器登录与上传辅助。 |
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime)／[PyTorch](https://pytorch.org/) | 模型运行。 |
-| [PyQt](https://www.riverbankcomputing.com/software/pyqt/) | 桌面界面。 |
+| Qt Quick 和 PySide6 | 当前开发版的桌面界面。 |
 | [NumPy](https://numpy.org/)、[SciPy](https://scipy.org/)、[librosa](https://librosa.org/)、[SoundFile](https://github.com/bastibe/python-soundfile)、[Mido](https://github.com/mido/mido)、[Pillow](https://python-pillow.org/) | 数值、音频、MIDI 与图像处理。 |
 
 所集成的 Vocal2Midi 流程还使用 [GAME](https://github.com/openvpi/GAME)、[HubertFA](https://github.com/wolfgitpr/HubertFA)、[LyricFA](https://github.com/wolfgitpr/LyricFA)、[RomajiASR](https://github.com/Xiantaidu/RomajiASR)、[llama.cpp](https://github.com/ggml-org/llama.cpp) 及相关语音和音高模型，更多致谢见保留的[上游说明](dependencies/vocal2midi2/ACKNOWLEDGEMENTS.md)。

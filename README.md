@@ -10,7 +10,7 @@ VWA is a Windows desktop assistant for preparing singing-synthesis projects, tun
 
 [Feedback and suggestions](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues/new/choose) · [Contribution guide](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/blob/main/CONTRIBUTING.md)
 
-Current development builds include a skippable first-run tour and startup update notices with release notes and snooze choices. The QQ group is also available in Settings. See the [startup guide (Chinese)](docs/StartupExperience.zh-CN.md). These source changes are separate from the published 1.1.0 packages.
+The development source uses Qt 6 and Qt Quick. It includes a skippable first-run tour and startup update notices with release notes and snooze choices. The QQ group is also available in Settings. See the [startup guide (Chinese)](docs/StartupExperience.zh-CN.md). The published 1.1.0 packages are unchanged.
 
 ## Features
 
@@ -94,7 +94,7 @@ Thanks to the authors and contributors of the following projects.
 | [FFmpeg](https://ffmpeg.org/) / [Jellyfin FFmpeg](https://github.com/jellyfin/jellyfin-ffmpeg) | Audio/video processing. |
 | [Playwright for Python](https://github.com/microsoft/playwright-python) | Browser sign-in and upload assistance. |
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime) / [PyTorch](https://pytorch.org/) | Model execution. |
-| [PyQt](https://www.riverbankcomputing.com/software/pyqt/) | Desktop interface. |
+| Qt Quick and PySide6 | Development desktop interface. |
 | [NumPy](https://numpy.org/), [SciPy](https://scipy.org/), [librosa](https://librosa.org/), [SoundFile](https://github.com/bastibe/python-soundfile), [Mido](https://github.com/mido/mido), [Pillow](https://python-pillow.org/) | Numeric, audio, MIDI and image processing. |
 
 The integrated Vocal2Midi pipeline also uses [GAME](https://github.com/openvpi/GAME), [HubertFA](https://github.com/wolfgitpr/HubertFA), [LyricFA](https://github.com/wolfgitpr/LyricFA), [RomajiASR](https://github.com/Xiantaidu/RomajiASR), [llama.cpp](https://github.com/ggml-org/llama.cpp) and its associated speech and pitch models. See the preserved [upstream acknowledgements](dependencies/vocal2midi2/ACKNOWLEDGEMENTS.md) for further credits.

@@ -10,7 +10,7 @@ VWA は、楽曲の準備、SVP の調声、動画合成、投稿用資料の作
 
 [不具合・機能提案・使い方の質問](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues/new/choose) · [貢献ガイド（English）](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/blob/main/CONTRIBUTING.md)
 
-現在の開発版には、スキップ可能な初回ガイドと、更新内容・再通知時期を選べる起動時の更新通知があります。設定からも QQ グループ番号をコピーできます。[起動ガイド（中国語）](docs/StartupExperience.zh-CN.md)をご覧ください。これらのソース変更は公開済み 1.1.0 パッケージとは別です。
+現在の開発版では Qt 6 と Qt Quick を使用しています。スキップできる初回ガイドと、再通知を延期できる起動時の更新通知があります。設定から QQ グループ番号をコピーできます。詳しくは[起動ガイド（中国語）](docs/StartupExperience.zh-CN.md)をご覧ください。公開済みの 1.1.0 パッケージに変更はありません。
 
 ## 主な機能
 
@@ -94,7 +94,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Merge-PortableParts.ps1
 | [FFmpeg](https://ffmpeg.org/)／[Jellyfin FFmpeg](https://github.com/jellyfin/jellyfin-ffmpeg) | 音声・動画処理。 |
 | [Playwright for Python](https://github.com/microsoft/playwright-python) | ブラウザーでのログインとアップロード支援。 |
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime)／[PyTorch](https://pytorch.org/) | モデルの実行。 |
-| [PyQt](https://www.riverbankcomputing.com/software/pyqt/) | デスクトップ UI。 |
+| Qt Quick と PySide6 | 開発版のデスクトップ UI。 |
 | [NumPy](https://numpy.org/)、[SciPy](https://scipy.org/)、[librosa](https://librosa.org/)、[SoundFile](https://github.com/bastibe/python-soundfile)、[Mido](https://github.com/mido/mido)、[Pillow](https://python-pillow.org/) | 数値、音声、MIDI、画像の処理。 |
 
 組み込まれた Vocal2Midi の処理には、[GAME](https://github.com/openvpi/GAME)、[HubertFA](https://github.com/wolfgitpr/HubertFA)、[LyricFA](https://github.com/wolfgitpr/LyricFA)、[RomajiASR](https://github.com/Xiantaidu/RomajiASR)、[llama.cpp](https://github.com/ggml-org/llama.cpp)、関連する音声・ピッチモデルも使用されています。その他のクレジットは、同梱の[上流プロジェクトの謝辞](dependencies/vocal2midi2/ACKNOWLEDGEMENTS.md)をご覧ください。

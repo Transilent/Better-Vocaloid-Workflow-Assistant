@@ -16,73 +16,79 @@ sys.path.insert(0, str(APP / 'tools'))
 from verify_source_layout import verify as verify_source_layout
 verify_source_layout(APP)
 runtime = Path(sys.executable).parent
-qt = runtime / 'Lib/site-packages/PyQt5/Qt5'
-env = dict(os.environ, PYTHONUTF8='1', PYTHONDONTWRITEBYTECODE='1', PYTHONNOUSERSITE='1', QT_QPA_PLATFORM='offscreen', VWA_TESTING='1', BVWA_TESTING='1',
-           NUMBA_CACHE_DIR=str(APP / 'work/test-numba-cache'),
-           QT_PLUGIN_PATH=str(qt / 'plugins'), QT_QPA_PLATFORM_PLUGIN_PATH=str(qt / 'plugins/platforms'))
-env['PATH'] = os.pathsep.join([str(runtime), str(runtime / 'DLLs'), str(qt / 'bin'), str(Path(os.environ['WINDIR']) / 'System32')])
+env = dict(os.environ, PYTHONUTF8='1', PYTHONDONTWRITEBYTECODE='1', PYTHONNOUSERSITE='1',
+           QT_QPA_PLATFORM='offscreen', VWA_TESTING='1', BVWA_TESTING='1',
+           NUMBA_CACHE_DIR=str(APP / 'work/test-numba-cache'))
+env['PATH'] = os.pathsep.join([str(runtime), str(runtime / 'DLLs'), str(Path(os.environ['WINDIR']) / 'System32')])
+for key in ('QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH', 'QML2_IMPORT_PATH', 'QML_IMPORT_PATH'):
+    env.pop(key, None)
+env.setdefault('QT_QPA_FONTDIR', str(Path(os.environ['WINDIR']) / 'Fonts'))
+env.setdefault('VWA_TEST_QT6_ROOT', str(APP / 'runtime/qt6'))
 folder = APP / 'work/test-results'
 folder.mkdir(parents=True, exist_ok=True)
 reports = {}
 selected=set(os.environ.get('BVWA_TEST_SELECTION','').split(','))-{''}
-names_v110 = ('test_v110_update_source_gate.py', 'test_v110_update_build.py')
-names = ('test_update_bridge.py', 'test_update_catalog.py', 'test_test_isolation.py', 'test_review_fixes.py', 'test_update_compatibility.py', 'test_runtime_upgrade.py','test_process_recovery.py','test_dependency_profiles.py','test_cache_integrity.py','test_parallel_download.py','test_slicing_bounds.py','test_v2_backend.py','test_lyrics_sources.py','test_project_exports.py','test_vocal_expression.py','test_vocal_timbre.py','test_pitch_accuracy.py','test_transcription_quality.py','test_processing_steps.py','test_reference_modes.py','test_core.py', 'test_bilibili_network.py', 'test_japanese_midi.py', 'test_chinese_lyrics.py', 'test_updates.py', 'test_auto_restart.py', 'test_gui.py', 'test_workspace_ui.py', 'test_components.py', 'test_publication_workspace.py', 'test_publication_steps.py', 'test_local_music.py', 'test_output_directory.py', 'test_workflow_features.py', 'test_subtitles.py', 'test_publish_browser.py', 'test_publish_adapters.py', 'test_bilibili_dual_cover.py', 'test_launchers.py', 'test_bootstrap.py', 'test_source_layout.py')
-names = ('test_mixdown_full_sample_acceptance.py','test_mixdown_catalog.py','test_mixdown_eq_curve.py','test_mixdown_control_panel.py','test_mixdown_live_meter_widgets.py','test_audio_mixdown_round2_acceptance.py','test_mixdown_theme.py','test_audio_mixdown_ui.py','test_audio_mixdown.py','test_reproducible_fixes.py','test_manual_bpm.py','test_note_benchmark.py','test_reference_audio.py','test_reference_corpus.py','test_vocal_partition.py','test_storage_management.py',) + names
-# Whole simple-mixdown architecture contracts.
-names = ('test_mixdown_export.py', 'test_mixdown_request.py', 'test_mixdown_widgets.py', 'test_mixdown_preview_controller.py') + names
-names = ('test_project_memory.py',) + names
-names = ('test_mixdown_seek.py',) + names
-names = ('test_mixdown_workspace.py',) + names
-names = ('test_mixdown_limiter.py', 'test_mixdown_realtime_graph.py', 'test_mixdown_realtime_service.py', 'test_mixdown_realtime_player.py', 'test_mixdown_realtime_ui.py') + names
-names = ('test_mixdown_native_output.py', 'test_mixdown_realtime_renderer.py', 'test_mixdown_realtime_session.py') + names
-names = ('test_bilibili_login.py',) + names
-names = ('test_expression_density.py', 'test_calibration_workflow.py', 'test_calibration_detail.py', 'test_calibration_refinement.py', 'test_calibration_channels.py', 'test_calibration_session.py', 'test_optional_flows.py', 'test_expression_calibration.py', 'test_module_audit.py', 'test_video_mixdown.py') + names
-names = ('test_task_contract.py', 'test_task_contract_ui.py') + names
-names = ('test_context_evidence.py', 'test_context_plan.py', 'test_context_workflow.py') + names
-names = ('test_context_structure.py', 'test_gesture_catalog.py', 'test_context_semantics.py', 'test_context_planner.py', 'test_context_proposal.py') + names
-names = ('test_ui_input.py','test_style_pitch.py','test_style_presets.py', 'test_context_alignment.py', 'test_context_adapter.py', 'test_context_reading.py', 'test_context_project.py') + names
-names = ('test_tuning_transforms.py','test_tuning_engine.py','test_tuning_workflow.py','test_tuning_ui.py','test_tuning_retention.py','test_tuning_curves.py') + names
-# Audit repair regression contracts.
-names = ('test_expression_controls.py', 'test_style_catalog.py', 'test_agent_style_schema.py', 'test_component_health.py') + names
-names = ('test_component_operations.py', 'test_workspace_controller.py', 'test_workspace_routes.py') + names
-names = ('test_preparation_commands.py', 'test_quick_results.py') + names
-names = ('test_mixdown_realtime_core.py', 'test_quick_mixdown_state.py', 'test_tuning_timeline.py') + names
-qt6_tests = ('test_quick_video.py', 'test_quick_publication.py', 'test_quick_mixdown_state.py',
-             'test_quick_tuning_capabilities.py', 'test_quick_workspace_capabilities.py',
-             'test_quick_publication_platform_handoffs_20261111.py',
-             'test_quick_publication_controls.py',
-             'test_quick_calibration_subtitle_recovery.py', 'test_quick_support_parity.py',
-             'test_quick_task_safety.py', 'test_quick_tuning_session_parity_20261111.py')
-names = ('test_quick_video.py', 'test_quick_publication.py', 'test_quick_tuning_capabilities.py',
-         'test_quick_workspace_capabilities.py', 'test_quick_results_external_bindings.py',
-         'test_quick_publication_platform_handoffs_20261111.py', 'test_quick_media_handoff.py') + names
-names = ('test_quick_publication_controls.py',) + names
-names = ('test_preparation_presets.py', 'test_quick_calibration_subtitle_recovery.py',
-         'test_quick_support_parity.py', 'test_quick_task_safety.py', 'test_quick_tuning_session_parity_20261111.py') + names
-names = ('test_runner_contract.py', 'test_pipeline_safety_fixes.py', 'test_tuning_audit_fixes.py') + names
-names = ('test_commit_recovery.py', 'test_component_recovery.py', 'test_delivery_integrity.py', 'test_operation_interlocks.py', 'test_tuning_ui_state.py') + names
-# VWA frontend regression contracts.
-names = ('test_frontend_auxiliary.py', 'test_frontend_foundation.py', 'test_frontend_interlocks.py', 'test_frontend_layout.py', 'test_frontend_preparation.py', 'test_frontend_publication.py', 'test_frontend_tuning.py', 'test_video_preview.py') + names
-names = ('test_tuning_input_picker.py','test_tuning_loaded_layout.py','test_frontend_art.py','test_frontend_responsive.py',) + names
-names = ('test_task_picker_integration.py','test_calibration_task_picker.py','test_tuning_progress.py',) + names
-names = ('test_i18n.py', 'test_strength_control.py', 'test_download_sources.py', 'test_chinese_model_install.py') + names
-names = ('test_portable_variants.py',) + names
-names = ('test_name_migration.py',) + names
-# Optional local Agent/MCP boundary contracts.
-names = ('test_agent_mcp_standard_routing.py', 'test_agent_mcp_standard_read.py', 'test_agent_mcp_standard_assets.py', 'test_agent_mcp_standard_decide.py', 'test_agent_mcp_standard_flow.py', 'test_agent_mcp_standard_integration.py',) + names
-names = ('test_agent_control.py', 'test_agent_score.py', 'test_agent_style.py', 'test_agent_mcp.py') + names
-names = ('test_agent_preparation.py', 'test_agent_lyrics.py', 'test_agent_exports.py', 'test_agent_workflow.py') + names
-names = ('test_agent_supervision.py', 'test_agent_export_audit.py', 'test_agent_reference.py', 'test_agent_structure.py') + names
-names = ('test_style_drafts.py', 'test_agent_drafts.py', 'test_agent_pronunciation.py', 'test_agent_refinement.py', 'test_tuning_shared_drafts.py') + names
-names = ('test_agent_workflow_dry_run_mcp.py', 'test_agent_lyric_reconcile.py', 'test_agent_lyric_timeline.py', 'test_agent_timeline_integration.py') + names
-names = ('test_agent_monophony.py', 'test_agent_media.py', 'test_agent_views.py', 'test_agent_delivery.py', 'test_agent_song_feedback.py', 'test_agent_segments.py', 'test_agent_segment_workflow.py') + names
-names = ('test_agent_pitch.py', 'test_agent_separation_repair.py', 'test_agent_signal_workflow.py') + names
-names = ('test_preset_documents.py', 'test_preset_library.py', 'test_preset_library_ui.py', 'test_preset_cli.py') + names
-names = ('test_mixdown_preset_documents.py', 'test_mixdown_preset_ui.py', 'test_mixdown_preset_integration.py') + names
-names = ('test_mixdown_live_meters.py',) + names_v110 + names
-# Tuning preset and local project binding contracts.
-names = ('test_tuning_preset_integration.py', 'test_tuning_preset_documents.py', 'test_tuning_preset_ui.py', 'test_tuning_preset_workflow.py', 'test_tuning_project_identity.py') + names
-names = ('test_startup_preferences.py', 'test_update_notice_ui.py', 'test_onboarding_ui.py', 'test_startup_experience.py') + names
+# Qt 6 tests all enter through the same verified bootstrap module.
+qt6_tests = (
+    'test_quick_desktop.py', 'test_process_recovery.py',
+    'test_quick_video.py', 'test_quick_publication.py', 'test_quick_mixdown_state.py',
+    'test_quick_tuning_capabilities.py', 'test_quick_workspace_capabilities.py',
+    'test_quick_publication_platform_handoffs_20261111.py', 'test_quick_publication_controls.py',
+    'test_quick_calibration_subtitle_recovery.py', 'test_quick_support_parity.py',
+    'test_quick_task_safety.py', 'test_quick_tuning_session_parity_20261111.py',
+)
+
+# Shared/backend tests and Quick controller tests that do not need Qt 6.
+shared_tests = (
+    'test_calibration_channels.py', 'test_calibration_session.py', 'test_calibration_workflow.py',
+    'test_optional_flows.py',
+    'test_startup_preferences.py', 'test_tuning_preset_documents.py', 'test_tuning_preset_workflow.py',
+    'test_tuning_project_identity.py', 'test_mixdown_eq_math.py', 'test_mixdown_preset_documents.py',
+    'test_preset_documents.py', 'test_preset_library.py', 'test_preset_cli.py', 'test_agent_pitch.py',
+    'test_agent_separation_repair.py', 'test_agent_signal_workflow.py', 'test_agent_monophony.py',
+    'test_agent_media.py', 'test_agent_views.py', 'test_agent_delivery.py', 'test_agent_song_feedback.py',
+    'test_agent_segments.py', 'test_agent_segment_workflow.py', 'test_agent_workflow_dry_run_mcp.py',
+    'test_agent_lyric_reconcile.py', 'test_agent_lyric_timeline.py', 'test_agent_timeline_integration.py',
+    'test_style_drafts.py', 'test_agent_drafts.py', 'test_agent_pronunciation.py',
+    'test_agent_refinement.py', 'test_agent_supervision.py', 'test_agent_export_audit.py',
+    'test_agent_reference.py', 'test_agent_structure.py', 'test_agent_preparation.py',
+    'test_agent_lyrics.py', 'test_agent_exports.py', 'test_agent_workflow.py', 'test_agent_control.py',
+    'test_agent_score.py', 'test_agent_style.py', 'test_agent_mcp.py', 'test_agent_mcp_standard_routing.py',
+    'test_agent_mcp_standard_read.py', 'test_agent_mcp_standard_assets.py',
+    'test_agent_mcp_standard_decide.py', 'test_agent_mcp_standard_flow.py',
+    'test_agent_mcp_standard_integration.py', 'test_i18n.py', 'test_download_sources.py',
+    'test_chinese_model_install.py', 'test_commit_recovery.py', 'test_component_recovery.py',
+    'test_runner_contract.py', 'test_pipeline_safety_fixes.py', 'test_tuning_audit_fixes.py',
+    'test_preparation_presets.py', 'test_quick_results_external_bindings.py', 'test_quick_media_handoff.py',
+    'test_mixdown_realtime_core.py', 'test_tuning_timeline.py', 'test_preparation_commands.py',
+    'test_quick_results.py', 'test_component_operations.py', 'test_workspace_controller.py',
+    'test_workspace_routes.py', 'test_expression_controls.py', 'test_style_catalog.py',
+    'test_agent_style_schema.py', 'test_component_health.py', 'test_tuning_transforms.py',
+    'test_tuning_engine.py', 'test_tuning_workflow.py', 'test_tuning_retention.py', 'test_tuning_curves.py',
+    'test_style_pitch.py', 'test_style_presets.py', 'test_context_alignment.py', 'test_context_adapter.py',
+    'test_context_reading.py', 'test_context_project.py', 'test_context_structure.py',
+    'test_gesture_catalog.py', 'test_context_semantics.py', 'test_context_planner.py',
+    'test_context_proposal.py', 'test_context_evidence.py', 'test_context_plan.py',
+    'test_context_workflow.py', 'test_task_contract.py', 'test_expression_density.py',
+    'test_calibration_detail.py', 'test_calibration_refinement.py', 'test_expression_calibration.py',
+    'test_video_mixdown.py', 'test_bilibili_login.py', 'test_mixdown_native_output.py',
+    'test_mixdown_realtime_renderer.py', 'test_mixdown_realtime_session.py', 'test_mixdown_limiter.py',
+    'test_mixdown_realtime_graph.py', 'test_mixdown_realtime_service.py', 'test_project_memory.py',
+    'test_mixdown_export.py', 'test_mixdown_request.py', 'test_mixdown_preview_controller.py',
+    'test_mixdown_full_sample_acceptance.py', 'test_mixdown_catalog.py', 'test_audio_mixdown.py',
+    'test_reproducible_fixes.py', 'test_manual_bpm.py', 'test_note_benchmark.py', 'test_reference_audio.py',
+    'test_reference_corpus.py', 'test_vocal_partition.py', 'test_test_isolation.py',
+    'test_dependency_profiles.py', 'test_cache_integrity.py',
+    'test_parallel_download.py', 'test_slicing_bounds.py', 'test_v2_backend.py', 'test_lyrics_sources.py',
+    'test_project_exports.py', 'test_vocal_expression.py', 'test_vocal_timbre.py', 'test_pitch_accuracy.py',
+    'test_transcription_quality.py', 'test_core.py', 'test_bilibili_network.py', 'test_japanese_midi.py',
+    'test_chinese_lyrics.py', 'test_components.py', 'test_local_music.py', 'test_output_directory.py',
+    'test_subtitles.py', 'test_publish_browser.py', 'test_publish_adapters.py',
+    'test_bilibili_dual_cover.py', 'test_launchers.py', 'test_source_layout.py',
+)
+
+names = qt6_tests + shared_tests
+
 if selected - set(names):
     raise ValueError('Unknown selected tests: ' + ', '.join(sorted(selected - set(names))))
 print('Preparing isolated application; installed user state will not be changed.', flush=True)
@@ -97,13 +103,9 @@ with application_copy(APP, APP / 'work/test-sandboxes') as sandbox:
                             NUMBA_CACHE_DIR=native_path(sandbox / 'cache/numba'))
             test_file = str(sandbox / 'tests' / name)
             command = [sys.executable, '-B', '-u', test_file]
-            if name in qt6_tests and test_env.get('VWA_TEST_QT6_ROOT'):
+            if name in qt6_tests:
                 # Each Qt 6 test gets its own process, with an explicit verified runtime.
-                bootstrap = ('import os,runpy,sys; sys.path.insert(0,os.getcwd()); '
-                             'from quick_runtime import configure_quick_runtime; '
-                             'configure_quick_runtime(os.getcwd(),os.environ["VWA_TEST_QT6_ROOT"],software=True); '
-                             'runpy.run_path(sys.argv.pop(1),run_name="__main__")')
-                command = [sys.executable, '-B', '-u', '-c', bootstrap, test_file]
+                command = [sys.executable, '-B', '-u', str(sandbox / 'tests/qt6_bootstrap.py'), test_file]
             result = run_bounded_process(command,
                                          cwd=sandbox, env=test_env, timeout=180)
             output = result.stdout + result.stderr
