@@ -55,6 +55,8 @@ dependencies/vocal2midi/experiments/
 
 # Generated development layout; canonical sources are in src/ and packaging/.
 /*.py
+/quick_ui/
+/runtime/qt6/
 /config.json
 /source-files.json
 /portable-files.json

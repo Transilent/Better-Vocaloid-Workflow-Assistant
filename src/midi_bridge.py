@@ -1,6 +1,7 @@
 """Call the bundled Vocal2Midi application layer with portable runtime paths."""
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -11,6 +12,105 @@ if hasattr(sys.stdout, "reconfigure"):
 from common import atomic_json, cancelled, clean_lyrics, midi_signature, file_hash, resolve_tools, app_path, preserve_changed_file
 from midi_checks import inspect_midi
 from v2m_runtime import configure
+
+_QSETTINGS_SIMPLE_ESCAPES = {
+    "a": "\a", "b": "\b", "f": "\f", "n": "\n", "r": "\r",
+    "t": "\t", "v": "\v", "\\": "\\", '"': '"',
+}
+
+
+def _decode_qsettings_value(raw):
+    """Decode one scalar value as written by QSettings IniFormat."""
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] == '"':
+        raw = raw[1:-1]
+    if raw.startswith("@@"):
+        raw = raw[1:]
+    result = []
+    index = 0
+    while index < len(raw):
+        if raw[index] != "\\" or index + 1 >= len(raw):
+            result.append(raw[index])
+            index += 1
+            continue
+        marker = raw[index + 1]
+        if marker == "x" and re.fullmatch(r"[0-9a-fA-F]{4}", raw[index + 2:index + 6]):
+            code = int(raw[index + 2:index + 6], 16)
+            index += 6
+            if (0xD800 <= code <= 0xDBFF
+                    and raw[index:index + 2] == "\\x"
+                    and re.fullmatch(r"[0-9a-fA-F]{4}", raw[index + 2:index + 6])):
+                low = int(raw[index + 2:index + 6], 16)
+                if 0xDC00 <= low <= 0xDFFF:
+                    code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
+                    index += 6
+            result.append(chr(code))
+            continue
+        if marker in _QSETTINGS_SIMPLE_ESCAPES:
+            result.append(_QSETTINGS_SIMPLE_ESCAPES[marker])
+            index += 2
+            continue
+        # Preserve an unknown escape instead of silently deleting data.
+        result.append("\\" + marker)
+        index += 2
+    return "".join(result)
+
+
+def _read_qsettings_ini(path):
+    """Read the top-level [General] scalar keys consumed by this bridge."""
+    path = Path(path)
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return {}
+    values = {}
+    section = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith((";", "#")):
+            continue
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1]
+            continue
+        if section not in (None, "General") or "=" not in line:
+            continue
+        key, raw = line.split("=", 1)
+        key = key.strip()
+        if key:
+            values[key] = raw.strip()
+    return values
+
+
+def _qsettings_typed_value(values, key, default):
+    raw = values.get(key)
+    if raw is None:
+        return default
+    text = _decode_qsettings_value(raw)
+    expected = type(default)
+    if expected is str:
+        return text
+    if "," in text:
+        raise ValueError(
+            f"Vocal2Midi setting {key!r} uses a QSettings list; this bridge accepts scalars only"
+        )
+    if expected is bool:
+        lowered = text.strip().lower()
+        if lowered in ("true", "yes", "on", "1"):
+            return True
+        if lowered in ("false", "no", "off", "0"):
+            return False
+        try:
+            return int(lowered, 10) != 0
+        except ValueError as error:
+            raise ValueError(f"Vocal2Midi setting {key!r} is not a boolean: {text!r}") from error
+    if expected in (int, float):
+        try:
+            return expected(text.strip())
+        except ValueError as error:
+            raise ValueError(
+                f"Vocal2Midi setting {key!r} is not a valid {expected.__name__}: {text!r}"
+            ) from error
+    raise TypeError(f"Unsupported Vocal2Midi setting type for {key!r}: {expected.__name__}")
 
 
 def lead_check_context(job, request):
@@ -61,16 +161,15 @@ def run(job, voice="vocals", asr_session=None):
                                          str(root / "inference/qwen3asr_dml/bin"), os.environ.get("PATH", "")])
     from application.config import PipelineConfig
     from application.pipeline import run_auto_lyric_job
-    # Load ONNX before Qt: these portable builds ship conflicting native
-    # dependencies when Qt initializes first.
-    from PyQt5.QtCore import QSettings
     import mido
 
-    settings = QSettings(str(root / "settings/vocal2midi.ini"), QSettings.IniFormat)
-    settings.setFallbacksEnabled(False)
+    # QSettings fallbacks were disabled. This reader keeps that boundary while
+    # avoiding a Qt binding import in the native worker; it accepts the scalar
+    # types used by this bridge and rejects unsupported QSettings collections.
+    settings = _read_qsettings_ini(root / "settings/vocal2midi.ini")
 
     def value(key, default):
-        return settings.value(key, default, type=type(default))
+        return _qsettings_typed_value(settings, key, default)
 
     def model(key, default):
         path = Path(value(key, default))

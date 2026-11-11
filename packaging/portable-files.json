@@ -2,6 +2,54 @@
   "format": 1,
   "entries": [
     {
+      "file": "appearance_state.py",
+      "source": "src/appearance_state.py"
+    },
+    {
+      "file": "component_operations.py",
+      "source": "src/component_operations.py"
+    },
+    {
+      "file": "quick_app.py",
+      "source": "src/quick_app.py"
+    },
+    {
+      "file": "quick_bridge.py",
+      "source": "src/quick_bridge.py"
+    },
+    {
+      "file": "quick_runtime.py",
+      "source": "src/quick_runtime.py"
+    },
+    {
+      "file": "quick_window_modes.py",
+      "source": "src/quick_window_modes.py"
+    },
+    {
+      "file": "workspace_controller.py",
+      "source": "src/workspace_controller.py"
+    },
+    {
+      "file": "workspace_routes.py",
+      "source": "src/workspace_routes.py"
+    },
+    {
+      "file": "quick_ui/ComponentsPage.qml",
+      "source": "src/quick_ui/ComponentsPage.qml"
+    },
+    {
+      "file": "quick_ui/Main.qml",
+      "source": "src/quick_ui/Main.qml"
+    },
+    {
+      "file": "quick_ui/PreparationPage.qml",
+      "source": "src/quick_ui/PreparationPage.qml"
+    },
+    {
+      "file": "quick_ui/UiButton.qml",
+      "source": "src/quick_ui/UiButton.qml"
+    },
+    {
       "file": "context_structure.py",
       "source": "src/context_structure.py"
     },

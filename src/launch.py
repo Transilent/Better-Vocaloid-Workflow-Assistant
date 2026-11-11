@@ -12,6 +12,12 @@ sys.dont_write_bytecode = True
 
 
 def main():
+    if "--quick" in sys.argv[1:]:
+        # Dispatch before common/check_dependencies and the legacy Qt 5 paths.
+        # The host owns --check/--smoke-test parsing and Qt 6 initialization.
+        quick_argv = [argument for argument in sys.argv[1:] if argument != "--quick"]
+        from quick_app import main as quick_main
+        return quick_main(quick_argv)
     from common import load_config
     from check_dependencies import validate
     validate()
@@ -53,7 +59,9 @@ if __name__ == "__main__":
             import ctypes
             print('Desktop launcher console attached:', bool(ctypes.windll.kernel32.GetConsoleWindow()), flush=True)
     try:
-        main()
+        result = main()
     except Exception:
         traceback.print_exc()
         sys.exit(1)
+    if result is not None:
+        sys.exit(result)

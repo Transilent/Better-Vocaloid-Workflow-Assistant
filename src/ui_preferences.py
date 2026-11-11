@@ -4,43 +4,7 @@ from common import environment_value
 from i18n import tr as _tr
 import os
 from PyQt5.QtWidgets import QCheckBox, QComboBox, QVBoxLayout, QWidget
-from common import ROOT, atomic_json, workspace_state
-
-
-DEFAULTS = {'ui_scale': 100, 'material': 'glass', 'reduce_motion': False, 'ui_language': 'zh-CN'}
-
-
-def normalize(values):
-    values = values if isinstance(values, dict) else {}
-    result = dict(DEFAULTS)
-    from i18n import normalize_language
-    result['ui_language'] = normalize_language(values.get('ui_language'))
-    if type(values.get('ui_scale')) is int and values['ui_scale'] in (100, 115, 130):
-        result['ui_scale'] = values['ui_scale']
-    if values.get('material') in ('glass', 'solid'):
-        result['material'] = values['material']
-    for key in ('reduce_motion',):
-        if type(values.get(key)) is bool:
-            result[key] = values[key]
-    return result
-
-
-def load_appearance():
-    return normalize(workspace_state().get('appearance', {}))
-
-
-def merge_appearance(state, values):
-    state = dict(state)
-    previous = state.get('appearance')
-    appearance = dict(previous) if isinstance(previous, dict) else {}
-    updates = values if isinstance(values, dict) else {}
-    appearance.update(normalize({**appearance, **updates}))
-    state['appearance'] = appearance
-    return state
-
-
-def save_appearance(values):
-    atomic_json(ROOT/'cache/workspace.json', merge_appearance(workspace_state(), values))
+from appearance_state import DEFAULTS, load_appearance, merge_appearance, normalize, save_appearance
 
 
 class AppearancePanel(QWidget):

@@ -2,7 +2,6 @@
 from i18n import tr as _tr
 import json
 from pathlib import Path
-from dataclasses import dataclass
 from PyQt5.QtCore import QEvent, QObject, QSize, Qt
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import QApplication
@@ -12,39 +11,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLi
 from common import ROOT, app_path, load_config, output_directory, job_directories
 from desktop_theme import apply_theme, button, card, fold, label, page, scroll_content
 from results_ui import ResultsPage
-
-
-@dataclass(frozen=True)
-class PageSpec:
-    """One stack slot plus its stable ID and sidebar projection."""
-
-    page_id: str
-    legacy_index: int
-    title: str
-    sidebar_order: int = None
-    sidebar_gap_before: bool = False
-    english_title: str = None
-    target: str = None
-    focus_step: str = None
-
-
-PAGE_SPECS = (
-    PageSpec(page_id='processing', legacy_index=0, title='准备工作流', sidebar_order=0),
-    PageSpec(page_id='components', legacy_index=1, title='模型与组件', sidebar_order=5,
-             sidebar_gap_before=True, english_title='Models'),
-    PageSpec(page_id='results', legacy_index=2, title='任务与结果', sidebar_order=6,
-             english_title='Tasks and results'),
-    PageSpec(page_id='publishing', legacy_index=3, title='发布', sidebar_order=4),
-    PageSpec(page_id='updates', legacy_index=4, title='设置与更新', sidebar_order=7,
-             english_title='Settings'),
-    PageSpec(page_id='workflow', legacy_index=5, title='工作流', target='processing'),
-    PageSpec(page_id='storage', legacy_index=6, title='缓存与磁盘', target='updates'),
-    PageSpec(page_id='subtitles', legacy_index=7, title='歌词转字幕', target='processing',
-             focus_step='subtitles'),
-    PageSpec(page_id='video_mixdown', legacy_index=8, title='合成视频', sidebar_order=3),
-    PageSpec(page_id='tuning', legacy_index=9, title='调音工作流', sidebar_order=1),
-    PageSpec(page_id='audio_mixdown', legacy_index=10, title='简易混音', sidebar_order=2),
-)
+from workspace_routes import PAGE_SPECS, PageSpec
 
 
 class WorkspaceNavigation:

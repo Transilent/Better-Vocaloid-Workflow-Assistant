@@ -8,29 +8,13 @@ from desktop_theme import button, card, label, page, scroll_content
 from common import load_config
 from ui_components import AdaptiveColumns, choice
 import download_sources
+import component_operations
 import optional_components as components
 
 
 def download_source_options():
-    """Load the shared source catalog with legacy priority modes first."""
-    options = download_sources.SOURCE_OPTIONS
-    if callable(options):
-        options = options()
-    ordered, seen = [], set()
-    for row in options or ():
-        if not isinstance(row, (tuple, list)) or len(row) != 2:
-            continue
-        title, value = row
-        if not isinstance(title, str) or not title or not isinstance(value, str) or value in seen:
-            continue
-        ordered.append((title, value))
-        seen.add(value)
-    by_value = {value: (title, value) for title, value in ordered}
-    result = [by_value[value] for value in ('auto', 'direct', 'mirror') if value in by_value]
-    result.extend(row for row in ordered if row[1] not in {'auto', 'direct', 'mirror'})
-    if not result:
-        raise ValueError('下载来源列表为空。')
-    return result
+    """Load the shared, Qt-free source catalog."""
+    return component_operations.download_source_options()
 
 
 def chinese_button_text(state):
@@ -95,15 +79,16 @@ class Installer(QThread):
 
     def run(self):
         try:
-            if self.runtime == 'chinese':
-                from feature_components import install
-                value = install('chinese', self.progress.emit, self.stop.is_set, source=self.source)
-            elif self.runtime == 'expression':
-                from expression_component import install
-                value = install(self.progress.emit, self.stop.is_set, source=self.source)
-            else:
-                value = components.install(self.runtime, self.progress.emit, self.stop.is_set,
-                                           force=self.force, source=self.source)
+            roformer = self.runtime in ('cpu', 'cuda')
+            component_id = 'roformer' if roformer else self.runtime
+            value = component_operations.install(
+                component_id,
+                runtime=self.runtime if roformer else None,
+                source=self.source,
+                progress=self.progress.emit,
+                check=self.stop.is_set,
+                force=self.force,
+            )
             self.value.emit(value)
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -122,8 +107,8 @@ class Verifier(QThread):
 
     def run(self):
         try:
-            report = components.full_verify(progress=self.progress.emit,
-                                            check=self.stop.is_set)
+            report = component_operations.verify(
+                'roformer', progress=self.progress.emit, check=self.stop.is_set)
             self.value.emit(report)
         except Exception as exc:
             self.failed.emit(str(exc))

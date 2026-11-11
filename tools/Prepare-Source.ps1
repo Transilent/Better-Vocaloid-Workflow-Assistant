@@ -17,6 +17,19 @@ if ($unregistered.Count -or $missing.Count) {
     throw ('Source mapping is incomplete (' + ($details -join '; ') + ').')
 }
 $copies = @()
+$cataloguedQml = @($files | Where-Object { $_ -match '^src/quick_ui/[A-Za-z0-9_]+\.qml$' })
+$qmlDirectory = Join-Path $sourceDirectory 'quick_ui'
+$discoveredQml = @(if (Test-Path -LiteralPath $qmlDirectory -PathType Container) {
+    Get-ChildItem -LiteralPath $qmlDirectory -File -Filter '*.qml' |
+        ForEach-Object { 'src/quick_ui/' + $_.Name }
+})
+if (@($discoveredQml | Where-Object { $cataloguedQml -notcontains $_ }).Count -or
+    @($cataloguedQml | Where-Object { $discoveredQml -notcontains $_ }).Count) {
+    throw 'Quick resource mapping is incomplete.'
+}
+foreach ($name in $cataloguedQml) {
+    $copies += @{ Source = $name; Destination = $name.Substring(4) }
+}
 foreach ($name in $files) {
     if ($name -notmatch '^src/[A-Za-z0-9_]+\.py$') { continue }
     $copies += @{ Source = $name; Destination = [IO.Path]::GetFileName($name) }
@@ -40,6 +53,10 @@ foreach ($copy in $copies) {
     if (!(Test-Path -LiteralPath $copy.Source -PathType Leaf)) { throw 'Source file is missing.' }
 }
 foreach ($copy in $copies) {
+    $parent = Split-Path -Parent $copy.Destination
+    if (!(Test-Path -LiteralPath $parent -PathType Container)) {
+        New-Item -Path $parent -ItemType Directory | Out-Null
+    }
     Copy-Item -LiteralPath $copy.Source -Destination $copy.Destination -Force
 }
 Write-Host ('Prepared {0} development files. Edit application code in src/.' -f $copies.Count)

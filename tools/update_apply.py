@@ -86,6 +86,9 @@ ROOT_FILES.update({
     'tuning_project_identity.py', 'tuning_worker.py', 'docs/TuningPresets.zh-CN.md',
     'support_info.py', 'startup_preferences.py', 'update_notice_ui.py', 'onboarding_ui.py',
     'docs/StartupExperience.zh-CN.md',
+    'appearance_state.py', 'component_operations.py', 'workspace_controller.py', 'workspace_routes.py',
+    'quick_app.py', 'quick_bridge.py', 'quick_runtime.py', 'quick_window_modes.py',
+    'quick_ui/ComponentsPage.qml', 'quick_ui/Main.qml', 'quick_ui/PreparationPage.qml', 'quick_ui/UiButton.qml',
 })
 TOOL_FILES = {'tools/update_apply.py', 'tools/Start-Diagnostics.bat',
               'tools/Check-Dependencies.bat', 'tools/Use-CPU.bat', 'tools/Use-GPU.bat',
@@ -138,14 +141,16 @@ class _ApplicationLock:
             pass
 
 
-def application_lock(root):
+def application_lock(root, *, lock_class=None):
     """Interlock canonical and released launchers without moving a live lock."""
-    from PyQt5.QtCore import QLockFile
+    if lock_class is None:
+        from PyQt5.QtCore import QLockFile
+        lock_class = QLockFile
     folder = Path(root) / 'cache'
     folder.mkdir(parents=True, exist_ok=True)
     held = []
     for name in ('BVWA.lock', 'VWA.lock'):
-        lock = QLockFile(str(folder / name))
+        lock = lock_class(str(folder / name))
         lock.setStaleLockTime(0)
         if not lock.tryLock(0):
             for previous in reversed(held): previous.unlock()
