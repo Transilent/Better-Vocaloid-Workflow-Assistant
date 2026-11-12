@@ -450,6 +450,26 @@ def spectrum_from_telemetry(telemetry: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def ease_spectrum_display(current: dict[str, Any], previous: dict[str, Any],
+                          elapsed: float) -> dict[str, Any]:
+    """Ease only the displayed levels of two contiguous measured FFTs."""
+    if (not 0 < elapsed <= .20 or not previous['freqs']
+            or current['freqs'] != previous['freqs'] or current['source'] != previous['source']):
+        return current
+    # Derive the weights from media time, not UI frame rate. A short rise
+    # keeps new transients visible; a slightly longer fall settles the trace.
+    attack = 1.0 - math.exp(-elapsed / .010)
+    release = 1.0 - math.exp(-elapsed / .060)
+
+    def blend(key: str) -> list[float]:
+        return [
+            round(old + (new - old) * (attack if new > old else release), 4)
+            for new, old in zip(current[key], previous[key])
+        ]
+
+    return {**current, 'before': blend('before'), 'after': blend('after')}
+
+
 def reverb_curve_from_telemetry(telemetry: Mapping[str, Any]) -> list[dict[str, float]]:
     """Return only the measured unit-impulse EDC; never synthesize a room shape."""
     reverb = telemetry.get('reverb') if isinstance(telemetry.get('reverb'), Mapping) else {}

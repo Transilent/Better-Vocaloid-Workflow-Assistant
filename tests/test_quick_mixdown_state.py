@@ -13,6 +13,7 @@ from mixdown_workspace_state import (
     classic_default_bands,
     compression_controls,
     default_bands,
+    ease_spectrum_display,
     empty_gr_history,
     eq_curve,
     meters_from_telemetry,
@@ -216,6 +217,19 @@ class MixdownWorkspaceStateTests(unittest.TestCase):
         telemetry['history_epoch'] = 6
         with self.assertRaisesRegex(ValueError, 'epoch'):
             telemetry_identity(telemetry, snapshot)
+
+    def test_spectrum_display_rises_quickly_and_resets_at_a_gap(self):
+        previous = {'freqs': [200.0, 400.0], 'before': [-70.0, -20.0],
+                    'after': [-70.0, -20.0], 'source': 'resident'}
+        measured = {**previous, 'before': [-20.0, -70.0], 'after': [-18.0, -73.0]}
+        display = ease_spectrum_display(measured, previous, .033)
+        self.assertGreater(display['before'][0], -25.0)
+        self.assertLess(display['before'][0], -20.0)
+        self.assertTrue(-55.0 < display['before'][1] < -32.0)
+        self.assertGreater(display['after'][0], display['before'][0])
+        self.assertEqual(measured['before'], [-20.0, -70.0])
+        self.assertIs(ease_spectrum_display(measured, previous, .40), measured)
+        self.assertIs(ease_spectrum_display(measured, {**previous, 'freqs': [250., 500.]}, .033), measured)
 
     def test_measured_meters_spectrum_and_ir_curve_are_separate(self):
         telemetry = {

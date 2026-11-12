@@ -38,6 +38,7 @@ from mixdown_runtime import (
 from mixdown_workspace_state import (
     GR_HISTORY_BUCKET_MS,
     MixdownWorkspaceState,
+    ease_spectrum_display,
     empty_gr_history,
     eq_curve,
     meters_from_telemetry,
@@ -797,10 +798,13 @@ class QuickMixdown(QObject):
                     self.grHistoryChanged.emit()
         source = data.get('spectrum') or {}
         window_end = source.get('window_end_frame') if isinstance(source, dict) else None
-        window = (epoch, revision, window_end if window_end is not None else frame)
-        if window != self._last_spectrum_window:
+        window = (epoch, window_end if isinstance(window_end, int) else frame)
+        last_window = self._last_spectrum_window
+        if window != last_window:
             spectrum = spectrum_from_telemetry(data)
             if spectrum['freqs']:
+                if last_window and last_window[0] == epoch and isinstance(rate, (int, float)) and rate > 0:
+                    spectrum = ease_spectrum_display(spectrum, self._spectrum, (window[1] - last_window[1]) / rate)
                 self._last_spectrum_window = window
                 self._last_spectrum_at = now
                 if spectrum != self._spectrum:

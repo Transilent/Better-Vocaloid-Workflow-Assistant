@@ -26,8 +26,9 @@ Item {
     property real dragGain: 0
     property bool dragPending: false
     property bool dragEqEnabled: false
-    readonly property color beforeInk: theme.dark === false ? "#007187" : "#62dfed"
-    readonly property color afterInk: theme.dark === false ? "#a84214" : "#ffac6d"
+    readonly property color beforeInk: theme.dark ? "#e7b671" : "#925318"
+    readonly property color afterInk: theme.dark ? "#63d5d9" : "#00747d"
+    readonly property real spectrumFloor: -96
     readonly property var gridTheme: [theme.line, theme.selectedLine, theme.muted, theme.scale]
     readonly property color responseInk: theme.accent
     onGridThemeChanged: schedulePaint(gridCanvas)
@@ -295,10 +296,17 @@ Item {
                 font.pixelSize: Math.round(16 * root.theme.scale)
                 font.weight: Font.DemiBold
             }
-            Rectangle {
-                Layout.preferredWidth: Math.round(14 * root.theme.scale)
-                Layout.preferredHeight: Math.max(2, Math.round(2 * root.theme.scale))
-                color: root.beforeInk
+            Row {
+                spacing: Math.round(2 * root.theme.scale)
+                Repeater {
+                    model: 3
+                    Rectangle {
+                        width: Math.round(4 * root.theme.scale)
+                        height: Math.max(1, Math.round(root.theme.scale))
+                        radius: height / 2
+                        color: root.beforeInk
+                    }
+                }
             }
             Text {
                 text: root.vwaTr("处理前")
@@ -306,9 +314,15 @@ Item {
                 font.pixelSize: Math.round(11 * root.theme.scale)
             }
             Rectangle {
-                Layout.preferredWidth: Math.round(14 * root.theme.scale)
-                Layout.preferredHeight: Math.max(2, Math.round(2 * root.theme.scale))
-                color: root.afterInk
+                Layout.preferredWidth: Math.round(16 * root.theme.scale)
+                Layout.preferredHeight: Math.round(5 * root.theme.scale)
+                color: Qt.rgba(root.afterInk.r, root.afterInk.g, root.afterInk.b, 0.22)
+                Rectangle {
+                    anchors { left: parent.left; right: parent.right; top: parent.top }
+                    height: Math.max(1, Math.round(2 * root.theme.scale))
+                    radius: height / 2
+                    color: root.afterInk
+                }
             }
             Text {
                 text: root.vwaTr("处理后")
@@ -335,7 +349,10 @@ Item {
             Layout.fillHeight: true
             Layout.minimumHeight: root.minimumPlotHeight
             radius: Math.round(9 * root.theme.scale)
-            color: root.theme.base
+            gradient: Gradient {
+                GradientStop { position: 0; color: root.theme.dark ? "#1b1d27" : root.theme.surface }
+                GradientStop { position: 1; color: root.theme.base }
+            }
             border.width: 1
             border.color: activeFocus ? root.theme.accent : root.theme.line
             clip: true
@@ -417,9 +434,9 @@ Item {
                     ctx.textAlign = "left"
                     ctx.fillStyle = root.theme.muted
                     const right = geometry.left + geometry.width + Math.round(7 * scale)
-                    for (let i = 0; i <= 3; ++i)
-                        ctx.fillText(i === 0 ? "0 dBFS" : String(-30 * i),
-                                     right, geometry.top + geometry.height * i / 3)
+                    for (let i = 0; i <= 4; ++i)
+                        ctx.fillText(i === 0 ? "0 dBFS" : String(root.spectrumFloor * i / 4),
+                                     right, geometry.top + geometry.height * i / 4)
                 }
             }
 
@@ -440,12 +457,9 @@ Item {
                     ctx.clearRect(0, 0, width, height)
                     if (!root.hasSpectrum)
                         return
-                    const geometry = {left: 0, top: 0, width: width, height: height}
-                    const scale = root.theme.scale
-                    root.drawSpectrum(ctx, root.spectrum.after, root.spectrum.freqs, geometry,
-                                      root.afterInk, 0.93, Math.max(2, 2 * scale), false)
-                    root.drawSpectrum(ctx, root.spectrum.before, root.spectrum.freqs, geometry,
-                                      root.beforeInk, 0.93, Math.max(1.6, 1.7 * scale), true)
+                    const freqs = root.spectrum.freqs;
+                    root.drawSpectrum(ctx, root.spectrum.after, freqs, width, height, root.afterInk, false);
+                    root.drawSpectrum(ctx, root.spectrum.before, freqs, width, height, root.beforeInk, true);
                 }
             }
 
@@ -465,7 +479,8 @@ Item {
                     const scale = root.theme.scale
                     if (root.eqCurve && root.eqCurve.length > 0) {
                         ctx.beginPath();
-                        let started = false;
+                        let firstX = NaN;
+                        let lastX = NaN;
                         for (let index = 0; index < root.eqCurve.length; ++index) {
                             const point = root.eqCurve[index];
                             if (!point)
@@ -476,18 +491,26 @@ Item {
                                 continue;
                             const x = geometry.left + root.clamp(nx, 0, 1) * geometry.width;
                             const y = root.yForGain(gain, geometry);
-                            if (!started) {
+                            if (!isFinite(firstX)) {
+                                firstX = x;
                                 ctx.moveTo(x, y);
-                                started = true;
                             } else {
                                 ctx.lineTo(x, y);
                             }
+                            lastX = x;
                         }
-                        if (started) {
+                        if (isFinite(firstX) && lastX > firstX) {
                             ctx.strokeStyle = root.responseInk;
                             ctx.lineWidth = Math.max(2, 2.4 * scale);
-                            ctx.globalAlpha = 0.96;
+                            ctx.lineJoin = "round";
                             ctx.stroke();
+                            const zeroY = root.yForGain(0, geometry);
+                            ctx.lineTo(lastX, zeroY);
+                            ctx.lineTo(firstX, zeroY);
+                            ctx.closePath();
+                            ctx.globalAlpha = 0.10;
+                            ctx.fillStyle = root.responseInk;
+                            ctx.fill();
                             ctx.globalAlpha = 1;
                         }
                     }
@@ -825,41 +848,53 @@ Item {
         }
     }
 
-    function drawSpectrum(ctx, values, frequencies, geometry, color, alpha, lineWidth, dashed) {
-        if (!values || !frequencies)
+    function drawSpectrum(ctx, values, freqs, width, height, ink, isBefore) {
+        if (!values || !freqs)
             return;
-        const count = Math.min(values.length, frequencies.length);
-        if (count < 2)
-            return;
+        const count = Math.min(values.length, freqs.length);
+        const maxHz = root.expectedMaxHz;
+        const pxPerLog = width / Math.log(maxHz / 20);
+        const floor = root.spectrumFloor;
+        let firstX = NaN;
+        let lastX = NaN;
+        let hasLevel = false;
         ctx.beginPath();
-        let started = false;
-        let lastX = -1;
         for (let index = 0; index < count; ++index) {
+            const hz = Number(freqs[index]);
             const level = Number(values[index]);
-            const hz = Number(frequencies[index]);
-            if (!isFinite(level) || !isFinite(hz) || hz < 20 || hz > root.expectedMaxHz) {
-                started = false;
+            if (!isFinite(level) || !isFinite(hz) || hz < 20 || hz > maxHz)
                 continue;
-            }
-            const x = root.xForFrequency(hz, geometry);
-            if (x - lastX < 0.7)
-                continue;
-            const y = geometry.top + (1 - clamp((level + 90) / 90, 0, 1)) * geometry.height;
-            if (!started) {
+            const x = Math.log(hz / 20) * pxPerLog;
+            const y = root.clamp(level / floor, 0, 1) * height;
+            if (!isFinite(firstX)) {
+                firstX = x;
                 ctx.moveTo(x, y);
-                started = true;
             } else {
                 ctx.lineTo(x, y);
             }
             lastX = x;
+            hasLevel = hasLevel || level > floor;
         }
-        ctx.strokeStyle = color;
-        ctx.globalAlpha = alpha;
-        ctx.lineWidth = lineWidth;
+        if (!hasLevel || !isFinite(firstX) || !(lastX > firstX))
+            return;
+
+        const scale = root.theme.scale;
+        ctx.strokeStyle = ink;
+        ctx.globalAlpha = isBefore ? 0.86 : 0.93;
+        ctx.lineWidth = Math.max(1, (isBefore ? 1.2 : 1.85) * scale);
         ctx.lineJoin = "round";
-        if (typeof ctx.setLineDash === "function")
-            ctx.setLineDash(dashed ? [4 * root.theme.scale, 3 * root.theme.scale] : []);
+        ctx.setLineDash(isBefore ? [3.5 * scale, 3 * scale] : []);
         ctx.stroke();
         ctx.globalAlpha = 1;
+
+        if (!isBefore) {
+            ctx.lineTo(lastX, height);
+            ctx.lineTo(firstX, height);
+            ctx.closePath();
+            ctx.globalAlpha = 0.12;
+            ctx.fillStyle = ink;
+            ctx.fill();
+            ctx.globalAlpha = 1;
+        }
     }
 }
