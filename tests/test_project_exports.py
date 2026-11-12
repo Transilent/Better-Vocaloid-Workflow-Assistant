@@ -227,6 +227,8 @@ with tempfile.TemporaryDirectory(dir=APP/'work',prefix='project-formats-') as te
     request['audio_formats']=['wav']
     empty_report=export_job(job,request)
     assert [track['notes'] for track in empty_report['projects']['tracks']]==[2,0]
+    empty_svp=next(row for row in empty_report['projects']['outputs'] if row['file'].endswith('.svp'))
+    assert empty_svp['tuning_transaction']['skipped_empty_tracks']==[1]
     for fmt in ('ustx','vsqx','svp'):
         text=(job/'exports'/('voices.'+fmt)).read_text(encoding='utf-8')
         assert 'Backing Vocal' in text, (fmt,'Lost empty voice track')

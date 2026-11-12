@@ -88,6 +88,8 @@ Karaoke 2 可直接使用。迁移助手时保留完整 `dependencies/optional` 
 
 在 VOCALOID 6 中，先建工程，再使用“文件 → 导入”载入 `voices.mid` 或单独声部 MIDI。“打开”用于工程文件。导入对话框若提供歌词编码选项，请选 UTF-8；6.2 起支持读取 MIDI 内的歌词。参见[官方手册](https://rsc-net.vocaloid.com/assets/pdf_files/bb/VOCALOID_Reference_Manual_ENG.pdf)与[MIDI 导入说明](https://www.vocaloid.com/en/support/faq/617)。
 
+要在 VOCALOID 6 中保留连续音高，请勾选**写入连续音高线**，导出 VSQX，然后用“文件 → 打开”载入 `voices.vsqx`。自动生成的弯音在休止处归零；有原始音高记录时，也会隔开无声段并修正符合条件的孤立尖峰。已手动改过的源工程保留原有音高。可在 `exports/report.json` 中查看保护和回读结果。
+
 ## 发布工作流
 
 **发布**位于可选的**合成视频**之后，每次显示一个完整步骤：

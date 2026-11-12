@@ -96,6 +96,8 @@ Enable **手动指定 BPM** under **歌词与音符** to set a constant 20–400
 
 In VOCALOID 6, create a project and use **File → Import** to import `voices.mid` or an individual vocal MIDI. **Open** is for project files. Select UTF-8 for embedded lyrics when the import dialog offers an encoding option; lyric import is supported from version 6.2. See the [official reference manual](https://rsc-net.vocaloid.com/assets/pdf_files/bb/VOCALOID_Reference_Manual_ENG.pdf) and [MIDI import support](https://www.vocaloid.com/en/support/faq/617).
 
+To keep the continuous pitch curve in VOCALOID 6, enable **Write continuous pitch curve**, export VSQX, and use **File → Open** on `voices.vsqx`. Generated pitch bends return to neutral at rests. When the original pitch measurements are available, VWA also keeps unvoiced gaps separate and corrects isolated spikes that meet the repair criteria. Manually edited source projects keep their pitch. See `exports/report.json` for the protection and readback results.
+
 ## Upload preparation
 
 Open **发布** (Publishing), after optional **合成视频** (Video assembly). Each page shows one step:

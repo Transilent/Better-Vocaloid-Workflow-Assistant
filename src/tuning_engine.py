@@ -461,7 +461,10 @@ def legacy_export(data,job,request,tracks,*,cancel=lambda:None):
     """
     from vocal_expression import expression_settings
     dynamics,strength,timbre=expression_settings(request)
-    indices=[i for i,t in enumerate(data['tracks']) if not t.get('mainRef',{}).get('isInstrumental')]
+    vocals=[i for i,t in enumerate(data['tracks']) if not t.get('mainRef',{}).get('isInstrumental')]
+    generated=list(zip(vocals,tracks,strict=True))
+    empty=[i for i,row in generated if row.get('notes')==0]
+    indices=[i for i in vocals if i not in empty]
     options={'track_indices':indices,'expression_density':request.get('expression_density','dense')}
     profile=request.get('reference_calibration') if not request.get('prepare_only') and strength>0 else None
     retained=request.get('retained_expression')
@@ -471,10 +474,12 @@ def legacy_export(data,job,request,tracks,*,cancel=lambda:None):
     elif retained:
         from calibration_workflow import retained_signature
         retained_signature(Path(job),request)
-        voices=[row['voice'] for row in tracks]
-        options.update(expression_mode='retained',retained_match_policy='legacy',retained_sources=[{'track_index':indices[voices.index(voice)],
+        voices={}
+        for i,row in generated:
+            voices.setdefault(row['voice'],i)
+        options.update(expression_mode='retained',retained_match_policy='legacy',retained_sources=[{'track_index':voices[voice],
             'project':str((Path(job)/row['file']).resolve()),'source_track_index':row['track_index'],'voice':voice}
-            for voice,row in retained['tracks'].items()])
+            for voice,row in retained['tracks'].items() if voices[voice] in indices])
         # Some tasks retain only an authored lead, not all generated voices.
         options['track_indices']=[row['track_index'] for row in options['retained_sources']]
     elif not request.get('prepare_only') and (dynamics or timbre) and strength>0:
@@ -483,12 +488,21 @@ def legacy_export(data,job,request,tracks,*,cancel=lambda:None):
     mode=options.get('expression_mode','preserve')
     if mode in ('reference','calibrated'):
         options['reference_sources']=[{'track_index':i,'voice':row['voice'],
-            'path':str(Path(job)/'audio'/(row['voice']+'.wav'))} for i,row in zip(indices,tracks)]
-    output,report=process_project(data,options,cancel=cancel,cache=Path(job)/'temp/reference-features',finalize=False)
+            'path':str(Path(job)/'audio'/(row['voice']+'.wav'))} for i,row in generated if i in indices]
+    if options['track_indices']:
+        output,report=process_project(data,options,cancel=cancel,cache=Path(job)/'temp/reference-features',finalize=False)
+    else:
+        cancel()
+        output=copy.deepcopy(data)
+        report={'schema':VERSION,'mode':mode,'track_indices':[],'stages':[],'status':'unchanged',
+                'primary':{'status':'not_selected','reason':'no_target_notes','mode':mode,'tracks':[]},
+                'source_content_sha256':digest(data),'notes_and_timing_unchanged':True,
+                'protected_content_unchanged':True,'pitch_changed':False}
     # Retaining only one part must still allow the requested final density on
     # other generated tracks. Their untouched source curves remain authoritative.
     density=finalize_project(output,indices,options['expression_density'],cancel)
-    report.update(expression_density=density,final_density_passes=1,output_content_sha256=digest(output),changed=digest(output)!=digest(data))
+    report.update(expression_density=density,final_density_passes=1,output_content_sha256=digest(output),
+                  changed=digest(output)!=digest(data),skipped_empty_tracks=empty)
     report['stages'].append('density')
     if density['unsupported_nonlinear_controls']:report['status']='partial'
     elif report['status']!='partial':report['status']='applied' if digest(output)!=digest(data) else 'unchanged'

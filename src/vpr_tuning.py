@@ -13,6 +13,7 @@ from zipfile import BadZipFile, ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 from common import native_path
 from svp_tuning import Note, Track
+from vocaloid_pitch import PBS_SPEC, PIT_SPEC, step_values
 
 
 SEQUENCE = 'Project/sequence.json'
@@ -21,7 +22,7 @@ MAX_SEQUENCE_BYTES = 32 * 1024**2
 MAX_MEMBER_BYTES = 2 * 1024**3 - 1
 BLICK = 705600000 // 480
 DYN, PIT, PBS = 'dynamics', 'pitchBend', 'pitchBendSens'
-CONTROLLERS = {DYN: (64, 0, 127), PIT: (0, -8192, 8191), PBS: (2, 1, 24)}
+CONTROLLERS = {DYN: (64, 0, 127), PIT: PIT_SPEC, PBS: PBS_SPEC}
 STYLE_ONLY = 'VPR 支持「保留原表现」下的 DYN 力度和 PIT 音高弯曲。'
 MAX_EDIT_TICKS = 750_000
 MAX_EVENTS = 250_000
@@ -322,14 +323,6 @@ def _curve(part, name):
     return index, curve
 
 
-def _step(grid, events, default):
-    import numpy as np
-
-    values = np.asarray([default] + [event['value'] for event in events], dtype=np.int64)
-    index = np.searchsorted([event['pos'] for event in events], grid, side='right')
-    return values[index]
-
-
 def _add_delta(part, raw, name, original, rendered):
     """Apply an additive, bounded delta and restore the authored step at every exit."""
     import numpy as np
@@ -346,7 +339,7 @@ def _add_delta(part, raw, name, original, rendered):
     delta = np.interp(grid, xs, ys, left=0., right=0.)
     delta[-1] = 0  # Keep the original step at the final guard.
     default, low, high = CONTROLLERS[name]
-    baseline = _step(grid, original['events'], default)
+    baseline = step_values(grid, original['events'], default)
     protections = []
 
     def protect(spans, reason, end_guard=0):
@@ -363,7 +356,7 @@ def _add_delta(part, raw, name, original, rendered):
         if sensitivity is None:
             return None, 'vpr_invalid_sensitivity_preserved', protections
         protect(part.direct_pitch_spans, 'vpr_direct_pitch_preserved', end_guard=1)
-        delta *= 8192. / (100 * _step(grid, sensitivity['events'], CONTROLLERS[PBS][0]))
+        delta *= 8192. / (100 * step_values(grid, sensitivity['events'], CONTROLLERS[PBS][0]))
     else:
         # A bounded DYN gesture, not a claim that DYN units are decibels.
         delta *= 4.
@@ -391,7 +384,7 @@ def _add_delta(part, raw, name, original, rendered):
     if len(kept) > MAX_EVENTS:
         return None, 'vpr_curve_capacity', protections
     events = [kept[x] for x in sorted(kept)]
-    if not np.array_equal(_step(grid, events, default), values):
+    if not np.array_equal(step_values(grid, events, default), values):
         raise ValueError('VPR 控制事件回读不一致，未写入候选。')
     return {**original, 'events': events}, '', protections
 

@@ -83,7 +83,7 @@ shared_tests = (
     'test_reference_corpus.py', 'test_vocal_partition.py', 'test_test_isolation.py',
     'test_dependency_profiles.py', 'test_cache_integrity.py',
     'test_parallel_download.py', 'test_slicing_bounds.py', 'test_v2_backend.py', 'test_lyrics_sources.py',
-    'test_project_exports.py', 'test_vocal_expression.py', 'test_vocal_timbre.py', 'test_pitch_accuracy.py',
+    'test_project_exports.py', 'test_preparation_vsqx_pitch.py', 'test_vocal_expression.py', 'test_vocal_timbre.py', 'test_pitch_accuracy.py',
     'test_transcription_quality.py', 'test_core.py', 'test_bilibili_network.py', 'test_japanese_midi.py',
     'test_chinese_lyrics.py', 'test_components.py', 'test_local_music.py', 'test_output_directory.py',
     'test_subtitles.py', 'test_publish_browser.py', 'test_publish_adapters.py',

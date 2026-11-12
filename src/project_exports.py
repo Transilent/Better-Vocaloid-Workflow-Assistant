@@ -41,11 +41,15 @@ def read_receipts(job):
 
 def project_input(job, request):
     instrumental = job/'audio/instrumental.wav'
-    return fingerprint({'schema': 3, 'language': request['language'], 'pitch': bool(request.get('export_pitch',False)),
-        'native': {v: file_hash(job / 'midi' / ('' if v == 'vocals' else v) / (v + '.ustx')) for v in voices_for(request)},
-        'absolute_pitch': {v: file_hash(job/'midi'/('' if v=='vocals' else v)/(v+'.pitch.npz'))
-             for v in voices_for(request) if request.get('export_pitch') and (job/'midi'/('' if v=='vocals' else v)/(v+'.pitch.npz')).is_file()},
-        'pitch_adapter': file_hash(Path(__file__).with_name('pitch_accuracy.py')) if request.get('export_pitch') else None,
+    pitch = bool(request.get('export_pitch',False))
+    folders = {v: job/'midi'/('' if v=='vocals' else v) for v in voices_for(request)}
+    return fingerprint({'schema': 4, 'language': request['language'], 'pitch': pitch,
+        'native': {v: file_hash(folder/(v+'.ustx')) for v,folder in folders.items()},
+        'absolute_pitch': {v: file_hash(folder/(v+'.pitch.npz')) for v,folder in folders.items()
+                           if pitch and (folder/(v+'.pitch.npz')).is_file()},
+        'pitch_receipts': {v: file_hash(folder/'report.json') for v,folder in folders.items()
+                           if pitch and (folder/'report.json').is_file()},
+        'pitch_adapter': file_hash(Path(__file__).with_name('pitch_accuracy.py')) if pitch else None,
         'instrumental': file_hash(instrumental) if request.get('include_instrumental',True) and instrumental.is_file() else None,
         'converter': file_hash(Path(__file__))})
 
@@ -58,6 +62,8 @@ def project_signatures(job, request):
     density_mode=density_settings(request)
     base = project_input(job, request)
     signatures = {fmt: fingerprint([base, fmt]) for fmt in request.get('project_formats', [])}
+    if 'vsqx' in signatures and request.get('export_pitch'):
+        signatures['vsqx'] = fingerprint([signatures['vsqx'], file_hash(Path(__file__).with_name('vocaloid_pitch.py'))])
     if 'svp' in signatures and (enabled or timbre) and strength > 0:
         signatures['svp'] = fingerprint([base, 'svp', strength,
             file_hash(Path(__file__).with_name('vocal_expression.py')),
@@ -433,6 +439,31 @@ def portable_audio_reference(path, fmt, source):
     if count!=1: raise ValueError(fmt.upper()+' 导出未保留伴奏，请检查导出日志。')
 
 
+def _ustx_playback(project):
+    # LibreSVIP's USTX reader pads tempo events by a fixed four beats.
+    from libresvip.core.tick_counter import skip_tempo_list
+    return project.model_copy(update={'song_tempo_list': skip_tempo_list(project.song_tempo_list, 1920)})
+
+
+def _vsqx_pitch_draft(project, generated_tracks):
+    """Leave generated tracks to the native PIT/PBS writer."""
+    from libresvip.core.tick_counter import shift_tempo_list
+    from libresvip.model.base import ParamCurve
+
+    tracks, index = [], 0
+    for track in project.track_list:
+        if hasattr(track, 'note_list'):
+            if index in generated_tracks:
+                params = track.edited_params.model_copy(update={'pitch': ParamCurve()})
+                track = track.model_copy(update={'edited_params': params})
+            index += 1
+        tracks.append(track)
+    # The converter removes one bar on write; the file also has one pre-measure.
+    first_bar = round(project.time_signature_list[0].bar_length())
+    return project.model_copy(update={'track_list': tracks,
+        'song_tempo_list': shift_tempo_list(project.song_tempo_list, 2 * first_bar)})
+
+
 def export_projects(job, request):
     job=Path(job).resolve()
     formats=request.get('project_formats',[])
@@ -453,34 +484,45 @@ def export_projects(job, request):
     voices=voices_for(request)
     projects=[]
     tracks=[]
+    generated_tracks = {}
+    pitch_requested = bool(request.get('export_pitch',False))
     for voice in voices:
         cancelled(job)
         folder=job/'midi' if voice=='vocals' else job/'midi'/voice
         path=folder/(voice+'.ustx')
         if not path.is_file():
             raise FileNotFoundError('缺少声部工程，请启用工程导出后重新提取 MIDI：'+str(path.name))
-        pitch_requested = bool(request.get('export_pitch',False))
         absolute = folder/(voice+'.pitch.npz')
         metadata_path = folder/'report.json'
         metadata = json.loads(metadata_path.read_text(encoding='utf-8')) if metadata_path.is_file() else {}
+        pitch_hash = file_hash(absolute) if pitch_requested and absolute.is_file() else None
+        expected_pitch_hash = metadata.get('output_sha256',{}).get('pitch.npz')
         if pitch_requested and metadata.get('pitch_source')=='absolute_rmvpe' and (
-                not absolute.is_file() or metadata.get('output_sha256',{}).get('pitch.npz') != file_hash(absolute)):
+                pitch_hash is None or expected_pitch_hash != pitch_hash):
             raise ValueError('连续音高缓存缺失或已改变，请重新提取 MIDI。')
         # A manually edited native score retains its own tuning. New unedited
         # results use the measured f0 instead of a simulated USTX base curve.
-        raw_pitch = (pitch_requested and absolute.is_file()
-            and metadata.get('native_sha256',{}).get('ustx') == file_hash(path)
-            and metadata.get('output_sha256',{}).get('pitch.npz') == file_hash(absolute))
+        unchanged = pitch_requested and metadata.get('native_sha256',{}).get('ustx') == file_hash(path)
+        raw_pitch = unchanged and pitch_hash is not None and expected_pitch_hash == pitch_hash
         project=converters['ustx'].load(path, {'import_pitch':pitch_requested and not raw_pitch,'import_instrumental_track':False,
             'plus_handling_mode':'monosyllabic' if request['language']=='zh' else 'polysyllabic'})
         vocal=[track for track in project.track_list if isinstance(track,SingingTrack)]
         if not vocal:
             vocal=[SingingTrack(title=voice)]
+        if raw_pitch:
+            from pitch_accuracy import load_pitch, absolute_curve
+            if len(vocal) != 1:
+                raise ValueError('连续音高缓存与声部无法一一对应，请重新提取 MIDI。')
+            measure = load_pitch(absolute)
+            if measure.source_sha256 != expected_pitch_hash:
+                raise ValueError('导出期间连续音高缓存已改变，请重试。')
+            playback = _ustx_playback(project)
         for track in vocal:
             pitch_source = None
             if raw_pitch:
-                from pitch_accuracy import load_pitch, absolute_curve
-                pitch_source = absolute_curve(track,project,load_pitch(absolute))
+                pitch_source = absolute_curve(track,playback,measure)
+            if unchanged and (raw_pitch or metadata.get('pitch_curve_requested') is True):
+                generated_tracks[len(tracks)] = measure if raw_pitch else None
             if not pitch_requested:
                 track.edited_params.pitch.points.root.clear()
             for note in track.note_list:
@@ -512,14 +554,23 @@ def export_projects(job, request):
         for track in merged.track_list:
             if isinstance(track,InstrumentalTrack): track.audio_file_path=str(audio_source)
         try:
-            converters[fmt].dump(pending,merged,options)
+            protected_vsqx = fmt=='vsqx' and bool(generated_tracks)
+            playback = _ustx_playback(merged) if protected_vsqx else None
+            draft = _vsqx_pitch_draft(playback, generated_tracks) if protected_vsqx else merged
+            converters[fmt].dump(pending,draft,options)
+            details = {}
             if request.get('include_instrumental',True) and instrumental.is_file():
                 portable_audio_reference(pending,fmt,audio_source)
             if fmt=='vsqx':
                 restore_vsqx_lyrics(pending,[track for track in merged.track_list if isinstance(track,SingingTrack)])
-            if not request.get('export_pitch',False):
+                if protected_vsqx:
+                    from vocaloid_pitch import write_vsqx_pitch
+                    details['pitch_protection'] = write_vsqx_pitch(
+                        pending, playback, generated_tracks, cancel=lambda:cancelled(job))
+                    if any(row['status']=='partial' for row in details['pitch_protection']['tracks']):
+                        print('VSQX 音高保护：重叠音符和无法编码的音高保持默认弯音，详见导出回执。',flush=True)
+            if not pitch_requested:
                 remove_pitch_data(pending,fmt)
-            details = {}
             if fmt=='svp':
                 from tuning_engine import legacy_export
                 original=pending.read_bytes()
@@ -533,11 +584,19 @@ def export_projects(job, request):
                 print('SVP 参数采样：'+density['status']+'，新增 '+str(density['added_points'])+' 个点。',flush=True)
                 if density['unsupported_nonlinear_controls']:
                     print('提示：已有非线性编辑器曲线保持原样，回执已记录未加密通道。',flush=True)
-            loaded=converters[fmt].load(pending,{'import_pitch':True,'import_instrumental_track':False})
+            loaded=converters[fmt].load(pending,{'import_pitch':not protected_vsqx,'import_instrumental_track':False})
             expected=sum(item['notes'] for item in tracks)
             actual=sum(len(track.note_list) for track in loaded.track_list if isinstance(track,SingingTrack))
             if expected!=actual:
                 raise ValueError(f'{fmt.upper()} 导出后的音符数量不一致，请查看导出日志。')
+            if protected_vsqx:
+                clock = [(tempo.position, tempo.bpm) for tempo in playback.song_tempo_list]
+                read_clock = [(tempo.position, tempo.bpm) for tempo in loaded.song_tempo_list]
+                if len(clock) != len(read_clock) or any(t != rt or abs(bpm - rbpm) > .011
+                        for (t,bpm),(rt,rbpm) in zip(clock,read_clock)):
+                    raise ValueError('VSQX 音高保护的导出速度与来源不一致。')
+                if project_signatures(job,request)['vsqx'] != signatures['vsqx']:
+                    raise ValueError('VSQX 导出期间来源或配置发生变化，请重试。')
             cancelled(job)
             preserved = preserve_changed_file(job,path,receipts.get(path.relative_to(job).as_posix(),{}).get('sha256'),file_hash(pending))
             pending.replace(path)
