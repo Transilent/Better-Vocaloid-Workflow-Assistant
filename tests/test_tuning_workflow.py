@@ -102,7 +102,7 @@ def make_profile(root):
 
 
 class TuningWorkflowTests(unittest.TestCase):
-    def test_inspect_has_actual_indices_and_rejects_non_svp_or_no_vocal(self):
+    def test_inspect_has_actual_indices_and_rejects_wrong_payload_or_no_vocal(self):
         with tempfile.TemporaryDirectory(prefix='workflow-', dir=TEST_TEMP) as temp:
             root = Path(temp)
             source = write_svp(root / 'source.svp')
@@ -114,8 +114,12 @@ class TuningWorkflowTests(unittest.TestCase):
 
             wrong = root / 'source.ustx'
             wrong.write_bytes(source.read_bytes())
-            with self.assertRaisesRegex(ValueError, '支持SVP'):
+            with self.assertRaisesRegex(ValueError, 'USTX'):
                 inspect_project(wrong)
+            unknown = root / 'source.vsqx'
+            unknown.write_bytes(source.read_bytes())
+            with self.assertRaisesRegex(ValueError, 'SVP 或 OpenUtau USTX'):
+                inspect_project(unknown)
             malformed = root / 'broken.svp'
             malformed.write_text('{}', encoding='utf-8')
             with self.assertRaisesRegex(ValueError, '有效的SVP'):

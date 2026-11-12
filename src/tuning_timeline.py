@@ -62,7 +62,7 @@ class ProjectNotes:
         }
         self.editable = tuple(key for key, row in self.tracks.items() if row['editable'])
         if not self.tracks:
-            raise ValueError('SVP 中没有可显示的演唱轨。')
+            raise ValueError('工程中没有可显示的演唱轨。')
         by_track = {key: [] for key in self.tracks}
         for row in context['notes']:
             if row['track_id'] in by_track:
@@ -98,7 +98,7 @@ class ProjectNotes:
         path = Path(path).expanduser().resolve()
         size = Path(native_path(path)).stat().st_size
         if not 0 < size <= 64 * 1024**2:
-            raise ValueError('SVP 工程为空或超过 64 MiB。')
+            raise ValueError('工程为空或超过 64 MiB。')
         project = inspect_project(path)
         if expected_sha256 and project['sha256'] != expected_sha256:
             raise ValueError('已核验的工程在交接时发生变化。')
@@ -122,6 +122,13 @@ class ProjectNotes:
 
     def uses_group_styles(self, indices):
         return any(row['styleOnly'] and row['index'] in indices for row in self.tracks.values())
+
+    @property
+    def style_only_reason(self):
+        if self.project.get('format') == 'ustx':
+            from ustx_tuning import STYLE_ONLY
+            return STYLE_ONLY
+        return GROUP_STYLE_ONLY
 
     def matches(self, query, *, limit=160):
         needle = _lyric_key(query[:256])
@@ -321,8 +328,9 @@ class TimelineDraftStore(DraftStore):
 
 def freeze_plan(project, regions, options, preset):
     normalized = settings(options)
-    if normalized['expression_mode'] != 'preserve' and project.uses_group_styles(normalized['track_indices'] or []):
-        raise ValueError(GROUP_STYLE_ONLY)
+    if normalized['expression_mode'] != 'preserve' and (project.project.get('format') == 'ustx'
+            or project.uses_group_styles(normalized['track_indices'] or [])):
+        raise ValueError(project.style_only_reason)
     if project.verify_regions(regions) != normalized['style_regions']:
         raise ValueError('逐轨片段与本次执行计划不一致。')
     if preset is not None:

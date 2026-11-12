@@ -1595,9 +1595,9 @@ class QuickBridge(QObject):
                     self._error(ValueError('该文件已变更、无法核验或不支持直接打开。'))
                     return
                 if route == 'tuning':
-                    if not quick_results.is_svp_project(row):
+                    if not quick_results.is_tuning_project(row):
                         self._clear_work_task_lock()
-                        self._error(ValueError('只能在调音工作台加载已核验的 SVP 工程。'))
+                        self._error(ValueError('只能在调音工作台加载已核验的 SVP 或 USTX 工程。'))
                         return
                     self.navigate('tuning')
                     self._tuning.accept_task(job, row)
@@ -1633,7 +1633,7 @@ class QuickBridge(QObject):
             destination = Path(row['path']) if row and row['openable'] else directory
             self.state.handoff = {'jobId': job, 'action': action, 'artifacts': rows, 'destination': str(destination)}
             self.taskChanged.emit()
-            if action == 'awaiting_tuning' and quick_results.is_svp_project(row):
+            if action == 'awaiting_tuning' and quick_results.is_tuning_project(row):
                 self._set_work_task_lock('调音工程 · 正在载入', job)
                 self.navigate('tuning')
                 self._tuning.accept_task(job, row)

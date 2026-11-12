@@ -32,7 +32,12 @@ def preset_context(binding,spec,options,data):
     checked=validate_plan(copy.deepcopy(binding),project=project)
     if normalize_options(checked['options'])!=options:
         raise ValueError('预设绑定与本次实际调音参数不一致，请重新预览应用。')
-    indices=selected_indices(data,options);mode=options['expression_mode']
+    if spec.get('format')=='ustx':
+        from ustx_tuning import selected_indices as select_ustx
+        indices=select_ustx(data,options)
+    else:
+        indices=selected_indices(data,options)
+    mode=options['expression_mode']
     local={'vocal_tracks':indices}
     if checked['bindings'].get('confirm_candidate_baseline') is True:local['confirm_candidate_baseline']=True
     if mode in ('reference','calibrated'):

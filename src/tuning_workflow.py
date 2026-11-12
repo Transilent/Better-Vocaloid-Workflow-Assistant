@@ -1,4 +1,4 @@
-"""Independent, recoverable SVP tuning sessions over immutable input snapshots."""
+"""Independent, recoverable tuning sessions over immutable project snapshots."""
 
 
 def canonical_kind(value):
@@ -21,7 +21,7 @@ import uuid
 ROOT=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT))
 from common import atomic_json,file_hash,native_path,preserve_changed_file,exclusive_sidecar,SidecarBusy
-from tuning_engine import settings,digest,process_project
+from tuning_engine import settings,digest,process_project,selected_indices
 from svp_tuning import Layout, SV2_MIN
 from tuning_execution import (normalize_options as _normalize,dependencies as _execution_dependencies,
                               preset_context as _preset_context,preset_dependency,receipt_binding_matches,
@@ -29,11 +29,13 @@ from tuning_execution import (normalize_options as _normalize,dependencies as _e
 
 SCHEMA=1
 COMMIT_SCHEMA=1
+TUNING_SUFFIXES=frozenset(('.svp','.ustx'))
 _LOCKS={};_LOCK_GUARD=threading.Lock()
 CONTRIBUTORS=('tuning_workflow.py','tuning_engine.py','vocal_expression.py','vocal_timbre.py',
  'expression_component.py','expression_calibration.py','calibration_refinement.py','calibration_workflow.py',
  'calibration_session.py','style_presets.py','style_catalog.py','expression_controls.py','style_pitch.py','common.py',
- 'tuning_execution.py','tuning_preset_documents.py','preset_documents.py','tuning_project_identity.py','svp_tuning.py')
+ 'tuning_execution.py','tuning_preset_documents.py','preset_documents.py','tuning_project_identity.py','svp_tuning.py',
+ 'ustx_tuning.py')
 
 
 def _read(path):
@@ -56,16 +58,33 @@ def _stat(path):
     return Path(native_path(path)).stat()
 
 
-def _project(raw):
+def project_format(path):
+    suffix=Path(path).suffix.casefold()
+    if suffix not in TUNING_SUFFIXES:
+        raise ValueError('请选择 SVP 或 OpenUtau USTX 工程。')
+    return suffix[1:]
+
+
+def receipt_path_for(path):
+    return path.with_name(path.name+'.tuning.json')
+
+
+def _project(raw,format='svp'):
+    if format=='ustx':
+        from ustx_tuning import read
+        return read(raw)
     value=json.loads(raw.decode('utf-8-sig').rstrip('\x00'))
     if not isinstance(value,dict) or not isinstance(value.get('tracks'),list) or not isinstance(value.get('time'),dict):
         raise ValueError('请选择有效的SVP工程。')
     return value
 
 
-def _candidate_payload(output, original, raw):
+def _candidate_payload(output, original, raw, format='svp'):
     if output == original:
         return raw
+    if format=='ustx':
+        from ustx_tuning import encode
+        return encode(output,raw)
     version = original.get('version')
     if type(version) is int and version >= SV2_MIN:
         # Keep the native file's encoding envelope as well as its JSON data.
@@ -75,9 +94,20 @@ def _candidate_payload(output, original, raw):
     return (json.dumps(output, ensure_ascii=False, indent=2, allow_nan=False) + '\n').encode('utf-8')
 
 
-def _relocate_media(data,source_directory):
+def _relocate_media(data,source_directory,format='svp'):
     """Keep referenced accompaniment identity when output lives elsewhere."""
     changes=[]
+    if format=='ustx':
+        for index,part in enumerate(data.get('wave_parts',[])):
+            filename=part.get('relative_path')
+            if isinstance(filename,str) and filename and not Path(filename).is_absolute():
+                # Preserve the original base directory without probing media
+                # or opening a path supplied by the project.
+                resolved=os.path.abspath(source_directory/filename)
+                part['relative_path']=resolved
+                changes.append({'track_index':part['track_no'],'wave_part_index':index,
+                                'original_reference':filename,'output_reference':resolved,'audio_modified':False})
+        return changes
     for index,track in enumerate(data['tracks']):
         audio=track.get('mainRef',{}).get('audio',{})
         filename=audio.get('filename') if isinstance(audio,dict) else None
@@ -91,17 +121,23 @@ def _relocate_media(data,source_directory):
 
 def inspect_project(path):
     path=Path(path).resolve()
-    if path.suffix.lower()!='.svp':raise ValueError('当前调音工作流支持SVP工程；其他工程请先转换并核对参数。')
-    raw=_raw(path);data=_project(raw);layout=Layout(data);tracks=[]
-    for row,track in zip(layout.tracks,data['tracks']):
+    format=project_format(path)
+    if not 0<_stat(path).st_size<=64*1024**2:raise ValueError('工程为空或超过 64 MiB。')
+    raw=_raw(path);data=_project(raw,format);tracks=[]
+    if format=='ustx':
+        from ustx_tuning import Layout as UstxLayout
+        layout=UstxLayout(data);score=layout.score
+    else:
+        layout=Layout(data);score=data
+    for row,track in zip(layout.tracks,score['tracks']):
         if row.instrumental is None:raise ValueError('SVP轨道格式无效。')
         tracks.append({'track_index':row.index,'name':track.get('name','演唱轨'),
             'note_count':row.note_count,'instrumental':row.instrumental})
-    if not any(not row['instrumental'] for row in tracks):raise ValueError('SVP中没有演唱轨。')
+    if not any(not row['instrumental'] for row in tracks):raise ValueError('工程中没有演唱轨。')
     sha=hashlib.sha256(raw).hexdigest()
     from tuning_project_identity import inspect_candidate_origin
     return {'path':str(path),'sha256':sha,'bytes':len(raw),'tracks':tracks,
-            'format_version':layout.version,'synthesizer_v_2':layout.sv2,
+            'format':format,'format_version':layout.version,'synthesizer_v_2':getattr(layout,'sv2',False),
             'candidate_origin':inspect_candidate_origin(path,sha256=sha)}
 
 
@@ -113,11 +149,12 @@ def job_projects(job):
     results=[];seen=set()
     def add(path,label,kind,expected=None):
         path=Path(path).resolve()
-        if path in seen or path.suffix.lower()!='.svp' or not _isfile(path):return
+        if path in seen or path.suffix.casefold() not in TUNING_SUFFIXES or not _isfile(path):return
         seen.add(path);info=inspect_project(path)
         results.append({'path':str(path),'label':label,'kind':kind,'sha256':info['sha256'],
                         'verified':expected is not None and expected==info['sha256']})
     add(job/'exports/voices.svp','原导出工程','baseline',receipts.get('exports/voices.svp',{}).get('sha256'))
+    add(job/'exports/voices.ustx','OpenUtau 导出工程','baseline',receipts.get('exports/voices.ustx',{}).get('sha256'))
     from task_contract import selected
     try:
         manual=selected(job,'project',verify=True)
@@ -169,7 +206,7 @@ def _status(root,data):
 
 def _verified_receipt(path,target,signature,spec,options,dependencies):
     try:
-        data=_read(path);parsed=_project(_raw(target))
+        data=_read(path);parsed=_project(_raw(target),project_format(target))
         if (not isinstance(data,dict) or not isinstance(data.get('report'),dict)
                 or data.get('signature')!=signature or data.get('source_sha256')!=spec['input_sha256']
                 or data.get('options')!=options or data.get('dependencies')!=dependencies
@@ -191,7 +228,7 @@ def _intent(root,path,session,spec,options,dependencies,signature,target):
         relative=Path(value['output'])
         if relative.is_absolute() or _owned(root,root/relative).resolve()!=target.resolve():
             return None
-        parsed=_project(_raw(target))
+        parsed=_project(_raw(target),project_format(target))
         report=value['report']
         if (value.get('schema')!=COMMIT_SCHEMA or canonical_kind(value.get('kind'))!='vwa.tuning-commit'
                 or value.get('session')!=str(Path(session).resolve())
@@ -224,6 +261,7 @@ def _intent_result(path,spec,options,dependencies,signature,target,receipt,inten
 
 def create_session(project,destination,*,job=None):
     project=Path(project).resolve();info=inspect_project(project)
+    format=info['format'];input_file='inputs/source.'+format
     raw=_raw(project)
     if hashlib.sha256(raw).hexdigest()!=info['sha256']:raise ValueError('导入期间工程发生变化，请重试。')
     associated=Path(job).resolve() if job else None
@@ -231,12 +269,12 @@ def create_session(project,destination,*,job=None):
     destination=Path(destination).absolute()
     if _exists(destination):raise FileExistsError('调音会话目录已存在，请选择新目录或继续原会话。')
     Path(native_path(destination)).mkdir(parents=True,exist_ok=False);root=destination.resolve()
-    snapshot=_owned(root,root/'inputs/source.svp');Path(native_path(snapshot.parent)).mkdir()
+    snapshot=_owned(root,root/input_file);Path(native_path(snapshot.parent)).mkdir()
     with Path(native_path(snapshot)).open('xb') as stream:stream.write(raw)
     if _raw(project)!=raw or _raw(snapshot)!=raw:raise ValueError('导入期间工程发生变化，未创建有效会话。')
     spec={'schema':SCHEMA,'kind':'vwa.tuning-session','id':uuid.uuid4().hex,
           'created_at':datetime.now(timezone.utc).isoformat(),'source':str(project),'source_sha256':info['sha256'],
-          'input_file':'inputs/source.svp','input_sha256':info['sha256'],'tracks':info['tracks'],
+          'input_file':input_file,'format':format,'input_sha256':info['sha256'],'tracks':info['tracks'],
           'job':str(associated) if associated else None,'input_origin':copy.deepcopy(info.get('candidate_origin'))}
     atomic_json(root/'session.json',spec)
     atomic_json(root/'status.json',{'state':'ready','session':spec['id']})
@@ -249,6 +287,8 @@ def read_session(session):
     spec=_read(session)
     if not isinstance(spec,dict) or spec.get('schema')!=SCHEMA or canonical_kind(spec.get('kind'))!='vwa.tuning-session':
         raise ValueError('调音会话格式无效。')
+    if project_format(spec['input_file'])!=spec.get('format','svp') or project_format(spec['source'])!=spec.get('format','svp'):
+        raise ValueError('调音会话格式与输入工程不一致。')
     snapshot=_owned(session.parent,session.parent/spec['input_file'])
     if file_hash(snapshot)!=spec.get('input_sha256'):raise ValueError('调音输入快照已改变，请重新导入工程。')
     return spec
@@ -309,18 +349,32 @@ def _exclusive(root):
         lock.release()
 
 
+def check_targets(data,options,format):
+    if format=='ustx':
+        from ustx_tuning import selected_indices as selected
+        return selected(data,options)
+    return selected_indices(data,options)
+
+
+def apply_project(data,options,format,*,cancel,progress,cache=None):
+    if format=='ustx':
+        from ustx_tuning import process_project as process
+        return process(data,options,cancel=cancel,progress=progress)
+    return process_project(data,options,cancel=cancel,progress=progress,cache=cache)
+
+
 def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None,preset_binding=None):
     path=Path(session).resolve();path=path/'session.json' if Path(native_path(path)).is_dir() else path
-    root=path.parent;spec=read_session(path);options=_normalize(options)
+    root=path.parent;spec=read_session(path);options=_normalize(options);format=spec.get('format','svp')
     with _exclusive(root):
         pending=None;signature=None;committed=False
         try:
-            cancel();snapshot=_check_source(root,spec);raw=_raw(snapshot);data=_project(raw)
+            cancel();snapshot=_check_source(root,spec);raw=_raw(snapshot);data=_project(raw,format)
             preset_binding=_preset_context(preset_binding,spec,options,data)
             deps=_run_dependencies(options,preset_binding)
             signature=digest({'schema':SCHEMA,'input':spec['input_sha256'],'options':options,'dependencies':deps})
-            target=_owned(root,root/'outputs'/('tuned-'+signature[:16]+'.svp'))
-            receipt_path=_owned(root,target.with_suffix('.svp.tuning.json'))
+            target=_owned(root,root/'outputs'/('tuned-'+signature[:16]+'.'+format))
+            receipt_path=_owned(root,receipt_path_for(target))
             intent_path=_commit_path(root,signature)
             for guarded in (target,receipt_path):
                 if _exists(guarded) and not _isfile(guarded):raise ValueError('调音输出路径不是文件，未覆盖。')
@@ -368,13 +422,13 @@ def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None,p
                 if status_error:result['observer_errors'].append(status_error)
                 return result
             progress('从固定输入快照开始处理')
-            output,report=process_project(data,options,cancel=cancel,progress=progress,cache=root/'cache/features')
+            output,report=apply_project(data,options,format,cancel=cancel,progress=progress,cache=root/'cache/features')
             if not isinstance(report,dict) or not isinstance(report.get('status'),str):
                 raise ValueError('调音引擎没有返回有效报告，未提交。')
-            media=_relocate_media(output,Path(spec['source']).parent)
-            payload=_candidate_payload(output,data,raw)
-            parsed=_project(payload)
-            if parsed!=output:raise ValueError('调音工程JSON序列化回读不一致，未提交。')
+            media=_relocate_media(output,Path(spec['source']).parent,format)
+            payload=_candidate_payload(output,data,raw,format)
+            parsed=_project(payload,format)
+            if parsed!=output:raise ValueError('调音工程序列化回读不一致，未提交。')
             payload_sha=hashlib.sha256(payload).hexdigest()
             Path(native_path(target.parent)).mkdir(parents=True,exist_ok=True)
             with tempfile.NamedTemporaryFile(dir=native_path(target.parent),prefix=target.name+'.',suffix='.pending',delete=False) as stream:
@@ -416,7 +470,7 @@ def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None,p
             pending.replace(Path(native_path(target)));pending=None
             published=Path(native_path(target))
             if (not published.is_file() or file_hash(target)!=payload_sha or published.stat().st_size!=len(payload)
-                    or _project(_raw(target))!=output):
+                    or _project(_raw(target),format)!=output):
                 raise OSError('调音工程发布后哈希校验失败。')
             committed=True
             observer=_notify(progress,'独立调音工程已提交：'+report['status'])
@@ -457,8 +511,9 @@ def verified_result(session):
     signature=state.get('signature')
     if not isinstance(signature,str):raise ValueError('调音状态缺少完整签名，不能登记。')
     output=_owned(root,Path(state.get('output','')))
-    target=_owned(root,root/'outputs'/('tuned-'+signature[:16]+'.svp'))
-    receipt_path=_owned(root,target.with_suffix('.svp.tuning.json'))
+    format=spec.get('format','svp')
+    target=_owned(root,root/'outputs'/('tuned-'+signature[:16]+'.'+format))
+    receipt_path=_owned(root,receipt_path_for(target))
     if output.resolve()!=target.resolve() or not _isfile(target):
         raise ValueError('调音状态没有指向已提交的独立候选，不能登记。')
     receipt=_read(receipt_path)
@@ -468,7 +523,7 @@ def verified_result(session):
         raise ValueError('调音回执结构或会话身份不完整，不能登记。')
     options=_normalize(receipt.get('options'))
     snapshot=_check_source(root,spec)
-    preset_binding=_preset_context(receipt.get('preset_binding'),spec,options,_project(_raw(snapshot)))
+    preset_binding=_preset_context(receipt.get('preset_binding'),spec,options,_project(_raw(snapshot),format))
     dependencies=_run_dependencies(options,preset_binding)
     expected=digest({'schema':SCHEMA,'input':spec['input_sha256'],'options':options,'dependencies':dependencies})
     if signature!=expected or receipt.get('dependencies')!=dependencies:
@@ -483,10 +538,10 @@ def verified_result(session):
 
 
 def export_verified_copy(result, destination, *, cancel=lambda:None):
-    """Publish the verified candidate bytes to a new local SVP path."""
+    """Publish the verified candidate bytes to a new path of the same format."""
     source=Path(result['output']);destination=Path(destination).absolute()
-    if destination.suffix.lower()!='.svp' or not _isfile(source):
-        raise ValueError('请选择新 SVP 文件名。')
+    if project_format(destination)!=project_format(source) or not _isfile(source):
+        raise ValueError('请选择与候选工程格式相同的新文件名。')
     if _exists(destination) or destination.is_symlink():
         raise FileExistsError('目标文件已存在，请使用新名称。')
     pending=None

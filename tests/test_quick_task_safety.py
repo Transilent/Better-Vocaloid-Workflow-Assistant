@@ -93,9 +93,10 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='quick-task-safety-') 
     assert '不能删除任务' in quick_results.task_mutation_error('删除任务', blockers_a)
     assert quick_results.protect_task_detail(base, [])['canDelete'] is True
 
-    assert quick_results.is_svp_project({'available': True, 'role': 'tuned_project', 'path': 'a.svp'})
-    assert not quick_results.is_svp_project({'available': True, 'role': 'tuned_project', 'path': 'a.ustx'})
-    assert not quick_results.is_svp_project({'available': False, 'role': 'tuned_project', 'path': 'a.svp'})
+    for suffix in ('.svp', '.ustx'):
+        assert quick_results.is_tuning_project({'available': True, 'role': 'tuned_project', 'path': 'a' + suffix})
+    assert not quick_results.is_tuning_project({'available': True, 'role': 'tuned_project', 'path': 'a.vsqx'})
+    assert not quick_results.is_tuning_project({'available': False, 'role': 'tuned_project', 'path': 'a.svp'})
 
     ustx = outside / 'manual.ustx'
     ustx.write_text('voice_parts:\n  - notes:\n      - lyric: a\n      - lyric: b\n', encoding='utf-8')
@@ -107,7 +108,7 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='quick-task-safety-') 
         after_ustx = quick_results.detail(job_a)
         project = after_ustx['bindings']['project']
         assert first == project['id'] and project['path'] == str(ustx.resolve())
-        assert not quick_results.is_svp_project(
+        assert quick_results.is_tuning_project(
             next(row for row in after_ustx['artifacts'] if row['id'] == first))
         second = quick_results.register_external(
             job_a, 'project', vsqx, expected_binding_id=project['id'],
@@ -129,7 +130,7 @@ assert 'signal.connect(self._schedule_task_safety)' in bridge
 assert 'subtitle_drafts=drafts' in bridge
 assert 'self._subtitles._drafts' in bridge
 assert 'self._hold_tuning_handoff_lock(job)' in bridge
-assert 'quick_results.is_svp_project(row)' in bridge
+assert 'quick_results.is_tuning_project(row)' in bridge
 assert '_DRAFT_FIELDS' in subtitles and 'def restoreSource' in subtitles
 
-print('PASS: task-scoped blockers, cached edge notifications, dormant drafts, multi-project registration and SVP handoff guard')
+print('PASS: task-scoped blockers, cached edge notifications, dormant drafts and SVP/USTX handoff guard')

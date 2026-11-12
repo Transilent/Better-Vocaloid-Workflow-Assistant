@@ -67,7 +67,7 @@ shared_tests = (
     'test_workspace_routes.py', 'test_expression_controls.py', 'test_style_catalog.py',
     'test_agent_style_schema.py', 'test_component_health.py', 'test_tuning_transforms.py',
     'test_tuning_engine.py', 'test_tuning_workflow.py', 'test_tuning_retention.py', 'test_tuning_curves.py',
-    'test_sv2_tuning.py',
+    'test_sv2_tuning.py', 'test_ustx_tuning.py',
     'test_style_pitch.py', 'test_style_presets.py', 'test_context_alignment.py', 'test_context_adapter.py',
     'test_context_reading.py', 'test_context_project.py', 'test_context_structure.py',
     'test_gesture_catalog.py', 'test_context_semantics.py', 'test_context_planner.py',

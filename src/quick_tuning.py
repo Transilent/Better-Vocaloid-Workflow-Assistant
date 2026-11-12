@@ -15,7 +15,6 @@ from preset_library import PresetLibrary
 import style_catalog
 from style_drafts import DraftConflict, DraftStore
 from style_presets import DETAIL_DEFAULTS, time_range_settings
-from svp_tuning import GROUP_STYLE_ONLY
 import tuning_engine as engine
 from tuning_timeline import (ProjectNotes, TimelineDraftStore, draft_options, freeze_plan,
                              normalize_timeline_draft)
@@ -71,7 +70,8 @@ def _session_candidate(session, reason=''):
             return None, reason
         output_sha256 = file_hash(output)
         output_bytes = output.stat().st_size
-        receipt_path = workflow._owned(root, output.with_suffix('.svp.tuning.json'))
+        workflow.project_format(output)
+        receipt_path = workflow._owned(root, workflow.receipt_path_for(output))
     except (OSError, ValueError):
         return None, reason
     receipt = _read_json_file(receipt_path)
@@ -202,17 +202,23 @@ def _preview(project, options, stop, send):
     _, raw = agent_style._read_source(project.project['path'])
     if agent_style._sha256_bytes(raw) != project.sha256:
         raise SourceChanged('预览期间源工程已改变，请重新载入。')
-    data = agent_style._project(raw)
-    indices = engine.selected_indices(data, options)
+    format = project.project.get('format', 'svp')
+    data = workflow._project(raw, format)
     if options['expression_mode'] != 'preserve':
+        indices = workflow.check_targets(data, options, format)
         if options['expression_mode'] in ('reference', 'calibrated'):
             engine.sources_for(options, indices)
         return tr('已核对轨道和参数来源。参考音频、校准或沿用参数将在生成时处理。')
-    _, report = engine.process_project(data, options, cancel=lambda: _stop_check(stop), progress=send)
+    _, report = workflow.apply_project(data, options, format, cancel=lambda: _stop_check(stop), progress=send)
+    indices = report['track_indices']
     curves = len(report['curve_changes'])
     label = tr('预览：{tracks} 轨 · {regions} 个逐轨片段 · {curves} 条曲线有变化。音符和时值保留。')
     label = label.format(tracks=len(indices), regions=len(options['style_regions']), curves=curves)
-    if report['status'] == 'partial':
+    if format == 'ustx':
+        label += tr(' USTX 只写 DYN 和 PITD；其他配方参数保留原样。')
+        if report.get('native_curve_skips'):
+            label += tr(' 有原生曲线未能安全叠加，请核对回执。')
+    elif report['status'] == 'partial':
         label += tr(' 有局部参数无法安全应用，生成后请核对结果。')
     return label
 
@@ -341,12 +347,14 @@ class QuickTuning(QObject):
     def _uses_group_styles(self):
         if not self.project:
             return False
+        if self.project.project.get('format') == 'ustx':
+            return True
         options = (self._preset.get('options') or {}) if self._preset else {}
         return self.project.uses_group_styles(options.get('track_indices') or self._indices(segments=True))
 
     def _execution(self):
         if not self.project:
-            raise ValueError('请先载入 SVP 工程。')
+            raise ValueError('请先载入调音工程。')
         if self._origin and not self._confirmed:
             raise ValueError('请确认是否把已生成的候选当作新基线。')
         if self._legacy:
@@ -459,14 +467,17 @@ class QuickTuning(QObject):
         active = self.project.tracks.get(self._active, {}) if self.project else {}
         preset_options = (self._preset.get('options') or {}) if self._preset else {}
         mode = preset_options.get('expression_mode', self._options['expression_mode'])
+        format = project.get('format', 'svp')
         return {
             'source': self._display_source or project.get('path', ''),
             'title': Path(self._display_source or project.get('path', '')).stem if project else '',
             'sha256': project.get('sha256', ''), 'job': self.job,
-            'projectFormat': ('SV2 · ' + str(project['format_version'])) if project.get('synthesizer_v_2') else '',
+            'projectFormat': ('USTX · ' + str(project['format_version'])) if format == 'ustx' else
+                             ('SV2 · ' + str(project['format_version'])) if project.get('synthesizer_v_2') else '',
+            'projectSuffix': format,
             'trackReadOnlyReason': tr(active['reason']) if active.get('reason') else '',
             'groupStyleOnly': group_styles,
-            'groupStyleReason': tr(GROUP_STYLE_ONLY) if group_styles else '',
+            'groupStyleReason': tr(self.project.style_only_reason) if group_styles else '',
             'session': str(self.session) if self.session else '',
             'sessionExists': session_exists,
             'sessionLocation': str(session_root),
@@ -577,7 +588,7 @@ class QuickTuning(QObject):
         rows = []
         for row in (detail or {}).get('artifacts', []):
             if (row.get('role') in ('editor_project', 'tuned_project') and row.get('available')
-                    and row.get('openable') and Path(row.get('path', '')).suffix.casefold() == '.svp'):
+                    and row.get('openable') and Path(row.get('path', '')).suffix.casefold() in workflow.TUNING_SUFFIXES):
                 rows.append({
                     'artifactId': str(row.get('id') or ''),
                     'label': str(row.get('displayPath') or Path(row['path']).name),
@@ -602,10 +613,10 @@ class QuickTuning(QObject):
             if selected and detail.get('jobId') == selected:
                 self._selected_tuning_task = selected
                 self._tuning_task_projects = self._bridge_task_projects(detail)
-                self._task_picker_message = (tr('共 {count} 个已核验 SVP；载入会复用任务与结果页面的核验。')
+                self._task_picker_message = (tr('共 {count} 个已核验调音工程；载入会复用任务与结果页面的核验。')
                                              .format(count=len(self._tuning_task_projects))
                                              if self._tuning_task_projects else
-                                             tr('此任务没有可载入的已核验 SVP 工程。'))
+                                             tr('此任务没有可载入的已核验调音工程。'))
         self.changed.emit()
 
     @Slot()
@@ -636,7 +647,7 @@ class QuickTuning(QObject):
             if self._selected_tuning_task not in known:
                 self._selected_tuning_task = self._tuning_tasks[0]['jobId'] if self._tuning_tasks else ''
             self._tuning_task_projects = []
-            self._task_picker_message = (tr('共 {count} 个任务；请选择任务后再选择已核验的 SVP。')
+            self._task_picker_message = (tr('共 {count} 个任务；请选择任务后再选择已核验的调音工程。')
                                          .format(count=len(self._tuning_tasks)) if self._tuning_tasks
                                          else tr('没有可读取的任务。'))
             if self._selected_tuning_task:
@@ -673,16 +684,16 @@ class QuickTuning(QObject):
             rows = []
             for row in detail.get('artifacts', []):
                 if (row.get('role') in ('editor_project', 'tuned_project') and row.get('available')
-                        and row.get('openable') and Path(row.get('path', '')).suffix.casefold() == '.svp'):
+                        and row.get('openable') and Path(row.get('path', '')).suffix.casefold() in workflow.TUNING_SUFFIXES):
                     rows.append({
                         'artifactId': str(row.get('id') or ''), 'label': str(row.get('displayPath') or
                         Path(row['path']).name), 'path': str(row.get('path') or ''),
                         'sha256': str(row.get('sha256') or ''), 'role': str(row.get('role') or ''),
                     })
             self._tuning_task_projects = rows
-            self._task_picker_message = (tr('共 {count} 个已核验 SVP；载入时会再次核对文件身份。')
+            self._task_picker_message = (tr('共 {count} 个已核验调音工程；载入时会再次核对文件身份。')
                                          .format(count=len(rows)) if rows
-                                         else tr('此任务没有可载入的已核验 SVP 工程。'))
+                                         else tr('此任务没有可载入的已核验调音工程。'))
 
         self._worker_command('task-picker-detail', '正在核验任务中的调音工程…', work, finish)
 
@@ -709,9 +720,9 @@ class QuickTuning(QObject):
             row = next((item for item in detail.get('artifacts', ())
                         if item.get('id') == artifact_id and item.get('available') and item.get('openable')
                         and item.get('role') in ('editor_project', 'tuned_project')
-                        and Path(item.get('path', '')).suffix.casefold() == '.svp'), None)
+                        and Path(item.get('path', '')).suffix.casefold() in workflow.TUNING_SUFFIXES), None)
             if detail.get('jobId') != job or row is None:
-                raise ValueError('所选任务工程已变更、不可核验或不再是 SVP。')
+                raise ValueError('所选任务工程已变更、不可核验或格式不受支持。')
             return row
 
         def finish(row):
@@ -1114,7 +1125,7 @@ class QuickTuning(QObject):
             self._load(str(Path(url.toLocalFile()).resolve()))
 
     def accept_task(self, job, artifact):
-        if artifact['available'] and Path(artifact['path']).suffix.casefold() == '.svp':
+        if artifact['available'] and Path(artifact['path']).suffix.casefold() in workflow.TUNING_SUFFIXES:
             self._load(artifact['path'], str(Path(job).resolve()), artifact)
 
     @Slot(str)
@@ -1295,7 +1306,7 @@ class QuickTuning(QObject):
     @Slot(str)
     def setExpressionMode(self, mode):
         if mode != 'preserve' and self._uses_group_styles():
-            self._error(ValueError(GROUP_STYLE_ONLY))
+            self._error(ValueError(self.project.style_only_reason))
             return
         if mode in _SOURCES and mode != self._options['expression_mode']:
             self._set_options({'expression_mode': mode, 'reference_sources': [], 'retained_sources': [],
@@ -1701,7 +1712,7 @@ class QuickTuning(QObject):
             self._saved_copy = path
             self.state, self.message = 'done', tr('已另存并核验独立工程：') + path
 
-        self._command('exporting', '正在核验并另存 SVP…', work, finish)
+        self._command('exporting', '正在核验并另存工程…', work, finish)
 
     @Slot()
     def openMixdown(self):

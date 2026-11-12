@@ -1,4 +1,4 @@
-"""Inspect exact SVP sidecar receipts without following linked paths."""
+"""Inspect exact tuning sidecar receipts without following linked paths."""
 
 from __future__ import annotations
 
@@ -234,7 +234,7 @@ def _unverified(candidate_sha: str | None, receipt_sha: str | None,
 
 
 def inspect_candidate_origin(project: Any, *, sha256: str | None = None) -> dict[str, Any] | None:
-    """Return a bounded receipt summary for one exact sibling SVP sidecar.
+    """Return a bounded receipt summary for one exact sibling tuning sidecar.
 
     The tuning sidecar wins when both supported sidecars exist. Only the exact
     appended names ``<project>.tuning.json`` and ``<project>.style.json`` are

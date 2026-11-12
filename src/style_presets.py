@@ -408,7 +408,7 @@ def _note_weights(times, spans, phrases, values, recipe, phrase_recipe, detail, 
     return weights
 
 
-def apply_style(project, preset, *, strength=.6, track_indices=None, density_mode='dense', pitch_enabled=None, detail=None, time_range=None, cancel=lambda:None, finalize=True):
+def apply_style(project, preset, *, strength=.6, track_indices=None, density_mode='dense', pitch_enabled=None, detail=None, time_range=None, cancel=lambda:None, finalize=True, controls_allowed=None):
     """Return an independent candidate and a receipt; no synthesis or I/O.
 
     Baseline linear knots are never removed. Changes are additive smooth
@@ -482,6 +482,8 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
         for name,values in PRESETS[preset]['controls'].items():
             cancel();original=parameters.get(name)
             state={'status':'skipped','recipe_start_core_release':list(values)};controls[name]=state
+            if controls_allowed is not None and name not in controls_allowed:
+                state['reason']='unsupported_format_channel';continue
             if phrase_recipe and phrase_recipe.get(name):
                 state['phrase_opening_body_closing']=copy.deepcopy(phrase_recipe[name])
             try:xs,ys=_curve(original,track_index=index,channel=name)

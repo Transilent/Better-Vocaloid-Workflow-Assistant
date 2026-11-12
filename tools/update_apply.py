@@ -49,7 +49,7 @@ ROOT_FILES.update({'agent_control.py','agent_worker.py','agent_mcp.py','agent_sc
     'agent_pronunciation.py','agent_refinement.py','agent_errors.py','agent_monophony.py','agent_media.py',
     'agent_views.py','agent_delivery.py','agent_segments.py','agent_segment_workflow.py','agent_lyric_timeline.py','agent_lyric_reconcile.py',
     'docs/AgentMCP.zh-CN.md','packaging/agent-mcp.example.json','packaging/requirements-mcp.lock.txt'})
-ROOT_FILES.update({'tuning_engine.py','tuning_workflow.py','tuning_ui.py'})
+ROOT_FILES.update({'tuning_engine.py','tuning_workflow.py','tuning_ui.py','svp_tuning.py','ustx_tuning.py'})
 ROOT_FILES.update({'audio_mixdown.py', 'audio_mixdown_ui.py'})
 ROOT_FILES.update({'audio_mixdown_audition.py', 'mixdown_audition_service.py',
                    'mixdown_control_panel.py', 'mixdown_eq_curve.py',

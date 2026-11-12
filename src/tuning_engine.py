@@ -134,15 +134,16 @@ def _has_incomplete(report):
     return False
 
 
-def _apply_style_layers(project,preset,*,strength,pitch,detail,technique,indices,time_range=None,cancel=lambda:None):
+def _apply_style_layers(project,preset,*,strength,pitch,detail,technique,indices,time_range=None,cancel=lambda:None,controls=None):
     """Two explicitly selected layers in one transaction, with separate audit."""
     from style_presets import apply_style
     output,emotion=apply_style(project,preset,strength=strength,track_indices=indices,
-        density_mode='original',pitch_enabled=pitch,detail=detail,time_range=time_range,cancel=cancel,finalize=False)
+        density_mode='original',pitch_enabled=pitch,detail=detail,time_range=time_range,cancel=cancel,finalize=False,
+        controls_allowed=controls)
     if technique['style_technique']=='none' or technique['technique_strength']==0:return output,emotion
     output,layer=apply_style(output,technique['style_technique'],strength=technique['technique_strength'],
         track_indices=indices,density_mode='original',pitch_enabled=technique['technique_pitch'],
-        detail=detail,time_range=time_range,cancel=cancel,finalize=False)
+        detail=detail,time_range=time_range,cancel=cancel,finalize=False,controls_allowed=controls)
     selected=[emotion,layer]
     applied=any(r['status'] in ('applied','partial') for r in selected)
     incomplete=any(r['status'] in ('partial','skipped') for r in selected)
@@ -158,18 +159,15 @@ def _apply_style_layers(project,preset,*,strength,pitch,detail,technique,indices
     return output,combined
 
 
-class _StyleTargets:
-    """Address note placements in memory without flattening the saved SVP."""
+class StyleTargets:
+    """Map style-engine tracks back to the real track and placement they represent."""
 
-    def __init__(self, output, layout, indices):
-        self.output=output
-        self.placements=()
-        self.project=output
-        if any(layout.tracks[index].style_only for index in indices):
-            self.placements=tuple(p for index in indices for p in layout.tracks[index].placements)
-            self.project={'time':output['time'],'tracks':[p.style_track(output) for p in self.placements]}
+    def __init__(self, project, placements=()):
+        self.placements=placements
+        self.project=project
+        if placements:
             from vocal_expression import TempoMap
-            clock=TempoMap(output['time']['tempo'])
+            clock=TempoMap(project['time']['tempo'])
             self.spans=[(clock.to_seconds(min(n.start for n in p.notes)),
                          clock.to_seconds(max(n.end for n in p.notes))) for p in self.placements]
 
@@ -199,16 +197,66 @@ class _StyleTargets:
                 row[key]=self.audit(value)
         return row
 
-    def finish(self):
-        if not self.placements:
-            return self.project
-        for placement,styled in zip(self.placements,self.project['tracks']):
-            group=placement.group_in(self.output)
-            original=group.get('parameters',{})
-            for name,value in styled['mainGroup'].get('parameters',{}).items():
-                if name in (*EXPRESSION,'pitchDelta') and value!=original.get(name):
-                    group.setdefault('parameters',{})[name]=value
-        return self.output
+
+def _svp_targets(output,layout,indices):
+    if not any(layout.tracks[index].style_only for index in indices):
+        return StyleTargets(output)
+    placements=tuple(p for index in indices for p in layout.tracks[index].placements)
+    return StyleTargets({'time':output['time'],'tracks':[p.style_track(output) for p in placements]},placements)
+
+
+def _write_svp_style(output,targets):
+    if not targets.placements:
+        return targets.project
+    for placement,styled in zip(targets.placements,targets.project['tracks']):
+        group=placement.group_in(output)
+        original=group.get('parameters',{})
+        for name,value in styled['mainGroup'].get('parameters',{}).items():
+            if name in (*EXPRESSION,'pitchDelta') and value!=original.get(name):
+                group.setdefault('parameters',{})[name]=value
+    return output
+
+
+def apply_style_plan(targets,options,indices,*,controls=None,cancel=lambda:None,progress=lambda text:None):
+    """Apply the same region, emotion and technique rules to native placements."""
+    regions=options['style_regions']
+    attempted=False
+    style={'status':'not_selected','pitch_changed':False}
+    if regions:
+        progress('按时间片段叠加风格增量')
+        receipts=[]
+        for region in regions:
+            cancel()
+            tracks=[region['track_index']] if 'track_index' in region else indices
+            time_range=(region['start'],region['end'])
+            selection=targets.indices(tracks,time_range)
+            if not selection:
+                receipts.append({'status':'skipped','reason':'no_notes_in_region',
+                    'track_indices':tracks,'time_range_seconds':list(time_range)})
+                continue
+            targets.project,item=_apply_style_layers(targets.project,region['preset'],strength=region['strength'],pitch=region['pitch'],
+                indices=selection,detail=region['detail'],time_range=time_range,cancel=cancel,controls=controls,
+                technique={'style_technique':region.get('technique','none'),
+                    'technique_strength':region.get('technique_strength',.6),'technique_pitch':region.get('technique_pitch',True)})
+            receipts.append(targets.audit(item))
+        applied=any(r['status'] in ('applied','partial') for r in receipts)
+        incomplete=any(r['status'] in ('partial','skipped') for r in receipts)
+        style={'status':'partial' if applied and incomplete else 'applied' if applied else 'skipped' if incomplete else 'not_selected',
+               'mode':'regions','label':'时间片段风格','regions':receipts,
+               'applied_controls':sum(r.get('applied_controls',0) for r in receipts),
+               'skipped_controls':sum(r.get('skipped_controls',0) for r in receipts),
+               'pitch_changed':any(r.get('pitch_changed') for r in receipts),
+               'outside_regions_style_unchanged':True}
+        attempted=True
+    elif (options['performance_style']!='none' and options['style_strength']>0) or (
+            options['style_technique']!='none' and options['technique_strength']>0):
+        progress('叠加所选风格增量')
+        targets.project,style=_apply_style_layers(targets.project,options['performance_style'],strength=options['style_strength'],
+            indices=targets.indices(indices),pitch=options['style_pitch'],detail=options['style_detail'],technique=options,cancel=cancel,controls=controls)
+        style=targets.audit(style)
+        attempted=True
+    return style,attempted
+
 
 
 def _curve_changes(before,after,layout,indices):
@@ -349,42 +397,10 @@ def process_project(data,options,*,cancel=lambda:None,progress=lambda text:None,
                     'operation':'explicit_primary_source_replacement','recoverable_from_input':True})
     report['primary_curve_replacements']=replacements
     report['primary']=primary;report['stages'].append('primary')
-    targets=_StyleTargets(output,layout,indices)
-    style={'status':'not_selected','pitch_changed':False}
-    if regions:
-        progress('按时间片段叠加风格增量')
-        receipts=[]
-        for region in regions:
-            cancel()
-            tracks=[region['track_index']] if 'track_index' in region else indices
-            time_range=(region['start'],region['end'])
-            selection=targets.indices(tracks,time_range)
-            if not selection:
-                receipts.append({'status':'skipped','reason':'no_notes_in_region',
-                    'track_indices':tracks,'time_range_seconds':list(time_range)})
-                continue
-            targets.project,item=_apply_style_layers(targets.project,region['preset'],strength=region['strength'],pitch=region['pitch'],
-                indices=selection,detail=region['detail'],time_range=time_range,cancel=cancel,
-                technique={'style_technique':region.get('technique','none'),
-                    'technique_strength':region.get('technique_strength',.6),'technique_pitch':region.get('technique_pitch',True)})
-            receipts.append(targets.audit(item))
-        applied=any(r['status'] in ('applied','partial') for r in receipts)
-        incomplete=any(r['status'] in ('partial','skipped') for r in receipts)
-        style={'status':'partial' if applied and incomplete else 'applied' if applied else 'skipped' if incomplete else 'not_selected',
-               'mode':'regions','label':'时间片段风格','regions':receipts,
-               'applied_controls':sum(r.get('applied_controls',0) for r in receipts),
-               'skipped_controls':sum(r.get('skipped_controls',0) for r in receipts),
-               'pitch_changed':any(r.get('pitch_changed') for r in receipts),
-               'outside_regions_style_unchanged':True}
-        report['stages'].append('style')
-    elif (options['performance_style']!='none' and options['style_strength']>0) or (
-            options['style_technique']!='none' and options['technique_strength']>0):
-        progress('叠加所选风格增量')
-        targets.project,style=_apply_style_layers(targets.project,options['performance_style'],strength=options['style_strength'],
-            indices=targets.indices(indices),pitch=options['style_pitch'],detail=options['style_detail'],technique=options,cancel=cancel)
-        style=targets.audit(style)
-        report['stages'].append('style')
-    output=targets.finish()
+    targets=_svp_targets(output,layout,indices)
+    style,attempted=apply_style_plan(targets,options,indices,cancel=cancel,progress=progress)
+    if attempted:report['stages'].append('style')
+    output=_write_svp_style(output,targets)
     report['style']=style
     progress('统一保形加密与保护校验')
     density_indices=[i for i in indices if not layout.tracks[i].style_only]

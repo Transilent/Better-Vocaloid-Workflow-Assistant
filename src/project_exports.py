@@ -401,18 +401,9 @@ def prepare_vsqx_audio(job, request, receipts):
 
 
 def read_ustx(path):
-    """Read USTX's YAML 1.2 booleans without converting Japanese 'no' to False."""
-    import re
-    import yaml
-    class Loader(yaml.SafeLoader):
-        pass
-    # Copy the resolver table: changing SafeLoader would affect unrelated code.
-    Loader.yaml_implicit_resolvers = {
-        key:[rule for rule in rules if rule[0]!='tag:yaml.org,2002:bool']
-        for key,rules in yaml.SafeLoader.yaml_implicit_resolvers.items()}
-    Loader.add_implicit_resolver('tag:yaml.org,2002:bool',
-        re.compile(r'^(?:true|True|TRUE|false|False|FALSE)$'), list('tTfF'))
-    return yaml.load(path.read_text(encoding='utf-8-sig'),Loader=Loader)
+    """Use the same lyric and YAML rules for export verification and tuning."""
+    from ustx_tuning import read
+    return read(path.read_bytes(), require_version=False)
 
 
 def portable_audio_reference(path, fmt, source):

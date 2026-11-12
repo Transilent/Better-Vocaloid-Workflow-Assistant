@@ -167,10 +167,10 @@ def _source_path(path: Any) -> Path:
         result = Path(path).expanduser().resolve()
     except (OSError, TypeError, ValueError) as error:
         raise ValueError("工程路径无效。") from error
-    if result.suffix.lower() != ".svp":
-        raise ValueError("Style worker 仅支持 SVP 工程；其他格式请先转换并核对音符与歌词。")
+    from tuning_workflow import project_format
+    project_format(result)
     if not _io_path(result).is_file():
-        raise ValueError("SVP 工程不存在或不是文件：" + str(result))
+        raise ValueError("工程不存在或不是文件：" + str(result))
     return result
 
 
@@ -179,9 +179,9 @@ def _read_source(path: Any) -> tuple[Path, bytes]:
     try:
         raw = _io_path(source).read_bytes()
     except OSError as error:
-        raise ValueError("无法读取 SVP 工程：" + str(source)) from error
+        raise ValueError("无法读取工程：" + str(source)) from error
     if not raw:
-        raise ValueError("SVP 工程为空。")
+        raise ValueError("工程为空。")
     return source, raw
 
 
@@ -292,11 +292,17 @@ def _context_unknown(
 
 
 def _build_context(source: Path, raw: bytes) -> dict[str, Any]:
-    from svp_tuning import Layout
-
-    project = _project(raw)
+    from tuning_workflow import project_format
+    format = project_format(source)
+    if format == "ustx":
+        from ustx_tuning import Layout, read
+        layout = Layout(read(raw))
+        project = layout.score
+    else:
+        from svp_tuning import Layout
+        project = _project(raw)
+        layout = Layout(project)
     clock, tempo_rows = _tempo(project)
-    layout = Layout(project)
     source_sha = _sha256_bytes(raw)
     track_rows: list[dict[str, Any]] = []
     note_rows: list[dict[str, Any]] = []
@@ -395,10 +401,12 @@ def _build_context(source: Path, raw: bytes) -> dict[str, Any]:
                 ))
                 continue
 
-            lyric, lyric_raw, lyric_known = _lyric(raw_note)
+            singing = _note_is_singing(raw_note, _lyric(raw_note)[0])
+            lyric, lyric_raw, lyric_known = _lyric(
+                {"lyrics": raw_note["source_lyric"]} if "source_lyric" in raw_note else raw_note)
             pitch = note.pitch
             pitch_known = pitch is not None
-            reference = {"group_placement": placement.key} if placement.library_index is not None else {}
+            reference = {"group_placement": placement.key} if format == "ustx" or placement.library_index is not None else {}
             note_payload = {
                 "source_sha256": source_sha,
                 "track_index": track_index,
@@ -440,7 +448,7 @@ def _build_context(source: Path, raw: bytes) -> dict[str, Any]:
                 "lyric": lyric,
                 "lyric_raw": lyric_raw,
                 "lyric_known": lyric_known,
-                "singing": _note_is_singing(raw_note, lyric),
+                "singing": singing,
             })
             parsed_count += 1
 
@@ -471,12 +479,12 @@ def _build_context(source: Path, raw: bytes) -> dict[str, Any]:
         "kind": CONTEXT_KIND,
         "source_path": str(source),
         "source_sha256": source_sha,
-        "format": "svp",
+        "format": format,
         "format_version": layout.version,
-        "synthesizer_v_2": layout.sv2,
+        "synthesizer_v_2": getattr(layout, "sv2", False),
         "tempo": tempo_rows,
         "time_basis": {
-            "tick": "SVP blick",
+            "tick": "SVP blick" if format == "svp" else "shared score blick (1 USTX tick = 1470000 blick)",
             "quarter_ticks": _SV_QUARTER,
             "note_fields": "onset_tick/duration_tick are group-local; start_seconds/end_seconds are project positions including placement offset and trim",
             "region_fields": "project seconds",
@@ -1722,6 +1730,11 @@ _PARTIAL_REASON_ADVICE = {
     "unsupported_nonlinear_controls": "部分原有非线性控制无法自动加密；已保留原曲线，试听后再决定是否重建控制点。",
     "preserved_nonlinear": "已有非线性曲线保持原样；其他可写曲线仍可应用风格。",
     "native_pitch_controls_preserved": "已保留原生音高控制，此组不叠加音高增量；可继续应用表情风格。",
+    "unsupported_format_channel": "这项配方参数没有已验证的原生对应项，保持原样。",
+    "ustx_custom_expression_preserved": "USTX 使用自定义表情定义，已保留该通道。",
+    "ustx_invalid_curve_preserved": "USTX 原曲线的坐标或值不符合原生约定，已保留。",
+    "ustx_no_native_delta": "叠加量经原生整数采样后没有变化，或原曲线已到边界。",
+    "ustx_curve_capacity": "这条 USTX 曲线超过保形采样容量，已保留。",
     "unsupported_fractional_time_controls": "部分控制点使用非整数时间，未自动加密；请保留原曲线或在 GUI 中显式重采样。",
 }
 
@@ -1801,7 +1814,7 @@ def render_style(
     *,
     allowed_media_roots: list[Any] | None = None,
 ) -> dict[str, Any]:
-    """Render a real independent SVP candidate through tuning_workflow."""
+    """Render a real independent project candidate through tuning_workflow."""
     check_cancel = _cancel_checker(cancel)
     progress_callback = _progress_callback(progress)
     check_cancel()
@@ -1906,10 +1919,14 @@ def render_style(
         raise ValueError("调音回执与候选或源工程身份不一致。")
 
     check_cancel()
-    progress_callback("保留源工程伴奏并改写候选中的相对媒体引用")
-    media_relocation = _relocate_candidate_media(
-        source, candidate, allowed_roots=media_roots,
-    )
+    if source.suffix.casefold() == ".ustx":
+        # USTX shares the verified session's reference policy. No source
+        # media is opened or copied by the local style worker in this format.
+        media_relocation = {"kind": "vwa.tuning.media-references", "format": "ustx",
+                            "tracks": result.get("media_references", []), "audio_copied": False}
+    else:
+        progress_callback("保留源工程伴奏并改写候选中的相对媒体引用")
+        media_relocation = _relocate_candidate_media(source, candidate, allowed_roots=media_roots)
     if not _io_path(candidate).is_file():
         raise ValueError("媒体迁移后候选工程不存在：" + str(candidate))
     if candidate == source:
@@ -1917,7 +1934,11 @@ def render_style(
     if _file_sha256(source) != current_sha:
         raise ValueError("媒体迁移期间源 SVP 发生变化；候选已保留，请核对后重试。")
     candidate_raw = _io_path(candidate).read_bytes()
-    candidate_project = _project(candidate_raw)
+    if source.suffix.casefold() == ".ustx":
+        from ustx_tuning import read
+        candidate_project = read(candidate_raw)
+    else:
+        candidate_project = _project(candidate_raw)
     # The final identity must cover the rewritten media paths and copied
     # accompaniment, not merely the pre-relocation tuning output.
     candidate_sha = _sha256_bytes(candidate_raw)

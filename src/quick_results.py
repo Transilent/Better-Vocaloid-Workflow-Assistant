@@ -102,14 +102,15 @@ OPENABLE_SUFFIXES = frozenset(('.wav', '.flac', '.ogg', '.mp3', '.m4a', '.mp4', 
                                '.txt', '.log', '.csv', '.json', '.png', '.jpg', '.jpeg', '.webp'))
 
 
-def is_svp_project(row):
-    """True only for an available Quick-editable Synthesizer V project."""
+def is_tuning_project(row):
+    """True only for available artifacts in a native tuning format."""
     if not isinstance(row, dict) or row.get('available') is not True:
         return False
     if row.get('role') not in ('editor_project', 'tuned_project'):
         return False
     try:
-        return Path(row.get('path') or '').suffix.casefold() == '.svp'
+        from tuning_workflow import TUNING_SUFFIXES
+        return Path(row.get('path') or '').suffix.casefold() in TUNING_SUFFIXES
     except (TypeError, ValueError):
         return False
 
@@ -459,7 +460,9 @@ def _delivery(job, action, rows):
         svps = [row for row in exports if Path(row['path']).suffix.casefold() == '.svp']
         baseline = next((row for row in svps if Path(row['path']) == job / 'exports/voices.svp'), None)
         midi = [row for row in verified if row['role'] == 'midi']
-        selected = baseline or (svps[0] if len(svps) == 1 else exports[0] if len(exports) == 1 else None)
+        supported = [row for row in exports if is_tuning_project(row)]
+        selected = baseline or (svps[0] if len(svps) == 1 else supported[0] if len(supported) == 1
+                                else exports[0] if len(exports) == 1 else None)
         return exports + midi, Path(selected['path']) if selected else None
     if action == 'audio_ready':
         from pipeline import requirements
@@ -623,7 +626,7 @@ def task_primary_action(detail, *, running_here=False, work_busy=False):
             kind, artifact_ids = 'publishing', targets['publishing']
         elif handoff == 'audio_ready' and detail.get('mixArtifactIds'):
             kind, artifact_ids = 'audio_mixdown', detail['mixArtifactIds']
-        elif handoff == 'awaiting_tuning' and is_svp_project(by_id.get(artifact_id)):
+        elif handoff == 'awaiting_tuning' and is_tuning_project(by_id.get(artifact_id)):
             kind, artifact_ids = 'tuning', (artifact_id,)
         else:
             kind = 'delivery'
@@ -712,7 +715,7 @@ def register_existing_video(job, path, check=None):
 __all__ = (
     'ARTIFACT_ROLES', 'ARTIFACT_STATES', 'BINDING_KINDS', 'BINDING_LABELS', 'TASK_STATES',
     'TASK_MUTATION_CAPABILITIES', 'task_reference_blockers', 'task_projection_failure',
-    'task_blocker_text', 'task_mutation_error', 'protect_task_detail', 'is_svp_project',
+    'task_blocker_text', 'task_mutation_error', 'protect_task_detail', 'is_tuning_project',
     'OPENABLE_SUFFIXES', 'scan', 'detail', 'task_primary_action', 'rename', 'delete', 'task_log',
     'register_existing_video', 'register_external', 'unlink_external', 'rebuild_artifacts',
 )
