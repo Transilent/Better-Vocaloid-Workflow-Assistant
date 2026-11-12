@@ -8,6 +8,8 @@ respective services.
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
+from stat import S_ISDIR
 from typing import Callable
 
 import check_dependencies
@@ -132,6 +134,24 @@ def _path_has_entries(path):
         return False
 
 
+def _install_volume(root):
+    """Read the volume used by the installer's disk preflight, without creating it."""
+    root = Path(root).absolute()
+    for path in (root, *root.parents):
+        try:
+            if not S_ISDIR(path.stat().st_mode):
+                break
+        except FileNotFoundError:
+            continue
+        except OSError:
+            break
+        try:
+            return {'path': str(root), 'free_bytes': shutil.disk_usage(path).free}
+        except OSError:
+            break
+    return {'path': str(root), 'free_bytes': None}
+
+
 def _tree_presence(root, *, damaged_names=('current',), partial_names=('downloads', 'staging', 'previous')):
     root = Path(root)
     if any((root / name).exists() for name in damaged_names):
@@ -239,7 +259,8 @@ def _roformer_row(runtime):
         except OSError:
             cached = None
             break
-    health = {'runtime': installed_runtime or '', 'cache_bytes': cached,
+    health = {'runtime': installed_runtime or '', 'ready_runtime': (installed_runtime or '') if ready else '',
+              'cache_bytes': cached,
               'installed_estimate': bool(ready and installed_runtime == runtime),
               'scope': '安装收据、文件路径与大小；完整校验另行执行',
               'source': '当前固定组件清单'}
@@ -388,7 +409,19 @@ def catalog(runtime, *, check=None) -> list[dict]:
     for read in (lambda: _builtin_row(check), lambda: _roformer_row(runtime), _chinese_row, _expression_row):
         if check is not None and check():
             raise InterruptedError('已取消组件检查。')
-        rows.append(read())
+        row = read()
+        root = {'roformer': optional_components.COMPONENT, 'chinese': feature_components.ROOT,
+                'expression': expression_component.COMPONENT}.get(row['id'])
+        if root is not None:
+            row['health']['volume'] = _install_volume(root)
+            # Chinese files are checked again before download. Reserve for the
+            # entire set as an estimate so an unchecked file is never counted
+            # as guaranteed reusable. Only the installer decides if space is enough.
+            reserve = row['required_bytes']
+            if row['id'] == 'chinese' and reserve:
+                reserve += 64 * 1024**2
+            row['health']['reserve_bytes'] = reserve
+        rows.append(row)
     return [{key: row[key] for key in ROW_KEYS} for row in rows]
 
 
@@ -456,11 +489,17 @@ def verification_summary(report):
                     label = ' · '.join(str(part) for part in (path, reason) if part)[:480]
                     if label not in rows:
                         rows.append(label)
-    count = (report.get('progress') or {}).get('sha256_checked', report.get('checked_files'))
-    if count is None and report.get('verified') and report.get('feature') == 'chinese':
-        count = report.get('complete_files')
+    progress = report.get('progress') or {}
+    count = progress.get('sha256_checked', report.get('checked_files'))
+    expected = progress.get('files_expected')
+    if report.get('feature') == 'chinese':
+        expected = report.get('files')
+        if count is None and report.get('verified'):
+            count = report.get('complete_files')
     return {'state': str(report.get('state') or ''), 'verified': report.get('verified') is True,
-            'checked': count if type(count) is int else None, 'issues': rows[:8], 'issue_count': len(rows)}
+            'checked': count if type(count) is int else None,
+            'expected': expected if type(expected) is int and expected > 0 else None,
+            'issues': rows[:8], 'issue_count': len(rows)}
 
 
 __all__ = [

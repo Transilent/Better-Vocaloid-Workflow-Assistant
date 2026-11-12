@@ -200,7 +200,9 @@ class QuickVideo(QObject):
         self._state = 'idle'
         self._message = '选择原视频和 Mixdown；自动对齐后生成新的 MP4。'
         self._alignment: dict[str, Any] | None = None
+        self._alignment_issue = ''
         self._preview = ''
+        self._preview_time: float | None = None
         self._result = ''
         self._result_sha256 = ''
         self._result_signature: tuple[int, int] | None = None
@@ -251,6 +253,9 @@ class QuickVideo(QObject):
             'message': self._message,
             'busy': busy,
             'preview': self._preview,
+            'previewTime': self._preview_time,
+            'sourceAvailable': source_ok,
+            'mixdownAvailable': mix_ok,
             'result': self._result,
             'resultStale': self._is_result_stale(),
             'canAnalyze': bool(source_ok and mix_ok and not busy),
@@ -259,6 +264,9 @@ class QuickVideo(QObject):
             'canPublish': can_publish,
             'canCancel': bool((self._worker.kind or self._active_kind) in _VIDEO_KINDS),
             'alignmentSummary': self._alignment_summary(),
+            'alignmentOffset': self._alignment_offset(),
+            'autoNeedsManual': bool(self._auto_align and (self._alignment_issue or
+                                    (self._alignment and self._alignment.get('accepted') is False))),
             'canAdoptSuggestion': self._can_adopt_suggestion(),
             'resultSha256': self._result_sha256,
             'receipt': deepcopy(self._result_receipt) if self._result_receipt else {},
@@ -285,7 +293,7 @@ class QuickVideo(QObject):
     def _alignment_summary(self) -> str:
         report = self._alignment
         if not isinstance(report, dict):
-            return ''
+            return self._alignment_issue
         try:
             offset = float(report.get('offset_seconds', 0) or 0)
         except (TypeError, ValueError):
@@ -304,8 +312,6 @@ class QuickVideo(QObject):
         text = f'自动对齐 {offset:+.3f} 秒'
         if value is not None:
             text += f' · 相关度 {value:.3f}'
-        if method:
-            text += f' · {method}'
         return text
 
     def _alignment_offset(self) -> float | None:
@@ -382,7 +388,9 @@ class QuickVideo(QObject):
             self._output = text
         if media_changed:
             self._alignment = None
+            self._alignment_issue = ''
             self._preview = ''
+            self._preview_time = None
         self._state = 'ready'
         if self._result:
             self._message = ('输入已修改；旧 MP4 保留，但当前结果不可登记。'
@@ -396,13 +404,8 @@ class QuickVideo(QObject):
         if self._closed or self._worker.kind or self._active_kind:
             return
         if key == 'offset':
-            try:
-                number = float(value)
-            except (TypeError, ValueError):
-                self._notice('手动偏移必须是秒数。')
-                return
-            if not math.isfinite(number) or not -3600 <= number <= 3600:
-                self._notice('手动偏移应在 -3600 到 3600 秒之间。')
+            number = self._checked_offset(value)
+            if number is None:
                 return
             self._offset = number
         elif key == 'autoAlign':
@@ -412,6 +415,30 @@ class QuickVideo(QObject):
         else:
             self._notice('未知的视频选项。')
             return
+        self._option_changed()
+
+    def _checked_offset(self, value):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            self._notice('手动偏移必须是秒数。')
+            return None
+        if not math.isfinite(number) or not -3600 <= number <= 3600:
+            self._notice('手动偏移应在 -3600 到 3600 秒之间。')
+            return None
+        return number
+
+    @Slot(float)
+    def setManualOffset(self, value):
+        if self._closed or self._worker.kind or self._active_kind:
+            return
+        number = self._checked_offset(value)
+        if number is not None and (self._auto_align or self._offset != number):
+            self._auto_align = False
+            self._offset = number
+            self._option_changed()
+
+    def _option_changed(self):
         self._state = 'ready'
         self._message = ('设置已修改；旧 MP4 保留，但需要重新合成后才能登记。'
                          if self._is_result_stale() else '设置已更新。')
@@ -660,7 +687,9 @@ class QuickVideo(QObject):
             output = output.with_stem(f'cover-mixdown-{stamp}')
         self._output = str(output)
         self._alignment = None
+        self._alignment_issue = ''
         self._preview = ''
+        self._preview_time = None
         self._result = ''
         self._result_sha256 = ''
         self._result_signature = None
@@ -741,6 +770,8 @@ class QuickVideo(QObject):
                 else:
                     self._state = 'failed'
                     self._message = str(error)[:1600] or error.__class__.__name__
+                    if kind == 'video-analyze':
+                        self._alignment_issue = self._message
             else:
                 try:
                     finish(value)
@@ -822,7 +853,7 @@ class QuickVideo(QObject):
             before = _signature(source)
             send('正在读取视频静帧…')
             destination = job / 'preview.jpg'
-            cover = publication.extract_cover(source, destination, seconds)
+            cover = publication.extract_cover(source, destination, seconds, require_audio=False)
             _stop_check(stop)
             if _signature(source) != before:
                 raise ValueError('预览期间原视频发生变化，请重新选择后再试。')
@@ -831,6 +862,7 @@ class QuickVideo(QObject):
 
         def finish(value):
             self._preview = str(value['url'])
+            self._preview_time = value['cover']['seconds']
             self._state = 'done' if self._result else 'ready'
             self._message = '静帧已更新；这不会写入或登记正式成品。'
 
@@ -854,6 +886,7 @@ class QuickVideo(QObject):
             return
         self._active_job = job
         self._alignment = None
+        self._alignment_issue = ''
 
         def work(stop, send):
             source, mix, _used_mix, _used_source = self._resolve_used_inputs(
@@ -1055,7 +1088,9 @@ class QuickVideo(QObject):
             self._result_signature = value['signature']
             self._result_token = value['token']
             self._result_receipt = receipt
-            self._alignment = deepcopy(receipt.get('alignment') or self._alignment)
+            if receipt['options']['auto_align'] and receipt.get('alignment'):
+                self._alignment = deepcopy(receipt['alignment'])
+                self._alignment_issue = ''
             self._registered_row = None
             self._registered_sha256 = ''
             stale = self._is_result_stale()

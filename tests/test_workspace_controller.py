@@ -10,8 +10,9 @@ from workspace_controller import WorkspaceController
 controller = WorkspaceController([('自动', 'auto'), ('直连', 'direct')])
 rows = [
     {'id': 'builtin', 'title': 'Karaoke 2', 'summary': '', 'status_text': '已就绪',
-     'model': 'dual', 'can_use': True, 'can_install': False, 'can_verify': False},
+     'status': 'ready', 'model': 'dual', 'can_use': True, 'can_install': False, 'can_verify': False},
     {'id': 'roformer', 'title': 'BS-RoFormer', 'summary': '', 'status_text': '已就绪',
+     'status': 'ready', 'health': {'ready_runtime': 'cpu'},
      'model': 'roformer', 'can_use': True, 'can_install': True, 'can_verify': True},
 ]
 with tempfile.TemporaryDirectory(dir=APP / 'work') as folder:
@@ -56,5 +57,19 @@ with tempfile.TemporaryDirectory(dir=APP / 'work') as folder:
     assert not controller.progress(install.operation_id, 3, 3, '旧操作')
     assert not controller.complete(install.operation_id, 'succeeded', '旧操作')
     assert controller.complete(retry.operation_id, 'succeeded', '校验通过')
+
+    # Browsing a different install target cannot change what the draft needs.
+    controller.draft = controller.draft.edit('recognize_lyrics', False)
+    cpu_on_cuda_tab = {**rows[1], 'status': 'missing', 'can_use': False}
+    assert controller.set_catalog('cuda', [rows[0], cpu_on_cuda_tab])
+    assert controller.component_plan['missingIds'] == []
+    assert not controller.use_builtin_component()
+    controller.draft = controller.draft.edit('roformer_device', 'cuda').edit('lyrics', '保留歌词')
+    assert controller.component_plan['missingIds'] == ['roformer']
+    assert controller.query == 'roformer'
+    assert controller.use_builtin_component() and controller.route == 'processing'
+    assert controller.draft.music_path == str(music)
+    assert controller.draft_view['lyrics'] == '保留歌词'
+    assert controller.draft_view['separator_model'] == 'dual'
 assert not any(name == 'PyQt5' or name == 'PySide6' for name in sys.modules)
 print('PASS: draft and selection across navigation, frozen commands, cancel, retry and stale event rejection')

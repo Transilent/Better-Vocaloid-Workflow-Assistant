@@ -261,7 +261,8 @@ class QuickVideoTests(unittest.TestCase):
             wait_for(self.application, lambda: not self.controller.view['busy'])
         self.assertEqual(self.controller.view['state'], 'cancelled')
 
-        def fake_cover(source, destination, seconds):
+        def fake_cover(source, destination, seconds, *, require_audio):
+            self.assertFalse(require_audio)
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(b'\x89PNG\r\n\x1a\nfixture')
             return {'source': str(source), 'seconds': seconds, 'sha256': '0' * 64}
@@ -270,6 +271,7 @@ class QuickVideoTests(unittest.TestCase):
             self.controller.previewFrame(1.25)
             wait_for(self.application, lambda: not self.controller.view['busy'])
         self.assertTrue(self.controller.view['preview'].startswith('file:'))
+        self.assertEqual(self.controller.view['previewTime'], 1.25)
         self.assertEqual(self.controller.view['result'], '')
 
 

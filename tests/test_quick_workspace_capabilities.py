@@ -171,6 +171,7 @@ try:
 
         bridge.navigate('video_mixdown')
         settle()
+        click('videoTaskInputsToggle')
         item('videoSourceIdentity').setProperty('text', bv)
         click('videoFindTask')
         wait('video page finds the exact BV task without network',

@@ -209,6 +209,7 @@ class QuickBridge(QObject):
     navigationChanged = Signal()
     draftChanged = Signal()
     selectionChanged = Signal()
+    componentTaskPlanChanged = Signal()
     queryChanged = Signal()
     optionsChanged = Signal()
     activityChanged = Signal()
@@ -233,6 +234,8 @@ class QuickBridge(QObject):
         self._work.changed.connect(self._work_changed)
         self._task_work.changed.connect(self._work_changed)
         self._catalog.changed.connect(self.activityChanged)
+        self._catalog.changed.connect(self.componentTaskPlanChanged)
+        self.draftChanged.connect(self._component_draft_changed)
         self._read.changed.connect(self.taskChanged)
         self._details.changed.connect(self.taskChanged)
         self._task_work.changed.connect(self.taskChanged)
@@ -277,7 +280,8 @@ class QuickBridge(QObject):
         draft = preparation.restore_draft_settings(draft)
         self.state.set_draft(draft)
         self._rows = RowsModel(self, (('componentId', 'id'), ('title', 'title'), ('summary', 'summary'),
-                                     ('status', 'status'), ('statusText', 'status_text')))
+                                     ('status', 'status'), ('statusText', 'status_text'),
+                                     ('componentGroup', 'component_group')))
         self._component_checks = {}
         self._tasks = RowsModel(self, tuple((key, key) for key in ('jobId', 'title', 'statusText', 'summary', 'sourceText')))
         self._exit_when_idle = False
@@ -529,25 +533,22 @@ class QuickBridge(QObject):
     def _component_check_key(component_id, runtime):
         return component_id, runtime if component_id == 'roformer' else ''
 
-    @Property('QVariantMap', notify=draftChanged)
+    @Property('QVariantMap', notify=componentTaskPlanChanged)
     def componentTaskPlan(self):
         draft = self.state.draft_view
-        voice = draft['voice_mode']
-        roformer = voice == 'roformer' or (voice == 'dual' and draft['separator_model'] == 'roformer')
-        separator = 'roformer' if roformer else 'builtin' if voice != 'import' else ''
+        plan = self.state.component_plan
+        required = plan['components']
+        separator = next((key for key in required if key in ('builtin', 'roformer')), '')
         lines = [tr('使用导入的分轨') if not separator else
                  'BS-RoFormer · ' + {'cpu': 'CPU', 'cuda': 'CUDA', 'auto': tr('自动选择运行库')}[draft['roformer_device']]
-                 if roformer else tr('内置分离')]
-        required = [separator] if separator else []
+                 if separator == 'roformer' else tr('内置分离')]
         if draft['target'] != 'separation':
             lines.append('Vocal2Midi ' + ('2.0' if draft['midi_backend'] == 'v2' else '1.0'))
             if draft['recognize_lyrics']:
                 chinese = draft['language'] == 'zh'
                 lines.append(tr('中文识别') if chinese else tr('日语识别'))
                 lines.append('TiFA' if draft['alignment_engine'] == 'tifa' else 'HubertFA')
-                if chinese:
-                    required.append('chinese')
-        return {'summary': ' · '.join(lines), 'components': required}
+        return {**plan, 'summary': ' · '.join(lines)}
 
     @Property(str, notify=selectionChanged)
     def selectedId(self):
@@ -911,8 +912,13 @@ class QuickBridge(QObject):
             self.navigate('results')
 
     def _update_rows(self):
-        self._rows.replace_rows(self.state.visible_rows)
+        self._rows.replace_rows(self.state.component_browser_rows)
         self.selectionChanged.emit()
+
+    def _component_draft_changed(self):
+        if self.state.rows:
+            self._update_rows()
+        self.componentTaskPlanChanged.emit()
 
     @Slot(str)
     def setQuery(self, query):
@@ -946,6 +952,12 @@ class QuickBridge(QObject):
             self.navigationChanged.emit()
 
     @Slot()
+    def useBuiltinComponent(self):
+        if not self.workBusy and not self.loading and self.state.use_builtin_component():
+            self.draftChanged.emit()
+            self.navigationChanged.emit()
+
+    @Slot()
     def refresh(self):
         if self.loading or self.state.active or self._closed:
             return
@@ -956,7 +968,11 @@ class QuickBridge(QObject):
             if isinstance(error, InterruptedError):
                 return
             if error is None:
+                first_catalog = not self.state.rows
                 self.state.set_catalog(runtime, rows)
+                missing = self.state.component_plan['missingIds']
+                if first_catalog and missing:
+                    self.state.select(missing[0])
             else:
                 self.state.set_catalog(runtime, ())
                 self.state.rows_runtime = None

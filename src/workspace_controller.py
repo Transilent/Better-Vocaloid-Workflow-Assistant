@@ -182,8 +182,60 @@ class WorkspaceController:
         self.source = source
         return True
 
+    @property
+    def component_plan(self):
+        """Separate what preparation chose from the target browsed in the catalog."""
+        draft = self.draft_view
+        voice = draft['voice_mode']
+        if voice == 'import':
+            separator = ''
+        elif voice == 'roformer' or (voice == 'dual' and draft['separator_model'] == 'roformer'):
+            separator = 'roformer'
+        else:
+            separator = 'builtin'
+        required = [separator] if separator else []
+        if draft['target'] != 'separation' and draft['recognize_lyrics'] and draft['language'] == 'zh':
+            required.append('chinese')
+
+        known = self.rows_runtime == self.runtime and bool(self.rows)
+        by_id = {row['id']: row for row in self.rows} if known else {}
+        ready = {key for key, row in by_id.items() if row['status'] == 'ready'}
+        if separator == 'roformer' and known:
+            installed = by_id.get('roformer', {}).get('health', {}).get('ready_runtime')
+            requested = draft['roformer_device']
+            # A CUDA build can run the CPU path; an explicit CUDA request needs
+            # that build. This is a file check, not a GPU/driver guarantee.
+            if installed in ('cpu', 'cuda') and (requested != 'cuda' or installed == 'cuda'):
+                ready.add('roformer')
+            else:
+                ready.discard('roformer')
+        return {
+            'components': required, 'ready': known,
+            'readyIds': [key for key in by_id if key in ready],
+            'missingIds': [key for key in required if key not in ready] if known else [],
+            'builtinReady': 'builtin' in ready,
+        }
+
+    @property
+    def component_browser_rows(self):
+        plan = self.component_plan
+        missing, ready = set(plan['missingIds']), set(plan['readyIds'])
+        groups = ('missing', 'ready', 'optional')
+        grouped = [{**row, 'component_group': 'missing' if row['id'] in missing else
+                    'ready' if row['id'] in ready or row['status'] == 'ready' else 'optional'}
+                   for row in self.visible_rows]
+        return sorted(grouped, key=lambda row: groups.index(row['component_group']))
+
     def use_component(self):
-        row = self.selected
+        return self._use_separation_row(self.selected)
+
+    def use_builtin_component(self):
+        plan = self.component_plan
+        if not plan['builtinReady'] or 'roformer' not in plan['missingIds']:
+            return False
+        return self._use_separation_row(next(row for row in self.rows if row['id'] == 'builtin'))
+
+    def _use_separation_row(self, row):
         if self.active or self.rows_runtime != self.runtime or not row.get('can_use'):
             return False
         model = row.get('model')

@@ -1,6 +1,8 @@
 """Pure, isolated contracts for the shared component operation layer."""
 from pathlib import Path
 import sys
+import tempfile
+from types import SimpleNamespace
 from unittest.mock import patch
 
 APP = Path(__file__).resolve().parents[1]
@@ -81,9 +83,25 @@ cpu_ready = dict(READY, runtime='cpu')
 roformer_cpu = catalog('cuda', roformer=cpu_ready)[1]
 assert roformer_cpu['status'] == 'missing'
 assert roformer_cpu['status_text'] == '当前目标未安装'
+assert roformer_cpu['health']['ready_runtime'] == 'cpu'
 assert roformer_cpu['installed_bytes'] == 0
 assert roformer_cpu['can_install'] and not roformer_cpu['can_verify']
 assert not roformer_cpu['can_use'] and 'CPU' in roformer_cpu['detail']
+
+with tempfile.TemporaryDirectory(dir=APP / 'work') as folder:
+    root = Path(folder)
+    install_root = root / 'some-volume' / 'dependencies' / 'optional'
+    install_root.parents[1].mkdir()
+    with patch.object(operations.shutil, 'disk_usage', return_value=SimpleNamespace(free=0)) as disk:
+        row = catalog(roformer_root=install_root)[1]
+        assert row['health']['volume'] == {'path': str(install_root), 'free_bytes': 0}
+        assert any(call.args == (install_root.parents[1],) for call in disk.call_args_list)
+    with patch.object(operations.shutil, 'disk_usage', side_effect=PermissionError):
+        assert catalog(roformer_root=install_root)[1]['health']['volume']['free_bytes'] is None
+
+summary = operations.verification_summary({'verified': True, 'state': 'verified',
+                                          'progress': {'sha256_checked': 3, 'files_expected': 3}})
+assert summary['checked'] == summary['expected'] == 3
 
 # Dispatch preserves the existing service call shapes and callbacks.
 progress = lambda done, total, text: None
