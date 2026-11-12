@@ -19,7 +19,9 @@ Item {
     property bool showPlotHeader: true
     property int minimumPlotHeight: Math.round(230 * theme.scale)
 
-    property int activeBand: 0
+    property int selectedBand: 0
+    readonly property int activeBand: availableBands > 0 ? clamp(selectedBand, 0, availableBands - 1) : -1
+    readonly property string activeBandName: activeBand >= 0 ? bandName(activeBand) : ""
     property int dragBand: -1
     property bool dragging: false
     property real dragFrequency: 0
@@ -42,10 +44,6 @@ Item {
     readonly property string spectrumSource: spectrum && spectrum.source ? String(spectrum.source) : ""
     readonly property string currentType: activeBand >= 0 ? String(bandValue(activeBand, "type", "bell")) : "bell"
 
-    onBandsChanged: {
-        if (activeBand >= availableBands)
-            activeBand = availableBands > 0 ? 0 : -1;
-    }
     onEqCurveChanged: schedulePaint(responseCanvas)
     onSpectrumChanged: schedulePaint(spectrumCanvas)
     onMaxHzChanged: {
@@ -230,26 +228,15 @@ Item {
         if (root.controller && typeof root.controller.setOption === "function")
             root.controller.setOption("eqEnabled", true);
     }
-    function commitNumeric(key, raw, fallback) {
-        if (root.activeBand < 0)
+    function bandName(index) {
+        return "B" + (index + 1);
+    }
+
+    function commitNumeric(key, index, value) {
+        if (index !== root.activeBand || index < 0)
             return;
-        const value = Number(raw);
-        if (!isFinite(value))
-            return;
-        let low = 0;
-        let high = 100000;
-        if (key === "freq_hz") {
-            low = 20;
-            high = root.expectedMaxHz;
-        } else if (key === "gain_db") {
-            low = -18;
-            high = 18;
-        } else if (key === "q") {
-            low = 0.1;
-            high = 24;
-        }
         root.ensureEqEnabled();
-        root.controller.setBand(root.activeBand, key, root.clamp(value, low, high));
+        root.controller.setBand(index, key, value);
     }
 
     function editBandWithKey(event) {
@@ -577,7 +564,7 @@ Item {
                         mouse.accepted = false;
                         return;
                     }
-                    root.activeBand = hit;
+                    root.controller.selectEqBand(hit);
                     if ((mouse.modifiers & Qt.AltModifier) !== 0) {
                         root.controller.setBand(hit, "enabled", !root.isBandEnabled(hit));
                         return;
@@ -616,7 +603,7 @@ Item {
                     const geometry = root.plotGeometry(width, height);
                     const hit = root.nearestBand(mouse.x, mouse.y, geometry);
                     if (hit >= 0) {
-                        root.activeBand = hit;
+                        root.controller.selectEqBand(hit);
                         dragPublish.stop()
                         root.dragPending = false
                         root.dragging = false;
@@ -630,7 +617,7 @@ Item {
                         wheel.accepted = false;
                         return;
                     }
-                    root.activeBand = hit;
+                    root.controller.selectEqBand(hit);
                     chartFrame.forceActiveFocus(Qt.MouseFocusReason);
                     if (root.bandValue(hit, "type", "") !== "highpass") {
                         const delta = wheel.angleDelta.y || wheel.pixelDelta.y * 8;
@@ -671,48 +658,63 @@ Item {
 
             Repeater {
                 model: root.availableBands
-                Rectangle {
+                Button {
+                    id: bandCard
                     required property int index
+                    readonly property bool selected: root.activeBand === index
+                    readonly property bool blocksMixdownSpace: true
+                    readonly property string details: root.frequencyLabel(root.bandFrequency(index))
+                        + "  " + root.gainLabel(root.bandGain(index)) + "  Q " + root.qValue(index).toFixed(2)
+                    objectName: "mixdownEqBand_" + index
                     Layout.fillWidth: true
                     implicitHeight: Math.round(54 * root.theme.scale)
-                    radius: Math.round(7 * root.theme.scale)
-                    color: root.activeBand === index ? root.theme.selected : root.theme.surface
-                    border.width: 1
-                    border.color: root.activeBand === index ? root.theme.selectedLine : root.theme.line
-                    opacity: root.isBandEnabled(index) ? 1 : 0.62
+                    padding: Math.round(9 * root.theme.scale)
+                    hoverEnabled: true
+                    focusPolicy: Qt.StrongFocus
+                    text: root.bandName(index) + " · " + root.typeLabel(root.bandValue(index, "type", "bell"))
+                    Accessible.name: text
+                    Accessible.description: details + " · "
+                        + (root.isBandEnabled(index) ? root.vwaTr("已启用") : root.vwaTr("已关闭"))
+                    Accessible.checkable: true
+                    Accessible.checked: selected
+                    onClicked: root.controller.selectEqBand(index)
 
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.margins: Math.round(9 * root.theme.scale)
+                    background: Rectangle {
+                        radius: Math.round(7 * root.theme.scale)
+                        color: bandCard.selected ? root.theme.selected : bandCard.down ? root.theme.pressed
+                            : bandCard.hovered ? root.theme.hover : root.theme.surface
+                        border.width: bandCard.visualFocus ? 2 : 1
+                        border.color: bandCard.visualFocus ? root.theme.accent
+                            : bandCard.selected ? root.theme.selectedLine : root.theme.line
+                        Behavior on color {
+                            enabled: !root.theme.reduceMotion && !bandCard.down
+                            ColorAnimation { duration: 90 }
+                        }
+                    }
+                    contentItem: RowLayout {
                         spacing: Math.round(7 * root.theme.scale)
                         Rectangle {
                             width: Math.round(8 * root.theme.scale)
                             height: width
                             radius: width / 2
-                            color: root.bandColor(index)
+                            color: root.isBandEnabled(bandCard.index) ? root.bandColor(bandCard.index) : root.theme.muted
                         }
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 1
                             Text {
-                                text: "B" + (index + 1) + " · " + root.typeLabel(root.bandValue(index, "type", "bell"))
+                                text: bandCard.text
                                 color: root.theme.text
                                 font.pixelSize: Math.round(11 * root.theme.scale)
                                 font.weight: Font.DemiBold
                             }
                             Text {
                                 Layout.fillWidth: true
-                                text: root.frequencyLabel(root.bandFrequency(index)) + "  " + root.gainLabel(root.bandGain(index)) + "  Q " + root.qValue(index).toFixed(2)
+                                text: bandCard.details
                                 color: root.theme.muted
-                                font.pixelSize: Math.round(9 * root.theme.scale)
+                                font.pixelSize: Math.round(10 * root.theme.scale)
                                 elide: Text.ElideRight
                             }
-                        }
-                    }
-                    MouseArea {
-                        anchors.fill: parent
-                        onClicked: {
-                            root.activeBand = index;
                         }
                     }
                 }
@@ -736,7 +738,7 @@ Item {
                 rowSpacing: Math.round(7 * root.theme.scale)
 
                 Text {
-                    text: "B" + (root.activeBand + 1)
+                    text: root.activeBandName
                     color: root.theme.muted
                     font.pixelSize: Math.round(11 * root.theme.scale)
                     font.weight: Font.DemiBold
@@ -748,6 +750,7 @@ Item {
                     Layout.fillWidth: true
                     Layout.minimumWidth: Math.round(96 * root.theme.scale)
                     theme: root.theme
+                    fieldLabel: root.activeBandName + " · " + root.vwaTr("频段类型")
                     model: root.typeOptions()
                     currentIndex: root.typeIndex(root.currentType)
                     onActivated: {
@@ -755,79 +758,54 @@ Item {
                             root.ensureEqEnabled();
                         root.controller.setBand(root.activeBand, "type", currentValue);
                     }
-                    Accessible.name: root.vwaTr("频段类型")
                 }
 
-                TextField {
-                    id: freqField
+                UiNumberField {
+                    objectName: "mixdownEqFrequency"
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: Math.round(86 * root.theme.scale)
+                    theme: root.theme
+                    fieldLabel: root.activeBandName + " · " + root.vwaTr("中心频率")
+                    unit: "Hz"
+                    scopeKey: root.activeBand
+                    currentValue: Math.round(root.bandValue(root.activeBand, "freq_hz", 1000))
+                    minimum: 20
+                    maximum: Math.floor(root.expectedMaxHz)
+                    decimals: 0
+                    arrowStep: 10
+                    onCommitted: (scope, value) => root.commitNumeric("freq_hz", scope, value)
+                }
+
+                UiNumberField {
+                    objectName: "mixdownEqGain"
                     Layout.fillWidth: true
                     Layout.minimumWidth: Math.round(72 * root.theme.scale)
-                    text: root.activeBand >= 0 ? Math.round(root.bandValue(root.activeBand, "freq_hz", 1000)) : ""
-                    color: root.theme.text
-                    font.pixelSize: Math.round(11 * root.theme.scale)
-                    horizontalAlignment: TextInput.AlignHCenter
-                    selectByMouse: true
-                    validator: DoubleValidator {
-                        bottom: 20
-                        top: root.expectedMaxHz
-                        decimals: 0
-                    }
-                    placeholderText: "Hz"
-                    Accessible.name: root.vwaTr("中心频率")
-                    background: Rectangle {
-                        radius: Math.round(6 * root.theme.scale)
-                        color: root.theme.base
-                        border.color: freqField.activeFocus ? root.theme.accent : root.theme.line
-                    }
-                    onEditingFinished: root.commitNumeric("freq_hz", text, 1000)
+                    theme: root.theme
+                    fieldLabel: root.activeBandName + " · " + root.vwaTr("频段增益")
+                    unit: "dB"
+                    scopeKey: root.activeBand
+                    currentValue: root.safeNumber(root.bandValue(root.activeBand, "gain_db", 0), 0)
+                    minimum: -18
+                    maximum: 18
+                    decimals: 1
+                    arrowStep: 1
+                    onCommitted: (scope, value) => root.commitNumeric("gain_db", scope, value)
                 }
 
-                TextField {
-                    id: gainField
+                UiNumberField {
+                    objectName: "mixdownEqQ"
                     Layout.fillWidth: true
                     Layout.minimumWidth: Math.round(66 * root.theme.scale)
-                    text: root.activeBand >= 0 ? Number(root.bandValue(root.activeBand, "gain_db", 0)).toFixed(1) : ""
-                    color: root.theme.text
-                    font.pixelSize: Math.round(11 * root.theme.scale)
-                    horizontalAlignment: TextInput.AlignHCenter
-                    selectByMouse: true
-                    validator: DoubleValidator {
-                        bottom: -18
-                        top: 18
-                        decimals: 1
-                    }
-                    placeholderText: "dB"
-                    Accessible.name: root.vwaTr("频段增益")
-                    background: Rectangle {
-                        radius: Math.round(6 * root.theme.scale)
-                        color: root.theme.base
-                        border.color: gainField.activeFocus ? root.theme.accent : root.theme.line
-                    }
-                    onEditingFinished: root.commitNumeric("gain_db", text, 0)
-                }
-
-                TextField {
-                    id: qField
-                    Layout.fillWidth: true
-                    Layout.minimumWidth: Math.round(62 * root.theme.scale)
-                    text: root.activeBand >= 0 ? root.qValue(root.activeBand).toFixed(2) : ""
-                    color: root.theme.text
-                    font.pixelSize: Math.round(11 * root.theme.scale)
-                    horizontalAlignment: TextInput.AlignHCenter
-                    selectByMouse: true
-                    validator: DoubleValidator {
-                        bottom: 0.1
-                        top: 24
-                        decimals: 2
-                    }
-                    placeholderText: "Q"
-                    Accessible.name: root.vwaTr("频段 Q")
-                    background: Rectangle {
-                        radius: Math.round(6 * root.theme.scale)
-                        color: root.theme.base
-                        border.color: qField.activeFocus ? root.theme.accent : root.theme.line
-                    }
-                    onEditingFinished: root.commitNumeric("q", text, 0.707)
+                    theme: root.theme
+                    fieldLabel: root.activeBandName + " · " + root.vwaTr("频段 Q")
+                    unit: "Q"
+                    scopeKey: root.activeBand
+                    currentValue: root.qValue(root.activeBand)
+                    minimum: 0.1
+                    maximum: 24
+                    decimals: 2
+                    arrowStep: 0.1
+                    onCommitted: (scope, value) => root.commitNumeric("q", scope, value)
                 }
 
                 UiButton {
@@ -842,7 +820,9 @@ Item {
                             root.ensureEqEnabled()
                         root.controller.setBand(root.activeBand, "enabled", turnOn)
                     }
-                    Accessible.name: text
+                    Accessible.name: root.activeBandName + " · " + text
+                    Accessible.checkable: true
+                    Accessible.checked: selected
                 }
             }
         }

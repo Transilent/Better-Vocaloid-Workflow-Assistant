@@ -131,6 +131,22 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(telemetry, [snapshot])
         self.assertIn(('seekConfirmed', ()), self.events)
 
+    def test_failed_seek_returns_to_last_confirmed_media_position(self):
+        generation = self.prepare()
+        self.service.events.put(dict(
+            type='live_state', request_id=generation,
+            snapshot=dict(state='paused', sample_rate=48000, duration_frames=480000,
+                          native=dict(media_frame=96000, sample_rate=48000))))
+        self.core.poll()
+        self.assertEqual(self.core.position(), 2000)
+        self.assertTrue(self.core.seek(6500, autoplay=False))
+        self.assertEqual(self.core.position(), 6500)
+        self.service.events.put(dict(type='error', request_id=generation, message='output lost'))
+        self.core.poll()
+        self.assertTrue(self.core.failed)
+        self.assertFalse(self.core.seek_pending)
+        self.assertEqual(self.core.position(), 2000)
+        self.assertNotIn(('seekConfirmed', ()), self.events)
 
     def test_loop_boundary_keeps_the_existing_range_seek(self):
         generation = self.prepare()

@@ -67,6 +67,7 @@
     "src/quick_ui/UiButton.qml",
     "src/quick_ui/UiIcon.qml",
     "src/quick_ui/UiComboBox.qml",
+    "src/quick_ui/UiNumberField.qml",
     "tests/test_component_operations.py",
     "tests/test_preparation_commands.py",
     "tests/test_quick_results.py",

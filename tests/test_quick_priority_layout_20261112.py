@@ -277,15 +277,38 @@ def tuning_flow(folder):
     before_selection = tune.view['start'], tune.view['end']
     before_regions = list(tune.regions)
     before_lyric = tune.view['lyricContext']
+    assert before_lyric.get('lyric'), before_lyric
+    if tune.view['viewportSpan'] < tune.view['duration'] - .001:
+        tap(visual('timelineFit'))
+    assert abs(tune.view['viewportSpan'] - tune.view['duration']) < .001
+    assert visual('timelineFit').property('text') == '回当前词'
+    tap(visual('timelineFit'))
+    assert tune.view['viewportSpan'] < tune.view['duration'] - .001
+    assert tune.view['viewportStart'] <= before_lyric['start']
+    assert tune.view['viewportStart'] + tune.view['viewportSpan'] >= before_lyric['end']
+    assert before_selection == (tune.view['start'], tune.view['end']) and before_regions == tune.regions
+    tap(visual('timelineFit'))
+    assert abs(tune.view['viewportSpan'] - tune.view['duration']) < .001
     before_span = tune.view['viewportSpan']
+    before_left = tune.view['viewportStart']
     strip = visual('tuningViewportInput')
     thumb = visual('tuningViewportThumb')
-    grip = strip.mapFromScene(thumb.mapToScene(QPointF(thumb.width() - 6, thumb.height() / 2)))
+    grip = strip.mapFromScene(thumb.mapToScene(QPointF(thumb.width() - 14 * scale / 100, thumb.height() / 2)))
     drag(strip, grip.x(), grip.y(), strip.width() * .67)
     wait('right grip zooms', lambda: tune.view['viewportSpan'] < before_span * .85)
+    assert tune.view['viewportStart'] == before_left
+    old_end = tune.view['viewportStart'] + tune.view['viewportSpan']
+    left_grip = strip.mapFromScene(thumb.mapToScene(QPointF(14 * scale / 100, thumb.height() / 2)))
+    drag(strip, left_grip.x(), left_grip.y(), strip.width() * .1)
+    assert abs(tune.view['viewportStart'] + tune.view['viewportSpan'] - old_end) < .001
     left = tune.view['viewportStart']
-    drag(strip, strip.width() * .25, strip.height() / 2, strip.width() * .36)
+    span = tune.view['viewportSpan']
+    center = strip.mapFromScene(thumb.mapToScene(QPointF(thumb.width() / 2, thumb.height() / 2)))
+    drag(strip, center.x(), center.y(), center.x() + strip.width() * .11)
     wait('thumb pans', lambda: tune.view['viewportStart'] > left + .01)
+    assert abs(tune.view['viewportSpan'] - span) < .001
+    assert '–' in visual('tuningViewportRange').property('text')
+    capture('tuning-viewport-controls')
     assert before_selection == (tune.view['start'], tune.view['end']) and before_regions == tune.regions
     assert tune.view['lyricContext'] == before_lyric
     before_return = (tune.view['start'], tune.view['end'], tune.view['viewportStart'], tune.view['viewportSpan'])

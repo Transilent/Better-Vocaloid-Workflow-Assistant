@@ -212,16 +212,18 @@ class RealtimePreviewPlayerCore:
     def seek(self, position_ms, *, autoplay=None):
         self._serial += 1
         target = max(0, min(int(position_ms), self._duration))
-        if autoplay is not None:
-            self._intent = bool(autoplay)
+        intent = self._intent if autoplay is None else bool(autoplay)
+        if not self._queue('seek', (target, intent), self._serial):
+            self._pending_seek = None
+            return False
+        self._intent = intent
         self._pending_seek = dict(token=self._serial, control_id=None, target=target)
-        self._position = target
         self._end_reported = False
-        return self._queue('seek', (target, self._intent), self._serial)
+        return True
 
     def play(self):
         self._intent = True
-        if self._ready and self._position >= self._duration:
+        if self._ready and self.position() >= self._duration:
             return self.seek(self._loop_start if self._loop else 0, autoplay=True)
         return self._queue('play')
 
@@ -254,7 +256,9 @@ class RealtimePreviewPlayerCore:
         self._loop_end = max(self._loop_start, int(end_ms))
 
     def position(self):
-        return self._position
+        # The target is shown optimistically, while the last device position
+        # remains available if the request is rejected or the device fails.
+        return self._pending_seek['target'] if self._pending_seek is not None else self._position
 
     def duration(self):
         return self._duration

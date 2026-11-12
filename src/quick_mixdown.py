@@ -84,6 +84,7 @@ def _artifacts_list(value: Any) -> list[dict[str, Any]]:
 class QuickMixdown(QObject):
     viewChanged = Signal()
     positionChanged = Signal()
+    pendingSeekChanged = Signal()
     tracksChanged = Signal()
     trackIdsChanged = Signal()
     bandsChanged = Signal()
@@ -109,6 +110,7 @@ class QuickMixdown(QObject):
         self._preset_plan = None
         self._preset_undo = None
         self._view = {}
+        self._pending_seek_id = 0
         self._tracks = self._state.tracks
         self._bands = self._state.bands
         self._eq_basis = (self._state.eq_enabled, self._state.sample_rate)
@@ -242,6 +244,10 @@ class QuickMixdown(QObject):
     @Property(int, notify=positionChanged)
     def position(self):
         return self._state.position
+
+    @Property(int, notify=pendingSeekChanged)
+    def pendingSeekId(self):
+        return self._pending_seek_id
 
     @Property('QVariantList', notify=tracksChanged)
     def tracks(self):
@@ -563,6 +569,7 @@ class QuickMixdown(QObject):
             and not self._active_kind and not support_probe_busy)
         view = self._state.view(can_export=can_export, can_register=can_register,
                                 can_play=can_play)
+        view['canSeek'] = bool(can_play and player.ready and not self._source_edit_pending)
         receipt_output = ((self._export_receipt or {}).get('output')
                           if isinstance(self._export_receipt, dict) else {})
         export_sha = str((receipt_output or {}).get('sha256') or '')
@@ -621,6 +628,11 @@ class QuickMixdown(QObject):
         if position != self._state.position:
             self._state.set_position(position)
             self.positionChanged.emit()
+        pending = self._preview.pending_seek if self._preview is not None else None
+        seek_id = pending['seek_id'] if pending and not self._source_edit_pending else 0
+        if seek_id != self._pending_seek_id:
+            self._pending_seek_id = seek_id
+            self.pendingSeekChanged.emit()
 
     def _after_render_change(self, *, preset_name=None, keep_preset_undo=False, during_drag=False):
         if not keep_preset_undo:
@@ -720,11 +732,12 @@ class QuickMixdown(QObject):
         self._recompute_and_emit()
 
     def _player_error(self, message):
+        seeking = self._preview is not None and self._preview.pending_seek is not None
         if self._preview is not None:
             self._preview.failed()
         self._clear_hotspots()
         with self._lock:
-            self._state.message = str(message)[:1600]
+            self._state.message = (('定位未完成：' if seeking else '') + str(message))[:1600]
         self._recompute_and_emit()
 
     def _apply_reverb_measurement(self, data):
@@ -985,6 +998,13 @@ class QuickMixdown(QObject):
             self._state.set_expanded(value)
         self._recompute_and_emit()
 
+    @Slot(int)
+    def selectEqBand(self, index):
+        with self._lock:
+            changed = self._state.select_eq_band(index)
+        if changed:
+            self._recompute_and_emit()
+
     @Slot(str)
     def selectMix(self, value):
         if not self._ensure_entered():
@@ -1039,11 +1059,15 @@ class QuickMixdown(QObject):
         if not self._ensure_entered():
             return
         try:
-            if self._preview is None or self._player is None or not self._player.ready:
+            if self._preview is None or self._player is None or not self._player.ready or self._source_edit_pending:
                 raise ValueError('连续试听尚未就绪。')
-            self._preview.commit_seek(position)
-            self._recompute_and_emit()
+            if self._preview.commit_seek(position):
+                self._recompute_and_emit()
+            else:
+                self._notice('定位未完成，请重试。')
         except Exception as error:
+            if self._preview is not None:
+                self._preview.dragging = False
             self._notice(error)
 
     @Slot()

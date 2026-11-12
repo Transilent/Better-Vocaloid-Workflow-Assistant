@@ -518,6 +518,7 @@ class MixdownWorkspaceState:
         self.message = '独立 WAV · 无需先创建任务'
         self.expanded = False
         self.analysis = 'eq'
+        self.active_eq_band = 0
         self.selection = 'B'
         self.loop = False
         self.output = str(fresh_output_path() if output is None else Path(output).expanduser().resolve())
@@ -762,6 +763,12 @@ class MixdownWorkspaceState:
 
     def set_expanded(self, value: Any) -> None:
         self.expanded = bool(value)
+
+    def select_eq_band(self, index: int) -> bool:
+        if not 0 <= index < len(self._bands) or index == self.active_eq_band:
+            return False
+        self.active_eq_band = index
+        return True
 
     def set_loop(self, value: Any) -> None:
         self.loop = bool(value)
@@ -1077,6 +1084,7 @@ class MixdownWorkspaceState:
             'message': str(self.message),
             'expanded': bool(self.expanded),
             'analysis': str(self.analysis),
+            'activeEqBand': self.active_eq_band,
             'selection': str(self.selection),
             'loop': bool(self.loop),
             'output': str(self.output),

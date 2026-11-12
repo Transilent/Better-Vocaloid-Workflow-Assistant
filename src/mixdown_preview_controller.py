@@ -96,7 +96,7 @@ class MixdownPreviewController:
             return False
         target = max(0, min(int(position), self.player.duration()))
         pending = self.pending_seek
-        if pending is None or pending['target_ms'] != target:
+        if pending is None or pending['phase'] != 'queued' or pending['target_ms'] != target:
             self.stage_seek(target, phase='seeking')
             pending = self.pending_seek
         pending.update(phase='seeking', submitted_at=self.clock())

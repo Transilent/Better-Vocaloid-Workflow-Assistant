@@ -12,9 +12,11 @@ Item {
     required property real timelineDuration
     required property real viewportStart
     required property real viewportSpan
+    property real leadingInset: 0
+    property real trailingInset: 0
     signal viewportRequested(real start, real span)
 
-    implicitHeight: Math.round(29 * theme.scale)
+    implicitHeight: Math.round(32 * theme.scale)
     activeFocusOnTab: true
     enabled: timelineDuration > 0
     Accessible.role: Accessible.ScrollBar
@@ -31,8 +33,11 @@ Item {
     readonly property real timeTravel: Math.max(0, total - visibleSpan)
     readonly property real visualStart: timeTravel > .0001
         ? thumbTravel * (visibleStart - timelineStart) / timeTravel : 0
-    readonly property real gripWidth: Math.min(11 * theme.scale, visualWidth / 3)
-    readonly property string rangeText: stamp(visibleStart) + " – " + stamp(visibleStart + visibleSpan)
+    // At the minimum thumb width, leave a distinct center for panning.
+    readonly property real gripWidth: Math.min(16 * theme.scale, Math.max(0, (visualWidth - 10 * theme.scale) / 2))
+    readonly property string rangeStart: stamp(visibleStart)
+    readonly property string rangeEnd: stamp(visibleStart + visibleSpan)
+    readonly property string rangeText: rangeStart + " – " + rangeEnd
 
     function bound(value, low, high) {
         return Math.max(low, Math.min(high, value));
@@ -58,6 +63,8 @@ Item {
     }
 
     Keys.onPressed: event => {
+        if (pointer.pressed || event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
+            return;
         const shift = event.modifiers & Qt.ShiftModifier;
         const step = visibleSpan * (shift ? .025 : .12);
         if (event.key === Qt.Key_Left)
@@ -77,12 +84,32 @@ Item {
         event.accepted = true;
     }
 
+    Text {
+        objectName: "tuningViewportRange"
+        anchors.left: parent.left
+        anchors.right: rail.left
+        anchors.rightMargin: Math.round(5 * strip.theme.scale)
+        anchors.verticalCenter: rail.verticalCenter
+        visible: strip.enabled && width > 0
+        text: width >= Math.round(97 * strip.theme.scale) ? strip.rangeText
+            : strip.rangeStart + "\n– " + strip.rangeEnd
+        color: strip.theme.muted
+        font.pixelSize: Math.round(10 * strip.theme.scale)
+        horizontalAlignment: Text.AlignHCenter
+        elide: Text.ElideRight
+        textFormat: Text.PlainText
+        Accessible.ignored: true
+    }
+
     Rectangle {
         id: rail
         anchors.fill: parent
-        anchors.topMargin: Math.round(3 * strip.theme.scale)
+        anchors.leftMargin: strip.leadingInset
+        anchors.rightMargin: strip.trailingInset
+        anchors.topMargin: Math.round(2 * strip.theme.scale)
         anchors.bottomMargin: anchors.topMargin
         color: strip.theme.base
+        border.width: strip.activeFocus ? 2 : 1
         border.color: strip.activeFocus ? strip.theme.accent : strip.theme.line
         radius: Math.round(4 * strip.theme.scale)
 
@@ -107,28 +134,28 @@ Item {
             anchors.top: parent.top
             anchors.bottom: parent.bottom
             radius: rail.radius
-            color: strip.theme.selected
+            color: pointer.pointedPart === "pan" ? strip.theme.pressed : strip.theme.selected
             border.color: pointer.pressed || strip.activeFocus ? strip.theme.accent : strip.theme.selectedLine
 
-            Text {
-                anchors.centerIn: parent
-                visible: implicitWidth + 28 * strip.theme.scale < thumb.width
-                color: strip.theme.text
-                text: strip.rangeText
-                font.pixelSize: Math.round(10 * strip.theme.scale)
-                textFormat: Text.PlainText
-            }
             Repeater {
                 model: 2
                 Rectangle {
                     required property int index
-                    x: index === 0 ? Math.round(4 * strip.theme.scale)
-                        : parent.width - width - Math.round(4 * strip.theme.scale)
+                    readonly property bool leftGrip: index === 0
+                    readonly property bool pointed: pointer.pointedPart === (leftGrip ? "left" : "right")
+                    x: leftGrip ? 0 : parent.width - width
                     anchors.verticalCenter: parent.verticalCenter
-                    width: Math.round(3 * strip.theme.scale)
-                    height: Math.round(11 * strip.theme.scale)
-                    radius: width / 2
-                    color: strip.theme.accent
+                    width: strip.gripWidth
+                    height: Math.max(0, parent.height - Math.round(4 * strip.theme.scale))
+                    radius: Math.round(4 * strip.theme.scale)
+                    color: pointed ? strip.theme.selectedLine : "transparent"
+                    Rectangle {
+                        anchors.centerIn: parent
+                        width: Math.round(3 * strip.theme.scale)
+                        height: Math.round((parent.pointed ? 15 : 11) * strip.theme.scale)
+                        radius: width / 2
+                        color: parent.pointed ? strip.theme.text : strip.theme.accent
+                    }
                 }
             }
         }
@@ -147,6 +174,7 @@ Item {
             property real panSecondsPerPixel: 0
             property real nextStart: 0
             property real nextEnd: 0
+            readonly property string pointedPart: pressed ? dragMode : containsMouse ? targetAt(mouseX) : ""
 
             function targetAt(x) {
                 if (x < thumb.x || x > thumb.x + thumb.width)
@@ -176,7 +204,7 @@ Item {
             }
 
             cursorShape: {
-                const target = pressed ? dragMode : targetAt(mouseX);
+                const target = pointedPart;
                 return target === "left" || target === "right" ? Qt.SizeHorCursor
                     : target === "pan" ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.PointingHandCursor;
             }
@@ -218,5 +246,5 @@ Item {
     }
     ToolTip.visible: (pointer.containsMouse || activeFocus) && !pointer.pressed
     ToolTip.delay: 650
-    ToolTip.text: strip.vwaTr("拖中间移动，拖两端缩放")
+    ToolTip.text: strip.rangeText + " · " + strip.vwaTr("拖中间移动，拖两端缩放")
 }

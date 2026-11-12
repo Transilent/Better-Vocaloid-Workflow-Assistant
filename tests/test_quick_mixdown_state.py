@@ -294,7 +294,7 @@ class QuickMixdownLifecycleTests(unittest.TestCase):
         app = QCoreApplication.instance() or QCoreApplication([])
         worker = WorkerLane(app, 'mixdown-audible-telemetry-test')
         controller = QuickMixdown(app, worker)
-        controller._preview = SimpleNamespace(dirty=True, position_ms=0)
+        controller._preview = SimpleNamespace(dirty=True, position_ms=0, pending_seek=None)
         packet = {
             'schema': TELEMETRY_SCHEMA, 'status': 'ready', 'source': 'realtime_dsp',
             'sample_rate': 44100, 'media_frame': 1200, 'parameter_revision': 2, 'history_epoch': 7,

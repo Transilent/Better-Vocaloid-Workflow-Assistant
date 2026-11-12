@@ -26,7 +26,6 @@ ApplicationWindow {
     readonly property string studioRoute: videoAway ? "video_mixdown" : publicationAway ? "publishing"
         : tuningAway ? "tuning" : mixAway ? "audio_mixdown" : ""
     property bool closingAfterTask: false
-    property real entryProgress: 1
 
     width: initialWidth
     height: initialHeight
@@ -50,6 +49,7 @@ ApplicationWindow {
             || (window.preferences.theme === "system" && window.systemDark)
         readonly property real scale: window.initialScale || (window.preferences.ui_scale || 100) / 100
         readonly property bool reduceMotion: window.initialReducedMotion || !!window.preferences.reduce_motion
+        readonly property int panelMotionMs: reduceMotion ? 0 : 140
         readonly property color base: dark ? "#13141a" : "#f5f4f9"
         readonly property color surface: dark ? "#191b23" : "#ffffff"
         readonly property color raised: dark ? "#20222b" : "#eeebf5"
@@ -67,16 +67,6 @@ ApplicationWindow {
         readonly property color success: dark ? "#91cdbb" : "#286a53"
         readonly property color error: dark ? "#efabac" : "#9f3545"
         readonly property color attention: dark ? "#d4ad80" : "#825320"
-    }
-
-    NumberAnimation {
-        id: entrance
-        target: window
-        property: "entryProgress"
-        from: 0
-        to: 1
-        duration: 155
-        easing.type: Easing.OutCubic
     }
 
     onClosing: function(event) {
@@ -150,12 +140,6 @@ ApplicationWindow {
         function onCloseReady() {
             window.closingAfterTask = true
             window.close()
-        }
-        function onNavigationChanged() {
-            entrance.stop()
-            window.entryProgress = 1
-            if (!theme.reduceMotion)
-                entrance.start()
         }
     }
 
@@ -255,6 +239,8 @@ ApplicationWindow {
                         leftAligned: !window.compact
                         quiet: true
                         selected: window.controller.route === modelData.pageId
+                        Accessible.checkable: true
+                        Accessible.checked: selected
                         onClicked: window.controller.navigate(modelData.pageId)
                         onActiveFocusChanged: {
                             if (activeFocus)
@@ -266,6 +252,20 @@ ApplicationWindow {
                         }
                         ToolTip.visible: hovered && window.compact
                         ToolTip.text: modelData.title
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.leftMargin: 2
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 2
+                            height: Math.round(16 * theme.scale)
+                            radius: width / 2
+                            color: theme.accent
+                            opacity: navButton.selected ? 1 : 0
+                            Behavior on opacity {
+                                enabled: !theme.reduceMotion
+                                NumberAnimation { duration: 90; easing.type: Easing.OutCubic }
+                            }
+                        }
                     }
                 }
             }
@@ -285,7 +285,6 @@ ApplicationWindow {
             objectName: "pageLoader"
             Layout.fillWidth: true
             Layout.fillHeight: true
-            opacity: 0.82 + 0.18 * window.entryProgress
             sourceComponent: {
                 switch (window.controller.route) {
                 case "components": return componentsPage

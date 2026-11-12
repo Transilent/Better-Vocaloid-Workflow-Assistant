@@ -88,13 +88,24 @@ def escape():
     app.processEvents()
 
 
-def capture(name):
+def capture(name, *, keep_cursor=False):
     if os.environ.get('VWA_QA_LAYOUT_CAPTURE') == '1':
-        QTest.mouseMove(window, QPointF(8, 8).toPoint())
+        if not keep_cursor:
+            QTest.mouseMove(window, QPointF(8, 8).toPoint())
         QTest.qWait(95)
         image = window.grabWindow()
         assert not image.isNull() and (image.width(), image.height()) == viewport
         assert image.save(str(evidence / f'{name}-{width}.png'))
+
+def set_number(name, value, key=Qt.Key.Key_Return):
+    tap(name)
+    QTest.keyClick(window, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+    for char in value:
+        QTest.keyClick(window, Qt.Key(ord(char)))
+    if key is not None:
+        QTest.keyClick(window, key)
+    app.processEvents()
+
 
 
 def url(path):
@@ -178,10 +189,20 @@ def mix_flow(folder, audio, job):
     wait('actual realtime engine and three vocals', lambda: mix.view['canPlay'])
     readout = 'mixdownTrackReadout_' + vocal_ids[0]
     assert 'L24' in visual(readout).property('text') and '+125ms' in visual(readout).property('text')
+    assert visual(readout).height() >= 24 * scale / 100
     tap(readout)
     dialog = window.findChild(QObject, 'mixdownTrackSettings')
-    assert dialog is not None and dialog.property('opened')
+    assert dialog is not None and dialog.property('visible')
+    assert dialog.property('x') >= visual(readout).mapToScene(QPointF(0, 0)).x() + visual(readout).width()
+    wait('anchored precision dialog fully opened', lambda: dialog.property('opened'))
+    set_number('mixdownTrackOffset', '0.240')
+    assert mix.tracks[0]['offset'] == .24 and '+240ms' in visual(readout).property('text')
+    set_number('mixdownTrackOffset', '0.125')
+    assert mix.tracks[0]['offset'] == .125
+    capture('mixdown-track-precision')
     escape()
+    wait('return focus to the readout that opened the dialog',
+         lambda: not dialog.property('visible') and visual(readout).hasActiveFocus())
     fader_tops = [visual('mixdownGain_' + key).mapToScene(QPointF(0, 0)).y()
                   for key in [*vocal_ids, 'instrumental']]
     assert max(fader_tops) - min(fader_tops) < 2, fader_tops
@@ -196,25 +217,69 @@ def mix_flow(folder, audio, job):
     wait('processed view is active', lambda: mix.view['selection'] == 'B' and mix.spectrum.get('source'))
     tap('mixdownPlayPause')
     wait('paused before scrub', lambda: not mix.view['playing'])
-    start_point, end_point = point('mixdownProgressGrab', .25), point('mixdownProgressGrab', .39)
+    latest_fraction = .46  # Still within the source signal, before the rendered reverb tail.
+    start_point, end_point, newest = (point('mixdownProgressGrab', frac) for frac in (.25, .39, latest_fraction))
+    QTest.mouseMove(window, start_point)
+    wait('hover previews a time without seeking', lambda: visual('mixdownSeekFeedback', False) is not None)
+    assert mix.pendingSeekId == 0 and ':' in visual('mixdownSeekFeedbackLabel').property('text')
+    initial_position = mix.position
     button, keys = Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier
-    QTest.mousePress(window, button, keys, start_point)
-    QTest.mouseMove(window, end_point, 35)
-    QTest.mouseRelease(window, button, keys, end_point)
+    with patch.object(mix._player, 'poll', return_value=None):
+        QTest.mousePress(window, button, keys, start_point)
+        QTest.mouseMove(window, end_point, 35)
+        target = visual('mixdownProgress').property('value')
+        assert mix.position == initial_position and abs(target - .39 * mix.view['duration']) < 40
+        capture('mixdown-seek-drag', keep_cursor=True)
+        QTest.mouseRelease(window, button, keys, end_point)
+        request = mix.pendingSeekId
+        assert request > 0 and abs(visual('mixdownProgress').property('value') - target) <= 1
+        assert not visual('mixdownProgress').property('showWaiting')
+        wait('slow acknowledgement shows a waiting label', lambda: visual('mixdownProgress').property('showWaiting'))
+        assert '定位中' in visual('mixdownSeekFeedbackLabel').property('text')
+        capture('mixdown-seek-pending', keep_cursor=True)
+        QTest.mouseClick(window, button, keys, newest)
+        assert mix.pendingSeekId > request and not visual('mixdownProgress').property('showWaiting')
     wait('seek confirmed without losing pause',
-         lambda: not mix._player.seek_pending and abs(mix.position - .39 * mix.view['duration']) < 310
+         lambda: mix.pendingSeekId == 0 and not mix._player.seek_pending
+         and abs(mix.position - latest_fraction * mix.view['duration']) < 80
          and not mix.view['playing'])
+
+    tap('mixdownEqBand_2')
+    assert mix.view['activeEqBand'] == 2
+    set_number('mixdownEqFrequency', '1820')
+    assert mix.bands[2]['freq_hz'] == 1820
+    set_number('mixdownEqGain', '4.5')
+    assert mix.bands[2]['gain_db'] == 4.5
+    set_number('mixdownEqGain', '7.0', Qt.Key.Key_Escape)
+    assert mix.bands[2]['gain_db'] == 4.5
+    set_number('mixdownEqQ', '1.25')
+    assert abs(mix.bands[2]['q'] - 1.25) < .001
+    QTest.keyClick(window, Qt.Key.Key_Up, Qt.KeyboardModifier.ShiftModifier)
+    assert abs(mix.bands[2]['q'] - 1.26) < .001
+    set_number('mixdownEqGain', '8.5', key=None)
+    mix.selectEqBand(1)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    assert mix.bands[2]['gain_db'] == 4.5 and mix.bands[1]['gain_db'] != 8.5
+    tap('mixdownEqBand_2')
+
     position = mix.position
     tap('mixdownPlayPause')
     wait('resume from the scrubbed position', lambda: mix.view['playing'] and mix.position > position + 95)
     tap('mixdownExpand')
-    assert mix.view['expanded']
+    assert mix.view['expanded'] and mix.view['activeEqBand'] == 2
+    wait('expanded EQ shows the current real signal',
+         lambda: mix.spectrum.get('source') == 'dsp_fft_pre_post_eq'
+         and max(mix.spectrum.get('before', []), default=-96) > -65
+         and max(mix.spectrum.get('after', []), default=-96) > -65)
+    capture('mixdown-eq-focus')
     start = mix.position
     owner.navigate('updates')
+    assert visual('pageLoader').opacity() == 1
     wait('playback and telemetry persist off page', lambda: mix.position > start + 125 and mix.meters.get('source'))
     owner.navigate('audio_mixdown')
     wait('expanded state returns and meters remain available',
          lambda: mix.view['expanded'] and mix.spectrum.get('source') and visual('mixdownProgressGrab', False))
+    assert mix.view['activeEqBand'] == 2 and visual('mixdownEqFrequency').property('unit') == 'Hz'
     tap('mixdownExpand')
     capture('mixdown-live')
     geometry['mixSeekWidth'] = round(visual('mixdownProgressGrab').width())
@@ -266,7 +331,7 @@ def mix_flow(folder, audio, job):
     wait('registered result changes the one primary action', lambda: mix.view['videoHandoffMode'] == 'registered')
     assert visual('mixdownComposeVideo').isEnabled() and visual('mixdownRegister', False) is None
     capture('mixdown-registered')
-    print(f'PASS {width}: 3 vocals, A/B, seek, expand, resident DSP, real export/staleness, standalone and task registration')
+    print(f'PASS {width}: 3 vocals, A/B, hover and superseded seek, exact EQ edits, focus, resident DSP, real export and registration')
     return output
 
 

@@ -1137,6 +1137,7 @@ Item {
                             objectName: "voiceMode"
                             Layout.fillWidth: true
                             theme: page.theme
+                            fieldLabel: page.controller.text("声部路线")
                             model: [
                                 {label: page.controller.text("内置 · 主唱与和声双轨"), value: "dual"},
                                 {label: page.controller.text("内置 · 合并人声单轨"), value: "single"},
@@ -1357,6 +1358,7 @@ Item {
                             objectName: "workTarget"
                             Layout.fillWidth: true
                             theme: page.theme
+                            fieldLabel: page.controller.text("工作目标")
                             model: [
                                 {label: page.controller.text("仅分离音频"), value: "separation"},
                                 {label: page.controller.text("MIDI 与音频"), value: "midi"},
@@ -1375,7 +1377,10 @@ Item {
                             theme: page.theme
                             quiet: true
                             leftAligned: true
-                            text: (page.showOutputOptions ? "▾  " : "▸  ") + page.controller.text("输出目录与格式")
+                            text: page.controller.text("输出目录与格式")
+                            disclosure: page.showOutputOptions ? 1 : 0
+                            Accessible.checkable: true
+                            Accessible.checked: disclosure === 1
                             onClicked: page.showOutputOptions = !page.showOutputOptions
                         }
 
@@ -1541,7 +1546,10 @@ Item {
                         objectName: "advancedToggle"
                         Layout.fillWidth: true
                         theme: page.theme
-                        text: (Boolean(page.field("advanced_expanded")) ? "▾  " : "▸  ") + page.controller.text("高级处理选项")
+                        text: page.controller.text("高级处理选项")
+                        disclosure: Boolean(page.field("advanced_expanded")) ? 1 : 0
+                        Accessible.checkable: true
+                        Accessible.checked: disclosure === 1
                         quiet: true
                         selected: Boolean(page.field("advanced_expanded"))
                         leftAligned: true

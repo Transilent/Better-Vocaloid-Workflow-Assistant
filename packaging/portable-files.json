@@ -190,6 +190,10 @@
       "source": "src/quick_ui/UiComboBox.qml"
     },
     {
+      "file": "quick_ui/UiNumberField.qml",
+      "source": "src/quick_ui/UiNumberField.qml"
+    },
+    {
       "file": "context_structure.py",
       "source": "src/context_structure.py"
     },

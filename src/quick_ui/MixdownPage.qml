@@ -81,6 +81,8 @@ Item {
     readonly property bool expanded: !!view.expanded
     readonly property int durationMs: Math.max(0, page.number(view.duration, 0))
     readonly property real positionMs: page.clamp(page.number(controller ? controller.position : 0, 0), 0, Math.max(1, durationMs))
+    readonly property real shownPositionMs: seeking ? pendingPosition : positionMs
+    readonly property int pendingSeekId: controller.pendingSeekId
     readonly property bool compact: width / theme.scale < 1010 || height / theme.scale < 575
     readonly property int pageMargin: Math.round((compact ? 14 : 20) * theme.scale)
     readonly property int vocalTrackCount: page.countVocalTracks()
@@ -183,6 +185,11 @@ Item {
         return hours > 0 ? hours + ":" + two(minutes) + ":" + two(seconds) : two(minutes) + ":" + two(seconds);
     }
 
+    function preciseTimeText(milliseconds) {
+        const value = Math.max(0, Math.floor(milliseconds));
+        return page.timeText(value) + "." + String(value % 1000).padStart(3, "0");
+    }
+
     function shortPath(value) {
         const raw = page.textValue(value, "");
         if (raw.length === 0)
@@ -260,12 +267,12 @@ Item {
         if (!page.seeking)
             return false;
         const target = page.clamp(page.pendingPosition, 0, page.durationMs);
-        page.seeking = false;
         if (commit) {
             page.controller.commitSeek(target);
         } else if (page.controller && typeof page.controller.cancelSeek === "function") {
             page.controller.cancelSeek();
         }
+        page.seeking = false;
         return true;
     }
 
@@ -319,7 +326,7 @@ Item {
     function focusBlocksSpace(item) {
         let current = item;
         while (current) {
-            if (String(current.objectName || "") === "mixdownEqPlot")
+            if (String(current.objectName || "") === "mixdownEqPlot" || current.blocksMixdownSpace === true)
                 return true
             if (current instanceof TextInput || current instanceof TextEdit || current instanceof TextField || current instanceof TextArea || current instanceof SpinBox || current instanceof ComboBox || current instanceof Popup || current instanceof Dialog)
                 return true;
@@ -844,9 +851,11 @@ Item {
                     UiButton {
                         objectName: "mixdownExpand"
                         theme: page.theme
-                            text: page.expanded ? page.vwaTr("还原混音布局") : page.vwaTr("放大曲线")
+                        text: page.expanded ? page.vwaTr("还原混音布局") : page.vwaTr("放大曲线")
                         glyph: page.expanded ? "restore" : "expand"
                         selected: page.expanded
+                        Accessible.checkable: true
+                        Accessible.checked: selected
                         onClicked: page.controller.setExpanded(!page.expanded)
                     }
                 }
@@ -879,6 +888,7 @@ Item {
                             bands: page.bands
                             eqCurve: page.eqCurve
                             spectrum: page.spectrum
+                            selectedBand: page.number(page.view.activeEqBand, 0)
                             maxHz: page.number(page.view.maxHz, 20000)
                             showBandDetails: !page.compact || page.showCompactEqDetails
                             showPlotHeader: !page.compact
@@ -1023,7 +1033,7 @@ Item {
                     onClicked: page.controller.selectMix("B")
                 }
                 Text {
-                    text: page.timeText(page.seeking ? page.pendingPosition : page.positionMs) + " / " + page.timeText(page.durationMs)
+                    text: page.timeText(page.shownPositionMs) + " / " + page.timeText(page.durationMs)
                     color: page.theme.text
                     font.pixelSize: Math.round(11 * page.theme.scale)
                     font.family: "Consolas"
@@ -1286,24 +1296,48 @@ Item {
                 from: 0
                 to: Math.max(1, page.durationMs)
                 stepSize: 1
-                enabled: page.hasMedia && !page.loading && page.durationMs > 0
+                enabled: !!page.view.canSeek && page.durationMs > 0
                 focusPolicy: Qt.StrongFocus
+                wheelEnabled: false
+                readonly property int railHeight: Math.round(7 * page.theme.scale)
+                readonly property bool waiting: page.pendingSeekId > 0
+                readonly property bool showWaiting: waiting && seekWait.requestId === page.pendingSeekId
+                readonly property bool previewing: enabled && !waiting && seekGrab.containsMouse
                 Accessible.name: page.vwaTr("混音播放进度")
-                Accessible.description: page.timeText(page.positionMs) + " / " + page.timeText(page.durationMs)
+                Accessible.description: page.timeText(page.shownPositionMs) + " / " + page.timeText(page.durationMs)
+                    + (showWaiting && !page.seeking ? " · " + page.vwaTr("定位中") : "")
                     + page.vwaTr("。方向键定位，Shift 精调，Home / End 到开头或结尾。")
                 Keys.onPressed: event => page.keyboardSeek(event)
 
+                Timer {
+                    id: seekWait
+                    property int requestId: 0
+                    interval: 140
+                    onTriggered: requestId = page.pendingSeekId
+                }
+                Connections {
+                    target: page
+                    function onPendingSeekIdChanged() {
+                        seekWait.stop();
+                        if (page.pendingSeekId > 0)
+                            seekWait.start();
+                    }
+                }
+                Component.onCompleted: {
+                    if (waiting)
+                        seekWait.start();
+                }
                 Binding {
                     target: seekSlider
                     property: "value"
-                    value: page.seeking ? page.pendingPosition : page.positionMs
+                    value: page.shownPositionMs
                     restoreMode: Binding.RestoreBindingOrValue
                 }
                 background: Rectangle {
                     x: 0
                     y: Math.round((parent.height - height) / 2)
                     width: parent.width
-                    height: Math.round(7 * page.theme.scale)
+                    height: seekSlider.railHeight
                     radius: height / 2
                     color: page.theme.base
                     border.color: seekSlider.activeFocus ? page.theme.accent : page.theme.line
@@ -1343,14 +1377,40 @@ Item {
                     }
                 }
                 handle: Rectangle {
-                    x: parent.visualPosition * (parent.width - width)
+                    x: parent.visualPosition * parent.width - width / 2
                     y: Math.round((parent.height - height) / 2)
                     width: Math.round(18 * page.theme.scale)
                     height: width
                     radius: width / 2
-                    color: page.theme.text
+                    color: seekSlider.waiting && !page.seeking ? page.theme.surface : page.theme.text
                     border.width: 2
                     border.color: page.theme.accent
+                }
+                Rectangle {
+                    objectName: "mixdownSeekFeedback"
+                    readonly property bool awaiting: seekSlider.showWaiting && !page.seeking
+                    readonly property real timestamp: page.seeking || awaiting ? page.shownPositionMs
+                        : page.seekPositionAt(seekGrab.mouseX)
+                    readonly property real markerX: page.durationMs > 0
+                        ? timestamp / page.durationMs * seekSlider.width : 0
+                    visible: seekSlider.enabled && (page.seeking || awaiting || seekSlider.previewing)
+                    x: Math.round(page.clamp(markerX - width / 2, 0, Math.max(0, seekSlider.width - width)))
+                    y: Math.floor((seekSlider.height - seekSlider.railHeight) / 2) - height - Math.round(4 * page.theme.scale)
+                    z: 9
+                    width: seekFeedbackLabel.implicitWidth + Math.round(14 * page.theme.scale)
+                    height: Math.round(21 * page.theme.scale)
+                    color: page.theme.raised
+                    border.color: page.seeking || awaiting ? page.theme.accent : page.theme.line
+                    radius: Math.round(5 * page.theme.scale)
+                    Text {
+                        id: seekFeedbackLabel
+                        objectName: "mixdownSeekFeedbackLabel"
+                        anchors.centerIn: parent
+                        text: (parent.awaiting ? page.vwaTr("定位中") + " · " : "") + page.preciseTimeText(parent.timestamp)
+                        color: page.theme.text
+                        font.pixelSize: Math.round(11 * page.theme.scale)
+                        textFormat: Text.PlainText
+                    }
                 }
             }
         }
@@ -1360,20 +1420,60 @@ Item {
         id: trackSettingsDialog
         objectName: "mixdownTrackSettings"
         property string trackId: ""
+        property Item invoker: null
+        property Item fallbackInvoker: null
         readonly property var track: page.trackById(trackId)
+        readonly property int panelMargin: Math.round(12 * page.theme.scale)
         title: page.vwaTr("轨道参数 · ") + page.trackValue(track, "label", "")
+        parent: Overlay.overlay
         modal: true
-        anchors.centerIn: parent
-        width: Math.min(parent.width - 28, Math.round(390 * page.theme.scale))
+        focus: true
+        margins: panelMargin
+        padding: panelMargin
+        spacing: Math.round(8 * page.theme.scale)
+        width: Math.min((parent ? parent.width : page.width) - 2 * panelMargin, Math.round(408 * page.theme.scale))
+        x: {
+            if (!parent)
+                return 0;
+            if (!invoker)
+                return Math.round((parent.width - width) / 2);
+            const origin = invoker.mapToItem(parent, 0, 0);
+            const right = origin.x + invoker.width + panelMargin;
+            return Math.round(page.clamp(right + width <= parent.width - panelMargin ? right
+                : origin.x - width - panelMargin, panelMargin, parent.width - width - panelMargin));
+        }
+        y: {
+            if (!parent)
+                return 0;
+            const top = invoker ? invoker.mapToItem(parent, 0, 0).y : (parent.height - height) / 2;
+            return Math.round(page.clamp(top, panelMargin, Math.max(panelMargin, parent.height - height - panelMargin)));
+        }
         closePolicy: Popup.CloseOnEscape
-        onOpened: page.noteDialogOpened()
-        onClosed: page.noteDialogClosed()
+        enter: Transition {
+            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: page.theme.panelMotionMs; easing.type: Easing.OutCubic }
+        }
+        exit: Transition {}
+        background: Rectangle {
+            color: page.theme.surface
+            border.color: page.theme.selectedLine
+            radius: Math.round(9 * page.theme.scale)
+        }
+        onAboutToShow: page.noteDialogOpened()
+        onClosed: {
+            page.noteDialogClosed();
+            const target = invoker && invoker.visible && invoker.enabled ? invoker : fallbackInvoker;
+            invoker = null;
+            fallbackInvoker = null;
+            if (target && target.visible && target.enabled)
+                target.forceActiveFocus(Qt.TabFocusReason);
+        }
         contentItem: ColumnLayout {
             spacing: Math.round(8 * page.theme.scale)
             Text {
                 Layout.fillWidth: true
                 text: page.textValue(page.trackValue(trackSettingsDialog.track, "name", ""), page.vwaTr("尚未选择素材"))
                 color: page.theme.muted
+                font.pixelSize: Math.round(12 * page.theme.scale)
                 elide: Text.ElideMiddle
                 textFormat: Text.PlainText
             }
@@ -1383,6 +1483,7 @@ Item {
                 label: page.vwaTr("精确增益 (dB)")
                 lower: -60
                 upper: 12
+                unit: "dB"
                 digits: 1
                 currentValue: page.number(page.trackValue(trackSettingsDialog.track, "gain", 0), 0)
                 onCommit: value => page.controller.setTrack(trackSettingsDialog.trackId, "gain", value)
@@ -1404,6 +1505,7 @@ Item {
                 label: page.vwaTr("位置偏移（秒，正值延后）")
                 lower: -30
                 upper: 30
+                unit: "s"
                 digits: 3
                 currentValue: page.number(page.trackValue(trackSettingsDialog.track, "offset", 0), 0)
                 onCommit: value => page.controller.setTrack(trackSettingsDialog.trackId, "offset", value)
@@ -1732,7 +1834,7 @@ Item {
         readonly property bool hasOffset: !monitor && !backing && Math.abs(offsetSeconds) >= 0.0005
         readonly property bool hasReadout: hasPan || hasOffset
         readonly property string readoutText: [hasPan ? panReadout : "",
-            hasOffset ? offsetReadout : ""].filter(value => value.length > 0).join(" / ")
+            hasOffset ? offsetReadout : ""].filter(value => value.length > 0).join("  ")
         readonly property string readoutAccessibleName: {
             const fields = [];
             if (hasPan)
@@ -1743,8 +1845,10 @@ Item {
                 + page.vwaTr("。点击打开精确轨道参数");
         }
         readonly property bool editable: !page.busy && !page.loading
-        function openTrackSettings() {
+        function openTrackSettings(invoker) {
             trackSettingsDialog.trackId = trackId;
+            trackSettingsDialog.invoker = invoker;
+            trackSettingsDialog.fallbackInvoker = trackSettingsButton;
             trackSettingsDialog.open();
         }
         objectName: monitor ? "mixdownMonitorChannel" : "mixdownTrack_" + trackId
@@ -1800,16 +1904,19 @@ Item {
 
             Item {
                 Layout.fillWidth: true
-                Layout.preferredHeight: Math.round(20 * page.theme.scale)
+                Layout.preferredHeight: Math.round((page.compact ? 24 : 26) * page.theme.scale)
                 TrackReadoutButton {
+                    id: trackReadout
                     objectName: "mixdownTrackReadout_" + channel.trackId
                     anchors.fill: parent
                     visible: channel.hasReadout
+                    enabled: channel.editable
                     theme: page.theme
                     text: channel.readoutText
                     Accessible.name: channel.readoutAccessibleName
+                    ToolTip.visible: hovered || visualFocus
                     ToolTip.text: Accessible.name
-                    onClicked: channel.openTrackSettings()
+                    onClicked: channel.openTrackSettings(trackReadout)
                 }
             }
 
@@ -1829,13 +1936,14 @@ Item {
                         onClicked: page.chooseTrackSource(channel.trackId)
                     }
                     StripButton {
+                        id: trackSettingsButton
                         objectName: "mixdownTrackSettings_" + channel.trackId
                         theme: page.theme
                         glyph: "sliders"
                         text: channel.label + page.vwaTr("轨道参数")
                         Accessible.description: channel.backing ? page.vwaTr("精确增益和声像") : page.vwaTr("精确增益、声像和时间偏移")
                         enabled: channel.editable
-                        onClicked: channel.openTrackSettings()
+                        onClicked: channel.openTrackSettings(trackSettingsButton)
                     }
                 }
             }
@@ -1955,6 +2063,7 @@ Item {
                     objectName: "mixdownSend_" + channel.trackId
                     theme: page.theme
                     label: page.vwaTr("发送")
+                    accessibleLabel: channel.label + " · " + page.vwaTr("混响发送")
                     displayValue: page.number(page.trackValue(channel.track, "send", 0), 0)
                     displayFactor: 100
                     unit: "%"
@@ -1977,13 +2086,27 @@ Item {
     }
 
     component TrackReadoutButton: UiButton {
-        implicitHeight: Math.round(20 * theme.scale)
-        leftPadding: Math.round(4 * theme.scale)
+        id: readoutButton
+        implicitHeight: Math.round(26 * theme.scale)
+        leftPadding: Math.round(2 * theme.scale)
         rightPadding: leftPadding
         topPadding: 0
         bottomPadding: 0
         quiet: true
-        font.pixelSize: Math.round(9 * theme.scale)
+        font.pixelSize: Math.round(10 * theme.scale)
+        font.family: "Consolas"
+        contentItem: Text {
+            text: readoutButton.text
+            font: readoutButton.font
+            color: readoutButton.enabled ? readoutButton.theme.text : readoutButton.theme.muted
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            wrapMode: Text.WordWrap
+            maximumLineCount: 2
+            lineHeightMode: Text.FixedHeight
+            lineHeight: Math.round(11 * readoutButton.theme.scale)
+            textFormat: Text.PlainText
+        }
     }
 
     component TrackNumber: RowLayout {
@@ -1995,7 +2118,7 @@ Item {
         required property real upper
         required property int digits
         required property real currentValue
-        readonly property int factor: Math.pow(10, digits)
+        property string unit: ""
         signal commit(real value)
         Text {
             Layout.fillWidth: true
@@ -2004,33 +2127,53 @@ Item {
             wrapMode: Text.Wrap
             font.pixelSize: Math.round(12 * field.theme.scale)
         }
-        SpinBox {
-            id: spin
-            objectName: field.inputName
-            Layout.preferredWidth: Math.round(116 * field.theme.scale)
-            from: Math.round(field.lower * field.factor)
-            to: Math.round(field.upper * field.factor)
-            value: Math.round(field.currentValue * field.factor)
-            stepSize: field.digits === 3 ? 10 : 1
-            editable: true
-            validator: DoubleValidator {
-                bottom: field.lower
-                top: field.upper
-                decimals: field.digits
-                notation: DoubleValidator.StandardNotation
-                locale: spin.locale.name
+        RowLayout {
+            spacing: Math.round(3 * field.theme.scale)
+            TrackStepButton {
+                theme: field.theme
+                text: "−"
+                Accessible.name: field.label + " · " + page.vwaTr("减小")
+                onClicked: numberField.adjust(-1, false)
             }
-            textFromValue: function (value, locale) { return (value / field.factor).toLocaleString(locale, "f", field.digits); }
-            valueFromText: function (text, locale) { return Math.round(Number.fromLocaleString(locale, text) * field.factor); }
-            onValueModified: field.commit(value / field.factor)
-            Accessible.name: field.label
+            UiNumberField {
+                id: numberField
+                objectName: field.inputName
+                Layout.preferredWidth: Math.round(90 * field.theme.scale)
+                theme: field.theme
+                fieldLabel: field.label
+                unit: field.unit
+                currentValue: field.currentValue
+                minimum: field.lower
+                maximum: field.upper
+                decimals: field.digits
+                arrowStep: field.digits === 3 ? .01 : Math.pow(10, -field.digits)
+                onCommitted: (_, value) => field.commit(value)
+            }
+            TrackStepButton {
+                theme: field.theme
+                text: "+"
+                Accessible.name: field.label + " · " + page.vwaTr("增大")
+                onClicked: numberField.adjust(1, false)
+            }
         }
+    }
+
+    component TrackStepButton: UiButton {
+        Layout.preferredWidth: Math.round(30 * theme.scale)
+        Layout.preferredHeight: Math.round(32 * theme.scale)
+        leftPadding: 0
+        rightPadding: 0
+        topPadding: 0
+        bottomPadding: 0
+        font.pixelSize: Math.round(16 * theme.scale)
+        autoRepeat: true
     }
 
     component ParameterSlider: ColumnLayout {
         id: parameter
         required property QtObject theme
         property string label: ""
+        property string accessibleLabel: label
         property real fromValue: 0
         property real toValue: 1
         property real displayValue: 0
@@ -2068,6 +2211,7 @@ Item {
             to: parameter.toValue
             value: parameter.displayValue
             enabled: parameter.interactive
+            wheelEnabled: false
             stepSize: parameter.step
             snapMode: Slider.SnapAlways
             onMoved: parameter.moved(value)
@@ -2080,7 +2224,7 @@ Item {
                     event.accepted = true;
                 }
             }
-            Accessible.name: parameter.label
+            Accessible.name: parameter.accessibleLabel
             background: Rectangle {
                 y: Math.round((parent.height - height) / 2)
                 width: parent.width

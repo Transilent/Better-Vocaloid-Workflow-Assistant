@@ -22,6 +22,9 @@ Item {
     readonly property var bindings: controller.bindings || []
     readonly property var techniques: controller.techniques || []
     readonly property var lyricContext: view.lyricContext || ({})
+    readonly property bool wholeTimelineVisible: numberOr(view.viewportSpan, 0) >= timelineSpan() - .001
+    readonly property bool canReturnToWord: textOf(lyricContext.lyric).length > 0
+        && currentWordSpan() < timelineSpan() - .001
 
     readonly property real availableWidth: Math.max(0, width)
     readonly property real availableHeight: Math.max(0, height)
@@ -580,6 +583,18 @@ Item {
     function fitTimelineView() {
         if (hasSource)
             controller.setViewport(timelineOrigin(), timelineSpan())
+    }
+
+    function currentWordSpan() {
+        const start = numberOr(lyricContext.start, 0);
+        return Math.max(4, (numberOr(lyricContext.end, start) - start) * 3);
+    }
+
+    function returnToCurrentWord() {
+        if (canReturnToWord) {
+            const span = currentWordSpan();
+            controller.setViewport(numberOr(lyricContext.start, timelineOrigin()) - span * .22, span);
+        }
     }
 
     function syncRetainedDraft() {
@@ -1255,10 +1270,15 @@ Item {
                             EditorButton {
                                 objectName: "timelineFit"
                                 theme: page.theme
-                                text: page.vwaTr("全曲")
+                                readonly property bool returning: page.wholeTimelineVisible && page.canReturnToWord
+                                text: returning ? page.vwaTr("回当前词") : page.vwaTr("全曲")
+                                Layout.minimumWidth: Math.max(implicitWidth, Math.round(66 * page.scale))
                                 quiet: true
                                 enabled: page.hasSource
-                                onClicked: page.fitTimelineView()
+                                ToolTip.visible: hovered || visualFocus
+                                ToolTip.text: returning ? page.vwaTr("回到当前词附近，只调整视野")
+                                    : page.vwaTr("显示全曲，只调整视野")
+                                onClicked: returning ? page.returnToCurrentWord() : page.fitTimelineView()
                             }
                             EditorButton {
                                 objectName: "tuningSnapToNotes"
@@ -1492,8 +1512,8 @@ Item {
                     TuningViewportStrip {
                         id: viewportStrip
                         Layout.fillWidth: true
-                        Layout.leftMargin: timelineRoll.x + timelineRoll.plotLeft
-                        Layout.rightMargin: Math.max(0, timelineFrame.width
+                        leadingInset: timelineRoll.x + timelineRoll.plotLeft
+                        trailingInset: Math.max(0, timelineFrame.width
                             - timelineRoll.x - timelineRoll.plotRight)
                         theme: page.theme
                         timelineStart: page.timelineOrigin()

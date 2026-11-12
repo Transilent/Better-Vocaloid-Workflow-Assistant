@@ -4,6 +4,7 @@ import QtQuick.Controls
 ComboBox {
     id: combo
     required property QtObject theme
+    property string fieldLabel: ""
 
     textRole: "label"
     valueRole: "value"
@@ -12,7 +13,8 @@ ComboBox {
     font.pixelSize: Math.round(13 * theme.scale)
     implicitHeight: Math.max(Math.round(36 * theme.scale), implicitContentHeight + Math.round(14 * theme.scale))
     focusPolicy: Qt.StrongFocus
-    Accessible.name: currentText
+    Accessible.name: fieldLabel || currentText
+    Accessible.description: fieldLabel ? currentText : ""
 
     contentItem: Text {
         leftPadding: combo.leftPadding
