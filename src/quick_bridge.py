@@ -216,6 +216,8 @@ class QuickBridge(QObject):
     preparationPresetsChanged = Signal()
     taskChanged = Signal()
     taskSafetyChanged = Signal()
+    taskArtifactChanged = Signal()
+    taskPrimaryActionChanged = Signal()
     subtitlesRequested = Signal()
     closeReady = Signal()
 
@@ -235,6 +237,10 @@ class QuickBridge(QObject):
         self._details.changed.connect(self.taskChanged)
         self._task_work.changed.connect(self.taskChanged)
         self.taskChanged.connect(self._task_changed_safety)
+        self.taskSafetyChanged.connect(self.taskArtifactChanged)
+        self.taskSafetyChanged.connect(self.taskPrimaryActionChanged)
+        self.activityChanged.connect(self.taskPrimaryActionChanged)
+        self.preparationTaskChanged.connect(self.taskPrimaryActionChanged)
         self._support = QuickSupport(self, self._work, sources)
         self._tuning = QuickTuning(self, self._work)
         self._calibration = QuickCalibration(self, self._tuning)
@@ -273,7 +279,7 @@ class QuickBridge(QObject):
         self._rows = RowsModel(self, (('componentId', 'id'), ('title', 'title'), ('summary', 'summary'),
                                      ('status', 'status'), ('statusText', 'status_text')))
         self._component_checks = {}
-        self._tasks = RowsModel(self, tuple((key, key) for key in ('jobId', 'title', 'statusText', 'summary')))
+        self._tasks = RowsModel(self, tuple((key, key) for key in ('jobId', 'title', 'statusText', 'summary', 'sourceText')))
         self._exit_when_idle = False
         self._closed = False
         self._notice = ''
@@ -605,6 +611,21 @@ class QuickBridge(QObject):
         job = detail.get('jobId') or self.state.selected_task_id
         return quick_results.protect_task_detail(detail, self._task_blockers_cached(job))
 
+    @Property(str, notify=taskArtifactChanged)
+    def selectedTaskArtifactId(self):
+        return self.state.selected_task_artifact_id
+
+    @Property('QVariantMap', notify=taskArtifactChanged)
+    def selectedTaskArtifact(self):
+        return dict(self.state.selected_task_artifact)
+
+    @Property('QVariantMap', notify=taskPrimaryActionChanged)
+    def taskPrimaryAction(self):
+        job = self.state.selected_task_id
+        running_here = bool(job and self.preparationBusy and self.state.preparation_task.get('job') == job)
+        return quick_results.task_primary_action(self.state.task_detail, running_here=running_here,
+                                                 work_busy=self.workBusy or self.taskLoading)
+
     @Property('QVariantMap', notify=taskChanged)
     def taskHandoff(self):
         return dict(self.state.handoff)
@@ -880,8 +901,7 @@ class QuickBridge(QObject):
         job = self.state.preparation_task['job']
         if not job:
             return
-        self.state.selected_task_id = job
-        self.state.task_detail = {}
+        self.state.focus_task(job)
         self.state.task_query = ''
         if self.state.route == 'results':
             self._invalidate_task_safety(emit=False)
@@ -1022,8 +1042,7 @@ class QuickBridge(QObject):
             if self.state.handoff and self.state.handoff['jobId'] not in visible_ids:
                 self.state.handoff = {}
             if self.state.selected_task_id not in visible_ids:
-                self.state.selected_task_id = rows[0]['jobId'] if rows else ''
-                self.state.task_detail = {}
+                self.state.focus_task(rows[0]['jobId'] if rows else '')
             self._tasks.replace_rows(self._task_rows())
             self.taskChanged.emit()
             if self.state.selected_task_id:
@@ -1078,15 +1097,42 @@ class QuickBridge(QObject):
             if error is None:
                 self.state.set_task_detail(job_id, value)
             elif not isinstance(error, InterruptedError) and self.state.selected_task_id == job_id:
-                self.state.task_detail = {}
+                self.state.set_task_detail(job_id, {})
                 self._error(error)
             next_job, self._next_detail = self._next_detail, None
             if next_job is not None:
                 self._request_detail(next_job)
 
         self._detail_job_id = job_id
-        if not self._details.start('detail', lambda stop, _send: quick_results.detail(job_id, stop.is_set), finish):
+        def work(stop, _send):
+            return quick_results.detail(job_id, stop.is_set, include_history=True)
+
+        if not self._details.start('detail', work, finish):
             self._detail_job_id = ''
+
+    @Slot(str)
+    def selectTaskArtifact(self, artifact_id):
+        if self.route == 'results' and self.state.select_task_artifact(artifact_id):
+            self.taskArtifactChanged.emit()
+
+    @Slot()
+    def runTaskPrimaryAction(self):
+        if self._closed or self.route != 'results':
+            return
+        action = self.taskPrimaryAction
+        if not action['enabled']:
+            return
+        kind = action['kind']
+        if kind == 'progress':
+            self.inspectTaskProgress(self.state.selected_task_id)
+        elif kind == 'retry':
+            self.resumeSelectedTask()
+        elif kind == 'tuning':
+            self._checked_artifact(action['artifactId'], route=kind, expected_action=action)
+        elif kind in ('audio_mixdown', 'video_mixdown', 'publishing'):
+            self._checked_artifact(None, route=kind, expected_action=action)
+        elif kind == 'delivery':
+            self._checked_artifact(None, expected_action=action)
 
     @Slot()
     def resumeSelectedTask(self):
@@ -1482,9 +1528,9 @@ class QuickBridge(QObject):
             self.navigate('video_mixdown')
 
         self._work.start('mixdown-handoff', work, finish)
-    def _checked_artifact(self, artifact_id, *, route=None):
+    def _checked_artifact(self, artifact_id, *, route=None, expected_action=None):
         job = self.state.selected_task_id
-        if self.workBusy or not job:
+        if self.workBusy or not job or self.route != 'results':
             return
         shown = self.state.task_detail
         shown_rows = {row['id']: row for row in shown.get('artifacts', ())}
@@ -1513,11 +1559,17 @@ class QuickBridge(QObject):
                 self._clear_work_task_lock()
                 self._error(error)
                 return
-            if self.state.selected_task_id != job:
+            if self.state.selected_task_id != job or self.route != 'results':
                 self._clear_work_task_lock()
                 return
             self.state.set_task_detail(job, detail)
             self.taskChanged.emit()
+            if expected_action is not None:
+                actual = quick_results.task_primary_action(detail)
+                if any(actual[key] != expected_action[key] for key in ('kind', 'artifactId', 'artifactIds')):
+                    self._clear_work_task_lock()
+                    self._error(ValueError('当前交付已变化，请核对后再继续。'))
+                    return
             by_id = {row['id']: row for row in detail['artifacts'] if row['available']}
             if artifact_id is not None:
                 row = by_id.get(artifact_id)
@@ -1577,7 +1629,10 @@ class QuickBridge(QObject):
 
         label = '调音工程 · 正在核验' if route == 'tuning' else '任务产物 · 正在核验'
         self._set_work_task_lock(label, job)
-        if not self._work.start('artifact-check', lambda stop, _send: quick_results.detail(job, stop.is_set), finish):
+        def work(stop, _send):
+            return quick_results.detail(job, stop.is_set, include_history=True)
+
+        if not self._work.start('artifact-check', work, finish):
             self._clear_work_task_lock()
 
     def _open_local(self, path):

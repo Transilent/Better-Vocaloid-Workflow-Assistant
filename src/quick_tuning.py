@@ -257,6 +257,7 @@ class QuickTuning(QObject):
         self._selected_region = ''
         self._query = ''
         self._matches, self._notes, self._regions = [], [], []
+        self._lyric_match_index = -1
         self._region_undo, self._region_redo = [], []
         self._view_preferences_file = self.root / 'cache/quick-tuning-view.json'
         self._view_preferences = self._load_view_preferences()
@@ -448,6 +449,9 @@ class QuickTuning(QObject):
         session_exists = bool(self.session and Path(native_path(self.session)).is_file())
         session_root = (Path(self.session).parent if session_exists else
                         ((Path(self.job) / 'tuning-sessions') if self.job else self._session_parent))
+        match_scope = self._lyric_match_scope()
+        match_position = (match_scope.index(self._lyric_match_index)
+                          if self._lyric_match_index in match_scope else -1)
         return {
             'source': self._display_source or project.get('path', ''),
             'title': Path(self._display_source or project.get('path', '')).stem if project else '',
@@ -462,6 +466,11 @@ class QuickTuning(QObject):
             'canReload': bool(project and not busy),
             'mode': self._mode, 'activeTrack': self._active, 'selectedTracks': list(self._selected),
             'selectedRegion': self._selected_region,
+            'lyricContext': self._lyric_context(),
+            'lyricMatchIndex': match_position,
+            'lyricMatchCount': len(match_scope),
+            'canPreviousLyricMatch': bool(match_scope) and match_position != 0,
+            'canNextLyricMatch': bool(match_scope) and match_position != len(match_scope) - 1,
             'query': self._query, 'start': self._start, 'end': self._end,
             'viewportStart': self._left, 'viewportSpan': self._span, 'duration': duration,
             'timelineStart': self.project.minimum if self.project else 0.,
@@ -764,11 +773,40 @@ class QuickTuning(QObject):
 
     def _update_notes(self):
         if self.project:
-            keys = [self._active] if self._mode == 'single' else list(self.project.tracks)
+            keys = ([self._active] if self._mode == 'single' else
+                    list(dict.fromkeys([self._active, *self.project.tracks])))
             self._notes = self.project.visible(keys, self._left, self._left + self._span)
         else:
             self._notes = []
         self.notesChanged.emit()
+
+    def _lyric_context(self):
+        """Project the current search hit or focused-track lyric from visible notes."""
+        if not self.project or self._active not in self.project.tracks:
+            return {}
+        if 0 <= self._lyric_match_index < len(self._matches):
+            row = self._matches[self._lyric_match_index]
+            if row['trackId'] == self._active:
+                return {key: row[key] for key in ('lyric', 'trackId', 'trackName', 'start', 'end')}
+        if self._end <= self._start + 1e-9:
+            return {}
+        # A view pan may hide selected notes; keep reporting the actual selection.
+        selected = self.project.visible((self._active,), self._start, self._end, limit=80)
+        if not selected:
+            return {}
+        selected.sort(key=lambda row: (row['start'], row['end'], row['id']))
+        return {
+            'lyric': ''.join(row['lyric'] for row in selected),
+            'trackId': self._active,
+            'trackName': self.project.tracks[self._active]['name'],
+            'start': selected[0]['start'],
+            'end': max(row['end'] for row in selected),
+        }
+
+    def _lyric_match_scope(self):
+        if self._mode == 'multi':
+            return list(range(len(self._matches)))
+        return [index for index, row in enumerate(self._matches) if row['trackId'] == self._active]
 
     def _adopt_draft(self, stored):
         payload = stored['data']
@@ -968,6 +1006,7 @@ class QuickTuning(QObject):
         self._start = self._end = self._left = project.minimum
         self._span = min(18., max(1., project.maximum - project.minimum))
         self._query, self._matches = '', []
+        self._lyric_match_index = -1
         self._plan, self._summary = None, ''
         self.state = 'ready'
         self._candidate_stale = bool(receipt)
@@ -1084,6 +1123,9 @@ class QuickTuning(QObject):
         if self.project and track in self.project.tracks and not self._editing_blocked and self._active != track:
             old = self._indices()
             self._active = track
+            if not (0 <= self._lyric_match_index < len(self._matches)
+                    and self._matches[self._lyric_match_index]['trackId'] == track):
+                self._lyric_match_index = -1
             self._changed_tracks(old)
 
     @Slot(str)
@@ -1102,6 +1144,7 @@ class QuickTuning(QObject):
         if value != self._query:
             self._query = value
             self._matches = self.project.matches(value) if self.project else []
+            self._lyric_match_index = -1
             self.matchesChanged.emit()
             self.changed.emit()
 
@@ -1109,24 +1152,60 @@ class QuickTuning(QObject):
     def selectMatch(self, track, note):
         if not self.project or track not in self.project.tracks:
             return
-        row = next((item for item in self._matches if item['trackId'] == track and item['id'] == note), None)
+        match_index = next((index for index, item in enumerate(self._matches)
+                            if item['trackId'] == track and item['id'] == note), -1)
+        row = self._matches[match_index] if match_index >= 0 else None
         row = row or self.project.notes.get(note)
         if row and row['trackId'] == track:
             self.focusTrack(track)
-            self.selectSpan(row['start'], row['end'])
+            self._lyric_match_index = match_index
+            self._set_selection(row['start'], row['end'], keep_match=True)
             self.setViewport(row['start'] - self._span * .22, self._span)
 
-    @Slot(float, float)
-    def selectSpan(self, first, last):
+    @Slot(int)
+    def stepLyricMatch(self, direction):
+        """Move through the current lyric search cursor without another search."""
+        if not self.project:
+            return
+        scope = self._lyric_match_scope()
+        if not scope:
+            return
+        step = 1 if direction > 0 else -1
+        if self._lyric_match_index in scope:
+            position = scope.index(self._lyric_match_index) + step
+            if not 0 <= position < len(scope):
+                return
+        elif step > 0:
+            position = next((position for position, index in enumerate(scope)
+                             if self._matches[index]['start'] >= self._start - 1e-9), 0)
+        else:
+            position = next((position for position in range(len(scope) - 1, -1, -1)
+                             if self._matches[scope[position]]['start'] <= self._start + 1e-9),
+                            len(scope) - 1)
+        index = scope[position]
+        row = self._matches[index]
+        self.focusTrack(row['trackId'])
+        self._lyric_match_index = index
+        self._set_selection(row['start'], row['end'], keep_match=True)
+        self.setViewport(row['start'] - self._span * .22, self._span)
+
+    def _set_selection(self, first, last, *, keep_match):
         if self.project and math.isfinite(first) and math.isfinite(last):
             a, b = sorted((first, last))
+            if not keep_match:
+                self._lyric_match_index = -1
             self._start = min(max(a, self.project.minimum), self.project.maximum)
             self._end = min(max(b, self.project.minimum), self.project.maximum)
             self.changed.emit()
 
+    @Slot(float, float)
+    def selectSpan(self, first, last):
+        self._set_selection(first, last, keep_match=False)
+
     @Slot()
     def clearSelection(self):
         if self.project and not self.worker.kind:
+            self._lyric_match_index = -1
             self._start = self._end = self.project.minimum
             self.changed.emit()
 

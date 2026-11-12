@@ -33,6 +33,7 @@ ARTIFACT_STATES = {
     'missing': '文件缺失',
     'unreadable': '无法读取',
     'stale': '上游文件已变化',
+    'historical': '历史版本 · 未重新核验',
     'missing_dependency': '上游文件缺失',
     'invalid_dependency': '文件关联无效',
 }
@@ -249,11 +250,19 @@ def _list_row(row):
     status_text = _status_text(state)
     next_text = _next_text(next_action)
     updated = _time_text(row.get('modified'))
+    request = row.get('request') if isinstance(row.get('request'), dict) else {}
+    source = _text(request.get('bv'))
+    if not source:
+        source_path = _text(request.get('source_audio'))
+        source = Path(source_path).name if source_path else _text(request.get('source_title'))
+    # A short task directory name still disambiguates copies of the same song.
+    source = ' · '.join(dict.fromkeys(part for part in (source, path.name) if part and part != title))
     return {
         'jobId': _job_id(path),
         'title': title,
         'statusText': status_text,
         'summary': updated + ' · ' + next_text,
+        'sourceText': source,
         'state': state,
         'modified': float(row.get('modified') or 0),
         'searchText': _search_text(row, path, status_text, next_text),
@@ -314,12 +323,13 @@ def _artifact_details(row, by_id):
             continue
         path = _text(upstream.get('path'))
         role = _text(upstream.get('role'))
-        state = _text(upstream.get('state'))
+        expected = _text(dependency.get('revision'))
+        state = _text(upstream.get('state')) if upstream.get('revision') == expected else 'stale'
         dependencies.append({
             'label': tr(ARTIFACT_ROLES.get(role, role or '产物')),
             'displayPath': Path(path).name if path else '',
             'statusText': tr(ARTIFACT_STATES.get(state, state or '未知')),
-            'revision': _text(upstream.get('revision')),
+            'revision': expected,
         })
     sha256 = _text(row.get('sha256'))
     producer = _text(row.get('producer'))
@@ -476,7 +486,21 @@ def _recovery(row, message=''):
     return None
 
 
-def detail(job, check=None):
+def _historical_rows(job, rows, check):
+    """Project retired deliverable metadata, without opening or rehashing it."""
+    entries = task_contract.read(job)['entries']
+    active = {row['id'] for row in rows}
+    history = []
+    for key, entry in reversed(tuple(entries.items())):
+        _cancelled(check)
+        if (key not in active and entry.get('active') is False
+                and entry['role'] in ('editor_project', 'tuned_project', 'mixdown', 'video', 'publication')):
+            history.append({**entry, 'id': key, 'state': 'historical',
+                            'path': str(task_contract.resolve(job, entry))})
+    return history
+
+
+def detail(job, check=None, *, include_history=False):
     """Inspect one registered task and return its result/action projection.
 
     Artifact integrity and handoff are derived from the same inspected rows so
@@ -506,11 +530,13 @@ def detail(job, check=None):
         deliver_ids = {item['id'] for item in delivery}
         ordered = sorted(rows, key=lambda row: (
             row['id'] not in deliver_ids,
-            row['state'] == 'verified',
+            row['state'] != 'verified',
             row['role'] not in ('editor_project', 'midi', 'mixdown', 'video', 'audio'),
         ))
+        if include_history:
+            ordered.extend(_historical_rows(path, rows, check))
         artifacts = [_artifact(path, item) for item in ordered]
-        by_id = {item['id']: item for item in rows}
+        by_id = {item['id']: item for item in ordered}
         artifact_details = {item['id']: _artifact_details(item, by_id) for item in ordered}
         binding_rows = _binding_projection(path, rows)
         if action == 'audio_ready' and not delivery:
@@ -573,6 +599,39 @@ def detail(job, check=None):
     if recovery is not None:
         result['recovery'] = recovery
     return result
+
+
+def task_primary_action(detail, *, running_here=False, work_busy=False):
+    """Choose a next action from the task's verified delivery, never from inspection focus."""
+    by_id = {row['id']: row for row in detail.get('artifacts', ()) if row['available']}
+    handoff = detail.get('handoff')
+    kind = artifact_id = ''
+    artifact_ids = ()
+    if running_here or handoff == 'processing':
+        kind = 'progress'
+    elif detail.get('canResume'):
+        kind = 'retry'
+    elif detail.get('canDispatch'):
+        delivery = detail.get('delivery', {})
+        artifact_id = delivery.get('openArtifactId') or ''
+        artifact_ids = delivery.get('artifactIds', ())
+        targets = detail.get('studioTargets', {})
+        if handoff == 'mixdown_ready' and targets.get('video_mixdown'):
+            kind, artifact_ids = 'video_mixdown', targets['video_mixdown']
+        elif handoff in ('video_ready', 'awaiting_upload', 'awaiting_publish') and targets.get('publishing'):
+            kind, artifact_ids = 'publishing', targets['publishing']
+        elif handoff == 'audio_ready' and detail.get('mixArtifactIds'):
+            kind, artifact_ids = 'audio_mixdown', detail['mixArtifactIds']
+        elif handoff == 'awaiting_tuning' and is_svp_project(by_id.get(artifact_id)):
+            kind, artifact_ids = 'tuning', (artifact_id,)
+        else:
+            kind = 'delivery'
+        if not artifact_ids or any(key not in by_id for key in artifact_ids):
+            kind, artifact_id, artifact_ids = '', '', ()
+        elif artifact_id not in artifact_ids:
+            artifact_id = artifact_ids[0]
+    return {'kind': kind, 'artifactId': artifact_id, 'artifactIds': list(artifact_ids),
+            'enabled': bool(kind and (not work_busy or (kind == 'progress' and running_here)))}
 
 
 def rename(job, name):
@@ -653,6 +712,6 @@ __all__ = (
     'ARTIFACT_ROLES', 'ARTIFACT_STATES', 'BINDING_KINDS', 'BINDING_LABELS', 'TASK_STATES',
     'TASK_MUTATION_CAPABILITIES', 'task_reference_blockers', 'task_projection_failure',
     'task_blocker_text', 'task_mutation_error', 'protect_task_detail', 'is_svp_project',
-    'OPENABLE_SUFFIXES', 'scan', 'detail', 'rename', 'delete', 'task_log',
+    'OPENABLE_SUFFIXES', 'scan', 'detail', 'task_primary_action', 'rename', 'delete', 'task_log',
     'register_existing_video', 'register_external', 'unlink_external', 'rebuild_artifacts',
 )

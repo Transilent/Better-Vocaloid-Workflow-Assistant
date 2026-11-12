@@ -25,6 +25,8 @@ Item {
     readonly property string selectedTrackKey: JSON.stringify(view.selectedTracks || [])
     readonly property var targetTracks: resolveTracks()
     readonly property string targetKey: JSON.stringify(Object.keys(targetTracks))
+    readonly property var laneTracks: displayLanes()
+    readonly property int hiddenLaneCount: Math.max(0, tracks.length - laneTracks.length)
 
     readonly property real origin: numberOr(view.timelineStart, 0)
     readonly property real fullSpan: Math.max(0.001, numberOr(view.duration, 1))
@@ -39,20 +41,27 @@ Item {
 
     readonly property int pitchRowHeight: Math.round((compact ? 17 : 20) * scale)
     readonly property real rulerHeight: Math.round(25 * scale)
-    readonly property real regionRowHeight: Math.round(19 * scale)
-    readonly property real plotLeft: Math.round((compact ? 48 : 60) * scale)
+    readonly property real laneRowHeight: Math.round((compact ? 37 : 43) * scale)
+    readonly property real laneAreaHeight: multi ? laneTracks.length * laneRowHeight : 0
+    readonly property real focusHeaderHeight: multi && hasSource ? Math.round(22 * scale) : 0
+    readonly property real regionRowHeight: multi ? laneRowHeight : Math.round(19 * scale)
+    readonly property real regionBandHeight: multi
+        ? Math.round(14 * scale) : Math.max(0, regionRowHeight - 2)
+    readonly property real plotLeft: Math.round((multi ? 108 : compact ? 48 : 60) * scale)
     readonly property real plotRight: Math.max(plotLeft + 1, width - Math.round(13 * scale))
-    readonly property real plotTop: rulerHeight + regionRowCount * regionRowHeight
+    readonly property real plotTop: rulerHeight + regionRowCount * regionRowHeight + focusHeaderHeight
     readonly property real plotBottom: Math.max(plotTop + 1, height)
     readonly property real plotWidth: plotRight - plotLeft
     readonly property real plotHeight: plotBottom - plotTop
     readonly property real rowsInView: Math.min(128, plotHeight / pitchRowHeight)
     readonly property real pitchOffset: clamp(topRow, 0, 128 - rowsInView)
-    readonly property var visibleNotes: collectNotes()
+    readonly property var visibleNotes: collectNotes([activeTrack])
+    readonly property var laneNotes: multi ? collectNotes(laneTracks.map(entry => String(entry.track.id))) : []
+    readonly property var interactionNotes: multi ? laneNotes : visibleNotes
     readonly property var styleSpans: collectRegions()
-    readonly property var styledTracks: Object.keys(styleSpans)
-        .sort((a, b) => targetTracks[a].order - targetTracks[b].order)
-    readonly property int regionRowCount: hasSource ? Math.max(1, styledTracks.length) : 0
+    readonly property var styledTracks: multi ? laneTracks.map(entry => String(entry.track.id))
+        : activeTrack.length > 0 ? [activeTrack] : []
+    readonly property int regionRowCount: hasSource ? (multi ? laneTracks.length : 1) : 0
     readonly property var styleBlocks: visibleStyleBlocks()
     readonly property var noteEdges: collectEdges()
     readonly property var noteRects: layoutNotes()
@@ -72,12 +81,13 @@ Item {
     property real pressY: -1
     property real pressTime: Number.NaN
     property real dragTime: Number.NaN
+    property var hoveredLaneNote: null
 
     activeFocusOnTab: hasSource
     Accessible.role: Accessible.Pane
-    Accessible.name: multi ? timeline.vwaTr("多轨钢琴卷帘") : timeline.vwaTr("单轨钢琴卷帘")
-    Accessible.description: focusedNote ? noteDescription(focusedNote) + "。" + instructions
-        : instructions
+    Accessible.name: multi ? timeline.vwaTr("多轨泳道与焦点钢琴卷帘") : timeline.vwaTr("单轨钢琴卷帘")
+    Accessible.description: (multi ? timeline.vwaTr("上方泳道只切换焦点，勾选批量目标不会随焦点变化。") : "")
+        + (focusedNote ? noteDescription(focusedNote) + "。" : "") + instructions
 
     function numberOr(value, fallback) {
         if (value === undefined || value === null || value === "")
@@ -107,12 +117,22 @@ Item {
         return result
     }
 
-    function collectNotes() {
+    function displayLanes() {
+        const all = tracks.map((track, index) => ({track: track, index: index, order: index}))
+        if (all.length <= 3)
+            return all
+        const activeIndex = all.findIndex(entry => String(entry.track.id) === activeTrack)
+        const start = activeIndex < 0 ? 0 : clamp(activeIndex - 1, 0, all.length - 3)
+        return all.slice(start, start + 3)
+    }
+
+    function collectNotes(trackIds) {
+        const wanted = new Set((trackIds || []).map(String))
         const result = []
         for (const note of notes) {
             const trackId = String(note.trackId)
-            const lane = targetTracks[trackId]
-            if (!lane)
+            const lane = laneTracks.find(entry => String(entry.track.id) === trackId)
+            if (!wanted.has(trackId) || (lane === undefined && trackId !== activeTrack))
                 continue
             const start = numberOr(note.start, Number.NaN)
             const end = numberOr(note.end, Number.NaN)
@@ -120,18 +140,30 @@ Item {
             if (!(end > start && end > visibleStart && start < visibleEnd
                     && Number.isInteger(pitch) && pitch >= 0 && pitch <= 127))
                 continue
-            result.push({ id: String(note.id), trackId: trackId, lane: lane,
+            result.push({ id: String(note.id), trackId: trackId,
+                lane: lane || {track: findTrack(trackId), index: trackOrder(trackId), order: 0},
                 lyric: String(note.lyric || "").trim(), pitch: pitch, start: start, end: end })
         }
         return result.sort((a, b) => a.start - b.start || a.lane.order - b.lane.order
             || a.pitch - b.pitch || a.end - b.end || a.id.localeCompare(b.id))
     }
 
+    function findTrack(trackId) {
+        return tracks.find(entry => String(entry.id) === String(trackId)) || {id: trackId, name: ''}
+    }
+
+    function trackOrder(trackId) {
+        const index = tracks.findIndex(entry => String(entry.id) === String(trackId))
+        return Math.max(0, index)
+    }
+
     function collectRegions() {
         const result = Object.create(null)
+        const ids = new Set(laneTracks.map(entry => String(entry.track.id)))
+        ids.add(activeTrack)
         for (const region of regions) {
             const id = String(region.trackId)
-            if (targetTracks[id]) {
+            if (ids.has(id)) {
                 if (!result[id])
                     result[id] = []
                 result[id].push(region)
@@ -145,7 +177,8 @@ Item {
     function visibleStyleBlocks() {
         const blocks = []
         for (let row = 0; row < styledTracks.length; ++row) {
-            for (const region of styleSpans[styledTracks[row]]) {
+            const track = styledTracks[row]
+            for (const region of styleSpans[track] || []) {
                 if (region.end > visibleStart && region.start < visibleEnd)
                     blocks.push({region: region, row: row})
             }
@@ -156,13 +189,15 @@ Item {
     function collectEdges() {
         const all = new Set()
         const perTrack = Object.create(null)
-        for (const note of visibleNotes) {
+        const snapTracks = new Set(Object.keys(targetTracks))
+        for (const note of interactionNotes) {
             if (note.lane.track.editable === false)
                 continue
             if (!perTrack[note.trackId])
                 perTrack[note.trackId] = new Set()
             for (const edge of [note.start, note.end]) {
-                all.add(edge)
+                if (snapTracks.has(note.trackId))
+                    all.add(edge)
                 perTrack[note.trackId].add(edge)
             }
         }
@@ -230,6 +265,35 @@ Item {
 
     function timeForPlotX(value) {
         return visibleStart + clamp(value, 0, plotWidth) / plotWidth * visibleSpan
+    }
+
+    function laneY(row) {
+        return rulerHeight + row * laneRowHeight
+    }
+
+    function laneAt(y) {
+        if (!multi || y < rulerHeight || y >= rulerHeight + laneAreaHeight)
+            return null
+        const index = Math.floor((y - rulerHeight) / laneRowHeight)
+        return laneTracks[index] || null
+    }
+
+    function laneNoteAt(x, y, trackId) {
+        if (x < plotLeft || x > plotRight)
+            return null
+        const at = timeForPlotX(x - plotLeft)
+        const candidates = laneNotes.filter(note => note.trackId === String(trackId)
+            && note.start <= at + 0.000001 && note.end >= at - 0.000001)
+        return candidates.sort((a, b) => a.end - a.start - (b.end - b.start))[0] || null
+    }
+
+    function laneDescription(lane) {
+        if (!lane)
+            return ""
+        const values = laneNotes.filter(note => note.trackId === String(lane.track.id))
+        const lyric = values.map(note => note.lyric).join("")
+        return String(lane.track.name || lane.track.id) + " · "
+            + (lyric || vwaTr("当前时间没有歌词")) + " · " + vwaTr("点击切换焦点");
     }
 
     function noteDescription(note) {
@@ -419,10 +483,9 @@ Item {
     function emptyMessage() {
         if (!hasSource)
             return "载入调音工程后显示钢琴卷帘"
-        if (!Object.keys(targetTracks).length)
-            return multi ? "至少勾选一条轨道以查看音符" : "选择一条轨道以查看音符"
         if (!visibleNoteCount)
-            return "当前时间没有音符，可搜索歌词或平移"
+            return multi ? "焦点轨在当前时间没有音符；点击泳道切换焦点，或勾选批量目标"
+                : "当前时间没有音符，可搜索歌词或平移"
         return ""
     }
 
@@ -432,13 +495,16 @@ Item {
         centerOnSource = true
         Qt.callLater(suggestPitch)
     }
-    onTargetKeyChanged: {
-        checkTargetPitch = true
+    onTargetKeyChanged: score.requestPaint()
+    onVisibleNotesChanged: {
         Qt.callLater(suggestPitch)
+        score.requestPaint()
     }
-    onVisibleNotesChanged: Qt.callLater(suggestPitch)
+    onLaneNotesChanged: score.requestPaint()
+    onLaneTracksChanged: score.requestPaint()
     onNoteRectsChanged: score.requestPaint()
     onStyleSpansChanged: score.requestPaint()
+    onActiveTrackChanged: score.requestPaint()
     onVisibleStartChanged: score.requestPaint()
     onVisibleSpanChanged: score.requestPaint()
     onPitchOffsetChanged: score.requestPaint()
@@ -448,6 +514,7 @@ Item {
     onDragTimeChanged: score.requestPaint()
     onFocusedNoteChanged: score.requestPaint()
     onHoveredNoteChanged: score.requestPaint()
+    onHoveredLaneNoteChanged: score.requestPaint()
     onActiveFocusChanged: score.requestPaint()
     onDarkChanged: score.requestPaint()
     onWidthChanged: score.requestPaint()
@@ -541,7 +608,8 @@ Item {
                     continue
                 const major = tick % 2 === 0
                 ctx.globalAlpha = major ? 0.9 : 0.5
-                fill(ctx, timeline.theme.line, x, timeline.plotTop, 1, timeline.plotHeight)
+                fill(ctx, timeline.theme.line, x, timeline.rulerHeight, 1,
+                    Math.max(0, timeline.height - timeline.rulerHeight))
                 ctx.globalAlpha = 1
                 if (major) {
                     const label = timeline.formatTime(tick * minor, decimals)
@@ -557,18 +625,147 @@ Item {
             fill(ctx, timeline.theme.line, 0, timeline.rulerHeight - 1, width, 1)
         }
 
+        function paintLanes(ctx) {
+            if (!timeline.multi)
+                return
+            const font = Math.round(10 * timeline.scale)
+            const noteFont = Math.round(9 * timeline.scale)
+            for (let row = 0; row < timeline.laneTracks.length; ++row) {
+                const lane = timeline.laneTracks[row]
+                const trackId = String(lane.track.id)
+                const top = timeline.laneY(row)
+                const active = trackId === timeline.activeTrack
+                const trackColor = timeline.trackColor(lane.index)
+                const values = timeline.laneNotes.filter(note => note.trackId === trackId)
+                fill(ctx, active ? timeline.theme.raised
+                    : (row % 2 ? timeline.theme.base : timeline.theme.surface),
+                    0, top, width, timeline.laneRowHeight)
+                if (active) {
+                    ctx.globalAlpha = 0.12
+                    fill(ctx, timeline.theme.accent, 0, top, width, timeline.laneRowHeight)
+                    ctx.globalAlpha = 1
+                }
+                fill(ctx, trackColor, 0, top, Math.max(2, Math.round(3 * timeline.scale)),
+                    timeline.laneRowHeight)
+                ctx.font = (active ? "bold " : "") + font + "px sans-serif"
+                ctx.fillStyle = active ? timeline.theme.text : timeline.theme.muted
+                ctx.textAlign = "left"
+                ctx.textBaseline = "middle"
+                ctx.fillText(timeline.fittedText(ctx, String(lane.track.name || trackId),
+                    timeline.plotLeft - Math.round(13 * timeline.scale)),
+                    Math.round(7 * timeline.scale), top + timeline.laneRowHeight / 2)
+                fill(ctx, timeline.theme.line, 0, top + timeline.laneRowHeight - 1,
+                    timeline.plotRight, 1)
+
+                ctx.save()
+                ctx.beginPath()
+                ctx.rect(timeline.plotLeft, top, timeline.plotWidth, timeline.laneRowHeight)
+                ctx.clip()
+                for (const region of timeline.styleSpans[trackId] || []) {
+                    if (region.end <= timeline.visibleStart || region.start >= timeline.visibleEnd)
+                        continue
+                    const x = Math.max(timeline.plotLeft, timeline.xForTime(Number(region.start)))
+                    const end = Math.min(timeline.plotRight, timeline.xForTime(Number(region.end)))
+                    if (end > x) {
+                        ctx.globalAlpha = 0.1
+                        fill(ctx, region.color || trackColor, x, top, end - x,
+                            timeline.laneRowHeight)
+                        ctx.globalAlpha = 1
+                    }
+                }
+
+                if (!values.length) {
+                    ctx.font = font + "px sans-serif"
+                    ctx.fillStyle = timeline.theme.muted
+                    ctx.fillText(timeline.vwaTr("当前时间没有歌词"), timeline.plotLeft + 5,
+                        top + timeline.laneRowHeight / 2)
+                } else {
+                    let minimumPitch = 127
+                    let maximumPitch = 0
+                    for (const note of values) {
+                        minimumPitch = Math.min(minimumPitch, note.pitch)
+                        maximumPitch = Math.max(maximumPitch, note.pitch)
+                    }
+                    const barTop = top + timeline.regionBandHeight + 4 * timeline.scale
+                    const barBottom = top + timeline.laneRowHeight - 13 * timeline.scale
+                    const span = Math.max(1, maximumPitch - minimumPitch)
+                    ctx.font = noteFont + "px sans-serif"
+                    ctx.textBaseline = "middle"
+                    for (const note of values) {
+                        const rawLeft = timeline.xForTime(note.start)
+                        const rawRight = timeline.xForTime(note.end)
+                        const left = Math.max(timeline.plotLeft, rawLeft)
+                        const right = Math.min(timeline.plotRight,
+                            Math.max(rawLeft + 2 * timeline.scale, rawRight))
+                        if (right <= left)
+                            continue
+                        const ratio = (note.pitch - minimumPitch) / span
+                        const y = barBottom - ratio * Math.max(2, barBottom - barTop)
+                        const style = timeline.styleForNote(note)
+                        const color = style && style.color ? style.color : trackColor
+                        fill(ctx, color, left, y, right - left,
+                            Math.max(3 * timeline.scale, 1.8 * timeline.scale))
+                        if (note === timeline.hoveredLaneNote) {
+                            ctx.strokeStyle = timeline.theme.text
+                            ctx.lineWidth = 1
+                            ctx.strokeRect(left + 0.5, y - 1.5, Math.max(0, right - left - 1),
+                                Math.max(1, 4.5 * timeline.scale))
+                        }
+                        const label = timeline.fittedText(ctx, note.lyric,
+                            right - left - Math.round(2 * timeline.scale))
+                        if (label) {
+                            ctx.fillStyle = active ? timeline.theme.text : timeline.theme.muted
+                            ctx.fillText(label, left + timeline.scale,
+                                top + timeline.laneRowHeight - Math.round(6 * timeline.scale))
+                        }
+                    }
+                }
+                ctx.restore()
+            }
+
+            if (!timeline.laneTracks.length) {
+                ctx.font = font + "px sans-serif"
+                ctx.fillStyle = timeline.theme.muted
+                ctx.fillText(timeline.vwaTr("勾选批量目标后显示逐轨泳道"),
+                    timeline.plotLeft + 5, timeline.rulerHeight + timeline.laneRowHeight / 2)
+            }
+            const headerY = timeline.laneY(timeline.laneTracks.length)
+            fill(ctx, timeline.theme.raised, 0, headerY, width, timeline.focusHeaderHeight)
+            fill(ctx, timeline.theme.accent, 0, headerY, Math.round(3 * timeline.scale),
+                timeline.focusHeaderHeight)
+            const focus = timeline.targetTracks[timeline.activeTrack]
+            const focusName = focus ? String(focus.track.name)
+                : String(timeline.findTrack(timeline.activeTrack).name || timeline.activeTrack || "—")
+            ctx.font = "bold " + font + "px sans-serif"
+            ctx.fillStyle = timeline.theme.text
+            ctx.textAlign = "left"
+            ctx.textBaseline = "middle"
+            const hidden = timeline.hiddenLaneCount > 0
+                ? " · " + timeline.vwaTr("另有 {count} 轨，从焦点框选择").replace("{count}", timeline.hiddenLaneCount)
+                : ""
+            ctx.fillText(timeline.fittedText(ctx,
+                timeline.vwaTr("焦点钢琴卷帘") + " · " + focusName + hidden,
+                timeline.plotRight - timeline.plotLeft - Math.round(10 * timeline.scale)),
+                timeline.plotLeft + Math.round(5 * timeline.scale),
+                headerY + timeline.focusHeaderHeight / 2)
+            fill(ctx, timeline.theme.line, 0, headerY + timeline.focusHeaderHeight - 1,
+                width, 1)
+        }
+
         function paintRegions(ctx) {
+            if (timeline.multi)
+                return
             ctx.font = Math.round(10 * timeline.scale) + "px sans-serif"
             for (let row = 0; row < timeline.regionRowCount; ++row) {
                 const y = timeline.rulerHeight + row * timeline.regionRowHeight
                 fill(ctx, timeline.theme.raised, 0, y, width, timeline.regionRowHeight)
                 fill(ctx, timeline.theme.line, 0, y + timeline.regionRowHeight - 1, width, 1)
-                const track = timeline.targetTracks[timeline.styledTracks[row]]
-                const label = timeline.multi && track ? track.track.name : "风格"
+                const track = timeline.styledTracks[row]
+                const label = timeline.vwaTr("风格")
                 ctx.fillStyle = timeline.theme.muted
                 ctx.fillText(timeline.fittedText(ctx, label, timeline.plotLeft - 10), 6, y + timeline.regionRowHeight / 2)
-                if (!track) {
-                    ctx.fillText("还未应用片段", timeline.plotLeft + 5, y + timeline.regionRowHeight / 2)
+                if (!(timeline.styleSpans[track] || []).length) {
+                    ctx.fillText(timeline.vwaTr("还未应用片段"), timeline.plotLeft + 5, y + timeline.regionRowHeight / 2)
                 }
             }
         }
@@ -581,10 +778,13 @@ Item {
             if (end <= x)
                 return
             ctx.globalAlpha = drag ? 0.19 : 0.12
-            fill(ctx, timeline.theme.accent, x, timeline.plotTop, end - x, timeline.plotHeight)
+            fill(ctx, timeline.theme.accent, x, timeline.rulerHeight, end - x,
+                Math.max(0, timeline.height - timeline.rulerHeight))
             ctx.globalAlpha = drag ? 0.95 : 0.7
-            fill(ctx, timeline.theme.accent, x, timeline.plotTop, 1, timeline.plotHeight)
-            fill(ctx, timeline.theme.accent, Math.max(x, end - 1), timeline.plotTop, 1, timeline.plotHeight)
+            fill(ctx, timeline.theme.accent, x, timeline.rulerHeight, 1,
+                Math.max(0, timeline.height - timeline.rulerHeight))
+            fill(ctx, timeline.theme.accent, Math.max(x, end - 1), timeline.rulerHeight, 1,
+                Math.max(0, timeline.height - timeline.rulerHeight))
             ctx.globalAlpha = 1
         }
 
@@ -626,13 +826,61 @@ Item {
             fill(ctx, timeline.theme.surface, 0, 0, width, height)
             ctx.textBaseline = "middle"
             ctx.textAlign = "left"
+            paintLanes(ctx)
             paintKeysAndRows(ctx)
-            paintRuler(ctx)
             paintRegions(ctx)
+            paintRuler(ctx)
             paintSelection(ctx, timeline.selectionStart, timeline.selectionEnd, false)
             paintSelection(ctx, Math.min(timeline.pressTime, timeline.dragTime),
                 Math.max(timeline.pressTime, timeline.dragTime), true)
             paintNotes(ctx)
+        }
+    }
+
+    Repeater {
+        id: laneInputs
+        model: timeline.multi ? timeline.laneTracks : []
+        Item {
+            id: laneInput
+            required property var modelData
+            required property int index
+            objectName: "tuningTrackLane_" + String(modelData.track.id)
+            x: 0
+            y: timeline.laneY(index)
+            width: timeline.plotRight
+            height: timeline.laneRowHeight
+            Accessible.role: Accessible.Pane
+            Accessible.name: String(modelData.track.name || modelData.track.id)
+            Accessible.description: timeline.laneDescription(modelData)
+
+            MouseArea {
+                id: laneHit
+                anchors.fill: parent
+                acceptedButtons: Qt.LeftButton
+                hoverEnabled: true
+                preventStealing: true
+                cursorShape: Qt.PointingHandCursor
+                onPositionChanged: function(mouse) {
+                    timeline.hoveredLaneNote = timeline.laneNoteAt(mouse.x,
+                        mouse.y + laneInput.y, modelData.track.id)
+                }
+                onExited: {
+                    if (timeline.hoveredLaneNote
+                            && timeline.hoveredLaneNote.trackId === String(modelData.track.id))
+                        timeline.hoveredLaneNote = null
+                }
+                onClicked: function(mouse) {
+                    const note = timeline.laneNoteAt(mouse.x, mouse.y + laneInput.y,
+                        modelData.track.id)
+                    if (note)
+                        timeline.selectNote(note)
+                    else
+                        timeline.controller.focusTrack(String(modelData.track.id))
+                }
+                ToolTip.visible: containsMouse
+                ToolTip.delay: 500
+                ToolTip.text: timeline.laneDescription(modelData)
+            }
         }
     }
 
@@ -648,7 +896,7 @@ Item {
             x: Math.max(timeline.plotLeft, firstX)
             y: timeline.rulerHeight + modelData.row * timeline.regionRowHeight + 1
             width: Math.max(0, Math.min(timeline.plotRight, lastX) - x)
-            height: timeline.regionRowHeight - 2
+            height: timeline.regionBandHeight
             visible: width > 0
 
             function openRegion() {
@@ -803,7 +1051,7 @@ Item {
         acceptedButtons: Qt.LeftButton
         preventStealing: true
         hoverEnabled: true
-        enabled: Object.keys(timeline.targetTracks).length > 0
+        enabled: timeline.hasSource && timeline.activeTrack.length > 0
         cursorShape: timeline.hoveredNote ? Qt.PointingHandCursor : Qt.CrossCursor
         ToolTip.visible: !!timeline.hoveredNote && !pressed
         ToolTip.delay: 500

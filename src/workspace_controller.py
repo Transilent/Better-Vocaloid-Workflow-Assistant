@@ -44,6 +44,7 @@ class WorkspaceController:
         self.task_rows = ()
         self.task_query = ''
         self.selected_task_id = ''
+        self.selected_task_artifact_id = ''
         self.task_detail = {}
         self.handoff = {}
 
@@ -98,17 +99,46 @@ class WorkspaceController:
     def set_task_rows(self, rows):
         self.task_rows = tuple(rows)
 
-    def select_task(self, job_id):
-        if not any(row['jobId'] == job_id for row in self.task_rows):
+    def focus_task(self, job_id):
+        """Switch the inspected task without keeping an unrelated file selected."""
+        if job_id == self.selected_task_id:
             return False
         self.selected_task_id = job_id
+        self.selected_task_artifact_id = ''
         self.task_detail = {}
         return True
 
+    def select_task(self, job_id):
+        if not any(row['jobId'] == job_id for row in self.task_rows):
+            return False
+        return self.focus_task(job_id)
+
+    @property
+    def selected_task_artifact(self):
+        return next((row for row in self.task_detail.get('artifacts', ())
+                     if row['id'] == self.selected_task_artifact_id), {})
+
+    def select_task_artifact(self, artifact_id):
+        if (artifact_id == self.selected_task_artifact_id or
+                not any(row['id'] == artifact_id for row in self.task_detail.get('artifacts', ()))):
+            return False
+        self.selected_task_artifact_id = artifact_id
+        return True
+
     def set_task_detail(self, job_id, detail):
-        if self.selected_task_id != job_id:
+        if self.selected_task_id != job_id or detail.get('jobId', job_id) != job_id:
             return False
         self.task_detail = detail
+        artifacts = detail.get('artifacts', ())
+        if not self.selected_task_artifact:
+            by_id = {row['id']: row for row in artifacts}
+            delivery = detail.get('delivery', {})
+            preferred = (delivery.get('openArtifactId'), *delivery.get('artifactIds', ()))
+            self.selected_task_artifact_id = next(
+                (key for key in preferred if key in by_id and by_id[key].get('available')),
+                next((row['id'] for row in artifacts if row.get('available')),
+                     artifacts[0]['id'] if artifacts else ''),
+            )
         return True
 
     @property

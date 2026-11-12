@@ -6,6 +6,10 @@ Vocaloid Workflow Assistant (VWA) is the current display and package name. Fresh
 
 ## Moving between workflows
 
+In Tasks and Results, choose a task on the left, browse its current and other outputs in the center, and inspect one file on the right. Previous versions are reference only; the footer uses the current verified output and rechecks it before handoff. Recovery, manual bindings and logs are under Manage Task.
+
+Single-track editing steps through lyric matches on the focused track; selecting a search result can jump to another track. Multi-track arrangement shows lyrics and style regions in separate lanes over one time scale. Focusing a lane changes the piano roll below, while the selected batch targets determine where edits apply. Drag the overview thumb to pan and its ends to zoom without altering the selection.
+
 Normal startup uses an ordinary window, capped at 1440×900 and bounded by the available screen. Maximizing enlarges the sidebar, navigation and background illustration while the content layout makes use of the wider area. Overall text sizing remains controlled by the UI scale preference.
 
 The four main destinations are Preparation, Tuning, Video assembly and Publishing. Tasks/results, Models/components and Settings follow them. Each workflow accepts its supported existing inputs; entering a page does not automatically execute earlier steps or change a running request.

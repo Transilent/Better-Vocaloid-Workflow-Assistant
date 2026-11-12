@@ -3,7 +3,7 @@ import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
 
-ScrollView {
+Item {
     id: page
     function vwaTr(message) {
         return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
@@ -21,7 +21,10 @@ ScrollView {
     readonly property var presets: controller.presets || []
     readonly property var bindings: controller.bindings || []
     readonly property var techniques: controller.techniques || []
+    readonly property var lyricContext: view.lyricContext || ({})
 
+    readonly property real availableWidth: Math.max(0, width)
+    readonly property real availableHeight: Math.max(0, height)
     readonly property real scale: theme.scale || 1
     readonly property bool stacked: availableWidth < (scale > 1.2 ? 1180 : 1040)
     readonly property bool compact: availableWidth < Math.round(720 * scale)
@@ -38,7 +41,8 @@ ScrollView {
     readonly property int editorPadding: Math.round(10 * scale)
     readonly property int editorGap: Math.round(6 * scale)
     readonly property real railWidth: Math.round(246 * scale)
-    readonly property real minimumRollHeight: Math.round((stacked ? 170 : 220) * scale)
+    readonly property real minimumRollHeight: Math.round((mode === "multi"
+        ? (stacked ? 220 : 280) : (stacked ? 170 : 220)) * scale)
     readonly property bool hasRange: validRange().length > 0
     readonly property bool hasLegacyDraft: hasValue(view.legacyDraft)
     readonly property bool targetEditable: editableTargets()
@@ -56,10 +60,7 @@ ScrollView {
     property bool editorFocus: false
     signal calibrationRequested()
 
-    contentWidth: availableWidth
     clip: true
-    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-    ScrollBar.vertical.policy: ScrollBar.AsNeeded
 
     function hasValue(value) {
         return value !== undefined && value !== null && value !== ""
@@ -226,6 +227,30 @@ ScrollView {
         return mode === "multi"
             ? "目标：" + names.join("、") + "（" + ids.length + " 轨）"
             : "目标：" + names[0]
+    }
+
+    function sessionStatusText() {
+        if (!hasSource)
+            return "未载入工程"
+        if (textOf(view.job).length > 0)
+            return "任务会话"
+        if (sessionExists)
+            return "会话已就绪"
+        return "首次生成时创建会话"
+    }
+
+    function currentLyricText() {
+        const lyric = textOf(lyricContext.lyric)
+        if (lyric.length === 0)
+            return page.vwaTr("当前词：点击歌词或搜索定位")
+        return page.vwaTr("当前词：") + lyric + " · " + trackName(lyricContext.trackId)
+            + " · " + formatTime(lyricContext.start) + "–" + formatTime(lyricContext.end)
+    }
+
+    function lyricMatchPositionText() {
+        const count = numberOr(view.lyricMatchCount, matches.length)
+        const index = numberOr(view.lyricMatchIndex, -1)
+        return count > 0 && index >= 0 ? String(index + 1) + "/" + String(count) : "—"
     }
 
     function rangeValues() {
@@ -735,7 +760,7 @@ ScrollView {
     }
 
     ColumnLayout {
-        width: page.availableWidth
+        anchors.fill: parent
         spacing: page.editorPadding
 
         Rectangle {
@@ -838,43 +863,69 @@ ScrollView {
                     enabled: !page.busy
                     onClicked: projectDialog.open()
                 }
-            }
-
-            RowLayout {
-                Layout.fillWidth: true
-                Layout.columnSpan: projectToolbar.columns
-                spacing: page.editorGap
                 EditorButton {
-                    objectName: "tuningOpenTask"
+                    id: workspaceMenuButton
+                    objectName: "tuningWorkspaceMenu"
                     theme: page.theme
-                    text: page.vwaTr("从任务载入…")
-                    enabled: !page.busy
-                    onClicked: {
-                        page.controller.refreshTuningTasks()
-                        taskPickerDialog.open()
+                    text: page.vwaTr("工程与恢复…")
+                    enabled: !page.busy || !page.hasSource
+                    onClicked: workspaceMenu.open()
+                    Menu {
+                        id: workspaceMenu
+                        y: workspaceMenuButton.height
+                        width: Math.round(222 * page.scale)
+                        MenuItem {
+                            objectName: "tuningOpenTask"
+                            text: page.vwaTr("从任务载入…")
+                            enabled: !page.busy
+                            onTriggered: {
+                                page.controller.refreshTuningTasks()
+                                taskPickerDialog.open()
+                            }
+                        }
+                        MenuSeparator {}
+                        MenuItem {
+                            objectName: "tuningReloadProject"
+                            text: page.vwaTr("重新读取当前工程")
+                            enabled: !page.busy && boolOr(page.view.canReload, false)
+                            onTriggered: page.controller.reloadProject()
+                        }
+                        MenuItem {
+                            objectName: "tuningResumeSession"
+                            text: page.vwaTr("继续会话…")
+                            enabled: !page.busy
+                            onTriggered: sessionDialog.open()
+                        }
+                        MenuItem {
+                            objectName: "tuningChooseSessionLocation"
+                            text: page.vwaTr("会话位置…")
+                            visible: !page.textOf(page.view.job).length
+                            enabled: !page.busy && boolOr(page.view.canChooseSessionLocation, false)
+                            onTriggered: sessionLocationDialog.open()
+                        }
+                        MenuSeparator {}
+                        MenuItem {
+                            objectName: "reloadLatestTuningDraft"
+                            text: page.vwaTr("载入最新草稿")
+                            visible: page.hasSource && !page.draftConflict
+                            enabled: !page.busy && boolOr(page.view.canReloadDraft, false)
+                            onTriggered: page.controller.reloadLatestDraft()
+                        }
+                        MenuItem {
+                            objectName: "saveTuningDraftRevision"
+                            text: page.vwaTr("保存新修订")
+                            visible: page.hasSource && !page.draftConflict
+                            enabled: !page.busy && boolOr(page.view.canSaveDraftRevision, false)
+                            onTriggered: page.controller.saveDraftRevision()
+                        }
+                        MenuItem {
+                            objectName: "chooseDraftRecovery"
+                            text: page.vwaTr("草稿副本…")
+                            visible: page.hasSource && !page.draftConflict
+                            enabled: !page.busy
+                            onTriggered: draftFile.open()
+                        }
                     }
-                }
-                EditorButton {
-                    objectName: "tuningReloadProject"
-                    theme: page.theme
-                    text: page.vwaTr("重新读取当前工程")
-                    enabled: !page.busy && boolOr(page.view.canReload, false)
-                    onClicked: page.controller.reloadProject()
-                }
-                EditorButton {
-                    objectName: "tuningResumeSession"
-                    theme: page.theme
-                    text: page.vwaTr("继续会话…")
-                    enabled: !page.busy
-                    onClicked: sessionDialog.open()
-                }
-                EditorButton {
-                    objectName: "tuningChooseSessionLocation"
-                    theme: page.theme
-                    text: page.vwaTr("会话位置…")
-                    visible: !page.textOf(page.view.job).length
-                    enabled: !page.busy && boolOr(page.view.canChooseSessionLocation, false)
-                    onClicked: sessionLocationDialog.open()
                 }
                 EditorButton {
                     objectName: "tuningEditorFocus"
@@ -884,16 +935,19 @@ ScrollView {
                     onClicked: page.toggleEditorFocus()
                 }
                 Text {
+                    id: sessionChip
                     objectName: "tuningSessionLocation"
-                    Layout.fillWidth: true
-                    text: page.textOf(page.view.sessionLocation)
+                    Layout.preferredWidth: Math.round(96 * page.scale)
+                    text: page.vwaTr(page.sessionStatusText())
                     color: page.theme.muted
                     font.pixelSize: Math.round(10 * page.scale)
                     elide: Text.ElideMiddle
                     textFormat: Text.PlainText
+                    Accessible.name: page.vwaTr("会话状态：") + text
                     HoverHandler { id: sessionLocationHover }
-                    ToolTip.visible: sessionLocationHover.hovered && text.length > 0
-                    ToolTip.text: text + page.vwaTr("\n候选目录：") + page.textOf(page.view.sessionOutput)
+                    ToolTip.visible: sessionLocationHover.hovered
+                    ToolTip.text: page.vwaTr("会话位置：") + page.textOf(page.view.sessionLocation)
+                        + page.vwaTr("\n候选目录：") + page.textOf(page.view.sessionOutput)
                 }
             }
         }
@@ -977,8 +1031,10 @@ ScrollView {
 
         GridLayout {
             Layout.fillWidth: true
+            Layout.fillHeight: true
             Layout.leftMargin: page.contentMargin
             Layout.rightMargin: page.contentMargin
+            Layout.bottomMargin: page.contentMargin
             columns: page.stacked ? 1 : 2
             columnSpacing: page.editorPadding
             rowSpacing: page.editorPadding
@@ -987,12 +1043,8 @@ ScrollView {
                 id: workspacePanel
                 objectName: "tuningWorkspacePanel"
                 Layout.fillWidth: true
-                Layout.alignment: Qt.AlignTop
-                Layout.preferredHeight: Math.max(chromeHeight + page.minimumRollHeight,
-                    Math.min(Math.round(920 * page.scale), page.availableHeight
-                        - (projectToolbar.visible ? projectToolbar.height : editorFocusBar.height)
-                        - 3 * page.editorPadding
-                        - (legacyDraftBanner.visible ? legacyDraftBanner.height + page.editorPadding : 0)))
+                Layout.fillHeight: true
+                Layout.minimumHeight: chromeHeight + page.minimumRollHeight
                 readonly property real chromeHeight: editorTools.implicitHeight
                     + selectionToolbar.implicitHeight + viewportStrip.implicitHeight
                     + 2 * page.editorPadding + 3 * page.editorGap
@@ -1015,6 +1067,15 @@ ScrollView {
                             Layout.fillWidth: true
                             visible: page.tracks.length > 0
                             spacing: page.editorGap
+                            Text {
+                                objectName: "tuningTargetScopeLabel"
+                                text: page.mode === "multi" ? page.vwaTr("批量目标")
+                                    : page.vwaTr("当前轨")
+                                color: page.theme.muted
+                                font.pixelSize: Math.round(10 * page.scale)
+                                font.weight: Font.DemiBold
+                                textFormat: Text.PlainText
+                            }
                             Flickable {
                                 objectName: "tuningTrackStrip"
                                 Layout.fillWidth: true
@@ -1045,6 +1106,9 @@ ScrollView {
                                                 : isActive
 
                                             theme: page.theme
+                                            objectName: (page.mode === "multi"
+                                                ? "tuningTrackTarget_" : "tuningTrackFocus_")
+                                                + String(modelData.id)
                                             text: page.textOf(modelData.name)
                                                 + (modelData.noteCount !== undefined
                                                     ? "  " + modelData.noteCount : "")
@@ -1056,7 +1120,12 @@ ScrollView {
                                             width: Math.max(Math.round(80 * page.scale),
                                                 Math.min(Math.round(236 * page.scale), implicitWidth))
                                             leftPadding: Math.round(19 * page.scale)
-                                            Accessible.name: text + (isActive ? page.vwaTr("，焦点轨") : "")
+                                            Accessible.name: text
+                                                + (page.mode === "multi"
+                                                    ? (isSelected ? page.vwaTr("，批量目标")
+                                                        : page.vwaTr("，未选为批量目标"))
+                                                    : page.vwaTr("，当前轨"))
+                                                + (isActive ? page.vwaTr("，焦点轨") : "")
                                             Rectangle {
                                                 x: Math.round(6 * page.scale)
                                                 anchors.verticalCenter: parent.verticalCenter
@@ -1066,8 +1135,13 @@ ScrollView {
                                                 color: timelineRoll.trackColor(trackChip.index)
                                             }
                                             ToolTip.visible: hovered
-                                                && page.textOf(modelData.reason).length > 0
-                                            ToolTip.text: page.textOf(modelData.reason)
+                                            ToolTip.text: page.mode === "multi"
+                                                ? page.vwaTr("点击切换批量目标；焦点在泳道或右侧焦点框切换。")
+                                                    + (page.textOf(modelData.reason).length > 0
+                                                        ? "\n" + page.textOf(modelData.reason) : "")
+                                                : page.vwaTr("点击设为当前精修轨。")
+                                                    + (page.textOf(modelData.reason).length > 0
+                                                        ? "\n" + page.textOf(modelData.reason) : "")
                                             onClicked: {
                                                 if (page.mode === "single")
                                                     page.controller.focusTrack(String(modelData.id))
@@ -1086,7 +1160,7 @@ ScrollView {
                                 theme: page.theme
                                 model: page.tracks
                                 textRole: "name"
-                                displayText: "焦点：" + (currentText || "—")
+                                displayText: page.vwaTr("焦点：") + (currentText || "—")
                                 valueRole: "id"
                                 currentIndex: page.trackIndex(page.activeId)
                                 enabled: !page.busy && page.tracks.length > 0
@@ -1095,6 +1169,58 @@ ScrollView {
                                     if (index >= 0 && index < page.tracks.length)
                                         page.controller.focusTrack(String(page.tracks[index].id))
                                 }
+                            }
+                        }
+
+                        RowLayout {
+                            objectName: "tuningCurrentLyricRow"
+                            Layout.fillWidth: true
+                            visible: page.mode === "single" && page.hasSource
+                            spacing: page.editorGap
+                            Rectangle {
+                                Layout.alignment: Qt.AlignVCenter
+                                implicitWidth: Math.round(7 * page.scale)
+                                implicitHeight: implicitWidth
+                                radius: width / 2
+                                color: page.activeTrackData
+                                    ? timelineRoll.trackColor(page.trackIndex(page.activeId))
+                                    : page.theme.muted
+                            }
+                            Text {
+                                objectName: "tuningCurrentLyricContext"
+                                Layout.fillWidth: true
+                                text: page.currentLyricText()
+                                color: page.theme.text
+                                font.pixelSize: Math.round(11 * page.scale)
+                                font.weight: Font.DemiBold
+                                elide: Text.ElideRight
+                                textFormat: Text.PlainText
+                                ToolTip.visible: truncated && lyricHover.hovered
+                                ToolTip.text: text
+                                HoverHandler { id: lyricHover }
+                            }
+                            Text {
+                                objectName: "tuningLyricOccurrencePosition"
+                                text: page.lyricMatchPositionText()
+                                color: page.theme.muted
+                                font.pixelSize: Math.round(10 * page.scale)
+                                textFormat: Text.PlainText
+                            }
+                            EditorButton {
+                                objectName: "tuningPreviousLyricOccurrence"
+                                theme: page.theme
+                                text: page.vwaTr("上一处")
+                                quiet: true
+                                enabled: !page.busy && boolOr(page.view.canPreviousLyricMatch, false)
+                                onClicked: page.controller.stepLyricMatch(-1)
+                            }
+                            EditorButton {
+                                objectName: "tuningNextLyricOccurrence"
+                                theme: page.theme
+                                text: page.vwaTr("下一处")
+                                quiet: true
+                                enabled: !page.busy && boolOr(page.view.canNextLyricMatch, false)
+                                onClicked: page.controller.stepLyricMatch(1)
                             }
                         }
 
@@ -1294,6 +1420,73 @@ ScrollView {
                             compact: page.stacked
                             onRegionFocused: page.inspectorTab = "style"
                         }
+
+                        Rectangle {
+                            objectName: "tuningEmptyState"
+                            anchors.fill: parent
+                            anchors.margins: 1
+                            visible: !page.hasSource
+                            z: 10
+                            color: page.theme.base
+                            Accessible.role: Accessible.Pane
+                            Accessible.name: page.vwaTr("打开调音工程")
+                            MouseArea {
+                                anchors.fill: parent
+                                acceptedButtons: Qt.LeftButton
+                                onClicked: {}
+                            }
+                            ColumnLayout {
+                                anchors.centerIn: parent
+                                width: Math.min(parent.width - Math.round(36 * page.scale),
+                                    Math.round(430 * page.scale))
+                                spacing: Math.round(8 * page.scale)
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: page.vwaTr("还没有打开调音工程")
+                                    color: page.theme.text
+                                    font.pixelSize: Math.round(17 * page.scale)
+                                    font.weight: Font.DemiBold
+                                    horizontalAlignment: Text.AlignHCenter
+                                    textFormat: Text.PlainText
+                                }
+                                HelperText {
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    text: page.vwaTr("打开 SVP 工程后，可在单轨卷帘逐句精修，或切到多轨泳道比较重复歌词。")
+                                    horizontalAlignment: Text.AlignHCenter
+                                }
+                                RowLayout {
+                                    Layout.alignment: Qt.AlignHCenter
+                                    spacing: page.editorGap
+                                    EditorButton {
+                                        objectName: "emptyOpenTuningProject"
+                                        theme: page.theme
+                                        text: page.vwaTr("打开工程…")
+                                        primary: true
+                                        enabled: !page.busy
+                                        onClicked: projectDialog.open()
+                                    }
+                                    EditorButton {
+                                        objectName: "emptyOpenTuningTask"
+                                        theme: page.theme
+                                        text: page.vwaTr("从任务载入…")
+                                        enabled: !page.busy
+                                        onClicked: {
+                                            page.controller.refreshTuningTasks()
+                                            taskPickerDialog.open()
+                                        }
+                                    }
+                                    EditorButton {
+                                        objectName: "emptyResumeTuningSession"
+                                        theme: page.theme
+                                        text: page.vwaTr("继续会话…")
+                                        quiet: true
+                                        enabled: !page.busy
+                                        onClicked: sessionDialog.open()
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     TuningViewportStrip {
@@ -1398,7 +1591,8 @@ ScrollView {
                 Layout.fillWidth: page.stacked
                 Layout.preferredWidth: page.stacked ? 0 : page.railWidth
                 Layout.minimumWidth: page.stacked ? 0 : page.railWidth
-                Layout.preferredHeight: page.stacked ? Math.round(560 * page.scale) : workspacePanel.height
+                Layout.fillHeight: !page.stacked
+                Layout.preferredHeight: page.stacked ? Math.round(560 * page.scale) : -1
                 Layout.alignment: Qt.AlignTop
                 radius: Math.round(8 * page.scale)
                 color: page.theme.surface
@@ -2410,32 +2604,6 @@ ScrollView {
                             visible: page.view.busy === true
                             enabled: visible
                             onClicked: page.controller.cancel()
-                        }
-                        EditorButton {
-                            objectName: "chooseDraftRecovery"
-                            theme: page.theme
-                            text: page.vwaTr("草稿副本…")
-                            visible: page.hasSource && !page.draftConflict
-                            enabled: !page.busy
-                            onClicked: draftFile.open()
-                        }
-                        EditorButton {
-                            objectName: "reloadLatestTuningDraft"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: page.vwaTr("载入最新草稿")
-                            visible: page.hasSource && !page.draftConflict
-                            enabled: !page.busy && boolOr(page.view.canReloadDraft, false)
-                            onClicked: page.controller.reloadLatestDraft()
-                        }
-                        EditorButton {
-                            objectName: "saveTuningDraftRevision"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            text: page.vwaTr("保存新修订")
-                            visible: page.hasSource && !page.draftConflict
-                            enabled: !page.busy && boolOr(page.view.canSaveDraftRevision, false)
-                            onClicked: page.controller.saveDraftRevision()
                         }
                         EditorButton {
                             objectName: "registerTuningResult"
