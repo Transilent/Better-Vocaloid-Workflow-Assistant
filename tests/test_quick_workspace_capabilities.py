@@ -189,6 +189,7 @@ try:
 
         bridge.navigate('updates')
         settle()
+        click('settingsCategory_storage')
         cache = private / 'cache/numba'
         cache.mkdir(parents=True)
         (cache / 'small.tmp').write_bytes(b'known disposable fixture')
@@ -207,6 +208,7 @@ try:
             check('protected account file remains untouched', protected.is_file() and support.storage['freed'] > 0)
 
         support._preset_library = PresetLibrary(private / 'presets')
+        click('settingsCategory_presets')
         click('refreshPresetLibrary')
         wait('settings loads the shared built-in library', lambda: support.presetLibrary['loaded']
              and any(row['builtin'] for row in support.presetLibrary['entries']))

@@ -15,7 +15,6 @@ Item {
     property var eqCurve: []
     property var spectrum: ({})
     property real maxHz: 20000
-    property string selection: "B"
     property bool showBandDetails: true
     property bool showPlotHeader: true
     property int minimumPlotHeight: Math.round(230 * theme.scale)
@@ -25,7 +24,16 @@ Item {
     property bool dragging: false
     property real dragFrequency: 0
     property real dragGain: 0
-    property bool paintQueued: false
+    property bool dragPending: false
+    property bool dragEqEnabled: false
+    readonly property color beforeInk: theme.dark === false ? "#007187" : "#62dfed"
+    readonly property color afterInk: theme.dark === false ? "#a84214" : "#ffac6d"
+    readonly property var gridTheme: [theme.line, theme.selectedLine, theme.muted, theme.scale]
+    readonly property color responseInk: theme.accent
+    onGridThemeChanged: schedulePaint(gridCanvas)
+    onBeforeInkChanged: schedulePaint(spectrumCanvas)
+    onAfterInkChanged: schedulePaint(spectrumCanvas)
+    onResponseInkChanged: schedulePaint(responseCanvas)
 
     readonly property real expectedMaxHz: Math.max(30, safeNumber(maxHz, 20000))
     readonly property int availableBands: Math.min(4, bands ? bands.length : 0)
@@ -36,12 +44,19 @@ Item {
     onBandsChanged: {
         if (activeBand >= availableBands)
             activeBand = availableBands > 0 ? 0 : -1;
-        schedulePaint();
     }
-    onEqCurveChanged: schedulePaint()
-    onSpectrumChanged: schedulePaint()
-    onSelectionChanged: schedulePaint()
-    onMaxHzChanged: schedulePaint()
+    onEqCurveChanged: schedulePaint(responseCanvas)
+    onSpectrumChanged: schedulePaint(spectrumCanvas)
+    onMaxHzChanged: {
+        schedulePaint(gridCanvas)
+        schedulePaint(spectrumCanvas)
+    }
+
+    Timer {
+        id: dragPublish
+        interval: 16
+        onTriggered: root.flushDrag()
+    }
 
     function safeNumber(value, fallback) {
         const number = Number(value);
@@ -93,9 +108,8 @@ Item {
     }
 
     function plotGeometry(widthValue, heightValue) {
-        const gap = Math.round(16 * root.theme.scale);
         const left = Math.round(48 * root.theme.scale);
-        const right = Math.round(14 * root.theme.scale);
+        const right = Math.round(53 * root.theme.scale);
         const top = Math.round(18 * root.theme.scale);
         const bottom = Math.round(26 * root.theme.scale);
         return {
@@ -180,14 +194,20 @@ Item {
         return (gain >= 0 ? "+" : "") + gain.toFixed(1) + " dB";
     }
 
-    function schedulePaint() {
-        if (paintQueued)
-            return;
-        paintQueued = true;
-        Qt.callLater(function () {
-            root.paintQueued = false;
-            chartCanvas.requestPaint();
-        });
+    function schedulePaint(canvas) {
+        if (canvas && canvas.visible && canvas.available)
+            canvas.requestPaint()
+    }
+
+    function flushDrag() {
+        if (!root.dragPending || root.dragBand < 0)
+            return
+        root.dragPending = false
+        if (!root.dragEqEnabled && root.isBandEnabled(root.dragBand)) {
+            root.ensureEqEnabled()
+            root.dragEqEnabled = true
+        }
+        root.controller.moveBand(root.dragBand, root.dragFrequency, root.dragGain)
     }
 
     function nearestBand(x, y, geometry) {
@@ -276,14 +296,23 @@ Item {
                 font.weight: Font.DemiBold
             }
             Rectangle {
-                width: Math.round(7 * root.theme.scale)
-                height: width
-                radius: width / 2
-                color: root.theme.accent
+                Layout.preferredWidth: Math.round(14 * root.theme.scale)
+                Layout.preferredHeight: Math.max(2, Math.round(2 * root.theme.scale))
+                color: root.beforeInk
             }
             Text {
-                text: root.selection === "A" ? root.vwaTr("A · 处理前频谱") : root.vwaTr("B · 处理后频谱")
-                color: root.theme.muted
+                text: root.vwaTr("处理前")
+                color: root.beforeInk
+                font.pixelSize: Math.round(11 * root.theme.scale)
+            }
+            Rectangle {
+                Layout.preferredWidth: Math.round(14 * root.theme.scale)
+                Layout.preferredHeight: Math.max(2, Math.round(2 * root.theme.scale))
+                color: root.afterInk
+            }
+            Text {
+                text: root.vwaTr("处理后")
+                color: root.afterInk
                 font.pixelSize: Math.round(11 * root.theme.scale)
             }
             Item {
@@ -291,7 +320,7 @@ Item {
             }
             Text {
                 Layout.maximumWidth: Math.round(230 * root.theme.scale)
-                text: root.spectrumSource.length > 0 ? root.vwaTr("实测 · ") + root.spectrumSource : root.vwaTr("等待真实频谱")
+                text: root.hasSpectrum ? root.vwaTr("实时频谱") : root.vwaTr("等待真实频谱")
                 color: root.hasSpectrum ? root.theme.muted : root.theme.attention
                 font.pixelSize: Math.round(10 * root.theme.scale)
                 elide: Text.ElideRight
@@ -300,6 +329,7 @@ Item {
 
         Rectangle {
             id: chartFrame
+            readonly property var plotBounds: root.plotGeometry(width, height)
             objectName: "mixdownEqPlot"
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -316,11 +346,13 @@ Item {
             Keys.onPressed: event => root.editBandWithKey(event)
 
             Canvas {
-                id: chartCanvas
+                id: gridCanvas
                 anchors.fill: parent
-                renderTarget: Canvas.FramebufferObject
+                renderTarget: Canvas.Image
                 onWidthChanged: requestPaint()
                 onHeightChanged: requestPaint()
+                onVisibleChanged: if (visible) requestPaint()
+                onAvailableChanged: if (available && visible) requestPaint()
 
                 onPaint: {
                     const ctx = getContext("2d");
@@ -328,7 +360,7 @@ Item {
                     ctx.globalAlpha = 1;
                     if (width < 20 || height < 20)
                         return;
-                    const geometry = root.plotGeometry(width, height);
+                    const geometry = chartFrame.plotBounds;
                     const scale = root.theme.scale;
                     ctx.lineWidth = Math.max(1, scale);
                     ctx.font = Math.round(10 * scale) + "px sans-serif";
@@ -381,13 +413,56 @@ Item {
                         ctx.fillText((gain > 0 ? "+" : "") + gain + " dB", geometry.left - Math.round(7 * scale), y);
                     }
 
-                    if (root.hasSpectrum) {
-                        root.drawSpectrum(ctx, root.spectrum.before, root.spectrum.freqs, geometry, root.theme.muted, root.selection === "A" ? 0.52 : 0.28, root.selection === "A" ? Math.max(1.4, 2 * scale) : Math.max(1, scale));
-                        if (root.spectrum.after && root.spectrum.after.length > 0) {
-                            root.drawSpectrum(ctx, root.spectrum.after, root.spectrum.freqs, geometry, root.theme.accent, root.selection === "B" ? 0.58 : 0.28, root.selection === "B" ? Math.max(1.4, 2 * scale) : Math.max(1, scale));
-                        }
-                    }
+                    // Spectral level and EQ gain have separate scales.
+                    ctx.textAlign = "left"
+                    ctx.fillStyle = root.theme.muted
+                    const right = geometry.left + geometry.width + Math.round(7 * scale)
+                    for (let i = 0; i <= 3; ++i)
+                        ctx.fillText(i === 0 ? "0 dBFS" : String(-30 * i),
+                                     right, geometry.top + geometry.height * i / 3)
+                }
+            }
 
+            Canvas {
+                id: spectrumCanvas
+                objectName: "mixdownEqSpectrum"
+                x: chartFrame.plotBounds.left
+                y: chartFrame.plotBounds.top
+                width: chartFrame.plotBounds.width
+                height: chartFrame.plotBounds.height
+                renderTarget: Canvas.Image
+                onWidthChanged: requestPaint()
+                onHeightChanged: requestPaint()
+                onVisibleChanged: if (visible) requestPaint()
+                onAvailableChanged: if (available && visible) requestPaint()
+                onPaint: {
+                    const ctx = getContext("2d")
+                    ctx.clearRect(0, 0, width, height)
+                    if (!root.hasSpectrum)
+                        return
+                    const geometry = {left: 0, top: 0, width: width, height: height}
+                    const scale = root.theme.scale
+                    root.drawSpectrum(ctx, root.spectrum.after, root.spectrum.freqs, geometry,
+                                      root.afterInk, 0.93, Math.max(2, 2 * scale), false)
+                    root.drawSpectrum(ctx, root.spectrum.before, root.spectrum.freqs, geometry,
+                                      root.beforeInk, 0.93, Math.max(1.6, 1.7 * scale), true)
+                }
+            }
+
+            Canvas {
+                id: responseCanvas
+                objectName: "mixdownEqResponse"
+                anchors.fill: parent
+                renderTarget: Canvas.Image
+                onWidthChanged: requestPaint()
+                onHeightChanged: requestPaint()
+                onVisibleChanged: if (visible) requestPaint()
+                onAvailableChanged: if (available && visible) requestPaint()
+                onPaint: {
+                    const ctx = getContext("2d")
+                    ctx.clearRect(0, 0, width, height)
+                    const geometry = chartFrame.plotBounds
+                    const scale = root.theme.scale
                     if (root.eqCurve && root.eqCurve.length > 0) {
                         ctx.beginPath();
                         let started = false;
@@ -409,48 +484,57 @@ Item {
                             }
                         }
                         if (started) {
-                            ctx.strokeStyle = root.theme.accent;
+                            ctx.strokeStyle = root.responseInk;
                             ctx.lineWidth = Math.max(2, 2.4 * scale);
                             ctx.globalAlpha = 0.96;
                             ctx.stroke();
                             ctx.globalAlpha = 1;
                         }
                     }
+                }
+            }
 
-                    for (let index = 0; index < root.availableBands; ++index) {
-                        const x = root.xForFrequency(root.bandFrequency(index), geometry);
-                        const y = root.yForGain(root.bandGain(index), geometry);
-                        const radius = Math.max(6, Math.round((root.activeBand === index ? 8 : 6) * scale));
-                        const enabled = root.isBandEnabled(index);
-                        ctx.beginPath();
-                        ctx.arc(x, y, radius, 0, Math.PI * 2);
-                        ctx.fillStyle = root.theme.base;
-                        ctx.fill();
-                        ctx.lineWidth = Math.max(2, 2 * scale);
-                        ctx.strokeStyle = enabled ? root.bandColor(index) : root.theme.muted;
-                        ctx.globalAlpha = enabled ? 1 : 0.55;
-                        ctx.stroke();
-                        if (root.activeBand === index) {
-                            ctx.beginPath();
-                            ctx.arc(x, y, radius + Math.round(3 * scale), 0, Math.PI * 2);
-                            ctx.strokeStyle = root.theme.text;
-                            ctx.lineWidth = Math.max(1, scale);
-                            ctx.stroke();
-                        }
-                        ctx.globalAlpha = 1;
-                        ctx.fillStyle = root.theme.text;
-                        ctx.textAlign = "center";
-                        ctx.font = "600 " + Math.round(9 * scale) + "px sans-serif";
-                        ctx.fillText(String(index + 1), x, y + 0.5);
+            Repeater {
+                model: root.availableBands
+                Rectangle {
+                    required property int index
+                    readonly property bool picked: root.activeBand === index
+                    readonly property bool bandOn: root.isBandEnabled(index)
+                    width: Math.round((picked ? 17 : 14) * root.theme.scale)
+                    height: width
+                    x: root.xForFrequency(root.bandFrequency(index), chartFrame.plotBounds) - width / 2
+                    y: root.yForGain(root.bandGain(index), chartFrame.plotBounds) - height / 2
+                    radius: width / 2
+                    color: root.theme.base
+                    border.color: bandOn ? root.bandColor(index) : root.theme.muted
+                    border.width: Math.max(1, Math.round(2 * root.theme.scale))
+                    opacity: bandOn ? 1 : 0.7
+                    Rectangle {
+                        visible: parent.picked
+                        anchors.centerIn: parent
+                        width: parent.width + Math.round(7 * root.theme.scale)
+                        height: width
+                        radius: width / 2
+                        color: "transparent"
+                        border.color: root.theme.text
                     }
-
-                    if (!root.hasSpectrum) {
-                        ctx.fillStyle = root.theme.muted;
-                        ctx.textAlign = "center";
-                        ctx.font = Math.round(11 * scale) + "px sans-serif";
-                        ctx.fillText("播放后显示 A/B 实测频谱", geometry.left + geometry.width / 2, geometry.top + geometry.height * 0.18);
+                    Text {
+                        anchors.centerIn: parent
+                        text: String(parent.index + 1)
+                        color: root.theme.text
+                        font.weight: Font.DemiBold
+                        font.pixelSize: Math.round(9 * root.theme.scale)
                     }
                 }
+            }
+
+            Text {
+                visible: !root.hasSpectrum
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: chartFrame.plotBounds.top + chartFrame.plotBounds.height * 0.17
+                text: root.vwaTr("等待真实频谱")
+                color: root.theme.muted
+                font.pixelSize: Math.round(11 * root.theme.scale)
             }
 
             MouseArea {
@@ -473,7 +557,6 @@ Item {
                     root.activeBand = hit;
                     if ((mouse.modifiers & Qt.AltModifier) !== 0) {
                         root.controller.setBand(hit, "enabled", !root.isBandEnabled(hit));
-                        root.schedulePaint();
                         return;
                     }
                     // Snapshot the actual node before switching the drawing to
@@ -481,8 +564,8 @@ Item {
                     root.dragFrequency = root.bandFrequency(hit);
                     root.dragGain = root.bandGain(hit);
                     root.dragBand = hit;
+                    root.dragPending = root.dragEqEnabled = false;
                     root.dragging = true;
-                    root.schedulePaint();
                 }
                 onPositionChanged: function (mouse) {
                     if (!root.dragging || root.dragBand < 0)
@@ -490,30 +573,32 @@ Item {
                     const geometry = root.plotGeometry(width, height);
                     root.dragFrequency = root.clamp(root.frequencyAt((mouse.x - geometry.left) / geometry.width), 20, root.expectedMaxHz);
                     root.dragGain = root.bandValue(root.dragBand, "type", "") === "highpass" ? 0 : root.gainAtY(mouse.y, geometry);
-                    if (root.isBandEnabled(root.dragBand))
-                        root.ensureEqEnabled();
-                    root.controller.moveBand(root.dragBand, root.dragFrequency, root.dragGain);
-                    root.schedulePaint();
+                    root.dragPending = true;
+                    if (!dragPublish.running)
+                        dragPublish.start();
                 }
                 onReleased: {
+                    dragPublish.stop()
+                    root.flushDrag()
                     root.dragging = false;
                     root.dragBand = -1;
-                    root.schedulePaint();
                 }
                 onCanceled: {
+                    dragPublish.stop()
+                    root.dragPending = false
                     root.dragging = false;
                     root.dragBand = -1;
-                    root.schedulePaint();
                 }
                 onDoubleClicked: function (mouse) {
                     const geometry = root.plotGeometry(width, height);
                     const hit = root.nearestBand(mouse.x, mouse.y, geometry);
                     if (hit >= 0) {
                         root.activeBand = hit;
+                        dragPublish.stop()
+                        root.dragPending = false
                         root.dragging = false;
                         root.dragBand = -1;
                         root.controller.resetBand(hit);
-                        root.schedulePaint();
                     }
                 }
                 onWheel: function (wheel) {
@@ -529,7 +614,6 @@ Item {
                         const fine = (wheel.modifiers & Qt.ShiftModifier) !== 0;
                         root.controller.setBand(hit, "q", root.qValue(hit) * Math.pow(fine ? 1.035 : 1.18, delta / 120));
                     }
-                    root.schedulePaint();
                     wheel.accepted = true;
                 }
             }
@@ -606,7 +690,6 @@ Item {
                         anchors.fill: parent
                         onClicked: {
                             root.activeBand = index;
-                            root.schedulePaint();
                         }
                     }
                 }
@@ -726,20 +809,23 @@ Item {
 
                 UiButton {
                     theme: root.theme
-                    selected: root.activeBand >= 0 && root.isBandEnabled(root.activeBand)
-                    text: selected ? root.vwaTr("已启用") : root.vwaTr("已旁通")
+                    objectName: "mixdownEqBandToggle"
+                    enabled: root.activeBand >= 0
+                    selected: enabled && root.isBandEnabled(root.activeBand)
+                    text: selected ? root.vwaTr("关闭") : root.vwaTr("启用")
                     onClicked: {
-                        if (root.activeBand >= 0)
-                            root.ensureEqEnabled();
-                        root.controller.setBand(root.activeBand, "enabled", !root.isBandEnabled(root.activeBand));
+                        const turnOn = !root.isBandEnabled(root.activeBand)
+                        if (turnOn)
+                            root.ensureEqEnabled()
+                        root.controller.setBand(root.activeBand, "enabled", turnOn)
                     }
-                    Accessible.name: root.vwaTr("启用当前频段")
+                    Accessible.name: text
                 }
             }
         }
     }
 
-    function drawSpectrum(ctx, values, frequencies, geometry, color, alpha, lineWidth) {
+    function drawSpectrum(ctx, values, frequencies, geometry, color, alpha, lineWidth, dashed) {
         if (!values || !frequencies)
             return;
         const count = Math.min(values.length, frequencies.length);
@@ -770,6 +856,9 @@ Item {
         ctx.strokeStyle = color;
         ctx.globalAlpha = alpha;
         ctx.lineWidth = lineWidth;
+        ctx.lineJoin = "round";
+        if (typeof ctx.setLineDash === "function")
+            ctx.setLineDash(dashed ? [4 * root.theme.scale, 3 * root.theme.scale] : []);
         ctx.stroke();
         ctx.globalAlpha = 1;
     }

@@ -36,6 +36,7 @@ from mixdown_runtime import (
     worker_environment,
 )
 from mixdown_workspace_state import (
+    GR_HISTORY_BUCKET_MS,
     MixdownWorkspaceState,
     empty_gr_history,
     eq_curve,
@@ -50,11 +51,8 @@ from common import ROOT
 from quick_work import WorkerLane
 
 
-_PLAYER_SIGNALS = (
-    'positionChanged', 'durationChanged', 'stateChanged', 'mediaStatusChanged',
-    'sourceChanged', 'errorOccurred', 'prepared', 'parametersApplied',
-    'seekConfirmed', 'telemetryChanged',
-)
+_METER_INTERVAL_SECONDS = .05
+_LIVE_READING_TIMEOUT_SECONDS = .30
 
 
 def _local_url(value: Any) -> Path:
@@ -145,8 +143,11 @@ class QuickMixdown(QObject):
         self._registered_mix_id = ''
         self._export_task_artifacts = []
         self._result_fingerprint = ''
-        self._preview_pending = False
         self._last_telemetry_identity = None
+        self._source_edit_pending = False
+        self._last_telemetry_at = 0.0
+        self._last_meter_identity = None
+        self._last_spectrum_window = None
         self._last_spectrum_at = 0.0
         self._last_meter_at = 0.0
         self._last_reverb_key = None
@@ -166,7 +167,7 @@ class QuickMixdown(QObject):
 
         self._eq_timer = QTimer(self)
         self._eq_timer.setSingleShot(True)
-        self._eq_timer.setInterval(50)
+        self._eq_timer.setInterval(16)
         self._eq_timer.timeout.connect(self._emit_eq_curve)
 
         self._poll_timer = QTimer(self)
@@ -338,17 +339,10 @@ class QuickMixdown(QObject):
             )
             self._player.available = bool(self._native_dll)
             self._preview = MixdownPreviewController(self._player)
-            for name in _PLAYER_SIGNALS:
+            for name, slot in (('errorOccurred', self._player_error), ('prepared', self._player_prepared),
+                               ('seekConfirmed', self._clear_hotspots), ('telemetryChanged', self._telemetry)):
                 signal = getattr(self._player, name, None)
-                if signal is None:
-                    continue
-                slot = {
-                    'errorOccurred': self._player_error,
-                    'prepared': self._player_prepared,
-                    'parametersApplied': self._parameters_applied,
-                    'telemetryChanged': self._telemetry,
-                }.get(name)
-                if slot is not None:
+                if signal is not None:
                     signal.connect(slot)
             self._player.set_volume(self._monitor_volume(self._state.master_gain))
             self._support['playerAvailable'] = bool(self._native_dll)
@@ -486,6 +480,7 @@ class QuickMixdown(QObject):
 
     def _clear_hotspots(self):
         with self._lock:
+            previous = self._meters, self._spectrum, self._reverb_curve, self._gr_history
             counters = []
             for row in self._tracks:
                 counters.append({'id': row['id'], 'rms': None, 'peak': None})
@@ -508,11 +503,15 @@ class QuickMixdown(QObject):
             self._reverb_curve = []
             self._gr_history = empty_gr_history()
             self._last_telemetry_identity = None
+            self._last_telemetry_at = 0.0
+            self._last_meter_identity = None
+            self._last_spectrum_window = None
+            self._last_spectrum_at = self._last_meter_at = 0.0
             self._last_reverb_key = None
-        self.metersChanged.emit()
-        self.grHistoryChanged.emit()
-        self.spectrumChanged.emit()
-        self.reverbCurveChanged.emit()
+        for old, new, signal in zip(previous, (self._meters, self._spectrum, self._reverb_curve, self._gr_history),
+                                    (self.metersChanged, self.spectrumChanged, self.reverbCurveChanged, self.grHistoryChanged)):
+            if old != new:
+                signal.emit()
 
     def _recompute_view_locked(self):
         player = self._player
@@ -600,7 +599,7 @@ class QuickMixdown(QObject):
             self.trackIdsChanged.emit()
         if bands_changed:
             self.bandsChanged.emit()
-        if eq_changed:
+        if eq_changed and not self._eq_timer.isActive():
             self._eq_timer.start()
         if changed:
             self.viewChanged.emit()
@@ -610,13 +609,19 @@ class QuickMixdown(QObject):
                  else self._state.duration if duration is None else duration)
         return self._state.preview_range_ms(total)
 
+    def _invalidate_edited_source(self):
+        if (self._preview is not None and self._preview.source_key is not None
+                and self._preview.source_key != self._state.source_key()):
+            self._source_edit_pending = True
+            self._clear_hotspots()
+
     def _sync_position(self):
         position = self._preview.position_ms if self._preview is not None else 0
         if position != self._state.position:
             self._state.set_position(position)
             self.positionChanged.emit()
 
-    def _after_render_change(self, *, preset_name=None, keep_preset_undo=False):
+    def _after_render_change(self, *, preset_name=None, keep_preset_undo=False, during_drag=False):
         if not keep_preset_undo:
             self._preset_undo = None
         if self._preview is not None:
@@ -625,7 +630,8 @@ class QuickMixdown(QObject):
             self._state.preset_name = '自定义' if preset_name is None else str(preset_name)
             if self._state.result:
                 self._state.result_stale = self._state.render_fingerprint() != self._result_fingerprint
-        self._schedule_preview()
+        if not during_drag or not self._preview_timer.isActive():
+            self._schedule_preview(delay=65 if during_drag else 90)
         self._recompute_and_emit()
 
     def _refresh_freshness(self):
@@ -675,7 +681,6 @@ class QuickMixdown(QObject):
                 source_key = self._state.source_key()
             duration = self._player.duration()
             loop_range = self._preview_loop_range_ms(duration) if self._state.loop else (0, 0)
-            self._preview_pending = True
             opening = (self._preview.source_key != source_key
                        or (not self._player.ready and not self._player.loading))
             start_ms = (self._resume_position_ms if self._resume_position_ms is not None
@@ -686,10 +691,11 @@ class QuickMixdown(QObject):
                 request, source_key, start_ms=start_ms,
                 loop_range=loop_range)
             if not accepted:
-                self._preview_pending = False
                 return False
+            self._source_edit_pending = False
             self._resume_position_ms = None
-            self._clear_hotspots()
+            if opening:
+                self._clear_hotspots()
             if not self._player.ready:
                 with self._lock:
                     if not self._active_kind:
@@ -697,15 +703,14 @@ class QuickMixdown(QObject):
                 self._recompute_and_emit()
             return True
         except (OSError, ValueError, TypeError) as error:
-            self._preview_pending = False
-            self._clear_hotspots()
+            if not self._state.has_media():
+                self._clear_hotspots()
             with self._lock:
                 self._state.message = str(error)
             self._recompute_and_emit()
             return False
 
     def _player_prepared(self):
-        self._preview_pending = False
         with self._lock:
             if self._state.message == '正在从常驻进程准备连续试听…':
                 self._state.message = '连续试听已就绪；可切换 A/B 并试听整曲。'
@@ -713,13 +718,7 @@ class QuickMixdown(QObject):
                 self._state.set_duration(self._player.duration())
         self._recompute_and_emit()
 
-    def _parameters_applied(self, key):
-        if self._preview is not None and (self._preview.dirty or key != self._preview.requested_key):
-            return
-        self._preview_pending = False
-
     def _player_error(self, message):
-        self._preview_pending = False
         if self._preview is not None:
             self._preview.failed()
         self._clear_hotspots()
@@ -727,7 +726,7 @@ class QuickMixdown(QObject):
             self._state.message = str(message)[:1600]
         self._recompute_and_emit()
 
-    def _apply_reverb_measurement(self, data, revision, epoch):
+    def _apply_reverb_measurement(self, data):
         reverb = data.get('reverb') if isinstance(data.get('reverb'), dict) else {}
         kernel = reverb.get('kernel_edc') if isinstance(reverb.get('kernel_edc'), dict) else {}
         enabled = reverb.get('enabled') is True
@@ -739,7 +738,7 @@ class QuickMixdown(QObject):
                 self.reverbCurveChanged.emit()
             return
         key = (kernel.get('key'), kernel.get('signature'),
-               self._player.generation if self._player else None, revision, epoch)
+               self._player.generation if self._player else None)
         if key == self._last_reverb_key and self._reverb_curve:
             return
         curve = reverb_curve_from_telemetry(data)
@@ -749,58 +748,69 @@ class QuickMixdown(QObject):
             self.reverbCurveChanged.emit()
 
     def _telemetry(self, snapshot):
-        if not isinstance(snapshot, dict) or self._closed:
+        if not isinstance(snapshot, dict) or self._closed or self._source_edit_pending:
             return
         data = snapshot.get('telemetry')
         if not isinstance(data, dict):
             return
         # The renderer follows the accompaniment. Updates to the displayed
         # Nyquist limit never become edits or retire a transport generation.
-        if self._preview is not None and not self._preview.dirty:
-            rate = data.get('sample_rate')
-            if isinstance(rate, (int, float)) and 8000 <= rate <= 384000:
-                with self._lock:
-                    rate_changed = self._state.set_sample_rate(rate)
-                if rate_changed:
-                    self._recompute_and_emit()
-        if data.get('status') != 'ready':
-            self._clear_hotspots()
-            return
-        if self._preview_pending or (self._preview is not None and self._preview.dirty):
-            return
+        rate = data.get('sample_rate')
+        if isinstance(rate, (int, float)) and 8000 <= rate <= 384000:
+            with self._lock:
+                rate_changed = self._state.set_sample_rate(rate)
+            if rate_changed:
+                self._recompute_and_emit()
+        now = time.monotonic()
         try:
             identity = telemetry_identity(data, snapshot)
         except (TypeError, ValueError):
+            # PCM already queued at the device can keep playing while another
+            # edit is pending. Do not blank a real reading for one missing tick.
+            if (self._last_telemetry_identity and snapshot.get('state') == 'playing'
+                    and now - self._last_telemetry_at >= _LIVE_READING_TIMEOUT_SECONDS):
+                self._clear_hotspots()
             return
-        if identity == self._last_telemetry_identity:
-            # EDC measurement can finish while playback is paused and the media
-            # frame remains unchanged. Keep that distinct from live send/return.
-            try:
-                _frame, revision, epoch, _source = identity
-            except ValueError:
-                return
-            self._apply_reverb_measurement(data, revision, epoch)
-            return
+        previous = self._last_telemetry_identity
+        frame, revision, epoch, _ = identity
+        if previous and epoch != previous[2]:
+            self._clear_hotspots()
+        elif previous and frame < previous[0]:
+            return  # Out-of-order device snapshots cannot move the meters backwards.
         self._last_telemetry_identity = identity
-        media_frame, revision, epoch, telemetry_source = identity
-        with self._lock:
-            vocal_ids = [row['id'] for row in self._state.active_vocals()]
-        now = time.monotonic()
-        if now - self._last_meter_at >= 0.066:
+        self._last_telemetry_at = now
+        if self._last_meter_identity != identity and (
+                not self._meters.get('source') or now - self._last_meter_at >= _METER_INTERVAL_SECONDS):
+            with self._lock:
+                vocal_ids = [row['id'] for row in self._state.active_vocals()]
             self._last_meter_at = now
+            self._last_meter_identity = identity
             self._meters = meters_from_telemetry(data, vocal_ids)
             self.metersChanged.emit()
-        history = update_gr_history(self._gr_history, data)
-        if history != self._gr_history:
-            self._gr_history = history
-            self.grHistoryChanged.emit()
-        if now - self._last_spectrum_at >= 0.10:
-            self._last_spectrum_at = now
+        if previous != identity:
+            history = update_gr_history(self._gr_history, data)
+            if history != self._gr_history:
+                old = self._gr_history
+                self._gr_history = history
+                if (old['epoch'], old['revision'], int(old['positionMs'] // GR_HISTORY_BUCKET_MS), old['source']) != (
+                        history['epoch'], history['revision'], int(history['positionMs'] // GR_HISTORY_BUCKET_MS), history['source']):
+                    self.grHistoryChanged.emit()
+        source = data.get('spectrum') or {}
+        window_end = source.get('window_end_frame') if isinstance(source, dict) else None
+        window = (epoch, revision, window_end if window_end is not None else frame)
+        if window != self._last_spectrum_window:
             spectrum = spectrum_from_telemetry(data)
-            if spectrum != self._spectrum:
-                self._spectrum = spectrum
-                self.spectrumChanged.emit()
-        self._apply_reverb_measurement(data, revision, epoch)
+            if spectrum['freqs']:
+                self._last_spectrum_window = window
+                self._last_spectrum_at = now
+                if spectrum != self._spectrum:
+                    self._spectrum = spectrum
+                    self.spectrumChanged.emit()
+        if (self._spectrum['freqs'] and snapshot.get('state') == 'playing'
+                and now - self._last_spectrum_at >= _LIVE_READING_TIMEOUT_SECONDS):
+            self._spectrum = {'before': [], 'after': [], 'freqs': [], 'source': ''}
+            self.spectrumChanged.emit()
+        self._apply_reverb_measurement(data)
     def _poll_player(self):
         if self._closed or self._player is None:
             return
@@ -828,6 +838,7 @@ class QuickMixdown(QObject):
                     raise ValueError('正在写入任务登记，暂时不能更换输入。')
                 self._state.set_source(track_id, path)
                 self._state.message = '已选择本地音轨；文件保持原位且只读。'
+            self._invalidate_edited_source()
             self._after_render_change()
         except Exception as error:
             self._notice(error)
@@ -873,6 +884,8 @@ class QuickMixdown(QObject):
             if self._preview is not None and old_has_media and not self._state.has_media():
                 self._preview.release()
                 self._clear_hotspots()
+            else:
+                self._invalidate_edited_source()
             self._after_render_change()
         except Exception as error:
             self._notice(error)
@@ -937,7 +950,7 @@ class QuickMixdown(QObject):
             with self._lock:
                 self._state.move_band(index, frequency_hz, gain_db)
                 self._state.message = 'EQ 控制点已移动。'
-            self._after_render_change()
+            self._after_render_change(during_drag=True)
         except Exception as error:
             self._notice(error)
 
@@ -1027,7 +1040,6 @@ class QuickMixdown(QObject):
             self._preview.commit_seek(position)
             self._recompute_and_emit()
         except Exception as error:
-            self._preview_pending = False
             self._notice(error)
 
     @Slot()

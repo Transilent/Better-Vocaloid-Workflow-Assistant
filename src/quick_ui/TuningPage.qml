@@ -1573,7 +1573,7 @@ ScrollView {
                                     checked: !!page.view.autoApplySelection
                                     onClicked: page.controller.setAutoApplySelection(checked)
                                     ToolTip.visible: hovered || visualFocus
-                                    ToolTip.text: page.vwaTr("拖选松手后应用当前风格和唱腔并保存草稿；点音符或输入时间仍只选择。")
+                                    ToolTip.text: page.vwaTr("拖选松手后应用当前风格和唱腔并保存草稿；点音符或输入时间仍只选择。同轨后添加、移动、调整或更新的整组风格覆盖旧片段，其他轨道不受影响。")
                                 }
                                 RowLayout {
                                     Layout.fillWidth: true

@@ -1335,14 +1335,14 @@ class QuickTuning(QObject):
             applied = [row for row in rows if row is not None]
             if not applied:
                 raise ValueError('选区内没有所选演唱轨的音符。')
-            updated = self._regions + applied
-            self._commit_regions(updated, '已添加逐轨片段。')
-            self._selected_region = applied[-1]['id']
-            self._start = min(float(row['recipe']['start']) for row in applied)
-            self._end = max(float(row['recipe']['end']) for row in applied)
-            self.message = tr('已添加 {count} 个逐轨片段。').format(count=len(applied))
-            self.state = 'ready'
-            self.changed.emit()
+            updated = self.project.overlay_regions(self._regions, applied)
+            if self._commit_regions(updated, '已添加逐轨片段；同轨重叠部分以新风格为准。'):
+                self._selected_region = applied[-1]['id']
+                self._start = min(float(row['recipe']['start']) for row in applied)
+                self._end = max(float(row['recipe']['end']) for row in applied)
+                self.message = tr('已添加 {count} 个逐轨片段；同轨重叠部分已按新风格整理。').format(count=len(applied))
+                self.state = 'ready'
+                self.changed.emit()
         except (ValueError, OSError) as error:
             self._error(error)
 
@@ -1361,7 +1361,6 @@ class QuickTuning(QObject):
             current = next((row for row in self._regions if row['id'] == identity), None)
             if current is None:
                 raise ValueError('该片段已不存在。')
-            self._selected_region = identity
             track = current['track_id']
             time_range_settings((start, end))
             brush = self._brush() if use_current_brush else {
@@ -1370,12 +1369,14 @@ class QuickTuning(QObject):
             replacement = self.project.region(track, start, end, brush, identity=identity)
             if replacement is None:
                 raise ValueError('当前选区内没有此片段轨道可应用的音符。')
-            updated = [replacement if row['id'] == identity else row for row in self._regions]
-            self._commit_regions(updated, '已更新片段范围和风格。' if use_current_brush
-                                 else '已将片段移动到完整音符范围。')
-            self._start = float(replacement['recipe']['start'])
-            self._end = float(replacement['recipe']['end'])
-            self.changed.emit()
+            base = [row for row in self._regions if row['id'] != identity]
+            updated = self.project.overlay_regions(base, [replacement])
+            if self._commit_regions(updated, '已更新片段；同轨重叠部分以当前整组风格为准。'
+                                    if use_current_brush else '已将片段移动到完整音符范围；重叠部分以此片段为准。'):
+                self._selected_region = identity
+                self._start = float(replacement['recipe']['start'])
+                self._end = float(replacement['recipe']['end'])
+                self.changed.emit()
         except (ValueError, OSError) as error:
             self._error(error)
 

@@ -205,7 +205,7 @@ def _finite_or_none(value: Any) -> float | None:
 
 
 def telemetry_identity(telemetry: Any, snapshot: Any) -> tuple[int, int, int, str]:
-    """Return the exact player identity for one renderer telemetry payload."""
+    """Identify the measured block consumed by the device, not the render head."""
     if not isinstance(telemetry, Mapping):
         raise ValueError('telemetry must be an object')
     if telemetry.get('schema') != TELEMETRY_SCHEMA or telemetry.get('status') != 'ready':
@@ -222,8 +222,14 @@ def telemetry_identity(telemetry: Any, snapshot: Any) -> tuple[int, int, int, st
     history_epoch = int(telemetry.get('history_epoch'))
     if media_frame != int(frame):
         raise ValueError('telemetry belongs to another media frame')
-    if parameter_revision != int(revision):
-        raise ValueError('telemetry belongs to another parameter revision')
+    if not 0 <= parameter_revision <= int(revision):
+        raise ValueError('telemetry parameter revision is outside the renderer state')
+    epoch = native.get('epoch')
+    if history_epoch < 0 or (epoch is not None and history_epoch != int(epoch)):
+        raise ValueError('telemetry belongs to another playback epoch')
+    start, end = telemetry.get('render_frame_start'), telemetry.get('render_frame_end')
+    if start is not None and end is not None and not int(start) < media_frame <= int(end):
+        raise ValueError('telemetry block was not submitted at the device cursor')
     source = str(telemetry.get('source') or '')
     if source != TELEMETRY_SOURCE:
         raise ValueError('telemetry source is not the realtime DSP')

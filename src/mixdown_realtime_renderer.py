@@ -134,7 +134,7 @@ def _merge_gr(values: list[tuple[dict[str, Any], int]]) -> dict[str, Any]:
 
 
 class _LiveSpectrumAnalyzer:
-    """Bounded 100 ms Hann/RFFT tap for the actual pre/post EQ vocal bus."""
+    """Overlap 100 ms Hann windows to report the actual EQ taps at 30 Hz."""
 
     def __init__(self, sample_rate: int, channels: int, numpy: Any) -> None:
         self.numpy = numpy
@@ -142,13 +142,16 @@ class _LiveSpectrumAnalyzer:
         self.channels = int(channels)
         self.interval_seconds = TELEMETRY_SPECTRUM_INTERVAL_MS / 1000.0
         self.hop_frames = max(1, int(round(self.sample_rate * self.interval_seconds)))
-        requested_fft = 1 << max(0, self.hop_frames - 1).bit_length()
+        wanted_window = max(1, round(self.sample_rate * audition.AUDITION_SPECTRUM_WINDOW_MS / 1000.0))
+        requested_fft = 1 << max(0, wanted_window - 1).bit_length()
         self.fft_size = max(
             audition.AUDITION_SPECTRUM_MIN_FFT_SIZE,
             min(audition.AUDITION_SPECTRUM_MAX_FFT_SIZE, requested_fft),
         )
-        self.window_samples = min(self.hop_frames, self.fft_size)
+        self.window_samples = min(wanted_window, self.fft_size)
+        self.hop_frames = min(self.hop_frames, self.window_samples)
         self.window = numpy.hanning(self.window_samples).astype(numpy.float64)
+        self._window_gain = float(numpy.sum(self.window))
         frequencies = numpy.fft.rfftfreq(
             self.fft_size, d=1.0 / float(self.sample_rate)
         )
@@ -194,8 +197,9 @@ class _LiveSpectrumAnalyzer:
         self.band_offsets = numpy.concatenate((
             numpy.asarray([0], dtype=numpy.int64), numpy.cumsum(counts),
         ))
-        self._before = numpy.zeros((self.hop_frames, self.channels), dtype=numpy.float32)
-        self._after = numpy.zeros((self.hop_frames, self.channels), dtype=numpy.float32)
+        self._frequency_labels = numpy.round(self.frequencies_hz, audition.AUDITION_SPECTRUM_FREQUENCY_DECIMALS).tolist()
+        self._before = numpy.empty((self.window_samples, self.channels), dtype=numpy.float32)
+        self._after = numpy.empty_like(self._before)
         self._filled = 0
         self._window_start = None
         self.last: dict[str, Any] | None = None
@@ -207,13 +211,12 @@ class _LiveSpectrumAnalyzer:
 
     def _analyze(self, start: int) -> dict[str, Any]:
         numpy = self.numpy
-        weights = self.window[:self._filled]
-        gain = float(numpy.sum(weights))
+        gain = self._window_gain
         if gain <= 0.0:
             return {}
         selected = []
         for source in (self._before, self._after):
-            windowed = source[:self._filled].astype(numpy.float64) * weights[:, None]
+            windowed = source * self.window[:, None]
             spectrum = numpy.fft.rfft(windowed, n=self.fft_size, axis=0)
             magnitudes = numpy.abs(spectrum) * (2.0 / gain)
             amplitudes = numpy.sqrt(numpy.mean(numpy.square(magnitudes), axis=1))
@@ -222,18 +225,13 @@ class _LiveSpectrumAnalyzer:
             floor = 10.0 ** (backend.SILENCE_DBFS / 20.0)
             values = 20.0 * numpy.log10(numpy.maximum(reduced, floor))
             selected.append(numpy.maximum(float(backend.SILENCE_DBFS), values))
-        before = [round(float(value), audition.AUDITION_SPECTRUM_DB_DECIMALS)
-                  for value in selected[0].tolist()]
-        after = [round(float(value), audition.AUDITION_SPECTRUM_DB_DECIMALS)
-                 for value in selected[1].tolist()]
+        before, after = [numpy.round(values, audition.AUDITION_SPECTRUM_DB_DECIMALS).tolist()
+                         for values in selected]
         return {
             "schema": "vwa.audio_mixdown.realtime-eq-spectrum/v1",
             "source": "dsp_fft_pre_post_eq",
             "method": "hann_rfft_power_band_max",
-            "frequency_hz": [
-                round(float(value), audition.AUDITION_SPECTRUM_FREQUENCY_DECIMALS)
-                for value in self.frequencies_hz.tolist()
-            ],
+            "frequency_hz": list(self._frequency_labels),
             "before_dbfs": before,
             "after_dbfs": after,
             "bins": len(before),
@@ -252,19 +250,24 @@ class _LiveSpectrumAnalyzer:
         after_values = numpy.asarray(after)
         if before_values.shape != after_values.shape or before_values.ndim != 2:
             raise ValueError("EQ telemetry taps must have matching 2-D shapes")
+        if self._window_start is not None and int(frame_start) != self._window_start + self._filled:
+            self.reset()  # Never bridge missing input or a seek with a made-up window.
         offset = 0
         while offset < len(before_values):
             if self._window_start is None:
                 self._window_start = int(frame_start) + offset
-            take = min(len(before_values) - offset, self.hop_frames - self._filled)
+            take = min(len(before_values) - offset, self.window_samples - self._filled)
             self._before[self._filled:self._filled + take] = before_values[offset:offset + take]
             self._after[self._filled:self._filled + take] = after_values[offset:offset + take]
             self._filled += take
             offset += take
-            if self._filled == self.hop_frames:
+            if self._filled == self.window_samples:
                 self.last = self._analyze(int(self._window_start))
-                self._filled = 0
-                self._window_start = None
+                keep = self.window_samples - self.hop_frames
+                self._before[:keep] = self._before[self.hop_frames:]
+                self._after[:keep] = self._after[self.hop_frames:]
+                self._filled = keep
+                self._window_start += self.hop_frames
 
     def payload(self) -> dict[str, Any]:
         if self.last is not None:
@@ -273,10 +276,7 @@ class _LiveSpectrumAnalyzer:
             "schema": "vwa.audio_mixdown.realtime-eq-spectrum/v1",
             "source": "dsp_fft_pre_post_eq",
             "method": "hann_rfft_power_band_max",
-            "frequency_hz": [
-                round(float(value), audition.AUDITION_SPECTRUM_FREQUENCY_DECIMALS)
-                for value in self.frequencies_hz.tolist()
-            ],
+            "frequency_hz": list(self._frequency_labels),
             "before_dbfs": [],
             "after_dbfs": [],
             "bins": int(len(self.frequencies_hz)),
@@ -1378,8 +1378,9 @@ class PreLimiterMixSession:
                     )
                 self._effects_signature = structure
                 self._telemetry_records.clear()
-                if self._spectrum is not None:
-                    self._spectrum.reset()
+                # The window is a measurement of consecutive rendered audio.
+                # Keep it across an edit: rebuilding every 65 ms must not
+                # starve the 100 ms analysis window. Seeks still reset it.
                 self._rebuild_effects(built, reverb_edc=prepared.reverb_edc)
                 self._warm_to(
                     previous_position, None,

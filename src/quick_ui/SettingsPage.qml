@@ -3,7 +3,7 @@ import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
 
-ScrollView {
+Rectangle {
     id: page
     function vwaTr(message) {
         return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
@@ -12,9 +12,8 @@ ScrollView {
     required property QtObject theme
     required property QtObject controller
 
-    contentWidth: availableWidth
     clip: true
-    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+    color: theme.base
     focus: true
 
     readonly property var values: controller.settings || ({})
@@ -22,7 +21,12 @@ ScrollView {
     readonly property var diagnostics: controller.diagnostics || ({})
     readonly property var storageView: controller.storage || ({})
     readonly property var presetView: controller.presetLibrary || ({})
-    readonly property bool narrow: availableWidth < (theme.scale > 1.2 ? 840 : 680)
+    readonly property bool narrow: width < (theme.scale > 1.2 ? 840 : 680)
+    readonly property bool showSupportRail: width >= (theme.scale > 1.2 ? 1200 : 1000)
+    readonly property int categoryRailWidth: Math.round(184 * theme.scale)
+    readonly property int supportRailWidth: Math.round(282 * theme.scale)
+    readonly property var categoryIds: ["appearance", "update", "storage", "presets", "support", "about"]
+    property string settingsCategory: "appearance"
     readonly property int pageMargin: Math.round((narrow ? 16 : 24) * theme.scale)
     readonly property string communityNumber: controller.qqGroup || "490619616"
     readonly property string currentUpdateState: String(updateInfo.update_state || "idle").toLowerCase()
@@ -65,6 +69,26 @@ ScrollView {
 
     function tr(source) {
         return controller && typeof controller.text === "function" ? controller.text(source) : source
+    }
+
+    function categoryTitle(category) {
+        switch (String(category || "")) {
+        case "appearance": return tr("外观与交互")
+        case "update": return tr("更新")
+        case "storage": return tr("下载与存储")
+        case "presets": return tr("预设库")
+        case "support": return tr("支持与日志")
+        case "about": return tr("关于")
+        default: return String(category || "")
+        }
+    }
+
+    function selectCategory(category) {
+        settingsCategory = String(category || "appearance")
+        if (settingsFlick) {
+            settingsFlick.cancelFlick()
+            settingsFlick.contentY = 0
+        }
     }
 
     function setting(name, fallback) {
@@ -948,954 +972,1275 @@ ScrollView {
     onDiagnosticsChanged: syncDiagnostics()
 
     ColumnLayout {
-        width: page.availableWidth
-        spacing: Math.round(14 * page.theme.scale)
+        anchors.fill: parent
+        spacing: 0
 
-        ColumnLayout {
+        RowLayout {
             Layout.fillWidth: true
             Layout.topMargin: page.pageMargin
             Layout.leftMargin: page.pageMargin
             Layout.rightMargin: page.pageMargin
-            spacing: 5
-            Text {
-                Layout.fillWidth: true
-                text: page.tr("设置与支持")
-                color: page.theme.text
-                font.pixelSize: Math.round(25 * page.theme.scale)
-                font.weight: Font.DemiBold
-                wrapMode: Text.Wrap
-            }
-            Text {
-                Layout.fillWidth: true
-                text: page.tr("管理外观、下载、程序更新与社区支持。")
-                color: page.theme.muted
-                font.pixelSize: Math.round(13 * page.theme.scale)
-                wrapMode: Text.Wrap
-            }
-        }
-        Rectangle {
-            objectName: "appearanceSection"
-            Layout.fillWidth: true
-            Layout.leftMargin: page.pageMargin
-            Layout.rightMargin: page.pageMargin
-            Layout.preferredHeight: appearanceContent.implicitHeight + Math.round(30 * page.theme.scale)
-            color: page.theme.surface
-            radius: Math.round(9 * page.theme.scale)
-            border.color: page.theme.line
+            Layout.bottomMargin: Math.round(15 * page.theme.scale)
+            spacing: Math.round(16 * page.theme.scale)
 
             ColumnLayout {
-                id: appearanceContent
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: Math.round(15 * page.theme.scale)
-                spacing: Math.round(13 * page.theme.scale)
-
+                Layout.fillWidth: true
+                spacing: 5
                 Text {
                     Layout.fillWidth: true
-                    text: page.tr("外观与语言")
+                    text: page.tr("设置与支持")
                     color: page.theme.text
-                    font.pixelSize: Math.round(18 * page.theme.scale)
+                    font.pixelSize: Math.round(25 * page.theme.scale)
                     font.weight: Font.DemiBold
-                }
-                Text {
-                    Layout.fillWidth: true
-                    text: page.tr("界面语言在下次启动时完整生效；主题、材质、缩放与动效会随设置更新。")
-                    color: page.theme.muted
-                    font.pixelSize: Math.round(12 * page.theme.scale)
                     wrapMode: Text.Wrap
                 }
-
-                GridLayout {
+                Text {
                     Layout.fillWidth: true
-                    columns: page.narrow ? 1 : 2
-                    columnSpacing: Math.round(24 * page.theme.scale)
-                    rowSpacing: Math.round(13 * page.theme.scale)
+                    text: page.tr("按分类管理本机外观、更新、下载与存储、预设库和支持。")
+                    color: page.theme.muted
+                    font.pixelSize: Math.round(13 * page.theme.scale)
+                    wrapMode: Text.Wrap
+                }
+            }
 
-                    ColumnLayout {
+            UiButton {
+                objectName: "topSupportEntry"
+                theme: page.theme
+                visible: !page.showSupportRail
+                text: page.tr("支持与反馈")
+                onClicked: page.selectCategory("support")
+            }
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: Math.max(1, Math.round(1 * page.theme.scale))
+            color: page.theme.line
+        }
+
+        GridLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            columns: page.showSupportRail ? 3 : 1
+            columnSpacing: 0
+            rowSpacing: 0
+
+            Rectangle {
+                id: categoryPanel
+                objectName: "settingsCategoryNavigation"
+                Layout.row: 0
+                Layout.column: 0
+                Layout.fillWidth: !page.showSupportRail
+                Layout.fillHeight: page.showSupportRail
+                Layout.preferredWidth: page.showSupportRail ? page.categoryRailWidth : -1
+                Layout.preferredHeight: page.showSupportRail ? -1
+                    : categoryFlow.implicitHeight + Math.round(20 * page.theme.scale)
+                color: page.theme.base
+                clip: true
+
+                Rectangle {
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    visible: page.showSupportRail
+                    width: Math.max(1, Math.round(1 * page.theme.scale))
+                    color: page.theme.line
+                }
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    visible: !page.showSupportRail
+                    height: Math.max(1, Math.round(1 * page.theme.scale))
+                    color: page.theme.line
+                }
+
+                ColumnLayout {
+                    id: categoryContent
+                    anchors.fill: parent
+                    anchors.leftMargin: Math.round(10 * page.theme.scale)
+                    anchors.rightMargin: Math.round(10 * page.theme.scale)
+                    anchors.topMargin: Math.round(10 * page.theme.scale)
+                    anchors.bottomMargin: Math.round(10 * page.theme.scale)
+                    spacing: Math.round(6 * page.theme.scale)
+
+                    Flow {
+                        id: categoryFlow
                         Layout.fillWidth: true
-                        spacing: 5
-                        Text {
-                            text: page.tr("界面主题")
-                            color: page.theme.muted
-                            font.pixelSize: Math.round(12 * page.theme.scale)
-                        }
-                        Flow {
-                            Layout.fillWidth: true
-                            spacing: Math.round(6 * page.theme.scale)
-                            ChoiceChip {
-                                objectName: "settingsThemeLight"
-                                tokens: page.theme
-                                text: page.tr("浅色")
-                                selected: String(page.setting("theme", "dark")) === "light"
-                                onClicked: page.changeSetting("theme", "light")
-                            }
-                            ChoiceChip {
-                                objectName: "settingsThemeDark"
-                                tokens: page.theme
-                                text: page.tr("深色")
-                                selected: String(page.setting("theme", "dark")) === "dark"
-                                onClicked: page.changeSetting("theme", "dark")
-                            }
-                            ChoiceChip {
-                                objectName: "settingsThemeSystem"
-                                tokens: page.theme
-                                text: page.tr("跟随系统")
-                                selected: String(page.setting("theme", "dark")) === "system"
-                                onClicked: page.changeSetting("theme", "system")
+                        spacing: Math.round(6 * page.theme.scale)
+
+                        Repeater {
+                            model: page.categoryIds
+                            delegate: UiButton {
+                                required property string modelData
+                                objectName: "settingsCategory_" + modelData
+                                width: page.showSupportRail ? categoryFlow.width : implicitWidth
+                                theme: page.theme
+                                text: page.categoryTitle(modelData)
+                                selected: page.settingsCategory === modelData
+                                leftAligned: true
+                                checkable: false
+                                Accessible.name: text
+                                Accessible.role: Accessible.RadioButton
+                                Accessible.checked: selected
+                                onClicked: page.selectCategory(modelData)
                             }
                         }
                     }
 
-                    ColumnLayout {
+                    Item {
                         Layout.fillWidth: true
-                        spacing: 5
-                        Text {
-                            text: page.tr("界面材质")
-                            color: page.theme.muted
-                            font.pixelSize: Math.round(12 * page.theme.scale)
-                        }
-                        Flow {
-                            Layout.fillWidth: true
-                            spacing: Math.round(6 * page.theme.scale)
-                            ChoiceChip {
-                                objectName: "settingsMaterialSolid"
-                                tokens: page.theme
-                                text: page.tr("纯色阅读")
-                                selected: String(page.setting("material", "solid")) === "solid"
-                                onClicked: page.changeSetting("material", "solid")
-                            }
-                            ChoiceChip {
-                                objectName: "settingsMaterialGlass"
-                                tokens: page.theme
-                                text: page.tr("月光玻璃")
-                                selected: String(page.setting("material", "solid")) === "glass"
-                                onClicked: page.changeSetting("material", "glass")
-                            }
-                        }
+                        Layout.fillHeight: true
+                        visible: page.showSupportRail
+                    }
+                }
+            }
+
+            ScrollView {
+                id: settingsScroll
+                objectName: "settingsCategoryContent"
+                Layout.row: page.showSupportRail ? 0 : 1
+                Layout.column: page.showSupportRail ? 1 : 0
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentWidth: availableWidth
+                clip: true
+                focus: true
+                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                background: Rectangle { color: "transparent" }
+
+                Flickable {
+                    id: settingsFlick
+                    objectName: "settingsContentFlickable"
+                    contentWidth: width
+                    contentHeight: settingsContent.implicitHeight
+                    boundsBehavior: Flickable.StopAtBounds
+                    ColumnLayout {
+                        id: settingsContent
+                        width: settingsFlick.width
+                        spacing: Math.round(14 * page.theme.scale)
+
+                    Item {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.round(10 * page.theme.scale)
                     }
 
-                    ColumnLayout {
+            Rectangle {
+                objectName: "appearanceSection"
+                visible: page.settingsCategory === "appearance"
+                Layout.fillWidth: true
+                Layout.leftMargin: page.pageMargin
+                Layout.rightMargin: page.pageMargin
+                Layout.preferredHeight: appearanceContent.implicitHeight + Math.round(30 * page.theme.scale)
+                color: page.theme.surface
+                radius: Math.round(9 * page.theme.scale)
+                border.color: page.theme.line
+
+                ColumnLayout {
+                    id: appearanceContent
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: Math.round(15 * page.theme.scale)
+                    spacing: Math.round(13 * page.theme.scale)
+
+                    Text {
                         Layout.fillWidth: true
-                        spacing: 5
-                        Text {
-                            text: page.tr("应用缩放")
-                            color: page.theme.muted
-                            font.pixelSize: Math.round(12 * page.theme.scale)
-                        }
-                        Flow {
+                        text: page.tr("外观与交互")
+                        color: page.theme.text
+                        font.pixelSize: Math.round(18 * page.theme.scale)
+                        font.weight: Font.DemiBold
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: page.tr("界面语言在下次启动时完整生效；主题、材质、缩放与动效会随设置更新。")
+                        color: page.theme.muted
+                        font.pixelSize: Math.round(12 * page.theme.scale)
+                        wrapMode: Text.Wrap
+                    }
+
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: page.narrow ? 1 : 2
+                        columnSpacing: Math.round(24 * page.theme.scale)
+                        rowSpacing: Math.round(13 * page.theme.scale)
+
+                        ColumnLayout {
                             Layout.fillWidth: true
-                            spacing: Math.round(6 * page.theme.scale)
-                            Repeater {
-                                model: [100, 115, 130]
+                            spacing: 5
+                            Text {
+                                text: page.tr("界面主题")
+                                color: page.theme.muted
+                                font.pixelSize: Math.round(12 * page.theme.scale)
+                            }
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: Math.round(6 * page.theme.scale)
                                 ChoiceChip {
-                                    required property int modelData
-                                    objectName: "settingsScale" + modelData
+                                    objectName: "settingsThemeLight"
                                     tokens: page.theme
-                                    text: modelData + "%"
-                                    selected: Number(page.setting("ui_scale", 100)) === modelData
-                                    onClicked: page.changeSetting("ui_scale", modelData)
+                                    text: page.tr("浅色")
+                                    selected: String(page.setting("theme", "dark")) === "light"
+                                    onClicked: page.changeSetting("theme", "light")
+                                }
+                                ChoiceChip {
+                                    objectName: "settingsThemeDark"
+                                    tokens: page.theme
+                                    text: page.tr("深色")
+                                    selected: String(page.setting("theme", "dark")) === "dark"
+                                    onClicked: page.changeSetting("theme", "dark")
+                                }
+                                ChoiceChip {
+                                    objectName: "settingsThemeSystem"
+                                    tokens: page.theme
+                                    text: page.tr("跟随系统")
+                                    selected: String(page.setting("theme", "dark")) === "system"
+                                    onClicked: page.changeSetting("theme", "system")
+                                }
+                            }
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 5
+                            Text {
+                                text: page.tr("界面材质")
+                                color: page.theme.muted
+                                font.pixelSize: Math.round(12 * page.theme.scale)
+                            }
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: Math.round(6 * page.theme.scale)
+                                ChoiceChip {
+                                    objectName: "settingsMaterialSolid"
+                                    tokens: page.theme
+                                    text: page.tr("纯色阅读")
+                                    selected: String(page.setting("material", "solid")) === "solid"
+                                    onClicked: page.changeSetting("material", "solid")
+                                }
+                                ChoiceChip {
+                                    objectName: "settingsMaterialGlass"
+                                    tokens: page.theme
+                                    text: page.tr("月光玻璃")
+                                    selected: String(page.setting("material", "solid")) === "glass"
+                                    onClicked: page.changeSetting("material", "glass")
+                                }
+                            }
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 5
+                            Text {
+                                text: page.tr("应用缩放")
+                                color: page.theme.muted
+                                font.pixelSize: Math.round(12 * page.theme.scale)
+                            }
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: Math.round(6 * page.theme.scale)
+                                Repeater {
+                                    model: [100, 115, 130]
+                                    ChoiceChip {
+                                        required property int modelData
+                                        objectName: "settingsScale" + modelData
+                                        tokens: page.theme
+                                        text: modelData + "%"
+                                        selected: Number(page.setting("ui_scale", 100)) === modelData
+                                        onClicked: page.changeSetting("ui_scale", modelData)
+                                    }
+                                }
+                            }
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 5
+                            Text {
+                                text: page.tr("界面语言")
+                                color: page.theme.muted
+                                font.pixelSize: Math.round(12 * page.theme.scale)
+                            }
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: Math.round(6 * page.theme.scale)
+                                ChoiceChip {
+                                    objectName: "settingsLanguageZh"
+                                    tokens: page.theme
+                                    text: page.vwaTr("简体中文")
+                                    selected: String(page.setting("ui_language", "zh-CN")) === "zh-CN"
+                                    onClicked: page.changeSetting("ui_language", "zh-CN")
+                                }
+                                ChoiceChip {
+                                    objectName: "settingsLanguageEn"
+                                    tokens: page.theme
+                                    text: "English"
+                                    selected: String(page.setting("ui_language", "zh-CN")) === "en"
+                                    onClicked: page.changeSetting("ui_language", "en")
+                                }
+                                ChoiceChip {
+                                    objectName: "settingsLanguageJa"
+                                    tokens: page.theme
+                                    text: page.vwaTr("日本語")
+                                    selected: String(page.setting("ui_language", "zh-CN")) === "ja"
+                                    onClicked: page.changeSetting("ui_language", "ja")
                                 }
                             }
                         }
                     }
 
-                    ColumnLayout {
+                    MotionChoice {
+                        objectName: "settingsReduceMotion"
                         Layout.fillWidth: true
-                        spacing: 5
-                        Text {
-                            text: page.tr("界面语言")
-                            color: page.theme.muted
-                            font.pixelSize: Math.round(12 * page.theme.scale)
-                        }
-                        Flow {
-                            Layout.fillWidth: true
-                            spacing: Math.round(6 * page.theme.scale)
-                            ChoiceChip {
-                                objectName: "settingsLanguageZh"
-                                tokens: page.theme
-                                text: page.vwaTr("简体中文")
-                                selected: String(page.setting("ui_language", "zh-CN")) === "zh-CN"
-                                onClicked: page.changeSetting("ui_language", "zh-CN")
-                            }
-                            ChoiceChip {
-                                objectName: "settingsLanguageEn"
-                                tokens: page.theme
-                                text: "English"
-                                selected: String(page.setting("ui_language", "zh-CN")) === "en"
-                                onClicked: page.changeSetting("ui_language", "en")
-                            }
-                            ChoiceChip {
-                                objectName: "settingsLanguageJa"
-                                tokens: page.theme
-                                text: page.vwaTr("日本語")
-                                selected: String(page.setting("ui_language", "zh-CN")) === "ja"
-                                onClicked: page.changeSetting("ui_language", "ja")
-                            }
-                        }
+                        tokens: page.theme
+                        text: page.tr("减少动效")
+                        detail: page.tr("关闭非必要过渡和持续动画，保留操作反馈。")
+                        selected: page.setting("reduce_motion", false) === true
+                        onClicked: page.changeSetting("reduce_motion", !(page.setting("reduce_motion", false) === true))
                     }
-                }
-
-                MotionChoice {
-                    objectName: "settingsReduceMotion"
-                    Layout.fillWidth: true
-                    tokens: page.theme
-                    text: page.tr("减少动效")
-                    detail: page.tr("关闭非必要过渡和持续动画，保留操作反馈。")
-                    selected: page.setting("reduce_motion", false) === true
-                    onClicked: page.changeSetting("reduce_motion", !(page.setting("reduce_motion", false) === true))
                 }
             }
-        }
-        Rectangle {
-            objectName: "downloadSection"
-            Layout.fillWidth: true
-            Layout.leftMargin: page.pageMargin
-            Layout.rightMargin: page.pageMargin
-            Layout.preferredHeight: downloadContent.implicitHeight + Math.round(30 * page.theme.scale)
-            color: page.theme.surface
-            radius: Math.round(9 * page.theme.scale)
-            border.color: page.theme.line
-
-            ColumnLayout {
-                id: downloadContent
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: Math.round(15 * page.theme.scale)
-                spacing: Math.round(12 * page.theme.scale)
-
-                Text {
-                    Layout.fillWidth: true
-                    text: page.tr("下载与存储")
-                    color: page.theme.text
-                    font.pixelSize: Math.round(18 * page.theme.scale)
-                    font.weight: Font.DemiBold
-                }
-                Text {
-                    Layout.fillWidth: true
-                    text: page.tr("下载来源同时用于组件和程序更新。指定镜像只重写对应来源的公开文件，安装前仍会校验完整性。")
-                    color: page.theme.muted
-                    font.pixelSize: Math.round(12 * page.theme.scale)
-                    wrapMode: Text.Wrap
-                }
-
-                GridLayout {
-                    Layout.fillWidth: true
-                    columns: page.narrow ? 1 : 2
-                    columnSpacing: Math.round(20 * page.theme.scale)
-                    rowSpacing: Math.round(12 * page.theme.scale)
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 5
-                        Text {
-                            text: page.tr("下载方式")
-                            color: page.theme.muted
-                            font.pixelSize: Math.round(12 * page.theme.scale)
-                        }
-                        UiComboBox {
-                            id: sourceCombo
-                            objectName: "downloadSourceChoice"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            model: page.controller.downloadSources || []
-                            currentIndex: page.indexOfValue(model, page.setting("download_source", "auto"))
-                            onActivated: index => page.changeSetting("download_source", currentValue)
-                        }
-                    }
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 5
-                        Text {
-                            text: page.tr("并行下载数")
-                            color: page.theme.muted
-                            font.pixelSize: Math.round(12 * page.theme.scale)
-                        }
-                        UiComboBox {
-                            id: workersCombo
-                            objectName: "downloadWorkersChoice"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            model: [
-                                { label: "1", value: 1 },
-                                { label: "2", value: 2 },
-                                { label: "3", value: 3 },
-                                { label: "4", value: 4 },
-                                { label: "5", value: 5 },
-                                { label: "6", value: 6 },
-                                { label: "7", value: 7 },
-                                { label: "8", value: 8 }
-                            ]
-                            currentIndex: page.indexOfValue(model, page.setting("download_workers", 4))
-                            onActivated: index => page.changeSetting("download_workers", Number(currentValue))
-                        }
-                    }
-                }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: 1
-                    color: page.theme.line
-                }
+            Rectangle {
+                objectName: "downloadSection"
+                visible: page.settingsCategory === "storage"
+                Layout.fillWidth: true
+                Layout.leftMargin: page.pageMargin
+                Layout.rightMargin: page.pageMargin
+                Layout.preferredHeight: downloadContent.implicitHeight + Math.round(30 * page.theme.scale)
+                color: page.theme.surface
+                radius: Math.round(9 * page.theme.scale)
+                border.color: page.theme.line
 
                 ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 5
+                    id: downloadContent
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: Math.round(15 * page.theme.scale)
+                    spacing: Math.round(12 * page.theme.scale)
+
                     Text {
-                        text: page.tr("任务输出目录")
+                        Layout.fillWidth: true
+                        text: page.tr("下载与存储")
+                        color: page.theme.text
+                        font.pixelSize: Math.round(18 * page.theme.scale)
+                        font.weight: Font.DemiBold
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: page.tr("下载来源同时用于组件和程序更新。指定镜像只重写对应来源的公开文件，安装前仍会校验完整性。")
                         color: page.theme.muted
                         font.pixelSize: Math.round(12 * page.theme.scale)
+                        wrapMode: Text.Wrap
+                    }
+
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: page.narrow ? 1 : 2
+                        columnSpacing: Math.round(20 * page.theme.scale)
+                        rowSpacing: Math.round(12 * page.theme.scale)
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 5
+                            Text {
+                                text: page.tr("下载方式")
+                                color: page.theme.muted
+                                font.pixelSize: Math.round(12 * page.theme.scale)
+                            }
+                            UiComboBox {
+                                id: sourceCombo
+                                objectName: "downloadSourceChoice"
+                                Layout.fillWidth: true
+                                theme: page.theme
+                                model: page.controller.downloadSources || []
+                                currentIndex: page.indexOfValue(model, page.setting("download_source", "auto"))
+                                onActivated: index => page.changeSetting("download_source", currentValue)
+                            }
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 5
+                            Text {
+                                text: page.tr("并行下载数")
+                                color: page.theme.muted
+                                font.pixelSize: Math.round(12 * page.theme.scale)
+                            }
+                            UiComboBox {
+                                id: workersCombo
+                                objectName: "downloadWorkersChoice"
+                                Layout.fillWidth: true
+                                theme: page.theme
+                                model: [
+                                    { label: "1", value: 1 },
+                                    { label: "2", value: 2 },
+                                    { label: "3", value: 3 },
+                                    { label: "4", value: 4 },
+                                    { label: "5", value: 5 },
+                                    { label: "6", value: 6 },
+                                    { label: "7", value: 7 },
+                                    { label: "8", value: 8 }
+                                ]
+                                currentIndex: page.indexOfValue(model, page.setting("download_workers", 4))
+                                onActivated: index => page.changeSetting("download_workers", Number(currentValue))
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: 1
+                        color: page.theme.line
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 5
+                        Text {
+                            text: page.tr("任务输出目录")
+                            color: page.theme.muted
+                            font.pixelSize: Math.round(12 * page.theme.scale)
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Math.round(8 * page.theme.scale)
+                            Text {
+                                id: outputPath
+                                objectName: "outputDirectory"
+                                Layout.fillWidth: true
+                                text: String(page.setting("output_directory", "")).length > 0
+                                    ? String(page.setting("output_directory", ""))
+                                    : page.tr("使用系统默认目录")
+                                color: String(page.setting("output_directory", "")).length > 0 ? page.theme.text : page.theme.muted
+                                font.pixelSize: Math.round(13 * page.theme.scale)
+                                elide: Text.ElideMiddle
+                                textFormat: Text.PlainText
+                                ToolTip.visible: outputHover.hovered && truncated
+                                ToolTip.text: String(page.setting("output_directory", ""))
+                                HoverHandler { id: outputHover }
+                            }
+                            UiButton {
+                                objectName: "chooseOutputDirectory"
+                                theme: page.theme
+                                text: page.tr("选择目录")
+                                onClicked: outputDialog.open()
+                            }
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: page.tr("用于后续准备、调音和导出任务的共同目录。单个任务仍可保留自己的结果位置。")
+                            color: page.theme.muted
+                            font.pixelSize: Math.round(11 * page.theme.scale)
+                            wrapMode: Text.Wrap
+                        }
+                    }
+                }
+            }
+            Rectangle {
+                objectName: "storageSection"
+                visible: page.settingsCategory === "storage"
+                Layout.fillWidth: true
+                Layout.leftMargin: page.pageMargin
+                Layout.rightMargin: page.pageMargin
+                Layout.preferredHeight: storageContent.implicitHeight + 30 * page.theme.scale
+                color: page.theme.surface
+                border.color: page.theme.line
+                radius: 9 * page.theme.scale
+                ColumnLayout {
+                    id: storageContent
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: 15 * page.theme.scale
+                    spacing: 8 * page.theme.scale
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text {
+                            Layout.fillWidth: true
+                            text: page.tr("存储与缓存")
+                            color: page.theme.text
+                            font.pixelSize: 17 * page.theme.scale
+                            font.weight: Font.DemiBold
+                        }
+                        UiButton {
+                            objectName: "scanStorage"
+                            theme: page.theme
+                            text: page.tr("扫描占用")
+                            enabled: !page.storageView.busy
+                            onClicked: page.controller.refreshStorage()
+                        }
+                        UiButton {
+                            objectName: "reviewStorageCleanup"
+                            theme: page.theme
+                            text: page.tr("清理所选…")
+                            enabled: !page.storageView.busy && !page.workBusy && page.selectedCachePaths().length > 0
+                            onClicked: storageCleanDialog.open()
+                        }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        visible: !!page.storageView.scanned
+                        text: page.tr("输出盘可用") + " " + page.storageView.free_label
+                            + "  ·  " + page.tr("任务") + " " + page.storageView.tasks_label
+                            + "  ·  " + page.tr("发布资料") + " " + page.storageView.publication_label
+                            + "  ·  " + page.tr("依赖与模型") + " " + page.storageView.dependencies_label
+                        color: page.theme.muted
+                        font.pixelSize: 12 * page.theme.scale
+                        wrapMode: Text.Wrap
+                        textFormat: Text.PlainText
+                    }
+                    ListView {
+                        id: cacheRows
+                        objectName: "storageCacheRows"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.min(count, 5) * 37 * page.theme.scale
+                        visible: count > 0
+                        clip: true
+                        model: page.storageView.rows || []
+                        ScrollBar.vertical: ScrollBar {}
+                        delegate: CheckDelegate {
+                            required property var modelData
+                            width: cacheRows.width
+                            height: 37 * page.theme.scale
+                            text: modelData.title + "  ·  " + modelData.size
+                                  + (modelData.protected ? "  ·  " + modelData.protected : "")
+                            checked: page.cachePathSelected(modelData.path)
+                            enabled: !page.storageView.busy && !modelData.protected
+                            onToggled: page.toggleCache(modelData.path, checked)
+                            ToolTip.visible: hovered
+                            ToolTip.text: modelData.path
+                        }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: page.storageView.error || page.storageView.message || ""
+                        color: page.storageView.error ? page.theme.error : page.theme.muted
+                        font.pixelSize: 12 * page.theme.scale
+                        wrapMode: Text.Wrap
+                        textFormat: Text.PlainText
+                    }
+                }
+            }
+            Rectangle {
+                objectName: "presetLibrarySection"
+                visible: page.settingsCategory === "presets"
+                Layout.fillWidth: true
+                Layout.leftMargin: page.pageMargin
+                Layout.rightMargin: page.pageMargin
+                Layout.preferredHeight: presetContent.implicitHeight + 30 * page.theme.scale
+                color: page.theme.surface
+                border.color: page.theme.line
+                radius: 9 * page.theme.scale
+                ColumnLayout {
+                    id: presetContent
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: 15 * page.theme.scale
+                    spacing: 8 * page.theme.scale
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text {
+                            Layout.fillWidth: true
+                            text: page.tr("本机预设库")
+                            color: page.theme.text
+                            font.pixelSize: 17 * page.theme.scale
+                            font.weight: Font.DemiBold
+                        }
+                        UiButton {
+                            objectName: "refreshPresetLibrary"
+                            theme: page.theme
+                            text: page.tr(page.presetView.loaded ? "刷新预设库" : "载入预设库")
+                            enabled: !page.presetView.busy
+                            onClicked: page.controller.refreshPresetLibrary()
+                        }
+                        UiButton {
+                            objectName: "importPresetLibrary"
+                            theme: page.theme
+                            text: page.tr("附加导入…")
+                            enabled: !!page.presetView.loaded && !page.presetView.busy
+                            onClicked: presetImportFileDialog.open()
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: !!page.presetView.loaded
+                        TextField {
+                            Layout.fillWidth: true
+                            placeholderText: page.tr("搜索名称、ID 或版本")
+                            text: page.presetQuery
+                            onTextEdited: page.presetQuery = text
+                        }
+                        UiComboBox {
+                            theme: page.theme
+                            model: ["all", "preparation", "mixdown", "tuning", "style_recipe"].map(
+                                       value => ({label:value === "all" ? page.tr("全部类型") : page.typeLabel(value), value:value}))
+                            currentIndex: page.indexOfValue(model, page.presetType)
+                            onActivated: page.presetType = currentValue
+                        }
+                    }
+                    ListView {
+                        id: presetRows
+                        objectName: "presetLibraryRows"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.min(count, 5) * 38 * page.theme.scale
+                        visible: count > 0
+                        clip: true
+                        model: page.filteredPresets
+                        ScrollBar.vertical: ScrollBar {}
+                        delegate: ItemDelegate {
+                            required property var modelData
+                            width: presetRows.width
+                            height: 38 * page.theme.scale
+                            highlighted: page.isPresetSelected(modelData)
+                            text: (modelData.favorite ? "★ " : "") + modelData.name + "  ·  "
+                                + page.typeLabel(modelData.type) + "  ·  " + modelData.version
+                                + (modelData.builtin ? "  ·  " + page.tr("内置") : "")
+                            onClicked: page.selectPreset(modelData)
+                        }
+                    }
+                    Flow {
+                        Layout.fillWidth: true
+                        visible: page.presetKey(page.selectedPreset).length > 0
+                        spacing: 6 * page.theme.scale
+                        UiButton {
+                            theme: page.theme
+                            text: page.tr("导出原文件…")
+                            enabled: !page.presetView.busy
+                            onClicked: {
+                                page.presetExportEntry = page.selectedPreset
+                                presetExportFileDialog.open()
+                            }
+                        }
+                        UiButton {
+                            theme: page.theme
+                            text: page.tr("创建副本…")
+                            enabled: !page.presetView.busy
+                            onClicked: page.openPresetText("copy")
+                        }
+                        UiButton {
+                            theme: page.theme
+                            text: page.tr("修改别名…")
+                            enabled: !page.presetView.busy && !page.selectedPreset.builtin
+                            onClicked: page.openPresetText("alias")
+                        }
+                        UiButton {
+                            theme: page.theme
+                            text: page.tr(page.selectedPreset.favorite ? "取消收藏" : "收藏")
+                            enabled: !page.presetView.busy && !page.selectedPreset.builtin
+                            onClicked: page.controller.setPresetFavorite(page.selectedPreset.id, page.selectedPreset.version,
+                                                                         !page.selectedPreset.favorite)
+                        }
+                        UiButton {
+                            theme: page.theme
+                            text: page.tr("移除…")
+                            enabled: !page.presetView.busy && !page.selectedPreset.builtin
+                            onClicked: { page.presetRemoveEntry = page.selectedPreset; presetRemoveDialog.open() }
+                        }
+                    }
+                    Rectangle {
+                        objectName: "presetInspectPanel"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.min(Math.round(230 * page.theme.scale),
+                                                         inspectContent.implicitHeight + Math.round(24 * page.theme.scale))
+                        visible: page.presetKey(page.selectedPreset).length > 0
+                        color: page.theme.base
+                        radius: 7 * page.theme.scale
+                        border.color: page.theme.line
+                        ColumnLayout {
+                            id: inspectContent
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: Math.round(11 * page.theme.scale)
+                            spacing: 6 * page.theme.scale
+                            Text {
+                                Layout.fillWidth: true
+                                text: page.tr("预设内容（只读）")
+                                color: page.theme.text
+                                font.pixelSize: 12 * page.theme.scale
+                                font.weight: Font.DemiBold
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                visible: !!page.presetView.inspect_error
+                                text: String(page.presetView.inspect_error || "")
+                                color: page.theme.error
+                                font.pixelSize: 11 * page.theme.scale
+                                wrapMode: Text.Wrap
+                            }
+                            ScrollView {
+                                id: presetInspectScroll
+                                objectName: "presetInspectScroll"
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: Math.round(160 * page.theme.scale)
+                                clip: true
+                                contentWidth: availableWidth
+                                ScrollBar.horizontal.policy: ScrollBar.AsNeeded
+                                TextArea {
+                                    objectName: "presetInspectText"
+                                    width: presetInspectScroll.availableWidth
+                                    text: page.presetView.inspect_busy
+                                        ? page.tr("正在读取预设内容…")
+                                        : String(page.presetView.inspect_text || "")
+                                    readOnly: true
+                                    selectByMouse: true
+                                    selectByKeyboard: true
+                                    wrapMode: TextEdit.NoWrap
+                                    textFormat: TextEdit.PlainText
+                                    color: page.theme.text
+                                    selectionColor: page.theme.accent
+                                    selectedTextColor: page.theme.base
+                                    font.family: "Consolas"
+                                    font.pixelSize: 11 * page.theme.scale
+                                    background: Rectangle { color: "transparent" }
+                                    Accessible.name: page.tr("预设 JSON 内容")
+                                }
+                            }
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text {
+                            Layout.fillWidth: true
+                            text: page.presetView.error || (page.presetView.loaded ? page.presetView.message
+                                  : page.tr("四类预设共用本机库。导入默认附加；同版本冲突时可另存副本。"))
+                            color: page.presetView.error ? page.theme.error : page.theme.muted
+                            font.pixelSize: 12 * page.theme.scale
+                            wrapMode: Text.Wrap
+                            textFormat: Text.PlainText
+                        }
+                        UiButton {
+                            theme: page.theme
+                            text: page.tr("恢复索引…")
+                            enabled: !page.presetView.busy
+                            visible: !!page.presetView.error && !page.presetView.conflict
+                            onClicked: presetRecoverDialog.open()
+                        }
+                    }
+                }
+            }
+            Rectangle {
+                objectName: "updateSection"
+                visible: page.settingsCategory === "update"
+                Layout.fillWidth: true
+                Layout.leftMargin: page.pageMargin
+                Layout.rightMargin: page.pageMargin
+                Layout.preferredHeight: updateContent.implicitHeight + Math.round(30 * page.theme.scale)
+                color: page.theme.surface
+                radius: Math.round(9 * page.theme.scale)
+                border.color: page.theme.line
+
+                ColumnLayout {
+                    id: updateContent
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: Math.round(15 * page.theme.scale)
+                    spacing: Math.round(11 * page.theme.scale)
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Math.round(9 * page.theme.scale)
+                        Text {
+                            Layout.fillWidth: true
+                            text: page.tr("程序更新")
+                            color: page.theme.text
+                            font.pixelSize: Math.round(18 * page.theme.scale)
+                            font.weight: Font.DemiBold
+                        }
+                        Rectangle {
+                            width: Math.round(8 * page.theme.scale)
+                            height: width
+                            radius: width / 2
+                            color: page.updateStateColor(page.currentUpdateState)
+                        }
+                        Text {
+                            objectName: "updateState"
+                            text: page.updateStateLabel(page.currentUpdateState)
+                            color: page.updateStateColor(page.currentUpdateState)
+                            font.pixelSize: Math.round(12 * page.theme.scale)
+                            font.weight: Font.DemiBold
+                        }
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: page.tr("发现新版本会先展示变更说明。你可以立即处理、稍后再看，或忽略这个版本。")
+                        color: page.theme.muted
+                        font.pixelSize: Math.round(12 * page.theme.scale)
+                        wrapMode: Text.Wrap
+                    }
+
+                    MotionChoice {
+                        objectName: "settingsStartupUpdate"
+                        Layout.fillWidth: true
+                        tokens: page.theme
+                        text: page.tr("启动时检查更新")
+                        detail: page.tr("在后台检查，有新版本时显示更新内容。")
+                        selected: page.setting("check_for_updates", true) === true
+                        onClicked: page.changeSetting("check_for_updates", !selected)
+                    }
+                    MotionChoice {
+                        objectName: "settingsAutoRestart"
+                        Layout.fillWidth: true
+                        visible: page.controller.canApplyProgramUpdates
+                        tokens: page.theme
+                        text: page.tr("下载完成后自动重启安装")
+                        detail: page.tr("仅在你已确认下载时生效。")
+                        selected: page.setting("auto_restart_updates", true) === true
+                        onClicked: page.changeSetting("auto_restart_updates", !selected)
+                    }
+
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: Math.round(14 * page.theme.scale)
+                        Text {
+                            text: page.tr("当前版本") + "  " + page.formatVersion(page.controller.currentVersion)
+                            color: page.theme.text
+                            font.pixelSize: Math.round(13 * page.theme.scale)
+                        }
+                        Text {
+                            visible: String(page.updateInfo.version || "").length > 0
+                            text: page.tr("可用版本") + "  " + page.formatVersion(page.updateInfo.version)
+                            color: page.theme.accent
+                            font.pixelSize: Math.round(13 * page.theme.scale)
+                            font.weight: Font.DemiBold
+                        }
+                    }
+
+                    Text {
+                        objectName: "updateMessage"
+                        Layout.fillWidth: true
+                        visible: String(page.updateInfo.message || "").length > 0
+                        text: String(page.updateInfo.message || "")
+                        color: page.currentUpdateState === "failed" || page.currentUpdateState === "error"
+                            ? page.theme.error : page.theme.muted
+                        font.pixelSize: Math.round(12 * page.theme.scale)
+                        wrapMode: Text.Wrap
+                        textFormat: Text.PlainText
+                    }
+                    Text {
+                        objectName: "updateOperationBlockers"
+                        Layout.fillWidth: true
+                        visible: page.operationBlockerText.length > 0
+                        text: page.tr("正在运行") + "  " + page.operationBlockerText
+                        color: page.theme.accent
+                        font.pixelSize: Math.round(11 * page.theme.scale)
+                        wrapMode: Text.Wrap
+                        textFormat: Text.PlainText
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        visible: String(page.updateInfo.notes || "").length > 0
+                        spacing: Math.round(4 * page.theme.scale)
+                        Text {
+                            text: page.tr("更新说明")
+                            color: page.theme.text
+                            font.pixelSize: Math.round(12 * page.theme.scale)
+                            font.weight: Font.DemiBold
+                        }
+                        ScrollView {
+                            id: updateReleaseNotesScroll
+                            objectName: "updateReleaseNotesScroll"
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: Math.round(150 * page.theme.scale)
+                            clip: true
+                            contentWidth: availableWidth
+                            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                            background: Rectangle {
+                                color: page.theme.base
+                                radius: Math.round(7 * page.theme.scale)
+                                border.color: page.theme.line
+                            }
+                            TextArea {
+                                objectName: "updateReleaseNotes"
+                                width: updateReleaseNotesScroll.availableWidth
+                                text: String(page.updateInfo.notes || "")
+                                readOnly: true
+                                selectByMouse: true
+                                selectByKeyboard: true
+                                wrapMode: TextEdit.Wrap
+                                textFormat: TextEdit.PlainText
+                                color: page.theme.text
+                                selectionColor: page.theme.accent
+                                selectedTextColor: page.theme.base
+                                font.pixelSize: Math.round(11 * page.theme.scale)
+                                background: Rectangle { color: "transparent" }
+                                Accessible.name: page.tr("更新说明")
+                            }
+                        }
+                    }
+
+                    ProgressBar {
+                        id: updateProgress
+                        objectName: "updateProgress"
+                        Layout.fillWidth: true
+                        visible: page.downloading || Number(page.updateInfo.total || 0) > 0
+                        indeterminate: page.downloading && Number(page.updateInfo.total || 0) <= 0 && !page.theme.reduceMotion
+                        value: Number(page.updateInfo.total || 0) > 0
+                            ? Math.max(0, Math.min(1, Number(page.updateInfo.done || 0) / Number(page.updateInfo.total)))
+                            : 0
+                        background: Rectangle {
+                            implicitHeight: Math.max(5, Math.round(6 * page.theme.scale))
+                            radius: height / 2
+                            color: page.theme.base
+                        }
+                        contentItem: Item {
+                            Rectangle {
+                                width: parent.width * Math.max(0, Math.min(1, updateProgress.visualPosition))
+                                height: parent.height
+                                radius: height / 2
+                                color: page.currentUpdateState === "failed" || page.currentUpdateState === "error"
+                                    ? page.theme.error : page.theme.accent
+                            }
+                        }
+                    }
+
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: Math.round(7 * page.theme.scale)
+                        UiButton {
+                            objectName: "updateCheck"
+                            theme: page.theme
+                            text: page.tr("检查更新")
+                            enabled: !page.downloading && !page.applying
+                            onClicked: page.controller.checkForUpdates()
+                        }
+                        UiButton {
+                            objectName: "updatePrimary"
+                            theme: page.theme
+                            primary: true
+                            text: page.updatePrimaryLabel()
+                            enabled: !page.downloading && !page.applying
+                            onClicked: page.updatePrimaryAction()
+                        }
+                        UiButton {
+                            objectName: "updateCancel"
+                            theme: page.theme
+                            quiet: true
+                            visible: (page.downloading || page.updateInfo.auto_restart_active)
+                                && page.updateInfo.can_cancel
+                            text: page.updateInfo.auto_restart_active ? page.tr("暂缓安装") : page.tr("取消下载")
+                            onClicked: page.controller.cancelUpdate()
+                        }
+                        UiButton {
+                            objectName: "updateResetReminder"
+                            theme: page.theme
+                            quiet: true
+                            text: page.tr("恢复已忽略提醒")
+                            onClicked: page.controller.resetUpdateReminder()
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        visible: page.updateCanDefer()
+                        spacing: 5
+                        Text {
+                            text: page.tr("延后提醒")
+                            color: page.theme.muted
+                            font.pixelSize: Math.round(12 * page.theme.scale)
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Math.round(7 * page.theme.scale)
+                            UiComboBox {
+                                id: settingsDelay
+                                objectName: "updateDeferDelay"
+                                Layout.fillWidth: true
+                                Layout.maximumWidth: Math.round(220 * page.theme.scale)
+                                theme: page.theme
+                                model: page.delayOptions()
+                                currentIndex: 0
+                            }
+                            UiButton {
+                                objectName: "updateDefer"
+                                theme: page.theme
+                                quiet: true
+                                text: page.tr("按所选时长延后")
+                                onClicked: page.controller.deferUpdate(Number(settingsDelay.currentValue))
+                            }
+                        }
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        visible: page.workBusy && page.updateInfo.apply_ready
+                        text: page.tr("当前任务运行中。更新包会保留，任务结束后再重启安装。")
+                        color: page.theme.accent
+                        font.pixelSize: Math.round(12 * page.theme.scale)
+                        wrapMode: Text.Wrap
+                    }
+                }
+            }
+            Rectangle {
+                objectName: "supportSection"
+                visible: page.settingsCategory === "support"
+                Layout.fillWidth: true
+                Layout.leftMargin: page.pageMargin
+                Layout.rightMargin: page.pageMargin
+                Layout.bottomMargin: page.pageMargin
+                Layout.preferredHeight: supportContent.implicitHeight + Math.round(30 * page.theme.scale)
+                color: page.theme.surface
+                radius: Math.round(9 * page.theme.scale)
+                border.color: page.theme.line
+
+                ColumnLayout {
+                    id: supportContent
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: Math.round(15 * page.theme.scale)
+                    spacing: Math.round(10 * page.theme.scale)
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: page.tr("帮助与社区")
+                        color: page.theme.text
+                        font.pixelSize: Math.round(18 * page.theme.scale)
+                        font.weight: Font.DemiBold
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: page.tr("遇到安装、组件或工作流问题时，可以通过 GitHub 提交可复现反馈；日常交流和版本消息在用户群。")
+                        color: page.theme.muted
+                        font.pixelSize: Math.round(12 * page.theme.scale)
+                        wrapMode: Text.Wrap
                     }
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: Math.round(8 * page.theme.scale)
                         Text {
-                            id: outputPath
-                            objectName: "outputDirectory"
-                            Layout.fillWidth: true
-                            text: String(page.setting("output_directory", "")).length > 0
-                                ? String(page.setting("output_directory", ""))
-                                : page.tr("使用系统默认目录")
-                            color: String(page.setting("output_directory", "")).length > 0 ? page.theme.text : page.theme.muted
-                            font.pixelSize: Math.round(13 * page.theme.scale)
-                            elide: Text.ElideMiddle
-                            textFormat: Text.PlainText
-                            ToolTip.visible: outputHover.hovered && truncated
-                            ToolTip.text: String(page.setting("output_directory", ""))
-                            HoverHandler { id: outputHover }
-                        }
-                        UiButton {
-                            objectName: "chooseOutputDirectory"
-                            theme: page.theme
-                            text: page.tr("选择目录")
-                            onClicked: outputDialog.open()
-                        }
-                    }
-                    Text {
-                        Layout.fillWidth: true
-                        text: page.tr("用于后续准备、调音和导出任务的共同目录。单个任务仍可保留自己的结果位置。")
-                        color: page.theme.muted
-                        font.pixelSize: Math.round(11 * page.theme.scale)
-                        wrapMode: Text.Wrap
-                    }
-                }
-            }
-        }
-        Rectangle {
-            objectName: "storageSection"
-            Layout.fillWidth: true
-            Layout.leftMargin: page.pageMargin
-            Layout.rightMargin: page.pageMargin
-            Layout.preferredHeight: storageContent.implicitHeight + 30 * page.theme.scale
-            color: page.theme.surface
-            border.color: page.theme.line
-            radius: 9 * page.theme.scale
-            ColumnLayout {
-                id: storageContent
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: 15 * page.theme.scale
-                spacing: 8 * page.theme.scale
-                RowLayout {
-                    Layout.fillWidth: true
-                    Text {
-                        Layout.fillWidth: true
-                        text: page.tr("存储与缓存")
-                        color: page.theme.text
-                        font.pixelSize: 17 * page.theme.scale
-                        font.weight: Font.DemiBold
-                    }
-                    UiButton {
-                        objectName: "scanStorage"
-                        theme: page.theme
-                        text: page.tr("扫描占用")
-                        enabled: !page.storageView.busy
-                        onClicked: page.controller.refreshStorage()
-                    }
-                    UiButton {
-                        objectName: "reviewStorageCleanup"
-                        theme: page.theme
-                        text: page.tr("清理所选…")
-                        enabled: !page.storageView.busy && !page.workBusy && page.selectedCachePaths().length > 0
-                        onClicked: storageCleanDialog.open()
-                    }
-                }
-                Text {
-                    Layout.fillWidth: true
-                    visible: !!page.storageView.scanned
-                    text: page.tr("输出盘可用") + " " + page.storageView.free_label
-                        + "  ·  " + page.tr("任务") + " " + page.storageView.tasks_label
-                        + "  ·  " + page.tr("发布资料") + " " + page.storageView.publication_label
-                        + "  ·  " + page.tr("依赖与模型") + " " + page.storageView.dependencies_label
-                    color: page.theme.muted
-                    font.pixelSize: 12 * page.theme.scale
-                    wrapMode: Text.Wrap
-                    textFormat: Text.PlainText
-                }
-                ListView {
-                    id: cacheRows
-                    objectName: "storageCacheRows"
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: Math.min(count, 5) * 37 * page.theme.scale
-                    visible: count > 0
-                    clip: true
-                    model: page.storageView.rows || []
-                    ScrollBar.vertical: ScrollBar {}
-                    delegate: CheckDelegate {
-                        required property var modelData
-                        width: cacheRows.width
-                        height: 37 * page.theme.scale
-                        text: modelData.title + "  ·  " + modelData.size
-                              + (modelData.protected ? "  ·  " + modelData.protected : "")
-                        checked: page.cachePathSelected(modelData.path)
-                        enabled: !page.storageView.busy && !modelData.protected
-                        onToggled: page.toggleCache(modelData.path, checked)
-                        ToolTip.visible: hovered
-                        ToolTip.text: modelData.path
-                    }
-                }
-                Text {
-                    Layout.fillWidth: true
-                    text: page.storageView.error || page.storageView.message || ""
-                    color: page.storageView.error ? page.theme.error : page.theme.muted
-                    font.pixelSize: 12 * page.theme.scale
-                    wrapMode: Text.Wrap
-                    textFormat: Text.PlainText
-                }
-            }
-        }
-        Rectangle {
-            objectName: "presetLibrarySection"
-            Layout.fillWidth: true
-            Layout.leftMargin: page.pageMargin
-            Layout.rightMargin: page.pageMargin
-            Layout.preferredHeight: presetContent.implicitHeight + 30 * page.theme.scale
-            color: page.theme.surface
-            border.color: page.theme.line
-            radius: 9 * page.theme.scale
-            ColumnLayout {
-                id: presetContent
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: 15 * page.theme.scale
-                spacing: 8 * page.theme.scale
-                RowLayout {
-                    Layout.fillWidth: true
-                    Text {
-                        Layout.fillWidth: true
-                        text: page.tr("本机预设库")
-                        color: page.theme.text
-                        font.pixelSize: 17 * page.theme.scale
-                        font.weight: Font.DemiBold
-                    }
-                    UiButton {
-                        objectName: "refreshPresetLibrary"
-                        theme: page.theme
-                        text: page.tr(page.presetView.loaded ? "刷新预设库" : "载入预设库")
-                        enabled: !page.presetView.busy
-                        onClicked: page.controller.refreshPresetLibrary()
-                    }
-                    UiButton {
-                        objectName: "importPresetLibrary"
-                        theme: page.theme
-                        text: page.tr("附加导入…")
-                        enabled: !!page.presetView.loaded && !page.presetView.busy
-                        onClicked: presetImportFileDialog.open()
-                    }
-                }
-                RowLayout {
-                    Layout.fillWidth: true
-                    visible: !!page.presetView.loaded
-                    TextField {
-                        Layout.fillWidth: true
-                        placeholderText: page.tr("搜索名称、ID 或版本")
-                        text: page.presetQuery
-                        onTextEdited: page.presetQuery = text
-                    }
-                    UiComboBox {
-                        theme: page.theme
-                        model: ["all", "preparation", "mixdown", "tuning", "style_recipe"].map(
-                                   value => ({label:value === "all" ? page.tr("全部类型") : page.typeLabel(value), value:value}))
-                        currentIndex: page.indexOfValue(model, page.presetType)
-                        onActivated: page.presetType = currentValue
-                    }
-                }
-                ListView {
-                    id: presetRows
-                    objectName: "presetLibraryRows"
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: Math.min(count, 5) * 38 * page.theme.scale
-                    visible: count > 0
-                    clip: true
-                    model: page.filteredPresets
-                    ScrollBar.vertical: ScrollBar {}
-                    delegate: ItemDelegate {
-                        required property var modelData
-                        width: presetRows.width
-                        height: 38 * page.theme.scale
-                        highlighted: page.isPresetSelected(modelData)
-                        text: (modelData.favorite ? "★ " : "") + modelData.name + "  ·  "
-                            + page.typeLabel(modelData.type) + "  ·  " + modelData.version
-                            + (modelData.builtin ? "  ·  " + page.tr("内置") : "")
-                        onClicked: page.selectPreset(modelData)
-                    }
-                }
-                Flow {
-                    Layout.fillWidth: true
-                    visible: page.presetKey(page.selectedPreset).length > 0
-                    spacing: 6 * page.theme.scale
-                    UiButton {
-                        theme: page.theme
-                        text: page.tr("导出原文件…")
-                        enabled: !page.presetView.busy
-                        onClicked: {
-                            page.presetExportEntry = page.selectedPreset
-                            presetExportFileDialog.open()
-                        }
-                    }
-                    UiButton {
-                        theme: page.theme
-                        text: page.tr("创建副本…")
-                        enabled: !page.presetView.busy
-                        onClicked: page.openPresetText("copy")
-                    }
-                    UiButton {
-                        theme: page.theme
-                        text: page.tr("修改别名…")
-                        enabled: !page.presetView.busy && !page.selectedPreset.builtin
-                        onClicked: page.openPresetText("alias")
-                    }
-                    UiButton {
-                        theme: page.theme
-                        text: page.tr(page.selectedPreset.favorite ? "取消收藏" : "收藏")
-                        enabled: !page.presetView.busy && !page.selectedPreset.builtin
-                        onClicked: page.controller.setPresetFavorite(page.selectedPreset.id, page.selectedPreset.version,
-                                                                     !page.selectedPreset.favorite)
-                    }
-                    UiButton {
-                        theme: page.theme
-                        text: page.tr("移除…")
-                        enabled: !page.presetView.busy && !page.selectedPreset.builtin
-                        onClicked: { page.presetRemoveEntry = page.selectedPreset; presetRemoveDialog.open() }
-                    }
-                }
-                Rectangle {
-                    objectName: "presetInspectPanel"
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: Math.min(Math.round(230 * page.theme.scale),
-                                                     inspectContent.implicitHeight + Math.round(24 * page.theme.scale))
-                    visible: page.presetKey(page.selectedPreset).length > 0
-                    color: page.theme.base
-                    radius: 7 * page.theme.scale
-                    border.color: page.theme.line
-                    ColumnLayout {
-                        id: inspectContent
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.top: parent.top
-                        anchors.margins: Math.round(11 * page.theme.scale)
-                        spacing: 6 * page.theme.scale
-                        Text {
-                            Layout.fillWidth: true
-                            text: page.tr("预设内容（只读）")
+                            objectName: "qqGroup"
+                            text: page.tr("QQ 群") + "  " + page.communityNumber
                             color: page.theme.text
-                            font.pixelSize: 12 * page.theme.scale
+                            font.pixelSize: Math.round(14 * page.theme.scale)
                             font.weight: Font.DemiBold
                         }
-                        Text {
-                            Layout.fillWidth: true
-                            visible: !!page.presetView.inspect_error
-                            text: String(page.presetView.inspect_error || "")
-                            color: page.theme.error
-                            font.pixelSize: 11 * page.theme.scale
-                            wrapMode: Text.Wrap
-                        }
-                        ScrollView {
-                            id: presetInspectScroll
-                            objectName: "presetInspectScroll"
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: Math.round(160 * page.theme.scale)
-                            clip: true
-                            contentWidth: availableWidth
-                            ScrollBar.horizontal.policy: ScrollBar.AsNeeded
-                            TextArea {
-                                objectName: "presetInspectText"
-                                width: presetInspectScroll.availableWidth
-                                text: page.presetView.inspect_busy
-                                    ? page.tr("正在读取预设内容…")
-                                    : String(page.presetView.inspect_text || "")
-                                readOnly: true
-                                selectByMouse: true
-                                selectByKeyboard: true
-                                wrapMode: TextEdit.NoWrap
-                                textFormat: TextEdit.PlainText
-                                color: page.theme.text
-                                selectionColor: page.theme.accent
-                                selectedTextColor: page.theme.base
-                                font.family: "Consolas"
-                                font.pixelSize: 11 * page.theme.scale
-                                background: Rectangle { color: "transparent" }
-                                Accessible.name: page.tr("预设 JSON 内容")
-                            }
+                        Item { Layout.fillWidth: true }
+                        UiButton {
+                            objectName: "copyQQGroup"
+                            theme: page.theme
+                            text: page.tr("复制群号")
+                            onClicked: page.controller.copyCommunity()
                         }
                     }
-                }
-                RowLayout {
-                    Layout.fillWidth: true
-                    Text {
+                    Flow {
                         Layout.fillWidth: true
-                        text: page.presetView.error || (page.presetView.loaded ? page.presetView.message
-                              : page.tr("四类预设共用本机库。导入默认附加；同版本冲突时可另存副本。"))
-                        color: page.presetView.error ? page.theme.error : page.theme.muted
-                        font.pixelSize: 12 * page.theme.scale
-                        wrapMode: Text.Wrap
-                        textFormat: Text.PlainText
-                    }
-                    UiButton {
-                        theme: page.theme
-                        text: page.tr("恢复索引…")
-                        enabled: !page.presetView.busy
-                        visible: !!page.presetView.error && !page.presetView.conflict
-                        onClicked: presetRecoverDialog.open()
+                        spacing: Math.round(7 * page.theme.scale)
+                        UiButton {
+                            objectName: "openFeedback"
+                            theme: page.theme
+                            text: page.tr("GitHub 反馈")
+                            onClicked: page.controller.openFeedback()
+                        }
+                        UiButton {
+                            objectName: "showDiagnostics"
+                            theme: page.theme
+                            text: page.tr("本机诊断")
+                            onClicked: page.controller.showDiagnostics()
+                        }
+                        UiButton {
+                            objectName: "replayTutorial"
+                            theme: page.theme
+                            quiet: true
+                            text: page.tr("重新查看教程")
+                            onClicked: page.controller.showTutorial()
+                        }
                     }
                 }
             }
-        }
-        Rectangle {
-            objectName: "updateSection"
-            Layout.fillWidth: true
-            Layout.leftMargin: page.pageMargin
-            Layout.rightMargin: page.pageMargin
-            Layout.preferredHeight: updateContent.implicitHeight + Math.round(30 * page.theme.scale)
-            color: page.theme.surface
-            radius: Math.round(9 * page.theme.scale)
-            border.color: page.theme.line
 
-            ColumnLayout {
-                id: updateContent
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: Math.round(15 * page.theme.scale)
-                spacing: Math.round(11 * page.theme.scale)
+            Rectangle {
+                objectName: "aboutSection"
+                Layout.fillWidth: true
+                Layout.leftMargin: page.pageMargin
+                Layout.rightMargin: page.pageMargin
+                Layout.preferredHeight: aboutContent.implicitHeight + Math.round(30 * page.theme.scale)
+                visible: page.settingsCategory === "about"
+                color: page.theme.surface
+                radius: Math.round(9 * page.theme.scale)
+                border.color: page.theme.line
 
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Math.round(9 * page.theme.scale)
+                ColumnLayout {
+                    id: aboutContent
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: Math.round(15 * page.theme.scale)
+                    spacing: Math.round(10 * page.theme.scale)
+
                     Text {
                         Layout.fillWidth: true
-                        text: page.tr("程序更新")
+                        text: page.tr("关于 VWA")
                         color: page.theme.text
                         font.pixelSize: Math.round(18 * page.theme.scale)
                         font.weight: Font.DemiBold
                     }
-                    Rectangle {
-                        width: Math.round(8 * page.theme.scale)
-                        height: width
-                        radius: width / 2
-                        color: page.updateStateColor(page.currentUpdateState)
-                    }
                     Text {
-                        objectName: "updateState"
-                        text: page.updateStateLabel(page.currentUpdateState)
-                        color: page.updateStateColor(page.currentUpdateState)
-                        font.pixelSize: Math.round(12 * page.theme.scale)
+                        Layout.fillWidth: true
+                        text: "VWA"
+                        color: page.theme.text
+                        font.pixelSize: Math.round(25 * page.theme.scale)
                         font.weight: Font.DemiBold
                     }
-                }
-
-                Text {
-                    Layout.fillWidth: true
-                    text: page.tr("发现新版本会先展示变更说明。你可以立即处理、稍后再看，或忽略这个版本。")
-                    color: page.theme.muted
-                    font.pixelSize: Math.round(12 * page.theme.scale)
-                    wrapMode: Text.Wrap
-                }
-
-                MotionChoice {
-                    objectName: "settingsStartupUpdate"
-                    Layout.fillWidth: true
-                    tokens: page.theme
-                    text: page.tr("启动时检查更新")
-                    detail: page.tr("在后台检查，有新版本时显示更新内容。")
-                    selected: page.setting("check_for_updates", true) === true
-                    onClicked: page.changeSetting("check_for_updates", !selected)
-                }
-                MotionChoice {
-                    objectName: "settingsAutoRestart"
-                    Layout.fillWidth: true
-                    visible: page.controller.canApplyProgramUpdates
-                    tokens: page.theme
-                    text: page.tr("下载完成后自动重启安装")
-                    detail: page.tr("仅在你已确认下载时生效。")
-                    selected: page.setting("auto_restart_updates", true) === true
-                    onClicked: page.changeSetting("auto_restart_updates", !selected)
-                }
-
-                Flow {
-                    Layout.fillWidth: true
-                    spacing: Math.round(14 * page.theme.scale)
                     Text {
+                        Layout.fillWidth: true
+                        text: page.tr("本地创作工作台")
+                        color: page.theme.muted
+                        font.pixelSize: Math.round(13 * page.theme.scale)
+                        wrapMode: Text.Wrap
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.round(1 * page.theme.scale)
+                        color: page.theme.line
+                    }
+                    Text {
+                        objectName: "aboutVersion"
+                        Layout.fillWidth: true
                         text: page.tr("当前版本") + "  " + page.formatVersion(page.controller.currentVersion)
                         color: page.theme.text
                         font.pixelSize: Math.round(13 * page.theme.scale)
+                        wrapMode: Text.Wrap
                     }
-                    Text {
-                        visible: String(page.updateInfo.version || "").length > 0
-                        text: page.tr("可用版本") + "  " + page.formatVersion(page.updateInfo.version)
-                        color: page.theme.accent
-                        font.pixelSize: Math.round(13 * page.theme.scale)
-                        font.weight: Font.DemiBold
-                    }
-                }
-
-                Text {
-                    objectName: "updateMessage"
-                    Layout.fillWidth: true
-                    visible: String(page.updateInfo.message || "").length > 0
-                    text: String(page.updateInfo.message || "")
-                    color: page.currentUpdateState === "failed" || page.currentUpdateState === "error"
-                        ? page.theme.error : page.theme.muted
-                    font.pixelSize: Math.round(12 * page.theme.scale)
-                    wrapMode: Text.Wrap
-                    textFormat: Text.PlainText
-                }
-                Text {
-                    objectName: "updateOperationBlockers"
-                    Layout.fillWidth: true
-                    visible: page.operationBlockerText.length > 0
-                    text: page.tr("正在运行") + "  " + page.operationBlockerText
-                    color: page.theme.accent
-                    font.pixelSize: Math.round(11 * page.theme.scale)
-                    wrapMode: Text.Wrap
-                    textFormat: Text.PlainText
-                }
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    visible: String(page.updateInfo.notes || "").length > 0
-                    spacing: Math.round(4 * page.theme.scale)
-                    Text {
-                        text: page.tr("更新说明")
-                        color: page.theme.text
-                        font.pixelSize: Math.round(12 * page.theme.scale)
-                        font.weight: Font.DemiBold
-                    }
-                    ScrollView {
-                        id: updateReleaseNotesScroll
-                        objectName: "updateReleaseNotesScroll"
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: Math.round(150 * page.theme.scale)
-                        clip: true
-                        contentWidth: availableWidth
-                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-                        background: Rectangle {
-                            color: page.theme.base
-                            radius: Math.round(7 * page.theme.scale)
-                            border.color: page.theme.line
-                        }
-                        TextArea {
-                            objectName: "updateReleaseNotes"
-                            width: updateReleaseNotesScroll.availableWidth
-                            text: String(page.updateInfo.notes || "")
-                            readOnly: true
-                            selectByMouse: true
-                            selectByKeyboard: true
-                            wrapMode: TextEdit.Wrap
-                            textFormat: TextEdit.PlainText
-                            color: page.theme.text
-                            selectionColor: page.theme.accent
-                            selectedTextColor: page.theme.base
-                            font.pixelSize: Math.round(11 * page.theme.scale)
-                            background: Rectangle { color: "transparent" }
-                            Accessible.name: page.tr("更新说明")
-                        }
-                    }
-                }
-
-                ProgressBar {
-                    id: updateProgress
-                    objectName: "updateProgress"
-                    Layout.fillWidth: true
-                    visible: page.downloading || Number(page.updateInfo.total || 0) > 0
-                    indeterminate: page.downloading && Number(page.updateInfo.total || 0) <= 0 && !page.theme.reduceMotion
-                    value: Number(page.updateInfo.total || 0) > 0
-                        ? Math.max(0, Math.min(1, Number(page.updateInfo.done || 0) / Number(page.updateInfo.total)))
-                        : 0
-                    background: Rectangle {
-                        implicitHeight: Math.max(5, Math.round(6 * page.theme.scale))
-                        radius: height / 2
-                        color: page.theme.base
-                    }
-                    contentItem: Item {
-                        Rectangle {
-                            width: parent.width * Math.max(0, Math.min(1, updateProgress.visualPosition))
-                            height: parent.height
-                            radius: height / 2
-                            color: page.currentUpdateState === "failed" || page.currentUpdateState === "error"
-                                ? page.theme.error : page.theme.accent
-                        }
-                    }
-                }
-
-                Flow {
-                    Layout.fillWidth: true
-                    spacing: Math.round(7 * page.theme.scale)
-                    UiButton {
-                        objectName: "updateCheck"
-                        theme: page.theme
-                        text: page.tr("检查更新")
-                        enabled: !page.downloading && !page.applying
-                        onClicked: page.controller.checkForUpdates()
-                    }
-                    UiButton {
-                        objectName: "updatePrimary"
-                        theme: page.theme
-                        primary: true
-                        text: page.updatePrimaryLabel()
-                        enabled: !page.downloading && !page.applying
-                        onClicked: page.updatePrimaryAction()
-                    }
-                    UiButton {
-                        objectName: "updateCancel"
-                        theme: page.theme
-                        quiet: true
-                        visible: (page.downloading || page.updateInfo.auto_restart_active)
-                            && page.updateInfo.can_cancel
-                        text: page.updateInfo.auto_restart_active ? page.tr("暂缓安装") : page.tr("取消下载")
-                        onClicked: page.controller.cancelUpdate()
-                    }
-                    UiButton {
-                        objectName: "updateResetReminder"
-                        theme: page.theme
-                        quiet: true
-                        text: page.tr("恢复已忽略提醒")
-                        onClicked: page.controller.resetUpdateReminder()
-                    }
-                }
-
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    visible: page.updateCanDefer()
-                    spacing: 5
-                    Text {
-                        text: page.tr("延后提醒")
-                        color: page.theme.muted
-                        font.pixelSize: Math.round(12 * page.theme.scale)
-                    }
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: Math.round(7 * page.theme.scale)
-                        UiComboBox {
-                            id: settingsDelay
-                            objectName: "updateDeferDelay"
-                            Layout.fillWidth: true
-                            Layout.maximumWidth: Math.round(220 * page.theme.scale)
-                            theme: page.theme
-                            model: page.delayOptions()
-                            currentIndex: 0
-                        }
-                        UiButton {
-                            objectName: "updateDefer"
-                            theme: page.theme
-                            quiet: true
-                            text: page.tr("按所选时长延后")
-                            onClicked: page.controller.deferUpdate(Number(settingsDelay.currentValue))
-                        }
-                    }
-                }
-
-                Text {
-                    Layout.fillWidth: true
-                    visible: page.workBusy && page.updateInfo.apply_ready
-                    text: page.tr("当前任务运行中。更新包会保留，任务结束后再重启安装。")
-                    color: page.theme.accent
-                    font.pixelSize: Math.round(12 * page.theme.scale)
-                    wrapMode: Text.Wrap
                 }
             }
-        }
-        Rectangle {
-            objectName: "supportSection"
-            Layout.fillWidth: true
-            Layout.leftMargin: page.pageMargin
-            Layout.rightMargin: page.pageMargin
-            Layout.bottomMargin: page.pageMargin
-            Layout.preferredHeight: supportContent.implicitHeight + Math.round(30 * page.theme.scale)
-            color: page.theme.surface
-            radius: Math.round(9 * page.theme.scale)
-            border.color: page.theme.line
 
-            ColumnLayout {
-                id: supportContent
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: Math.round(15 * page.theme.scale)
-                spacing: Math.round(10 * page.theme.scale)
 
-                Text {
-                    Layout.fillWidth: true
-                    text: page.tr("帮助与社区")
-                    color: page.theme.text
-                    font.pixelSize: Math.round(18 * page.theme.scale)
-                    font.weight: Font.DemiBold
+                    Item {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: page.pageMargin
+                    }
+                    }
                 }
-                Text {
-                    Layout.fillWidth: true
-                    text: page.tr("遇到安装、组件或工作流问题时，可以通过 GitHub 提交可复现反馈；日常交流和版本消息在用户群。")
-                    color: page.theme.muted
-                    font.pixelSize: Math.round(12 * page.theme.scale)
-                    wrapMode: Text.Wrap
+            }
+
+            Rectangle {
+                id: sideSupportPanel
+                objectName: "settingsSupportSidebar"
+                Layout.row: 0
+                Layout.column: 2
+                Layout.fillHeight: true
+                Layout.preferredWidth: page.supportRailWidth
+                visible: page.showSupportRail
+                color: page.theme.base
+
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    width: Math.max(1, Math.round(1 * page.theme.scale))
+                    color: page.theme.line
                 }
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Math.round(8 * page.theme.scale)
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: Math.round(20 * page.theme.scale)
+                    anchors.rightMargin: Math.round(20 * page.theme.scale)
+                    anchors.topMargin: Math.round(19 * page.theme.scale)
+                    anchors.bottomMargin: Math.round(18 * page.theme.scale)
+                    spacing: Math.round(11 * page.theme.scale)
+
                     Text {
-                        objectName: "qqGroup"
-                        text: page.tr("QQ 群") + "  " + page.communityNumber
+                        Layout.fillWidth: true
+                        text: page.tr("帮助与社区")
                         color: page.theme.text
-                        font.pixelSize: Math.round(14 * page.theme.scale)
+                        font.pixelSize: Math.round(18 * page.theme.scale)
                         font.weight: Font.DemiBold
                     }
-                    Item { Layout.fillWidth: true }
-                    UiButton {
-                        objectName: "copyQQGroup"
-                        theme: page.theme
-                        text: page.tr("复制群号")
-                        onClicked: page.controller.copyCommunity()
+                    Text {
+                        Layout.fillWidth: true
+                        text: page.tr("遇到安装、组件或工作流问题时，可以通过 GitHub 提交可复现反馈；日常交流和版本消息在用户群。")
+                        color: page.theme.muted
+                        font.pixelSize: Math.round(12 * page.theme.scale)
+                        wrapMode: Text.Wrap
                     }
-                }
-                Flow {
-                    Layout.fillWidth: true
-                    spacing: Math.round(7 * page.theme.scale)
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: supportQqContent.implicitHeight + Math.round(20 * page.theme.scale)
+                        color: page.theme.surface
+                        radius: Math.round(8 * page.theme.scale)
+                        border.color: page.theme.line
+
+                        ColumnLayout {
+                            id: supportQqContent
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: Math.round(12 * page.theme.scale)
+                            spacing: Math.round(5 * page.theme.scale)
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: page.tr("QQ 群")
+                                color: page.theme.muted
+                                font.pixelSize: Math.round(12 * page.theme.scale)
+                            }
+                            Text {
+                                objectName: "supportSidebarQQGroup"
+                                Layout.fillWidth: true
+                                text: page.communityNumber
+                                color: page.theme.text
+                                font.pixelSize: Math.round(23 * page.theme.scale)
+                                font.weight: Font.DemiBold
+                                textFormat: Text.PlainText
+                            }
+                            UiButton {
+                                objectName: "supportSidebarCopyQQGroup"
+                                theme: page.theme
+                                quiet: true
+                                text: page.tr("复制群号")
+                                onClicked: page.controller.copyCommunity()
+                            }
+                        }
+                    }
+
                     UiButton {
-                        objectName: "openFeedback"
+                        objectName: "supportSidebarOpenFeedback"
+                        Layout.fillWidth: true
                         theme: page.theme
+                        primary: true
                         text: page.tr("GitHub 反馈")
                         onClicked: page.controller.openFeedback()
                     }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.max(1, Math.round(1 * page.theme.scale))
+                        color: page.theme.line
+                    }
+
                     UiButton {
-                        objectName: "showDiagnostics"
+                        objectName: "supportSidebarShowDiagnostics"
+                        Layout.fillWidth: true
                         theme: page.theme
+                        quiet: true
+                        leftAligned: true
                         text: page.tr("本机诊断")
                         onClicked: page.controller.showDiagnostics()
                     }
                     UiButton {
-                        objectName: "replayTutorial"
+                        objectName: "supportSidebarReplayTutorial"
+                        Layout.fillWidth: true
                         theme: page.theme
                         quiet: true
+                        leftAligned: true
                         text: page.tr("重新查看教程")
                         onClicked: page.controller.showTutorial()
+                    }
+                    Item {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
                     }
                 }
             }
         }
     }
-
     component ChoiceChip: Button {
         id: chip
         required property QtObject tokens

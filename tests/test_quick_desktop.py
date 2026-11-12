@@ -13,8 +13,18 @@ qInstallMessageHandler(lambda kind, _ctx, msg: warnings.append(msg)
                        if kind in (QtMsgType.QtWarningMsg, QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg) else None)
 
 
+def named(window, name):
+    stack = [window.contentItem()]
+    while stack:
+        item = stack.pop()
+        if item.objectName() == name:
+            return item
+        stack.extend(item.childItems())
+    return window.findChild(QObject, name)
+
+
 def click(window, name):
-    button = window.findChild(QObject, name)
+    button = named(window, name)
     assert button and button.property('visible') and button.property('enabled'), name
     assert QMetaObject.invokeMethod(button, 'click'), name
     app.processEvents()
@@ -37,6 +47,24 @@ try:
                 assert window.findChild(QObject, name) is not None, name
             assert (window.width(), window.height()) == viewport
             print(f'PASS {viewport[0]}×{viewport[1]} at {scale}% · {", ".join(loaded)}', flush=True)
+            categories = {
+                'appearance': 'appearanceSection', 'update': 'updateSection',
+                'storage': 'storageSection', 'presets': 'presetLibrarySection',
+                'support': 'supportSection', 'about': 'aboutSection',
+            }
+            rail = window.findChild(QObject, 'settingsSupportSidebar')
+            group = window.findChild(QObject, 'supportSidebarQQGroup')
+            assert rail.property('visible') and '490619616' in group.property('text')
+            for category, active in categories.items():
+                content = named(window, 'settingsContentFlickable')
+                if content.property('contentHeight') > content.height() + 30:
+                    content.setProperty('contentY', 30)
+                click(window, 'settingsCategory_' + category)
+                assert content.property('contentY') == 0
+                for section in categories.values():
+                    assert window.findChild(QObject, section).property('visible') == (section == active), section
+                assert window.findChild(QObject, 'supportSidebarOpenFeedback').property('visible')
+            print('PASS all six settings groups and persistent support at this size', flush=True)
             if scale == 100:
                 owner.support.showTutorial()
                 app.processEvents()

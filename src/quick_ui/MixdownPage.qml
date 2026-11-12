@@ -714,7 +714,7 @@ Item {
                     Text {
                         visible: !page.compact
                         Layout.maximumWidth: Math.round(210 * page.theme.scale)
-                        text: page.meters && page.meters.source ? page.vwaTr("实时源 · ") + page.meters.source : page.vwaTr("等待实时遥测")
+                        text: page.meters && page.meters.source ? page.vwaTr("实测中") : page.vwaTr("等待实测")
                         color: page.meters && page.meters.source ? page.theme.muted : page.theme.attention
                         font.pixelSize: Math.round(10 * page.theme.scale)
                         elide: Text.ElideRight
@@ -773,7 +773,6 @@ Item {
                             eqCurve: page.eqCurve
                             spectrum: page.spectrum
                             maxHz: page.number(page.view.maxHz, 20000)
-                            selection: page.selectionMode
                             showBandDetails: !page.compact || page.showCompactEqDetails
                             showPlotHeader: !page.compact
                             minimumPlotHeight: Math.round((page.compact ? 112 : 230) * page.theme.scale)

@@ -206,10 +206,40 @@ with tempfile.TemporaryDirectory(prefix='quick-tuning-parity-', dir=APP / 'work'
     location_tune.selectSpan(0, 2)
     location_tune.addRegion()
     wait('synthetic region is selected for keyboard deletion', lambda: bool(location_tune.view['selectedRegion']))
-    location_tune.removeSelectedRegion()
-    assert not location_tune.regions
+    broad_gentle = location_tune._regions[0]
+    location_tune.setStyle('sad')
+    location_tune.selectSpan(1, 1.2)
+    location_tune.addRegion()
+    assert [(row['recipe']['preset'], row['recipe']['start'], row['recipe']['end'])
+            for row in location_tune._regions] == [('gentle', 0., 1.), ('sad', 1., 1.5)]
     location_tune.undoRegions()
-    assert location_tune.regions
+    assert location_tune._regions == [broad_gentle]
+    location_tune.redoRegions()
+    assert [(row['recipe']['preset'], row['recipe']['start'], row['recipe']['end'])
+            for row in location_tune._regions] == [('gentle', 0., 1.), ('sad', 1., 1.5)]
+    sad_fragment = location_tune._regions[1]
+    location_tune.setStyle('bold')
+    location_tune.moveRegion(sad_fragment['id'], 0, .9)
+    assert [(row['id'], row['recipe']['preset'], row['recipe']['strength'],
+             row['recipe']['start'], row['recipe']['end']) for row in location_tune._regions] == [
+                 (sad_fragment['id'], 'sad', sad_fragment['recipe']['strength'], 0., 1.)]
+    location_tune.undoRegions()
+    assert [(row['recipe']['preset'], row['recipe']['start'], row['recipe']['end'])
+            for row in location_tune._regions] == [('gentle', 0., 1.), ('sad', 1., 1.5)]
+    left_fragment = location_tune._regions[0]
+    location_tune.selectSpan(0, 1.2)
+    location_tune.updateRegion(left_fragment['id'])
+    assert [(row['id'], row['recipe']['preset'], row['recipe']['start'], row['recipe']['end'])
+            for row in location_tune._regions] == [(left_fragment['id'], 'bold', 0., 1.5)]
+    location_tune.undoRegions()
+    assert [(row['recipe']['preset'], row['recipe']['start'], row['recipe']['end'])
+            for row in location_tune._regions] == [('gentle', 0., 1.), ('sad', 1., 1.5)]
+    location_tune.removeSelectedRegion()
+    assert [(row['recipe']['preset'], row['recipe']['start'], row['recipe']['end'])
+            for row in location_tune._regions] == [('sad', 1., 1.5)]
+    location_tune.undoRegions()
+    assert [(row['recipe']['preset'], row['recipe']['start'], row['recipe']['end'])
+            for row in location_tune._regions] == [('gentle', 0., 1.), ('sad', 1., 1.5)]
     location_tune.clearSelection()
     assert location_tune.view['start'] == location_tune.view['end']
 

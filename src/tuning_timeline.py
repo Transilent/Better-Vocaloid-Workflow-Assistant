@@ -2,6 +2,7 @@
 
 from bisect import bisect_right
 from copy import deepcopy
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -28,6 +29,18 @@ def _identity(value, prefix):
 
 def _lyric_key(text):
     return ''.join(c for c in unicodedata.normalize('NFKC', text).casefold() if not c.isspace())
+
+
+def _fragment_identity(parent_id, start, end, used):
+    """Derive a stable editor ID for the surviving part of one region."""
+    nonce = 0
+    while True:
+        material = f'vwa.style-region-fragment/v1|{parent_id}|{start:.17g}|{end:.17g}|{nonce}'
+        identity = hashlib.sha256(material.encode('utf-8')).hexdigest()[:32]
+        if identity not in used:
+            used.add(identity)
+            return identity
+        nonce += 1
 
 
 class ProjectNotes:
@@ -148,7 +161,68 @@ class ProjectNotes:
         return {'id': identity or uuid4().hex, 'track_id': track,
                 'start_note_id': first['note_ids'][0], 'end_note_id': end_id, 'recipe': recipe}
 
+    def _region_fragment(self, row, start, end, used):
+        """Resolve a surviving interval back to complete lyric-note anchors."""
+        brush = {key: deepcopy(value) for key, value in row['recipe'].items()
+                 if key not in ('start', 'end', 'track_index')}
+        identity = _fragment_identity(row['id'], start, end, used)
+        fragment = self.region(row['track_id'], start, end, brush, identity=identity)
+        if (fragment is None
+                or fragment['recipe']['start'] < start - 1e-9
+                or fragment['recipe']['end'] > end + 1e-9):
+            raise ValueError('重叠覆盖后留下的旧片段无法对齐到完整歌词音符。')
+        return fragment
+
+    def overlay_regions(self, values, additions):
+        """Apply later, already snapped regions over earlier same-track regions.
+
+        The returned rows are the exact non-overlapping rows used by drafts and
+        exports. A later region wins as one complete recipe after note
+        snapping; surviving left and right intervals keep the earlier recipe.
+        """
+        if not isinstance(values, (list, tuple)) or not isinstance(additions, (list, tuple)):
+            raise ValueError('风格时间片段必须为列表。')
+        current = deepcopy(list(values))
+        incoming = deepcopy(list(additions))
+        self.verify_regions(current)
+        for addition in incoming:
+            self.verify_regions([addition])
+        current_ids = {row['id'] for row in current}
+        incoming_ids = [row['id'] for row in incoming]
+        if len(incoming_ids) != len(set(incoming_ids)) or current_ids.intersection(incoming_ids):
+            raise ValueError('风格时间片段 ID 必须唯一。')
+        used = current_ids | set(incoming_ids)
+
+        for addition in incoming:
+            recipe = addition['recipe']
+            updated = []
+            for row in current:
+                old = row['recipe']
+                if (row['track_id'] != addition['track_id']
+                        or old['end'] <= recipe['start'] or recipe['end'] <= old['start']):
+                    updated.append(row)
+                    continue
+                if old['start'] < recipe['start']:
+                    updated.append(self._region_fragment(row, old['start'], recipe['start'], used))
+                if recipe['end'] < old['end']:
+                    updated.append(self._region_fragment(row, recipe['end'], old['end'], used))
+            updated.append(addition)
+            if len(updated) > 128:
+                raise ValueError('风格时间片段过多。')
+            current = updated
+
+        self.verify_regions(current)
+        return sorted(current, key=lambda row: (row['recipe']['track_index'], row['recipe']['start'],
+                                                row['recipe']['end'], row['id']))
+
     def verify_regions(self, values):
+        if not isinstance(values, (list, tuple)):
+            raise ValueError('风格时间片段必须为列表。')
+        if len(values) > 128:
+            raise ValueError('风格时间片段过多。')
+        identities = [row.get('id') for row in values if isinstance(row, dict)]
+        if len(identities) != len(values) or len(identities) != len(set(identities)):
+            raise ValueError('风格时间片段 ID 必须唯一。')
         for row in values:
             recipe = row['recipe']
             track = row['track_id']

@@ -14,6 +14,7 @@ import time
 from typing import Any
 
 from audio_mixdown import PEAK_CEILING
+from mixdown_sources import AUDITION_SPECTRUM_INTERVAL_MS
 
 
 TELEMETRY_SCHEMA = 'vwa.audio_mixdown.realtime-telemetry/v1'
@@ -244,7 +245,7 @@ class RealtimeAuditionSession:
                     'source': 'dsp_fft_pre_post_eq', 'sample_rate': sample_rate,
                     'media_frame': None if media_frame is None else int(media_frame),
                     'window_start_frame': None, 'window_end_frame': None,
-                    'interval_ms': 100.0, 'bins': 0, 'fft_size': None,
+                    'interval_ms': AUDITION_SPECTRUM_INTERVAL_MS, 'bins': 0, 'fft_size': None,
                 },
                 'reverb': {
                     'enabled': False, 'mix': 0.0,
@@ -296,7 +297,7 @@ class RealtimeAuditionSession:
             'media_frame': frame,
             'window_start_frame': source_spectrum.get('window_start_frame'),
             'window_end_frame': source_spectrum.get('window_end_frame'),
-            'interval_ms': float(source_spectrum.get('interval_ms', 100.0)),
+            'interval_ms': float(source_spectrum.get('interval_ms', AUDITION_SPECTRUM_INTERVAL_MS)),
             'bins': int(source_spectrum.get('bins', len(freq_hz))),
             'fft_size': source_spectrum.get('fft_size'),
         }

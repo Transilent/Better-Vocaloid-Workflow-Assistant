@@ -196,8 +196,8 @@ class MixdownWorkspaceStateTests(unittest.TestCase):
         self.assertEqual([row['id'] for row in state.task_artifacts()], ['a', 'b'])
         self.assertNotEqual(Path(state.output), self.output)
 
-    def test_frame_and_parameter_mismatch_is_rejected(self):
-        snapshot = {'native': {'media_frame': 12}, 'parameter_revision': 3}
+    def test_submitted_older_parameter_block_is_valid_but_other_clock_is_not(self):
+        snapshot = {'native': {'media_frame': 12, 'epoch': 7}, 'parameter_revision': 3}
         telemetry = {
             'schema': TELEMETRY_SCHEMA, 'status': 'ready', 'source': 'realtime_dsp',
             'media_frame': 12, 'parameter_revision': 3, 'history_epoch': 7,
@@ -208,7 +208,13 @@ class MixdownWorkspaceStateTests(unittest.TestCase):
             telemetry_identity(telemetry, snapshot)
         telemetry['media_frame'] = 12
         telemetry['parameter_revision'] = 2
+        self.assertEqual(telemetry_identity(telemetry, snapshot), (12, 2, 7, 'realtime_dsp'))
+        telemetry['parameter_revision'] = 4
         with self.assertRaisesRegex(ValueError, 'revision'):
+            telemetry_identity(telemetry, snapshot)
+        telemetry['parameter_revision'] = 3
+        telemetry['history_epoch'] = 6
+        with self.assertRaisesRegex(ValueError, 'epoch'):
             telemetry_identity(telemetry, snapshot)
 
     def test_measured_meters_spectrum_and_ir_curve_are_separate(self):
@@ -263,6 +269,53 @@ class QuickMixdownLifecycleTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_actual_measurements_are_not_blocked_by_pending_edits(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from PySide6.QtCore import QCoreApplication
+        from quick_mixdown import QuickMixdown
+        from quick_work import WorkerLane
+
+        app = QCoreApplication.instance() or QCoreApplication([])
+        worker = WorkerLane(app, 'mixdown-audible-telemetry-test')
+        controller = QuickMixdown(app, worker)
+        controller._preview = SimpleNamespace(dirty=True, position_ms=0)
+        packet = {
+            'schema': TELEMETRY_SCHEMA, 'status': 'ready', 'source': 'realtime_dsp',
+            'sample_rate': 44100, 'media_frame': 1200, 'parameter_revision': 2, 'history_epoch': 7,
+            'position_ms': 27.2, 'render_frame_start': 1024, 'render_frame_end': 1536,
+            'tracks': [{'role': 'backing', 'index': 0, 'rms_dbfs': -18, 'peak_dbfs': -7}],
+            'bus': {'limiter_gr_db': 1.2, 'final_output': {'rms_dbfs': -15, 'peak_dbfs': -1}},
+            'dynamics': {'compressor': {'enabled': True, 'gr_db': 1.5}},
+            'spectrum': {'source': 'dsp_fft_pre_post_eq', 'freq_hz': [100, 1000],
+                         'before_dbfs': [-21, -40], 'after_dbfs': [-18, -40], 'window_end_frame': 1100},
+            'reverb': {'enabled': True, 'send_rms_dbfs': -23, 'return_rms_dbfs': -31},
+        }
+        live = {'state': 'playing', 'native': {'media_frame': 1200, 'epoch': 7},
+                'parameter_revision': 3, 'telemetry': packet}
+        try:
+            with patch('quick_mixdown.time.monotonic', return_value=20.0) as clock:
+                controller._telemetry(live)
+                self.assertEqual(controller.meters['gr'], 1.5)
+                self.assertEqual(controller.meters['reverb']['return_rms'], -31)
+                self.assertEqual(controller.spectrum['after'], [-18, -40])
+                unavailable = {**live, 'telemetry': {**packet, 'status': 'not_submitted'}}
+                clock.return_value = 20.07
+                controller._telemetry(unavailable)
+                self.assertEqual(controller.meters['gr'], 1.5)
+                clock.return_value = 20.4
+                controller._telemetry(unavailable)
+                self.assertFalse(controller.meters['source'])
+                self.assertFalse(controller.spectrum['freqs'])
+                controller._telemetry(live)
+                self.assertEqual(controller.meters['gr'], 1.5)
+                self.assertEqual(controller.spectrum['after'], [-18, -40])
+        finally:
+            controller._preview = None
+            controller.close()
+            worker.close()
+
     def test_constructor_is_read_only_until_enter(self):
         try:
             from PySide6.QtCore import QCoreApplication
