@@ -65,6 +65,10 @@ try:
                    'owner': {'name': '夹具'}, 'duration': 2, 'pic': 'https://i0.hdslb.com/test.jpg'}
         with patch.object(pipeline, 'get_view', return_value=fixture) as fetch, \
                 patch.object(pipeline, 'validate_dependencies'):
+            wait('publication entry available after restoring the draft',
+                 lambda: (entry := window.findChild(QObject, 'publicationLocalOptions')) is not None
+                 and entry.property('visible') and entry.property('enabled'))
+            click('publicationLocalOptions')
             item('publicationBv').setProperty('text', fixture['bvid'])
             app.processEvents()
             click('publicationFetchBv')

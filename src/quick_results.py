@@ -300,6 +300,7 @@ def _artifact(job, row):
         'displayPath': str(Path(path).relative_to(job)) if path and Path(path).is_relative_to(job) else path,
         'role': role,
         'state': state,
+        'bytes': row.get('bytes'),
         'sha256': _text(row.get('sha256')),
         'revision': _text(row.get('revision')),
     }

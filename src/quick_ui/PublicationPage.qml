@@ -6,6 +6,7 @@ import QtQuick.Layouts
 Item {
     id: page
     objectName: "publicationPage"
+    signal taskVideoRequested()
     required property QtObject theme
     required property QtObject controller
 
@@ -50,6 +51,57 @@ Item {
     readonly property int coverCanvasHeight: Math.round((page.dense ? 150 : 226) * page.theme.scale)
     readonly property var taskChoices: page.arrayOf(view.taskChoices)
     property string taskSelection: ""
+
+    property bool sourceOptionsExpanded: false
+    readonly property var review: page.objectOf(view.review)
+    readonly property bool hasVideo: !!review.videoReady
+    readonly property bool showDraftEditors: hasVideo || view.bundleOnly === true
+    readonly property var platformReview: page.objectOf(page.objectOf(review.platforms)[page.platform])
+
+    onVideoTextChanged: if (videoText.length) sourceOptionsExpanded = false
+
+    function reviewItems() {
+        const cover = review.coverState
+        const bundle = review.packageState
+        return [
+            { key: "video", step: 0, label: controller.text("成品视频"),
+              status: hasVideo && !review.videoProblem ? controller.text("已关联") : controller.text("待检查"),
+              problem: review.videoProblem || "" },
+            { key: "cover", step: 1, label: controller.text("封面"),
+              status: cover === "previewed" ? controller.text("已预览")
+                  : cover === "configured" ? controller.text("待预览") : controller.text("待选择"),
+              problem: review.coverProblem || "" },
+            { key: "copy", step: 0, label: platformLabel(platform) + " " + controller.text("文稿"),
+              status: hasVideo && !platformReview.copyProblem ? controller.text("已填写") : controller.text("待核对"),
+              problem: platformReview.copyProblem || "" },
+            { key: "declarations", step: 0, label: controller.text("声明"),
+              status: hasVideo && !platformReview.declarationProblem ? controller.text("已填写") : controller.text("待填写"),
+              problem: platformReview.declarationProblem || "" },
+            { key: "package", step: 2, label: controller.text("发布资料"),
+              status: bundle === "verified" ? controller.text("本地已核验")
+                  : bundle === "stale" ? controller.text("已过期")
+                  : bundle === "unchecked" ? controller.text("待核验") : controller.text("未生成"),
+              problem: "" }
+        ]
+    }
+
+    function openReviewItem(item) {
+        controller.reviewStep(item.step)
+        Qt.callLater(() => {
+            if (page.step !== item.step)
+                return
+            if (item.key === "copy" && publicationTitleInput.visible)
+                publicationTitleInput.forceActiveFocus()
+            else if (item.key === "declarations" && aiCombo.visible)
+                aiCombo.forceActiveFocus()
+            const flick = contentScroll.contentItem
+            const focus = item.key === "copy" ? publicationTitleInput
+                : item.key === "declarations" ? aiCombo : null
+            flick.contentY = focus && focus.visible
+                ? Math.max(0, Math.min(focus.mapToItem(publicationContent, 0, 0).y - page.pageMargin,
+                    flick.contentHeight - contentScroll.availableHeight)) : 0
+        })
+    }
 
     function number(value, fallback) {
         if (value === undefined || value === null || value === "")
@@ -755,6 +807,7 @@ Item {
         }
 
         Rectangle {
+            objectName: "publicationStepper"
             Layout.fillWidth: true
             Layout.preferredHeight: Math.round(43 * page.theme.scale)
             color: page.theme.sidebar
@@ -774,6 +827,7 @@ Item {
                     ]
                     delegate: Rectangle {
                         id: stepCard
+                        objectName: "publicationStep_" + index
                         required property string modelData
                         required property int index
 
@@ -802,7 +856,7 @@ Item {
 
                                 Text {
                                     anchors.centerIn: parent
-                                    text: index < page.step ? "?" : String(index + 1)
+                                    text: index < page.step ? "✓" : String(index + 1)
                                     color: index === page.step ? page.theme.onAccent
                                         : index < page.step ? page.theme.base : page.theme.muted
                                     font.pixelSize: Math.round(10 * page.theme.scale)
@@ -826,6 +880,41 @@ Item {
             }
         }
 
+        RowLayout {
+            objectName: "publicationReviewStrip"
+            Layout.fillWidth: true
+            Layout.minimumWidth: 0
+            Layout.leftMargin: page.pageMargin
+            Layout.rightMargin: page.pageMargin
+            visible: page.hasVideo || page.bundleText.length > 0
+            spacing: Math.round(4 * page.theme.scale)
+
+            HelperText {
+                theme: page.theme
+                text: page.controller.text("交付检查")
+            }
+
+            Repeater {
+                model: page.reviewItems()
+                delegate: UiButton {
+                    id: reviewButton
+                    required property var modelData
+                    objectName: "publicationReview_" + modelData.key
+                    theme: page.theme
+                    text: modelData.label + " · " + modelData.status
+                    font.pixelSize: Math.round(11 * page.theme.scale)
+                    implicitHeight: Math.round(29 * page.theme.scale)
+                    enabled: !page.busy
+                    quiet: true
+                    selected: modelData.key === "package" && page.review.packageState === "stale"
+                    ToolTip.visible: (hovered || visualFocus) && modelData.problem.length > 0
+                    ToolTip.text: modelData.problem
+                    onClicked: page.openReviewItem(modelData)
+                }
+            }
+            Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
+        }
+
         ScrollView {
             id: contentScroll
             objectName: "publicationContentScroll"
@@ -837,6 +926,7 @@ Item {
             ScrollBar.vertical.policy: ScrollBar.AsNeeded
 
             ColumnLayout {
+                id: publicationContent
                 width: contentScroll.availableWidth
                 spacing: 0
 
@@ -848,10 +938,55 @@ Item {
                     spacing: Math.round(10 * page.theme.scale)
 
                     SurfaceCard {
+                        objectName: "publicationInputEntry"
                         Layout.fillWidth: true
                         theme: page.theme
-                        heading: page.controller.text("来源任务与素材")
-                        explanation: page.controller.text("任务字段、成品视频和已有发布资料分别选择；导入发布资料不会改写任务。")
+                        heading: page.hasVideo ? page.fileName(page.videoText) : page.controller.text("先带入要发布的成品")
+                        explanation: page.hasVideo
+                            ? (page.jobText.length ? page.controller.text("来源任务") + " · " + page.fileName(page.jobText)
+                                                   : page.controller.text("独立发布资料"))
+                            : page.controller.text("从任务带入核验过的视频，或选择本地视频、导入已有资料。")
+
+                        Flow {
+                            Layout.fillWidth: true
+                            spacing: Math.round(8 * page.theme.scale)
+
+                            UiButton {
+                                objectName: "publicationUseTaskVideo"
+                                theme: page.theme
+                                primary: !page.hasVideo
+                                text: page.controller.text("从任务带入成品")
+                                enabled: !page.busy
+                                onClicked: page.taskVideoRequested()
+                            }
+
+                            UiButton {
+                                objectName: "publicationLocalOptions"
+                                theme: page.theme
+                                selected: page.sourceOptionsExpanded
+                                text: page.controller.text(page.sourceOptionsExpanded ? "收起本地素材设置"
+                                    : page.hasVideo ? "更换来源或视频…" : "选择本地视频…")
+                                enabled: !page.busy
+                                onClicked: page.sourceOptionsExpanded = !page.sourceOptionsExpanded
+                            }
+
+                            UiButton {
+                                objectName: "publicationBundleImport"
+                                theme: page.theme
+                                quiet: true
+                                text: page.controller.text("导入已有发布资料…")
+                                enabled: !page.busy
+                                onClicked: publicationBundleFolderDialog.open()
+                            }
+                        }
+                    }
+
+                    SurfaceCard {
+                        Layout.fillWidth: true
+                        visible: page.sourceOptionsExpanded
+                        theme: page.theme
+                        heading: page.controller.text("来源任务与本地视频")
+                        explanation: page.controller.text("先载入来源任务或本家资料，再选择本地成品。")
 
                         RowLayout {
                             Layout.fillWidth: true
@@ -964,31 +1099,6 @@ Item {
                             }
                         }
 
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Math.round(7 * page.theme.scale)
-
-                            Text {
-                                Layout.fillWidth: true
-                                Layout.minimumWidth: 0
-                                text: page.bundleText.length > 0
-                                    ? page.controller.text("发布资料") + " · " + page.fileName(page.bundleText)
-                                    : page.controller.text("尚未导入已有发布资料")
-                                color: page.bundleText.length > 0 ? page.theme.text : page.theme.muted
-                                font.pixelSize: Math.round(11.5 * page.theme.scale)
-                                elide: Text.ElideMiddle
-                                textFormat: Text.PlainText
-                            }
-
-                            UiButton {
-                                objectName: "publicationBundleImport"
-                                theme: page.theme
-                                text: page.controller.text("导入发布资料…")
-                                enabled: !page.busy
-                                onClicked: publicationBundleFolderDialog.open()
-                            }
-                        }
-
                         HelperText {
                             Layout.fillWidth: true
                             theme: page.theme
@@ -998,59 +1108,10 @@ Item {
                         }
                     }
 
-                    SurfaceCard {
-                        Layout.fillWidth: true
-                        theme: page.theme
-                        heading: page.controller.text("素材与文案")
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Math.round(8 * page.theme.scale)
-
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                Layout.minimumWidth: 0
-                                spacing: Math.round(4 * page.theme.scale)
-                                HelperText {
-                                    theme: page.theme
-                                    text: page.controller.text("任务")
-                                }
-                                Text {
-                                    Layout.fillWidth: true
-                                    Layout.minimumWidth: 0
-                                    text: page.jobText.length > 0 ? page.fileName(page.jobText) : page.controller.text("未关联任务")
-                                    color: page.theme.text
-                                    font.pixelSize: Math.round(12 * page.theme.scale)
-                                    font.weight: Font.DemiBold
-                                    elide: Text.ElideRight
-                                    textFormat: Text.PlainText
-                                }
-                            }
-
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                Layout.minimumWidth: 0
-                                spacing: Math.round(4 * page.theme.scale)
-                                HelperText {
-                                    theme: page.theme
-                                    text: page.controller.text("成品视频")
-                                }
-                                Text {
-                                    Layout.fillWidth: true
-                                    Layout.minimumWidth: 0
-                                    text: page.videoText.length > 0 ? page.fileName(page.videoText) : page.controller.text("未关联成品")
-                                    color: page.videoText.length > 0 ? page.theme.text : page.theme.error
-                                    font.pixelSize: Math.round(12 * page.theme.scale)
-                                    font.weight: Font.DemiBold
-                                    elide: Text.ElideRight
-                                    textFormat: Text.PlainText
-                                }
-                            }
-                        }
-                    }
-
                     GridLayout {
+                        objectName: "publicationDraftEditors"
                         Layout.fillWidth: true
+                        visible: page.showDraftEditors
                         columns: page.compact ? 1 : 2
                         columnSpacing: Math.round(8 * page.theme.scale)
                         rowSpacing: Math.round(8 * page.theme.scale)
@@ -1150,6 +1211,7 @@ Item {
                             }
 
                             ThemedTextField {
+                                id: publicationTitleInput
                                 objectName: "publicationTitle"
                                 Layout.fillWidth: true
                                 theme: page.theme
@@ -1170,6 +1232,7 @@ Item {
 
                     SurfaceCard {
                         Layout.fillWidth: true
+                        visible: page.showDraftEditors
                         theme: page.theme
                         heading: page.controller.text("简介与 STAFF")
 
@@ -1212,6 +1275,7 @@ Item {
 
                     SurfaceCard {
                         Layout.fillWidth: true
+                        visible: page.showDraftEditors
                         theme: page.theme
                         heading: page.controller.text("标签与声明")
                         explanation: page.controller.text("这些记录进入本地交接清单；平台上的实际声明仍需你本人选择。")
@@ -2236,7 +2300,7 @@ Item {
                     theme: page.theme
                     primary: true
                     text: page.step === 0 ? page.controller.text("检查封面") : page.controller.text("检查文案与声明")
-                    enabled: !page.busy
+                    enabled: !page.busy && (page.hasVideo || page.view.bundleOnly === true)
                     onClicked: page.controller.nextStep()
                 }
 

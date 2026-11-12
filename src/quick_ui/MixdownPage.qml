@@ -27,6 +27,49 @@ Item {
     readonly property var reverbCurve: controller.reverbCurve || []
     readonly property var presets: controller.presets || []
     readonly property var exportProgress: view.exportProgress || ({})
+    readonly property string resultPath: page.textValue(view.result, "")
+    readonly property bool hasResult: resultPath.length > 0
+    readonly property bool resultExpired: hasResult && !!view.resultStale
+    readonly property bool taskResult: page.textValue(view.job, "").length > 0
+    readonly property bool registeredMix: hasResult && !resultExpired && !!view.canComposeVideo
+        && String(view.videoHandoffMode || "") === "registered"
+    readonly property bool independentMix: hasResult && !resultExpired && !!view.canComposeVideo
+        && String(view.videoHandoffMode || "") === "independent"
+    readonly property bool taskNeedsRegistration: hasResult && !resultExpired && taskResult
+        && !!view.canRegister && !registeredMix && !independentMix
+    readonly property bool exportTargetReusesResult: hasResult
+        && page.sameLocalPath(view.output, resultPath)
+    readonly property string deliveryState: {
+        const state = String(view.state || "");
+        if (state === "exporting")
+            return "exporting";
+        if (state === "registering")
+            return "registering";
+        if (resultExpired)
+            return "expired";
+        if (registeredMix)
+            return "registered";
+        if (independentMix)
+            return "independent";
+        if (taskNeedsRegistration)
+            return "awaiting";
+        if (hasResult)
+            return "review";
+        if (state === "failed" || state === "error")
+            return "error";
+        if (!!view.componentMissing)
+            return "blocked";
+        return "empty";
+    }
+    readonly property string primaryHandoffAction: {
+        if (deliveryState === "exporting" || deliveryState === "registering")
+            return "none";
+        if (deliveryState === "registered" || deliveryState === "independent")
+            return "compose";
+        if (deliveryState === "awaiting")
+            return "register";
+        return "export";
+    }
 
     readonly property string analysisMode: String(view.analysis || "eq").toLowerCase()
     readonly property string selectionMode: String(view.selection || "B").toUpperCase() === "A" ? "A" : "B"
@@ -293,6 +336,70 @@ Item {
         const labels = {prepare: "准备", decode: "解码", mix: "混音", encode: "编码",
                         loudness: "响度分析", done: "完成", cancelled: "已取消", failed: "失败"};
         return labels[String(phase || "")] || String(phase || "处理中");
+    }
+
+    function deliveryTitle() {
+        switch (page.deliveryState) {
+        case "exporting": return page.vwaTr("正在导出 WAV");
+        case "registering": return page.vwaTr("正在登记任务");
+        case "expired": return page.vwaTr("导出已过期");
+        case "registered": return page.vwaTr("任务已核验");
+        case "independent": return page.vwaTr("独立 WAV 有效");
+        case "awaiting": return page.vwaTr("任务待登记");
+        case "review": return page.vwaTr("导出结果待检查");
+        case "error": return page.vwaTr("当前操作有阻塞");
+        case "blocked": return page.vwaTr("混音组件未就绪");
+        default: return page.vwaTr("尚未导出");
+        }
+    }
+
+    function deliveryColor() {
+        switch (page.deliveryState) {
+        case "registered":
+        case "independent":
+            return page.theme.success;
+        case "expired":
+        case "awaiting":
+        case "review":
+        case "blocked":
+            return page.theme.attention;
+        case "error":
+            return page.theme.error;
+        case "exporting":
+        case "registering":
+            return page.theme.accent;
+        default:
+            return page.theme.muted;
+        }
+    }
+
+    function handoffActionLabel() {
+        if (page.primaryHandoffAction === "compose") {
+            if (page.independentMix)
+                return page.compact ? page.vwaTr("进入") : page.vwaTr("进入视频合成");
+            return page.compact ? page.vwaTr("合成") : page.vwaTr("合成视频");
+        }
+        if (page.primaryHandoffAction === "register")
+            return page.compact ? page.vwaTr("登记") : page.vwaTr("登记到任务");
+        if (page.exportTargetReusesResult)
+            return page.compact ? page.vwaTr("选择路径") : page.vwaTr("选择新路径");
+        return page.compact ? page.vwaTr("导出") : page.vwaTr("导出新 WAV");
+    }
+
+    function handoffActionEnabled() {
+        if (page.primaryHandoffAction === "compose")
+            return !!page.view.canComposeVideo && !page.busy;
+        if (page.primaryHandoffAction === "register")
+            return !!page.view.canRegister && !page.resultExpired && !page.busy && !page.loading;
+        if (page.exportTargetReusesResult)
+            return !page.busy && !page.loading;
+        return !!page.view.canExport && !page.busy && !page.loading;
+    }
+
+    function sameLocalPath(left, right) {
+        const normalizedLeft = String(left || "").trim().replace(/\\/g, "/").toLowerCase();
+        const normalizedRight = String(right || "").trim().replace(/\\/g, "/").toLowerCase();
+        return normalizedLeft.length > 0 && normalizedLeft === normalizedRight;
     }
 
     function commitPreviewRange() {
@@ -921,17 +1028,9 @@ Item {
                     font.pixelSize: Math.round(11 * page.theme.scale)
                     font.family: "Consolas"
                 }
-                Text {
+                Item {
                     Layout.fillWidth: true
                     Layout.minimumWidth: 0
-                    text: page.textValue(page.view.message, page.loading ? page.vwaTr("正在加载真实音频…") : page.vwaTr("Space 播放 / 暂停"))
-                    color: page.view.state === "failed" ? page.theme.error : page.theme.muted
-                    font.pixelSize: Math.round(10 * page.theme.scale)
-                    elide: Text.ElideRight
-                    textFormat: Text.PlainText
-                    ToolTip.visible: transportStatusHover.hovered && truncated
-                    ToolTip.text: text
-                    HoverHandler { id: transportStatusHover }
                 }
                 UiButton {
                     visible: page.busy || page.loading
@@ -940,51 +1039,128 @@ Item {
                     text: page.vwaTr("取消")
                     onClicked: page.controller.cancel()
                 }
+            }
+
+            RowLayout {
+                id: handoffRow
+                objectName: "mixdownHandoff"
+                Layout.fillWidth: true
+                spacing: Math.round(7 * page.theme.scale)
+
+                Rectangle {
+                    objectName: "mixdownDeliveryStatus"
+                    Layout.preferredWidth: Math.round(128 * page.theme.scale)
+                    Layout.preferredHeight: Math.round(26 * page.theme.scale)
+                    radius: height / 2
+                    color: page.theme.base
+                    border.color: page.deliveryColor()
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: Math.round(8 * page.theme.scale)
+                        anchors.rightMargin: Math.round(9 * page.theme.scale)
+                        spacing: Math.round(6 * page.theme.scale)
+                        Rectangle {
+                            Layout.preferredWidth: Math.round(6 * page.theme.scale)
+                            Layout.preferredHeight: Layout.preferredWidth
+                            radius: width / 2
+                            color: page.deliveryColor()
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: page.deliveryTitle()
+                            color: page.theme.text
+                            font.pixelSize: Math.round(10 * page.theme.scale)
+                            font.weight: Font.DemiBold
+                            elide: Text.ElideRight
+                            textFormat: Text.PlainText
+                        }
+                    }
+                }
+                Text {
+                    objectName: "mixdownDeliveryMessage"
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    text: page.textValue(page.view.message,
+                        page.loading ? page.vwaTr("正在加载真实音频…") : page.vwaTr("Space 播放 / 暂停"))
+                    color: page.deliveryState === "error" ? page.theme.error : page.theme.muted
+                    font.pixelSize: Math.round(10 * page.theme.scale)
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    ToolTip.visible: handoffMessageHover.hovered && truncated
+                    ToolTip.text: text
+                    HoverHandler { id: handoffMessageHover }
+                }
                 UiButton {
-                    objectName: "mixdownChooseOutput"
+                    id: outputMenuButton
+                    objectName: "mixdownOutputMenu"
                     theme: page.theme
-                    glyph: "folder"
                     quiet: true
-                    text: page.vwaTr("选择 WAV 导出位置")
-                    ToolTip.text: page.vwaTr("WAV 导出位置 · 采样率随伴奏\n") + page.textValue(page.view.output, page.vwaTr("尚未选择文件"))
-                    enabled: !page.busy && !page.loading
-                    onClicked: page.openManagedDialog(outputDialog)
+                    text: page.vwaTr("导出选项")
+                    ToolTip.text: page.vwaTr("输出位置、打开 WAV 或所在文件夹")
+                    onClicked: outputMenu.open()
+                    Menu {
+                        id: outputMenu
+                        y: outputMenuButton.height
+                        width: Math.round(284 * page.theme.scale)
+                        MenuItem {
+                            objectName: "mixdownChooseOutput"
+                            text: page.vwaTr("选择 WAV 导出位置…")
+                            enabled: !page.busy && !page.loading
+                            onTriggered: page.openManagedDialog(outputDialog)
+                        }
+                        MenuSeparator {}
+                        MenuItem {
+                            text: page.vwaTr("当前输出：") + page.shortPath(page.view.output)
+                            enabled: false
+                        }
+                        MenuItem {
+                            objectName: "mixdownOpenResult"
+                            text: page.resultExpired ? page.vwaTr("打开上次导出的 WAV") : page.vwaTr("打开导出的 WAV")
+                            enabled: page.hasResult
+                            onTriggered: page.controller.openResult()
+                        }
+                        MenuItem {
+                            objectName: "mixdownOpenResultDirectory"
+                            text: page.hasResult ? page.vwaTr("打开结果所在文件夹") : page.vwaTr("打开输出文件夹")
+                            enabled: page.textValue(page.hasResult ? page.resultPath : page.view.output, "").length > 0
+                            onTriggered: page.controller.openOutputFolder()
+                        }
+                    }
                 }
                 UiButton {
                     objectName: "mixdownExport"
                     theme: page.theme
-                    primary: !page.view.canRegister && !page.view.canComposeVideo
-                    text: page.view.resultStale ? (page.compact ? page.vwaTr("重导出") : page.vwaTr("重新导出 WAV"))
-                        : (page.compact ? page.vwaTr("导出") : page.vwaTr("导出新 WAV"))
-                    enabled: !!page.view.canExport && !page.busy && !page.loading
-                    onClicked: page.controller.exportMix()
+                    visible: page.primaryHandoffAction === "export"
+                    text: page.handoffActionLabel()
+                    primary: true
+                    enabled: page.handoffActionEnabled()
+                    ToolTip.text: page.exportTargetReusesResult
+                        ? page.vwaTr("当前目标等于上次结果；请选择新文件名，现有 WAV 不会被覆盖")
+                        : page.vwaTr("导出新的 WAV 文件")
+                    onClicked: {
+                        if (page.exportTargetReusesResult)
+                            page.openManagedDialog(outputDialog);
+                        else
+                            page.controller.exportMix();
+                    }
                 }
                 UiButton {
                     objectName: "mixdownRegister"
                     theme: page.theme
-                    text: page.compact ? page.vwaTr("登记") : page.vwaTr("登记结果")
+                    visible: page.primaryHandoffAction === "register"
+                    text: page.handoffActionLabel()
                     primary: true
-                    visible: !!page.view.canRegister && !page.view.resultStale && !page.view.canComposeVideo
-                    enabled: !!page.view.canRegister && !page.view.resultStale && !page.busy && !page.loading
+                    enabled: page.handoffActionEnabled()
                     onClicked: page.controller.registerMix()
                 }
                 UiButton {
                     objectName: "mixdownComposeVideo"
                     theme: page.theme
-                    visible: !!page.view.canComposeVideo
-                    text: page.compact ? (page.view.videoHandoffMode === "independent" ? page.vwaTr("进入") : page.vwaTr("合成")) : (page.view.videoHandoffMode === "independent" ? page.vwaTr("进入视频合成") : page.vwaTr("合成视频"))
+                    visible: page.primaryHandoffAction === "compose"
+                    text: page.handoffActionLabel()
                     primary: true
-                    enabled: !page.busy
+                    enabled: page.handoffActionEnabled()
                     onClicked: page.controller.composeVideo()
-                }
-                UiButton {
-                    objectName: "mixdownOpenResult"
-                    theme: page.theme
-                    quiet: true
-                    glyph: "external"
-                    text: page.view.resultStale ? page.vwaTr("打开上次导出的 WAV") : page.vwaTr("打开导出结果")
-                    visible: page.resultText(page.view.result).length > 0
-                    onClicked: page.controller.openResult()
                 }
             }
 
@@ -1545,7 +1721,32 @@ Item {
             : order === 0 ? page.theme.success : order === 1 ? page.theme.accent : page.theme.text
         readonly property real gainDb: monitor ? page.number(page.view.masterGain, 0)
             : page.number(page.trackValue(track, "gain", 0), 0)
+        readonly property real panValue: page.number(page.trackValue(track, "pan", 0), 0)
+        readonly property int panPercent: Math.round(panValue * 100)
+        readonly property real offsetSeconds: page.number(page.trackValue(track, "offset", 0), 0)
+        readonly property int offsetMilliseconds: Math.round(offsetSeconds * 1000)
+        readonly property string panReadout: panPercent < 0 ? "L" + Math.abs(panPercent) : "R" + panPercent
+        readonly property string offsetReadout: (offsetMilliseconds > 0 ? "+" : "")
+            + offsetMilliseconds + "ms"
+        readonly property bool hasPan: !monitor && Math.abs(panValue) > 0.0001
+        readonly property bool hasOffset: !monitor && !backing && Math.abs(offsetSeconds) >= 0.0005
+        readonly property bool hasReadout: hasPan || hasOffset
+        readonly property string readoutText: [hasPan ? panReadout : "",
+            hasOffset ? offsetReadout : ""].filter(value => value.length > 0).join(" / ")
+        readonly property string readoutAccessibleName: {
+            const fields = [];
+            if (hasPan)
+                fields.push(page.vwaTr("声像 ") + panReadout);
+            if (hasOffset)
+                fields.push(page.vwaTr("位置偏移 ") + offsetReadout);
+            return label + " · " + fields.join(page.vwaTr("，"))
+                + page.vwaTr("。点击打开精确轨道参数");
+        }
         readonly property bool editable: !page.busy && !page.loading
+        function openTrackSettings() {
+            trackSettingsDialog.trackId = trackId;
+            trackSettingsDialog.open();
+        }
         objectName: monitor ? "mixdownMonitorChannel" : "mixdownTrack_" + trackId
         radius: Math.round(6 * page.theme.scale)
         color: monitor ? page.theme.selected : page.theme.base
@@ -1599,6 +1800,21 @@ Item {
 
             Item {
                 Layout.fillWidth: true
+                Layout.preferredHeight: Math.round(20 * page.theme.scale)
+                TrackReadoutButton {
+                    objectName: "mixdownTrackReadout_" + channel.trackId
+                    anchors.fill: parent
+                    visible: channel.hasReadout
+                    theme: page.theme
+                    text: channel.readoutText
+                    Accessible.name: channel.readoutAccessibleName
+                    ToolTip.text: Accessible.name
+                    onClicked: channel.openTrackSettings()
+                }
+            }
+
+            Item {
+                Layout.fillWidth: true
                 Layout.preferredHeight: Math.round((page.compact ? 26 : 30) * page.theme.scale)
                 RowLayout {
                     anchors.centerIn: parent
@@ -1619,10 +1835,7 @@ Item {
                         text: channel.label + page.vwaTr("轨道参数")
                         Accessible.description: channel.backing ? page.vwaTr("精确增益和声像") : page.vwaTr("精确增益、声像和时间偏移")
                         enabled: channel.editable
-                        onClicked: {
-                            trackSettingsDialog.trackId = channel.trackId;
-                            trackSettingsDialog.open();
-                        }
+                        onClicked: channel.openTrackSettings()
                     }
                 }
             }
@@ -1761,6 +1974,16 @@ Item {
         bottomPadding: 0
         quiet: true
         font.pixelSize: Math.round(11 * theme.scale)
+    }
+
+    component TrackReadoutButton: UiButton {
+        implicitHeight: Math.round(20 * theme.scale)
+        leftPadding: Math.round(4 * theme.scale)
+        rightPadding: leftPadding
+        topPadding: 0
+        bottomPadding: 0
+        quiet: true
+        font.pixelSize: Math.round(9 * theme.scale)
     }
 
     component TrackNumber: RowLayout {

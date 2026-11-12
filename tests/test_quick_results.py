@@ -70,10 +70,11 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='quick-results-') as t
         assert result['recovery'] == {'state': 'failed', 'message': '合成失败'}
         artifact = result['artifacts'][0]
         assert set(artifact) == {'id', 'label', 'statusText', 'available', 'openable',
-                                 'path', 'displayPath', 'role', 'state', 'sha256', 'revision'}
+                                 'path', 'displayPath', 'role', 'state', 'bytes', 'sha256', 'revision'}
         assert artifact['available'] is True and Path(artifact['path']) == failed_audio.resolve()
         assert artifact['role'] == 'audio' and artifact['state'] == 'verified'
         assert len(artifact['sha256']) == 64 and artifact['revision']
+        assert artifact['bytes'] == Path(artifact['path']).stat().st_size
         assert '原曲音频' in artifact['label'] and Path(artifact['displayPath']) == Path('audio/lead.wav')
         mixdown = failed / 'finished.wav'
         mixdown.write_bytes(b'distinct mixdown output')

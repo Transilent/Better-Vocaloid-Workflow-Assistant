@@ -337,7 +337,11 @@ ApplicationWindow {
         }
         Component {
             id: publicationPage
-            PublicationPage { theme: window.tokens; controller: window.controller.publication }
+            PublicationPage {
+                theme: window.tokens
+                controller: window.controller.publication
+                onTaskVideoRequested: window.controller.navigate("results")
+            }
         }
 
         Rectangle {

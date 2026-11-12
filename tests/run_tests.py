@@ -37,6 +37,7 @@ qt6_tests = (
     'test_quick_calibration_subtitle_recovery.py', 'test_quick_support_parity.py',
     'test_quick_task_safety.py', 'test_quick_tuning_session_parity_20261111.py',
     'test_quick_priority_layout_20261112.py', 'test_quick_component_video_workspace.py',
+    'test_quick_workflow_layout.py',
 )
 
 # Shared/backend tests and Quick controller tests that do not need Qt 6.

@@ -144,7 +144,7 @@ class QuickPublicationTests(unittest.TestCase):
                     'rights', 'coverMode', 'coverSeconds', 'coverFile', 'coverPreview',
                     'busy', 'message', 'state', 'bundle', 'bundleStale', 'canPrepare',
                     'canCheck', 'verified', 'actions', 'taskChoices', 'taskMessage',
-                    'taskScanBusy', 'sourceReady', 'sourceProblem', 'bundleOnly'}
+                    'taskScanBusy', 'sourceReady', 'sourceProblem', 'bundleOnly', 'review'}
         self.assertEqual(set(self.controller.view), expected)
         self.assertEqual(self.controller.view['actions'], {})
 

@@ -16,6 +16,8 @@ class QuickPreparationSources(QObject):
         super().__init__(owner)
         self.owner, self.worker = owner, worker
         self._songs, self._downloads, self._issues = [], [], []
+        self._checked_draft_revision = None
+        self._check_error = ''
         self._reference = None
         self._reference_revision = None
         self._lyric_purpose = 'preparation'
@@ -60,13 +62,20 @@ class QuickPreparationSources(QObject):
     @Property('QVariantMap', notify=changed)
     def view(self):
         reference = self._reference
+        current_check = self._checked_draft_revision == self.draft.revision
+        issues = self._issues if current_check else []
+        check_state = ('checking' if self.worker.kind == 'preparation-source-check' else
+                       'unchecked' if not current_check else 'error' if self._check_error else
+                       'issues' if issues else 'passed')
         return {'busy': bool(self.worker.kind), 'songs': self._songs, 'downloads': self._downloads,
                 'preview': '\n'.join(cue.text for cue in reference.cues) if reference else '',
                 'previewId': reference.origin.get('song_id', '') if reference else '',
                 'canApply': bool(reference and self._reference_revision == self._lyric_revision()
                                  and (self._lyric_purpose != 'subtitles' or reference.cues)),
                 'selectedDownload': Path(self.reusable_job()).name if self.reusable_job() else '',
-                'message': self._message, 'issues': self._issues, 'network': self._network,
+                'message': self._message, 'issues': issues, 'network': self._network,
+                'componentCheck': {'state': check_state, 'issues': issues,
+                                   'error': self._check_error if current_check else ''},
                 'networkLoaded': self._network_loaded, 'login': self._login}
 
     def _start(self, kind, label, work, accept):
@@ -149,17 +158,34 @@ class QuickPreparationSources(QObject):
 
     @Slot()
     def checkComponents(self):
+        if self.worker.kind:
+            return
         draft = self.draft
-
-        def accept(issues):
-            if self.draft.revision != draft.revision:
-                raise ValueError('准备选择已变化，请重新检查。')
-            self._issues = issues
-            self._message = '请处理当前选择的问题后继续。' if issues else '当前所选的可选组件检查通过。'
-
+        self._checked_draft_revision = None
+        self._check_error = ''
         self._issues = []
-        self._start('check', '正在检查所选组件…',
-                    lambda _stop, _send: preparation.selected_component_issues(draft), accept)
+        self._message = '正在检查所选组件…'
+
+        def finish(issues, error):
+            if self.draft.revision != draft.revision:
+                self._message = '准备选择已变化，请重新检查。'
+            else:
+                self._checked_draft_revision = draft.revision
+                if error is not None:
+                    self._check_error = self._message = str(error)[:1000] or type(error).__name__
+                else:
+                    self._issues = issues
+                    self._message = ('请处理当前选择的问题后继续。' if issues
+                                     else '当前所选的可选组件检查通过。')
+            self.changed.emit()
+
+        self.worker.start('preparation-source-check',
+                          lambda _stop, _send: preparation.selected_component_issues(draft), finish)
+
+    def invalidate_component_check(self):
+        if self._checked_draft_revision is not None:
+            self._checked_draft_revision = None
+            self.changed.emit()
 
     @Slot()
     def refreshDownloadSettings(self):

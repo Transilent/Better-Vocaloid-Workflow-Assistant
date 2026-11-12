@@ -1012,6 +1012,7 @@ class QuickBridge(QObject):
                 self._component_checks[key] = {**components.verification_summary(report), 'message': message}
             elif request.action == 'install':
                 self._component_checks.pop(key, None)
+                self._sources.invalidate_component_check()
             self.state.complete(request.operation_id, status, message)
             self.selectionChanged.emit()
             if not self._exit_when_idle:

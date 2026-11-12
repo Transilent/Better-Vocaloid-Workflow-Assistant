@@ -1607,6 +1607,19 @@ class QuickMixdown(QObject):
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(result).resolve()))):
             self._notice('系统无法打开导出文件。')
 
+    @Slot()
+    def openOutputFolder(self):
+        with self._lock:
+            path = self._state.result or self._state.output
+        try:
+            folder = Path(path).expanduser().resolve().parent if path else None
+            if folder is None or not folder.is_dir():
+                raise ValueError('当前没有可打开的输出目录。')
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
+                raise ValueError('系统无法打开输出目录。')
+        except (OSError, ValueError) as error:
+            self._notice(error)
+
     def accept_task(self, job, artifacts):
         """Load only verified separation WAVs belonging to this exact task."""
         if not self._ensure_entered():

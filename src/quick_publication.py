@@ -1341,18 +1341,39 @@ class QuickPublication(QObject):
 
     @Slot()
     def nextStep(self):
+        return self._move_step(delta=1)
+
+    @Slot()
+    def previousStep(self):
+        return self._move_step(delta=-1)
+
+    @Slot(int)
+    def reviewStep(self, target):
+        """Jump from a review item using the same forward checks as the stepper."""
+        return self._move_step(target=target)
+
+    def _move_step(self, *, target=None, delta=0):
         try:
             with self._lock:
                 if self._closed or self._state.busy:
                     return False
                 self._maybe_mark_drift_locked()
-                if self._state.step >= 2:
-                    return True
-                if not self._validate_current_page_locked(self._state.step, raise_error=True):
+                current = self._state.step
+                if target is None:
+                    target = min(2, max(0, current + delta))
+                if target not in (0, 1, 2):
                     return False
-                self._state.step += 1
-                self._state.message = ('请检查并预览封面，然后核对发布资料。' if self._state.step == 1
-                                       else '请核对文稿、封面和本地声明，再生成发布资料。')
+                imported = self._state.bundle_only and self._state.bundle and not self._state.bundle_stale
+                if not imported:
+                    for step in range(current, target):
+                        if not self._validate_current_page_locked(step, raise_error=True):
+                            return False
+                self._state.step = target
+                if target < current:
+                    self._state.message = '可返回修改当前步骤；已生成资料会在修改后标记为过期。'
+                elif target > current:
+                    self._state.message = ('请检查并预览封面，然后核对发布资料。' if target == 1
+                                           else '请核对文稿、封面和本地声明，再生成发布资料。')
                 self._recompute_locked()
                 self._save_draft_safe_locked()
             self._emit()
@@ -1360,19 +1381,6 @@ class QuickPublication(QObject):
         except Exception as exc:
             self._notice(str(exc))
             return False
-
-    @Slot()
-    def previousStep(self):
-        with self._lock:
-            if self._closed or self._state.busy:
-                return False
-            if self._state.step > 0:
-                self._state.step -= 1
-                self._state.message = '可返回修改当前步骤；已生成资料会在修改后标记为过期。'
-                self._recompute_locked()
-                self._save_draft_safe_locked()
-        self._emit()
-        return True
 
     @Slot()
     def prepareBundle(self):
@@ -2549,7 +2557,16 @@ class QuickPublication(QObject):
             self._state.source_stamp, self._state.bundle_stamp,
         )
 
-    def _content_for_draft_locked(self, platform: str, draft: _PlatformDraft) -> dict[str, Any]:
+    @staticmethod
+    def _declaration_problem(platform, draft):
+        if type(draft.ai) is not bool:
+            return (publication.AI_REQUIRED if platform == XIAOHONGSHU else
+                    f'请明确声明{PLATFORM_LABELS[platform]}素材是否包含 AI 生成或合成内容。')
+        if not _text(draft.rights).strip():
+            return f'请填写{PLATFORM_LABELS[platform]}的原创、转载、署名与授权声明。'
+        return ''
+
+    def _content_for_draft_locked(self, platform: str, draft: _PlatformDraft, *, require_declarations=True) -> dict[str, Any]:
         content = {
             'title': draft.title.strip(),
             'description': draft.description,
@@ -2558,17 +2575,15 @@ class QuickPublication(QObject):
         }
         if type(draft.ai) is bool:
             content['ai_generated'] = draft.ai
-        publication.validate_content(content, platform, require_ai=True)
+        publication.validate_content(content, platform)
         tags = content['tags']
         maximum, each = TAG_LIMITS[platform]
         if len(tags) > maximum:
             raise ValueError(f'{PLATFORM_LABELS[platform]}最多填写 {maximum} 个标签。')
         if any(len(tag) > each for tag in tags):
             raise ValueError(f'{PLATFORM_LABELS[platform]}每个标签最多 {each} 字，请删减或拆分。')
-        if type(draft.ai) is not bool:
-            raise ValueError(f'请明确声明{PLATFORM_LABELS[platform]}素材是否包含 AI 生成或合成内容。')
-        if not _text(draft.rights).strip():
-            raise ValueError(f'请填写{PLATFORM_LABELS[platform]}的原创、转载、署名与授权声明。')
+        if require_declarations and (problem := self._declaration_problem(platform, draft)):
+            raise ValueError(problem)
         return content
 
     def _contents_locked(self) -> dict[str, dict[str, Any]]:
@@ -2599,6 +2614,9 @@ class QuickPublication(QObject):
             self._contents_locked()
         except Exception as exc:
             return str(exc)
+        return self._cover_problem_locked()
+
+    def _cover_problem_locked(self):
         draft = self._state.draft()
         if draft.cover_mode == 'original':
             if not Path(self._state.original_cover).is_file():
@@ -2633,20 +2651,7 @@ class QuickPublication(QObject):
                 except Exception as exc:
                     problem = str(exc)
         elif step == 1:
-            draft = self._state.draft()
-            if draft.cover_mode == 'original' and not Path(self._state.original_cover).is_file():
-                problem = '没有可核验的本家原封面。'
-            elif draft.cover_mode == 'custom':
-                try:
-                    _sniff_image(Path(draft.cover_file))
-                except (OSError, ValueError) as exc:
-                    problem = str(exc)
-            elif draft.cover_mode == 'frame' and not Path(self._state.video).is_file():
-                problem = '没有可截取封面的已核验成品。'
-            elif draft.cover_mode == 'original-frame' and self._state.source_mode != 'bilibili':
-                problem = '只有 B站来源任务可以截取本家原视频。'
-            elif draft.cover_mode not in COVER_MODES:
-                problem = '请选择封面来源。'
+            problem = self._cover_problem_locked()
         if problem and raise_error:
             self._notice(problem)
         return not problem
@@ -2702,6 +2707,31 @@ class QuickPublication(QObject):
                 result[platform] = {'platform': platform, 'ready': False, 'error': message}
         return result
 
+    def _review_locked(self):
+        state = self._state
+        draft = state.draft()
+        video_ready = bool(state.video_ref or (state.bundle_only and state.video and not state.bundle_stale))
+        video_problem = ('' if video_ready and state.source_ready else
+                         state.source_problem if video_ready else '请选择已核验的成品视频。')
+        cover_problem = '' if state.bundle_only and draft.cover_preview else self._cover_problem_locked()
+        platform_checks = {}
+        for platform in state.selected_platforms:
+            item = state.drafts[platform]
+            copy_problem = ''
+            try:
+                self._content_for_draft_locked(platform, item, require_declarations=False)
+            except ValueError as error:
+                copy_problem = str(error)
+            platform_checks[platform] = {'copyProblem': copy_problem,
+                                         'declarationProblem': self._declaration_problem(platform, item)}
+        return {'videoReady': video_ready, 'videoProblem': video_problem,
+                'coverState': 'previewed' if not cover_problem and draft.cover_preview else
+                              'configured' if not cover_problem else 'missing',
+                'coverProblem': cover_problem,
+                'platforms': platform_checks,
+                'packageState': 'stale' if state.bundle_stale else 'verified' if state.verified else
+                                'unchecked' if state.bundle else 'missing'}
+
     def _recompute_view_locked(self):
         draft = self._state.draft()
         view = {
@@ -2733,6 +2763,7 @@ class QuickPublication(QObject):
             'sourceReady': bool(self._state.source_ready),
             'sourceProblem': self._state.source_problem,
             'bundleOnly': bool(self._state.bundle_only),
+            'review': self._review_locked(),
         }
         if (self._state.job or self._state.bundle or self._state.browser.state != 'idle'
                 or self._state.selected_platforms != (BILIBILI,)):
