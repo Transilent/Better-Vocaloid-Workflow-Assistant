@@ -13,6 +13,7 @@ import agent_style
 from common import native_path
 from style_drafts import DraftStore
 from style_presets import region_settings, time_range_settings
+from svp_tuning import GROUP_STYLE_ONLY
 from tuning_engine import DEFAULTS, digest, settings
 from tuning_preset_documents import plan_application, validate_plan
 from tuning_workflow import inspect_project
@@ -55,8 +56,8 @@ class ProjectNotes:
             row['track_id']: {'id': row['track_id'], 'index': row['track_index'],
                               'name': row['name'] or f"演唱轨 {row['track_index'] + 1}",
                               'noteCount': row['note_count_parsed'], 'editable': row['eligible_for_style'],
-                              'reason': '含引用组或不支持的音符结构，请先展平或检查工程。'
-                              if not row['eligible_for_style'] else ''}
+                              'styleOnly': row.get('style_only', False),
+                              'reason': row.get('read_only_reason', '')}
             for row in context['tracks'] if row['vocal']
         }
         self.editable = tuple(key for key, row in self.tracks.items() if row['editable'])
@@ -118,6 +119,9 @@ class ProjectNotes:
                     if len(result) >= limit:
                         return result
         return result
+
+    def uses_group_styles(self, indices):
+        return any(row['styleOnly'] and row['index'] in indices for row in self.tracks.values())
 
     def matches(self, query, *, limit=160):
         needle = _lyric_key(query[:256])
@@ -317,6 +321,8 @@ class TimelineDraftStore(DraftStore):
 
 def freeze_plan(project, regions, options, preset):
     normalized = settings(options)
+    if normalized['expression_mode'] != 'preserve' and project.uses_group_styles(normalized['track_indices'] or []):
+        raise ValueError(GROUP_STYLE_ONLY)
     if project.verify_regions(regions) != normalized['style_regions']:
         raise ValueError('逐轨片段与本次执行计划不一致。')
     if preset is not None:

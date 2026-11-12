@@ -70,6 +70,10 @@ def apply_pitch(data,preset,*,strength,track_indices,detail=None,time_range=None
         physical_index = {ni: position for position, ni in enumerate(physical)}
         row={'track_index':index,'status':'skipped','gestures':[],'skipped_notes':[]}
         report['tracks'].append(row)
+        system_pitch=track.get('mainRef',{}).get('systemPitchDelta')
+        if isinstance(system_pitch,dict):system_pitch=system_pitch.get('points',system_pitch)
+        if group.get('pitchControls') or system_pitch:
+            row['reason']='native_pitch_controls_preserved';continue
         try:xs,ys=_curve(original,float_positions=True)
         except ValueError as error:row['reason']=str(error);continue
         notes=[]

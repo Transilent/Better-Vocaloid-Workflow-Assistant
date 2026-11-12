@@ -832,6 +832,14 @@ Item {
                     textFormat: Text.PlainText
                 }
                 Text {
+                    objectName: "tuningProjectFormat"
+                    visible: text.length > 0
+                    text: page.textOf(page.view.projectFormat)
+                    color: page.theme.muted
+                    font.pixelSize: Math.round(11 * page.scale)
+                    textFormat: Text.PlainText
+                }
+                Text {
                     Layout.fillWidth: true
                     text: page.hasSource ? page.fileName(page.view.source) : page.vwaTr("尚未载入调音工程")
                     color: page.theme.muted
@@ -1956,7 +1964,7 @@ Item {
                                         theme: page.theme
                                         text: page.vwaTr("参考音频")
                                         selected: page.textOf(page.view.expressionMode) === "reference"
-                                        enabled: !page.busy && page.hasSource
+                                        enabled: !page.busy && page.hasSource && !page.view.groupStyleOnly
                                         onClicked: page.controller.setExpressionMode("reference")
                                     }
                                     EditorButton {
@@ -1965,7 +1973,7 @@ Item {
                                         theme: page.theme
                                         text: page.vwaTr("校准 + 参考")
                                         selected: page.textOf(page.view.expressionMode) === "calibrated"
-                                        enabled: !page.busy && page.hasSource
+                                        enabled: !page.busy && page.hasSource && !page.view.groupStyleOnly
                                         onClicked: page.controller.setExpressionMode("calibrated")
                                     }
                                     EditorButton {
@@ -1974,7 +1982,7 @@ Item {
                                         theme: page.theme
                                         text: page.vwaTr("沿用原参数")
                                         selected: page.textOf(page.view.expressionMode) === "retained"
-                                        enabled: !page.busy && page.hasSource
+                                        enabled: !page.busy && page.hasSource && !page.view.groupStyleOnly
                                         onClicked: page.controller.setExpressionMode("retained")
                                     }
                                 }
@@ -1982,7 +1990,8 @@ Item {
                                 HelperText {
                                     Layout.fillWidth: true
                                     theme: page.theme
-                                    text: page.expressionModeKnown
+                                    text: page.view.groupStyleOnly ? page.textOf(page.view.groupStyleReason)
+                                        : page.expressionModeKnown
                                         ? page.vwaTr("四种来源共用当前轨道与区间；外部声库渲染仍由你手动完成。")
                                         : page.vwaTr("表达来源状态待后端回读；可先选择一种真实来源。")
                                 }
@@ -1996,6 +2005,12 @@ Item {
                                     font.weight: Font.DemiBold
                                     wrapMode: Text.Wrap
                                     textFormat: Text.PlainText
+                                }
+                                HelperText {
+                                    Layout.fillWidth: true
+                                    visible: text.length > 0
+                                    theme: page.theme
+                                    text: page.textOf(page.view.trackReadOnlyReason)
                                 }
 
                                 GridLayout {
@@ -2750,7 +2765,7 @@ Item {
         title: page.vwaTr("导入调音工程")
         fileMode: FileDialog.OpenFile
         nameFilters: [
-            page.vwaTr("SynthV 工程 (*.svp)"),
+            page.vwaTr("Synthesizer V Studio 1 / 2 (*.svp)"),
             page.vwaTr("所有文件 (*)")
         ]
         onAccepted: page.controller.chooseProject(selectedFile)

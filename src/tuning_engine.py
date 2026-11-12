@@ -9,7 +9,9 @@ import json
 import math
 from pathlib import Path
 
-VERSION=2
+from svp_tuning import GROUP_STYLE_ONLY, Layout
+
+VERSION=3
 REFERENCE=('dynamics','tension','breathiness','voicing')
 EXPRESSION=('loudness','tension','breathiness','voicing','gender','toneShift')
 DEFAULTS={'expression_mode':'preserve','track_indices':None,'reference_sources':[],
@@ -69,19 +71,22 @@ def settings(options):
     return result
 
 
-def selected_indices(data,options):
-    from style_presets import track_indices_for
+def selected_indices(data,options,*,layout=None):
+    layout=layout if layout is not None else Layout(data)
     indices=options['track_indices']
-    indices=track_indices_for(data,options['style_scope']) if indices is None else indices
+    if indices is None:
+        vocals=[row.index for row in layout.tracks if row.instrumental is False]
+        lead=[index for index in vocals if data['tracks'][index].get('name') in ('Vocals','Lead Vocal')]
+        indices=vocals if options['style_scope']=='all_vocals' else (lead or vocals[:1])
     if not indices:raise ValueError('工程中没有可处理的演唱轨。')
     for index in indices:
-        if index>=len(data['tracks']) or data['tracks'][index].get('mainRef',{}).get('isInstrumental'):
+        if not 0<=index<len(layout.tracks) or layout.tracks[index].instrumental is not False:
             raise ValueError('所选索引不是有效的演唱轨。')
-        track=data['tracks'][index];ref=track.get('mainRef',{})
-        if track.get('groups') or ref.get('blickAbsoluteBegin',0)!=0 or ref.get('blickAbsoluteEnd',-1)!=-1:
-            raise ValueError('当前调音事务只支持未裁剪的 mainGroup；库组引用请先在编辑器中展开为独立工程副本。')
-        group=track.get('mainGroup',{})
-        if not isinstance(group.get('notes'),list):raise ValueError('演唱轨缺少音符组。')
+        track=layout.tracks[index]
+        if not track.writable:
+            raise ValueError(f'演唱轨 {index+1}：{track.reason}')
+        if track.style_only and options['expression_mode']!='preserve':
+            raise ValueError(GROUP_STYLE_ONLY)
     return list(indices)
 
 
@@ -98,14 +103,18 @@ def sources_for(options,indices):
     return [mapping[index] for index in indices]
 
 
-def _protected(data,indices,controls,pitch=False,calibrated=False):
+def _protected(data,indices,controls,pitch=False,calibrated=False,*,layout=None):
     value=copy.deepcopy(data)
     for index in indices:
-        track=value['tracks'][index];group=track.get('mainGroup',{})
-        parameters=group.get('parameters',{})
-        for name in (*controls,*(('pitchDelta',) if pitch else ())):parameters.pop(name,None)
-        if not parameters:group.pop('parameters',None)
+        track=value['tracks'][index]
+        groups=([p.group_in(value) for p in layout.tracks[index].placements]
+                if layout and layout.tracks[index].style_only else [track.get('mainGroup',{})])
+        for group in groups:
+            parameters=group.get('parameters',{})
+            for name in (*controls,*(('pitchDelta',) if pitch else ())):parameters.pop(name,None)
+            if not parameters:group.pop('parameters',None)
         if calibrated:
+            group=track.get('mainGroup',{})
             ref=track.get('mainRef',{});ref.pop('database',None)
             voice=ref.get('voice',{})
             for name in EXPRESSION:voice.pop('param'+name[0].upper()+name[1:],None)
@@ -147,6 +156,71 @@ def _apply_style_layers(project,preset,*,strength,pitch,detail,technique,indices
         notes_and_pitch_unchanged=not any(r.get('pitch_changed',False) for r in selected),
         source_content_sha256=digest(project),output_content_sha256=digest(output))
     return output,combined
+
+
+class _StyleTargets:
+    """Address note placements in memory without flattening the saved SVP."""
+
+    def __init__(self, output, layout, indices):
+        self.output=output
+        self.placements=()
+        self.project=output
+        if any(layout.tracks[index].style_only for index in indices):
+            self.placements=tuple(p for index in indices for p in layout.tracks[index].placements)
+            self.project={'time':output['time'],'tracks':[p.style_track(output) for p in self.placements]}
+            from vocal_expression import TempoMap
+            clock=TempoMap(output['time']['tempo'])
+            self.spans=[(clock.to_seconds(min(n.start for n in p.notes)),
+                         clock.to_seconds(max(n.end for n in p.notes))) for p in self.placements]
+
+    def indices(self, tracks, time_range=None):
+        if not self.placements:
+            return tracks
+        return [i for i,p in enumerate(self.placements) if p.track_index in tracks
+                and (not time_range or self.spans[i][0]<time_range[1] and self.spans[i][1]>time_range[0])]
+
+    def audit(self, receipt):
+        if not self.placements:
+            return receipt
+        if isinstance(receipt,list):
+            return [self.audit(item) for item in receipt]
+        if not isinstance(receipt,dict):
+            return receipt
+        row={}
+        for key,value in receipt.items():
+            if key=='track_index':
+                placement=self.placements[value]
+                row.update(track_index=placement.track_index,group_placement=placement.key)
+            elif key=='track_indices':
+                row[key]=list(dict.fromkeys(self.placements[i].track_index for i in value))
+            elif key in ('source_content_sha256','output_content_sha256'):
+                row['style_view_'+key]=value
+            else:
+                row[key]=self.audit(value)
+        return row
+
+    def finish(self):
+        if not self.placements:
+            return self.project
+        for placement,styled in zip(self.placements,self.project['tracks']):
+            group=placement.group_in(self.output)
+            original=group.get('parameters',{})
+            for name,value in styled['mainGroup'].get('parameters',{}).items():
+                if name in (*EXPRESSION,'pitchDelta') and value!=original.get(name):
+                    group.setdefault('parameters',{})[name]=value
+        return self.output
+
+
+def _curve_changes(before,after,layout,indices):
+    result=[]
+    for index in indices:
+        for placement in layout.tracks[index].placements:
+            old=placement.group_in(before).get('parameters',{})
+            new=placement.group_in(after).get('parameters',{})
+            for name in sorted(old.keys()|new.keys()):
+                if old.get(name)!=new.get(name):
+                    result.append({'track_index':index,'group_placement':placement.key,'parameter':name})
+    return result
 
 
 def _review_calibration_channels(view,sources,profile):
@@ -209,7 +283,8 @@ def process_project(data,options,*,cancel=lambda:None,progress=lambda text:None,
     """Pure project transaction. No intermediate SVP serialize/read/overwrite."""
     if not isinstance(data,dict) or not isinstance(data.get('tracks'),list) or not isinstance(data.get('time'),dict):
         raise ValueError('请选择有效的SVP工程。')
-    options=settings(options);indices=selected_indices(data,options);source_sha=digest(data)
+    options=settings(options);layout=Layout(data)
+    indices=selected_indices(data,options,layout=layout);source_sha=digest(data)
     regions=options['style_regions']
     if any('track_index' in region and region['track_index'] not in indices for region in regions):
         raise ValueError('风格片段包含本次未选中的演唱轨。')
@@ -258,10 +333,10 @@ def process_project(data,options,*,cancel=lambda:None,progress=lambda text:None,
         primary={'status':'applied','mode':mode,'tracks':tracks,'new_fit':False}
     primary_controls=EXPRESSION if mode in ('calibrated','retained') else tuple(
         ('loudness' if name=='dynamics' else name) for name in REFERENCE if options['reference_'+name])
-    if _protected(data,indices,primary_controls,False,mode in ('calibrated','retained'))!=_protected(output,indices,primary_controls,False,mode in ('calibrated','retained')):
+    if mode!='preserve' and _protected(data,indices,primary_controls,False,mode in ('calibrated','retained'))!=_protected(output,indices,primary_controls,False,mode in ('calibrated','retained')):
         raise ValueError('参数来源处理改变了未选择的通道或工程对象，未提交。')
     replacements=[]
-    for index in indices:
+    for index in indices if primary_controls else ():
         before=data['tracks'][index].get('mainGroup',{}).get('parameters',{})
         after=output['tracks'][index].get('mainGroup',{}).get('parameters',{})
         for name in primary_controls:
@@ -274,18 +349,25 @@ def process_project(data,options,*,cancel=lambda:None,progress=lambda text:None,
                     'operation':'explicit_primary_source_replacement','recoverable_from_input':True})
     report['primary_curve_replacements']=replacements
     report['primary']=primary;report['stages'].append('primary')
+    targets=_StyleTargets(output,layout,indices)
     style={'status':'not_selected','pitch_changed':False}
     if regions:
         progress('按时间片段叠加风格增量')
         receipts=[]
         for region in regions:
             cancel()
-            targets = [region['track_index']] if 'track_index' in region else indices
-            output,item=_apply_style_layers(output,region['preset'],strength=region['strength'],pitch=region['pitch'],
-                indices=targets,detail=region['detail'],time_range=(region['start'],region['end']),cancel=cancel,
+            tracks=[region['track_index']] if 'track_index' in region else indices
+            time_range=(region['start'],region['end'])
+            selection=targets.indices(tracks,time_range)
+            if not selection:
+                receipts.append({'status':'skipped','reason':'no_notes_in_region',
+                    'track_indices':tracks,'time_range_seconds':list(time_range)})
+                continue
+            targets.project,item=_apply_style_layers(targets.project,region['preset'],strength=region['strength'],pitch=region['pitch'],
+                indices=selection,detail=region['detail'],time_range=time_range,cancel=cancel,
                 technique={'style_technique':region.get('technique','none'),
                     'technique_strength':region.get('technique_strength',.6),'technique_pitch':region.get('technique_pitch',True)})
-            receipts.append(item)
+            receipts.append(targets.audit(item))
         applied=any(r['status'] in ('applied','partial') for r in receipts)
         incomplete=any(r['status'] in ('partial','skipped') for r in receipts)
         style={'status':'partial' if applied and incomplete else 'applied' if applied else 'skipped' if incomplete else 'not_selected',
@@ -298,21 +380,29 @@ def process_project(data,options,*,cancel=lambda:None,progress=lambda text:None,
     elif (options['performance_style']!='none' and options['style_strength']>0) or (
             options['style_technique']!='none' and options['technique_strength']>0):
         progress('叠加所选风格增量')
-        output,style=_apply_style_layers(output,options['performance_style'],strength=options['style_strength'],
-            indices=indices,pitch=options['style_pitch'],detail=options['style_detail'],technique=options,cancel=cancel)
+        targets.project,style=_apply_style_layers(targets.project,options['performance_style'],strength=options['style_strength'],
+            indices=targets.indices(indices),pitch=options['style_pitch'],detail=options['style_detail'],technique=options,cancel=cancel)
+        style=targets.audit(style)
         report['stages'].append('style')
+    output=targets.finish()
     report['style']=style
     progress('统一保形加密与保护校验')
-    density=finalize_project(output,indices,options['expression_density'],cancel) if finalize else {
+    density_indices=[i for i in indices if not layout.tracks[i].style_only]
+    finalized=bool(finalize and density_indices)
+    density=finalize_project(output,density_indices,options['expression_density'],cancel) if finalized else {
         'status':'deferred','mode':options['expression_density'],'added_points':0,'unsupported_nonlinear_controls':0}
+    if targets.placements:
+        density['preserved_native_group_tracks']=[i for i in indices if i not in density_indices]
+        if not density_indices:
+            density['status']='preserved_native_groups'
     report['expression_density']=density
-    if finalize:report['stages'].append('density')
+    if finalized:report['stages'].append('density')
     # Primary calibration/retention can legitimately install the selected bank's
     # expression offsets; all score/pitch/retake/unknown objects still compare.
     pitch_allowed=any(r['pitch'] or (r.get('technique')=='chinese_opera' and r.get('technique_pitch',True))
         for r in regions) if regions else options['style_pitch'] or (
             options['style_technique']!='none' and options['technique_pitch'])
-    if _protected(data,indices,EXPRESSION,pitch_allowed,mode in ('calibrated','retained'))!=_protected(output,indices,EXPRESSION,pitch_allowed,mode in ('calibrated','retained')):
+    if _protected(data,indices,EXPRESSION,pitch_allowed,mode in ('calibrated','retained'),layout=layout)!=_protected(output,indices,EXPRESSION,pitch_allowed,mode in ('calibrated','retained'),layout=layout):
         raise ValueError('调音处理改变了保护范围之外的工程内容，未提交。')
     if digest(data)!=source_sha:raise ValueError('调音处理意外修改了输入对象，未提交。')
     cancel();changed=digest(output)!=source_sha
@@ -322,7 +412,8 @@ def process_project(data,options,*,cancel=lambda:None,progress=lambda text:None,
                   protected_content_unchanged=True,original_input_unchanged=True,
                   notes_and_timing_unchanged=True,pitch_changed=bool(style.get('pitch_changed')),
                   note_expression_offsets_may_change=mode in ('calibrated','retained'),
-                  project_writes=0,final_density_passes=int(finalize),
+                  project_writes=0,final_density_passes=int(finalized),
+                  curve_changes=_curve_changes(data,output,layout,indices),
                   calibration_metrics_scope='primary_stage_before_style' if mode=='calibrated' else None)
     return output,report
 

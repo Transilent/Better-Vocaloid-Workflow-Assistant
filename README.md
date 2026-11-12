@@ -59,6 +59,8 @@ Requirements: Windows 10/11 x64. The portable package includes its runtime. Chec
 4. Select the original video and Mixdown in **Assemble video**. An existing finished video can go directly to **Publishing**.
 5. Check the cover, platform drafts and credits before preparing the upload. Review the creator page and publish manually.
 
+Tuning can open supported native Synthesizer V Studio 2 (SV2) projects directly. For independently placed note groups, choose **Keep original expression**, apply a style, and save a separate candidate. Shared groups, trims that hide notes, and unverified project versions are read-only. Open the candidate in SV2 to audition it.
+
 Use **Tasks and results** to find, continue or retry tasks. Install optional models under **Models and components**. Change the interface language under **Settings and updates → Appearance → Interface language**, then restart VWA.
 
 ## Upgrading

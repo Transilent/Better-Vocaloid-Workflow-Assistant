@@ -15,6 +15,7 @@ from preset_library import PresetLibrary
 import style_catalog
 from style_drafts import DraftConflict, DraftStore
 from style_presets import DETAIL_DEFAULTS, time_range_settings
+from svp_tuning import GROUP_STYLE_ONLY
 import tuning_engine as engine
 from tuning_timeline import (ProjectNotes, TimelineDraftStore, draft_options, freeze_plan,
                              normalize_timeline_draft)
@@ -207,12 +208,8 @@ def _preview(project, options, stop, send):
         if options['expression_mode'] in ('reference', 'calibrated'):
             engine.sources_for(options, indices)
         return tr('已核对轨道和参数来源。参考音频、校准或沿用参数将在生成时处理。')
-    changed, report = engine.process_project(data, options, cancel=lambda: _stop_check(stop), progress=send)
-    curves = 0
-    for index in indices:
-        previous = data['tracks'][index]['mainGroup'].get('parameters', {})
-        current = changed['tracks'][index]['mainGroup'].get('parameters', {})
-        curves += sum(previous.get(key) != current.get(key) for key in previous.keys() | current.keys())
+    _, report = engine.process_project(data, options, cancel=lambda: _stop_check(stop), progress=send)
+    curves = len(report['curve_changes'])
     label = tr('预览：{tracks} 轨 · {regions} 个逐轨片段 · {curves} 条曲线有变化。音符和时值保留。')
     label = label.format(tracks=len(indices), regions=len(options['style_regions']), curves=curves)
     if report['status'] == 'partial':
@@ -341,6 +338,12 @@ class QuickTuning(QObject):
         keys = ([row['track_id'] for row in self._regions] if segments and self._regions else self._targets)
         return sorted({self.project.tracks[key]['index'] for key in keys}) if self.project else []
 
+    def _uses_group_styles(self):
+        if not self.project:
+            return False
+        options = (self._preset.get('options') or {}) if self._preset else {}
+        return self.project.uses_group_styles(options.get('track_indices') or self._indices(segments=True))
+
     def _execution(self):
         if not self.project:
             raise ValueError('请先载入 SVP 工程。')
@@ -452,10 +455,18 @@ class QuickTuning(QObject):
         match_scope = self._lyric_match_scope()
         match_position = (match_scope.index(self._lyric_match_index)
                           if self._lyric_match_index in match_scope else -1)
+        group_styles = self._uses_group_styles()
+        active = self.project.tracks.get(self._active, {}) if self.project else {}
+        preset_options = (self._preset.get('options') or {}) if self._preset else {}
+        mode = preset_options.get('expression_mode', self._options['expression_mode'])
         return {
             'source': self._display_source or project.get('path', ''),
             'title': Path(self._display_source or project.get('path', '')).stem if project else '',
             'sha256': project.get('sha256', ''), 'job': self.job,
+            'projectFormat': ('SV2 · ' + str(project['format_version'])) if project.get('synthesizer_v_2') else '',
+            'trackReadOnlyReason': tr(active['reason']) if active.get('reason') else '',
+            'groupStyleOnly': group_styles,
+            'groupStyleReason': tr(GROUP_STYLE_ONLY) if group_styles else '',
             'session': str(self.session) if self.session else '',
             'sessionExists': session_exists,
             'sessionLocation': str(session_root),
@@ -482,7 +493,8 @@ class QuickTuning(QObject):
             'canSaveDraftRevision': bool(project and not busy and not self._legacy),
             'snapEnabled': self._view_preferences['snap'],
             'autoApplySelection': self._view_preferences['auto_apply_selection'],
-            'canFreeze': bool(project and not busy and usable and (not self._origin or self._confirmed)),
+            'canFreeze': bool(project and not busy and usable and (not self._origin or self._confirmed)
+                              and (not group_styles or mode == 'preserve')),
             'canRun': bool(self._plan and not busy), 'canRegister': bool(self.job and receipt.get('receipt_verified')
                        and not self._candidate_stale and not busy and self.state != 'registered'),
             'candidate': receipt.get('output', ''), 'candidateStale': self._candidate_stale,
@@ -519,7 +531,8 @@ class QuickTuning(QObject):
 
     @Property('QVariantList', notify=tracksChanged)
     def tracks(self):
-        return list(self.project.tracks.values()) if self.project else []
+        return [{**row, 'reason': tr(row['reason']) if row['reason'] else ''}
+                for row in self.project.tracks.values()] if self.project else []
 
     @Property('QVariantList', constant=True)
     def styles(self):
@@ -1281,6 +1294,9 @@ class QuickTuning(QObject):
 
     @Slot(str)
     def setExpressionMode(self, mode):
+        if mode != 'preserve' and self._uses_group_styles():
+            self._error(ValueError(GROUP_STYLE_ONLY))
+            return
         if mode in _SOURCES and mode != self._options['expression_mode']:
             self._set_options({'expression_mode': mode, 'reference_sources': [], 'retained_sources': [],
                                'reference_calibration': None, 'retained_project': None,

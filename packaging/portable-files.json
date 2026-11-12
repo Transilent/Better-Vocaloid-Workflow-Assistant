@@ -522,6 +522,10 @@
       "source": "src/style_pitch.py"
     },
     {
+      "file": "svp_tuning.py",
+      "source": "src/svp_tuning.py"
+    },
+    {
       "file": "tuning_engine.py",
       "source": "src/tuning_engine.py"
     },

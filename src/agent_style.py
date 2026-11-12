@@ -292,8 +292,11 @@ def _context_unknown(
 
 
 def _build_context(source: Path, raw: bytes) -> dict[str, Any]:
+    from svp_tuning import Layout
+
     project = _project(raw)
     clock, tempo_rows = _tempo(project)
+    layout = Layout(project)
     source_sha = _sha256_bytes(raw)
     track_rows: list[dict[str, Any]] = []
     note_rows: list[dict[str, Any]] = []
@@ -334,9 +337,13 @@ def _build_context(source: Path, raw: bytes) -> dict[str, Any]:
             "name": name,
         })
         reasons: list[str] = []
+        first_reason = ""
 
         def reason(code: str, message: str) -> None:
+            nonlocal first_reason
             if code not in reasons:
+                if not reasons:
+                    first_reason = message
                 reasons.append(code)
                 unknown_rows.append(_context_unknown(code, message, track_index))
 
@@ -358,58 +365,21 @@ def _build_context(source: Path, raw: bytes) -> dict[str, Any]:
             if instrumental_value:
                 reason("track.instrumental", "该轨道是伴奏轨，不能作为风格目标。")
 
-        offset_value = raw_ref.get("blickOffset", 0)
-        offset_ok = type(offset_value) is int
-        if not offset_ok:
-            reason("track.offset_invalid", "轨道 blickOffset 不是整数，无法安全换算工程秒。")
-            offset = None
-        else:
-            offset = offset_value
-
-        groups = raw_track.get("groups")
-        if groups:
-            reason("track.linked_groups", "当前风格引擎不支持链接库组。")
-        begin = raw_ref.get("blickAbsoluteBegin", 0)
-        end = raw_ref.get("blickAbsoluteEnd", -1)
-        if begin != 0 or end != -1:
-            reason("track.cropped", "当前风格引擎不支持裁剪后的演唱 mainGroup。")
-
-        group = raw_track.get("mainGroup")
-        raw_notes = group.get("notes") if isinstance(group, dict) else None
-        if not isinstance(group, dict):
-            reason("track.main_group_missing", "轨道缺少 mainGroup。")
-            raw_notes = []
-        elif not isinstance(raw_notes, list):
-            reason("track.notes_invalid", "mainGroup.notes 不是列表。")
-            raw_notes = []
+        main_offset = raw_ref.get("blickOffset", 0)
+        main_offset = main_offset if type(main_offset) is int else None
+        track = layout.tracks[track_index]
+        for code, message in track.issues.items():
+            reason(code, message)
 
         parsed_count = 0
-        for note_index, raw_note in enumerate(raw_notes):
-            if not isinstance(raw_note, dict):
-                reason("note.invalid", "第 " + str(note_index) + " 个音符不是对象。")
-                unknown_rows.append(_context_unknown(
-                    "note.invalid", "音符不是对象。", track_index, note_index=note_index,
-                ))
-                continue
-            onset = raw_note.get("onset")
-            duration = raw_note.get("duration")
-            if type(onset) is not int or type(duration) is not int or duration <= 0:
-                reason("note.timing_invalid", "轨道包含非整数 onset/duration 或非正时长音符。")
-                unknown_rows.append(_context_unknown(
-                    "note.timing_invalid", "音符时间不是引擎可安全处理的范围。",
-                    track_index, note_index=note_index,
-                ))
-                continue
-            if offset is None:
-                unknown_rows.append(_context_unknown(
-                    "note.time_unknown", "轨道偏移无效，音符工程秒未知。",
-                    track_index, note_index=note_index,
-                ))
-                continue
+        placed_notes = ((placement, note) for placement in track.placements for note in placement.notes)
+        for placement, note in placed_notes:
+            note_index, raw_note = note.index, note.data
+            onset, duration = raw_note["onset"], raw_note["duration"]
+            offset, project_onset = placement.offset, note.start
             try:
-                project_onset = onset + offset
                 start_seconds = float(clock.to_seconds(project_onset))
-                end_seconds = float(clock.to_seconds(project_onset + duration))
+                end_seconds = float(clock.to_seconds(note.end))
             except (TypeError, ValueError, OverflowError) as error:
                 reason("note.time_invalid", "音符时间无法通过速度表换算。")
                 unknown_rows.append(_context_unknown(
@@ -426,12 +396,9 @@ def _build_context(source: Path, raw: bytes) -> dict[str, Any]:
                 continue
 
             lyric, lyric_raw, lyric_known = _lyric(raw_note)
-            raw_pitch = raw_note.get("pitch")
-            pitch_known = (
-                type(raw_pitch) in (int, float)
-                and math.isfinite(float(raw_pitch))
-            )
-            pitch = raw_pitch if pitch_known else None
+            pitch = note.pitch
+            pitch_known = pitch is not None
+            reference = {"group_placement": placement.key} if placement.library_index is not None else {}
             note_payload = {
                 "source_sha256": source_sha,
                 "track_index": track_index,
@@ -443,6 +410,7 @@ def _build_context(source: Path, raw: bytes) -> dict[str, Any]:
                 "pitch": pitch,
                 "lyric": lyric,
                 "lyric_raw": lyric_raw,
+                **reference,
             }
             note_id = _stable_id("note", note_payload)
             if not lyric_known:
@@ -466,6 +434,7 @@ def _build_context(source: Path, raw: bytes) -> dict[str, Any]:
                 "duration_tick": duration,
                 "track_offset_tick": offset,
                 "project_onset_tick": project_onset,
+                **({"project_end_tick": note.end, **reference} if placement.adapted else {}),
                 "start_seconds": start_seconds,
                 "end_seconds": end_seconds,
                 "lyric": lyric,
@@ -483,15 +452,17 @@ def _build_context(source: Path, raw: bytes) -> dict[str, Any]:
             "name": name,
             "vocal": vocal,
             "instrumental": instrumental,
-            "offset_tick": offset,
-            "offset_quarters": None if offset is None else offset / _SV_QUARTER,
-            "main_group_present": isinstance(group, dict),
-            "note_count_raw": len(raw_notes),
+            "offset_tick": main_offset,
+            "offset_quarters": None if main_offset is None else main_offset / _SV_QUARTER,
+            "main_group_present": isinstance(raw_track.get("mainGroup"), dict),
+            "note_count_raw": track.raw_count,
             "note_count_parsed": parsed_count,
             "database": copy.deepcopy(raw_ref.get("database")),
             "voice": copy.deepcopy(raw_ref.get("voice")),
             "eligible_for_style": bool(vocal and parsed_count and not reasons),
             "ineligibility_reasons": reasons,
+            "read_only_reason": first_reason,
+            "style_only": track.style_only,
         })
 
     presets, techniques = _preset_catalog()
@@ -501,11 +472,13 @@ def _build_context(source: Path, raw: bytes) -> dict[str, Any]:
         "source_path": str(source),
         "source_sha256": source_sha,
         "format": "svp",
+        "format_version": layout.version,
+        "synthesizer_v_2": layout.sv2,
         "tempo": tempo_rows,
         "time_basis": {
             "tick": "SVP blick",
             "quarter_ticks": _SV_QUARTER,
-            "note_fields": "onset_tick/duration_tick are source-relative; start_seconds/end_seconds include mainRef.blickOffset",
+            "note_fields": "onset_tick/duration_tick are group-local; start_seconds/end_seconds are project positions including placement offset and trim",
             "region_fields": "project seconds",
         },
         "tracks": track_rows,
@@ -614,6 +587,8 @@ def _project_context(
                 "note_count_parsed": row.get("note_count_parsed"),
                 "eligible_for_style": row.get("eligible_for_style"),
                 "ineligibility_reasons": copy.deepcopy(row.get("ineligibility_reasons", [])),
+                "read_only_reason": row.get("read_only_reason", ""),
+                "style_only": row.get("style_only", False),
             }
             for row in context["tracks"]
         ]
@@ -685,14 +660,8 @@ def _track_error(row: dict[str, Any]) -> str:
         return "所选轨道 " + str(row["track_index"]) + " 是伴奏轨，不能作为风格目标。"
     if "track.instrumental_unknown" in codes:
         return "所选轨道 " + str(row["track_index"]) + " 的伴奏标记未知，不能安全应用风格。"
-    if "track.linked_groups" in codes:
-        return "所选轨道 " + str(row["track_index"]) + " 使用了链接库组；当前风格引擎不支持。"
-    if "track.cropped" in codes:
-        return "所选轨道 " + str(row["track_index"]) + " 的主音符组已裁剪；当前风格引擎不支持。"
-    if "track.offset_invalid" in codes:
-        return "所选轨道 " + str(row["track_index"]) + " 的时间偏移无效。"
-    if "track.no_notes" in codes:
-        return "所选轨道 " + str(row["track_index"]) + " 没有可用音符。"
+    if row.get("read_only_reason"):
+        return "所选轨道 " + str(row["track_index"]) + "：" + row["read_only_reason"]
     return (
         "所选轨道 " + str(row["track_index"])
         + " 不满足当前风格引擎的演唱轨合同：" + ",".join(codes)
@@ -1693,7 +1662,7 @@ def plan_style(path: Any, proposal: dict[str, Any]) -> dict[str, Any]:
         "context_unknowns": copy.deepcopy(selected["unknowns"]),
         "limitations": [
             "语义理由和 evidence_refs 由调用方提供；本模块不推断情绪或调用语义模型。",
-            "仅支持未裁剪、未链接库组的 SVP 演唱 mainGroup。",
+            "仅处理可独立编辑的演唱音符组；共享组及未验证的组结构保持只读。",
             "只生成真实调音工程候选；不进行声库合成、试听或网络验证。",
             "风格目标由全局 track_indices 决定，region 不接受单独 target 覆盖。",
             "start_note_id/end_note_id 必须来自当前 SVP source_sha256 下的同轨上下文；过期或跨轨 ID 会被拒绝。",
@@ -1751,6 +1720,8 @@ _PARTIAL_REASON_ADVICE = {
     "overlapping_notes": "音高或包络目标存在重叠；请检查同一轨道的单声部冲突后再生成风格候选。",
     "non_singing_or_rap": "气口、静音或说唱音符未套用演唱风格；请在需要表现的目标音符上重新划定片段。",
     "unsupported_nonlinear_controls": "部分原有非线性控制无法自动加密；已保留原曲线，试听后再决定是否重建控制点。",
+    "preserved_nonlinear": "已有非线性曲线保持原样；其他可写曲线仍可应用风格。",
+    "native_pitch_controls_preserved": "已保留原生音高控制，此组不叠加音高增量；可继续应用表情风格。",
     "unsupported_fractional_time_controls": "部分控制点使用非整数时间，未自动加密；请保留原曲线或在 GUI 中显式重采样。",
 }
 

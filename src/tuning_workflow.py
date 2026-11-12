@@ -22,6 +22,7 @@ ROOT=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT))
 from common import atomic_json,file_hash,native_path,preserve_changed_file,exclusive_sidecar,SidecarBusy
 from tuning_engine import settings,digest,process_project
+from svp_tuning import Layout, SV2_MIN
 from tuning_execution import (normalize_options as _normalize,dependencies as _execution_dependencies,
                               preset_context as _preset_context,preset_dependency,receipt_binding_matches,
                               project_context)
@@ -32,7 +33,7 @@ _LOCKS={};_LOCK_GUARD=threading.Lock()
 CONTRIBUTORS=('tuning_workflow.py','tuning_engine.py','vocal_expression.py','vocal_timbre.py',
  'expression_component.py','expression_calibration.py','calibration_refinement.py','calibration_workflow.py',
  'calibration_session.py','style_presets.py','style_catalog.py','expression_controls.py','style_pitch.py','common.py',
- 'tuning_execution.py','tuning_preset_documents.py','preset_documents.py','tuning_project_identity.py')
+ 'tuning_execution.py','tuning_preset_documents.py','preset_documents.py','tuning_project_identity.py','svp_tuning.py')
 
 
 def _read(path):
@@ -62,6 +63,18 @@ def _project(raw):
     return value
 
 
+def _candidate_payload(output, original, raw):
+    if output == original:
+        return raw
+    version = original.get('version')
+    if type(version) is int and version >= SV2_MIN:
+        # Keep the native file's encoding envelope as well as its JSON data.
+        nul = len(raw) - len(raw.rstrip(b'\0'))
+        encoding = 'utf-8-sig' if raw.startswith(b'\xef\xbb\xbf') else 'utf-8'
+        return json.dumps(output, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode(encoding) + b'\0' * nul
+    return (json.dumps(output, ensure_ascii=False, indent=2, allow_nan=False) + '\n').encode('utf-8')
+
+
 def _relocate_media(data,source_directory):
     """Keep referenced accompaniment identity when output lives elsewhere."""
     changes=[]
@@ -79,16 +92,16 @@ def _relocate_media(data,source_directory):
 def inspect_project(path):
     path=Path(path).resolve()
     if path.suffix.lower()!='.svp':raise ValueError('当前调音工作流支持SVP工程；其他工程请先转换并核对参数。')
-    raw=_raw(path);data=_project(raw);tracks=[]
-    for index,track in enumerate(data['tracks']):
-        if not isinstance(track,dict):raise ValueError('SVP轨道格式无效。')
-        tracks.append({'track_index':index,'name':track.get('name','演唱轨'),
-            'note_count':len(track.get('mainGroup',{}).get('notes',[])),
-            'instrumental':bool(track.get('mainRef',{}).get('isInstrumental'))})
+    raw=_raw(path);data=_project(raw);layout=Layout(data);tracks=[]
+    for row,track in zip(layout.tracks,data['tracks']):
+        if row.instrumental is None:raise ValueError('SVP轨道格式无效。')
+        tracks.append({'track_index':row.index,'name':track.get('name','演唱轨'),
+            'note_count':row.note_count,'instrumental':row.instrumental})
     if not any(not row['instrumental'] for row in tracks):raise ValueError('SVP中没有演唱轨。')
     sha=hashlib.sha256(raw).hexdigest()
     from tuning_project_identity import inspect_candidate_origin
     return {'path':str(path),'sha256':sha,'bytes':len(raw),'tracks':tracks,
+            'format_version':layout.version,'synthesizer_v_2':layout.sv2,
             'candidate_origin':inspect_candidate_origin(path,sha256=sha)}
 
 
@@ -359,7 +372,7 @@ def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None,p
             if not isinstance(report,dict) or not isinstance(report.get('status'),str):
                 raise ValueError('调音引擎没有返回有效报告，未提交。')
             media=_relocate_media(output,Path(spec['source']).parent)
-            payload=raw if output==data else (json.dumps(output,ensure_ascii=False,indent=2,allow_nan=False)+'\n').encode('utf-8')
+            payload=_candidate_payload(output,data,raw)
             parsed=_project(payload)
             if parsed!=output:raise ValueError('调音工程JSON序列化回读不一致，未提交。')
             payload_sha=hashlib.sha256(payload).hexdigest()
