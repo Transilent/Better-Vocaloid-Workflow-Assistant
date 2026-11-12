@@ -197,13 +197,10 @@ def _resume_project(session, drafts, legacy, stop):
 
 def _preview(project, options, stop, send):
     """Compute real parameter differences for style-only plans without writing."""
-    import agent_style
-
-    _, raw = agent_style._read_source(project.project['path'])
-    if agent_style._sha256_bytes(raw) != project.sha256:
+    snapshot = workflow.read_source(project.project['path'])
+    if snapshot.sha256 != project.sha256:
         raise SourceChanged('预览期间源工程已改变，请重新载入。')
-    format = project.project.get('format', 'svp')
-    data = workflow._project(raw, format)
+    format, data = snapshot.format, snapshot.data
     if options['expression_mode'] != 'preserve':
         indices = workflow.check_targets(data, options, format)
         if options['expression_mode'] in ('reference', 'calibrated'):
@@ -214,8 +211,9 @@ def _preview(project, options, stop, send):
     curves = len(report['curve_changes'])
     label = tr('预览：{tracks} 轨 · {regions} 个逐轨片段 · {curves} 条曲线有变化。音符和时值保留。')
     label = label.format(tracks=len(indices), regions=len(options['style_regions']), curves=curves)
-    if format == 'ustx':
-        label += tr(' USTX 只写 DYN 和 PITD；其他配方参数保留原样。')
+    if format in workflow.STYLE_ADAPTERS:
+        label += tr(' VPR 只写 DYN 和 PIT；其他配方参数保留原样。' if format == 'vpr'
+                    else ' USTX 只写 DYN 和 PITD；其他配方参数保留原样。')
         if report.get('native_curve_skips'):
             label += tr(' 有原生曲线未能安全叠加，请核对回执。')
     elif report['status'] == 'partial':
@@ -347,10 +345,8 @@ class QuickTuning(QObject):
     def _uses_group_styles(self):
         if not self.project:
             return False
-        if self.project.project.get('format') == 'ustx':
-            return True
         options = (self._preset.get('options') or {}) if self._preset else {}
-        return self.project.uses_group_styles(options.get('track_indices') or self._indices(segments=True))
+        return self.project.requires_style_mode(options.get('track_indices') or self._indices(segments=True))
 
     def _execution(self):
         if not self.project:
@@ -472,7 +468,7 @@ class QuickTuning(QObject):
             'source': self._display_source or project.get('path', ''),
             'title': Path(self._display_source or project.get('path', '')).stem if project else '',
             'sha256': project.get('sha256', ''), 'job': self.job,
-            'projectFormat': ('USTX · ' + str(project['format_version'])) if format == 'ustx' else
+            'projectFormat': (format.upper() + ' · ' + str(project['format_version'])) if format in workflow.STYLE_ADAPTERS else
                              ('SV2 · ' + str(project['format_version'])) if project.get('synthesizer_v_2') else '',
             'projectSuffix': format,
             'trackReadOnlyReason': tr(active['reason']) if active.get('reason') else '',

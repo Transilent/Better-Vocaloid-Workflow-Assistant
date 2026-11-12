@@ -275,7 +275,7 @@ def _role(name):
     if name == '发布简介草稿.txt': return 'description_draft'
     suffix = Path(name).suffix.lower()
     if suffix in ('.mid', '.midi'): return 'midi'
-    if suffix in ('.svp', '.ustx', '.vsqx'): return 'editor_project'
+    if suffix in ('.svp', '.ustx', '.vpr', '.vsqx'): return 'editor_project'
     if name.endswith('.pitch.npz'): return 'absolute_pitch'
     if suffix in ('.wav', '.mp3', '.flac', '.ogg'): return 'audio'
     if suffix in ('.srt', '.ass', '.lrc'): return 'subtitles'
@@ -585,6 +585,10 @@ def bind(job, kind, path, *, validate=True, dependencies=None, expected_sha256=N
             if not any(track.get('mainGroup', {}).get('notes') for track in value.get('tracks', [])
                        if not track.get('mainRef', {}).get('isInstrumental')):
                 raise ContractError('工程中没有演唱音符。')
+        elif path.suffix.lower() == '.vpr':
+            from tuning_workflow import inspect_project
+            if not any(row['note_count'] for row in inspect_project(path)['tracks'] if not row['instrumental']):
+                raise ContractError('工程中没有音符。')
         elif path.suffix.lower() in ('.ustx', '.vsqx'):
             if path.stat().st_size > 64 * 1024**2: raise ContractError('工程文件过大。')
             if path.suffix.lower() == '.ustx':
@@ -595,7 +599,7 @@ def bind(job, kind, path, *, validate=True, dependencies=None, expected_sha256=N
                 count = sum(element.tag.rsplit('}', 1)[-1] == 'note' for element in ET.parse(path).iter())
             if count <= 0: raise ContractError('工程中没有音符。')
         else:
-            raise ContractError('请选择 SVP、USTX 或 VSQX 工程。')
+            raise ContractError('请选择 SVP、USTX、VPR 或 VSQX 工程。')
     key, entry = _entry(job, path, 'tuned_project' if kind == 'project' else kind, 'human', check=check)
     if expected_sha256 is not None and entry['sha256'] != expected_sha256:
         raise ContractError('待登记文件与已核验的导出摘要不符。')

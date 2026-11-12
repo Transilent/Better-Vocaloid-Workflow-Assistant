@@ -35,6 +35,8 @@ Item {
     readonly property bool busy: view.busy === true || draftConflict
     readonly property bool hasSource: textOf(view.source).length > 0
     readonly property bool ustxProject: view.projectSuffix === "ustx"
+    readonly property bool vprProject: view.projectSuffix === "vpr"
+    readonly property bool nativeStyleProject: ustxProject || vprProject
     readonly property bool sessionExists: boolOr(view.sessionExists, false)
     readonly property bool candidateOpenable: candidatePresent
         && (boolOr(view.candidateVerified, false) || boolOr(view.candidateHistorical, false))
@@ -877,7 +879,7 @@ Item {
                     objectName: "openVoiceCalibration"
                     theme: page.theme
                     text: page.vwaTr("声库校准…")
-                    enabled: !page.ustxProject
+                    enabled: !page.nativeStyleProject
                     onClicked: page.calibrationRequested()
                 }
                 EditorButton {
@@ -1482,7 +1484,7 @@ Item {
                                 HelperText {
                                     Layout.fillWidth: true
                                     theme: page.theme
-                                    text: page.vwaTr("打开 SVP 或 USTX 后，可在单轨卷帘逐句精修，或切到多轨泳道比较重复歌词。")
+                                    text: page.vwaTr("打开调音工程后，可在单轨卷帘逐句精修，或切到多轨泳道比较重复歌词。")
                                     horizontalAlignment: Text.AlignHCenter
                                 }
                                 RowLayout {
@@ -2220,7 +2222,7 @@ Item {
 
                                 RowLayout {
                                     Layout.fillWidth: true
-                                    visible: !page.ustxProject
+                                    visible: !page.nativeStyleProject
                                     spacing: Math.round(5 * page.scale)
                                     HelperText {
                                         Layout.alignment: Qt.AlignVCenter
@@ -2503,7 +2505,8 @@ Item {
                                     EditorButton {
                                         objectName: "saveTuningCandidate"
                                         theme: page.theme
-                                        text: page.ustxProject ? page.vwaTr("另存 USTX…") : page.vwaTr("另存 SVP…")
+                                        text: page.vprProject ? page.vwaTr("另存 VPR…")
+                                            : page.ustxProject ? page.vwaTr("另存 USTX…") : page.vwaTr("另存 SVP…")
                                         enabled: !page.view.busy
                                         onClicked: candidateSaveDialog.open()
                                     }
@@ -2742,8 +2745,9 @@ Item {
         objectName: "tuningCandidateSaveDialog"
         title: page.vwaTr("另存已核验的调音工程")
         fileMode: FileDialog.SaveFile
-        defaultSuffix: page.ustxProject ? "ustx" : "svp"
-        nameFilters: [page.ustxProject ? page.vwaTr("OpenUtau 工程 (*.ustx)")
+        defaultSuffix: page.vprProject ? "vpr" : page.ustxProject ? "ustx" : "svp"
+        nameFilters: [page.vprProject ? page.vwaTr("VOCALOID 工程 (*.vpr)")
+                                      : page.ustxProject ? page.vwaTr("OpenUtau 工程 (*.ustx)")
                                       : page.vwaTr("Synthesizer V 工程 (*.svp)")]
         onAccepted: page.controller.exportCandidate(selectedFile)
     }
@@ -2769,9 +2773,10 @@ Item {
         title: page.vwaTr("导入调音工程")
         fileMode: FileDialog.OpenFile
         nameFilters: [
-            page.vwaTr("调音工程 (*.svp *.ustx)"),
+            page.vwaTr("调音工程 (*.svp *.ustx *.vpr)"),
             page.vwaTr("Synthesizer V Studio 1 / 2 (*.svp)"),
             page.vwaTr("OpenUtau 工程 (*.ustx)"),
+            page.vwaTr("VOCALOID 工程 (*.vpr)"),
             page.vwaTr("所有文件 (*)")
         ]
         onAccepted: page.controller.chooseProject(selectedFile)

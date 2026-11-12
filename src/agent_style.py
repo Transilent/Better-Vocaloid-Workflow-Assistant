@@ -145,10 +145,6 @@ def _stable_id(prefix: str, value: dict[str, Any]) -> str:
     return prefix + "_" + _digest(value)[:24]
 
 
-def _sha256_bytes(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
-
-
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     try:
@@ -174,30 +170,14 @@ def _source_path(path: Any) -> Path:
     return result
 
 
-def _read_source(path: Any) -> tuple[Path, bytes]:
+def _read_source(path: Any):
+    from tuning_workflow import read_source
+
     source = _source_path(path)
     try:
-        raw = _io_path(source).read_bytes()
+        return read_source(source)
     except OSError as error:
         raise ValueError("无法读取工程：" + str(source)) from error
-    if not raw:
-        raise ValueError("工程为空。")
-    return source, raw
-
-
-def _project(raw: bytes) -> dict[str, Any]:
-    try:
-        text = raw.decode("utf-8-sig").rstrip("\x00")
-        value = json.loads(text)
-    except (UnicodeError, json.JSONDecodeError) as error:
-        raise ValueError("SVP 工程不是有效的 UTF-8 JSON。") from error
-    if not isinstance(value, dict):
-        raise ValueError("SVP 工程根节点必须为对象。")
-    if not isinstance(value.get("tracks"), list):
-        raise ValueError("SVP 工程缺少有效轨道列表。")
-    if not isinstance(value.get("time"), dict):
-        raise ValueError("SVP 工程缺少有效时间配置。")
-    return value
 
 
 def _tempo(project: dict[str, Any]):
@@ -291,19 +271,11 @@ def _context_unknown(
     return value
 
 
-def _build_context(source: Path, raw: bytes) -> dict[str, Any]:
-    from tuning_workflow import project_format
-    format = project_format(source)
-    if format == "ustx":
-        from ustx_tuning import Layout, read
-        layout = Layout(read(raw))
-        project = layout.score
-    else:
-        from svp_tuning import Layout
-        project = _project(raw)
-        layout = Layout(project)
+def context_for_snapshot(snapshot, geometry=None) -> dict[str, Any]:
+    from tuning_workflow import score_layout
+    source, format, source_sha = snapshot.path, snapshot.format, snapshot.sha256
+    project, layout = geometry or score_layout(snapshot.data, format)
     clock, tempo_rows = _tempo(project)
-    source_sha = _sha256_bytes(raw)
     track_rows: list[dict[str, Any]] = []
     note_rows: list[dict[str, Any]] = []
     unknown_rows: list[dict[str, Any]] = []
@@ -406,7 +378,7 @@ def _build_context(source: Path, raw: bytes) -> dict[str, Any]:
                 {"lyrics": raw_note["source_lyric"]} if "source_lyric" in raw_note else raw_note)
             pitch = note.pitch
             pitch_known = pitch is not None
-            reference = {"group_placement": placement.key} if format == "ustx" or placement.library_index is not None else {}
+            reference = {"group_placement": placement.key} if format != "svp" or placement.library_index is not None else {}
             note_payload = {
                 "source_sha256": source_sha,
                 "track_index": track_index,
@@ -484,7 +456,7 @@ def _build_context(source: Path, raw: bytes) -> dict[str, Any]:
         "synthesizer_v_2": getattr(layout, "sv2", False),
         "tempo": tempo_rows,
         "time_basis": {
-            "tick": "SVP blick" if format == "svp" else "shared score blick (1 USTX tick = 1470000 blick)",
+            "tick": "SVP blick" if format == "svp" else "shared score blick (1 native tick = 1470000 blick)",
             "quarter_ticks": _SV_QUARTER,
             "note_fields": "onset_tick/duration_tick are group-local; start_seconds/end_seconds are project positions including placement offset and trim",
             "region_fields": "project seconds",
@@ -638,14 +610,13 @@ def read_context(
     detail: str = "full",
     include_note_ids: bool = True,
 ) -> dict[str, Any]:
-    """Read revision-bound SVP evidence, optionally with a bounded projection.
+    """Read revision-bound project evidence, optionally with a bounded projection.
 
     Calls that omit the projection keywords retain the original complete
     context shape.  MCP callers explicitly request ``notes`` pages so a single
     page can never be mistaken for the whole song.
     """
-    source, raw = _read_source(path)
-    context = _build_context(source, raw)
+    context = context_for_snapshot(_read_source(path))
     indices = _indices(track_indices, len(context["tracks"]), allow_none=True)
     if indices is None:
         indices = list(range(len(context["tracks"])))
@@ -1591,9 +1562,10 @@ def _engine_options(
 
 
 def plan_style(path: Any, proposal: dict[str, Any]) -> dict[str, Any]:
-    """Validate caller semantics and align them to complete notes in SVP seconds."""
-    source, raw = _read_source(path)
-    context = _build_context(source, raw)
+    """Validate caller semantics and align them to complete notes in project seconds."""
+    snapshot = _read_source(path)
+    source = snapshot.path
+    context = context_for_snapshot(snapshot)
     indices, brief, normal_regions, selected = _validate_proposal(proposal, context)
     semantic, engine_regions, aligned_ranges = _align_regions(normal_regions, selected)
 
@@ -1735,6 +1707,12 @@ _PARTIAL_REASON_ADVICE = {
     "ustx_invalid_curve_preserved": "USTX 原曲线的坐标或值不符合原生约定，已保留。",
     "ustx_no_native_delta": "叠加量经原生整数采样后没有变化，或原曲线已到边界。",
     "ustx_curve_capacity": "这条 USTX 曲线超过保形采样容量，已保留。",
+    "vpr_invalid_controller_preserved": "VPR 原控制事件不符合已验证的格式，已保留此通道。",
+    "vpr_invalid_sensitivity_preserved": "VPR 的 PBS 事件无法确认；原 PIT 和 PBS 均保持原样。",
+    "vpr_direct_pitch_preserved": "音符有原生手绘音高，此处不叠加 PIT。",
+    "vpr_overlapping_note_preserved": "重叠音符的范围保持原样，同轨独立音符仍可应用风格。",
+    "vpr_no_native_delta": "没有可安全写入的 VPR 控制增量，原值保持。",
+    "vpr_curve_capacity": "这条 VPR 曲线超过采样容量，已保留。",
     "unsupported_fractional_time_controls": "部分控制点使用非整数时间，未自动加密；请保留原曲线或在 GUI 中显式重采样。",
 }
 
@@ -1820,10 +1798,11 @@ def render_style(
     check_cancel()
     saved = _verify_plan_digest(plan)
 
-    source, initial_raw = _read_source(path)
+    snapshot = _read_source(path)
+    source = snapshot.path
     if saved.get("source_path") != str(source):
         raise ValueError("计划绑定的源工程路径与当前 path 不一致。")
-    current_sha = _sha256_bytes(initial_raw)
+    current_sha = snapshot.sha256
     if saved.get("source_sha256") != current_sha:
         raise ValueError("源 SVP 已改变；请基于当前文件重新生成风格计划。")
 
@@ -1919,11 +1898,13 @@ def render_style(
         raise ValueError("调音回执与候选或源工程身份不一致。")
 
     check_cancel()
-    if source.suffix.casefold() == ".ustx":
-        # USTX shares the verified session's reference policy. No source
-        # media is opened or copied by the local style worker in this format.
-        media_relocation = {"kind": "vwa.tuning.media-references", "format": "ustx",
+    if snapshot.format != "svp":
+        # Native adapters already verified references or preserved the embedded
+        # archive members in the shared session transaction.
+        media_relocation = {"kind": "vwa.tuning.media-references", "format": snapshot.format,
                             "tracks": result.get("media_references", []), "audio_copied": False}
+        if snapshot.format == "vpr":
+            media_relocation["archive"] = result["report"]["archive"]
     else:
         progress_callback("保留源工程伴奏并改写候选中的相对媒体引用")
         media_relocation = _relocate_candidate_media(source, candidate, allowed_roots=media_roots)
@@ -1933,17 +1914,12 @@ def render_style(
         raise ValueError("媒体迁移不得把候选覆盖为源工程。")
     if _file_sha256(source) != current_sha:
         raise ValueError("媒体迁移期间源 SVP 发生变化；候选已保留，请核对后重试。")
-    candidate_raw = _io_path(candidate).read_bytes()
-    if source.suffix.casefold() == ".ustx":
-        from ustx_tuning import read
-        candidate_project = read(candidate_raw)
-    else:
-        candidate_project = _project(candidate_raw)
+    candidate_snapshot = tuning_workflow.read_source(candidate)
     # The final identity must cover the rewritten media paths and copied
     # accompaniment, not merely the pre-relocation tuning output.
-    candidate_sha = _sha256_bytes(candidate_raw)
-    candidate_bytes = len(candidate_raw)
-    serialized_content_sha = _digest(candidate_project)
+    candidate_sha = candidate_snapshot.sha256
+    candidate_bytes = candidate_snapshot.size
+    serialized_content_sha = _digest(candidate_snapshot.data)
     original_tuning_sha = receipt_document.get("tuning_output_sha256", tuning_candidate_sha)
     receipt_document.update({
         "tuning_output_sha256": original_tuning_sha,

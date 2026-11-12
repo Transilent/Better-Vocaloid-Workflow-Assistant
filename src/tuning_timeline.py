@@ -10,13 +10,12 @@ import unicodedata
 from uuid import uuid4
 
 import agent_style
-from common import native_path
 from style_drafts import DraftStore
 from style_presets import region_settings, time_range_settings
 from svp_tuning import GROUP_STYLE_ONLY
 from tuning_engine import DEFAULTS, digest, settings
 from tuning_preset_documents import plan_application, validate_plan
-from tuning_workflow import inspect_project
+from tuning_workflow import STYLE_ADAPTERS, inspect_project, read_source, score_layout, style_adapter
 
 
 _REGION_FIELDS = frozenset(('id', 'track_id', 'start_note_id', 'end_note_id', 'recipe'))
@@ -96,13 +95,12 @@ class ProjectNotes:
     @classmethod
     def load(cls, path, *, expected_sha256=None):
         path = Path(path).expanduser().resolve()
-        size = Path(native_path(path)).stat().st_size
-        if not 0 < size <= 64 * 1024**2:
-            raise ValueError('工程为空或超过 64 MiB。')
-        project = inspect_project(path)
-        if expected_sha256 and project['sha256'] != expected_sha256:
+        snapshot = read_source(path)
+        if expected_sha256 and snapshot.sha256 != expected_sha256:
             raise ValueError('已核验的工程在交接时发生变化。')
-        return cls(project, agent_style.read_context(path))
+        geometry = score_layout(snapshot.data, snapshot.format)
+        project = inspect_project(path, snapshot=snapshot, geometry=geometry)
+        return cls(project, agent_style.context_for_snapshot(snapshot, geometry))
 
     def visible(self, tracks, start, end, *, limit=4000):
         result = []
@@ -123,11 +121,13 @@ class ProjectNotes:
     def uses_group_styles(self, indices):
         return any(row['styleOnly'] and row['index'] in indices for row in self.tracks.values())
 
+    def requires_style_mode(self, indices):
+        return self.project.get('format') in STYLE_ADAPTERS or self.uses_group_styles(indices)
+
     @property
     def style_only_reason(self):
-        if self.project.get('format') == 'ustx':
-            from ustx_tuning import STYLE_ONLY
-            return STYLE_ONLY
+        if adapter := style_adapter(self.project.get('format')):
+            return adapter.STYLE_ONLY
         return GROUP_STYLE_ONLY
 
     def matches(self, query, *, limit=160):
@@ -328,8 +328,7 @@ class TimelineDraftStore(DraftStore):
 
 def freeze_plan(project, regions, options, preset):
     normalized = settings(options)
-    if normalized['expression_mode'] != 'preserve' and (project.project.get('format') == 'ustx'
-            or project.uses_group_styles(normalized['track_indices'] or [])):
+    if normalized['expression_mode'] != 'preserve' and project.requires_style_mode(normalized['track_indices'] or []):
         raise ValueError(project.style_only_reason)
     if project.verify_regions(regions) != normalized['style_regions']:
         raise ValueError('逐轨片段与本次执行计划不一致。')

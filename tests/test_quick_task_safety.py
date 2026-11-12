@@ -93,7 +93,7 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='quick-task-safety-') 
     assert '不能删除任务' in quick_results.task_mutation_error('删除任务', blockers_a)
     assert quick_results.protect_task_detail(base, [])['canDelete'] is True
 
-    for suffix in ('.svp', '.ustx'):
+    for suffix in ('.svp', '.ustx', '.vpr'):
         assert quick_results.is_tuning_project({'available': True, 'role': 'tuned_project', 'path': 'a' + suffix})
     assert not quick_results.is_tuning_project({'available': True, 'role': 'tuned_project', 'path': 'a.vsqx'})
     assert not quick_results.is_tuning_project({'available': False, 'role': 'tuned_project', 'path': 'a.svp'})
@@ -133,4 +133,4 @@ assert 'self._hold_tuning_handoff_lock(job)' in bridge
 assert 'quick_results.is_tuning_project(row)' in bridge
 assert '_DRAFT_FIELDS' in subtitles and 'def restoreSource' in subtitles
 
-print('PASS: task-scoped blockers, cached edge notifications, dormant drafts and SVP/USTX handoff guard')
+print('PASS: task-scoped blockers, cached edge notifications, dormant drafts and SVP/USTX/VPR handoff guard')

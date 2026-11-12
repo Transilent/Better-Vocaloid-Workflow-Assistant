@@ -17,7 +17,7 @@ The development source uses Qt 6 and Qt Quick. It includes a skippable first-run
 | Workflow | What it does |
 | --- | --- |
 | Preparation | Import local audio or a Bilibili BV/link, separate lead vocals, backing vocals and accompaniment, transcribe Chinese or Japanese lyrics and notes, and export MIDI, USTX, VSQX or SVP. |
-| Tuning | Open a task project or local SVP or USTX, apply experimental styles and pitch gestures to vocal tracks or lyric regions, and save a separate project in the same format. |
+| Tuning | Open a task project or local SVP, USTX, or VPR, apply experimental styles and pitch gestures to vocal tracks or lyric regions, and save a separate project in the same format. |
 | Simple mixing | Balance up to three rendered vocal WAVs and one accompaniment with track level, pan, mute/solo, vocal timing and reverb sends, shared vocal-bus EQ/compression/reverb, and editable A/B previews. |
 | Video assembly | Combine a video with your Mixdown, with automatic alignment, manual offset and optional loudness adjustment. |
 | Publishing | Prepare covers, titles, descriptions and credits. Bilibili supports assisted upload; Xiaohongshu provides a local handoff for manual posting and AI disclosure. |
@@ -62,6 +62,8 @@ Requirements: Windows 10/11 x64. The portable package includes its runtime. Chec
 Tuning can open supported native Synthesizer V Studio 2 (SV2) projects directly. For independently placed note groups, choose **Keep original expression**, apply a style, and save a separate candidate. Shared groups, trims that hide notes, and unverified project versions are read-only. Open the candidate in SV2 to audition it.
 
 For OpenUtau USTX, **Keep original expression** supports additive dynamics (DYN) and pitch deviation (PITD) while preserving note pitch shapes, vibrato, phonemes, and other expressions. Save a USTX candidate and open it in OpenUtau to audition it.
+
+For VOCALOID 5/6 VPR, **Keep original expression** supports additive dynamics (DYN) and pitch bend (PIT) while preserving PBS, voices, note pitch data, and embedded audio. Overlapping notes are left alone, and PIT is skipped on notes with drawn pitch. Save a VPR candidate and open it in VOCALOID to audition it.
 
 Use **Tasks and results** to find, continue or retry tasks. Install optional models under **Models and components**. Change the interface language under **Settings and updates → Appearance → Interface language**, then restart VWA.
 

@@ -1597,7 +1597,7 @@ class QuickBridge(QObject):
                 if route == 'tuning':
                     if not quick_results.is_tuning_project(row):
                         self._clear_work_task_lock()
-                        self._error(ValueError('只能在调音工作台加载已核验的 SVP 或 USTX 工程。'))
+                        self._error(ValueError('只能在调音工作台加载已核验的 SVP、USTX 或 VPR 工程。'))
                         return
                     self.navigate('tuning')
                     self._tuning.accept_task(job, row)

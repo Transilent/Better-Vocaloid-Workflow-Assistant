@@ -6,7 +6,7 @@ analysis occurs here; it validates options, project and dependency identities.
 import copy
 from pathlib import Path
 from common import file_hash
-from tuning_engine import digest, settings, selected_indices, sources_for
+from tuning_engine import digest, settings, sources_for
 
 
 def normalize_options(options):
@@ -32,11 +32,8 @@ def preset_context(binding,spec,options,data):
     checked=validate_plan(copy.deepcopy(binding),project=project)
     if normalize_options(checked['options'])!=options:
         raise ValueError('预设绑定与本次实际调音参数不一致，请重新预览应用。')
-    if spec.get('format')=='ustx':
-        from ustx_tuning import selected_indices as select_ustx
-        indices=select_ustx(data,options)
-    else:
-        indices=selected_indices(data,options)
+    from tuning_workflow import check_targets
+    indices=check_targets(data,options,spec.get('format','svp'))
     mode=options['expression_mode']
     local={'vocal_tracks':indices}
     if checked['bindings'].get('confirm_candidate_baseline') is True:local['confirm_candidate_baseline']=True

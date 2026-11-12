@@ -98,7 +98,7 @@ TASK_MUTATION_CAPABILITIES = frozenset({
 })
 _RESUMABLE_ACTIONS = frozenset(('retry', 'continue', 'ready'))
 OPENABLE_SUFFIXES = frozenset(('.wav', '.flac', '.ogg', '.mp3', '.m4a', '.mp4', '.mkv', '.webm',
-                               '.mid', '.midi', '.svp', '.ustx', '.vsqx', '.srt', '.vtt', '.ass', '.lrc',
+                               '.mid', '.midi', '.svp', '.ustx', '.vpr', '.vsqx', '.srt', '.vtt', '.ass', '.lrc',
                                '.txt', '.log', '.csv', '.json', '.png', '.jpg', '.jpeg', '.webp'))
 
 

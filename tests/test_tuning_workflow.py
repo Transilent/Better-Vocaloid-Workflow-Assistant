@@ -118,7 +118,7 @@ class TuningWorkflowTests(unittest.TestCase):
                 inspect_project(wrong)
             unknown = root / 'source.vsqx'
             unknown.write_bytes(source.read_bytes())
-            with self.assertRaisesRegex(ValueError, 'SVP 或 OpenUtau USTX'):
+            with self.assertRaisesRegex(ValueError, 'SVP.*OpenUtau USTX.*VOCALOID VPR'):
                 inspect_project(unknown)
             malformed = root / 'broken.svp'
             malformed.write_text('{}', encoding='utf-8')
