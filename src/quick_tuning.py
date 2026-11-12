@@ -358,11 +358,14 @@ class QuickTuning(QObject):
         if self._preset:
             if self._preset['missing']:
                 raise ValueError(' '.join(self._preset['missing']))
+            self._check_preset_source(self._preset['document'])
             return deepcopy(self._preset['options']), deepcopy(self._preset)
         indices = self._indices(segments=True)
         if not indices:
             raise ValueError('请选择至少一条可编辑的演唱轨。')
         options = deepcopy(self._options)
+        if options['expression_mode'] != 'preserve' and self.project.requires_style_mode(indices):
+            raise ValueError(self.project.style_only_reason)
         options['track_indices'] = indices
         options['style_regions'] = self.project.verify_regions(self._regions)
         if self._regions:
@@ -463,6 +466,7 @@ class QuickTuning(QObject):
         active = self.project.tracks.get(self._active, {}) if self.project else {}
         preset_options = (self._preset.get('options') or {}) if self._preset else {}
         mode = preset_options.get('expression_mode', self._options['expression_mode'])
+        usable = usable and (mode == 'preserve' or not group_styles)
         format = project.get('format', 'svp')
         return {
             'source': self._display_source or project.get('path', ''),
@@ -1723,6 +1727,14 @@ class QuickTuning(QObject):
             bindings['calibration_profile'] = self._options['reference_calibration']
         return plan_application(document, self.project.project, bindings, raw_document=raw, before=before)
 
+    def _check_preset_source(self, document):
+        if document['payload']['expression_mode'] == 'preserve':
+            return
+        if self.project.requires_style_mode(self._indices(segments=True)):
+            raise ValueError(self.project.style_only_reason)
+        if self._regions:
+            raise ValueError('此预设包含参数来源。请在没有逐轨片段的工程上绑定。')
+
     def _rebind_preset(self):
         if self._preset and self.project:
             self._preset = self._bound(self._preset['document'], self._preset['document_text'])
@@ -1741,10 +1753,8 @@ class QuickTuning(QObject):
         def finish(value):
             if value['entry']['sha256'] != row['sha256']:
                 raise ValueError('预设版本已改变，请重新选择。')
+            self._check_preset_source(value['document'])
             plan = self._bound(value['document'], value['raw'], before=self._options)
-            if self._regions:
-                if plan['document']['payload']['expression_mode'] != 'preserve':
-                    raise ValueError('此预设包含参数来源。请在没有逐轨片段的工程上绑定。')
             self._preset_review = {
                 'entry': row, 'stamp': self._preset_review_stamp(),
                 'summary': {'name': plan['preset']['name'], 'changes': plan['changes'],
@@ -1774,6 +1784,7 @@ class QuickTuning(QObject):
         def finish(value):
             if value['entry']['sha256'] != row['sha256'] or self._preset_review_stamp() != review['stamp']:
                 raise ValueError('工程或预设已变化，请重新预览。')
+            self._check_preset_source(value['document'])
             plan = self._bound(value['document'], value['raw'])
             if self._regions:
                 self._options.update({key: deepcopy(plan['controls'][key]) for key in _BRUSH_KEYS})

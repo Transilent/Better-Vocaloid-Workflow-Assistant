@@ -12,7 +12,7 @@ from uuid import uuid4
 import agent_style
 from style_drafts import DraftStore
 from style_presets import region_settings, time_range_settings
-from svp_tuning import GROUP_STYLE_ONLY
+from svp_tuning import GROUP_STYLE_ONLY, GROUPS_PARTLY_PROTECTED
 from tuning_engine import DEFAULTS, digest, settings
 from tuning_preset_documents import plan_application, validate_plan
 from tuning_workflow import STYLE_ADAPTERS, inspect_project, read_source, score_layout, style_adapter
@@ -72,14 +72,18 @@ class ProjectNotes:
             values.sort(key=lambda row: (row['start_seconds'], row['end_seconds'], row['note_index']))
             notes = tuple({'id': row['note_id'], 'trackId': key, 'trackName': self.tracks[key]['name'],
                            'lyric': (row['lyric'] or '')[:300], 'pitch': row['pitch'],
-                           'start': row['start_seconds'], 'end': row['end_seconds']} for row in values)
+                           'start': row['start_seconds'], 'end': row['end_seconds'],
+                           **({'readOnlyReason': row['read_only_reason']} if row.get('read_only_reason') else {})}
+                          for row in values)
+            if self.tracks[key]['editable'] and any(n.get('readOnlyReason') for n in notes):
+                self.tracks[key]['reason'] = GROUPS_PARTLY_PROTECTED
             self.notes.update((row['id'], row) for row in notes)
             ends, farthest = [], -math.inf
             for row in notes:
                 farthest = max(farthest, row['end'])
                 ends.append(farthest)
             self._windows[key] = (notes, ends)
-            components = agent_style.note_components(values)
+            components = agent_style.note_components([row for row in values if not row.get('read_only_reason')])
             self._components[key] = components
             self._component_ends[key] = [row['end'] for row in components]
             if notes:

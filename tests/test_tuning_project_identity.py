@@ -196,6 +196,17 @@ class CandidateOriginTests(unittest.TestCase):
             self.assertIsNone(oversized["receipt_sha256"])
             self.assertIn("上限", oversized["reason"])
 
+    def test_vpr_identity_uses_same_container_limit_as_import(self):
+        with tempfile.TemporaryDirectory(prefix="candidate-origin-", dir=TEST_TEMP) as temporary:
+            root = Path(temporary)
+            candidate = root / "Edited.VPR"
+            candidate.write_bytes(b"container" * 32)
+            write_receipt(Path(str(candidate) + ".tuning.json"), tuning_receipt(candidate, root))
+            with patch.object(identity, "MAX_PROJECT_BYTES", 128), patch.object(identity, "MAX_VPR_PROJECT_BYTES", 512):
+                self.assertTrue(identity.inspect_candidate_origin(candidate)["verified"])
+            with patch.object(identity, "MAX_VPR_PROJECT_BYTES", 128):
+                self.assertFalse(identity.inspect_candidate_origin(candidate)["verified"])
+
     def test_tuning_sidecar_has_priority_over_style(self):
         with tempfile.TemporaryDirectory(prefix="candidate-origin-", dir=TEST_TEMP) as temporary:
             root = Path(temporary)

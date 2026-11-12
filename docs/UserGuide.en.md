@@ -98,6 +98,14 @@ In VOCALOID 6, create a project and use **File → Import** to import `voices.mi
 
 To keep the continuous pitch curve in VOCALOID 6, enable **Write continuous pitch curve**, export VSQX, and use **File → Open** on `voices.vsqx`. Generated pitch bends return to neutral at rests. When the original pitch measurements are available, VWA also keeps unvoiced gaps separate and corrects isolated spikes that meet the repair criteria. Manually edited source projects keep their pitch. See `exports/report.json` for the protection and readback results.
 
+## Tuning projects
+
+In **Tuning**, choose **Import tuning project** to open a Synthesizer V Studio 1 or 2 SVP, an OpenUtau USTX, or a VOCALOID 5 or 6 VPR. Choose a vocal track, find the notes by lyric, select a range, then apply a style, freeze the preview, and generate a candidate. USTX and VPR can add dynamics and pitch changes in **Keep original performance** mode. Linked or cropped SV2 groups stay read-only; other independent groups on that track remain editable. The preview shows which curves actually change.
+
+Use **Save As** to write a new file in the same format. Keep the matching `.tuning.json` beside the project. When you import the copy again, VWA recognizes it as a tuned candidate and asks whether to continue editing from that version.
+
+USTX 0.5 projects can be previewed. To edit one, open it in OpenUtau and save a copy in the newer format first.
+
 ## Upload preparation
 
 Open **发布** (Publishing), after optional **合成视频** (Video assembly). Each page shows one step:

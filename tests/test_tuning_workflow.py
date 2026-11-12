@@ -229,6 +229,34 @@ class TuningWorkflowTests(unittest.TestCase):
             self.assertNotIn('manualReview', rebuilt)
             self.assertEqual(second['project_commit_count'], 1)
 
+    def test_save_copy_does_not_overwrite_companion_receipt_or_a_concurrent_project(self):
+        with tempfile.TemporaryDirectory(prefix='tuning-copy-', dir=TEST_TEMP) as temp:
+            root = Path(temp)
+            source = write_svp(root / 'source.svp', project())
+            session = create_session(source, root / 'session')
+            result = run_session(session, {'track_indices': [0], 'performance_style': 'gentle'})
+            saved = root / 'my-edit.svp'
+            sidecar = tuning_workflow.receipt_path_for(saved)
+            sidecar.write_text('other receipt', encoding='utf-8')
+            with self.assertRaises(FileExistsError):
+                tuning_workflow.export_verified_copy(result, saved)
+            self.assertEqual(sidecar.read_text(encoding='utf-8'), 'other receipt')
+            self.assertFalse(saved.exists())
+            sidecar.unlink()
+            publish = tuning_workflow._publish_new_file
+
+            def compete(pending, destination):
+                if destination == saved:
+                    destination.write_bytes(b'another project')
+                publish(pending, destination)
+
+            with patch('tuning_workflow._publish_new_file', side_effect=compete):
+                with self.assertRaises(FileExistsError):
+                    tuning_workflow.export_verified_copy(result, saved)
+            self.assertEqual(saved.read_bytes(), b'another project')
+            self.assertFalse(sidecar.exists())
+            self.assertFalse(list(root.glob('*.pending')))
+
     def test_original_change_stops_and_missing_original_still_recovers_from_snapshot(self):
         with tempfile.TemporaryDirectory(prefix='source-', dir=TEST_TEMP) as temp:
             root = Path(temp)

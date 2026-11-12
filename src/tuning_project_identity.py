@@ -13,6 +13,7 @@ from typing import Any
 
 MAX_RECEIPT_BYTES = 4 * 1024 * 1024
 MAX_PROJECT_BYTES = 128 * 1024 * 1024
+MAX_VPR_PROJECT_BYTES = 512 * 1024 * 1024
 _SHA256 = re.compile(r"[0-9a-fA-F]{64}\Z")
 _REPARSE_POINT = 0x400
 _CHUNK = 1024 * 1024
@@ -264,7 +265,8 @@ def inspect_candidate_origin(project: Any, *, sha256: str | None = None) -> dict
         return _unverified(declared_sha, None, receipt_name,
                            "调用方提供的候选 SHA-256 格式无效。")
 
-    candidate_sha, issue = _hash_limited(candidate, MAX_PROJECT_BYTES)
+    limit = MAX_VPR_PROJECT_BYTES if os.path.splitext(candidate)[1].casefold() == '.vpr' else MAX_PROJECT_BYTES
+    candidate_sha, issue = _hash_limited(candidate, limit)
     if issue is not None:
         return _unverified(declared_sha, None, receipt_name,
                            "无法核对当前工程字节：" + issue + "。")

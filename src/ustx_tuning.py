@@ -150,7 +150,9 @@ class Layout:
             if row.instrumental:
                 continue
             if self.version not in VERSIONS:
-                row.issues['track.ustx_version'] = '此 USTX 版本尚未验证写回，当前只读。'
+                row.issues['track.ustx_version'] = (
+                    'USTX 0.5 可预览；请在 OpenUtau 另存为新版工程后再调音。' if self.version == '0.5'
+                    else '此 USTX 版本尚未验证写回，当前只读。')
             if data.get('expression_graphs') or tracks[i].get('expression_graph'):
                 row.issues['track.ustx_graph'] = '此轨使用 OpenUtau 表达式图，当前只读。'
         for i, part in enumerate(voice):
@@ -169,7 +171,10 @@ class Layout:
 
     @staticmethod
     def _tempo(data):
-        source = _objects(data, 'tempos')
+        # OpenUtau 0.5 stores constant tempo at the project root. The fallback
+        # is for displaying this legacy score; the original remains read-only.
+        source = ([{'position': 0, 'bpm': data.get('bpm')}] if data['ustx_version'] == '0.5' and 'tempos' not in data
+                  else _objects(data, 'tempos'))
         result = []
         last = -1
         for t in source:

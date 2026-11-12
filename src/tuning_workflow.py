@@ -588,36 +588,67 @@ def verified_result(session):
     return verified
 
 
+def _publish_new_file(pending,destination):
+    if os.name=='nt':
+        os.rename(pending,native_path(destination))
+    else:
+        os.link(pending,native_path(destination))
+
+
 def export_verified_copy(result, destination, *, cancel=lambda:None):
-    """Publish the verified candidate bytes to a new path of the same format."""
+    """Publish an independent project and its portable, hash-bound origin."""
     source=Path(result['output']);destination=Path(destination).absolute()
-    if project_format(destination)!=project_format(source) or not _isfile(source):
+    format=project_format(source)
+    if project_format(destination)!=format or not _isfile(source):
         raise ValueError('请选择与候选工程格式相同的新文件名。')
-    if _exists(destination) or destination.is_symlink():
-        raise FileExistsError('目标文件已存在，请使用新名称。')
-    pending=None
+    if result.get('receipt_verified') is not True:
+        raise ValueError('请先核验调音候选和回执，再另存。')
+    origin=receipt_path_for(destination)
+    if any(os.path.lexists(native_path(path)) for path in (destination,origin)):
+        raise FileExistsError('目标工程或同名回执已存在，请使用新名称。')
+    pending=origin_pending=origin_identity=None
+    published=False
     try:
         checksum=hashlib.sha256();size=0
         with open(native_path(source),'rb') as original, tempfile.NamedTemporaryFile(
-                dir=native_path(destination.parent),prefix='.vwa-svp-',suffix='.pending',delete=False) as stream:
+                dir=native_path(destination.parent),prefix='.vwa-tuning-',suffix='.pending',delete=False) as stream:
             pending=stream.name
             for block in iter(lambda:original.read(1024*1024),b''):
                 cancel();stream.write(block);checksum.update(block);size+=len(block)
             stream.flush();os.fsync(stream.fileno())
         if checksum.hexdigest()!=result['output_sha256'] or size!=result['output_bytes']:
             raise ValueError('候选在另存期间已改变，请重新核对。')
+        # A saved copy must be recognizable when imported again. Keep only
+        # the two hashes and format; do not leak session paths or local inputs.
+        identity={'schema':SCHEMA,'kind':'vwa.tuning-result','format':format,
+                  'receipt_verified':True,'source_sha256':result['source_sha256'],
+                  'output_sha256':result['output_sha256']}
+        with tempfile.NamedTemporaryFile(dir=native_path(destination.parent),prefix='.vwa-origin-',
+                                         suffix='.pending',delete=False) as stream:
+            origin_pending=stream.name
+            stream.write(json.dumps(identity,ensure_ascii=False,separators=(',',':')).encode('utf-8'))
+            stream.flush();os.fsync(stream.fileno())
+            temp_identity=os.fstat(stream.fileno())
         cancel()
-        if os.name=='nt':
-            os.rename(pending,native_path(destination))
-            pending=None
-        else:
-            os.link(pending,native_path(destination))
+        _publish_new_file(origin_pending,origin)
+        origin_identity=temp_identity
+        _publish_new_file(pending,destination)
+        published=True
         if file_hash(destination)!=result['output_sha256']:
             raise OSError('另存文件读回校验失败，请检查目标文件。')
         return str(destination)
     finally:
-        if pending is not None:
-            Path(pending).unlink(missing_ok=True)
+        if origin_identity is not None and not published:
+            # Remove only the sidecar made by this transaction if the project
+            # name was taken before the final rename.
+            try:
+                if os.path.samestat(origin_identity,os.lstat(native_path(origin))):
+                    Path(native_path(origin)).unlink()
+            except OSError:
+                pass
+        for path in (pending,origin_pending):
+            if path is not None:
+                Path(path).unlink(missing_ok=True)
 
 
 def register_result(session,*,job=None):

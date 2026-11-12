@@ -403,6 +403,7 @@ def context_for_snapshot(snapshot, geometry=None) -> dict[str, Any]:
                     "pitch.unknown", "音符音高缺失或不是有限数字。",
                     track_index, note_index=note_index,
                 ))
+            protection = getattr(placement, 'protection', None)
             note_rows.append({
                 "note_id": note_id,
                 "track_id": track_id,
@@ -421,6 +422,7 @@ def context_for_snapshot(snapshot, geometry=None) -> dict[str, Any]:
                 "lyric_raw": lyric_raw,
                 "lyric_known": lyric_known,
                 "singing": singing,
+                **({"read_only_reason": protection[1]} if protection else {}),
             })
             parsed_count += 1
 
@@ -723,6 +725,8 @@ def _resolve_note_boundary_ids(
 
     start_note = all_notes[start_note_id]
     end_note = all_notes[end_note_id]
+    if protected := start_note.get("read_only_reason") or end_note.get("read_only_reason"):
+        raise ValueError(label + " 的边界音符只读：" + protected)
     if start_note["track_id"] != end_note["track_id"]:
         raise StyleNoteBoundaryError(
             "style_note_boundary_cross_track",
@@ -1289,7 +1293,8 @@ def _style_overlap_error(
 def _align_regions(
     regions: list[dict[str, Any]], selected_context: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    components = _components(selected_context["notes"])
+    notes = selected_context["notes"]
+    components = _components([note for note in notes if not note.get("read_only_reason")])
     boundaries = sorted({
         float(component[edge])
         for component in components
@@ -1313,6 +1318,9 @@ def _align_regions(
             if component["start"] < last and component["end"] > first
         ]
         if not touched:
+            if any(note.get("read_only_reason") and note["start_seconds"] < last
+                   and note["end_seconds"] > first for note in notes):
+                raise ValueError("所选时间内只有受保护的音符组，请选择独立可编辑的音符。")
             raise ValueError(
                 "片段 " + f"{first:.6f}-{last:.6f}s 位于静音区，没有可对齐的音符。"
             )

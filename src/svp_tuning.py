@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 SV2_MIN = 182
 SV2_MAX = 196
 GROUP_STYLE_ONLY = '引用、裁剪或移调的音符组目前只支持「保留原表现」下的风格编辑。'
+GROUPS_PARTLY_PROTECTED = '本轨的共享或裁剪音符组保持只读；可编辑其他独立音符组。'
 
 
 def _obj(value):
@@ -41,6 +42,7 @@ class Placement:
     ref: dict
     offset: int
     notes: list[Note] = field(default_factory=list)
+    protection: tuple[str, str] | None = None
 
     @property
     def adapted(self):
@@ -84,7 +86,12 @@ class Track:
 
     @property
     def writable(self):
-        return self.instrumental is False and not self.issues and bool(self.note_count)
+        return self.instrumental is False and not self.issues and bool(self.style_placements)
+
+    @property
+    def style_placements(self):
+        return [placement for placement in self.placements
+                if placement.notes and not getattr(placement, 'protection', None)]
 
     @property
     def reason(self):
@@ -179,6 +186,10 @@ class Layout:
                     furthest, previous = end, key
         if not row.note_count:
             issue('track.no_notes', '轨道没有可安全定位的音符。')
+        elif not row.style_placements:
+            for placement in row.placements:
+                if placement.protection:
+                    issue(*placement.protection)
         return row
 
     def _reference(self, row, index, ref):
@@ -188,11 +199,12 @@ class Layout:
         if len(slots) != 1:
             row.issues.setdefault('track.group_reference', '音符组引用缺失或素材库中有重复 ID。')
             return
+        protection = None
         if self._references[target] != 1:
-            row.issues.setdefault('track.group_shared', '音符组被多个片段引用；请先在 SV2 中将此组独立。')
-        self._placement(row, index, slots[0], self._library[slots[0]], ref)
+            protection = ('track.group_shared', '音符组被多个片段引用；请先在 SV2 中将此组独立。')
+        self._placement(row, index, slots[0], self._library[slots[0]], ref, protection=protection)
 
-    def _placement(self, row, index, slot, group, ref):
+    def _placement(self, row, index, slot, group, ref, *, protection=None):
         issue = row.issues.setdefault
         notes = group.get('notes')
         if not isinstance(notes, list):
@@ -217,7 +229,7 @@ class Layout:
             return
         if self.sv2 and ref.get('mute', False):
             return
-        placement = Placement(row.index, index, slot, group, ref, offset)
+        placement = Placement(row.index, index, slot, group, ref, offset, protection=protection)
         if not self.sv2 and placement.adapted:
             issue('track.cropped', '当前只支持已核验的 SV2 组裁剪和移调。')
         if 'parameters' in group and not isinstance(group['parameters'], dict):
@@ -233,7 +245,8 @@ class Layout:
                 continue
             left, right = start + offset, start + offset + duration
             if trimmed and (left < begin or (end != -1 and right > end)):
-                issue('track.group_trimmed_notes', '裁剪隐藏了全部或部分音符；此组当前只读。')
+                if placement.protection is None:
+                    placement.protection = ('track.group_trimmed_notes', '裁剪隐藏了全部或部分音符；此组当前只读。')
                 left, right = max(left, begin), min(right, end) if end != -1 else right
                 if left >= right:
                     continue

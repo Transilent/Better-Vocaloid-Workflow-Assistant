@@ -101,6 +101,7 @@ class UstxTuningTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '格式相同'):
                 export_verified_copy(result, Path(root) / 'wrong.svp')
             saved = Path(export_verified_copy(result, Path(root) / 'candidate.ustx'))
+            self.assertTrue(ProjectNotes.load(saved).project['candidate_origin']['verified'])
             self.assertEqual(sha256(saved.read_bytes()).hexdigest(), result['output_sha256'])
             self.assertEqual(sha256(source.read_bytes()).hexdigest(), before)
             actual = read(saved.read_bytes())
@@ -135,6 +136,22 @@ class UstxTuningTest(unittest.TestCase):
             self.assertEqual(result['report']['curve_changes'],
                              [{'track_index': 0, 'group_placement': 'part:1', 'parameter': 'dyn'}])
             self.assertFalse(result['media_relocation']['audio_copied'])
+
+    def test_legacy_constant_tempo_can_preview_without_claiming_write_support(self):
+        data = project()
+        data.update(ustx_version='0.5', bpm=164, beat_per_bar=4, beat_unit=4)
+        data.pop('tempos')
+        with tempfile.TemporaryDirectory(prefix='ustx-legacy-', dir=APP) as root:
+            path = write_source(root, data)
+            notes = ProjectNotes.load(path)
+            self.assertEqual(notes.project['format_version'], '0.5')
+            self.assertFalse(notes.editable)
+            lead = next(iter(notes.tracks))
+            self.assertIn('OpenUtau 另存', notes.tracks[lead]['reason'])
+            self.assertGreater(notes.tracks[lead]['noteCount'], 0)
+        self.assertEqual(Layout(data).score['time']['tempo'], [{'position': 0, 'bpm': 164}])
+        with self.assertRaisesRegex(ValueError, 'OpenUtau 另存'):
+            process_project(data, {'track_indices': [0], 'performance_style': 'bold'})
 
     def test_unsupported_versions_graph_overlap_and_custom_expression_are_preserved(self):
         base = project()

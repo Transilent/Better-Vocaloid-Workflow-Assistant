@@ -1,5 +1,7 @@
 {
   "en": {
+    "本轨的共享或裁剪音符组保持只读；可编辑其他独立音符组。": "Linked or trimmed note groups on this track are read-only. Other independent groups can be edited.",
+    "USTX 0.5 可预览；请在 OpenUtau 另存为新版工程后再调音。": "You can preview USTX 0.5. Save a copy in the newer format in OpenUtau before tuning.",
     "打开 B站填写": "Open Bilibili to fill",
     "小红书手动投稿": "Post manually on Xiaohongshu",
     "小红书仅支持手动投稿，请使用发布页的“小红书手动投稿”资料。": "Xiaohongshu posting is manual. Use the Xiaohongshu handoff in Publishing.",
@@ -2643,6 +2645,8 @@
     "查看日志说明": "Read log guide"
   },
   "ja": {
+    "本轨的共享或裁剪音符组保持只读；可编辑其他独立音符组。": "このトラックのリンクされたグループとトリミングされたグループは読み取り専用です。他の独立したグループは編集できます。",
+    "USTX 0.5 可预览；请在 OpenUtau 另存为新版工程后再调音。": "USTX 0.5 はプレビューできます。調声する前に OpenUtau で新しい形式に保存してください。",
     "打开 B站填写": "Bilibiliの投稿フォームを開く",
     "小红书手动投稿": "小紅書に手動で投稿",
     "小红书仅支持手动投稿，请使用发布页的“小红书手动投稿”资料。": "小紅書への投稿は手動です。投稿ページの「小紅書に手動で投稿」をご利用ください。",

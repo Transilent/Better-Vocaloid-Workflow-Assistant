@@ -13,11 +13,11 @@ from zipfile import BadZipFile, ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 from common import native_path
 from svp_tuning import Note, Track
+from tuning_project_identity import MAX_VPR_PROJECT_BYTES as MAX_FILE_BYTES
 from vocaloid_pitch import PBS_SPEC, PIT_SPEC, step_values
 
 
 SEQUENCE = 'Project/sequence.json'
-MAX_FILE_BYTES = 512 * 1024**2
 MAX_SEQUENCE_BYTES = 32 * 1024**2
 MAX_MEMBER_BYTES = 2 * 1024**3 - 1
 BLICK = 705600000 // 480
@@ -27,6 +27,19 @@ STYLE_ONLY = 'VPR 支持「保留原表现」下的 DYN 力度和 PIT 音高弯�
 MAX_EDIT_TICKS = 750_000
 MAX_EVENTS = 250_000
 _CHUNK = 1024**2
+
+
+def _authored_vibrato(note):
+    if note.get('isAiVibratoEnabled'):
+        return True
+    value = note.get('vibrato')
+    if value is None or value == {}:
+        return False
+    # Yamaha stores duration, depths and rates, rather than a generic
+    # controller event list. Only a known disabled shape permits a new layer.
+    return not (isinstance(value, dict)
+                and set(value) <= {'type', 'duration', 'depths', 'rates'}
+                and type(value.get('duration')) is int and value['duration'] == 0)
 
 
 @contextmanager
@@ -270,11 +283,9 @@ class Layout:
                 continue
             if note.get('directPitches'):
                 part.direct_pitch_spans.append((start, start + dur))
-            vibrato = note.get('vibrato')
-            authored = bool(note.get('isAiVibratoEnabled') or (isinstance(vibrato, dict) and vibrato.get('events')))
             onset, duration = start * BLICK, dur * BLICK
             data = {'onset': onset, 'duration': duration, 'pitch': pitch, 'lyrics': note.get('lyric'),
-                    'attributes': {'dF0Vbr': 1 if authored else 0}}
+                    'attributes': {'dF0Vbr': 1 if _authored_vibrato(note) else 0}}
             project_start = onset + part.offset
             part.notes.append(Note(i, data, project_start, project_start + duration, pitch))
         if part.notes:

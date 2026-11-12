@@ -107,7 +107,7 @@ def _protected(data,indices,controls,pitch=False,calibrated=False,*,layout=None)
     value=copy.deepcopy(data)
     for index in indices:
         track=value['tracks'][index]
-        groups=([p.group_in(value) for p in layout.tracks[index].placements]
+        groups=([p.group_in(value) for p in layout.tracks[index].style_placements]
                 if layout and layout.tracks[index].style_only else [track.get('mainGroup',{})])
         for group in groups:
             parameters=group.get('parameters',{})
@@ -201,7 +201,7 @@ class StyleTargets:
 def _svp_targets(output,layout,indices):
     if not any(layout.tracks[index].style_only for index in indices):
         return StyleTargets(output)
-    placements=tuple(p for index in indices for p in layout.tracks[index].placements)
+    placements=tuple(p for index in indices for p in layout.tracks[index].style_placements)
     return StyleTargets({'time':output['time'],'tracks':[p.style_track(output) for p in placements]},placements)
 
 
@@ -215,6 +215,24 @@ def _write_svp_style(output,targets):
             if name in (*EXPRESSION,'pitchDelta') and value!=original.get(name):
                 group.setdefault('parameters',{})[name]=value
     return output
+
+
+def _svp_protected_style_groups(layout,indices,project,regions):
+    from vocal_expression import TempoMap
+    groups=[p for index in indices for p in layout.tracks[index].placements if p.protection]
+    if not groups:
+        return []
+    clock=TempoMap(project['time']['tempo'])
+    rows=[]
+    for placement in groups:
+        if regions and not any(
+                region.get('track_index',placement.track_index)==placement.track_index
+                and any(clock.to_seconds(note.start)<region['end'] and clock.to_seconds(note.end)>region['start']
+                        for note in placement.notes) for region in regions):
+            continue
+        rows.append({'track_index':placement.track_index,'group_placement':placement.key,
+                     'status':'skipped','reason':placement.protection[0],'message':placement.protection[1]})
+    return rows
 
 
 def apply_style_plan(targets,options,indices,*,controls=None,cancel=lambda:None,progress=lambda text:None):
@@ -401,6 +419,9 @@ def process_project(data,options,*,cancel=lambda:None,progress=lambda text:None,
     style,attempted=apply_style_plan(targets,options,indices,cancel=cancel,progress=progress)
     if attempted:report['stages'].append('style')
     output=_write_svp_style(output,targets)
+    if attempted and (protected_groups:=_svp_protected_style_groups(layout,indices,output,regions)):
+        style['protected_groups']=protected_groups
+        if style['status']=='applied':style['status']='partial'
     report['style']=style
     progress('统一保形加密与保护校验')
     density_indices=[i for i in indices if not layout.tracks[i].style_only]

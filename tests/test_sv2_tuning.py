@@ -102,6 +102,7 @@ class SV2TuningTest(unittest.TestCase):
             self.assertEqual({row['parameter'] for row in report['curve_changes']},
                              {'tension', 'breathiness', 'voicing'})
             exported = export_verified_copy(candidate, Path(temp) / 'edited.svp')
+            self.assertTrue(ProjectNotes.load(exported).project['candidate_origin']['verified'])
             edited = Path(exported)
             payload = edited.read_bytes()
             self.assertTrue(payload.startswith(b'\xef\xbb\xbf') and payload.endswith(b'\0'))
@@ -145,20 +146,43 @@ class SV2TuningTest(unittest.TestCase):
             self.assertTrue(all(row['group_placement'] == 'group:1' and row['track_index'] == 0
                                 for row in result['report']['curve_changes']))
 
-    def test_shared_and_partial_groups_are_visible_but_block_writes(self):
+    def test_shared_and_cropped_groups_leave_independent_groups_editable(self):
         source = project()
         shared = deepcopy(source)
         # A muted copy still refers to the same native source.
         shared['tracks'][1]['groups'] = [ref('a', mute=True)]
         cropped = deepcopy(source)
         cropped['tracks'][0]['groups'][0]['blickAbsoluteBegin'] = 9 * Q
+        for data, why in ((shared, '多个片段'), (cropped, '裁剪')):
+            with self.subTest(why=why), tempfile.TemporaryDirectory(dir=APP) as temp:
+                notes = ProjectNotes.load(write_project(temp, data))
+                lead = notes.editable[0]
+                visible = notes.visible([lead], 0, 20)
+                self.assertEqual(visible[0]['start'], 4.5 if data is cropped else 4.)
+                self.assertIn(why, visible[0]['readOnlyReason'])
+                self.assertIsNone(notes.region(lead, 4.5, 5., {'preset': 'gentle'}))
+                self.assertIsNotNone(notes.region(lead, 7.2, 7.7, {'preset': 'gentle'}))
+                result, report = process_project(data, {'track_indices': [0], 'performance_style': 'gentle'})
+                self.assertEqual(result['library'][::2], data['library'][::2])
+                self.assertEqual(result['tracks'], data['tracks'])
+                self.assertEqual(report['status'], 'partial')
+                self.assertIn(why, report['style']['protected_groups'][0]['message'])
+                self.assertTrue(report['curve_changes'])
+                self.assertTrue(all(row['group_placement']=='group:1' for row in report['curve_changes']))
+
+        # When there are no independent groups, the track stays read-only.
+        shared['tracks'][0]['groups'].pop()
+        with self.assertRaisesRegex(ValueError, '多个片段'):
+            process_project(shared, {'track_indices': [0], 'performance_style': 'gentle'})
+
+    def test_ambiguous_or_unverified_svp_remains_read_only(self):
+        source = project()
         overlap = deepcopy(source)
         overlap['tracks'][0]['groups'][1]['blickOffset'] = 9 * Q
         missing = deepcopy(source)
         missing['tracks'][0]['groups'][0]['groupID'] = 'unresolved'
         future = {**source, 'version': 999}
-        for data, why in ((shared, '多个片段'), (cropped, '裁剪'), (overlap, '重叠'),
-                          (missing, '引用缺失'), (future, '尚未验证')):
+        for data, why in ((overlap, '重叠'), (missing, '引用缺失'), (future, '尚未验证')):
             with self.subTest(why=why), tempfile.TemporaryDirectory(dir=APP) as temp:
                 notes = ProjectNotes.load(write_project(temp, data))
                 lead = next(iter(notes.tracks))
@@ -169,11 +193,6 @@ class SV2TuningTest(unittest.TestCase):
                     process_project(data, {'track_indices': [0], 'performance_style': 'gentle'})
                 with self.assertRaises(ValueError):
                     notes.region(lead, 4, 5, {'preset': 'gentle'})
-                if data is cropped:
-                    self.assertEqual(notes.visible([lead], 0, 20)[0]['start'], 4.5)
-                    candidate, report = process_project(data, {'track_indices': [1], 'performance_style': 'gentle'})
-                    self.assertEqual(candidate['library'][:2], data['library'][:2])
-                    self.assertTrue(report['curve_changes'])
 
     def test_group_sources_gate_replacement_modes(self):
         with self.assertRaisesRegex(ValueError, '只支持.*保留原表现'):

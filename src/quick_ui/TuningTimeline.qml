@@ -142,7 +142,8 @@ Item {
                 continue
             result.push({ id: String(note.id), trackId: trackId,
                 lane: lane || {track: findTrack(trackId), index: trackOrder(trackId), order: 0},
-                lyric: String(note.lyric || "").trim(), pitch: pitch, start: start, end: end })
+                lyric: String(note.lyric || "").trim(), pitch: pitch, start: start, end: end,
+                readOnlyReason: String(note.readOnlyReason || "") })
         }
         return result.sort((a, b) => a.start - b.start || a.lane.order - b.lane.order
             || a.pitch - b.pitch || a.end - b.end || a.id.localeCompare(b.id))
@@ -230,6 +231,8 @@ Item {
     }
 
     function styleForNote(note) {
+        if (note.readOnlyReason)
+            return null
         const spans = styleSpans[note.trackId]
         if (!spans)
             return null
@@ -300,6 +303,7 @@ Item {
         return (note.lyric || "空歌词") + " · " + pitchName(note.pitch)
             + " · " + String(note.lane.track.name || note.trackId) + "\n"
             + formatTime(note.start, 3) + "–" + formatTime(note.end, 3)
+            + (note.readOnlyReason ? "\n" + vwaTr(note.readOnlyReason) : "")
     }
 
     function formatTime(value, decimals) {
@@ -797,7 +801,7 @@ Item {
                 const track = timeline.trackColor(note.lane.index)
                 const style = timeline.styleForNote(note)
                 const color = style && style.color ? style.color : track
-                ctx.globalAlpha = note.lane.track.editable === false ? 0.55 : 1
+                ctx.globalAlpha = note.readOnlyReason || note.lane.track.editable === false ? 0.55 : 1
                 fill(ctx, color, box.x, box.y, box.width, box.height)
                 if (timeline.multi && style)
                     fill(ctx, track, box.x, box.y, Math.min(box.width, 3 * timeline.scale), box.height)

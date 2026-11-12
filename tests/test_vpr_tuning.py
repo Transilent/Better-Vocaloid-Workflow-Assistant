@@ -28,7 +28,9 @@ EXTRA = 'Project/Additional/source.bin'
 
 def note(pos, duration, pitch, lyric):
     return {'pos': pos, 'duration': duration, 'number': pitch, 'lyric': lyric, 'phoneme': 'a',
-            'isProtected': True, 'exp': {'accent': 70}, 'vibrato': {'events': [{'pos': 48, 'value': 12}]}}
+            'isProtected': True, 'exp': {'accent': 70}, 'vibrato': {
+                'type': 1, 'duration': duration // 2, 'depths': [{'pos': 0, 'value': 35}],
+                'rates': [{'pos': 0, 'value': 30}]}}
 
 
 def project():
@@ -122,6 +124,7 @@ class VprTuningTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, '格式相同'):
                     workflow.export_verified_copy(result, root / 'wrong.ustx')
                 saved = Path(workflow.export_verified_copy(result, root / 'candidate.vpr'))
+                self.assertTrue(ProjectNotes.load(saved).project['candidate_origin']['verified'])
                 self.assertEqual(len(ProjectNotes.load(saved).notes), len(timeline.notes))
             self.assertEqual(sha256(source.read_bytes()).hexdigest(), source_sha)
             self.assertEqual(sha256(saved.read_bytes()).hexdigest(), result['output_sha256'])
@@ -172,6 +175,19 @@ class VprTuningTests(unittest.TestCase):
         self.assertEqual([r['parameter'] for r in receipt['curve_changes']], [DYN])
         self.assertIn('vpr_direct_pitch_preserved', json.dumps(receipt))
         self.assertEqual(ai['tracks'][2]['parts'][0]['notes'], data['tracks'][2]['parts'][0]['notes'])
+
+    def test_real_vibrato_is_not_overlaid_but_disabled_vibrato_allows_a_style(self):
+        data = project()
+        target = data['tracks'][1]['parts'][1]['notes'][0]
+        target['duration'] = 460  # 0.958 s at the actual 60 BPM.
+        options = {'track_indices': [1], 'performance_style': 'power_pop', 'style_pitch': True}
+        out, applied = process_project(data, options)
+        self.assertEqual(out['tracks'][1]['parts'][1]['notes'][0], target)
+        self.assertIn('existing_or_unknown_vibrato_preserved', json.dumps(applied))
+        self.assertNotIn('delayed_vibrato', json.dumps(applied))
+        target['vibrato']['duration'] = 0
+        _, disabled = process_project(data, options)
+        self.assertIn('delayed_vibrato', json.dumps(disabled))
 
     def test_overlap_protects_notes_locally_and_agent_targets_one_part(self):
         data = project()
