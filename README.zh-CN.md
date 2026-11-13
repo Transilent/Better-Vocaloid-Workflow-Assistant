@@ -4,13 +4,15 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
-VWA 是面向 Windows 的歌声合成工作流助手，提供歌曲准备、SVP 调音、视频合成和上传资料整理。
+VWA 是面向 Windows 的歌声合成工作流助手，串联歌曲准备、逐句调音、简易混音、视频合成与投稿资料整理。
 
 **用户交流群：QQ群 490619616。** 欢迎交流使用体验、问题与建议。
 
 [问题反馈与建议](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues/new/choose) · [Issue 与 PR 贡献规范](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/blob/main/CONTRIBUTING.zh-CN.md)
 
-当前开发源码采用 Qt 6 和 Qt Quick，提供可跳过的首次使用教程和可延后的启动更新提醒；设置中可复制群号。详见[启动提醒与教程说明](docs/StartupExperience.zh-CN.md)。已发布的 1.1.0 安装包未变。
+**[下载 VWA 2.0.0（Windows x64）](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.0.0)** · [使用指南](docs/UserGuide.zh-CN.md)
+
+2.0.0 采用 Qt Quick 工作台。调音可在单轨卷帘和多轨编排间切换，混音支持整曲连续试听和实时分析。首次启动有可跳过的教程；发现更新时先显示版本和更新内容，由你决定何时更新。详见[启动提醒与教程](docs/StartupExperience.zh-CN.md)。
 
 ## 功能
 
@@ -31,53 +33,47 @@ VWA 是面向 Windows 的歌声合成工作流助手，提供歌曲准备、SVP 
 
 ## 下载与安装
 
-从 [1.1.0 发行页](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v1.1.0)下载适合自己的完整包或 JPN 包。
+在 [2.0.0 发行页](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.0.0)的 **Assets** 中选择普通版或 JPN 版。
 
 | 包型 | 用途与内容 |
 | --- | --- |
 | 全量包 | 面向所有用户的干净安装路线，包括新用户和任意旧版本用户；包含完整模型集与基础运行环境。 |
 | JPN 包 | 工作流与全量包相同，仅省略中文 Qwen 权重，保留日语识别与音符提取；中文模型可后续安装。 |
-| 更新包 | 只有该安装版本在 1.1.0 发行说明中被明确列为兼容时，才可使用提供的更新；更新包不能作为完整安装。 |
+| 增量更新 | 仅面向正式发行的 **1.0.0 和 1.1.0**，从旧版设置页启动。 |
 
 两种全量变体均支持三种界面语言。界面语言与歌词识别语言分别设置。GitHub 的 **Source code** 源码包和更新 ZIP 均不能作为完整安装使用。
 
-**全量包：**若发行时将完整资产分卷，请把同一资产的全部分卷、对应元数据与合并工具放在同一文件夹。在该文件夹打开 PowerShell，运行：
+**普通版（约 5.41 GB）：** 下载 `VWA-Windows-x64.zip.001`、`.002`、`.003`、`portable-metadata-full.json` 和 `Merge-PortableParts.ps1`，放在同一文件夹。在该文件夹打开 PowerShell，运行：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Merge-PortableParts.ps1
 ```
 
-脚本校验分卷并生成 `VWA-Windows-x64.zip`，随后完整解压。JPN 若以单个 ZIP 提供，可直接解压。进入解压后的 `VWA` 文件夹，运行 **`VWA.exe`**。迁移程序时保留整个文件夹。
+脚本会校验三卷并生成 `VWA-Windows-x64.zip`。**JPN 版（约 1.74 GB）** 下载 `VWA-Windows-x64-JPN.zip`，可直接解压。建议使用较短的可写路径，例如 `D:\Apps`；在解压出的 `VWA` 文件夹内运行 **`VWA.exe`**。移动时请保留整个文件夹。
 
 运行环境为 Windows 10／11 x64，便携包已包含运行环境。最终下载、合并与解压所需空间以正式发行说明为准，模型组件和素材另需空间。声库合成需自行准备兼容的歌声编辑器与声库。
 
 ## 使用流程
 
 1. 在**准备工作流**选择音乐来源、歌词语言、处理方式与保存目录，完成后核对音频、音符和歌词。
-2. 在**调音工作流**选择已有任务或导入 SVP，指定轨道、参数来源与可选实验风格，生成独立工程并在 SV 中试听。
+2. 在**调音工作流**打开任务工程，或导入 Synthesizer V Studio 1／2 的 SVP、OpenUtau 的 USTX 或 VOCALOID 5／6 的 VPR。按歌词定位、选轨、调整风格，另存为新工程，在对应编辑器中合成和试听。
 3. 合成歌声干声后，在**简易混音**中平衡最多三条歌声与一条伴奏，试听并导出新 WAV，或显式登记为任务 Mixdown。
 4. 在**合成视频**中选择原视频和 Mixdown；已有成品视频可直接进入**发布**。
 5. 核对封面、平台文案与署名后准备上传，最后在创作页面检查并手动发布。
 
 调音可直接打开已支持的 Synthesizer V Studio 2（SV2）原生 SVP。独占的素材库音符组可用「保留原表现」叠加风格并另存候选；共享组、裁掉音符的组或尚未验证的工程格式会显示为只读。请在 SV2 中打开候选试听。
 
-OpenUtau USTX 可在「保留原表现」下叠加响度（DYN）与音高偏差（PITD），保留音符内的音高、颤音、音素和其他表情。完成后另存 USTX，再用 OpenUtau 打开试听。
+OpenUtau USTX 可在「保留原表现」下叠加响度（DYN）与音高偏差（PITD），保留音符内的音高、颤音、音素和其他表情。完成后另存 USTX，再用 OpenUtau 打开试听。USTX 0.5 可预览，编辑前请先在 OpenUtau 中另存为较新格式。
 
 VOCALOID 5/6 VPR 可在「保留原表现」下叠加力度（DYN）与音高弯曲（PIT），保留 PBS、声库、原生音高和内嵌音频。重叠音符保持原样；已手绘音高的音符不叠加 PIT。完成后另存 VPR，再用 VOCALOID 打开试听。
 
-在**任务与结果**查找、继续或重试任务，在**模型与组件**按需安装模型。界面语言可在**设置与更新 → 外观 → 界面语言**中修改，下次启动生效。
+在**任务与结果**查找、继续或重试任务，在**模型与组件**按需安装模型。到**设置与支持**调整外观和界面语言、重看教程或管理[本机预设库](docs/PresetLibrary.zh-CN.md)。预设可导出分享，导入默认追加。
 
 ## 升级
 
-| 当前版本 | 1.1.0 升级路线 |
-| --- | --- |
-| 1.0.0 | 在**设置与更新**中检查并安装 1.1.0；1.0.0 JPN 会更新为 1.1.0 JPN。 |
-| 0.4.0／0.4.1 | 1.1.0 暂不提供直接更新，请在新目录使用全量包。 |
-| 0.3.0／0.3.1 及其他版本 | 请在新目录使用全量包。旧版 `VWA-Updater.exe` 下载不能作为 1.1.0 升级路线。 |
+**1.0.0 或 1.1.0 正式版：** 在旧版的**设置与更新**中检查更新，按提示重启安装 2.0.0。普通版和 JPN 均可升级，保留设置、任务、预设、登录会话、已安装模型与可选组件。JPN 不会自动补装原来未安装的中文模型。
 
-1.0.0 JPN 的更新目标为 1.1.0 JPN：不会为更新强制下载省略的中文权重，用户后来安装的模型会保留。
-
-不要手工解压更新包覆盖安装，只使用应用或发行说明提供的更新。被明确支持的升级会保留设置、任务、登录会话、已安装模型及可选组件。升级前请备份正在编辑的工程。
+**其他版本：** 把普通版或 JPN 完整包解压到新目录。升级前请备份正在编辑的工程，通过应用更新，勿手工解压增量 ZIP 覆盖。
 
 ## 文档与反馈
 
@@ -100,7 +96,7 @@ VOCALOID 5/6 VPR 可在「保留原表现」下叠加力度（DYN）与音高弯
 | [FFmpeg](https://ffmpeg.org/)／[Jellyfin FFmpeg](https://github.com/jellyfin/jellyfin-ffmpeg) | 音视频处理。 |
 | [Playwright for Python](https://github.com/microsoft/playwright-python) | 浏览器登录与上传辅助。 |
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime)／[PyTorch](https://pytorch.org/) | 模型运行。 |
-| Qt Quick 和 PySide6 | 当前开发版的桌面界面。 |
+| [Qt Quick 和 PySide6](https://doc.qt.io/qtforpython-6.10/) | 桌面界面。 |
 | [NumPy](https://numpy.org/)、[SciPy](https://scipy.org/)、[librosa](https://librosa.org/)、[SoundFile](https://github.com/bastibe/python-soundfile)、[Mido](https://github.com/mido/mido)、[Pillow](https://python-pillow.org/) | 数值、音频、MIDI 与图像处理。 |
 
 所集成的 Vocal2Midi 流程还使用 [GAME](https://github.com/openvpi/GAME)、[HubertFA](https://github.com/wolfgitpr/HubertFA)、[LyricFA](https://github.com/wolfgitpr/LyricFA)、[RomajiASR](https://github.com/Xiantaidu/RomajiASR)、[llama.cpp](https://github.com/ggml-org/llama.cpp) 及相关语音和音高模型，更多致谢见保留的[上游说明](dependencies/vocal2midi2/ACKNOWLEDGEMENTS.md)。
@@ -108,3 +104,5 @@ VOCALOID 5/6 VPR 可在「保留原表现」下叠加力度（DYN）与音高弯
 ## 许可证
 
 VWA 原创代码采用 [MIT 许可证](LICENSE)。第三方代码、运行库与模型权重分别保留其原有许可证与声明，详见[第三方说明](THIRD_PARTY_NOTICES.zh-CN.md)。
+
+[2.0.0 随包运行库、许可和对应源码](docs/ThirdPartyRuntime.md)。

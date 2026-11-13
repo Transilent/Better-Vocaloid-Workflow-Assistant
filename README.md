@@ -4,13 +4,15 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
-VWA is a Windows desktop assistant for preparing singing-synthesis projects, tuning SVP projects, assembling videos and preparing uploads.
+VWA is a Windows desktop assistant for preparing singing projects, tuning by lyric, mixing vocals, assembling videos, and preparing uploads.
 
 **User community: QQ group 490619616.** Join for help and discussion.
 
 [Feedback and suggestions](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues/new/choose) · [Contribution guide](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/blob/main/CONTRIBUTING.md)
 
-The development source uses Qt 6 and Qt Quick. It includes a skippable first-run tour and startup update notices with release notes and snooze choices. The QQ group is also available in Settings. See the [startup guide (Chinese)](docs/StartupExperience.zh-CN.md). The published 1.1.0 packages are unchanged.
+**[Download VWA 2.0.0 for Windows x64](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.0.0)** · [User guide](docs/UserGuide.en.md)
+
+VWA 2.0.0 introduces a Qt Quick workbench with single-track and multitrack tuning, continuous mix audition, and live analysis. The first launch offers a skippable tour. When an update is available, VWA shows the changes and lets you decide when to install it.
 
 ## Features
 
@@ -31,53 +33,47 @@ VWA also provides task history and recovery, saved presets, optional model insta
 
 ## Download and installation
 
-Download the full or JPN package from the [1.1.0 release](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v1.1.0).
+Choose the full or JPN package under **Assets** on the [2.0.0 release page](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.0.0).
 
 | Package | Use and contents |
 | --- | --- |
 | Full | Clean installation for all users, including new users and users on any older version. Includes the complete model set and base runtime. |
 | JPN | The same workflows with only the Chinese Qwen weight files omitted. Japanese recognition and note extraction remain available; Chinese models can be installed later. |
-| Update | Only an installed version explicitly listed as compatible in the 1.1.0 release may use an offered update. An update archive is not a complete installation. |
+| Update | Available in the app for released **1.0.0 and 1.1.0** installations only. |
 
 Both full variants support all three interface languages. Interface language and lyric-recognition language are set separately. GitHub's **Source code** archives and update ZIPs are not complete installations.
 
-**Full package:** if the release splits the full asset, download every part for that asset together with its matching metadata and merge helper. Open PowerShell in that folder and run:
+**Full package (about 5.41 GB):** Put `VWA-Windows-x64.zip.001`, `.002`, `.003`, `portable-metadata-full.json`, and `Merge-PortableParts.ps1` in one folder. Open PowerShell there and run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Merge-PortableParts.ps1
 ```
 
-The script verifies the parts and creates `VWA-Windows-x64.zip`. Extract that ZIP completely. If JPN is supplied as one ZIP, extract it directly. Open the extracted `VWA` folder and run **`VWA.exe`**. Keep the complete folder together when moving the application.
+The script verifies all three parts and creates `VWA-Windows-x64.zip`. For **JPN (about 1.74 GB)**, download and extract `VWA-Windows-x64-JPN.zip` directly. Use a short, writable path such as `D:\Apps`, then run **`VWA.exe`** inside the extracted `VWA` folder. Keep the whole folder together when moving it.
 
 Requirements: Windows 10/11 x64. The portable package includes its runtime. Check the published release notes for the final download, joining and extraction space; leave additional room for optional components and media. A compatible singing editor and voicebank are required for voice synthesis.
 
 ## Basic use
 
 1. In **Preparation**, select the source, lyric language, processing options and output folder. Review the resulting audio, notes and lyrics.
-2. In **Tuning**, choose a task project or import an SVP. Select the tracks, parameter source and optional experimental style, then generate a separate project for auditioning in SV.
+2. In **Tuning**, open a task project or import a Synthesizer V Studio 1/2 SVP, OpenUtau USTX, or VOCALOID 5/6 VPR. Find a lyric, select the tracks and range, and save a new project for rendering and auditioning in its editor.
 3. Render the vocal stems. Open **Simple mixing** to balance up to three vocal WAVs and one accompaniment, audition the result and export a new WAV or register it as a task Mixdown.
 4. Select the original video and Mixdown in **Assemble video**. An existing finished video can go directly to **Publishing**.
 5. Check the cover, platform drafts and credits before preparing the upload. Review the creator page and publish manually.
 
 Tuning can open supported native Synthesizer V Studio 2 (SV2) projects directly. For independently placed note groups, choose **Keep original expression**, apply a style, and save a separate candidate. Shared groups, trims that hide notes, and unverified project versions are read-only. Open the candidate in SV2 to audition it.
 
-For OpenUtau USTX, **Keep original expression** supports additive dynamics (DYN) and pitch deviation (PITD) while preserving note pitch shapes, vibrato, phonemes, and other expressions. Save a USTX candidate and open it in OpenUtau to audition it.
+For OpenUtau USTX, **Keep original expression** supports additive dynamics (DYN) and pitch deviation (PITD) while preserving note pitch shapes, vibrato, phonemes, and other expressions. Save a USTX candidate and open it in OpenUtau to audition it. USTX 0.5 can be previewed; resave it in OpenUtau before editing.
 
 For VOCALOID 5/6 VPR, **Keep original expression** supports additive dynamics (DYN) and pitch bend (PIT) while preserving PBS, voices, note pitch data, and embedded audio. Overlapping notes are left alone, and PIT is skipped on notes with drawn pitch. Save a VPR candidate and open it in VOCALOID to audition it.
 
-Use **Tasks and results** to find, continue or retry tasks. Install optional models under **Models and components**. Change the interface language under **Settings and updates → Appearance → Interface language**, then restart VWA.
+Use **Tasks and results** to find, continue, or retry tasks. Install optional models from **Models and components**. In **Settings and support**, change the interface language, revisit the tour, or manage the [local preset library](docs/PresetLibrary.en.md). Imports append presets by default.
 
 ## Upgrading
 
-| Installed version | 1.1.0 route |
-| --- | --- |
-| 1.0.0 | Check for and install 1.1.0 in **Settings and updates**. The 1.0.0 JPN variant updates to 1.1.0 JPN. |
-| 0.4.0 / 0.4.1 | Direct updates to 1.1.0 are not currently provided. Use the full package in a new folder. |
-| 0.3.0 / 0.3.1 and other versions | Use the full package in a new folder. Older `VWA-Updater.exe` downloads are not a 1.1.0 upgrade route. |
+**Released 1.0.0 or 1.1.0:** Check for updates in the old app under **Settings and updates**, then follow the restart prompt. Both full and JPN retain settings, tasks, presets, sign-in sessions, installed models, and optional components. JPN does not automatically add omitted Chinese weights.
 
-The 1.0.0 JPN update targets 1.1.0 JPN: it does not force a download of omitted Chinese weights, and models installed later are preserved.
-
-Do not unpack an update archive over an installation; use only the update offered by the application or release notes. A listed compatible update preserves settings, tasks, sign-in sessions, installed models and optional components. Back up editor projects before upgrading.
+**All other versions:** Extract a full or JPN package into a new folder. Back up editor projects and apply an offered update through the app.
 
 ## Documentation and support
 
@@ -100,7 +96,7 @@ Thanks to the authors and contributors of the following projects.
 | [FFmpeg](https://ffmpeg.org/) / [Jellyfin FFmpeg](https://github.com/jellyfin/jellyfin-ffmpeg) | Audio/video processing. |
 | [Playwright for Python](https://github.com/microsoft/playwright-python) | Browser sign-in and upload assistance. |
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime) / [PyTorch](https://pytorch.org/) | Model execution. |
-| Qt Quick and PySide6 | Development desktop interface. |
+| [Qt Quick and PySide6](https://doc.qt.io/qtforpython-6.10/) | Desktop interface. |
 | [NumPy](https://numpy.org/), [SciPy](https://scipy.org/), [librosa](https://librosa.org/), [SoundFile](https://github.com/bastibe/python-soundfile), [Mido](https://github.com/mido/mido), [Pillow](https://python-pillow.org/) | Numeric, audio, MIDI and image processing. |
 
 The integrated Vocal2Midi pipeline also uses [GAME](https://github.com/openvpi/GAME), [HubertFA](https://github.com/wolfgitpr/HubertFA), [LyricFA](https://github.com/wolfgitpr/LyricFA), [RomajiASR](https://github.com/Xiantaidu/RomajiASR), [llama.cpp](https://github.com/ggml-org/llama.cpp) and its associated speech and pitch models. See the preserved [upstream acknowledgements](dependencies/vocal2midi2/ACKNOWLEDGEMENTS.md) for further credits.
@@ -108,3 +104,5 @@ The integrated Vocal2Midi pipeline also uses [GAME](https://github.com/openvpi/G
 ## License
 
 VWA's original code is licensed under [MIT](LICENSE). Third-party code, runtimes and model weights retain their own licenses and notices. See [Third-party notices](THIRD_PARTY_NOTICES.md).
+
+See [2.0.0 runtime notices and corresponding source](docs/ThirdPartyRuntime.md).

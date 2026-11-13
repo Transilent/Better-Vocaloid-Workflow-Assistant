@@ -128,10 +128,19 @@ RUNTIME_PROGRAM_FILES = {'components/roformer.json', 'components/runtime-feature
                           'components/pedalboard.json', 'components/pedalboard-LICENSE.txt',
                           'components/pedalboard-NOTICE.txt', 'components/pedalboard-THIRD_PARTY_NOTICES.md'}
 ROOT_FILES.add('VWA.exe')
-ROOT_FILES.add('Start-Quick.bat')
+ROOT_FILES.update({'Start-Quick.bat', 'quick_ui/UiNumberField.qml', 'vocaloid_pitch.py'})
 LAUNCHER_MIGRATION = {'from': 'BVWA.exe', 'to': 'VWA.exe', 'legacy_alias': True}
 SOURCE_POLICY_FORMAT = 1
 SOURCE_POLICY_REQUIRED_TARGET = '1.1.0'
+QUICK_TRANSITION_VERSION = '2.0.0'
+QUICK_TRANSITION_SOURCES = frozenset({'1.0.0', '1.1.0'})
+QUICK_TRANSITION_IDENTITY = {'desktop_frontend': 'quick', 'qt_version': '6.10.3'}
+QUICK_TRANSITION_RUNTIME_SHA = '61a99c9f30945dab1ce1c2dd5f64567f909268856544f83b279231a20ea1a23c'
+QUICK_TRANSITION_QT_PREFIX = 'runtime/qt6/'
+QUICK_TRANSITION_WHEELS = {
+    'pyside6-essentials': '051a70e2df79cf1c012a208ad82a98e8de23ca7fe3b0f3344d07152d15705b59',
+    'shiboken6': '38261c88e87a1c32d1302b642b755470d2369c78af3c7d7d9e95d631f79b556c',
+}
 SOURCE_IDENTITY_REQUIRED_FILES = frozenset({'app.py', 'updater.py', 'updates_ui.py', 'tools/update_apply.py'})
 FIRST_HOP_PROGRAM_FILES = frozenset({'app.py', 'version.json', 'tools/update_apply.py'})
 SOURCE_POLICY_MAX_SOURCES = 32
@@ -257,6 +266,78 @@ def validate_quick_program(names):
         raise ValueError('程序更新不是完整的 Quick 界面，或仍带有旧界面文件。')
     if any(name.startswith('runtime/') for name in names):
         raise ValueError('程序更新不能替换 Qt 运行库。')
+
+
+def quick_transition_identity(plan):
+    identity = plan.get('quick_transition')
+    if plan.get('version') != QUICK_TRANSITION_VERSION:
+        if identity is not None or 'retire_widgets' in plan:
+            raise ValueError('此目标版本不支持 Qt Quick 迁移。')
+        return None
+    if (identity != QUICK_TRANSITION_IDENTITY or
+            plan.get('source_runtime_sha256') != QUICK_TRANSITION_RUNTIME_SHA or
+            plan.get('target_runtime_sha256') != QUICK_TRANSITION_RUNTIME_SHA):
+        raise ValueError('2.0.0 需要适用的 Qt Quick 迁移包。')
+    return identity
+
+
+def validate_quick_runtime_record(entry):
+    name = entry.get('file', '')
+    parts = name.split('/')
+    if (not name.startswith(QUICK_TRANSITION_QT_PREFIX)
+            or any(not re.fullmatch(r'[A-Za-z0-9_.+@-]+', part) or part.endswith('.')
+                   or re.fullmatch(r'(?i:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?', part)
+                   for part in parts)
+            or type(entry.get('bytes')) is not int or not 0 <= entry['bytes'] <= 64 * 1024**2
+            or not re.fullmatch(r'[a-f0-9]{64}', entry.get('sha256', ''))):
+        raise ValueError('Qt Quick 迁移包含无效的运行库记录：' + name)
+
+
+def validate_quick_transition_payload(plan, records, version, receipt):
+    identity = quick_transition_identity(plan)
+    if identity is None or desktop_identity(version) != identity or version.get('version') != plan['version']:
+        raise ValueError('迁移包的 Qt Quick 版本信息不一致。')
+    qt_names = {name for name in records if name.startswith(QUICK_TRANSITION_QT_PREFIX)}
+    program = set(records) - qt_names
+    validate_quick_program(program)
+    if len(program) > MAX_QUICK_PROGRAM_FILES or not {'VWA.exe', 'dependencies/manifest.json'}.issubset(program):
+        raise ValueError('Qt Quick 迁移包的程序文件不完整。')
+    required_qt = {
+        'WHEELS.json', 'PySide6/QtCore.pyd', 'PySide6/QtGui.pyd', 'PySide6/QtQml.pyd',
+        'PySide6/QtQuick.pyd', 'PySide6/QtQuickControls2.pyd', 'PySide6/Qt6Core.dll',
+        'PySide6/Qt6Gui.dll', 'PySide6/Qt6Qml.dll', 'PySide6/Qt6Quick.dll',
+        'PySide6/plugins/platforms/qwindows.dll', 'PySide6/qml/QtQml/qmldir',
+        'PySide6/qml/QtQuick/qmldir', 'PySide6/qml/QtQuick/Controls/qmldir',
+        'PySide6/qml/QtQuick/Layouts/qmldir', 'shiboken6/Shiboken.pyd',
+    }
+    if not {QUICK_TRANSITION_QT_PREFIX + name for name in required_qt}.issubset(qt_names):
+        raise ValueError('Qt Quick 迁移包缺少运行库。')
+    wheels = receipt.get('wheels', [])
+    if (receipt.get('version') != identity['qt_version'] or len(wheels) != len(QUICK_TRANSITION_WHEELS)
+            or any(wheel.get('version') != identity['qt_version'] for wheel in wheels)
+            or {wheel.get('project'): wheel.get('sha256') for wheel in wheels} != QUICK_TRANSITION_WHEELS):
+        raise ValueError('Qt Quick 迁移包与锁定的 Qt wheel 不一致。')
+
+
+def quick_transition_removals(plan, records):
+    tables = plan.get('retire_widgets')
+    if not isinstance(tables, dict) or set(tables) != QUICK_TRANSITION_SOURCES:
+        raise ValueError('Qt Quick 迁移缺少旧界面清理记录。')
+    result = {}
+    for version, entries in tables.items():
+        if not isinstance(entries, list) or not 1 <= len(entries) <= len(LEGACY_FRONTEND_FILES):
+            raise ValueError('旧界面清理记录无效。')
+        by_name = {}
+        for entry in entries:
+            validate_file(entry)
+            name = entry['file']
+            if name not in LEGACY_FRONTEND_FILES or name in records or name in by_name:
+                raise ValueError('旧界面清理记录包含不适用的文件：' + name)
+            by_name[name] = entry
+        if 'app.py' not in by_name:
+            raise ValueError('Qt Quick 迁移缺少旧入口清理记录。')
+        result[version] = by_name
+    return result
 
 
 def validate_destination(root, name):
@@ -511,9 +592,16 @@ def _source_binding(root, policy, target_version):
 
 def _policy_from_runtime_item(item, target_version):
     policy = item.get('source_policy') if isinstance(item, dict) else None
-    if target_version == SOURCE_POLICY_REQUIRED_TARGET and policy is None:
-        raise ValueError('目标 1.1.0 更新缺少 source_policy，已停止更新；请使用完整便携包。')
-    return _normalise_source_policy(policy) if policy is not None else None
+    if target_version in (SOURCE_POLICY_REQUIRED_TARGET, QUICK_TRANSITION_VERSION) and policy is None:
+        raise ValueError('该更新缺少 source_policy，已停止更新；请使用完整便携包。')
+    result = _normalise_source_policy(policy) if policy is not None else None
+    if target_version == QUICK_TRANSITION_VERSION:
+        sources = result['allowed_sources']
+        if ({s['version'] for s in sources} != QUICK_TRANSITION_SOURCES or
+                len(sources) != len(QUICK_TRANSITION_SOURCES) or
+                any(s['runtime_sha256'] != QUICK_TRANSITION_RUNTIME_SHA or 'VWA.exe' not in s['files'] for s in sources)):
+            raise ValueError('2.0.0 只支持已验证的 1.0.0 与 1.1.0 安装。')
+    return result
 
 
 def _write_source_binding(plan_path, plan):
@@ -575,14 +663,14 @@ def _verify_bound_source(root, plan_path, plan):
     binding_keys = ('source_policy', 'source_policy_sha256', 'source_identity',
                     'source_identity_sha256', 'source_evidence', 'source_evidence_sha256')
     has_binding = any(key in plan for key in binding_keys)
-    if plan.get('version') == SOURCE_POLICY_REQUIRED_TARGET and not has_binding:
-        raise ValueError('目标 1.1.0 更新计划缺少 source_policy，已停止；请使用完整便携包。')
+    if plan.get('version') in (SOURCE_POLICY_REQUIRED_TARGET, QUICK_TRANSITION_VERSION) and not has_binding:
+        raise ValueError('更新计划缺少 source_policy，已停止；请使用完整便携包。')
     if not has_binding:
         return None
     if not isinstance(plan.get('source_policy'), dict):
         raise ValueError('更新计划包含不完整的 source_policy，已停止；请使用完整便携包。')
     _verify_policy_receipt(root, plan_path, plan)
-    policy = _normalise_source_policy(plan['source_policy'])
+    policy = _policy_from_runtime_item(plan, plan['version'])
     if (plan.get('source_policy_sha256') != _canonical_json_sha256(policy)
             or plan.get('source_identity') not in policy['allowed_sources']
             or plan.get('source_identity_sha256') != _canonical_json_sha256(plan.get('source_identity'))
@@ -717,8 +805,8 @@ def apply_update(plan_path):
         if current:
             raise ValueError('Quick 安装不使用历史运行库迁移计划。')
         return apply_runtime_upgrade(plan_path)
-    if plan.get('version') == SOURCE_POLICY_REQUIRED_TARGET:
-        raise ValueError('目标 1.1.0 不能通过普通程序更新入口安装，必须使用带 source_policy 的运行库更新流程。')
+    if plan.get('version') in (SOURCE_POLICY_REQUIRED_TARGET, QUICK_TRANSITION_VERSION):
+        raise ValueError('该版本需要使用带 source_policy 的运行库更新流程。')
     _require_forward_target(root, plan, plan_path)
     if reason := installation_busy(root):
         raise RuntimeError(reason)
@@ -914,6 +1002,10 @@ def _jpn_runtime_omissions(root, base):
 
 
 def _validate_runtime_stage(root, stage, plan, check=None):
+    transition = quick_transition_identity(plan)
+    installed = _installed_metadata(root)
+    if transition and (desktop_identity(installed) or installed['version'] not in QUICK_TRANSITION_SOURCES):
+        raise ValueError('Qt Quick 迁移的源安装不受支持。')
     if sha(root / 'dependencies/manifest.json') != plan['source_runtime_sha256']:
         raise ValueError('当前运行库与升级包不匹配，请使用完整便携包。')
     target_path = stage / 'files/dependencies/manifest.json'
@@ -958,8 +1050,13 @@ def _validate_runtime_stage(root, stage, plan, check=None):
             or type(migration.get('legacy_alias')) is not bool
             or 'BVWA.exe' in records):
         raise ValueError('启动入口迁移信息无效。')
-    if not {'app.py', 'version.json', 'dependencies/manifest.json'}.issubset(records):
+    required = {'version.json', 'dependencies/manifest.json'}
+    if not transition:
+        required.add('app.py')
+    if not required.issubset(records):
         raise ValueError('运行库升级缺少必要程序文件。')
+    if transition and (changed or len({name.casefold() for name in records}) != len(records)):
+        raise ValueError('Qt Quick 迁移不应替换推理依赖或包含路径别名。')
     for name, entry in records.items():
         if name in target:
             if entry != target[name] or name not in changed:
@@ -967,9 +1064,15 @@ def _validate_runtime_stage(root, stage, plan, check=None):
         elif name == 'dependencies/manifest.json':
             if entry['sha256'] != plan['target_runtime_sha256']:
                 raise ValueError('目标清单摘要不匹配。')
+        elif transition and name.startswith(QUICK_TRANSITION_QT_PREFIX):
+            validate_quick_runtime_record(entry)
         elif name not in RUNTIME_PROGRAM_FILES:
             validate_file(entry)
-        root_paths.checked(name)
+        destination = root_paths.checked(name)
+        if (transition and name.startswith(QUICK_TRANSITION_QT_PREFIX) and destination.exists()
+                and (not destination.is_file() or destination.stat().st_size != entry['bytes']
+                     or sha(destination) != entry['sha256'])):
+            raise ValueError('已安装的 Qt Quick 文件与目标不同，请使用完整便携包：' + name)
         source = stage_paths.checked(name)
         if source.stat().st_size != entry['bytes'] or sha(source) != entry['sha256']:
             raise ValueError('升级文件校验失败：' + name)
@@ -980,9 +1083,23 @@ def _validate_runtime_stage(root, stage, plan, check=None):
         if entry != base[name]:
             raise ValueError('待清理文件的原始校验信息不一致。')
         root_paths.checked(name)
-    version = json.loads((stage / 'files/version.json').read_text(encoding='utf-8'))
-    if version['version'] != plan['version'] or version.get('runtime_upgrade'):
+    version = json.loads((stage / 'files/version.json').read_text(encoding='utf-8-sig'))
+    if version['version'] != plan['version'] or version.get('runtime_upgrade') or version.get('upgrade_pending'):
         raise ValueError('目标程序版本信息无效。')
+    if transition:
+        receipt = json.loads(stage_paths.checked(QUICK_TRANSITION_QT_PREFIX + 'WHEELS.json')
+                             .read_text(encoding='utf-8-sig'))
+        validate_quick_transition_payload(plan, records, version, receipt)
+        obsolete = quick_transition_removals(plan, records)[installed['version']]
+        source_app = _policy_from_runtime_item(plan, plan['version'])
+        identity = next(s for s in source_app['allowed_sources'] if s['version'] == installed['version'])
+        if obsolete['app.py']['sha256'] != identity['files']['app.py']:
+            raise ValueError('待清理旧入口与源发行身份不一致。')
+        for name in obsolete:
+            root_paths.checked(name)
+        removals.update(obsolete)
+    elif desktop_identity(version):
+        raise ValueError('历史运行库计划不能安装 Qt Quick。')
     release.update(installed_omitted=sorted(installed_omissions),
                    preserved_omitted=sorted(preserved_omissions))
     return records, removals, release
@@ -1255,8 +1372,8 @@ def prepare_program_update(version, item, root, progress=lambda *args: None, che
     """One program staging implementation for the GUI and legacy repair tool."""
     if not isinstance(version, str) or not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', version):
         raise ValueError('更新版本号无效。')
-    if version == SOURCE_POLICY_REQUIRED_TARGET and not allow_policy_bootstrap:
-        raise ValueError('目标 1.1.0 不能通过普通程序更新入口安装，必须使用带 source_policy 的运行库更新流程。')
+    if version in (SOURCE_POLICY_REQUIRED_TARGET, QUICK_TRANSITION_VERSION) and not allow_policy_bootstrap:
+        raise ValueError('该版本需要使用带 source_policy 的运行库更新流程。')
     _asset_record(item)
     root = Path(root).resolve()
     identity = desktop_identity(json.loads((root / 'version.json').read_text(encoding='utf-8-sig')))
@@ -1426,6 +1543,8 @@ def prepare_runtime_upgrade(item, root, progress=lambda *args: None, check=None,
                 ('sha256', 'source_runtime_sha256', 'target_runtime_sha256'))):
         raise ValueError('运行库升级信息无效，请使用完整便携包。')
     target_version = item['version']
+    if target_version == QUICK_TRANSITION_VERSION and desktop_identity(_installed_metadata(root)):
+        raise ValueError('仅从旧版界面迁移至 2.0.0。')
     policy = _policy_from_runtime_item(item, target_version)
     initial_source = _source_binding(root, policy, target_version) if policy is not None else None
     if sha(root / 'dependencies/manifest.json') != item['source_runtime_sha256']:
@@ -1455,6 +1574,12 @@ def prepare_runtime_upgrade(item, root, progress=lambda *args: None, check=None,
                     raise ValueError('运行库升级包内嵌的源版本策略与发布信息不一致。')
             if {info.filename for info in infos} != {'runtime-upgrade.json'} | {entry['file'] for entry in plan['entries']}:
                 raise ValueError('运行库升级包与文件清单不一致。')
+            if quick_transition_identity(plan):
+                if len({info.filename.casefold() for info in infos}) != len(infos):
+                    raise ValueError('Qt Quick 迁移包包含路径别名。')
+                for entry in plan['entries']:
+                    if entry['file'].startswith(QUICK_TRANSITION_QT_PREFIX):
+                        validate_quick_runtime_record(entry)
             needed = sum(info.file_size for info in infos) * 2 + 64 * 1024**2
             if shutil.disk_usage(root).free < needed:
                 raise OSError('升级临时空间不足，请清理磁盘后重试。')

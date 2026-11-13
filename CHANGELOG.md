@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 2.0.0 — 2026-11-13
+
+- Move the Windows desktop to a Qt Quick workbench with continuous preparation, tuning and mixing workflows. Add guided onboarding, startup update notices, and Settings and Support with QQ group 490619616.
+- Add a piano-roll tuning workspace with track and lyric navigation, a draggable timeline overview, editable colored style regions, project-bound presets, and first-pass SV2, USTX, and VPR project workflows.
+- Rebuild continuous mixing audition around a shared real-time audio session, including A/B playback, live meters, spectrum, gain reduction and reverb. Mix and export WAV files independently of a task.
+- Share a versioned local preset library across preparation, mixing, tuning and style recipes. Imported presets are appended by default. Xiaohongshu export produces a local package for manual posting.
+
+### Changes carried forward
 
 - Connect portable mixing presets to capture, scoped before/after application and guarded one-step undo. Preserve current width and track templates by default, share the existing processing path, and append imported presets across all four kinds with an explicit independent-copy option.
 

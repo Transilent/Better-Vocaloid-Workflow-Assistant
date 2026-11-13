@@ -177,10 +177,9 @@ full 模式下 `reviewed` 由一次明确的整曲审批产生；显式 segments
 
 ## 安装、配置与授权根
 
-Windows x64、CPython 3.12。SDK 固定为 `mcp==2.3.0`，传递依赖和平台 wheel 摘要固定在 `packaging/requirements-mcp.lock.txt`。按项目方法生成根 Python 文件后运行：
+Windows x64、CPython 3.12。SDK 固定为 `mcp==2.3.0`，传递依赖和平台 wheel 摘要固定在 `packaging/requirements-mcp.lock.txt`。便携包已经包含根目录下的业务代码和安装脚本，解压后进入 `VWA` 文件夹运行下列命令。只有从 Git 源码运行时，才需要先执行 `./tools/Prepare-Source.ps1`。
 
 ```powershell
-./tools/Prepare-Source.ps1
 ./tools/Setup-AgentMCP.ps1 `
   -BootstrapPython 'C:/Python312/python.exe' `
   -WorkerPython 'C:/VWA/dependencies/vocal2midi/python/python.exe' `
@@ -188,7 +187,7 @@ Windows x64、CPython 3.12。SDK 固定为 `mcp==2.3.0`，传递依赖和平台 
   -ControlDirectory 'C:/VWA-Agent'
 ```
 
-`BootstrapPython` 创建独立 SDK 环境；`WorkerPython` 是现有 VWA 业务 Python。复用环境时增加 `-RuntimeDirectory`。setup 不注册 MCP 宿主，不复制模型或账号，也不修改已有 `config.json`。
+`BootstrapPython` 须为安装了 `venv` 和 `pip` 的完整 CPython 3.12，用于创建独立的 SDK 环境。`WorkerPython` 则指向便携包内的业务 Python；包内 Python 不能用来创建该虚拟环境。复用环境时增加 `-RuntimeDirectory`。setup 不注册 MCP 宿主，不复制模型或账号，也不修改已有 `config.json`。
 
 控制配置的路径字段都是绝对路径。`shared_draft_root` 与 `allowed_delivery_roots` 可省略，但不能猜测或自动扩大：
 

@@ -2,7 +2,7 @@
 
 [English](TuningWorkflow.en.md) | [简体中文](TuningWorkflow.zh-CN.md)
 
-The main sequence is **Preparation → Tuning → Video assembly → Publishing**.
+The main sequence is **Preparation → Tuning → Simple mixing → Video assembly → Publishing**.
 Video assembly remains optional; a finished video can go directly to publishing.
 Voicebank synthesis and final publication remain explicit user actions.
 
@@ -12,15 +12,13 @@ saved tuning preferences do not implicitly process the newly prepared project.
 When regenerating compatible notes, retaining already authored automation stays
 available as preservation rather than a new acoustic fit.
 
-Tuning works independently of the preparation page's MIDI/export toggles. Select
-an existing task's SVP or import an SVP, select the vocal tracks and explicit
-reference mappings, then generate a separate candidate. The initial editing
-format is SVP. Other formats must be converted and checked separately; this
-workflow does not silently discard unknown parameters through conversion.
+Open a task project or import a Synthesizer V Studio 1/2 SVP, OpenUtau USTX, or VOCALOID 5/6 VPR. Find the lyric, edit a range in single-track or multitrack view, and save a new project in the same format.
+
+Shared or cropped SV2 note groups remain read-only. USTX 0.5 can be previewed; resave it in OpenUtau before editing. USTX and VPR write their supported dynamics and pitch curves in **Keep original performance** mode. Reopen and audition the result in the original editor.
 
 ## One expression source
 
-Choose one primary source:
+Choose one primary source for an SVP that supports these options. For other formats, use the available choices in Tuning:
 
 - **Preserve** keeps authored parameters.
 - **Reference mapping** creates the selected Loudness/Tension/Breathiness/Voicing

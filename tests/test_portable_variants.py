@@ -72,6 +72,7 @@ with tempfile.TemporaryDirectory(dir=native_path(APP/'work/temp'),prefix='pv-') 
     spec={'files':[record(n,d) for n,d in chinese.items()],'bytes':sum(map(len,chinese.values()))}
     (root/'components/runtime-features.json').write_text(json.dumps({'features':{'chinese':spec}}))
     (root/'app.py').write_bytes(b'# source')
+    (root/'version.json').write_text(json.dumps({'version':'1.1.0'}),encoding='utf-8')
     (root/'assets').mkdir()
     (root/'assets/日本語.txt').write_bytes('VWA 日本語'.encode('utf-8'))
     (root/'config.example.json').write_bytes(b'{"download_source":"auto"}')

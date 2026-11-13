@@ -1,6 +1,6 @@
 # VWA user guide
 
-The development version includes a [local preset library](PresetLibrary.en.md) in Settings/updates for inspecting and sharing portable documents. The mixing console supports capture, application previews and undo; tuning integration is planned separately.
+Open the [local preset library](PresetLibrary.en.md) under **Settings and support**. Export presets for preparation, mixing, tuning, and styles; imports are appended by default. Tuning presets and drafts can be saved per project.
 
 [English](UserGuide.en.md) | [简体中文](UserGuide.zh-CN.md) | [README](../README.md)
 
@@ -8,19 +8,19 @@ The development version includes a [local preset library](PresetLibrary.en.md) i
 
 The [VWA workspace guide](Frontend.en.md) describes the compact preparation layout, independent tuning, appearance settings and result states.
 
-The portable folder includes the runtime. Complete packages are `VWA-Windows-x64.zip` (full) and `VWA-Windows-x64-JPN.zip` (JPN). For split delivery, use the matching `portable-metadata-full.json` or `portable-metadata-jpn.json` and the helper supplied with that package. For a source checkout, `tools/Start-Diagnostics.bat` installs the runtime first, using either complete ZIP in this folder or its parent, or downloading the Release files. It verifies dependency hashes and preserves assistant settings, jobs and sign-in profiles. After an interruption, run the diagnostic script again.
+Download the Windows x64 full or JPN package from the [2.0.0 release](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.0.0). Both include the runtime. Join the three full-package parts as described in the [portable guide](Portable.en.md), or extract the JPN ZIP directly. Choose a short, writable path.
 
 Run **`VWA.exe`** from the extracted top-level `VWA` folder to start without a console window. Open **准备工作流** (Preparation workflow). Under **音乐来源**,
 select **B站 BV 号 / 链接** or **本地音乐文件**. **选择文件** opens the music chooser.
 A local file requires no BV and is copied before decoding. Saved snapshots allow
 resume after the original is moved. The sidebar also contains **模型与组件**
-(Models/components), **任务与结果** (Tasks/results), independent **调音工作流** (Tuning workflow), **合成视频** (Video assembly), **发布** (Publishing), and **设置与更新** (Settings/updates).
+(Models/components), **任务与结果** (Tasks/results), independent **调音工作流** (Tuning workflow), **合成视频** (Video assembly), **发布** (Publishing), and **设置与支持** (Settings and support).
 
 ## Upgrading
 
-VWA 1.0.0 uses `VWA-Windows-x64.zip` for a full new installation and `VWA-Windows-x64-JPN.zip` for JPN. Existing installations can use **Settings/updates** to download and install a compatible program update. Settings, tasks, sign-in profiles, installed models and optional components are retained when the offered update supports them.
+**Released 1.0.0 or 1.1.0:** Check for updates in the old app under **Settings and updates**, then follow the restart prompt. Both full and JPN retain settings, tasks, presets, sign-in sessions, installed models, and optional components. JPN does not automatically add omitted Chinese weights.
 
-Released clients that still rely on legacy BVWA protocol aliases can use **`VWA-Updater.exe`** when the release notes identify it as the compatibility tool. A standalone update ZIP is not a complete installation. Back up editor projects before upgrading.
+**All other versions:** Extract a full or JPN package into a new folder. Back up editor projects and apply an offered update through the app.
 
 ## Save location
 
@@ -146,15 +146,15 @@ base CPU/DirectML device settings; restart afterward.
 
 ## Downloads and program updates
 
-Models/components offers automatic, official and accelerated download modes. Settings/updates sets the default. GitHub files use GitProxy; Hugging Face models use HF-Mirror. Other dependencies use their official sources. Automatic and accelerated modes try the alternate source after connection failures. File-size and SHA-256 checks remain enabled.
+Models/components offers automatic, official and accelerated download modes. Settings and support sets the default. GitHub files use GitProxy; Hugging Face models use HF-Mirror. Other dependencies use their official sources. Automatic and accelerated modes try the alternate source after connection failures. File-size and SHA-256 checks remain enabled.
 
-Automatic updates run only at startup. By default, the assistant checks for a compatible program update, downloads and verifies it, then restarts after a 10-second countdown. You can postpone installation or disable these preferences in Settings/updates. Once you start using the assistant, installation is deferred until the next launch. There are no periodic checks during normal use. Manually checked or downloaded updates require you to select Restart/install. Updates preserve settings, tasks, platform sign-in and optional models. Replacement failures restore the previous program. A changed base runtime requires a complete portable package. Released clients still using legacy BVWA aliases should follow the compatibility instructions in the release notes and use `VWA-Updater.exe` when directed.
+VWA checks for updates on startup by default. The notice shows the changes and user QQ group before you choose **Update now** or **Later**. It downloads only after you agree. If installation fails, VWA attempts to restore the previous version. See the [startup and tour guide (Chinese)](StartupExperience.zh-CN.md).
 
 ## Workflows, tasks and recovery
 
 The **准备工作流** (Preparation workflow) page groups Music source and Output compactly at the top. The separation mode stays visible while model details and imported-stem paths expand below it. The main **歌词与音符** (Lyrics and notes) area shows lead/backing text and recognition/note settings in adaptive columns, with a subtitle-tool entry. Narrow windows stack these columns and scroll. Open **设备设置** (Device settings) in the top toolbar to choose each engine's device. Presets save language, models, devices and output formats, without song paths or reference lyrics.
 
-The sidebar begins with Preparation workflow, Tuning workflow, Video assembly and Publishing. Tuning accepts an existing task's SVP or an imported SVP and produces independent, recoverable candidates. See [Tuning workflow](TuningWorkflow.en.md) for parameter-source choices, curve protection and retry behavior. Models/components, Tasks/results and Settings/updates follow. Appearance settings offer light/dark palettes and glass/solid surfaces; standard window controls remain.
+The sidebar lists Preparation, Tuning, Simple mixing, Video assembly, and Publishing, with Tasks and results, Models and components, and Settings and support below. Tuning offers single-track editing and a multitrack view. Newer style edits take precedence where regions overlap on the same track. See the [tuning guide](TuningWorkflow.en.md).
 
 Device settings also provides a shared **DirectML 显卡** (DirectML adapter) selector and **CPU 线程数** (CPU threads). Auto prefers a dedicated graphics adapter and keeps each engine's thread defaults. An explicit thread limit applies to the relevant CPU operations; more threads may not improve speed. These choices are saved with presets.
 
@@ -174,7 +174,7 @@ Reprocessing reuses the cached original cover when its source and hash match. Pu
 
 Before regenerating an output that has changed since export, the assistant preserves it under the task’s `backups/` folder and records the path in its report. This protects in-place MIDI and project edits. Unchanged generated files do not create backups. Keep your working editor project in a separate file when possible.
 
-Open **设置与更新 → 缓存与磁盘** (Settings/updates → Cache/disk), scan usage and select disposable files to clean. Task outputs, model weights, presets and sign-in sessions are protected. Downloads and unfinished range segments can be cleaned after the active operation ends.
+Open **设置与支持 → 缓存与磁盘** (Settings and support → Cache/disk), scan usage and select disposable files to clean. Task outputs, model weights, presets and sign-in sessions are protected. Downloads and unfinished range segments can be cleaned after the active operation ends.
 
 WAV export uses the task's existing audio files. Compressed formats are stored separately. Continuing a task validates inputs and outputs before reuse; damaged exports are repaired individually. Reading source credits and the original cover does not download the full video. Video is retrieved when needed for frame capture or source-video access.
 

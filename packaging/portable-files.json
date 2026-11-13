@@ -538,6 +538,10 @@
       "source": "src/ustx_tuning.py"
     },
     {
+      "file": "vocaloid_pitch.py",
+      "source": "src/vocaloid_pitch.py"
+    },
+    {
       "file": "vpr_tuning.py",
       "source": "src/vpr_tuning.py"
     },

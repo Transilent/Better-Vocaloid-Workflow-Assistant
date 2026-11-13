@@ -13,7 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tools.build_portable import digest
 from tools.update_apply import (RUNTIME_PROGRAM_FILES, ROOT_FILES, TOOL_FILES, _runtime_path,
-                                program_name, select_update_route, validate_file, validate_destination)
+                                QUICK_TRANSITION_QT_PREFIX, QUICK_TRANSITION_SOURCES, QUICK_TRANSITION_VERSION,
+                                _policy_from_runtime_item, program_name, quick_transition_identity,
+                                quick_transition_removals, select_update_route, validate_file,
+                                validate_destination, validate_quick_runtime_record,
+                                validate_quick_transition_payload)
 
 LAUNCHER_MIGRATION = {'from': 'BVWA.exe', 'to': 'VWA.exe', 'legacy_alias': True}
 COMPATIBILITY_TOOL_NAMES = {'VWA-Updater.exe', 'BVWA-Updater.exe'}
@@ -55,10 +59,12 @@ def _runtime_record(entry, *, manifest=False, path_only=False):
     return name
 
 
-def _program_record(entry):
+def _program_record(entry, *, quick=False):
     name = _runtime_record(entry)
     path = PurePosixPath(name)
-    if name in RUNTIME_PROGRAM_FILES:
+    if quick and name.startswith(QUICK_TRANSITION_QT_PREFIX):
+        validate_quick_runtime_record(entry)
+    elif name in RUNTIME_PROGRAM_FILES:
         # These explicit program support files can live outside runtime roots.
         pass
     elif name == 'dependencies/manifest.json':
@@ -182,8 +188,9 @@ def _runtime_zip_members(zipped, plan, target_records):
     if not isinstance(entries, list) or not isinstance(removed, list):
         raise ValueError('Runtime migration lacks entries or removed records')
     records, removals = {}, {}
+    transition = quick_transition_identity(plan)
     for entry in entries:
-        name = _program_record(entry) if isinstance(entry, dict) else ''
+        name = _program_record(entry, quick=bool(transition))
         if name in records:
             raise ValueError('Runtime migration contains duplicate entries: ' + name)
         if name == 'runtime-upgrade.json':
@@ -201,8 +208,22 @@ def _runtime_zip_members(zipped, plan, target_records):
         removals[name] = entry
     if set(names) != set(records) | {'runtime-upgrade.json'}:
         raise ValueError('Runtime archive members do not match the migration plan')
-    if not {'app.py', 'version.json', 'dependencies/manifest.json'}.issubset(records):
+    required = {'version.json', 'dependencies/manifest.json'}
+    if not transition:
+        required.add('app.py')
+    if not required.issubset(records):
         raise ValueError('Runtime migration lacks required program files')
+    if transition:
+        if (set(records) & set(target_records) or removals
+                or len({name.casefold() for name in names}) != len(names)):
+            raise ValueError('Quick migration cannot replace inference dependencies or contain aliases')
+        validate_quick_transition_payload(
+            plan, records, json.loads(zipped.read('version.json')),
+            json.loads(zipped.read(QUICK_TRANSITION_QT_PREFIX + 'WHEELS.json')))
+        removed_widgets = quick_transition_removals(plan, records)
+        for source in _policy_from_runtime_item(plan, plan['version'])['allowed_sources']:
+            if removed_widgets[source['version']]['app.py']['sha256'] != source['files']['app.py']:
+                raise ValueError('Retired Widgets entry point differs from the source identity')
     migration = plan.get('launcher_migration')
     if migration is not None and (not isinstance(migration, dict) or migration != LAUNCHER_MIGRATION or
                                  type(migration.get('legacy_alias')) is not bool):
@@ -395,7 +416,7 @@ def verify_catalog_assets(catalog, folder, *, target_manifest=None, external_rea
     folder = Path(folder).resolve()
     if not isinstance(catalog, dict):
         raise ValueError('Catalog must be an object')
-    require_source_policy = require_source_policy or catalog.get('version') == '1.1.0'
+    require_source_policy = require_source_policy or catalog.get('version') in ('1.1.0', QUICK_TRANSITION_VERSION)
     routes = catalog.get('updates')
     if not isinstance(routes, list) or not routes:
         raise ValueError('Missing runtime update routes')
@@ -410,6 +431,10 @@ def verify_catalog_assets(catalog, folder, *, target_manifest=None, external_rea
         select_update_route(catalog, route_sha)
         route_sources = _route_sources(route)
         runtime_item = route.get('runtime_upgrade')
+        if catalog.get('version') == QUICK_TRANSITION_VERSION:
+            if set(route_sources) != QUICK_TRANSITION_SOURCES or len(routes) != 1:
+                raise ValueError('2.0.0 requires exactly one route covering only 1.0.0 and 1.1.0')
+            _policy_from_runtime_item(runtime_item, QUICK_TRANSITION_VERSION)
         _validate_source_policy(runtime_item, route_sources, route_sha,
                                 required=require_source_policy)
         bootstrap = _verified_asset(folder, route['update'])
@@ -517,7 +542,7 @@ def build(folder, version, migrations, *, legacy_update=None, legacy_program=Non
           target_manifest=None, external_reason=None, require_source_policy=False,
           include_legacy=True, candidate=None):
     folder = Path(folder).resolve()
-    require_source_policy = require_source_policy or version == '1.1.0'
+    require_source_policy = require_source_policy or version in ('1.1.0', QUICK_TRANSITION_VERSION)
     routes, route_by_runtime, labels, targets, manifests = [], {}, {}, set(), []
     candidate_id = candidate.get('candidate_id') if isinstance(candidate, dict) else None
     if candidate is not None:
