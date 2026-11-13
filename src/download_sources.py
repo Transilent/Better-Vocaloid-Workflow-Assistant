@@ -11,8 +11,7 @@ import urllib.request
 from common import direct_urlopen
 
 
-# Public UI contract shared by the component and update pages.  The first three
-# values intentionally preserve the historical priority modes.
+# Public routing IDs also consumed by the frozen update/bootstrap tools.
 SOURCE_OPTIONS = (
     ('自动选择', 'auto'),
     ('官方源直连', 'direct'),
@@ -44,6 +43,39 @@ PYTORCH_VERIFIED_WHEELS = frozenset({
     'torch-2.7.1+cu128-cp312-cp312-win_amd64.whl',
 })
 SOURCE_LABELS = {source: label for label, source in SOURCE_OPTIONS}
+
+_COMPONENT_PYPI_IDS = ('pypi-tuna', 'pypi-ustc', 'pypi-aliyun')
+_USTC_PYPI = 'https://mirrors.ustc.edu.cn/pypi/'
+_COMPONENT_STATIONS = (
+    ('魔搭权重 + GitHub 配置', 'modelscope'),
+    ('GitHub Release（权重和配置）', 'github-release'),
+    ('HF-Mirror（可能跳回官方）', HF_SOURCE_ID),
+    (SOURCE_LABELS['pypi-tuna'], 'pypi-tuna'),
+    ('中科大 PyPI 加速', 'pypi-ustc'),
+    (SOURCE_LABELS['pypi-aliyun'], 'pypi-aliyun'),
+    (SOURCE_LABELS[PYTORCH_SOURCE_ID], PYTORCH_SOURCE_ID),
+)
+COMPONENT_SOURCES = (*SOURCES, 'modelscope', 'github-release', 'pypi-ustc')
+
+# Alternate distribution is keyed by the original URL AND its fixed identity.
+# Keep install manifests byte-identical: existing receipts bind their hashes.
+_ROFORMER_HF = ('https://huggingface.co/becruily/bs-roformer-karaoke/resolve/'
+                'f7849ae934209184dc288d1018cd8a76a7fc8b3c/')
+_ROFORMER_RELEASE = ('https://github.com/nomadkaraoke/python-audio-separator/'
+                     'releases/download/model-configs/')
+_ROFORMER_WEIGHT = 'bs_roformer_karaoke_frazer_becruily.ckpt'
+_ROFORMER_ALTERNATES = {
+    (_ROFORMER_HF + _ROFORMER_WEIGHT, 204436907,
+     'eb90ee24c1154d83fbcfd27e96182f19e061557cc6e4746953125e08c29389f9'): (
+        _ROFORMER_RELEASE + _ROFORMER_WEIGHT,
+        'https://modelscope.cn/models/CCYellowStar/bs_roformer_karaoke_frazer_becruily/'
+        'resolve/17b19a737fbf3dec88b6b770aec5778297b42423/' + _ROFORMER_WEIGHT,
+    ),
+    (_ROFORMER_HF + 'config_karaoke_frazer_becruily.yaml', 1903,
+     '1d3b58b473025183d0d3c91e7a444cb5f1418d9f34e8f46b8d2fb10d2cc8ab34'): (
+        _ROFORMER_RELEASE + 'config_bs_roformer_karaoke_frazer_becruily.yaml', None,
+    ),
+}
 
 # Prefixes documented by the service operators.  Only public GitHub
 # release/raw/archive URLs are ever appended to these prefixes.
@@ -88,6 +120,11 @@ _PUBLIC_DOWNLOAD_VALUES = {'', '1', 'true', 'yes'}
 def source_options():
     """Return the canonical UI choices without exposing a mutable singleton."""
     return SOURCE_OPTIONS
+
+
+def update_source_options():
+    """Only strategies and GitHub stations can change a program update route."""
+    return tuple(row for row in SOURCE_OPTIONS if row[1] in (*LEGACY_SOURCES, *GITHUB_SOURCE_IDS))
 
 
 def normalize_source(source='auto'):
@@ -326,6 +363,71 @@ def download_urls(url, source='auto'):
     return [url]
 
 
+def normalize_component_source(source='auto'):
+    if isinstance(source, str) and source.strip().casefold() in COMPONENT_SOURCES:
+        return source.strip().casefold()
+    return normalize_source(source)
+
+
+def _component_alternate(item):
+    return _ROFORMER_ALTERNATES.get((item.get('url'), item.get('bytes'), item.get('sha256')))
+
+
+def component_stations(item):
+    """Which explicit choices can change this pinned file's route."""
+    if _component_alternate(item):
+        return ('modelscope', 'github-release')
+    kind = public_download_kind(item.get('url'))
+    return {
+        'hf-resolve': (HF_SOURCE_ID,),
+        'pypi-wheel': _COMPONENT_PYPI_IDS,
+        'pytorch-wheel': (PYTORCH_SOURCE_ID,),
+    }.get(kind, ())
+
+
+def component_source_options(items):
+    """Build the menu from the files in the current install plan."""
+    stations = {station for item in items for station in component_stations(item)}
+    if not stations:
+        return ()
+    return (*SOURCE_OPTIONS[:2], *(row for row in _COMPONENT_STATIONS if row[1] in stations))
+
+
+def component_download_urls(item, source='auto'):
+    """Route only verified component files; resolve unrelated files by their own source."""
+    source = normalize_component_source(source)
+    url = item['url']
+    if source == 'direct':
+        return [url]
+    alternate = _component_alternate(item)
+    if alternate:
+        github, modelscope = alternate
+        # The mirror hosts weights only. The pinned YAML comes from the same
+        # GitHub release as the backup weight, with a verified relay as fallback.
+        gh_relay = _accelerated_url(github, 'gh-proxy')
+        if source == 'github-release':
+            mirrors = [github, gh_relay, modelscope]
+        else:
+            mirrors = [modelscope, github, gh_relay]
+        if source in ('modelscope', 'github-release'):
+            # A user who chose these routes can be on a network where Hugging
+            # Face is unreachable. Do not send these requests back there.
+            return _unique(mirrors)
+        return _unique([url, *mirrors] if source == 'auto' else [*mirrors, url])
+    stations = component_stations(item)
+    if not stations:
+        return [url]
+    if stations == _COMPONENT_PYPI_IDS:
+        def wheel_url(station):
+            if station == 'pypi-ustc':
+                return _USTC_PYPI + urlsplit(url).path.lstrip('/')
+            return _accelerated_url(url, station)
+        order = _unique([source, *stations]) if source in stations else stations
+        mirrors = [wheel_url(station) for station in order]
+        return [url, *mirrors] if source == 'auto' else [*mirrors, url]
+    return download_urls(url, source if source == 'auto' or source in stations else 'mirror')
+
+
 def source_name(url):
     host = (urlsplit(url).hostname or '').casefold()
     return {
@@ -336,11 +438,13 @@ def source_name(url):
         'mirrors.tuna.tsinghua.edu.cn': 'TUNA PyPI',
         'pypi.tuna.tsinghua.edu.cn': 'TUNA PyPI',
         'mirrors.aliyun.com': 'Aliyun PyPI',
+        'mirrors.ustc.edu.cn': 'USTC PyPI',
         'files.pythonhosted.org': 'PyPI',
         'mirror.sjtu.edu.cn': 'SJTU PyTorch',
         'download.pytorch.org': 'PyTorch',
         'download-r2.pytorch.org': 'PyTorch',
         'github.com': 'GitHub',
+        'modelscope.cn': 'ModelScope',
         'raw.githubusercontent.com': 'GitHub Raw',
         'huggingface.co': 'Hugging Face',
     }.get(host, '官方源')

@@ -17,7 +17,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-from urllib.request import Request, urlopen
 import uuid
 import zipfile
 
@@ -120,16 +119,11 @@ def _verify_wheel(path: Path, spec: dict) -> None:
         raise ComponentError('Pedalboard wheel is missing required runtime modules')
 
 
-def _download(spec: dict, target: Path) -> Path:
-    wheel = spec['wheel']
-    target.parent.mkdir(parents=True, exist_ok=True)
-    request = Request(wheel['url'], headers={'User-Agent': 'VWA-Pedalboard-Component/1'})
-    with urlopen(request, timeout=60) as response, target.open('xb') as stream:
-        if getattr(response, 'status', 200) != 200:
-            raise ComponentError('Pedalboard download did not return HTTP 200')
-        shutil.copyfileobj(response, stream, length=1024 * 1024)
-    _verify_wheel(target, spec)
-    return target
+def _download(spec: dict, folder: Path, source: str) -> Path:
+    from optional_components import download
+    wheel = download(spec['wheel'], folder, lambda *_: None, source=source, workers=1)
+    _verify_wheel(wheel, spec)
+    return wheel
 
 
 def _extract_wheel(archive: Path, destination: Path) -> None:
@@ -333,12 +327,20 @@ def _install(app_root: Path, spec: dict, wheel: Path, python: Path, force: bool,
 
 
 def main(argv=None):
+    # The packaged interpreter ignores PYTHONPATH. Prefer checked-out source
+    # when running this tool from a development tree, otherwise use the app.
+    sys.path.insert(0, str(ROOT))
+    if (ROOT / 'src').is_dir():
+        sys.path.insert(0, str(ROOT / 'src'))
+    from download_sources import component_source_options
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('check', 'install', 'status'))
     parser.add_argument('--app-root', type=Path, default=ROOT,
                         help='Root of an isolated VWA copy (default: this checkout)')
     parser.add_argument('--wheel', type=Path,
                         help='Previously downloaded cp312 win_amd64 wheel')
+    parser.add_argument('--download-source', default='auto',
+                        help='Source for an online install (auto, direct, mirror, pypi-tuna, pypi-ustc, pypi-aliyun)')
     parser.add_argument('--python', type=Path,
                         help='Trial Python 3.12 x64 interpreter')
     parser.add_argument('--force', action='store_true')
@@ -350,16 +352,19 @@ def main(argv=None):
     if args.action == 'status':
         result = _status(app_root, spec)
     else:
-        if args.wheel:
-            wheel = args.wheel.resolve()
-            _verify_wheel(wheel, spec)
-            temporary = None
-        elif args.action == 'install':
-            temporary = tempfile.TemporaryDirectory(prefix='vwa-pedalboard-')
-            wheel = _download(spec, Path(temporary.name) / spec['wheel']['name'])
-        else:
-            raise ComponentError('check requires --wheel; pass install to download the pinned wheel')
+        temporary = None
         try:
+            if args.wheel:
+                wheel = args.wheel.resolve()
+                _verify_wheel(wheel, spec)
+            elif args.action == 'install':
+                choices = {value for _, value in component_source_options([spec['wheel']])}
+                if args.download_source not in choices | {'mirror'}:
+                    raise ComponentError('Choose a PyPI download source for Pedalboard')
+                temporary = tempfile.TemporaryDirectory(prefix='vwa-pedalboard-')
+                wheel = _download(spec, Path(temporary.name), args.download_source)
+            else:
+                raise ComponentError('check requires --wheel; pass install to download the pinned wheel')
             result = ({'ready': True, 'version': spec['version'],
                        'wheel': str(wheel), 'wheel_sha256': spec['wheel']['sha256']}
                       if args.action == 'check'
@@ -376,6 +381,6 @@ def main(argv=None):
 if __name__ == '__main__':
     try:
         raise SystemExit(main())
-    except ComponentError as error:
+    except (ComponentError, OSError, ValueError) as error:
         print('ERROR: ' + str(error), file=sys.stderr)
         raise SystemExit(1)

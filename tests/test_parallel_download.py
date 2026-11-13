@@ -83,10 +83,10 @@ try:
         except downloader.RangeUnsupported: pass
         assert not (folder/'invalid/asset.bin').exists()
         bad=False
-        with patch.object(downloader,'download_urls',return_value=[url+'/missing',url+'/asset']):
+        with patch.object(downloader,'component_download_urls',return_value=[url+'/missing',url+'/asset']):
             result=downloader.download(item,folder/'fallback',lambda *args:None,workers=2,segment_bytes=1024**2)
             assert result.read_bytes()==payload
-        with patch.object(downloader,'download_urls',return_value=[url+'/corrupt',url+'/asset']):
+        with patch.object(downloader,'component_download_urls',return_value=[url+'/corrupt',url+'/asset']):
             result=downloader.download(item,folder/'bad-mirror',lambda *args:None,workers=2,segment_bytes=1024**2)
             assert result.read_bytes()==payload, 'A corrupt mirror must not stop a verified alternate route'
         # Migrate a historical part-based download while retaining its prefix.

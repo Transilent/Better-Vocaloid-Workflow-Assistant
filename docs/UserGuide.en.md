@@ -146,7 +146,7 @@ base CPU/DirectML device settings; restart afterward.
 
 ## Downloads and program updates
 
-Models/components offers automatic, official and accelerated download modes. Settings and support sets the default. GitHub files use GitProxy; Hugging Face models use HF-Mirror. Other dependencies use their official sources. Automatic and accelerated modes try the alternate source after connection failures. File-size and SHA-256 checks remain enabled.
+Models & components lists only the [download sources](DownloadSources.en.md) relevant to each installation. When Hugging Face is unreachable, choose **ModelScope weights + GitHub config** or **GitHub Release (weights and config)** for BS‑RoFormer. Each component remembers its source, and every file is checked against its fixed size and SHA‑256. Settings & support controls the app update source separately.
 
 VWA checks for updates on startup by default. The notice shows the changes and user QQ group before you choose **Update now** or **Later**. It downloads only after you agree. If installation fails, VWA attempts to restore the previous version. See the [startup and tour guide (Chinese)](StartupExperience.zh-CN.md).
 

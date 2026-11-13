@@ -341,7 +341,6 @@ with tempfile.TemporaryDirectory(prefix='component-health-', dir=APP / 'work') a
     installer_progress = []
     with patch.object(components, 'MANIFEST', install_manifest), \
          patch.object(components, 'manifest', return_value=install_spec), \
-         patch.object(components, 'download_urls'), \
          patch.object(components, 'download', side_effect=fake_download), \
          patch.object(components, 'extract_wheel', side_effect=fake_extract), \
          patch.object(components, 'load_config', return_value={'python': sys.executable}), \

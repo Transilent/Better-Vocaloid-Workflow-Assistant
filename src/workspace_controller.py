@@ -24,14 +24,12 @@ class WorkspaceController:
     available_routes = ('processing', 'tuning', 'audio_mixdown', 'video_mixdown', 'publishing',
                         'components', 'results', 'updates')
 
-    def __init__(self, sources):
+    def __init__(self, component_sources=None):
         self.draft = PreparationDraft()
         self.route = 'processing'
         self.return_route = 'processing'
         self.runtime = 'cpu'
-        self.source_options = tuple(sources)
-        self.source = next((value for _, value in self.source_options if value == 'auto'),
-                           self.source_options[0][1])
+        self.component_sources = dict(component_sources or {})
         self.query = ''
         self.selected_id = 'builtin'
         self.rows = ()
@@ -176,10 +174,25 @@ class WorkspaceController:
         self.runtime = runtime
         return True
 
-    def set_download_source(self, source):
+    @property
+    def source_options(self):
+        return self.selected.get('download_sources', ())
+
+    @property
+    def source(self):
+        preferred = self.component_sources.get(self.selected_id, 'auto')
+        options = self.source_options
+        if preferred == 'mirror' and len(options) > 2:
+            return options[2][1]  # Old "prefer mirrors" maps to this component's primary station.
+        return preferred if any(value == preferred for _, value in options) else 'auto'
+
+    def set_download_source(self, source, *, save=None):
         if self.active or source == self.source or source not in {value for _, value in self.source_options}:
             return False
-        self.source = source
+        preferences = {**self.component_sources, self.selected_id: source}
+        if save is not None:
+            save(preferences)
+        self.component_sources = preferences
         return True
 
     @property

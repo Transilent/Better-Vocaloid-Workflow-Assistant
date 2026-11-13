@@ -8,6 +8,6 @@
 
 可独立使用，也可关联已有任务，确认后登记为任务 Mixdown 并继续合成视频。源文件不会被覆盖，切换任务后应重新确认素材；已生成文件保留在原路径。
 
-首次使用时，在混音界面点击“安装混音组件”。助手会下载 Pedalboard 0.9.26 Windows x64 wheel，核对固定的大小和 SHA-256，解包到 `dependencies/optional/pedalboard/current`，并在隔离子进程中检查效果链；无需修改基础 Python 的 site-packages。下载约 3.5 MiB，安装后的运行文件约 9.1 MiB。需要网络连接和应用目录写权限。
+首次使用时，在混音界面选择已下载的 Pedalboard 0.9.26 Windows x64 wheel。也可以用 `tools/install_pedalboard_component.py install --download-source pypi-ustc` 从[支持的来源](DownloadSources.zh-CN.md)在线安装。VWA 核对固定大小和 SHA-256，解包到 `dependencies/optional/pedalboard/current`，并在隔离子进程检查效果链。wheel 约 3.5 MiB，安装后约 9.1 MiB；离线安装需要程序目录写权限。
 
 组件固定版本与来源见 `components/pedalboard.json`，许可证及静态依赖见 `components/pedalboard-THIRD_PARTY_NOTICES.md`。现有 v1.0.0 发行包没有此功能。发布前应验证实际构建的更新兼容性与对应源码提供方式；旧更新客户端可能不接受新增文件，应先验证兼容首跳或完整包。

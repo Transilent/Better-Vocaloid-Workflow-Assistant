@@ -1349,7 +1349,7 @@ Rectangle {
                         }
                         Text {
                             Layout.fillWidth: true
-                            text: page.tr("下载来源同时用于组件和程序更新。指定镜像只重写对应来源的公开文件，安装前仍会校验完整性。")
+                            text: page.tr("这里选择程序更新的来源。模型和组件的来源在各自的安装卡片中选择；并行下载数通用。")
                             color: page.theme.muted
                             font.pixelSize: Math.round(12 * page.theme.scale)
                             wrapMode: Text.Wrap
@@ -1365,7 +1365,7 @@ Rectangle {
                                 Layout.fillWidth: true
                                 spacing: 5
                                 Text {
-                                    text: page.tr("下载方式")
+                                    text: page.tr("程序更新来源")
                                     color: page.theme.muted
                                     font.pixelSize: Math.round(12 * page.theme.scale)
                                 }

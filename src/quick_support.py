@@ -936,8 +936,6 @@ class QuickSupport(QObject):
             return
         try:
             if self.state.save(name, value):
-                if name == 'download_source':
-                    self.owner.set_component_source(value)
                 if name == 'auto_restart_updates' and value is False and self.state.auto_restart_active:
                     self._restart_timer.stop()
                     self.state.defer_auto_restart('已关闭自动重启。')

@@ -135,9 +135,6 @@ def _validated(feature, root=None):
         pinned = catalog.get(relative, {})
         if (item.get('bytes'), item.get('sha256')) != (pinned.get('bytes'), pinned.get('sha256')):
             raise ValueError('组件清单与原始模型校验信息不一致，已停止安装。')
-        # Validate the selected route before creating any cache or target files.
-        from download_sources import download_urls
-        download_urls(url, 'auto')
         item['file'] = relative
         item['name'] = name
         item['target'] = target
@@ -299,15 +296,14 @@ def install(feature, progress, check=None, source='auto'):
     complete feature passes a fresh size check.
     """
     from optional_components import download
-    from download_sources import download_urls
+    from download_sources import normalize_component_source
     from pipeline import job_lock
     from task_store import checked_tree
 
     root = Path(ROOT).resolve()
     spec, items = _validated(feature, root)
     # Reject an unsupported source before creating the cache directory.
-    for item in items:
-        download_urls(item['url'], source)
+    source = normalize_component_source(source)
     folder = root / 'cache/feature-downloads' / feature
     folder.mkdir(parents=True, exist_ok=True)
     checked_tree(folder, root)

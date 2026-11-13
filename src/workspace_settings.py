@@ -5,6 +5,7 @@ from pathlib import Path
 
 import appearance_state
 from common import ROOT, atomic_json, load_config, output_directory
+from download_sources import COMPONENT_SOURCES
 from support_info import QQ_GROUP
 import startup_preferences
 import updater
@@ -22,6 +23,24 @@ _CONFIG = {'theme', 'download_source', 'download_workers', 'check_for_updates', 
 _UPDATE_RECEIPT_LIMIT = 64 * 1024
 _UPDATE_NOTICE_LIMIT = 256 * 1024
 _TEXT_LIMIT = 60000
+_COMPONENT_DOWNLOAD_KEY = 'component_download_sources'
+_DOWNLOADED_COMPONENTS = ('roformer', 'chinese', 'expression')
+
+
+def component_source_preferences(config):
+    saved = config.get(_COMPONENT_DOWNLOAD_KEY)
+    if not isinstance(saved, dict):
+        # Preserve applicable choices from the old shared setting once.
+        legacy = config.get('download_source', 'auto')
+        saved = dict.fromkeys(_DOWNLOADED_COMPONENTS, legacy)
+    return {component: source for component, source in saved.items()
+            if component in _DOWNLOADED_COMPONENTS and source in COMPONENT_SOURCES}
+
+
+def save_component_source_preferences(preferences):
+    config = load_config(False)
+    config[_COMPONENT_DOWNLOAD_KEY] = preferences
+    atomic_json(ROOT / 'config.json', config)
 
 
 def _bounded_json(path, *, limit):
@@ -180,6 +199,8 @@ class SettingsState:
             return False
         if name in _CONFIG:
             config = load_config(False)
+            if name == 'download_source' and not isinstance(config.get(_COMPONENT_DOWNLOAD_KEY), dict):
+                config[_COMPONENT_DOWNLOAD_KEY] = component_source_preferences(config)
             config[name] = value
             config.pop('startup_auto_update', None)
             atomic_json(ROOT / 'config.json', config)

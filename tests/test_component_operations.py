@@ -1,5 +1,6 @@
 """Pure, isolated contracts for the shared component operation layer."""
 from pathlib import Path
+import json
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ BASE_MANIFEST = {
     'torch_wheels': {'cpu': {'bytes': 30}, 'cuda': {'bytes': 300}},
     'install_bytes': {'cpu': 200, 'cuda': 2000},
 }
+CHINESE_MANIFEST = json.loads((APP / 'components/runtime-features.json').read_text(encoding='utf-8'))['features']['chinese']
 READY = {
     'ready': True,
     'runtime': 'cuda',
@@ -47,6 +49,7 @@ def catalog(runtime='cuda', *, core=CORE, check_result=PASSED,
          patch.object(operations.optional_components, 'manifest', return_value=manifest), \
          patch.object(operations.optional_components, 'COMPONENT', roformer_root), \
          patch.object(operations.feature_components, 'status', return_value=chinese), \
+         patch.object(operations.feature_components, 'specification', return_value=CHINESE_MANIFEST), \
          patch.object(operations.expression_component, 'status', return_value=expression), \
          patch.object(operations.expression_component, 'SPEC', {'bytes': 70}), \
          patch.object(operations.expression_component, 'COMPONENT', expression_root):
@@ -131,11 +134,5 @@ with patch.object(operations.expression_component, 'verify', return_value=True):
     world = operations.verify('expression')
 assert world['verified'] is True and world['state'] == 'verified'
 assert 'SHA-256' in world['scope'] and '不加载扩展' in world['scope']
-
-with patch.object(operations.download_sources, 'SOURCE_OPTIONS', (
-        ('官方', 'direct'), ('自动', 'auto'), ('镜像', 'mirror'),
-        ('GitHub', 'gitproxy'), ('自定义', 'custom'), ('重复', 'custom'))):
-    options = operations.download_source_options()
-assert [value for _, value in options] == ['auto', 'direct', 'mirror', 'gitproxy', 'custom']
 
 print('PASS: shared component catalog, runtime isolation, dispatch and verification contracts')

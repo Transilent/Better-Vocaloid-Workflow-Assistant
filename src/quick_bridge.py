@@ -9,7 +9,8 @@ from PySide6.QtCore import QAbstractListModel, QModelIndex, QObject, Property, Q
 from PySide6.QtGui import QDesktopServices
 
 import component_operations as components
-from common import ROOT, output_directory, remember_job, save_output_directory
+from common import ROOT, load_config, output_directory, remember_job, save_output_directory
+from download_sources import update_source_options
 from i18n import tr
 import preparation_commands as preparation
 import quick_results
@@ -24,6 +25,7 @@ from quick_mixdown import QuickMixdown
 from quick_video import QuickVideo
 from quick_work import WorkerLane
 from workspace_controller import WorkspaceController
+from workspace_settings import component_source_preferences, save_component_source_preferences
 import workflow
 
 
@@ -212,6 +214,7 @@ class QuickBridge(QObject):
     componentTaskPlanChanged = Signal()
     queryChanged = Signal()
     optionsChanged = Signal()
+    componentSourceChanged = Signal()
     activityChanged = Signal()
     preparationTaskChanged = Signal()
     preparationPresetsChanged = Signal()
@@ -224,8 +227,8 @@ class QuickBridge(QObject):
 
     def __init__(self):
         super().__init__()
-        sources = components.download_source_options()
-        self.state = WorkspaceController(sources)
+        self.state = WorkspaceController(component_source_preferences(load_config(False)))
+        self.selectionChanged.connect(self.componentSourceChanged)
         self._work = WorkerLane(self, 'vwa-workspace')
         self._catalog = WorkerLane(self, 'vwa-components')
         self._read = WorkerLane(self, 'vwa-task-library')
@@ -244,7 +247,7 @@ class QuickBridge(QObject):
         self.taskSafetyChanged.connect(self.taskPrimaryActionChanged)
         self.activityChanged.connect(self.taskPrimaryActionChanged)
         self.preparationTaskChanged.connect(self.taskPrimaryActionChanged)
-        self._support = QuickSupport(self, self._work, sources)
+        self._support = QuickSupport(self, self._work, update_source_options())
         self._tuning = QuickTuning(self, self._work)
         self._calibration = QuickCalibration(self, self._tuning)
         self._calibration.worker.changed.connect(self._work_changed)
@@ -266,7 +269,6 @@ class QuickBridge(QObject):
                        self._catalog.changed, self._read.changed, self._details.changed,
                        self._task_work.changed, self.preparationTaskChanged):
             signal.connect(self._support.refreshActivity)
-        self.state.set_download_source(self._support.state.values['download_source'])
         saved_workflow = workflow.read_state()
         self._legacy_workflow = saved_workflow
         self._legacy_workflow_presets = dict(saved_workflow['presets'])
@@ -558,11 +560,11 @@ class QuickBridge(QObject):
     def query(self):
         return self.state.query
 
-    @Property('QVariantList', constant=True)
+    @Property('QVariantList', notify=componentSourceChanged)
     def downloadSources(self):
-        return self._support.downloadSources
+        return [{'label': tr(label), 'value': value} for label, value in self.state.source_options]
 
-    @Property(str, notify=optionsChanged)
+    @Property(str, notify=componentSourceChanged)
     def downloadSource(self):
         return self.state.source
 
@@ -939,11 +941,14 @@ class QuickBridge(QObject):
 
     @Slot(str)
     def setDownloadSource(self, source):
-        self._support.setSetting('download_source', source)
-
-    def set_component_source(self, source):
-        if self.state.set_download_source(source):
-            self.optionsChanged.emit()
+        if self.workBusy or self.loading:
+            return
+        try:
+            if self.state.set_download_source(source, save=save_component_source_preferences):
+                self.componentSourceChanged.emit()
+        except OSError as exc:
+            self._error(exc)
+            self.componentSourceChanged.emit()
 
     @Slot()
     def useComponent(self):

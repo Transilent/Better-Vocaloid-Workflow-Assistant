@@ -7,13 +7,17 @@ APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP / 'src'))
 from workspace_controller import WorkspaceController
 
-controller = WorkspaceController([('自动', 'auto'), ('直连', 'direct')])
+controller = WorkspaceController({'roformer': 'mirror', 'expression': 'modelscope'})
 rows = [
     {'id': 'builtin', 'title': 'Karaoke 2', 'summary': '', 'status_text': '已就绪',
      'status': 'ready', 'model': 'dual', 'can_use': True, 'can_install': False, 'can_verify': False},
     {'id': 'roformer', 'title': 'BS-RoFormer', 'summary': '', 'status_text': '已就绪',
      'status': 'ready', 'health': {'ready_runtime': 'cpu'},
-     'model': 'roformer', 'can_use': True, 'can_install': True, 'can_verify': True},
+     'model': 'roformer', 'can_use': True, 'can_install': True, 'can_verify': True,
+     'download_sources': [('自动', 'auto'), ('直连', 'direct'), ('魔搭', 'modelscope')]},
+    {'id': 'expression', 'title': 'WORLD', 'summary': '', 'status_text': '未安装',
+     'status': 'missing', 'can_use': False, 'can_install': True, 'can_verify': False,
+     'download_sources': [('自动', 'auto'), ('直连', 'direct'), ('清华', 'pypi-tuna')]},
 ]
 with tempfile.TemporaryDirectory(dir=APP / 'work') as folder:
     music = Path(folder) / '素材 example.wav'
@@ -22,8 +26,15 @@ with tempfile.TemporaryDirectory(dir=APP / 'work') as folder:
     draft = controller.draft
     assert controller.navigate('components') and controller.draft == draft
     assert controller.set_catalog('cpu', rows)
+    assert not controller.source_options and controller.source == 'auto'
+    assert controller.select('expression') and controller.source == 'auto'
+    assert not controller.set_download_source('modelscope')
+    saved = []
+    assert controller.set_download_source('pypi-tuna', save=saved.append)
+    assert saved == [{'roformer': 'mirror', 'expression': 'pypi-tuna'}]
     assert controller.set_query('roformer')
     assert controller.select('roformer')
+    assert controller.source == 'modelscope'
     assert controller.use_component()
     assert controller.route == 'processing'
     assert controller.draft.music_path == str(music)

@@ -47,7 +47,10 @@ def wait(label, ready, timeout=22):
         if ready():
             return
         QTest.qWait(18)
-    raise AssertionError((label, owner.route, owner.notice, video.view['message'], warnings))
+    combo = visual('downloadSourceChoice', required=False)
+    source_debug = (owner.selectedId, owner.downloadSource, owner.downloadSources,
+                    [combo.property(key) for key in ('count', 'currentIndex', 'currentValue')] if combo else None)
+    raise AssertionError((label, owner.route, owner.notice, video.view['message'], warnings, source_debug))
 
 
 def visual(name, *, required=True):
@@ -115,6 +118,10 @@ def component_flow(mixdown):
         assert plan['builtinReady'] and plan['missingIds'] == ['roformer'], plan
         assert 'expression' not in plan['components']
         assert 'BS-RoFormer' in visual('componentTaskPlan').property('text')
+        owner.selectComponent('builtin')
+        wait('built-in hides download controls', lambda: visual('downloadSourceChoice', required=False) is None)
+        assert not owner.downloadSources
+        assert visual('downloadSourceChoice', required=False) is None
         tap('component_roformer')
         wait('RoFormer install plan', lambda: owner.selectedId == 'roformer' and
              visual('componentPlan', required=False) is not None)
@@ -126,8 +133,43 @@ def component_flow(mixdown):
         geometry['componentCatalogPx'] = round(catalog.width())
         assert_on_screen(visual('componentPlan'), 8, 8)
         assert_on_screen(visual('installComponent'), 8, 8)
+        options = [row['value'] for row in owner.downloadSources]
+        assert options == ['auto', 'direct', 'modelscope', 'github-release',
+                           'pypi-tuna', 'pypi-ustc', 'pypi-aliyun', 'pytorch-sjtu'], options
+        combo = visual('downloadSourceChoice')
+        assert combo.property('count') == len(options)
+        assert_on_screen(combo, combo.width() / 2, combo.height() / 2)
+        tap('downloadSourceChoice')
+        QTest.keyClick(window, Qt.Key.Key_Home)
+        QTest.keyClick(window, Qt.Key.Key_Down)
+        QTest.keyClick(window, Qt.Key.Key_Down)
+        QTest.keyClick(window, Qt.Key.Key_Return)
+        wait('choose ModelScope using the actual combo', lambda: owner.downloadSource == 'modelscope')
+        config = load_config(False)
+        assert config['component_download_sources']['roformer'] == 'modelscope'
+        assert config['download_source'] == 'auto'
+        owner.selectComponent('chinese')
+        wait('Qwen sources follow selection', lambda: visual('downloadSourceChoice').property('count') == 3)
+        assert [r['value'] for r in owner.downloadSources] == ['auto', 'direct', 'hf-mirror']
+        assert visual('downloadSourceChoice').property('currentValue') == 'auto'
+        assert 'Hugging Face' in visual('componentSourceHint').property('text')
+        owner.selectComponent('expression')
+        wait('WORLD sources follow selection', lambda: visual('downloadSourceChoice').property('count') == 5)
+        assert [r['value'] for r in owner.downloadSources] == ['auto', 'direct', 'pypi-tuna', 'pypi-ustc', 'pypi-aliyun']
+        owner.selectComponent('roformer')
+        wait('return to remembered source', lambda: visual('downloadSourceChoice').property('currentValue') == 'modelscope')
         capture('components-install-plan')
-        tap('returnToPreparation')
+        owner.navigate('updates')
+        tap('settingsCategory_storage')
+        wait('settings only lists update sources', lambda: visual('downloadSourceChoice').property('count') == 6)
+        assert [r['value'] for r in owner.support.downloadSources] == [
+            'auto', 'direct', 'mirror', 'gitproxy', 'gh-proxy', 'ghfast']
+        owner.support.setSetting('download_source', 'ghfast')
+        assert load_config(False)['download_source'] == 'ghfast'
+        owner.navigate('components')
+        wait('update setting did not change component source',
+             lambda: visual('downloadSourceChoice').property('currentValue') == 'modelscope')
+        owner.navigate('processing')
         wait('return to untouched draft', lambda: owner.route == 'processing')
         assert owner.state.draft == before
         owner.navigate('components')
@@ -137,7 +179,8 @@ def component_flow(mixdown):
         assert draft['separator_model'] == 'dual' and draft['roformer_device'] == 'auto'
         assert owner.state.draft.music_path == str(mixdown) and draft['lyrics'] == '夜色与远方'
 
-        def cancellable_download(_component_id, *, progress, check, **_options):
+        def cancellable_download(component_id, *, progress, check, source, **_options):
+            assert component_id == 'roformer' and source == 'modelscope'
             progress(1, 3, '夹具下载中')
             deadline = monotonic() + 8
             while not check() and monotonic() < deadline:

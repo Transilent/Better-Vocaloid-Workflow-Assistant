@@ -28,6 +28,10 @@ If relevant, manually select a short excerpt from:
 | `diagnostics.log` in the VWA program folder | Output from `tools/Start-Diagnostics.bat`, if used |
 | `pipeline.log` in the affected task folder | Preparation/processing failures; the task/results page can help locate it |
 
+For a model download failure, include the component, CPU/CUDA if applicable, selected source, and the full error from the component card. If the error shows only a timeout, include the filename or progress shown just before the failure.
+
+模型下载失败时请贴组件卡片上的完整报错，并写明组件名、运行库（如 CPU/CUDA）和所选来源。如果旧版只显示超时，补上报错前停在哪个文件或进度。
+
 按问题选择相关片段：启动看程序目录的 `launcher.log`；使用诊断启动后看 `diagnostics.log`；准备任务失败看对应任务目录的 `pipeline.log`。不存在的日志不必补造，也无需提交整个目录。原始配置和 JSON 状态文件可能包含路径或作品信息，除非已明确筛选脱敏，否则不要附上。
 
 Remove usernames, full paths, cookies, tokens, account information, lyrics and private project/media names. Do not upload full configuration, `cache/accounts`, browser profiles, projects, songs/stems, models or voicebank files. Prefer a small synthetic or otherwise shareable example. Ask in the issue before sending additional material if you cannot safely redact it; no private upload channel is provided by this setup.

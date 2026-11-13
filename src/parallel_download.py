@@ -10,7 +10,7 @@ import time
 import urllib.request
 
 from common import atomic_json, direct_urlopen, file_hash
-from download_sources import download_urls, source_name
+from download_sources import component_download_urls, source_name
 
 
 class RangeUnsupported(OSError):
@@ -44,7 +44,7 @@ def sequential_partial(item, folder):
 
 
 def download(item, folder, progress, check=None, source='auto', workers=4,
-             opener=direct_urlopen, segment_bytes=32 * 1024**2):
+             opener=direct_urlopen, segment_bytes=32 * 1024**2, *, routes=None):
     """Every segment must match its range; unverified bytes never become a target."""
     if not 1 <= workers <= 8 or segment_bytes < 1024:
         raise ValueError('下载连接数应为 1–8。')
@@ -55,6 +55,8 @@ def download(item, folder, progress, check=None, source='auto', workers=4,
     total = item['bytes']
     if not isinstance(total, int) or total < 1 or not re.fullmatch('[a-f0-9]{64}', item['sha256']):
         raise ValueError('下载清单无效。')
+    if routes is None:
+        routes = component_download_urls(item, source)
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / name
     if target.is_symlink() or (target.exists() and getattr(target.lstat(), 'st_file_attributes', 0) & 1024):
@@ -108,7 +110,7 @@ def download(item, folder, progress, check=None, source='auto', workers=4,
         atomic_json(receipt, {**metadata, 'version': 2, 'lengths': lengths})
     save()
     last_error = None
-    for route in download_urls(item['url'], source):
+    for route in routes:
         abort = threading.Event()
         def cancelled():
             if check and check():

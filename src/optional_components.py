@@ -2,6 +2,7 @@
 import argparse
 from contextlib import contextmanager
 import hashlib
+from http.client import IncompleteRead
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+from urllib.parse import urlsplit
 import urllib.request
 import zipfile
 
@@ -18,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import ROOT, atomic_json, file_hash, load_config, direct_urlopen, native_path
 from common import exclusive_sidecar, SidecarBusy
 import component_health
-from download_sources import download_urls, source_name
+from download_sources import component_download_urls, normalize_component_source, source_name
 
 COMPONENT = ROOT / 'dependencies/optional/bs-roformer'
 MANIFEST = ROOT / 'components/roformer.json'
@@ -130,7 +132,7 @@ def download(item, folder, progress, check=None, opener=direct_urlopen, source='
         raise ValueError('Invalid download filename')
     target = folder / name
     partial = folder / (name + '.partial')
-    routes = download_urls(item['url'], source)
+    routes = component_download_urls(item, source)
     cancelled(check)
     if target.is_file() and target.stat().st_size == item['bytes'] and file_hash(target) == item['sha256']:
         progress(item['bytes'], item['bytes'], '已校验下载文件')
@@ -140,18 +142,19 @@ def download(item, folder, progress, check=None, opener=direct_urlopen, source='
         workers = int(load_config(False).get('download_workers', 4))
     if not 1 <= workers <= 8:
         raise ValueError('下载连接数应为 1–8。')
+    from parallel_download import ChecksumMismatch, RangeUnsupported, sequential_partial
     if workers > 1 and item['bytes'] >= 8 * 1024**2 and not partial.exists():
-        from parallel_download import download as parallel, RangeUnsupported
+        from parallel_download import download as parallel
         try:
-            return parallel(item, folder, progress, check, source=source, workers=workers, opener=opener)
-        except RangeUnsupported:
-            progress(0, item['bytes'], '当前下载源未支持分段，切换为单连接续传')
-            from parallel_download import sequential_partial
+            return parallel(item, folder, progress, check, workers=workers, opener=opener, routes=routes)
+        except (RangeUnsupported, ChecksumMismatch):
+            progress(0, item['bytes'], '分段下载未完成，切换为单连接续传')
             sequential_partial(item, folder)
     elif workers == 1 and not partial.exists():
-        from parallel_download import sequential_partial
         sequential_partial(item, folder)
-    for attempt in range(3):
+    attempts = max(3, len(routes))
+    failures = {}
+    for attempt in range(attempts):
         cancelled(check)
         offset = partial.stat().st_size if partial.exists() else 0
         if offset == item['bytes']:
@@ -169,12 +172,14 @@ def download(item, folder, progress, check=None, opener=direct_urlopen, source='
         route = routes[min(attempt, len(routes) - 1)]
         request = urllib.request.Request(route, headers=headers)
         progress(offset, item['bytes'], '连接' + source_name(route))
+        endpoint = urlsplit(route).hostname
         try:
             with opener(request, timeout=30) as response:
+                endpoint = urlsplit(response.geturl()).hostname or endpoint
                 code = response.status
                 if code == 206:
                     content_range = response.headers.get('Content-Range', '')
-                    if not content_range.startswith(f'bytes {offset}-') or not content_range.endswith('/' + str(item['bytes'])):
+                    if content_range != f"bytes {offset}-{item['bytes'] - 1}/{item['bytes']}":
                         raise ValueError('服务器返回了错误的下载续传范围。')
                 elif code == 200:
                     offset = 0  # Server ignored Range: replace the partial, never append.
@@ -184,17 +189,16 @@ def download(item, folder, progress, check=None, opener=direct_urlopen, source='
                     progress(offset, item['bytes'], '正在下载 · ' + source_name(route))
                     while block := response.read(1024 * 1024):
                         cancelled(check)
+                        if offset + len(block) > item['bytes']:
+                            raise ValueError('下载文件超出清单大小。')
                         writer.write(block)
                         offset += len(block)
-                        if offset > item['bytes']:
-                            raise ValueError('下载文件超出清单大小。')
                         progress(offset, item['bytes'], '正在下载 · ' + source_name(route))
             cancelled(check)
             if offset != item['bytes']:
                 raise OSError('下载未完成，正在重试。')
             if file_hash(partial) != item['sha256']:
                 partial.unlink()
-                from parallel_download import ChecksumMismatch
                 raise ChecksumMismatch('下载文件 SHA-256 校验失败，请重试。')
             partial.replace(target)
             segments=folder/(name+'.segments')
@@ -206,16 +210,29 @@ def download(item, folder, progress, check=None, opener=direct_urlopen, source='
         except InterruptedError:
             raise
         except ValueError as exc:
-            from parallel_download import ChecksumMismatch
-            if not isinstance(exc, ChecksumMismatch) or attempt == 2:
-                raise
-            progress(0, item['bytes'], '文件校验失败，尝试其他下载源')
-        except (OSError, urllib.error.URLError):
-            if attempt == 2:
-                raise
+            failures[endpoint] = str(exc)
+            if attempt + 1 == attempts:
+                raise type(exc)(_download_failure(name, failures)) from exc
+            progress(offset, item['bytes'], '服务器响应或文件校验有误，尝试其他下载源')
+        except (OSError, IncompleteRead) as exc:
+            if isinstance(exc, urllib.error.HTTPError):
+                endpoint = urlsplit(exc.geturl()).hostname or endpoint
+            reason = getattr(exc, 'reason', exc)
+            code = getattr(exc, 'code', None)
+            winerror = getattr(reason, 'winerror', None)
+            error = f'HTTP {code}' if code else f'WinError {winerror}' if winerror else type(reason).__name__
+            failures[endpoint] = error
+            if attempt + 1 == attempts:
+                raise OSError(_download_failure(name, failures)) from exc
             progress(offset, item['bytes'], '连接中断，正在重连')
-            time.sleep(attempt + 1)
+            if attempt + 1 >= len(routes):
+                time.sleep(attempt + 1)
     raise RuntimeError('Download failed')
+
+
+def _download_failure(name, failures):
+    # Hostnames and error codes are shareable; redirect URLs may be signed.
+    return f'{name} · ' + '；'.join(f'{host}：{reason}' for host, reason in failures.items())
 
 
 def extract_wheel(archive, directory, check=None):
@@ -351,7 +368,7 @@ def probe(directory):
 
 
 def install(runtime, progress=print, check=None, root=COMPONENT, force=False, source='auto'):
-    download_urls('https://github.com/', source)  # Validate before modifying the install stage.
+    source = normalize_component_source(source)
     if runtime not in ('cpu', 'cuda'):
         raise ValueError('请选择 CPU 或 NVIDIA GPU 运行库。')
     if sys.version_info[:2] != (3, 12) or sys.maxsize < 2**32 or sys.platform != 'win32':
@@ -440,8 +457,11 @@ if __name__ == '__main__':
     parser.add_argument('--probe')
     parser.add_argument('--verify', action='store_true',
                         help='explicitly hash manifest weights and receipt-critical files')
-    from download_sources import SOURCES
-    parser.add_argument('--download-source', choices=SOURCES, default='auto')
+    from download_sources import component_source_options
+    spec = manifest()
+    items = spec['weights'] + spec['shared_wheels'] + list(spec['torch_wheels'].values())
+    choices = [value for _, value in component_source_options(items)]
+    parser.add_argument('--download-source', choices=[*choices, 'mirror'], default='auto')
     args = parser.parse_args()
     if args.probe:
         probe(args.probe)

@@ -25,7 +25,7 @@ def make_audio(path):
 
 with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='prep-draft-') as folder:
     root = Path(folder)
-    controller = WorkspaceController([('自动', 'auto')])
+    controller = WorkspaceController()
     controller.set_music(str(make_audio(root / '本地源.wav')))
     for name, value in (
         ('output_directory', str(root / 'results')), ('target', 'separation'),

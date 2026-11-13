@@ -2,39 +2,20 @@
 
 [简体中文](DownloadSources.zh-CN.md)
 
-Choose a route in **Settings & updates → Download settings**, or in **Models & components** before an installation. The setting is retained when an update restarts into the migration window.
+Select the item to install in **Models & components**, then choose **Download source**. Each component remembers its own selection. **Settings & support → Downloads and storage** controls the app update source separately. The download connection limit is shared.
 
-- **Automatic** tries the official origin first, followed by supported alternatives.
-- **Direct** uses the original service.
-- **Prefer acceleration** selects alternative routes for each supported file origin, retaining direct fallback.
-- **Named mirrors** prefer that provider for its matching origin, then fall back to direct. Files from other origins remain direct. For example, choosing TUNA PyPI does not route a Qwen model through TUNA.
-
-## Available providers
-
-| Provider | Files routed through it |
+| Component | Available sources |
 | --- | --- |
-| GitProxy | Public GitHub release, raw and archive files |
-| GH-Proxy | Public GitHub release, raw and archive files |
-| ghfast.top | Public GitHub release, raw and archive files |
-| HF-Mirror | Public Hugging Face `resolve` files, including the original Chinese Qwen weights |
-| TUNA PyPI | Pinned wheels from `files.pythonhosted.org/packages/…` |
-| Aliyun PyPI | Pinned wheels from `files.pythonhosted.org/packages/…` |
-| SJTU PyTorch | The currently pinned Windows Python 3.12 torch 2.7.1 CPU and cu128 wheels |
+| Built-in Karaoke 2 and Japanese recognition | Included with the application. Restore the matching installation files if they are missing. |
+| BS‑RoFormer (CPU / CUDA) | **ModelScope weights + GitHub config** or **GitHub Release (weights and config)**. TUNA, USTC, and Aliyun PyPI serve the Python dependencies. SJTU serves the pinned CPU or CUDA PyTorch wheel. |
+| Chinese lyric recognition (Qwen3‑ASR) | Official Hugging Face and HF‑Mirror. HF‑Mirror may redirect to Hugging Face. No independent source has passed verification. |
+| Reference vocal timbre (WORLD) | Official PyPI, TUNA, USTC, and Aliyun PyPI. |
+| Pedalboard (command-line installation) | Official PyPI, TUNA, USTC, and Aliyun PyPI. The graphical interface can still install from a local wheel. |
 
-GitHub acceleration is limited to explicit public file paths. API metadata, platform sign-in, upload requests, Bilibili signed media and NetEase requests use the original services. Cookies, tokens and signed query strings are not added to third-party accelerator requests. GitHub uploads remain direct.
+**Automatic** tries official addresses first and falls back to matching alternatives. **Official direct** uses only official addresses. A named provider changes the order for the files it serves; other files use their own providers. If Hugging Face is unreachable, select either BS‑RoFormer alternative. Neither option uses Hugging Face. ModelScope serves the weights only; the config comes from the pinned GitHub release asset or its verified backup route. If you need Chinese recognition without access to Hugging Face, the standard VWA package includes the Qwen weights.
 
-PyPI mirrors use the same pinned package file, not a newly resolved package version. SJTU routing is limited to the two supported wheel filenames; other PyTorch versions and channels retain their original URLs. The PyPI mirrors do not proxy arbitrary package indexes or API requests.
+Every route uses the same file versions, sizes and SHA‑256 values. Downloads can be cancelled and resumed. Files are enabled only after verification. To report a failure, include the component, runtime (CPU or CUDA), selected source and the full error from its card. The error names the file, hosts and error codes; a full configuration or model is not needed. Normal refresh in **Chinese lyric recognition** checks presence and size; run the full check separately from the component card.
 
-## Verification, cancellation and recovery
+App updates still support Automatic, Official direct, Prefer acceleration, GitProxy, GH‑Proxy and ghfast.top. Third-party routes apply only to public files. Sign-in, upload and signed requests retain their original services.
 
-Component and update installation uses fixed byte counts and SHA-256 values. A mirror does not select which model or library version is installed. Downloads retain existing range/resume, cancellation and fallback behavior. The small compatibility runtime installer also accepts a download-source option; it does not provide all of the desktop downloader's parallel/range features.
-
-Open **Models & components → Chinese lyric recognition** to download Qwen when the weights are not bundled. The card shows size, retained partial downloads, progress and cancellation. Once files are present, **Verify / Repair** performs the full cancellable integrity check and repairs missing or damaged files. Normal page refresh checks file presence and size for responsiveness; it is not a new full SHA-256 verification. Japanese recognition and notes-only extraction do not require the Chinese weights.
-
-Automatic updates run only at startup. Installing an update waits for active workflows, installation, cache operations and publication sessions to finish. Final publication remains a user action on the platform website.
-
-## Command-line compatibility
-
-The shared source IDs are `auto`, `direct`, `mirror`, `gitproxy`, `gh-proxy`, `ghfast`, `hf-mirror`, `pypi-tuna`, `pypi-aliyun`, and `pytorch-sjtu`.
-
-The optional-component command accepts `--download-source <ID>`. The runtime recovery script accepts `-DownloadSource <ID>`. New migration helpers accept all ten IDs; a component-only mirror selected for a GitHub update falls back to direct rather than failing validation.
+The BS‑RoFormer and Pedalboard installers support `--download-source`. New IDs are `modelscope` and `github-release` for BS‑RoFormer, and `pypi-ustc` for PyPI dependencies. The existing `mirror` command-line mode is still accepted.

@@ -6,6 +6,7 @@ import sys
 import unittest
 from unittest.mock import Mock, patch
 from urllib.error import URLError
+from urllib.parse import urlsplit
 
 APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP))
@@ -226,6 +227,46 @@ class DownloadSourceTests(unittest.TestCase):
             'torch-2.7.1%2Bcu128-cp312-cp312-win_amd64.whl')
         self.assertEqual(sources.source_name(
             'https://mirror.sjtu.edu.cn/pytorch-wheels/cpu/torch.whl'), 'SJTU PyTorch')
+
+
+class PinnedComponentRoutes(unittest.TestCase):
+    def test_roformer_routes_are_pinned_and_independent(self):
+        spec = json.loads((APP / 'components/roformer.json').read_text(encoding='utf-8'))
+        weight, config = spec['weights']
+        for source, first_hosts in {
+            'modelscope': ('modelscope.cn', 'github.com'),
+            'github-release': ('github.com', 'github.com'),
+            'pypi-aliyun': ('modelscope.cn', 'github.com'),
+            'pytorch-sjtu': ('modelscope.cn', 'github.com'),
+        }.items():
+            for item, first in zip((weight, config), first_hosts):
+                with self.subTest(source=source, file=item['name']):
+                    routes = sources.component_download_urls(item, source)
+                    hosts = [urlsplit(url).hostname for url in routes]
+                    self.assertEqual(hosts[0], first)
+                    self.assertEqual('huggingface.co' in hosts, source not in ('modelscope', 'github-release'))
+                    self.assertNotIn('hf-mirror.com', hosts)
+                    self.assertIn('gh-proxy.com', hosts)
+                    self.assertEqual(sources.component_download_urls(item, 'direct'), [item['url']])
+        self.assertEqual(sources.component_download_urls(weight, 'auto')[0], weight['url'])
+        for field, value in [('bytes', weight['bytes'] + 1), ('sha256', '0' * 64),
+                             ('url', weight['url'] + '?download=1')]:
+            routes = sources.component_download_urls(dict(weight, **{field: value}), 'modelscope')
+            self.assertFalse(any('modelscope.cn' in url or 'github.com' in url for url in routes))
+        for runtime in ('cpu', 'cuda'):
+            torch = spec['torch_wheels'][runtime]
+            self.assertEqual(urlsplit(sources.component_download_urls(torch, 'modelscope')[0]).hostname,
+                             'mirror.sjtu.edu.cn')
+            for item in spec['shared_wheels']:
+                self.assertEqual(urlsplit(sources.component_download_urls(item, 'pypi-ustc')[0]).hostname,
+                                 'mirrors.ustc.edu.cn')
+
+    def test_no_model_providers_in_update_settings(self):
+        self.assertEqual([value for _, value in sources.update_source_options()],
+                         ['auto', 'direct', 'mirror', 'gitproxy', 'gh-proxy', 'ghfast'])
+        for source in ('modelscope', 'github-release', 'pypi-ustc'):
+            with self.assertRaises(ValueError):
+                sources.download_urls(GITHUB_RELEASE, source)
 
 
 if __name__ == '__main__':

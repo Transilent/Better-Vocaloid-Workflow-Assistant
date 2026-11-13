@@ -24,7 +24,7 @@ COMPONENT_IDS = ('builtin', 'roformer', 'chinese', 'expression')
 ROW_KEYS = (
     'id', 'title', 'summary', 'status', 'status_text', 'detail',
     'download_bytes', 'installed_bytes', 'required_bytes',
-    'can_install', 'can_verify', 'can_use', 'model', 'health',
+    'can_install', 'can_verify', 'can_use', 'model', 'health', 'download_sources',
 )
 STATUSES = ('ready', 'missing', 'partial', 'damaged', 'error')
 _STATUS_TEXT = {
@@ -35,33 +35,6 @@ _STATUS_TEXT = {
     'error': '检查失败',
 }
 _FEATURE_STATUS = {'ready', 'missing', 'partial', 'damaged', 'error'}
-
-
-def download_source_options():
-    """Return the canonical, deduplicated download source choices.
-
-    The historical ``auto``/``direct``/``mirror`` entries stay first so old
-    settings and tests keep their priority.  The function deliberately has no
-    Qt dependency.
-    """
-    options = download_sources.SOURCE_OPTIONS
-    if callable(options):
-        options = options()
-    ordered, seen = [], set()
-    for row in options or ():
-        if not isinstance(row, (tuple, list)) or len(row) != 2:
-            continue
-        title, value = row
-        if not isinstance(title, str) or not title or not isinstance(value, str) or value in seen:
-            continue
-        ordered.append((title, value))
-        seen.add(value)
-    by_value = {value: (title, value) for title, value in ordered}
-    result = [by_value[value] for value in ('auto', 'direct', 'mirror') if value in by_value]
-    result.extend(row for row in ordered if row[1] not in {'auto', 'direct', 'mirror'})
-    if not result:
-        raise ValueError('下载来源列表为空。')
-    return result
 
 
 def _runtime(value):
@@ -87,7 +60,7 @@ def _progress(callback):
 
 def _row(component_id, status, *, detail, download=0, installed=0,
          required=0, can_install=False, can_verify=False, can_use=False,
-         model=None, status_text=None, health=None):
+         model=None, status_text=None, health=None, download_items=()):
     if status not in STATUSES:
         raise ValueError('无效的组件状态。')
     return {
@@ -115,6 +88,7 @@ def _row(component_id, status, *, detail, download=0, installed=0,
         'can_use': bool(can_use),
         'model': model,
         'health': health or {},
+        'download_sources': download_sources.component_source_options(download_items) if can_install else (),
     }
 
 
@@ -273,7 +247,7 @@ def _roformer_row(runtime):
         return _row(
             'roformer', 'ready', detail=detail,
             download=download, installed=installed, required=required,
-            can_install=True, can_verify=True, can_use=True, model=model, health=health,
+            can_install=True, can_verify=True, can_use=True, model=model, health=health, download_items=items,
         )
 
     if ready and installed_runtime is not None:
@@ -285,7 +259,7 @@ def _roformer_row(runtime):
             detail=f'已安装另一档 {installed_name} 运行库；当前选择的 {selected_name} 尚未安装。'
                    f' 安装 {selected_name} 会切换到该运行库。',
             download=download, installed=0, required=required,
-            can_install=True, can_verify=False, can_use=False, model=model, health=health,
+            can_install=True, can_verify=False, can_use=False, model=model, health=health, download_items=items,
         )
 
     state_value = state.get('state') or verification.get('state')
@@ -313,13 +287,14 @@ def _roformer_row(runtime):
         'roformer', status, detail=detail,
         download=download, installed=0, required=required,
         can_install=status != 'error', can_verify=can_verify, can_use=False,
-        model=model, health=health,
+        model=model, health=health, download_items=items,
     )
 
 
 def _chinese_row():
     try:
         state = feature_components.status('chinese')
+        download_items = () if state.get('state') == 'error' else feature_components.specification('chinese')['files']
     except Exception as exc:
         return _error_row('chinese', exc)
     status = state.get('state')
@@ -350,7 +325,7 @@ def _chinese_row():
         'chinese', status, detail=detail,
         download=total, installed=installed, required=total,
         can_install=status != 'error', can_verify=can_verify,
-        can_use=status == 'ready', model=None,
+        can_use=status == 'ready', model=None, download_items=download_items,
         health={'version': str(state.get('revision') or '')[:16], 'cache_bytes': cached,
                 'complete_files': complete, 'expected_files': files,
                 'scope': '清单与本地文件检查；完整校验另行执行', 'source': '固定模型版本'},
@@ -389,6 +364,7 @@ def _expression_row():
         download=download, installed=installed, required=max(16 * 1024**2, download, installed),
         can_install=status != 'error', can_verify=can_verify,
         can_use=status == 'ready', model=None,
+        download_items=(spec,),
         health={'version': str(state.get('version') or ''), 'scope': '安装收据和列出的文件摘要',
                 'source': '固定 PyPI 组件'},
     )
@@ -504,5 +480,5 @@ def verification_summary(report):
 
 __all__ = [
     'COMPONENT_IDS', 'ROW_KEYS', 'STATUSES',
-    'download_source_options', 'catalog', 'install', 'verify',
+    'catalog', 'install', 'verify',
 ]

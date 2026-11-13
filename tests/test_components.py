@@ -90,11 +90,20 @@ try:
     item = {'name': 'fallback.whl', 'url': base + '/unavailable',
             'sha256': hashlib.sha256(DATA).hexdigest(), 'bytes': len(DATA)}
     (SCRATCH / (item['name'] + '.partial')).write_bytes(DATA[:123456])
-    with patch.object(components, 'download_urls', return_value=[base + '/unavailable', base + '/resume']):
+    # All configured routes must be reachable in the single-connection path,
+    # including a fourth fallback after switching networks with a partial file.
+    routes = [base + '/unavailable'] * 3 + [base + '/resume']
+    with patch.object(components, 'component_download_urls', return_value=routes):
         assert components.download(item, SCRATCH, lambda *args: None).read_bytes() == DATA
     assert ('/unavailable', 'bytes=123456-') in ranges
     assert ('/resume', 'bytes=123456-') in ranges
     passed.append('alternate-source-preserves-range-and-hash')
+    item['name'] = 'unavailable.whl'
+    try:
+        components.download(item, SCRATCH, lambda *args: None)
+        raise AssertionError('Network failure was accepted')
+    except OSError as error:
+        assert 'unavailable.whl' in str(error) and '127.0.0.1' in str(error) and 'HTTP 503' in str(error)
 finally:
     server.shutdown()
     server.server_close()

@@ -29,6 +29,15 @@ ScrollView {
     readonly property bool lowSpace: reserveBytes > 0 && freeBytes >= 0 && freeBytes < reserveBytes
     readonly property bool usesPlannedRoformer: planComponents.indexOf("roformer") >= 0
     readonly property bool idle: !controller.workBusy && !controller.loading
+    readonly property var sourceChoices: controller.downloadSources
+    readonly property string sourceHint: controller.downloadSource === "direct" ? ""
+        : component.id === "roformer" ? controller.text(
+            controller.downloadSource === "modelscope" || controller.downloadSource === "github-release"
+            ? "所选方案不经过 Hugging Face；Python 和 PyTorch 依赖由各自的镜像提供。"
+            : "PyPI 只用于普通依赖，SJTU 只用于 PyTorch。连不上 Hugging Face 时可直接选魔搭或 GitHub。")
+        : component.id === "chinese" ? controller.text(
+            "HF-Mirror 可能跳回 Hugging Face；暂无核验通过的独立来源。")
+        : ""
     readonly property string planBadgeText: !planLoaded
         ? controller.text(controller.loading ? "目录状态获取中" : "目录状态未知")
         : planComplete ? controller.text("当前方案组件已齐备") : controller.text("当前方案缺 {0} 项").replace("{0}", missingIds.length)
@@ -574,24 +583,37 @@ ScrollView {
                         }
                         ColumnLayout {
                             Layout.fillWidth: true
-                            visible: !!page.component.can_install
+                            visible: page.sourceChoices.length > 0
                             Text {
                                 text: page.controller.text("下载来源")
                                 color: page.theme.muted
                                 font.pixelSize: Math.round(11 * page.theme.scale)
                             }
                             UiComboBox {
+                                id: sourceCombo
                                 objectName: "downloadSourceChoice"
                                 Layout.fillWidth: true
                                 theme: page.theme
                                 enabled: page.idle
                                 Accessible.name: page.controller.text("下载来源")
-                                model: page.controller.downloadSources
-                                currentIndex: page.controller.downloadSources.findIndex(option => option.value === page.controller.downloadSource)
+                                readonly property var sourceModel: page.sourceChoices
+                                model: sourceModel
+                                currentIndex: sourceModel.findIndex(option => option.value === page.controller.downloadSource)
                                 onActivated: page.controller.setDownloadSource(currentValue)
                             }
                         }
                         Item { Layout.fillWidth: true; Layout.preferredWidth: 80 }
+                    }
+
+                    Text {
+                        objectName: "componentSourceHint"
+                        Layout.fillWidth: true
+                        visible: page.sourceChoices.length > 0 && text.length > 0
+                        text: page.sourceHint
+                        color: page.theme.muted
+                        font.pixelSize: Math.round(11 * page.theme.scale)
+                        wrapMode: Text.Wrap
+                        textFormat: Text.PlainText
                     }
 
                     Text {
@@ -720,7 +742,8 @@ ScrollView {
                                    ? " · " + page.controller.operation.done + " / " + page.controller.operation.total : "")
                             color: page.theme.muted
                             font.pixelSize: Math.round(11 * page.theme.scale)
-                            elide: Text.ElideRight
+                            wrapMode: page.controller.operation.state === "failed" ? Text.WrapAnywhere : Text.NoWrap
+                            elide: page.controller.operation.state === "failed" ? Text.ElideNone : Text.ElideRight
                             textFormat: Text.PlainText
                         }
                         UiButton {
