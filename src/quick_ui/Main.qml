@@ -17,15 +17,21 @@ ApplicationWindow {
     readonly property bool compact: width < 1110 || (theme.scale > 1.2 && width < 1280)
     readonly property bool useArtwork: preferences.material === "glass"
     readonly property var preferences: controller.support.settings
-    readonly property bool preparationAway: controller.preparationBusy && controller.route !== "processing"
-    readonly property bool tuningAway: controller.operationKind.indexOf("tuning-") === 0 && controller.route !== "tuning"
-    readonly property bool mixAway: controller.route !== "audio_mixdown"
-        && (controller.mixdown.view.playing || controller.operationKind.indexOf("mixdown-") === 0)
-    readonly property bool videoAway: controller.operationKind.indexOf("video-") === 0 && controller.route !== "video_mixdown"
-    readonly property bool publicationAway: controller.operationKind.indexOf("publication-") === 0 && controller.route !== "publishing"
-    readonly property string studioRoute: videoAway ? "video_mixdown" : publicationAway ? "publishing"
-        : tuningAway ? "tuning" : mixAway ? "audio_mixdown" : ""
+    readonly property bool mixAway: controller.route !== "audio_mixdown" && controller.mixdown.view.playing
+    readonly property bool previewLoading: controller.mixdown.view.loading
+    property int previewWait: 0
+    readonly property var operations: controller.activeOperations
+    readonly property var issue: controller.latestOperationIssue
+    readonly property var primaryOperation: operations.length > 0 ? operations[0] : ({})
     property bool closingAfterTask: false
+
+    onPreviewLoadingChanged: previewWait = 0
+    Timer {
+        interval: 1000
+        repeat: true
+        running: window.previewLoading
+        onTriggered: window.previewWait += 1
+    }
 
     width: initialWidth
     height: initialHeight
@@ -70,7 +76,7 @@ ApplicationWindow {
     }
 
     onClosing: function(event) {
-        if ((controller.workBusy || controller.calibration.view.busy) && !closingAfterTask) {
+        if ((controller.hasActiveOperations || window.previewLoading) && !closingAfterTask) {
             event.accepted = false
             exitDialog.open()
         }
@@ -376,7 +382,7 @@ ApplicationWindow {
             objectName: "backgroundStudioActivity"
             Layout.fillWidth: true
             Layout.preferredHeight: studioBar.implicitHeight + 12
-            visible: window.studioRoute.length > 0
+            visible: window.mixAway
             color: theme.surface
             Rectangle { width: parent.width; height: 1; color: theme.line }
             RowLayout {
@@ -390,11 +396,7 @@ ApplicationWindow {
                     font.pixelSize: 13 * theme.scale
                     elide: Text.ElideRight
                     textFormat: Text.PlainText
-                    text: window.videoAway ? window.controller.video.view.message
-                        : window.publicationAway ? window.controller.publication.view.message
-                        : window.tuningAway ? window.controller.tuning.view.message
-                        : window.controller.mixdown.view.playing ? window.controller.text("简易混音 · 后台试听")
-                        : window.controller.mixdown.view.message || window.controller.text("简易混音")
+                    text: window.controller.text("简易混音 · 后台试听")
                 }
                 UiButton {
                     objectName: "pauseBackgroundMix"
@@ -406,9 +408,8 @@ ApplicationWindow {
                 UiButton {
                     objectName: "returnBackgroundStudio"
                     theme: window.tokens
-                    text: window.controller.text(window.videoAway ? "返回视频" : window.publicationAway ? "返回发布"
-                                                 : window.tuningAway ? "返回调音" : "返回混音")
-                    onClicked: window.controller.navigate(window.studioRoute)
+                    text: window.controller.text("返回混音")
+                    onClicked: window.controller.navigate("audio_mixdown")
                 }
             }
         }
@@ -417,8 +418,8 @@ ApplicationWindow {
             objectName: "workspaceActivity"
             Layout.fillWidth: true
             Layout.preferredHeight: footer.implicitHeight + 16
-            visible: window.preparationAway || window.controller.busy || window.controller.notice.length > 0
-                || (window.controller.route === "components" && window.controller.operation.state !== "idle")
+            visible: window.operations.length > 0 || !!window.issue.id || window.previewLoading
+                || window.controller.notice.length > 0
             color: theme.surface
             Rectangle { width: parent.width; height: 1; color: theme.line }
             RowLayout {
@@ -433,52 +434,100 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     spacing: 5
                     Text {
+                        objectName: "operationHeadline"
                         Layout.fillWidth: true
-                        text: window.controller.notice || (window.preparationAway
-                            ? window.controller.preparationTask.message
-                            : window.controller.operation.message) || ""
-                        color: !window.preparationAway && window.controller.operation.state === "failed" ? theme.error : theme.text
+                        Layout.minimumWidth: 0
+                        text: window.operations.length ? window.primaryOperation.detail
+                            : window.previewLoading ? window.controller.text("正在准备连续试听…")
+                            : window.issue.title || window.controller.notice
+                        color: window.operations.length || window.previewLoading || !window.issue.id ? theme.text : theme.error
                         font.pixelSize: 13 * theme.scale
                         textFormat: Text.PlainText
                         elide: Text.ElideRight
-                        ToolTip.visible: activityHover.hovered && truncated
-                        ToolTip.text: text
+                        ToolTip.visible: activityHover.hovered && (truncated || !!window.issue.details)
+                        ToolTip.text: window.operations.length || window.previewLoading ? text
+                            : window.issue.details || text
                         HoverHandler { id: activityHover }
                     }
-                    ProgressBar {
-                        objectName: "componentProgress"
+                    Text {
+                        objectName: "operationTiming"
                         Layout.fillWidth: true
-                        visible: window.controller.busy
-                        indeterminate: !window.controller.operation.total && !theme.reduceMotion
-                        value: window.controller.operation.total ? Math.min(1, window.controller.operation.done / window.controller.operation.total) : 0
-                        Accessible.name: window.controller.text("组件任务进度")
+                        visible: text.length > 0
+                        text: window.operations.length ? [window.primaryOperation.timing,
+                              window.primaryOperation.count].filter(s => s).join(" · ")
+                            : window.previewLoading ? window.controller.text("已等待 {0}")
+                                .replace("{0}", Math.floor(window.previewWait / 60).toString().padStart(2, "0")
+                                    + ":" + (window.previewWait % 60).toString().padStart(2, "0"))
+                            : window.issue.hint || ""
+                        font.pixelSize: 11 * theme.scale
+                        color: theme.muted
+                        elide: Text.ElideRight
+                        textFormat: Text.PlainText
                     }
                     ProgressBar {
-                        objectName: "backgroundPreparationProgress"
+                        objectName: "workspaceOperationProgress"
                         Layout.fillWidth: true
-                        visible: window.preparationAway
-                        value: window.controller.preparationTask.total > 0
-                            ? window.controller.preparationTask.completed / window.controller.preparationTask.total : 0
-                        Accessible.name: window.controller.text("准备任务进度")
+                        visible: (window.operations.length || window.previewLoading)
+                            && (window.primaryOperation.fraction !== undefined || !theme.reduceMotion)
+                        indeterminate: window.primaryOperation.fraction === undefined && !theme.reduceMotion
+                        value: window.primaryOperation.fraction === undefined ? 0 : window.primaryOperation.fraction
+                        implicitHeight: Math.round(5 * theme.scale)
+                        Accessible.name: window.controller.text("当前操作进度")
                     }
                 }
                 UiButton {
-                    objectName: "viewPreparationProgress"
-                    visible: window.preparationAway
+                    objectName: "openOperationWorkspace"
+                    visible: window.operations.length
+                        ? (window.primaryOperation.route !== window.controller.route
+                            || String(window.primaryOperation.kind).indexOf("calibration-") === 0)
+                        : window.previewLoading ? window.controller.route !== "audio_mixdown"
+                        : !!window.issue.route && window.issue.route !== window.controller.route
                     theme: window.tokens
-                    text: window.controller.text("查看进度")
-                    onClicked: window.controller.navigate("processing")
+                    text: window.controller.text(window.operations.length ? "查看进度"
+                        : window.previewLoading ? "返回混音" : "查看工作区")
+                    onClicked: {
+                        const entry = window.operations.length ? window.primaryOperation
+                            : window.previewLoading ? {kind: "mixdown-preview", route: "audio_mixdown"}
+                            : window.issue
+                        if (String(entry.kind).indexOf("calibration-") === 0)
+                            voiceCalibration.open()
+                        else
+                            window.controller.navigate(entry.route)
+                    }
                 }
                 UiButton {
-                    objectName: "cancelComponent"
-                    visible: window.controller.busy
-                    enabled: window.controller.operation.state === "running"
+                    objectName: "activityDiagnostics"
+                    theme: window.tokens
+                    quiet: true
+                    text: window.operations.length > 1
+                        ? window.controller.text("{0} 项操作").replace("{0}", window.operations.length)
+                        : window.controller.text("本机诊断")
+                    onClicked: window.controller.support.showDiagnostics()
+                }
+                UiButton {
+                    objectName: "dismissOperationIssue"
+                    visible: !window.operations.length && !window.previewLoading
+                        && (!!window.issue.id || window.controller.notice.length > 0)
+                    theme: window.tokens
+                    quiet: true
+                    text: window.controller.text("关闭提示")
+                    onClicked: window.controller.dismissOperationIssue(window.issue.id || "")
+                }
+                UiButton {
+                    objectName: "cancelWorkspaceOperation"
+                    visible: !!window.primaryOperation.canCancel
+                    enabled: !window.primaryOperation.cancelling
                     theme: window.tokens
                     text: window.controller.text("取消")
-                    onClicked: window.controller.cancelOperation()
+                    onClicked: window.controller.cancelActiveOperation(window.primaryOperation.id)
                 }
             }
         }
+    }
+
+    DiagnosticsDialog {
+        theme: window.tokens
+        controller: window.controller.support
     }
 
     CalibrationDialog {

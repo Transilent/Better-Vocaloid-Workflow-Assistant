@@ -116,7 +116,8 @@ class QuickCalibration(QObject):
 
     def __init__(self, parent, tuning):
         super().__init__(parent)
-        self.worker = WorkerLane(self, 'vwa-calibration')
+        self.worker = WorkerLane(self, 'vwa-calibration', journal=getattr(parent, 'journal', None),
+                                 namespace='calibration-')
         self.worker.changed.connect(self.changed)
         self.tuning = tuning
         tuning.changed.connect(self.changed)
@@ -163,6 +164,8 @@ class QuickCalibration(QObject):
                 self.message = tr(str(value))
             self.changed.emit()
 
+        result = ['succeeded', '']
+
         def complete(value, error):
             if error is None:
                 try:
@@ -170,12 +173,13 @@ class QuickCalibration(QObject):
                 except (OSError, ValueError, TypeError, KeyError) as failure:
                     error = failure
             if error is not None:
+                result[:] = ['cancelled' if isinstance(error, InterruptedError) else 'failed', error]
                 self.message = tr(str(error)[:1400])
                 self.hint = '' if isinstance(error, InterruptedError) else tr(recovery_hint(str(error)))
                 self.phase = 'ready' if self.session else 'setup'
             self.changed.emit()
 
-        self.worker.start(kind, work, complete, progress)
+        self.worker.start(kind, work, complete, progress, label=label, outcome=lambda _value: result)
 
     def _choose_project(self, path, seed=None):
         if self.session or self.worker.kind or Path(path).suffix.lower() != '.svp':
@@ -405,10 +409,12 @@ class QuickCalibration(QObject):
                 def on_state(value):
                     latest.update(value)
                     latest.pop('message', None)
-                    send(dict(latest))
+                    send({**latest, 'total': 0 if latest['phase'] == 'fitting' else latest['total'],
+                          'message': ('正在拟合声库参数…' if latest['phase'] == 'fitting'
+                                      else '正在等待七份试音文件…')})
 
                 def progress(message):
-                    send({**latest, 'message': message} if latest else message)
+                    send({**latest, 'total': 0, 'message': message} if latest else message)
 
                 saved = sessions.wait_and_fit(path, folder, cancel=cancel, progress=progress, on_state=on_state,
                                               channel_mode=channels, output_name=name, strength=strength, register=False)

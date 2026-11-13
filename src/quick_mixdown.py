@@ -102,7 +102,7 @@ class QuickMixdown(QObject):
         self._initialized = False
         self._lock = threading.RLock()
         self._active_kind = ''
-        self._support_lane = WorkerLane(self, f'vwa-mixdown-support-{id(self):x}')
+        self._support_lane = WorkerLane(self, 'vwa-mixdown-support', journal=getattr(parent, 'journal', None))
         self._state = MixdownWorkspaceState()
         self._library = PresetLibrary()
         self._presets = []
@@ -423,6 +423,10 @@ class QuickMixdown(QObject):
                 self._state.loading = bool(self._player and self._player.loading)
             self._recompute_and_emit()
 
+    @property
+    def support_lane(self):
+        return self._support_lane
+
     def _start_support_check(self):
         if not self._initialized or self._closed or self._support_ready:
             return
@@ -724,6 +728,7 @@ class QuickMixdown(QObject):
             return False
 
     def _player_prepared(self):
+        self._last_preview_problem = ''
         with self._lock:
             if self._state.message == '正在从常驻进程准备连续试听…':
                 self._state.message = '连续试听已就绪；可切换 A/B 并试听整曲。'
@@ -738,6 +743,10 @@ class QuickMixdown(QObject):
         self._clear_hotspots()
         with self._lock:
             self._state.message = (('定位未完成：' if seeking else '') + str(message))[:1600]
+        report = getattr(self.parent(), 'report_problem', None)
+        if report is not None and self._state.message != getattr(self, '_last_preview_problem', ''):
+            self._last_preview_problem = self._state.message
+            report('mixdown-preview', RuntimeError(str(message)))
         self._recompute_and_emit()
 
     def _apply_reverb_measurement(self, data):
@@ -1247,6 +1256,7 @@ class QuickMixdown(QObject):
                 self._recompute_and_emit()
             except Exception as exc:
                 self._notice('导出完成但结果回执无效：' + str(exc))
+                raise
         if not self._start_owned('mixdown-export', work, finish, progress=progress):
             with self._lock:
                 self._state.clear_export_progress()

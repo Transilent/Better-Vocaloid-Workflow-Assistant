@@ -268,6 +268,10 @@ class PinnedComponentRoutes(unittest.TestCase):
             with self.assertRaises(ValueError):
                 sources.download_urls(GITHUB_RELEASE, source)
 
+    def test_shared_file_downloader_honors_the_update_source(self):
+        routes = sources.component_download_urls({'url': GITHUB_RELEASE}, 'ghfast')
+        self.assertEqual(routes, sources.download_urls(GITHUB_RELEASE, 'ghfast'))
+
 
 if __name__ == '__main__':
     unittest.main()

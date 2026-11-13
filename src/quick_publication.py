@@ -1844,6 +1844,10 @@ class QuickPublication(QObject):
                     finish(value, error)
                 except Exception as exc:
                     self._notice('发布工作区处理结果失败：' + str(exc), state='error')
+                    if error is None:
+                        report = getattr(self.parent(), 'report_problem', None)
+                        if report is not None:
+                            report(kind, exc)
         finally:
             with self._lock:
                 if self._active_kind == kind:

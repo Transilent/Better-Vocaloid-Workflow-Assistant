@@ -760,6 +760,8 @@ class QuickVideo(QObject):
                 self._message = str(text)[:1600]
                 self._emit()
 
+        result = ['succeeded', '']
+
         def complete(value, error):
             self._active_kind = ''
             self._active_job = None
@@ -776,13 +778,17 @@ class QuickVideo(QObject):
                 try:
                     finish(value)
                 except Exception as failure:
+                    result[:] = ['failed', failure]
                     self._state = 'failed'
                     self._message = str(failure)[:1600]
+                else:
+                    if self._state == 'partial':
+                        result[0] = 'partial'
             if self._closed:
                 self._cleanup_owned_jobs()
             self._emit()
 
-        if not self._worker.start(kind, work, complete, progress):
+        if not self._worker.start(kind, work, complete, progress, label=label, outcome=lambda _value: result):
             self._active_kind = ''
             self._active_job = None
             self._state = 'ready'
@@ -1051,7 +1057,7 @@ class QuickVideo(QObject):
                 stop, source_value, mix_value)
             _stop_check(stop)
             send('正在冻结输入并准备独立 MP4…')
-            arguments = {'normalize': bool(options['normalize']), 'reset_cancel': False}
+            arguments = {'normalize': bool(options['normalize']), 'reset_cancel': False, 'progress': send}
             if options['auto_align']:
                 if alignment and alignment.get('accepted') is True:
                     arguments['alignment_report'] = alignment

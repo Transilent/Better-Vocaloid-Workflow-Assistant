@@ -416,6 +416,10 @@ def component_download_urls(item, source='auto'):
         return _unique([url, *mirrors] if source == 'auto' else [*mirrors, url])
     stations = component_stations(item)
     if not stations:
+        # Updates reuse the pinned-file downloader, but their GitHub provider
+        # preferences are separate from the component source menu.
+        if source in SOURCES and (public_download_kind(url) or '').startswith('github-'):
+            return download_urls(url, source)
         return [url]
     if stations == _COMPONENT_PYPI_IDS:
         def wheel_url(station):

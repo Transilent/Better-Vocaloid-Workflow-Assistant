@@ -11,6 +11,7 @@ import urllib.request
 
 from common import atomic_json, direct_urlopen, file_hash
 from download_sources import component_download_urls, source_name
+from operation_diagnostics import DownloadTrace
 
 
 class RangeUnsupported(OSError):
@@ -111,6 +112,7 @@ def download(item, folder, progress, check=None, source='auto', workers=4,
     save()
     last_error = None
     for route in routes:
+        trace = DownloadTrace(opener, route, item, 'parallel')
         abort = threading.Event()
         def cancelled():
             if check and check():
@@ -120,7 +122,7 @@ def download(item, folder, progress, check=None, source='auto', workers=4,
         try:
             cancelled()
             probe = urllib.request.Request(route, headers={'User-Agent':'VWA-Downloader', 'Range':'bytes=0-0', 'Accept-Encoding':'identity'})
-            with opener(probe, timeout=12) as response:
+            with trace.open(probe, timeout=12) as response:
                 if response.status != 206 or response.headers.get('Content-Range') != f'bytes 0-0/{total}' or len(response.read(2)) != 1:
                     raise RangeUnsupported('服务器不支持分段下载，将使用单连接。')
                 validator = response.headers.get('ETag') or response.headers.get('Last-Modified')
@@ -149,7 +151,7 @@ def download(item, folder, progress, check=None, source='auto', workers=4,
                     if validator:
                         headers['If-Range'] = validator
                     try:
-                        with opener(urllib.request.Request(route, headers=headers), timeout=12) as response:
+                        with trace.open(urllib.request.Request(route, headers=headers), timeout=12) as response:
                             if response.status != 206 or response.headers.get('Content-Range') != f'bytes {offset}-{end}/{total}':
                                 raise RangeUnsupported('服务器返回的分段范围不正确。')
                             with data.open('r+b', buffering=0) as output:
@@ -184,6 +186,7 @@ def download(item, folder, progress, check=None, source='auto', workers=4,
             finally:
                 save()
             cancelled()
+            progress(total, total, '正在校验下载文件')
             digest = hashlib.sha256()
             with data.open('rb') as reader:
                 while block := reader.read(1024**2):
@@ -198,10 +201,13 @@ def download(item, folder, progress, check=None, source='auto', workers=4,
             data.replace(target)
             shutil.rmtree(stage)
             progress(total, total, '下载完成，SHA-256 校验通过')
+            trace.record('succeeded', total)
             return target
         except InterruptedError:
+            trace.record('cancelled', sum(lengths))
             raise
         except (OSError, ChecksumMismatch) as exc:
+            trace.record('failed', sum(lengths), exc)
             last_error = exc
     if isinstance(last_error, ChecksumMismatch):
         raise ChecksumMismatch('所有下载源均未提供符合 SHA-256 的文件，请稍后重试。') from last_error

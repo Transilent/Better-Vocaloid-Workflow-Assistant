@@ -12,6 +12,7 @@ import component_operations as components
 from common import ROOT, load_config, output_directory, remember_job, save_output_directory
 from download_sources import update_source_options
 from i18n import tr
+from operation_diagnostics import clock_text, describe, error_text, journal_for, operation_event
 import preparation_commands as preparation
 import quick_results
 from quick_media_handoff import artifact_identity, verify_publication_bundle, verify_task_artifact
@@ -27,6 +28,18 @@ from quick_work import WorkerLane
 from workspace_controller import WorkspaceController
 from workspace_settings import component_source_preferences, save_component_source_preferences
 import workflow
+
+
+_CANCELLABLE_TUNING = frozenset(('tuning-loading', 'tuning-freezing', 'tuning-running',
+                                'tuning-checking-calibration', 'tuning-exporting'))
+
+
+def _can_cancel(kind):
+    if kind == 'video-register':
+        return False
+    return (kind in ('component', 'preparation', 'update-download', 'mixdown-export',
+                     'mixdown-install', 'mixdown-support-probe') or kind in _CANCELLABLE_TUNING
+            or kind.startswith(('calibration-', 'video-', 'publication-')))
 
 
 _TASK_STATE_FILTERS = frozenset(('all', 'done', 'pending', 'failed', 'running'))
@@ -69,11 +82,23 @@ class RowsModel(QAbstractListModel):
 
 def _component_result(request, stop, send):
     def progress(done, total, message):
-        send((request.operation_id, done, total, message))
+        mode = 'verify' if request.action == 'verify' else 'download'
+        if request.action == 'install':
+            if message.startswith(('正在安装', '正在验证', '正在确认', '正在检查', '正在校验')):
+                mode = 'install' if message.startswith('正在安装') else 'verify'
+            if mode != 'download':
+                total = 0
+        send({'operation_id': request.operation_id, 'done': done, 'total': total,
+              'message': message, 'phase': mode,
+              'unit': 'items' if request.action == 'verify' and request.component_id in ('builtin', 'expression')
+                       else 'bytes'})
 
     if request.action == 'install':
-        components.install(request.component_id, runtime=request.runtime, source=request.source,
-                           force=request.force, progress=progress, check=stop.is_set)
+        try:
+            components.install(request.component_id, runtime=request.runtime, source=request.source,
+                               force=request.force, progress=progress, check=stop.is_set)
+        except InterruptedError:
+            return 'cancelled', '安装已取消；可继续使用已保留的下载。', None
         return 'succeeded', '安装完成。', None
     report = components.verify(request.component_id, progress=progress, check=stop.is_set)
     if report.get('verified') is True:
@@ -97,6 +122,8 @@ def _run_preparation(draft, existing, retry_cpu, stop, send, *, reuse_job='', re
     send({'state': 'running', 'job': str(job), 'message': '正在启动准备任务…'})
     try:
         code = preparation.run_process(job, stop=stop, on_progress=send, retry_cpu=retry_cpu)
+        if code:
+            operation_event('progress', exit_code=code & 0xffffffff)
         view = preparation.progress_view(job)
         if code and view['state'] not in ('cancelled', 'failed'):
             view.update(state='failed', message=f'准备进程退出（{code}）。请查看任务日志。')
@@ -111,7 +138,13 @@ def _run_preparation(draft, existing, retry_cpu, stop, send, *, reuse_job='', re
             view['message'] = '准备完成。' if view['state'] == 'done' else '本轮阶段完成，可以继续。'
         return view
     except Exception as exc:
-        return {'job': str(job), 'state': 'failed', 'message': str(exc)[:1600]}
+        if isinstance(exc, InterruptedError):
+            return {'job': str(job), 'state': 'cancelled', 'message': tr('任务已停止')}
+        from error_recovery import explain
+        recovery = explain(exc)
+        return {'job': str(job), 'state': 'failed', 'message': str(exc)[:1600],
+                'recovery_title': recovery['title'], 'recovery_message': recovery['message'],
+                'recovery_action': recovery['action']}
 
 
 def _controller_view(controller):
@@ -216,6 +249,7 @@ class QuickBridge(QObject):
     optionsChanged = Signal()
     componentSourceChanged = Signal()
     activityChanged = Signal()
+    operationActivityChanged = Signal()
     preparationTaskChanged = Signal()
     preparationPresetsChanged = Signal()
     taskChanged = Signal()
@@ -227,13 +261,14 @@ class QuickBridge(QObject):
 
     def __init__(self):
         super().__init__()
+        self.journal = journal_for()
         self.state = WorkspaceController(component_source_preferences(load_config(False)))
         self.selectionChanged.connect(self.componentSourceChanged)
-        self._work = WorkerLane(self, 'vwa-workspace')
-        self._catalog = WorkerLane(self, 'vwa-components')
-        self._read = WorkerLane(self, 'vwa-task-library')
-        self._details = WorkerLane(self, 'vwa-task-detail')
-        self._task_work = WorkerLane(self, 'vwa-task-mutations')
+        self._work = WorkerLane(self, 'vwa-workspace', journal=self.journal)
+        self._catalog = WorkerLane(self, 'vwa-components', journal=self.journal)
+        self._read = WorkerLane(self, 'vwa-task-library', journal=self.journal)
+        self._details = WorkerLane(self, 'vwa-task-detail', journal=self.journal)
+        self._task_work = WorkerLane(self, 'vwa-task-mutations', journal=self.journal)
         self._work.changed.connect(self._work_changed)
         self._task_work.changed.connect(self._work_changed)
         self._catalog.changed.connect(self.activityChanged)
@@ -301,15 +336,122 @@ class QuickBridge(QObject):
         self._task_safety_timer.setInterval(140)
         self._task_safety_timer.timeout.connect(self._refresh_task_safety)
         self._task_safety_cache = {'job': '', 'groups': (), 'blockers': [], 'signature': ()}
+        self._dismissed_issue = ''
+        self._activities = (self._work, self._task_work, self._calibration.worker, self._catalog,
+                            self._read, self._details, self._support.storage_lane,
+                            self._support.preset_lane, self._support.inspect_lane, self._support.discovery,
+                            self._mixdown.support_lane)
+        self._operation_timer = QTimer(self)
+        self._operation_timer.setInterval(1000)
+        self._operation_timer.timeout.connect(self.operationActivityChanged)
+        for lane in self._activities:
+            lane.activityChanged.connect(self._refresh_activity)
+
+    @Property(bool, notify=operationActivityChanged)
+    def hasActiveOperations(self):
+        # Quiet catalog reads and the automatic startup check may finish while
+        # closing. Only operations initiated by the user need the exit choice.
+        return any(lane.kind for lane in (self._work, self._task_work, self._calibration.worker,
+                                          self._support.storage_lane, self._support.preset_lane))
+
+    def _refresh_activity(self):
+        busy = any(lane.kind for lane in self._activities)
+        if busy and not self._operation_timer.isActive():
+            self._operation_timer.start()
+        elif not busy:
+            self._operation_timer.stop()
+        self.operationActivityChanged.emit()
+        if not self.hasActiveOperations and self._exit_when_idle and not self._closed:
+            self.closeReady.emit()
+
+    def report_problem(self, kind, error, *, route=''):
+        self.journal.problem(kind, error, route=route)
+        self.operationActivityChanged.emit()
+
+    @Slot(str)
+    def cancelActiveOperation(self, identifier):
+        for lane in self._activities:
+            row = lane.activity
+            if row.get('id') != identifier:
+                continue
+            kind = row['kind']
+            if not _can_cancel(kind) or row['cancelling']:
+                return
+            if kind == 'component':
+                self.cancelOperation()
+            elif kind == 'preparation':
+                self.cancelPreparation()
+            elif kind == 'update-download':
+                self._support.cancelUpdate()
+            elif kind.startswith('video-'):
+                self._video.cancel()
+            elif kind.startswith('calibration-'):
+                self._calibration.cancel()
+            elif kind.startswith('tuning-'):
+                self._tuning.cancel()
+            elif kind in ('mixdown-export', 'mixdown-install', 'mixdown-support-probe'):
+                self._mixdown.cancel()
+            elif kind.startswith('publication-'):
+                self._publication.cancel()
+            return
+
+    @Property('QVariantList', notify=operationActivityChanged)
+    def activeOperations(self):
+        from task_store import format_size
+        active = []
+        for lane in self._activities:
+            row = lane.activity
+            if not row:
+                continue
+            detail = row['detail']
+            row['label'] = tr(row['label'])
+            row['detail'] = tr(detail) if detail else row['label']
+            kind = row['kind']
+            row['canCancel'] = _can_cancel(kind)
+            row['timing'] = tr('已等待 {0}', clock_text(row['elapsed']))
+            if row['cancelling']:
+                row['detail'] = tr('正在取消，等待安全收尾…')
+            elif row['quiet'] >= 15 and row['phase'] == 'waiting':
+                row['timing'] = tr('正在等外部编辑器导出 · 已等待 {0}', clock_text(row['elapsed']))
+            elif row['quiet'] >= 15:
+                row['timing'] = tr('等待下一次进度 · 已等待 {0}', clock_text(row['elapsed']))
+            if row.get('total'):
+                row['fraction'] = row['done'] / row['total']
+                unit = row['unit']
+                row['count'] = (f'{format_size(row["done"])} / {format_size(row["total"])}' if unit == 'bytes'
+                                else f'{row["done"]:g} / {row["total"]:g}' if unit == 'items'
+                                else f'{row["fraction"]:.0%}')
+            else:
+                row['count'] = ''
+            active.append(row)
+        return active
+
+    @Property('QVariantMap', notify=operationActivityChanged)
+    def latestOperationIssue(self):
+        issue = self.journal.latest_failure(self._dismissed_issue)
+        if not issue:
+            return {}
+        label, _ = describe(issue.get('kind', ''))
+        title, hint = error_text(issue.get('code'))
+        details = self._notice if issue.get('kind') == 'workspace' else ''
+        return {**issue, 'title': f'{tr(label)} · {tr(title)}', 'hint': tr(hint), 'details': details}
+
+    @Slot(str)
+    def dismissOperationIssue(self, identifier):
+        if identifier:
+            self._dismissed_issue = identifier
+        self._notice = ''
+        self.operationActivityChanged.emit()
+        self.activityChanged.emit()
 
     def _error(self, error):
         self._notice = str(error)[:1600] or error.__class__.__name__
+        if not any(lane.completing_failure for lane in self._activities):
+            self.report_problem('workspace', error, route=self.state.route)
         self.activityChanged.emit()
 
     def _work_changed(self):
         self.activityChanged.emit()
-        if self._exit_when_idle and not self.workBusy and not self._calibration.worker.kind:
-            self.closeReady.emit()
 
     def _task_reference_groups(self):
         tracks = self._mixdown.tracks
@@ -838,7 +980,7 @@ class QuickBridge(QObject):
         task = self.state.preparation_task
         task.update(id=key, state='running', job=existing or '', message='正在准备任务…',
                     completed=0, total=0, current='', elapsed=0, can_retry=False,
-                    stages=[], log_tail='', recovery_action='', recovery_message='')
+                    stages=[], stage_progress={}, log_tail='', recovery_title='', recovery_action='', recovery_message='')
         self.state.handoff = {}
         self._notice = ''
         if existing or reprocess:
@@ -887,8 +1029,13 @@ class QuickBridge(QObject):
             if not self._exit_when_idle and self.state.route == 'results':
                 self.refreshTasks()
 
+        def outcome(value):
+            state = value.get('state')
+            return ('succeeded' if state == 'done' else state or 'failed', value.get('message', ''))
+
         started = self._work.start('preparation', lambda stop, send: _run_preparation(
-            draft, existing, retry_cpu, stop, send, reuse_job=reuse_job, reprocess=reprocess), finish, progress)
+            draft, existing, retry_cpu, stop, send, reuse_job=reuse_job, reprocess=reprocess), finish, progress,
+            label='正在准备任务…', outcome=outcome)
         if not started:
             self._clear_work_task_lock()
 
@@ -1003,7 +1150,7 @@ class QuickBridge(QObject):
         self._notice = ''
 
         def progress(value):
-            if self.state.progress(*value):
+            if self.state.progress(value['operation_id'], value['done'], value['total'], value['message']):
                 self.activityChanged.emit()
 
         def finish(value, error):
@@ -1023,7 +1170,11 @@ class QuickBridge(QObject):
             if not self._exit_when_idle:
                 self.refresh()
 
-        self._work.start('component', lambda stop, send: _component_result(request, stop, send), finish, progress)
+        self._work.start('component', lambda stop, send: _component_result(request, stop, send), finish, progress,
+                         label='正在准备组件…', facts={'component': request.component_id, 'runtime': request.runtime
+                             if request.component_id == 'roformer' else '', 'action': request.action,
+                             'source': request.source if request.action == 'install' else ''},
+                         outcome=lambda value: value[:2])
 
     @Slot()
     def cancelOperation(self):
@@ -1198,7 +1349,7 @@ class QuickBridge(QObject):
             if error is not None:
                 self._error(error)
                 return
-            self.state.preparation_task.update(id='', recovery_action='', recovery_message='', log_tail='')
+            self.state.preparation_task.update(id='', recovery_action='', recovery_title='', recovery_message='', log_tail='')
             self.state.preparation_task.update(view)
             self.state.preparation_task['can_retry'] = view['state'] in ('failed', 'cancelled', 'interrupted', 'partial')
             self.preparationTaskChanged.emit()
@@ -1695,10 +1846,9 @@ class QuickBridge(QObject):
         self._video.cancel()
         self._publication.cancel()
         self._calibration.cancel()
-        self._task_work.cancel()
-        if self._work.kind:
-            self._work.cancel()
-        if not self.workBusy and not self._calibration.worker.kind:
+        for lane in self._activities:
+            lane.cancel()
+        if not self.hasActiveOperations:
             self.closeReady.emit()
 
     def close(self):
@@ -1706,6 +1856,7 @@ class QuickBridge(QObject):
             return
         self._closed = True
         self._task_safety_timer.stop()
+        self._operation_timer.stop()
         self._support.close()
         self._video.cancel()
         self._publication.cancel()
@@ -1716,3 +1867,4 @@ class QuickBridge(QObject):
         self._mixdown.close()
         self._video.close()
         self._publication.close()
+        self._operation_timer.stop()

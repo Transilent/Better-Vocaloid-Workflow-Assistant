@@ -1889,7 +1889,8 @@ Item {
                     Text {
                         Layout.fillWidth: true
                         visible: page.task && String(page.task.message || "").length > 0
-                        text: page.task && page.task.message ? String(page.task.message) : ""
+                        text: page.task && page.task.message
+                            ? page.controller.text(String(page.task.recovery_title || page.task.message)) : ""
                         color: page.taskFailed ? page.theme.error : page.theme.text
                         font.pixelSize: Math.round(13 * page.theme.scale)
                         wrapMode: Text.Wrap
@@ -1921,6 +1922,16 @@ Item {
                         visible: page.taskFailed && String(page.task.recovery_action || "").length > 0
                         theme: page.theme
                         text: page.controller.text(String(page.task.recovery_message || ""))
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        visible: page.taskFailed && !!page.task.recovery_title && !!page.task.message
+                        text: String(page.task.message || "")
+                        color: page.theme.muted
+                        font.pixelSize: Math.round(11 * page.theme.scale)
+                        wrapMode: Text.WrapAnywhere
+                        textFormat: Text.PlainText
                     }
 
                     Flow {
@@ -1998,6 +2009,14 @@ Item {
                             onClicked: page.controller.refreshPreparationLog()
                         }
 
+                        UiButton {
+                            theme: page.theme
+                            quiet: true
+                            visible: page.taskFailed
+                            text: page.controller.text("本机诊断")
+                            onClicked: page.controller.support.showDiagnostics()
+                        }
+
                         Item {
                             visible: !page.narrow
                             Layout.fillWidth: true
@@ -2050,7 +2069,8 @@ Item {
                     objectName: "preparationFooterStatus"
                     Layout.fillWidth: true
                     text: page.taskState !== "idle"
-                        ? page.statusTitle() + (page.task.message ? " · " + page.controller.text(String(page.task.message)) : "")
+                        ? page.statusTitle() + (page.task.message ? " · "
+                            + page.controller.text(String(page.task.recovery_title || page.task.message)) : "")
                         : page.inputBlocker || page.controller.text(page.componentCheck.state === "issues"
                             ? "先处理组件问题。" : "素材已选，可以检查或开始。")
                     color: page.taskState !== "idle" ? page.statusColor() : page.theme.text
@@ -2079,30 +2099,15 @@ Item {
                     HoverHandler { id: componentStatusHover }
                 }
 
-                ProgressBar {
-                    objectName: "preparationProgress"
+                Text {
+                    objectName: "preparationStageCount"
                     Layout.fillWidth: true
-                    visible: page.taskRunning
-                    from: 0
-                    to: page.taskTotal > 0 ? page.taskTotal : 1
-                    value: page.taskTotal > 0 ? Math.min(page.taskCompleted, page.taskTotal) : 0
-                    indeterminate: page.taskState === "running" && page.taskTotal <= 0 && !page.theme.reduceMotion
-                    Accessible.name: page.controller.text("准备任务进度")
-                    background: Rectangle {
-                        implicitHeight: Math.round(6 * page.theme.scale)
-                        color: page.theme.base
-                        radius: height / 2
-                    }
-                    contentItem: Item {
-                        Rectangle {
-                            width: page.taskTotal > 0
-                                ? parent.width * Math.min(1, page.taskCompleted / page.taskTotal)
-                                : parent.width * 0.32
-                            height: parent.height
-                            radius: height / 2
-                            color: page.theme.accent
-                        }
-                    }
+                    visible: page.taskRunning && page.taskTotal > 0
+                    text: page.controller.text("已完成 {0} / {1} 个步骤")
+                        .replace("{0}", page.taskCompleted).replace("{1}", page.taskTotal)
+                    color: page.theme.muted
+                    font.pixelSize: Math.round(11 * page.theme.scale)
+                    textFormat: Text.PlainText
                 }
             }
 

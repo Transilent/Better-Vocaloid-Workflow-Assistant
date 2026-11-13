@@ -16,14 +16,26 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
+    log = None
     if '--desktop' in sys.argv:
         import faulthandler
-        log = (ROOT / 'launcher.log').open('a', encoding='utf-8', buffering=1)
-        sys.stdout = sys.stderr = log
-        faulthandler.enable(log)
+        try:
+            path = ROOT / 'launcher.log'
+            if path.is_file() and path.stat().st_size >= 2 * 1024**2:
+                path.replace(ROOT / 'launcher.log.1')
+            log = path.open('a', encoding='utf-8', buffering=1)
+            sys.stdout = sys.stderr = log
+            faulthandler.enable(log)
+        except OSError:
+            pass
     try:
         result = main()
-    except Exception:
+    except Exception as error:
+        from operation_diagnostics import journal_for
+        journal_for(ROOT).problem('startup', error)
         traceback.print_exc()
-        sys.exit(1)
+        result = 1
+    finally:
+        from operation_diagnostics import close_journal
+        close_journal(ROOT)
     sys.exit(result)

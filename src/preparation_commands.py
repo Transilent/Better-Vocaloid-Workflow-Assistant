@@ -438,6 +438,7 @@ def reprocess_task(draft, previous):
 
 def progress_view(job):
     from progress_state import TITLES, snapshot
+    from operation_diagnostics import meter
 
     data = snapshot(job)
     state = data['status'].get('state', 'ready')
@@ -445,15 +446,19 @@ def progress_view(job):
     steps = data['status'].get('steps', {})
     stages = [{'key': key, 'label': TITLES.get(key, key), 'state': steps.get(key, {}).get('state', 'pending')}
               for key in data['stages']]
+    event = data['event']
+    unit = 'bytes' if data['current'] == 'download' else 'items'
+    stage_progress = meter(event.get('done'), event.get('total'), unit)
     return {'state': state, 'job': str(job), 'current': data['current'] or '', 'message': message,
-            'completed': data['completed'], 'total': len(stages), 'elapsed': data['elapsed'], 'stages': stages}
+            'completed': data['completed'], 'total': len(stages), 'elapsed': data['elapsed'],
+            'stage_progress': stage_progress, 'stages': stages}
 
 
 def recovery_view(job):
     from error_recovery import failure
 
     detail = failure(job)
-    return {'message': detail['raw'][:1600], 'recovery_action': detail['action'],
+    return {'message': detail['raw'][:1600], 'recovery_title': detail['title'], 'recovery_action': detail['action'],
             'recovery_message': detail['message']}
 
 
@@ -506,7 +511,7 @@ def run_process(job, *, stop=None, on_progress=None, on_line=None, retry_cpu=Fal
                                 value = progress_view(job)
                             except (OSError, TypeError, ValueError):
                                 value = None
-                            if value is not None:
+                            if value is not None and value['state'] == 'running':
                                 on_progress(value)
                             last_read = now
                         try:

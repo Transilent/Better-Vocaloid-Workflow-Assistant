@@ -356,7 +356,7 @@ def get_view(bv, tools=None):
     return data["data"]
 
 
-def run_process(argv, job, label, cooperative=False):
+def run_process(argv, job, label, cooperative=False, *, on_progress_line=None):
     env = os.environ.copy()
     env.update(PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1", PYTHONNOUSERSITE="1")
     temp = Path(job) / "temp"
@@ -392,7 +392,7 @@ def run_process(argv, job, label, cooperative=False):
             active_voice = {'midi_lead': '主唱', 'midi_backing': '和声'}.get(label, '人声')
             stop_started = None
             while True:
-                more = reader.read()
+                more = reader.read(65536)
                 pending += more
                 if b"\n" in pending or b"\r" in pending:
                     # tqdm updates use carriage returns instead of newlines.
@@ -407,12 +407,17 @@ def run_process(argv, job, label, cooperative=False):
                                     active_voice = {'lead': '主唱', 'backing': '和声'}.get(text.rsplit(' ', 1)[-1], '人声')
                                 from progress_state import from_log
                                 from_log(job, text, active_voice)
-                            print(text, flush=True)
+                            if not (on_progress_line is not None and on_progress_line(text)):
+                                print(text, flush=True)
                 code = process.poll()
                 if code is not None:
-                    pending += reader.read()
+                    # Drain all complete progress records before the final fragment.
+                    if more:
+                        continue
                     if pending:
-                        print(pending.decode("utf-8", errors="replace"), flush=True)
+                        text = pending.decode("utf-8", errors="replace").strip()
+                        if text and not (on_progress_line is not None and on_progress_line(text)):
+                            print(text, flush=True)
                     break
                 if cancellation_requested(job):
                     stop_started = stop_started or time.monotonic()
@@ -1253,6 +1258,7 @@ def _run(job, until):
     status['run_started'] = time.time()
     status['planned_steps'] = [key for key, _, _ in steps]
     status.pop("error", None)
+    status.pop('error_details', None)
     status.pop('artifact_error', None)
     atomic_json(status_file, status)
     try:

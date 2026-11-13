@@ -430,6 +430,8 @@ class QuickTuning(QObject):
             self.message = tr(str(text))
             self.changed.emit()
 
+        result = ['succeeded', '']
+
         def complete(value, error):
             if error is not None:
                 self._error(error)
@@ -437,10 +439,11 @@ class QuickTuning(QObject):
             try:
                 finish(value)
             except (ValueError, OSError, TypeError, KeyError) as failure:
+                result[:] = ['cancelled' if isinstance(failure, InterruptedError) else 'failed', failure]
                 self._error(failure)
             self.changed.emit()
 
-        return self.worker.start('tuning-' + kind, work, complete, progress)
+        return self.worker.start('tuning-' + kind, work, complete, progress, label=label, outcome=lambda _value: result)
 
     @Slot(str, result=str)
     def text(self, source):

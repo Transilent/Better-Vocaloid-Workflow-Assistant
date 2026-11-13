@@ -292,8 +292,32 @@ def _report_state(report, fingerprints, max_shift):
 
 
 def _render(job, video, mixdown, output, *, offset=None, reference=None, normalize=False,
-            max_shift=30, alignment_report=None):
+            max_shift=30, alignment_report=None, progress=None):
     from pipeline import run_process
+
+    def tell(phase, message):
+        if progress is not None:
+            progress({'phase': phase, 'message': message})
+
+    def ffmpeg_step(argv, label, phase, message):
+        tell(phase, message)
+        if progress is None:
+            return run_process(argv, job, label)
+        def read(line):
+            key, sep, value = line.partition('=')
+            if not sep or key not in ('frame', 'fps', 'stream_0_0_q', 'bitrate', 'total_size',
+                    'out_time_us', 'out_time_ms', 'out_time', 'dup_frames', 'drop_frames', 'speed', 'progress'):
+                return False
+            if key == 'out_time_us' and value.isdigit() and len(value) <= 15:
+                seconds = int(value) // 1000000
+                if seconds != measured_time[0]:
+                    measured_time[0] = seconds
+                    progress({'phase': phase, 'message': message, 'media_seconds': seconds})
+            return True
+        measured_time = [-1]
+        return run_process([argv[0], '-progress', 'pipe:1', '-nostats', *argv[1:]],
+                           job, label, on_progress_line=read)
+
     job, video, mixdown, output = [Path(p).resolve() for p in (job, video, mixdown, output)]
     reference = Path(reference).resolve() if reference else video
     if any(not path.is_file() for path in (video, mixdown, reference)):
@@ -311,6 +335,7 @@ def _render(job, video, mixdown, output, *, offset=None, reference=None, normali
             raise ValueError('手动偏移应在正负 3600 秒内。')
     limit = None if offset is not None else _max_shift_value(max_shift)
     roles = (('video', video), ('mixdown', mixdown), ('reference', reference))
+    tell('verify', '正在校验视频和音频输入…')
     fingerprints, path_hashes = _snapshot_inputs(roles)
     measured = {'offset_seconds': offset, 'method': 'manual', 'accepted': True}
     auto = offset is None
@@ -326,6 +351,7 @@ def _render(job, video, mixdown, output, *, offset=None, reference=None, normali
             atomic_json(job / 'video-alignment.json', alignment_report)
             raise ValueError(_alignment_error(alignment_report))
         else:
+            tell('audio', '正在解码并比较参考音频与 Mixdown…')
             measured = _analyze_alignment(job, video, mixdown, reference=reference, max_shift=limit,
                                           expected_inputs=(fingerprints, path_hashes), persist=False)
         if not measured.get('accepted'):
@@ -348,6 +374,7 @@ def _render(job, video, mixdown, output, *, offset=None, reference=None, normali
             filters.append(f'adelay={offset*1000:.3f}:all=1')
         loudness = None
         if normalize:
+            tell('measuring', '正在测量音频响度…')
             first = ','.join(filters+['loudnorm=I=-14:TP=-1:LRA=11:print_format=json'])
             run_process([ffmpeg, '-nostdin', '-hide_banner', '-y', '-i', str(mixdown), '-vn',
                          '-af', first, '-f', 'null', '-'], job, 'mix_loudness')
@@ -367,13 +394,16 @@ def _render(job, video, mixdown, output, *, offset=None, reference=None, normali
         if pending.exists():
             raise FileExistsError('发现同名合成临时文件，请选择其他输出文件名。')
         try:
-            run_process([ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-n',
+            ffmpeg_step([ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-n',
                          '-i', str(video), '-i', str(mixdown), '-map', '0:v:0', '-map', '1:a:0',
                          '-c:v', 'copy', '-af', ','.join(filters), '-c:a', 'aac', '-b:a', '320k',
-                         '-ar', '44100', '-shortest', '-movflags', '+faststart', str(pending)], job, 'mix_video')
+                         '-ar', '44100', '-shortest', '-movflags', '+faststart', str(pending)],
+                        'mix_video', 'muxing', '正在合成视频和混音音轨…')
             # Decode both mapped streams before exposing a finished video.
-            run_process([ffmpeg, '-nostdin', '-v', 'error', '-xerror', '-i', str(pending),
-                         '-map', '0:v:0', '-map', '0:a:0', '-f', 'null', '-'], job, 'verify_mix_video')
+            ffmpeg_step([ffmpeg, '-nostdin', '-v', 'error', '-xerror', '-i', str(pending),
+                         '-map', '0:v:0', '-map', '0:a:0', '-f', 'null', '-'],
+                        'verify_mix_video', 'validation', '正在逐流验证成品…')
+            tell('hashing', '正在复核输入与成品的文件摘要…')
             current, _ = _snapshot_inputs(roles)
             if pending.stat().st_size < 1024 or not _same_inputs(fingerprints, current):
                 raise ValueError('合成期间输入文件发生变化或输出不完整。')

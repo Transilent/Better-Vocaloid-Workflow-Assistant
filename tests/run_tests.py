@@ -38,6 +38,7 @@ qt6_tests = (
     'test_quick_task_safety.py', 'test_quick_tuning_session_parity_20261111.py',
     'test_quick_priority_layout_20261112.py', 'test_quick_component_video_workspace.py',
     'test_quick_workflow_layout.py',
+    'test_quick_operation_diagnostics.py',
 )
 
 # Shared/backend tests and Quick controller tests that do not need Qt 6.
@@ -59,6 +60,7 @@ shared_tests = (
     'test_agent_mcp_standard_read.py', 'test_agent_mcp_standard_assets.py',
     'test_agent_mcp_standard_decide.py', 'test_agent_mcp_standard_flow.py',
     'test_agent_mcp_standard_integration.py', 'test_i18n.py', 'test_download_sources.py',
+    'test_operation_diagnostics.py',
     'test_chinese_model_install.py', 'test_commit_recovery.py', 'test_component_recovery.py',
     'test_runner_contract.py', 'test_pipeline_safety_fixes.py', 'test_tuning_audit_fixes.py',
     'test_preparation_presets.py', 'test_quick_results_external_bindings.py', 'test_quick_media_handoff.py',

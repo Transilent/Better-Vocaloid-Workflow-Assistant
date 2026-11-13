@@ -14,4 +14,5 @@ configure_quick_runtime(APP, runtime, software=True)
 test_file = Path(sys.argv[1]).resolve()
 if APP not in test_file.parents:
     raise SystemExit(f"Test file escaped the isolated application: {test_file}")
+sys.argv = [str(test_file), *sys.argv[2:]]
 runpy.run_path(str(test_file), run_name="__main__")

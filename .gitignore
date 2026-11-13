@@ -10,6 +10,8 @@ work/
 last_job.txt
 publish-ui.json
 launcher.log
+launcher.log.1
+diagnostics.log
 *验证报告.json
 依赖检查报告.json
 __pycache__/

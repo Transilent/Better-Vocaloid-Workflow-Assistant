@@ -1440,17 +1440,6 @@ Item {
                     }
                 }
 
-                ProgressBar {
-                    objectName: "videoProgress"
-                    Layout.fillWidth: true
-                    visible: page.busy
-                    indeterminate: page.busy && !page.theme.reduceMotion
-                    value: 0
-                    implicitHeight: visible ? Math.round(5 * page.theme.scale) : 0
-                    palette.dark: page.theme.accent
-                    palette.midlight: page.theme.raised
-                    Accessible.name: page.tr("视频任务进度")
-                }
             }
 
             UiButton {

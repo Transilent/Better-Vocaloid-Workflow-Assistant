@@ -148,6 +148,8 @@ base CPU/DirectML device settings; restart afterward.
 
 Models & components lists only the [download sources](DownloadSources.en.md) relevant to each installation. When Hugging Face is unreachable, choose **ModelScope weights + GitHub config** or **GitHub Release (weights and config)** for BS‑RoFormer. Each component remembers its source, and every file is checked against its fixed size and SHA‑256. Settings & support controls the app update source separately.
 
+During a long operation, the bottom status bar keeps showing the current step and elapsed time across workspaces. It displays measured bytes, items, or media time when available. Waiting for another progress update does not mark the task as failed. Open **Local Diagnostics** to copy recent technical events, or open the raw task log separately in Tasks & Results.
+
 VWA checks for updates on startup by default. The notice shows the changes and user QQ group before you choose **Update now** or **Later**. It downloads only after you agree. If installation fails, VWA attempts to restore the previous version. See the [startup and tour guide (Chinese)](StartupExperience.zh-CN.md).
 
 ## Workflows, tasks and recovery

@@ -27,6 +27,11 @@ If relevant, manually select a short excerpt from:
 | `launcher.log` in the VWA program folder | Startup failures |
 | `diagnostics.log` in the VWA program folder | Output from `tools/Start-Diagnostics.bat`, if used |
 | `pipeline.log` in the affected task folder | Preparation/processing failures; the task/results page can help locate it |
+| `cache/diagnostics/operations.jsonl` and `operations.jsonl.1` | Recent structured operation records, keyed by the short operation ID in Local Diagnostics |
+
+Start with **Settings & Support → Support & Logs → Local Diagnostics → Copy summary**. The status bar also opens the same summary during a task or after a failure. Refresh it after reproducing the problem. It includes elapsed time, the last measured progress, recent failure codes, and, for fixed component files, attempted hosts and reusable download bytes. It does not copy raw task logs. Nothing is sent until you choose to share it.
+
+优先在 **设置与支持 → 支持与日志 → 本机诊断 → 复制摘要**，任务运行中或报错后也可从底部状态条打开。复现后刷新摘要。开发者可用摘要中的短操作编号在程序目录的 `cache/diagnostics/operations.jsonl` 及轮换副本 `operations.jsonl.1` 查找对应记录。摘要记录实际阶段、耗时、错误码；固定组件下载还记录尝试的站点和可续传字节。任务原始日志仍从任务页单独打开。
 
 For a model download failure, include the component, CPU/CUDA if applicable, selected source, and the full error from the component card. If the error shows only a timeout, include the filename or progress shown just before the failure.
 

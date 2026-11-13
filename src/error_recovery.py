@@ -26,11 +26,11 @@ def explain(error, stage='', cancelled=False):
           'cuda initialization', 'cudaexecutionprovider failed', 'directml error',
           'dmlexecutionprovider failed', 'failed to create dml', 'device removed', 'd3d12 error'), '推理设备不可用',
          '可以切换为 CPU 后继续，也可以在工作流中检查设备设置。', 'cpu'),
-        (('no space', 'disk full', '磁盘', 'winerror 112'), '磁盘空间不足',
-         '先在“设置与更新”的缓存管理中检查占用；清理后可从失败阶段继续。', 'storage'),
+        (('no space', 'disk full', '磁盘空间不足', '空间不足', 'winerror 112'), '磁盘空间不足',
+         '先在“设置与支持”的缓存管理中检查占用；清理后可从失败阶段继续。', 'storage'),
         (('no module named', 'dll load failed', '运行库缺失', '模型缺失', '组件尚未安装', '模型路径不存在'), '所需组件未就绪',
          '在“模型与组件”检查安装状态，恢复模型后可继续当前任务。运行库文件可通过依赖检查工具核对。', 'components'),
-        (('timed out', 'timeout', 'urlopen', 'connection', 'http error', '403', '412', '读取 b站', '下载'), '网络请求未完成',
+        (('timed out', 'timeout', 'urlopen', 'connection', 'http error', 'winerror 10060', 'http 403', 'http 412', '读取 b站'), '网络请求未完成',
          '检查网络或视频访问权限后重试。组件下载可在模型页面切换下载源。', 'resume'),
         (('路径不存在', 'no such file', '找不到', 'not found', '权重', '组件', '模型路径'), '缺少文件或组件',
          '检查模型是否安装、输入文件是否被移动。修改配置后可用原输入重新处理。', 'workflow'),
@@ -41,7 +41,7 @@ def explain(error, stage='', cancelled=False):
     ]
     for words, title, message, action in rules:
         if any(word in text for word in words):
-            if title == '网络请求未完成' and stage in ('metadata', 'download', 'audio'):
+            if title == '网络请求未完成' and stage in ('metadata', 'download'):
                 return {'title': 'B站连接未完成',
                         'message': 'B站资料和媒体使用直连。请检查网络是否能访问 B站，再继续／重试；视频访问限制可在日志中查看。',
                         'action': 'resume'}

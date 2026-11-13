@@ -3,6 +3,8 @@
 from pathlib import Path
 import platform
 import shutil
+import sys
+from datetime import datetime, timezone
 
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot, qVersion
 from PySide6.QtGui import QDesktopServices, QGuiApplication
@@ -13,6 +15,7 @@ import updater
 from common import ROOT, environment_value, job_directories, output_directory
 from download_sources import read_small
 from i18n import tr
+from operation_diagnostics import LOG_DIR, clock_text, journal_for, support_lines
 from quick_work import WorkerLane
 from support_info import FEEDBACK_URL, QQ_GROUP
 from task_store import format_size, size
@@ -137,10 +140,12 @@ class QuickSupport(QObject):
         super().__init__(owner)
         self.owner = owner
         self.worker = worker
-        self.discovery = WorkerLane(self, 'vwa-update-discovery')
-        self.storage_lane = WorkerLane(self, 'vwa-storage-management')
-        self.preset_lane = WorkerLane(self, 'vwa-preset-library')
-        self.inspect_lane = WorkerLane(self, 'vwa-preset-inspect')
+        self.journal = getattr(owner, 'journal', None) or journal_for()
+        self.discovery = WorkerLane(self, 'vwa-update-discovery', journal=self.journal)
+        self.storage_lane = WorkerLane(self, 'vwa-storage-management', journal=self.journal)
+        self.preset_lane = WorkerLane(self, 'vwa-preset-library', journal=self.journal)
+        self.inspect_lane = WorkerLane(self, 'vwa-preset-inspect', journal=self.journal)
+        self._diagnostic_lane = WorkerLane(self, 'vwa-diagnostic-reader')
         self.state = SettingsState(sources)
         self.state.restore_update_recovery(load_update_recovery(ROOT))
         self.sources = sources
@@ -161,7 +166,7 @@ class QuickSupport(QObject):
         self._restart_timer = QTimer(self)
         self._restart_timer.setInterval(1000)
         self._restart_timer.timeout.connect(self._tick_auto_restart)
-        self._diagnostics = {'open': False, 'text': ''}
+        self._diagnostics = {'open': False, 'text': '', 'busy': False, 'message': ''}
         self._storage_view = {
             'busy': False,
             'scanned': False,
@@ -1001,6 +1006,7 @@ class QuickSupport(QObject):
         self.storage_lane.close()
         self.preset_lane.close()
         self.inspect_lane.close()
+        self._diagnostic_lane.close()
 
     @Slot(int)
     def deferUpdate(self, seconds):
@@ -1047,12 +1053,15 @@ class QuickSupport(QObject):
         self.startupChanged.emit()
 
         def work(stop, send):
-            return updater.prepare_update(release, source, lambda done, total, message: send((done, total, message)),
-                                          check=stop.is_set)
+            def progress(done, total, message):
+                phase = 'verify' if message.startswith(('正在校验', '下载完成')) else 'download'
+                send({'done': done, 'total': total if phase == 'download' else 0,
+                      'message': message, 'phase': phase, 'unit': 'bytes'})
+            return updater.prepare_update(release, source, progress, check=stop.is_set)
 
         def progress(value):
             if self.state.update['update_state'] == 'downloading':
-                done, total, message = value
+                done, total, message = value['done'], value['total'], value['message']
                 self.state.update.update(done=done, total=total, message=message)
                 self.startupChanged.emit()
 
@@ -1069,7 +1078,8 @@ class QuickSupport(QObject):
                 self._restart_timer.start()
             self.startupChanged.emit()
 
-        self.worker.start('update-download', work, complete, progress)
+        self.worker.start('update-download', work, complete, progress,
+                          label='正在下载程序更新…', facts={'source': source})
 
     @Slot()
     def cancelUpdate(self):
@@ -1109,16 +1119,77 @@ class QuickSupport(QObject):
 
     @Slot()
     def showDiagnostics(self):
-        lines = (
+        self._diagnostics.update(open=True, message='')
+        self.refreshDiagnostics()
+
+    @Slot()
+    def refreshDiagnostics(self):
+        if not self._diagnostics['open'] or self._diagnostic_lane.kind:
+            return
+        self._diagnostics.update(busy=True, message='')
+        self.diagnosticsChanged.emit()
+        active = getattr(self.owner, 'activeOperations', ())
+        task_state = self.owner.preparationTask['state']
+        windows = sys.getwindowsversion() if sys.platform == 'win32' else None
+        system = (f'Windows {11 if windows.build >= 22000 else 10} (build {windows.build})'
+                  if windows else f'{platform.system()} {platform.release()}')
+        lines = [
             f'VWA: {self.version}', f'Qt Quick: {qVersion()}',
-            f'{tr("系统")}: {platform.system()} {platform.release()}',
+            f'{tr("系统")}: {system} ({platform.machine()})',
+            f'Python: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}',
             f'{tr("界面语言")}: {self.state.values["ui_language"]}',
             f'{tr("界面缩放")}: {self.state.values["ui_scale"]}%',
-            f'{tr("准备任务状态")}: {self.owner.preparationTask["state"]}',
+            f'{tr("准备任务状态")}: {task_state}',
             f'{tr("更新状态")}: {self.state.update["update_state"]}',
-        )
-        self._diagnostics = {'open': True, 'text': '\n'.join(lines)}
-        self.diagnosticsChanged.emit()
+            f'{tr("并行下载数")}: {self.state.values["download_workers"]}',
+            f'UTC: {datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S}',
+            f'{tr("当前操作")}: {len(active)}',
+        ]
+        selected = getattr(self.owner, 'selected', {}) or {}
+        if selected.get('id') in ('roformer', 'chinese', 'expression', 'builtin'):
+            runtime = getattr(self.owner, 'runtime', '') if selected['id'] == 'roformer' else ''
+            source = getattr(self.owner, 'downloadSource', '')
+            lines.append(f'  component={selected["id"]} state={selected["status"]} '
+                         f'runtime={runtime} source={source}'.rstrip())
+        for row in active:
+            # Deliberately omit the on-screen message: it can contain a project
+            # name. All other fields come from the lane's public contract.
+            mode = 'cancelling' if row['cancelling'] else 'running'
+            parts = [f'  [{row["id"]}]', row['kind'], mode, row['phase'],
+                     clock_text(row['elapsed']), row['count']]
+            for key in ('component', 'runtime', 'source', 'action', 'media_seconds', 'quiet'):
+                if row.get(key) not in (None, ''):
+                    parts.append(f'{key}={row[key]}')
+            lines.append(' '.join(filter(None, parts)))
+
+        def work(_stop, _send):
+            history = list(support_lines(self.journal.history(), self.journal.session))
+            try:
+                free = shutil.disk_usage(ROOT).free
+            except OSError:
+                free = None
+            return history, free
+
+        def finish(result, error):
+            self._diagnostics['busy'] = False
+            if not self._diagnostics['open']:
+                return
+            history, free = result if error is None else ((), None)
+            report = list(lines)
+            if free is not None:
+                report.append(f'{tr("程序所在磁盘可用空间")}: {format_size(free)}')
+            report += ['', tr('近期事件（UTC）')]
+            if not history:
+                report.append(tr('暂无可分享的事件。'))
+            for event, line in history:
+                report.append(line + (' · ' + tr('上次运行没有结束记录，原因未确认。')
+                                      if event == 'session_interrupted' else ''))
+            if self.journal.available is False or error is not None:
+                report += ['', tr('本机日志暂不可读写；摘要可能仅包含本次运行。')]
+            self._diagnostics['text'] = '\n'.join(report)
+            self.diagnosticsChanged.emit()
+
+        self._diagnostic_lane.start('diagnostics', work, finish)
 
     @Slot()
     def closeDiagnostics(self):
@@ -1127,8 +1198,19 @@ class QuickSupport(QObject):
 
     @Slot()
     def copyDiagnostics(self):
-        if self._diagnostics['open']:
-            QGuiApplication.clipboard().setText(self._diagnostics['text'])
+        if self._diagnostics['open'] and not self._diagnostics['busy'] and self._diagnostics['text']:
+            clipboard = QGuiApplication.clipboard()
+            clipboard.setText(self._diagnostics['text'])
+            self._diagnostics['message'] = tr('已复制诊断摘要。' if clipboard.text() == self._diagnostics['text']
+                                              else '无法访问剪贴板，可选中摘要手动复制。')
+            self.diagnosticsChanged.emit()
+
+    @Slot()
+    def openDiagnosticLogs(self):
+        folder = ROOT / LOG_DIR
+        if not folder.is_dir() or not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
+            self._diagnostics['message'] = tr('本机日志目录暂不可打开。')
+            self.diagnosticsChanged.emit()
 
     @Slot()
     def showTutorial(self):

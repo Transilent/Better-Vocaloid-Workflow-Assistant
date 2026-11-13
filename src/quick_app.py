@@ -79,6 +79,8 @@ def main(argv=None):
     parser.add_argument('--smoke-test', action='store_true')
     parser.add_argument('--desktop', action='store_true', help=argparse.SUPPRESS)
     options = parser.parse_args(argv)
+    from operation_diagnostics import journal_for
+    journal = journal_for(ROOT)
     runtime = configure_quick_runtime(ROOT, options.quick_runtime, software=options.software)
 
     from PySide6.QtCore import QObject, QCoreApplication, QEvent, QTimer, QtMsgType, qInstallMessageHandler, qVersion
@@ -87,19 +89,37 @@ def main(argv=None):
     app = QGuiApplication([sys.argv[0]])
     app.setApplicationName('VWA')
     warnings = []
+    check_mode = options.check or options.smoke_test
+    qt_raw_count = 0
+    previous_exception_hook = sys.excepthook
 
     def message_handler(kind, _context, message):
-        if kind in (QtMsgType.QtWarningMsg, QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg):
-            warnings.append(message)
+        nonlocal qt_raw_count
+        level = {QtMsgType.QtWarningMsg: 'warning', QtMsgType.QtCriticalMsg: 'critical',
+                 QtMsgType.QtFatalMsg: 'fatal'}.get(kind)
+        if level:
+            if check_mode:
+                warnings.append(message)
+            else:
+                journal.event('qt_warning', kind='qt', code='qt', level=level)
+        if sys.stderr is not None and (check_mode or level == 'fatal' or (level and qt_raw_count < 30)):
+            qt_raw_count += 1
             print(message, file=sys.stderr, flush=True)
 
-    if options.check or options.smoke_test:
-        qInstallMessageHandler(message_handler)
+    def exception_hook(error_type, error, traceback):
+        journal.problem('qt', error, code='callback')
+        previous_exception_hook(error_type, error, traceback)
+
     guard = None if options.check else acquire_application_lock(ROOT)
     if not options.check and guard is None:
         print('助手已在运行，请使用已打开的窗口。', flush=True)
         return 2
     engine = controller = modes = None
+    exit_code = None
+    qInstallMessageHandler(message_handler)
+    if not check_mode:
+        sys.excepthook = exception_hook
+        journal.event('session_start', kind='startup')
     try:
         engine, window, controller, modes = create_workspace(app, show=not options.check)
         print(f'VWA Quick · Qt {qVersion()} · {runtime}', flush=True)
@@ -141,7 +161,8 @@ def main(argv=None):
             QTimer.singleShot(150, complete_smoke)
         else:
             QTimer.singleShot(0, controller.support.begin_startup)
-        return app.exec()
+        exit_code = app.exec()
+        return exit_code
     finally:
         if modes is not None:
             modes.close()
@@ -152,5 +173,8 @@ def main(argv=None):
             QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         if guard is not None:
             guard.unlock()
-        if options.check or options.smoke_test:
-            qInstallMessageHandler(None)
+        sys.excepthook = previous_exception_hook
+        qInstallMessageHandler(None)
+        if not check_mode and exit_code is not None:
+            journal.event('session_end', kind='startup', state='succeeded' if not exit_code else 'failed',
+                          exit_code=exit_code & 0xffffffff)

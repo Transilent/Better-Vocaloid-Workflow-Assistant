@@ -18,7 +18,6 @@ Rectangle {
 
     readonly property var values: controller.settings || ({})
     readonly property var updateInfo: controller.startup || ({})
-    readonly property var diagnostics: controller.diagnostics || ({})
     readonly property var storageView: controller.storage || ({})
     readonly property var presetView: controller.presetLibrary || ({})
     readonly property bool narrow: width < (theme.scale > 1.2 ? 840 : 680)
@@ -40,7 +39,6 @@ Rectangle {
     readonly property bool applying: currentUpdateState === "applying"
     readonly property bool restartPending: !!updateInfo.restart_pending
     readonly property string operationBlockerText: (controller.operationBlockers || []).join("、")
-    property bool suppressDiagnosticsClose: false
     property var cacheSelection: ({})
     property int cacheGeneration: -1
     property string presetQuery: ""
@@ -342,30 +340,6 @@ Rectangle {
         if (version.length === 0)
             return tr("未知")
         return version.charAt(0).toLowerCase() === "v" ? version : "v" + version
-    }
-
-    function findDescendant(item, objectName) {
-        if (!item)
-            return null
-        if (String(item.objectName || "") === objectName)
-            return item
-        const children = item.children || []
-        for (let index = 0; index < children.length; ++index) {
-            const found = findDescendant(children[index], objectName)
-            if (found)
-                return found
-        }
-        return null
-    }
-
-    function syncDiagnostics() {
-        if (diagnostics.open && !diagnosticsDialog.opened)
-            diagnosticsDialog.open()
-        else if (!diagnostics.open && diagnosticsDialog.opened) {
-            suppressDiagnosticsClose = true
-            diagnosticsDialog.close()
-            suppressDiagnosticsClose = false
-        }
     }
 
     FolderDialog {
@@ -806,154 +780,8 @@ Rectangle {
         }
     }
 
-    Dialog {
-        id: diagnosticsDialog
-        objectName: "diagnosticsDialog"
-        parent: Overlay.overlay
-        modal: true
-        focus: true
-        closePolicy: Popup.CloseOnEscape
-        padding: 0
-        x: parent ? Math.max(Math.round(12 * page.theme.scale), (parent.width - width) / 2) : 12
-        y: parent ? Math.max(Math.round(12 * page.theme.scale), (parent.height - height) / 2) : 12
-        width: Math.min(parent ? parent.width - Math.round(24 * page.theme.scale) : Math.round(680 * page.theme.scale),
-                        Math.round(680 * page.theme.scale))
-        height: Math.min(parent ? parent.height - Math.round(24 * page.theme.scale) : Math.round(560 * page.theme.scale),
-                         Math.round(560 * page.theme.scale))
-
-        Overlay.modal: Rectangle {
-            color: Qt.rgba(page.theme.base.r, page.theme.base.g, page.theme.base.b, 0.86)
-        }
-        background: Rectangle {
-            color: page.theme.surface
-            radius: Math.round(10 * page.theme.scale)
-            border.color: page.theme.line
-        }
-        contentItem: ColumnLayout {
-            spacing: 0
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: diagnosticHeader.implicitHeight + Math.round(24 * page.theme.scale)
-                color: page.theme.raised
-                radius: Math.round(10 * page.theme.scale)
-                Rectangle {
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    height: parent.radius
-                    color: parent.color
-                }
-                ColumnLayout {
-                    id: diagnosticHeader
-                    anchors.fill: parent
-                    anchors.leftMargin: Math.round(18 * page.theme.scale)
-                    anchors.rightMargin: Math.round(18 * page.theme.scale)
-                    spacing: 2
-                    Text {
-                        Layout.fillWidth: true
-                        text: page.tr("本机诊断摘要")
-                        color: page.theme.text
-                        font.pixelSize: Math.round(18 * page.theme.scale)
-                        font.weight: Font.DemiBold
-                    }
-                    Text {
-                        Layout.fillWidth: true
-                        text: page.tr("仅显示控制器提供的摘要，不读取私人日志正文或用户文件。")
-                        color: page.theme.muted
-                        font.pixelSize: Math.round(11 * page.theme.scale)
-                        wrapMode: Text.Wrap
-                    }
-                }
-            }
-            ScrollView {
-                id: diagnosticsScroll
-                objectName: "diagnosticsScroll"
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                Layout.leftMargin: Math.round(18 * page.theme.scale)
-                Layout.rightMargin: Math.round(18 * page.theme.scale)
-                Layout.topMargin: Math.round(12 * page.theme.scale)
-                Layout.bottomMargin: Math.round(8 * page.theme.scale)
-                contentWidth: availableWidth
-                clip: true
-                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-                background: Rectangle {
-                    color: page.theme.base
-                    radius: Math.round(7 * page.theme.scale)
-                    border.color: page.theme.line
-                }
-                TextArea {
-                    objectName: "diagnosticsText"
-                    width: diagnosticsScroll.availableWidth
-                    text: String(page.diagnostics.text || "").length > 0
-                        ? String(page.diagnostics.text)
-                        : page.tr("诊断摘要暂不可用。")
-                    readOnly: true
-                    selectByMouse: true
-                    selectByKeyboard: true
-                    wrapMode: TextEdit.WrapAnywhere
-                    textFormat: TextEdit.PlainText
-                    color: page.theme.text
-                    selectionColor: page.theme.accent
-                    selectedTextColor: page.theme.base
-                    font.family: "Consolas"
-                    font.pixelSize: Math.round(11 * page.theme.scale)
-                    leftPadding: Math.round(10 * page.theme.scale)
-                    rightPadding: Math.round(10 * page.theme.scale)
-                    topPadding: Math.round(9 * page.theme.scale)
-                    bottomPadding: Math.round(9 * page.theme.scale)
-                    background: Rectangle { color: "transparent" }
-                    Accessible.name: page.tr("本机诊断摘要正文")
-                }
-            }
-            Flow {
-                Layout.fillWidth: true
-                Layout.leftMargin: Math.round(18 * page.theme.scale)
-                Layout.rightMargin: Math.round(18 * page.theme.scale)
-                Layout.bottomMargin: Math.round(14 * page.theme.scale)
-                spacing: Math.round(7 * page.theme.scale)
-                UiButton {
-                    objectName: "copyDiagnostics"
-                    theme: page.theme
-                    text: page.tr("复制摘要")
-                    enabled: String(page.diagnostics.text || "").length > 0
-                    onClicked: page.controller.copyDiagnostics()
-                }
-                UiButton {
-                    objectName: "diagnosticsFeedback"
-                    theme: page.theme
-                    quiet: true
-                    text: page.tr("GitHub 反馈")
-                    onClicked: page.controller.openFeedback()
-                }
-                UiButton {
-                    objectName: "closeDiagnostics"
-                    theme: page.theme
-                    quiet: true
-                    text: page.tr("关闭")
-                    onClicked: page.controller.closeDiagnostics()
-                }
-            }
-        }
-        onOpened: Qt.callLater(function() {
-            const target = page.findDescendant(diagnosticsDialog.contentItem, "closeDiagnostics")
-            if (target)
-                target.forceActiveFocus()
-        })
-        onClosed: {
-            if (!page.suppressDiagnosticsClose && page.diagnostics.open)
-                page.controller.closeDiagnostics()
-        }
-        onRejected: {
-            if (!page.suppressDiagnosticsClose)
-                page.controller.closeDiagnostics()
-        }
-    }
-
-
     Connections {
         target: page.controller
-        function onDiagnosticsChanged() { page.syncDiagnostics() }
         function onStorageChanged() {
             if (page.storageView.generation !== page.cacheGeneration) {
                 page.cacheGeneration = page.storageView.generation
@@ -976,10 +804,8 @@ Rectangle {
 
     Component.onCompleted: {
         controller.setMonitorActive(true)
-        syncDiagnostics()
     }
     Component.onDestruction: controller.setMonitorActive(false)
-    onDiagnosticsChanged: syncDiagnostics()
 
     ColumnLayout {
         anchors.fill: parent

@@ -77,7 +77,9 @@ def snapshot(job):
         event = {}
     stages = status.get('planned_steps', list(TITLES)[:-1])
     current = status.get('current_step')
-    if event.get('stage') != current:
+    started = status.get('run_started')
+    if (event.get('stage') != current or (isinstance(started, (int, float))
+            and (not isinstance(event.get('updated'), (int, float)) or event['updated'] < started))):
         event = {}
     steps = status.get('steps', {})
     completed = sum(steps.get(k, {}).get('state') == 'done' for k in stages)

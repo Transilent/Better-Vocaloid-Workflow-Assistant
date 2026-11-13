@@ -158,14 +158,19 @@ def preparation_flow(audio):
 
     def controlled_preparation(draft, _existing, _cpu, stop, send, **_kw):
         assert draft.music_path == str(audio['主唱'])
-        send({'completed': 1, 'total': 3, 'current': 'separation', 'message': '夹具 · 处理音频'})
+        send({'completed': 1, 'total': 3, 'current': 'separation', 'message': '夹具 · 处理音频',
+              'stage_progress': {'done': 7, 'total': 20, 'unit': 'items'}})
         assert stop.wait(9), 'Footer cancellation never reached the running worker'
         raise InterruptedError('夹具任务已取消')
 
     with patch.object(quick_bridge, '_run_preparation', side_effect=controlled_preparation):
         tap('startPreparation')
         wait('live progress from the worker', lambda: owner.preparationTask.get('completed') == 1)
-        assert point('preparationProgress').y() > geometry['preparationFooterTop']
+        current_footer_top = visual('preparationFooter').mapToScene(QPointF(0, 0)).y()
+        assert point('preparationStageCount').y() > current_footer_top
+        assert '1 / 3' in visual('preparationStageCount').property('text')
+        wait('actual current-stage progress', lambda:
+             abs(visual('workspaceOperationProgress').property('value') - .35) < .001)
         tap('cancelPreparation')
         wait('cancelled', lambda: owner.preparationTask['state'] == 'cancelled' and not owner.preparationBusy)
     assert owner.state.draft_view['lyrics'] == '窗边微光\n照向远方'

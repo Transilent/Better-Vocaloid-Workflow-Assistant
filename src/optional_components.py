@@ -21,6 +21,7 @@ from common import ROOT, atomic_json, file_hash, load_config, direct_urlopen, na
 from common import exclusive_sidecar, SidecarBusy
 import component_health
 from download_sources import component_download_urls, normalize_component_source, source_name
+from operation_diagnostics import DownloadTrace, download_file, operation_event
 
 COMPONENT = ROOT / 'dependencies/optional/bs-roformer'
 MANIFEST = ROOT / 'components/roformer.json'
@@ -150,6 +151,8 @@ def download(item, folder, progress, check=None, opener=direct_urlopen, source='
         except (RangeUnsupported, ChecksumMismatch):
             progress(0, item['bytes'], '分段下载未完成，切换为单连接续传')
             sequential_partial(item, folder)
+            operation_event('download_fallback', phase='download', file=download_file(item), mode='single',
+                            cached_bytes=partial.stat().st_size if partial.is_file() else 0)
     elif workers == 1 and not partial.exists():
         sequential_partial(item, folder)
     attempts = max(3, len(routes))
@@ -173,8 +176,9 @@ def download(item, folder, progress, check=None, opener=direct_urlopen, source='
         request = urllib.request.Request(route, headers=headers)
         progress(offset, item['bytes'], '连接' + source_name(route))
         endpoint = urlsplit(route).hostname
+        trace = DownloadTrace(opener, route, item, 'single')
         try:
-            with opener(request, timeout=30) as response:
+            with trace.open(request, timeout=30) as response:
                 endpoint = urlsplit(response.geturl()).hostname or endpoint
                 code = response.status
                 if code == 206:
@@ -197,7 +201,8 @@ def download(item, folder, progress, check=None, opener=direct_urlopen, source='
             cancelled(check)
             if offset != item['bytes']:
                 raise OSError('下载未完成，正在重试。')
-            if file_hash(partial) != item['sha256']:
+            progress(item['bytes'], item['bytes'], '正在校验下载文件')
+            if file_hash(partial, check=check) != item['sha256']:
                 partial.unlink()
                 raise ChecksumMismatch('下载文件 SHA-256 校验失败，请重试。')
             partial.replace(target)
@@ -206,15 +211,19 @@ def download(item, folder, progress, check=None, opener=direct_urlopen, source='
                 from task_store import checked_tree
                 checked_tree(segments,folder)
                 shutil.rmtree(segments)
+            trace.record('succeeded', item['bytes'])
             return target
         except InterruptedError:
+            trace.record('cancelled', offset)
             raise
         except ValueError as exc:
+            trace.record('failed', 0 if isinstance(exc, ChecksumMismatch) else offset, exc)
             failures[endpoint] = str(exc)
             if attempt + 1 == attempts:
                 raise type(exc)(_download_failure(name, failures)) from exc
             progress(offset, item['bytes'], '服务器响应或文件校验有误，尝试其他下载源')
         except (OSError, IncompleteRead) as exc:
+            trace.record('failed', offset, exc)
             if isinstance(exc, urllib.error.HTTPError):
                 endpoint = urlsplit(exc.geturl()).hostname or endpoint
             reason = getattr(exc, 'reason', exc)
