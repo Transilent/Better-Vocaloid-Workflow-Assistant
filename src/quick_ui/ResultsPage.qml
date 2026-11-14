@@ -1651,7 +1651,7 @@ Rectangle {
         title: page.controller.text(bindingKind === "project" ? "选择编辑器工程" : "选择 Mixdown 音频")
         fileMode: FileDialog.OpenFile
         nameFilters: bindingKind === "project"
-            ? [page.controller.text("编辑器工程 (*.svp *.ustx *.vsqx)")]
+            ? [page.controller.text("编辑器工程 (*.svp *.ustx *.vpr *.vsqx *.acep *.ufdata)")]
             : [page.controller.text("音频 (*.wav *.flac *.ogg *.mp3 *.m4a)")]
         onAccepted: {
             registerArtifactDialog.pendingArtifactUrl = selectedFile

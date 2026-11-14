@@ -554,6 +554,10 @@
       "source": "src/vpr_tuning.py"
     },
     {
+      "file": "ace_tuning.py",
+      "source": "src/ace_tuning.py"
+    },
+    {
       "file": "assets/headphone-character.png",
       "source": "assets/headphone-character.png"
     },

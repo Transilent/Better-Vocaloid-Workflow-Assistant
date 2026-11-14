@@ -32,7 +32,7 @@ from tuning_execution import (normalize_options as _normalize,dependencies as _e
 
 SCHEMA=1
 COMMIT_SCHEMA=1
-STYLE_ADAPTERS={'ustx':'ustx_tuning','vpr':'vpr_tuning'}
+STYLE_ADAPTERS={'ustx':'ustx_tuning','vpr':'vpr_tuning','acep':'ace_tuning:ACEP','ufdata':'ace_tuning:UFDATA'}
 TUNING_SUFFIXES=frozenset('.'+fmt for fmt in ('svp',*STYLE_ADAPTERS))
 _LOCKS={};_LOCK_GUARD=threading.Lock()
 CONTRIBUTORS=('tuning_workflow.py','tuning_engine.py','vocal_expression.py','vocal_timbre.py',
@@ -65,7 +65,7 @@ def _stat(path):
 def project_format(path):
     suffix=Path(path).suffix.casefold()
     if suffix not in TUNING_SUFFIXES:
-        raise ValueError('请选择 SVP、OpenUtau USTX 或 VOCALOID VPR 工程。')
+        raise ValueError('请选择 SVP、USTX、VPR、ACEP 或 UFData 工程。')
     return suffix[1:]
 
 
@@ -75,7 +75,10 @@ def receipt_path_for(path):
 
 def style_adapter(format):
     name=STYLE_ADAPTERS.get(format)
-    return import_module(name) if name else None
+    if not name:return None
+    module,_,symbol=name.partition(':')
+    adapter=import_module(module)
+    return getattr(adapter,symbol) if symbol else adapter
 
 
 def _project(raw,format='svp'):
@@ -129,9 +132,8 @@ def score_layout(data,format):
 def _candidate_payload(output, original, raw, format='svp'):
     if output == original:
         return raw
-    if format=='ustx':
-        from ustx_tuning import encode
-        return encode(output,raw)
+    if (adapter:=style_adapter(format)) and hasattr(adapter,'encode'):
+        return adapter.encode(output,raw)
     version = original.get('version')
     if type(version) is int and version >= SV2_MIN:
         # Keep the native file's encoding envelope as well as its JSON data.
@@ -144,7 +146,7 @@ def _candidate_payload(output, original, raw, format='svp'):
 def _relocate_media(data,source_directory,format='svp'):
     """Keep referenced accompaniment identity when output lives elsewhere."""
     changes=[]
-    if format=='vpr':
+    if format in ('vpr','acep','ufdata'):
         return changes
     if format=='ustx':
         for index,part in enumerate(data.get('wave_parts',[])):
@@ -181,7 +183,8 @@ def inspect_project(path,*,snapshot=None,geometry=None):
     from tuning_project_identity import inspect_candidate_origin
     return {'path':str(path),'sha256':sha,'bytes':snapshot.size,'tracks':tracks,
             'format':format,'format_version':layout.version,'synthesizer_v_2':getattr(layout,'sv2',False),
-            'candidate_origin':inspect_candidate_origin(path,sha256=sha)}
+            'candidate_origin':inspect_candidate_origin(path,sha256=sha),
+            **({'format_notice':layout.notice} if hasattr(layout,'notice') else {})}
 
 
 def job_projects(job):
@@ -348,12 +351,14 @@ def _check_source(root,spec):
     return snapshot
 
 
-def _dependencies(options):
-    return _execution_dependencies(options,CONTRIBUTORS,ROOT)
+def _dependencies(options,format):
+    # Include the ACE-specific implementation in the candidate's signature.
+    contributors=CONTRIBUTORS+('ace_tuning.py',) if format in ('acep','ufdata') else CONTRIBUTORS
+    return _execution_dependencies(options,contributors,ROOT)
 
 
-def _run_dependencies(options,binding):
-    result=_dependencies(options)
+def _run_dependencies(options,binding,format='svp'):
+    result=_dependencies(options,format)
     if binding is not None:result['preset']=preset_dependency(binding)
     return result
 
@@ -416,7 +421,7 @@ def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None,p
             raw=None if format=='vpr' else _raw(snapshot)
             data=_project(snapshot if raw is None else raw,format)
             preset_binding=_preset_context(preset_binding,spec,options,data)
-            deps=_run_dependencies(options,preset_binding)
+            deps=_run_dependencies(options,preset_binding,format)
             signature=digest({'schema':SCHEMA,'input':spec['input_sha256'],'options':options,'dependencies':deps})
             target=_owned(root,root/'outputs'/('tuned-'+signature[:16]+'.'+format))
             receipt_path=_owned(root,receipt_path_for(target))
@@ -430,7 +435,7 @@ def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None,p
             verified_old=_verified_receipt(receipt_path,target,signature,spec,options,deps) if _isfile(target) else None
             if verified_old is not None:
                 _check_source(root,spec)
-                if _run_dependencies(options,preset_binding)!=deps:raise ValueError('调音依赖发生变化，请重试。')
+                if _run_dependencies(options,preset_binding,format)!=deps:raise ValueError('调音依赖发生变化，请重试。')
                 cancel();result={**verified_old,'cached':True,'receipt':str(receipt_path),'output':str(target),
                     'project_commit_count':0,'commit_state':'receipted','receipt_verified':True,
                     'recovered_from_intent':False,'observer_errors':[]}
@@ -442,7 +447,7 @@ def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None,p
             prepared=_intent(root,intent_path,path,spec,options,deps,signature,target) if _isfile(target) else None
             if prepared is not None:
                 _check_source(root,spec)
-                if _run_dependencies(options,preset_binding)!=deps:raise ValueError('调音依赖发生变化，请重试。')
+                if _run_dependencies(options,preset_binding,format)!=deps:raise ValueError('调音依赖发生变化，请重试。')
                 # This output crossed the commit boundary in an earlier run;
                 # metadata repair must not turn it into an ordinary failure.
                 cancel();committed=True
@@ -486,7 +491,7 @@ def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None,p
                 raise ValueError('VPR 原样复制的文件摘要不一致，未提交。')
             if file_hash(pending)!=payload_sha:raise ValueError('调音临时文件写入校验失败。')
             _check_source(root,spec)
-            if _run_dependencies(options,preset_binding)!=deps:raise ValueError('调音期间参考音频、配置或算法发生变化，未提交，请重试。')
+            if _run_dependencies(options,preset_binding,format)!=deps:raise ValueError('调音期间参考音频、配置或算法发生变化，未提交，请重试。')
             cancel();expected=old.get('output_sha256') if isinstance(old,dict) else None
             before_existing=file_hash(target) if _exists(target) else None
             preserved=preserve_changed_file(root,target,expected,payload_sha)
@@ -514,7 +519,7 @@ def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None,p
             atomic_json(intent_path,intent_doc)
             # Recheck cancellation and inputs while the transaction is still abortable.
             cancel();_check_source(root,spec)
-            if _run_dependencies(options,preset_binding)!=deps:raise ValueError('调音提交前参考音频、配置或算法发生变化，未提交，请重试。')
+            if _run_dependencies(options,preset_binding,format)!=deps:raise ValueError('调音提交前参考音频、配置或算法发生变化，未提交，请重试。')
             if (file_hash(target) if _exists(target) else None)!=before_existing:
                 raise ValueError('提交意图写入后现有工程发生变化，未覆盖；请重试。')
             if file_hash(pending)!=payload_sha:raise ValueError('调音临时文件在提交前发生变化，未覆盖；请重试。')
@@ -575,7 +580,7 @@ def verified_result(session):
     options=_normalize(receipt.get('options'))
     snapshot=_check_source(root,spec)
     preset_binding=_preset_context(receipt.get('preset_binding'),spec,options,read_project(snapshot,format))
-    dependencies=_run_dependencies(options,preset_binding)
+    dependencies=_run_dependencies(options,preset_binding,format)
     expected=digest({'schema':SCHEMA,'input':spec['input_sha256'],'options':options,'dependencies':dependencies})
     if signature!=expected or receipt.get('dependencies')!=dependencies:
         raise ValueError('调音回执与当前输入、选项或算法依赖不匹配，不能登记。')
@@ -603,6 +608,16 @@ def export_verified_copy(result, destination, *, cancel=lambda:None):
         raise ValueError('请选择与候选工程格式相同的新文件名。')
     if result.get('receipt_verified') is not True:
         raise ValueError('请先核验调音候选和回执，再另存。')
+    if format=='acep':
+        from ace_tuning import ACE_HOME
+        spec=read_session(result['session'])
+        original=Path(spec['source'])
+        # A native project can contain paths in opaque plug-in fields. Keep
+        # its base directory instead of copying or guessing those resources.
+        if spec['input_sha256']!=result['source_sha256'] or destination.parent.resolve()!=original.parent:
+            raise ValueError(ACE_HOME)
+        if not _isfile(original) or file_hash(original)!=spec['source_sha256']:
+            raise ValueError('原始 ACEP 工程已移动或改变，请重新导入后另存。')
     origin=receipt_path_for(destination)
     if any(os.path.lexists(native_path(path)) for path in (destination,origin)):
         raise FileExistsError('目标工程或同名回执已存在，请使用新名称。')
@@ -655,6 +670,8 @@ def register_result(session,*,job=None):
     spec=read_session(session)
     result=verified_result(session)
     target=Path(result['output'])
+    if target.suffix.casefold()=='.acep':
+        raise ValueError('ACEP 依赖原工程目录，请先另存同目录副本，再在「任务与结果」手动登记。')
     job=Path(job or spec.get('job') or '').resolve()
     if not _isfile(job/'request.json'):raise ValueError('请选择要登记到的已有准备任务。')
     from task_contract import bind

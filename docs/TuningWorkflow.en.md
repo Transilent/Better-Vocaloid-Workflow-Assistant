@@ -12,9 +12,17 @@ saved tuning preferences do not implicitly process the newly prepared project.
 When regenerating compatible notes, retaining already authored automation stays
 available as preservation rather than a new acoustic fit.
 
-Open a task project or import a Synthesizer V Studio 1/2 SVP, OpenUtau USTX, or VOCALOID 5/6 VPR. Find the lyric, edit a range in single-track or multitrack view, and save a new project in the same format.
+Open a task project or import a Synthesizer V Studio 1/2 SVP, OpenUtau USTX, VOCALOID 5/6 VPR, ACE Studio ACEP, or UFData exchange score. Find the lyric, edit a range in single-track or multitrack view, and save a new file in the same format.
 
 Shared or cropped SV2 note groups remain read-only. USTX 0.5 can be previewed; resave it in OpenUtau before editing. USTX and VPR write their supported dynamics and pitch curves in **Keep original performance** mode. Reopen and audition the result in the original editor.
+
+## ACE Studio preview
+
+- **ACEP (JSON/Zstd, project schema 9 revision 0):** add pitch offsets to selected vocal clips in **Keep original performance** mode. The score, singers, effects, other controls, and media references are preserved. Clips with authored anchors, shared or overlapping notes, or a crop through a note are protected. Use **Save ACEP as…** to write a new file beside the source, where ACE Studio can still resolve `Samples`; then open the copy in ACE Studio.
+- **ACEP2 and other unverified ACEP variants:** supported structures can be browsed. Unknown containers and tempo ramps show a UFData fallback. ACEP2 writes are disabled.
+- **UFData:** choose UFData in ACE Studio's **Export MIDI** dialog. VWA can apply local pitch changes to the exchange score. Import the saved UFData into the original ACE Studio project. This route does not carry the original singers, backing audio, effects, or ACE-specific expression. Confirm what pitch data your editor version imports before relying on the result.
+
+[ACE Studio import](https://docs.acestudio.ai/project/file-management/import-files) · [Export](https://docs.acestudio.ai/project/file-management/export-files) · [Project files and Samples](https://docs.acestudio.ai/project/file-management)
 
 ## One expression source
 

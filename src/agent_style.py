@@ -1721,6 +1721,11 @@ _PARTIAL_REASON_ADVICE = {
     "vpr_overlapping_note_preserved": "重叠音符的范围保持原样，同轨独立音符仍可应用风格。",
     "vpr_no_native_delta": "没有可安全写入的 VPR 控制增量，原值保持。",
     "vpr_curve_capacity": "这条 VPR 曲线超过采样容量，已保留。",
+    "ace_pitch_controls": "保留 ACEP 原有锚点或未知音高曲线；可选择其他独立片段。",
+    "ace_clipped_note": "裁剪边界截过音符；请在 ACE Studio 整理片段后重新导入。",
+    "ace_disabled_or_shared": "停用或共用的片段保持原样。",
+    "ace_overlap": "重叠音符所在片段保持原样。",
+    "pitch_capacity": "这条音高曲线超过保留原样所需的采样容量，可分段处理。",
     "unsupported_fractional_time_controls": "部分控制点使用非整数时间，未自动加密；请保留原曲线或在 GUI 中显式重采样。",
 }
 
@@ -1907,12 +1912,16 @@ def render_style(
 
     check_cancel()
     if snapshot.format != "svp":
-        # Native adapters already verified references or preserved the embedded
-        # archive members in the shared session transaction.
+        # ACEP keeps its opaque project references; its session copy is not
+        # the file to open in the editor. Exports must stay beside the source.
         media_relocation = {"kind": "vwa.tuning.media-references", "format": snapshot.format,
                             "tracks": result.get("media_references", []), "audio_copied": False}
         if snapshot.format == "vpr":
             media_relocation["archive"] = result["report"]["archive"]
+        elif snapshot.format == "acep":
+            from ace_tuning import ACE_HOME
+            media_relocation.update(requires_same_folder_copy=True, editor_ready_in_session=False,
+                                    note=ACE_HOME)
     else:
         progress_callback("保留源工程伴奏并改写候选中的相对媒体引用")
         media_relocation = _relocate_candidate_media(source, candidate, allowed_roots=media_roots)

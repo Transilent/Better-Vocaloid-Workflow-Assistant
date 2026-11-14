@@ -212,8 +212,9 @@ def _preview(project, options, stop, send):
     label = tr('预览：{tracks} 轨 · {regions} 个逐轨片段 · {curves} 条曲线有变化。音符和时值保留。')
     label = label.format(tracks=len(indices), regions=len(options['style_regions']), curves=curves)
     if format in workflow.STYLE_ADAPTERS:
-        label += tr(' VPR 只写 DYN 和 PIT；其他配方参数保留原样。' if format == 'vpr'
-                    else ' USTX 只写 DYN 和 PITD；其他配方参数保留原样。')
+        adapter_note = {'vpr':' VPR 只写 DYN 和 PIT；其他配方参数保留原样。',
+                        'ustx':' USTX 只写 DYN 和 PITD；其他配方参数保留原样。'}.get(format)
+        label += tr(adapter_note) if adapter_note else ' ' + tr(workflow.style_adapter(format).STYLE_ONLY)
         if report.get('native_curve_skips'):
             label += tr(' 有原生曲线未能安全叠加，请核对回执。')
     elif report['status'] == 'partial':
@@ -297,6 +298,8 @@ class QuickTuning(QObject):
         portable = ({key: deepcopy(legacy[key]) for key in _PORTABLE_PREFERENCE_KEYS
                      if key in legacy} if isinstance(legacy, dict) else {})
         options = self._defaults()
+        if self.project and self.project.project['format'] in ('acep', 'ufdata'):
+            return {**options, 'style_pitch': True}
         if not portable:
             return options
         try:
@@ -478,6 +481,8 @@ class QuickTuning(QObject):
             'projectFormat': (format.upper() + ' · ' + str(project['format_version'])) if format in workflow.STYLE_ADAPTERS else
                              ('SV2 · ' + str(project['format_version'])) if project.get('synthesizer_v_2') else '',
             'projectSuffix': format,
+            'formatNotice': tr(project['format_notice']) if project.get('format_notice') else '',
+            'formatReadOnly': bool(project and format in ('acep','ufdata') and not self.project.editable),
             'trackReadOnlyReason': tr(active['reason']) if active.get('reason') else '',
             'groupStyleOnly': group_styles,
             'groupStyleReason': tr(self.project.style_only_reason) if group_styles else '',
@@ -510,7 +515,7 @@ class QuickTuning(QObject):
             'canFreeze': bool(project and not busy and usable and (not self._origin or self._confirmed)
                               and (not group_styles or mode == 'preserve')),
             'canRun': bool(self._plan and not busy), 'canRegister': bool(self.job and receipt.get('receipt_verified')
-                       and not self._candidate_stale and not busy and self.state != 'registered'),
+                       and format != 'acep' and not self._candidate_stale and not busy and self.state != 'registered'),
             'candidate': receipt.get('output', ''), 'candidateStale': self._candidate_stale,
             'candidateVerified': bool(receipt.get('receipt_verified')),
             'candidateHistorical': bool(receipt.get('historical')),
@@ -1056,6 +1061,8 @@ class QuickTuning(QObject):
             self.message = tr('已沿用旧版可移植调音偏好；参考音频、校准、路径和轨道选择不会跨工程带入。')
         elif reload_session:
             self.message = tr('已恢复保存的处理记录和可表达的编辑设置，可继续生成工程。')
+        elif project.project.get('format_notice'):
+            self.message = tr(project.project['format_notice'])
         else:
             self.message = tr('点击歌词或拖出时间范围，再为选中的轨道添加风格。')
         self.tracksChanged.emit()
@@ -1615,7 +1622,9 @@ class QuickTuning(QObject):
             else:
                 partial = receipt['status'] == 'partial'
                 self.state = 'partial' if partial else 'done'
-                self.message = tr('候选已生成，部分参数保留原样；请打开工程核对。' if partial else
+                self.message = tr('本次没有可写入的音高变化，请检查所选音符和风格。'
+                                  if project.project['format'] in ('acep','ufdata') and receipt['status'] == 'unchanged' else
+                                  '候选已生成，部分参数保留原样；请打开工程核对。' if partial else
                                   '候选已生成。请在编辑器中核对并合成歌声。')
 
         self._command('running', '正在生成独立调音候选…', work, finish)
@@ -1672,7 +1681,23 @@ class QuickTuning(QObject):
 
     @Slot()
     def openCandidate(self):
+        if self.project and self.project.project['format'] == 'acep':
+            if not self._saved_copy:
+                from ace_tuning import ACE_HOME
+                self._error(ValueError(ACE_HOME))
+                return
+        elif self.project and self.project.project['format'] == 'ufdata':
+            self.message = tr('请在 ACE Studio 的原工程中导入另存的 UFData。')
+            self.changed.emit()
+            return
         self._open_result('output')
+
+    @Slot(result=QUrl)
+    def suggestedCandidatePath(self):
+        if self.project is None or self.project.project['format'] != 'acep':
+            return QUrl()
+        original = Path(self._display_source or self.project.project['path'])
+        return QUrl.fromLocalFile(str(original.with_name(original.stem + '-VWA.acep')))
 
     @Slot()
     def openResultReceipt(self):
@@ -1683,11 +1708,21 @@ class QuickTuning(QObject):
                 or not (self.candidate.get('receipt_verified') or self.candidate.get('historical'))):
             return
 
-        def finish(result):
-            if not result.get(key):
+        saved = self._saved_copy if key == 'output' and self.project.project['format'] == 'acep' else ''
+
+        def work(stop, _send):
+            result = self._verify_historical_candidate(stop) if self.candidate.get('historical') else self._verify_candidate(stop)
+            target = saved or result.get(key)
+            if saved:
+                if file_hash(Path(target)) != result.get('output_sha256'):
+                    raise ValueError('另存的 ACEP 已改变，请打开编辑器手动核对。')
+            return target
+
+        def finish(target):
+            if not target:
                 raise ValueError('保留结果没有可打开的回执文件。')
             self.state = 'ready' if self._candidate_stale else 'done'
-            if not QDesktopServices.openUrl(QUrl.fromLocalFile(result[key])):
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(target)):
                 raise ValueError('系统未能打开文件，请按路径手动打开。')
             historical = self.candidate.get('historical') is True
             if key == 'output':
@@ -1697,10 +1732,7 @@ class QuickTuning(QObject):
                 self.message = tr('已打开保留候选的原回执，供人工核对。'
                                   if historical else '已打开核验回执。')
 
-        verify = (lambda stop, _send: self._verify_historical_candidate(stop)
-                  if self.candidate.get('historical') is True
-                  else self._verify_candidate(stop))
-        self._command('checking', '正在核验候选工程…', verify, finish)
+        self._command('checking', '正在核验候选工程…', work, finish)
 
     @Slot(QUrl)
     def exportCandidate(self, url):

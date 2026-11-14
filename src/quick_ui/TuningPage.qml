@@ -36,7 +36,14 @@ Item {
     readonly property bool hasSource: textOf(view.source).length > 0
     readonly property bool ustxProject: view.projectSuffix === "ustx"
     readonly property bool vprProject: view.projectSuffix === "vpr"
-    readonly property bool nativeStyleProject: ustxProject || vprProject
+    readonly property bool acepProject: view.projectSuffix === "acep"
+    readonly property bool ufdataProject: view.projectSuffix === "ufdata"
+    readonly property bool nativeStyleProject: ustxProject || vprProject || acepProject || ufdataProject
+    readonly property var projectFilters: ({
+        svp: "Synthesizer V 工程 (*.svp)", ustx: "OpenUtau 工程 (*.ustx)",
+        vpr: "VOCALOID 工程 (*.vpr)", acep: "ACE Studio 工程 (*.acep)",
+        ufdata: "ACE Studio 交换谱 (*.ufdata)"
+    })
     readonly property bool sessionExists: boolOr(view.sessionExists, false)
     readonly property bool candidateOpenable: candidatePresent
         && (boolOr(view.candidateVerified, false) || boolOr(view.candidateHistorical, false))
@@ -1654,6 +1661,13 @@ Item {
                         }
                     }
                     Divider {}
+                    HelperText {
+                        objectName: "tuningFormatReadOnly"
+                        Layout.fillWidth: true
+                        theme: page.theme
+                        visible: !!page.view.formatReadOnly
+                        text: page.textOf(page.view.trackReadOnlyReason || page.view.formatNotice)
+                    }
                     ScrollView {
                         id: inspectorScroll
                         objectName: "tuningInspectorScroll"
@@ -1673,6 +1687,7 @@ Item {
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 visible: page.inspectorTab === "style"
+                                enabled: !page.view.formatReadOnly
                                 spacing: page.editorGap
                                 RowLayout {
                                     Layout.fillWidth: true
@@ -2474,8 +2489,10 @@ Item {
                                     EditorButton {
                                         objectName: "openTuningCandidate"
                                         theme: page.theme
+                                        visible: !page.ufdataProject
                                         text: page.vwaTr("打开候选")
                                         enabled: page.candidateOpenable && !page.view.busy
+                                            && (!page.acepProject || !!page.view.savedCopy)
                                         onClicked: page.controller.openCandidate()
                                     }
                                 }
@@ -2491,12 +2508,21 @@ Item {
                                                 + (reason.length > 0 ? "\n" + reason : "")
                                         }
                                         const report = page.view.candidateDetails || {}
-                                        const state = {applied:page.vwaTr("已处理"), partial:page.vwaTr("部分处理"), unchanged:page.vwaTr("无变化")}[report.status] || ""
+                                        const state = {done:page.vwaTr("已处理"), applied:page.vwaTr("已处理"),
+                                            partial:page.vwaTr("部分处理"), unchanged:page.vwaTr("无变化")}[report.status] || ""
                                         return state + " · " + (report.tracks || 0) + page.vwaTr(" 轨")
                                             + (report.notesPreserved ? page.vwaTr(" · 音符与时值保留") : "")
                                             + (report.pitchChanged ? page.vwaTr("\n已修改局部音高") : "")
                                             + "\nSHA " + page.shortHash(report.sha256)
                                     }
+                                }
+                                HelperText {
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    visible: !!page.view.formatNotice && (page.acepProject || page.ufdataProject)
+                                    text: page.ufdataProject
+                                        ? page.vwaTr("请在 ACE Studio 的原工程中导入另存的 UFData。")
+                                        : page.textOf(page.view.formatNotice)
                                 }
                                 Flow {
                                     Layout.fillWidth: true
@@ -2505,10 +2531,16 @@ Item {
                                     EditorButton {
                                         objectName: "saveTuningCandidate"
                                         theme: page.theme
-                                        text: page.vprProject ? page.vwaTr("另存 VPR…")
+                                        text: page.acepProject ? page.vwaTr("另存 ACEP…")
+                                            : page.ufdataProject ? page.vwaTr("另存 UFData…")
+                                            : page.vprProject ? page.vwaTr("另存 VPR…")
                                             : page.ustxProject ? page.vwaTr("另存 USTX…") : page.vwaTr("另存 SVP…")
                                         enabled: !page.view.busy
-                                        onClicked: candidateSaveDialog.open()
+                                        onClicked: {
+                                            if (page.acepProject)
+                                                candidateSaveDialog.selectedFile = page.controller.suggestedCandidatePath()
+                                            candidateSaveDialog.open()
+                                        }
                                     }
                                     EditorButton {
                                         objectName: "openTuningReceipt"
@@ -2745,10 +2777,8 @@ Item {
         objectName: "tuningCandidateSaveDialog"
         title: page.vwaTr("另存已核验的调音工程")
         fileMode: FileDialog.SaveFile
-        defaultSuffix: page.vprProject ? "vpr" : page.ustxProject ? "ustx" : "svp"
-        nameFilters: [page.vprProject ? page.vwaTr("VOCALOID 工程 (*.vpr)")
-                                      : page.ustxProject ? page.vwaTr("OpenUtau 工程 (*.ustx)")
-                                      : page.vwaTr("Synthesizer V 工程 (*.svp)")]
+        defaultSuffix: page.view.projectSuffix || "svp"
+        nameFilters: [page.vwaTr(page.projectFilters[defaultSuffix] || page.projectFilters.svp)]
         onAccepted: page.controller.exportCandidate(selectedFile)
     }
 
@@ -2773,10 +2803,12 @@ Item {
         title: page.vwaTr("导入调音工程")
         fileMode: FileDialog.OpenFile
         nameFilters: [
-            page.vwaTr("调音工程 (*.svp *.ustx *.vpr)"),
+            page.vwaTr("调音工程 (*.svp *.ustx *.vpr *.acep *.ufdata)"),
             page.vwaTr("Synthesizer V Studio 1 / 2 (*.svp)"),
             page.vwaTr("OpenUtau 工程 (*.ustx)"),
-            page.vwaTr("VOCALOID 工程 (*.vpr)"),
+            page.vwaTr(page.projectFilters.vpr),
+            page.vwaTr(page.projectFilters.acep),
+            page.vwaTr(page.projectFilters.ufdata),
             page.vwaTr("所有文件 (*)")
         ]
         onAccepted: page.controller.chooseProject(selectedFile)

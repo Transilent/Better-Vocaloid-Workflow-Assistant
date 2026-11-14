@@ -123,7 +123,7 @@ bridge = (APP / 'src/quick_bridge.py').read_text(encoding='utf-8')
 subtitles = (APP / 'src/quick_subtitles.py').read_text(encoding='utf-8')
 assert 'readonly property bool mutationIdle' in qml
 assert 'taskBlockReason' in qml
-assert '编辑器工程 (*.svp *.ustx *.vsqx)' in qml
+assert '编辑器工程 (*.svp *.ustx *.vpr *.vsqx *.acep *.ufdata)' in qml
 assert 'inspectTaskProgress' in qml and 'reprocessSelectedTask' in qml
 assert 'signal.connect(self.taskSafetyChanged)' not in bridge
 assert 'signal.connect(self._schedule_task_safety)' in bridge
