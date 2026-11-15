@@ -12,6 +12,7 @@ import threading
 
 import numpy as np
 
+from mixdown_contract import finite_number
 from mixdown_realtime_renderer import (
     PreLimiterMixSession,
     TELEMETRY_BLOCK_SCHEMA,
@@ -29,6 +30,13 @@ from mixdown_limiter import StreamingLimiter
 LIMITER_TELEMETRY_HISTORY_FRAMES = 32768
 
 
+def _monitor_gain(request):
+    trim = finite_number(request.get('monitor_trim_db', 0.0), 'monitor_trim_db')
+    if not -80.0 <= trim <= 0.0:
+        raise ValueError('monitor_trim_db must be between -80 and 0')
+    return 10.0 ** (trim / 20.0)
+
+
 class LimitedMixSession:
     OUTPUT_STAGE = 'post_limiter'
 
@@ -37,6 +45,9 @@ class LimitedMixSession:
         self._lock = threading.RLock()
         self._closed = False
         self._volume = 1.0
+        self._monitor_gain = self._monitor_target = self._requested_gain = _monitor_gain(request)
+        self._monitor_ramp_left = 0
+        self._monitor_changes = deque()
         self._pre = (renderer_factory or PreLimiterMixSession)(
             request, cache_dir, ffmpeg=ffmpeg, **runtime)
         self.sample_rate = int(self._pre.sample_rate)
@@ -59,6 +70,10 @@ class LimitedMixSession:
         self._limiter_input_frames = 0
         self._limiter_output_frames = 0
         self._limiter_stream_start = 0
+
+    @property
+    def source_token(self):
+        return self._pre.source_token
 
     def _ensure_open(self):
         if self._closed:
@@ -257,8 +272,35 @@ class LimitedMixSession:
                 output_start = self._limiter_stream_start + self._limiter_output_frames
                 if capture_telemetry:
                     self._record_limiter_output(output_start, block)
+                if self._monitor_changes or self._monitor_gain != 1.0 or self._monitor_ramp_left:
+                    self._apply_monitor_gain(output_start, block)
                 self._limiter_output_frames += len(block)
                 self._fifo = np.concatenate((self._fifo, block))
+
+    def _apply_monitor_gain(self, start, block):
+        # Limiter lookahead can emit old and new parameters in one PCM block.
+        # Start the monitor ramp at the corresponding media frame.
+        cursor = 0
+        while self._monitor_changes and self._monitor_changes[0][0] < start + len(block):
+            frame, gain = self._monitor_changes.popleft()
+            edge = max(0, frame - start)
+            self._scale_monitor(block[cursor:edge])
+            self._monitor_target = gain
+            self._monitor_ramp_left = max(1, round(self.sample_rate * .005))
+            cursor = edge
+        self._scale_monitor(block[cursor:])
+
+    def _scale_monitor(self, block):
+        count = min(len(block), self._monitor_ramp_left)
+        if count:
+            step = (self._monitor_target - self._monitor_gain) / self._monitor_ramp_left
+            gain = self._monitor_gain + step * np.arange(1, count + 1, dtype=np.float32)
+            block[:count] *= gain[:, None]
+            self._monitor_ramp_left -= count
+            self._monitor_gain = (self._monitor_gain + step * count if self._monitor_ramp_left
+                                  else self._monitor_target)
+        if self._monitor_gain != 1.0:
+            block[count:] *= self._monitor_gain
 
     def _read(self, frames, *, capture_telemetry=True):
         self._fill(frames, capture_telemetry=capture_telemetry)
@@ -269,21 +311,23 @@ class LimitedMixSession:
         self.position_frame += frames
         return result
 
-    def render(self, frames):
+    def render(self, frames, *, capture_telemetry=True):
         if isinstance(frames, bool) or not isinstance(frames, int) or frames <= 0:
             raise ValueError('frames must be a positive integer')
         with self._lock:
             self._ensure_open()
             start = int(self.position_frame)
             output = np.ascontiguousarray(
-                self._read(frames) * self._volume, dtype=np.float32
+                self._read(frames, capture_telemetry=capture_telemetry) * self._volume, dtype=np.float32
             )
-            telemetry = self._merge_output_telemetry(
-                start, start + frames, output
-            )
-            if telemetry is not None:
-                self._store_telemetry_record(telemetry)
+            if capture_telemetry:
+                telemetry = self._merge_output_telemetry(start, start + frames, output)
+                if telemetry is not None:
+                    self._store_telemetry_record(telemetry)
             return output
+
+    def render_without_telemetry(self, frames):
+        return self.render(frames, capture_telemetry=False)
 
     def seek(self, frame, preroll_frames=None):
         if isinstance(frame, bool) or not isinstance(frame, int):
@@ -302,6 +346,9 @@ class LimitedMixSession:
             self._fifo = np.empty((0, self.channels), dtype=np.float32)
             self._finished = False
             self.position_frame = start
+            self._monitor_changes.clear()
+            self._monitor_gain = self._monitor_target = self._requested_gain
+            self._monitor_ramp_left = 0
             while self.position_frame < frame:
                 self._read(
                     min(512, frame - self.position_frame),
@@ -311,15 +358,19 @@ class LimitedMixSession:
 
     def prepare_parameters(self, request):
         # Canonical path/source checks intentionally happen outside this lock.
-        return self._pre.prepare_parameters(request)
+        return self._pre.prepare_parameters(request), _monitor_gain(request)
 
     def apply_parameters(self, plan):
+        audio_plan, gain = plan
         with self._lock:
             self._ensure_open()
             old_duration = self.duration_frames
-            self._pre.apply_parameters(plan)
+            self._pre.apply_parameters(audio_plan)
             self.duration_frames = int(self._pre.duration_frames)
             self.parameter_first_frame = int(self._pre.position_frame)
+            if gain != self._requested_gain:
+                self._requested_gain = gain
+                self._monitor_changes.append((self.parameter_first_frame, gain))
             if self._finished or self.duration_frames < old_duration:
                 self.seek(min(self.position_frame, self.duration_frames))
 

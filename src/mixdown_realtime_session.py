@@ -278,6 +278,7 @@ class RealtimeAuditionSession:
                 'peak_dbfs': row.get('peak_dbfs'),
                 'rms_dbfs': row.get('rms_dbfs'),
                 'gr_db': row.get('gr_db', 0.0),
+                'deess_gr_db': row.get('deess_gr_db'),
                 'audible': bool(row.get('audible', False)),
                 'stage': row.get('stage'),
             })

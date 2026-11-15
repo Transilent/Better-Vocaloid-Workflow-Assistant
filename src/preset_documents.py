@@ -115,6 +115,7 @@ _MIX = _object({
     'track_template': _object({'pan_mode': _enum('center', 'alternate', 'lead_harmony'),
                                'pan': _number(-1, 1), 'harmony_pan': _number(0, 1),
                                'reverb_send': _number(0, 1)}),
+    'vocal_deess': _array(_object({'enabled': _BOOL, 'strength': _number(0, 1)}), 1, 3),
 }, ('apply_scope', 'eq_enabled', 'eq_bands', 'compression_enabled', 'compression_strength',
     'reverb_enabled', 'reverb_profile', 'reverb_mix', 'reverb_predelay_ms'))
 _STYLE_REF = {'oneOf': [_enum('builtin:none', 'builtin:gentle', 'builtin:sad', 'builtin:bold'), _REF]}
@@ -311,6 +312,8 @@ def validate_document(value, *, allow_builtin=False):
         has_width = payload['apply_scope'] == 'vocal_processing_and_output_width'
         if ('width' in payload) != has_width:
             _invalid('$.payload.width', '总输出宽度必须与应用范围一致。')
+        if ('vocal_deess' in payload) != ('mix.deess' in value['requires']['capabilities']):
+            _invalid('$.payload.vocal_deess', '逐轨去齿音数据须与 mix.deess 能力声明一致。')
         if slots:
             _invalid('$.binding_slots', '混音预设不保存工程输入槽位。')
     elif kind == 'preparation':

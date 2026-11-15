@@ -796,7 +796,7 @@ class AudioMixdownContract(unittest.TestCase):
         _verify_result(self, first_report, first, self.root)
         self.assertGreaterEqual(len(events), 2)
         last = -1.0
-        for event in events:
+        for event in events[:-1]:
             self.assertEqual(event['phase'], 'mix')
             self.assertGreaterEqual(float(event['fraction']), last)
             last = float(event['fraction'])
@@ -806,6 +806,8 @@ class AudioMixdownContract(unittest.TestCase):
             self.assertIsInstance(event['tracks'], list)
             self.assertTrue(math.isfinite(float(event['bus_peak'])))
         self.assertEqual(float(events[-1]['fraction']), 1.0)
+        self.assertEqual(events[-1]['phase'], 'measuring')
+        self.assertTrue(events[-1]['message'])
         self.assertEqual(events[-1]['frames_done'], events[-1]['frames_total'])
 
         second = copy.deepcopy(first)
@@ -817,6 +819,42 @@ class AudioMixdownContract(unittest.TestCase):
         self.assertEqual(first_report['peak_after_effects_dbfs'],
                          second_report['peak_after_effects_dbfs'])
         self.assertEqual(first_report['gr_db_p95'], second_report['gr_db_p95'])
+
+    def test_output_quality_distinguishes_true_peak_and_locates_pre_limiter_overload(self):
+        rate = 48000
+        vocal, backing = self.root / 'hot-vocal.wav', self.root / 'hot-backing.wav'
+        frames = np.arange(rate * 2)
+        tone = (.82 * np.sin(np.pi * .5 * frames + np.pi / 4)).astype(np.float32)
+        tone[:rate] = 0
+        _write(vocal, tone[:, None], rate)
+        _write(backing, tone[:, None], rate)
+        request = _request(vocal, backing, self.root / 'hot.wav')
+        request.update(eq_bands=[], width=1.0)
+        report = audio_mixdown.render(request)
+        quality = report['quality']
+        self.assertEqual(quality['status'], 'measured')
+        self.assertTrue(math.isfinite(quality['integrated_lufs']))
+        self.assertGreater(quality['true_peak_dbtp'], quality['sample_peak_dbfs'] + 1.0)
+        self.assertLessEqual(quality['sample_peak_dbfs'], -0.99)
+        self.assertEqual(quality['pre_limiter_overload_ms'], [1000])
+        self.assertEqual(quality['pre_limiter_overload_frames'], rate)
+        self.assertEqual(report['output_sha256'], _digest(Path(report['output_path'])))
+
+    def test_measurement_failure_preserves_valid_wav(self):
+        from unittest.mock import patch
+
+        rate = 8000
+        vocal, backing = self.root / 'check-vocal.wav', self.root / 'check-backing.wav'
+        _write(vocal, _tone(1.0, rate, 330, .04), rate)
+        _write(backing, _tone(1.0, rate, 110, .02), rate)
+        request = _request(vocal, backing, self.root / 'check.wav')
+        with patch.object(audio_mixdown, 'measure_file',
+                          side_effect=audio_mixdown.MixdownError('meter failure')):
+            report = audio_mixdown.render(request)
+        _verify_result(self, report, request, self.root)
+        self.assertEqual(report['quality']['status'], 'unavailable')
+        self.assertIn('meter failure', report['quality']['reason'])
+        self.assertIsNone(report['quality']['integrated_lufs'])
 
     def test_legacy_eq_low_cut_keeps_original_filter_semantics(self):
         rate = 16000

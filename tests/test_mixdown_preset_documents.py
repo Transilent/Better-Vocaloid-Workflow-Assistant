@@ -72,6 +72,23 @@ class MixingPlans(unittest.TestCase):
         with self.assertRaises(PresetError):
             plan_application(doc, snapshot(), include_width=True)
 
+    def test_deesser_is_opt_in_per_vocal_and_legacy_presets_keep_local_controls(self):
+        before = snapshot()
+        before['tracks'][0].update(deess_enabled=False, deess_strength=.45)
+        before['tracks'][1].update(deess_enabled=True, deess_strength=.61)
+        doc = make_document(dict(before['processing'], vocal_deess=[
+            {'enabled': True, 'strength': .53},
+        ]), 'De-ess')
+        self.assertIn('mix.deess', doc['requires']['capabilities'])
+        default = plan_application(doc, before)
+        self.assertEqual(default['after']['tracks'], before['tracks'])
+        applied = plan_application(doc, before, include_tracks=True)['after']['tracks']
+        self.assertEqual(applied[0], dict(before['tracks'][0], deess_enabled=True, deess_strength=.53))
+        self.assertEqual(applied[1], before['tracks'][1])
+        legacy = plan_application(builtin_documents()[4], before, include_tracks=True)['after']['tracks']
+        self.assertEqual(legacy[1]['deess_strength'], .61)
+        self.assertTrue(legacy[1]['deess_enabled'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -13,6 +13,7 @@ from typing import Any
 
 EQ_BAND_TYPES = ("highpass", "lowshelf", "bell", "highshelf")
 MAX_VOCALS = 3
+DEFAULT_DEESS_STRENGTH = 0.45
 MAX_OFFSET_SECONDS = 6.0 * 60.0 * 60.0
 MAX_EQ_BANDS = 4
 REVERB_PROFILES = ("small", "natural", "wide")

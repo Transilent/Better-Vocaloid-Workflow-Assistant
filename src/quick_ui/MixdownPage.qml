@@ -27,6 +27,9 @@ Item {
     readonly property var reverbCurve: controller.reverbCurve || []
     readonly property var presets: controller.presets || []
     readonly property var exportProgress: view.exportProgress || ({})
+    readonly property var exportQuality: view.exportQuality || ({})
+    readonly property var levelMatch: view.loudnessMatch || ({})
+    readonly property var overloadTimes: exportQuality.pre_limiter_overload_ms || []
     readonly property string resultPath: page.textValue(view.result, "")
     readonly property bool hasResult: resultPath.length > 0
     readonly property bool resultExpired: hasResult && !!view.resultStale
@@ -170,6 +173,32 @@ Item {
         return page.finite(value) ? Number(value).toFixed(1) + (unit || " dB") : "—";
     }
 
+    function levelMatchDetail() {
+        switch (page.levelMatch.status) {
+        case "measuring": return page.vwaTr("正在测量当前选段 · 点击取消");
+        case "stale": return page.vwaTr("参数或试听范围已变更，点击重新匹配响度");
+        case "too_short": return page.vwaTr("可比较的试听范围不足 0.4 秒");
+        case "below_gate": return page.vwaTr("至少一侧过静，无法匹配响度");
+        case "unavailable": return page.vwaTr("响度匹配失败") + " · " + page.textValue(page.levelMatch.reason, "");
+        case "ready":
+            return page.preciseTimeText(page.levelMatch.start_ms) + "–" + page.preciseTimeText(page.levelMatch.end_ms)
+                + " · A " + page.dbText(page.levelMatch.trim_db.A)
+                + " / B " + page.dbText(page.levelMatch.trim_db.B)
+                + " · " + page.vwaTr("仅补偿试听 · 点击关闭");
+        default: return page.vwaTr("测量试听范围，降低 A/B 中较响的一侧");
+        }
+    }
+
+    function qualityDetail() {
+        switch (page.exportQuality.status) {
+        case "too_short": return page.vwaTr("成品不足 0.4 秒，无法计算整曲响度");
+        case "below_gate": return page.vwaTr("成品响度低于计量门限");
+        case "unavailable":
+            return page.vwaTr("WAV 已导出，响度测量未完成") + " · " + page.textValue(page.exportQuality.reason, "");
+        default: return page.vwaTr("在导出的 WAV 上测量");
+        }
+    }
+
     function percentText(value) {
         return page.finite(value) ? Math.round(page.clamp(Number(value), 0, 1) * 100) + "%" : "—";
     }
@@ -282,6 +311,11 @@ Item {
         return page.finishSeekGesture(false);
     }
 
+    function endReductionListening() {
+        if (page.controller && page.view.listenReductionTrack)
+            page.controller.setReductionListen(page.view.listenReductionTrack, false);
+    }
+
     function keyboardSeek(event) {
         if (event.key === Qt.Key_Escape && page.seeking) {
             page.cancelSeekGesture();
@@ -340,6 +374,8 @@ Item {
     }
 
     function exportPhaseText(phase) {
+        if (phase === "measuring")
+            return page.vwaTr("测量响度与真峰值");
         const labels = {prepare: "准备", decode: "解码", mix: "混音", encode: "编码",
                         loudness: "响度分析", done: "完成", cancelled: "已取消", failed: "失败"};
         return labels[String(phase || "")] || String(phase || "处理中");
@@ -433,8 +469,8 @@ Item {
             "processing.compression_enabled": "压缩", "processing.compression_strength": "压缩强度",
             "processing.reverb_enabled": "混响", "processing.reverb_profile": "混响空间",
             "processing.reverb_mix": "混响量", "processing.reverb_predelay_ms": "预延迟",
-            "processing.width": "总输出宽度", "tracks": "歌声声像与发送"};
-        return labels[field] || field;
+            "processing.width": "总输出宽度", "tracks": "歌声轨参数"};
+        return labels[field] ? page.vwaTr(labels[field]) : field;
     }
 
     function presetValueText(field, value) {
@@ -443,7 +479,9 @@ Item {
                              + band.freq_hz + " Hz / " + band.gain_db + " dB / Q " + band.q).join("\n");
         if (field === "tracks")
             return value.map((track, i) => "歌声 " + (i + 1) + " · 声像 " + Math.round(track.pan * 100)
-                             + " / 发送 " + page.percentText(track.reverb_send)).join("\n");
+                             + " / 发送 " + page.percentText(track.reverb_send)
+                             + (track.deess_enabled === undefined ? "" : " / " + page.vwaTr("柔化齿音") + " "
+                                 + (track.deess_enabled ? page.percentText(track.deess_strength) : page.vwaTr("关闭")))).join("\n");
         if (typeof value === "boolean")
             return value ? "启用" : "关闭";
         if (field === "processing.compression_strength" || field === "processing.reverb_mix")
@@ -454,10 +492,15 @@ Item {
     }
 
     onVisibleChanged: {
-        if (!page.visible)
+        if (!page.visible) {
             page.cancelSeekGesture();
+            page.endReductionListening();
+        }
     }
-    Component.onDestruction: page.cancelSeekGesture()
+    Component.onDestruction: {
+        page.cancelSeekGesture();
+        page.endReductionListening();
+    }
     Timer {
         id: keyboardSeekTimer
         interval: 85
@@ -1019,7 +1062,7 @@ Item {
                     text: page.compact ? "A" : page.vwaTr("A 处理前")
                     Accessible.name: page.vwaTr("A 处理前")
                     ToolTip.visible: hovered
-                    ToolTip.text: page.vwaTr("切换并试听处理前 · Ctrl+Shift+A")
+                    ToolTip.text: page.vwaTr("旁通去齿音、EQ、压缩和混响 · Ctrl+Shift+A")
                     onClicked: page.controller.selectMix("A")
                 }
                 UiButton {
@@ -1031,6 +1074,23 @@ Item {
                     ToolTip.visible: hovered
                     ToolTip.text: page.vwaTr("切换并试听处理后 · Ctrl+Shift+B")
                     onClicked: page.controller.selectMix("B")
+                }
+                UiButton {
+                    objectName: "mixdownLoudnessMatch"
+                    theme: page.theme
+                    quiet: true
+                    selected: page.levelMatch.status === "ready"
+                    enabled: selected || page.levelMatch.status === "measuring" || !!page.view.canMatchLoudness
+                    text: page.levelMatch.status === "measuring" ? page.vwaTr("匹配中…")
+                        : page.levelMatch.status === "stale" ? page.vwaTr("重新匹配")
+                        : ["unavailable", "too_short", "below_gate"].includes(page.levelMatch.status)
+                            ? page.vwaTr("未匹配") : page.vwaTr("同响度 A/B")
+                    Accessible.checkable: true
+                    Accessible.checked: selected
+                    Accessible.description: page.levelMatchDetail()
+                    ToolTip.visible: hovered
+                    ToolTip.text: page.levelMatchDetail()
+                    onClicked: page.controller.toggleLoudnessMatch()
                 }
                 Text {
                     text: page.timeText(page.shownPositionMs) + " / " + page.timeText(page.durationMs)
@@ -1176,12 +1236,13 @@ Item {
 
             RowLayout {
                 id: exportProgressRow
+                readonly property bool measuring: page.exportProgress.phase === "measuring"
                 Layout.fillWidth: true
                 visible: String(page.view.state || "") === "exporting"
                 spacing: Math.round(7 * page.theme.scale)
 
                 Text {
-                    Layout.preferredWidth: Math.round(62 * page.theme.scale)
+                    Layout.preferredWidth: Math.max(implicitWidth, Math.round(62 * page.theme.scale))
                     text: page.exportPhaseText(page.exportProgress.phase)
                     color: page.theme.text
                     font.pixelSize: Math.round(10 * page.theme.scale)
@@ -1194,16 +1255,52 @@ Item {
                     from: 0
                     to: 1
                     value: page.clamp(page.number(page.exportProgress.fraction, 0), 0, 1)
-                    indeterminate: false
+                    indeterminate: exportProgressRow.measuring
                     Accessible.name: page.vwaTr("导出进度")
                 }
                 Text {
+                    visible: !exportProgressRow.measuring
                     Layout.preferredWidth: Math.round(40 * page.theme.scale)
                     horizontalAlignment: Text.AlignRight
                     text: Math.round(page.number(page.exportProgress.fraction, 0) * 100) + "%"
                     color: page.theme.muted
                     font.pixelSize: Math.round(10 * page.theme.scale)
                     font.family: "Consolas"
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                visible: page.hasResult && !!page.exportQuality.status && !exportProgressRow.visible
+                spacing: Math.round(6 * page.theme.scale)
+                Text {
+                    objectName: "mixdownExportQuality"
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    text: (page.resultExpired ? page.vwaTr("上次导出 · ") : "")
+                        + page.vwaTr("整曲响度 ") + page.dbText(page.exportQuality.integrated_lufs, " LUFS")
+                        + "  ·  " + page.vwaTr("真峰值 ") + page.dbText(page.exportQuality.true_peak_dbtp, " dBTP")
+                        + "  ·  " + page.vwaTr("采样峰值 ") + page.dbText(page.exportQuality.sample_peak_dbfs, " dBFS")
+                        + (page.exportQuality.status === "measured" ? "" : "  ·  " + page.qualityDetail().split(" · ")[0])
+                    color: page.number(page.exportQuality.true_peak_dbtp, 0) > 0 ? page.theme.attention : page.theme.muted
+                    font.pixelSize: Math.round(10 * page.theme.scale)
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    HoverHandler { id: qualityHover }
+                    ToolTip.visible: qualityHover.hovered
+                    ToolTip.text: page.qualityDetail()
+                }
+                UiButton {
+                    objectName: "mixdownOverloadPosition"
+                    theme: page.theme
+                    quiet: true
+                    visible: page.overloadTimes.length > 0
+                    enabled: !!page.view.canSeek && !page.resultExpired
+                    text: page.vwaTr("限幅前超载") + " · " + page.preciseTimeText(page.overloadTimes[0])
+                    ToolTip.visible: hovered
+                    ToolTip.text: page.vwaTr("跳至首处超载") + " · "
+                        + page.overloadTimes.map(value => page.preciseTimeText(value)).join(" / ")
+                    onClicked: page.controller.commitSeek(page.overloadTimes[0])
                 }
             }
 
@@ -1593,7 +1690,10 @@ Item {
                 id: tracksScope
                 objectName: "mixdownPresetIncludeTracks"
                 visible: !!presetReviewDialog.plan.hasTracks
-                text: page.vwaTr("同时应用歌声声像与混响发送")
+                text: presetReviewDialog.plan.hasDeess
+                    ? (presetReviewDialog.plan.hasTrackTemplate ? page.vwaTr("同时应用声像、混响发送与去齿音")
+                        : page.vwaTr("同时应用逐轨去齿音"))
+                    : page.vwaTr("同时应用歌声声像与混响发送")
                 checked: !!presetReviewDialog.plan.includeTracks
                 onClicked: page.controller.previewPreset(presetReviewDialog.plan.key, !!presetReviewDialog.plan.includeWidth, checked)
             }
@@ -1816,6 +1916,7 @@ Item {
         property int order: 0
         readonly property bool monitor: trackId === "master"
         readonly property bool backing: trackId === "instrumental"
+        readonly property bool vocal: !monitor && !backing
         readonly property var track: page.trackById(trackId)
         readonly property string label: monitor ? page.vwaTr("试听输出") : String(page.trackValue(track, "label", backing ? page.vwaTr("伴奏") : page.vwaTr("歌声 ") + (order + 1)))
         readonly property string sourcePath: String(page.trackValue(track, "path", ""))
@@ -1845,6 +1946,9 @@ Item {
                 + page.vwaTr("。点击打开精确轨道参数");
         }
         readonly property bool editable: !page.busy && !page.loading
+        readonly property bool deessEnabled: !!page.trackValue(track, "deess_enabled", false)
+        readonly property real deessStrength: page.number(page.trackValue(track, "deess_strength", 0), 0)
+        readonly property real deessGr: page.laneValue(trackId, "deess")
         function openTrackSettings(invoker) {
             trackSettingsDialog.trackId = trackId;
             trackSettingsDialog.invoker = invoker;
@@ -1944,6 +2048,63 @@ Item {
                         Accessible.description: channel.backing ? page.vwaTr("精确增益和声像") : page.vwaTr("精确增益、声像和时间偏移")
                         enabled: channel.editable
                         onClicked: channel.openTrackSettings(trackSettingsButton)
+                    }
+                }
+            }
+
+            Loader {
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.round(64 * page.theme.scale)
+                active: channel.vocal
+                sourceComponent: ColumnLayout {
+                    spacing: Math.round(2 * page.theme.scale)
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Math.round(2 * page.theme.scale)
+                        StripButton {
+                            objectName: "mixdownDeess_" + channel.trackId
+                            Layout.fillWidth: true
+                            theme: page.theme
+                            rightPadding: 0
+                            selected: channel.deessEnabled
+                            enabled: channel.editable
+                            text: page.vwaTr("去齿音")
+                            Accessible.name: channel.label + " · " + page.vwaTr("柔化齿音")
+                            Accessible.checkable: true
+                            Accessible.checked: selected
+                            ToolTip.visible: hovered || visualFocus
+                            ToolTip.text: page.vwaTr("只压低这路歌声的短促齿擦音")
+                            onClicked: page.controller.setTrack(channel.trackId, "deess_enabled", !selected)
+                        }
+                        StripButton {
+                            objectName: "mixdownDeessListen_" + channel.trackId
+                            Layout.preferredWidth: Math.round(22 * page.theme.scale)
+                            theme: page.theme
+                            rightPadding: 0
+                            glyph: "headphones"
+                            text: page.vwaTr("只听削减")
+                            selected: page.view.listenReductionTrack === channel.trackId
+                            enabled: selected || (page.canPlay && channel.deessEnabled && channel.deessStrength > 0
+                                && channel.sourcePath.length > 0 && !page.trackValue(channel.track, "muted", false))
+                            Accessible.checkable: true
+                            Accessible.checked: selected
+                            onClicked: page.controller.setReductionListen(channel.trackId, !selected)
+                        }
+                    }
+                    ParameterSlider {
+                        objectName: "mixdownDeessStrength_" + channel.trackId
+                        Layout.fillWidth: true
+                        theme: page.theme
+                        label: channel.deessEnabled && page.playing && page.selectionMode === "B"
+                            ? page.dbText(-channel.deessGr) : page.vwaTr("强度")
+                        accessibleLabel: channel.label + " · " + page.vwaTr("齿音处理强度")
+                        displayValue: channel.deessStrength
+                        displayFactor: 100
+                        step: 0.01
+                        unit: "%"
+                        interactive: channel.editable && channel.deessEnabled
+                        onMoved: amount => page.controller.setTrack(channel.trackId, "deess_strength", amount)
                     }
                 }
             }

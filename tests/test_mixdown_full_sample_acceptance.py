@@ -150,6 +150,97 @@ class FullSampleAcceptance(unittest.TestCase):
         for path in (*self.vocals,self.backing):
             self.assertEqual(self.source_hashes[path.name],hashlib.sha256(path.read_bytes()).hexdigest())
 
+    def test_deessing_is_track_local_and_shared_by_audition_and_export(self):
+        import pedalboard
+
+        from mixdown_deesser import VocalDeesser
+
+        rate = self.rate
+        t = np.arange(rate * 2) / rate
+        vowel = .13 * np.sin(2 * np.pi * 240 * t)
+        sibilance = sum(.10 * np.sin(2 * np.pi * frequency * t)
+                        for frequency in (6127, 7283, 8461))
+        begin, end = round(.86 * rate), round(1.14 * rate)
+        pulse = np.zeros_like(t)
+        pulse[begin:end] = np.hanning(end - begin)
+        pulse *= sibilance
+        vocal = np.column_stack((vowel + pulse, vowel - pulse)).astype(np.float32)
+        whole, reduction = VocalDeesser(rate, 2, pedalboard).process(vocal, .45)
+        self.assertGreater(reduction, 1.3)
+        self.assertLessEqual(reduction, 2.71)
+        split = VocalDeesser(rate, 2, pedalboard)
+        np.testing.assert_allclose(whole, np.concatenate([
+            split.process(vocal[i:i + 671], .45)[0] for i in range(0, len(vocal), 671)
+        ]), atol=2e-7, rtol=0)
+        np.testing.assert_array_equal(split.process(vocal, 0.0)[0], vocal)
+        np.testing.assert_allclose(whole[:begin - 512], vocal[:begin - 512], atol=3e-6, rtol=0)
+        self.assertTrue(np.any(np.abs(whole[begin:end] - vocal[begin:end]) > .012))
+
+        sf.write(self.vocals[0], vocal, rate, subtype='FLOAT')
+        request = self.request()
+        request.update(eq_low_cut_hz=0.0, eq_presence_db=0.0, reverb_mix=0.0,
+                       reverb_predelay_ms=0, compression_strength=0.0, width=1.0,
+                       instrumental_mute=True, preview_start_seconds=0.0, preview_duration_seconds=2.0)
+        request['vocals'][0].update(deess_strength=.45, pan=0.0)
+        for track in request['vocals'][1:]:
+            track['mute'] = True
+        dll = APP / 'components/native-audio/vwa_native_output.dll'
+        ffmpeg = backend._ffmpeg_executable()
+        graph = LimitedMixSession(request, self.root / 'cache', dll, ffmpeg=ffmpeg)
+        try:
+            graph.seek(rate)
+            graph.render(512)
+            meter = graph.telemetry_for_range(rate, rate + 512)['tracks']
+            self.assertGreater(meter[0]['deess_gr_db'], 1.3)
+            self.assertIsNone(meter[1]['deess_gr_db'])
+            graph.seek(0)
+            device_pcm = graph.render_without_telemetry(2 * rate)
+            graph.set_parameters(dict(request, monitor_reduction_vocal=0))
+            graph.seek(0)
+            delta = graph.render_without_telemetry(2 * rate)
+        finally:
+            graph.close()
+        report = backend.render(request)
+        export_pcm, _ = sf.read(report['output_path'], dtype='float32', always_2d=True)
+        np.testing.assert_allclose(device_pcm, export_pcm, atol=4e-6, rtol=0)
+        np.testing.assert_allclose(device_pcm + delta, vocal, atol=4e-6, rtol=0)
+
+    def test_same_range_loudness_measurement_and_monitor_gain(self):
+        from mixdown_loudness import compare_range
+
+        a = self.request()
+        a.update(eq_low_cut_hz=0.0, eq_presence_db=0.0, reverb_mix=0.0,
+                 reverb_predelay_ms=0, compression_strength=0.0, width=1.0)
+        b = copy.deepcopy(a)
+        b['instrumental_db'] -= 6.0
+        for track in b['vocals']:
+            track['gain_db'] -= 6.0
+        dll = APP / 'components/native-audio/vwa_native_output.dll'
+        cache = self.root / 'cache'
+        result = compare_range(a, b, 2660, 5660, cache, dll)
+        self.assertEqual(result['status'], 'ready')
+        self.assertEqual((result['start_ms'], result['end_ms']), (2660, 5660))
+        self.assertAlmostEqual(result['trim_db']['A'], -6.0, delta=.1)
+        self.assertEqual(result['trim_db']['B'], 0)
+        self.assertEqual(compare_range(a, b, 26, 236, cache, dll)['status'], 'too_short')
+        silent = copy.deepcopy(b)
+        silent['instrumental_mute'] = True
+        for track in silent['vocals']:
+            track['mute'] = True
+        self.assertEqual(compare_range(a, silent, 2660, 5660, cache, dll)['status'], 'below_gate')
+        graph = LimitedMixSession(a, cache, dll)
+        try:
+            start = round(2.66 * self.rate)
+            graph.seek(start)
+            direct = graph.render_without_telemetry(1536)
+            graph.set_parameters(dict(a, monitor_trim_db=-6))
+            graph.seek(start)
+            matched = graph.render_without_telemetry(1536)
+            self.assertEqual(graph.position_frame, start + 1536)
+        finally:
+            graph.close()
+        np.testing.assert_allclose(direct * 10 ** (-6 / 20), matched, atol=2e-7, rtol=0)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

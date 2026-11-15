@@ -10,7 +10,7 @@ from mixdown_contract import project_eq_band, valid_sample_rate
 from preset_documents import PresetError, validate_document
 
 SUPPORTED_CAPABILITIES = frozenset({
-    'mix.eq4', 'mix.compression', 'mix.reverb', 'mix.width', 'mix.track_template',
+    'mix.eq4', 'mix.compression', 'mix.reverb', 'mix.width', 'mix.track_template', 'mix.deess',
 })
 
 
@@ -30,6 +30,8 @@ def make_document(payload, name, *, include_width=False, identifier=None):
         capabilities.append('mix.width')
     if 'track_template' in payload:
         capabilities.append('mix.track_template')
+    if 'vocal_deess' in payload:
+        capabilities.append('mix.deess')
     return validate_document({
         'format': 'vwa.preset', 'format_version': 1,
         'id': identifier or 'user.' + str(uuid.uuid4()), 'type': 'mixdown', 'version': '0.1.0',
@@ -50,12 +52,18 @@ def _snapshot(before):
     if type(tracks) is not list or not 1 <= len(tracks) <= 3:
         raise PresetError('invalid_target', '当前演唱轨数量无效。')
     for track in tracks:
-        if type(track) is not dict or set(track) != {'pan', 'reverb_send'}:
+        if type(track) is not dict or set(track) not in (
+                {'pan', 'reverb_send'}, {'pan', 'reverb_send', 'deess_enabled', 'deess_strength'}):
             raise PresetError('invalid_target', '当前演唱轨参数无效。')
         for field, low, high in (('pan', -1, 1), ('reverb_send', 0, 1)):
             value = track[field]
             if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
                 raise PresetError('invalid_target', '当前演唱轨参数超出范围。', field=field)
+        if 'deess_enabled' in track:
+            strength = track['deess_strength']
+            if (type(track['deess_enabled']) is not bool or type(strength) not in (float, int)
+                    or not math.isfinite(strength) or not 0 <= strength <= 1):
+                raise PresetError('invalid_target', '当前演唱轨去齿音参数无效。')
     return {'processing': processing, 'tracks': copy.deepcopy(tracks)}
 
 
@@ -77,13 +85,14 @@ def plan_application(document, before, *, sample_rate=44100,
     if type(include_width) is not bool or type(include_tracks) is not bool:
         raise PresetError('invalid_scope', '附加应用范围必须明确选择。')
     source = document['payload']
-    if include_width and 'width' not in source or include_tracks and 'track_template' not in source:
+    has_track_settings = 'track_template' in source or 'vocal_deess' in source
+    if include_width and 'width' not in source or include_tracks and not has_track_settings:
         raise PresetError('invalid_scope', '预设没有声明所选的附加参数。')
     before = _snapshot(before)
     after = copy.deepcopy(before)
     processing = after['processing']
     processing.update(copy.deepcopy({k: v for k, v in source.items()
-                                    if k not in ('width', 'track_template', 'apply_scope')}))
+                                    if k not in ('width', 'track_template', 'vocal_deess', 'apply_scope')}))
     try:
         rate = valid_sample_rate(sample_rate)
         processing['eq_bands'] = [project_eq_band(band, sample_rate=rate)
@@ -95,7 +104,7 @@ def plan_application(document, before, *, sample_rate=44100,
     processing['reverb_predelay_ms'] = int(round(source['reverb_predelay_ms']))
     if include_width:
         processing['width'] = int(round(source['width'] * 100)) / 100
-    if include_tracks:
+    if include_tracks and 'track_template' in source:
         template = source['track_template']
         for index, track in enumerate(after['tracks']):
             mode, harmony = template['pan_mode'], template['harmony_pan']
@@ -105,6 +114,9 @@ def plan_application(document, before, *, sample_rate=44100,
                 pan = template['pan']
             track['pan'] = int(round(pan * 100)) / 100
             track['reverb_send'] = template['reverb_send']
+    if include_tracks and 'vocal_deess' in source:
+        for track, deess in zip(after['tracks'], source['vocal_deess']):
+            track.update(deess_enabled=deess['enabled'], deess_strength=deess['strength'])
     changes = [{'field': 'processing.' + key, 'before': before['processing'][key],
                 'after': value} for key, value in processing.items()
                if before['processing'][key] != value]

@@ -14,9 +14,9 @@ Examples: [preparation](examples/presets/preparation.vwa-preset.json), [mixing](
 
 ## Using presets in the mixing console
 
-Save current as preset captures EQ, compression and reverb, including retained values of bypassed controls. Each save appends a new identity, even with the same display name. Overall output width is optional; file paths, hardware, projects and current track balance are excluded.
+Save current as preset captures EQ, compression, reverb and configured per-vocal de-essing, including retained values of bypassed controls. Each save appends a new identity, even with the same display name. Overall output width is optional. The preset stores processing settings.
 
-Choose from local library shows a before/after comparison without changing the mix. Manage presets can append imported files and refresh the list. Applying output width and the declared pan/reverb-send template are separate opt-ins, both disabled by default. Width can affect accompaniment. Levels, mute/solo, offsets and source bindings stay intact.
+Choose from local library shows a before/after comparison without changing the mix. Manage presets can append imported files and refresh the list. Applying output width and declared track settings are separate opt-ins. De-essing applies to the corresponding vocal slots in order. Tracks without a matching entry keep their current settings.
 
 Confirm apply rechecks the selected version/digest and live mixer state. EQ frequencies respect the current sample rate and the preview reflects actual percentage/predelay control precision without rewriting the package. One-step undo is available until the next manual parameter edit. Existing audition and export processing use the resulting controls.
 
@@ -35,7 +35,7 @@ The required envelope is `format: "vwa.preset"`, integer `format_version: 1`, `i
 | Kind | Portable content |
 | --- | --- |
 | `preparation` | A supported graph and 16 explicit portable options. External stems use a required input slot. Paths, lyrics, hardware and thread settings are excluded. |
-| `mixdown` | Four ordered EQ bands (high-pass, low shelf, bell, high shelf), independent bypass flags and retained values, compression, reverb and optional track template. Overall output width requires an explicit scope because it can affect accompaniment. |
+| `mixdown` | Four ordered EQ bands (high-pass, low shelf, bell, high shelf), bypass flags and retained values, compression, reverb and optional track template. Optional `vocal_deess` lists one to three pairs of `enabled` and `strength` in vocal order and declares `mix.deess`. Overall output width requires an explicit scope. |
 | `tuning` | One expression source, style/technique references and strengths, density, and required target/source slots. No live project bindings. |
 | `style_recipe` | A `style` or `technique` role and additive curves over normalized note phase 0–1. Loudness, tension, breathiness and voicing only, 2–64 points per channel, strictly increasing from phase 0 to 1. Loudness deltas ±12; other channels ±1. Pitch recipes must be disabled in v1. |
 

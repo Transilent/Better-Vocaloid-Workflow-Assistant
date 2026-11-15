@@ -20,7 +20,7 @@ from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
 import mixdown_export
-from mixdown_contract import MAX_VOCALS
+from mixdown_contract import DEFAULT_DEESS_STRENGTH, MAX_VOCALS
 from mixdown_limiter_spec import PEAK_CEILING_DBFS
 from mixdown_preview_controller import MixdownPreviewController
 from mixdown_runtime import (
@@ -103,7 +103,13 @@ class QuickMixdown(QObject):
         self._lock = threading.RLock()
         self._active_kind = ''
         self._support_lane = WorkerLane(self, 'vwa-mixdown-support', journal=getattr(parent, 'journal', None))
+        self._match_lane = WorkerLane(self, 'vwa-mixdown-level-match',
+                                      journal=getattr(parent, 'journal', None))
         self._state = MixdownWorkspaceState()
+        self._match = {'status': 'off'}
+        self._match_key = None
+        self._match_cache = None
+        self._listen_reduction = ''
         self._library = PresetLibrary()
         self._presets = []
         self._preset_meta = {}
@@ -574,6 +580,9 @@ class QuickMixdown(QObject):
         view = self._state.view(can_export=can_export, can_register=can_register,
                                 can_play=can_play)
         view['canSeek'] = bool(can_play and player.ready and not self._source_edit_pending)
+        view['canMatchLoudness'] = bool(view['canSeek'] and not player.failed and not self._match_lane.kind)
+        view['loudnessMatch'] = copy.deepcopy(self._match)
+        view['listenReductionTrack'] = self._listen_reduction
         receipt_output = ((self._export_receipt or {}).get('output')
                           if isinstance(self._export_receipt, dict) else {})
         export_sha = str((receipt_output or {}).get('sha256') or '')
@@ -582,6 +591,8 @@ class QuickMixdown(QObject):
         registered_video = bool(export_fresh and self._state.job and self._registered_mix_id)
         independent_video = bool(export_fresh and not self._state.job)
         view['canComposeVideo'] = registered_video or independent_video
+        render_result = (self._export_receipt or {}).get('render_result') or {}
+        view['exportQuality'] = copy.deepcopy(render_result.get('quality') or {})
         view['videoHandoffMode'] = ('registered' if registered_video else
                                     'independent' if independent_video else '')
         view['support'] = copy.deepcopy(self._support)
@@ -644,6 +655,9 @@ class QuickMixdown(QObject):
         if self._preview is not None:
             self._preview.dirty = True
         with self._lock:
+            self._invalidate_match()
+            if self._reduction_index() is None:
+                self._listen_reduction = ''
             self._state.preset_name = '自定义' if preset_name is None else str(preset_name)
             if self._state.result:
                 self._state.result_stale = self._state.render_fingerprint() != self._result_fingerprint
@@ -653,14 +667,22 @@ class QuickMixdown(QObject):
 
     def _refresh_freshness(self):
         with self._lock:
+            match_changed = self._invalidate_match()
             if not self._state.result:
-                return
-            fresh = self._state.render_fingerprint() == self._result_fingerprint
-            stale = not fresh
-            changed = self._state.result_stale != stale
-            if changed:
+                changed = False
+            else:
+                fresh = self._state.render_fingerprint() == self._result_fingerprint
+                output = (self._export_receipt or {}).get('output') or {}
+                if fresh and 'mtime_ns' in output and 'bytes' in output:
+                    try:
+                        info = Path(self._state.result).stat()
+                        fresh = (info.st_mtime_ns, info.st_size) == (output['mtime_ns'], output['bytes'])
+                    except OSError:
+                        fresh = False
+                stale = not fresh
+                changed = self._state.result_stale != stale
                 self._state.result_stale = stale
-        if changed:
+        if changed or match_changed:
             self._recompute_and_emit()
 
     def _emit_eq_curve(self):
@@ -695,6 +717,11 @@ class QuickMixdown(QObject):
                 request = self._state.request(
                     Path(self._cache_dir) / 'live-unused.wav',
                     bypass_processing=bypass)
+                reduction_index = self._reduction_index() if not bypass else None
+                if reduction_index is not None:
+                    request['monitor_reduction_vocal'] = reduction_index
+                elif self._match['status'] == 'ready':
+                    request['monitor_trim_db'] = self._match['trim_db'][self._state.selection]
                 source_key = self._state.source_key()
             duration = self._player.duration()
             loop_range = self._preview_loop_range_ms(duration) if self._state.loop else (0, 0)
@@ -924,9 +951,110 @@ class QuickMixdown(QObject):
             with self._lock:
                 self._state.set_track(track_id, key, value)
                 self._state.message = '通道参数已更新。'
-            self._after_render_change()
+            self._after_render_change(during_drag=(key == 'deess_strength'))
         except Exception as error:
             self._notice(error)
+
+    def _reduction_index(self, track_id=None):
+        target = self._listen_reduction if track_id is None else track_id
+        if not target:
+            return None
+        vocals = self._state.active_vocals()
+        backing = self._state.instrumental()
+        solo = backing['solo'] or any(row['solo'] for row in vocals)
+        return next((index for index, row in enumerate(vocals)
+                     if row['id'] == target and row['deess_enabled'] and row['deess_strength'] > 0.0
+                     and not row['muted'] and (not solo or row['solo'])), None)
+
+    @Slot(str, bool)
+    def setReductionListen(self, track_id, enabled):
+        if not self._ensure_entered() or self._preview is None:
+            return
+        with self._lock:
+            if enabled:
+                if (not self._view.get('canPlay') or self._reduction_index(track_id) is None):
+                    self._notice('请先启用并试听这路歌声的柔化齿音。')
+                    return
+                self._listen_reduction = track_id
+                self._state.set_selection('B')
+                self._preview.select('after')
+            elif track_id == self._listen_reduction:
+                self._listen_reduction = ''
+            else:
+                return
+            self._preview.dirty = True
+            if enabled:
+                self._preview.set_playing(True)
+        self._schedule_preview(0)
+        self._recompute_and_emit()
+
+    def _match_signature(self):
+        return self._state.render_fingerprint(), self._state.preview_range_ms(duration_ms=0)
+
+    def _clear_match(self, status='off'):
+        active = self._match['status'] == 'ready'
+        self._match = {'status': status}
+        self._match_key = None
+        self._match_lane.cancel()
+        if active:
+            self._schedule_preview(0)
+
+    def _invalidate_match(self):
+        if self._match_key is not None and self._match_signature() != self._match_key:
+            self._clear_match('stale')
+            return True
+        return False
+
+    @Slot()
+    def toggleLoudnessMatch(self):
+        if not self._ensure_entered():
+            return
+        try:
+            with self._lock:
+                if self._match['status'] in ('ready', 'measuring'):
+                    self._clear_match()
+                elif self._view.get('canMatchLoudness'):
+                    self._start_loudness_match()
+            self._recompute_and_emit()
+        except (OSError, ValueError, TypeError) as error:
+            self._notice(error)
+
+    def _start_loudness_match(self):
+        key = self._match_signature()
+        if self._match_cache and self._match_cache[0] == key:
+            self._match_key, self._match = self._match_cache
+            self._schedule_preview(0)
+            return
+        cache_dir, dll = self._cache_dir, self._native_dll
+        output = Path(cache_dir) / 'level-match-unused.wav'
+        a = self._state.request(output, bypass_processing=True)
+        b = self._state.request(output)
+        self._match_key = key
+        self._match = {'status': 'measuring'}
+
+        def work(stop, _send):
+            return mixdown_export.compare_once(a, b, key[1], cache_dir, dll, stop.is_set)
+
+        def finish(result, error):
+            if self._closed:
+                return
+            with self._lock:
+                if self._match_key == key:
+                    if self._match_signature() != key:
+                        self._match = {'status': 'stale'}
+                        self._match_key = None
+                    elif error is not None:
+                        self._match = {'status': 'unavailable', 'reason': str(error)[-1200:]}
+                    else:
+                        self._match = result
+                        if result['status'] == 'ready':
+                            self._match_cache = key, result
+                            self._schedule_preview(0)
+            self._recompute_and_emit()
+
+        if not self._match_lane.start('mixdown-level-match', work, finish, label='正在测量当前选段的 A/B 响度…'):
+            self._match = {'status': 'off'}
+            self._match_key = None
 
     @Slot(str, 'QVariant')
     def setOption(self, name, value):
@@ -1025,6 +1153,9 @@ class QuickMixdown(QObject):
                 can_audition = bool(self._support_ready and self._player is not None
                                     and self._player.available and self._state.has_media())
             if self._preview is not None:
+                if self._listen_reduction:
+                    self._listen_reduction = ''
+                    self._preview.dirty = True
                 self._preview.select('before' if selection == 'A' else 'after')
                 if can_audition:
                     self._preview.set_playing(True)
@@ -1093,6 +1224,7 @@ class QuickMixdown(QObject):
             return False
         with self._lock:
             changed = self._state.set_preview_range(start, duration)
+            self._invalidate_match()
             loop_range = self._preview_loop_range_ms()
         if self._player is not None:
             self._player.set_loop_range(*loop_range)
@@ -1180,6 +1312,7 @@ class QuickMixdown(QObject):
                 'sample_rate': report.get('sample_rate'),
                 'duration_seconds': report.get('duration_seconds'),
                 'peak_dbfs': report.get('peak_dbfs'),
+                'quality': copy.deepcopy(report.get('quality') or {}),
                 'warnings': list(report.get('warnings') or []),
             },
         }
@@ -1470,7 +1603,10 @@ class QuickMixdown(QObject):
                                         include_width=include_width, include_tracks=include_tracks)
                 self._preset_plan = {'stamp': stamp, 'plan': plan, 'view': {
                     'key': key, 'name': label, 'changes': plan['changes'], 'adjusted': plan['adjusted'],
-                    'hasWidth': 'width' in document['payload'], 'hasTracks': 'track_template' in document['payload'],
+                    'hasWidth': 'width' in document['payload'],
+                    'hasTracks': 'track_template' in document['payload'] or 'vocal_deess' in document['payload'],
+                    'hasTrackTemplate': 'track_template' in document['payload'],
+                    'hasDeess': 'vocal_deess' in document['payload'],
                     'includeWidth': include_width, 'includeTracks': include_tracks,
                 }}
             self._recompute_and_emit()
@@ -1544,7 +1680,14 @@ class QuickMixdown(QObject):
                 raise ValueError('预设名称不能为空。')
             from mixdown_preset_documents import make_document
             with self._lock:
-                payload = self._state.processing_state()
+                state = self._state.preset_state()
+            payload = state['processing']
+            if any(row['deess_enabled'] or row['deess_strength'] != DEFAULT_DEESS_STRENGTH
+                   for row in state['tracks']):
+                payload['vocal_deess'] = [
+                    {'enabled': row['deess_enabled'], 'strength': row['deess_strength']}
+                    for row in state['tracks']
+                ]
             document = make_document(payload, name.strip(), include_width=include_width)
             revision = self._library.snapshot()['revision']
             result = self._library.put_document(document, expected_revision=revision)
@@ -1726,6 +1869,8 @@ class QuickMixdown(QObject):
             with self._lock:
                 old_has_media = self._state.has_media()
                 self._state.load_task_sources(job_path, sources)
+                self._clear_match()
+                self._listen_reduction = ''
                 self._state.preset_name = '自定义'
                 self._preset_plan = None
                 self._preset_undo = None
@@ -1756,6 +1901,7 @@ class QuickMixdown(QObject):
         if self._active_kind:
             self._worker.cancel()
         self._support_lane.close()
+        self._match_lane.close()
         if self._preview is not None:
             try:
                 self._preview.release()

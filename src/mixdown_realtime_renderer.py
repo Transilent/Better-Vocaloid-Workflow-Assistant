@@ -42,9 +42,20 @@ class _PreparedParameters:
     owner: object
     settings: Any
     options: Any
+    reduction_track: int | None = None
     effects: Any = None
     effects_structure: Any = None
     reverb_edc: Any = None
+
+
+def _reduction_track(request, settings):
+    index = request.get("monitor_reduction_vocal")
+    if index is None:
+        return None
+    if (type(index) is not int or not 0 <= index < len(settings.vocals)
+            or settings.vocals[index].deess_strength <= 0.0):
+        raise ValueError("只听削减需要一条已启用柔化齿音的歌声轨。")
+    return index
 
 MIN_STATEFUL_BLOCK_FRAMES = 4
 MONO_UPNMIX_DBFS = -3.010299956639812
@@ -333,6 +344,8 @@ def merge_telemetry_blocks(blocks: list[Mapping[str, Any]]) -> dict[str, Any] | 
         first.update(meter)
         first["audible"] = any(bool(value.get("audible", False)) for value, _ in values)
         first["gr_db"] = round(max(float(value.get("gr_db", 0.0)) for value, _ in values), 4)
+        if first.get("deess_gr_db") is not None:
+            first["deess_gr_db"] = max(value.get("deess_gr_db") or 0.0 for value, _ in values)
         tracks.append(first)
     spectrum = None
     for block in reversed(blocks):
@@ -450,6 +463,7 @@ class _BuiltEffects:
     compressor: Any
     reverb: Any
     reverb_stage: Any
+    deessers: tuple
     warnings: list[str]
 
 
@@ -597,7 +611,8 @@ class PreLimiterMixSession:
 
     def __init__(self, request: Mapping[str, Any], cache_dir: str | Path,
                  numpy: Any = None, soundfile: Any = None,
-                 pedalboard: Any = None, ffmpeg: str | Path | None = None):
+                 pedalboard: Any = None, ffmpeg: str | Path | None = None, *,
+                 cancel=None, measure_reverb=True):
         self._lock = threading.RLock()
         self._parameter_owner = object()
         if numpy is None:
@@ -637,6 +652,8 @@ class PreLimiterMixSession:
         self._pedalboard = pedalboard
         settings = backend._settings(request)
         options = audition._v3_options(request, settings)
+        self._reduction_track = _reduction_track(request, settings)
+        self._measure_reverb = bool(measure_reverb)
         if ffmpeg is None:
             ffmpeg = backend._ffmpeg_executable()
         else:
@@ -654,7 +671,7 @@ class PreLimiterMixSession:
             settings, width=0.0, uses_v3=True,
         )
         prepared = audition._prepare_sources(
-            preparation_settings, cache_root, ffmpeg, soundfile, None,
+            preparation_settings, cache_root, ffmpeg, soundfile, cancel,
         )
 
         decoder_identity = audition._decoder_identity(ffmpeg)
@@ -777,6 +794,8 @@ class PreLimiterMixSession:
             str(settings.reverb_profile),
             int(backend._predelay_frames(
                 options.reverb_predelay_ms, self.sample_rate)),
+            tuple(track.offset_seconds if track.deess_strength > 0.0 and audible else None
+                  for track, audible in zip(settings.vocals, backend._audibility(settings)[0])),
         )
 
     def _reverb_signature(self, reverb: Any, settings: Any, options: Any) -> tuple:
@@ -892,6 +911,14 @@ class PreLimiterMixSession:
                 self._pedalboard, settings, warnings,
             )
             reverb = audition._make_reverb(self._pedalboard, settings)
+            active = [audible and track.deess_strength > 0.0
+                      for audible, track in zip(backend._audibility(settings)[0], settings.vocals)]
+            deessers = (None,) * len(active)
+            if any(active):
+                from mixdown_deesser import VocalDeesser
+                deessers = tuple(
+                    VocalDeesser(self.sample_rate, self.channels, self._pedalboard) if enabled else None
+                    for enabled in active)
         except Exception as error:
             raise backend.MixdownError(
                 "无法创建 PRE-LIMITER 人声处理链。"
@@ -910,6 +937,7 @@ class PreLimiterMixSession:
             compressor=compressor,
             reverb=reverb,
             reverb_stage=reverb_stage,
+            deessers=deessers,
             warnings=warnings,
         )
 
@@ -925,9 +953,12 @@ class PreLimiterMixSession:
         self._compressor = built.compressor
         self._reverb = built.reverb
         self._reverb_stage = built.reverb_stage
+        self._deessers = built.deessers
         self._warnings = list(built.warnings)
         self._first = True
         self.effect_rebuild_count += 1
+        if not self._measure_reverb:
+            return
         if self._spectrum is None:
             self._spectrum = _LiveSpectrumAnalyzer(
                 self.sample_rate, self.channels, self._numpy
@@ -983,6 +1014,7 @@ class PreLimiterMixSession:
         vocal_block = numpy.zeros((frames, channels), dtype=numpy.float32)
         send_block = numpy.zeros((frames, channels), dtype=numpy.float32)
         backing_block = numpy.zeros((frames, channels), dtype=numpy.float32)
+        reduction_audio = None
         track_telemetry = ([
             {
                 "role": "vocal",
@@ -990,6 +1022,7 @@ class PreLimiterMixSession:
                 "peak_dbfs": backend.SILENCE_DBFS,
                 "rms_dbfs": backend.SILENCE_DBFS,
                 "gr_db": 0.0,
+                "deess_gr_db": 0.0 if self._deessers[index] is not None else None,
                 "audible": bool(audible),
                 "frames": int(frames),
                 "stage": "post_track_gain_pan_pre_vocal_fx",
@@ -1017,12 +1050,24 @@ class PreLimiterMixSession:
             destination_start = max(0, -source_start)
             source_index = max(0, source_start)
             count = min(frames - destination_start, source_frames - source_index)
-            if count <= 0:
+            deesser = self._deessers[track_index]
+            if count <= 0 and deesser is None:
                 continue
             track_block = numpy.zeros((frames, channels), dtype=numpy.float32)
-            track_block[destination_start:destination_start + count] = backend._read_frames(
-                handle, source_index, count, channels, numpy,
-            )
+            if count > 0:
+                track_block[destination_start:destination_start + count] = backend._read_frames(
+                    handle, source_index, count, channels, numpy,
+                )
+            if deesser is not None:
+                original = track_block
+                track_block, reduction_db = deesser.process(track_block, track.deess_strength)
+                if track_telemetry is not None:
+                    track_telemetry[track_index]["deess_gr_db"] = round(reduction_db, 3)
+                if self._reduction_track == track_index:
+                    reduction_audio = original - track_block
+                    reduction_audio *= numpy.float32(gain)
+                    reduction_audio[:, 0] *= numpy.float32(pan[0])
+                    reduction_audio[:, 1] *= numpy.float32(pan[1])
             track_block *= numpy.float32(gain)
             track_block[:, 0] *= numpy.float32(pan[0])
             track_block[:, 1] *= numpy.float32(pan[1])
@@ -1097,6 +1142,8 @@ class PreLimiterMixSession:
 
         mixed = numpy.add(vocal, backing_block, dtype=numpy.float32)
         mixed = backend._apply_width(mixed, float(settings.width), numpy)
+        if self._reduction_track is not None:
+            mixed = reduction_audio if reduction_audio is not None else numpy.zeros_like(mixed)
         if not numpy.isfinite(mixed).all():
             raise ValueError("PRE-LIMITER 混音产生了 NaN 或无穷大采样。")
         mixed = numpy.ascontiguousarray(mixed, dtype=numpy.float32)
@@ -1245,6 +1292,8 @@ class PreLimiterMixSession:
                 self._request_settings, self.sample_rate, has_reverb_send,
             ),
         )
+        if any(deesser is not None for deesser in self._deessers):
+            seconds = max(seconds, .45)
         return min(target, max(0, int(math.ceil(seconds * self.sample_rate))))
 
     def _warm_to(self, target: int, requested_preroll: int | None,
@@ -1331,6 +1380,7 @@ class PreLimiterMixSession:
             owner = self._parameter_owner
         settings = backend._settings(request)
         options = audition._v3_options(request, settings)
+        reduction_track = _reduction_track(request, settings)
         identity = self._source_identity(settings)
         if identity != source_paths:
             raise ValueError(
@@ -1350,10 +1400,10 @@ class PreLimiterMixSession:
         built = self._build_effects(settings, options) if rebuild else None
         reverb_edc = (
             self._prepare_reverb_edc(built, settings, options)
-            if built is not None else None
+            if built is not None and self._measure_reverb else None
         )
         return _PreparedParameters(
-            owner, settings, options, effects=built,
+            owner, settings, options, reduction_track=reduction_track, effects=built,
             effects_structure=structure, reverb_edc=reverb_edc,
         )
 
@@ -1367,6 +1417,7 @@ class PreLimiterMixSession:
             previous_position = int(self.position_frame)
             self._request_settings = settings
             self._options = options
+            self._reduction_track = prepared.reduction_track
             self.source_end_frame = self._source_end(settings)
             self.duration_frames = self._duration(settings)
             structure = self._effect_structure(options, settings)

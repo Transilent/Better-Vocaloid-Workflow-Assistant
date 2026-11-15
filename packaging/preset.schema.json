@@ -584,6 +584,29 @@
                 "reverb_send"
               ],
               "additionalProperties": false
+            },
+            "vocal_deess": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "strength": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "strength"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1,
+              "maxItems": 3
             }
           },
           "required": [

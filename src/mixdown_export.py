@@ -189,6 +189,7 @@ for extra in reversed(os.environ.get('VWA_MIXDOWN_EXTRA_PATHS', '').split(os.pat
 request_path = Path(sys.argv[1])
 cancel_path = Path(sys.argv[2])
 request = json.loads(request_path.read_text(encoding='utf-8'))
+mode = sys.argv[3]
 
 def cancel():
     return cancel_path.exists()
@@ -199,14 +200,18 @@ def emit(event):
     print(json.dumps(value, ensure_ascii=False), flush=True)
 
 try:
-    from audio_mixdown import render
-    parameters = inspect.signature(render).parameters
-    if 'progress' in parameters:
-        result = render(request, cancel=cancel, progress=emit)
+    if mode == 'compare':
+        from mixdown_loudness import compare_range
+        result = compare_range(**request, cancel=cancel, work_dir=request_path.parent)
     else:
-        result = render(request, cancel=cancel)
+        from audio_mixdown import render
+        parameters = inspect.signature(render).parameters
+        if 'progress' in parameters:
+            result = render(request, cancel=cancel, progress=emit)
+        else:
+            result = render(request, cancel=cancel)
     if not isinstance(result, dict):
-        raise TypeError('render did not return a dictionary')
+        raise TypeError('mixdown worker did not return a dictionary')
     print(json.dumps({'event': 'done', 'fraction': 1.0, 'report': result},
                      ensure_ascii=False), flush=True)
 except BaseException as error:
@@ -232,23 +237,39 @@ def render_once(request: Mapping[str, Any],
             raise ValueError('混音后端没有返回结果字典。')
         return dict(report)
 
-    root = Path(tempfile.mkdtemp(prefix='vwa-audio-render-'))
+    return _run_worker(request, check, progress, mode='export')
+
+
+def compare_once(before, after, bounds, cache_dir, dll_path, check):
+    start_ms, end_ms = bounds
+    return _run_worker({
+        'before': before, 'after': after, 'start_ms': start_ms, 'end_ms': end_ms,
+        'cache_dir': str(cache_dir), 'dll_path': str(dll_path),
+    }, check, mode='compare')
+
+
+def _run_worker(request, check, progress=None, *, mode):
+    check_cancel(check)
+    root = Path(tempfile.mkdtemp(prefix='vwa-audio-' + mode + '-'))
     request_path = root / 'request.json'
     cancel_path = root / 'cancel.flag'
     stderr_path = root / 'stderr.txt'
-    request_path.write_text(json.dumps(request, ensure_ascii=False), encoding='utf-8')
     process = None
     reader = None
     output_lines = queue.Queue()
     try:
+        request_path.write_text(json.dumps(request, ensure_ascii=False), encoding='utf-8')
+        flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        if mode == 'compare':
+            flags |= getattr(subprocess, 'BELOW_NORMAL_PRIORITY_CLASS', 0)
         with stderr_path.open('wb') as stderr:
             process = subprocess.Popen(
                 [str(child_python()), '-B', '-u', '-c', _RENDER_WORKER,
-                 str(request_path), str(cancel_path)],
+                 str(request_path), str(cancel_path), mode],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=stderr,
                 env=worker_environment(),
                 cwd=str(application_root() or Path(__file__).resolve().parents[1]),
-                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                creationflags=flags,
                 text=True, encoding='utf-8', errors='replace', bufsize=1)
 
             def read_output():
@@ -395,6 +416,7 @@ def execute(plan: ExportPlan, check: Callable[[], Any] | None = None,
 __all__ = [
     'ExportPlan',
     'SourceSnapshot',
+    'compare_once',
     'execute',
     'plan_export',
     'publish_without_overwrite',

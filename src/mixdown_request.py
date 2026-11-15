@@ -128,8 +128,8 @@ def processing_request_fields(
 ) -> dict[str, Any]:
     """Project one processing snapshot to renderer request fields.
 
-    A/B bypass affects only EQ, compression, and reverb.  Width remains the
-    active output setting exactly as it does in the established request path.
+    Bypass shared EQ, compression and reverb here. The track projection
+    handles vocal de-essing. Width stays active in both audition mixes.
     """
     if not isinstance(processing, Mapping):
         raise TypeError("processing must be an object")
@@ -181,7 +181,7 @@ def processing_request_fields(
     }
 
 
-def _vocal_request(row: Mapping[str, Any], index: int) -> dict[str, Any]:
+def _vocal_request(row: Mapping[str, Any], index: int, bypass: bool) -> dict[str, Any]:
     if not isinstance(row, Mapping):
         raise ValueError(f"vocals[{index}] must be an object")
     required = (
@@ -192,7 +192,7 @@ def _vocal_request(row: Mapping[str, Any], index: int) -> dict[str, Any]:
     if missing:
         raise ValueError(
             f"vocals[{index}] is missing {', '.join(missing)}")
-    return {
+    track = {
         "path": _path_text(row["path"], f"vocals[{index}].path"),
         "gain_db": _bounded_number(
             row["gain_db"], f"vocals[{index}].gain_db", -120.0, 24.0),
@@ -206,6 +206,11 @@ def _vocal_request(row: Mapping[str, Any], index: int) -> dict[str, Any]:
         "reverb_send": _bounded_number(
             row["reverb_send"], f"vocals[{index}].reverb_send", 0.0, 1.0),
     }
+    strength = _bounded_number(
+        row.get("deess_strength", 0.0), f"vocals[{index}].deess_strength", 0.0, 1.0)
+    if strength > 0.0 and not bypass:
+        track["deess_strength"] = strength
+    return track
 
 
 def build_mixdown_request(
@@ -226,7 +231,8 @@ def build_mixdown_request(
         raise ValueError("vocals must be a sequence of track objects")
     if not 1 <= len(vocals) <= MAX_VOCALS:
         raise ValueError(f"vocals must contain between 1 and {MAX_VOCALS} tracks")
-    tracks = [_vocal_request(row, index) for index, row in enumerate(vocals)]
+    bypass = _boolean(bypass_processing, "bypass_processing")
+    tracks = [_vocal_request(row, index, bypass) for index, row in enumerate(vocals)]
     result = {
         "vocals": tracks,
         "instrumental_path": _path_text(

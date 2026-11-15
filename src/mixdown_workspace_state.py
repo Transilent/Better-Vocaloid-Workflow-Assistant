@@ -19,6 +19,7 @@ from typing import Any
 import uuid
 
 from mixdown_contract import (
+    DEFAULT_DEESS_STRENGTH,
     DEFAULT_SAMPLE_RATE,
     EQ_BAND_TYPES,
     EQ_HIGHPASS_Q,
@@ -350,7 +351,8 @@ def meters_from_telemetry(telemetry: Mapping[str, Any], vocal_ids: Sequence[str]
     for index, identifier in enumerate(vocal_ids):
         row = by_key.get(('vocal', index), {})
         lanes.append({'id': str(identifier), 'rms': _finite_or_none(row.get('rms_dbfs')),
-                      'peak': _finite_or_none(row.get('peak_dbfs'))})
+                      'peak': _finite_or_none(row.get('peak_dbfs')),
+                      'deess': _finite_or_none(row.get('deess_gr_db'))})
     row = by_key.get(('backing', 0), {})
     lanes.append({'id': str(instrumental_id), 'rms': _finite_or_none(row.get('rms_dbfs')),
                   'peak': _finite_or_none(row.get('peak_dbfs'))})
@@ -542,7 +544,8 @@ class MixdownWorkspaceState:
         self.preset_name = '自定义'
         self._tracks = [
             {'id': 'vocal-1', 'label': '歌声 1', 'path': '', 'name': '', 'gain': 0.0,
-             'muted': False, 'solo': False, 'pan': 0.0, 'offset': 0.0, 'send': 1.0, '_artifact': None},
+             'muted': False, 'solo': False, 'pan': 0.0, 'offset': 0.0, 'send': 1.0,
+             'deess_enabled': False, 'deess_strength': DEFAULT_DEESS_STRENGTH, '_artifact': None},
             {'id': 'instrumental', 'label': '伴奏', 'path': '', 'name': '', 'gain': 0.0,
              'muted': False, 'solo': False, 'pan': 0.0, 'offset': 0.0, 'send': 0.0, '_artifact': None},
         ]
@@ -569,7 +572,8 @@ class MixdownWorkspaceState:
     @staticmethod
     def _public_track(row: Mapping[str, Any]) -> dict[str, Any]:
         return {key: copy.deepcopy(row.get(key)) for key in
-                ('id', 'label', 'path', 'name', 'gain', 'muted', 'solo', 'pan', 'offset', 'send')}
+                ('id', 'label', 'path', 'name', 'gain', 'muted', 'solo', 'pan', 'offset', 'send',
+                 'deess_enabled', 'deess_strength')}
 
     def set_job(self, job: Any) -> None:
         self.job = str(Path(job).resolve()) if job else ''
@@ -604,7 +608,8 @@ class MixdownWorkspaceState:
         self._tracks.insert(len(vocals), {
             'id': identifier, 'label': f'歌声 {number}', 'path': '', 'name': '',
             'gain': 0.0, 'muted': False, 'solo': False, 'pan': 0.0, 'offset': 0.0,
-            'send': 1.0, '_artifact': None,
+            'send': 1.0, 'deess_enabled': False,
+            'deess_strength': DEFAULT_DEESS_STRENGTH, '_artifact': None,
         })
         return identifier
 
@@ -632,6 +637,11 @@ class MixdownWorkspaceState:
             if row['id'] == 'instrumental':
                 raise ValueError('混响发送仅作用于歌声轨。')
             row['send'] = _clamp(value, 0.0, 1.0, 'send')
+        elif name in ('deess_enabled', 'deess_strength'):
+            if row['id'] == 'instrumental':
+                raise ValueError('柔化齿音仅作用于歌声轨。')
+            row[name] = (_boolean(value, name) if name == 'deess_enabled'
+                         else _clamp(value, 0.0, 1.0, name))
         elif name in ('muted', 'solo'):
             row[name] = _boolean(value, name)
         elif name == 'name':
@@ -688,6 +698,7 @@ class MixdownWorkspaceState:
                 'path': str(path), 'name': path.name, 'gain': 0.0,
                 'muted': False, 'solo': False, 'pan': 0.0, 'offset': 0.0,
                 'send': 0.0 if identifier == 'instrumental' else 1.0,
+                'deess_enabled': False, 'deess_strength': DEFAULT_DEESS_STRENGTH,
                 '_artifact': copy.deepcopy(dict(artifact)),
             })
         vocals = [row for row in rows if row['id'] != 'instrumental']
@@ -937,6 +948,9 @@ class MixdownWorkspaceState:
         for row, values in zip(vocals, tracks, strict=True):
             row['pan'] = _clamp(values['pan'], -1.0, 1.0, 'pan')
             row['send'] = _clamp(values.get('reverb_send', row['send']), 0.0, 1.0, 'reverb_send')
+            if 'deess_enabled' in values:
+                row['deess_enabled'] = _boolean(values['deess_enabled'], 'deess_enabled')
+                row['deess_strength'] = _clamp(values['deess_strength'], 0.0, 1.0, 'deess_strength')
 
     def processing_state(self) -> dict[str, Any]:
         return build_processing_state(
@@ -956,7 +970,10 @@ class MixdownWorkspaceState:
         vocals = [row for row in self._tracks if row['id'] != 'instrumental']
         return {
             'processing': self.processing_state(),
-            'tracks': [{'pan': float(row['pan']), 'reverb_send': float(row['send'])} for row in vocals],
+            'tracks': [{
+                'pan': float(row['pan']), 'reverb_send': float(row['send']),
+                'deess_enabled': row['deess_enabled'], 'deess_strength': row['deess_strength'],
+            } for row in vocals],
         }
 
     def write_preset_state(self, value: Mapping[str, Any]) -> None:
@@ -1019,6 +1036,7 @@ class MixdownWorkspaceState:
                 'path': row['path'], 'gain_db': float(row['gain']),
                 'offset_seconds': float(row['offset']), 'mute': bool(row['muted']), 'solo': bool(row['solo']),
                 'pan': float(row['pan']), 'reverb_send': float(row['send']),
+                'deess_strength': float(row['deess_strength']) if row['deess_enabled'] else 0.0,
             } for row in vocals],
             instrumental_path=backing['path'],
             output_path=Path(output_path).resolve(),

@@ -11,6 +11,8 @@
     "src/mixdown_eq_math.py",
     "src/mixdown_realtime_core.py",
     "src/mixdown_workspace_state.py",
+    "src/mixdown_deesser.py",
+    "src/mixdown_loudness.py",
     "src/quick_mixdown.py",
     "src/quick_mixdown_player.py",
     "src/quick_calibration.py",

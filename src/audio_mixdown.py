@@ -33,6 +33,7 @@ from typing import Any, Callable, Mapping
 import unicodedata
 
 import mixdown_contract as contract
+from mixdown_loudness import PreLimiterOverloads, measure_file
 
 
 PEDALBOARD_VERSION = "0.9.26"
@@ -93,6 +94,7 @@ class _VocalTrack:
     solo: bool = False
     pan: float = 0.0
     reverb_send: float = 1.0
+    deess_strength: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -359,7 +361,7 @@ def _uses_v3(request: Mapping[str, Any]) -> bool:
     if isinstance(vocals_raw, list):
         return any(
             isinstance(item, Mapping)
-            and any(name in item for name in ("mute", "solo", "pan", "reverb_send"))
+            and any(name in item for name in ("mute", "solo", "pan", "reverb_send", "deess_strength"))
             for item in vocals_raw
         )
     return False
@@ -441,6 +443,10 @@ def _vocal_tracks(request: Mapping[str, Any]) -> tuple[_VocalTrack, ...]:
                 reverb_send=_optional_number(
                     item, "reverb_send", 1.0, 0.0, 1.0,
                     label=f"{prefix}.reverb_send",
+                ),
+                deess_strength=_optional_number(
+                    item, "deess_strength", 0.0, 0.0, 1.0,
+                    label=f"{prefix}.deess_strength",
                 ),
             ))
         return tuple(tracks)
@@ -888,7 +894,7 @@ def _make_v3_processors(pedalboard: Any, settings: _Settings,
 def _emit_progress(callback: Callable[[dict[str, Any]], Any] | None, *,
                    phase: str, frames_done: int, frames_total: int,
                    tracks: list[dict[str, Any]], bus_peak: float,
-                   elapsed_ms: float) -> None:
+                   elapsed_ms: float, message: str = "") -> None:
     if callback is None:
         return
     total = max(1, int(frames_total))
@@ -900,6 +906,7 @@ def _emit_progress(callback: Callable[[dict[str, Any]], Any] | None, *,
         "tracks": tracks,
         "bus_peak": float(bus_peak),
         "elapsed_ms": float(elapsed_ms),
+        "message": message,
     }
     try:
         callback(event)
@@ -997,7 +1004,8 @@ def _render_mix(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
                 instrumental_path: Path, sample_rate: int, channels: int,
                 instrumental_frames: int, mix_path: Path, pedalboard: Any,
                 numpy: Any, soundfile: Any, cancel: Callable[[], Any] | None,
-                progress: Callable[[dict[str, Any]], Any] | None = None
+                progress: Callable[[dict[str, Any]], Any] | None = None, *,
+                overloads: PreLimiterOverloads | None = None
                 ) -> tuple[int, int, int | None, int | None, list[float], float,
                            float, list[float], float, float]:
     if len(vocal_inputs) != len(settings.vocals):
@@ -1209,6 +1217,8 @@ def _render_mix(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
                 if meter_hi > meter_lo:
                     measured_bus = mixed[meter_lo:meter_hi]
                     measured_peak = float(numpy.max(numpy.abs(measured_bus)))
+                    if overloads is not None:
+                        overloads.observe(measured_bus, measured_peak, start + meter_lo, numpy)
                     bus_peak = max(bus_peak, measured_peak)
                     bus_after_effects_peak = max(bus_after_effects_peak, measured_peak)
 
@@ -1251,7 +1261,8 @@ def _render_mix_v3(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
                    instrumental_path: Path, sample_rate: int, channels: int,
                    instrumental_frames: int, mix_path: Path, pedalboard: Any,
                    numpy: Any, soundfile: Any, cancel: Callable[[], Any] | None,
-                   progress: Callable[[dict[str, Any]], Any] | None = None
+                   progress: Callable[[dict[str, Any]], Any] | None = None, *,
+                   overloads: PreLimiterOverloads | None = None
                    ) -> tuple[int, int, int | None, int | None, list[float], float,
                               float, list[float], float, float]:
     """Render the v3 effects graph with a single send/return reverb instance."""
@@ -1330,6 +1341,12 @@ def _render_mix_v3(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
     vocal_gains = [10.0 ** (track.gain_db / 20.0) for track in settings.vocals]
     vocal_pans = [pan_gains(track.pan) for track in settings.vocals]
     vocal_sends = [float(track.reverb_send) for track in settings.vocals]
+    vocal_deess = [track.deess_strength for track in settings.vocals]
+    deessers = [None] * len(vocal_deess)
+    if any(vocal_deess):
+        from mixdown_deesser import VocalDeesser
+        deessers = [VocalDeesser(sample_rate, channels, pedalboard) if strength > 0.0 else None
+                    for strength in vocal_deess]
     instrumental_gain = 10.0 ** (settings.instrumental_db / 20.0)
     instrumental_pans = pan_gains(settings.instrumental_pan)
     tail_threshold = 10.0 ** (TAIL_FLOOR_DBFS / 20.0)
@@ -1407,6 +1424,9 @@ def _render_mix_v3(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
                         ] = _read_frames(
                             handle, source_index, vocal_count, channels, numpy
                         )
+                    deesser = deessers[track_index]
+                    if deesser is not None:
+                        track_block, _ = deesser.process(track_block, vocal_deess[track_index])
                     track_block *= numpy.float32(gain)
                     if channels == 2:
                         track_block[:, 0] *= numpy.float32(track_pan[0])
@@ -1507,6 +1527,8 @@ def _render_mix_v3(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
                 if meter_hi > meter_lo:
                     measured_bus = mixed[meter_lo:meter_hi]
                     measured_peak = float(numpy.max(numpy.abs(measured_bus)))
+                    if overloads is not None:
+                        overloads.observe(measured_bus, measured_peak, start + meter_lo, numpy)
                     bus_peak = max(bus_peak, measured_peak)
                     bus_after_effects_peak = max(bus_after_effects_peak, measured_peak)
 
@@ -1706,12 +1728,13 @@ def render(request: Mapping[str, Any], cancel: Callable[[], Any] | None = None,
 
         premix = temp_root / "premix-f32.wav"
         render_function = _render_mix_v3 if settings.uses_v3 else _render_mix
+        overloads = PreLimiterOverloads(sample_rate)
         (base_frames, full_frames, preview_start, preview_duration,
          vocal_peaks, instrumental_peak, bus_peak, track_after_peaks,
          bus_after_effects_peak, gr_db_p95) = render_function(
             settings, vocal_inputs, instrumental_float, sample_rate, channels,
             instrumental_info.frames, premix, pedalboard, numpy, soundfile, cancel,
-            progress=progress,
+            progress=progress, overloads=overloads,
         )
 
         if preview_start is None:
@@ -1740,6 +1763,20 @@ def render(request: Mapping[str, Any], cancel: Callable[[], Any] | None = None,
             staged, sample_rate, channels, expected_frames, soundfile, numpy, cancel
         )
         _check_cancel(cancel)
+        _emit_progress(
+            progress, phase="measuring", frames_done=expected_frames, frames_total=expected_frames,
+            tracks=[], bus_peak=_amplitude_to_dbfs(bus_peak), elapsed_ms=0.0,
+            message="正在测量 WAV 响度与真峰值…",
+        )
+        try:
+            quality = measure_file(staged, ffmpeg, temp_root / "loudness.log",
+                                   sample_rate, expected_frames, cancel)
+        except InterruptedError:
+            raise
+        except (MixdownError, OSError, ValueError) as error:
+            quality = {"status": "unavailable", "reason": str(error)[-1400:],
+                       "integrated_lufs": None, "true_peak_dbtp": None}
+        quality.update(sample_peak_dbfs=float(peak_dbfs), **overloads.report())
 
         for path, fingerprint in source_fingerprints.items():
             if (_source_fingerprint(path) != fingerprint
@@ -1766,6 +1803,7 @@ def render(request: Mapping[str, Any], cancel: Callable[[], Any] | None = None,
                 "solo": track.solo,
                 "pan": track.pan,
                 "reverb_send": float(track.reverb_send),
+                "deess_strength": float(track.deess_strength),
                 "audible": vocal_audible[index],
                 "peak_dbfs": track_peak,
                 "peak_after_effects_dbfs": _amplitude_to_dbfs(
@@ -1816,6 +1854,7 @@ def render(request: Mapping[str, Any], cancel: Callable[[], Any] | None = None,
             "output_path": str(output),
             "duration_seconds": expected_frames / float(sample_rate),
             "peak_dbfs": float(peak_dbfs),
+            "quality": quality,
             "sample_rate": sample_rate,
             "channels": channels,
             "tracks": tracks,

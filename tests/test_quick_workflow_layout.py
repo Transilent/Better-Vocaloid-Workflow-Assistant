@@ -48,7 +48,18 @@ def wait(label, condition, timeout=20):
         if condition():
             return
         QTest.qWait(18)
-    raise AssertionError((label, owner.route, owner.notice, mix.view.get('message'), pub.view.get('message'), warnings))
+    snapshot = mix._player.snapshot if mix._player is not None else {}
+    core = mix._player._core if mix._player is not None else None
+    raise AssertionError((label, owner.route, owner.notice, mix.view.get('message'), pub.view.get('message'),
+                          mix.view.get('loudnessMatch'), mix.view.get('listenReductionTrack'), mix.position,
+                          {'state': snapshot.get('state'), 'revision': snapshot.get('parameter_revision'),
+                           'play_intent': snapshot.get('play_intent'), 'last_control': snapshot.get('last_control_id'),
+                           'preview_dirty': mix._preview.dirty if mix._preview else None,
+                           'wants_play': mix._preview.play_intent if mix._preview else None,
+                           'timer': mix._preview_timer.isActive(), 'player_state': int(core.state()) if core else None,
+                           'pending': core._pending_parameters if core else None,
+                           'controls': [name for name, *_ in core._commands] if core else []},
+                          snapshot.get('native'), mix.meters.get('lanes'), warnings))
 
 
 def visual(name, required=True):
@@ -119,8 +130,13 @@ def inputs(folder):
     audio = {}
     for name, frequency, amplitude in [('主唱', 440, .55), ('和声一', 550, .19), ('和声二', 660, .15), ('伴奏', 220, .15)]:
         audio[name] = folder / (name + ' · 带中文的音轨.wav')
-        sf.write(audio[name], amplitude * envelope * (np.sin(2 * np.pi * frequency * times) +
-                                                       .22 * np.sin(2 * np.pi * 1600 * times)), rate)
+        signal = amplitude * envelope * (np.sin(2 * np.pi * frequency * times)
+                                         + .22 * np.sin(2 * np.pi * 1600 * times))
+        if name == '主唱':
+            start, end = round(rate * .32), round(rate * .61)
+            band = sum(np.sin(2 * np.pi * hz * times[start:end]) for hz in (5993, 7137, 8287))
+            signal[start:end] += .16 * np.hanning(end - start) * band
+        sf.write(audio[name], signal, rate)
     return audio
 
 
@@ -208,6 +224,26 @@ def mix_flow(folder, audio, job):
     escape()
     wait('return focus to the readout that opened the dialog',
          lambda: not dialog.property('visible') and visual(readout).hasActiveFocus())
+    vocal = vocal_ids[0]
+    control = point('mixdownDeess_' + vocal)
+    slider = visual('mixdownDeessStrength_' + vocal + 'Slider').mapToScene(QPointF(0, 0))
+    fader = visual('mixdownGain_' + vocal).mapToScene(QPointF(0, 0))
+    assert point('mixdownChooseSource_' + vocal).y() < control.y() < slider.y() < fader.y()
+    tap('mixdownDeess_' + vocal)
+    assert mix.tracks[0]['deess_enabled'] and mix.tracks[0]['deess_strength'] == .45
+    tap('mixdownDeessStrength_' + vocal + 'Slider', .68)
+    wait('strength slider edits only the selected vocal',
+         lambda: mix.tracks[0]['deess_strength'] > .5 and not mix.tracks[1]['deess_enabled'])
+    wait('audition prepared for reduction listening', lambda: mix.view['canSeek'])
+    tap('mixdownDeessListen_' + vocal)
+    wait('actual isolated reduction and a measured per-track amount',
+         lambda: mix.view['listenReductionTrack'] == vocal_ids[0] and mix.view['playing']
+         and (mix.meters['lanes'][0].get('deess') or 0) > 0.25)
+    capture('mixdown-deess-strip')
+    tap('mixdownDeessListen_' + vocal)
+    assert mix.view['listenReductionTrack'] == ''
+    tap('mixdownPlayPause')
+    wait('ordinary transport can pause after isolated monitoring', lambda: not mix.view['playing'])
     fader_tops = [visual('mixdownGain_' + key).mapToScene(QPointF(0, 0)).y()
                   for key in [*vocal_ids, 'instrumental']]
     assert max(fader_tops) - min(fader_tops) < 2, fader_tops
@@ -220,6 +256,24 @@ def mix_flow(folder, audio, job):
     wait('actual A/B controller selects dry', lambda: mix.view['selection'] == 'A' and mix.view['playing'])
     tap('mixdownAfter')
     wait('processed view is active', lambda: mix.view['selection'] == 'B' and mix.spectrum.get('source'))
+    for voice in vocal_ids[1:]:
+        mix.setTrack(voice, 'deess_enabled', True)
+    mix.setPreviewRange(0, 3)
+    mix.setLoop(True)
+    wait('comparison range is selected', lambda: mix.pendingSeekId == 0)
+    generation = mix._player.generation
+    before_match = mix._player.snapshot.get('native', {}).get('underrun_frames', 0)
+    tap('mixdownLoudnessMatch')
+    wait('background measurement matches the selection during playback',
+         lambda: mix.view['loudnessMatch']['status'] == 'ready' and mix.view['playing'], timeout=35)
+    assert mix._player.generation == generation
+    assert mix.view['loudnessMatch']['end_ms'] == 3000
+    assert max(mix.view['loudnessMatch']['trim_db'].values()) == 0
+    geometry['levelMatchUnderrunFrames'] = (
+        mix._player.snapshot.get('native', {}).get('underrun_frames', 0) - before_match)
+    mix.setPreviewRange(0, 4)
+    assert mix.view['loudnessMatch']['status'] == 'stale'
+    mix.setLoop(False)
     tap('mixdownPlayPause')
     wait('paused before scrub', lambda: not mix.view['playing'])
     latest_fraction = .46  # Still within the source signal, before the rendered reverb tail.
@@ -296,6 +350,9 @@ def mix_flow(folder, audio, job):
     wait('actual WAV exported and valid for independent video', lambda: mix.view.get('videoHandoffMode') == 'independent',
          timeout=35)
     assert output.is_file() and sf.info(output).frames > 100
+    assert mix.view['exportQuality']['status'] == 'measured'
+    assert 'LUFS' in visual('mixdownExportQuality').property('text')
+    assert 'dBTP' in visual('mixdownExportQuality').property('text')
     assert not mix.view['canRegister'] and visual('mixdownRegister', False) is None
     capture('mixdown-independent')
     digest = file_hash(output)
@@ -336,7 +393,7 @@ def mix_flow(folder, audio, job):
     wait('registered result changes the one primary action', lambda: mix.view['videoHandoffMode'] == 'registered')
     assert visual('mixdownComposeVideo').isEnabled() and visual('mixdownRegister', False) is None
     capture('mixdown-registered')
-    print(f'PASS {width}: 3 vocals, A/B, hover and superseded seek, exact EQ edits, focus, resident DSP, real export and registration')
+    print(f'PASS {width}: 3 vocals, de-essing, matched A/B, seek, exact EQ edits, focus, resident DSP, export quality and registration')
     return output
 
 

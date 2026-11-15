@@ -450,9 +450,11 @@ class QuickMixdownLifecycleTests(unittest.TestCase):
                 self.play_intent = bool(options['autoplay'])
                 self.ready, self.loading = True, False
                 self.commands.append(('open', options['key']))
+                self.last_request = request
                 return True
             def parameters(self, request, **options):
                 self.commands.append(('parameters', options['key']))
+                self.last_request = request
                 return True
             def seek(self, position, autoplay):
                 self.cursor = int(position)
@@ -486,6 +488,41 @@ class QuickMixdownLifecycleTests(unittest.TestCase):
             self.assertEqual(controller._state.selection, 'A')
             self.assertEqual(player.loop_range, (4000, 10000))
             self.assertEqual(player.commands[-1], ('open', 'before'))
+            captured = {}
+
+            def schedule(kind, work, finish, **options):
+                captured.update(work=work, finish=finish)
+                return True
+
+            with patch.object(controller, '_ensure_entered', return_value=True), \
+                    patch.object(controller._match_lane, 'start', side_effect=schedule):
+                controller.setTrack('vocal-1', 'deess_enabled', True)
+                controller.toggleLoudnessMatch()
+                self.assertEqual(controller.view['loudnessMatch']['status'], 'measuring')
+                captured['finish']({'status': 'ready', 'trim_db': {'A': -3.6, 'B': 0.0}}, None)
+                self.assertTrue(controller._refresh_preview())
+                self.assertEqual(player.last_request['monitor_trim_db'], -3.6)
+                self.assertNotIn('deess_strength', player.last_request['vocals'][0])
+                self.assertTrue(controller._state.request(self.output)['vocals'][0]['deess_strength'])
+                self.assertNotIn('monitor_trim_db', controller._state.request(self.output))
+                controller.setReductionListen('vocal-1', True)
+                original_cursor = player.cursor
+                self.assertTrue(controller._refresh_preview())
+                self.assertEqual(player.last_request['monitor_reduction_vocal'], 0)
+                self.assertNotIn('monitor_trim_db', player.last_request)
+                controller.setReductionListen('vocal-1', False)
+                self.assertTrue(controller._refresh_preview())
+                self.assertEqual(player.cursor, original_cursor)
+                self.assertNotIn('monitor_reduction_vocal', player.last_request)
+                controller.setPreviewRange(5, 6)
+                self.assertEqual(controller.view['loudnessMatch']['status'], 'stale')
+                self.assertTrue(controller._refresh_preview())
+                self.assertNotIn('monitor_trim_db', player.last_request)
+                controller.toggleLoudnessMatch()
+                self.assertEqual(controller.view['loudnessMatch']['status'], 'measuring')
+                controller.setPreviewRange(6, 6)
+                captured['finish']({'status': 'ready', 'trim_db': {'A': -6.1, 'B': 0.0}}, None)
+                self.assertEqual(controller.view['loudnessMatch']['status'], 'stale')
         finally:
             controller._preview_timer.stop()
             controller.close()
