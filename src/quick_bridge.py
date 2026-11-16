@@ -935,11 +935,6 @@ class QuickBridge(QObject):
         from lyrics_sources import from_file
         self._fetch_lyrics(voice, lambda: from_file(url.toLocalFile()), 'local' if voice == 'lead' else None)
 
-    @Slot(str)
-    def fetchLyrics(self, source):
-        from lyrics_sources import fetch
-        self._fetch_lyrics('lead', lambda: fetch(source), 'netease')
-
     def _fetch_lyrics(self, voice, lookup, mode):
         if self.workBusy:
             return

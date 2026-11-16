@@ -42,7 +42,7 @@ External stems must come from the same source and retain the full timeline from 
 
 Paste reference lyrics only. Spaces, punctuation, and line breaks are removed. Lead and backing lyrics are independent. Do not paste credits or a full description. Empty backing lyrics allow independent recognition.
 
-Use **歌词与音符** (Lyrics and notes) to search NetEase or import/edit local reference lyrics. This area also holds the extraction steps and subtitle-tool entry. Devices remain in the top toolbar's **设备设置**. Logs are available through **处理日志**.
+Use **歌词与语言** (Lyrics and language) to search NetEase or import and edit local reference lyrics. Devices remain in the top toolbar's **设备设置**. Logs are available through **处理日志**.
 
 ## Optional BS-RoFormer component
 
@@ -180,7 +180,7 @@ Open **设置与支持 → 缓存与磁盘** (Settings and support → Cache/dis
 
 WAV export uses the task's existing audio files. Compressed formats are stored separately. Continuing a task validates inputs and outputs before reuse; damaged exports are repaired individually. Reading source credits and the original cover does not download the full video. Video is retrieved when needed for frame capture or source-video access.
 
-In **歌词与音符** (Lyrics and notes), choose **NetEase matching** to search by song and artist or paste a song ID/link; the selected original lyrics fill the lead vocal by default. Choose **本地填写** (Local text) to import LRC/YRC/TXT reference lyrics or edit them directly. Empty fields use local recognition for that voice. Lead text is kept separately for each source, and backing lyrics are never overwritten by a NetEase lead match. Reference text is aligned against vocal audio; song timestamps do not move MIDI notes.
+In Preparation, enter the song name under **Lyrics and language**, then select **Search NetEase** or press Enter. Add an artist name to narrow the results. Choose a version by artist, album, and duration, preview its lyrics, and apply them to the lead vocal. Enter a song ID or link to preview that version directly. You can also import LRC/YRC/TXT or edit the lyrics directly. Empty fields use local recognition for that voice. Applying NetEase lyrics leaves the backing lyrics untouched. Reference text is aligned against vocal audio; song timestamps do not move MIDI notes.
 
 The **歌词转字幕** (Lyrics/subtitles) card has two inputs: **NetEase matching** uses an existing song lyric timeline, while **MIDI matching** uses lyric events and the MIDI tempo map. Select a vocal track when importing a multi-track MIDI. Each input keeps its own editable draft. Preview and adjust cue text/times and the overall offset before exporting UTF-8 SRT or WebVTT. Untimed plain text is rejected; its duration is never divided into estimated subtitles. Subtitle matching does not replace the transcription reference lyrics.
 

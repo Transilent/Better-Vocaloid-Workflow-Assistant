@@ -352,6 +352,7 @@ Item {
         id: sourceTools
         theme: page.theme
         controller: page.controller.preparationSources
+        onLyricQuerySubmitted: query => page.controller.setPreparationField("lyrics_lookup", query)
         onComponentsRequested: page.controller.navigate("components")
     }
 
@@ -887,9 +888,33 @@ Item {
                         title: page.controller.text("歌词与语言")
                         subtitle: page.controller.text("已有歌词可直接填入或导入；留空时按所选语言从人声音频识别。")
 
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Math.round(8 * page.theme.scale)
+
+                            ThemedTextField {
+                                id: lyricsLookupField
+                                objectName: "neteaseSong"
+                                Layout.fillWidth: true
+                                theme: page.theme
+                                text: page.field("lyrics_lookup")
+                                placeholderText: page.vwaTr("歌名、歌手、歌曲 ID 或链接")
+                                enabled: !page.editLocked && Boolean(page.field("recognize_lyrics"))
+                                onTextEdited: page.controller.setPreparationField("lyrics_lookup", text)
+                                onAccepted: sourceTools.openPane("lyrics", text)
+                            }
+                            UiButton {
+                                objectName: "browseNeteaseVersions"
+                                theme: page.theme
+                                text: page.vwaTr("搜索网易云")
+                                enabled: lyricsLookupField.enabled
+                                onClicked: sourceTools.openPane("lyrics", lyricsLookupField.text)
+                            }
+                        }
+
                         GridLayout {
                             Layout.fillWidth: true
-                            columns: page.narrow ? 1 : 3
+                            columns: page.narrow ? 1 : 2
                             columnSpacing: Math.round(9 * page.theme.scale)
                             rowSpacing: Math.round(7 * page.theme.scale)
 
@@ -915,38 +940,6 @@ Item {
                                 onClicked: {
                                     lyricsDialog.voice = "backing"
                                     lyricsDialog.open()
-                                }
-                            }
-
-                            RowLayout {
-                                Layout.fillWidth: true
-                                spacing: Math.round(6 * page.theme.scale)
-
-                                ThemedTextField {
-                                    id: lyricsLookupField
-                                    objectName: "neteaseSong"
-                                    Layout.fillWidth: true
-                                    theme: page.theme
-                                    text: page.field("lyrics_lookup")
-                                    placeholderText: page.controller.text("网易云歌曲 ID 或链接")
-                                    enabled: !page.editLocked && Boolean(page.field("recognize_lyrics"))
-                                    onTextEdited: page.controller.setPreparationField("lyrics_lookup", text)
-                                }
-
-                                UiButton {
-                                    objectName: "fetchLyrics"
-                                    theme: page.theme
-                                    text: page.controller.text("获取主唱歌词")
-                                    enabled: !page.editLocked && Boolean(page.field("recognize_lyrics"))
-                                        && String(page.field("lyrics_lookup")).trim().length > 0
-                                    onClicked: page.controller.fetchLyrics(String(page.field("lyrics_lookup")))
-                                }
-                                UiButton {
-                                    objectName: "browseNeteaseVersions"
-                                    theme: page.theme
-                                    text: page.vwaTr("查找版本…")
-                                    enabled: !page.editLocked && Boolean(page.field("recognize_lyrics"))
-                                    onClicked: sourceTools.openPane("lyrics")
                                 }
                             }
                         }

@@ -99,21 +99,28 @@ class QuickPreparationSources(QObject):
     def searchSongs(self, keyword):
         if self.worker.kind:
             return
+        keyword = keyword.strip()
+        if not keyword:
+            return
+        self._songs = []
+        self._reference = None
         try:
             identifier = lyrics_sources.song_id(keyword)
-        except ValueError:
+        except ValueError as error:
+            if keyword.lower().startswith(('http://', 'https://')):
+                self._message = str(error)
+                self.changed.emit()
+                return
             identifier = None
         if identifier:
             self.previewSong(identifier)
             return
-        self._songs = []
-        self._reference = None
-
         def accept(songs):
             self._songs = [{**song, 'label': f"{song['title']} · {song['artists']} · {song['album']} · "
                                             f"{int(song['duration']) // 60}:{int(song['duration']) % 60:02d}"}
                            for song in songs]
-            self._message = f'找到 {len(songs)} 个版本，请先选择并核对。'
+            self._message = ('选择版本并预览歌词后，再填入草稿。' if songs else
+                             '没找到歌曲。可试试「歌名 + 歌手」，或输入歌曲 ID／链接。')
 
         self._start('search', '正在查找歌曲版本…', lambda _stop, _send: lyrics_sources.search(keyword), accept)
 

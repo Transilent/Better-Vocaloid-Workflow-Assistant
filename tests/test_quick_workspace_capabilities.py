@@ -11,8 +11,9 @@ from unittest.mock import patch
 
 import numpy as np
 import soundfile as sf
-from PySide6.QtCore import QCoreApplication, QEvent, QMetaObject, QObject, QtMsgType, QUrl, qInstallMessageHandler
+from PySide6.QtCore import QCoreApplication, QEvent, QMetaObject, QObject, Qt, QtMsgType, QUrl, qInstallMessageHandler
 from PySide6.QtGui import QGuiApplication
+from PySide6.QtTest import QTest
 
 import artifact_cache
 from common import ROOT, atomic_json, file_hash, load_config, native_path
@@ -125,21 +126,67 @@ try:
         ]
         ref = lyrics_sources.LyricReference('春风', [Cue(0, .7, '春风')],
                 {'provider': 'netease', 'song_id': '456', 'format': 'lrc'})
-        click('browseNeteaseVersions')
+        bridge.setPreparationField('backing_lyrics', '和声原文')
+        bridge.setPreparationField('lyrics_lookup', '测试曲')
         with patch.object(lyrics_sources, 'search', return_value=song_rows) as search:
-            item('neteaseSearchQuery').setProperty('text', '测试曲')
-            click('searchNeteaseVersions')
-            wait('search exposes both distinct song versions', lambda: len(sources.view['songs']) == 2)
+            click('browseNeteaseVersions')
+            wait('the main NetEase field searches a title and shows both versions',
+                 lambda: len(sources.view['songs']) == 2)
             search.assert_called_once_with('测试曲')
+        versions = item('neteaseVersionChoice')
+        versions.forceActiveFocus()
+        QTest.keyClick(window, Qt.Key.Key_Space)
+        settle()
+        for _ in range(2):
+            if versions.property('highlightedIndex') == 1:
+                break
+            QTest.keyClick(window, Qt.Key.Key_Down)
+        check('the second result is highlighted', versions.property('highlightedIndex') == 1)
+        QTest.keyClick(window, Qt.Key.Key_Return)
+        wait('the second version is selected in the Quick dialog',
+             lambda: versions.property('currentValue') == '456')
         with patch.object(lyrics_sources, 'fetch', return_value=ref) as fetch:
-            sources.previewSong('456')
+            click('previewNeteaseLyrics')
             wait('preview shows selected version without applying lyrics', lambda: sources.view['preview'] == '春风')
             check('lyric preview reached the actual Quick dialog',
                   item('neteaseLyricsPreview').property('text') == '春风' and not bridge.state.draft.view['lyrics'])
             click('applyNeteaseLyrics')
             fetch.assert_called_once_with('456')
-        check('apply preserves lyric origin and draft version',
-              bridge.state.draft.view['lyrics'] == '春风' and bridge.state.draft.lyric_reference['origin']['song_id'] == '456')
+        check('apply stores the chosen version and preserves backing lyrics',
+              bridge.state.draft.view['lyrics'] == '春风'
+              and bridge.state.draft.lyric_reference['origin']['song_id'] == '456'
+              and bridge.state.draft.view['backing_lyrics'] == '和声原文')
+
+        main_lookup = item('neteaseSong')
+        bridge.setPreparationField('lyrics_lookup', 'https://music.163.com/#/song?id=123')
+        main_lookup.forceActiveFocus()
+        original = lyrics_sources.LyricReference('另一版本', [Cue(1, 2, '另一版本')],
+                {'provider': 'netease', 'song_id': '123', 'format': 'lrc'})
+        with patch.object(lyrics_sources, 'fetch', return_value=original) as fetch:
+            QTest.keyClick(window, Qt.Key.Key_Return)
+            wait('Enter on a song link previews it without reusing earlier results',
+                 lambda: not sources.view['busy'] and sources.view['previewId'] == '123'
+                 and not sources.view['songs'] and item('applyNeteaseLyrics').property('enabled'))
+            fetch.assert_called_once_with('123')
+            check('previewing the link does not replace the applied lyrics', bridge.state.draft.view['lyrics'] == '春风')
+        QMetaObject.invokeMethod(item('preparationSourcesDialog'), 'close')
+        settle()
+
+        bridge.openSubtitleTool()
+        click('importSubtitleNetease')
+        subtitle_sources = item('subtitleSourcesDialog')
+        subtitle_sources.findChild(QObject, 'neteaseSearchQuery').setProperty('text', '456')
+        with patch.object(lyrics_sources, 'fetch', return_value=ref):
+            assert QMetaObject.invokeMethod(subtitle_sources.findChild(QObject, 'searchNeteaseVersions'), 'click')
+            wait('subtitle mode previews the same provider independently', lambda: sources.view['canApply'])
+            assert QMetaObject.invokeMethod(subtitle_sources.findChild(QObject, 'applyNeteaseLyrics'), 'click')
+        check('using NetEase for subtitles does not change preparation',
+              bridge.subtitles.view['sourceKind'] == 'netease'
+              and bridge.state.draft.lyric_reference['origin']['song_id'] == '456'
+              and bridge.state.draft.view['backing_lyrics'] == '和声原文')
+        QMetaObject.invokeMethod(item('subtitleDialog'), 'close')
+        settle()
+
         bridge.setPreparationField('target', 'midi')
         bridge.setPreparationField('midi_backend', 'v1')
         bridge.setPreparationField('alignment_engine', 'tifa')

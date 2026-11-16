@@ -11,6 +11,7 @@ Dialog {
     required property QtObject theme
     required property QtObject controller
     signal componentsRequested()
+    signal lyricQuerySubmitted(string query)
     property string pane: "lyrics"
     property string lyricPurpose: "preparation"
     property string selectedSong: ""
@@ -26,15 +27,29 @@ Dialog {
     height: Math.min(parent.height - 48, Math.round((pane === "lyrics" ? 610 : pane === "download" ? 510 : 340) * theme.scale))
     padding: Math.round(15 * theme.scale)
 
-    function openPane(name) {
+    function openPane(name, initialQuery) {
         if (name === "lyrics" && !controller.selectLyricPurpose(lyricPurpose))
             return
         pane = name
+        if (name === "lyrics" && initialQuery !== undefined)
+            keyword.text = initialQuery.trim()
         open()
-        if (name === "download")
+        if (name === "lyrics" && initialQuery !== undefined && keyword.text)
+            submitLyrics()
+        else if (name === "download")
             controller.refreshDownloadSettings()
         else if (name === "check")
             controller.checkComponents()
+    }
+    onOpened: if (pane === "lyrics" && keyword.enabled) keyword.forceActiveFocus()
+
+    function submitLyrics() {
+        const query = keyword.text.trim()
+        if (!query || view.busy)
+            return
+        selectedSong = ""
+        lyricQuerySubmitted(query)
+        controller.searchSongs(query)
     }
     component Body: Text {
         Layout.fillWidth: true
@@ -56,20 +71,17 @@ Dialog {
                     id: keyword
                     objectName: "neteaseSearchQuery"
                     Layout.fillWidth: true
-                    placeholderText: dialog.vwaTr("歌名、歌手或歌曲链接")
+                    placeholderText: dialog.vwaTr("歌名、歌手、歌曲 ID 或链接")
                     enabled: !dialog.view.busy
                     selectByMouse: true
-                    onAccepted: dialog.controller.searchSongs(text)
+                    onAccepted: dialog.submitLyrics()
                 }
                 UiButton {
                     objectName: "searchNeteaseVersions"
                     theme: dialog.theme
                     text: dialog.vwaTr("查找")
                     enabled: !dialog.view.busy && !!keyword.text.trim()
-                    onClicked: {
-                        dialog.selectedSong = ""
-                        dialog.controller.searchSongs(keyword.text)
-                    }
+                    onClicked: dialog.submitLyrics()
                 }
             }
             RowLayout {
@@ -82,6 +94,8 @@ Dialog {
                     model: dialog.view.songs
                     valueRole: "id"
                     currentIndex: model.findIndex(row => row.id === dialog.selectedSong)
+                    fieldLabel: dialog.vwaTr("歌曲版本")
+                    displayText: currentIndex < 0 ? dialog.vwaTr("选择歌曲版本") : currentText
                     enabled: model.length > 0 && !dialog.view.busy
                     onActivated: dialog.selectedSong = currentValue
                 }
@@ -206,7 +220,7 @@ Dialog {
         Body {
             visible: !!dialog.view.message
             color: dialog.theme.text
-            text: dialog.view.message
+            text: dialog.vwaTr(dialog.view.message)
         }
         RowLayout {
             Layout.fillWidth: true
