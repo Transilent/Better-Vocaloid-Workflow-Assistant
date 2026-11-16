@@ -47,6 +47,10 @@ def check_at(viewport, scale, directory):
         raise AssertionError((name, label, viewport))
 
     try:
+        # A saved target must be shown by the ComboBox before the first user
+        # edit, not left at the model's first item.
+        QTest.qWait(120)
+        assert find(name='workTarget').property('currentValue') == bridge.preparation['target']
         bridge.chooseMusic(QUrl.fromLocalFile(str(source)))
         bridge.setPreparationField('output_directory', str(directory / 'tasks'))
         assert bridge.preparation['project_formats'] == []

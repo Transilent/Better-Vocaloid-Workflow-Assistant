@@ -68,6 +68,20 @@ Item {
         return prep[name] === undefined || prep[name] === null ? "" : prep[name]
     }
 
+    function indexInModel(options, value) {
+        // Passing model explicitly makes each currentIndex binding depend on
+        // the model, so it cannot be evaluated against an empty first frame.
+        if (!options || options.length === undefined)
+            return 0
+        for (let index = 0; index < options.length; ++index) {
+            const candidate = options[index] && options[index].value !== undefined
+                ? options[index].value : options[index]
+            if (String(candidate) === String(value))
+                return index
+        }
+        return 0
+    }
+
     function listHas(values, value) {
         if (!values || values.length === undefined)
             return false
@@ -1029,7 +1043,7 @@ Item {
                                     ]
                                     textRole: "label"
                                     valueRole: "value"
-                                    currentIndex: Math.max(0, indexOfValue(page.field("language")))
+                                    currentIndex: page.indexInModel(model, page.field("language"))
                                     enabled: !page.editLocked
                                     onActivated: page.controller.setPreparationField("language", currentValue)
                                 }
@@ -1055,7 +1069,7 @@ Item {
                                     ]
                                     textRole: "label"
                                     valueRole: "value"
-                                    currentIndex: Math.max(0, indexOfValue(page.field("zh_lyric_mode")))
+                                    currentIndex: page.indexInModel(model, page.field("zh_lyric_mode"))
                                     enabled: !page.editLocked && Boolean(page.field("recognize_lyrics"))
                                     onActivated: page.controller.setPreparationField("zh_lyric_mode", currentValue)
                                 }
@@ -1126,7 +1140,7 @@ Item {
                             ]
                             textRole: "label"
                             valueRole: "value"
-                            currentIndex: Math.max(0, indexOfValue(page.roformerSelected ? "roformer" : page.field("voice_mode")))
+                            currentIndex: page.indexInModel(model, page.roformerSelected ? "roformer" : page.field("voice_mode"))
                             enabled: !page.editLocked
                             onActivated: page.chooseVoiceMode(currentValue)
                         }
@@ -1178,7 +1192,7 @@ Item {
                                 ]
                                 textRole: "label"
                                 valueRole: "value"
-                                currentIndex: Math.max(0, indexOfValue(page.field("separator_model")))
+                                currentIndex: page.indexInModel(model, page.field("separator_model"))
                                 enabled: !page.editLocked
                                 onActivated: page.chooseSeparatorModel(currentValue)
                             }
@@ -1211,7 +1225,7 @@ Item {
                                     ]
                                     textRole: "label"
                                     valueRole: "value"
-                                    currentIndex: Math.max(0, indexOfValue(page.field("roformer_device")))
+                                    currentIndex: page.indexInModel(model, page.field("roformer_device"))
                                     enabled: !page.editLocked
                                     onActivated: page.controller.setPreparationField("roformer_device", currentValue)
                                 }
@@ -1236,7 +1250,7 @@ Item {
                                     ]
                                     textRole: "label"
                                     valueRole: "value"
-                                    currentIndex: Math.max(0, indexOfValue(page.field("separation_flow")))
+                                    currentIndex: page.indexInModel(model, page.field("separation_flow"))
                                     enabled: !page.editLocked
                                     onActivated: page.controller.setPreparationField("separation_flow", currentValue)
                                 }
@@ -1346,7 +1360,7 @@ Item {
                             ]
                             textRole: "label"
                             valueRole: "value"
-                            currentIndex: Math.max(0, indexOfValue(page.field("target")))
+                            currentIndex: page.indexInModel(model, page.field("target"))
                             enabled: !page.editLocked
                             onActivated: page.controller.setPreparationField("target", currentValue)
                         }
@@ -1571,7 +1585,7 @@ Item {
                                     ]
                                     textRole: "label"
                                     valueRole: "value"
-                                    currentIndex: Math.max(0, indexOfValue(page.field("separation_device")))
+                                    currentIndex: page.indexInModel(model, page.field("separation_device"))
                                     enabled: !page.editLocked
                                     onActivated: page.controller.setPreparationField("separation_device", currentValue)
                                 }
@@ -1596,7 +1610,7 @@ Item {
                                     ]
                                     textRole: "label"
                                     valueRole: "value"
-                                    currentIndex: Math.max(0, indexOfValue(page.field("midi_device")))
+                                    currentIndex: page.indexInModel(model, page.field("midi_device"))
                                     enabled: !page.editLocked
                                     onActivated: page.controller.setPreparationField("midi_device", currentValue)
                                 }
@@ -1628,7 +1642,7 @@ Item {
                                     ]
                                     textRole: "label"
                                     valueRole: "value"
-                                    currentIndex: Math.max(0, indexOfValue(page.field("dml_adapter")))
+                                    currentIndex: page.indexInModel(model, page.field("dml_adapter"))
                                     enabled: !page.editLocked
                                     onActivated: page.controller.setPreparationField("dml_adapter", currentValue)
                                 }
@@ -1656,7 +1670,7 @@ Item {
                                     ]
                                     textRole: "label"
                                     valueRole: "value"
-                                    currentIndex: Math.max(0, indexOfValue(Number(page.field("cpu_threads"))))
+                                    currentIndex: page.indexInModel(model, Number(page.field("cpu_threads")))
                                     enabled: !page.editLocked
                                     onActivated: page.controller.setPreparationField("cpu_threads", currentValue)
                                 }
@@ -1681,7 +1695,7 @@ Item {
                                     ]
                                     textRole: "label"
                                     valueRole: "value"
-                                    currentIndex: Math.max(0, indexOfValue(page.field("midi_backend")))
+                                    currentIndex: page.indexInModel(model, page.field("midi_backend"))
                                     enabled: !page.editLocked
                                     onActivated: page.controller.setPreparationField("midi_backend", currentValue)
                                 }
@@ -1706,7 +1720,7 @@ Item {
                                     ]
                                     textRole: "label"
                                     valueRole: "value"
-                                    currentIndex: Math.max(0, indexOfValue(page.field("alignment_engine")))
+                                    currentIndex: page.indexInModel(model, page.field("alignment_engine"))
                                     enabled: !page.editLocked
                                     onActivated: page.controller.setPreparationField("alignment_engine", currentValue)
                                 }
@@ -1732,7 +1746,7 @@ Item {
                                     ]
                                     textRole: "label"
                                     valueRole: "value"
-                                    currentIndex: Math.max(0, indexOfValue(Number(page.field("midi_steps"))))
+                                    currentIndex: page.indexInModel(model, Number(page.field("midi_steps")))
                                     enabled: !page.editLocked
                                     onActivated: page.controller.setPreparationField("midi_steps", currentValue)
                                 }
