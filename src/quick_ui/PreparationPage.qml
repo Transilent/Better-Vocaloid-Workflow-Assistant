@@ -78,19 +78,6 @@ Item {
         return false
     }
 
-    function toggleInList(values, value, checked) {
-        const result = []
-        if (values && values.length !== undefined) {
-            for (let index = 0; index < values.length; ++index) {
-                if (String(values[index]) !== String(value))
-                    result.push(values[index])
-            }
-        }
-        if (checked)
-            result.push(value)
-        return result
-    }
-
     function chooseVoiceMode(value) {
         if (value === "roformer") {
             controller.setPreparationField("separator_model", "roformer")
@@ -1413,12 +1400,8 @@ Item {
                                             enabled: !page.editLocked
                                             ToolTip.visible: hovered
                                             ToolTip.text: modelData.hint
-                                            onToggled: {
-                                                if (checked !== page.listHas(page.field("project_formats"), modelData.value))
-                                                    page.controller.setPreparationField(
-                                                        "project_formats",
-                                                        page.toggleInList(page.field("project_formats"), modelData.value, checked))
-                                            }
+                                            onToggled: page.controller.setPreparationExportFormat(
+                                                "project_formats", modelData.value, checked)
                                         }
                                     }
                                 }
@@ -1449,12 +1432,8 @@ Item {
                                             text: modelData.toUpperCase()
                                             checked: page.listHas(page.field("audio_formats"), modelData)
                                             enabled: !page.editLocked
-                                            onToggled: {
-                                                if (checked !== page.listHas(page.field("audio_formats"), modelData))
-                                                    page.controller.setPreparationField(
-                                                        "audio_formats",
-                                                        page.toggleInList(page.field("audio_formats"), modelData, checked))
-                                            }
+                                            onToggled: page.controller.setPreparationExportFormat(
+                                                "audio_formats", modelData, checked)
                                         }
                                     }
                                 }

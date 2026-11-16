@@ -252,6 +252,15 @@ class PreparationDraft:
             return replace(self, fields=fields, lyric_reference=None, revision=self.revision + 1)
         return replace(self, fields=fields, revision=self.revision + 1)
 
+    def with_export_format(self, field, format_id, selected):
+        """Apply one checkbox intent to the current draft's format selection."""
+        if field not in _FORMATS or format_id not in _FORMATS[field] or type(selected) is not bool:
+            raise ValueError('导出格式无效。')
+        values = [value for value in self.fields[field] if value != format_id]
+        if selected:
+            values.append(format_id)
+        return self.edit(field, values)
+
     def set_stem(self, key, path):
         if key not in _STEMS:
             raise ValueError('分轨名称无效。')

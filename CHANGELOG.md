@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fix Preparation format checkboxes so project and audio selections are saved and included in new tasks ([#3](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues/3)).
+
 ## 2.0.0 — 2026-11-13
 
 - Move the Windows desktop to a Qt Quick workbench with continuous preparation, tuning and mixing workflows. Add guided onboarding, startup update notices, and Settings and Support with QQ group 490619616.

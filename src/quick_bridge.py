@@ -852,6 +852,11 @@ class QuickBridge(QObject):
     def setPreparationField(self, name, value):
         self._update_draft(lambda: self.state.set_preparation_field(name, value), persist=True)
 
+    @Slot(str, str, bool)
+    def setPreparationExportFormat(self, field, format_id, selected):
+        self._update_draft(lambda: self.state.set_draft(
+            self.state.draft.with_export_format(field, format_id, selected)), persist=True)
+
     @Slot(str)
     def setPreparationMusicPath(self, path):
         try:
