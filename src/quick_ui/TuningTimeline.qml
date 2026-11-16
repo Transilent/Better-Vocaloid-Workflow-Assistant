@@ -21,6 +21,8 @@ Item {
     readonly property string sourceKey: String(view.source || "") + "|" + String(view.sha256 || "")
     readonly property bool hasSource: !!view.source
     readonly property bool multi: view.mode === "multi"
+    readonly property bool scoreEditable: hasSource && !multi && !view.busy && view.scoreEditReason === ""
+    readonly property bool noteTool: scoreEditable && !!view.noteTool
     readonly property string activeTrack: String(view.activeTrack || "")
     readonly property string selectedTrackKey: JSON.stringify(view.selectedTracks || [])
     readonly property var targetTracks: resolveTracks()
@@ -68,8 +70,9 @@ Item {
     readonly property int visibleNoteCount: visibleNotes.length
     readonly property var focusedNote: visibleNotes.find(entry =>
         entry.trackId === focusedTrackId && entry.id === focusedNoteId)
-    readonly property var hoveredNote: scoreMouse.containsMouse
-        ? noteAt(scoreMouse.mouseX + plotLeft, scoreMouse.mouseY + plotTop) : null
+    readonly property var hoveredBox: scoreMouse.containsMouse && !noteGesture
+        ? noteBoxAt(scoreMouse.mouseX + plotLeft, scoreMouse.mouseY + plotTop) : null
+    readonly property var hoveredNote: hoveredBox ? hoveredBox.note : null
     readonly property string instructions: "点击音符选段，拖拽选择时间。左右键找音符，回车选择；上下键或键轨滚轮移动音高。滚轮缩放，Shift 加滚轮平移。"
 
     property real topRow: 63
@@ -82,12 +85,17 @@ Item {
     property real pressTime: Number.NaN
     property real dragTime: Number.NaN
     property var hoveredLaneNote: null
+    property var noteGesture: null
+    property var noteGhost: null
+    property var lyricNote: null
 
     activeFocusOnTab: hasSource
     Accessible.role: Accessible.Pane
     Accessible.name: multi ? timeline.vwaTr("多轨泳道与焦点钢琴卷帘") : timeline.vwaTr("单轨钢琴卷帘")
     Accessible.description: (multi ? timeline.vwaTr("上方泳道只切换焦点，勾选批量目标不会随焦点变化。") : "")
-        + (focusedNote ? noteDescription(focusedNote) + "。" : "") + instructions
+        + (focusedNote ? noteDescription(focusedNote) + "。" : "")
+        + (scoreEditable ? vwaTr("双击音符或按 F2 改词。") + " " : "")
+        + (noteTool ? vwaTr("拖音符改变位置或音高，拖右端改变时长。") + " " : "") + instructions
 
     function numberOr(value, fallback) {
         if (value === undefined || value === null || value === "")
@@ -143,7 +151,8 @@ Item {
             result.push({ id: String(note.id), trackId: trackId,
                 lane: lane || {track: findTrack(trackId), index: trackOrder(trackId), order: 0},
                 lyric: String(note.lyric || "").trim(), pitch: pitch, start: start, end: end,
-                readOnlyReason: String(note.readOnlyReason || "") })
+                readOnlyReason: String(note.readOnlyReason || ""), lyricReason: String(note.lyricReason || ""),
+                timingReason: String(note.timingReason || ""), pitchReason: String(note.pitchReason || "") })
         }
         return result.sort((a, b) => a.start - b.start || a.lane.order - b.lane.order
             || a.pitch - b.pitch || a.end - b.end || a.id.localeCompare(b.id))
@@ -209,7 +218,7 @@ Item {
         return {all: Array.from(all).sort(byTime), tracks: tracks}
     }
 
-    function snapTime(seconds, modifiers, trackId) {
+    function snapTime(seconds, modifiers, trackId, ignore) {
         if (!view.snapEnabled || (modifiers & Qt.AltModifier))
             return seconds
         const edges = trackId ? noteEdges.tracks[trackId] || [] : noteEdges.all
@@ -224,9 +233,14 @@ Item {
             else
                 right = mid
         }
-        const a = edges[Math.max(0, left - 1)]
-        const b = edges[Math.min(edges.length - 1, left)]
-        const nearest = Math.abs(seconds - a) <= Math.abs(seconds - b) ? a : b
+        let a = left - 1
+        let b = left
+        function ignored(edge) { return ignore && (edge === ignore.start || edge === ignore.end) }
+        while (a >= 0 && ignored(edges[a])) --a
+        while (b < edges.length && ignored(edges[b])) ++b
+        const before = a >= 0 ? edges[a] : Infinity
+        const after = b < edges.length ? edges[b] : Infinity
+        const nearest = Math.abs(seconds - before) <= Math.abs(seconds - after) ? before : after
         return Math.abs(nearest - seconds) * plotWidth / visibleSpan <= 9 * scale ? nearest : seconds
     }
 
@@ -300,10 +314,12 @@ Item {
     }
 
     function noteDescription(note) {
-        return (note.lyric || "空歌词") + " · " + pitchName(note.pitch)
+        const reason = noteTool ? note.timingReason || note.pitchReason : note.lyricReason
+        return (note.lyric || vwaTr("空歌词")) + " · " + pitchName(note.pitch)
             + " · " + String(note.lane.track.name || note.trackId) + "\n"
             + formatTime(note.start, 3) + "–" + formatTime(note.end, 3)
-            + (note.readOnlyReason ? "\n" + vwaTr(note.readOnlyReason) : "")
+            + (note.readOnlyReason || (scoreEditable && reason)
+                ? "\n" + vwaTr(note.readOnlyReason || reason) : "")
     }
 
     function formatTime(value, decimals) {
@@ -395,13 +411,29 @@ Item {
         return result
     }
 
-    function noteAt(x, y) {
+    function noteBoxAt(x, y) {
         for (let i = noteRects.length - 1; i >= 0; --i) {
             const box = noteRects[i]
             if (x >= box.x && x < box.x + box.width && y >= box.y && y < box.y + box.height)
-                return box.note
+                return box
         }
         return null
+    }
+
+    function resizeHit(box, x) {
+        return box && !box.note.timingReason && box.note.end <= visibleEnd
+            && box.width >= 9 * scale && x >= box.x + box.width - Math.min(box.width / 3, 9 * scale)
+    }
+
+    function dragRequest(gesture, x, y, modifiers) {
+        const note = gesture.note
+        const dx = x - pressX
+        const horizontal = !note.timingReason && Math.abs(dx) >= 2 * scale
+        const edge = gesture.action === "resize" ? note.end : note.start
+        const seconds = horizontal ? snapTime(edge + dx * visibleSpan / plotWidth, modifiers, note.trackId, note) : edge
+        const pitch = gesture.action === "move" && !note.pitchReason
+            ? clamp(note.pitch - Math.round((y - pressY) / pitchRowHeight), 0, 127) : note.pitch
+        return {seconds: seconds, pitch: pitch, horizontal: horizontal}
     }
 
     function movePitch(rows) {
@@ -467,6 +499,38 @@ Item {
         controller.selectSpan(note.start, note.end)
     }
 
+    function openLyric(note) {
+        if (!scoreEditable || !note || note.trackId !== activeTrack || note.lyricReason)
+            return false
+        clearGesture()
+        if (note.start < visibleStart || note.start >= visibleEnd)
+            controller.setViewport(note.start - visibleSpan * 0.15, visibleSpan)
+        selectNote(note)
+        lyricNote = note
+        lyricInput.text = note.lyric
+        lyricInput.forceActiveFocus(Qt.OtherFocusReason)
+        lyricInput.selectAll()
+        return true
+    }
+
+    function closeLyric() {
+        if (lyricNote)
+            lyricNote = null
+    }
+
+    function finishLyric(advance) {
+        if (!lyricNote || lyricInput.inputMethodComposing)
+            return
+        const noteId = lyricNote.id
+        if (!controller.editNoteLyric(noteId, lyricInput.text))
+            return
+        const next = advance ? controller.nextEditableLyric(noteId) : null
+        if (!next || !next.id || !openLyric(next)) {
+            closeLyric()
+            timeline.forceActiveFocus(Qt.OtherFocusReason)
+        }
+    }
+
     function zoomAt(factor, anchorTime) {
         const next = clamp(visibleSpan * factor, Math.min(fullSpan, 0.5), fullSpan)
         const ratio = clamp((anchorTime - visibleStart) / visibleSpan, 0, 1)
@@ -478,6 +542,8 @@ Item {
     }
 
     function clearGesture() {
+        noteGesture = null
+        noteGhost = null
         pressX = -1
         pressY = -1
         pressTime = Number.NaN
@@ -494,6 +560,8 @@ Item {
     }
 
     onSourceKeyChanged: {
+        closeLyric()
+        clearGesture()
         focusedTrackId = ""
         focusedNoteId = ""
         centerOnSource = true
@@ -508,7 +576,17 @@ Item {
     onLaneTracksChanged: score.requestPaint()
     onNoteRectsChanged: score.requestPaint()
     onStyleSpansChanged: score.requestPaint()
-    onActiveTrackChanged: score.requestPaint()
+    onActiveTrackChanged: {
+        closeLyric()
+        clearGesture()
+        score.requestPaint()
+    }
+    onScoreEditableChanged: if (!scoreEditable) closeLyric()
+    onNoteToolChanged: {
+        clearGesture()
+        score.requestPaint()
+    }
+    onVisibleChanged: if (!visible) closeLyric()
     onVisibleStartChanged: score.requestPaint()
     onVisibleSpanChanged: score.requestPaint()
     onPitchOffsetChanged: score.requestPaint()
@@ -533,7 +611,9 @@ Item {
     Keys.onUpPressed: event => event.accepted = movePitch(-1)
     Keys.onDownPressed: event => event.accepted = movePitch(1)
     Keys.onPressed: function(event) {
-        if (event.key === Qt.Key_PageUp || event.key === Qt.Key_PageDown) {
+        if (event.key === Qt.Key_F2 && scoreEditable) {
+            event.accepted = openLyric(focusedNote)
+        } else if (event.key === Qt.Key_PageUp || event.key === Qt.Key_PageDown) {
             event.accepted = movePitch((event.key === Qt.Key_PageUp ? -1 : 1)
                 * Math.max(1, Math.floor(rowsInView) - 1))
         } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter
@@ -820,6 +900,10 @@ Item {
                     ctx.lineWidth = 1
                     ctx.strokeRect(box.x + 0.5, box.y + 0.5,
                         Math.max(0, box.width - 1), Math.max(0, box.height - 1))
+                    if (timeline.noteTool && !note.timingReason && note.end <= timeline.visibleEnd
+                            && box.width >= 9 * timeline.scale)
+                        fill(ctx, timeline.theme.text, box.x + box.width - 4 * timeline.scale,
+                            box.y + 3, Math.round(timeline.scale), Math.max(1, box.height - 6))
                 }
             }
         }
@@ -1048,6 +1132,7 @@ Item {
 
     MouseArea {
         id: scoreMouse
+        objectName: "tuningScoreMouse"
         x: timeline.plotLeft
         y: timeline.plotTop
         width: timeline.plotWidth
@@ -1056,7 +1141,10 @@ Item {
         preventStealing: true
         hoverEnabled: true
         enabled: timeline.hasSource && timeline.activeTrack.length > 0
-        cursorShape: timeline.hoveredNote ? Qt.PointingHandCursor : Qt.CrossCursor
+        cursorShape: timeline.noteGesture ? (timeline.noteGesture.action === "resize" ? Qt.SizeHorCursor : Qt.ClosedHandCursor)
+            : timeline.noteTool && timeline.resizeHit(timeline.hoveredBox, mouseX + x) ? Qt.SizeHorCursor
+            : timeline.noteTool && timeline.hoveredNote && (!timeline.hoveredNote.timingReason || !timeline.hoveredNote.pitchReason)
+                ? Qt.OpenHandCursor : timeline.hoveredNote ? Qt.PointingHandCursor : Qt.CrossCursor
         ToolTip.visible: !!timeline.hoveredNote && !pressed
         ToolTip.delay: 500
         ToolTip.text: timeline.hoveredNote ? timeline.noteDescription(timeline.hoveredNote) : ""
@@ -1068,37 +1156,74 @@ Item {
             }
             timeline.pressX = mouse.x
             timeline.pressY = mouse.y
+            const box = timeline.noteBoxAt(mouse.x + x, mouse.y + y)
+            if (timeline.noteTool && box) {
+                if (!box.note.timingReason || !box.note.pitchReason) {
+                    timeline.noteGesture = {note: box.note, action: timeline.resizeHit(box, mouse.x + x) ? "resize" : "move"}
+                }
+                return
+            }
             timeline.pressTime = timeline.snapTime(timeline.timeForPlotX(mouse.x), mouse.modifiers, "")
             timeline.dragTime = timeline.pressTime
         }
         onPositionChanged: function(mouse) {
-            if (pressed && timeline.pressX >= 0)
+            if (pressed && timeline.noteGesture) {
+                const gesture = timeline.noteGesture
+                const request = timeline.dragRequest(gesture, mouse.x, mouse.y, mouse.modifiers)
+                if (request.horizontal || request.pitch !== gesture.note.pitch) {
+                    timeline.noteGhost = timeline.controller.previewNoteGeometry(
+                        gesture.note.id, gesture.action, request.seconds, request.pitch, request.horizontal)
+                } else {
+                    timeline.noteGhost = null
+                }
+            } else if (pressed && timeline.pressX >= 0 && isFinite(timeline.pressTime))
                 timeline.dragTime = timeline.snapTime(timeline.timeForPlotX(mouse.x), mouse.modifiers, "")
         }
         onReleased: function(mouse) {
             if (timeline.pressX < 0)
                 return
+            const gesture = timeline.noteGesture
+            if (gesture) {
+                const request = timeline.dragRequest(gesture, mouse.x, mouse.y, mouse.modifiers)
+                timeline.clearGesture()
+                if (request.horizontal || request.pitch !== gesture.note.pitch) {
+                    if (timeline.controller.editNoteGeometry(gesture.note.id, gesture.action,
+                            request.seconds, request.pitch, request.horizontal))
+                        timeline.revealPitch(request.pitch, gesture.note.trackId, gesture.note.id)
+                } else {
+                    timeline.selectNote(gesture.note)
+                }
+                return
+            }
             const dx = Math.abs(mouse.x - timeline.pressX)
             const dy = Math.abs(mouse.y - timeline.pressY)
             const end = timeline.snapTime(timeline.timeForPlotX(mouse.x), mouse.modifiers, "")
             const first = Math.min(timeline.pressTime, end)
             const last = Math.max(timeline.pressTime, end)
-            const note = dx < 2 && dy < 3
-                ? timeline.noteAt(mouse.x + x, mouse.y + y) : null
+            const box = dx < 2 && dy < 3 ? timeline.noteBoxAt(mouse.x + x, mouse.y + y) : null
             timeline.clearGesture()
             if (timeline.view.busy === true)
                 return
-            if (dx >= 2 && last > first)
-                timeline.controller.finishTimelineSelection(first, last)
-            else if (note)
-                timeline.selectNote(note)
+            if (dx >= 2 && last > first) {
+                if (timeline.noteTool) timeline.controller.selectSpan(first, last)
+                else timeline.controller.finishTimelineSelection(first, last)
+            } else if (box) {
+                timeline.selectNote(box.note)
+            }
         }
         onCanceled: timeline.clearGesture()
         onDoubleClicked: function(mouse) {
-            if (!timeline.noteAt(mouse.x + x, mouse.y + y))
+            const box = timeline.noteBoxAt(mouse.x + x, mouse.y + y)
+            if (box)
+                timeline.openLyric(box.note)
+            else
                 timeline.controller.setViewport(timeline.origin, timeline.fullSpan)
         }
         onWheel: function(wheel) {
+            if (pressed || timeline.lyricNote) {
+                wheel.accepted = true
+                return
+            }
             const vertical = wheel.pixelDelta.y || wheel.angleDelta.y
             const horizontal = wheel.pixelDelta.x || wheel.angleDelta.x
             if (!vertical && !horizontal) {
@@ -1114,6 +1239,69 @@ Item {
             else
                 timeline.zoomAt(vertical > 0 ? 0.82 : 1.22, timeline.timeForPlotX(wheel.x))
             wheel.accepted = true
+        }
+    }
+
+    Item {
+        x: timeline.plotLeft
+        y: timeline.plotTop
+        width: timeline.plotWidth
+        height: timeline.plotHeight
+        clip: true
+        visible: !!timeline.noteGhost && timeline.noteGhost.start !== undefined
+        Rectangle {
+            x: visible ? timeline.xForTime(timeline.noteGhost.start) - timeline.plotLeft : 0
+            y: visible ? timeline.yForPitch(timeline.noteGhost.pitch) - timeline.plotTop + 2 : 0
+            width: visible ? Math.max(2, timeline.xForTime(timeline.noteGhost.end)
+                - timeline.xForTime(timeline.noteGhost.start)) : 0
+            height: timeline.pitchRowHeight - 4
+            radius: 2
+            border.width: 1
+            border.color: timeline.theme.text
+            color: timeline.theme.accent
+            opacity: 0.82
+        }
+    }
+
+    TextField {
+        id: lyricInput
+        objectName: "tuningInlineLyric"
+        visible: !!timeline.lyricNote
+        z: 3
+        width: Math.min(timeline.plotWidth, Math.round(212 * timeline.scale))
+        height: Math.round(31 * timeline.scale)
+        x: visible ? timeline.clamp(timeline.xForTime(timeline.lyricNote.start),
+            timeline.plotLeft, timeline.plotRight - width) : 0
+        y: visible ? timeline.clamp(timeline.yForPitch(timeline.lyricNote.pitch),
+            timeline.plotTop, timeline.plotBottom - height) : 0
+        font.pixelSize: Math.round(13 * timeline.scale)
+        color: timeline.theme.text
+        placeholderTextColor: timeline.theme.muted
+        selectByMouse: true
+        selectionColor: timeline.theme.accent
+        selectedTextColor: timeline.theme.base
+        placeholderText: timeline.vwaTr("音符歌词")
+        Accessible.name: placeholderText
+        Accessible.description: timeline.vwaTr("回车保存，Tab 改下一字，Esc 取消。")
+        background: Rectangle {
+            radius: 5
+            color: timeline.theme.surface
+            border.color: timeline.theme.accent
+            border.width: 1
+        }
+        onAccepted: timeline.finishLyric(false)
+        onActiveFocusChanged: if (!activeFocus) timeline.closeLyric()
+        Keys.onPressed: function(event) {
+            if (inputMethodComposing)
+                return
+            if (event.key === Qt.Key_Tab && event.modifiers === Qt.NoModifier) {
+                timeline.finishLyric(true)
+                event.accepted = true
+            } else if (event.key === Qt.Key_Escape) {
+                timeline.closeLyric()
+                timeline.forceActiveFocus(Qt.OtherFocusReason)
+                event.accepted = true
+            }
         }
     }
 

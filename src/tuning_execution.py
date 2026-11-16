@@ -7,10 +7,26 @@ import copy
 from pathlib import Path
 from common import file_hash
 from tuning_engine import digest, settings, sources_for
+from tuning_score_edits import normalize_edits
+
+
+def editor_options(options):
+    if not isinstance(options, dict):
+        return settings(options)
+    options = dict(options)
+    edits = normalize_edits(options.pop('note_edits', []))
+    result = settings(options)
+    if edits:
+        if result['expression_mode'] != 'preserve':
+            raise ValueError('改词或改音符时，请先使用“保留原表现”，再为新工程匹配参考。')
+        if any('track_index' not in region for region in result['style_regions']):
+            raise ValueError('改音符时，风格片段必须指定各自的轨道。')
+        result['note_edits'] = edits
+    return result
 
 
 def normalize_options(options):
-    result=settings(options)
+    result=editor_options(options)
     for key in ('reference_calibration','retained_project'):
         if result[key]:result[key]=str(Path(result[key]).expanduser().resolve())
     for row in result['reference_sources']:

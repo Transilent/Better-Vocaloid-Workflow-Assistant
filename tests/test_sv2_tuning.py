@@ -74,6 +74,33 @@ def note_layout(project):
 
 
 class SV2TuningTest(unittest.TestCase):
+    def test_native_edit_of_independent_group_keeps_retake_and_placement(self):
+        original = project()
+        # Real SV2 clips normally store explicit bounds even with no cut notes.
+        original['tracks'][0]['groups'][1].update(blickAbsoluteBegin=13 * Q, blickAbsoluteEnd=17 * Q)
+        with tempfile.TemporaryDirectory(prefix='sv2-note-edit-', dir=APP) as temp:
+            path = write_project(temp, original, native_envelope=True)
+            raw = path.read_bytes()
+            baseline = ProjectNotes.load(path)
+            cropped, _, retake, note = baseline.visible([baseline.editable[0]], 0., 20.)
+            self.assertTrue(cropped['lyricReason'] and cropped['pitchReason'])
+            self.assertTrue(retake['pitchReason'] and retake['timingReason'])
+            self.assertFalse(note['lyricReason'] or note['timingReason'] or note['pitchReason'])
+            edit = {'note_id': note['id'], 'lyric': '空', 'pitch': 65, 'onset': 5 * Q // 2}
+            with self.assertRaisesRegex(ValueError, '原生编辑能力'):
+                baseline.with_note_edits([dict(edit, note_id=cropped['id'])])
+            with self.assertRaisesRegex(ValueError, '重录'):
+                baseline.with_note_edits([{'note_id': retake['id'], 'pitch': 61}])
+            with self.assertRaisesRegex(ValueError, '超出原片段'):
+                baseline.with_note_edits([dict(edit, onset=4 * Q)])
+            result = run_session(create_session(path, Path(temp) / 'session'), {'note_edits': [edit]})
+            payload = Path(result['output']).read_bytes()
+            self.assertTrue(payload.startswith(b'\xef\xbb\xbf') and payload.endswith(b'\0'))
+            expected = deepcopy(original)
+            expected['library'][1]['notes'][1].update(lyrics='空', pitch=65, onset=5 * Q // 2)
+            self.assertEqual(json.loads(payload.rstrip(b'\0')), expected)
+            self.assertEqual(path.read_bytes(), raw)
+
     def test_real_group_coordinates_survive_timeline_session_and_export(self):
         source = project()
         with tempfile.TemporaryDirectory(prefix='sv2-tuning-', dir=APP) as temp:
@@ -195,7 +222,7 @@ class SV2TuningTest(unittest.TestCase):
                     notes.region(lead, 4, 5, {'preset': 'gentle'})
 
     def test_group_sources_gate_replacement_modes(self):
-        with self.assertRaisesRegex(ValueError, '只支持.*保留原表现'):
+        with self.assertRaisesRegex(ValueError, 'SV2 轨道.*保留原表现'):
             process_project(project(), {'track_indices': [1], 'expression_mode': 'reference',
                                         'reference_dynamics': True})
 

@@ -354,6 +354,8 @@ def _check_source(root,spec):
 def _dependencies(options,format):
     # Include the ACE-specific implementation in the candidate's signature.
     contributors=CONTRIBUTORS+('ace_tuning.py',) if format in ('acep','ufdata') else CONTRIBUTORS
+    if options.get('note_edits'):
+        contributors+=('tuning_score_edits.py','agent_style.py')
     return _execution_dependencies(options,contributors,ROOT)
 
 
@@ -409,6 +411,36 @@ def apply_project(data,options,format,*,cancel,progress,cache=None):
     if adapter:=style_adapter(format):
         return adapter.process_project(data,options,cancel=cancel,progress=progress)
     return process_project(data,options,cancel=cancel,progress=progress,cache=cache)
+
+
+def apply_snapshot(snapshot,options,*,cancel,progress,cache=None):
+    """Write only the explicitly requested notes and style regions to the candidate."""
+    data,format=snapshot.data,snapshot.format
+    if not options.get('note_edits'):
+        return apply_project(data,options,format,cancel=cancel,progress=progress,cache=cache)
+    from agent_style import context_for_snapshot
+    from tuning_score_edits import ScoreEdits
+    cancel()
+    progress('正在核对歌词和音符的修改…')
+    geometry=score_layout(data,format)
+    model=ScoreEdits(data,format,geometry,context_for_snapshot(snapshot,geometry))
+    edited,changes=model.materialize(data,options['note_edits'])
+    cancel()
+    indices={row['track_index'] for row in changes}
+    if options['style_regions']:
+        style_options={key:value for key,value in options.items() if key!='note_edits'}
+        # Only tracks with explicit time regions participate in the style pass.
+        style_options['track_indices']=sorted({row['track_index'] for row in options['style_regions']})
+        edited,report=apply_project(edited,style_options,format,cancel=cancel,progress=progress,cache=cache)
+        indices.update(report['track_indices'])
+    else:
+        report={'mode':'preserve','status':'unchanged',
+                'curve_changes':[],'pitch_changed':False}
+    if changes and report['status']=='unchanged':
+        report['status']='applied'
+    report.update(track_indices=sorted(indices),note_changes=changes,
+                  notes_and_timing_unchanged=not changes)
+    return edited,report
 
 
 def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None,preset_binding=None):
@@ -472,7 +504,8 @@ def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None,p
                 if status_error:result['observer_errors'].append(status_error)
                 return result
             progress('从固定输入快照开始处理')
-            output,report=apply_project(data,options,format,cancel=cancel,progress=progress,cache=root/'cache/features')
+            source=SourceSnapshot(snapshot,format,spec['input_sha256'],_stat(snapshot).st_size,data)
+            output,report=apply_snapshot(source,options,cancel=cancel,progress=progress,cache=root/'cache/features')
             if not isinstance(report,dict) or not isinstance(report.get('status'),str):
                 raise ValueError('调音引擎没有返回有效报告，未提交。')
             media=_relocate_media(output,Path(spec['source']).parent,format)

@@ -10,6 +10,7 @@ APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP / 'src'))
 
 import agent_style
+from common import native_path
 from style_drafts import DraftConflict, DraftStore
 from style_presets import region_settings
 from tuning_engine import digest, settings
@@ -38,9 +39,9 @@ def score():
 class TimelineTest(unittest.TestCase):
     def setUp(self):
         (APP / 'work').mkdir(exist_ok=True)
-        work = tempfile.TemporaryDirectory(dir=APP / 'work', prefix='tuning-timeline-')
+        work = tempfile.TemporaryDirectory(dir=native_path(APP / 'work'), prefix='tuning-timeline-')
         self.addCleanup(work.cleanup)
-        self.root = Path(work.name)
+        self.root = APP / 'work' / Path(work.name).name
         self.raw = score()
         self.source = self.root / '歌词与三轨.svp'
         self.source.write_text(json.dumps(self.raw, ensure_ascii=False), encoding='utf-8')
@@ -93,6 +94,55 @@ class TimelineTest(unittest.TestCase):
             tuning_workflow.verified_result(session)
         with self.assertRaisesRegex(ValueError, '交接'):
             ProjectNotes.load(self.source, expected_sha256=self.project.sha256)
+
+    def test_existing_note_edit_and_style_share_a_revision_without_rebuilding_tracks(self):
+        first_group = self.raw['tracks'][0]['mainGroup']
+        first_group['parameters'] = {}
+        first_group['notes'][0]['attributes'] = {'tF0VbrStart': .4, 'future_field': {'retain': [1, 2]}}
+        self.source.write_text(json.dumps(self.raw, ensure_ascii=False), encoding='utf-8')
+        original = self.source.read_bytes()
+        project = ProjectNotes.load(self.source)
+        first, second, *_ = project.visible([project.editable[0]], 0., 99.)
+        anchor = project.region(first['trackId'], .05, .30, STYLE)
+        change = {'note_id': first['id'], 'lyric': '春', 'pitch': 61, 'onset': Q // 4, 'duration': Q // 2}
+        projected = project.with_note_edits([change])
+        shifted, = projected.rebase_regions(project, [anchor])
+        self.assertEqual((shifted['id'], shifted['start_note_id'], shifted['recipe']['start'], shifted['recipe']['end']),
+                         (anchor['id'], first['id'], .125, .375))
+        self.assertEqual(projected.matches('春好')[0]['endId'], second['id'])
+        self.assertEqual(projected.next_note(first['id'])['id'], second['id'])
+        with self.assertRaisesRegex(ValueError, '重叠'):
+            project.with_note_edits([dict(change, onset=3 * Q // 4)])
+        with self.assertRaisesRegex(ValueError, '风格片段包含'):
+            project.with_note_edits([dict(change, onset=4 * Q)]).rebase_regions(
+                project, [project.region(first['trackId'], 0., 1., STYLE)])
+        with self.assertRaisesRegex(ValueError, '音符修改与'):
+            freeze_plan(project, [], {'note_edits': [change]}, None)
+
+        session = tuning_workflow.create_session(self.source, self.root / 'session')
+        opts = {'track_indices': [0, 1], 'note_edits': [change], 'performance_style': 'bold'}
+        bare = tuning_workflow.run_session(session, opts)
+        self.assertEqual(bare['report']['curve_changes'], [])
+        self.assertEqual(bare['report']['track_indices'], [0])
+        self.assertFalse(bare['report']['notes_and_timing_unchanged'])
+        self.assertEqual(set(bare['report']['note_changes'][0]['fields']), {'lyric', 'pitch', 'onset', 'duration'})
+        expected = copy.deepcopy(self.raw)
+        expected['tracks'][0]['mainGroup']['notes'][0].update(lyrics='春', pitch=61, onset=Q // 4, duration=Q // 2)
+        self.assertEqual(tuning_workflow.read_project(bare['output']), expected)
+
+        stored = normalize_timeline_draft(project.sha256, {'schema_version': 2, 'input_sha256': project.sha256,
+                                           'regions': [shifted], 'options': opts})
+        self.assertEqual(project.with_note_edits(stored['options']['note_edits']).verify_regions(stored['regions']),
+                         [shifted['recipe']])
+        opts['style_regions'] = [shifted['recipe']]
+        _, plan = freeze_plan(projected, [shifted], opts, None)
+        styled = tuning_workflow.run_session(session, json.loads(plan)['options'])
+        self.assertEqual(styled['report']['style']['regions'][0]['track_indices'], [0])
+        edited = tuning_workflow.read_project(styled['output'])
+        self.assertEqual(edited['tracks'][0]['mainGroup']['notes'], expected['tracks'][0]['mainGroup']['notes'])
+        self.assertEqual(edited['tracks'][1:], self.raw['tracks'][1:])
+        self.assertNotEqual(bare['signature'], styled['signature'])
+        self.assertEqual(self.source.read_bytes(), original)
 
     def test_later_region_paints_after_snapping_and_keeps_track_fragments(self):
         old = self.project.region(self.lead, 0., self.project.maximum, STYLE)

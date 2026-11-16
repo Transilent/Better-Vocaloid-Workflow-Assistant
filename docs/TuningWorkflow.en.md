@@ -14,7 +14,17 @@ available as preservation rather than a new acoustic fit.
 
 Open a task project or import a Synthesizer V Studio 1/2 SVP, OpenUtau USTX, VOCALOID 5/6 VPR, ACE Studio ACEP, or UFData exchange score. Find the lyric, edit a range in single-track or multitrack view, and save a new file in the same format.
 
-Shared or cropped SV2 note groups remain read-only. USTX 0.5 can be previewed; resave it in OpenUtau before editing. USTX and VPR write their supported dynamics and pitch curves in **Keep original performance** mode. Reopen and audition the result in the original editor.
+USTX 0.5 can be previewed; resave it in OpenUtau before editing. Style processing for USTX and VPR writes supported dynamics and pitch curves in **Keep original performance** mode. Reopen and audition the result in the original editor.
+
+## Edit lyrics and notes
+
+Open an editable USTX or SVP vocal track in single-track view:
+
+- **Lyrics:** double-click a note or select it and press F2. Enter saves; Tab saves and opens the next editable lyric; Esc cancels.
+- **Notes:** enable **Edit notes**. Drag a note horizontally to move it, vertically to change pitch, or by its right edge to resize it. Hold Alt to bypass snapping. Release to apply; Ctrl+Z undoes the edit, and Ctrl+Y or Ctrl+Shift+Z redoes it.
+- **Save:** edits are saved to the project draft. Preview the changes, then generate and save a new copy in the original format. A lyric or note edit alone writes only those changes. Existing style regions follow their original notes, and previous candidates are retained and marked out of date.
+
+This supports existing notes in USTX 0.6–0.10, simple SVP projects, and verified independent SV2 groups. Shared or transposed groups and groups with cropped notes are protected. Manual pronunciation can block lyric edits, and native timing or curves can lock position, duration, or pitch. Edits cannot cross clip bounds or introduce notes that overlap on the same track. Use **Keep original performance** while editing; match new reference or calibration inputs to the resulting score afterward.
 
 ## ACE Studio preview
 
@@ -65,14 +75,13 @@ before/after hashes and point counts; original curves remain recoverable from
 the input snapshot. Finite fractional coordinates keep their original types
 rather than being truncated. Densification preserves the source function;
 adding points is distinct from changing expression. Unknown controls, retakes,
-unselected tracks and the score remain protected. Existing nonlinear curves may
-be kept with a partial/unsupported receipt rather than rewritten inaccurately.
-Flat, untrimmed mainGroup selections are supported; linked group arrangements
-need a separately prepared editor copy.
+and unselected tracks remain protected. The score changes only through explicit
+note edits. Existing nonlinear curves that cannot be processed safely are kept
+and reported as partial results.
 
 ## Recovery and provenance
 
-A session snapshots the source bytes in `inputs/source.svp`. Every attempt starts
+A session snapshots the source bytes in `inputs/source.<format>`. Every attempt starts
 from that snapshot, including retries, style changes and cache misses. It never
 uses the last candidate as its next baseline. Changed settings produce another
 signature-bound output. A valid cached result is verified without another

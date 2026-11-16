@@ -22,7 +22,7 @@ from PySide6.QtCore import QObject, QUrl, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 
-from common import atomic_json, file_hash
+from common import atomic_json, file_hash, native_path
 import quick_results
 import quick_support
 import quick_tuning as quick_tuning_module
@@ -100,8 +100,8 @@ class FakeTaskBridge(QObject):
         self.calls.append(('tune', artifact_id))
 
 
-with tempfile.TemporaryDirectory(prefix='quick-tuning-parity-', dir=APP / 'work') as directory:
-    root = Path(directory)
+with tempfile.TemporaryDirectory(prefix='quick-tuning-parity-', dir=native_path(APP / 'work')) as directory:
+    root = APP / 'work' / Path(directory).name
     media = root / 'media/accompaniment.wav'
     media.parent.mkdir(parents=True)
     media.write_bytes(b'synthetic accompaniment')

@@ -1312,6 +1312,22 @@ Item {
                                 ToolTip.text: page.vwaTr("吸附到附近音符边界 · Alt 临时跳过")
                                 onClicked: page.controller.setSnapEnabled(!page.view.snapEnabled)
                             }
+                            EditorButton {
+                                objectName: "tuningNoteTool"
+                                theme: page.theme
+                                text: page.vwaTr("改音符")
+                                quiet: true
+                                selected: !!page.view.noteTool
+                                enabled: page.hasSource && !page.busy && !page.textOf(page.view.scoreEditReason)
+                                Accessible.checkable: true
+                                Accessible.checked: selected
+                                Accessible.description: ToolTip.text
+                                ToolTip.visible: hovered || visualFocus
+                                ToolTip.text: page.textOf(page.view.scoreEditReason)
+                                    || (selected ? page.vwaTr("拖音符改变位置或音高，拖右端改变时长。")
+                                                 : page.vwaTr("切换到音符编辑。双击音符或按 F2 改词。"))
+                                onClicked: page.controller.setNoteTool(!selected)
+                            }
                         }
 
                         Rectangle {
@@ -2512,6 +2528,8 @@ Item {
                                             partial:page.vwaTr("部分处理"), unchanged:page.vwaTr("无变化")}[report.status] || ""
                                         return state + " · " + (report.tracks || 0) + page.vwaTr(" 轨")
                                             + (report.notesPreserved ? page.vwaTr(" · 音符与时值保留") : "")
+                                            + (report.noteChanges ? " · " + page.vwaTr("已修改 {count} 个音符")
+                                                .replace("{count}", report.noteChanges) : "")
                                             + (report.pitchChanged ? page.vwaTr("\n已修改局部音高") : "")
                                             + "\nSHA " + page.shortHash(report.sha256)
                                     }

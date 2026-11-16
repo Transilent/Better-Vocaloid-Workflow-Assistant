@@ -82,6 +82,10 @@
       "source": "src/tuning_timeline.py"
     },
     {
+      "file": "tuning_score_edits.py",
+      "source": "src/tuning_score_edits.py"
+    },
+    {
       "file": "quick_ui/MixdownEq.qml",
       "source": "src/quick_ui/MixdownEq.qml"
     },

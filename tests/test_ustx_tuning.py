@@ -71,6 +71,45 @@ def sample(curve, x):
 
 
 class UstxTuningTest(unittest.TestCase):
+    def test_native_lyric_and_geometry_keep_parts_and_hand_authored_fields(self):
+        score = project()
+        note = score['voice_parts'][1]['notes'][0]
+        note.pop('phoneme_overrides')
+        note.pop('phoneme_expressions')
+        with tempfile.TemporaryDirectory(prefix='ustx-edit-', dir=APP) as root:
+            source = write_source(root, score)
+            raw = source.read_bytes()
+            baseline = ProjectNotes.load(source)
+            lead = baseline.editable[0]
+            protected, _, target = baseline.visible([lead], 0., 100.)
+            self.assertTrue(protected['lyricReason'] and protected['timingReason'])
+            with self.assertRaisesRegex(ValueError, '手工发音'):
+                baseline.with_note_edits([{'note_id': protected['id'], 'lyric': 'new'}])
+            with self.assertRaisesRegex(ValueError, '手工时序'):
+                baseline.with_note_edits([{'note_id': protected['id'], 'onset': 145}])
+            self.assertFalse(target['lyricReason'] or target['timingReason'] or target['pitchReason'])
+            model = baseline.score_editor
+            self.assertEqual(model.gesture(target['id'], {}, 'move', target['start'] + .25, 66, True),
+                             {'onset': 120, 'pitch': 66})
+            edit = {'note_id': target['id'], 'lyric': 'そら', 'pitch': 66, 'onset': 120, 'duration': 660}
+            with self.assertRaisesRegex(ValueError, '超出'):
+                baseline.with_note_edits([dict(edit, duration=900)])
+            self.assertAlmostEqual(baseline.with_note_edits([edit]).notes[target['id']]['start'], target['start'] + .25)
+            session = create_session(source, Path(root) / 'session')
+            result = run_session(session, {'note_edits': [edit]})
+            out = Path(root) / 'edited.ustx'
+            export_verified_copy(verified_result(session), out)
+            self.assertEqual(source.read_bytes(), raw)
+            actual = read(out.read_bytes())
+            expected = deepcopy(score)
+            expected['voice_parts'][1]['notes'][0].update(lyric='そら', tone=66, position=120, duration=660)
+            self.assertEqual(actual['voice_parts'], expected['voice_parts'])
+            self.assertEqual(actual['tracks'], expected['tracks'])
+            self.assertEqual(actual['tempos'], expected['tempos'])
+            relocated = actual['wave_parts'][0]
+            self.assertEqual((relocated['position'], relocated['skip_ms']), (36, 35.0))
+            self.assertEqual(ProjectNotes.load(out).matches('そら')[0]['pitch'], 66)
+
     def test_native_session_only_changes_selected_curve_samples_and_wave_reference(self):
         original = project()
         with tempfile.TemporaryDirectory(prefix='ustx-session-', dir=APP) as root:

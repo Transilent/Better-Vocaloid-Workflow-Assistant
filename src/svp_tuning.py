@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 # format can be inspected, but its placement and write contract is unverified.
 SV2_MIN = 182
 SV2_MAX = 196
-GROUP_STYLE_ONLY = '引用、裁剪或移调的音符组目前只支持「保留原表现」下的风格编辑。'
+GROUP_STYLE_ONLY = '含音符组引用、裁剪或移调的 SV2 轨道，请使用「保留原表现」。'
 GROUPS_PARTLY_PROTECTED = '本轨的共享或裁剪音符组保持只读；可编辑其他独立音符组。'
 
 
