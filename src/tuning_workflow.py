@@ -26,7 +26,7 @@ sys.path.insert(0,str(ROOT))
 from common import atomic_json,file_hash,native_path,preserve_changed_file,exclusive_sidecar,SidecarBusy
 from tuning_engine import settings,digest,process_project,selected_indices
 from svp_tuning import Layout, SV2_MIN
-from tuning_execution import (normalize_options as _normalize,dependencies as _execution_dependencies,
+from tuning_execution import (EDITOR_OPTION_KEYS, normalize_options as _normalize,dependencies as _execution_dependencies,
                               preset_context as _preset_context,preset_dependency,receipt_binding_matches,
                               project_context)
 
@@ -354,8 +354,10 @@ def _check_source(root,spec):
 def _dependencies(options,format):
     # Include the ACE-specific implementation in the candidate's signature.
     contributors=CONTRIBUTORS+('ace_tuning.py',) if format in ('acep','ufdata') else CONTRIBUTORS
-    if options.get('note_edits'):
+    if EDITOR_OPTION_KEYS.intersection(options):
         contributors+=('tuning_score_edits.py','agent_style.py')
+    if options.get('pitch_strokes'):
+        contributors+=('tuning_pitch_layer.py',)
     return _execution_dependencies(options,contributors,ROOT)
 
 
@@ -414,33 +416,53 @@ def apply_project(data,options,format,*,cancel,progress,cache=None):
 
 
 def apply_snapshot(snapshot,options,*,cancel,progress,cache=None):
-    """Write only the explicitly requested notes and style regions to the candidate."""
+    """Resolve edits against the native baseline, then apply style and manual pitch."""
     data,format=snapshot.data,snapshot.format
-    if not options.get('note_edits'):
+    edits,strokes=options.get('note_edits',[]),options.get('pitch_strokes',[])
+    if not (edits or strokes):
         return apply_project(data,options,format,cancel=cancel,progress=progress,cache=cache)
     from agent_style import context_for_snapshot
     from tuning_score_edits import ScoreEdits
     cancel()
-    progress('正在核对歌词和音符的修改…')
     geometry=score_layout(data,format)
     model=ScoreEdits(data,format,geometry,context_for_snapshot(snapshot,geometry))
-    edited,changes=model.materialize(data,options['note_edits'])
+    if edits:
+        progress('正在核对歌词和音符的修改…')
+        edited,changes=model.materialize(data,edits)
+    else:
+        edited,changes=data,[]
+    if strokes:
+        from tuning_pitch_layer import PitchLayer, apply_layer
+        spans=PitchLayer(data,model,geometry[1]).resolve(strokes,{row['note_id']:row for row in edits})
     cancel()
     indices={row['track_index'] for row in changes}
     if options['style_regions']:
-        style_options={key:value for key,value in options.items() if key!='note_edits'}
+        style_options={key:value for key,value in options.items() if key not in EDITOR_OPTION_KEYS}
         # Only tracks with explicit time regions participate in the style pass.
         style_options['track_indices']=sorted({row['track_index'] for row in options['style_regions']})
-        edited,report=apply_project(edited,style_options,format,cancel=cancel,progress=progress,cache=cache)
+        output,report=apply_project(edited,style_options,format,cancel=cancel,progress=progress,cache=cache)
         indices.update(report['track_indices'])
     else:
+        output=copy.deepcopy(edited) if strokes else edited
         report={'mode':'preserve','status':'unchanged',
                 'curve_changes':[],'pitch_changed':False}
-    if changes and report['status']=='unchanged':
+    manual=[]
+    if strokes:
+        progress('正在合成风格和手绘音高…')
+        manual=apply_layer(edited,output,format,spans,cancel=cancel)
+        indices.update(span.track for span in spans)
+        report['curve_changes'] += [row for row in manual if row not in report['curve_changes']]
+        report['pitch_changed'] |= bool(manual)
+        report['hand_pitch']={'spans':len(spans),'curve_changes':manual,
+                              'policy':'native_plus_manual_instead_of_style'}
+        report.setdefault('stages', []).append('hand_pitch')
+        report['output_content_sha256']=digest(output)
+    if (changes or manual) and report['status']=='unchanged':
         report['status']='applied'
     report.update(track_indices=sorted(indices),note_changes=changes,
+                  changed=bool(changes or manual or report.get('changed')),
                   notes_and_timing_unchanged=not changes)
-    return edited,report
+    return output,report
 
 
 def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None,preset_binding=None):

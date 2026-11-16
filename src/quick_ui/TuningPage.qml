@@ -128,6 +128,7 @@ Item {
         context: Qt.WindowShortcut
         autoRepeat: false
         enabled: page.visible && !page.busy && boolOr(page.view.canUndoRegions, false)
+            && !timelineRoll.pitchGesture
             && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
         onActivated: page.controller.undoRegions()
     }
@@ -138,6 +139,7 @@ Item {
         context: Qt.WindowShortcut
         autoRepeat: false
         enabled: page.visible && !page.busy && boolOr(page.view.canRedoRegions, false)
+            && !timelineRoll.pitchGesture
             && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
         onActivated: page.controller.redoRegions()
     }
@@ -148,6 +150,7 @@ Item {
         context: Qt.WindowShortcut
         autoRepeat: false
         enabled: page.visible && !page.busy && boolOr(page.view.canRedoRegions, false)
+            && !timelineRoll.pitchGesture
             && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
         onActivated: page.controller.redoRegions()
     }
@@ -158,6 +161,7 @@ Item {
         context: Qt.WindowShortcut
         autoRepeat: false
         enabled: page.visible && !page.busy && page.textOf(page.view.selectedRegion).length > 0
+            && !timelineRoll.pitchGesture
             && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
         onActivated: page.controller.removeSelectedRegion()
     }
@@ -168,9 +172,11 @@ Item {
         context: Qt.WindowShortcut
         autoRepeat: false
         enabled: page.visible && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
-            && (page.editorFocus || page.hasRange)
+            && (page.editorFocus || page.hasRange || !!timelineRoll.pitchGesture)
         onActivated: {
-            if (page.editorFocus)
+            if (timelineRoll.pitchGesture)
+                timelineRoll.clearGesture()
+            else if (page.editorFocus)
                 page.editorFocus = false
             else
                 page.controller.clearSelection()
@@ -1234,6 +1240,17 @@ Item {
                                 HoverHandler { id: lyricHover }
                             }
                             Text {
+                                objectName: "tuningHandPitchLegend"
+                                visible: !!page.view.pitchTool || timelineRoll.manualCurves.length > 0
+                                text: page.view.pitchTool === "erase" ? page.vwaTr("擦除手绘") : page.vwaTr("手绘音高偏移")
+                                color: timelineRoll.handColor
+                                font.pixelSize: Math.round(11 * page.scale)
+                                textFormat: Text.PlainText
+                                ToolTip.visible: handLegendHover.hovered
+                                ToolTip.text: page.vwaTr("手绘覆盖风格的音高偏移，与原工程音高叠加。这里不显示合成后的音高。")
+                                HoverHandler { id: handLegendHover }
+                            }
+                            Text {
                                 objectName: "tuningLyricOccurrencePosition"
                                 text: page.lyricMatchPositionText()
                                 color: page.theme.muted
@@ -1309,7 +1326,9 @@ Item {
                                 Accessible.checkable: true
                                 Accessible.checked: selected
                                 ToolTip.visible: hovered || visualFocus
-                                ToolTip.text: page.vwaTr("吸附到附近音符边界 · Alt 临时跳过")
+                                ToolTip.text: page.view.pitchTool === "draw"
+                                    ? page.vwaTr("手绘每 10 音分吸附 · Alt 临时跳过")
+                                    : page.vwaTr("吸附到附近音符边界 · Alt 临时跳过")
                                 onClicked: page.controller.setSnapEnabled(!page.view.snapEnabled)
                             }
                             EditorButton {
@@ -1327,6 +1346,35 @@ Item {
                                     || (selected ? page.vwaTr("拖音符改变位置或音高，拖右端改变时长。")
                                                  : page.vwaTr("切换到音符编辑。双击音符或按 F2 改词。"))
                                 onClicked: page.controller.setNoteTool(!selected)
+                            }
+                            EditorButton {
+                                objectName: "tuningPitchDrawTool"
+                                theme: page.theme
+                                glyph: "edit"
+                                text: page.vwaTr("手绘音高")
+                                selected: page.view.pitchTool === "draw"
+                                visible: page.hasSource && page.mode === "single"
+                                enabled: !page.busy && !page.textOf(page.view.pitchEditReason)
+                                Accessible.checkable: true
+                                Accessible.checked: selected
+                                Accessible.description: ToolTip.text
+                                ToolTip.text: page.textOf(page.view.pitchEditReason)
+                                    || page.vwaTr("沿一个音符画音高偏移，松手保存。再点一次回到风格选区。")
+                                onClicked: page.controller.setPitchTool(selected ? "style" : "draw")
+                            }
+                            EditorButton {
+                                objectName: "tuningPitchEraseTool"
+                                theme: page.theme
+                                glyph: "eraser"
+                                text: page.vwaTr("擦除手绘")
+                                selected: page.view.pitchTool === "erase"
+                                visible: page.hasSource && page.mode === "single"
+                                enabled: !page.busy && !page.textOf(page.view.pitchEditReason)
+                                    && (selected || (page.view.pitchStrokeCount || 0) > 0)
+                                Accessible.checkable: true
+                                Accessible.checked: selected
+                                ToolTip.text: page.vwaTr("点笔触擦掉一整段，拖动擦掉局部。原曲线和风格保留。")
+                                onClicked: page.controller.setPitchTool(selected ? "style" : "erase")
                             }
                         }
 
@@ -2530,6 +2578,8 @@ Item {
                                             + (report.notesPreserved ? page.vwaTr(" · 音符与时值保留") : "")
                                             + (report.noteChanges ? " · " + page.vwaTr("已修改 {count} 个音符")
                                                 .replace("{count}", report.noteChanges) : "")
+                                            + (report.pitchSpans ? " · " + page.vwaTr("手绘 {count} 段")
+                                                .replace("{count}", report.pitchSpans) : "")
                                             + (report.pitchChanged ? page.vwaTr("\n已修改局部音高") : "")
                                             + "\nSHA " + page.shortHash(report.sha256)
                                     }

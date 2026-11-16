@@ -66,7 +66,7 @@ shared_tests = (
     'test_chinese_model_install.py', 'test_commit_recovery.py', 'test_component_recovery.py',
     'test_runner_contract.py', 'test_pipeline_safety_fixes.py', 'test_tuning_audit_fixes.py',
     'test_preparation_presets.py', 'test_quick_results_external_bindings.py', 'test_quick_media_handoff.py',
-    'test_mixdown_realtime_core.py', 'test_tuning_timeline.py', 'test_preparation_commands.py',
+    'test_mixdown_realtime_core.py', 'test_tuning_timeline.py', 'test_tuning_pitch_layer.py', 'test_preparation_commands.py',
     'test_quick_results.py', 'test_component_operations.py', 'test_workspace_controller.py',
     'test_workspace_routes.py', 'test_expression_controls.py', 'test_style_catalog.py',
     'test_agent_style_schema.py', 'test_component_health.py', 'test_tuning_transforms.py',

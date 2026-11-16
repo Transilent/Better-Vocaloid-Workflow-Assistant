@@ -23,6 +23,9 @@ Item {
     readonly property bool multi: view.mode === "multi"
     readonly property bool scoreEditable: hasSource && !multi && !view.busy && view.scoreEditReason === ""
     readonly property bool noteTool: scoreEditable && !!view.noteTool
+    readonly property string pitchTool: !view.busy && !multi ? String(view.pitchTool || "") : ""
+    readonly property color handColor: dark ? "#69e8d2" : "#116961"
+    readonly property var manualCurves: controller.pitchCurves || []
     readonly property string activeTrack: String(view.activeTrack || "")
     readonly property string selectedTrackKey: JSON.stringify(view.selectedTracks || [])
     readonly property var targetTracks: resolveTracks()
@@ -70,7 +73,7 @@ Item {
     readonly property int visibleNoteCount: visibleNotes.length
     readonly property var focusedNote: visibleNotes.find(entry =>
         entry.trackId === focusedTrackId && entry.id === focusedNoteId)
-    readonly property var hoveredBox: scoreMouse.containsMouse && !noteGesture
+    readonly property var hoveredBox: scoreMouse.containsMouse && !noteGesture && !pitchGesture
         ? noteBoxAt(scoreMouse.mouseX + plotLeft, scoreMouse.mouseY + plotTop) : null
     readonly property var hoveredNote: hoveredBox ? hoveredBox.note : null
     readonly property string instructions: "点击音符选段，拖拽选择时间。左右键找音符，回车选择；上下键或键轨滚轮移动音高。滚轮缩放，Shift 加滚轮平移。"
@@ -88,6 +91,7 @@ Item {
     property var noteGesture: null
     property var noteGhost: null
     property var lyricNote: null
+    property var pitchGesture: null
 
     activeFocusOnTab: hasSource
     Accessible.role: Accessible.Pane
@@ -152,7 +156,8 @@ Item {
                 lane: lane || {track: findTrack(trackId), index: trackOrder(trackId), order: 0},
                 lyric: String(note.lyric || "").trim(), pitch: pitch, start: start, end: end,
                 readOnlyReason: String(note.readOnlyReason || ""), lyricReason: String(note.lyricReason || ""),
-                timingReason: String(note.timingReason || ""), pitchReason: String(note.pitchReason || "") })
+                timingReason: String(note.timingReason || ""), pitchReason: String(note.pitchReason || ""),
+                drawReason: String(note.drawReason || "") })
         }
         return result.sort((a, b) => a.start - b.start || a.lane.order - b.lane.order
             || a.pitch - b.pitch || a.end - b.end || a.id.localeCompare(b.id))
@@ -314,7 +319,7 @@ Item {
     }
 
     function noteDescription(note) {
-        const reason = noteTool ? note.timingReason || note.pitchReason : note.lyricReason
+        const reason = pitchTool ? note.drawReason : noteTool ? note.timingReason || note.pitchReason : note.lyricReason
         return (note.lyric || vwaTr("空歌词")) + " · " + pitchName(note.pitch)
             + " · " + String(note.lane.track.name || note.trackId) + "\n"
             + formatTime(note.start, 3) + "–" + formatTime(note.end, 3)
@@ -436,6 +441,36 @@ Item {
         return {seconds: seconds, pitch: pitch, horizontal: horizontal}
     }
 
+    function pitchNoteAt(x, y) {
+        const time = timeForPlotX(x)
+        const proximity = ((view.pitchMaxCents || 200) / 100 + 0.65) * pitchRowHeight
+        return visibleNotes.find(note => note.start <= time && time < note.end
+            && Math.abs(plotTop + y - yForPitch(note.pitch) - pitchRowHeight / 2) <= proximity)
+    }
+
+    function pitchSample(x, y, modifiers, force) {
+        const gesture = pitchGesture
+        if (!gesture)
+            return
+        const note = gesture.note
+        const edge = Number(view.pitchEdgeSeconds || 0.018)
+        const seconds = clamp(timeForPlotX(x), note.start + edge, note.end - edge)
+        const range = Number(view.pitchMaxCents || 200)
+        const pitch = (yForPitch(note.pitch) + pitchRowHeight / 2 - (plotTop + y)) / pitchRowHeight * 100
+        const snap = view.snapEnabled && !(modifiers & Qt.AltModifier) ? 10 : 1
+        const sample = [seconds, clamp(Math.round(pitch / snap) * snap, -range, range)]
+        const points = gesture.points
+        const last = points.length ? points[points.length - 1] : null
+        if (!force && last && Math.abs(xForTime(last[0]) - xForTime(seconds)) < 2 * scale
+                && Math.abs(last[1] - sample[1]) < 4)
+            return
+        if (points.length >= 2048)
+            points[points.length - 1] = sample
+        else
+            points.push(sample)
+        pitchInk.requestPaint()
+    }
+
     function movePitch(rows) {
         const next = clamp(pitchOffset + rows, 0, 128 - rowsInView)
         if (next === pitchOffset)
@@ -544,6 +579,10 @@ Item {
     function clearGesture() {
         noteGesture = null
         noteGhost = null
+        if (pitchGesture) {
+            pitchGesture = null
+            pitchInk.requestPaint()
+        }
         pressX = -1
         pressY = -1
         pressTime = Number.NaN
@@ -586,7 +625,8 @@ Item {
         clearGesture()
         score.requestPaint()
     }
-    onVisibleChanged: if (!visible) closeLyric()
+    onPitchToolChanged: clearGesture()
+    onVisibleChanged: if (!visible) { closeLyric(); clearGesture() }
     onVisibleStartChanged: score.requestPaint()
     onVisibleSpanChanged: score.requestPaint()
     onPitchOffsetChanged: score.requestPaint()
@@ -606,12 +646,14 @@ Item {
         score.requestPaint()
     }
 
-    Keys.onLeftPressed: event => event.accepted = moveNoteCursor(-1)
-    Keys.onRightPressed: event => event.accepted = moveNoteCursor(1)
-    Keys.onUpPressed: event => event.accepted = movePitch(-1)
-    Keys.onDownPressed: event => event.accepted = movePitch(1)
+    Keys.onLeftPressed: event => event.accepted = !pitchGesture && moveNoteCursor(-1)
+    Keys.onRightPressed: event => event.accepted = !pitchGesture && moveNoteCursor(1)
+    Keys.onUpPressed: event => event.accepted = !pitchGesture && movePitch(-1)
+    Keys.onDownPressed: event => event.accepted = !pitchGesture && movePitch(1)
     Keys.onPressed: function(event) {
-        if (event.key === Qt.Key_F2 && scoreEditable) {
+        if (pitchGesture) {
+            event.accepted = true
+        } else if (event.key === Qt.Key_F2 && scoreEditable) {
             event.accepted = openLyric(focusedNote)
         } else if (event.key === Qt.Key_PageUp || event.key === Qt.Key_PageDown) {
             event.accepted = movePitch((event.key === Qt.Key_PageUp ? -1 : 1)
@@ -1141,7 +1183,9 @@ Item {
         preventStealing: true
         hoverEnabled: true
         enabled: timeline.hasSource && timeline.activeTrack.length > 0
-        cursorShape: timeline.noteGesture ? (timeline.noteGesture.action === "resize" ? Qt.SizeHorCursor : Qt.ClosedHandCursor)
+        cursorShape: timeline.pitchTool ? (timeline.hoveredNote && timeline.hoveredNote.drawReason
+                    ? Qt.ForbiddenCursor : Qt.CrossCursor)
+            : timeline.noteGesture ? (timeline.noteGesture.action === "resize" ? Qt.SizeHorCursor : Qt.ClosedHandCursor)
             : timeline.noteTool && timeline.resizeHit(timeline.hoveredBox, mouseX + x) ? Qt.SizeHorCursor
             : timeline.noteTool && timeline.hoveredNote && (!timeline.hoveredNote.timingReason || !timeline.hoveredNote.pitchReason)
                 ? Qt.OpenHandCursor : timeline.hoveredNote ? Qt.PointingHandCursor : Qt.CrossCursor
@@ -1156,6 +1200,15 @@ Item {
             }
             timeline.pressX = mouse.x
             timeline.pressY = mouse.y
+            if (timeline.pitchTool) {
+                const note = timeline.pitchNoteAt(mouse.x, mouse.y)
+                if (note && !note.drawReason) {
+                    timeline.selectNote(note)
+                    timeline.pitchGesture = {note: note, kind: timeline.pitchTool, points: []}
+                    timeline.pitchSample(mouse.x, mouse.y, mouse.modifiers, true)
+                }
+                return
+            }
             const box = timeline.noteBoxAt(mouse.x + x, mouse.y + y)
             if (timeline.noteTool && box) {
                 if (!box.note.timingReason || !box.note.pitchReason) {
@@ -1167,7 +1220,9 @@ Item {
             timeline.dragTime = timeline.pressTime
         }
         onPositionChanged: function(mouse) {
-            if (pressed && timeline.noteGesture) {
+            if (pressed && timeline.pitchGesture) {
+                timeline.pitchSample(mouse.x, mouse.y, mouse.modifiers, false)
+            } else if (pressed && timeline.noteGesture) {
                 const gesture = timeline.noteGesture
                 const request = timeline.dragRequest(gesture, mouse.x, mouse.y, mouse.modifiers)
                 if (request.horizontal || request.pitch !== gesture.note.pitch) {
@@ -1182,6 +1237,17 @@ Item {
         onReleased: function(mouse) {
             if (timeline.pressX < 0)
                 return
+            if (timeline.pitchTool) {
+                const gesture = timeline.pitchGesture
+                if (gesture) {
+                    timeline.pitchSample(mouse.x, mouse.y, mouse.modifiers, true)
+                    timeline.clearGesture()
+                    timeline.controller.editPitchStroke(gesture.note.id, gesture.kind, gesture.points)
+                } else {
+                    timeline.clearGesture()
+                }
+                return
+            }
             const gesture = timeline.noteGesture
             if (gesture) {
                 const request = timeline.dragRequest(gesture, mouse.x, mouse.y, mouse.modifiers)
@@ -1213,6 +1279,8 @@ Item {
         }
         onCanceled: timeline.clearGesture()
         onDoubleClicked: function(mouse) {
+            if (timeline.pitchTool)
+                return
             const box = timeline.noteBoxAt(mouse.x + x, mouse.y + y)
             if (box)
                 timeline.openLyric(box.note)
@@ -1239,6 +1307,77 @@ Item {
             else
                 timeline.zoomAt(vertical > 0 ? 0.82 : 1.22, timeline.timeForPlotX(wheel.x))
             wheel.accepted = true
+        }
+    }
+
+    Canvas {
+        id: pitchInk
+        objectName: "tuningHandPitchInk"
+        x: timeline.plotLeft
+        y: timeline.plotTop
+        width: timeline.plotWidth
+        height: timeline.plotHeight
+        readonly property real leftTime: timeline.visibleStart
+        readonly property real timeSpan: timeline.visibleSpan
+        readonly property real firstRow: timeline.pitchOffset
+        readonly property int semitone: timeline.pitchRowHeight
+        onLeftTimeChanged: requestPaint()
+        onTimeSpanChanged: requestPaint()
+        onFirstRowChanged: requestPaint()
+        onSemitoneChanged: requestPaint()
+        onWidthChanged: requestPaint()
+        onHeightChanged: requestPaint()
+        Connections {
+            target: timeline
+            function onManualCurvesChanged() { pitchInk.requestPaint() }
+            function onDarkChanged() { pitchInk.requestPaint() }
+        }
+
+        function line(ctx, points, pitch, ink) {
+            if (points.length < 2)
+                return
+            ctx.beginPath()
+            for (let i = 0; i < points.length; ++i) {
+                const point = points[i]
+                const x = timeline.xForTime(point[0]) - timeline.plotLeft
+                const y = timeline.yForPitch(pitch === null ? point[1] : pitch + point[1] / 100)
+                    - timeline.plotTop + timeline.pitchRowHeight / 2
+                if (i === 0) ctx.moveTo(x, y)
+                else ctx.lineTo(x, y)
+            }
+            ctx.lineCap = "round"
+            ctx.lineJoin = "round"
+            ctx.strokeStyle = timeline.dark ? "#103333" : "#f5fffc"
+            ctx.lineWidth = 4.6 * timeline.scale
+            ctx.stroke()
+            ctx.strokeStyle = ink
+            ctx.lineWidth = 2.2 * timeline.scale
+            ctx.stroke()
+        }
+
+        onPaint: {
+            const ctx = getContext("2d")
+            ctx.clearRect(0, 0, width, height)
+            for (const curve of timeline.manualCurves)
+                line(ctx, curve.points, null, timeline.handColor)
+            const gesture = timeline.pitchGesture
+            if (!gesture || !gesture.points.length)
+                return
+            if (gesture.kind === "draw") {
+                line(ctx, gesture.points, gesture.note.pitch, timeline.handColor)
+            } else {
+                let first = Infinity
+                let last = -Infinity
+                for (const point of gesture.points) {
+                    first = Math.min(first, point[0])
+                    last = Math.max(last, point[0])
+                }
+                const left = timeline.xForTime(first) - timeline.plotLeft
+                const right = timeline.xForTime(last) - timeline.plotLeft
+                ctx.fillStyle = Qt.rgba(0.96, 0.43, 0.55, 0.33)
+                const row = timeline.yForPitch(gesture.note.pitch) - timeline.plotTop
+                ctx.fillRect(left, row - 2 * semitone, Math.max(2, right - left), 5 * semitone)
+            }
         }
     }
 

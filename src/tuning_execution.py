@@ -7,7 +7,12 @@ import copy
 from pathlib import Path
 from common import file_hash
 from tuning_engine import digest, settings, sources_for
+from tuning_pitch_layer import normalize_strokes
 from tuning_score_edits import normalize_edits
+
+
+EDITOR_OPTION_KEYS = frozenset(('note_edits', 'pitch_strokes'))
+PRESERVE_FOR_EDIT = '改谱或手绘请使用“保留原表现”，再为新工程匹配参考。'
 
 
 def editor_options(options):
@@ -15,13 +20,17 @@ def editor_options(options):
         return settings(options)
     options = dict(options)
     edits = normalize_edits(options.pop('note_edits', []))
+    strokes = normalize_strokes(options.pop('pitch_strokes', []))
     result = settings(options)
-    if edits:
+    if edits or strokes:
         if result['expression_mode'] != 'preserve':
-            raise ValueError('改词或改音符时，请先使用“保留原表现”，再为新工程匹配参考。')
+            raise ValueError(PRESERVE_FOR_EDIT)
         if any('track_index' not in region for region in result['style_regions']):
-            raise ValueError('改音符时，风格片段必须指定各自的轨道。')
+            raise ValueError('改谱或手绘时，风格片段必须指定各自的轨道。')
+    if edits:
         result['note_edits'] = edits
+    if strokes:
+        result['pitch_strokes'] = strokes
     return result
 
 

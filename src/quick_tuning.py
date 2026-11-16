@@ -16,7 +16,8 @@ import style_catalog
 from style_drafts import DraftConflict, DraftStore
 from style_presets import DETAIL_DEFAULTS, time_range_settings
 import tuning_engine as engine
-from tuning_execution import editor_options
+from tuning_execution import EDITOR_OPTION_KEYS, PRESERVE_FOR_EDIT, editor_options
+from tuning_pitch_layer import EDGE_SECONDS, MAX_CENTS, UNSUPPORTED as DRAW_UNSUPPORTED
 from tuning_score_edits import FORMATS as SCORE_EDIT_FORMATS, UNSUPPORTED as SCORE_EDIT_UNSUPPORTED
 from tuning_timeline import (ProjectNotes, TimelineDraftStore, draft_options, freeze_plan,
                              normalize_timeline_draft)
@@ -98,7 +99,7 @@ def _session_intent(session, project):
     if raw_options is not None:
         try:
             options = draft_options(raw_options)
-            project = project.with_note_edits(options.get('note_edits', []))
+            project = _draft_projection(project, {'options': options, 'regions': []})
         except (TypeError, ValueError) as error:
             warning = str(error)
             options = QuickTuning._defaults()
@@ -219,7 +220,9 @@ def _preview(project, options, stop, send):
         label = tr('预览：{tracks} 轨 · {regions} 个逐轨片段 · {curves} 条曲线有变化。音符和时值保留。')
     label = label.format(tracks=len(indices), regions=len(options['style_regions']), curves=curves,
                          notes=len(report.get('note_changes', [])))
-    if format in workflow.STYLE_ADAPTERS and (not options.get('note_edits') or options['style_regions']):
+    if options.get('pitch_strokes'):
+        label += ' ' + tr('手绘 {count} 段；覆盖风格音高偏移。').format(count=report['hand_pitch']['spans'])
+    if format in workflow.STYLE_ADAPTERS and (not EDITOR_OPTION_KEYS.intersection(options) or options['style_regions']):
         adapter_note = {'vpr':' VPR 只写 DYN 和 PIT；其他配方参数保留原样。',
                         'ustx':' USTX 只写 DYN 和 PITD；其他配方参数保留原样。'}.get(format)
         label += tr(adapter_note) if adapter_note else ' ' + tr(workflow.style_adapter(format).STYLE_ONLY)
@@ -232,7 +235,7 @@ def _preview(project, options, stop, send):
 
 def _draft_projection(project, payload):
     options = payload['options'] if payload else {}
-    result = project.with_note_edits(options.get('note_edits', []))
+    result = project.with_edits(options.get('note_edits', []), options.get('pitch_strokes', []))
     if payload:
         result.verify_regions(payload['regions'])
     return result
@@ -271,7 +274,7 @@ class QuickTuning(QObject):
         self._preset = None
         self._preset_review = None
         self._mode, self._active, self._selected = 'single', '', []
-        self._note_tool = False
+        self._score_tool = 'style'
         self._start, self._end, self._left, self._span = 0., 0., 0., 18.
         self._selected_region = ''
         self._query = ''
@@ -380,9 +383,9 @@ class QuickTuning(QObject):
                 raise ValueError(' '.join(self._preset['missing']))
             self._check_preset_source(self._preset['document'])
             return deepcopy(self._preset['options']), deepcopy(self._preset)
-        edits = self.project.note_edits
-        if edits:
-            indices = {self.project.score_editor.targets[row['note_id']].track for row in edits}
+        score_changes = self.project.has_score_changes
+        if score_changes:
+            indices = self.project.edit_track_indices()
             if self._regions:
                 indices.update(self._indices(segments=True))
             indices = sorted(indices)
@@ -390,14 +393,12 @@ class QuickTuning(QObject):
             indices = self._indices(segments=True)
         if not indices:
             raise ValueError('请选择至少一条可编辑的演唱轨。')
-        options = deepcopy(self._options)
-        if edits:
-            options['note_edits'] = list(edits)
+        options = self._draft_options()
         if options['expression_mode'] != 'preserve' and self.project.requires_style_mode(indices):
             raise ValueError(self.project.style_only_reason)
         options['track_indices'] = indices
         options['style_regions'] = self.project.verify_regions(self._regions)
-        if self._regions or edits:
+        if self._regions or score_changes:
             # Brush changes are just preparation for the next region.
             for key in _BRUSH_KEYS:
                 options[key] = deepcopy(engine.DEFAULTS[key])
@@ -405,10 +406,16 @@ class QuickTuning(QObject):
         options['retained_sources'] = [row for row in options['retained_sources'] if row['track_index'] in indices]
         return editor_options(options), None
 
-    def _draft(self):
+    def _draft_options(self):
         options = deepcopy(self._options)
         if self.project.note_edits:
             options['note_edits'] = list(self.project.note_edits)
+        if self.project.pitch_strokes:
+            options['pitch_strokes'] = list(self.project.pitch_strokes)
+        return options
+
+    def _draft(self):
+        options = self._draft_options()
         options['track_indices'] = self._indices() or None
         return {'schema_version': 2, 'input_sha256': self.project.sha256, 'regions': self._regions,
                 'options': options, 'preset': self._preset, 'confirmed': self._confirmed}
@@ -489,7 +496,8 @@ class QuickTuning(QObject):
         missing = ' '.join(self._preset.get('missing', [])) if self._preset else ''
         duration = self.project.maximum - self.project.minimum if self.project else 0.
         note_count = len(self.project.note_edits) if self.project else 0
-        usable = bool(self._regions or self._targets or note_count) and not self._legacy and not missing and not self._draft_conflict
+        pitch_count = len(self.project.pitch_strokes) if self.project else 0
+        usable = bool(self._regions or self._targets or note_count or pitch_count) and not self._legacy and not missing and not self._draft_conflict
         review = self._draft_review
         session_exists = bool(self.session and Path(native_path(self.session)).is_file())
         session_root = (Path(self.session).parent if session_exists else
@@ -504,6 +512,7 @@ class QuickTuning(QObject):
         usable = usable and (mode == 'preserve' or not group_styles)
         format = project.get('format', 'svp')
         score_reason = self._score_block()
+        draw_reason = self._pitch_block()
         return {
             'source': self._display_source or project.get('path', ''),
             'title': Path(self._display_source or project.get('path', '')).stem if project else '',
@@ -525,7 +534,10 @@ class QuickTuning(QObject):
                                               and not receipt and not busy),
             'canReload': bool(project and not busy),
             'mode': self._mode, 'activeTrack': self._active, 'selectedTracks': list(self._selected),
-            'noteTool': self._note_tool and not score_reason, 'scoreEditReason': tr(score_reason),
+            'noteTool': self._score_tool == 'note' and not score_reason, 'scoreEditReason': tr(score_reason),
+            'pitchTool': self._score_tool if self._score_tool in ('draw', 'erase') and not draw_reason else '',
+            'pitchEditReason': tr(draw_reason), 'pitchStrokeCount': pitch_count,
+            'pitchMaxCents': MAX_CENTS, 'pitchEdgeSeconds': EDGE_SECONDS,
             'noteEditCount': note_count,
             'selectedRegion': self._selected_region,
             'lyricContext': self._lyric_context(),
@@ -558,6 +570,7 @@ class QuickTuning(QObject):
                 'mode': report.get('mode', ''), 'pitchChanged': report.get('pitch_changed') is True,
                 'notesPreserved': report.get('notes_and_timing_unchanged') is True,
                 'noteChanges': len(report.get('note_changes', [])),
+                'pitchSpans': report.get('hand_pitch', {}).get('spans', 0),
             } if receipt else {},
             'savedCopy': self._saved_copy,
             'previewSummary': self._summary,
@@ -819,6 +832,13 @@ class QuickTuning(QObject):
     def notes(self):
         return self._notes
 
+    @Property('QVariantList', notify=notesChanged)
+    def pitchCurves(self):
+        if not self.project or not self.project.pitch_strokes:
+            return []
+        visible = {row['id'] for row in self._notes if row['trackId'] == self._active}
+        return self.project.pitch_layer.display(self.project.pitch_strokes, self.project.note_patches, visible)
+
     @Property('QVariantList', notify=catalogChanged)
     def presets(self):
         return [{'key': key, 'label': row['name']} for key, row in self._presets.items()]
@@ -878,7 +898,8 @@ class QuickTuning(QObject):
         self.project = _draft_projection(self.project, payload)
         self._portable_preferences_imported = False
         self._options = deepcopy(payload['options']) if payload else self._new_project_defaults()
-        self._options.pop('note_edits', None)
+        for key in EDITOR_OPTION_KEYS:
+            self._options.pop(key, None)
         self._preset = deepcopy(payload['preset']) if payload else None
         self._confirmed = bool(payload and payload['confirmed'])
         self._regions = deepcopy(payload['regions']) if payload else []
@@ -900,7 +921,7 @@ class QuickTuning(QObject):
             self._selected = list(project.editable[:1])
         self._active = next(iter(self._selected), next(iter(project.tracks)))
         self._mode = 'multi' if len(self._selected) > 1 else 'single'
-        self._note_tool = False
+        self._score_tool = 'style'
 
     @staticmethod
     def _draft_description(payload):
@@ -1183,7 +1204,7 @@ class QuickTuning(QObject):
             self._changed_tracks(old)
 
     def _changed_tracks(self, old):
-        changed = old != self._indices() and not (self._regions or self.project.note_edits)
+        changed = old != self._indices() and not (self._regions or self.project.has_score_changes)
         if changed:
             self._rebind_preset()
         self._dirty_draft(invalidate=changed)
@@ -1314,9 +1335,9 @@ class QuickTuning(QObject):
         if self._editing_blocked:
             return
         try:
-            if (self.project and self.project.note_edits
+            if (self.project and self.project.has_score_changes
                     and changes.get('expression_mode', 'preserve') != 'preserve'):
-                raise ValueError('改词或改音符时，请先使用“保留原表现”，再为新工程匹配参考。')
+                raise ValueError(PRESERVE_FOR_EDIT)
             options = draft_options({**self._options, **changes})
             if options == self._options:
                 return
@@ -1325,7 +1346,7 @@ class QuickTuning(QObject):
                 self._preset = None
             else:
                 self._rebind_preset()
-            staged = self._regions or (self.project and self.project.note_edits)
+            staged = self._regions or (self.project and self.project.has_score_changes)
             self._dirty_draft(invalidate=not staged or bool(set(changes) - set(_BRUSH_KEYS)))
         except (OSError, ValueError) as error:
             self._error(error)
@@ -1463,29 +1484,74 @@ class QuickTuning(QObject):
     def _can_edit_regions(self):
         return bool(self.project and not self._editing_blocked and not self._legacy)
 
-    def _score_block(self):
+    def _editor_block(self):
         if not self.project:
             return '请先载入调音工程。'
-        if self.project.project.get('format') not in SCORE_EDIT_FORMATS:
-            return SCORE_EDIT_UNSUPPORTED
         if self._mode != 'single':
-            return '切到单轨后可以改词和改音符。'
+            return '切到单轨后可以改谱或手绘。'
         if self._legacy or self._draft_conflict or (self._origin and not self._confirmed):
             return '请先处理草稿或确认候选基线。'
         if self._preset:
             return '请先解除当前工程的预设绑定。'
         if self._options['expression_mode'] != 'preserve':
-            return '改词或改音符时，请使用“保留原表现”。'
+            return PRESERVE_FOR_EDIT
+        return ''
+
+    def _score_block(self):
+        if reason := self._editor_block():
+            return reason
+        if self.project.project.get('format') not in SCORE_EDIT_FORMATS:
+            return SCORE_EDIT_UNSUPPORTED
         active = self.project.tracks.get(self._active, {})
         if active.get('index') not in self.project.score_editor.editable_tracks:
             return active.get('reason') or '这条轨道没有可编辑的原生音符。'
         return ''
 
+    def _pitch_block(self):
+        if reason := self._editor_block():
+            return reason
+        if self.project.project.get('format') not in SCORE_EDIT_FORMATS:
+            return DRAW_UNSUPPORTED
+        active = self.project.tracks.get(self._active, {})
+        if active.get('index') not in self.project.pitch_layer.tracks:
+            return '这条轨道没有可手绘的音高。'
+        return ''
+
     @Slot(bool)
     def setNoteTool(self, enabled):
-        if not self._editing_blocked and (not enabled or not self._score_block()) and enabled != self._note_tool:
-            self._note_tool = enabled
+        if not self._editing_blocked and (not enabled or not self._score_block()):
+            self._set_score_tool('note' if enabled else 'style')
+
+    @Slot(str)
+    def setPitchTool(self, kind):
+        if not self._editing_blocked and (kind == 'style' or (kind in ('draw', 'erase') and not self._pitch_block())):
+            self._set_score_tool(kind)
+
+    def _set_score_tool(self, kind):
+        if kind != self._score_tool:
+            self._score_tool = kind
             self.changed.emit()
+
+    @Slot(str, str, 'QVariantList', result=bool)
+    def editPitchStroke(self, identity, kind, samples):
+        if self._editing_blocked or self._score_tool != kind:
+            return False
+        try:
+            if reason := self._pitch_block():
+                raise ValueError(reason)
+            note = self.project.notes.get(identity)
+            if not note or note['trackId'] != self._active:
+                raise ValueError('请在当前轨道选择要修改的音符。')
+            project = self.project.with_edits(self.project.note_edits, self.project.pitch_layer.gesture(
+                self.project.pitch_strokes, self.project.note_patches, identity, kind, samples))
+            if project is not self.project:
+                self._record_edit()
+                self._replace_edits(project, self._regions,
+                                    '已保存手绘音高，可撤销。' if kind == 'draw' else '已擦除手绘，原曲线和风格保留。')
+            return True
+        except (ValueError, ArithmeticError) as error:
+            self._error(error)
+            return False
 
     def _editable_note(self, identity):
         if self._editing_blocked:
@@ -1511,7 +1577,7 @@ class QuickTuning(QObject):
             return False
 
     def _note_gesture(self, identity, action, seconds, pitch, horizontal):
-        if not self._note_tool:
+        if self._score_tool != 'note':
             return None
         note = self._editable_note(identity)
         if not note:
@@ -1566,7 +1632,7 @@ class QuickTuning(QObject):
         return True
 
     def _edit_state(self):
-        return self.project.note_edits, self._regions
+        return self.project.note_edits, self.project.pitch_strokes, self._regions
 
     def _record_edit(self):
         self._region_undo.append(self._edit_state())
@@ -1574,7 +1640,8 @@ class QuickTuning(QObject):
         self._region_redo.clear()
 
     def _replace_edits(self, project, rows, notice):
-        changed_score = self.project is not project
+        changed_score = self.project.note_edits != project.note_edits
+        changed_pitch = self.project.pitch_strokes != project.pitch_strokes
         self.project = project
         self._regions = rows
         if self._selected_region not in {row['id'] for row in rows}:
@@ -1588,6 +1655,8 @@ class QuickTuning(QObject):
             self._lyric_match_index = -1
             self._update_notes()
             self.matchesChanged.emit()
+        elif changed_pitch:
+            self.notesChanged.emit()
         self.state, self.message = 'ready', tr(notice)
         self.regionsChanged.emit()
         self._dirty_draft()
@@ -1682,14 +1751,14 @@ class QuickTuning(QObject):
 
     def _step_edit(self, stack, other, notice):
         if self._can_edit_regions() and stack:
-            edits, rows = stack[-1]
-            if edits and (self._preset or self._options['expression_mode'] != 'preserve'):
-                self._error(ValueError('请解除预设绑定或改用“保留原表现”，再恢复音符修改。'))
+            edits, strokes, rows = stack[-1]
+            if (edits or strokes) and (self._preset or self._options['expression_mode'] != 'preserve'):
+                self._error(ValueError('请解除预设绑定或改用“保留原表现”，再恢复改谱或手绘。'))
                 return
-            project = self.project.with_note_edits(edits)
+            project = self.project.with_edits(edits, strokes)
             other.append(self._edit_state())
             stack.pop()
-            if self.project is not project:
+            if self.project.note_edits != project.note_edits:
                 self._start = self._end = 0.
             self._replace_edits(project, rows, notice)
 
@@ -1935,7 +2004,7 @@ class QuickTuning(QObject):
             return
         if self.project.requires_style_mode(self._indices(segments=True)):
             raise ValueError(self.project.style_only_reason)
-        if self._regions or self.project.note_edits:
+        if self._regions or self.project.has_score_changes:
             raise ValueError('此预设包含参数来源。请在没有逐轨片段的工程上绑定。')
 
     def _rebind_preset(self):
@@ -1944,7 +2013,7 @@ class QuickTuning(QObject):
 
     def _preset_review_stamp(self):
         return (self.project.sha256, self._indices(), self._confirmed,
-                deepcopy(self._options), deepcopy(self._regions), self.project.note_edits)
+                deepcopy(self._options), self._edit_state())
 
     @Slot(str)
     def previewPreset(self, key):
@@ -1961,8 +2030,8 @@ class QuickTuning(QObject):
             self._preset_review = {
                 'entry': row, 'stamp': self._preset_review_stamp(),
                 'summary': {'name': plan['preset']['name'], 'changes': plan['changes'],
-                            'missing': plan['missing'] if not (self._regions or self.project.note_edits) else [],
-                            'brushOnly': bool(self._regions or self.project.note_edits)},
+                            'missing': plan['missing'] if not (self._regions or self.project.has_score_changes) else [],
+                            'brushOnly': bool(self._regions or self.project.has_score_changes)},
             }
             self.message = tr('预设差异已准备，确认后才会应用。')
             self.state = 'ready'
@@ -1989,7 +2058,7 @@ class QuickTuning(QObject):
                 raise ValueError('工程或预设已变化，请重新预览。')
             self._check_preset_source(value['document'])
             plan = self._bound(value['document'], value['raw'])
-            if self._regions or self.project.note_edits:
+            if self._regions or self.project.has_score_changes:
                 self._options.update({key: deepcopy(plan['controls'][key]) for key in _BRUSH_KEYS})
                 self._dirty_draft(invalidate=False)
                 self.message = tr('预设已成为下一片段的风格；现有片段保留。')

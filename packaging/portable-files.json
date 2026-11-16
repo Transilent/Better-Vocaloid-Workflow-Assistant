@@ -85,6 +85,10 @@
       "file": "tuning_score_edits.py",
       "source": "src/tuning_score_edits.py"
     },
+      {
+        "file": "tuning_pitch_layer.py",
+        "source": "src/tuning_pitch_layer.py"
+      },
     {
       "file": "quick_ui/MixdownEq.qml",
       "source": "src/quick_ui/MixdownEq.qml"

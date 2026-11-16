@@ -48,7 +48,7 @@ def exercise(root, viewport, scale):
     source, saved = directory / 'source.ustx', directory / 'edited.ustx'
     original = score(f'Edit test {scale}')
     source.write_bytes(encode(original, b''))
-    before = file_hash(source)
+    original_sha = file_hash(source)
     engine, window, owner, modes = create_workspace(app, viewport=viewport, scale=scale)
     tune = owner.tuning
     left = Qt.MouseButton.LeftButton
@@ -164,8 +164,48 @@ def exercise(root, viewport, scale):
     tap('tuningModeSingle')
     assert tune.project.notes[identity] == resized and tune.view['noteEditCount'] == 1
 
+    tap('tuningPitchDrawTool')
+    assert tune.view['pitchTool'] == 'draw' and not tune.view['noteTool']
+    draw_a = note_point(resized, .24)
+    draw_b = note_point(resized, .72) - QPointF(0, roll.property('pitchRowHeight') * .55).toPoint()
+    QTest.mousePress(window, left, pos=draw_a)
+    QTest.mouseMove(window, draw_b, 30)
+    assert tune.view['pitchStrokeCount'] == 0 and visual('tuningHandPitchInk')
+    QTest.keyClick(window, Qt.Key.Key_Escape)
+    QTest.mouseRelease(window, left, pos=draw_b)
+    assert tune.view['pitchStrokeCount'] == 0
+
+    QTest.mousePress(window, left, pos=draw_a)
+    QTest.mouseMove(window, draw_b, 30)
+    QTest.mouseRelease(window, left, pos=draw_b)
+    assert tune.view['pitchStrokeCount'] == 1 and visual('tuningHandPitchLegend')
+    strokes = tune.project.pitch_strokes
+    assert tune.pitchCurves[0]['noteId'] == identity
+    assert tune.pitchCurves[0]['points'][0][1] < tune.pitchCurves[0]['points'][-1][1]
+
+    tune.setStyle('bold')
+    tune.setStylePitch(True)
+    tune.selectSpan(resized['start'], resized['end'])
+    tune.updateRegion(region_id)
+    assert tune.regions[0]['style'] == 'bold' and tune.project.pitch_strokes == strokes
+    tap('tuningPitchEraseTool')
+    assert tune.view['pitchTool'] == 'erase'
+    QTest.mouseClick(window, left, pos=note_point(resized, .50))
+    assert tune.view['pitchStrokeCount'] == 0 and not tune.pitchCurves and len(tune.regions) == 1
+    QTest.keyClick(window, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert tune.project.pitch_strokes == strokes and tune.regions[0]['style'] == 'bold'
+
+    before = tune.pitchCurves[0]['points'][0][0]
+    tap('tuningNoteTool')
+    drag(note_point(resized), .04 * scale_x, 0)
+    resized = tune.project.notes[identity]
+    assert tune.project.pitch_strokes == strokes
+    assert tune.pitchCurves[0]['points'][0][0] > before + .02
+    assert tune.regions[0]['start'] == resized['start'] and tune.regions[0]['end'] == resized['end']
+
     tune.freeze()
-    wait('preview includes note and scoped style', lambda: tune.view['canRun'] and '1 个音符' in tune.view['previewSummary'])
+    wait('preview includes note, scoped style and manual pitch', lambda: tune.view['canRun']
+         and '1 个音符' in tune.view['previewSummary'] and '手绘 1 段' in tune.view['previewSummary'])
     tune.run()
     wait('verified candidate', lambda: tune.view['candidateVerified'] and not tune.view['busy'])
     first_candidate = Path(tune.view['candidate'])
@@ -179,12 +219,15 @@ def exercise(root, viewport, scale):
     assert payload['voice_parts'][0]['notes'] == [expected, *original['voice_parts'][0]['notes'][1:]]
     assert payload['voice_parts'][1] == original['voice_parts'][1]
     assert verified['report']['note_changes'][0]['note_id'] == identity
-    assert file_hash(source) == before and file_hash(saved) == verified['output_sha256']
+    assert verified['report']['hand_pitch']['spans'] == 1
+    assert {c['abbr'] for c in payload['voice_parts'][0]['curves']} == {'pitd', 'dyn'}
+    assert file_hash(source) == original_sha and file_hash(saved) == verified['output_sha256']
 
     tune.resumeSession(QUrl.fromLocalFile(str(tune.session)))
     wait('resume restores edited notes and anchored style', lambda: not tune.view['busy'] and
          tune.view['noteEditCount'] == 1 and tune.project.notes[identity] == resized)
     assert tune.regions[0]['end'] == resized['end'] and not tune.view['candidateStale']
+    assert tune.project.pitch_strokes == strokes and tune.pitchCurves[0]['noteId'] == identity
     QTest.qWait(70)
     QTest.mouseDClick(window, left, pos=note_point(resized))
     wait('edit reopened note', lambda: visual('tuningInlineLyric') is not None)
@@ -192,7 +235,7 @@ def exercise(root, viewport, scale):
     QTest.keyClick(window, Qt.Key.Key_Return)
     assert tune.project.notes[identity]['lyric'] == '山' and tune.view['candidateStale']
     assert file_hash(first_candidate) == verified['output_sha256']
-    print('PASS', viewport, scale, 'inline input, move, resize, protected overlap, undo/redo, draft, verified export')
+    print('PASS', viewport, scale, 'note edits, style replacement, draw/erase and cancel, undo, draft, verified export')
 
     owner.close()
     window.close()

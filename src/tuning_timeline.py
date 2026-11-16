@@ -1,7 +1,7 @@
 """Revision-bound note navigation and per-track style drafts for desktop and tools."""
 
 from bisect import bisect_right
-from copy import deepcopy
+from copy import copy, deepcopy
 import hashlib
 import json
 import math
@@ -14,7 +14,8 @@ from style_drafts import DraftStore
 from style_presets import region_settings, time_range_settings
 from svp_tuning import GROUP_STYLE_ONLY, GROUPS_PARTLY_PROTECTED
 from tuning_engine import DEFAULTS, digest
-from tuning_execution import editor_options
+from tuning_execution import EDITOR_OPTION_KEYS, editor_options
+from tuning_pitch_layer import PitchLayer
 from tuning_preset_documents import plan_application, validate_plan
 from tuning_score_edits import ScoreEdits
 from tuning_workflow import STYLE_ADAPTERS, inspect_project, read_source, score_layout, style_adapter
@@ -48,11 +49,13 @@ def _fragment_identity(parent_id, start, end, used):
 class ProjectNotes:
     """Index the same project-coordinate IDs and tempo conversion as the Agent."""
 
-    def __init__(self, project, context, *, score_editor=None, note_edits=()):
+    def __init__(self, project, context, *, score_editor=None, note_edits=(), pitch_layer=None):
         self.project = deepcopy(project)
         self.score_editor = score_editor
         self.note_edits = tuple(note_edits)
         self.note_patches = {row['note_id']: row for row in note_edits}
+        self.pitch_layer = pitch_layer
+        self.pitch_strokes = ()
         self.sha256 = project['sha256']
         if context['source_sha256'] != self.sha256:
             raise ValueError('工程在读取轨道期间已改变，请重新载入。')
@@ -79,6 +82,8 @@ class ProjectNotes:
                            'lyric': (row['lyric'] or '')[:300], 'pitch': row['pitch'],
                            'start': row['start_seconds'], 'end': row['end_seconds'],
                            **(score_editor.capabilities(row['note_id']) if score_editor else {}),
+                           **({'drawReason': pitch_layer.reason(row['note_id'], {
+                               'start': row['start_seconds'], 'end': row['end_seconds']})} if pitch_layer else {}),
                            **({'readOnlyReason': row['read_only_reason']} if row.get('read_only_reason') else {})}
                           for row in values)
             if self.tracks[key]['editable'] and any(n.get('readOnlyReason') for n in notes):
@@ -111,16 +116,34 @@ class ProjectNotes:
         geometry = score_layout(snapshot.data, snapshot.format)
         project = inspect_project(path, snapshot=snapshot, geometry=geometry)
         context = agent_style.context_for_snapshot(snapshot, geometry)
-        return cls(project, context, score_editor=ScoreEdits(snapshot.data, snapshot.format, geometry, context))
+        editor = ScoreEdits(snapshot.data, snapshot.format, geometry, context)
+        return cls(project, context, score_editor=editor, pitch_layer=PitchLayer(snapshot.data, editor, geometry[1]))
 
     def with_note_edits(self, rows):
-        rows = tuple(rows)
-        if self.note_edits == rows:
+        return self.with_edits(rows, self.pitch_strokes)
+
+    def with_edits(self, rows, strokes):
+        rows, strokes = tuple(rows), tuple(strokes)
+        if (rows, strokes) == (self.note_edits, self.pitch_strokes):
             return self
         if self.score_editor is None:
             raise ValueError('当前工程没有可编辑的原生音符。')
-        return ProjectNotes(self.project, self.score_editor.projected(list(rows)), score_editor=self.score_editor,
-                            note_edits=rows)
+        if rows == self.note_edits:
+            result = copy(self)
+        else:
+            result = ProjectNotes(self.project, self.score_editor.projected(list(rows)), score_editor=self.score_editor,
+                                  note_edits=rows, pitch_layer=self.pitch_layer)
+        if strokes:
+            result.pitch_layer.resolve(strokes, result.note_patches)
+        result.pitch_strokes = strokes
+        return result
+
+    @property
+    def has_score_changes(self):
+        return bool(self.note_edits or self.pitch_strokes)
+
+    def edit_track_indices(self):
+        return {self.score_editor.targets[row['note_id']].track for row in (*self.note_edits, *self.pitch_strokes)}
 
     def next_note(self, identity):
         row = self.notes.get(identity)
@@ -314,7 +337,7 @@ class ProjectNotes:
 
 def draft_options(value):
     """Validate persistent editor options even while local inputs are pending."""
-    if not isinstance(value, dict) or set(value) - set(DEFAULTS) - {'note_edits'}:
+    if not isinstance(value, dict) or set(value) - set(DEFAULTS) - EDITOR_OPTION_KEYS:
         raise ValueError('逐轨草稿含有未知调音选项。')
     temporary = {}
     if value.get('expression_mode') == 'calibrated' and not value.get('reference_calibration'):
@@ -353,7 +376,8 @@ def normalize_timeline_draft(input_sha256, data):
         raise ValueError('逐轨片段只能通过音符身份保存。')
     preset = data.get('preset')
     if preset is not None:
-        if cleaned or options.get('note_edits') or not isinstance(preset, dict) or preset.get('input_sha256') != input_sha256:
+        if (cleaned or EDITOR_OPTION_KEYS.intersection(options) or not isinstance(preset, dict)
+                or preset.get('input_sha256') != input_sha256):
             raise ValueError('逐轨草稿的预设绑定与当前工程不符。')
         if preset.get('missing'):
             rebuilt = plan_application(preset['document'], preset['project'], preset['bindings'],
@@ -377,6 +401,8 @@ def freeze_plan(project, regions, options, preset):
     normalized = editor_options(options)
     if tuple(normalized.get('note_edits', [])) != project.note_edits:
         raise ValueError('草稿里的音符修改与本次执行计划不一致。')
+    if tuple(normalized.get('pitch_strokes', [])) != project.pitch_strokes:
+        raise ValueError('草稿里的手绘修改与本次执行计划不一致。')
     if normalized['expression_mode'] != 'preserve' and project.requires_style_mode(normalized['track_indices'] or []):
         raise ValueError(project.style_only_reason)
     if project.verify_regions(regions) != normalized['style_regions']:

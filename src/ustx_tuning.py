@@ -318,6 +318,15 @@ def _add_native_delta(original, rendered, abbr):
     changed = target != base
     if not changed.any():
         return None, 'ustx_no_native_delta'
+    return encode_native_curve(original, grid, target, changed)
+
+
+def encode_native_curve(original, grid, target, changed):
+    """Keep native knots and prove exact playback of the desired integer grid."""
+    import numpy as np
+
+    xs = original['xs']
+    lo = grid[0]
     keep = np.zeros(len(grid), dtype=bool)
     keep[[0, -1]] = True
     if xs:

@@ -26,6 +26,16 @@ Open an editable USTX or SVP vocal track in single-track view:
 
 This supports existing notes in USTX 0.6–0.10, simple SVP projects, and verified independent SV2 groups. Shared or transposed groups and groups with cropped notes are protected. Manual pronunciation can block lyric edits, and native timing or curves can lock position, duration, or pitch. Edits cannot cross clip bounds or introduce notes that overlap on the same track. Use **Keep original performance** while editing; match new reference or calibration inputs to the resulting score afterward.
 
+## Combine style and drawn pitch
+
+In single-track view, click the pencil, draw inside one vocal note, and release to save the stroke to the draft. Click the pencil again to return to style selection. The teal line shows a drawn offset of up to ±200 cents. With Snap on, offsets snap every 10 cents; hold Alt to bypass. Esc cancels a stroke in progress.
+
+Inside the stroke, the drawn offset replaces the style pitch offset and is added to the original pitch curve. The native vibrato and the style's other controls stay in place, with short transitions at the ends of the stroke. Changing the style or strength leaves the stroke alone. The line represents the edit, not synthesized pitch.
+
+Click the stroke's time position with the eraser to remove the whole stroke, or drag to remove part of it. This reveals the existing style and source curve. Draw, erase, note and style edits share undo. Strokes follow their notes when moved; erase any out-of-bounds section before shortening a note past it.
+
+Drawing writes to supported USTX PITD or linear SVP pitchDelta curves. Nonlinear curves, direct pitch anchors, and unverified native structures are protected. The preview reports the number of drawn spans before you save a new copy in the original format.
+
 ## ACE Studio preview
 
 - **ACEP (JSON/Zstd, project schema 9 revision 0):** add pitch offsets to selected vocal clips in **Keep original performance** mode. The score, singers, effects, other controls, and media references are preserved. Clips with authored anchors, shared or overlapping notes, or a crop through a note are protected. Use **Save ACEP as…** to write a new file beside the source, where ACE Studio can still resolve `Samples`; then open the copy in ACE Studio.
