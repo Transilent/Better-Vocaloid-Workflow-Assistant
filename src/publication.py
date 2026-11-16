@@ -161,7 +161,10 @@ def prepare(job, video, content, cover_seconds=20, cover_file=None, parent=None,
         source_draft(job)
     job = clean_path(job)
     request = json.loads((job / "request.json").read_text(encoding="utf-8"))
-    bv = str(request.get('bv') or '')
+    raw_bv = request.get('bv')
+    # A local source has no BV. Keep that absence explicit in the manifest
+    # instead of turning it into an empty string that looks like a blank ID.
+    bv = raw_bv if isinstance(raw_bv, str) and raw_bv.strip() else None
     if expected_video is not None and bv:
         source_draft(job)
 
@@ -176,7 +179,7 @@ def prepare(job, video, content, cover_seconds=20, cover_file=None, parent=None,
         validate_content(fields, platform, require_ai=True)
     info = inspect_video(video)
     stamp = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime("%Y%m%d-%H%M%S-%f")
-    prefix = bv if re.fullmatch(r'BV[0-9a-zA-Z]{10}', bv) else 'Local'
+    prefix = bv if isinstance(bv, str) and re.fullmatch(r'BV[0-9a-zA-Z]{10}', bv) else 'Local'
     bundle = Path(parent or ROOT / "publish-packages") / f"{prefix}_{stamp}"
     bundle.mkdir(parents=True)
     try:
