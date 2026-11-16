@@ -314,8 +314,21 @@ class RealtimePreviewPlayerCore:
             elif kind == 'live_ready':
                 self.loading = False
                 self._ready = True
-                self._duration = int(round(int(event['duration_frames']) * 1000 / int(event['sample_rate'])))
+                rate = int(event['sample_rate'])
+                self._duration = int(round(int(event['duration_frames']) * 1000 / rate))
+                # A source replacement may shorten the song while retaining an
+                # old playhead. The service resets that position to the start;
+                # mirror its effective position here instead of showing a stale
+                # time until the first audio snapshot arrives.
+                if 'position_frame' in event and rate > 0:
+                    self._position = min(
+                        self._duration,
+                        max(0, int(round(int(event['position_frame']) * 1000 / rate))),
+                    )
+                else:
+                    self._position = min(self._position, self._duration)
                 self._emit('durationChanged', self._duration)
+                self._emit('positionChanged', self._position)
                 self._emit('sourceChanged', self._generation)
                 self._emit('mediaStatusChanged', MediaStatus.LoadedMedia)
                 self._emit('prepared')

@@ -810,6 +810,25 @@ class RealtimeServerTests(unittest.TestCase):
         wait_until(lambda: len(sessions.created) == 2)
         self.assertEqual(sessions.created[-1].seek_calls[0][1:], (0, True))
 
+    def test_shorter_source_resets_retained_open_position_without_failing(self):
+        server, events, _graphs, sessions = self.make_server()
+        server.handle_command(self.open_command(
+            "shorter-source-generation", position_ms=1500, autoplay=True,
+        ))
+        ready = wait_event(events, lambda item: (
+            item.get("type") == "live_ready"
+            and item.get("request_id") == "shorter-source-generation"
+        ))
+        self.assertEqual(ready["duration_frames"], 8000)
+        self.assertEqual(ready["position_frame"], 0)
+        wait_until(lambda: sessions.created)
+        self.assertEqual(sessions.created[-1].seek_calls[0][1:], (0, True))
+        self.assertFalse(any(
+            item.get("type") == "error"
+            and item.get("request_id") == "shorter-source-generation"
+            for item in list(events)
+        ))
+
     def test_runtime_error_closes_graph_and_requires_explicit_new_open(self):
         graphs = GraphFactory()
         graphs.fail_sources.add("fail")

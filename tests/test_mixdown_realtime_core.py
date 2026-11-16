@@ -103,6 +103,18 @@ class CoreTests(unittest.TestCase):
         subprocess.run([sys.executable, '-B', '-c', code], cwd=ROOT, env=env,
                        check=True, timeout=10)
 
+    def test_live_ready_uses_the_effective_clamped_position(self):
+        self.assertTrue(self.core.open({'gain': 1.0}, position_ms=5000, autoplay=False))
+        generation = self.core.generation
+        self.service.events.put(dict(
+            type='live_ready', request_id=generation, sample_rate=48000, channels=2,
+            duration_frames=96000, position_frame=0,
+        ))
+        self.core.poll()
+        self.assertFalse(self.core.failed)
+        self.assertEqual(self.core.duration(), 2000)
+        self.assertEqual(self.core.position(), 0)
+
     def test_real_snapshot_and_ack_fields_are_forwarded_unchanged(self):
         generation = self.prepare()
         self.assertTrue(self.core.seek(3000, autoplay=False))

@@ -771,8 +771,11 @@ class _RealtimeWorkerServer:
             )
             session.set_volume(spec.volume)
             position_frame = int(round(spec.position_ms * sample_rate / 1000.0))
-            if not 0 <= position_frame <= duration_frames:
-                raise ValueError("open position is outside the prepared song")
+            # Replacing a source with a shorter file can retain a playhead that
+            # no longer exists. Starting that replacement from the beginning is
+            # recoverable and must not fail the resident session.
+            if position_frame < 0 or position_frame > duration_frames:
+                position_frame = 0
             open_seek_serial = None
             if position_frame or spec.autoplay:
                 open_seek_serial = session.seek(position_frame, autoplay=spec.autoplay)
@@ -814,6 +817,7 @@ class _RealtimeWorkerServer:
                     "sample_rate": sample_rate,
                     "channels": channels,
                     "duration_frames": duration_frames,
+                    "position_frame": position_frame,
                 })
         except Exception as error:
             with self._condition:
