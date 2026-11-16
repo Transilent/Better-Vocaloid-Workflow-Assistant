@@ -16,6 +16,6 @@
   "download_source": "auto",
   "check_for_updates": true,
   "auto_restart_updates": true,
-  "theme": "light",
+  "theme": "dark",
   "download_workers": 4
 }

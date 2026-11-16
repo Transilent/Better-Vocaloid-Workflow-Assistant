@@ -94,7 +94,8 @@ class SettingsState:
         config = load_config(False)
         self.sources = tuple(value for _, value in sources)
         self.values = appearance_state.load_appearance()
-        self.values['theme'] = config.get('theme', 'light') if config.get('theme') in _CHOICES['theme'] else 'light'
+        theme = config.get('theme')
+        self.values['theme'] = theme if theme in _CHOICES['theme'] else 'dark'
         workers = config.get('download_workers', 4)
         self.values['download_workers'] = workers if type(workers) is int and 1 <= workers <= 8 else 4
         source = config.get('download_source', 'auto')

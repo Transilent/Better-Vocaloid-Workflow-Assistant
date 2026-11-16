@@ -12,6 +12,8 @@ Single-track editing steps through lyric matches on the focused track; selecting
 
 Normal startup uses an ordinary window, capped at 1440×900 and bounded by the available screen. Maximizing enlarges the sidebar, navigation and background illustration while the content layout makes use of the wider area. Overall text sizing remains controlled by the UI scale preference.
 
+Fresh installations use the dark theme by default. Switch to light or follow the system in Settings and Support. Updates retain the saved theme preference.
+
 The sidebar lists Preparation, Tuning, Simple mixing, Video assembly and Publishing, with Tasks and results, Models and components, and Settings and support below. A workspace can use existing inputs without rerunning earlier steps.
 
 Preparation groups the source and output choices compactly. File format labels are short; the save location belongs to the entire task. The lyrics and notes area holds reference text, language, Chinese characters/pinyin, alignment, extraction steps, manual BPM and export options. MIDI processing and editor-project export are separate decisions. Turning an output off retains its selected format preferences. Subtitles still require a real timing source. Device settings remain accessible from the toolbar.
