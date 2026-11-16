@@ -17,7 +17,7 @@ from style_drafts import DraftConflict, DraftStore
 from style_presets import DETAIL_DEFAULTS, time_range_settings
 import tuning_engine as engine
 from tuning_execution import EDITOR_OPTION_KEYS, PRESERVE_FOR_EDIT, editor_options
-from tuning_pitch_layer import EDGE_SECONDS, MAX_CENTS, UNSUPPORTED as DRAW_UNSUPPORTED
+from tuning_pitch_layer import EDGE_SECONDS, FORMATS as DRAW_FORMATS, MAX_CENTS, UNSUPPORTED as DRAW_UNSUPPORTED
 from tuning_score_edits import FORMATS as SCORE_EDIT_FORMATS, UNSUPPORTED as SCORE_EDIT_UNSUPPORTED
 from tuning_timeline import (ProjectNotes, TimelineDraftStore, draft_options, freeze_plan,
                              normalize_timeline_draft)
@@ -1510,7 +1510,7 @@ class QuickTuning(QObject):
     def _pitch_block(self):
         if reason := self._editor_block():
             return reason
-        if self.project.project.get('format') not in SCORE_EDIT_FORMATS:
+        if self.project.project.get('format') not in DRAW_FORMATS:
             return DRAW_UNSUPPORTED
         active = self.project.tracks.get(self._active, {})
         if active.get('index') not in self.project.pitch_layer.tracks:

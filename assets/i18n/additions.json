@@ -1,5 +1,8 @@
 {
   "en": {
+    "手绘超出现有 VOCALOID 弯音灵敏度范围，请缩小偏移。": "The stroke exceeds the current VOCALOID pitch bend sensitivity. Reduce the offset.",
+    "笔触或过渡经过原生音高断点，请把笔触移离断点。": "The stroke or its transition crosses a protected native pitch break. Move the stroke away from it.",
+    "音高候选回读与手绘目标不一致，未写入候选。": "The saved pitch would not match the drawn target. No candidate was written.",
     "手绘音高": "Draw pitch",
     "擦除手绘": "Erase drawn pitch",
     "手绘音高偏移": "Drawn pitch offset",
@@ -2860,6 +2863,9 @@
     "去齿音": "De-ess"
   },
   "ja": {
+    "手绘超出现有 VOCALOID 弯音灵敏度范围，请缩小偏移。": "描画が現在の VOCALOID ピッチベンド感度の範囲を超えています。偏差を小さくしてください。",
+    "笔触或过渡经过原生音高断点，请把笔触移离断点。": "筆跡またはそのつなぎが元のピッチの区切りをまたいでいます。区切りから離して描いてください。",
+    "音高候选回读与手绘目标不一致，未写入候选。": "書き出し後のピッチが描画内容と一致しないため、候補を保存しませんでした。",
     "手绘音高": "ピッチを描く",
     "擦除手绘": "手描きピッチを消す",
     "手绘音高偏移": "手描きのピッチ偏差",

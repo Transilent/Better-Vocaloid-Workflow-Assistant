@@ -381,6 +381,15 @@ def _add_delta(part, raw, name, original, rendered):
     values = np.rint(baseline + max(scale, 0.) * delta).astype(np.int64)
     if not np.any(values != baseline):
         return None, 'vpr_no_native_delta', protections
+    replacement = _write_step_grid(original, grid, values, baseline, default)
+    return (None, 'vpr_curve_capacity', protections) if replacement is None else (replacement, '', protections)
+
+
+def _write_step_grid(original, grid, values, baseline, default):
+    """Splice held controller samples while keeping the original knot positions."""
+    import numpy as np
+
+    lo, hi = int(grid[0]), int(grid[-1])
     kept = {e['pos']: dict(e) for e in original['events']}
     for x, event in kept.items():
         if lo <= x <= hi:
@@ -393,11 +402,45 @@ def _add_delta(part, raw, name, original, rendered):
         if pos not in kept:
             kept[pos] = {'pos': pos, 'value': int(values[i])}
     if len(kept) > MAX_EVENTS:
-        return None, 'vpr_curve_capacity', protections
+        return None
     events = [kept[x] for x in sorted(kept)]
     if not np.array_equal(step_values(grid, events, default), values):
         raise ValueError('VPR 控制事件回读不一致，未写入候选。')
-    return {**original, 'events': events}, '', protections
+    return {**original, 'events': events}
+
+
+def apply_manual_pitch(original, dest, _format, spans, *, cancel):
+    """Compose in cents and quantize back to PIT at the unchanged local PBS."""
+    import numpy as np
+    from tuning_pitch_layer import CAPACITY, PROTECTED, mix_pitch_samples, pitch_tick_grid
+
+    idx, styled = _curve(dest, PIT)
+    _, base = _curve(original, PIT)
+    _, sensitivity = _curve(original, PBS)
+    if styled is None or base is None or sensitivity is None or sensitivity != _curve(dest, PBS)[1]:
+        raise ValueError(PROTECTED)
+    grid = pitch_tick_grid(spans, MAX_EDIT_TICKS)
+    default, low, high = PIT_SPEC
+    quantum = 100 * step_values(grid, sensitivity['events'], PBS_SPEC[0]) / 8192.
+    old = step_values(grid, styled['events'], default)
+    baseline = step_values(grid, base['events'], default) * quantum
+    target = mix_pitch_samples(grid, baseline, old * quantum, spans, -math.inf, math.inf, cancel=cancel) / quantum
+    # The positive limit is one quantum short of the nominal sensitivity.
+    if np.any(target < low - 1e-7) or np.any(target > high + 1.0000001):
+        raise ValueError('手绘超出现有 VOCALOID 弯音灵敏度范围，请缩小偏移。')
+    values = np.clip(np.rint(target), low, high).astype(np.int64)
+    if np.array_equal(values, old):
+        return False, PIT
+    replacement = _write_step_grid(styled, grid, values, old, default)
+    if replacement is None:
+        raise ValueError(CAPACITY)
+    if dest.get('controllers') is None:
+        dest['controllers'] = []
+    if idx is None:
+        dest['controllers'].append(replacement)
+    else:
+        dest['controllers'][idx] = replacement
+    return True, PIT
 
 
 def process_project(data, options, *, cancel=lambda: None, progress=lambda text: None):

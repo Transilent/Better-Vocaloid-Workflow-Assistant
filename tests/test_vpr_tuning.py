@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 import wave
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
+import numpy as np
 
 APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP / 'src'))
@@ -96,6 +97,86 @@ def sampled(part, channel, tick):
 
 
 class VprTuningTests(unittest.TestCase):
+    def test_manual_pitch_keeps_pbs_audio_and_style_outside_the_stroke(self):
+        data = project()
+        with tempfile.TemporaryDirectory(prefix='vpr-ink-', dir=APP) as root:
+            root = Path(root)
+            source = write_source(root / 'source.vpr', data)
+            source_bytes = source.read_bytes()
+            timeline = ProjectNotes.load(source)
+            lead, ai = timeline.editable
+            note, *_ = timeline.visible([lead], 0, 50)
+            direct, = timeline.visible([ai], 0, 50)
+            self.assertEqual(note['drawReason'], '')
+            self.assertTrue(direct['drawReason'])
+            with self.assertRaisesRegex(ValueError, '受保护'):
+                timeline.pitch_layer.gesture([], {}, direct['id'], 'draw', [[.68, 0], [.76, 35]])
+            a = note['start']
+            strokes = timeline.pitch_layer.gesture([], {}, note['id'], 'draw',
+                                                   [[a+.04, 0], [a+.12, 64], [a+.30, -30]])
+            timeline = timeline.with_edits([], strokes)
+            self.assertEqual(timeline.edit_track_indices(), {1})
+            span, = timeline.pitch_layer.resolve(strokes, {})
+            session = workflow.create_session(source, root / 'session')
+            native = data['tracks'][1]['parts'][0]
+            actual, underlying = [], []
+            for preset in ('gentle', 'bold'):
+                region = timeline.region(lead, a+.01, note['end']-.01, {'preset':preset, 'pitch':True})
+                styling = {'track_indices':[1], 'style_regions':[region['recipe']]}
+                style_only = workflow.run_session(session, styling)
+                _, plan = freeze_plan(timeline, [region], {**styling, 'pitch_strokes': strokes}, None)
+                combined = workflow.run_session(session, json.loads(plan)['options'])
+                self.assertTrue(combined['report']['hand_pitch']['curve_changes'])
+                self.assertTrue(workflow.verified_result(session)['receipt_verified'])
+                styled = read(style_only['output'])
+                output = read(combined['output'])
+                part = output['tracks'][1]['parts'][0]
+                base = styled['tracks'][1]['parts'][0]
+                self.assertEqual(curve(part, PBS), curve(native, PBS))
+                self.assertEqual(curve(part, DYN), curve(base, DYN))
+                reverted = deepcopy(output)
+                controls = reverted['tracks'][1]['parts'][0]['controllers']
+                controls[next(i for i, c in enumerate(controls) if c['name'] == PIT)] = curve(base, PIT)
+                self.assertEqual(reverted, styled)
+                inside, pure = [], []
+                xs, ys = zip(*span.points)
+                for tick in range(900):
+                    value, expected = sampled(part, PIT, tick), sampled(base, PIT, tick)
+                    if tick <= span.left or tick >= span.right:
+                        self.assertEqual(value, expected, tick)
+                    if xs[0] <= tick <= xs[-1]:
+                        quantum = sampled(native, PBS, tick) * 100. / 8192.
+                        manual = np.interp(tick, xs, ys)
+                        self.assertLessEqual(abs((value-sampled(native, PIT, tick)) * quantum - manual),
+                                             quantum / 2. + 1e-8)
+                        inside.append(value)
+                        pure.append(expected)
+                actual.append(inside)
+                underlying.append(pure)
+                with ZipFile(source) as before, ZipFile(combined['output']) as after:
+                    self.assertEqual(before.namelist(), after.namelist())
+                    self.assertEqual(before.comment, after.comment)
+                    for name in (AUDIO, EXTRA):
+                        self.assertEqual(before.read(name), after.read(name))
+            self.assertEqual(actual[0], actual[1])
+            self.assertNotEqual(underlying[0], underlying[1])
+            self.assertEqual(source.read_bytes(), source_bytes)
+
+    def test_manual_pitch_does_not_raise_pbs_to_fit(self):
+        data = project()
+        part = data['tracks'][1]['parts'][0]
+        curve(part, PBS)['events'] = [{'pos':0, 'value':1}]
+        with tempfile.TemporaryDirectory(prefix='vpr-ink-pbs-', dir=APP) as root:
+            root = Path(root)
+            source = write_source(root/'source.vpr', data)
+            timeline = ProjectNotes.load(source)
+            note, *_ = timeline.visible([timeline.editable[0]], 0, 50)
+            a = note['start']
+            strokes = timeline.pitch_layer.gesture([], {}, note['id'], 'draw', [[a+.04, 180], [a+.1, 180]])
+            session = workflow.create_session(source, root/'session')
+            with self.assertRaisesRegex(ValueError, '弯音灵敏度'):
+                workflow.run_session(session, {'pitch_strokes':strokes})
+            self.assertFalse(list((session.parent/'outputs').glob('*.vpr')))
     def test_session_keeps_audio_and_non_selected_samples(self):
         data = project()
         with tempfile.TemporaryDirectory(prefix='vpr-qa-', dir=APP) as root:

@@ -34,11 +34,11 @@ Inside the stroke, the drawn offset replaces the style pitch offset and is added
 
 Click the stroke's time position with the eraser to remove the whole stroke, or drag to remove part of it. This reveals the existing style and source curve. Draw, erase, note and style edits share undo. Strokes follow their notes when moved; erase any out-of-bounds section before shortening a note past it.
 
-Drawing writes to supported USTX PITD or linear SVP pitchDelta curves. Nonlinear curves, direct pitch anchors, and unverified native structures are protected. The preview reports the number of drawn spans before you save a new copy in the original format.
+Drawing writes to supported USTX PITD, linear SVP pitchDelta, VOCALOID 5/6 VPR pitch bend, ACEP data-form pitch offsets, and absolute or relative pitch in UFData v1. VPR keeps its existing pitch bend sensitivity; reduce the offset if it exceeds that range. ACEP2, direct pitch anchors, and unsupported curve types stay protected. If a stroke or its transition crosses a protected pitch break, the preview asks you to adjust it before saving a new copy in the original format.
 
 ## ACE Studio preview
 
-- **ACEP (JSON/Zstd, project schema 9 revision 0):** add pitch offsets to selected vocal clips in **Keep original performance** mode. The score, singers, effects, other controls, and media references are preserved. Clips with authored anchors, shared or overlapping notes, or a crop through a note are protected. Use **Save ACEP as…** to write a new file beside the source, where ACE Studio can still resolve `Samples`; then open the copy in ACE Studio.
+- **ACEP (JSON/Zstd, project schema 9 revision 0):** combine style and drawn pitch offsets in selected vocal clips in **Keep original performance** mode. The score, singers, effects, other controls, and media references are preserved. Clips with native pitch anchors, shared or overlapping notes, or a crop through a note are protected. Use **Save ACEP as…** to write a new file beside the source, where ACE Studio can still resolve `Samples`; then open the copy in ACE Studio.
 - **ACEP2 and other unverified ACEP variants:** supported structures can be browsed. Unknown containers and tempo ramps show a UFData fallback. ACEP2 writes are disabled.
 - **UFData:** choose UFData in ACE Studio's **Export MIDI** dialog. VWA can apply local pitch changes to the exchange score. Import the saved UFData into the original ACE Studio project. This route does not carry the original singers, backing audio, effects, or ACE-specific expression. Confirm what pitch data your editor version imports before relying on the result.
 

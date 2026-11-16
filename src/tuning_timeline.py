@@ -143,7 +143,8 @@ class ProjectNotes:
         return bool(self.note_edits or self.pitch_strokes)
 
     def edit_track_indices(self):
-        return {self.score_editor.targets[row['note_id']].track for row in (*self.note_edits, *self.pitch_strokes)}
+        return ({self.score_editor.targets[row['note_id']].track for row in self.note_edits}
+                | {self.pitch_layer.notes[row['note_id']].track for row in self.pitch_strokes})
 
     def next_note(self, identity):
         row = self.notes.get(identity)

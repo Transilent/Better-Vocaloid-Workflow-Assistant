@@ -9,6 +9,8 @@ import sys
 from tempfile import TemporaryDirectory
 import unittest
 
+import numpy as np
+
 APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP))
 
@@ -133,6 +135,102 @@ class AceFormats(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.zstd, _ = codecs()
+
+    def test_manual_pitch_preserves_ace_resources_and_both_ufdata_axes(self):
+        for format, raw in [('acep', wrap_ace(ace_score())), ('ufdata', json.dumps(uf_score()).encode()),
+                            ('ufdata-relative', json.dumps(uf_score(relative=True)).encode())]:
+            with self.subTest(format=format):
+                suffix = format.split('-')[0]
+                native = suffix == 'acep'
+                source = self.root/f'{format}.{suffix}'
+                source.write_bytes(raw)
+                timeline = ProjectNotes.load(source)
+                note, *_ = timeline.visible(timeline.editable[:1], 0, 30)
+                assert note['lyric'] in ('窗', '春')
+                a = note['start']
+                strokes = timeline.pitch_layer.gesture([], {}, note['id'], 'draw',
+                    [[a+.052, 0], [a+.079, 85], [a+.145, -33]])
+                if native:
+                    for text in ('留','裁','光'):
+                        protected, = timeline.matches(text)
+                        self.assertTrue(timeline.notes[protected['id']]['drawReason'])
+                else:
+                    self.assertEqual(timeline.edit_track_indices(), set())
+                timeline = timeline.with_edits([], strokes)
+                self.assertEqual(timeline.edit_track_indices(), {0})
+                span, = timeline.pitch_layer.resolve(strokes, {})
+                old = workflow.read_project(source)['project']
+
+                def value(project, tick):
+                    if native:
+                        return native_curve(project).get(tick, 0.)
+                    pitch = project['tracks'][0]['pitch']
+                    heard = uf_value(pitch, tick)
+                    if heard is None:
+                        return 0.
+                    return heard if not pitch['isAbsolute'] else heard - note['pitch']
+
+                session = workflow.create_session(source, self.root/f's-{format}')
+                both, plain = [], []
+                for preset in ('gentle','bold'):
+                    opts = parameters(0, a, note['end'])
+                    opts['style_regions'][0]['preset'] = preset
+                    styled_receipt = workflow.run_session(session, opts)
+                    styled = workflow.read_project(styled_receipt['output'])['project']
+                    receipt = workflow.run_session(session, {**opts,'pitch_strokes':strokes})
+                    saved = self.root/f'{format}-{preset}.{suffix}'
+                    workflow.export_verified_copy(workflow.verified_result(session), saved)
+                    read = workflow.read_project(saved)['project']
+                    self.assertTrue(receipt['report']['hand_pitch']['curve_changes'])
+                    self.assertTrue(receipt['report']['notes_and_timing_unchanged'])
+                    if native:
+                        self.assertEqual(read, replace_data(styled, read, 0, 0))
+                        envelope = json.loads(saved.read_bytes())
+                        self.assertEqual(envelope['unknownEnvelopeField'], [42,None])
+                        self.assertEqual(read, json.loads(self.zstd.decompress(b64decode(envelope['content']))))
+                    else:
+                        normalized = deepcopy(read)
+                        normalized['tracks'][0]['pitch'] = styled['tracks'][0]['pitch']
+                        self.assertEqual(normalized, styled)
+                        self.assertEqual(read['tracks'][0]['pitch']['isAbsolute'],
+                                         old['tracks'][0]['pitch']['isAbsolute'])
+                        if format == 'ufdata':
+                            pitch = read['tracks'][0]['pitch']
+                            self.assertEqual(list(zip(pitch['ticks'],pitch['values']))[:2], [(0,0),(0,60)])
+                    xs, ys = zip(*span.points)
+                    actual, without_ink = [], []
+                    for tick in range(0, 480):
+                        if tick <= span.left or tick >= span.right:
+                            self.assertEqual(value(read,tick), value(styled,tick), tick)
+                        if xs[0] <= tick <= xs[-1]:
+                            got = value(read,tick)
+                            self.assertAlmostEqual(got, value(old,tick) + np.interp(tick,xs,ys)/100., delta=.0000011)
+                            actual.append(got)
+                            without_ink.append(value(styled,tick))
+                    both.append(actual)
+                    plain.append(without_ink)
+                np.testing.assert_allclose(both[0], both[1], rtol=0., atol=.0000011)
+                self.assertNotEqual(plain[0], plain[1])
+                self.assertEqual(source.read_bytes(),raw)
+
+    def test_manual_pitch_rejects_ace_null_and_ufdata_break_without_writing(self):
+        uf = uf_score()
+        pitch = uf['project']['tracks'][0]['pitch']
+        pitch['ticks'][2:2] = [55, 65]
+        pitch['values'][2:2] = [0., 60.]
+        for suffix, raw in [('ufdata',json.dumps(uf).encode()), ('acep',wrap_ace(ace_score()))]:
+            with self.subTest(suffix=suffix):
+                source = self.root/f'break.{suffix}'
+                source.write_bytes(raw)
+                timeline = ProjectNotes.load(source)
+                note, *_ = timeline.visible(timeline.editable[:1],0,30)
+                a = note['start']
+                strokes = timeline.pitch_layer.gesture([], {}, note['id'], 'draw',
+                                                       [[a+.022,40],[a+.12,54]])
+                session = workflow.create_session(source,self.root/f'break-{suffix}')
+                with self.assertRaisesRegex(ValueError,'音高断点'):
+                    workflow.run_session(session, {'pitch_strokes':strokes})
+                self.assertFalse(list((session.parent/'outputs').glob('*')))
 
     def test_native_round_trip_selected_clip_and_samples(self):
         score = ace_score()

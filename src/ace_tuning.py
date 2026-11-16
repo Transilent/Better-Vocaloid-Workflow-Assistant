@@ -506,6 +506,81 @@ def _exchange_pitch(original, grid, amount, keys):
     return {'isAbsolute':absolute,'ticks':[t for t,_ in kept],'values':[v for _,v in kept]}, '', edited
 
 
+def _ace_pitch_samples(curves, grid, _keys):
+    import numpy as np
+
+    start = int(grid[0])
+    values = np.zeros(len(grid), dtype=float)
+    for row in curves:
+        offset = row['offset'] - start
+        lo, hi = max(0, offset), min(len(grid), offset + len(row['values']))
+        if lo < hi:
+            values[lo:hi] = np.asarray(row['values'][lo - offset:hi - offset], dtype=float)
+    return np.nan_to_num(values), np.isnan(values)
+
+
+def _uf_pitch_samples(curve, grid, keys):
+    """Sample v1 held values, protecting zero breaks and duplicate start markers."""
+    import numpy as np
+
+    absolute = curve['isAbsolute']
+    ticks = np.asarray(curve['ticks'], dtype=np.int64)
+    owners = np.searchsorted(ticks, grid, side='right')
+    values = np.asarray([None if absolute else 0., *curve['values']], dtype=float)[owners]
+    protected = np.zeros(len(grid), dtype=bool)
+    if absolute:
+        protected |= values == 0
+        duplicates = ticks[1:][ticks[1:] == ticks[:-1]] - grid[0]
+        protected[duplicates[(duplicates >= 0) & (duplicates < len(grid))]] = True
+        values = np.where(np.isnan(values), 0., values - keys)
+    return values, protected
+
+
+def apply_manual_pitch(original, dest, format, spans, *, cancel):
+    """Reuse the native and exchange writers after replacing the style contribution."""
+    import numpy as np
+    from tuning_pitch_layer import CAPACITY, LIMIT, PROTECTED, mix_pitch_samples, pitch_tick_grid
+
+    native = format == 'acep'
+    read_curve, samples = (_ace_curve, _ace_pitch_samples) if native else (_uf_curve, _uf_pitch_samples)
+    old, styled = read_curve(original), read_curve(dest)
+    if old is None or styled is None or not native and old['isAbsolute'] != styled['isAbsolute']:
+        raise ValueError(PROTECTED)
+    grid = pitch_tick_grid(spans, EDIT_LIMIT)
+    keys = np.full(len(grid), -1, dtype=np.int16)
+    for span in spans:
+        keys[span.left - grid[0]:span.right - grid[0] + 1] = span.key
+    baseline, original_protected = samples(old, grid, keys)
+    current, style_protected = samples(styled, grid, keys)
+    if np.any((original_protected | style_protected) & (keys >= 0)):
+        # ACE nulls and UFData's explicit break markers are not pitch zeroes.
+        raise ValueError('笔触或过渡经过原生音高断点，请把笔触移离断点。')
+    limit = MAX_EDIT_SEMITONES * 100
+    target = mix_pitch_samples(grid, baseline * 100., current * 100., spans, -limit, limit, cancel=cancel) / 100.
+    changed = np.abs(target - current) >= .000001
+    parameter = PITCH_CHANNEL if native else 'pitch'
+    if not changed.any():
+        return False, parameter
+    if np.any(np.abs(current[changed]) > MAX_EDIT_SEMITONES) or (not native and styled['isAbsolute']
+            and np.any((target[changed] + keys[changed] <= 0) | (target[changed] + keys[changed] > 127))):
+        raise ValueError(LIMIT)
+    amount = np.where(changed, target - current, 0.)
+    if native:
+        replacement, reason, _ = _native_pitch(styled, grid, amount)
+    else:
+        replacement, reason, _ = _exchange_pitch(styled, grid, amount, keys)
+    if replacement is None:
+        raise ValueError(CAPACITY if reason == 'pitch_capacity' else PROTECTED)
+    readback, protected = samples(replacement, grid, keys)
+    if not np.array_equal(protected, style_protected) or not np.allclose(readback, target, rtol=0., atol=.00000101):
+        raise ValueError('音高候选回读与手绘目标不一致，未写入候选。')
+    if native:
+        dest.setdefault('parameters', {})[parameter] = replacement
+    else:
+        dest[parameter] = replacement
+    return True, parameter
+
+
 class _PitchAdapter:
     def __init__(self, native):
         self.native = native

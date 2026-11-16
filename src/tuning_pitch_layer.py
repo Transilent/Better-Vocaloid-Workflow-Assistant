@@ -6,10 +6,13 @@ import math
 import re
 
 from style_presets import _curve
-from tuning_score_edits import FORMATS
+from tuning_score_edits import FORMATS as SCORE_FORMATS
+from vocal_expression import SV_QUARTER, TempoMap
 
 
 MAX_CENTS = 200
+FORMATS = SCORE_FORMATS | {'vpr', 'acep', 'ufdata'}
+TICK_FORMATS = frozenset(('vpr', 'acep', 'ufdata'))
 MAX_POINTS = 16_384
 MAX_BYTES = 224 * 1024
 MIN_NOTE_SECONDS = .08
@@ -82,87 +85,136 @@ class Span:
     points: list
     left: int
     right: int
+    key: int
+
+
+@dataclass(frozen=True)
+class Anchor:
+    placement: tuple
+    group: str
+    track: int
+    offset: int
+    step: int
+    onset: int
+    duration: int
+    pitch: int
+    lyric: str
+
+
+def _native_group(format, data, part, score_target):
+    """Find a native group and its per-note protections once per placement."""
+    if format == 'vpr':
+        from vpr_tuning import PBS, PIT, _curve as controller
+        path = ('tracks', part.track_index, 'parts', part.index)
+        raw = _get(data, path)
+        writable = all(controller(raw, name)[1] is not None for name in (PIT, PBS))
+        return path, writable, set(part.direct_pitch_spans) | set(part.overlap_spans)
+    if format in ('acep', 'ufdata'):
+        # The adapters' style placements have already excluded unknown curve
+        # shapes, ACEP2, shared instances, overlaps and cropped-through notes.
+        path = ('project', 'tracks', part.track_index)
+        if format == 'acep':
+            path += ('patterns', part.index)
+        return path, True, set(part.protected)
+    path = score_target.path[:-2]
+    raw = _get(data, path)
+    if format == 'ustx':
+        from ustx_tuning import _native_curve
+        return path, not _native_curve(data, raw, 'pitd')[2], set()
+    system = part.ref.get('systemPitchDelta')
+    if isinstance(system, dict):
+        system = system.get('points', system)
+    try:
+        _curve(raw.get('parameters', {}).get('pitchDelta'))
+    except ValueError:
+        return path, False, set()
+    return path, not (raw.get('pitchControls') or system), set()
 
 
 class PitchLayer:
     """Uses the same immutable identity, native note coordinates and clock as score edits."""
 
     def __init__(self, data, score, layout):
-        self.score, self.format = score, score.format
-        self.tracks, self.notes, self.reasons = set(), {}, {}
+        self.format = score.format
+        self.tracks, self.notes = set(), {}
         if self.format not in FORMATS:
             return
+        self.clock = score.clock or TempoMap(layout.score['time']['tempo'])
         placements = {(track.index, place.key): place for track in layout.tracks if track.writable
                       for place in track.style_placements}
+        rows_by_track = {}
+        for row in score.rows.values():
+            rows_by_track.setdefault(row['track_index'], []).append(row)
         overlapping = set()
-        for rows in score.track_notes.values():
+        for rows in rows_by_track.values():
             last = None
             for row in sorted(rows, key=lambda n: n['start_seconds']):
                 if last and row['start_seconds'] < last['end_seconds']:
                     overlapping.update((last['note_id'], row['note_id']))
                 if last is None or row['end_seconds'] > last['end_seconds']:
                     last = row
-        group_ok = {}
-        for identity, target in score.targets.items():
-            row = score.rows[identity]
+        groups = {}
+        for identity, row in score.rows.items():
             key = row.get('group_placement', 'main')
-            group_path = target.path[:-2]
-            group = _get(data, group_path)
-            if group_path not in group_ok:
-                if self.format == 'ustx':
-                    from ustx_tuning import _native_curve
-                    group_ok[group_path] = not _native_curve(data, group, 'pitd')[2]
-                else:
-                    placement = placements[target.track, key]
-                    system = placement.ref.get('systemPitchDelta')
-                    if isinstance(system, dict):
-                        system = system.get('points', system)
-                    try:
-                        _curve(group.get('parameters', {}).get('pitchDelta'))
-                        group_ok[group_path] = not (group.get('pitchControls') or system)
-                    except ValueError:
-                        group_ok[group_path] = False
-            lyric = target.old['lyric'].strip().casefold()
-            native = group['notes'][target.path[-1]]
-            if (identity in overlapping or not row['singing'] or lyric in ('', 'r', 'ap', '-')
-                    or not group_ok[group_path] or (self.format == 'svp' and
-                        (native.get('pitchControls') or native.get('retakes')))):
-                self.reasons[identity] = PROTECTED
+            part_key = row['track_index'], key
+            part = placements.get(part_key)
+            target = score.targets.get(identity)
+            if (part is None or row.get('read_only_reason') or identity in overlapping or not row['singing']
+                    or self.format in SCORE_FORMATS and target is None):
                 continue
-            self.notes[identity] = (target, key)
-            self.tracks.add(target.track)
+            if part_key not in groups:
+                groups[part_key] = _native_group(self.format, data, part, target)
+            path, writable, protected = groups[part_key]
+            if not writable:
+                continue
+            if target:
+                step = target.step
+                onset, duration, pitch, lyric = (target.old[name] for name in ('onset', 'duration', 'pitch', 'lyric'))
+            else:
+                step = SV_QUARTER // 480
+                onset, duration = row['onset_tick'] // step, row['duration_tick'] // step
+                pitch, lyric = row['pitch'], row['lyric']
+            if ((onset, onset + duration) in protected or not _singing_lyric(lyric)
+                    or type(pitch) is not int or not 0 <= pitch <= 127):
+                continue
+            if self.format == 'svp':
+                native = _get(data, target.path)
+                if native.get('pitchControls') or native.get('retakes'):
+                    continue
+            self.notes[identity] = Anchor(path, key, part.track_index, part.offset, step, onset, duration, pitch, lyric)
+            self.tracks.add(part.track_index)
 
     def reason(self, identity, note):
         if identity not in self.notes:
-            return self.reasons.get(identity, PROTECTED)
+            return PROTECTED
         return SHORT if note['end'] - note['start'] < MIN_NOTE_SECONDS else ''
 
     def _basis(self, identity, patch):
         if identity not in self.notes:
             raise ValueError(UNSUPPORTED if self.format not in FORMATS else PROTECTED)
-        target, group = self.notes[identity]
-        lyric = patch.get('lyric', target.old['lyric']).strip().casefold()
-        if lyric in ('', 'r', 'ap', '-', 'sil', 'pau', 'sp', 'br') or (lyric.startswith('br') and lyric[2:].isdigit()):
+        target = self.notes[identity]
+        if not _singing_lyric(patch.get('lyric', target.lyric)):
             raise ValueError(PROTECTED)
         step = target.step
-        onset = patch.get('onset', target.old['onset'])
-        duration = patch.get('duration', target.old['duration'])
+        onset = patch.get('onset', target.onset)
+        duration = patch.get('duration', target.duration)
         absolute = target.offset + onset * step
-        clock = self.score.clock
+        clock = self.clock
         start, end = clock.to_seconds(absolute), clock.to_seconds(absolute + duration * step)
         if end - start < MIN_NOTE_SECONDS:
             raise ValueError(SHORT)
         inner_a = max(2, math.ceil((clock.to_position(start + EDGE_SECONDS) - absolute) / step))
         inner_b = min(duration - 2, math.floor((clock.to_position(end - EDGE_SECONDS) - absolute) / step))
-        return target, group, onset, absolute, duration, inner_a, inner_b
+        return target, onset, absolute, duration, inner_a, inner_b
 
     def resolve(self, strokes, patches):
         """Resolve normalized spans to the native curve grid and cap their fades to the note."""
-        clock = self.score.clock
         rows = []
         for row in strokes:
             identity, points = row['note_id'], row['points']
-            target, group, onset, absolute, duration, lower, upper = self._basis(identity, patches.get(identity, {}))
+            patch = patches.get(identity, {})
+            target, onset, absolute, duration, lower, upper = self._basis(identity, patch)
+            clock = self.clock
             a, b = points[0][0], points[-1][0]
             if a < lower or b > upper:
                 raise ValueError(BOUNDS)
@@ -170,15 +222,16 @@ class PitchLayer:
             start, end = clock.to_seconds(absolute + a * step), clock.to_seconds(absolute + b * step)
             guard_a = max(1, min(a - 1, round((clock.to_position(start - EDGE_SECONDS) - absolute) / step)))
             guard_b = min(duration - 1, max(b + 1, round((clock.to_position(end + EDGE_SECONDS) - absolute) / step)))
-            rows.append(Span(target.path[:-2], target.track, group,
-                             [[x + onset, y] for x, y in points], guard_a + onset, guard_b + onset))
+            rows.append(Span(target.placement, target.track, target.group,
+                             [[x + onset, y] for x, y in points], guard_a + onset, guard_b + onset,
+                             patch.get('pitch', target.pitch)))
         return rows
 
     def gesture(self, rows, patches, identity, kind, samples):
         if kind not in ('draw', 'erase') or not 1 <= len(samples) <= 2048:
             raise ValueError(SPAN)
-        target, _, _, absolute, _, lower, upper = self._basis(identity, patches.get(identity, {}))
-        clock, step = self.score.clock, target.step
+        target, _, absolute, _, lower, upper = self._basis(identity, patches.get(identity, {}))
+        clock, step = self.clock, target.step
         if upper <= lower:
             raise ValueError(SHORT)
         points = {}
@@ -214,15 +267,20 @@ class PitchLayer:
             if identity not in visible:
                 continue
             patch = patches.get(identity, {})
-            target, _, _, start, _, _, _ = self._basis(identity, patch)
-            pitch = patch.get('pitch', target.old['pitch'])
+            target, _, start, _, _, _ = self._basis(identity, patch)
+            pitch = patch.get('pitch', target.pitch)
             result.append({'noteId': identity, 'points': [
-                [self.score.clock.to_seconds(start + x * target.step), pitch + y / 100.]
+                [self.clock.to_seconds(start + x * target.step), pitch + y / 100.]
                 for x, y in row['points']]})
         return result
 
 
-def _mix(grid, native, styled, spans, low, high, *, cancel):
+def _singing_lyric(lyric):
+    text = (lyric or '').strip().casefold()
+    return text not in ('', 'r', 'ap', '-', 'sil', 'pau', 'sp', 'br') and not (text.startswith('br') and text[2:].isdigit())
+
+
+def mix_pitch_samples(grid, native, styled, spans, low, high, *, cancel):
     """Replace only the style contribution inside the hand-drawn intervals."""
     import numpy as np
 
@@ -246,8 +304,18 @@ def _mix(grid, native, styled, spans, low, high, *, cancel):
     return result
 
 
+def pitch_tick_grid(spans, limit):
+    import numpy as np
+
+    lo = min(span.left for span in spans)
+    hi = max(span.right for span in spans)
+    if hi - lo + 1 > limit:
+        raise ValueError(CAPACITY)
+    return np.arange(lo, hi + 1, dtype=np.int64)
+
+
 def apply_layer(base, output, format, spans, *, cancel):
-    """Mutation whitelist: only PITD or linear pitchDelta coordinates are writable."""
+    """Write only the supported pitch channel on each owning native placement."""
     import numpy as np
 
     from collections import defaultdict
@@ -259,7 +327,15 @@ def apply_layer(base, output, format, spans, *, cancel):
         cancel()
         original, dest = _get(base, path), _get(output, path)
         batch.sort(key=lambda span: span.points[0][0])
-        if format == 'ustx':
+        if format in TICK_FORMATS:
+            if format == 'vpr':
+                from vpr_tuning import apply_manual_pitch
+            else:
+                from ace_tuning import apply_manual_pitch
+            changed, parameter = apply_manual_pitch(original, dest, format, batch, cancel=cancel)
+            if not changed:
+                continue
+        elif format == 'ustx':
             from ustx_tuning import MAX_SAMPLES, _native_curve, _native_samples, encode_native_curve
             idx, styled, _ = _native_curve(output, dest, 'pitd')
             _, native, _ = _native_curve(base, original, 'pitd')
@@ -272,7 +348,7 @@ def apply_layer(base, output, format, spans, *, cancel):
             grid = np.arange(lo, hi + 1, dtype=np.int64)
             values = _native_samples(grid, styled['xs'], styled['ys']).astype(float)
             baseline = _native_samples(grid, native['xs'], native['ys'])
-            target = np.rint(_mix(grid, baseline, values, batch, -1200, 1200, cancel=cancel)).astype(np.int64)
+            target = np.rint(mix_pitch_samples(grid, baseline, values, batch, -1200, 1200, cancel=cancel)).astype(np.int64)
             changed = target != values
             if not changed.any():
                 continue
@@ -284,7 +360,7 @@ def apply_layer(base, output, format, spans, *, cancel):
             else:
                 dest['curves'][idx] = replacement
             parameter = 'pitd'
-        else:
+        elif format == 'svp':
             parameter = 'pitchDelta'
             styled = dest.get('parameters', {}).get(parameter)
             old_x, old_y = _curve(original.get('parameters', {}).get(parameter))
@@ -301,7 +377,7 @@ def apply_layer(base, output, format, spans, *, cancel):
             grid = np.unique(np.asarray(xs + old_x + ends, dtype=np.float64))
             values = np.interp(grid, xs, ys) if xs else np.zeros(len(grid))
             baseline = np.interp(grid, old_x, old_y) if old_x else np.zeros(len(grid))
-            target = _mix(grid, baseline, values, batch, -1200, 1200, cancel=cancel)
+            target = mix_pitch_samples(grid, baseline, values, batch, -1200, 1200, cancel=cancel)
             if np.array_equal(values, target):
                 continue
             old_values = dict(zip(xs, ys))
@@ -309,5 +385,7 @@ def apply_layer(base, output, format, spans, *, cancel):
             for x, y, style in zip(grid.tolist(), target.tolist(), values.tolist()):
                 points.extend((int(x) if x.is_integer() else x, old_values.get(x, y) if y == style else y))
             dest.setdefault('parameters', {})[parameter] = {**(styled or {}), 'mode': 'linear', 'points': points}
+        else:
+            raise ValueError(UNSUPPORTED)
         changes.append({'track_index': batch[0].track, 'group_placement': batch[0].group, 'parameter': parameter})
     return changes
