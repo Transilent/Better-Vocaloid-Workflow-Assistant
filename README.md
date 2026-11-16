@@ -19,7 +19,7 @@ VWA 2.0.0 introduces a Qt Quick workbench with single-track and multitrack tunin
 | Workflow | What it does |
 | --- | --- |
 | Preparation | Import local audio or a Bilibili BV/link, separate lead vocals, backing vocals and accompaniment, transcribe Chinese or Japanese lyrics and notes, and export MIDI, USTX, VSQX or SVP. |
-| Tuning | Open a task project or local SVP, USTX, or VPR, apply experimental styles and pitch gestures to vocal tracks or lyric regions, and save a separate project in the same format. |
+| Tuning | Open a task project or local SVP/SV2, USTX, VPR, ACEP, or UFData. Edit eligible notes on the piano roll, apply styles or draw pitch, and save a separate project in the same format. |
 | Simple mixing | Balance up to three rendered vocal WAVs and one accompaniment with track level, pan, mute/solo, vocal timing and reverb sends, shared vocal-bus EQ/compression/reverb, and editable A/B previews. |
 | Video assembly | Combine a video with your Mixdown, with automatic alignment, manual offset and optional loudness adjustment. |
 | Publishing | Prepare covers, titles, descriptions and credits. Bilibili supports assisted upload; Xiaohongshu provides a local handoff for manual posting and AI disclosure. |
@@ -56,7 +56,7 @@ Requirements: Windows 10/11 x64. The portable package includes its runtime. Chec
 ## Basic use
 
 1. In **Preparation**, select the source, lyric language, processing options and output folder. Review the resulting audio, notes and lyrics.
-2. In **Tuning**, open a task project or import a Synthesizer V Studio 1/2 SVP, OpenUtau USTX, or VOCALOID 5/6 VPR. Find a lyric, select the tracks and range, and save a new project for rendering and auditioning in its editor.
+2. In **Tuning**, open a task project or import Synthesizer V Studio 1/2 SVP, OpenUtau USTX, VOCALOID 5/6 VPR, ACE Studio ACEP, or UFData. Find the lyric, edit notes or adjust the style, and save a new project for rendering and auditioning in its editor. See the [supported versions and editing limits](docs/TuningWorkflow.en.md#edit-lyrics-and-notes).
 3. Render the vocal stems. Open **Simple mixing** to balance up to three vocal WAVs and one accompaniment, audition the result and export a new WAV or register it as a task Mixdown.
 4. Select the original video and Mixdown in **Assemble video**. An existing finished video can go directly to **Publishing**.
 5. Check the cover, platform drafts and credits before preparing the upload. Review the creator page and publish manually.

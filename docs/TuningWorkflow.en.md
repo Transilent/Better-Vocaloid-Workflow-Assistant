@@ -18,13 +18,17 @@ USTX 0.5 can be previewed; resave it in OpenUtau before editing. Style processin
 
 ## Edit lyrics and notes
 
-Open an editable USTX or SVP vocal track in single-track view:
+Open an editable vocal track in single-track view:
 
 - **Lyrics:** double-click a note or select it and press F2. Enter saves; Tab saves and opens the next editable lyric; Esc cancels.
 - **Notes:** enable **Edit notes**. Drag a note horizontally to move it, vertically to change pitch, or by its right edge to resize it. Hold Alt to bypass snapping. Release to apply; Ctrl+Z undoes the edit, and Ctrl+Y or Ctrl+Shift+Z redoes it.
 - **Save:** edits are saved to the project draft. Preview the changes, then generate and save a new copy in the original format. A lyric or note edit alone writes only those changes. Existing style regions follow their original notes, and previous candidates are retained and marked out of date.
 
-This supports existing notes in USTX 0.6–0.10, simple SVP projects, and verified independent SV2 groups. Shared or transposed groups and groups with cropped notes are protected. Manual pronunciation can block lyric edits, and native timing or curves can lock position, duration, or pitch. Edits cannot cross clip bounds or introduce notes that overlap on the same track. Use **Keep original performance** while editing; match new reference or calibration inputs to the resulting score afterward.
+Existing notes can be edited in USTX 0.6–0.10, supported SVP/SV2 groups, VOCALOID 5/6 VPR, ACEP (JSON/Zstd, project schema 9 revision 0), and UFData v1. Shared, transposed, or cropped groups and native curves can restrict specific edits. The editor shows the reason. Moves and resizes stay within clips and cannot create same-track overlaps. Use **Keep original performance** while editing.
+
+- **VPR:** a lyric change also writes the pronunciation for the original language. Use Japanese kana or its romaji, an unambiguous Mandarin character or untoned pinyin, or a word with a known pronunciation on the same track in the same language. Locked pronunciation stays intact. Where phoneme positions are stored, the new pronunciation must use the same number of phonemes. Native direct pitch stays protected.
+- **ACEP:** custom pronunciation, frozen syllables, and manual timing remain protected. Clip edits respect the original crop. ACEP2 remains read-only; export UFData from ACE Studio to edit the exchange score instead.
+- **UFData:** existing phonemes are preserved. Notes can move or resize only in gaps between existing pitch data. Absolute pitch data protects the note's key where it overlaps; relative pitch offsets are preserved when changing the key.
 
 ## Combine style and drawn pitch
 
@@ -38,9 +42,9 @@ Drawing writes to supported USTX PITD, linear SVP pitchDelta, VOCALOID 5/6 VPR p
 
 ## ACE Studio preview
 
-- **ACEP (JSON/Zstd, project schema 9 revision 0):** combine style and drawn pitch offsets in selected vocal clips in **Keep original performance** mode. The score, singers, effects, other controls, and media references are preserved. Clips with native pitch anchors, shared or overlapping notes, or a crop through a note are protected. Use **Save ACEP as…** to write a new file beside the source, where ACE Studio can still resolve `Samples`; then open the copy in ACE Studio.
+- **ACEP (JSON/Zstd, project schema 9 revision 0):** edit existing notes and combine style and drawn pitch offsets in selected vocal clips in **Keep original performance** mode. Unedited notes, singers, effects, other controls, and media references are preserved. Clips with native pitch anchors, shared or overlapping notes, or a crop through a note are protected. Use **Save ACEP as…** to write a new file beside the source, where ACE Studio can still resolve `Samples`; then open the copy in ACE Studio.
 - **ACEP2 and other unverified ACEP variants:** supported structures can be browsed. Unknown containers and tempo ramps show a UFData fallback. ACEP2 writes are disabled.
-- **UFData:** choose UFData in ACE Studio's **Export MIDI** dialog. VWA can apply local pitch changes to the exchange score. Import the saved UFData into the original ACE Studio project. This route does not carry the original singers, backing audio, effects, or ACE-specific expression. Confirm what pitch data your editor version imports before relying on the result.
+- **UFData:** choose UFData in ACE Studio's **Export MIDI** dialog. Edit the notes or apply local pitch changes in VWA, then import the saved UFData into the original ACE Studio project. This route does not carry the original singers, backing audio, effects, or ACE-specific expression. Confirm what pitch data your editor version imports before relying on the result.
 
 [ACE Studio import](https://docs.acestudio.ai/project/file-management/import-files) · [Export](https://docs.acestudio.ai/project/file-management/export-files) · [Project files and Samples](https://docs.acestudio.ai/project/file-management)
 

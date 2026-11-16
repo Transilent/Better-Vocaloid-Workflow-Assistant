@@ -9,17 +9,12 @@ from bisect import bisect_right
 from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass, field
-from functools import lru_cache
-from importlib import import_module
 from io import BytesIO
 import json
 import math
 from pathlib import Path
 import struct
-import sys
-from threading import Lock
-
-from common import ROOT
+from common import ROOT, bundled_export_module
 from svp_tuning import Note, Track
 
 
@@ -31,13 +26,12 @@ CURVE_LIMIT = 350_000
 NOTE_LIMIT = 100_000
 # Preserve larger authored offsets, but never add style to an extreme pitch.
 MAX_EDIT_SEMITONES = 12.
-_CODEC_LOCK = Lock()
 
 ACE_READ_ONLY = '此 ACEP2 或未验证版本仅可浏览；若要调音，请在 ACE Studio 导出 UFData。'
 ACE_HOME = 'ACEP 候选请另存到原工程所在的文件夹，再从 ACE Studio 打开，以保留 Samples 和其他文件引用。'
 ACE_BAD = '无法读取此 ACEP；请在 ACE Studio 通过「导出 MIDI」选择 UFData。'
-ACE_STYLE = 'ACEP 只写音高偏移，保留歌手、原表现参数和工程资源。'
-UF_STYLE = 'UFData 只写可交换的音高；歌手、音频和 ACE 专用参数不在交换范围内。'
+ACE_STYLE = 'ACEP 风格处理只写音高偏移，保留歌手、原表现参数和工程资源。'
+UF_STYLE = 'UFData 支持编辑已有音符和音高；歌手、音频和 ACE 专用参数不在交换范围内。'
 PITCH_CHANNEL = 'pitchDelta'
 
 
@@ -65,28 +59,11 @@ def _bytes(value, bom=False):
                       allow_nan=False).encode('utf-8-sig' if bom else 'utf-8')
 
 
-@lru_cache(maxsize=2)
 def _bundled_codec(name):
-    runtime = (ROOT / 'dependencies/export').resolve()
-    with _CODEC_LOCK:
-        # Import only the two codecs from the existing distribution. The
-        # LibreSVIP project converter would rebuild the singers and tracks.
-        if not runtime.is_dir():
-            raise ValueError('本机缺少 ACEP 解码库，请修复 VWA，或使用 UFData。')
-        path = str(runtime)
-        inserted = path not in sys.path
-        if inserted:
-            sys.path.insert(0, path)
-        try:
-            module = import_module(name)
-            if not Path(module.__file__).resolve().is_relative_to(runtime):
-                raise ImportError('codec is not from the VWA runtime')
-            return module
-        except (ImportError, OSError, RuntimeError) as error:
-            raise ValueError('本机缺少 ACEP 解码库，请修复 VWA，或使用 UFData。') from error
-        finally:
-            if inserted:
-                sys.path.remove(path)
+    try:
+        return bundled_export_module(ROOT, name)
+    except (ImportError, OSError, RuntimeError) as error:
+        raise ValueError('本机缺少 ACEP 解码库，请修复 VWA，或使用 UFData。') from error
 
 
 def _inflate(payload, expected=None):

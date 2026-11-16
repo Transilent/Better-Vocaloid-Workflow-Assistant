@@ -6,12 +6,11 @@ import math
 import re
 
 from style_presets import _curve
-from tuning_score_edits import FORMATS as SCORE_FORMATS
+from tuning_score_edits import DIRECT_FORMATS, FORMATS, native_group_path
 from vocal_expression import SV_QUARTER, TempoMap
 
 
 MAX_CENTS = 200
-FORMATS = SCORE_FORMATS | {'vpr', 'acep', 'ufdata'}
 TICK_FORMATS = frozenset(('vpr', 'acep', 'ufdata'))
 MAX_POINTS = 16_384
 MAX_BYTES = 224 * 1024
@@ -105,16 +104,14 @@ def _native_group(format, data, part, score_target):
     """Find a native group and its per-note protections once per placement."""
     if format == 'vpr':
         from vpr_tuning import PBS, PIT, _curve as controller
-        path = ('tracks', part.track_index, 'parts', part.index)
+        path = native_group_path(format, part.track_index, part.index)
         raw = _get(data, path)
         writable = all(controller(raw, name)[1] is not None for name in (PIT, PBS))
         return path, writable, set(part.direct_pitch_spans) | set(part.overlap_spans)
     if format in ('acep', 'ufdata'):
         # The adapters' style placements have already excluded unknown curve
         # shapes, ACEP2, shared instances, overlaps and cropped-through notes.
-        path = ('project', 'tracks', part.track_index)
-        if format == 'acep':
-            path += ('patterns', part.index)
+        path = native_group_path(format, part.track_index, part.index)
         return path, True, set(part.protected)
     path = score_target.path[:-2]
     raw = _get(data, path)
@@ -160,7 +157,7 @@ class PitchLayer:
             part = placements.get(part_key)
             target = score.targets.get(identity)
             if (part is None or row.get('read_only_reason') or identity in overlapping or not row['singing']
-                    or self.format in SCORE_FORMATS and target is None):
+                    or self.format in DIRECT_FORMATS and target is None):
                 continue
             if part_key not in groups:
                 groups[part_key] = _native_group(self.format, data, part, target)

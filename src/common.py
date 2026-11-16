@@ -11,12 +11,15 @@ import threading
 import weakref
 from contextlib import contextmanager
 from functools import lru_cache
+from importlib import import_module
 from pathlib import Path
+import sys
 
 ROOT = Path(__file__).resolve().parent
 BV_PATTERN = re.compile(r"(?<![A-Za-z0-9])BV1[A-Za-z0-9]{9}(?![A-Za-z0-9])")
 _ATOMIC_LOCKS = weakref.WeakValueDictionary()
 _ATOMIC_GUARD = threading.Lock()
+_EXPORT_IMPORT_LOCK = threading.Lock()
 
 
 TOOL_PATHS = ("python", "vocal2midi", "ffmpeg", "mdx_model", "mdx_metadata",
@@ -32,6 +35,27 @@ def native_path(path):
     if value.startswith('\\\\'):
         return '\\\\?\\UNC\\' + value[2:]
     return '\\\\?\\' + value
+
+
+@lru_cache(maxsize=16)
+def bundled_export_module(root, name):
+    """Load an existing export runtime module without leaving it on sys.path."""
+    runtime = (root / 'dependencies/export').resolve()
+    if not runtime.is_dir():
+        raise ImportError('VWA export runtime is missing')
+    with _EXPORT_IMPORT_LOCK:
+        path = str(runtime)
+        inserted = path not in sys.path
+        if inserted:
+            sys.path.insert(0, path)
+        try:
+            module = import_module(name)
+            if not Path(module.__file__).resolve().is_relative_to(runtime):
+                raise ImportError('module is not from the VWA export runtime')
+            return module
+        finally:
+            if inserted:
+                sys.path.remove(path)
 
 
 class SidecarBusy(BlockingIOError):

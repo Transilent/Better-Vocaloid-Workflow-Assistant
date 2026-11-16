@@ -1,17 +1,20 @@
 """Native VOCALOID 5/6 project editing over part-local controllers."""
 
+import ast
 from contextlib import contextmanager
 from copy import copy, deepcopy
 from dataclasses import dataclass, field
+from functools import lru_cache
 import hashlib
 import io
 import json
 import math
 from pathlib import Path
 import stat
+from unicodedata import normalize
 from zipfile import BadZipFile, ZIP_DEFLATED, ZIP_STORED, ZipFile
 
-from common import native_path
+from common import ROOT, bundled_export_module, native_path
 from svp_tuning import Note, Track
 from tuning_project_identity import MAX_VPR_PROJECT_BYTES as MAX_FILE_BYTES
 from vocaloid_pitch import PBS_SPEC, PIT_SPEC, step_values
@@ -40,6 +43,106 @@ def _authored_vibrato(note):
     return not (isinstance(value, dict)
                 and set(value) <= {'type', 'duration', 'depths', 'rates'}
                 and type(value.get('duration')) is int and value['duration'] == 0)
+
+
+def score_language(part, note):
+    """A V6 AI note can override the part's language."""
+    if 'langID' in note:
+        return note['langID'] if type(note['langID']) is int else None
+    ai = part.get('aiVoice')
+    if isinstance(ai, dict):
+        choices = ai.get('langIDs')
+        if isinstance(choices, list) and len(choices) == 1:
+            option = choices[0]
+            value = option.get('langID') if isinstance(option, dict) else option
+            return value if type(value) is int else None
+        return None
+    voice = part.get('voice')
+    value = voice.get('langID') if isinstance(voice, dict) else None
+    return value if type(value) is int else None
+
+
+@lru_cache(maxsize=4)
+def _score_phone_table(root, language, name):
+    # Use the pinned LibreSVIP tables as data. Importing its core would load
+    # converter dependencies and could replace process-wide YAML behavior.
+    path = root / f'dependencies/export/libresvip/core/lyric_phoneme/{language}/vocaloid_xsampa.py'
+    with open(native_path(path), 'r', encoding='utf-8-sig') as stream:
+        source = stream.read(24_001)
+    if len(source) <= 24_000:
+        for node in ast.parse(source).body:
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name) and node.targets[0].id == name):
+                table = ast.literal_eval(node.value)
+                if isinstance(table, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in table.items()):
+                    return table
+    raise ValueError('VPR 发音词典结构不符。')
+
+
+def score_phoneme(lang, lyric):
+    """Strict single-note lookup, with no default phoneme for unknown text."""
+    lyric = normalize('NFKC', lyric).lower()
+    try:
+        if lang == 0:
+            kana = bundled_export_module(ROOT, 'wanakana.japanese')
+            table = _score_phone_table(ROOT, 'japanese', 'romaji2xsampa')
+            return table.get(kana.to_romaji(lyric, custom_romaji_mapping={'っ': 'cl'}))
+        if lang == 4:
+            if len(lyric) == 1 and not lyric.isascii():
+                pinyin = bundled_export_module(ROOT, 'pypinyin')
+                readings = pinyin.pinyin(lyric, style=pinyin.Style.NORMAL, heteronym=True, errors='ignore')
+                if len(readings) != 1 or len(set(readings[0])) != 1:
+                    return None
+                lyric = readings[0][0]
+            table = _score_phone_table(ROOT, 'chinese', 'pinyin2xsampa')
+            return table.get(lyric.replace('ü', 'v'))
+    except (ImportError, OSError, RuntimeError, SyntaxError, ValueError) as error:
+        raise ValueError('无法读取本机 VPR 发音词典，请修复 VWA，或在 VOCALOID 中改词。') from error
+    return None
+
+
+def _static_midi_effect(effect):
+    static = {'SingingSkill', 'VoiceColor', 'RobotVoice', 'DefaultLyric', 'Breath', 'Take'}
+    if not isinstance(effect, dict):
+        return False
+    if effect.get('isBypassed') is True:
+        return True
+    key, params = effect.get('id'), effect.get('parameters')
+    return (isinstance(key, str) and key in static
+            and set(effect) <= {'id', 'isBypassed', 'isFolded', 'parameters'}
+            and isinstance(params, list)
+            and all(isinstance(p, dict) and set(p) == {'name', 'value'}
+                    and isinstance(p['name'], str) and not isinstance(p['value'], (dict, list)) for p in params))
+
+
+def score_automation_changes_in_part(part, minimum):
+    """Time changes must not shift a note across time-varying part automation."""
+    effects = part.get('midiEffects')
+    if effects and (not isinstance(effects, list) or not all(map(_static_midi_effect, effects))):
+        return True
+    defaults = {key: spec[0] for key, spec in CONTROLLERS.items()}
+    defaults.update(brightness=64, clearness=0, breathiness=0, portamento=64, growl=0, gender=64)
+    controllers = part.get('controllers')
+    if controllers is None:
+        return False
+    if not isinstance(controllers, list):
+        return True
+    for control in controllers:
+        if not isinstance(control, dict) or not isinstance(control.get('name'), str):
+            return True
+        events = control.get('events')
+        if not isinstance(events, list) or any(not isinstance(event, dict)
+                or not _tick(event.get('pos')) or type(event.get('value')) is not int for event in events):
+            return True
+        if events:
+            default = defaults.get(control['name'])
+            if default is None:
+                return True
+            first = events[0]['value']
+            if (any(event['value'] != first for event in events)
+                    or first != default and events[0]['pos'] > minimum):
+                return True
+    return False
 
 
 @contextmanager

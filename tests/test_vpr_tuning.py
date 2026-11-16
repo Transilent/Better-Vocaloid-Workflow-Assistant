@@ -15,12 +15,12 @@ from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
 import numpy as np
 
 APP = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(APP / 'src'))
+sys.path[:0] = [str(APP), str(APP / 'src')]
 
 import agent_style
 from tuning_timeline import ProjectNotes, freeze_plan
 import tuning_workflow as workflow
-from vpr_tuning import DYN, PBS, PIT, SEQUENCE, Layout, process_project, read
+from vpr_tuning import DYN, PBS, PIT, SEQUENCE, Layout, process_project, read, score_phoneme
 
 
 AUDIO = 'Project/Audio/demo.wav'
@@ -86,6 +86,23 @@ def write_source(path, data):
     return path
 
 
+def editable_score():
+    data = project()
+    part = data['tracks'][1]['parts'][0]
+    part['voice']['langID'] = 0
+    part['controllers'] = [{'name': PIT, 'events': [{'pos': 120, 'value': 0}]}]
+    part['midiEffects'] = [{'id': 'SingingSkill', 'isBypassed': False, 'isFolded': False,
+                            'parameters': [{'name': 'Amount', 'value': 5}]}]
+    part['notes'][0].update(lyric='ま', phoneme='m a', isProtected=False,
+                            phonemePositions=[{'pos': -20}, {'pos': 0}, {'pos': 160}],
+                            vibrato={'type': 0, 'duration': 0})
+    second = data['tracks'][1]['parts'][1]
+    second['voice']['langID'] = 1
+    second['notes'][0].update(lyric='meet', phoneme='m i: t', isProtected=False)
+    second['notes'].append(note(380, 80, 62, 'you') | {'phoneme': 'j u:', 'isProtected': False})
+    return data
+
+
 def curve(part, channel):
     return next((c for c in part.get('controllers') or [] if c['name'] == channel), {'events': []})
 
@@ -97,6 +114,54 @@ def sampled(part, channel, tick):
 
 
 class VprTuningTests(unittest.TestCase):
+    def test_note_edits_write_pronunciation_and_timing_without_rebuilding_vpr(self):
+        original = editable_score()
+        with tempfile.TemporaryDirectory(prefix='vpr-score-', dir=APP) as folder:
+            root = Path(folder)
+            source = write_source(root / 'score.vpr', original)
+            source_sha = sha256(source.read_bytes()).hexdigest()
+            timeline = ProjectNotes.load(source)
+            chosen, = timeline.matches('ま')
+            identity = chosen['id']
+            self.assertFalse(any(chosen[key] for key in ('lyricReason', 'pitchReason', 'timingReason')))
+            peer, = timeline.matches('空')
+            self.assertTrue(peer['lyricReason'] and peer['timingReason'])
+            direct, = [row for row in timeline.notes.values() if row['trackId'] == timeline.editable[1]]
+            self.assertTrue(direct['pitchReason'])
+            for field, value, message in [('lyric', 'あ', '音素的数量'), ('lyric', '星光', '确定原语言'),
+                                          ('duration', 160, '截断'), ('onset', 1460, '原片段')]:
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, message):
+                    timeline.with_note_edits([{'note_id': identity, field: value}])
+            # A move to the far side of a neighbour would retain a wrong native array order.
+            with self.assertRaisesRegex(ValueError, '相邻音符'):
+                timeline.with_note_edits([{'note_id': identity, 'onset': 1510, 'duration': 390}])
+            english, = timeline.matches('meet')
+            self.assertEqual(timeline.score_editor.materialize(original, [
+                {'note_id': english['id'], 'lyric': 'you'}])[0]['tracks'][1]['parts'][1]['notes'][0]['phoneme'], 'j u:')
+            self.assertEqual(score_phoneme(4, '你'), score_phoneme(4, 'ni'))
+            self.assertIsNotNone(score_phoneme(4, 'ni'))
+            self.assertIsNone(score_phoneme(4, '行'))
+            self.assertIsNotNone(score_phoneme(0, 'メ'))
+            edits = [{'note_id': identity, 'lyric': 'め', 'pitch': 62, 'onset': 180, 'duration': 390}]
+            projected = timeline.with_note_edits(edits)
+            self.assertEqual((projected.notes[identity]['lyric'], projected.notes[identity]['pitch']), ('め', 62))
+            session = workflow.create_session(source, root / 'session')
+            workflow.run_session(session, {'track_indices': [1], 'note_edits': edits})
+            receipt = workflow.verified_result(session)
+            out = root / 'new.vpr'
+            workflow.export_verified_copy(receipt, out)
+            expected = deepcopy(original)
+            expected['tracks'][1]['parts'][0]['notes'][0].update(
+                lyric='め', phoneme='m e', number=62, pos=180, duration=390)
+            self.assertEqual(read(out), expected)
+            row, = receipt['report']['note_changes']
+            self.assertEqual(row['native_fields']['phoneme'], {'before': 'm a', 'after': 'm e'})
+            with ZipFile(source) as old, ZipFile(out) as new:
+                self.assertEqual(old.namelist(), new.namelist())
+                for name in (AUDIO, EXTRA):
+                    self.assertEqual(old.read(name), new.read(name))
+            self.assertEqual(sha256(source.read_bytes()).hexdigest(), source_sha)
+
     def test_manual_pitch_keeps_pbs_audio_and_style_outside_the_stroke(self):
         data = project()
         with tempfile.TemporaryDirectory(prefix='vpr-ink-', dir=APP) as root:

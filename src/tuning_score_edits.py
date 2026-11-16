@@ -1,4 +1,5 @@
 """Revision-bound edits to existing native notes. No format conversion or rendering."""
+from bisect import bisect_right
 from copy import deepcopy
 from dataclasses import dataclass
 import json
@@ -9,7 +10,13 @@ import unicodedata
 from vocal_expression import TempoMap, SV_QUARTER
 
 
-FORMATS = frozenset(('ustx', 'svp'))
+DIRECT_FORMATS = frozenset(('ustx', 'svp'))
+ADAPTED_FIELDS = {
+    'vpr': {'lyric': 'lyric', 'pitch': 'number', 'onset': 'pos', 'duration': 'duration'},
+    'acep': {'lyric': 'lyric', 'pitch': 'pitch', 'onset': 'pos', 'duration': 'dur'},
+    'ufdata': {'lyric': 'lyric', 'pitch': 'key', 'onset': 'tickOn', 'duration': 'tickOff'},
+}
+FORMATS = DIRECT_FORMATS | frozenset(ADAPTED_FIELDS)
 FIELDS = frozenset(('lyric', 'pitch', 'onset', 'duration'))
 MAX_EDITS = 4096
 MAX_EDIT_BYTES = 640 * 1024  # Leave room in the shared draft for styles and metadata.
@@ -17,6 +24,8 @@ UNSUPPORTED = '此工程格式暂不支持改词或改音符。'
 PHONEMES = '此音符有手工发音或延音设置，请在原编辑器改词。'
 TIMING = '此音符或片段有手工时序、曲线或音素，已保护原位置和时长。'
 PITCH = '此片段有原生音高锚点或重录参数，已保护音符音高。'
+VPR_PHONEME = '无法为此 VPR 歌词确定原语言的发音。可使用工程里同语言的已有词，或在 VOCALOID 中改词。'
+VPR_PHONE_COUNT = '新发音与原音素的数量不同，无法保留音素位置，请在 VOCALOID 中改词。'
 
 
 def _lyric(text):
@@ -67,6 +76,148 @@ def _nonempty(value):
     return bool(value)
 
 
+def native_group_path(format, track, index):
+    if format == 'vpr':
+        return ('tracks', track, 'parts', index)
+    if format == 'acep':
+        return ('project', 'tracks', track, 'patterns', index)
+    if format == 'ufdata':
+        return ('project', 'tracks', track)
+    raise ValueError(UNSUPPORTED)
+
+
+def _native(data, path):
+    for key in path:
+        data = data[key]
+    return data
+
+
+def _special_lyric(lyric, *, extended=True):
+    lyric = lyric.strip().casefold()
+    return (not lyric or lyric in ('+', '++', '-', 'r', 'sil', 'pau', 'br', 'ap', 'sp')
+            or lyric.startswith('.') or '[' in lyric or ']' in lyric or extended and
+            (lyric in ('ー', '−') or re.fullmatch(r'br\d+', lyric) or re.search(r'#\d+$', lyric)))
+
+
+def _trim_phones(value):
+    if isinstance(value, str):
+        tokens = value.split()
+        if tokens and len(tokens) <= 40 and len(value) <= 300 and not _special_lyric(value):
+            return ' '.join(tokens)
+    return None
+
+
+@dataclass(frozen=True)
+class NativeGroup:
+    path: tuple
+    raw: dict
+    minimum: int
+    maximum: int
+    timed: bool
+    protected: frozenset
+    pitch_starts: tuple = ()
+    pitch_ends: tuple = ()
+    pitch_absolute: bool = False
+    unknown_pitch: bool = False
+
+    def pitch_window(self, start, end):
+        i = bisect_right(self.pitch_ends, start)
+        before = self.pitch_ends[i-1] if i else self.minimum
+        after = self.pitch_starts[i] if i < len(self.pitch_starts) else self.maximum
+        return max(self.minimum, before), min(self.maximum, after), after < end
+
+
+def _adapted_group(data, format, place):
+    step = SV_QUARTER // 480
+    path = native_group_path(format, place.track_index, place.index)
+    raw = _native(data, path)
+    offset = place.offset // step
+    lower = max(0, -offset)
+    if format == 'vpr':
+        from vpr_tuning import score_automation_changes_in_part
+        upper = place.length
+        if upper is None:
+            upper = max((note.end - place.offset) // step for note in place.notes)
+        timed = score_automation_changes_in_part(raw, lower) or len(place.notes) != len(raw['notes'])
+        return NativeGroup(path, raw, lower, min(upper, 2**30 - 1 - max(0, offset)),
+                           timed, frozenset(place.overlap_spans))
+    if format == 'acep':
+        first = int(raw.get('clipPos', 0))
+        upper = first + int(raw.get('clipDur', raw.get('dur')))
+        params = raw.get('parameters', {})
+        # The named offset/voice lanes can't override the base MIDI note.
+        relative = {'pitchDelta', 'energy', 'breathiness', 'tension', 'falsetto', 'gender', 'vuv',
+                    'realEnergy', 'realBreathiness', 'realTension', 'realFalsetto'}
+        unknown = any(v for key, v in params.items() if key not in relative)
+        return NativeGroup(path, raw, max(lower, first), min(10**8 - 1, upper), any(params.values()),
+                           frozenset(place.protected), unknown_pitch=unknown)
+    pitch = raw.get('pitch') or {'ticks': [], 'values': [], 'isAbsolute': True}
+    ticks, values = pitch['ticks'], pitch['values']
+    starts, ends = [], []
+    for i, value in enumerate(values):
+        if value is not None and value != 0:
+            start, end = ticks[i], ticks[i+1] if i+1 < len(ticks) else 10**8
+            if start < end:
+                starts.append(start)
+                ends.append(end)
+    return NativeGroup(path, raw, lower, 10**8 - 1, False, frozenset(),
+                       tuple(starts), tuple(ends), pitch['isAbsolute'])
+
+
+def _vpr_phone_positions(note, phones):
+    points = note.get('phonemePositions')
+    if points is None or points == []:
+        return ()
+    if (not phones or not isinstance(points, list) or len(points) != len(phones.split()) + 1
+            or any(not isinstance(p, dict) or set(p) != {'pos'} or type(p['pos']) is not int
+                   or not -2**30 < p['pos'] < 2**30 for p in points)):
+        return None
+    positions = tuple(p['pos'] for p in points)
+    return positions if positions == tuple(sorted(positions)) else None
+
+
+def _adapted_target(format, group, index, old):
+    note = group.raw['notes'][index]
+    start, end = old['onset'], old['onset'] + old['duration']
+    timed = group.timed or (start, end) in group.protected
+    pitched = group.unknown_pitch
+    if index + 1 < len(group.raw['notes']):
+        next_note = group.raw['notes'][index + 1]
+        next_lyric = next_note.get('lyric')
+        if isinstance(next_lyric, str) and next_lyric.strip() in ('+', '++', '-', 'ー', '−'):
+            timed = True
+    lyric_reason, minimum_duration, lang, slots = '', 1, None, 0
+    if format == 'vpr':
+        from vpr_tuning import _authored_vibrato, score_language
+        phones = _trim_phones(note.get('phoneme'))
+        positions = _vpr_phone_positions(note, phones)
+        lock = note.get('isProtected')
+        locked = lock is not None and lock is not False
+        lang = score_language(group.raw, note)
+        if locked or positions is None or note.get('phoneme') and not phones:
+            lyric_reason = PHONEMES
+        elif lang is None:
+            lyric_reason = VPR_PHONEME
+        if positions:
+            slots = len(positions) - 1
+            minimum_duration = max(1, min(old['duration'], positions[-1] + 1))
+        skill = note.get('singingSkill')
+        if isinstance(skill, dict) and type(skill.get('duration')) is int:
+            minimum_duration = max(minimum_duration, min(old['duration'], skill['duration']))
+        pitched = bool(note.get('directPitches'))
+        timed = timed or pitched or locked or positions is None or _authored_vibrato(note)
+    elif format == 'acep':
+        custom_timing = (note.get('headConsonants') or note.get('tailConsonants')
+                         or note.get('consonantLen') or note.get('brLen') or note.get('phonemes'))
+        if (custom_timing or note.get('pronunciation') or note.get('syllable')
+                or note.get('freezedDefaultSyllable')):
+            lyric_reason = PHONEMES
+        timed = timed or custom_timing
+    elif note.get('phoneme'):
+        lyric_reason = PHONEMES
+    return lyric_reason, timed, pitched, minimum_duration, lang, slots
+
+
 @dataclass(frozen=True)
 class Target:
     track: int
@@ -80,6 +231,9 @@ class Target:
     lyric_reason: str
     timing_reason: str
     pitch_reason: str
+    minimum_duration: int = 1
+    language: int | None = None
+    phoneme_slots: int = 0
 
     def reason(self, field):
         return (self.lyric_reason if field == 'lyric' else self.pitch_reason if field == 'pitch'
@@ -98,12 +252,15 @@ class ScoreEdits:
         self.clock = TempoMap(project['time']['tempo']) if format in FORMATS else None
         self.targets = {}
         self.editable_tracks = set()
+        self.vpr_words = {}
         self.rows = {row['note_id']: row for row in context['notes']}
         if not self.clock:
             return
         placements = {(track.index, place.key): place for track in layout.tracks if track.writable
                       for place in track.style_placements}
         part_limits = {}
+        native_groups = {}
+        self.group_rows = {}
         self.track_notes = {}
         for row in context['notes']:
             track = row['track_index']
@@ -113,7 +270,19 @@ class ScoreEdits:
                 continue
             local_index = row['note_index']
             minimum = 0
-            if format == 'ustx':
+            adapted = format in ADAPTED_FIELDS
+            if adapted:
+                group_key = track, place.key
+                self.group_rows.setdefault(group_key, []).append(row)
+                if group_key not in native_groups:
+                    native_groups[group_key] = _adapted_group(data, format, place)
+                group = native_groups[group_key]
+                path = group.path
+                note = group.raw['notes'][local_index]
+                fields = ADAPTED_FIELDS[format]
+                step = SV_QUARTER // 480
+                minimum, maximum = group.minimum, group.maximum
+            elif format == 'ustx':
                 path = ('voice_parts', place.index)
                 group = data['voice_parts'][place.index]
                 note = group['notes'][local_index]
@@ -156,20 +325,47 @@ class ScoreEdits:
                            or bool(note.get('pitchControls') or note.get('retakes')))
                 timed = timed or pitched
             old = {key: note.get(raw, '' if key == 'lyric' else None) for key, raw in fields.items()}
+            if format == 'ufdata':
+                old['duration'] -= old['onset']
             if (type(old['onset']) is not int or old['onset'] < 0
                     or type(old['duration']) is not int or old['duration'] <= 0
                     or type(old['pitch']) is not int or not 0 <= old['pitch'] <= 127
                     or not isinstance(old['lyric'], str)):
                 continue
-            lyric = old['lyric'].strip()
-            explicit = (not lyric or lyric.casefold() in ('+', '++', '-', 'r', 'sil', 'pau', 'br', 'ap', 'sp')
-                        or lyric.startswith('.') or '[' in lyric or ']' in lyric)
-            # Keep an explicitly notated rest/continuation out of the lyric tool.
-            self.targets[row['note_id']] = Target(
+            floor, language, slots = 1, None, 0
+            if adapted:
+                lyric_reason, timed, pitched, floor, language, slots = _adapted_target(format, group, local_index, old)
+                if format == 'ufdata':
+                    minimum, maximum, curve_overlaps = group.pitch_window(old['onset'], old['onset']+old['duration'])
+                    timed = timed or curve_overlaps
+                    pitched = group.pitch_absolute and curve_overlaps
+                if _special_lyric(old['lyric']) or not row['singing']:
+                    lyric_reason = PHONEMES
+                if not row['singing'] or _special_lyric(old['lyric']):
+                    timed = pitched = True
+                if format == 'vpr' and not lyric_reason and (phones := _trim_phones(note.get('phoneme'))):
+                    word = (track, language, old['lyric'].strip().casefold())
+                    self.vpr_words[word] = phones if self.vpr_words.get(word, phones) == phones else None
+            else:
+                lyric_reason = PHONEMES if manual_phones or _special_lyric(old['lyric'], extended=False) else ''
+            target = Target(
                 track, (*path, 'notes', local_index), place.offset, step, minimum, maximum, old, fields,
-                PHONEMES if manual_phones or explicit else '', TIMING if timed else '', PITCH if pitched else '')
-            if not (self.targets[row['note_id']].lyric_reason and timed and pitched):
+                lyric_reason, TIMING if timed else '', PITCH if pitched else '', floor, language, slots)
+            self.targets[row['note_id']] = target
+            if not (lyric_reason and timed and pitched):
                 self.editable_tracks.add(track)
+        for rows in self.group_rows.values():
+            rows.sort(key=lambda row: row['note_index'])
+
+    def _phoneme(self, target, lyric):
+        from vpr_tuning import score_phoneme
+        word = (target.track, target.language, lyric.casefold())
+        result = self.vpr_words[word] if word in self.vpr_words else score_phoneme(target.language, lyric)
+        if not result:
+            raise ValueError(VPR_PHONEME)
+        if target.phoneme_slots and len(result.split()) != target.phoneme_slots:
+            raise ValueError(VPR_PHONE_COUNT)
+        return result
 
     def capabilities(self, identity):
         target = self.targets.get(identity)
@@ -197,20 +393,40 @@ class ScoreEdits:
                     continue
                 if problem := target.reason(field):
                     raise ValueError(problem)
+                if field == 'lyric' and self.format in ADAPTED_FIELDS:
+                    if _special_lyric(edit[field]):
+                        raise ValueError(PHONEMES)
+                    if self.format == 'vpr':
+                        self._phoneme(target, edit[field])
                 local[field] = edit[field]
             onset, duration = local['onset'], local['duration']
             if onset != target.old['onset'] or duration != target.old['duration']:
                 if onset < target.minimum or onset + duration > target.maximum:
-                    raise ValueError('音符超出原片段可编辑范围。')
+                    raise ValueError('音符超出原片段或原生曲线之间的可编辑范围。')
+                if duration < target.minimum_duration:
+                    raise ValueError('音符过短，会截断原有音素位置。')
                 changed_timing.add(identity)
             start = target.offset + onset * target.step
             end = start + duration * target.step
             row = self.rows[identity]
-            changed[identity] = {**row, 'lyric': local['lyric'], 'lyric_raw': local['lyric'],
+            lyric = ({'lyric': local['lyric'], 'lyric_raw': local['lyric'], 'lyric_known': True}
+                     if local['lyric'] != target.old['lyric'] else {})
+            changed[identity] = {**row, **lyric,
                                  'pitch': local['pitch'], 'onset_tick': onset * target.step,
                                  'duration_tick': duration * target.step, 'project_onset_tick': start,
                                  **({'project_end_tick': end} if 'project_end_tick' in row else {}),
                                  'start_seconds': self.clock.to_seconds(start), 'end_seconds': self.clock.to_seconds(end)}
+        for group in {(self.rows[i]['track_index'], self.rows[i].get('group_placement', 'main'))
+                      for i in changed_timing} & self.group_rows.keys():
+            # Preserve native note order and stable IDs. Crossing an adjacent
+            # note would otherwise silently leave the native note list unsorted.
+            rows = self.group_rows[group]
+            for a, b in zip(rows, rows[1:]):
+                ai, bi = a['note_id'], b['note_id']
+                if ((ai in changed_timing or bi in changed_timing)
+                        and a['project_onset_tick'] <= b['project_onset_tick']
+                        and changed.get(ai, a)['project_onset_tick'] > changed.get(bi, b)['project_onset_tick']):
+                    raise ValueError('音符不能移到同片段的相邻音符之外。')
         for track in {self.targets[identity].track for identity in changed_timing}:
             ordered = sorted((changed.get(row['note_id'], row) for row in self.track_notes[track]),
                              key=lambda row: (row['start_seconds'], row['end_seconds']))
@@ -251,7 +467,7 @@ class ScoreEdits:
             start = max(target.minimum, min(target.maximum - duration, position))
             return {'onset': start, 'pitch': pitch}
         if action == 'resize':
-            return {'duration': max(1, min(target.maximum, position) - start)}
+            return {'duration': max(target.minimum_duration, min(target.maximum, position) - start)}
         raise ValueError('未知音符操作。')
 
     def geometry(self, identity, patch, changes):
@@ -268,15 +484,25 @@ class ScoreEdits:
         details = []
         for edit in edits:
             target = self.targets[edit['note_id']]
-            native = output
-            for key in target.path:
-                native = native[key]
+            native = _native(output, target.path)
             changed = {}
+            derived = {}
             for field, value in sorted(edit.items()):
                 if field == 'note_id' or value == target.old[field]:
                     continue
-                native[target.fields[field]] = value
+                if not (self.format == 'ufdata' and field == 'duration'):
+                    native[target.fields[field]] = value
                 changed[field] = {'before': target.old[field], 'after': value}
             if changed:
-                details.append({'note_id': edit['note_id'], 'track_index': target.track, 'fields': changed})
+                if self.format == 'ufdata' and changed.keys() & {'onset', 'duration'}:
+                    end = edit.get('onset', target.old['onset']) + edit.get('duration', target.old['duration'])
+                    derived['tickOff'] = {'before': native['tickOff'], 'after': end}
+                    native['tickOff'] = end
+                elif self.format == 'vpr' and 'lyric' in changed:
+                    phones = self._phoneme(target, edit['lyric'])
+                    if phones != native.get('phoneme'):
+                        derived['phoneme'] = {'before': native.get('phoneme'), 'after': phones}
+                        native['phoneme'] = phones
+                details.append({'note_id': edit['note_id'], 'track_index': target.track, 'fields': changed,
+                                **({'native_fields': derived} if derived else {})})
         return output, details

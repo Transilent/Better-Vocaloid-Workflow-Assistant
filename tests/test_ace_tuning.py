@@ -104,6 +104,22 @@ def uf_score(*, relative=False, empty=False):
         ],'unknown':{'mustStay':True}}, 'extension':{'schema':'keep'}}
 
 
+def editable_ace_score():
+    data = ace_score()
+    clip = data['tracks'][0]['patterns'][0]
+    clip.update(clipPos=40, clipDur=1160, parameters={})
+    clip['notes'][0].update(pos=40, dur=300, pronunciation=None)
+    return data
+
+
+def editable_uf_score():
+    data = uf_score(empty=True)
+    notes = data['project']['tracks'][0]['notes']
+    notes[0]['phoneme'] = None
+    notes[1]['tickOn'] = 720
+    return data
+
+
 def parameters(track, begin, end):
     return {'track_indices':[track], 'style_regions':[{
         'start':begin,'end':end,'preset':'gentle','strength':.85,'pitch':True,'track_index':track}]}
@@ -135,6 +151,90 @@ class AceFormats(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.zstd, _ = codecs()
+
+    def test_ace_score_edits_preserve_pronunciation_clip_bounds_and_resources(self):
+        original = editable_ace_score()
+        source = self.root / 'original.acep'
+        source.write_bytes(wrap_ace(original))
+        before = file_hash(source)
+        timeline = ProjectNotes.load(source)
+        first, = timeline.matches('窗')
+        peer, = timeline.matches('边')
+        anchor, = timeline.matches('留')
+        self.assertFalse(any(first[k] for k in ('lyricReason', 'pitchReason', 'timingReason')))
+        self.assertTrue(peer['lyricReason'] and not peer['pitchReason'])
+        self.assertTrue(anchor['lyricReason'] and anchor['timingReason'] and anchor['pitchReason'])
+        with self.assertRaisesRegex(ValueError, '可编辑范围'):
+            timeline.with_note_edits([{'note_id': first['id'], 'onset': 39}])
+        with self.assertRaisesRegex(ValueError, '手工发音'):
+            timeline.with_note_edits([{'note_id': peer['id'], 'lyric': '河'}])
+        edits = [{'note_id': first['id'], 'lyric': '星', 'pitch': 62, 'onset': 95, 'duration': 330}]
+        session = workflow.create_session(source, self.root / 'native-session')
+        workflow.run_session(session, {'track_indices': [0], 'note_edits': edits})
+        receipt = workflow.verified_result(session)
+        saved = self.root / 'edited.acep'
+        workflow.export_verified_copy(receipt, saved)
+        expected = deepcopy(original)
+        expected['tracks'][0]['patterns'][0]['notes'][0].update(pos=95, dur=330, pitch=62, lyric='星')
+        self.assertEqual(workflow.read_project(saved)['project'], expected)
+        row, = receipt['report']['note_changes']
+        self.assertEqual(set(row['fields']), {'lyric', 'pitch', 'onset', 'duration'})
+        self.assertEqual(file_hash(source), before)
+        self.assertEqual(file_hash(saved), receipt['output_sha256'])
+        protected = self.root / 'readonly.acep'
+        protected.write_bytes(wrap_ace(original, binary=True))
+        model = ProjectNotes.load(protected)
+        self.assertFalse(model.score_editor.editable_tracks)
+        first, = model.matches('窗')
+        with self.assertRaisesRegex(ValueError, '原生编辑能力'):
+            model.with_note_edits([{'note_id': first['id'], 'pitch': 68}])
+
+    def test_ufdata_score_edits_write_end_ticks_and_leave_authored_pitch_alone(self):
+        original = editable_uf_score()
+        track = original['project']['tracks'][0]
+        track['pitch'] = {'isAbsolute': True, 'ticks': [680, 990], 'values': [63.97, None]}
+        source = self.root / 'original.ufdata'
+        atomic_json(source, original)
+        before = file_hash(source)
+        timeline = ProjectNotes.load(source)
+        first, = timeline.matches('春')
+        anchored, = timeline.matches('江')
+        self.assertFalse(first['timingReason'] or first['pitchReason'])
+        self.assertTrue(anchored['timingReason'] and anchored['pitchReason'] and not anchored['lyricReason'])
+        for edits, reason in [([{'note_id': first['id'], 'duration': 690}], '原生曲线'),
+                              ([{'note_id': anchored['id'], 'pitch': 65}], '原生音高'),
+                              ([{'note_id': anchored['id'], 'onset': 690}], '原位置')]:
+            with self.subTest(edits=edits), self.assertRaisesRegex(ValueError, reason):
+                timeline.with_note_edits(edits)
+        moved = {'note_id': first['id'], 'onset': 55, 'pitch': 62, 'lyric': '青'}
+        materialized, detail = timeline.score_editor.materialize(original, [moved])
+        first_native = materialized['project']['tracks'][0]['notes'][0]
+        self.assertEqual((first_native['tickOn'], first_native['tickOff']), (55, 535))
+        self.assertEqual(detail[0]['native_fields']['tickOff']['after'], 535)
+        session = workflow.create_session(source, self.root / 'exchange-session')
+        # Resize the head note and edit the protected note's lyric independently.
+        workflow.run_session(session, {'track_indices': [0], 'note_edits': [
+            {**moved, 'duration': 545}, {'note_id': anchored['id'], 'lyric': '河'}]})
+        receipt = workflow.verified_result(session)
+        saved = self.root / 'edited.ufdata'
+        workflow.export_verified_copy(receipt, saved)
+        expected = deepcopy(original)
+        notes = expected['project']['tracks'][0]['notes']
+        notes[0].update(tickOn=55, tickOff=600, key=62, lyric='青')
+        notes[1]['lyric'] = '河'
+        self.assertEqual(workflow.read_project(saved), expected)
+        self.assertEqual(file_hash(source), before)
+
+        relative = self.root / 'relative.ufdata'
+        atomic_json(relative, uf_score(relative=True))
+        timeline = ProjectNotes.load(relative)
+        first, = timeline.matches('春')
+        self.assertTrue(first['lyricReason'] and first['timingReason'])
+        self.assertFalse(first['pitchReason'])
+        edited, _ = timeline.score_editor.materialize(workflow.read_project(relative), [
+            {'note_id': first['id'], 'pitch': 65}])
+        self.assertEqual(edited['project']['tracks'][0]['pitch'], uf_score(relative=True)['project']['tracks'][0]['pitch'])
+        self.assertEqual(edited['project']['tracks'][0]['notes'][0]['key'], 65)
 
     def test_manual_pitch_preserves_ace_resources_and_both_ufdata_axes(self):
         for format, raw in [('acep', wrap_ace(ace_score())), ('ufdata', json.dumps(uf_score()).encode()),
