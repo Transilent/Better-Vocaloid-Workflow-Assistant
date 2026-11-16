@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 import copy
 import json
+import math
 from pathlib import Path
 import shutil
 import threading
@@ -94,6 +95,7 @@ class QuickMixdown(QObject):
     reverbCurveChanged = Signal()
     grHistoryChanged = Signal()
     presetsChanged = Signal()
+    alignmentChanged = Signal()
 
     def __init__(self, parent, worker):
         super().__init__(parent)
@@ -105,6 +107,13 @@ class QuickMixdown(QObject):
         self._support_lane = WorkerLane(self, 'vwa-mixdown-support', journal=getattr(parent, 'journal', None))
         self._match_lane = WorkerLane(self, 'vwa-mixdown-level-match',
                                       journal=getattr(parent, 'journal', None))
+        self._alignment_lane = WorkerLane(self, 'vwa-mixdown-waveform',
+                                          journal=getattr(parent, 'journal', None))
+        self._waveforms = {}
+        self._waveform_errors = {}
+        self._alignment = {'status': 'empty', 'durations': {}, 'errors': {}}
+        self._alignment_keys = {}
+        self._alignment_inflight = {}
         self._state = MixdownWorkspaceState()
         self._match = {'status': 'off'}
         self._match_key = None
@@ -258,6 +267,80 @@ class QuickMixdown(QObject):
     @Property('QVariantList', notify=tracksChanged)
     def tracks(self):
         return copy.deepcopy(self._tracks)
+
+    @Property('QVariantMap', notify=alignmentChanged)
+    def alignment(self):
+        return copy.deepcopy(self._alignment)
+
+    @Slot(float, float, result='QVariantMap')
+    def alignmentWindow(self, start_ms, end_ms):
+        if not (math.isfinite(start_ms) and math.isfinite(end_ms) and 0 <= start_ms < end_ms):
+            return {}
+        span = end_ms - start_ms
+        segments = {}
+        for track in self._state.tracks:
+            identifier = track['id']
+            waveform = self._waveforms.get(identifier)
+            if waveform is not None:
+                # A spare viewport lets the drag preview reveal hidden peaks
+                # without Qt/Python calls in the pointer or playback hot path.
+                guard = min(30000.0, span) if identifier != 'instrumental' else 0.0
+                offset = track['offset'] * 1000.0
+                segments[identifier] = waveform.window(start_ms, end_ms, offset, guard_ms=guard)
+        return segments
+
+    @Slot()
+    def retryAlignment(self):
+        self._waveform_errors.clear()
+        self._refresh_alignment()
+
+    def _refresh_alignment(self):
+        if self._closed or self._state.analysis != 'align':
+            return
+        rows = self._state.source_rows()
+        keys = {row['id']: (row['path'], row['bytes'], row['mtime_ns']) for row in rows}
+        sources_changed = keys != self._alignment_keys
+        if sources_changed:
+            for identifier in self._alignment_keys:
+                if keys.get(identifier) != self._alignment_keys[identifier]:
+                    self._waveforms.pop(identifier, None)
+                    self._waveform_errors.pop(identifier, None)
+            self._alignment_keys = keys
+        missing = [row for row in rows if row['id'] not in self._waveforms
+                   and row['id'] not in self._waveform_errors]
+        if self._alignment_lane.kind:
+            if any(keys.get(identifier) != key for identifier, key in self._alignment_inflight.items()):
+                self._alignment_lane.cancel()
+        elif missing:
+            requested = {row['id']: keys[row['id']] for row in missing}
+            self._alignment_inflight = requested
+
+            def finish(value, error):
+                self._alignment_inflight = {}
+                if self._closed:
+                    return
+                if not isinstance(error, MixdownCancelled):
+                    waves, errors = value if error is None else ({}, dict.fromkeys(requested, str(error)))
+                    for identifier, key in requested.items():
+                        if key != self._alignment_keys.get(identifier):
+                            continue
+                        if identifier in waves:
+                            self._waveforms[identifier] = waves[identifier]
+                        else:
+                            self._waveform_errors[identifier] = errors.get(identifier, '无法读取波形。')
+                self._refresh_alignment()
+
+            self._alignment_lane.start(
+                'mixdown-waveform', lambda stop, _send: mixdown_export.waveforms_once(missing, stop.is_set),
+                finish, label='正在读取音频波形…')
+        status = ('empty' if not keys else 'loading' if missing else
+                  'partial' if self._waveforms and self._waveform_errors else
+                  'error' if self._waveform_errors else 'ready')
+        view = {'status': status, 'durations': {k: w.duration_ms for k, w in self._waveforms.items()},
+                'errors': dict(self._waveform_errors)}
+        if view != self._alignment or sources_changed:
+            self._alignment = view
+            self.alignmentChanged.emit()
 
     @Property('QStringList', notify=trackIdsChanged)
     def trackIds(self):
@@ -684,6 +767,7 @@ class QuickMixdown(QObject):
                 self._state.result_stale = stale
         if changed or match_changed:
             self._recompute_and_emit()
+        self._refresh_alignment()
 
     def _emit_eq_curve(self):
         try:
@@ -892,6 +976,7 @@ class QuickMixdown(QObject):
                 self._state.set_source(track_id, path)
                 self._state.message = '已选择本地音轨；文件保持原位且只读。'
             self._invalidate_edited_source()
+            self._refresh_alignment()
             self._after_render_change()
         except Exception as error:
             self._notice(error)
@@ -907,6 +992,7 @@ class QuickMixdown(QObject):
             if self._preview is not None:
                 self._preview.release()
             self._clear_hotspots()
+            self._refresh_alignment()
             self._after_render_change()
         except Exception as error:
             self._notice(error)
@@ -939,6 +1025,7 @@ class QuickMixdown(QObject):
                 self._clear_hotspots()
             else:
                 self._invalidate_edited_source()
+            self._refresh_alignment()
             self._after_render_change()
         except Exception as error:
             self._notice(error)
@@ -1125,6 +1212,7 @@ class QuickMixdown(QObject):
         try:
             with self._lock:
                 self._state.set_analysis(value)
+            self._refresh_alignment()
             self._recompute_and_emit()
         except Exception as error:
             self._notice(error)
@@ -1883,6 +1971,7 @@ class QuickMixdown(QObject):
                 self._preview.release()
             self._clear_hotspots()
             self._schedule_preview(0)
+            self._refresh_alignment()
             self._recompute_and_emit()
             return True
         except Exception as error:
@@ -1902,6 +1991,7 @@ class QuickMixdown(QObject):
             self._worker.cancel()
         self._support_lane.close()
         self._match_lane.close()
+        self._alignment_lane.close()
         if self._preview is not None:
             try:
                 self._preview.release()

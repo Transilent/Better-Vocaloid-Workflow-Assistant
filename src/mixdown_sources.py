@@ -558,25 +558,6 @@ def _make_compressor(pedalboard: Any, settings: backend._Settings,
         ) from error
 
 
-def _make_reverb(pedalboard: Any, settings: backend._Settings) -> Any | None:
-    if settings.reverb_mix <= 0.0:
-        return None
-    if not hasattr(pedalboard, "Reverb"):
-        raise backend.MixdownError("当前 Pedalboard 缺少 Reverb 组件。")
-    room_size, damping = {
-        "small": (0.25, 0.65),
-        "natural": (0.58, 0.52),
-        "wide": (0.82, 0.42),
-    }[settings.reverb_profile]
-    return pedalboard.Reverb(
-        room_size=room_size,
-        damping=damping,
-        wet_level=1.0,
-        dry_level=0.0,
-        width=0.9,
-    )
-
-
 class _DelayedProcessor:
     """A stateful pre-delay in front of one Pedalboard processor."""
 
@@ -633,7 +614,7 @@ def _eq_history_seconds(settings: backend._Settings, sample_rate: int) -> float:
 def _audition_preroll_seconds(settings: backend._Settings, sample_rate: int,
                               has_reverb_send: bool) -> float:
     required = max(AUDITION_PREROLL_SECONDS, _eq_history_seconds(settings, sample_rate))
-    if settings.reverb_mix > 0.0 and has_reverb_send:
+    if settings.reverb_enabled and has_reverb_send:
         predelay_seconds = (backend._predelay_frames(
             settings.reverb_predelay_ms, sample_rate
         ) / float(sample_rate))

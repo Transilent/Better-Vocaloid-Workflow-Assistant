@@ -530,6 +530,7 @@ Item {
     MixShortcut { sequence: "Alt+1"; onActivated: page.selectAnalysis("eq") }
     MixShortcut { sequence: "Alt+2"; onActivated: page.selectAnalysis("gr") }
     MixShortcut { sequence: "Alt+3"; onActivated: page.selectAnalysis("reverb") }
+    MixShortcut { sequence: "Alt+4"; onActivated: page.selectAnalysis("align") }
     MixShortcut { sequence: "Ctrl+Shift+A"; enabled: page.visible && !page.spaceBlocked && page.hasMedia && page.canPlay; onActivated: page.controller.selectMix("A") }
     MixShortcut { sequence: "Ctrl+Shift+B"; enabled: page.visible && !page.spaceBlocked && page.hasMedia && page.canPlay; onActivated: page.controller.selectMix("B") }
     MixShortcut { sequence: "Ctrl+Shift+L"; enabled: page.visible && !page.spaceBlocked && page.hasMedia && page.canPlay; onActivated: page.controller.setLoop(!page.view.loop) }
@@ -865,11 +866,20 @@ Item {
                         ToolTip.text: page.vwaTr("混响空间 · Alt+3")
                             onClicked: page.selectAnalysis("reverb")
                     }
+                    UiButton {
+                        objectName: "mixdownAnalysisAlignment"
+                        theme: page.theme
+                        selected: page.analysisMode === "align"
+                        text: page.vwaTr("对齐")
+                        ToolTip.visible: hovered
+                        ToolTip.text: page.vwaTr("波形对齐 · Alt+4")
+                        onClicked: page.selectAnalysis("align")
+                    }
                     Item {
                         Layout.fillWidth: true
                     }
                     Text {
-                        visible: !page.compact
+                        visible: !page.compact && page.analysisMode !== "align"
                         Layout.maximumWidth: Math.round(210 * page.theme.scale)
                         text: page.meters && page.meters.source ? page.vwaTr("实测中") : page.vwaTr("等待实测")
                         color: page.meters && page.meters.source ? page.theme.muted : page.theme.attention
@@ -894,7 +904,8 @@ Item {
                     UiButton {
                         objectName: "mixdownExpand"
                         theme: page.theme
-                        text: page.expanded ? page.vwaTr("还原混音布局") : page.vwaTr("放大曲线")
+                        text: page.expanded ? page.vwaTr("还原混音布局")
+                            : page.analysisMode === "align" ? page.vwaTr("放大波形") : page.vwaTr("放大曲线")
                         glyph: page.expanded ? "restore" : "expand"
                         selected: page.expanded
                         Accessible.checkable: true
@@ -915,13 +926,15 @@ Item {
                     interactive: contentHeight > height
                     readonly property int analysisContentMinimum: page.analysisMode === "reverb" ? 426
                         : page.analysisMode === "gr" ? 486
+                        : page.analysisMode === "align" ? 400
                         : page.compact ? (page.showCompactEqDetails ? 440 : 112) : 408
                     ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
                     StackLayout {
                         width: analysisScroll.width
                         height: analysisScroll.contentHeight
-                        currentIndex: page.analysisMode === "gr" ? 1 : page.analysisMode === "reverb" ? 2 : 0
+                        currentIndex: page.analysisMode === "gr" ? 1 : page.analysisMode === "reverb" ? 2
+                            : page.analysisMode === "align" ? 3 : 0
 
                         MixdownEq {
                             Layout.fillWidth: true
@@ -974,7 +987,6 @@ Item {
                             returnLevel: page.number(page.reverbTelemetry.return_rms, NaN)
                             returnPeak: page.number(page.reverbTelemetry.return_peak, NaN)
                             dryLevel: page.number(page.reverbTelemetry.dry_rms, NaN)
-                            wetFraction: page.number(page.reverbTelemetry.wet_fraction, NaN)
                             edcAvailable: page.reverbTelemetry && page.reverbTelemetry.edc_available === true
                             edcMeasured: page.reverbTelemetry && page.reverbTelemetry.edc_measured === true
                             edcReason: page.reverbTelemetry && page.reverbTelemetry.edc_reason ? String(page.reverbTelemetry.edc_reason) : ""
@@ -986,6 +998,17 @@ Item {
                             room: String(page.view.reverbRoom || "natural")
                             mix: page.number(page.view.reverbMix, 0)
                             predelay: page.number(page.view.reverbPredelay, 0)
+                        }
+
+                        MixdownAlignment {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            theme: page.theme
+                            controller: page.controller
+                            tracks: page.tracks
+                            positionMs: page.shownPositionMs
+                            canSeek: !!page.view.canSeek
+                            canEdit: !page.busy
                         }
                     }
                 }
@@ -2679,7 +2702,6 @@ Item {
         property real returnLevel: NaN
         property real returnPeak: NaN
         property real dryLevel: NaN
-        property real wetFraction: NaN
         property bool edcAvailable: false
         property bool edcMeasured: false
         property string edcReason: ""
@@ -2764,7 +2786,16 @@ Item {
                 Layout.fillWidth: true
                 spacing: 18 * reverbPage.theme.scale
                 SignalReadout {
+                    objectName: "mixdownReverbDry"
+                    Layout.alignment: Qt.AlignTop
+                    theme: reverbPage.theme
+                    label: page.vwaTr("人声干声")
+                    rms: reverbPage.dryLevel
+                    emptyLabel: "等待实测"
+                }
+                SignalReadout {
                     objectName: "mixdownReverbSend"
+                    Layout.alignment: Qt.AlignTop
                     theme: reverbPage.theme
                     label: page.vwaTr("实时发送")
                     rms: reverbPage.processingSelection === "B" && reverbPage.effectEnabled ? reverbPage.sendLevel : NaN
@@ -2772,15 +2803,31 @@ Item {
                     emptyLabel: reverbPage.processingSelection === "A" ? "A · 旁路"
                         : reverbPage.telemetryAvailable && !reverbPage.effectEnabled ? "混响旁路" : "等待实测"
                 }
-                SignalReadout {
-                    objectName: "mixdownReverbReturn"
-                    theme: reverbPage.theme
-                    label: page.vwaTr("实时返回")
-                    rms: reverbPage.processingSelection === "B" && reverbPage.effectEnabled ? reverbPage.returnLevel : NaN
-                    peak: reverbPage.processingSelection === "B" && reverbPage.effectEnabled ? reverbPage.returnPeak : NaN
-                    ink: reverbPage.theme.accent
-                    emptyLabel: reverbPage.processingSelection === "A" ? "A · 旁路"
-                        : reverbPage.telemetryAvailable && !reverbPage.effectEnabled ? "混响旁路" : "等待实测"
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 4 * reverbPage.theme.scale
+                    SignalReadout {
+                        objectName: "mixdownReverbReturn"
+                        theme: reverbPage.theme
+                        label: page.vwaTr("湿声返回电平")
+                        rms: reverbPage.processingSelection === "B" && reverbPage.effectEnabled ? reverbPage.returnLevel : NaN
+                        peak: reverbPage.processingSelection === "B" && reverbPage.effectEnabled ? reverbPage.returnPeak : NaN
+                        ink: reverbPage.theme.accent
+                        emptyLabel: reverbPage.processingSelection === "A" ? "A · 旁路"
+                            : reverbPage.telemetryAvailable && !reverbPage.effectEnabled ? "混响旁路" : "等待实测"
+                    }
+                    ParameterSlider {
+                        objectName: "mixdownReverbMix"
+                        Layout.fillWidth: true
+                        theme: reverbPage.theme
+                        label: page.vwaTr("湿声返回量")
+                        displayValue: reverbPage.mix
+                        displayFactor: 100
+                        unit: "%"
+                        step: 0.01
+                        interactive: reverbPage.configuredEnabled
+                        onMoved: (amount) => reverbPage.controller.setOption("reverbMix", amount)
+                    }
                 }
             }
             Text {
@@ -2877,14 +2924,14 @@ Item {
 
             Rectangle {
                 Layout.fillWidth: true
-                implicitHeight: Math.round(126 * reverbPage.theme.scale)
+                implicitHeight: Math.round((width > 620 * reverbPage.theme.scale ? 60 : 108) * reverbPage.theme.scale)
                 radius: Math.round(8 * reverbPage.theme.scale)
                 color: reverbPage.theme.base
                 border.color: reverbPage.theme.line
                 GridLayout {
                     anchors.fill: parent
                     anchors.margins: Math.round(10 * reverbPage.theme.scale)
-                    columns: parent.width > Math.round(620 * reverbPage.theme.scale) ? 4 : 2
+                    columns: parent.width > Math.round(620 * reverbPage.theme.scale) ? 3 : 2
                     columnSpacing: Math.round(12 * reverbPage.theme.scale)
                     rowSpacing: Math.round(8 * reverbPage.theme.scale)
                     UiButton {
@@ -2904,20 +2951,6 @@ Item {
                                 reverbPage.controller.setOption("reverbRoom", currentValue);
                         }
                         Accessible.name: page.vwaTr("混响空间")
-                    }
-                    ParameterSlider {
-                        objectName: "mixdownReverbMix"
-                        Layout.fillWidth: true
-                        theme: reverbPage.theme
-                        label: page.vwaTr("混合")
-                        fromValue: 0
-                        toValue: 1
-                        displayValue: reverbPage.mix
-                        displayFactor: 100
-                        unit: "%"
-                        step: 0.01
-                        interactive: reverbPage.configuredEnabled
-                        onMoved: (amount) => reverbPage.controller.setOption("reverbMix", amount)
                     }
                     ParameterSlider {
                         objectName: "mixdownReverbPredelay"

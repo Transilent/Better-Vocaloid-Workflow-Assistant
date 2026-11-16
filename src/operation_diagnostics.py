@@ -39,6 +39,7 @@ _LABELS = {
     'update-download': ('下载程序更新', 'updates'),
     'mixdown-preview': ('连续试听', 'audio_mixdown'),
     'mixdown-level-match': ('测量 A/B 响度', 'audio_mixdown'),
+    'mixdown-waveform': ('读取对齐波形', 'audio_mixdown'),
     'startup': ('程序启动', 'updates'),
     'qt': ('界面运行', 'updates'),
 }

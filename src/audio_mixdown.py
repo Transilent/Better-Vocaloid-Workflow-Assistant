@@ -109,6 +109,7 @@ class _Settings:
     eq_low_cut_hz: float
     eq_presence_db: float
     compression_strength: float
+    reverb_enabled: bool
     reverb_mix: float
     reverb_profile: str
     preview_start_seconds: float | None
@@ -502,6 +503,7 @@ def _settings(request: Mapping[str, Any]) -> _Settings:
         raise ValueError("eq_low_cut_hz 必须为 0（旁通）或不小于 10 Hz。")
     compression = _finite_number(request, "compression_strength", 0.0, 1.0)
     reverb = _finite_number(request, "reverb_mix", 0.0, 1.0)
+    reverb_enabled = _boolean_value(request, "reverb_enabled", reverb > 0.0)
     reverb_predelay = _optional_number(
         request, "reverb_predelay_ms", 0.0, 0.0, 120.0)
     width = _optional_number(request, "width", 1.0, 0.0, 2.0)
@@ -523,7 +525,8 @@ def _settings(request: Mapping[str, Any]) -> _Settings:
         eq_low_cut_hz=low_cut,
         eq_presence_db=presence,
         compression_strength=compression,
-        reverb_mix=reverb,
+        reverb_enabled=reverb_enabled,
+        reverb_mix=reverb if reverb_enabled else 0.0,
         reverb_profile=reverb_profile,
         preview_start_seconds=preview_start,
         preview_duration_seconds=preview_duration,
@@ -695,21 +698,7 @@ def _make_vocal_processors(pedalboard: Any, settings: _Settings, sample_rate: in
             release_ms=120.0 + 80.0 * strength,
         ))
     dry_chain = pedalboard.Pedalboard(plugins) if plugins else None
-    reverb = None
-    if settings.reverb_mix > 0.0:
-        room_size, damping = {
-            "small": (0.25, 0.65),
-            "natural": (0.58, 0.52),
-            "wide": (0.82, 0.42),
-        }[settings.reverb_profile]
-        reverb = pedalboard.Reverb(
-            room_size=room_size,
-            damping=damping,
-            wet_level=1.0,
-            dry_level=0.0,
-            width=0.9,
-        )
-    return dry_chain, reverb
+    return dry_chain, _make_reverb(pedalboard, settings) if settings.reverb_mix > 0.0 else None
 
 
 def _amplitude_to_dbfs(value: float) -> float:
@@ -855,7 +844,7 @@ def _make_compressor(pedalboard: Any, settings: _Settings) -> Any | None:
 
 
 def _make_reverb(pedalboard: Any, settings: _Settings) -> Any | None:
-    if settings.reverb_mix <= 0.0:
+    if not settings.reverb_enabled:
         return None
     room_size, damping = {
         "small": (0.25, 0.65),
@@ -1194,10 +1183,7 @@ def _render_mix(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
                     wet = _pedalboard_process(
                         reverb, vocal_block, sample_rate, first, numpy
                     )
-                    mix_value = settings.reverb_mix
-                    vocal_block = (
-                        vocal_block * (1.0 - mix_value) + wet * mix_value
-                    ).astype(numpy.float32, copy=False)
+                    vocal_block = vocal_block + wet * numpy.float32(settings.reverb_mix)
                 first = False
 
                 if backing_audible:
@@ -1332,7 +1318,7 @@ def _render_mix_v3(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
     try:
         eq_chain, compressor, reverb, predelay = _make_v3_processors(
             pedalboard, settings, sample_rate)
-        if not has_audible_vocal or not has_reverb_send:
+        if not has_audible_vocal or not has_reverb_send or settings.reverb_mix == 0.0:
             reverb = None
             predelay = None
     except Exception as error:
@@ -1503,10 +1489,7 @@ def _render_mix_v3(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
                     wet = _pedalboard_process(
                         reverb, delayed_send, sample_rate, first, numpy
                     )
-                    mix_value = settings.reverb_mix
-                    vocal_block = (
-                        dry_vocal * (1.0 - mix_value) + wet * mix_value
-                    ).astype(numpy.float32, copy=False)
+                    vocal_block = dry_vocal + wet * numpy.float32(settings.reverb_mix)
                 first = False
 
                 if backing_audible:

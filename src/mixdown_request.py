@@ -173,6 +173,7 @@ def processing_request_fields(
         "eq_bands": bands,
         "compression_strength": (
             snapshot["compression_strength"] if use_compression else 0.0),
+        "reverb_enabled": use_reverb,
         "reverb_mix": snapshot["reverb_mix"] if use_reverb else 0.0,
         "reverb_profile": snapshot["reverb_profile"],
         "reverb_predelay_ms": (

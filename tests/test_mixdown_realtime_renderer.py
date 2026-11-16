@@ -629,7 +629,7 @@ class PreLimiterMixSessionTests(unittest.TestCase):
         self.assertGreater(reverb['send_rms_dbfs'], backend.SILENCE_DBFS)
         self.assertGreaterEqual(reverb['measured_wet_fraction'], 0.0)
         self.assertLessEqual(reverb['measured_wet_fraction'], 1.0)
-        self.assertEqual(reverb['level_ratio_method'], 'reverb_blend_energy_fraction')
+        self.assertEqual(reverb['level_ratio_method'], 'reverb_return_energy_fraction')
         kernel = session.snapshot()['reverb_kernel_edc']
         self.assertFalse(kernel.get('measuring'), kernel)
         self.assertTrue(kernel.get('available'), kernel)

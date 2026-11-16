@@ -203,6 +203,9 @@ try:
     if mode == 'compare':
         from mixdown_loudness import compare_range
         result = compare_range(**request, cancel=cancel, work_dir=request_path.parent)
+    elif mode == 'waveform':
+        from mixdown_waveform import measure_tracks
+        result = measure_tracks(request['rows'], work_dir=request_path.parent, cancel=cancel)
     else:
         from audio_mixdown import render
         parameters = inspect.signature(render).parameters
@@ -248,6 +251,13 @@ def compare_once(before, after, bounds, cache_dir, dll_path, check):
     }, check, mode='compare')
 
 
+def waveforms_once(rows, check):
+    from mixdown_waveform import Waveform
+    result = _run_worker({'rows': rows}, check, mode='waveform')
+    return ({key: Waveform.unpack(payload) for key, payload in result['waves'].items()},
+            result['errors'])
+
+
 def _run_worker(request, check, progress=None, *, mode):
     check_cancel(check)
     root = Path(tempfile.mkdtemp(prefix='vwa-audio-' + mode + '-'))
@@ -260,7 +270,7 @@ def _run_worker(request, check, progress=None, *, mode):
     try:
         request_path.write_text(json.dumps(request, ensure_ascii=False), encoding='utf-8')
         flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-        if mode == 'compare':
+        if mode in ('compare', 'waveform'):
             flags |= getattr(subprocess, 'BELOW_NORMAL_PRIORITY_CLASS', 0)
         with stderr_path.open('wb') as stderr:
             process = subprocess.Popen(

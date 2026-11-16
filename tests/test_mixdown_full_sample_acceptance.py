@@ -205,6 +205,125 @@ class FullSampleAcceptance(unittest.TestCase):
         np.testing.assert_allclose(device_pcm, export_pcm, atol=4e-6, rtol=0)
         np.testing.assert_allclose(device_pcm + delta, vocal, atol=4e-6, rtol=0)
 
+    def test_waveforms_follow_signed_pcm_offsets_for_audition_and_export(self):
+        from mixdown_waveform import Waveform, measure_tracks
+
+        rate = self.rate
+        vocal = np.zeros((rate * 2, 2), np.float32)
+        for seconds, amplitude in ((.1, .23), (.65, .3)):
+            vocal[round(rate * seconds)] = (-amplitude, amplitude)
+        backing = np.zeros_like(vocal)
+        backing[round(.39 * rate)] = (.18, .12)
+        sf.write(self.vocals[0], vocal, rate, subtype='FLOAT')
+        sf.write(self.backing, backing, rate, subtype='PCM_24')
+        rows = []
+        for key, path in (('vocal', self.vocals[0]), ('backing', self.backing)):
+            stat = path.stat()
+            rows.append(dict(id=key, path=str(path), bytes=stat.st_size, mtime_ns=stat.st_mtime_ns))
+        value = measure_tracks(rows, work_dir=self.root, cancel=None)
+        self.assertEqual(value['errors'], {})
+        waves = {k: Waveform.unpack(v) for k, v in value['waves'].items()}
+        request = self.request()
+        request.update(eq_low_cut_hz=0., eq_presence_db=0., compression_strength=0.,
+                       reverb_mix=0., width=1., instrumental_db=0.)
+        request['vocals'] = [dict(request['vocals'][0], gain_db=0., pan=0.)]
+        dll = APP / 'components/native-audio/vwa_native_output.dll'
+        for offset in (-.2, .24):
+            request['vocals'][0]['offset_seconds'] = offset
+            request['output_path'] = str(self.root / f'offset-{offset}.wav')
+            graph = LimitedMixSession(request, self.root / 'cache', dll)
+            try:
+                realtime = graph.render_without_telemetry(graph.duration_frames)
+            finally:
+                graph.close()
+            report = backend.render(request)
+            exported, _ = sf.read(report['output_path'], dtype='float32', always_2d=True)
+            np.testing.assert_allclose(realtime, exported, atol=4e-6, rtol=0)
+            for key, samples, shift in (('vocal', vocal, offset), ('backing', backing, 0)):
+                peak_index = int(np.argmax(samples[:, 1]))
+                expected = peak_index + round(shift * rate)
+                self.assertAlmostEqual(realtime[expected, 1], samples[peak_index, 1], delta=4e-6)
+                span = waves[key].window(0, 1000, shift * 1000)
+                positive = span['peaks'][1::2]
+                peak_start = span['start'] + int(np.argmax(positive)) * span['step']
+                self.assertTrue(peak_start <= expected * 1000 / rate < peak_start + span['step'])
+                if key == 'vocal':
+                    self.assertLess(min(span['peaks'][::2]), -9000)  # Stereo antiphase remains visible.
+            if offset < 0:
+                self.assertFalse(realtime[:round(.15 * rate)].any())  # Source head trimmed at project zero.
+
+        compressed = self.root / 'waveform-aac.m4a'
+        backend._run_ffmpeg(
+            [str(backend._ffmpeg_executable()), '-nostdin', '-y', '-i', str(self.backing),
+             '-c:a', 'aac', str(compressed)], self.root / 'compress.log', None,
+            'Create AAC waveform fixture.')
+        stat = compressed.stat()
+        measured = measure_tracks([dict(id='aac', path=str(compressed),
+                                        bytes=stat.st_size, mtime_ns=stat.st_mtime_ns)],
+                                  work_dir=self.root, cancel=None)
+        self.assertEqual(measured['errors'], {})
+        compressed_wave = Waveform.unpack(measured['waves']['aac'])
+        self.assertAlmostEqual(compressed_wave.duration_ms, 2000, delta=35)
+        span = compressed_wave.window(340, 445, 0)
+        t = span['start'] + span['step'] * int(np.argmax(span['peaks'][1::2]))
+        self.assertAlmostEqual(t, 390, delta=10)
+        self.assertFalse((self.root / '0.wav').exists())
+
+    def test_wet_return_adds_only_wet_pcm_and_preserves_live_tail(self):
+        rate = self.rate
+        vocal = np.zeros((2 * rate, 2), np.float32)
+        vocal[:rate // 5] = .12 * np.sin(2 * np.pi * 331 * np.arange(rate // 5) / rate)[:, None]
+        sf.write(self.vocals[0], vocal, rate, subtype='FLOAT')
+        request = self.request()
+        request.update(eq_low_cut_hz=0., eq_presence_db=0., compression_strength=0.,
+                       width=1., instrumental_mute=True, reverb_enabled=True,
+                       reverb_predelay_ms=80., preview_start_seconds=0., preview_duration_seconds=2.)
+        request['vocals'] = [dict(request['vocals'][0], gain_db=0., pan=0.,
+                                 offset_seconds=0., reverb_send=1.)]
+        dll = APP / 'components/native-audio/vwa_native_output.dll'
+        cache = self.root / 'cache'
+        outputs = []
+        for gain in (0., .5, 1.):
+            options = dict(request, reverb_mix=gain, output_path=str(self.root / f'return-{gain}.wav'))
+            graph = LimitedMixSession(options, cache, dll)
+            try:
+                pcm = graph.render_without_telemetry(2 * rate)
+            finally:
+                graph.close()
+            report = backend.render(options)
+            exported, _ = sf.read(report['output_path'], dtype='float32', always_2d=True)
+            np.testing.assert_allclose(pcm, exported, atol=4e-6, rtol=0)
+            outputs.append(pcm)
+        dry, half, full = outputs
+        np.testing.assert_allclose(dry, vocal, atol=4e-6, rtol=0)
+        np.testing.assert_allclose(full[:rate // 20], dry[:rate // 20], atol=4e-6, rtol=0)
+        self.assertGreater(float(np.max(np.abs(full - dry))), .005)
+        np.testing.assert_allclose(half - dry, (full - dry) * .5, atol=4e-6, rtol=0)
+
+        graph = LimitedMixSession(dict(request, reverb_mix=1.), cache, dll)
+        try:
+            original_duration = graph.duration_frames
+            graph.render_without_telemetry(rate // 5)
+            graph.set_parameters(dict(request, reverb_mix=0.))
+            start = graph.position_frame
+            mute_edge = graph.parameter_first_frame - start
+            muted = graph.render(rate // 8)
+            telemetry = graph.telemetry_for_range(start, graph.position_frame)
+            self.assertEqual(telemetry['reverb']['live']['wet_rms_dbfs'], backend.SILENCE_DBFS)
+            graph.set_parameters(dict(request, reverb_mix=1.))
+            start = graph.position_frame
+            open_edge = graph.parameter_first_frame - start
+            restored = graph.render_without_telemetry(rate // 5)
+            self.assertEqual(graph.duration_frames, original_duration)
+            # Already queued limiter lookahead is allowed to use the old value.
+            self.assertLess(mute_edge, len(muted))
+            np.testing.assert_allclose(muted[mute_edge:], 0, atol=4e-6, rtol=0)
+            self.assertGreater(float(np.max(np.abs(restored[open_edge:]))), .005)
+            np.testing.assert_allclose(restored[open_edge:], full[start + open_edge:start + len(restored)],
+                                       atol=4e-6, rtol=0)
+        finally:
+            graph.close()
+
     def test_same_range_loudness_measurement_and_monitor_gain(self):
         from mixdown_loudness import compare_range
 

@@ -121,6 +121,25 @@ def _merge_meter(values: list[tuple[dict[str, float], int]]) -> dict[str, float]
     return {"peak_dbfs": round(peak, 4), "rms_dbfs": round(rms, 4)}
 
 
+def _reverb_levels(send_meter, wet_meter, dry_meter):
+    wet_rms, dry_rms = wet_meter["rms_dbfs"], dry_meter["rms_dbfs"]
+    wet_power = _power_from_dbfs(wet_rms) if wet_rms > backend.SILENCE_DBFS else 0.0
+    dry_power = _power_from_dbfs(dry_rms) if dry_rms > backend.SILENCE_DBFS else 0.0
+    return {
+        "send_meter": send_meter, "wet_meter": wet_meter, "dry_meter": dry_meter,
+        "send_peak_dbfs": send_meter["peak_dbfs"],
+        "send_rms_dbfs": send_meter["rms_dbfs"],
+        "wet_peak_dbfs": wet_meter["peak_dbfs"], "wet_rms_dbfs": wet_rms,
+        "dry_rms_dbfs": dry_rms,
+        "measured_wet_fraction": round(wet_power / (wet_power + dry_power), 6)
+        if wet_power + dry_power else None,
+        "wet_to_dry_db": round(wet_rms - dry_rms, 4) if wet_power and dry_power else None,
+        "level_ratio_method": "reverb_return_energy_fraction",
+        "method": "aligned_processed_wet_return",
+        "source": "actual_reverb_send_dsp_output_and_dry_input",
+    }
+
+
 def _merge_gr(values: list[tuple[dict[str, Any], int]]) -> dict[str, Any]:
     total = sum(max(0, int(frames)) for _, frames in values)
     if total <= 0:
@@ -363,36 +382,7 @@ def merge_telemetry_blocks(blocks: list[Mapping[str, Any]]) -> dict[str, Any] | 
     send_meter = _merge_meter(send_values)
     wet_meter = _merge_meter(wet_values)
     dry_meter = _merge_meter(dry_values)
-    mix_value = float(reverb.get("mix", 0.0))
-    dry_power = _power_from_dbfs(dry_meter["rms_dbfs"]) * (1.0 - mix_value) ** 2
-    wet_power = _power_from_dbfs(wet_meter["rms_dbfs"]) * mix_value ** 2
-    wet_fraction = (
-        wet_power / (dry_power + wet_power)
-        if wet_power + dry_power > 0.0 else None
-    )
-    reverb["live"] = {
-        "send_meter": send_meter,
-        "wet_meter": wet_meter,
-        "dry_meter": dry_meter,
-        "send_peak_dbfs": send_meter["peak_dbfs"],
-        "send_rms_dbfs": send_meter["rms_dbfs"],
-        "wet_peak_dbfs": wet_meter["peak_dbfs"],
-        "wet_rms_dbfs": wet_meter["rms_dbfs"],
-        "dry_rms_dbfs": dry_meter["rms_dbfs"],
-        "measured_wet_fraction": (
-            round(wet_fraction, 6) if wet_fraction is not None else None
-        ),
-        "level_ratio_method": "reverb_blend_energy_fraction",
-        "method": "aligned_processed_wet_return",
-        "source": "actual_reverb_send_dsp_output_and_dry_input",
-    }
-    wet_rms = float(wet_meter["rms_dbfs"])
-    dry_rms = float(dry_meter["rms_dbfs"])
-    reverb["live"]["wet_to_dry_db"] = (
-        round(wet_rms - dry_rms, 4)
-        if wet_rms > backend.SILENCE_DBFS and dry_rms > backend.SILENCE_DBFS
-        else None
-    )
+    reverb["live"] = _reverb_levels(send_meter, wet_meter, dry_meter)
     compressor = _merge_gr([(value, frames) for value, frames in compressor_values])
     compressor.setdefault("enabled", bool(compressor_values and compressor_values[-1][0].get("enabled")))
     compressor["scope"] = "shared_vocal_bus"
@@ -758,12 +748,10 @@ class PreLimiterMixSession:
         ]
         return max([int(self._prepared.backing_frames), *ends])
 
-    def _reverb_enabled(self, settings: backend._Settings) -> bool:
-        return float(settings.reverb_mix) > 0.0
-
     def _duration(self, settings: backend._Settings) -> int:
         end = self._source_end(settings)
-        if self._reverb_enabled(settings):
+        # Muting the return must not shrink the transport or reset the room.
+        if settings.reverb_enabled:
             end += backend._reverb_tail_budget_frames(
                 self._options.reverb_predelay_ms, self.sample_rate,
             )
@@ -790,7 +778,7 @@ class PreLimiterMixSession:
             float(settings.eq_low_cut_hz),
             float(settings.eq_presence_db),
             float(settings.compression_strength),
-            bool(float(settings.reverb_mix) > 0.0),
+            settings.reverb_enabled,
             str(settings.reverb_profile),
             int(backend._predelay_frames(
                 options.reverb_predelay_ms, self.sample_rate)),
@@ -809,7 +797,7 @@ class PreLimiterMixSession:
     def _prepare_reverb_edc(self, built: _BuiltEffects, settings: Any,
                             options: Any) -> dict[str, Any]:
         signature = self._reverb_signature(built.reverb, settings, options)
-        if built.reverb is None or float(settings.reverb_mix) <= 0.0:
+        if built.reverb is None:
             return {
                 "available": False,
                 "measured": False,
@@ -856,7 +844,7 @@ class PreLimiterMixSession:
         signature = self._reverb_signature(
             reverb, self._request_settings, self._options
         )
-        if reverb is None or float(self._request_settings.reverb_mix) <= 0.0:
+        if reverb is None:
             with self._reverb_ir_lock:
                 self._reverb_kernel_signature = signature
                 self._reverb_kernel_edc = {
@@ -910,7 +898,7 @@ class PreLimiterMixSession:
             compressor = audition._make_compressor(
                 self._pedalboard, settings, warnings,
             )
-            reverb = audition._make_reverb(self._pedalboard, settings)
+            reverb = backend._make_reverb(self._pedalboard, settings)
             active = [audible and track.deess_strength > 0.0
                       for audible, track in zip(backend._audibility(settings)[0], settings.vocals)]
             deessers = (None,) * len(active)
@@ -1128,10 +1116,8 @@ class PreLimiterMixSession:
                 send_block, self.sample_rate, self._first, numpy,
                 allow_terminal_padding=allow_terminal_padding,
             )
-            mix_value = float(settings.reverb_mix)
-            vocal = (
-                vocal * (1.0 - mix_value) + wet * mix_value
-            ).astype(numpy.float32, copy=False)
+            wet = wet * numpy.float32(settings.reverb_mix)
+            vocal = vocal + wet
         self._first = False
         if capture_telemetry:
             if self._spectrum is None:
@@ -1149,17 +1135,10 @@ class PreLimiterMixSession:
         mixed = numpy.ascontiguousarray(mixed, dtype=numpy.float32)
         if not capture_telemetry:
             return mixed
-        send_meter = _meter(send_block, numpy)
-        wet_meter = _meter(wet if wet is not None else numpy.zeros_like(send_block), numpy)
+        silent = {"peak_dbfs": backend.SILENCE_DBFS, "rms_dbfs": backend.SILENCE_DBFS}
+        send_meter = _meter(send_block, numpy) if wet is not None else silent
+        wet_meter = _meter(wet, numpy) if wet is not None else silent
         dry_meter = _meter(dry_before_reverb, numpy)
-        mix_value = float(settings.reverb_mix)
-        dry_power = (_power_from_dbfs(dry_meter["rms_dbfs"])
-                     * (1.0 - mix_value) ** 2)
-        wet_power = _power_from_dbfs(wet_meter["rms_dbfs"]) * mix_value ** 2
-        wet_fraction = (
-            wet_power / (dry_power + wet_power)
-            if wet_power + dry_power > 0.0 else None
-        )
         self._telemetry_records.append({
             "schema": TELEMETRY_BLOCK_SCHEMA,
             "source": TELEMETRY_SOURCE,
@@ -1175,27 +1154,7 @@ class PreLimiterMixSession:
             "reverb": {
                 "enabled": self._reverb_stage is not None,
                 "mix": float(settings.reverb_mix),
-                "live": {
-                    "send_meter": send_meter,
-                    "wet_meter": wet_meter,
-                    "dry_meter": dry_meter,
-                    "send_peak_dbfs": send_meter["peak_dbfs"],
-                    "send_rms_dbfs": send_meter["rms_dbfs"],
-                    "measured_wet_fraction": (
-                        round(wet_fraction, 6) if wet_fraction is not None else None
-                    ),
-                    "level_ratio_method": "reverb_blend_energy_fraction",
-                    "wet_peak_dbfs": wet_meter["peak_dbfs"],
-                    "wet_rms_dbfs": wet_meter["rms_dbfs"],
-                    "dry_rms_dbfs": dry_meter["rms_dbfs"],
-                    "wet_to_dry_db": (
-                        round(wet_meter["rms_dbfs"] - dry_meter["rms_dbfs"], 4)
-                        if wet_meter["rms_dbfs"] > backend.SILENCE_DBFS
-                        and dry_meter["rms_dbfs"] > backend.SILENCE_DBFS else None
-                    ),
-                    "method": "aligned_processed_wet_return",
-                    "source": "actual_reverb_dsp_output_and_dry_input",
-                },
+                "live": _reverb_levels(send_meter, wet_meter, dry_meter),
                 "kernel_edc": self.reverb_measurement(),
             },
         })

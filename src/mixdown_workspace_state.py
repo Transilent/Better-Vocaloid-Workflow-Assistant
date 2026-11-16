@@ -52,7 +52,7 @@ from mixdown_request import build_mixdown_request, build_processing_state
 TELEMETRY_SCHEMA = 'vwa.audio_mixdown.realtime-telemetry/v1'
 TELEMETRY_SOURCE = 'realtime_dsp'
 AUDIO_SUFFIXES = frozenset(('.wav', '.flac', '.ogg', '.mp3', '.m4a', '.aac'))
-ANALYSES = frozenset(('eq', 'gr', 'reverb'))
+ANALYSES = frozenset(('eq', 'gr', 'reverb', 'align'))
 EQ_CURVE_POINTS = RESPONSE_POINTS
 MAX_SPECTRUM_POINTS = 256
 MAX_REVERB_POINTS = 256
@@ -763,7 +763,7 @@ class MixdownWorkspaceState:
     def set_analysis(self, value: Any) -> None:
         mode = str(value or '').casefold()
         if mode not in ANALYSES:
-            raise ValueError('analysis must be eq, gr, or reverb')
+            raise ValueError('analysis must be eq, gr, reverb, or align')
         self.analysis = mode
 
     def set_selection(self, value: Any) -> None:
@@ -882,7 +882,7 @@ class MixdownWorkspaceState:
             mix_value = _clamp(mix_value, 0.0, 1.0, key)
             changed = mix_value != self.reverb_mix
             self.reverb_mix = mix_value
-            return changed, '混响量'
+            return changed, '湿声返回量'
         if folded in ('reverbpredelay', 'reverbpredelayms'):
             delay = _clamp(value, 0.0, 120.0, key)
             changed = delay != self.reverb_predelay_ms

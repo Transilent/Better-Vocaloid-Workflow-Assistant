@@ -193,6 +193,69 @@ def preparation_flow(audio):
     print(f'PASS {width}: fixed preparation, real component check, draft invalidation, and worker cancellation')
 
 
+def alignment_flow(vocal):
+    tap('mixdownAnalysisAlignment')
+    wait('four real waveform lanes', lambda: mix.alignment['status'] == 'ready')
+    slices = mix.alignmentWindow(0, 10000)
+    assert len(slices) == 4 and all(max(row['peaks']) > 1000 for row in slices.values())
+    assert slices['instrumental']['start'] == 0
+    assert visual('mixdownAlignmentOffset').property('currentValue') == 125
+    set_number('mixdownAlignmentOffset', '-240')
+    assert mix.tracks[0]['offset'] == -.24
+    changed = mix.alignmentWindow(0, 10000)
+    assert changed['instrumental'] == slices['instrumental']
+    assert round(changed[vocal]['start']) == -240
+    tap('mixdownAlignmentZoomIn')
+    wait('zoom enables panning', lambda: visual('mixdownAlignmentPan', False) is not None)
+    pan = 'mixdownAlignmentPan'
+    button = Qt.MouseButton.LeftButton
+    modifiers = Qt.KeyboardModifier.NoModifier
+    origin, target = point(pan, .24), point(pan, .38)
+    QTest.mousePress(window, button, modifiers, origin)
+    QTest.mouseMove(window, target, 30)
+    QTest.mouseRelease(window, button, modifiers, target)
+    assert visual('mixdownAlignment').property('start') > 500
+    ruler = 'mixdownAlignmentRuler'
+    tap(ruler, .42)
+    wait('waveform ruler seeks real player', lambda: mix.pendingSeekId == 0 and mix.position > 1000)
+    name = 'mixdownAlignmentLane-' + vocal
+    origin, target = point(name, .42), point(name, .55)
+    QTest.mousePress(window, button, modifiers, origin)
+    QTest.mouseMove(window, target, 30)
+    app.processEvents()
+    assert mix.tracks[0]['offset'] == -.24, 'moving the pointer must not commit an offset'
+    assert visual('mixdownAlignmentOffset').property('currentValue') > 250, 'preview the new offset'
+    capture('mixdown-alignment-drag', keep_cursor=True)
+    QTest.mouseRelease(window, button, modifiers, target)
+    app.processEvents()
+    assert mix.tracks[0]['offset'] > .25
+    assert mix.alignmentWindow(0, 10000)['instrumental'] == slices['instrumental']
+    geometry['mixAlignmentWaveWidth'] = round(visual(name).width())
+    geometry['mixAlignmentWaveHeight'] = round(visual(name).height())
+    tap('mixdownAlignmentReset')
+    assert mix.tracks[0]['offset'] == 0
+    set_number('mixdownAlignmentOffset', '125')
+    assert mix.tracks[0]['offset'] == .125
+    tap('mixdownAlignmentFit')
+    tap('mixdownAnalysisReverb')
+    assert visual('mixdownReverbMix').property('label') == '湿声返回量'
+    tap('mixdownPlayPause')
+    wait('measured dry, send and actual wet return', lambda: mix.view['playing']
+         and visual('mixdownReverbDry').property('measured')
+         and visual('mixdownReverbReturn').property('rms') > -70)
+    capture('mixdown-independent-wet')
+    tap('mixdownReverbMixSlider', .005)
+    wait('zero wet return without stopping the dry signal',
+         lambda: mix.view['reverbMix'] == 0 and mix.view['playing']
+         and visual('mixdownReverbReturn').property('rms') < -110
+         and visual('mixdownReverbDry').property('rms') > -70)
+    mix.setOption('reverbMix', .2)
+    tap('mixdownPlayPause')
+    tap('mixdownAnalysisEq')
+    mix.commitSeek(0)
+    wait('return to beginning after alignment', lambda: mix.pendingSeekId == 0 and mix.position < 10)
+
+
 def mix_flow(folder, audio, job):
     owner.navigate('audio_mixdown')
     mix.addTrack()
@@ -225,6 +288,7 @@ def mix_flow(folder, audio, job):
     wait('return focus to the readout that opened the dialog',
          lambda: not dialog.property('visible') and visual(readout).hasActiveFocus())
     vocal = vocal_ids[0]
+    alignment_flow(vocal)
     control = point('mixdownDeess_' + vocal)
     slider = visual('mixdownDeessStrength_' + vocal + 'Slider').mapToScene(QPointF(0, 0))
     fader = visual('mixdownGain_' + vocal).mapToScene(QPointF(0, 0))

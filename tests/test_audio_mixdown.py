@@ -717,8 +717,13 @@ class AudioMixdownContract(unittest.TestCase):
         delayed_report = audio_mixdown.render(delayed_request)
         delayed_audio, _, _ = _verify_result(
             self, delayed_report, delayed_request, self.root)
-        early = delayed_audio[:int(round(.04 * rate))]
-        self.assertLess(float(np.max(np.abs(early), initial=0.)), .002)
+        dry_request = dict(delayed_request, reverb_mix=0.0, output_path=str(self.root / 'predelay-dry.wav'))
+        dry_audio, _, _ = _verify_result(
+            self, audio_mixdown.render(dry_request), dry_request, self.root)
+        first = int(round(.08 * rate))
+        np.testing.assert_allclose(delayed_audio[:first], dry_audio[:first], atol=4e-6, rtol=0)
+        self.assertGreater(float(np.max(np.abs(delayed_audio[first:len(dry_audio)]
+                                               - dry_audio[first:]))), .002)
 
     def test_v3_width_uses_mid_side_and_preserves_center_level(self):
         rate = 16000

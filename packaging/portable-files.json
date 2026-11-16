@@ -22,6 +22,10 @@
       "source": "src/mixdown_loudness.py"
     },
     {
+      "file": "mixdown_waveform.py",
+      "source": "src/mixdown_waveform.py"
+    },
+    {
       "file": "quick_mixdown.py",
       "source": "src/quick_mixdown.py"
     },
@@ -84,6 +88,10 @@
     {
       "file": "quick_ui/MixdownMeter.qml",
       "source": "src/quick_ui/MixdownMeter.qml"
+    },
+    {
+      "file": "quick_ui/MixdownAlignment.qml",
+      "source": "src/quick_ui/MixdownAlignment.qml"
     },
     {
       "file": "quick_ui/MixdownPage.qml",
