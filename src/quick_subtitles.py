@@ -106,7 +106,7 @@ def _midi_tracks(path: Path) -> list[dict[str, Any]]:
         raise SubtitleEditError('字幕工具暂不支持 MIDI Type 2。')
     rows = []
     for index, track in enumerate(midi.tracks):
-        count = sum(1 for message in track if message.type == 'lyrics' and message.text.strip())
+        count = sum(1 for message in track if message.type == 'lyrics' and subtitles.is_display_lyric(message.text))
         if not count:
             continue
         name = str(track.name or '').strip()

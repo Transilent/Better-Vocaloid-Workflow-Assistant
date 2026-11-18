@@ -11,6 +11,7 @@ ROOT=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT))
 from common import atomic_json, cancelled, file_hash, resolve_tools, preserve_changed_file
 from artifact_cache import fingerprint
+from preparation_languages import validate_project_formats
 
 PROJECT_FORMATS=('ustx','vsqx','svp')
 AUDIO_FORMATS=('wav','flac','mp3','ogg')
@@ -412,6 +413,37 @@ def read_ustx(path):
     return read(path.read_bytes(), require_version=False)
 
 
+def english_ustx_input_options(language):
+    if language != 'en':
+        return {}
+    return {'plus_handling_mode': 'polysyllabic', 'breath_lyrics': '', 'silence_lyrics': ''}
+
+
+def restore_english_ustx_lyrics(path, project):
+    """Keep exact words and both continuation markers through LibreSVIP."""
+    import yaml
+
+    data = read_ustx(path)
+    expected = {}
+    for track_index, track in enumerate(project.track_list):
+        for note in getattr(track, 'note_list', ()):
+            key = (track_index, note.start_pos, note.length, note.key_number)
+            if key in expected:
+                raise ValueError('USTX 导出包含重复音符，无法匹配英文歌词。')
+            expected[key] = '+~' if note.lyric == '-' else note.lyric
+    restored = len(expected)
+    for part in data.get('voice_parts', []):
+        for note in part['notes']:
+            key = (part['track_no'], part['position'] + note['position'], note['duration'], note['tone'])
+            if key not in expected:
+                raise ValueError('USTX 导出音符位置或时长与英文歌词来源不一致。')
+            note['lyric'] = expected.pop(key)
+    if expected:
+        raise ValueError('USTX 导出漏写音符，无法保留完整的英文歌词。')
+    path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding='utf-8')
+    return restored
+
+
 def portable_audio_reference(path, fmt, source):
     """Resolve probes absolutely, then serialize an editor-relative audio link."""
     base = path.parent/ 'voices.wavparts' if fmt=='vsqx' else path.parent
@@ -469,6 +501,8 @@ def export_projects(job, request):
     formats=request.get('project_formats',[])
     if not formats:
         return {'outputs':[], 'tracks':[]}
+    validate_project_formats(request['language'], formats)
+    english_options = english_ustx_input_options(request['language'])
     receipts = read_receipts(job)
     signatures = project_signatures(job, request)
     companion = prepare_vsqx_audio(job,request,receipts) if vsqx_audio_required(job,request) else None
@@ -505,7 +539,7 @@ def export_projects(job, request):
         unchanged = pitch_requested and metadata.get('native_sha256',{}).get('ustx') == file_hash(path)
         raw_pitch = unchanged and pitch_hash is not None and expected_pitch_hash == pitch_hash
         project=converters['ustx'].load(path, {'import_pitch':pitch_requested and not raw_pitch,'import_instrumental_track':False,
-            'plus_handling_mode':'monosyllabic' if request['language']=='zh' else 'polysyllabic'})
+            'plus_handling_mode':'monosyllabic' if request['language']=='zh' else 'polysyllabic', **english_options})
         vocal=[track for track in project.track_list if isinstance(track,SingingTrack)]
         if not vocal:
             vocal=[SingingTrack(title=voice)]
@@ -561,6 +595,8 @@ def export_projects(job, request):
             details = {}
             if request.get('include_instrumental',True) and instrumental.is_file():
                 portable_audio_reference(pending,fmt,audio_source)
+            if english_options and fmt == 'ustx':
+                details['english_lyric_notes'] = restore_english_ustx_lyrics(pending, merged)
             if fmt=='vsqx':
                 restore_vsqx_lyrics(pending,[track for track in merged.track_list if isinstance(track,SingingTrack)])
                 if protected_vsqx:
@@ -584,11 +620,20 @@ def export_projects(job, request):
                 print('SVP 参数采样：'+density['status']+'，新增 '+str(density['added_points'])+' 个点。',flush=True)
                 if density['unsupported_nonlinear_controls']:
                     print('提示：已有非线性编辑器曲线保持原样，回执已记录未加密通道。',flush=True)
-            loaded=converters[fmt].load(pending,{'import_pitch':not protected_vsqx,'import_instrumental_track':False})
+            loaded=converters[fmt].load(pending,{'import_pitch':not protected_vsqx,'import_instrumental_track':False,
+                                               **(english_options if fmt == 'ustx' else {})})
             expected=sum(item['notes'] for item in tracks)
             actual=sum(len(track.note_list) for track in loaded.track_list if isinstance(track,SingingTrack))
             if expected!=actual:
                 raise ValueError(f'{fmt.upper()} 导出后的音符数量不一致，请查看导出日志。')
+            if english_options and fmt == 'ustx':
+                def lyrics(project):
+                    return sorted((index, note.start_pos, note.length, note.key_number, note.lyric)
+                                  for index, track in enumerate(project.track_list)
+                                  for note in getattr(track, 'note_list', ()))
+
+                if lyrics(loaded) != lyrics(merged) or project_signatures(job, request)[fmt] != signatures[fmt]:
+                    raise ValueError('USTX 英文歌词回读与来源不一致，请重新导出。')
             if protected_vsqx:
                 clock = [(tempo.position, tempo.bpm) for tempo in playback.song_tempo_list]
                 read_clock = [(tempo.position, tempo.bpm) for tempo in loaded.song_tempo_list]

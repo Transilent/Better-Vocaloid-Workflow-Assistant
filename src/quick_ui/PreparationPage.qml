@@ -39,6 +39,7 @@ Item {
 
     readonly property bool usesBackingLyrics: field("target") !== "separation"
         && Boolean(field("recognize_lyrics")) && field("voice_mode") !== "single"
+    readonly property bool englishLyrics: field("language") === "en"
     readonly property var componentCheck: controller.preparationSources.view.componentCheck || ({})
     readonly property string inputBlocker: page.sourceBlocker()
     property bool showOutputOptions: false
@@ -1037,10 +1038,7 @@ Item {
                                     objectName: "lyricsLanguage"
                                     Layout.fillWidth: true
                                     theme: page.theme
-                                    model: [
-                                        {label: page.controller.text("中文"), value: "zh"},
-                                        {label: page.controller.text("日语"), value: "ja"}
-                                    ]
+                                    model: page.controller.preparationLanguages
                                     textRole: "label"
                                     valueRole: "value"
                                     currentIndex: page.indexInModel(model, page.field("language"))
@@ -1100,9 +1098,10 @@ Item {
                                 HelperText {
                                     Layout.fillWidth: true
                                     theme: page.theme
-                                    text: page.field("recognize_lyrics")
-                                        ? page.controller.text("有可靠歌词时优先填写，可减少识别并参与对齐。")
-                                        : page.controller.text("关闭识别时不提交歌词文本。")
+                                    text: !page.field("recognize_lyrics")
+                                        ? page.controller.text("关闭识别时不提交歌词文本。")
+                                        : page.englishLyrics ? page.controller.text("参考歌词请保留单词间的空格，数字请按实际唱法拼写。")
+                                        : page.controller.text("有可靠歌词时优先填写，可减少识别并参与对齐。")
                                 }
                             }
                         }
@@ -1392,6 +1391,13 @@ Item {
                                     text: page.controller.text("工程格式")
                                 }
 
+                                HelperText {
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    visible: page.englishLyrics
+                                    text: page.controller.text("英文支持 MIDI 和 USTX。")
+                                }
+
                                 GridLayout {
                                     Layout.fillWidth: true
                                     columns: 2
@@ -1407,13 +1413,14 @@ Item {
 
                                         delegate: CheckOption {
                                             required property var modelData
+                                            readonly property bool available: !page.englishLyrics || modelData.value === "ustx"
                                             Layout.fillWidth: true
                                             theme: page.theme
                                             text: modelData.label
-                                            checked: page.listHas(page.field("project_formats"), modelData.value)
-                                            enabled: !page.editLocked
+                                            checked: available && page.listHas(page.field("project_formats"), modelData.value)
+                                            enabled: available && !page.editLocked
                                             ToolTip.visible: hovered
-                                            ToolTip.text: modelData.hint
+                                            ToolTip.text: available ? modelData.hint : page.controller.text("英文支持 MIDI 和 USTX。")
                                             onToggled: page.controller.setPreparationExportFormat(
                                                 "project_formats", modelData.value, checked)
                                         }
@@ -1695,8 +1702,8 @@ Item {
                                     ]
                                     textRole: "label"
                                     valueRole: "value"
-                                    currentIndex: page.indexInModel(model, page.field("midi_backend"))
-                                    enabled: !page.editLocked
+                                    currentIndex: page.indexInModel(model, page.englishLyrics ? "v2" : page.field("midi_backend"))
+                                    enabled: !page.editLocked && !page.englishLyrics
                                     onActivated: page.controller.setPreparationField("midi_backend", currentValue)
                                 }
                             }
@@ -1720,8 +1727,8 @@ Item {
                                     ]
                                     textRole: "label"
                                     valueRole: "value"
-                                    currentIndex: page.indexInModel(model, page.field("alignment_engine"))
-                                    enabled: !page.editLocked
+                                    currentIndex: page.indexInModel(model, page.englishLyrics ? "hfa" : page.field("alignment_engine"))
+                                    enabled: !page.editLocked && !page.englishLyrics
                                     onActivated: page.controller.setPreparationField("alignment_engine", currentValue)
                                 }
                             }
@@ -1908,6 +1915,21 @@ Item {
                         visible: page.taskFailed && String(page.task.recovery_action || "").length > 0
                         theme: page.theme
                         text: page.controller.text(String(page.task.recovery_message || ""))
+                    }
+
+                    Repeater {
+                        model: page.task.lyric_notices || []
+                        delegate: HelperText {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            theme: page.theme
+                            text: page.controller.text(modelData.voice === "lead" ? "主唱"
+                                : modelData.voice === "backing" ? "和声" : "人声") + " · "
+                                + (modelData.state === "unavailable"
+                                    ? page.controller.text("英文歌词未能对齐，已保留 MIDI 音符。")
+                                    : page.controller.text("{0} 个片段只有音符，请在对齐报告中核对。")
+                                        .replace("{0}", modelData.chunks))
+                        }
                     }
 
                     Text {

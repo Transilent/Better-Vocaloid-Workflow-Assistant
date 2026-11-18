@@ -14,6 +14,7 @@ from download_sources import update_source_options
 from i18n import tr
 from operation_diagnostics import clock_text, describe, error_text, journal_for, operation_event
 import preparation_commands as preparation
+from preparation_languages import PROFILES
 import quick_results
 from quick_media_handoff import artifact_identity, verify_publication_bundle, verify_task_artifact
 from quick_publication import QuickPublication
@@ -626,6 +627,10 @@ class QuickBridge(QObject):
     def preparation(self):
         return self.state.draft_view
 
+    @Property('QVariantList', constant=True)
+    def preparationLanguages(self):
+        return [{'label': tr(profile.label), 'value': code} for code, profile in PROFILES.items()]
+
     @Property('QVariantList', notify=preparationPresetsChanged)
     def preparationPresets(self):
         return [dict(row) for row in self._preparation_presets]
@@ -687,11 +692,11 @@ class QuickBridge(QObject):
                  'BS-RoFormer · ' + {'cpu': 'CPU', 'cuda': 'CUDA', 'auto': tr('自动选择运行库')}[draft['roformer_device']]
                  if separator == 'roformer' else tr('内置分离')]
         if draft['target'] != 'separation':
-            lines.append('Vocal2Midi ' + ('2.0' if draft['midi_backend'] == 'v2' else '1.0'))
+            english = draft['language'] == 'en'
+            lines.append('Vocal2Midi ' + ('2.0' if english or draft['midi_backend'] == 'v2' else '1.0'))
             if draft['recognize_lyrics']:
-                chinese = draft['language'] == 'zh'
-                lines.append(tr('中文识别') if chinese else tr('日语识别'))
-                lines.append('TiFA' if draft['alignment_engine'] == 'tifa' else 'HubertFA')
+                lines.append(tr(PROFILES[draft['language']].recognition_label))
+                lines.append('TiFA' if not english and draft['alignment_engine'] == 'tifa' else 'HubertFA')
         return {**plan, 'summary': ' · '.join(lines)}
 
     @Property(str, notify=selectionChanged)

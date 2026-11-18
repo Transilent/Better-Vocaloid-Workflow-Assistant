@@ -61,7 +61,7 @@ ScrollView {
     function componentTitle(componentId) {
         return componentId === "builtin" ? controller.text("内置 Karaoke 2")
             : componentId === "roformer" ? "BS-RoFormer"
-            : componentId === "chinese" ? controller.text("中文歌词识别")
+            : componentId === "chinese" ? controller.text("中文 / 英文歌词识别")
             : componentId === "expression" ? controller.text("参考演唱音色")
             : componentId
     }

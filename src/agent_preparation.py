@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 import common
 from common import ROOT, app_path, atomic_json, clean_lyrics, file_hash, load_config, native_path, resolve_tools
 import pipeline
+from preparation_languages import LANGUAGES, validate_english_midi_options
 
 PLAN_SCHEMA = 1
 RECEIPT_SCHEMA = 1
@@ -456,8 +457,8 @@ def _normalise_options(options):
     result = copy.deepcopy(DEFAULT_OPTIONS)
     result.update(copy.deepcopy(options))
 
-    if result["language"] not in ("zh", "ja"):
-        raise ValueError("language 只能是 zh 或 ja。")
+    if result["language"] not in LANGUAGES:
+        raise ValueError("language 只能是 zh、ja 或 en。")
     result["lyrics"] = _bounded_text(result["lyrics"], "lyrics")
     result["backing_lyrics"] = _bounded_text(result["backing_lyrics"], "backing_lyrics")
     if type(result["recognize_lyrics"]) is not bool:
@@ -468,6 +469,7 @@ def _normalise_options(options):
         raise ValueError("midi_backend 只能是 v1 或 v2。")
     if result["alignment_engine"] not in ("hfa", "tifa"):
         raise ValueError("alignment_engine 只能是 hfa 或 tifa。")
+    validate_english_midi_options(result["language"], result["midi_backend"], result["alignment_engine"])
     if result["alignment_engine"] == "tifa" and result["midi_backend"] != "v2":
         raise ValueError("TiFA 歌词对齐需要 midi_backend=v2。")
     if type(result["midi_steps"]) is not int or result["midi_steps"] not in (8, 16, 32):
@@ -1033,13 +1035,14 @@ def _source_argument(job, request):
 
 def _target_request(source_request, options):
     request = copy.deepcopy(source_request)
+    language = options["language"]
     request.update({
-        "language": options["language"],
-        "lyrics": clean_lyrics(options["lyrics"]),
-        "lyric_lines": clean_lyrics(options["lyrics"], preserve_lines=True).splitlines(),
-        "backing_lyrics": clean_lyrics(options["backing_lyrics"]),
+        "language": language,
+        "lyrics": clean_lyrics(options["lyrics"], language=language),
+        "lyric_lines": clean_lyrics(options["lyrics"], preserve_lines=True, language=language).splitlines(),
+        "backing_lyrics": clean_lyrics(options["backing_lyrics"], language=language),
         "backing_lyric_lines": clean_lyrics(options["backing_lyrics"],
-                                            preserve_lines=True).splitlines(),
+                                            preserve_lines=True, language=language).splitlines(),
         "recognize_lyrics": options["recognize_lyrics"],
         "voice_mode": options["voice_mode"],
         "midi_steps": options["midi_steps"],

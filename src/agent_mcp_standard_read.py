@@ -13,6 +13,7 @@ from pydantic import Field
 
 from agent_control import ControlError
 from agent_mcp_models import Result, StrictModel
+from preparation_languages import PreparationLanguage
 
 
 # Worker invocations create bounded call records. This tool also exposes
@@ -175,7 +176,7 @@ class ContextRead(StrictModel):
 class LyricsRead(StrictModel):
     action: Literal['lyrics_read']
     artifact_id: str
-    language: Literal['zh', 'ja'] = 'zh'
+    language: PreparationLanguage = 'zh'
 
 
 class LyricTimelineRead(StrictModel):
@@ -208,7 +209,7 @@ class LyricsReview(StrictModel):
     action: Literal['lyrics_review']
     artifact_id: str
     reference_text: str | None = None
-    language: Literal['zh', 'ja'] = 'zh'
+    language: PreparationLanguage = 'zh'
 
 
 class LyricReconcileLine(StrictModel):

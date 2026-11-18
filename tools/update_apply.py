@@ -87,7 +87,7 @@ ROOT_FILES.update({
     'support_info.py', 'startup_preferences.py', 'update_notice_ui.py', 'onboarding_ui.py',
     'docs/StartupExperience.zh-CN.md',
     'appearance_state.py', 'component_operations.py', 'workspace_controller.py', 'workspace_routes.py',
-    'preparation_commands.py', 'quick_results.py', 'quick_support.py', 'quick_work.py', 'workspace_settings.py',
+    'preparation_commands.py', 'preparation_languages.py', 'quick_results.py', 'quick_support.py', 'quick_work.py', 'workspace_settings.py',
     'operation_diagnostics.py', 'quick_ui/DiagnosticsDialog.qml',
     'quick_app.py', 'quick_bridge.py', 'quick_runtime.py', 'quick_window_modes.py',
     'quick_ui/ComponentsPage.qml', 'quick_ui/Main.qml', 'quick_ui/PreparationPage.qml', 'quick_ui/UiButton.qml',

@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from workspace_routes import PAGE_SPECS
 from preparation_commands import PreparationDraft
+from preparation_languages import PROFILES, QWEN_FEATURE
 
 
 @dataclass(frozen=True)
@@ -207,8 +208,9 @@ class WorkspaceController:
         else:
             separator = 'builtin'
         required = [separator] if separator else []
-        if draft['target'] != 'separation' and draft['recognize_lyrics'] and draft['language'] == 'zh':
-            required.append('chinese')
+        if (draft['target'] != 'separation' and draft['recognize_lyrics']
+                and PROFILES[draft['language']].asr_feature == QWEN_FEATURE):
+            required.append(QWEN_FEATURE)
 
         known = self.rows_runtime == self.runtime and bool(self.rows)
         by_id = {row['id']: row for row in self.rows} if known else {}

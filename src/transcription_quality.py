@@ -1,6 +1,7 @@
 """Syllable boundaries and evidence-based repairs for generated transcriptions."""
 import copy
 import math
+from pathlib import Path
 
 ALGORITHM_VERSION = 11
 PAUSE_LIMIT = .15
@@ -927,12 +928,37 @@ def refine_notes(notes, result, syllables=(), energy=None, verify_pitch=None, re
     return output, report
 
 
+def english_alignment_fallback(chunks, sr, outcome, unsupported):
+    """Locate chunks with missing text or alignment in source-audio seconds."""
+    from inference.API import game_api
+
+    fallback = []
+    for index, chunk in enumerate(chunks):
+        stem = f'chunk_{index}'
+        prediction = outcome.pred_dict.get(stem)
+        if stem in unsupported:
+            reason = 'words_outside_dictionary'
+        elif not outcome.chars_dict.get(stem):
+            reason = 'no_asr_text'
+        elif not outcome.aligned or not prediction or not any(
+                game_api._find_word_nucleus_start(word, 'en') is not None for word in prediction[2]):
+            reason = 'no_hubertfa_alignment'
+        else:
+            continue
+        start = float(chunk['offset'])
+        fallback.append({'chunk': index, 'start': start,
+                         'end': start + len(chunk['waveform']) / sr, 'reason': reason,
+                         **({'words': unsupported[stem]} if stem in unsupported else {})})
+    return fallback
+
+
 def install(language, audio_path, report_path, reference_text='', *, pitch_available=True, peer=None):
     global _state, _installed
     _state = {'language': language, 'audio': audio_path, 'report': report_path, 'syllables': [], 'unvoiced': [], 'tail_proposals': [],
               'reference':reference_text, 'alignment_retries': [], 'voiced_pause_retries': [],
               'hfa_model':None, 'pitch_available':pitch_available, 'peer':peer,'write_pitch':False,
-              'note_boundary_checks':[],'confirmed_boundaries':[]}
+              'note_boundary_checks':[],'confirmed_boundaries':[],
+              'english_unsupported_words': {}, 'english_alignment': None}
     if _installed:
         return
     from inference.API import game_api, hfa_api, lfa_api
@@ -976,6 +1002,14 @@ def install(language, audio_path, report_path, reference_text='', *, pitch_avail
                 hfa_api._repair_short_word_boundaries(prediction[2], max_gap_sec=PAUSE_LIMIT)
 
     def stage(chunks, sr, ctx, outcome, *args, **kwargs):
+        if ctx.fa_language == 'en' and outcome is not None:
+            fallback = english_alignment_fallback(chunks, sr, outcome, _state['english_unsupported_words'])
+            for row in fallback:
+                outcome.pred_dict.pop(f"chunk_{row['chunk']}", None)
+            _state['english_alignment'] = {
+                'chunks': len(chunks),
+                'fallback': fallback,
+            }
         if ctx.fa_language=='zh' and outcome and _state['hfa_model'] is not None:
             from pitch_accuracy import current_pitch
             _state['voiced_pause_retries'] = retry_voiced_pauses(_state['hfa_model'],outcome,chunks,sr,
@@ -1012,7 +1046,6 @@ def install(language, audio_path, report_path, reference_text='', *, pitch_avail
             # Recheck only ambiguous notes with both a measured contour change
             # and timed lyric support. Share the tail retry's 16-window/24 s
             # budget and loaded model rather than adding another model layer.
-            from pathlib import Path
             import soundfile as sf
             pitch=current_pitch()
             for note in notes:
@@ -1048,8 +1081,28 @@ def install(language, audio_path, report_path, reference_text='', *, pitch_avail
 
     def hfa(model, directory, language='zh', cancel_checker=None, use_phoneme_g2p=False):
         _state['hfa_model']=model
+        unsupported = {}
+        if language == 'en' and not use_phoneme_g2p:
+            from preparation_languages import ENGLISH_DICTIONARY
+
+            with (model.vocab_folder / ENGLISH_DICTIONARY).open(encoding='utf-8') as stream:
+                vocabulary = {line.partition('\t')[0].strip() for line in stream}
+            labs = list(Path(directory).glob('chunk_*.lab'))
+            for lab in labs:
+                if cancel_checker and cancel_checker():
+                    raise InterruptedError('英文歌词对齐已取消。')
+                missing = sorted(set(lab.read_text(encoding='utf-8').split()) - vocabulary)
+                if missing:
+                    unsupported[lab.stem] = missing
+            _state['english_unsupported_words'] = unsupported
+            if labs and len(unsupported) == len(labs):
+                return {}
         predictions = native_hfa(model, directory, language=language,
             cancel_checker=cancel_checker, use_phoneme_g2p=use_phoneme_g2p)
+        for stem in unsupported:
+            # Skipped words have no valid time anchor. Keep pitch-only notes
+            # for this chunk instead of labelling that span with a neighbour.
+            predictions.pop(stem, None)
         _state['alignment_retries'] = retry_collapsed_alignment(model, directory, predictions, language,
             native_hfa, cancel_checker, use_phoneme_g2p)
         return predictions
@@ -1092,6 +1145,8 @@ def install(language, audio_path, report_path, reference_text='', *, pitch_avail
         report['aligned_coverage']=aligned_coverage_gaps(result,_state['syllables'],pitch,
             report['removed']+report['cross_voice_exclusions'])
         report['syllables'] = _state['syllables']
+        if _state['english_alignment'] is not None:
+            report['english_alignment'] = _state['english_alignment']
         report['unvoiced_phonemes'] = _state['unvoiced']
         report['pitch_phoneme_guard'] = pitch_audit
         report['japanese_tail_repairs'] = [row for row in tail_audit if row.get('source')!='local_GAME_internal']

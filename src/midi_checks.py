@@ -3,7 +3,7 @@ from collections import Counter
 import mido
 
 
-def inspect_midi(path, allow_empty=False):
+def inspect_midi(path, allow_empty=False, *, language=None):
     midi = mido.MidiFile(str(path), charset="utf8")
     if midi.type not in (0, 1) or not 0 < midi.ticks_per_beat < 32768:
         raise ValueError("MIDI 格式或时间分辨率不受支持。")
@@ -16,10 +16,15 @@ def inspect_midi(path, allow_empty=False):
     active = {}
     seconds = 0.0
     lyric_count = 0
+    word_count = 0
+    if language == 'en':
+        from preparation_languages import english_words
     for message in midi:
         seconds += message.time
         if message.type == "lyrics" and message.text:
             lyric_count += 1
+            if language == 'en' and english_words(message.text):
+                word_count += 1
         if message.type == "note_on" and message.velocity > 0:
             key = (message.channel, message.note)
             if key in active:
@@ -49,6 +54,7 @@ def inspect_midi(path, allow_empty=False):
         if reasons:
             hints.append({**note, "reason": "；".join(reasons)})
     return {"notes": len(notes), "lyrics_events": lyric_count,
+            **({'word_events': word_count} if language == 'en' else {}),
             "format": midi.type, "tracks": len(midi.tracks), "lyric_encoding": "utf-8",
             "first_note_seconds": notes[0]["start"] if notes else None,
             "last_note_seconds": max((n["end"] for n in notes), default=0),

@@ -966,7 +966,7 @@ def _merge_issues(candidates: list[dict[str, Any]], key: str) -> list[dict[str, 
 
 def _audit_candidate(format_name: str, row: Any, source: dict[str, Any],
                      source_sha: str, receipt_root: Path, plan_sha: str,
-                     converters: Mapping[str, Any], pitch=None, cancel=None) -> dict[str, Any]:
+                     converters: Mapping[str, Any], pitch=None, cancel=None, *, language=None) -> dict[str, Any]:
     result = _skeleton_candidate(format_name, row, source_sha)
     warnings: list[dict[str, Any]] = result["warnings"]
     blockers: list[dict[str, Any]] = result["blockers"]
@@ -1066,12 +1066,14 @@ def _audit_candidate(format_name: str, row: Any, source: dict[str, Any],
         blockers.append(_issue("candidate_parser_unavailable", "运行库未提供格式解析器。", format_name))
         return result
     try:
+        from project_exports import english_ustx_input_options
+        input_options = english_ustx_input_options(language) if format_name == 'ustx' else {}
         if pitch and pitch.get("status") in ("planned", "preserved"):
             from agent_pitch import load_pitch_project
-            project = load_pitch_project(_io_path(canonical_path), format_name, converters)
+            project = load_pitch_project(_io_path(canonical_path), format_name, converters, input_options=input_options)
         else:
             project = converter.load(_io_path(canonical_path),
-                {"import_pitch": False, "import_instrumental_track": False})
+                {"import_pitch": False, "import_instrumental_track": False, **input_options})
         parsed = _parse_project(project, format_name)
         if pitch and pitch.get("status") in ("planned", "preserved"):
             from agent_pitch import verify_pitch_plan
@@ -1410,6 +1412,7 @@ def audit_export(source_path: Any, receipt: Any, export_runtime: Any = None,
                     candidates.append(_audit_candidate(
                         fmt, rows[index], parsed_source, source_sha, receipt_root,
                         plan_sha, converters, saved.get("pitch"), check_cancel,
+                        language=saved.get("language"),
                     ))
                 check_cancel()
         except (FileNotFoundError, ValueError, ImportError, OSError) as error:

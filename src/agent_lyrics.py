@@ -120,8 +120,9 @@ def _natural_path_text(value: Any, field_name: str) -> str:
 
 
 def _validate_language(language: Any) -> str:
-    if not isinstance(language, str) or language not in {"zh", "ja"}:
-        raise ValueError("language 必须是 'zh' 或 'ja'。")
+    from preparation_languages import LANGUAGES
+    if not isinstance(language, str) or language not in LANGUAGES:
+        raise ValueError("language 必须是 zh、ja 或 en。")
     return language
 
 
@@ -448,7 +449,10 @@ def _is_continuation_or_punctuation(text: str) -> bool:
     return all(ch in _CONTINUATION_CHARS for ch in stripped)
 
 
-def _comparison_tokens(text: str) -> list[str]:
+def _comparison_tokens(text: str, language=None) -> list[str]:
+    if language == 'en':
+        from preparation_languages import english_words
+        return [word.lower() for word in english_words(text)]
     tokens = []
     for char in unicodedata.normalize("NFC", text):
         category = unicodedata.category(char)
@@ -487,7 +491,8 @@ def _hint(
 
 
 def _reference_mismatch_hints(read: dict[str, Any], reference_text: str) -> list[dict[str, Any]]:
-    reference_tokens = _comparison_tokens(reference_text)
+    language = read["language"]
+    reference_tokens = _comparison_tokens(reference_text, language)
     units: list[dict[str, Any]] = []
     for note in sorted(
         (row for row in read["notes"] if row.get("lyric_alignment") == "aligned"),
@@ -496,7 +501,7 @@ def _reference_mismatch_hints(read: dict[str, Any], reference_text: str) -> list
         lyric = note.get("lyric")
         if not isinstance(lyric, str):
             continue
-        for token in _comparison_tokens(lyric):
+        for token in _comparison_tokens(lyric, language):
             units.append({
                 "token": token, "note_id": note["note_id"],
                 "track_index": note["track_index"], "tick": note["onset_tick"],
@@ -682,8 +687,9 @@ def review_lyrics(path, reference_text=None, language="zh") -> dict:
     reference_evidence = {
         "provided": reference_text is not None,
         "source": "explicit_caller_input",
-        "comparison": "Unicode punctuation/whitespace excluded; no provider or phonetic inference",
-        "token_count": len(_comparison_tokens(reference_text)) if reference_text is not None else 0,
+        "comparison": ("Case-insensitive words with contractions and hyphens" if language == 'en'
+                       else "Unicode punctuation/whitespace excluded; no provider or phonetic inference"),
+        "token_count": len(_comparison_tokens(reference_text, language)) if reference_text is not None else 0,
     }
     if reference_text is not None:
         if reference_evidence["token_count"] == 0:

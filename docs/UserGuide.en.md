@@ -33,14 +33,16 @@ Under **输出内容** (Output) on Preparation, use **选择目录** (Choose fol
 | 自动分离 · 主唱 / 和声双轨 | Two-stage model separation and two-part MIDI |
 | 导入外部分轨 | Use full-length lead, backing, and accompaniment WAV stems |
 | 合并人声 · 单轨 MIDI | Combined vocal transcription |
-| 中文 / 日语 | Chinese / Japanese lyric processing |
+| 中文 / 日语 / 英文 | Chinese, Japanese or English lyric processing |
 | 中文歌词格式 | Characters or pinyin for both Chinese vocal tracks |
 | 识别歌词并写入 MIDI | Enable lyric recognition; unchecked gives notes only |
 | 准备工作流 → 歌词与音符 → 提取步数 | Choose 8, 16 or 32 GAME steps |
 
 External stems must come from the same source and retain the full timeline from zero, including initial silence. Mono and 48 kHz WAVs are converted. A different duration is rejected; equal duration does not prove correct alignment.
 
-Paste reference lyrics only. Spaces, punctuation, and line breaks are removed. Lead and backing lyrics are independent. Do not paste credits or a full description. Empty backing lyrics allow independent recognition.
+Paste the sung text for each vocal part. English reference lyrics keep word boundaries, contractions and hyphens. Spell out numbers as sung. Leave the reference blank to transcribe that vocal part independently.
+
+Choose **英文** (English) to use Vocal2Midi 2.0 and HubertFA and export MIDI and USTX. The first note carries the word. A `+` marks the next syllable, and a sustain uses `-` in MIDI or `+~` in USTX. Select an English phonemizer that matches your voicebank in OpenUtau. Check the per-voice `*_alignment.json` for dictionary misses or unaligned passages kept as notes only.
 
 Use **歌词与语言** (Lyrics and language) to search NetEase or import and edit local reference lyrics. Devices remain in the top toolbar's **设备设置**. Logs are available through **处理日志**.
 
@@ -61,9 +63,9 @@ download. Retain the complete `dependencies/optional` folder when moving the app
 
 Models separate musical roles, not singer identities. Listen for leakage, missed notes, and lyric errors. More inference steps do not guarantee higher accuracy.
 
-Chinese lyrics use Qwen ASR. Japanese lyrics retain the bundled Romaji ASR model, followed by HubertFA alignment; selecting Japanese does not replace its weights with Qwen. If a chunk has empty recognition or an unusable alignment, it keeps pitch-only notes and is recorded in the alignment report. A bad alignment chunk does not discard successfully aligned chunks. Short Japanese mora repairs do not bridge pauses longer than 150 ms.
+Chinese and English share Qwen3-ASR. Japanese uses the bundled Romaji ASR model followed by HubertFA alignment. Chunks without usable words or alignment keep their notes and appear in the alignment report. Short Japanese mora repairs bridge pauses of up to 150 ms.
 
-Models/components includes **中文歌词识别 → 校验 / 恢复中文模型** (Chinese lyrics → Verify/restore Chinese model). It verifies the original Qwen weights and downloads missing or damaged files. The complete runtime includes these approximately 4.38 GiB of weights. Japanese and notes-only extraction check their own dependencies and can run without Qwen. Cache cleanup does not remove installed weights.
+Use **模型与组件 → 中文 / 英文歌词识别** (Models and components → Chinese / English lyric recognition) to download, verify or repair Qwen3-ASR. The full runtime includes these weights. JPN installations need a one-time download of about 4.39 GiB to transcribe either Chinese or English. Japanese and notes-only extraction can run independently.
 
 ## Run and recovery
 

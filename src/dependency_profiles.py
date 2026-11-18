@@ -2,20 +2,21 @@
 from pathlib import Path
 
 from common import ROOT, dependency_manifest
+from preparation_languages import HUBERTFA_MODEL, PROFILES, QWEN_FEATURE, QWEN_MODEL, QWEN_TITLE, ROMAJI_MODEL
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 
 LABELS = {'core': '基础运行库', 'midi': 'MIDI 提取', 'alignment': '歌词对齐',
-          'chinese': '中文歌词识别', 'japanese': '日语歌词识别', 'pitch': '音高分析（RMVPE）',
+          QWEN_FEATURE: QWEN_TITLE, 'japanese': '日语歌词识别', 'pitch': '音高分析（RMVPE）',
           'projects': '工程转换', 'publishing': '网页上传'}
 
 
 def group(name):
     if name.startswith(('dependencies/browser/', 'vendor/playwright/', 'vendor/playwright-')): return 'publishing'
     if name.startswith('dependencies/export/'): return 'projects'
-    if '/experiments/Qwen3-ASR-1.7B-dml/' in name: return 'chinese'
-    if '/experiments/romajiASR/' in name: return 'japanese'
-    if '/experiments/1218_hfa_model_new_dict/' in name: return 'alignment'
+    if f'/{QWEN_MODEL}/' in name: return QWEN_FEATURE
+    if f'/{ROMAJI_MODEL}/' in name: return 'japanese'
+    if f'/{HUBERTFA_MODEL}/' in name: return 'alignment'
     if '/experiments/RMVPE/' in name: return 'pitch'
     if '/experiments/GAME-' in name: return 'midi'
     return 'core'
@@ -31,7 +32,7 @@ def _inside_root(path):
 def status(features=None, *, file_filter=None, check=None):
     """Report target-file presence without hashing multi-gigabyte weights.
 
-    The Chinese row additionally reports resumable cache bytes. The explicit
+    The Qwen row additionally reports resumable cache bytes. The explicit
     ComponentsPage action performs the full pinned SHA-256 verification.
     """
     chosen = set(LABELS) if features is None else set(features)
@@ -100,7 +101,7 @@ def status(features=None, *, file_filter=None, check=None):
 def task_features(request, stages):
     """Return only the runtime groups used by this task.
 
-    Japanese recognition never requests the Chinese Qwen group, and disabling
+    Japanese recognition uses Romaji ASR, and disabling
     lyrics recognition requests no language model at all.
     """
     features = {'core'}
@@ -108,7 +109,7 @@ def task_features(request, stages):
         features.add('midi')
         if request.get('recognize_lyrics', True):
             language = request.get('language', 'zh')
-            features.update(('alignment', 'chinese' if language == 'zh' else 'japanese'))
+            features.update(('alignment', PROFILES[language].asr_feature))
         from common import resolve_tools
         tools = dict(request.get('tools', {}))
         tools.setdefault('vocal2midi', 'dependencies/vocal2midi2' if request.get('midi_backend') == 'v2' else 'dependencies/vocal2midi')

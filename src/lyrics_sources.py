@@ -64,6 +64,13 @@ class LyricReference:
     origin: dict
     raw: str = ''
 
+    def text_for(self, language):
+        if language != 'en' or not (self.cues or self.raw):
+            return self.text
+        lines = (cue.text for cue in self.cues) if self.cues else self.raw.splitlines()
+        return clean_lyrics('\n'.join(line for line in lines if not is_credit(line)),
+                            preserve_lines=True, language=language)
+
 
 def is_credit(text):
     return bool(re.match(r'^\s*(?:作词|作詞|作曲|编曲|編曲|词曲|词|曲|混音|母带|录音|制作人|制作|监制|发行|出品|演唱|歌手|翻译|lyrics?|composer|arranger|vocal)\s*[:：]',text,re.I))

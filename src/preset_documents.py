@@ -16,6 +16,7 @@ import re
 import stat
 
 from common import native_path
+from preparation_languages import LANGUAGES, validate_english_midi_options, validate_project_formats
 
 MAX_DOCUMENT_BYTES = 256 * 1024
 MAX_DEPTH = 16
@@ -91,7 +92,7 @@ _GRAPH = _object({
     'edges': _array(_array(_enum('source', 'separation', 'midi', 'subtitles'), 2, 2), 1, 3, unique=True),
 })
 _PREPARATION_OPTIONS = _object({
-    'language': _enum('zh', 'ja'), 'recognize_lyrics': _BOOL,
+    'language': _enum(*LANGUAGES), 'recognize_lyrics': _BOOL,
     'zh_lyric_mode': _enum('hanzi', 'pinyin'), 'voice_mode': _enum('single', 'dual', 'import', 'roformer'),
     'midi_steps': _enum(8, 16, 32), 'midi_backend': _enum('v1', 'v2'),
     'alignment_engine': _enum('hfa', 'tifa'),
@@ -323,6 +324,11 @@ def validate_document(value, *, allow_builtin=False):
         except (ValueError, TypeError, KeyError) as error:
             _invalid('$.payload.graph', str(error))
         options = payload['options']
+        try:
+            validate_english_midi_options(options['language'], options['midi_backend'], options['alignment_engine'])
+            validate_project_formats(options['language'], options['project_formats'])
+        except ValueError as error:
+            _invalid('$.payload.options', str(error))
         if options['alignment_engine'] == 'tifa' and options['midi_backend'] != 'v2':
             _invalid('$.payload.options', 'TiFA 需要 v2 后端。')
         if options['separation_flow'] == 'independent' and options['voice_mode'] != 'roformer':

@@ -186,7 +186,7 @@ def _hash_file(path, check=None, progress=None, base=0, total=None):
     with open(native_path(path), 'rb') as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             if check and check():
-                raise InterruptedError('已取消操作；已完成的中文模型文件会保留。')
+                raise InterruptedError('已取消操作。已下载并校验的 Qwen3-ASR 模型文件可继续使用。')
             digest.update(block)
             read += len(block)
             if progress and (read - last_report >= 8 * 1024**2):
@@ -273,10 +273,10 @@ def status(feature, verify=False, check=None, root=None):
 def verify(feature, progress=None, check=None, root=None):
     state = status(feature, verify=True, check=check, root=root)
     if progress:
-        progress(state['downloaded_bytes'], state['bytes'], '中文模型校验通过' if state['ready']
-                 else '中文模型校验未完成')
+        progress(state['downloaded_bytes'], state['bytes'], 'Qwen3-ASR 模型校验通过' if state['ready']
+                 else 'Qwen3-ASR 模型校验未完成')
     if not state['ready']:
-        raise ValueError('中文模型缺失或文件校验失败，请点击“校验 / 修复”恢复。')
+        raise ValueError('Qwen3-ASR 模型缺失或文件校验失败，请点击“校验 / 修复”恢复。')
     try:
         root = Path(ROOT if root is None else root).resolve()
         spec = specification(feature, root)
@@ -310,7 +310,7 @@ def install(feature, progress, check=None, source='auto'):
     total = spec['bytes']
     with job_lock(folder):
         _raise_if_cancelled(check)
-        progress(0, total, '正在校验中文模型')
+        progress(0, total, '正在校验 Qwen3-ASR 模型')
         state = _load_state(root, feature, spec)
         failed = set(state.get('failed_files', ()))
         required = []
@@ -323,17 +323,17 @@ def install(feature, progress, check=None, source='auto'):
             except OSError:
                 valid = False
             if valid:
-                progress(done, total, f'正在检查中文模型 · {index}/{len(items)}')
+                progress(done, total, f'正在检查 Qwen3-ASR 模型 · {index}/{len(items)}')
                 valid = _hash_file(
                     target, check,
                     lambda current, size, base=done, index=index: progress(
-                        min(total, current), total, f'正在检查中文模型 · {index}/{len(items)}'),
+                        min(total, current), total, f'正在检查 Qwen3-ASR 模型 · {index}/{len(items)}'),
                 ) == item['sha256']
                 _raise_if_cancelled(check)
             if valid:
                 failed.discard(item['file'])
                 done += item['bytes']
-                progress(done, total, f'已校验中文模型 · {index}/{len(items)}')
+                progress(done, total, f'已校验 Qwen3-ASR 模型 · {index}/{len(items)}')
             else:
                 if target.exists():
                     failed.add(item['file'])
@@ -341,7 +341,7 @@ def install(feature, progress, check=None, source='auto'):
         _save_state(root, feature, spec, failed)
         needed = sum(item['bytes'] for item in required) + 64 * 1024**2
         if required and shutil.disk_usage(root).free < needed:
-            raise OSError('安装中文模型所需的可用空间不足，已保留现有下载；请先清理缓存。')
+            raise OSError('安装 Qwen3-ASR 模型的可用空间不足。清理缓存后可继续现有下载。')
 
         for item in required:
             _raise_if_cancelled(check)
@@ -363,16 +363,16 @@ def install(feature, progress, check=None, source='auto'):
                 downloaded = Path(downloaded)
                 resolved = downloaded.resolve(strict=True)
             except OSError as exc:
-                raise ValueError('下载器未返回可读取的中文模型文件。') from exc
+                raise ValueError('下载器未返回可读取的 Qwen3-ASR 模型文件。') from exc
             if (not resolved.is_relative_to(folder.resolve()) or resolved.is_symlink()
                     or not resolved.is_file() or resolved.stat().st_size != item['bytes']
                     or _hash_file(
                         resolved, check,
                         lambda current, size: progress(min(total, start + current), total,
-                                                       '正在确认中文模型文件')) != item['sha256']):
+                                                       '正在确认 Qwen3-ASR 模型文件')) != item['sha256']):
                 if resolved.is_relative_to(folder.resolve()) and resolved.is_file() and not resolved.is_symlink():
                     resolved.unlink(missing_ok=True)
-                raise ValueError('下载的中文模型 SHA-256 校验失败，未激活文件。')
+                raise ValueError('下载的 Qwen3-ASR 模型文件 SHA-256 校验失败。')
             _raise_if_cancelled(check)
             target = item['target']
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -383,14 +383,14 @@ def install(feature, progress, check=None, source='auto'):
             failed.discard(item['file'])
             _save_state(root, feature, spec, failed)
             done += item['bytes']
-            progress(done, total, '中文模型文件校验通过')
+            progress(done, total, 'Qwen3-ASR 模型校验通过')
 
         # Once every target is verified and atomically activated, a late stop
         # request cannot turn a complete installation into a partial result.
         final = status(feature, verify=False, root=root)
         if not final['ready']:
-            raise OSError('中文模型安装尚未完成；已校验文件会保留，可继续下载。')
+            raise OSError('Qwen3-ASR 模型安装尚未完成。可继续下载剩余文件。')
         _save_state(root, feature, spec, ())
-        progress(total, total, '中文模型已就绪，可离线使用')
+        progress(total, total, 'Qwen3-ASR 模型已就绪，可离线使用')
     return {'ready': True, 'verified': True, 'feature': feature, 'files': len(items),
             'bytes': total, 'repaired': bool(required)}

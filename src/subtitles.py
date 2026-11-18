@@ -61,13 +61,18 @@ def timed_csv(text):
     return validate([Cue(float(r['start']), float(r['end']), r['text']) for r in rows])
 
 
-def midi_cues(path, track=None, *, reference_lines=None):
+def is_display_lyric(text):
+    return bool(text.strip()) and text.strip() not in ('+', '-', '+~', '+*')
+
+
+def midi_cues(path, track=None, *, reference_lines=None, language=None):
     import mido
     midi = mido.MidiFile(str(path), charset='utf8')
     if midi.type == 2:
         raise ValueError('字幕导出暂不支持 MIDI Type 2。')
     # Preserve the global tempo map while selecting one voice's lyric events.
-    selected = next((i for i, t in enumerate(midi.tracks) if any(m.type == 'lyrics' for m in t)), None) if track is None else track
+    selected = next((i for i, t in enumerate(midi.tracks)
+                     if any(m.type == 'lyrics' and is_display_lyric(m.text) for m in t)), None) if track is None else track
     if selected is None or not 0 <= selected < len(midi.tracks):
         raise ValueError('MIDI 没有歌词事件；请选择带歌词的声部文件。')
     tracks = []
@@ -87,7 +92,7 @@ def midi_cues(path, track=None, *, reference_lines=None):
         beat += msg.time / midi.ticks_per_beat
         if msg.type == 'set_tempo':
             tempo = msg.tempo
-        if msg.type == 'lyrics' and msg.text.strip():
+        if msg.type == 'lyrics' and is_display_lyric(msg.text):
             syllables.append((seconds, msg.text.strip(), beat))
         elif msg.type == 'note_on' and msg.velocity:
             active[(msg.channel, msg.note)].append(seconds)
@@ -114,25 +119,32 @@ def midi_cues(path, track=None, *, reference_lines=None):
             start = starts[index]
             releases[start] = max(releases.get(start, start), end)
             index += 1
-    # Reference lines are usable only when all characters and syllable boundaries
+    # Reference lines are usable only when all lyric units and boundaries
     # agree. Never invent timestamps or split a multi-character lyric event.
     from common import clean_lyrics
-    lines = [clean_lyrics(line) for line in (reference_lines or []) if clean_lyrics(line)]
+    from preparation_languages import english_words
+
+    def tokens(text):
+        return ([word.lower() for word in english_words(text)] if language == 'en'
+                else list(clean_lyrics(text)))
+
+    lines = [units for line in (reference_lines or []) if (units := tokens(line))]
+    event_tokens = [tokens(text) for _, text, _ in syllables]
     boundaries, consumed = set(), 0
-    if lines and ''.join(lines) == ''.join(clean_lyrics(text) for _, text, _ in syllables):
+    if lines and [unit for line in lines for unit in line] == [unit for event in event_tokens for unit in event]:
         cursor = 0
         for line in lines[:-1]:
             cursor += len(line)
             boundaries.add(cursor)
         event_boundaries = set()
-        for _, text, _ in syllables:
-            consumed += len(clean_lyrics(text))
+        for units in event_tokens:
+            consumed += len(units)
             event_boundaries.add(consumed)
         if not boundaries <= event_boundaries:
             boundaries.clear()
     consumed = 0
     groups = []
-    for start, text, beat in syllables:
+    for (start, text, beat), units in zip(syllables, event_tokens):
         join = (groups and consumed not in boundaries
                 and ((bool(boundaries)) or
                      (start - groups[-1][-1][0] <= 2 and beat - groups[-1][-1][2] <= 1.6
@@ -141,7 +153,7 @@ def midi_cues(path, track=None, *, reference_lines=None):
             groups[-1].append((start, text, beat))
         else:
             groups.append([(start, text, beat)])
-        consumed += len(clean_lyrics(text))
+        consumed += len(units)
     cues = []
     for i, group in enumerate(groups):
         roman = all(re.fullmatch(r'[\x20-\x7e]+', s) for _, s, _ in group)
@@ -195,7 +207,7 @@ def export_job(job, request):
     for voice in voices:
         source = job / 'midi' / (voice+'.mid') if voice == 'vocals' else job / 'midi' / voice / (voice+'.mid')
         try:
-            cues = midi_cues(source, reference_lines=request.get(
+            cues = midi_cues(source, language=request.get('language'), reference_lines=request.get(
                 'backing_lyric_lines' if voice == 'backing' else 'lyric_lines'))
         except ValueError as exc:
             warnings.append(f'{voice}：{exc}')

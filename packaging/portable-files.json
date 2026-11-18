@@ -146,6 +146,10 @@
       "source": "src/preparation_commands.py"
     },
     {
+      "file": "preparation_languages.py",
+      "source": "src/preparation_languages.py"
+    },
+    {
       "file": "quick_app.py",
       "source": "src/quick_app.py"
     },

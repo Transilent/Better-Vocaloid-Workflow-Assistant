@@ -18,6 +18,7 @@ import download_sources
 import expression_component
 import feature_components
 import optional_components
+from preparation_languages import QWEN_FEATURE, QWEN_TITLE
 
 
 COMPONENT_IDS = ('builtin', 'roformer', 'chinese', 'expression')
@@ -68,13 +69,13 @@ def _row(component_id, status, *, detail, download=0, installed=0,
         'title': {
             'builtin': 'Karaoke 2',
             'roformer': 'BS-RoFormer',
-            'chinese': '中文歌词识别',
+            QWEN_FEATURE: QWEN_TITLE,
             'expression': '参考演唱音色',
         }[component_id],
         'summary': {
             'builtin': '主唱／和声分离 · 内置基础方案 · 无需下载',
             'roformer': '主唱／和声分离 · 可选 CPU / CUDA 运行库',
-            'chinese': 'Qwen3-ASR · 可选中文模型',
+            QWEN_FEATURE: 'Qwen3-ASR · 中文和英文共用',
             'expression': 'WORLD · 张力、气声与发声强度',
         }[component_id],
         'status': status,
@@ -312,15 +313,15 @@ def _chinese_row():
     cached = _nonnegative_int(state.get('partial_bytes'))
     can_verify = status in {'ready', 'partial', 'damaged'} and (installed > 0 or cached > 0)
     if status == 'ready':
-        detail = '中文模型文件按当前清单就绪；完整校验会逐文件核对固定 SHA-256。'
+        detail = 'Qwen3-ASR 模型文件已就绪；完整校验会逐文件核对固定 SHA-256。'
     elif status == 'error':
-        detail = state.get('error') or '中文模型清单或路径状态无法读取。'
+        detail = state.get('error') or 'Qwen3-ASR 模型清单或路径状态无法读取。'
     elif status == 'damaged':
-        detail = f'中文模型文件需要修复（{complete} / {files} 个文件完整）；可继续下载并重新校验。'
+        detail = f'Qwen3-ASR 模型文件需要修复（{complete} / {files} 个文件完整）；可继续下载并重新校验。'
     elif status == 'partial':
-        detail = f'中文模型已准备 {complete} / {files} 个文件；下载缓存可断点续传。'
+        detail = f'Qwen3-ASR 模型已准备 {complete} / {files} 个文件；下载缓存可断点续传。'
     else:
-        detail = '中文模型尚未安装；下载后可离线使用，完整校验会逐文件核对 SHA-256。'
+        detail = 'Qwen3-ASR 模型尚未安装；下载后可离线使用，完整校验会逐文件核对 SHA-256。'
     return _row(
         'chinese', status, detail=detail,
         download=total, installed=installed, required=total,

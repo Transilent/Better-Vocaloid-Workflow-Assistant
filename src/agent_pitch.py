@@ -1220,7 +1220,7 @@ def restore_native_pitch(path: Any, fmt: str, project: Any, plan: Any, *,
             "tracks": rows, "total_points": total_points}
 
 
-def load_pitch_project(path: Any, fmt: str, converters: Mapping[str, Any]) -> Any:
+def load_pitch_project(path: Any, fmt: str, converters: Mapping[str, Any], *, input_options=None) -> Any:
     """Load a verification project without SVP's five-tick pitch downsampling.
 
     SVP is read through a local ``SynthVParser`` subclass that forces the pitch
@@ -1243,7 +1243,7 @@ def load_pitch_project(path: Any, fmt: str, converters: Mapping[str, Any]) -> An
         raise ValueError("回读工程路径必须指向普通文件。")
     options = {"import_pitch": True, "import_instrumental_track": False}
     if format_name != "svp":
-        return converter.load(source, options)
+        return converter.load(source, {**options, **(input_options or {})})
 
     from libresvip.plugins.svp.model import SVProject
     from libresvip.plugins.svp.synthv_parser import SynthVParser

@@ -11,6 +11,7 @@ from pydantic import (
     model_validator,
 )
 from agent_preparation import PREPARATION_BPM_RANGE, PREPARATION_CPU_THREADS_RANGE, PREPARATION_DEVICE_VALUES
+from preparation_languages import PreparationLanguage
 from style_catalog import DEFAULT_TECHNIQUE_ID, TECHNIQUE_IDS, VISIBLE_STYLES
 
 StylePresetId = Literal[*VISIBLE_STYLES]
@@ -112,7 +113,7 @@ WorkflowReviewMode = Annotated[Literal['full','segments','legacy'], Field(
 
 
 class PreparationOptions(StrictModel):
-    language: Literal['zh','ja'] = 'zh'
+    language: PreparationLanguage = 'zh'
     lyrics: str = Field(default='', max_length=100000, description=(
         '已核对的主唱歌词；新歌曲开始准备或扒谱前优先填写，以便参与歌词对齐。'
         '没有可靠歌词时可留空，外部搜索结果须先核实版本。'))

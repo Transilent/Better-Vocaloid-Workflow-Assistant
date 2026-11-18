@@ -538,6 +538,12 @@ def invocation_contract(source_directory):
         check(prep_call['args'] == ['C:/managed/source.wav', {}, declared_url],
               'preparation_source_declaration_forwarded')
         before = len(calls)
+        await call(server, 'vwa_start', {'action': 'preparation_plan', 'source': 'C:/managed/source.wav',
+                   'options': {'language': 'en', 'lyrics': "Don't let go"}})
+        prep_call = next(row for row in calls[before:] if row['callback'] == 'preparation_plan')
+        check(prep_call['args'] == ['C:/managed/source.wav', {'language': 'en', 'lyrics': "Don't let go"}],
+              'english_preparation_options_forwarded')
+        before = len(calls)
         await call(server, 'vwa_start', {'action': 'workflow_create',
                    'source': 'C:/managed/source.wav', 'source_url': declared_url,
                    'idempotency_key': 'declared-source'})

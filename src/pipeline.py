@@ -25,6 +25,9 @@ from common import direct_urlopen, native_path
 from common import exclusive_sidecar, SidecarBusy
 from common import cancellation_requested
 from check_dependencies import validate as validate_dependencies
+from preparation_languages import (
+    LANGUAGES, PROFILES, QWEN_FEATURE, validate_english_midi_options, validate_project_formats,
+)
 from source_contract import reject_unsupported_bilibili_subpage
 
 sys.dont_write_bytecode = True
@@ -106,6 +109,11 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
         raise ValueError('歌词或字幕匹配方式无效。')
     if midi_backend not in (None,'v1','v2') or alignment_engine not in ('hfa','tifa'):
         raise ValueError('MIDI 引擎或歌词对齐引擎无效。')
+    if language not in LANGUAGES:
+        raise ValueError('歌词语言请选择中文、日语或英文。')
+    validate_english_midi_options(language, midi_backend, alignment_engine)
+    if language == 'en' and midi_backend is None:
+        midi_backend = 'v2'
     if alignment_engine=='tifa' and midi_backend!='v2':
         raise ValueError('TiFA 需要 Vocal2Midi 2.0 后端。')
     from workflow import validate_graph
@@ -118,10 +126,12 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
             raise ValueError('字幕节点需要歌词事件，请开启歌词识别或移除字幕节点。')
         if end_stage=='subtitles' and subtitles_mode!='midi':
             raise ValueError('自动字幕使用 MIDI 匹配；网易云时间轴请在字幕卡片中编辑并导出。')
+    validate_project_formats(language, projects)
     tools = load_config(resolve_paths=False)
     if midi_backend is not None:
         tools['vocal2midi']='dependencies/vocal2midi2' if midi_backend=='v2' else 'dependencies/vocal2midi'
-    if alignment_engine=='tifa' and not (ROOT/'dependencies/vocal2midi2/models/tifa-1.0-onnx').is_dir():
+    if (recognize_lyrics and alignment_engine=='tifa'
+            and not (ROOT/'dependencies/vocal2midi2/models/tifa-1.0-onnx').is_dir()):
         raise FileNotFoundError('TiFA 模型尚未安装，请先安装模型或选择 HubertFA。')
     for key, value in [('separation_device', separation_device), ('midi_device', midi_device)]:
         if value is not None:
@@ -152,8 +162,6 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
     bv = None if local is not None else extract_bv(source)
     if voice_mode not in ("single", "dual", "import", "roformer"):
         raise ValueError("未知的分轨模式。")
-    if language not in ("zh", "ja"):
-        raise ValueError("歌词语言请选择中文或日语。")
     if zh_lyric_mode not in ('hanzi', 'pinyin'):
         raise ValueError('中文歌词格式请选择汉字或拼音。')
     if midi_steps not in (8, 16, 32):
@@ -186,9 +194,9 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
         "output_directory": saved_path(destination),
         **({"source_audio": saved_path(local), "source_title": local.stem,
             "input_file": "input/source" + local.suffix.lower()} if local is not None else {}),
-        "language": language, "lyrics": clean_lyrics(lyrics),
-        'lyric_lines': clean_lyrics(lyrics, preserve_lines=True).splitlines(),
-        'backing_lyric_lines': clean_lyrics(backing_lyrics, preserve_lines=True).splitlines(),
+        "language": language, "lyrics": clean_lyrics(lyrics, language=language),
+        'lyric_lines': clean_lyrics(lyrics, preserve_lines=True, language=language).splitlines(),
+        'backing_lyric_lines': clean_lyrics(backing_lyrics, preserve_lines=True, language=language).splitlines(),
         "zh_lyric_mode": zh_lyric_mode,
         "recognize_lyrics": bool(recognize_lyrics), "tools": tools,
         'created_at': dt.datetime.now().astimezone().isoformat(),
@@ -196,7 +204,7 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
         "voice_mode": voice_mode, "imported_stems": imported_stems or {},
         'separation_flow': separation_flow,
         **({'reference_calibration':saved_path(reference_calibration)} if reference_calibration else {}),
-        "midi_steps": int(midi_steps), "bpm": bpm, "backing_lyrics": clean_lyrics(backing_lyrics),
+        "midi_steps": int(midi_steps), "bpm": bpm, "backing_lyrics": clean_lyrics(backing_lyrics, language=language),
         'project_formats':projects,'audio_formats':audios,'export_pitch':bool(export_pitch),
         'project_export_enabled':bool(projects),'audio_export_enabled':bool(audios),
         **({'export_preferences':export_preferences} if export_preferences is not None else {}),
@@ -1033,9 +1041,9 @@ def midi(job, request):
             print(f"已完成，跳过 {voice} 的提取。", flush=True)
             continue
         pending.append(voice)
-    # Chinese GPU ASR must not coexist with the previous voice's resident GAME,
+    # Qwen GPU ASR must not coexist with the previous voice's resident GAME,
     # HFA and RMVPE sessions on a small GPU. Preserve isolated workers there.
-    reuse = request.get('midi_backend') == 'v2' and (request['language'] == 'ja'
+    reuse = request.get('midi_backend') == 'v2' and (PROFILES[request['language']].asr_feature != QWEN_FEATURE
         or config.get('midi_device') == 'cpu' or not request.get('recognize_lyrics', True))
     if pending and reuse:
         run_process([config['python'], '-B', '-u', str(ROOT / 'midi_bridge.py'), str(job), '--voices', *pending],
@@ -1381,7 +1389,7 @@ def main():
     inputs.add_argument("--source", help="BV 号或 B站链接")
     inputs.add_argument("--audio-file", help="直接导入本地音乐")
     inputs.add_argument("--job", help="继续已有任务")
-    parser.add_argument("--language", choices=("zh", "ja"), default="zh")
+    parser.add_argument("--language", choices=LANGUAGES, default="zh")
     parser.add_argument("--lyrics-file")
     parser.add_argument("--notes-only", action="store_true")
     parser.add_argument('--output-dir', help='Parent directory for a new task; defaults to the application jobs folder')

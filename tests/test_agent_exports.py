@@ -156,6 +156,9 @@ class AgentExportPlanTests(unittest.TestCase):
             source = write_fixture(root / "source.mid")
             self.assertEqual(plan_export(source)["formats"], ["svp"])
             self.assertEqual(plan_export(source)["options"]["language"], "zh")
+            self.assertEqual(plan_export(source, options={"language": "en"})["formats"], ["ustx"])
+            with self.assertRaisesRegex(ValueError, "MIDI 和 USTX"):
+                plan_export(source, ["vsqx"], {"language": "en"})
 
             with self.assertRaisesRegex(ValueError, "非空列表"):
                 plan_export(source, "svp")
@@ -168,7 +171,7 @@ class AgentExportPlanTests(unittest.TestCase):
                 ({"default_bpm": math.nan}, "finite|1.*1000|有限"),
                 ({"default_bpm": math.inf}, "finite|1.*1000|有限"),
                 ({"default_bpm": True}, "有限"),
-                ({"language": "en"}, "zh 或 ja"),
+                ({"language": "yue"}, "zh、ja 或 en"),
                 ({"svp_version": "3.0"}, "1.9"),
                 ("not-an-object", "对象"),
             ):

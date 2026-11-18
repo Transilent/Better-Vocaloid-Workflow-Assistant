@@ -9,6 +9,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import ROOT, TOOL_PATHS, atomic_json, file_hash, load_config
+from preparation_languages import QWEN_TITLE
+
+QWEN_MISSING_GUIDANCE = ('中文和英文歌词识别需要 Qwen3-ASR。请打开“模型与组件 → 中文 / 英文歌词识别”下载或修复；'
+                         '下载可取消并继续。')
 
 
 def check(full=False, features=None, *, tool_paths=None):
@@ -85,14 +89,11 @@ def missing_guidance(errors):
         if isinstance(name, str):
             labels.add(LABELS[group(name)])
     parts = []
-    if '中文歌词识别' in labels:
-        parts.append('中文模型缺失（中文歌词识别 · Qwen3-ASR）。请打开“模型与组件”中的'
-                     '“中文歌词识别”，点击“下载中文模型”；下载可取消并支持断点续传。'
-                     '日语识别和“不识别歌词”模式不需要此权重。')
+    if QWEN_TITLE in labels:
+        parts.append(QWEN_MISSING_GUIDANCE)
     if '日语歌词识别' in labels:
-        parts.append('日语模型缺失（日语歌词识别 · Romaji ASR）。请恢复“日语歌词识别”对应的模型文件；'
-                     '中文模型与此功能无关。')
-    other = sorted(labels - {'中文歌词识别', '日语歌词识别'})
+        parts.append('日语模型缺失（日语歌词识别 · Romaji ASR）。请恢复“日语歌词识别”对应的模型文件。')
+    other = sorted(labels - {QWEN_TITLE, '日语歌词识别'})
     if other:
         parts.append('同时缺少：' + '、'.join(other) + '。运行库与模型可在配套文件中恢复。')
     if not parts and errors and all(error.get('component') != 'dependency_file' for error in errors):

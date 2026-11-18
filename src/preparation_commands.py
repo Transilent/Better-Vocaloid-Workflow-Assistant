@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -10,13 +11,16 @@ from uuid import uuid4
 
 import workflow
 from common import ROOT, app_path, atomic_json, load_config, native_path, workspace_state
+from preparation_languages import (
+    LANGUAGES, PROFILES, QWEN_FEATURE, effective_preparation_options, validate_project_formats,
+)
 
 
 _STEMS = ('lead', 'backing', 'instrumental')
 _CHOICES = {
     'input_mode': ('local', 'bilibili'), 'voice_mode': ('single', 'dual', 'import', 'roformer'),
     'separator_model': ('dual', 'roformer'), 'target': ('separation', 'midi', 'subtitles'),
-    'language': ('zh', 'ja'), 'zh_lyric_mode': ('hanzi', 'pinyin'),
+    'language': LANGUAGES, 'zh_lyric_mode': ('hanzi', 'pinyin'),
     'roformer_device': ('auto', 'cpu', 'cuda'), 'separation_flow': ('cascade', 'independent'),
     'separation_device': ('cpu', 'dml'), 'midi_device': ('cpu', 'dml'),
     'midi_backend': ('v1', 'v2'), 'alignment_engine': ('hfa', 'tifa'), 'midi_steps': (8, 16, 32),
@@ -58,7 +62,7 @@ def make_preset_document(draft, name):
     from preset_documents import CONTRACTS, PREPARATION_KEYS, validate_document
 
     label = _preset_label(name)
-    values = draft.preferences()
+    values = effective_preparation_options(draft.preferences())
     options = {key: deepcopy(values[key]) for key in PREPARATION_KEYS}
     slots = []
     if options['voice_mode'] == 'import':
@@ -256,6 +260,8 @@ class PreparationDraft:
         """Apply one checkbox intent to the current draft's format selection."""
         if field not in _FORMATS or format_id not in _FORMATS[field] or type(selected) is not bool:
             raise ValueError('导出格式无效。')
+        if field == 'project_formats' and selected:
+            validate_project_formats(self.fields['language'], (format_id,))
         values = [value for value in self.fields[field] if value != format_id]
         if selected:
             values.append(format_id)
@@ -278,7 +284,7 @@ class PreparationDraft:
 
     def apply_lyrics(self, voice, reference):
         name = 'lyrics' if voice == 'lead' else 'backing_lyrics'
-        updated = self.edit(name, reference.text)
+        updated = self.edit(name, reference.text_for(self.fields['language']))
         if voice != 'lead':
             return updated
         return replace(updated, lyric_reference={'origin': deepcopy(reference.origin),
@@ -384,7 +390,14 @@ def selected_component_issues(draft):
         import optional_components
         if not optional_components.status()['ready']:
             issues.append('BS-RoFormer 尚未就绪。请安装组件，或改用内置分离。')
-    if data['target'] != 'separation' and data['alignment_engine'] == 'tifa':
+    if data['target'] == 'separation' or not data['recognize_lyrics']:
+        return issues
+    if PROFILES[data['language']].asr_feature == QWEN_FEATURE:
+        from check_dependencies import QWEN_MISSING_GUIDANCE
+        from feature_components import status
+        if not status(QWEN_FEATURE)['ready']:
+            issues.append(QWEN_MISSING_GUIDANCE)
+    if data['language'] != 'en' and data['alignment_engine'] == 'tifa':
         if data['midi_backend'] != 'v2':
             issues.append('TiFA 需要 Vocal2Midi 2.0；也可以切回 HubertFA。')
         elif not (ROOT / 'dependencies/vocal2midi2/models/tifa-1.0-onnx').is_dir():
@@ -458,9 +471,23 @@ def progress_view(job):
     event = data['event']
     unit = 'bytes' if data['current'] == 'download' else 'items'
     stage_progress = meter(event.get('done'), event.get('total'), unit)
+    lyric_notices = []
+    if steps.get('midi', {}).get('state') == 'done':
+        try:
+            midi_report = json.loads((Path(job) / 'midi/report.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            midi_report = {}
+        voices = midi_report.get('voices', {'vocals': midi_report}) if isinstance(midi_report, dict) else {}
+        if isinstance(voices, dict):
+            for voice, report in voices.items():
+                if isinstance(report, dict) and report.get('language') == 'en':
+                    alignment = report.get('alignment')
+                    if isinstance(alignment, dict) and alignment.get('state') in ('unavailable', 'partial'):
+                        lyric_notices.append({'voice': voice, 'state': alignment['state'],
+                                              'chunks': alignment.get('pitch_only_chunks', 0)})
     return {'state': state, 'job': str(job), 'current': data['current'] or '', 'message': message,
             'completed': data['completed'], 'total': len(stages), 'elapsed': data['elapsed'],
-            'stage_progress': stage_progress, 'stages': stages}
+            'stage_progress': stage_progress, 'stages': stages, 'lyric_notices': lyric_notices}
 
 
 def recovery_view(job):

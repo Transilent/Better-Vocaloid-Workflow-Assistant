@@ -12,6 +12,9 @@ if hasattr(sys.stdout, "reconfigure"):
 from common import atomic_json, cancelled, clean_lyrics, midi_signature, file_hash, resolve_tools, app_path, preserve_changed_file
 from common import cancellation_requested
 from midi_checks import inspect_midi
+from preparation_languages import (
+    HUBERTFA_MODEL, PROFILES, QWEN_FEATURE, QWEN_MODEL, ROMAJI_MODEL, lyric_output_mode,
+)
 from v2m_runtime import configure
 
 _QSETTINGS_SIMPLE_ESCAPES = {
@@ -142,6 +145,10 @@ def run(job, voice="vocals", asr_session=None):
         raise ValueError("声部名称无效。")
     job = app_path(job)
     request = json.loads((job / "request.json").read_text(encoding="utf-8"))
+    language = request["language"]
+    recognize_lyrics = request.get('recognize_lyrics', True)
+    reference_lyrics = (clean_lyrics(request.get('backing_lyrics' if voice == 'backing' else 'lyrics', ''),
+                                     language=language) if recognize_lyrics else '')
     root = Path(resolve_tools(request["tools"])["vocal2midi"]).resolve()
     from runtime_devices import prepare_environment
     prepare_environment(request['tools'])
@@ -152,9 +159,9 @@ def run(job, voice="vocals", asr_session=None):
         from pitch_accuracy import install as install_pitch_guards
         install_pitch_guards(job/'temp/midi-output'/voice/(voice+'.pitch.npz'))
         from transcription_quality import install as install_transcription_guards
-        install_transcription_guards(request['language'],job/'audio'/(voice+'.wav'),
+        install_transcription_guards(language,job/'audio'/(voice+'.wav'),
             job/'temp/midi-output'/voice/(voice+'.quality.json'),
-            clean_lyrics(request.get('backing_lyrics','') if voice=='backing' else request.get('lyrics','')),
+            reference_lyrics,
             pitch_available=True,
             peer=lead_check_context(job,request) if voice=='backing' else None)
     # ONNX and llama native libraries use the same locations as run.bat.
@@ -182,16 +189,10 @@ def run(job, voice="vocals", asr_session=None):
     def is_cancelled():
         return cancellation_requested(job)
 
-    language = request["language"]
     from music_timing import effective_bpm, install_midi_tempo
     tempo = effective_bpm(request)
     install_midi_tempo(tempo)
-    saved_mode = value("lyric_output_mode_" + language, "汉字" if language == "zh" else "罗马音")
-    mode = {"汉字": "hanzi", "拼音": "pinyin", "罗马音": "romaji", "假名": "kana"}.get(saved_mode, "auto")
-    if language == 'zh' and 'zh_lyric_mode' in request:
-        mode = request['zh_lyric_mode']
-        if mode not in ('hanzi', 'pinyin'):
-            raise ValueError('任务中的中文歌词格式无效，请重新建立任务。')
+    mode = lyric_output_mode(request, value)
     t0, nsteps = value("t0", 0.0), request.get("midi_steps", value("nsteps", 8))
     if not 0 <= t0 < 1 or nsteps < 1:
         raise ValueError("Vocal2Midi 的 t0/nsteps 设置无效。")
@@ -207,18 +208,19 @@ def run(job, voice="vocals", asr_session=None):
     formats=['mid','csv','txt']
     if request.get('project_formats'):
         formats.append('ustx')
-        if (root/'backend-version.json').is_file(): formats.append('vsqx')
+        if language != 'en' and (root/'backend-version.json').is_file():
+            formats.append('vsqx')
     config_values = dict(
         audio_path=str(job / "audio" / (voice + ".wav")),
         output_filename=voice + ".wav", output_dir=pending,
         game_model_dir=model("game_model", "experiments/GAME-1.0.3-medium-onnx"),
-        hfa_model_dir=model("hfa_model", "experiments/1218_hfa_model_new_dict"),
-        asr_model_path=model("asr_model", "experiments/Qwen3-ASR-1.7B-dml"),
+        hfa_model_dir=model("hfa_model", HUBERTFA_MODEL),
+        asr_model_path=model("asr_model", QWEN_MODEL),
         device=request["tools"].get("midi_device", "dml"), language=language,
         ts=[t0 + i * (1 - t0) / nsteps for i in range(nsteps)],
-        lyric_output_mode=mode, original_lyrics=clean_lyrics(request.get("backing_lyrics", "") if voice == "backing" else request.get("lyrics", "")),
+        lyric_output_mode=mode, original_lyrics=reference_lyrics,
         output_formats=formats,
-        output_lyrics=request.get("recognize_lyrics", True), output_pitch_curve=bool(request.get('export_pitch') and request.get('project_formats')),
+        output_lyrics=recognize_lyrics, output_pitch_curve=bool(request.get('export_pitch') and request.get('project_formats')),
         slicing_method='smart' if (root/'backend-version.json').is_file() else '智能切片', slice_min_sec=value("slice_min_sec", 5.0),
         slice_max_sec=value("slice_max_sec", 10.0), tempo=tempo,
         quantization_step=0, quantization_mode="simple", pitch_format="name",
@@ -227,7 +229,7 @@ def run(job, voice="vocals", asr_session=None):
         est_threshold=value("est_thresh", 0.2), batch_size=value("batch_size", 1),
         asr_batch_size=value("asr_batch", 2),
         rmvpe_model_path=model("rmvpe_model", "experiments/RMVPE/rmvpe.onnx"),
-        phoneme_asr_model_path=model("phoneme_asr_model", "experiments/romajiASR"),
+        phoneme_asr_model_path=model("phoneme_asr_model", ROMAJI_MODEL),
         cancel_checker=is_cancelled,
     )
     config_values.update(alignment_engine=request.get('alignment_engine','hfa'),
@@ -240,7 +242,7 @@ def run(job, voice="vocals", asr_session=None):
     cancelled(job)
     print(f"开始提取 {voice}：GAME 推理 {nsteps} 步。", flush=True)
     print('[VWA Progress] '+json.dumps({'voice':voice,'detail':'音符 / 歌词提取','done':0,'total':1}), flush=True)
-    import logging,re
+    import logging
     warnings=[]
     class AlignmentMessages(logging.Handler):
         def emit(self,record):
@@ -249,7 +251,6 @@ def run(job, voice="vocals", asr_session=None):
                 count=re.search(r'fallback for\s+(\d+)',message)
                 if count: warnings.append(int(count[1]))
     listener=AlignmentMessages()
-    logging.getLogger().addHandler(listener)
     silent = silent_audio(cfg.audio_path)
     if silent:
         empty = mido.MidiFile(charset="utf8")
@@ -265,24 +266,39 @@ def run(job, voice="vocals", asr_session=None):
                 save_vsqx([],pending/(voice+'.vsqx'),tempo=tempo,language=language)
         print('未检测到该声部的有效人声，已保留空轨道。',flush=True)
     else:
-        try: run_auto_lyric_job(cfg)
-        finally: logging.getLogger().removeHandler(listener)
+        logger = logging.getLogger()
+        logger.addHandler(listener)
+        try:
+            run_auto_lyric_job(cfg)
+        finally:
+            logger.removeHandler(listener)
     cancelled(job)
-    logging.getLogger().removeHandler(listener)
     if not cfg.output_pitch_curve:
         from project_exports import remove_pitch_data
         for suffix in ('ustx','vsqx'):
             if suffix in formats:
                 remove_pitch_data(pending/(voice+'.'+suffix),suffix)
-    report = inspect_midi(pending / (voice + ".mid"), allow_empty=voice == "backing" or silent)
+    report = inspect_midi(pending / (voice + ".mid"), allow_empty=voice == "backing" or silent, language=language)
     print('[VWA Progress] '+json.dumps({'voice':voice,'detail':'文件验证','done':1,'total':1}), flush=True)
     alignment = json.loads(alignment_file.read_text(encoding="utf-8")) if alignment_file.exists() else None
-    if alignment is None and warnings:
+    quality_path = pending / (voice + '.quality.json')
+    if language == 'en':
+        word_events = report['word_events']
+        quality = json.loads(quality_path.read_text(encoding='utf-8')) if quality_path.is_file() else {}
+        english = quality.get('english_alignment', {})
+        fallback = english.get('fallback', [])
+        pitch_only = max(len(fallback), sum(warnings))
+        state = ('disabled' if not cfg.output_lyrics else 'no_vocals' if not report['notes']
+                 else 'unavailable' if not word_events else 'partial' if pitch_only else 'aligned')
+        alignment = {**english, 'requested_lyrics': cfg.output_lyrics, 'state': state,
+                     'pitch_only_chunks': pitch_only, 'word_events': word_events}
+        atomic_json(alignment_file, alignment)
+    elif alignment is None and warnings:
         alignment={'requested_lyrics':cfg.output_lyrics,'pitch_only_chunks':sum(warnings)}
         atomic_json(alignment_file,alignment)
     if (pending/(voice+'.pitch.npz')).is_file():
         formats.append('pitch.npz')
-    if (pending/(voice+'.quality.json')).is_file():
+    if quality_path.is_file():
         formats.append('quality.json')
     try:
         old = json.loads((out/'report.json').read_text(encoding='utf-8'))
@@ -324,6 +340,8 @@ def run(job, voice="vocals", asr_session=None):
     if alignment and alignment["requested_lyrics"] and alignment["pitch_only_chunks"]:
         print(f"提示：{alignment['pitch_only_chunks']} 个片段保留音符但没有可靠歌词对齐；"
               f"详情见 {alignment_file.name}。", flush=True)
+    if language == 'en' and alignment['state'] == 'unavailable':
+        print('英文歌词未能对齐，已保留 MIDI 音符。请核对人声、语言和参考歌词。', flush=True)
 
 
 def run_many(job, voices):
@@ -335,7 +353,7 @@ def run_many(job, voices):
     prepare_environment(request['tools'])
     configure(root)
     session = None
-    if (request.get('midi_backend') == 'v2' and request['language'] == 'zh'
+    if (request.get('midi_backend') == 'v2' and PROFILES[request['language']].asr_feature == QWEN_FEATURE
             and request['tools'].get('midi_device', 'dml') == 'cpu' and request.get('recognize_lyrics', True)):
         # The retained multi-GB text model is worthwhile only with a comfortable
         # host-memory margin. GPU Qwen sessions keep their original release policy.

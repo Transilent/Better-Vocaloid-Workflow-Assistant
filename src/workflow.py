@@ -2,6 +2,7 @@
 import copy
 import math
 from common import ROOT, atomic_json, workspace_state, load_config
+from preparation_languages import LANGUAGES, effective_preparation_options
 import style_catalog
 
 NODES = {'source': '音乐输入', 'separation': '分离声部', 'midi': '生成 MIDI', 'subtitles': '导出字幕'}
@@ -99,7 +100,7 @@ def validate_options(options):
             result[key] = bool(result[kind + '_formats'])
         if type(result[key]) is not bool:
             raise ValueError('导出开关必须为开启或关闭。')
-    choices = {'language': ('zh', 'ja'), 'voice_mode': ('dual', 'single', 'import', 'roformer'),
+    choices = {'language': LANGUAGES, 'voice_mode': ('dual', 'single', 'import', 'roformer'),
                'zh_lyric_mode': ('hanzi', 'pinyin'), 'midi_steps': (8, 16, 32),
                'roformer_device': ('auto', 'cpu', 'cuda'),
                'separation_device': ('cpu', 'dml'), 'midi_device': ('cpu', 'dml')}
@@ -134,7 +135,7 @@ def validate_options(options):
 
 def execution_options(preferences, *, midi_enabled=True):
     """Compile selected preferences without discarding inactive UI choices."""
-    result = copy.deepcopy(validate_options(preferences))
+    result = effective_preparation_options(copy.deepcopy(validate_options(preferences)))
     result['project_export_enabled'] &= bool(midi_enabled)
     if not result['project_export_enabled']:
         result['project_formats'] = []

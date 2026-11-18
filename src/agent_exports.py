@@ -29,6 +29,7 @@ import xml.etree.ElementTree as ET
 import mido
 
 from common import native_path
+from preparation_languages import LANGUAGES, validate_project_formats
 
 
 class ExportError(ValueError):
@@ -81,7 +82,6 @@ _OPTION_KEYS = frozenset({
     "language", "default_bpm", "svp_version", "include_instrumental",
     "instrumental_path", "track_names", "project_name", "preserve_pitch", "pitch_sources",
 })
-_LANGUAGES = frozenset({"zh", "ja"})
 _SVP_VERSIONS = {"1.9": 100, "1.11": 135, "2.0": 182}
 
 
@@ -128,9 +128,9 @@ def _finite_number(value: Any, label: str, *, minimum: float, maximum: float) ->
     return number
 
 
-def _normalise_formats(formats: Any) -> list[str]:
+def _normalise_formats(formats: Any, language: str) -> list[str]:
     if formats is None:
-        return ["svp"]
+        return ["ustx"] if language == "en" else ["svp"]
     if not isinstance(formats, (list, tuple)) or not formats:
         raise ValueError("formats 必须是非空列表，可含 svp、ustx、vsqx。")
     result: list[str] = []
@@ -143,6 +143,7 @@ def _normalise_formats(formats: Any) -> list[str]:
         if fmt in result:
             raise ValueError("formats 不能包含重复格式。")
         result.append(fmt)
+    validate_project_formats(language, result)
     return result
 
 
@@ -166,8 +167,8 @@ def _normalise_options(options: Any) -> dict[str, Any]:
     if unknown:
         raise ValueError("options 含有未支持字段：" + ", ".join(sorted(map(str, unknown))))
     language = options.get("language", "zh")
-    if not isinstance(language, str) or language not in _LANGUAGES:
-        raise ValueError("options.language 必须是 zh 或 ja。")
+    if not isinstance(language, str) or language not in LANGUAGES:
+        raise ValueError("options.language 必须是 zh、ja 或 en。")
     default_bpm = _finite_number(
         options.get("default_bpm", _DEFAULT_BPM),
         "options.default_bpm", minimum=1.0, maximum=1000.0,
@@ -629,8 +630,8 @@ def _monophonic_preflight(source: Path) -> dict[str, Any]:
 def plan_export(path: Any, formats: Any = None, options: Any = None) -> dict[str, Any]:
     """Validate corrected MIDI and return a stable, read-only export plan."""
     source = _source_path(path)
-    normal_formats = _normalise_formats(formats)
     normal_options = _normalise_options(options)
+    normal_formats = _normalise_formats(formats, normal_options["language"])
     raw, source_sha = _read_stable(source)
     midi = _load_midi(raw)
     evidence = _parse_evidence(raw, midi.ticks_per_beat)
@@ -1236,6 +1237,11 @@ def apply_export(
                         )
                     if fmt == "vsqx":
                         _restore_vsqx_lyrics(temporary, project)
+                    input_options = {}
+                    if fmt == "ustx" and saved["options"]["language"] == "en":
+                        from project_exports import english_ustx_input_options, restore_english_ustx_lyrics
+                        restore_english_ustx_lyrics(_io_path(temporary), candidate_project)
+                        input_options = english_ustx_input_options("en")
                     media = None
                     metadata = None
                     if fmt == "svp":
@@ -1265,11 +1271,11 @@ def apply_export(
                     check_cancel()
                     if pitch_application is not None:
                         from agent_pitch import load_pitch_project
-                        loaded = load_pitch_project(_io_path(temporary), fmt, converters)
+                        loaded = load_pitch_project(_io_path(temporary), fmt, converters, input_options=input_options)
                     else:
                         loaded = converters[fmt].load(
                             _io_path(temporary),
-                            {"import_pitch": False, "import_instrumental_track": False},
+                            {"import_pitch": False, "import_instrumental_track": False, **input_options},
                         )
                 except Exception as error:
                     if isinstance(error, InterruptedError):
@@ -1379,6 +1385,7 @@ def apply_export(
             "source_sha256": current_sha,
             "output_root": str(root),
             "formats": saved["formats"],
+            **({"language": "en"} if saved["options"]["language"] == "en" else {}),
             "runtime_path": str(runtime),
             "engine": "LibreSVIP",
             "candidates": candidates,

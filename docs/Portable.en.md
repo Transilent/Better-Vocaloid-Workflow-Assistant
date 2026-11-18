@@ -27,7 +27,7 @@ Review audio, lyrics and notes before use. Final publication is confirmed by you
 
 The update preserves the JPN model setup. It leaves omitted Chinese weights absent and keeps any weights installed separately. For all other versions, extract a full or JPN package into a new folder.
 
-With JPN, select Japanese recognition in Preparation. To use Chinese lyrics, open **Models → Chinese lyric recognition → Download Chinese model**. Existing files can be verified and repaired.
+JPN can use Japanese recognition immediately. For Chinese or English lyrics, use **Models and components → Chinese / English lyric recognition** to download, verify or repair the shared Qwen3-ASR weights.
 
 If a download is split, keep all parts with the matching `portable-metadata-full.json` or `portable-metadata-jpn.json` and use the merge helper supplied with that package. GitHub Source code archives and update ZIPs do not include a complete runtime.
 
@@ -63,6 +63,6 @@ In 1.0.0 or 1.1.0, check for updates in Settings and updates, then follow the re
 
 2.0.0 uses Qt Quick. If validation of the old program or runtime fails, use a complete portable archive in a new folder. The 0.4 series has no direct update route.
 
-Keep `dependencies`, `runtime/qt6`, `models`, `assets`, `components` and `vendor` with the executable. Startup errors are recorded in `launcher.log`. `tools/Start-Diagnostics.bat` shows startup diagnostics; `tools/Check-Dependencies.bat` checks runtime files. In JPN, add the Chinese model from Models when needed.
+Keep `dependencies`, `runtime/qt6`, `models`, `assets`, `components` and `vendor` with the executable. Find startup errors in `launcher.log`, open startup diagnostics with `tools/Start-Diagnostics.bat`, or check runtime files with `tools/Check-Dependencies.bat`.
 
 Project code: [MIT license](LICENSE). Third-party terms: [notices](THIRD_PARTY_NOTICES.md). [Project repository](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant).

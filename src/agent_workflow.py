@@ -17,6 +17,7 @@ from agent_control import (ControlError, MAX_JSON, atomic_json, digest, file_loc
                            file_hash, io_path, safe_path)
 from agent_supervision import summarize_export, validate_export_review, SupervisionError
 from common import clean_lyrics
+from preparation_languages import LANGUAGES, validate_project_formats
 
 
 class Workflow:
@@ -335,8 +336,8 @@ class Workflow:
                     or '/' in item or '\\' in item or Path(item).is_absolute()):
                 raise ControlError('invalid_export_options', name + ' 必须是公开的 artifact 或任务 ID，不能是路径。')
 
-        if 'language' in normalized and normalized['language'] not in ('zh', 'ja'):
-            raise ControlError('invalid_export_options', '导出选项 language 必须是 zh 或 ja。')
+        if 'language' in normalized and normalized['language'] not in LANGUAGES:
+            raise ControlError('invalid_export_options', '导出选项 language 必须是 zh、ja 或 en。')
         if 'default_bpm' in normalized:
             finite_number('导出选项 default_bpm', normalized['default_bpm'], 1.0, 1000.0)
         if 'svp_version' in normalized and normalized['svp_version'] not in ('1.9', '1.11', '2.0'):
@@ -659,8 +660,9 @@ class Workflow:
                 request_binding='verified', request_sha256_verified=True,
             )
 
-        supplied = clean_lyrics(reference_lyrics)
-        prepared = clean_lyrics(preparation_lyrics)
+        language = request.get('language', 'zh')
+        supplied = clean_lyrics(reference_lyrics, language=language)
+        prepared = clean_lyrics(preparation_lyrics, language=language)
         if not prepared:
             return result(
                 'not_used', 'lyrics_field_empty',
@@ -694,7 +696,8 @@ class Workflow:
                 '参考歌词是否用于该次准备未知；不能推断歌词已对齐。',
                 request_binding='verified', request_sha256_verified=True,
             )
-        if ''.join(lyric_lines) != prepared:
+        separator = ' ' if language == 'en' else ''
+        if separator.join(lyric_lines) != prepared:
             return result(
                 'unknown', 'lyrics_fields_inconsistent',
                 '原准备任务的 request.json 中 lyrics 与 lyric_lines 内容不一致，'
@@ -702,7 +705,7 @@ class Workflow:
                 request_binding='verified', request_sha256_verified=True,
             )
         supplied_lines = clean_lyrics(
-            reference_lyrics, preserve_lines=True).splitlines()
+            reference_lyrics, preserve_lines=True, language=language).splitlines()
         if lyric_lines != supplied_lines:
             return result(
                 'not_used', 'lyric_lines_different',
@@ -744,16 +747,10 @@ class Workflow:
             raise ControlError('invalid_source', '请选择歌曲来源、已导入MIDI或已有受管准备任务之一。')
         if not isinstance(brief, str) or not isinstance(reference_lyrics, str):
             raise ControlError('invalid_context', '创作背景和参考歌词必须是文本。')
-        formats = ['svp'] if formats is None else formats
-        if not isinstance(formats, list) or not formats or len(set(formats)) != len(formats) or set(formats) - {'svp', 'ustx', 'vsqx'}:
-            raise ControlError('invalid_formats', '工程格式支持 svp、ustx、vsqx，不能重复。')
         if options is not None and not isinstance(options, dict):
             raise ControlError('invalid_options', '准备选项必须是对象。')
-        if brief and 'svp' not in formats:
-            raise ControlError('style_requires_svp', '语义风格需要同时导出 SVP 工程。')
         request = {'source': source, 'options': options or {}, 'brief': brief,
-                   'reference_lyrics': reference_lyrics, 'score_artifact_id': score_artifact_id,
-                   'formats': formats}
+                   'reference_lyrics': reference_lyrics, 'score_artifact_id': score_artifact_id}
         if preparation_job_id:request['preparation_job_id']=preparation_job_id
         request['review_mode'] = review_mode
         source_evidence = None
@@ -784,6 +781,10 @@ class Workflow:
                 raise
             except (OSError, UnicodeError, ValueError):
                 pass
+            if job_request.get('language') == 'en':
+                if request['options'].get('language', 'en') != 'en':
+                    raise ControlError('invalid_options', '已准备任务的歌词语言为英文。')
+                request['options'] = {**request['options'], 'language': 'en'}
             provenance = job_request.get('source_provenance')
             if source_url is not None and (not provenance or provenance.get('url') != source_url):
                 raise ControlError('invalid_source', '来源声明必须与准备任务中已保存的声明一致。')
@@ -803,6 +804,23 @@ class Workflow:
                 request['source_evidence'] = copy.deepcopy(source_evidence)
         elif source_url is not None:
             request['source_url'] = source_url
+        language = request['options'].get('language', 'zh')
+        export_language = (initial_export_options or {}).get('language', language)
+        if language not in LANGUAGES or (language == 'en' and export_language != 'en'):
+            raise ControlError('invalid_options', '歌词与导出语言设置无效。')
+        if formats is None:
+            formats = ['ustx'] if export_language == 'en' else ['svp']
+        if (not isinstance(formats, list) or not formats
+                or any(fmt not in ('svp', 'ustx', 'vsqx') for fmt in formats)
+                or len(set(formats)) != len(formats)):
+            raise ControlError('invalid_formats', '工程格式支持 svp、ustx、vsqx，不能重复。')
+        try:
+            validate_project_formats(export_language, formats)
+        except ValueError as error:
+            raise ControlError('invalid_formats', str(error)) from error
+        if brief and 'svp' not in formats:
+            raise ControlError('style_requires_svp', '语义风格需要同时导出 SVP 工程。')
+        request['formats'] = formats
         if idempotency_key is None and initial_export_options:
             derived = {'request': request, 'initial_export_options': initial_export_options}
         else:

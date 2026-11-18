@@ -95,6 +95,24 @@ def check_at(viewport, scale, directory):
         assert request['project_formats'] == ['ustx', 'vsqx', 'svp'] and request['project_export_enabled']
         assert request['audio_formats'] == ['wav', 'flac'] and request['audio_export_enabled']
         assert restore_draft_settings(PreparationDraft()).preferences()['project_formats'] == request['project_formats']
+
+        language = find(name='lyricsLanguage')
+        language.forceActiveFocus()
+        QTest.keyClick(window, Qt.Key.Key_Down)
+        QTest.keyClick(window, Qt.Key.Key_Down)
+        app.processEvents()
+        assert language.property('currentValue') == bridge.preparation['language'] == 'en'
+        assert '英文识别' in bridge.componentTaskPlan['summary']
+        assert 'chinese' in bridge.componentTaskPlan['components']
+        assert find(label='USTX').isEnabled() and find(label='USTX').property('checked')
+        assert not find(label='SVP').isEnabled() and not find(label='VSQX').property('checked')
+        assert restore_draft_settings(PreparationDraft()).preferences()['language'] == 'en'
+        QTest.keyClick(window, Qt.Key.Key_Up)
+        app.processEvents()
+        assert language.property('currentValue') == 'ja'
+        assert 'chinese' not in bridge.componentTaskPlan['components']
+        assert find(label='SVP').isEnabled() and find(label='SVP').property('checked')
+
         toggle('FLAC', 'audio_formats', ['wav'])
         toggle('VSQX', 'project_formats', ['ustx', 'svp'])
         toggle('SVP', 'project_formats', ['ustx'])

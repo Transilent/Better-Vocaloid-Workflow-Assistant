@@ -66,12 +66,13 @@ def inference_inputs(job, request, voice):
     recognize = request.get('recognize_lyrics', True)
     pitch = bool(request.get('export_pitch') and request.get('project_formats'))
     analyze_pitch = pitch or (backend/'backend-version.json').is_file()
+    from preparation_languages import HUBERTFA_MODEL, PROFILES, lyric_output_mode
     language = request['language']
     models = {'game_model': 'experiments/GAME-1.0.3-medium-onnx'}
     if recognize:
-        models['hfa_model'] = 'experiments/1218_hfa_model_new_dict'
-        models['asr_model' if language == 'zh' else 'phoneme_asr_model'] = (
-            'experiments/Qwen3-ASR-1.7B-dml' if language == 'zh' else 'experiments/romajiASR')
+        profile = PROFILES[language]
+        models['hfa_model'] = HUBERTFA_MODEL
+        models[profile.asr_settings_key] = profile.asr_model
     if analyze_pitch:
         models['rmvpe_model'] = 'experiments/RMVPE/rmvpe.onnx'
     identities = {}
@@ -99,8 +100,7 @@ def inference_inputs(job, request, voice):
                if (backend / 'backend-version.json').is_file() else {}),
             'voice': voice, 'language': language, 'recognize_lyrics': recognize,
             'lyrics': request.get('backing_lyrics', '') if voice == 'backing' else request.get('lyrics', ''),
-            'lyric_mode': request.get('zh_lyric_mode', settings.get('lyric_output_mode_zh', '汉字')) if language == 'zh'
-                          else settings.get('lyric_output_mode_ja', '罗马音'),
+            'lyric_mode': lyric_output_mode(request, settings.get),
             'native_project': bool(request.get('project_formats')), 'pitch': pitch,
             'alignment': request.get('alignment_engine', 'hfa'), 'models': identities, 'code': code,
             'parameters': effective, 'device': tools.get('midi_device', 'dml'), 'adapter': tools.get('dml_adapter', 'auto')}

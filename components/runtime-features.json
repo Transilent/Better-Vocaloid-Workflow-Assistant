@@ -2,7 +2,7 @@
   "format": 1,
   "features": {
     "chinese": {
-      "name": "Chinese lyrics · Qwen3-ASR",
+      "name": "Chinese / English lyrics · Qwen3-ASR",
       "files": [
         {
           "file": "dependencies/vocal2midi/experiments/Qwen3-ASR-1.7B-dml/qwen3_asr_encoder_backend.fp16.onnx",

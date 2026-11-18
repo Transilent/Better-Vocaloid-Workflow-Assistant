@@ -279,11 +279,14 @@ def extract_bv(text):
     return ids[0]
 
 
-def clean_lyrics(text, *, preserve_lines=False):
+def clean_lyrics(text, *, preserve_lines=False, language='zh'):
     # Content selection must happen before this function: removing punctuation
     # alone cannot distinguish actual lyrics from author names or STAFF.
     if preserve_lines:
-        return '\n'.join(line for raw in text.splitlines() if (line := clean_lyrics(raw)))
+        return '\n'.join(line for raw in text.splitlines() if (line := clean_lyrics(raw, language=language)))
+    if language == 'en':
+        from preparation_languages import english_words
+        return ' '.join(english_words(text))
     return "".join(c for c in unicodedata.normalize("NFC", text)
                    if unicodedata.category(c)[0] in {"L", "N", "M"})
 

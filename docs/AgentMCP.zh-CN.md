@@ -74,7 +74,9 @@ MCP 是可选运行环境；VWA GUI 和推理 Python 不需要安装 MCP SDK。�
 }
 ```
 
-`formats` 省略时为 `["svp"]`。可显式包含不重复的 `svp`、`ustx`、`vsqx`；有非空 `brief` 时必须包含 `svp`，因为调用方风格语义只写入 SVP 风格链路。`review_mode` 省略时默认为 `full` 整曲审批；读取支持分页和紧凑摘要，Agent 应读完所需谱面及疑点后提交一次有依据的整曲决定。显式 `segments` 保留逐段核验与修改后重读，`review_mode="legacy"` 保留历史工作流语义。整曲审批不表示自动接受未知读音或转换损失。
+准备选项 `options.language` 支持 `zh`、`ja` 和 `en`。英文默认选用 Vocal2Midi 2.0 和 HubertFA，实际参考歌词填入 `options.lyrics` 或 `options.backing_lyrics`，保留英文单词和缩约词。MIDI 审核用 `language: "en"` 按词比对参考歌词，英文工程候选用 USTX。
+
+英文省略 `formats` 时为 `["ustx"]`。中文和日语默认 `["svp"]`，可显式选择不重复的 `svp`、`ustx`、`vsqx`；有非空 `brief` 时必须包含 `svp`。`review_mode` 默认 `full` 整曲审批；读取支持分页和紧凑摘要，Agent 读完所需谱面及疑点后提交一次有依据的整曲决定。显式 `segments` 保留逐段核验与修改后重读，`review_mode="legacy"` 保留历史工作流语义。整曲审批不表示自动接受未知读音或转换损失。
 
 工作流的业务阶段为：
 

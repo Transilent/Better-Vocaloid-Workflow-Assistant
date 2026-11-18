@@ -743,7 +743,7 @@ class WorkflowCreateGetTests(WorkflowTestBase):
             ({"pitch_bindings": object()}, "invalid_export_options"),
             ([], "invalid_export_options"),
             ({"unknown_option": True}, "invalid_export_options"),
-            ({"language": "en"}, "invalid_export_options"),
+            ({"language": "yue"}, "invalid_export_options"),
             ({"default_bpm": True}, "invalid_export_options"),
             ({"svp_version": "3.0"}, "invalid_export_options"),
             ({"include_instrumental": "yes"}, "invalid_options"),
@@ -784,6 +784,14 @@ class WorkflowCreateGetTests(WorkflowTestBase):
         self.assertEqual(self.control.plan_calls, [])
         self.assertEqual(self.control.plan_starts, [])
         self.assertEqual(self.control.worker_calls, [])
+
+    def test_english_workflow_defaults_to_ustx(self):
+        artifact = self.control.import_asset(self.midi)
+        flow = self.workflow.create(score_artifact_id=artifact['id'], options={'language': 'en'})
+        self.assertEqual(self.workflow._read(flow['id'])['request']['formats'], ['ustx'])
+        with self.assertRaises(ControlError) as raised:
+            self.workflow.create(score_artifact_id=artifact['id'], options={'language': 'en'}, formats=['svp'])
+        self.assertEqual(raised.exception.code, 'invalid_formats')
 
     def test_concurrent_same_export_intent_is_one_atomic_creation(self):
         bindings = {"pitch_source_job_id": "job_pitch_concurrent",
