@@ -21,6 +21,11 @@ Item {
     readonly property var presets: controller.presets || []
     readonly property var bindings: controller.bindings || []
     readonly property var techniques: controller.techniques || []
+    readonly property var currentNote: view.selectedNote || ({})
+    readonly property string noteScope: textOf(view.sha256) + "|" + textOf(currentNote.id)
+    readonly property string styleRegionId: textOf(view.selectedRegion)
+    readonly property var styleRegion: regions.find(row => row.id === styleRegionId)
+    readonly property var styleBrush: view.styleBrush || ({})
     readonly property var lyricContext: view.lyricContext || ({})
     readonly property bool wholeTimelineVisible: numberOr(view.viewportSpan, 0) >= timelineSpan() - .001
     readonly property bool canReturnToWord: textOf(lyricContext.lyric).length > 0
@@ -70,10 +75,12 @@ Item {
     property string selectedPresetKey: ""
     property string inspectorTab: "style"
     property bool showStyleDetails: false
+    property int noteScopeVersion: 0
     property bool editorFocus: false
     signal calibrationRequested()
 
     clip: true
+    onNoteScopeChanged: noteScopeVersion += 1
 
     function hasValue(value) {
         return value !== undefined && value !== null && value !== ""
@@ -130,7 +137,7 @@ Item {
         context: Qt.WindowShortcut
         autoRepeat: false
         enabled: page.visible && !page.busy && boolOr(page.view.canUndoRegions, false)
-            && !timelineRoll.pitchGesture && !parameterLane.gesture
+            && !timelineRoll.gestureType && !parameterLane.gesture
             && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
         onActivated: page.controller.undoRegions()
     }
@@ -141,7 +148,7 @@ Item {
         context: Qt.WindowShortcut
         autoRepeat: false
         enabled: page.visible && !page.busy && boolOr(page.view.canRedoRegions, false)
-            && !timelineRoll.pitchGesture && !parameterLane.gesture
+            && !timelineRoll.gestureType && !parameterLane.gesture
             && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
         onActivated: page.controller.redoRegions()
     }
@@ -152,7 +159,7 @@ Item {
         context: Qt.WindowShortcut
         autoRepeat: false
         enabled: page.visible && !page.busy && boolOr(page.view.canRedoRegions, false)
-            && !timelineRoll.pitchGesture && !parameterLane.gesture
+            && !timelineRoll.gestureType && !parameterLane.gesture
             && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
         onActivated: page.controller.redoRegions()
     }
@@ -163,7 +170,7 @@ Item {
         context: Qt.WindowShortcut
         autoRepeat: false
         enabled: page.visible && !page.busy && page.textOf(page.view.selectedRegion).length > 0
-            && !timelineRoll.pitchGesture && !parameterLane.gesture
+            && !timelineRoll.gestureType && !parameterLane.gesture
             && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
         onActivated: page.controller.removeSelectedRegion()
     }
@@ -174,17 +181,26 @@ Item {
         context: Qt.WindowShortcut
         autoRepeat: false
         enabled: page.visible && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
-            && (page.editorFocus || page.hasRange || !!timelineRoll.pitchGesture || !!parameterLane.gesture)
+            && (page.editorFocus || page.hasRange || !!timelineRoll.gestureType || !!parameterLane.gesture)
         onActivated: {
             if (parameterLane.gesture)
                 parameterLane.resetPointer()
-            else if (timelineRoll.pitchGesture)
+            else if (timelineRoll.gestureType)
                 timelineRoll.clearGesture()
             else if (page.editorFocus)
                 page.editorFocus = false
             else
                 page.controller.clearSelection()
         }
+    }
+
+    function editNoteField(key, value) {
+        const note = currentNote
+        if (!note.id || !view.noteTool)
+            return
+        if (controller.editNoteGeometry(note.id, key === "end" ? "resize" : "move",
+                key === "pitch" ? note.start : value, key === "pitch" ? value : note.pitch, key === "start"))
+            timelineRoll.locateNote(currentNote)
     }
 
     function findTrack(trackId) {
@@ -725,9 +741,9 @@ Item {
         id: strengthRow
         required property string label
         required property string sliderName
+        required property string field
         required property real amount
         property string valueName: ""
-        signal edited(real amount)
         Layout.fillWidth: true
         spacing: page.editorGap
         HelperText {
@@ -736,19 +752,30 @@ Item {
             text: strengthRow.label
         }
         PercentSlider {
+            id: strengthControl
+            property string dragRegion: ""
             objectName: strengthRow.sliderName
             Layout.fillWidth: true
             strength: strengthRow.amount
             enabled: !page.busy && page.hasSource && strengthRow.enabled
             Accessible.name: strengthRow.label
-            onMoved: strengthRow.edited(value / 100)
+            onMoved: {
+                if (!pressed)
+                    page.controller.setBrushValue(page.styleRegionId, strengthRow.field, value / 100)
+            }
+            onPressedChanged: {
+                if (pressed)
+                    dragRegion = page.styleRegionId
+                else if (dragRegion === page.styleRegionId && value !== percent)
+                    page.controller.setBrushValue(dragRegion, strengthRow.field, value / 100)
+            }
         }
         HelperText {
             objectName: strengthRow.valueName
             theme: page.theme
             Layout.minimumWidth: Math.round(33 * page.scale)
             horizontalAlignment: Text.AlignRight
-            text: page.strengthText(strengthRow.amount)
+            text: page.strengthText(strengthControl.value / 100)
         }
     }
 
@@ -1379,9 +1406,30 @@ Item {
                                 Accessible.description: ToolTip.text
                                 ToolTip.visible: hovered || visualFocus
                                 ToolTip.text: page.textOf(page.view.scoreEditReason)
-                                    || (selected ? page.vwaTr("拖音符改变位置或音高，拖右端改变时长。")
-                                                 : page.vwaTr("切换到音符编辑。双击音符或按 F2 改词。"))
-                                onClicked: page.controller.setNoteTool(!selected)
+                                    || page.vwaTr("拖音符改变位置或音高，拖右端改变时长。单击在右侧调整参数。")
+                                onClicked: {
+                                    page.controller.setNoteTool(true)
+                                    if (page.currentNote.id)
+                                        page.inspectorTab = "note"
+                                }
+                            }
+                            EditorButton {
+                                objectName: "tuningStyleTool"
+                                theme: page.theme
+                                text: page.vwaTr("框选风格")
+                                quiet: true
+                                selected: !!page.view.styleTool
+                                enabled: page.hasSource && !page.busy && !page.view.formatReadOnly
+                                Accessible.checkable: true
+                                Accessible.checked: selected
+                                Accessible.description: ToolTip.text
+                                ToolTip.visible: hovered || visualFocus
+                                ToolTip.text: page.vwaTr("拖出风格区间。按住 Shift 拖动只选区。")
+                                onClicked: {
+                                    if (page.mode === "single")
+                                        page.controller.setNoteTool(false)
+                                    page.inspectorTab = "style"
+                                }
                             }
                             EditorButton {
                                 objectName: "tuningPitchDrawTool"
@@ -1395,8 +1443,10 @@ Item {
                                 Accessible.checked: selected
                                 Accessible.description: ToolTip.text
                                 ToolTip.text: page.textOf(page.view.pitchEditReason)
-                                    || page.vwaTr("沿一个音符画音高偏移，松手保存。再点一次回到风格选区。")
-                                onClicked: page.controller.setPitchTool(selected ? "style" : "draw")
+                                    || page.vwaTr("沿一个音符画音高偏移，松手保存。")
+                                onClicked: selected && !page.view.scoreEditReason
+                                    ? page.controller.setNoteTool(true)
+                                    : page.controller.setPitchTool(selected ? "style" : "draw")
                             }
                             EditorButton {
                                 objectName: "tuningPitchEraseTool"
@@ -1410,7 +1460,9 @@ Item {
                                 Accessible.checkable: true
                                 Accessible.checked: selected
                                 ToolTip.text: page.vwaTr("点笔触擦掉一整段，拖动擦掉局部。原曲线和风格保留。")
-                                onClicked: page.controller.setPitchTool(selected ? "style" : "erase")
+                                onClicked: selected && !page.view.scoreEditReason
+                                    ? page.controller.setNoteTool(true)
+                                    : page.controller.setPitchTool(selected ? "style" : "erase")
                             }
                         }
 
@@ -1559,6 +1611,7 @@ Item {
                             compact: page.stacked
                             inspectionTime: parameterLane.inspectionTime
                             inspectPointer: parameterLane.visible
+                            onNoteFocused: if (!page.editorFocus) page.inspectorTab = "note"
                             onRegionFocused: page.inspectorTab = "style"
                         }
 
@@ -1759,12 +1812,14 @@ Item {
                         Layout.fillWidth: true
                         spacing: 2
                         Repeater {
-                            model: [{key:"style", label:page.vwaTr("风格")}, {key:"source", label:page.vwaTr("来源")},
+                            model: [{key:"style", label:page.vwaTr("风格")}, {key:"note", label:page.vwaTr("音符")},
+                                    {key:"source", label:page.vwaTr("来源")},
                                     {key:"presets", label:page.vwaTr("预设")}, {key:"result", label:page.vwaTr("结果")}]
                             EditorButton {
                                 required property var modelData
                                 objectName: "tuningInspector_" + modelData.key
                                 Layout.fillWidth: true
+                                Layout.minimumWidth: 0
                                 theme: page.theme
                                 quiet: true
                                 text: modelData.label
@@ -1793,15 +1848,109 @@ Item {
                         Connections {
                             target: page
                             function onInspectorTabChanged() { inspectorScroll.contentItem.contentY = 0 }
+                            function onStyleRegionIdChanged() {
+                                if (page.styleRegionId && page.inspectorTab === "style")
+                                    inspectorScroll.contentItem.contentY = 0
+                            }
                         }
                         ColumnLayout {
                             width: inspectorScroll.availableWidth
                             spacing: page.editorGap
                             ColumnLayout {
                                 Layout.fillWidth: true
+                                visible: page.inspectorTab === "note"
+                                spacing: page.editorGap
+                                PanelLabel {
+                                    theme: page.theme
+                                    text: page.vwaTr("音符参数")
+                                }
+                                HelperText {
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    text: page.currentNote.id ? page.textOf(page.currentNote.lyric)
+                                        : page.vwaTr("单击卷帘中的音符以调整参数。")
+                                }
+                                Repeater {
+                                    model: [{key:"pitch", label:page.vwaTr("音高")},
+                                            {key:"start", label:page.vwaTr("开始")},
+                                            {key:"end", label:page.vwaTr("结束")}]
+                                    RowLayout {
+                                        required property var modelData
+                                        readonly property bool pitchField: modelData.key === "pitch"
+                                        readonly property string reason: page.textOf(page.view.scoreEditReason
+                                            || (pitchField ? page.currentNote.pitchReason : page.currentNote.timingReason))
+                                        Layout.fillWidth: true
+                                        visible: !!page.currentNote.id
+                                        HelperText {
+                                            theme: page.theme
+                                            Layout.minimumWidth: Math.round(38 * page.scale)
+                                            text: modelData.label
+                                        }
+                                        UiNumberField {
+                                            objectName: "tuningNoteField_" + modelData.key
+                                            Layout.fillWidth: true
+                                            theme: page.theme
+                                            fieldLabel: modelData.label
+                                            unit: pitchField ? "MIDI" : "s"
+                                            currentValue: page.numberOr(page.currentNote[modelData.key], 0)
+                                            minimum: pitchField ? 0 : Math.floor(1000 * page.numberOr(
+                                                modelData.key === "start" ? page.currentNote.timeMin : page.currentNote.start, 0)) / 1000
+                                            maximum: pitchField ? 127 : Math.ceil(1000 * page.numberOr(page.currentNote.timeMax, 0)) / 1000
+                                            decimals: pitchField ? 0 : 3
+                                            arrowStep: pitchField ? 1 : .01
+                                            scopeKey: page.noteScopeVersion
+                                            enabled: !page.busy && !!page.view.noteTool && !reason
+                                            onCommitted: (scope, value) => page.editNoteField(modelData.key, value)
+                                        }
+                                        HelperText {
+                                            theme: page.theme
+                                            visible: !!reason
+                                            text: "ⓘ"
+                                            Accessible.name: reason
+                                            ToolTip.visible: lockReasonHover.hovered
+                                            ToolTip.text: reason
+                                            HoverHandler { id: lockReasonHover }
+                                        }
+                                    }
+                                }
+                                HelperText {
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    visible: !!page.view.scoreEditReason || (!!page.currentNote.id && !page.view.noteTool)
+                                    text: page.textOf(page.view.scoreEditReason) || page.vwaTr("切到「改音符」后可调整参数。")
+                                }
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true
                                 visible: page.inspectorTab === "style"
                                 enabled: !page.view.formatReadOnly
                                 spacing: page.editorGap
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    PanelLabel {
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        text: page.styleRegion ? page.vwaTr("当前片段") : page.vwaTr("新片段")
+                                    }
+                                    EditorButton {
+                                        objectName: "tuningNewRegionBrush"
+                                        theme: page.theme
+                                        visible: !!page.styleRegion
+                                        text: page.vwaTr("新片段")
+                                        quiet: true
+                                        enabled: !page.busy
+                                        onClicked: page.controller.selectSpan(Number(page.view.start), Number(page.view.end))
+                                    }
+                                }
+                                HelperText {
+                                    objectName: "tuningStyleRegionScope"
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    visible: !!page.styleRegion
+                                    text: page.styleRegion ? page.styleRegion.trackName
+                                        + " · " + Number(page.styleRegion.start).toFixed(2)
+                                        + "–" + Number(page.styleRegion.end).toFixed(2) + " s" : ""
+                                }
                                 RowLayout {
                                     Layout.fillWidth: true
                                     PanelLabel { Layout.fillWidth: true; theme: page.theme; text: page.vwaTr("风格") }
@@ -1810,9 +1959,9 @@ Item {
                                         theme: page.theme
                                         text: page.vwaTr("附加音高")
                                         quiet: true
-                                        selected: !!page.view.stylePitch
+                                        selected: !!page.styleBrush.pitch
                                         enabled: !page.busy && page.hasSource
-                                        onClicked: page.controller.setStylePitch(!page.view.stylePitch)
+                                        onClicked: page.controller.setBrushValue(page.styleRegionId, "pitch", !selected)
                                     }
                                 }
                                 GridLayout {
@@ -1831,9 +1980,9 @@ Item {
                                             text: String(modelData.short || modelData.label)
                                             fullLabel: String(modelData.label)
                                             tint: modelData.color || page.theme.muted
-                                            selected: String(page.view.style) === String(modelData.id)
+                                            selected: String(page.styleBrush.preset) === String(modelData.id)
                                             enabled: !page.busy && page.hasSource
-                                            onClicked: page.controller.setStyle(String(modelData.id))
+                                            onClicked: page.controller.setBrushValue(page.styleRegionId, "preset", String(modelData.id))
                                         }
                                     }
                                 }
@@ -1841,8 +1990,33 @@ Item {
                                     label: page.vwaTr("风格强度")
                                     sliderName: "tuningStyleStrengthSlider"
                                     valueName: "tuningStyleStrengthPercent"
-                                    amount: page.numberOr(page.view.styleStrength, 0)
-                                    onEdited: amount => page.controller.setStyleStrength(amount)
+                                    field: "strength"
+                                    amount: page.numberOr(page.styleBrush.strength, 0)
+                                }
+                                EditorButton {
+                                    objectName: "tuningStyleDetailToggle"
+                                    theme: page.theme
+                                    text: page.vwaTr("风格细节")
+                                    quiet: true
+                                    disclosure: page.showStyleDetails ? 1 : 0
+                                    selected: page.showStyleDetails
+                                    onClicked: page.showStyleDetails = !page.showStyleDetails
+                                }
+                                ColumnLayout {
+                                    visible: page.showStyleDetails
+                                    Layout.fillWidth: true
+                                    spacing: 0
+                                    Repeater {
+                                        model: [{key:"onset", label:page.vwaTr("起音")}, {key:"sustain", label:page.vwaTr("持续")},
+                                                {key:"connection", label:page.vwaTr("衔接")}, {key:"release", label:page.vwaTr("收尾")}]
+                                        StrengthRow {
+                                            required property var modelData
+                                            label: modelData.label
+                                            sliderName: "tuningStyleDetail_" + modelData.key
+                                            field: modelData.key
+                                            amount: page.numberOr((page.styleBrush.detail || {})[modelData.key], 1)
+                                        }
+                                    }
                                 }
                                 RowLayout {
                                     Layout.fillWidth: true
@@ -1852,9 +2026,9 @@ Item {
                                         theme: page.theme
                                         text: page.vwaTr("倚滑与收腔")
                                         quiet: true
-                                        selected: !!page.view.technique_pitch
-                                        enabled: !page.busy && page.hasSource && page.view.style_technique !== "none"
-                                        onClicked: page.toggleOption("technique_pitch")
+                                        selected: !!page.styleBrush.technique_pitch
+                                        enabled: !page.busy && page.hasSource && page.styleBrush.technique !== "none"
+                                        onClicked: page.controller.setBrushValue(page.styleRegionId, "technique_pitch", !selected)
                                     }
                                 }
                                 GridLayout {
@@ -1873,42 +2047,18 @@ Item {
                                             text: String(modelData.short || modelData.label)
                                             fullLabel: String(modelData.label)
                                             tint: modelData.color || page.theme.muted
-                                            selected: String(page.view.style_technique) === String(modelData.id)
+                                            selected: String(page.styleBrush.technique) === String(modelData.id)
                                             enabled: !page.busy && page.hasSource
-                                            onClicked: page.controller.setTuningOption("style_technique", String(modelData.id))
+                                            onClicked: page.controller.setBrushValue(page.styleRegionId, "technique", String(modelData.id))
                                         }
                                     }
                                 }
                                 StrengthRow {
                                     label: page.vwaTr("唱腔强度")
                                     sliderName: "tuningTechniqueStrengthSlider"
-                                    amount: page.numberOr(page.view.technique_strength, 0)
-                                    enabled: page.view.style_technique !== "none"
-                                    onEdited: amount => page.controller.setTuningOption("technique_strength", amount)
-                                }
-                                EditorButton {
-                                    objectName: "tuningStyleDetailToggle"
-                                    theme: page.theme
-                                    text: page.showStyleDetails ? page.vwaTr("收起风格细节") : page.vwaTr("起音、持续、衔接、收尾…")
-                                    quiet: true
-                                    selected: page.showStyleDetails
-                                    onClicked: page.showStyleDetails = !page.showStyleDetails
-                                }
-                                ColumnLayout {
-                                    visible: page.showStyleDetails
-                                    Layout.fillWidth: true
-                                    spacing: 0
-                                    Repeater {
-                                        model: [{key:"onset", label:page.vwaTr("起音")}, {key:"sustain", label:page.vwaTr("持续")},
-                                                {key:"connection", label:page.vwaTr("衔接")}, {key:"release", label:page.vwaTr("收尾")}]
-                                        StrengthRow {
-                                            required property var modelData
-                                            label: modelData.label
-                                            sliderName: "tuningStyleDetail_" + modelData.key
-                                            amount: page.numberOr((page.view.styleDetail || {})[modelData.key], 1)
-                                            onEdited: amount => page.controller.setStyleDetail(modelData.key, amount)
-                                        }
-                                    }
+                                    field: "technique_strength"
+                                    amount: page.numberOr(page.styleBrush.technique_strength, 0)
+                                    enabled: page.styleBrush.technique !== "none"
                                 }
                                 Divider {}
                                 EditorButton {
@@ -1917,6 +2067,7 @@ Item {
                                     theme: page.theme
                                     text: page.vwaTr("应用为片段")
                                     primary: true
+                                    visible: !page.styleRegion
                                     enabled: page.canAddRegion
                                     onClicked: page.controller.addRegion()
                                 }
@@ -1927,7 +2078,7 @@ Item {
                                     checked: !!page.view.autoApplySelection
                                     onClicked: page.controller.setAutoApplySelection(checked)
                                     ToolTip.visible: hovered || visualFocus
-                                    ToolTip.text: page.vwaTr("拖选松手后应用当前风格和唱腔并保存草稿；点音符或输入时间仍只选择。同轨后添加、移动、调整或更新的整组风格覆盖旧片段，其他轨道不受影响。")
+                                    ToolTip.text: page.vwaTr("在「框选风格」中松手即应用。按住 Shift 或在「改音符」中拖空白处只选区。")
                                 }
                                 RowLayout {
                                     Layout.fillWidth: true
@@ -2035,7 +2186,7 @@ Item {
                                                     glyph: "check"
                                                     text: page.vwaTr("更新片段")
                                                     quiet: true
-                                                    enabled: !page.busy && page.hasRange
+                                                    enabled: !page.busy && page.hasRange && !page.styleRegion
                                                         && page.textOf(regionRow.modelData.id).length > 0
                                                     onClicked: page.controller.updateRegion(
                                                         String(regionRow.modelData.id))

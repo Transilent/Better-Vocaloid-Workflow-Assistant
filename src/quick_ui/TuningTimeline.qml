@@ -14,6 +14,7 @@ Item {
     required property var notes
     required property var regions
     property bool compact: false
+    signal noteFocused()
     signal regionFocused()
 
     readonly property real scale: theme.scale || 1
@@ -23,6 +24,7 @@ Item {
     readonly property bool multi: view.mode === "multi"
     readonly property bool scoreEditable: hasSource && !multi && !view.busy && view.scoreEditReason === ""
     readonly property bool noteTool: scoreEditable && !!view.noteTool
+    readonly property bool styleTool: !view.busy && !!view.styleTool
     readonly property string pitchTool: !view.busy && !multi ? String(view.pitchTool || "") : ""
     readonly property color handColor: dark ? "#69e8d2" : "#116961"
     readonly property var manualCurves: controller.pitchCurves || []
@@ -79,6 +81,7 @@ Item {
     readonly property int visibleNoteCount: visibleNotes.length
     readonly property var focusedNote: visibleNotes.find(entry =>
         entry.trackId === focusedTrackId && entry.id === focusedNoteId)
+    readonly property string selectedNoteId: String((view.selectedNote || {}).id || "")
     readonly property var hoveredBox: scoreMouse.containsMouse && !noteGesture && !pitchGesture
         ? noteBoxAt(scoreMouse.mouseX + plotLeft, scoreMouse.mouseY + plotTop) : null
     readonly property var hoveredNote: hoveredBox ? hoveredBox.note : null
@@ -94,6 +97,7 @@ Item {
     property real pressTime: Number.NaN
     property real dragTime: Number.NaN
     property bool selectOnly: false
+    property string gestureType: ""
     property var hoveredLaneNote: null
     property var noteGesture: null
     property var noteGhost: null
@@ -538,11 +542,9 @@ Item {
         if (!note || view.busy === true)
             return
         revealPitch(note.pitch, note.trackId, note.id)
-        if (note.trackId !== activeTrack)
-            controller.focusTrack(note.trackId)
-        // A search hit can span several syllables. A roll hit always uses this
-        // exact note's own bounds, even if it is also the first search hit.
-        controller.selectSpan(note.start, note.end)
+        controller.selectNote(note.id)
+        if (!multi && !styleTool && !pitchTool)
+            noteFocused()
     }
 
     function locateNote(note) {
@@ -603,6 +605,7 @@ Item {
         pressTime = Number.NaN
         dragTime = Number.NaN
         selectOnly = false
+        gestureType = ""
     }
 
     function emptyMessage() {
@@ -642,6 +645,7 @@ Item {
         score.requestPaint()
     }
     onPitchToolChanged: clearGesture()
+    onStyleToolChanged: clearGesture()
     onVisibleChanged: if (!visible) { closeLyric(); clearGesture() }
     onVisibleStartChanged: score.requestPaint()
     onVisibleSpanChanged: score.requestPaint()
@@ -652,6 +656,7 @@ Item {
     onBeatMarksChanged: score.requestPaint()
     onDragTimeChanged: score.requestPaint()
     onFocusedNoteChanged: score.requestPaint()
+    onSelectedNoteIdChanged: score.requestPaint()
     onHoveredNoteChanged: score.requestPaint()
     onHoveredLaneNoteChanged: score.requestPaint()
     onActiveFocusChanged: score.requestPaint()
@@ -963,7 +968,8 @@ Item {
                         ctx.fillText(label, box.x + pad, box.y + box.height / 2)
                     }
                 }
-                if ((timeline.activeFocus && note === timeline.focusedNote) || note === timeline.hoveredNote) {
+                if (note.id === timeline.selectedNoteId || (timeline.activeFocus && note === timeline.focusedNote)
+                        || note === timeline.hoveredNote) {
                     ctx.strokeStyle = timeline.theme.text
                     ctx.lineWidth = 1
                     ctx.strokeRect(box.x + 0.5, box.y + 0.5,
@@ -1098,7 +1104,8 @@ Item {
                 background: Rectangle {
                     radius: 3
                     color: Qt.darker(styleBlock.tint, styleDrag.containsMouse ? 1 : 1.25)
-                    border.color: regionButton.visualFocus ? timeline.theme.text : styleBlock.tint
+                    border.color: regionButton.visualFocus || styleBlock.region.id === timeline.view.selectedRegion
+                        ? timeline.theme.text : styleBlock.tint
                     Repeater {
                         model: styleDrag.containsMouse && parent.width >= 26 ? 2 : 0
                         Rectangle {
@@ -1222,7 +1229,9 @@ Item {
         enabled: timeline.hasSource && timeline.activeTrack.length > 0
         cursorShape: timeline.pitchTool ? (timeline.hoveredNote && timeline.hoveredNote.drawReason
                     ? Qt.ForbiddenCursor : Qt.CrossCursor)
-            : timeline.noteGesture ? (timeline.noteGesture.action === "resize" ? Qt.SizeHorCursor : Qt.ClosedHandCursor)
+            : timeline.noteGesture && timeline.noteGesture.action
+                ? (timeline.noteGesture.action === "resize" ? Qt.SizeHorCursor : Qt.ClosedHandCursor)
+            : timeline.styleTool ? Qt.CrossCursor
             : timeline.noteTool && timeline.resizeHit(timeline.hoveredBox, mouseX + x) ? Qt.SizeHorCursor
             : timeline.noteTool && timeline.hoveredNote && (!timeline.hoveredNote.timingReason || !timeline.hoveredNote.pitchReason)
                 ? Qt.OpenHandCursor : timeline.hoveredNote ? Qt.PointingHandCursor : Qt.CrossCursor
@@ -1239,6 +1248,7 @@ Item {
             timeline.pressY = mouse.y
             timeline.selectOnly = !!(mouse.modifiers & Qt.ShiftModifier)
             if (!timeline.selectOnly && timeline.pitchTool) {
+                timeline.gestureType = "pitch"
                 const note = timeline.pitchNoteAt(mouse.x, mouse.y)
                 if (note && !note.drawReason) {
                     timeline.selectNote(note)
@@ -1249,18 +1259,21 @@ Item {
             }
             const box = timeline.noteBoxAt(mouse.x + x, mouse.y + y)
             if (!timeline.selectOnly && timeline.noteTool && box) {
-                if (!box.note.timingReason || !box.note.pitchReason) {
-                    timeline.noteGesture = {note: box.note, action: timeline.resizeHit(box, mouse.x + x) ? "resize" : "move"}
-                }
+                timeline.gestureType = "note"
+                const action = timeline.resizeHit(box, mouse.x + x) ? "resize"
+                    : box.note.timingReason && box.note.pitchReason ? "" : "move"
+                timeline.noteGesture = {note: box.note, action: action}
+                timeline.selectNote(box.note)
                 return
             }
+            timeline.gestureType = timeline.styleTool && !timeline.selectOnly ? "style" : "range"
             timeline.pressTime = timeline.snapTime(timeline.timeForPlotX(mouse.x), mouse.modifiers, "")
             timeline.dragTime = timeline.pressTime
         }
         onPositionChanged: function(mouse) {
             if (pressed && timeline.pitchGesture) {
                 timeline.pitchSample(mouse.x, mouse.y, mouse.modifiers, false)
-            } else if (pressed && timeline.noteGesture) {
+            } else if (pressed && timeline.noteGesture && timeline.noteGesture.action) {
                 const gesture = timeline.noteGesture
                 const request = timeline.dragRequest(gesture, mouse.x, mouse.y, mouse.modifiers)
                 if (request.horizontal || request.pitch !== gesture.note.pitch) {
@@ -1273,9 +1286,10 @@ Item {
                 timeline.dragTime = timeline.snapTime(timeline.timeForPlotX(mouse.x), mouse.modifiers, "")
         }
         onReleased: function(mouse) {
-            if (timeline.pressX < 0)
+            const kind = timeline.gestureType
+            if (!kind)
                 return
-            if (!timeline.selectOnly && timeline.pitchTool) {
+            if (kind === "pitch") {
                 const gesture = timeline.pitchGesture
                 if (gesture) {
                     timeline.pitchSample(mouse.x, mouse.y, mouse.modifiers, true)
@@ -1286,16 +1300,14 @@ Item {
                 }
                 return
             }
-            const gesture = timeline.noteGesture
-            if (gesture) {
-                const request = timeline.dragRequest(gesture, mouse.x, mouse.y, mouse.modifiers)
+            if (kind === "note") {
+                const gesture = timeline.noteGesture
+                const request = gesture.action ? timeline.dragRequest(gesture, mouse.x, mouse.y, mouse.modifiers) : null
                 timeline.clearGesture()
-                if (request.horizontal || request.pitch !== gesture.note.pitch) {
+                if (request && (request.horizontal || request.pitch !== gesture.note.pitch)) {
                     if (timeline.controller.editNoteGeometry(gesture.note.id, gesture.action,
                             request.seconds, request.pitch, request.horizontal))
                         timeline.revealPitch(request.pitch, gesture.note.trackId, gesture.note.id)
-                } else {
-                    timeline.selectNote(gesture.note)
                 }
                 return
             }
@@ -1305,14 +1317,14 @@ Item {
             const first = Math.min(timeline.pressTime, end)
             const last = Math.max(timeline.pressTime, end)
             const box = dx < 2 && dy < 3 ? timeline.noteBoxAt(mouse.x + x, mouse.y + y) : null
-            const selectOnly = timeline.noteTool || timeline.selectOnly
             timeline.clearGesture()
             if (timeline.view.busy === true)
                 return
             if (dx >= 2 && last > first) {
-                if (selectOnly)
+                if (kind === "style")
+                    timeline.controller.finishTimelineSelection(first, last)
+                else
                     timeline.controller.selectSpan(first, last)
-                else timeline.controller.finishTimelineSelection(first, last)
             } else if (box) {
                 timeline.selectNote(box.note)
             }

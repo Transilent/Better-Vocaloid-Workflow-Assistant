@@ -98,7 +98,8 @@ def exercise(root, viewport, scale):
     QTest.qWait(80)
     roll = visual('tuningTimelineCanvas')
     assert roll and (window.width(), window.height()) == viewport
-    assert visual('tuningNoteTool').isEnabled()
+    assert visual('tuningNoteTool').isEnabled() and visual('tuningNoteTool').property('selected')
+    assert tune.view['noteTool'] and not tune.view['styleTool']
     tune.setSessionLocation(QUrl.fromLocalFile(str(directory / 'sessions')))
     track = tune.view['activeTrack']
     first, second, *_ = tune.project.visible([track], 0., 10.)
@@ -129,7 +130,6 @@ def exercise(root, viewport, scale):
     tune.setStylePitch(False)
     tune.addRegion()
     region_id = tune.regions[0]['id']
-    tap('tuningNoteTool')
     assert tune.view['noteTool'] and tune.view['noteEditCount'] == 1
 
     def drag(point, dx, dy, before_release=None):
@@ -154,7 +154,56 @@ def exercise(root, viewport, scale):
     drag(edge, .13 * scale_x, 0)
     resized = tune.project.notes[identity]
     assert resized['end'] > moved['end'] + .10 and resized['pitch'] == moved['pitch']
-    assert tune.regions[0]['end'] == resized['end']
+    assert len(tune.regions) == 1 and tune.regions[0]['end'] == resized['end']
+
+    # The inspector edit goes through the same score transaction as a drag.
+    assert visual('tuningInspector_note').property('selected')
+    proof = ROOT / 'work/test-results'
+    assert window.grabWindow().save(str(proof / f'note-properties-{scale}.png'))
+    for key, value in (('pitch', 63), ('start', .180), ('end', .815)):
+        name = 'tuningNoteField_' + key
+        field = visual(name)
+        tap(name)
+        QTest.keyClick(window, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+        event = QInputMethodEvent()
+        event.setCommitString(f'{value:.3f}' if key != 'pitch' else str(value))
+        assert app.sendEvent(field, event)
+        QTest.keyClick(window, Qt.Key.Key_Return)
+        changed = tune.project.notes[identity]
+        assert abs(changed[key] - value) < .002, (key, changed, tune.view['message'])
+        QTest.mouseClick(window, left, pos=note_point(changed))
+        QTest.keyClick(window, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+        assert tune.project.notes[identity] == resized and tune.view['selectedNote']['pitch'] == 61
+
+    # Move over a note in the explicit style tool, then adjust its saved region.
+    tap('tuningStyleTool')
+    assert tune.view['styleTool'] and not tune.view['noteTool'] and tune.view['autoApplySelection']
+    drag(note_point(second, .05), .20 * scale_x, 0)
+    assert len(tune.regions) == 2 and tune.project.notes[second['id']] == second
+    second_region = next(row for row in tune.regions if row['id'] != region_id)
+    assert second_region['start'] == second['start'] and second_region['end'] == second['end']
+    tap('tuningStyleBand_' + second_region['id'])
+    assert tune.view['selectedRegion'] == second_region['id']
+    tap('tuningStyleDetailToggle')
+    detail = visual('tuningStyleDetail_onset')
+    assert detail and detail.isEnabled()
+    initial = tune.view['styleBrush']['detail']['onset']
+
+    def assert_detail_uncommitted():
+        assert tune.view['styleBrush']['detail']['onset'] == initial
+
+    drag(pointer(detail, .92 * detail.width(), detail.height() / 2), -.62 * detail.width(), 0,
+         assert_detail_uncommitted)
+    amount = tune.view['styleBrush']['detail']['onset']
+    assert .18 < amount < .42 and tune.view['styleDetail']['onset'] == initial, (amount, warnings)
+    assert window.grabWindow().save(str(proof / f'style-region-properties-{scale}.png'))
+    QTest.keyClick(window, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert len(tune.regions) == 2 and tune.view['styleBrush']['detail']['onset'] == initial
+    tap('tuningNewRegionBrush')
+    assert not tune.view['selectedRegion'] and tune.view['styleBrush']['detail']['onset'] == initial
+    QTest.keyClick(window, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert len(tune.regions) == 1 and tune.regions[0]['id'] == region_id
+    tap('tuningNoteTool')
 
     drag(note_point(resized), .58 * scale_x, 0)
     assert tune.project.notes[identity] == resized and '重叠' in tune.view['message']
@@ -238,7 +287,7 @@ def exercise(root, viewport, scale):
     QTest.keyClick(window, Qt.Key.Key_Return)
     assert tune.project.notes[identity]['lyric'] == '山' and tune.view['candidateStale']
     assert file_hash(first_candidate) == verified['output_sha256']
-    print('PASS', viewport, scale, 'note edits, style replacement, draw/erase and cancel, undo, draft, verified export')
+    print('PASS', viewport, scale, 'default note drag, inspector, scoped style, draw/erase, undo, draft and verified export')
 
     tune.setViewport(0., 2.6)
     tap('tuningParameterToggle')

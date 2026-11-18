@@ -14,7 +14,7 @@ from i18n import tr
 from preset_library import PresetLibrary
 import style_catalog
 from style_drafts import DraftConflict, DraftStore
-from style_presets import DETAIL_DEFAULTS, time_range_settings
+from style_presets import DETAIL_DEFAULTS, region_settings, time_range_settings
 import tuning_engine as engine
 from tuning_execution import EDITOR_OPTION_KEYS, PRESERVE_FOR_EDIT, editor_options
 from tuning_pitch_layer import EDGE_SECONDS, FORMATS as DRAW_FORMATS, MAX_CENTS, UNSUPPORTED as DRAW_UNSUPPORTED
@@ -281,13 +281,14 @@ class QuickTuning(QObject):
         self._preset = None
         self._preset_review = None
         self._mode, self._active, self._selected = 'single', '', []
-        self._score_tool = 'style'
+        self._score_tool = 'note'
         self._parameter_style = {}
         self._plot_cache = (None, {})
         self._lyric_batch = None
         self._edit_issue = None
         self._start, self._end, self._left, self._span = 0., 0., 0., 18.
         self._selected_region = ''
+        self._selected_note = ''
         self._query = ''
         self._matches, self._notes, self._regions = [], [], []
         self._lyric_match_index = -1
@@ -530,6 +531,8 @@ class QuickTuning(QObject):
         format = project.get('format', 'svp')
         score_reason = self._score_block()
         draw_reason = self._pitch_block()
+        region = self._region(self._selected_region)
+        style_brush = self._brush(region['recipe']) if region else self._brush()
         return {
             'source': self._display_source or project.get('path', ''),
             'title': Path(self._display_source or project.get('path', '')).stem if project else '',
@@ -552,11 +555,14 @@ class QuickTuning(QObject):
             'canReload': bool(project and not busy),
             'mode': self._mode, 'activeTrack': self._active, 'selectedTracks': list(self._selected),
             'noteTool': self._score_tool == 'note' and not score_reason, 'scoreEditReason': tr(score_reason),
+            'styleTool': self._mode == 'multi' or self._score_tool == 'style',
             'pitchTool': self._score_tool if self._score_tool in ('draw', 'erase') and not draw_reason else '',
             'pitchEditReason': tr(draw_reason), 'pitchStrokeCount': pitch_count,
             'pitchMaxCents': MAX_CENTS, 'pitchEdgeSeconds': EDGE_SECONDS,
             'noteEditCount': note_count,
             'selectedRegion': self._selected_region,
+            'styleBrush': style_brush,
+            'selectedNote': self._selected_note_view(),
             'lyricContext': self._lyric_context(),
             'lyricMatchIndex': match_position,
             'lyricMatchCount': len(match_scope),
@@ -924,6 +930,19 @@ class QuickTuning(QObject):
             self._notes = []
         self.notesChanged.emit()
 
+    def _selected_note_view(self):
+        note = self.project.notes.get(self._selected_note) if self.project else None
+        if not note:
+            return {}
+        editor = self.project.score_editor
+        target = editor.targets.get(note['id']) if editor else None
+        minimum, maximum = note['start'], note['end']
+        if target:
+            minimum = editor.clock.to_seconds(target.offset + target.step * target.minimum)
+            maximum = editor.clock.to_seconds(target.offset + target.step * target.maximum)
+        return {**note, 'timingReason': tr(note.get('timingReason', '')), 'pitchReason': tr(note.get('pitchReason', '')),
+                'timeMin': minimum, 'timeMax': maximum}
+
     def _lyric_context(self):
         """Project the current search hit or focused-track lyric from visible notes."""
         if not self.project or self._active not in self.project.tracks:
@@ -980,7 +999,8 @@ class QuickTuning(QObject):
             self._selected = list(project.editable[:1])
         self._active = next(iter(self._selected), next(iter(project.tracks)))
         self._mode = 'multi' if len(self._selected) > 1 else 'single'
-        self._score_tool = 'style'
+        self._score_tool = 'note'
+        self._selected_region = self._selected_note = ''
 
     @staticmethod
     def _draft_description(payload):
@@ -1264,6 +1284,7 @@ class QuickTuning(QObject):
         if self.project and not self._editing_blocked and mode in ('single', 'multi') and mode != self._mode:
             old = self._indices()
             self._mode = mode
+            self._selected_region = self._selected_note = ''
             self._changed_tracks(old)
 
     def _changed_tracks(self, old):
@@ -1279,6 +1300,7 @@ class QuickTuning(QObject):
         if self.project and track in self.project.tracks and not self._editing_blocked and self._active != track:
             old = self._indices()
             self._active = track
+            self._selected_region = self._selected_note = ''
             if not (0 <= self._lyric_match_index < len(self._matches)
                     and self._matches[self._lyric_match_index]['trackId'] == track):
                 self._lyric_match_index = -1
@@ -1345,9 +1367,10 @@ class QuickTuning(QObject):
         self._set_selection(row['start'], row['end'], keep_match=True)
         self.setViewport(row['start'] - self._span * .22, self._span)
 
-    def _set_selection(self, first, last, *, keep_match):
+    def _set_selection(self, first, last, *, keep_match=False, note='', region=''):
         if self.project and math.isfinite(first) and math.isfinite(last):
             a, b = sorted((first, last))
+            self._selected_note, self._selected_region = note, region
             if not keep_match:
                 self._lyric_match_index = -1
             previous = self._start, self._end
@@ -1359,7 +1382,15 @@ class QuickTuning(QObject):
 
     @Slot(float, float)
     def selectSpan(self, first, last):
-        self._set_selection(first, last, keep_match=False)
+        self._set_selection(first, last)
+
+    @Slot(str)
+    def selectNote(self, identity):
+        note = self.project.notes.get(identity) if self.project else None
+        if note and not self.worker.kind:
+            self.focusTrack(note['trackId'])
+            if self._active == note['trackId']:
+                self._set_selection(note['start'], note['end'], note=identity)
 
     @Slot()
     def clearSelection(self):
@@ -1552,8 +1583,47 @@ class QuickTuning(QObject):
             self._rebind_preset()
             self._dirty_draft()
 
-    def _brush(self):
-        return {key: deepcopy(self._options[value]) for key, value in _REGION_BRUSH_FIELDS.items()}
+    def _brush(self, recipe=None):
+        if recipe is None:
+            return {key: deepcopy(self._options[value]) for key, value in _REGION_BRUSH_FIELDS.items()}
+        return {key: deepcopy(recipe.get(key, engine.DEFAULTS[option]))
+                for key, option in _REGION_BRUSH_FIELDS.items()}
+
+    def _region(self, identity):
+        return next((row for row in self._regions if row['id'] == identity), None) if identity else None
+
+    @Slot(str, str, 'QVariant')
+    def setBrushValue(self, identity, field, value):
+        if not self._can_edit_regions() or identity != self._selected_region:
+            return
+        current = self._region(identity)
+        if identity and not current:
+            return
+        recipe = current['recipe'] if current else None
+        brush = self._brush(recipe)
+        if field in DETAIL_DEFAULTS:
+            field, value = 'detail', {**brush['detail'], field: value}
+        if field not in _REGION_BRUSH_FIELDS:
+            return
+        if brush[field] == value:
+            return
+        changes = {field: value}
+        if field == 'preset':
+            changes['detail'] = None
+        if not current:
+            self._set_options({_REGION_BRUSH_FIELDS[key]: item for key, item in changes.items()})
+            return
+        brush.update(changes)
+        if (brush['preset'] == style_catalog.DEFAULT_STYLE_ID
+                and brush['technique'] == style_catalog.DEFAULT_TECHNIQUE_ID):
+            self.removeRegion(identity)
+            return
+        try:
+            replacement = {**current, 'recipe': region_settings([{**recipe, **brush}])[0]}
+            rows = [replacement if row['id'] == identity else row for row in self._regions]
+            self._commit_regions(rows, '已保存片段参数，可撤销。')
+        except (ValueError, OSError) as error:
+            self._error(error)
 
     def _can_edit_regions(self):
         return bool(self.project and not self._editing_blocked and not self._legacy)
@@ -1819,7 +1889,7 @@ class QuickTuning(QObject):
         timing = (old['start'], old['end']) != (new['start'], new['end'])
         rows = project.rebase_regions(previous, self._regions) if timing else self._regions
         self._record_edit()
-        self._selected_region = ''
+        self._selected_region, self._selected_note = '', identity
         self._start, self._end = new['start'], new['end']
         self._replace_edits(project, rows, notice)
         return True
@@ -1874,7 +1944,7 @@ class QuickTuning(QObject):
                 raise ValueError('选区内没有所选演唱轨的音符。')
             updated = self.project.overlay_regions(self._regions, applied)
             if self._commit_regions(updated, '已添加逐轨片段；同轨重叠部分以新风格为准。'):
-                self._selected_region = applied[-1]['id']
+                self._selected_region, self._selected_note = applied[-1]['id'], ''
                 self._start = min(float(row['recipe']['start']) for row in applied)
                 self._end = max(float(row['recipe']['end']) for row in applied)
                 self.message = tr('已添加 {count} 个逐轨片段；同轨重叠部分已按新风格整理。').format(count=len(applied))
@@ -1895,14 +1965,12 @@ class QuickTuning(QObject):
         if not self._can_edit_regions():
             return
         try:
-            current = next((row for row in self._regions if row['id'] == identity), None)
+            current = self._region(identity)
             if current is None:
                 raise ValueError('该片段已不存在。')
             track = current['track_id']
             time_range_settings((start, end))
-            brush = self._brush() if use_current_brush else {
-                key: value for key, value in current['recipe'].items() if key in _REGION_BRUSH_FIELDS
-            }
+            brush = self._brush() if use_current_brush else self._brush(current['recipe'])
             replacement = self.project.region(track, start, end, brush, identity=identity)
             if replacement is None:
                 raise ValueError('当前选区内没有此片段轨道可应用的音符。')
@@ -1910,10 +1978,7 @@ class QuickTuning(QObject):
             updated = self.project.overlay_regions(base, [replacement])
             if self._commit_regions(updated, '已更新片段；同轨重叠部分以当前整组风格为准。'
                                     if use_current_brush else '已将片段移动到完整音符范围；重叠部分以此片段为准。'):
-                self._selected_region = identity
-                self._start = float(replacement['recipe']['start'])
-                self._end = float(replacement['recipe']['end'])
-                self.changed.emit()
+                self._set_selection(replacement['recipe']['start'], replacement['recipe']['end'], region=identity)
         except (ValueError, OSError) as error:
             self._error(error)
 
@@ -1952,22 +2017,20 @@ class QuickTuning(QObject):
             other.append(self._edit_state())
             stack.pop()
             if self.project.note_edits != project.note_edits:
-                self._start = self._end = 0.
+                note = project.notes.get(self._selected_note)
+                self._start, self._end = (note['start'], note['end']) if note else (0., 0.)
             self._replace_edits(project, rows, notice)
 
     @Slot(str)
     def editRegion(self, identity):
         if not self._can_edit_regions():
             return
-        row = next((item for item in self._regions if item['id'] == identity), None)
+        row = self._region(identity)
         if row is None:
             return
-        self._selected_region = identity
         recipe = row['recipe']
         self.focusTrack(row['track_id'])
-        self.selectSpan(recipe['start'], recipe['end'])
-        self._set_options({option: deepcopy(recipe.get(field, engine.DEFAULTS[option]))
-                           for field, option in _REGION_BRUSH_FIELDS.items()})
+        self._set_selection(recipe['start'], recipe['end'], region=identity)
         self.setViewport(recipe['start'] - self._span * .15, self._span)
 
     @Slot()
