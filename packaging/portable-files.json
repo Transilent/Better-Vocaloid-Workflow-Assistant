@@ -114,8 +114,16 @@
       "source": "src/quick_ui/PreparationSourcesDialog.qml"
     },
     {
+      "file": "quick_ui/TuningLyricBatchDialog.qml",
+      "source": "src/quick_ui/TuningLyricBatchDialog.qml"
+    },
+    {
       "file": "quick_ui/TuningPage.qml",
       "source": "src/quick_ui/TuningPage.qml"
+    },
+    {
+      "file": "quick_ui/TuningParameterLane.qml",
+      "source": "src/quick_ui/TuningParameterLane.qml"
     },
     {
       "file": "quick_ui/TuningTimeline.qml",

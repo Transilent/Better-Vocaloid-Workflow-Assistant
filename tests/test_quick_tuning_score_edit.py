@@ -49,7 +49,10 @@ def exercise(root, viewport, scale):
     original = score(f'Edit test {scale}')
     source.write_bytes(encode(original, b''))
     original_sha = file_hash(source)
-    engine, window, owner, modes = create_workspace(app, viewport=viewport, scale=scale)
+    try:
+        engine, window, owner, modes = create_workspace(app, viewport=viewport, scale=scale)
+    except RuntimeError as error:
+        raise AssertionError(warnings) from error
     tune = owner.tuning
     left = Qt.MouseButton.LeftButton
 
@@ -236,6 +239,139 @@ def exercise(root, viewport, scale):
     assert tune.project.notes[identity]['lyric'] == '山' and tune.view['candidateStale']
     assert file_hash(first_candidate) == verified['output_sha256']
     print('PASS', viewport, scale, 'note edits, style replacement, draw/erase and cancel, undo, draft, verified export')
+
+    tune.setViewport(0., 2.6)
+    tap('tuningParameterToggle')
+    wait('open parameter lane', lambda: visual('tuningParameterGraph') is not None)
+    lane = visual('tuningParameterLane')
+    graph = visual('tuningParameterGraph')
+    origin = graph.mapToScene(QPointF(lane.property('leftInset'), 0)).x()
+    roll_origin = roll.mapToScene(QPointF(roll.property('plotLeft'), 0)).x()
+    assert abs(origin - roll_origin) < 1, (origin, roll_origin, scale)
+    assert lane.property('rightInset') - lane.property('leftInset') == roll.property('plotWidth')
+
+    tune.setBeatDivision(4)
+    wait('tempo grid', lambda: visual('tuningBeatDivision').property('currentIndex') == 1)
+    beats = [t for t, strong in tune.beatMarks if strong]
+    assert len(beats) >= 5 and beats[:4] == [0., .5, 1., 1.5] and abs(beats[4] - 13 / 6) < 1e-6, beats
+    tune.setBeatDivision(8)
+    assert abs(tune.snapBeat(1.81) - 11 / 6) < 1e-6
+    tune.setBeatDivision(0)
+
+    tune.freeze()
+    wait('real style layer', lambda: tune.view['canRun'] and bool(tune.parameterPlot.get('style')))
+    assert any(row['noteId'] == identity and any(pair and pair[1] for pair in row['points'])
+               for row in tune.parameterPlot['style'])
+    assert not tune.parameterPlot['original'] and tune.project.pitch_strokes == strokes
+    proof = ROOT / 'work/test-results'
+    assert window.grabWindow().save(str(proof / f'parameter-lane-{scale}.png'))
+    tap('tuningParameterStyle')
+    assert not lane.property('showStyle')
+    tap('tuningParameterStyle')
+
+    def plot_x(left, width, seconds):
+        return left + width * (seconds - roll.property('visibleStart')) / roll.property('visibleSpan')
+
+    def parameter_point(seconds, cents):
+        left_x = lane.property('leftInset')
+        x = plot_x(left_x, lane.property('rightInset') - left_x, seconds)
+        pad, extent = 10 * scale / 100, lane.property('extent')
+        return pointer(graph, x, pad + (extent - cents) / (2 * extent) * (graph.height() - 2 * pad))
+
+    def parameter_drag(a, b):
+        QTest.mousePress(window, left, pos=a)
+        QTest.mouseMove(window, b, 25)
+        assert tune.project.pitch_strokes == strokes
+        QTest.mouseRelease(window, left, pos=b)
+        app.processEvents()
+
+    tap('tuningParameterLine')
+    parameter_drag(parameter_point(1.05, 30), parameter_point(1.60, 50))
+    assert tune.project.pitch_strokes == strokes
+    tap('tuningEditingIssues')
+    wait('issue location', lambda: visual('tuningIssueLocate_0') is not None)
+    tap('tuningIssueLocate_0')
+    wait('located correct note', lambda: roll.property('focusedNoteId') == second['id'])
+    parameter_drag(parameter_point(1.05, 30), parameter_point(1.32, 80))
+    assert tune.view['pitchStrokeCount'] == 2 and not tune.parameterPlot.get('style')
+    fresh = next(row for row in tune.pitchCurves if row['noteId'] == second['id'])
+    assert len(fresh['offsets']) == 2
+    for (x, y), (seconds, cents) in zip(fresh['offsets'], ((1.05, 30), (1.32, 80))):
+        assert abs(x - seconds) < .008 and abs(y - cents) <= 10, fresh
+
+    tap('tuningParameterNodes')
+    mid = parameter_point(1.18, 0)
+    QTest.mouseClick(window, left, pos=mid)
+    wait('insert pitch node', lambda: any(row['noteId'] == second['id'] and len(row['offsets']) == 3
+                                         for row in tune.pitchCurves))
+    dest = parameter_point(1.21, -50)
+    drag(mid, dest.x() - mid.x(), dest.y() - mid.y())
+    node = next(row['offsets'][1] for row in tune.pitchCurves if row['noteId'] == second['id'])
+    assert abs(node[0] - 1.21) < .008 and node[1] == -50, node
+    for _ in range(3):
+        QTest.keyClick(window, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert tune.project.pitch_strokes == strokes and tune.regions[0]['id'] == region_id
+
+    tap('tuningPitchDrawTool')
+
+    def range_point(seconds):
+        return pointer(roll, plot_x(roll.property('plotLeft'), roll.property('plotWidth'), seconds),
+                       roll.property('plotTop') + roll.property('plotHeight') / 2)
+
+    shift = Qt.KeyboardModifier.ShiftModifier
+    QTest.mousePress(window, left, shift, pos=range_point(.02))
+    QTest.mouseMove(window, range_point(1.44), 30)
+    gesture = roll.property('pressTime'), roll.property('dragTime'), roll.property('selectOnly')
+    QTest.mouseRelease(window, left, shift, pos=range_point(1.44))
+    assert tune.project.pitch_strokes == strokes and tune.regions[0]['id'] == region_id
+    left_time, right_time = roll.property('selectionStart'), roll.property('selectionEnd')
+    assert left_time <= resized['start'] and right_time >= second['end'], (left_time, right_time, gesture, warnings)
+    tap('tuningLyricBatch')
+    wait('paste dialog', lambda: visual('tuningLyricBatchText') is not None)
+    paste = visual('tuningLyricBatchText')
+    paste.setProperty('text', 'きゃー春山')
+    tap('tuningLyricBatchPreview')
+    assert tune.lyricBatch['extra'] == ['山'] and not visual('tuningLyricBatchApply').isEnabled()
+    paste.setProperty('text', 'きゃー')
+    tap('tuningLyricBatchPreview')
+    assert tune.lyricBatch['blocked'] == 1 and not visual('tuningLyricBatchApply').isEnabled()
+    wait('editable lyric slots', lambda: visual('tuningLyricBatchSlot_1') is not None)
+    tap('tuningLyricBatchSlot_1')
+    event = QInputMethodEvent()
+    event.setCommitString('春')
+    assert app.sendEvent(visual('tuningLyricBatchSlot_1'), event)
+    wait('lyrics entered in second slot', lambda: visual('tuningLyricBatchApply').isEnabled())
+    assert [row['after'] for row in tune.lyricBatch['rows']] == ['きゃー', '春']
+    harmony = next(key for key in tune.project.tracks if key != track)
+    tune.focusTrack(harmony)
+    assert not tune.lyricBatch['canApply'] and not tune.applyLyricBatch()
+    tune.focusTrack(track)
+    assert not visual('tuningLyricBatchApply').isEnabled()
+    paste.setProperty('text', 'きゃー春')
+    tap('tuningLyricBatchPreview')
+    assert window.grabWindow().save(str(proof / f'lyric-review-{scale}.png'))
+    tap('tuningLyricBatchApply')
+    wait('applied both lyrics', lambda: tune.project.notes[identity]['lyric'] == 'きゃー'
+         and tune.project.notes[second['id']]['lyric'] == '春' and visual('tuningLyricBatchText') is None)
+    assert tune.project.visible([harmony], 0., 10.)[0]['lyric'] == '和'
+    if scale == 100:
+        tune.freeze()
+        wait('freeze reviewed batch', lambda: tune.view['canRun'])
+        tune.run()
+        wait('verified batch candidate', lambda: tune.view['candidateVerified'] and not tune.view['candidateStale']
+             and not tune.view['busy'])
+        output = read_project(Path(tune.view['candidate']))
+        assert [note['lyric'] for note in output['voice_parts'][0]['notes']] == ['きゃー', '春', '呀']
+        assert output['voice_parts'][1] == original['voice_parts'][1]
+        batch_copy = directory / 'phrase.ustx'
+        tune.exportCandidate(QUrl.fromLocalFile(str(batch_copy)))
+        wait('export reviewed phrase', lambda: tune.view['savedCopy'] == str(batch_copy))
+        assert read_project(batch_copy) == output
+    QTest.keyClick(window, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert [tune.project.notes[i]['lyric'] for i in (identity, second['id'])] == ['山', '好']
+    tap('tuningParameterToggle')
+    assert visual('tuningParameterGraph') is None and file_hash(source) == original_sha
+    print('PASS', viewport, scale, 'parameter lane, two tempos, line/node gestures, issue locator, reviewed batch, one undo')
 
     owner.close()
     window.close()

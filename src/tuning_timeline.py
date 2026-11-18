@@ -17,12 +17,81 @@ from tuning_engine import DEFAULTS, digest
 from tuning_execution import EDITOR_OPTION_KEYS, editor_options
 from tuning_pitch_layer import PitchLayer
 from tuning_preset_documents import plan_application, validate_plan
-from tuning_score_edits import ScoreEdits
+from tuning_score_edits import PHONEMES, ScoreEdits, _special_lyric
 from tuning_workflow import STYLE_ADAPTERS, inspect_project, read_source, score_layout, style_adapter
 
 
 _REGION_FIELDS = frozenset(('id', 'track_id', 'start_note_id', 'end_note_id', 'recipe'))
 _DRAFT_FIELDS = frozenset(('schema_version', 'input_sha256', 'regions', 'options', 'preset', 'confirmed', '_sync'))
+LYRIC_BATCH_LIMIT = 128
+_SMALL_KANA = frozenset('ぁぃぅぇぉゃゅょゎァィゥェォャュョヮー')
+
+
+def _is_han(char):
+    return (char == '〇' or '\u3400' <= char <= '\u9fff' or '\uf900' <= char <= '\ufaff'
+            or '\U00020000' <= char <= '\U000323af')
+
+
+def split_batch_lyrics(text):
+    """Split pasted text without detaching small kana or the vowel-length mark."""
+    if len(text) > 8192:
+        raise ValueError('歌词太长，请分句粘贴。')
+    words, run, kana = [], [], False
+    for char in unicodedata.normalize('NFC', text):
+        is_kana = '\u3041' <= char <= '\u30fa' or char == 'ー'
+        is_ideograph = _is_han(char)
+        separator = char.isspace() or unicodedata.category(char).startswith('P')
+        if run and (separator or is_ideograph or (is_kana and not (kana and char in _SMALL_KANA)) or
+                    (kana and not is_kana)):
+            words.append(''.join(run))
+            run.clear()
+            kana = False
+        if is_ideograph:
+            words.append(char)
+        elif not separator:
+            run.append(char)
+            kana = is_kana
+    if run:
+        words.append(''.join(run))
+    return words
+
+
+def batch_lyric_row(project, note, proposed):
+    """Prepare a UI row. A slur, breath or special native marker retains its text."""
+    old = note['lyric']
+    row = {**note, 'before': old, 'after': proposed, 'reason': '', 'readings': [],
+           'preserved': _special_lyric(old), 'changed': False}
+    if row['preserved']:
+        marker = project.score_editor.rows[note['id']].get('lyric_raw') or old
+        return {**row, 'before': marker, 'after': marker, 'reason': '延音、换气或原生标记已保留。'}
+    text = proposed.strip()
+    if note['lyricReason']:
+        return {**row, 'reason': note['lyricReason'], 'blocked': text != old}
+    if not text:
+        return {**row, 'reason': '请填写歌词或保留原词。', 'blocked': True}
+    target = project.score_editor.targets.get(note['id'])
+    if len(text) == 1 and _is_han(text) and (not target or target.language in (None, 4)):
+        from vpr_tuning import chinese_score_readings
+        try:
+            row['readings'] = list(chinese_score_readings(text))
+        except (ImportError, OSError, RuntimeError, ValueError):
+            # Optional reading hints must not change the native edit policy.
+            pass
+    if text == old:
+        return row
+    try:
+        project.score_editor.validate_lyric(note['id'], text)
+    except ValueError as error:
+        return {**row, 'reason': str(error), 'blocked': True}
+    return {**row, 'changed': True}
+
+
+def _notes_and_overlaps(notes):
+    farthest = None
+    for note in notes:
+        yield note, farthest if farthest is not None and note['start'] < farthest['end'] - 1e-7 else None
+        if farthest is None or note['end'] > farthest['end']:
+            farthest = note
 
 
 def _identity(value, prefix):
@@ -153,6 +222,39 @@ class ProjectNotes:
         notes, _ = self._windows[row['trackId']]
         index = next(i for i, note in enumerate(notes) if note['id'] == identity)
         return next((note for note in notes[index + 1:] if not note.get('lyricReason')), None)
+
+    def lyric_batch(self, track, start, end, text):
+        notes = self.visible((track,), start, end, limit=LYRIC_BATCH_LIMIT + 1) if end > start else []
+        if not notes:
+            raise ValueError('请先框选当前轨道的一句歌词。')
+        if len(notes) > LYRIC_BATCH_LIMIT:
+            raise ValueError('选区音符太多，请分句贴词。')
+        if any(note['start'] < start - 1e-7 or note['end'] > end + 1e-7 for note in notes):
+            raise ValueError('选区切到了音符，请选中完整音符。')
+        words = split_batch_lyrics(text)
+        rows, index = [], 0
+        overlapping = {row['id'] for note, other in _notes_and_overlaps(notes)
+                       if other is not None for row in (note, other)}
+        for note in notes:
+            special = _special_lyric(note['lyric'])
+            proposed = note['lyric'] if special else words[index] if index < len(words) else ''
+            rows.append({**batch_lyric_row(self, note, proposed), 'overlap': note['id'] in overlapping})
+            if not special:
+                index += 1
+        return rows, words[index:]
+
+    def editing_issues(self, track, limit=120):
+        """Locate actual collisions and authored phoneme guards without modifying notes."""
+        rows = self._windows.get(track, ((), ()))[0]
+        issues = []
+        for note, other in _notes_and_overlaps(rows):
+            if other is not None:
+                issues.append({**note, 'reason': '同轨音符重叠', 'otherLyric': other['lyric']})
+            if note.get('lyricReason') == PHONEMES and not _special_lyric(note['lyric']):
+                issues.append({**note, 'reason': PHONEMES})
+            if len(issues) > limit:
+                break
+        return issues[:limit], len(issues) > limit
 
     def visible(self, tracks, start, end, *, limit=4000):
         result = []

@@ -107,9 +107,20 @@ class ManualPitchTest(unittest.TestCase):
                     styled, _ = workflow.apply_project(snap.data, options, format,
                                                       cancel=lambda: None, progress=lambda _: None)
                     _, plan = freeze_plan(active, [region], dict(options, pitch_strokes=strokes), None)
+                    layers = {}
                     layered, report = workflow.apply_snapshot(snap, json.loads(plan)['options'],
-                                                               cancel=lambda: None, progress=lambda _: None)
+                        cancel=lambda: None, progress=lambda _: None,
+                        observe_style=lambda raw: layers.update(p.pitch_layer.curve_sources(raw)))
                     assert report['hand_pitch']['spans'] == 1 and report['notes_and_timing_unchanged']
+                    plot = p.pitch_layer.plot([note], note['start'], note['end'], layers)
+                    anchor = p.pitch_layer.notes[note['id']]
+                    for name, native in [('original', snap.data), ('style', styled)]:
+                        curve, = plot[name]
+                        assert curve['noteId'] == note['id'] and 2 < len(curve['points']) <= 128
+                        seconds, cents = zip(*curve['points'])
+                        x = np.array([(p.pitch_layer.clock.to_position(t) - anchor.offset) / anchor.step
+                                      for t in seconds])
+                        np.testing.assert_allclose(cents, sample(native, format, x), rtol=0, atol=1e-6)
                     layer_values = sample(layered, format, grid)
                     style_values = sample(styled, format, grid)
                     np.testing.assert_allclose(layer_values[interior], target, rtol=0, atol=1e-10)

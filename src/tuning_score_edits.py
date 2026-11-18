@@ -375,6 +375,21 @@ class ScoreEdits:
             return {'lyricReason': reason, 'timingReason': reason, 'pitchReason': reason}
         return target.capabilities()
 
+    def validate_lyric(self, identity, value):
+        """Check a single replacement using the same policy as candidate generation."""
+        target = self.targets.get(identity)
+        if target is None:
+            raise ValueError('此音符不能修改。')
+        text = _lyric(value)
+        if text != target.old['lyric']:
+            if target.lyric_reason:
+                raise ValueError(target.lyric_reason)
+            if self.format in ADAPTED_FIELDS and _special_lyric(text):
+                raise ValueError(PHONEMES)
+            if self.format == 'vpr':
+                self._phoneme(target, text)
+        return text
+
     def projected(self, rows):
         edits = normalize_edits(rows)
         if not edits:
@@ -391,13 +406,10 @@ class ScoreEdits:
             for field in edit.keys() - {'note_id'}:
                 if edit[field] == local[field]:
                     continue
-                if problem := target.reason(field):
+                if field == 'lyric':
+                    self.validate_lyric(identity, edit[field])
+                elif problem := target.reason(field):
                     raise ValueError(problem)
-                if field == 'lyric' and self.format in ADAPTED_FIELDS:
-                    if _special_lyric(edit[field]):
-                        raise ValueError(PHONEMES)
-                    if self.format == 'vpr':
-                        self._phoneme(target, edit[field])
                 local[field] = edit[field]
             onset, duration = local['onset'], local['duration']
             if onset != target.old['onset'] or duration != target.old['duration']:
@@ -442,17 +454,20 @@ class ScoreEdits:
         return {**self.context, 'notes': [changed.get(row['note_id'], row) for row in self.context['notes']]}
 
     def update(self, rows, identity, changes):
-        target = self.targets.get(identity)
-        if target is None:
-            raise ValueError('此音符不能修改。')
+        return self.update_many(rows, {identity: changes})
+
+    def update_many(self, rows, changes_by_note):
         other = {row['note_id']: dict(row) for row in rows}
-        edit = {**other.pop(identity, {'note_id': identity}), **changes}
-        edit = {key: value for key, value in edit.items()
-                if key == 'note_id' or value != target.old.get(key)}
-        if len(edit) > 1:
-            other[identity] = edit
-        result = normalize_edits(list(other.values()))
-        return result
+        for identity, changes in changes_by_note.items():
+            target = self.targets.get(identity)
+            if target is None:
+                raise ValueError('此音符不能修改。')
+            edit = {**other.pop(identity, {'note_id': identity}), **changes}
+            edit = {key: value for key, value in edit.items()
+                    if key == 'note_id' or value != target.old.get(key)}
+            if len(edit) > 1:
+                other[identity] = edit
+        return normalize_edits(list(other.values()))
 
     def gesture(self, identity, current, action, seconds, pitch, horizontal):
         target = self.targets.get(identity)

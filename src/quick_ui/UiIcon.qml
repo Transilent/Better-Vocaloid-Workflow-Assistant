@@ -20,6 +20,8 @@ Item {
         sliders: "M4 6 H8 M12 6 H20 M4 12 H14 M18 12 H20 M4 18 H7 M11 18 H20 M8 4 V8 H12 V4 Z M14 10 V14 H18 V10 Z M7 16 V20 H11 V16 Z",
         external: "M13 4 H20 V11 M20 4 L11 13 M11 5 H5 V19 H19 V13",
         edit: "M4 20 L5 15 L16 4 L20 8 L9 19 Z M13 7 L17 11",
+        lyrics: "M5 5 H19 V19 H5 Z M8 9 H16 M8 13 H16 M8 16 H13",
+        issues: "M12 3 L22 20 H2 Z M12 9 V13 M12 16 V16.4",
         eraser: "M3 15 L13 5 Q14 4 15 5 L20 10 Q21 11 20 12 L13 19 H7 Z M8 10 L16 17 M13 19 H21",
         check: "M5 12 L10 17 L20 7",
         chevron: "M9 5 L16 12 L9 19"

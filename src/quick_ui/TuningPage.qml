@@ -110,6 +110,8 @@ Item {
     }
 
     function focusBlocksEditorShortcut(item) {
+        if (lyricBatchDialog.visible || issuesDialog.visible)
+            return true
         let current = item
         while (current) {
             if (current instanceof TextInput || current instanceof TextEdit
@@ -128,7 +130,7 @@ Item {
         context: Qt.WindowShortcut
         autoRepeat: false
         enabled: page.visible && !page.busy && boolOr(page.view.canUndoRegions, false)
-            && !timelineRoll.pitchGesture
+            && !timelineRoll.pitchGesture && !parameterLane.gesture
             && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
         onActivated: page.controller.undoRegions()
     }
@@ -139,7 +141,7 @@ Item {
         context: Qt.WindowShortcut
         autoRepeat: false
         enabled: page.visible && !page.busy && boolOr(page.view.canRedoRegions, false)
-            && !timelineRoll.pitchGesture
+            && !timelineRoll.pitchGesture && !parameterLane.gesture
             && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
         onActivated: page.controller.redoRegions()
     }
@@ -150,7 +152,7 @@ Item {
         context: Qt.WindowShortcut
         autoRepeat: false
         enabled: page.visible && !page.busy && boolOr(page.view.canRedoRegions, false)
-            && !timelineRoll.pitchGesture
+            && !timelineRoll.pitchGesture && !parameterLane.gesture
             && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
         onActivated: page.controller.redoRegions()
     }
@@ -161,7 +163,7 @@ Item {
         context: Qt.WindowShortcut
         autoRepeat: false
         enabled: page.visible && !page.busy && page.textOf(page.view.selectedRegion).length > 0
-            && !timelineRoll.pitchGesture
+            && !timelineRoll.pitchGesture && !parameterLane.gesture
             && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
         onActivated: page.controller.removeSelectedRegion()
     }
@@ -172,9 +174,11 @@ Item {
         context: Qt.WindowShortcut
         autoRepeat: false
         enabled: page.visible && !page.focusBlocksEditorShortcut(page.Window.activeFocusItem)
-            && (page.editorFocus || page.hasRange || !!timelineRoll.pitchGesture)
+            && (page.editorFocus || page.hasRange || !!timelineRoll.pitchGesture || !!parameterLane.gesture)
         onActivated: {
-            if (timelineRoll.pitchGesture)
+            if (parameterLane.gesture)
+                parameterLane.resetPointer()
+            else if (timelineRoll.pitchGesture)
                 timelineRoll.clearGesture()
             else if (page.editorFocus)
                 page.editorFocus = false
@@ -1088,6 +1092,7 @@ Item {
                 readonly property real chromeHeight: editorTools.implicitHeight
                     + selectionToolbar.implicitHeight + viewportStrip.implicitHeight
                     + 2 * page.editorPadding + 3 * page.editorGap
+                    + (parameterLane.visible ? parameterLane.implicitHeight + page.editorGap : 0)
                 radius: Math.round(8 * page.scale)
                 color: page.theme.surface
                 border.width: 1
@@ -1293,6 +1298,37 @@ Item {
                                 Accessible.name: page.vwaTr("搜索歌词")
                                 onTextEdited: page.controller.setQuery(text)
                                 onAccepted: page.controller.setQuery(text)
+                            }
+                            EditorButton {
+                                objectName: "tuningLyricBatch"
+                                theme: page.theme
+                                glyph: "lyrics"
+                                text: page.vwaTr("整句贴词")
+                                enabled: page.hasSource && !page.busy && !page.textOf(page.view.scoreEditReason)
+                                ToolTip.text: page.vwaTr("整句贴词 · 先框选音符。按住 Shift 可只选区。")
+                                onClicked: lyricBatchDialog.open()
+                            }
+                            EditorButton {
+                                objectName: "tuningEditingIssues"
+                                theme: page.theme
+                                glyph: "issues"
+                                text: page.vwaTr("检查编辑问题")
+                                enabled: page.hasSource && !page.busy
+                                onClicked: {
+                                    issuesDialog.review = page.controller.editingIssues()
+                                    issuesDialog.open()
+                                }
+                            }
+                            EditorButton {
+                                objectName: "tuningParameterToggle"
+                                theme: page.theme
+                                glyph: "sliders"
+                                text: page.vwaTr("参数轨")
+                                selected: parameterLane.visible
+                                enabled: page.hasSource && page.mode === "single"
+                                Accessible.checkable: true
+                                Accessible.checked: selected
+                                onClicked: page.controller.setParameterOpen(!page.view.parameterOpen)
                             }
                             EditorButton {
                                 objectName: "tuningClearLyricSearch"
@@ -1521,6 +1557,8 @@ Item {
                             notes: page.notes
                             regions: page.regions
                             compact: page.stacked
+                            inspectionTime: parameterLane.inspectionTime
+                            inspectPointer: parameterLane.visible
                             onRegionFocused: page.inspectorTab = "style"
                         }
 
@@ -1590,6 +1628,17 @@ Item {
                                 }
                             }
                         }
+                    }
+
+                    TuningParameterLane {
+                        id: parameterLane
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: implicitHeight
+                        visible: page.hasSource && page.mode === "single" && !!page.view.parameterOpen
+                        theme: page.theme
+                        controller: page.controller
+                        view: page.view
+                        roll: timelineRoll
                     }
 
                     TuningViewportStrip {
@@ -2758,6 +2807,68 @@ Item {
                     }
 
                 }
+            }
+        }
+    }
+
+    TuningLyricBatchDialog {
+        id: lyricBatchDialog
+        theme: page.theme
+        controller: page.controller
+        onNoteRequested: note => timelineRoll.locateNote(note)
+    }
+
+    Dialog {
+        id: issuesDialog
+        objectName: "tuningIssuesDialog"
+        title: page.vwaTr("编辑问题")
+        property var review: ({})
+        readonly property var rows: review.rows || []
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        focus: true
+        width: Math.min(parent.width - 40, Math.round(570 * page.scale))
+        height: Math.min(parent.height - 48, Math.round((rows.length ? 380 : 175) * page.scale))
+        standardButtons: Dialog.Close
+        contentItem: ColumnLayout {
+            HelperText {
+                theme: page.theme
+                Layout.fillWidth: true
+                text: issuesDialog.rows.length
+                    ? page.vwaTr("点击一项，在当前轨道定位音符。")
+                    : page.vwaTr("当前轨道未发现重叠音符或受保护发音。")
+            }
+            ListView {
+                objectName: "tuningIssueList"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                model: issuesDialog.rows
+                clip: true
+                spacing: Math.round(5 * page.scale)
+                ScrollBar.vertical: ScrollBar {}
+                delegate: EditorButton {
+                    required property var modelData
+                    required property int index
+                    objectName: "tuningIssueLocate_" + index
+                    width: ListView.view.width - Math.round(12 * page.scale)
+                    theme: page.theme
+                    leftAligned: true
+                    text: Number(modelData.start).toFixed(2) + " s  ·  " + modelData.lyric
+                        + (modelData.otherLyric ? " / " + modelData.otherLyric : "") + "  ·  " + modelData.reason
+                    ToolTip.visible: hovered || visualFocus
+                    ToolTip.text: text
+                    onClicked: {
+                        issuesDialog.close()
+                        timelineRoll.locateNote(modelData)
+                    }
+                }
+            }
+            HelperText {
+                theme: page.theme
+                Layout.fillWidth: true
+                visible: !!issuesDialog.review.truncated
+                text: page.vwaTr("仅显示前 120 个问题。")
             }
         }
     }

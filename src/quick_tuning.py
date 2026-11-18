@@ -19,10 +19,11 @@ import tuning_engine as engine
 from tuning_execution import EDITOR_OPTION_KEYS, PRESERVE_FOR_EDIT, editor_options
 from tuning_pitch_layer import EDGE_SECONDS, FORMATS as DRAW_FORMATS, MAX_CENTS, UNSUPPORTED as DRAW_UNSUPPORTED
 from tuning_score_edits import FORMATS as SCORE_EDIT_FORMATS, UNSUPPORTED as SCORE_EDIT_UNSUPPORTED
-from tuning_timeline import (ProjectNotes, TimelineDraftStore, draft_options, freeze_plan,
+from tuning_timeline import (ProjectNotes, TimelineDraftStore, batch_lyric_row, draft_options, freeze_plan,
                              normalize_timeline_draft)
 from tuning_preset_documents import make_document, plan_application
 import tuning_workflow as workflow
+from vocal_expression import SV_QUARTER
 
 
 _REFERENCE_FLAGS = ('reference_dynamics', 'reference_tension', 'reference_breathiness', 'reference_voicing')
@@ -201,7 +202,7 @@ def _resume_project(session, drafts, legacy, stop):
 
 
 def _preview(project, options, stop, send):
-    """Compute real parameter differences for style-only plans without writing."""
+    """Compute parameter differences and the actual pitch layer before manual edits."""
     snapshot = workflow.read_source(project.project['path'])
     if snapshot.sha256 != project.sha256:
         raise SourceChanged('预览期间源工程已改变，请重新载入。')
@@ -210,8 +211,14 @@ def _preview(project, options, stop, send):
         indices = workflow.check_targets(data, options, format)
         if options['expression_mode'] in ('reference', 'calibrated'):
             engine.sources_for(options, indices)
-        return tr('已核对轨道和参数来源。参考音频、校准或沿用参数将在生成时处理。')
-    _, report = workflow.apply_snapshot(snapshot, options, cancel=lambda: _stop_check(stop), progress=send)
+        return tr('已核对轨道和参数来源。参考音频、校准或沿用参数将在生成时处理。'), {}
+    style = {}
+    cancel = lambda: _stop_check(stop)
+
+    def capture(data):
+        style.update(project.pitch_layer.curve_sources(data, cancel=cancel))
+
+    _, report = workflow.apply_snapshot(snapshot, options, cancel=cancel, progress=send, observe_style=capture)
     indices = report['track_indices']
     curves = len(report['curve_changes'])
     if options.get('note_edits'):
@@ -230,7 +237,7 @@ def _preview(project, options, stop, send):
             label += tr(' 有原生曲线未能安全叠加，请核对回执。')
     elif report['status'] == 'partial':
         label += tr(' 有局部参数无法安全应用，生成后请核对结果。')
-    return label
+    return label, style
 
 
 def _draft_projection(project, payload):
@@ -275,6 +282,10 @@ class QuickTuning(QObject):
         self._preset_review = None
         self._mode, self._active, self._selected = 'single', '', []
         self._score_tool = 'style'
+        self._parameter_style = {}
+        self._plot_cache = (None, {})
+        self._lyric_batch = None
+        self._edit_issue = None
         self._start, self._end, self._left, self._span = 0., 0., 0., 18.
         self._selected_region = ''
         self._query = ''
@@ -335,7 +346,11 @@ class QuickTuning(QObject):
         except (OSError, ValueError):
             values = {}
         values = values if isinstance(values, dict) else {}
-        return {key: values.get(key, True) is not False for key in ('snap', 'auto_apply_selection')}
+        division = values.get('beat_division', 0)
+        return {'snap': values.get('snap', True) is not False,
+                'auto_apply_selection': values.get('auto_apply_selection', True) is not False,
+                'parameter_open': values.get('parameter_open') is True,
+                'beat_division': division if type(division) is int and division in (4, 8, 16) else 0}
 
     def _set_view_preference(self, key, enabled):
         if self._view_preferences[key] == enabled:
@@ -441,6 +456,8 @@ class QuickTuning(QObject):
             self._autosave.start()
         if invalidate:
             self._plan, self._summary = None, ''
+            self._parameter_style = {}
+            self._invalidate_lyric_batch()
             self._candidate_stale = bool(self.candidate)
             if self.state in ('frozen', 'done', 'partial', 'registered'):
                 self.state, self.message = 'ready', tr('已修改调音设置，请重新预览。原候选文件保留。')
@@ -556,6 +573,9 @@ class QuickTuning(QObject):
             'canSaveDraftRevision': bool(project and not busy and not self._legacy),
             'snapEnabled': self._view_preferences['snap'],
             'autoApplySelection': self._view_preferences['auto_apply_selection'],
+            'parameterOpen': self._view_preferences['parameter_open'],
+            'beatDivision': self._view_preferences['beat_division'],
+            'canUseBeatGrid': bool(self.project and self.project.score_editor.clock),
             'canFreeze': bool(project and not busy and usable and (not self._origin or self._confirmed)
                               and (not group_styles or mode == 'preserve')),
             'canRun': bool(self._plan and not busy), 'canRegister': bool(self.job and receipt.get('receipt_verified')
@@ -839,6 +859,45 @@ class QuickTuning(QObject):
         visible = {row['id'] for row in self._notes if row['trackId'] == self._active}
         return self.project.pitch_layer.display(self.project.pitch_strokes, self.project.note_patches, visible)
 
+    @Property('QVariantMap', notify=changed)
+    def parameterPlot(self):
+        if not self.project or self._mode != 'single' or not self._view_preferences['parameter_open']:
+            return {}
+        source = self._plan[0] if self._plan else None
+        key = self.project, self._active, self._left, self._span, source
+        if key != self._plot_cache[0]:
+            focused = [note for note in self._notes if note['trackId'] == self._active]
+            plot = self.project.pitch_layer.plot(focused, self._left, self._left + self._span,
+                                                   self._parameter_style if source else {})
+            self._plot_cache = key, plot
+        return self._plot_cache[1]
+
+    @Property('QVariantList', notify=changed)
+    def beatMarks(self):
+        division = self._view_preferences['beat_division']
+        clock = self.project.score_editor.clock if self.project else None
+        if not division or clock is None:
+            return []
+        step = (4 * SV_QUARTER) // division
+        first = math.ceil(clock.to_position(self._left) / step)
+        last = math.floor(clock.to_position(self._left + self._span) / step)
+        quarter = division // 4
+        spacing = max(1, math.ceil((last - first + 1) / 180))
+        if spacing > 1:
+            spacing = quarter * math.ceil(spacing / quarter)
+        return [[clock.to_seconds(i * step), i % quarter == 0]
+                for i in range(math.ceil(first / spacing) * spacing, last + 1, spacing)]
+
+    @Slot(float, result=float)
+    def snapBeat(self, seconds):
+        division = self._view_preferences['beat_division']
+        clock = self.project.score_editor.clock if self.project else None
+        if not division or clock is None or not self._view_preferences['snap'] or not math.isfinite(seconds):
+            return seconds
+        step = (4 * SV_QUARTER) // division
+        position = clock.to_position(max(self.project.minimum, min(self.project.maximum, seconds)))
+        return clock.to_seconds(round(position / step) * step)
+
     @Property('QVariantList', notify=catalogChanged)
     def presets(self):
         return [{'key': key, 'label': row['name']} for key, row in self._presets.items()]
@@ -1098,6 +1157,10 @@ class QuickTuning(QObject):
         self._query, self._matches = '', []
         self._lyric_match_index = -1
         self._plan, self._summary = None, ''
+        self._parameter_style = {}
+        self._plot_cache = (None, {})
+        self._lyric_batch = None
+        self._edit_issue = None
         self.state = 'ready'
         self._candidate_stale = bool(receipt)
         if receipt:
@@ -1204,6 +1267,7 @@ class QuickTuning(QObject):
             self._changed_tracks(old)
 
     def _changed_tracks(self, old):
+        self._invalidate_lyric_batch()
         changed = old != self._indices() and not (self._regions or self.project.has_score_changes)
         if changed:
             self._rebind_preset()
@@ -1286,8 +1350,11 @@ class QuickTuning(QObject):
             a, b = sorted((first, last))
             if not keep_match:
                 self._lyric_match_index = -1
+            previous = self._start, self._end
             self._start = min(max(a, self.project.minimum), self.project.maximum)
             self._end = min(max(b, self.project.minimum), self.project.maximum)
+            if previous != (self._start, self._end):
+                self._invalidate_lyric_batch()
             self.changed.emit()
 
     @Slot(float, float)
@@ -1297,9 +1364,7 @@ class QuickTuning(QObject):
     @Slot()
     def clearSelection(self):
         if self.project and not self.worker.kind:
-            self._lyric_match_index = -1
-            self._start = self._end = self.project.minimum
-            self.changed.emit()
+            self.selectSpan(self.project.minimum, self.project.minimum)
 
     @Slot(float, float)
     def finishTimelineSelection(self, first, last):
@@ -1326,6 +1391,15 @@ class QuickTuning(QObject):
     @Slot(bool)
     def setSnapEnabled(self, enabled):
         self._set_view_preference('snap', enabled)
+
+    @Slot(bool)
+    def setParameterOpen(self, enabled):
+        self._set_view_preference('parameter_open', enabled)
+
+    @Slot(int)
+    def setBeatDivision(self, division):
+        if division in (0, 4, 8, 16):
+            self._set_view_preference('beat_division', division)
 
     @Slot(bool)
     def setAutoApplySelection(self, enabled):
@@ -1534,7 +1608,14 @@ class QuickTuning(QObject):
 
     @Slot(str, str, 'QVariantList', result=bool)
     def editPitchStroke(self, identity, kind, samples):
-        if self._editing_blocked or self._score_tool != kind:
+        if self._score_tool != kind:
+            return False
+        return self._apply_pitch(identity, lambda project, _note: project.pitch_layer.gesture(
+            project.pitch_strokes, project.note_patches, identity, kind, samples),
+            '已保存手绘音高，可撤销。' if kind == 'draw' else '已擦除手绘，原曲线和风格保留。')
+
+    def _apply_pitch(self, identity, operation, notice):
+        if self._editing_blocked:
             return False
         try:
             if reason := self._pitch_block():
@@ -1542,16 +1623,36 @@ class QuickTuning(QObject):
             note = self.project.notes.get(identity)
             if not note or note['trackId'] != self._active:
                 raise ValueError('请在当前轨道选择要修改的音符。')
-            project = self.project.with_edits(self.project.note_edits, self.project.pitch_layer.gesture(
-                self.project.pitch_strokes, self.project.note_patches, identity, kind, samples))
+            project = self.project.with_edits(self.project.note_edits, operation(self.project, note))
             if project is not self.project:
+                self._edit_issue = None
                 self._record_edit()
-                self._replace_edits(project, self._regions,
-                                    '已保存手绘音高，可撤销。' if kind == 'draw' else '已擦除手绘，原曲线和风格保留。')
+                self._replace_edits(project, self._regions, notice)
             return True
         except (ValueError, ArithmeticError) as error:
+            self._remember_edit_issue(identity, error)
             self._error(error)
             return False
+
+    @Slot(str, float, float, float, float, result=bool)
+    def drawPitchLine(self, identity, first, first_cents, last, last_cents):
+        def apply(project, note):
+            if not all(math.isfinite(t) and note['start'] <= t <= note['end'] for t in (first, last)):
+                raise ValueError('手绘直线需要留在同一个音符内。')
+            return project.pitch_layer.gesture(project.pitch_strokes, project.note_patches, identity,
+                                                'draw', [[first, first_cents], [last, last_cents]])
+
+        return self._apply_pitch(identity, apply, '已保存音高直线，可撤销。')
+
+    @Slot(str, float, int, float, float, result=bool)
+    def editPitchNode(self, identity, span_start, index, seconds, cents):
+        def apply(project, note):
+            if not math.isfinite(seconds) or not note['start'] <= seconds <= note['end']:
+                raise ValueError('音高节点需要留在原音符内。')
+            return project.pitch_layer.edit_node(project.pitch_strokes, project.note_patches, identity,
+                                                  span_start, index, seconds, cents)
+
+        return self._apply_pitch(identity, apply, '已保存音高节点，可撤销。')
 
     def _editable_note(self, identity):
         if self._editing_blocked:
@@ -1573,8 +1674,99 @@ class QuickTuning(QObject):
                 raise ValueError(note['lyricReason'])
             return self._commit_note(identity, {'lyric': lyric}, '歌词已更新，可撤销。')
         except ValueError as error:
+            self._remember_edit_issue(identity, error)
             self._error(error)
             return False
+
+    def _batch_scope(self):
+        return self.project, self._active, self._start, self._end
+
+    def _invalidate_lyric_batch(self):
+        if self._lyric_batch is not None:
+            self._lyric_batch['scope'] = None
+
+    @Property('QVariantMap', notify=changed)
+    def lyricBatch(self):
+        review = self._lyric_batch
+        if review is None:
+            return {}
+        rows, extra = review['rows'], review['extra']
+        scoped = review['scope'] == self._batch_scope()
+        reason = review['reason'] or self._score_block()
+        if not scoped:
+            reason = '轨道、选区或草稿已变化，请重新核对贴词。'
+        blocked = sum(bool(row.get('blocked')) for row in rows)
+        changes = sum(row['changed'] for row in rows)
+        return {'rows': [{**row, 'reason': tr(row['reason'])} for row in rows],
+                'extra': extra, 'reason': tr(reason), 'blocked': blocked, 'changes': changes,
+                'track': review['track'], 'canApply': bool(changes and not (reason or extra or blocked)
+                                                          and not self._editing_blocked)}
+
+    @Slot(str, result='QVariantMap')
+    def previewLyricBatch(self, text):
+        scope = self._batch_scope()
+        track = self.project.tracks.get(self._active, {}).get('name', '') if self.project else ''
+        rows, extra, reason = [], [], self._score_block()
+        if not reason and not self._editing_blocked:
+            try:
+                rows, extra = self.project.lyric_batch(self._active, self._start, self._end, text)
+            except ValueError as error:
+                reason = str(error)
+        self._lyric_batch = {'scope': scope, 'track': track, 'rows': rows, 'extra': extra, 'reason': reason}
+        self.changed.emit()
+        return self.lyricBatch
+
+    @Slot(str, str)
+    def reviseLyricBatch(self, identity, text):
+        review = self._lyric_batch
+        if review and review['scope'] == self._batch_scope() and not self._editing_blocked:
+            for index, row in enumerate(review['rows']):
+                if row['id'] == identity and not row['preserved']:
+                    note = self.project.notes[identity]
+                    review['rows'][index] = {**batch_lyric_row(self.project, note, text[:300]),
+                                             'overlap': row['overlap']}
+                    self.changed.emit()
+                    break
+
+    @Slot(result=bool)
+    def applyLyricBatch(self):
+        if not self.lyricBatch.get('canApply'):
+            return False
+        try:
+            edits = self.project.score_editor.update_many(self.project.note_edits, {
+                row['id']: {'lyric': row['after'].strip()} for row in self._lyric_batch['rows'] if row['changed']})
+            project = self.project.with_note_edits(edits)
+        except ValueError as error:
+            self._lyric_batch['reason'] = str(error)
+            self.changed.emit()
+            return False
+        self._record_edit()
+        self._lyric_batch = None
+        self._edit_issue = None
+        self._replace_edits(project, self._regions, '整句歌词已更新，可一次撤销。')
+        return True
+
+    @Slot()
+    def dismissLyricBatch(self):
+        if self._lyric_batch is not None:
+            self._lyric_batch = None
+            self.changed.emit()
+
+    def _remember_edit_issue(self, identity, error):
+        if self.project and identity in self.project.notes:
+            self._edit_issue = self.project, identity, str(error)
+
+    @Slot(result='QVariantMap')
+    def editingIssues(self):
+        if not self.project:
+            return {'rows': [], 'truncated': False}
+        rows, truncated = self.project.editing_issues(self._active)
+        if self._edit_issue and self._edit_issue[0] is self.project:
+            _, identity, reason = self._edit_issue
+            note = self.project.notes.get(identity)
+            if note and note['trackId'] == self._active:
+                rows.insert(0, {**note, 'reason': reason})
+        return {'rows': [{**row, 'reason': tr(row['reason'])} for row in rows], 'truncated': truncated}
 
     def _note_gesture(self, identity, action, seconds, pitch, horizontal):
         if self._score_tool != 'note':
@@ -1605,6 +1797,7 @@ class QuickTuning(QObject):
             changes = self._note_gesture(identity, action, seconds, pitch, horizontal)
             return changes is not None and self._commit_note(identity, changes, '音符已更新，可撤销。')
         except (ValueError, ArithmeticError) as error:
+            self._remember_edit_issue(identity, error)
             self._error(error)
             return False
 
@@ -1809,7 +2002,8 @@ class QuickTuning(QObject):
             _verify_input(project, job, artifact, stop)
             return _preview(project, options, stop, send)
 
-        def finish(summary):
+        def finish(value):
+            summary, self._parameter_style = value
             self._plan, self._summary = plan, summary
             self.state, self.message = 'frozen', tr('计划已冻结，可生成独立候选。')
 
@@ -1821,16 +2015,21 @@ class QuickTuning(QObject):
             return
         expected, raw = self._plan
         project, job, artifact, session = self.project, self.job, self.artifact, self.session
+        resumed = self._reload_session is not None
+        baseline = Path(project.project['path'])
+        original_source = self._display_source if resumed else str(baseline)
 
         def work(stop, send):
             data = json.loads(raw)
             if engine.digest(data) != expected or data['input_sha256'] != project.sha256:
                 raise ValueError('冻结计划已变化，请重新预览。')
             _verify_input(project, job, artifact, stop)
-            if not Path(native_path(session)).is_file():
-                workflow.create_session(project.project['path'], session.parent, job=job or None)
+            if not resumed and not Path(native_path(session)).is_file():
+                workflow.create_session(baseline, session.parent, job=job or None)
             spec = workflow.read_session(session)
-            if (spec['input_sha256'], spec['source'], spec['job']) != (project.sha256, project.project['path'], job or None):
+            identity = spec['input_sha256'], spec['source_sha256'], spec['source'], spec['job']
+            if (identity != (project.sha256, project.sha256, original_source, job or None)
+                    or resumed and workflow._owned(session.parent, session.parent / spec['input_file']) != baseline):
                 raise ValueError('会话输入不再对应冻结计划。')
             plan_path = workflow._owned(session.parent, session.parent / ('quick-plan-' + expected + '.json'))
             if not plan_path.is_file():

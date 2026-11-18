@@ -26,6 +26,12 @@ Item {
     readonly property string pitchTool: !view.busy && !multi ? String(view.pitchTool || "") : ""
     readonly property color handColor: dark ? "#69e8d2" : "#116961"
     readonly property var manualCurves: controller.pitchCurves || []
+    readonly property var beatMarks: controller.beatMarks || []
+    property real inspectionTime: Number.NaN
+    property bool inspectPointer: false
+    readonly property real pointerSeconds: inspectPointer && scoreMouse.containsMouse
+        ? timeForPlotX(scoreMouse.mouseX) : Number.NaN
+    readonly property real cursorTime: isFinite(inspectionTime) ? inspectionTime : pointerSeconds
     readonly property string activeTrack: String(view.activeTrack || "")
     readonly property string selectedTrackKey: JSON.stringify(view.selectedTracks || [])
     readonly property var targetTracks: resolveTracks()
@@ -87,6 +93,7 @@ Item {
     property real pressY: -1
     property real pressTime: Number.NaN
     property real dragTime: Number.NaN
+    property bool selectOnly: false
     property var hoveredLaneNote: null
     property var noteGesture: null
     property var noteGhost: null
@@ -226,9 +233,11 @@ Item {
     function snapTime(seconds, modifiers, trackId, ignore) {
         if (!view.snapEnabled || (modifiers & Qt.AltModifier))
             return seconds
+        if (ignore && view.beatDivision)
+            return controller.snapBeat(seconds)
         const edges = trackId ? noteEdges.tracks[trackId] || [] : noteEdges.all
         if (!edges.length)
-            return seconds
+            return view.beatDivision ? controller.snapBeat(seconds) : seconds
         let left = 0
         let right = edges.length
         while (left < right) {
@@ -246,7 +255,9 @@ Item {
         const before = a >= 0 ? edges[a] : Infinity
         const after = b < edges.length ? edges[b] : Infinity
         const nearest = Math.abs(seconds - before) <= Math.abs(seconds - after) ? before : after
-        return Math.abs(nearest - seconds) * plotWidth / visibleSpan <= 9 * scale ? nearest : seconds
+        if (Math.abs(nearest - seconds) * plotWidth / visibleSpan <= 9 * scale)
+            return nearest
+        return view.beatDivision ? controller.snapBeat(seconds) : seconds
     }
 
     function styleForNote(note) {
@@ -534,13 +545,17 @@ Item {
         controller.selectSpan(note.start, note.end)
     }
 
+    function locateNote(note) {
+        if (note.start < visibleStart || note.start >= visibleEnd)
+            controller.setViewport(note.start - visibleSpan * 0.15, visibleSpan)
+        selectNote(note)
+    }
+
     function openLyric(note) {
         if (!scoreEditable || !note || note.trackId !== activeTrack || note.lyricReason)
             return false
         clearGesture()
-        if (note.start < visibleStart || note.start >= visibleEnd)
-            controller.setViewport(note.start - visibleSpan * 0.15, visibleSpan)
-        selectNote(note)
+        locateNote(note)
         lyricNote = note
         lyricInput.text = note.lyric
         lyricInput.forceActiveFocus(Qt.OtherFocusReason)
@@ -587,6 +602,7 @@ Item {
         pressY = -1
         pressTime = Number.NaN
         dragTime = Number.NaN
+        selectOnly = false
     }
 
     function emptyMessage() {
@@ -633,6 +649,7 @@ Item {
     onPitchRowHeightChanged: score.requestPaint()
     onSelectionStartChanged: score.requestPaint()
     onSelectionEndChanged: score.requestPaint()
+    onBeatMarksChanged: score.requestPaint()
     onDragTimeChanged: score.requestPaint()
     onFocusedNoteChanged: score.requestPaint()
     onHoveredNoteChanged: score.requestPaint()
@@ -748,6 +765,15 @@ Item {
                 fill(ctx, timeline.theme.line, x, timeline.rulerHeight - (major ? 6 : 3),
                     1, major ? 6 : 3)
             }
+            for (const mark of timeline.beatMarks) {
+                const x = Math.round(timeline.xForTime(mark[0]))
+                if (x < timeline.plotLeft || x >= timeline.plotRight)
+                    continue
+                ctx.globalAlpha = mark[1] ? 0.44 : 0.25
+                fill(ctx, timeline.theme.accent, x, timeline.rulerHeight - (mark[1] ? 8 : 4),
+                    1, timeline.height - timeline.rulerHeight + (mark[1] ? 8 : 4))
+            }
+            ctx.globalAlpha = 1
             fill(ctx, timeline.theme.line, 0, timeline.rulerHeight - 1, width, 1)
         }
 
@@ -965,6 +991,17 @@ Item {
                 Math.max(timeline.pressTime, timeline.dragTime), true)
             paintNotes(ctx)
         }
+    }
+
+    Rectangle {
+        x: visible ? timeline.xForTime(timeline.cursorTime) : 0
+        y: timeline.rulerHeight
+        width: 1
+        height: Math.max(0, timeline.height - y)
+        color: timeline.theme.accent
+        opacity: 0.75
+        visible: timeline.cursorTime >= timeline.visibleStart && timeline.cursorTime <= timeline.visibleEnd
+        z: 2
     }
 
     Repeater {
@@ -1200,7 +1237,8 @@ Item {
             }
             timeline.pressX = mouse.x
             timeline.pressY = mouse.y
-            if (timeline.pitchTool) {
+            timeline.selectOnly = !!(mouse.modifiers & Qt.ShiftModifier)
+            if (!timeline.selectOnly && timeline.pitchTool) {
                 const note = timeline.pitchNoteAt(mouse.x, mouse.y)
                 if (note && !note.drawReason) {
                     timeline.selectNote(note)
@@ -1210,7 +1248,7 @@ Item {
                 return
             }
             const box = timeline.noteBoxAt(mouse.x + x, mouse.y + y)
-            if (timeline.noteTool && box) {
+            if (!timeline.selectOnly && timeline.noteTool && box) {
                 if (!box.note.timingReason || !box.note.pitchReason) {
                     timeline.noteGesture = {note: box.note, action: timeline.resizeHit(box, mouse.x + x) ? "resize" : "move"}
                 }
@@ -1237,7 +1275,7 @@ Item {
         onReleased: function(mouse) {
             if (timeline.pressX < 0)
                 return
-            if (timeline.pitchTool) {
+            if (!timeline.selectOnly && timeline.pitchTool) {
                 const gesture = timeline.pitchGesture
                 if (gesture) {
                     timeline.pitchSample(mouse.x, mouse.y, mouse.modifiers, true)
@@ -1267,11 +1305,13 @@ Item {
             const first = Math.min(timeline.pressTime, end)
             const last = Math.max(timeline.pressTime, end)
             const box = dx < 2 && dy < 3 ? timeline.noteBoxAt(mouse.x + x, mouse.y + y) : null
+            const selectOnly = timeline.noteTool || timeline.selectOnly
             timeline.clearGesture()
             if (timeline.view.busy === true)
                 return
             if (dx >= 2 && last > first) {
-                if (timeline.noteTool) timeline.controller.selectSpan(first, last)
+                if (selectOnly)
+                    timeline.controller.selectSpan(first, last)
                 else timeline.controller.finishTimelineSelection(first, last)
             } else if (box) {
                 timeline.selectNote(box.note)

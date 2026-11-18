@@ -486,13 +486,15 @@ def _exchange_pitch(original, grid, amount, keys):
 def _ace_pitch_samples(curves, grid, _keys):
     import numpy as np
 
-    start = int(grid[0])
     values = np.zeros(len(grid), dtype=float)
     for row in curves:
-        offset = row['offset'] - start
-        lo, hi = max(0, offset), min(len(grid), offset + len(row['values']))
+        offset = row['offset']
+        lo, hi = np.searchsorted(grid, [offset, offset + len(row['values'])])
         if lo < hi:
-            values[lo:hi] = np.asarray(row['values'][lo - offset:hi - offset], dtype=float)
+            indexes = grid[lo:hi] - offset
+            values[lo:hi] = (row['values'][indexes[0]:indexes[-1] + 1]
+                             if indexes[-1] - indexes[0] + 1 == len(indexes)
+                             else [row['values'][index] for index in indexes])
     return np.nan_to_num(values), np.isnan(values)
 
 
@@ -507,8 +509,10 @@ def _uf_pitch_samples(curve, grid, keys):
     protected = np.zeros(len(grid), dtype=bool)
     if absolute:
         protected |= values == 0
-        duplicates = ticks[1:][ticks[1:] == ticks[:-1]] - grid[0]
-        protected[duplicates[(duplicates >= 0) & (duplicates < len(grid))]] = True
+        duplicates = ticks[1:][ticks[1:] == ticks[:-1]]
+        slots = np.searchsorted(grid, duplicates)
+        valid = slots < len(grid)
+        protected[slots[valid][grid[slots[valid]] == duplicates[valid]]] = True
         values = np.where(np.isnan(values), 0., values - keys)
     return values, protected
 

@@ -415,12 +415,15 @@ def apply_project(data,options,format,*,cancel,progress,cache=None):
     return process_project(data,options,cancel=cancel,progress=progress,cache=cache)
 
 
-def apply_snapshot(snapshot,options,*,cancel,progress,cache=None):
+def apply_snapshot(snapshot,options,*,cancel,progress,cache=None,observe_style=None):
     """Resolve edits against the native baseline, then apply style and manual pitch."""
     data,format=snapshot.data,snapshot.format
     edits,strokes=options.get('note_edits',[]),options.get('pitch_strokes',[])
     if not (edits or strokes):
-        return apply_project(data,options,format,cancel=cancel,progress=progress,cache=cache)
+        output,report=apply_project(data,options,format,cancel=cancel,progress=progress,cache=cache)
+        if observe_style is not None and report.get('pitch_changed'):
+            observe_style(output)
+        return output,report
     from agent_style import context_for_snapshot
     from tuning_score_edits import ScoreEdits
     cancel()
@@ -441,6 +444,8 @@ def apply_snapshot(snapshot,options,*,cancel,progress,cache=None):
         # Only tracks with explicit time regions participate in the style pass.
         style_options['track_indices']=sorted({row['track_index'] for row in options['style_regions']})
         output,report=apply_project(edited,style_options,format,cancel=cancel,progress=progress,cache=cache)
+        if observe_style is not None and report.get('pitch_changed'):
+            observe_style(output)
         indices.update(report['track_indices'])
     else:
         output=copy.deepcopy(edited) if strokes else edited

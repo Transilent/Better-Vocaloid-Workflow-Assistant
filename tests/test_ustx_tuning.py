@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 APP = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(APP / 'src'))
+sys.path[:0] = [str(APP), str(APP / 'src')]
 
 import agent_style
 from tuning_timeline import ProjectNotes, freeze_plan
@@ -71,6 +71,48 @@ def sample(curve, x):
 
 
 class UstxTuningTest(unittest.TestCase):
+    def test_batch_preview_keeps_slurs_and_reports_overlaps_and_phone_overrides(self):
+        score = project()
+        lead = score['voice_parts'][0]
+        lead['notes'] = [
+            {'position': 0, 'duration': 240, 'tone': 60, 'lyric': '风'},
+            {'position': 240, 'duration': 180, 'tone': 62, 'lyric': '来'},
+            {'position': 420, 'duration': 180, 'tone': 64, 'lyric': '+'},
+            {'position': 660, 'duration': 240, 'tone': 65, 'lyric': '了',
+             'phoneme_overrides': [{'index': 0, 'phoneme': 'le', 'offset': 0}]},
+        ]
+        with tempfile.TemporaryDirectory(prefix='ustx-phrase-', dir=APP) as root:
+            source = write_source(root, score)
+            baseline = ProjectNotes.load(source)
+            track = baseline.editable[0]
+            a, _, slur, locked, *_ = baseline.visible([track], 0., 100.)
+            with self.assertRaisesRegex(ValueError, '完整音符'):
+                baseline.lyric_batch(track, a['start'] + .01, locked['end'], '重、きゃー山')
+            rows, extra = baseline.lyric_batch(track, a['start'], locked['end'], '重、きゃー山')
+            self.assertFalse(extra)
+            self.assertEqual([row['after'] for row in rows], ['重', 'きゃー', '+', '山'])
+            self.assertFalse(any(row['overlap'] for row in rows))
+            self.assertTrue({'chong', 'zhong'}.issubset(rows[0]['readings']))
+            self.assertTrue(rows[2]['preserved'])
+            self.assertTrue(rows[3]['blocked'])
+            self.assertIn('手工发音', rows[3]['reason'])
+            rows, _ = baseline.lyric_batch(track, a['start'], locked['end'], '重、きゃー了')
+            self.assertFalse(rows[3]['blocked'])
+            self.assertIn('手工发音', rows[3]['reason'])
+            issues, truncated = baseline.editing_issues(track)
+            self.assertFalse(truncated)
+            self.assertIn(locked['id'], [row['id'] for row in issues])
+            self.assertEqual(baseline.score_editor.rows[slur['id']]['lyric_raw'], '+')
+            # USTX preserves overlapping tracks as read-only. The issue list can still locate them.
+            lead['notes'][1]['position'] = 180
+            twin = ProjectNotes.load(write_source(root, score))
+            track = next(key for key, row in twin.tracks.items() if row['index'] == 0)
+            rows, truncated = twin.editing_issues(track)
+            self.assertFalse(truncated)
+            overlap, = rows
+            self.assertEqual((overlap['lyric'], overlap['otherLyric']), ('来', '风'))
+            self.assertNotIn(track, twin.editable)
+
     def test_native_lyric_and_geometry_keep_parts_and_hand_authored_fields(self):
         score = project()
         note = score['voice_parts'][1]['notes'][0]

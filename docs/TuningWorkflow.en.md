@@ -21,6 +21,8 @@ USTX 0.5 can be previewed; resave it in OpenUtau before editing. Style processin
 Open an editable vocal track in single-track view:
 
 - **Lyrics:** double-click a note or select it and press F2. Enter saves; Tab saves and opens the next editable lyric; Esc cancels.
+- To **paste phrase lyrics**, hold Shift and drag across the whole notes of a phrase. Open **Paste phrase lyrics** beside the lyric search and choose **Review assignments** after pasting. Edit individual assignments or keep the original lyric for a note. Review shows missing and extra words, alternate readings, same-track overlaps, and protected pronunciations. Pairing skips notes that mark a slur, breath, or other native control. Apply the phrase in one draft edit and press Ctrl+Z once to undo it.
+- Use **Check editing issues** beside the search to see same-track overlaps, protected pronunciations, and the latest failed edit. Select an issue to locate its note.
 - **Notes:** enable **Edit notes**. Drag a note horizontally to move it, vertically to change pitch, or by its right edge to resize it. Hold Alt to bypass snapping. Release to apply; Ctrl+Z undoes the edit, and Ctrl+Y or Ctrl+Shift+Z redoes it.
 - **Save:** edits are saved to the project draft. Preview the changes, then generate and save a new copy in the original format. A lyric or note edit alone writes only those changes. Existing style regions follow their original notes, and previous candidates are retained and marked out of date.
 
@@ -31,6 +33,10 @@ Existing notes can be edited in USTX 0.6–0.10, supported SVP/SV2 groups, VOCAL
 - **UFData:** existing phonemes are preserved. Notes can move or resize only in gaps between existing pitch data. Absolute pitch data protects the note's key where it overlaps; relative pitch offsets are preserved when changing the key.
 
 ## Combine style and drawn pitch
+
+Open **Parameter lane** beside the lyric search to expand the pitch editor below the roll. Both views share the horizontal viewport, selection, and cursor. Keep the seconds ruler visible and optionally choose a 1/4, 1/8, or 1/16 beat grid with snapping based on the project's tempo changes.
+
+Toggle the supported original control curve, the actual styled preview, and the drawn offset individually. All three use cents. Choose **Preview** to refresh the styled curve after editing. Use **Line** to drag between two points within a note. In **Nodes** mode, click inside a drawn segment to insert a node or drag a dot to change its time and height. Both tools use the same draft and undo history as the piano-roll pencil.
 
 In single-track view, click the pencil, draw inside one vocal note, and release to save the stroke to the draft. Click the pencil again to return to style selection. The teal line shows a drawn offset of up to ±200 cents. With Snap on, offsets snap every 10 cents; hold Alt to bypass. Esc cancels a stroke in progress.
 

@@ -79,6 +79,15 @@ def _score_phone_table(root, language, name):
     raise ValueError('VPR 发音词典结构不符。')
 
 
+@lru_cache(maxsize=512)
+def chinese_score_readings(lyric):
+    if len(lyric) != 1 or lyric.isascii():
+        return ()
+    pinyin = bundled_export_module(ROOT, 'pypinyin')
+    rows = pinyin.pinyin(lyric, style=pinyin.Style.NORMAL, heteronym=True, errors='ignore')
+    return tuple(dict.fromkeys(rows[0])) if len(rows) == 1 else ()
+
+
 def score_phoneme(lang, lyric):
     """Strict single-note lookup, with no default phoneme for unknown text."""
     lyric = normalize('NFKC', lyric).lower()
@@ -89,11 +98,10 @@ def score_phoneme(lang, lyric):
             return table.get(kana.to_romaji(lyric, custom_romaji_mapping={'っ': 'cl'}))
         if lang == 4:
             if len(lyric) == 1 and not lyric.isascii():
-                pinyin = bundled_export_module(ROOT, 'pypinyin')
-                readings = pinyin.pinyin(lyric, style=pinyin.Style.NORMAL, heteronym=True, errors='ignore')
-                if len(readings) != 1 or len(set(readings[0])) != 1:
+                readings = chinese_score_readings(lyric)
+                if len(readings) != 1:
                     return None
-                lyric = readings[0][0]
+                lyric = readings[0]
             table = _score_phone_table(ROOT, 'chinese', 'pinyin2xsampa')
             return table.get(lyric.replace('ü', 'v'))
     except (ImportError, OSError, RuntimeError, SyntaxError, ValueError) as error:
