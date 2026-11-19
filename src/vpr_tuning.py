@@ -105,7 +105,7 @@ def score_phoneme(lang, lyric):
             table = _score_phone_table(ROOT, 'chinese', 'pinyin2xsampa')
             return table.get(lyric.replace('ü', 'v'))
     except (ImportError, OSError, RuntimeError, SyntaxError, ValueError) as error:
-        raise ValueError('无法读取本机 VPR 发音词典，请修复 VWA，或在 VOCALOID 中改词。') from error
+        raise ValueError('无法读取随包的 VOCALOID 发音词典。请修复 VWA 后重试，或在 VOCALOID 中改词。') from error
     return None
 
 
@@ -327,6 +327,8 @@ class Part:
     notes: list[Note] = field(default_factory=list)
     direct_pitch_spans: list[tuple[int, int]] = field(default_factory=list)
     overlap_spans: list[tuple[int, int]] = field(default_factory=list)
+    step: int = BLICK
+    bounded_curves: bool = False
     adapted = True
 
     @property
@@ -339,6 +341,13 @@ class Part:
 
 
 class Layout:
+    format = 'vpr'
+    versions = (5, 6)
+    step = BLICK
+    tempo = staticmethod(_tempo)
+    bounded_curves = False
+    style_only = STYLE_ONLY
+
     def __init__(self, data):
         tracks = _objects(data, 'tracks')
         version = data.get('version')
@@ -349,14 +358,14 @@ class Layout:
         self.tracks = tuple(Track(i, type(t.get('type')) is int and t['type'] == 1, native_refs=True)
                             for i, t in enumerate(tracks))
         self.score = {
-            'time': {'tempo': _tempo(data)},
+            'time': {'tempo': self.tempo(data)},
             'tracks': [{'name': t.get('name') or f'轨道 {i+1}', 'mainRef': {'isInstrumental': row.instrumental}}
                        for i, (t, row) in enumerate(zip(tracks, self.tracks))],
         }
         for row, track in zip(self.tracks, tracks):
             if row.instrumental:
                 continue
-            if fields[0] not in (5, 6):
+            if fields[0] not in self.versions:
                 row.issues['track.vpr_version'] = '此 VPR 版本尚未验证写回，当前只读。'
             if type(track.get('type')) is not int or track['type'] not in (0, 2):
                 row.issues['track.vpr_type'] = '此 VPR 轨道类型尚未验证写回，当前只读。'
@@ -369,32 +378,31 @@ class Layout:
             latest = -math.inf
             for i, (left, right, _, _, part) in enumerate(spans):
                 if left < latest or (i + 1 < len(spans) and spans[i + 1][0] < right):
-                    part.overlap_spans.append(((left - part.offset) // BLICK, (right - part.offset) // BLICK))
+                    part.overlap_spans.append(((left - part.offset) // part.step, (right - part.offset) // part.step))
                 latest = max(latest, right)
             if spans and sum(len(part.overlap_spans) for part in row.placements) == len(spans):
                 row.issues['track.vpr_overlap'] = '此轨没有可安全写入的独立音符，重叠部分保持只读。'
 
-    @staticmethod
-    def _part(row, index, source):
+    def _part(self, row, index, source):
         pos, length = source.get('pos'), source.get('duration')
         if not _tick(pos) or (length is not None and (not _tick(length) or length <= 0)):
-            row.issues.setdefault('track.vpr_part', 'VPR 片段位置或长度无效。')
+            row.issues.setdefault('track.vpr_part', f'{self.format.upper()} 片段位置或长度无效。')
             return
-        part = Part(row.index, index, pos * BLICK, length)
+        part = Part(row.index, index, pos * self.step, length, step=self.step, bounded_curves=self.bounded_curves)
         notes = _objects(source, 'notes', [])
         row.raw_count += len(notes)
         for i, note in enumerate(notes):
             start, dur, pitch = note.get('pos'), note.get('duration'), note.get('number')
             if (not _tick(start) or start < 0 or not _tick(dur) or dur <= 0 or not _tick(pos + start + dur)
                     or type(pitch) is not int or not 0 <= pitch <= 127):
-                row.issues.setdefault('note.timing_invalid', 'VPR 片段包含无法定位的音符。')
+                row.issues.setdefault('note.timing_invalid', f'{self.format.upper()} 片段包含无法定位的音符。')
                 continue
             if length is not None and start + dur > length:
-                row.issues.setdefault('track.vpr_part_boundary', 'VPR 片段边界截断了音符，当前只读。')
+                row.issues.setdefault('track.vpr_part_boundary', f'{self.format.upper()} 片段边界截断了音符，当前只读。')
                 continue
             if note.get('directPitches'):
                 part.direct_pitch_spans.append((start, start + dur))
-            onset, duration = start * BLICK, dur * BLICK
+            onset, duration = start * part.step, dur * part.step
             data = {'onset': onset, 'duration': duration, 'pitch': pitch, 'lyrics': note.get('lyric'),
                     'attributes': {'dF0Vbr': 1 if _authored_vibrato(note) else 0}}
             project_start = onset + part.offset
@@ -406,7 +414,7 @@ class Layout:
 def selected_indices(data, options, *, layout=None):
     layout = layout or Layout(data)
     if options['expression_mode'] != 'preserve':
-        raise ValueError(STYLE_ONLY)
+        raise ValueError(layout.style_only)
     indices = options['track_indices']
     if indices is None:
         if options['style_scope'] == 'all_vocals':
@@ -414,10 +422,10 @@ def selected_indices(data, options, *, layout=None):
         else:
             indices = [t.index for t in layout.tracks if t.writable][:1]
     if not indices:
-        raise ValueError('VPR 工程没有可编辑的演唱轨。')
+        raise ValueError(f'{layout.format.upper()} 工程没有可编辑的演唱轨。')
     for index in indices:
         if not 0 <= index < len(layout.tracks) or layout.tracks[index].instrumental:
-            raise ValueError('所选索引不是有效的 VPR 演唱轨。')
+            raise ValueError(f'所选索引不是有效的 {layout.format.upper()} 演唱轨。')
         if not layout.tracks[index].writable:
             raise ValueError(f'演唱轨 {index+1}：{layout.tracks[index].reason}')
     return list(indices)
@@ -450,7 +458,7 @@ def _add_delta(part, raw, name, original, rendered):
     import numpy as np
 
     points = rendered['points']
-    xs = np.asarray(points[::2], dtype=np.float64) / BLICK
+    xs = np.asarray(points[::2], dtype=np.float64) / part.step
     ys = np.asarray(points[1::2], dtype=np.float64)
     lo, hi = max(0, math.floor(xs[0])), math.ceil(xs[-1]) + 1
     if part.length is not None:
@@ -460,6 +468,14 @@ def _add_delta(part, raw, name, original, rendered):
     grid = np.arange(lo, hi + 1, dtype=np.int64)
     delta = np.interp(grid, xs, ys, left=0., right=0.)
     delta[-1] = 0  # Keep the original step at the final guard.
+    if part.bounded_curves:
+        singing = np.zeros(len(grid), dtype=bool)
+        for note in part.notes:
+            start, end = (note.start - part.offset) // part.step, (note.end - part.offset) // part.step
+            first, last = max(0, start + 1 - lo), min(len(grid), end - 1 - lo)
+            if first < last:
+                singing[first:last] = True
+        delta[~singing] = 0
     default, low, high = CONTROLLERS[name]
     baseline = step_values(grid, original['events'], default)
     protections = []
@@ -554,11 +570,11 @@ def apply_manual_pitch(original, dest, _format, spans, *, cancel):
     return True, PIT
 
 
-def process_project(data, options, *, cancel=lambda: None, progress=lambda text: None):
+def process_project(data, options, *, cancel=lambda: None, progress=lambda text: None, layout=None):
     from tuning_engine import VERSION, StyleTargets, _has_incomplete, apply_style_plan, digest, settings
 
     options = settings(options)
-    layout = Layout(data)
+    layout = layout or Layout(data)
     indices = selected_indices(data, options, layout=layout)
     if any(r.get('track_index') not in (*indices, None) for r in options['style_regions']):
         raise ValueError('风格片段包含本次未选中的演唱轨。')
@@ -615,7 +631,7 @@ def process_project(data, options, *, cancel=lambda: None, progress=lambda text:
         raise ValueError('VPR 处理改变了保护范围之外的工程内容。')
     cancel()
     return output, {
-        'schema': VERSION, 'format': 'vpr', 'mode': 'preserve', 'track_indices': indices,
+        'schema': VERSION, 'format': layout.format, 'mode': 'preserve', 'track_indices': indices,
         'stages': ['primary', 'style'] if attempted else ['primary'],
         'primary': {'status': 'preserved', 'mode': 'preserve'}, 'style': style,
         'curve_changes': changed, 'native_curve_skips': skipped,

@@ -32,14 +32,15 @@ from tuning_execution import (EDITOR_OPTION_KEYS, normalize_options as _normaliz
 
 SCHEMA=1
 COMMIT_SCHEMA=1
-STYLE_ADAPTERS={'ustx':'ustx_tuning','vpr':'vpr_tuning','acep':'ace_tuning:ACEP','ufdata':'ace_tuning:UFDATA'}
+STYLE_ADAPTERS={'ustx':'ustx_tuning','vpr':'vpr_tuning','vsqx':'vsqx_tuning',
+                'acep':'ace_tuning:ACEP','ufdata':'ace_tuning:UFDATA'}
 TUNING_SUFFIXES=frozenset('.'+fmt for fmt in ('svp',*STYLE_ADAPTERS))
 _LOCKS={};_LOCK_GUARD=threading.Lock()
 CONTRIBUTORS=('tuning_workflow.py','tuning_engine.py','vocal_expression.py','vocal_timbre.py',
  'expression_component.py','expression_calibration.py','calibration_refinement.py','calibration_workflow.py',
  'calibration_session.py','style_presets.py','style_catalog.py','expression_controls.py','style_pitch.py','common.py',
  'tuning_execution.py','tuning_preset_documents.py','preset_documents.py','tuning_project_identity.py','svp_tuning.py',
- 'ustx_tuning.py','vpr_tuning.py')
+ 'ustx_tuning.py','vpr_tuning.py','vocaloid_pitch.py')
 
 
 def _read(path):
@@ -65,7 +66,7 @@ def _stat(path):
 def project_format(path):
     suffix=Path(path).suffix.casefold()
     if suffix not in TUNING_SUFFIXES:
-        raise ValueError('请选择 SVP、USTX、VPR、ACEP 或 UFData 工程。')
+        raise ValueError('请选择 SVP、USTX、VPR、VSQX、ACEP 或 UFData 工程。')
     return suffix[1:]
 
 
@@ -143,11 +144,14 @@ def _candidate_payload(output, original, raw, format='svp'):
     return (json.dumps(output, ensure_ascii=False, indent=2, allow_nan=False) + '\n').encode('utf-8')
 
 
-def _relocate_media(data,source_directory,format='svp'):
+def _relocate_media(data,source,format='svp'):
     """Keep referenced accompaniment identity when output lives elsewhere."""
+    if format=='vsqx':
+        return style_adapter(format).relocate_media(data,source)
     changes=[]
     if format in ('vpr','acep','ufdata'):
         return changes
+    source_directory=source.parent
     if format=='ustx':
         for index,part in enumerate(data.get('wave_parts',[])):
             filename=part.get('relative_path')
@@ -193,15 +197,26 @@ def job_projects(job):
     receipt_path=job/'exports/receipts.json'
     receipts=_read(receipt_path) if _isfile(receipt_path) else {}
     results=[];seen=set()
-    def add(path,label,kind,expected=None):
+    def add(path,label,kind,expected=None,*,verified_only=False):
         path=Path(path).resolve()
         if path in seen or path.suffix.casefold() not in TUNING_SUFFIXES or not _isfile(path):return
-        seen.add(path);info=inspect_project(path)
+        if verified_only and not expected:return
+        try:info=inspect_project(path)
+        except (OSError,ValueError):
+            if verified_only:return
+            raise
+        verified=expected is not None and expected==info['sha256']
+        if verified_only and not verified:return
+        seen.add(path)
         results.append({'path':str(path),'label':label,'kind':kind,'sha256':info['sha256'],
-                        'verified':expected is not None and expected==info['sha256']})
+                        'verified':verified})
     add(job/'exports/voices.svp','原导出工程','baseline',receipts.get('exports/voices.svp',{}).get('sha256'))
     add(job/'exports/voices.ustx','OpenUtau 导出工程','baseline',receipts.get('exports/voices.ustx',{}).get('sha256'))
     add(job/'exports/voices.vpr','VOCALOID 导出工程','baseline',receipts.get('exports/voices.vpr',{}).get('sha256'))
+    vsqx='exports/voices.vsqx'
+    receipt=receipts.get(vsqx)
+    if isinstance(receipt,dict) and receipt.get('active',True):
+        add(job/vsqx,'VOCALOID VSQX 导出工程','baseline',receipt.get('sha256'),verified_only=True)
     from task_contract import selected
     try:
         manual=selected(job,'project',verify=True)
@@ -352,8 +367,9 @@ def _check_source(root,spec):
 
 
 def _dependencies(options,format):
-    # Include the ACE-specific implementation in the candidate's signature.
     contributors=CONTRIBUTORS+('ace_tuning.py',) if format in ('acep','ufdata') else CONTRIBUTORS
+    if format=='vsqx':
+        contributors+=('vsqx_tuning.py','agent_pronunciation.py')
     if EDITOR_OPTION_KEYS.intersection(options):
         contributors+=('tuning_score_edits.py','agent_style.py')
     if options.get('pitch_strokes'):
@@ -535,7 +551,7 @@ def run_session(session,options,*,cancel=lambda:None,progress=lambda text:None,p
             output,report=apply_snapshot(source,options,cancel=cancel,progress=progress,cache=root/'cache/features')
             if not isinstance(report,dict) or not isinstance(report.get('status'),str):
                 raise ValueError('调音引擎没有返回有效报告，未提交。')
-            media=_relocate_media(output,Path(spec['source']).parent,format)
+            media=_relocate_media(output,Path(spec['source']),format)
             Path(native_path(target.parent)).mkdir(parents=True,exist_ok=True)
             with tempfile.NamedTemporaryFile(dir=native_path(target.parent),prefix=target.name+'.',suffix='.pending',delete=False) as stream:
                 pending=Path(stream.name)

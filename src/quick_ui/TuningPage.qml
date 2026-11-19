@@ -42,12 +42,14 @@ Item {
     readonly property bool hasSource: textOf(view.source).length > 0
     readonly property bool ustxProject: view.projectSuffix === "ustx"
     readonly property bool vprProject: view.projectSuffix === "vpr"
+    readonly property bool vsqxProject: view.projectSuffix === "vsqx"
     readonly property bool acepProject: view.projectSuffix === "acep"
     readonly property bool ufdataProject: view.projectSuffix === "ufdata"
-    readonly property bool nativeStyleProject: ustxProject || vprProject || acepProject || ufdataProject
+    readonly property bool nativeStyleProject: ustxProject || vprProject || vsqxProject || acepProject || ufdataProject
     readonly property var projectFilters: ({
         svp: "Synthesizer V 工程 (*.svp)", ustx: "OpenUtau 工程 (*.ustx)",
-        vpr: "VOCALOID 工程 (*.vpr)", acep: "ACE Studio 工程 (*.acep)",
+        vpr: "VOCALOID 工程 (*.vpr)", vsqx: "VOCALOID VSQX 工程 (*.vsqx)",
+        acep: "ACE Studio 工程 (*.acep)",
         ufdata: "ACE Studio 交换谱 (*.ufdata)"
     })
     readonly property bool sessionExists: boolOr(view.sessionExists, false)
@@ -2816,6 +2818,7 @@ Item {
                                         text: page.acepProject ? page.vwaTr("另存 ACEP…")
                                             : page.ufdataProject ? page.vwaTr("另存 UFData…")
                                             : page.vprProject ? page.vwaTr("另存 VPR…")
+                                            : page.vsqxProject ? page.vwaTr("另存 VSQX…")
                                             : page.ustxProject ? page.vwaTr("另存 USTX…") : page.vwaTr("另存 SVP…")
                                         enabled: !page.view.busy
                                         onClicked: {
@@ -3151,10 +3154,11 @@ Item {
         title: page.vwaTr("导入调音工程")
         fileMode: FileDialog.OpenFile
         nameFilters: [
-            page.vwaTr("调音工程 (*.svp *.ustx *.vpr *.acep *.ufdata)"),
+            page.vwaTr("调音工程 (*.svp *.ustx *.vpr *.vsqx *.acep *.ufdata)"),
             page.vwaTr("Synthesizer V Studio 1 / 2 (*.svp)"),
             page.vwaTr("OpenUtau 工程 (*.ustx)"),
             page.vwaTr(page.projectFilters.vpr),
+            page.vwaTr(page.projectFilters.vsqx),
             page.vwaTr(page.projectFilters.acep),
             page.vwaTr(page.projectFilters.ufdata),
             page.vwaTr("所有文件 (*)")

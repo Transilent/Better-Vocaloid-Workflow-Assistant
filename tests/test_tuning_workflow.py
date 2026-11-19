@@ -116,9 +116,13 @@ class TuningWorkflowTests(unittest.TestCase):
             wrong.write_bytes(source.read_bytes())
             with self.assertRaisesRegex(ValueError, 'USTX'):
                 inspect_project(wrong)
-            unknown = root / 'source.vsqx'
+            wrong = root / 'source.vsqx'
+            wrong.write_bytes(source.read_bytes())
+            with self.assertRaisesRegex(ValueError, 'VSQX'):
+                inspect_project(wrong)
+            unknown = root / 'source.vsq'
             unknown.write_bytes(source.read_bytes())
-            with self.assertRaisesRegex(ValueError, 'SVP.*USTX.*VPR.*ACEP.*UFData'):
+            with self.assertRaisesRegex(ValueError, 'SVP.*USTX.*VPR.*VSQX.*ACEP.*UFData'):
                 inspect_project(unknown)
             malformed = root / 'broken.svp'
             malformed.write_text('{}', encoding='utf-8')

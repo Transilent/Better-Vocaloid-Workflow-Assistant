@@ -544,7 +544,7 @@ class QuickTuning(QObject):
                              ('SV2 · ' + str(project['format_version'])) if project.get('synthesizer_v_2') else '',
             'projectSuffix': format,
             'formatNotice': tr(project['format_notice']) if project.get('format_notice') else '',
-            'formatReadOnly': bool(project and format in ('acep','ufdata') and not self.project.editable),
+            'formatReadOnly': bool(project and format in ('vsqx','acep','ufdata') and not self.project.editable),
             'trackReadOnlyReason': tr(active['reason']) if active.get('reason') else '',
             'groupStyleOnly': group_styles,
             'groupStyleReason': tr(self.project.style_only_reason) if group_styles else '',

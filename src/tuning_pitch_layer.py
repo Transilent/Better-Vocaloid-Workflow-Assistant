@@ -6,12 +6,12 @@ import math
 import re
 
 from style_presets import _curve
-from tuning_score_edits import DIRECT_FORMATS, FORMATS, native_group_path
+from tuning_score_edits import DIRECT_FORMATS, FORMATS, VOCALOID_FORMATS, native_group_path
 from vocal_expression import SV_QUARTER, TempoMap
 
 
 MAX_CENTS = 200
-TICK_FORMATS = frozenset(('vpr', 'acep', 'ufdata'))
+TICK_FORMATS = VOCALOID_FORMATS | frozenset(('acep', 'ufdata'))
 MAX_POINTS = 16_384
 MAX_BYTES = 224 * 1024
 MIN_NOTE_SECONDS = .08
@@ -102,7 +102,7 @@ class Anchor:
 
 def _native_group(format, data, part, score_target):
     """Find a native group and its per-note protections once per placement."""
-    if format == 'vpr':
+    if format in VOCALOID_FORMATS:
         from vpr_tuning import PBS, PIT, _curve as controller
         path = native_group_path(format, part.track_index, part.index)
         raw = _get(data, path)
@@ -137,6 +137,8 @@ class PitchLayer:
         self.original_curves = {}
         if self.format not in FORMATS:
             return
+        if self.format == 'vsqx':
+            data = layout.sequence
         self.clock = score.clock or TempoMap(layout.score['time']['tempo'])
         placements = {(track.index, place.key): place for track in layout.tracks if track.writable
                       for place in track.style_placements}
@@ -169,7 +171,7 @@ class PitchLayer:
                 step = target.step
                 onset, duration, pitch, lyric = (target.old[name] for name in ('onset', 'duration', 'pitch', 'lyric'))
             else:
-                step = SV_QUARTER // 480
+                step = getattr(part, 'step', SV_QUARTER // 480)
                 onset, duration = row['onset_tick'] // step, row['duration_tick'] // step
                 pitch, lyric = row['pitch'], row['lyric']
             if ((onset, onset + duration) in protected or not _singing_lyric(lyric)
@@ -181,10 +183,16 @@ class PitchLayer:
                     continue
             self.notes[identity] = Anchor(path, key, part.track_index, part.offset, step, onset, duration, pitch, lyric)
             self.tracks.add(part.track_index)
-        self.original_curves = self.curve_sources(data)
+        self.original_curves = self._curve_sources(data)
 
     def curve_sources(self, data, *, cancel=lambda: None):
         """Collect authored native pitch channels on the same placements as manual editing."""
+        if self.format == 'vsqx':
+            from vsqx_tuning import Layout
+            data = Layout(data).sequence
+        return self._curve_sources(data, cancel=cancel)
+
+    def _curve_sources(self, data, *, cancel=lambda: None):
         curves = {}
         for path in dict.fromkeys(note.placement for note in self.notes.values()):
             cancel()
@@ -198,7 +206,7 @@ class PitchLayer:
                 _, curve, _ = _native_curve(data, part, 'pitd')
                 if curve and curve['xs']:
                     curves[path] = (curve['xs'], curve['ys'])
-            elif self.format == 'vpr':
+            elif self.format in VOCALOID_FORMATS:
                 from vpr_tuning import PBS, PIT, _curve as controller
                 _, bend = controller(part, PIT)
                 _, sensitivity = controller(part, PBS)
@@ -224,7 +232,7 @@ class PitchLayer:
         elif self.format == 'ustx':
             from ustx_tuning import _native_samples
             values = _native_samples(grid, *curve)
-        elif self.format == 'vpr':
+        elif self.format in VOCALOID_FORMATS:
             from vocaloid_pitch import PBS_SPEC, PIT_SPEC, step_values
             values = (step_values(grid, curve[0], PIT_SPEC[0]) *
                       step_values(grid, curve[1], PBS_SPEC[0])) * (100. / 8192.)
@@ -438,6 +446,22 @@ def pitch_tick_grid(spans, limit):
 
 def apply_layer(base, output, format, spans, *, cancel):
     """Write only the supported pitch channel on each owning native placement."""
+    if format != 'vsqx':
+        return _apply_native_layer(base, output, format, spans, cancel=cancel)
+    from copy import deepcopy
+    from vsqx_tuning import Layout, merge_sequence, verify_sequence
+
+    original, styled = Layout(base).sequence, Layout(output).sequence
+    edited = deepcopy(styled)
+    changes = _apply_native_layer(original, edited, format, spans, cancel=cancel)
+    if changes:
+        candidate = merge_sequence(output, styled, edited)
+        verify_sequence(candidate, edited)
+        output.update(candidate)
+    return changes
+
+
+def _apply_native_layer(base, output, format, spans, *, cancel):
     import numpy as np
 
     from collections import defaultdict
@@ -450,7 +474,7 @@ def apply_layer(base, output, format, spans, *, cancel):
         original, dest = _get(base, path), _get(output, path)
         batch.sort(key=lambda span: span.points[0][0])
         if format in TICK_FORMATS:
-            if format == 'vpr':
+            if format in VOCALOID_FORMATS:
                 from vpr_tuning import apply_manual_pitch
             else:
                 from ace_tuning import apply_manual_pitch

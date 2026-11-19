@@ -1,4 +1,4 @@
-"""Exercise ACEP, UFData and VPR score/pitch editing and save controls in Qt Quick."""
+"""Exercise ACEP, UFData, VPR and VSQX score/pitch editing and saving in Qt Quick."""
 import os
 from pathlib import Path
 import sys
@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_ace_tuning import ace_score, editable_ace_score, editable_uf_score, uf_score, wrap_ace
 from test_vpr_tuning import editable_score as editable_vpr_score
 from test_vpr_tuning import project as vpr_score, write_source as write_vpr
+from test_vsqx_tuning import write_fixture as write_vsqx
 import tuning_workflow as workflow
 
 
@@ -187,7 +188,7 @@ try:
         output=lookup('tuningCandidateSaveDialog')
         wait('tuning visible',lambda:lookup('tuningOpenProject').property('visible'))
         filters=source.property('nameFilters')
-        assert '*.acep' in filters[0] and '*.ufdata' in filters[0]
+        assert all(f'*{suffix}' in filters[0] for suffix in ('.acep', '.ufdata', '.vsqx'))
         open_file(source,native)
         assert 'JSON / 9' in tune.view['projectFormat']
         assert not lookup('openVoiceCalibration').property('enabled')
@@ -211,11 +212,16 @@ try:
         uf_notes = root/'编辑音符.ufdata'
         atomic_json(uf_notes, editable_uf_score())
         vpr_notes = write_vpr(root/'更新歌词.vpr', editable_vpr_score())
-        for project, before, lyric in ((ace_notes, '窗', '星'), (uf_notes, '春', '青'), (vpr_notes, 'ま', 'め')):
+        vsqx3 = write_vsqx(root/'待改歌词-3.vsqx', 3)
+        vsqx4 = write_vsqx(root/'待改歌词-4.vsqx', 4)
+        for project, before, lyric in ((ace_notes, '窗', '星'), (uf_notes, '春', '青'),
+                                       (vpr_notes, 'ま', 'め'), (vsqx3, 'ま', 'め'), (vsqx4, 'ま', 'め')):
             print(f'Check {project.suffix}: inline lyric, move, resize, undo and mixed candidate', flush=True)
             open_file(source,project)
             resized = edit_note(before, lyric)
             render_candidate(output,project,lyric,project.with_stem(project.stem+'-VWA'), notes_edited=True)
+            if project.suffix == '.vsqx':
+                assert lookup('saveTuningCandidate').property('text') == '另存 VSQX…'
             tune.resumeSession(QUrl.fromLocalFile(str(tune.session)))
             wait('draft and verified edited candidate', lambda: not tune.view['busy'] and tune.view['candidateVerified']
                  and tune.view['noteEditCount'] == 1 and tune.view['pitchStrokeCount'] == 1)
@@ -230,7 +236,7 @@ try:
         assert readonly.property('visible') and 'UFData' in readonly.property('text')
         assert not warnings, warnings
         assert window.grabWindow().save(str(out/f'acep2-read-only-{viewport[0]}.png'))
-        print(f'PASS {viewport[0]}: VPR, ACEP and UFData score + style + pointer strokes, draft, safe export and ACEP2 read-only')
+        print(f'PASS {viewport[0]}: VSQX, VPR, ACEP and UFData score + style + pointer strokes, draft, safe export and ACEP2 read-only')
 finally:
     modes.close()
     owner.close()

@@ -585,18 +585,14 @@ def bind(job, kind, path, *, validate=True, dependencies=None, expected_sha256=N
             if not any(track.get('mainGroup', {}).get('notes') for track in value.get('tracks', [])
                        if not track.get('mainRef', {}).get('isInstrumental')):
                 raise ContractError('工程中没有演唱音符。')
-        elif path.suffix.lower() in ('.vpr', '.acep', '.ufdata'):
+        elif path.suffix.lower() in ('.vpr', '.vsqx', '.acep', '.ufdata'):
             from tuning_workflow import inspect_project
             if not any(row['note_count'] for row in inspect_project(path)['tracks'] if not row['instrumental']):
                 raise ContractError('工程中没有音符。')
-        elif path.suffix.lower() in ('.ustx', '.vsqx'):
+        elif path.suffix.lower() == '.ustx':
             if path.stat().st_size > 64 * 1024**2: raise ContractError('工程文件过大。')
-            if path.suffix.lower() == '.ustx':
-                from project_exports import read_ustx
-                count = sum(len(part.get('notes', [])) for part in read_ustx(path).get('voice_parts', []))
-            else:
-                import xml.etree.ElementTree as ET
-                count = sum(element.tag.rsplit('}', 1)[-1] == 'note' for element in ET.parse(path).iter())
+            from project_exports import read_ustx
+            count = sum(len(part.get('notes', [])) for part in read_ustx(path).get('voice_parts', []))
             if count <= 0: raise ContractError('工程中没有音符。')
         else:
             raise ContractError('请选择 SVP、USTX、VPR、VSQX、ACEP 或 UFData 工程。')

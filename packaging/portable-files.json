@@ -590,6 +590,10 @@
       "source": "src/vpr_tuning.py"
     },
     {
+      "file": "vsqx_tuning.py",
+      "source": "src/vsqx_tuning.py"
+    },
+    {
       "file": "ace_tuning.py",
       "source": "src/ace_tuning.py"
     },

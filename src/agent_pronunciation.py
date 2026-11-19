@@ -639,6 +639,8 @@ def _parse_vsqx_xml(raw: bytes) -> tuple[ET.Element, dict[str, Any]]:
 
 
 def _vsqx_tick_prefix(root: ET.Element, resolution: int, pre_measure: int) -> int:
+    from vocaloid_pitch import pre_measure_ticks
+
     master = _one_direct_child(root, {"masterTrack"}, "masterTrack")
     signatures: list[tuple[int, int, int]] = []
     for element in _direct_children(master, {"timeSig"}):
@@ -648,22 +650,10 @@ def _vsqx_tick_prefix(root: ET.Element, resolution: int, pre_measure: int) -> in
         if numerator <= 0 or denominator <= 0:
             raise PronunciationError("VSQX 拍号必须为正。")
         signatures.append((bar, numerator, denominator))
-    signatures.sort()
-    if not signatures:
-        signatures = [(0, 4, 4)]
-    measure = 0
-    prefix = 0.0
-    bar_length = float(resolution * 4)
-    for bar, numerator, denominator in signatures:
-        if bar < measure:
-            raise PronunciationError("VSQX 拍号顺序无效。")
-        prefix += (bar - measure) * bar_length
-        measure = bar
-        bar_length = resolution * 4.0 * numerator / denominator
-    prefix += (pre_measure - measure) * bar_length
-    if not math.isfinite(prefix) or prefix < 0:
-        raise PronunciationError("VSQX preMeasure/tick 前缀无效。")
-    return int(round(prefix))
+    try:
+        return pre_measure_ticks(signatures, resolution, pre_measure)
+    except ValueError as error:
+        raise PronunciationError(str(error)) from error
 
 
 def _tempo_positions(events: list[dict[str, Any]], resolution: int) -> tuple[list[float], list[tuple[float, float]]]:

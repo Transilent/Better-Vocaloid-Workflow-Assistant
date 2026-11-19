@@ -2,11 +2,28 @@
 
 from itertools import groupby
 import math
+from fractions import Fraction
 import xml.etree.ElementTree as ET
 
 PIT_SPEC = (0, -8192, 8191)
 PBS_SPEC = (2, 1, 24)
 REPLAY_TOLERANCE_CENTS = 2.0
+
+
+def pre_measure_ticks(signatures, resolution, count):
+    """Measure lengths up to the musical zero, without using later meters."""
+    tick, measure = Fraction(0), 0
+    length = Fraction(4 * resolution)
+    previous = -1
+    for bar, numerator, denominator in sorted(signatures):
+        if bar <= previous or numerator <= 0 or denominator <= 0:
+            raise ValueError('VSQX 拍号位置重复或拍号无效。')
+        previous = bar
+        if bar < count:
+            tick += (bar - measure) * length
+            measure = bar
+            length = Fraction(4 * resolution * numerator, denominator)
+    return round(tick + (count - measure) * length)
 
 
 def step_values(grid, events, default):

@@ -11,8 +11,10 @@ from vocal_expression import TempoMap, SV_QUARTER
 
 
 DIRECT_FORMATS = frozenset(('ustx', 'svp'))
+VOCALOID_FORMATS = frozenset(('vpr', 'vsqx'))
 ADAPTED_FIELDS = {
     'vpr': {'lyric': 'lyric', 'pitch': 'number', 'onset': 'pos', 'duration': 'duration'},
+    'vsqx': {'lyric': 'lyric', 'pitch': 'number', 'onset': 'pos', 'duration': 'duration'},
     'acep': {'lyric': 'lyric', 'pitch': 'pitch', 'onset': 'pos', 'duration': 'dur'},
     'ufdata': {'lyric': 'lyric', 'pitch': 'key', 'onset': 'tickOn', 'duration': 'tickOff'},
 }
@@ -24,7 +26,7 @@ UNSUPPORTED = '此工程格式暂不支持改词或改音符。'
 PHONEMES = '此音符有手工发音或延音设置，请在原编辑器改词。'
 TIMING = '此音符或片段有手工时序、曲线或音素，已保护原位置和时长。'
 PITCH = '此片段有原生音高锚点或重录参数，已保护音符音高。'
-VPR_PHONEME = '无法为此 VPR 歌词确定原语言的发音。可使用工程里同语言的已有词，或在 VOCALOID 中改词。'
+VPR_PHONEME = '无法为此 VOCALOID 歌词确定原语言的发音。可使用工程里同语言的已有词，或在 VOCALOID 中改词。'
 VPR_PHONE_COUNT = '新发音与原音素的数量不同，无法保留音素位置，请在 VOCALOID 中改词。'
 
 
@@ -77,7 +79,7 @@ def _nonempty(value):
 
 
 def native_group_path(format, track, index):
-    if format == 'vpr':
+    if format in VOCALOID_FORMATS:
         return ('tracks', track, 'parts', index)
     if format == 'acep':
         return ('project', 'tracks', track, 'patterns', index)
@@ -128,17 +130,18 @@ class NativeGroup:
 
 
 def _adapted_group(data, format, place):
-    step = SV_QUARTER // 480
+    step = getattr(place, 'step', SV_QUARTER // 480)
     path = native_group_path(format, place.track_index, place.index)
     raw = _native(data, path)
     offset = place.offset // step
     lower = max(0, -offset)
-    if format == 'vpr':
+    if format in VOCALOID_FORMATS:
         from vpr_tuning import score_automation_changes_in_part
         upper = place.length
         if upper is None:
             upper = max((note.end - place.offset) // step for note in place.notes)
-        timed = score_automation_changes_in_part(raw, lower) or len(place.notes) != len(raw['notes'])
+        timed = (raw.get('timingProtected') or score_automation_changes_in_part(raw, lower)
+                 or len(place.notes) != len(raw['notes']))
         return NativeGroup(path, raw, lower, min(upper, 2**30 - 1 - max(0, offset)),
                            timed, frozenset(place.overlap_spans))
     if format == 'acep':
@@ -187,7 +190,7 @@ def _adapted_target(format, group, index, old):
         if isinstance(next_lyric, str) and next_lyric.strip() in ('+', '++', '-', 'ー', '−'):
             timed = True
     lyric_reason, minimum_duration, lang, slots = '', 1, None, 0
-    if format == 'vpr':
+    if format in VOCALOID_FORMATS:
         from vpr_tuning import _authored_vibrato, score_language
         phones = _trim_phones(note.get('phoneme'))
         positions = _vpr_phone_positions(note, phones)
@@ -206,6 +209,8 @@ def _adapted_target(format, group, index, old):
             minimum_duration = max(minimum_duration, min(old['duration'], skill['duration']))
         pitched = bool(note.get('directPitches'))
         timed = timed or pitched or locked or positions is None or _authored_vibrato(note)
+        if format == 'vsqx' and start < group.minimum:
+            timed = True
     elif format == 'acep':
         custom_timing = (note.get('headConsonants') or note.get('tailConsonants')
                          or note.get('consonantLen') or note.get('brLen') or note.get('phonemes'))
@@ -249,6 +254,8 @@ class ScoreEdits:
         self.format = format
         self.context = context
         project, layout = geometry
+        self.vsqx_sequence = layout.sequence if format == 'vsqx' else None
+        native_data = self.vsqx_sequence if self.vsqx_sequence is not None else data
         self.clock = TempoMap(project['time']['tempo']) if format in FORMATS else None
         self.targets = {}
         self.editable_tracks = set()
@@ -275,12 +282,12 @@ class ScoreEdits:
                 group_key = track, place.key
                 self.group_rows.setdefault(group_key, []).append(row)
                 if group_key not in native_groups:
-                    native_groups[group_key] = _adapted_group(data, format, place)
+                    native_groups[group_key] = _adapted_group(native_data, format, place)
                 group = native_groups[group_key]
                 path = group.path
                 note = group.raw['notes'][local_index]
                 fields = ADAPTED_FIELDS[format]
-                step = SV_QUARTER // 480
+                step = getattr(place, 'step', SV_QUARTER // 480)
                 minimum, maximum = group.minimum, group.maximum
             elif format == 'ustx':
                 path = ('voice_parts', place.index)
@@ -343,7 +350,7 @@ class ScoreEdits:
                     lyric_reason = PHONEMES
                 if not row['singing'] or _special_lyric(old['lyric']):
                     timed = pitched = True
-                if format == 'vpr' and not lyric_reason and (phones := _trim_phones(note.get('phoneme'))):
+                if format in VOCALOID_FORMATS and not lyric_reason and (phones := _trim_phones(note.get('phoneme'))):
                     word = (track, language, old['lyric'].strip().casefold())
                     self.vpr_words[word] = phones if self.vpr_words.get(word, phones) == phones else None
             else:
@@ -386,7 +393,7 @@ class ScoreEdits:
                 raise ValueError(target.lyric_reason)
             if self.format in ADAPTED_FIELDS and _special_lyric(text):
                 raise ValueError(PHONEMES)
-            if self.format == 'vpr':
+            if self.format in VOCALOID_FORMATS:
                 self._phoneme(target, text)
         return text
 
@@ -523,7 +530,7 @@ class ScoreEdits:
     def materialize(self, data, rows):
         edits = normalize_edits(rows)
         self.projected(edits)
-        output = deepcopy(data)
+        output = deepcopy(self.vsqx_sequence if self.vsqx_sequence is not None else data)
         details = []
         for edit in edits:
             target = self.targets[edit['note_id']]
@@ -541,11 +548,16 @@ class ScoreEdits:
                     end = edit.get('onset', target.old['onset']) + edit.get('duration', target.old['duration'])
                     derived['tickOff'] = {'before': native['tickOff'], 'after': end}
                     native['tickOff'] = end
-                elif self.format == 'vpr' and 'lyric' in changed:
+                elif self.format in VOCALOID_FORMATS and 'lyric' in changed:
                     phones = self._phoneme(target, edit['lyric'])
                     if phones != native.get('phoneme'):
                         derived['phoneme'] = {'before': native.get('phoneme'), 'after': phones}
                         native['phoneme'] = phones
                 details.append({'note_id': edit['note_id'], 'track_index': target.track, 'fields': changed,
                                 **({'native_fields': derived} if derived else {})})
+        if self.vsqx_sequence is not None:
+            from vsqx_tuning import merge_sequence, verify_sequence
+            edited = output
+            output = merge_sequence(data, self.vsqx_sequence, output)
+            verify_sequence(output, edited)
         return output, details

@@ -12,9 +12,9 @@ saved tuning preferences do not implicitly process the newly prepared project.
 When regenerating compatible notes, retaining already authored automation stays
 available as preservation rather than a new acoustic fit.
 
-Open a task project or import a Synthesizer V Studio 1/2 SVP, OpenUtau USTX, VOCALOID 5/6 VPR, ACE Studio ACEP, or UFData exchange score. Find the lyric, edit a range in single-track or multitrack view, and save a new file in the same format.
+Open a task project or import a Synthesizer V Studio 1/2 SVP, OpenUtau USTX, VOCALOID VPR or VSQX, ACE Studio ACEP, or UFData exchange score. Find the lyric, edit a range in single-track or multitrack view, and save a new file in the same format.
 
-USTX 0.5 can be previewed; resave it in OpenUtau before editing. Style processing for USTX and VPR writes supported dynamics and pitch curves in **Keep original performance** mode. Reopen and audition the result in the original editor.
+You can preview USTX 0.5 and resave it in OpenUtau before editing. Style processing for USTX, VPR, and VSQX writes supported dynamics and pitch curves in **Keep original performance** mode. Reopen and audition the result in the original editor.
 
 ## Edit lyrics and notes
 
@@ -29,9 +29,10 @@ Open an editable vocal track in single-track view:
 - Choose **Style range** before dragging to mark a style region. In multitrack view you can drag directly in a track lane. Regions apply to the checked tracks. With automatic application enabled, release to save a region to the draft. Shift-drag selects time only. Click a colored region above the piano roll to edit its settings in the inspector. Choose **New region** to configure the next region.
 - **Save:** edits are saved to the project draft. Preview the changes, then generate and save a new copy in the original format. A lyric or note edit alone writes only those changes. Existing style regions follow their original notes, and previous candidates are retained and marked out of date.
 
-Existing notes can be edited in USTX 0.6–0.10, supported SVP/SV2 groups, VOCALOID 5/6 VPR, ACEP (JSON/Zstd, project schema 9 revision 0), and UFData v1. Shared, transposed, or cropped groups and native curves can restrict specific edits. The editor shows the reason. Moves and resizes stay within clips and cannot create same-track overlaps. Use **Keep original performance** while editing.
+Existing notes can be edited in USTX 0.6–0.10, supported SVP/SV2 groups, VOCALOID 5/6 VPR, VOCALOID 3/4 VSQX, ACEP (JSON/Zstd, project schema 9 revision 0), and UFData v1. Shared, transposed, or cropped groups and native curves can restrict specific edits. The editor shows the reason. Moves and resizes stay within clips and cannot create same-track overlaps. Use **Keep original performance** while editing.
 
 - **VPR:** a lyric change also writes the pronunciation for the original language. Use Japanese kana or its romaji, an unambiguous Mandarin character or untoned pinyin, or a word with a known pronunciation on the same track in the same language. Locked pronunciation stays intact. Where phoneme positions are stored, the new pronunciation must use the same number of phonemes. Native direct pitch stays protected.
+- **VSQX** uses the same pronunciation rules as VPR. Automation that changes over time, singer changes, and authored timing can lock a note's position and duration. Save as a new `.vsqx` in the original version. The saved copy points to the original audio on this computer. Relink or import the backing audio in the original editor when moving to another computer.
 - **ACEP:** custom pronunciation, frozen syllables, and manual timing remain protected. Clip edits respect the original crop. ACEP2 remains read-only; export UFData from ACE Studio to edit the exchange score instead.
 - **UFData:** existing phonemes are preserved. Notes can move or resize only in gaps between existing pitch data. Absolute pitch data protects the note's key where it overlaps; relative pitch offsets are preserved when changing the key.
 
@@ -49,7 +50,7 @@ Inside the stroke, the drawn offset replaces the style pitch offset and is added
 
 Click the stroke's time position with the eraser to remove the whole stroke, or drag to remove part of it. This reveals the existing style and source curve. Draw, erase, note and style edits share undo. Strokes follow their notes when moved; erase any out-of-bounds section before shortening a note past it.
 
-Drawing writes to supported USTX PITD, linear SVP pitchDelta, VOCALOID 5/6 VPR pitch bend, ACEP data-form pitch offsets, and absolute or relative pitch in UFData v1. VPR keeps its existing pitch bend sensitivity; reduce the offset if it exceeds that range. ACEP2, direct pitch anchors, and unsupported curve types stay protected. If a stroke or its transition crosses a protected pitch break, the preview asks you to adjust it before saving a new copy in the original format.
+Drawing writes to supported USTX PITD, linear SVP pitchDelta, VPR and VSQX PIT pitch bend, ACEP data-form pitch offsets, and absolute or relative pitch in UFData v1. VPR and VSQX keep their existing pitch bend sensitivity. Reduce the offset if it exceeds that range. ACEP2, direct pitch anchors, and unsupported curve types stay protected. If a stroke or its transition crosses a protected pitch break, the preview asks you to adjust it before saving a new copy in the original format.
 
 ## ACE Studio preview
 

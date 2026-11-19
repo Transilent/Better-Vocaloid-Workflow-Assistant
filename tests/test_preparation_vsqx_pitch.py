@@ -119,6 +119,13 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='vsqx-pitch-') as temp
     assert [(t.position, t.bpm) for t in loaded.song_tempo_list] == [(0, 120), (1344, 90)]
     assert loaded.time_signature_list[0].numerator == 3
     assert [(n.start_pos, n.length, n.key_number, n.lyric) for n in loaded.track_list[0].note_list] == notes
+    # The protected preparation output enters Tuning with the same playable clock.
+    from tuning_timeline import ProjectNotes
+    timeline = ProjectNotes.load(output)
+    lead_note, = timeline.matches('好')
+    assert abs(lead_note['start'] - 1.2) < 1e-10
+    assert abs(lead_note['end'] - 2.3) < 1e-10
+    assert lead_note['drawReason'] == '' and lead_note['timingReason']
     assert file_hash(sidecar) == raw_hash and file_hash(lead) == receipt['native_sha256']['ustx']
     assert outputs_intact(job, request)
     original = output.read_bytes()
