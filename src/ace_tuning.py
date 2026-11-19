@@ -16,6 +16,7 @@ from pathlib import Path
 import struct
 from common import ROOT, bundled_export_module
 from svp_tuning import Note, Track
+from tuning_clock import meter_events
 
 
 BLICK = 705600000 // 480
@@ -168,12 +169,13 @@ def _tempo(project, native):
     projected, last = [], -1
     for row in rows:
         pos, bpm = row.get('position' if native else 'tickPosition'), row.get('bpm')
-        if native and row.get('isLerp') is not False and row.get('isLerp') is not None:
+        if native and (row.get('isLerp') not in (None, False) or row.get('bend') not in (None, 0)):
             raise ValueError('暂不能准确对齐 ACEP 连续速度曲线，请从 ACE Studio 导出 UFData。')
-        if (not _ticks(pos) or pos <= last or (not projected and pos != 0)
+        valid_position = _integral_tick(pos) if native else _ticks(pos)
+        if (not valid_position or pos <= last or (not projected and pos != 0)
                 or type(bpm) not in (int, float) or not 0 < bpm <= 1000):
             raise ValueError('工程速度表需要从第 0 tick 开始，并按位置递增。')
-        projected.append({'position': pos * BLICK, 'bpm': bpm})
+        projected.append({'position': int(pos) * BLICK, 'bpm': bpm})
         last = pos
     if not projected:
         raise ValueError('工程缺少可用于调音的速度表。')
@@ -232,7 +234,7 @@ def _ace_curve(clip):
     return curves
 
 
-def _uf_curve(track):
+def _uf_curve(track, *, for_display=False):
     data = track.get('pitch')
     if data is None:
         return {'ticks': [], 'values': [], 'isAbsolute': True}
@@ -248,9 +250,11 @@ def _uf_curve(track):
     # LibreSVIP emits an absolute zero and a pitched value at the same
     # tick to start a segment. Retain both markers, not the last one alone.
     for i, (a, b) in enumerate(zip(ts, ts[1:])):
-        if a == b and (not absolute or vs[i] != 0 or vs[i+1] is None or vs[i+1] <= 0
-                       or i>0 and ts[i-1]==a or i+2<len(ts) and ts[i+2]==a):
-            return None
+        if a == b:
+            seam = absolute and vs[i] == 0 and vs[i+1] is not None and vs[i+1] > 0
+            end = for_display and absolute and vs[i+1] == 0 and vs[i] is not None and vs[i] > 0
+            if (not (seam or end) or i > 0 and ts[i-1] == a or i + 2 < len(ts) and ts[i+2] == a):
+                return None
     return data
 
 
@@ -286,6 +290,8 @@ def _notes(row, part, source, *, native, lower=None, upper=None):
 
 
 class _Layout:
+    step = BLICK
+
     def __init__(self, data, native):
         project = data.get('project')
         if not isinstance(project, dict):
@@ -305,7 +311,12 @@ class _Layout:
                       if isinstance(clip.get('uuid'), str) and clip['uuid'])
         self.tracks = tuple(Track(i, native and track.get('type') != 'sing', native_refs=True)
                             for i, track in enumerate(tracks))
-        self.score = {'time': {'tempo': _tempo(project, native)}, 'tracks': [
+        self.measure_prefix = 0 if native else project.get('measurePrefix', 0)
+        meters = meter_events(project.get('timeSignatures', []), 'barPos' if native else 'measurePosition',
+                              'numerator', 'denominator')
+        if native and not meters and 'beatsPerBar' in project:
+            meters = [{'index': 0, 'numerator': project['beatsPerBar'], 'denominator': 4}]
+        self.score = {'time': {'tempo': _tempo(project, native), 'meter': meters}, 'tracks': [
             {'name': t.get('name') if isinstance(t.get('name'), str) and t['name'] else f'轨道 {row.index + 1}',
              'mainRef': {'isInstrumental': row.instrumental}} for t, row in zip(tracks, self.tracks)]}
         count = 0

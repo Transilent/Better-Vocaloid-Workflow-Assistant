@@ -124,6 +124,7 @@ class ProjectNotes:
         self.note_edits = tuple(note_edits)
         self.note_patches = {row['note_id']: row for row in note_edits}
         self.pitch_layer = pitch_layer
+        self.native = pitch_layer.native if pitch_layer else None
         self.pitch_strokes = ()
         self.sha256 = project['sha256']
         if context['source_sha256'] != self.sha256:

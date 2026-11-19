@@ -25,6 +25,8 @@ ROOT=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT))
 from common import atomic_json,file_hash,native_path,preserve_changed_file,exclusive_sidecar,SidecarBusy
 from tuning_engine import settings,digest,process_project,selected_indices
+from tuning_clock import ProjectClock
+from tuning_native import NativeProject
 from svp_tuning import Layout, SV2_MIN
 from tuning_execution import (EDITOR_OPTION_KEYS, normalize_options as _normalize,dependencies as _execution_dependencies,
                               preset_context as _preset_context,preset_dependency,receipt_binding_matches,
@@ -40,6 +42,7 @@ CONTRIBUTORS=('tuning_workflow.py','tuning_engine.py','vocal_expression.py','voc
  'expression_component.py','expression_calibration.py','calibration_refinement.py','calibration_workflow.py',
  'calibration_session.py','style_presets.py','style_catalog.py','expression_controls.py','style_pitch.py','common.py',
  'tuning_execution.py','tuning_preset_documents.py','preset_documents.py','tuning_project_identity.py','svp_tuning.py',
+ 'tuning_clock.py','tuning_native.py','tuning_native_pitch.py',
  'ustx_tuning.py','vpr_tuning.py','vocaloid_pitch.py')
 
 
@@ -126,8 +129,16 @@ def read_source(path):
 def score_layout(data,format):
     if adapter:=style_adapter(format):
         layout=adapter.Layout(data)
-        return layout.score,layout
-    return data,Layout(data)
+        score=layout.score
+    else:
+        score,layout=data,Layout(data)
+    layout.clock = ProjectClock(
+        score['time'], step=getattr(layout, 'step', 1),
+        native_origin=getattr(layout, 'native_origin', 0),
+        measure_prefix=getattr(layout, 'measure_prefix', 0),
+    )
+    layout.native = NativeProject(data, format, layout)
+    return score,layout
 
 
 def _candidate_payload(output, original, raw, format='svp'):
@@ -452,7 +463,7 @@ def apply_snapshot(snapshot,options,*,cancel,progress,cache=None,observe_style=N
         edited,changes=data,[]
     if strokes:
         from tuning_pitch_layer import PitchLayer, apply_layer
-        spans=PitchLayer(data,model,geometry[1]).resolve(strokes,{row['note_id']:row for row in edits})
+        spans=PitchLayer(data,model,geometry[1],preview=False).resolve(strokes,{row['note_id']:row for row in edits})
     cancel()
     indices={row['track_index'] for row in changes}
     if options['style_regions']:

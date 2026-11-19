@@ -85,10 +85,22 @@
       "file": "tuning_score_edits.py",
       "source": "src/tuning_score_edits.py"
     },
-      {
-        "file": "tuning_pitch_layer.py",
-        "source": "src/tuning_pitch_layer.py"
-      },
+    {
+      "file": "tuning_pitch_layer.py",
+      "source": "src/tuning_pitch_layer.py"
+    },
+    {
+      "file": "tuning_clock.py",
+      "source": "src/tuning_clock.py"
+    },
+    {
+      "file": "tuning_native.py",
+      "source": "src/tuning_native.py"
+    },
+    {
+      "file": "tuning_native_pitch.py",
+      "source": "src/tuning_native_pitch.py"
+    },
     {
       "file": "quick_ui/MixdownEq.qml",
       "source": "src/quick_ui/MixdownEq.qml"

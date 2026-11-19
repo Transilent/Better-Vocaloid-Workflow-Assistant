@@ -24,7 +24,6 @@ from tuning_timeline import (ProjectNotes, TimelineDraftStore, batch_lyric_row, 
                              normalize_timeline_draft)
 from tuning_preset_documents import make_document, plan_application
 import tuning_workflow as workflow
-from vocal_expression import SV_QUARTER
 
 
 _REFERENCE_FLAGS = ('reference_dynamics', 'reference_tension', 'reference_breathiness', 'reference_voicing')
@@ -887,15 +886,7 @@ class QuickTuning(QObject):
         clock = self.project.score_editor.clock if self.project else None
         if not division or clock is None:
             return []
-        step = (4 * SV_QUARTER) // division
-        first = math.ceil(clock.to_position(self._left) / step)
-        last = math.floor(clock.to_position(self._left + self._span) / step)
-        quarter = division // 4
-        spacing = max(1, math.ceil((last - first + 1) / 180))
-        if spacing > 1:
-            spacing = quarter * math.ceil(spacing / quarter)
-        return [[clock.to_seconds(i * step), i % quarter == 0]
-                for i in range(math.ceil(first / spacing) * spacing, last + 1, spacing)]
+        return clock.marks(clock.to_position(self._left), clock.to_position(self._left + self._span), division)
 
     @Slot(float, result=float)
     def snapBeat(self, seconds):
@@ -903,9 +894,8 @@ class QuickTuning(QObject):
         clock = self.project.score_editor.clock if self.project else None
         if not division or clock is None or not self._view_preferences['snap'] or not math.isfinite(seconds):
             return seconds
-        step = (4 * SV_QUARTER) // division
         position = clock.to_position(max(self.project.minimum, min(self.project.maximum, seconds)))
-        return clock.to_seconds(round(position / step) * step)
+        return clock.to_seconds(clock.snap(position, division))
 
     @Property('QVariantList', notify=catalogChanged)
     def presets(self):

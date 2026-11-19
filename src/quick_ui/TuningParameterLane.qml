@@ -370,6 +370,8 @@ Rectangle {
                 text: lane.label("原曲线")
                 selected: lane.showOriginal
                 tint: lane.originalColor
+                ToolTip.visible: hovered || visualFocus
+                ToolTip.text: lane.label("查看工程里的原生偏移、音符控制点和颤音。")
                 onClicked: lane.showOriginal = !lane.showOriginal
             }
             CurveToggle {
@@ -412,7 +414,7 @@ Rectangle {
                 activeFocusOnTab: true
                 Accessible.name: lane.label("音高参数轨")
 
-                function stroke(ctx, points, color, nodes) {
+                function stroke(ctx, points, color, nodes, anchorsOnly) {
                     ctx.strokeStyle = color
                     ctx.lineWidth = 1.5 * lane.uiScale
                     ctx.beginPath()
@@ -427,11 +429,14 @@ Rectangle {
                         else ctx.moveTo(x, y)
                         started = true
                     }
-                    ctx.stroke()
+                    if (!anchorsOnly)
+                        ctx.stroke()
                     if (!nodes)
                         return
                     ctx.fillStyle = color
                     for (const p of points) {
+                        if (!p)
+                            continue
                         const x = lane.xForTime(p[0])
                         if (x < lane.leftInset || x > lane.rightInset)
                             continue
@@ -467,14 +472,16 @@ Rectangle {
                     }
                     ctx.fillStyle = lane.theme.line
                     for (const mark of lane.roll.beatMarks) {
-                        ctx.globalAlpha = mark[1] ? 0.85 : 0.42
+                        ctx.globalAlpha = mark[1] === 2 ? 0.85 : mark[1] === 1 ? 0.6 : 0.32
                         ctx.fillRect(Math.round(lane.xForTime(mark[0])), 0, 1, height)
                     }
                     ctx.globalAlpha = 1
                     if (lane.showOriginal)
-                        for (const row of lane.plot.original || []) stroke(ctx, row.points, lane.originalColor, false)
+                        for (const row of lane.plot.original || [])
+                            stroke(ctx, row.points, lane.originalColor, !!row.anchors, !!row.anchors)
                     if (lane.showStyle)
-                        for (const row of lane.plot.style || []) stroke(ctx, row.points, lane.styleColor, false)
+                        for (const row of lane.plot.style || [])
+                            stroke(ctx, row.points, lane.styleColor, !!row.anchors, !!row.anchors)
                     const g = lane.gesture
                     if (g && g.note) {
                         ctx.fillStyle = lane.theme.accent

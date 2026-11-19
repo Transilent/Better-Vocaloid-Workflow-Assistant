@@ -35,11 +35,14 @@ def expression_settings(options):
 
 
 class TempoMap:
-    """Convert generated SVP's absolute blicks and audio seconds without rounding beats."""
+    """Convert musical positions and seconds about content time zero."""
     def __init__(self, tempos):
+        if not isinstance(tempos, (list, tuple)) or any(
+                not isinstance(row, dict) or type(row.get('position')) is not int for row in tempos):
+            raise ValueError('工程速度表的位置格式无效。')
         tempos = sorted(tempos, key=lambda item: item['position'])
-        if not tempos or tempos[0]['position'] != 0:
-            raise ValueError('SVP 速度表需要从工程起点开始。')
+        if not tempos or tempos[0]['position'] > 0:
+            raise ValueError('工程速度表需要覆盖内容起点。')
         self.positions, self.bpms, self.seconds = [], [], []
         elapsed = 0.
         for item in tempos:
@@ -53,6 +56,9 @@ class TempoMap:
             self.positions.append(position)
             self.bpms.append(bpm)
             self.seconds.append(elapsed)
+        zero = self.to_seconds(0)
+        if zero:
+            self.seconds = [seconds - zero for seconds in self.seconds]
 
     def to_seconds(self, position):
         index = max(0, bisect.bisect_right(self.positions, position) - 1)

@@ -82,6 +82,21 @@ class VsqxTuningTests(unittest.TestCase):
         self.addCleanup(scratch.cleanup)
         self.root = Path(scratch.name)
 
+    def test_pickup_uses_actual_tempo_before_content_zero(self):
+        source = write_fixture(self.root / 'pickup.vsqx', 4)
+        xml = source.read_text(encoding='utf-8-sig')
+        source.write_text(xml.replace('<t>3120</t>', '<t>2400</t>').replace(
+            '<tempo><t>3840</t><v>9600</v></tempo>',
+            '<tempo><t>2640</t><v>6000</v></tempo>'), encoding='utf-8')
+        timeline = ProjectNotes.load(source)
+        pickup, = timeline.matches('ま')
+        clock = timeline.native.clock
+        self.assertEqual(clock.native_origin, 2880)
+        self.assertAlmostEqual(clock.to_seconds(clock.native_position(0)), -1.625)
+        self.assertAlmostEqual(pickup['start'], -.3125)
+        self.assertEqual(clock.to_position(pickup['start']), clock.native_position(2520))
+        self.assertTrue(pickup['timingReason'])
+
     def test_score_uses_native_ticks_and_preserves_xml_and_wav(self):
         for version in (3, 4):
             with self.subTest(version=version):

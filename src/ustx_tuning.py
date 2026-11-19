@@ -6,6 +6,7 @@ import math
 import re
 
 from svp_tuning import Note, Track
+from tuning_clock import meter_events
 
 
 QUARTER = 705600000
@@ -125,6 +126,8 @@ class Part:
 class Layout:
     """Place voice parts on actual tracks. Wave parts never become note targets."""
 
+    step = BLICK
+
     def __init__(self, data):
         self.version = data['ustx_version']
         tracks = _objects(data, 'tracks')
@@ -139,8 +142,12 @@ class Layout:
         wave = {p['track_no'] for p in waves}
         self.tracks = tuple(Track(i, i in wave and i not in vocal, native_refs=i in vocal)
                             for i in range(len(tracks)))
+        meters = meter_events(data.get('time_signatures', []), 'bar_position', 'beat_per_bar', 'beat_unit')
+        if not meters and ('beat_per_bar' in data or 'beat_unit' in data):
+            meters = [{'index': 0, 'numerator': data.get('beat_per_bar', 4),
+                       'denominator': data.get('beat_unit', 4)}]
         self.score = {
-            'time': {'tempo': self._tempo(data)},
+            'time': {'tempo': self._tempo(data), 'meter': meters},
             'tracks': [{'name': t.get('track_name') or f'轨道 {i+1}',
                         'mainRef': {'isInstrumental': self.tracks[i].instrumental,
                                     'voice': {'singer': t.get('singer'), 'phonemizer': t.get('phonemizer')}}}

@@ -78,6 +78,28 @@ class ManualPitchTest(unittest.TestCase):
         return p.pitch_layer.gesture([], p.note_patches, note['id'], 'draw',
                                     [[start+lo, 0], [start + (lo+hi)/2, 70], [start+hi, -30]])
 
+    def test_meter_and_note_local_pitch_share_one_clock(self):
+        data = example('ustx', authored=False)
+        native = data['voice_parts'][0]['notes'][0]
+        native.update(pitch={'data': [{'x': -18.5, 'y': -2, 'shape': 'io'},
+                                       {'x': 46.5, 'y': 7.5, 'shape': 'l'}], 'snap_first': False},
+                      vibrato={'length': 66, 'period': 124, 'depth': 35, 'in': 20, 'out': 25},
+                      phoneme_overrides=[{'index': 0, 'offset': -20}])
+        data['time_signatures'] = [{'bar_position': 0, 'beat_per_bar': 3, 'beat_unit': 4},
+                                   {'bar_position': 1, 'beat_per_bar': 7, 'beat_unit': 8}]
+        _, timeline, note, _ = self.load('ustx', data=data)
+        clock = timeline.native.clock
+        self.assertIs(clock, timeline.score_editor.clock)
+        self.assertEqual(clock.position_at_bar(2), 13 * Q // 2)
+        self.assertEqual(clock.snap(13 * Q // 2 + Q // 8, 4), 13 * Q // 2)
+        self.assertIn([clock.to_seconds(3 * Q), 2, 2, '7/8'], clock.marks(0, 7 * Q, 8))
+        self.assertEqual(timeline.native.note(0, 'part:0', 0), native)
+        knots, vibrato = timeline.pitch_layer.plot([note], 0, note['end'], {})['original']
+        self.assertTrue(knots['anchors'])
+        self.assertAlmostEqual(knots['points'][0][0], note['start'] - .0185)
+        self.assertEqual(knots['points'][1][1], 75.)
+        self.assertGreater(max(y for _, y in vibrato['points']), 20.)
+
     def test_style_replacement_does_not_change_manual_samples_and_erase_exposes_style(self):
         for format, channel in [('ustx', 'dyn'), ('svp', 'loudness')]:
             with self.subTest(format=format):

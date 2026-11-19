@@ -122,15 +122,20 @@ def _tempo(root, names):
                    _integer(row, names['denominator'])) for row in _elements(master, 'timeSig')]
     origin = pre_measure_ticks(signatures, resolution, count)
     step = SV_QUARTER // resolution
-    tempos = {_integer(row, names['tick']): _integer(row, names['bpm']) for row in _elements(master, 'tempo')}
+    tempos = {}
+    for row in _elements(master, 'tempo'):
+        tick, value = _integer(row, names['tick']), _integer(row, names['bpm'])
+        if tick in tempos and tempos[tick] != value:
+            raise ValueError('VSQX 同一位置包含相互冲突的速度。')
+        tempos[tick] = value
     if any(tick < 0 or not 0 < value <= 100000 for tick, value in tempos.items()):
         raise ValueError('VSQX 速度事件位置或 BPM 无效。')
-    ordered = sorted(tempos.items())
-    at_origin = next((value for tick, value in reversed(ordered) if tick <= origin), 12000)
-    events = [{'position': 0, 'bpm': at_origin / 100.}]
-    events.extend({'position': (tick - origin) * step, 'bpm': value / 100.}
-                  for tick, value in ordered if tick > origin)
-    return events, origin, step, ordered
+    tempos.setdefault(0, 12000)
+    events = [{'position': (tick - origin) * step, 'bpm': value / 100.}
+              for tick, value in sorted(tempos.items())]
+    meters = [{'index': bar - count, 'numerator': numerator, 'denominator': denominator}
+              for bar, numerator, denominator in signatures]
+    return events, meters, origin, step, count
 
 
 def _control_rows(part, names, ids, length):
@@ -185,6 +190,7 @@ class Layout(vocaloid.Layout):
     format = 'vsqx'
     versions = (3, 4)
     tempo = staticmethod(lambda data: data['tempos'])
+    meters = staticmethod(lambda data: data['meters'])
     bounded_curves = True
     style_only = STYLE_ONLY
     notice = STYLE_ONLY
@@ -194,27 +200,27 @@ class Layout(vocaloid.Layout):
         names = _NAMES[version]
         ids = _CONTROL_IDS[version]
         root = document.documentElement
-        tempos, origin, self.step, raw_tempos = _tempo(root, names)
+        tempos, meters, origin, self.step, self.measure_prefix = _tempo(root, names)
+        self.native_origin = origin
+        self.native_tracks = tuple(_elements(root, 'vsTrack'))
+        self.native_parts = {}
+        self.native_media = tuple((part, _text(_child(part, 'filePath')))
+                                  for part in root.getElementsByTagNameNS(root.namespaceURI, 'wavPart'))
         tracks = []
         total_notes = 0
-        for track in _elements(root, 'vsTrack'):
+        for track_index, track in enumerate(self.native_tracks):
             parts = []
-            for part in _elements(track, names['part']):
+            for part_index, part in enumerate(_elements(track, names['part'])):
                 position, length = _integer(part, names['tick']), _integer(part, 'playTime')
                 singers = sorted((_integer(row, names['tick']), _integer(row, names['bank']))
                                  for row in _elements(part, 'singer'))
                 singer_ticks = [tick for tick, _ in singers]
                 nodes = _elements(part, 'note')
+                self.native_parts[track_index, part_index] = part, nodes
                 notes = [_note(note, names, singers, singer_ticks) for note in nodes]
                 total_notes += len(notes)
                 if len(parts) >= MAX_GROUPS or total_notes > MAX_NOTES:
                     raise ValueError('VSQX 片段或音符超过安全上限。')
-                first = min((position + note['pos'] for note in notes), default=origin)
-                if first < origin:
-                    prior = [value for tick, value in raw_tempos if tick <= first]
-                    change = [value for tick, value in raw_tempos if first < tick <= origin]
-                    if any(value != (prior[-1] if prior else 12000) for value in change):
-                        raise ValueError('VSQX 预备小节内含演唱及变速，当前无法精确定位该工程。')
                 controllers, _, unknown = _control_rows(part, names, ids, length)
                 singer_changes = bool(singer_ticks and singer_ticks != [0])
                 parts.append({'pos': position - origin, 'duration': length, 'notes': notes,
@@ -223,7 +229,8 @@ class Layout(vocaloid.Layout):
             if len(tracks) >= MAX_TRACKS:
                 raise ValueError('VSQX 轨道超过安全上限。')
             tracks.append({'type': 0, 'name': _text(_child(track, names['name'])), 'parts': parts})
-        self.sequence = {'version': {'major': version, 'minor': 0, 'revision': 0}, 'tempos': tempos, 'tracks': tracks}
+        self.sequence = {'version': {'major': version, 'minor': 0, 'revision': 0},
+                         'tempos': tempos, 'meters': meters, 'tracks': tracks}
         super().__init__(self.sequence)
         self.version = str(version)
 

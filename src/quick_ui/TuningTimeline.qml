@@ -860,6 +860,37 @@ Item {
         }
 
         function paintRuler(ctx) {
+            const font = Math.round(11 * timeline.scale)
+            ctx.font = font + "px sans-serif"
+            ctx.textBaseline = "middle"
+            const marks = timeline.beatMarks
+            if (marks.length > 0) {
+                let labelEnd = timeline.plotLeft
+                ctx.fillStyle = timeline.theme.muted
+                ctx.fillText("音高", Math.round(7 * timeline.scale), timeline.rulerHeight / 2)
+                for (const mark of marks) {
+                    const x = Math.round(timeline.xForTime(mark[0]))
+                    if (x < timeline.plotLeft || x >= timeline.plotRight)
+                        continue
+                    const bar = mark[1] === 2
+                    const tick = bar ? 8 : mark[1] === 1 ? 6 : 3
+                    ctx.globalAlpha = bar ? 0.53 : mark[1] === 1 ? 0.29 : 0.14
+                    fill(ctx, timeline.theme.accent, x, timeline.rulerHeight - tick,
+                        1, timeline.height - timeline.rulerHeight + tick)
+                    ctx.globalAlpha = 1
+                    if (bar && x >= labelEnd) {
+                        const label = String(mark[2]) + (mark[3] ? "  " + mark[3] : "")
+                        const end = x + 5 + ctx.measureText(label).width
+                        if (end <= timeline.plotRight) {
+                            ctx.fillStyle = timeline.theme.muted
+                            ctx.fillText(label, x + 5, timeline.rulerHeight / 2)
+                            labelEnd = end + Math.round(12 * timeline.scale)
+                        }
+                    }
+                }
+                fill(ctx, timeline.theme.line, 0, timeline.rulerHeight - 1, width, 1)
+                return
+            }
             const desired = timeline.visibleSpan * Math.round(74 * timeline.scale) / timeline.plotWidth
             const unit = Math.pow(10, Math.floor(Math.log10(desired)))
             const ratio = desired / unit
@@ -868,9 +899,6 @@ Item {
             const first = Math.ceil((timeline.visibleStart - 0.000001) / minor)
             const last = Math.floor((timeline.visibleEnd + 0.000001) / minor)
             const decimals = Math.max(0, Math.min(3, -Math.floor(Math.log10(step) + 0.000001)))
-            const font = Math.round(11 * timeline.scale)
-            ctx.font = font + "px sans-serif"
-            ctx.textBaseline = "middle"
             ctx.fillStyle = timeline.theme.muted
             ctx.fillText("音高", Math.round(7 * timeline.scale), timeline.rulerHeight / 2)
             for (let tick = first; tick <= last; ++tick) {
@@ -892,14 +920,6 @@ Item {
                 }
                 fill(ctx, timeline.theme.line, x, timeline.rulerHeight - (major ? 6 : 3),
                     1, major ? 6 : 3)
-            }
-            for (const mark of timeline.beatMarks) {
-                const x = Math.round(timeline.xForTime(mark[0]))
-                if (x < timeline.plotLeft || x >= timeline.plotRight)
-                    continue
-                ctx.globalAlpha = mark[1] ? 0.44 : 0.25
-                fill(ctx, timeline.theme.accent, x, timeline.rulerHeight - (mark[1] ? 8 : 4),
-                    1, timeline.height - timeline.rulerHeight + (mark[1] ? 8 : 4))
             }
             ctx.globalAlpha = 1
             fill(ctx, timeline.theme.line, 0, timeline.rulerHeight - 1, width, 1)

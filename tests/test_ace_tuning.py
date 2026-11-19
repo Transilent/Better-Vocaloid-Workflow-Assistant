@@ -417,11 +417,14 @@ class AceFormats(unittest.TestCase):
 
     def test_binary_is_read_only_and_corruption_never_falls_back(self):
         score = ace_score()
+        score['tempos'][0].update(position=0.0, bend=0.0)
+        score['tempos'][1]['bend'] = None
         raw = wrap_ace(score,binary=True)
         path = self.root/'new.acep'
         path.write_bytes(raw)
         timeline = ProjectNotes.load(path)
         self.assertEqual(timeline.project['format_version'],'2 / 9')
+        self.assertEqual(timeline.native.clock.bpms, [120, 90, 150])
         self.assertEqual(len(timeline.notes),10)
         self.assertFalse(timeline.editable)
         session = workflow.create_session(path,self.root/'session')
@@ -449,6 +452,8 @@ class AceFormats(unittest.TestCase):
                 atomic_json(path,data)
                 raw = path.read_bytes()
                 timeline = ProjectNotes.load(path)
+                self.assertEqual(timeline.native.clock.measure_prefix, data['project']['measurePrefix'])
+                self.assertEqual(timeline.native.clock.to_seconds(0), 0.)
                 start = timeline.matches('春')[0]['start']
                 self.assertEqual(start,0.)
                 self.assertAlmostEqual(timeline.matches('江')[0]['end'],500/960+500/720,places=10)

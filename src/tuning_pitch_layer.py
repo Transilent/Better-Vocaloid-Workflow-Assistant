@@ -6,8 +6,10 @@ import math
 import re
 
 from style_presets import _curve
+from tuning_native import at_path as _get
+from tuning_native_pitch import NativePitch
 from tuning_score_edits import DIRECT_FORMATS, FORMATS, VOCALOID_FORMATS, native_group_path
-from vocal_expression import SV_QUARTER, TempoMap
+from vocal_expression import SV_QUARTER
 
 
 MAX_CENTS = 200
@@ -53,12 +55,6 @@ def normalize_strokes(rows):
     if len(json.dumps(result, separators=(',', ':')).encode()) > MAX_BYTES:
         raise ValueError(CAPACITY)
     return result
-
-
-def _get(data, path):
-    for key in path:
-        data = data[key]
-    return data
 
 
 def _clip_points(points, first, last):
@@ -131,15 +127,15 @@ def _native_group(format, data, part, score_target):
 class PitchLayer:
     """Uses the same immutable identity, native note coordinates and clock as score edits."""
 
-    def __init__(self, data, score, layout):
+    def __init__(self, data, score, layout, *, preview=True):
         self.format = score.format
         self.tracks, self.notes = set(), {}
-        self.original_curves = {}
+        self.native = layout.native
         if self.format not in FORMATS:
             return
         if self.format == 'vsqx':
             data = layout.sequence
-        self.clock = score.clock or TempoMap(layout.score['time']['tempo'])
+        self.clock = self.native.clock
         placements = {(track.index, place.key): place for track in layout.tracks if track.writable
                       for place in track.style_placements}
         rows_by_track = {}
@@ -183,97 +179,18 @@ class PitchLayer:
                     continue
             self.notes[identity] = Anchor(path, key, part.track_index, part.offset, step, onset, duration, pitch, lyric)
             self.tracks.add(part.track_index)
-        self.original_curves = self._curve_sources(data)
+        self.preview = NativePitch(self.native, score.rows, data) if preview else None
 
     def curve_sources(self, data, *, cancel=lambda: None):
-        """Collect authored native pitch channels on the same placements as manual editing."""
+        """Read the candidate's pitch on the same placements as the editor."""
         if self.format == 'vsqx':
             from vsqx_tuning import Layout
             data = Layout(data).sequence
-        return self._curve_sources(data, cancel=cancel)
-
-    def _curve_sources(self, data, *, cancel=lambda: None):
-        curves = {}
-        for path in dict.fromkeys(note.placement for note in self.notes.values()):
-            cancel()
-            part = _get(data, path)
-            if self.format == 'svp':
-                xs, ys = _curve(part.get('parameters', {}).get('pitchDelta'))
-                if xs:
-                    curves[path] = (xs, ys)
-            elif self.format == 'ustx':
-                from ustx_tuning import _native_curve
-                _, curve, _ = _native_curve(data, part, 'pitd')
-                if curve and curve['xs']:
-                    curves[path] = (curve['xs'], curve['ys'])
-            elif self.format in VOCALOID_FORMATS:
-                from vpr_tuning import PBS, PIT, _curve as controller
-                _, bend = controller(part, PIT)
-                _, sensitivity = controller(part, PBS)
-                if bend and bend['events'] and sensitivity:
-                    curves[path] = (bend['events'], sensitivity['events'])
-            elif self.format == 'acep':
-                from ace_tuning import _ace_curve
-                if rows := _ace_curve(part):
-                    curves[path] = rows
-            elif self.format == 'ufdata':
-                from ace_tuning import _uf_curve
-                curve = _uf_curve(part)
-                if curve and curve['ticks']:
-                    curves[path] = curve
-        return curves
-
-    def _samples(self, curve, grid, note_key):
-        import numpy as np
-
-        gaps = None
-        if self.format == 'svp':
-            values = np.interp(grid, *curve)
-        elif self.format == 'ustx':
-            from ustx_tuning import _native_samples
-            values = _native_samples(grid, *curve)
-        elif self.format in VOCALOID_FORMATS:
-            from vocaloid_pitch import PBS_SPEC, PIT_SPEC, step_values
-            values = (step_values(grid, curve[0], PIT_SPEC[0]) *
-                      step_values(grid, curve[1], PBS_SPEC[0])) * (100. / 8192.)
-        else:
-            from ace_tuning import _ace_pitch_samples, _uf_pitch_samples
-            sample = _ace_pitch_samples if self.format == 'acep' else _uf_pitch_samples
-            values, gaps = sample(curve, grid, np.full(len(grid), note_key, dtype=int))
-            values *= 100.
-        return values, gaps
+        paths = {note.placement for note in self.notes.values()}
+        return self.preview.curves(data, paths, cancel=cancel)
 
     def plot(self, notes, start, end, styled):
-        """Read actual control samples on a bounded viewport, separated by note and gap."""
-        import numpy as np
-
-        output = {'original': [], 'style': []}
-        if not self.original_curves and not styled:
-            return output
-        for note in notes[:300]:
-            anchor = self.notes.get(note['id'])
-            if anchor is None:
-                continue
-            sources = (self.original_curves.get(anchor.placement), styled.get(anchor.placement))
-            if not any(source is not None for source in sources):
-                continue
-            left, right = max(start, note['start']), min(end, note['end'])
-            if right <= left:
-                continue
-            count = min(128, max(2, math.ceil(1500 * (right - left) / (end - start))))
-            first, last = ((self.clock.to_position(t) - anchor.offset) / anchor.step for t in (left, right))
-            grid = np.linspace(first, last, count)
-            if self.format != 'svp':
-                grid = np.unique(np.rint(grid).astype(np.int64))
-            times = [self.clock.to_seconds(anchor.offset + anchor.step * tick) for tick in grid.tolist()]
-            for key, source in zip(output, sources):
-                if source is None:
-                    continue
-                values, gaps = self._samples(source, grid, note['pitch'])
-                points = [[float(t), float(v)] if (gaps is None or not gaps[i]) and math.isfinite(v) else None
-                          for i, (t, v) in enumerate(zip(times, values))]
-                output[key].append({'noteId': note['id'], 'points': points})
-        return output
+        return self.preview.plot(notes, start, end, styled)
 
     def reason(self, identity, note):
         if identity not in self.notes or not _singing_lyric(note['lyric']):

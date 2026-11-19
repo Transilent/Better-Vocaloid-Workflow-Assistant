@@ -114,6 +114,24 @@ def sampled(part, channel, tick):
 
 
 class VprTuningTests(unittest.TestCase):
+    def test_preview_keeps_short_held_pulse_and_protected_ai_points(self):
+        score = project()
+        part = score['tracks'][1]['parts'][0]
+        part['controllers'] = [
+            {'name': PIT, 'events': [{'pos': 143, 'value': 4096}, {'pos': 144, 'value': 0}]},
+            {'name': PBS, 'events': [{'pos': 0, 'value': 2}]},
+        ]
+        with tempfile.TemporaryDirectory(prefix='vpr-preview-', dir=APP) as folder:
+            timeline = ProjectNotes.load(write_source(Path(folder) / 'pulse.vpr', score))
+            notes = timeline.matches('青')
+            series = timeline.pitch_layer.plot(notes, 0., 3., {})['original']
+            pulse, = [row for row in series if not row['anchors']]
+            anchors, = [row for row in series if row['anchors']]
+            self.assertEqual([y for _, y in pulse['points']], [0., 0., 100., 100., 0., 0.])
+            self.assertEqual(pulse['points'][1][0], pulse['points'][2][0])
+            self.assertEqual(anchors['points'][0][1], 35.)
+            self.assertTrue(timeline.notes[anchors['noteId']]['drawReason'])
+
     def test_note_edits_write_pronunciation_and_timing_without_rebuilding_vpr(self):
         original = editable_score()
         with tempfile.TemporaryDirectory(prefix='vpr-score-', dir=APP) as folder:

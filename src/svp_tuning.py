@@ -156,10 +156,12 @@ class Layout:
             issue('track.linked_groups', '音符组引用列表格式无效。')
             groups = []
         if groups and not self.sv2:
-            issue('track.linked_groups', '当前只支持已核验的 SV2 素材库组引用。')
-        row.native_refs = self.sv2 and bool(groups)
-        if self.sv2 and main_id and main_id != inline_id:
+            issue('track.linked_groups', 'SV1 的素材库音符组可以浏览，暂不写回。')
+        row.native_refs = bool(groups)
+        if main_id and main_id != inline_id and (self.sv2 or main_id in self._definitions):
             if not _obj(inline).get('notes'):
+                if not self.sv2:
+                    issue('track.linked_groups', 'SV1 的素材库音符组可以浏览，暂不写回。')
                 self._reference(row, None, ref)
             else:
                 issue('track.group_reference', '主音符组与引用目标不一致。')
@@ -169,9 +171,8 @@ class Layout:
             self._placement(row, None, None, inline, ref)
         elif not self.sv2 or not groups or inline is not None:
             issue('track.main_group_missing', '轨道缺少有效的主音符组。')
-        if self.sv2:
-            for i, item in enumerate(groups):
-                self._reference(row, i, item)
+        for i, item in enumerate(groups):
+            self._reference(row, i, item)
         # Each displayed note must resolve to one style target at its time.
         # Overlapping notes *within* a group still use the existing style rules.
         if len(row.placements) > 1:
@@ -201,7 +202,7 @@ class Layout:
             return
         protection = None
         if self._references[target] != 1:
-            protection = ('track.group_shared', '音符组被多个片段引用；请先在 SV2 中将此组独立。')
+            protection = ('track.group_shared', '音符组被多个片段引用；请先在原编辑器中将此组独立。')
         self._placement(row, index, slots[0], self._library[slots[0]], ref, protection=protection)
 
     def _placement(self, row, index, slot, group, ref, *, protection=None):
@@ -227,14 +228,14 @@ class Layout:
         if type(ref.get('mute', False)) is not bool or ref.get('isInstrumental', False) is not False:
             issue('track.group_reference', '音符组静音或伴奏标记无效。')
             return
-        if self.sv2 and ref.get('mute', False):
+        if ref.get('mute', False):
             return
         placement = Placement(row.index, index, slot, group, ref, offset, protection=protection)
         if not self.sv2 and placement.adapted:
             issue('track.cropped', '当前只支持已核验的 SV2 组裁剪和移调。')
         if 'parameters' in group and not isinstance(group['parameters'], dict):
             issue('track.parameters_invalid', '音符组参数格式无效。')
-        trimmed = self.sv2 and (begin != 0 or end != -1)
+        trimmed = begin != 0 or end != -1
         for i, note in enumerate(notes):
             if not isinstance(note, dict):
                 issue('note.invalid', '音符组中存在无效的音符对象。')
@@ -254,7 +255,7 @@ class Layout:
                 issue('track.rap', '此轨包含 SV2 说唱音符，当前只读。')
             pitch = note.get('pitch')
             if type(pitch) in (int, float) and -1e6 <= pitch <= 1e6:
-                if self.sv2 and pitch_offset:
+                if pitch_offset:
                     pitch += pitch_offset
             else:
                 pitch = None

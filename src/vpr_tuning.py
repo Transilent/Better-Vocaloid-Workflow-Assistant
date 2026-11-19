@@ -18,6 +18,7 @@ from common import ROOT, bundled_export_module, native_path
 from svp_tuning import Note, Track
 from tuning_project_identity import MAX_VPR_PROJECT_BYTES as MAX_FILE_BYTES
 from vocaloid_pitch import PBS_SPEC, PIT_SPEC, step_values
+from tuning_clock import meter_events
 
 
 SEQUENCE = 'Project/sequence.json'
@@ -345,6 +346,14 @@ class Layout:
     versions = (5, 6)
     step = BLICK
     tempo = staticmethod(_tempo)
+
+    @staticmethod
+    def meters(data):
+        raw = data.get('masterTrack', {}).get('timeSig', {})
+        if not isinstance(raw, dict):
+            raise ValueError('VPR 拍号轨格式无效。')
+        return meter_events(raw.get('events', []), 'bar', 'numer', 'denom')
+
     bounded_curves = False
     style_only = STYLE_ONLY
 
@@ -358,7 +367,7 @@ class Layout:
         self.tracks = tuple(Track(i, type(t.get('type')) is int and t['type'] == 1, native_refs=True)
                             for i, t in enumerate(tracks))
         self.score = {
-            'time': {'tempo': self.tempo(data)},
+            'time': {'tempo': self.tempo(data), 'meter': self.meters(data)},
             'tracks': [{'name': t.get('name') or f'轨道 {i+1}', 'mainRef': {'isInstrumental': row.instrumental}}
                        for i, (t, row) in enumerate(zip(tracks, self.tracks))],
         }

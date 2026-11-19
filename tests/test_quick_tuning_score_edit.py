@@ -346,7 +346,7 @@ def exercise(root, viewport, scale):
 
     tune.setBeatDivision(4)
     wait('tempo grid', lambda: visual('tuningBeatDivision').property('currentIndex') == 1)
-    beats = [t for t, strong in tune.beatMarks if strong]
+    beats = [mark[0] for mark in tune.beatMarks if mark[1]]
     assert len(beats) >= 5 and beats[:4] == [0., .5, 1., 1.5] and abs(beats[4] - 13 / 6) < 1e-6, beats
     tune.setBeatDivision(8)
     assert abs(tune.snapBeat(1.81) - 11 / 6) < 1e-6

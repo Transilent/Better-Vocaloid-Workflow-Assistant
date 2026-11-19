@@ -7,7 +7,8 @@ import math
 import re
 import unicodedata
 
-from vocal_expression import TempoMap, SV_QUARTER
+from vocal_expression import SV_QUARTER
+from tuning_native import at_path as _native, native_group_path
 
 
 DIRECT_FORMATS = frozenset(('ustx', 'svp'))
@@ -76,22 +77,6 @@ def _nonempty(value):
     if isinstance(value, dict):
         return any(_nonempty(entry) for key, entry in value.items() if key != 'mode')
     return bool(value)
-
-
-def native_group_path(format, track, index):
-    if format in VOCALOID_FORMATS:
-        return ('tracks', track, 'parts', index)
-    if format == 'acep':
-        return ('project', 'tracks', track, 'patterns', index)
-    if format == 'ufdata':
-        return ('project', 'tracks', track)
-    raise ValueError(UNSUPPORTED)
-
-
-def _native(data, path):
-    for key in path:
-        data = data[key]
-    return data
 
 
 def _special_lyric(lyric, *, extended=True):
@@ -256,7 +241,7 @@ class ScoreEdits:
         project, layout = geometry
         self.vsqx_sequence = layout.sequence if format == 'vsqx' else None
         native_data = self.vsqx_sequence if self.vsqx_sequence is not None else data
-        self.clock = TempoMap(project['time']['tempo']) if format in FORMATS else None
+        self.clock = layout.clock if format in FORMATS else None
         self.targets = {}
         self.editable_tracks = set()
         self.vpr_words = {}

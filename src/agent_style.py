@@ -180,26 +180,6 @@ def _read_source(path: Any):
         raise ValueError("无法读取工程：" + str(source)) from error
 
 
-def _tempo(project: dict[str, Any]):
-    from vocal_expression import TempoMap
-
-    rows = project["time"].get("tempo")
-    if not isinstance(rows, list) or not rows:
-        raise ValueError("SVP 工程缺少从工程起点开始的速度表，无法对齐秒与音符。")
-    try:
-        clock = TempoMap(rows)
-    except (KeyError, TypeError, ValueError, OverflowError) as error:
-        raise ValueError("SVP 速度表无效：" + str(error)) from error
-    output = []
-    for row in sorted(rows, key=lambda item: item["position"]):
-        output.append({
-            "position_tick": row["position"],
-            "bpm": float(row["bpm"]),
-            "start_seconds": float(clock.to_seconds(row["position"])),
-        })
-    return clock, output
-
-
 def _finite(value: Any, label: str) -> float:
     if type(value) not in (int, float):
         raise ValueError(label + "必须是有限数字。")
@@ -275,7 +255,7 @@ def context_for_snapshot(snapshot, geometry=None) -> dict[str, Any]:
     from tuning_workflow import score_layout
     source, format, source_sha = snapshot.path, snapshot.format, snapshot.sha256
     project, layout = geometry or score_layout(snapshot.data, format)
-    clock, tempo_rows = _tempo(project)
+    clock = layout.clock
     track_rows: list[dict[str, Any]] = []
     note_rows: list[dict[str, Any]] = []
     unknown_rows: list[dict[str, Any]] = []
@@ -456,11 +436,18 @@ def context_for_snapshot(snapshot, geometry=None) -> dict[str, Any]:
         "format": format,
         "format_version": layout.version,
         "synthesizer_v_2": getattr(layout, "sv2", False),
-        "tempo": tempo_rows,
+        "tempo": [{"position_tick": tick, "bpm": float(bpm), "start_seconds": seconds}
+                  for tick, bpm, seconds in zip(clock.positions, clock.bpms, clock.seconds)],
+        "meter": [{"index": row.bar, "numerator": row.numerator, "denominator": row.denominator,
+                   "position_tick": clock.position_at_bar(row.bar)} for row in clock.meters],
         "time_basis": {
             "tick": ("SVP blick" if format == "svp"
                      else f"shared score blick (1 native tick = {getattr(layout, 'step', 1470000)} blick)"),
             "quarter_ticks": _SV_QUARTER,
+            "native_tick_step": clock.step,
+            "native_content_origin": clock.native_origin,
+            "project_start_tick": clock.project_start,
+            "measure_prefix": clock.measure_prefix,
             "note_fields": "onset_tick/duration_tick are group-local; start_seconds/end_seconds are project positions including placement offset and trim",
             "region_fields": "project seconds",
         },
