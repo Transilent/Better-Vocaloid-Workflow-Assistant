@@ -18,27 +18,34 @@ Rectangle {
     readonly property real leftInset: roll.x + roll.plotLeft
     readonly property real rightInset: roll.x + roll.plotRight
     readonly property bool canEdit: !view.busy && !String(view.pitchEditReason || "")
+    readonly property bool hasStrokes: Number(view.pitchStrokeCount || 0) > 0
+    readonly property real pitchLimit: Number(view.pitchMaxCents || 200)
     readonly property real extent: plotExtent()
     readonly property real inspectionTime: visible && isFinite(pointerTime) ? pointerTime : Number.NaN
     property bool showOriginal: true
     property bool showStyle: true
     property bool showManual: true
-    property string tool: ""
+    property string tool: "line"
     property var gesture: null
     property var pointer: null
     property real pointerTime: Number.NaN
+    property var hoverNote: null
+    property var hoverNode: null
+    property var menuNode: null
 
     color: theme.base
     radius: Math.round(6 * uiScale)
     border.color: theme.line
     border.width: 1
-    implicitHeight: Math.round(126 * uiScale)
+    implicitHeight: Math.round(150 * uiScale)
     clip: true
 
     function label(text) { return roll.vwaTr(text) }
 
     function plotExtent() {
-        let peak = Number(view.pitchMaxCents || 200)
+        let peak = pitchLimit
+        if (tool !== "inspect" && canEdit)
+            return peak
         const layers = [showOriginal ? plot.original || [] : [], showStyle ? plot.style || [] : []]
         for (const rows of layers)
             for (const row of rows)
@@ -60,22 +67,26 @@ Rectangle {
     function noteAt(seconds) {
         const candidates = roll.visibleNotes.filter(
             note => note.start <= seconds && seconds < note.end)
-        return candidates.length === 1 ? candidates[0] : null
+        return candidates.length === 1 ? candidates[0]
+            : candidates.find(note => note.id === (view.selectedNote || {}).id) || null
     }
 
     function pointAt(x, y, modifiers, note) {
         const raw = timeForX(x)
         const pad = 10 * uiScale
-        const limit = Number(view.pitchMaxCents || 200)
         const snap = view.snapEnabled && !(modifiers & Qt.AltModifier)
         const step = snap ? 10 : 1
-        const candidate = snap ? controller.snapBeat(raw) : raw
-        const seconds = note && candidate >= note.start && candidate <= note.end ? candidate : raw
+        const edge = Number(view.pitchEdgeSeconds || .018)
+        const low = note ? note.start + edge : roll.origin
+        const high = note ? note.end - edge : roll.fullEnd
+        const seconds = roll.clamp(raw, low, high)
         const cents = extent * (1 - 2 * (y - pad) / Math.max(1, graph.height - 2 * pad))
-        return [seconds, Math.max(-limit, Math.min(limit, Math.round(cents / step) * step))]
+        return [seconds, roll.clamp(Math.round(cents / step) * step, -pitchLimit, pitchLimit)]
     }
 
     function nodeAt(x, y) {
+        if (!showManual)
+            return null
         let best = null
         let threshold = Math.pow(8 * uiScale, 2)
         for (const row of manual) {
@@ -92,39 +103,111 @@ Rectangle {
         return best
     }
 
+    function strokeAt(x, y) {
+        const raw = timeForX(x)
+        for (const row of manual) {
+            const points = row.offsets
+            if (raw <= points[0][0] || raw >= points[points.length - 1][0])
+                continue
+            const next = points.findIndex(pair => pair[0] > raw)
+            const a = points[next - 1], b = points[next]
+            const cents = a[1] + (b[1] - a[1]) * (raw - a[0]) / (b[0] - a[0])
+            if (Math.abs(yForValue(cents) - y) <= 7 * uiScale)
+                return {row: row, index: -1, pair: [raw, cents]}
+        }
+        return null
+    }
+
     function resetPointer() {
         gesture = null
         pointer = null
         pointerTime = Number.NaN
+        hoverNote = hoverNode = null
         graph.requestPaint()
     }
 
     function switchTool(value) {
         resetPointer()
-        tool = tool === value ? "" : value
-        if (tool.length)
+        tool = value
+        if (value !== "inspect")
             showManual = true
     }
 
     function startEdit(mouse) {
-        const raw = timeForX(mouse.x)
-        const hit = tool === "nodes" ? nodeAt(mouse.x, mouse.y) : null
-        const note = hit ? roll.visibleNotes.find(entry => entry.id === hit.row.noteId) : noteAt(raw)
-        if (!note || !tool.length || !canEdit) {
-            if (note)
-                roll.selectNote(note)
+        graph.forceActiveFocus(Qt.MouseFocusReason)
+        if (mouse.button === Qt.MiddleButton) {
+            gesture = {pan: roll.beginPan(mouse.x, mouse.y)}
             return
         }
-        const pair = pointAt(mouse.x, mouse.y, mouse.modifiers, note)
-        if (tool === "line")
-            gesture = {note: note, first: pair}
-        else {
-            const row = hit ? hit.row : manual.find(entry => entry.noteId === note.id
-                && entry.offsets[0][0] < raw && raw < entry.offsets[entry.offsets.length - 1][0])
-            if (row)
-                gesture = {note: note, row: row, index: hit ? hit.index : -1}
+        if (mouse.x < leftInset || mouse.x > rightInset)
+            return
+        const raw = timeForX(mouse.x)
+        const hit = tool === "nodes" ? nodeAt(mouse.x, mouse.y) || strokeAt(mouse.x, mouse.y) : null
+        const note = hit ? roll.visibleNotes.find(entry => entry.id === hit.row.noteId) : noteAt(raw)
+        if (mouse.button === Qt.RightButton) {
+            if (canEdit && hit && hit.index >= 0 && note && !note.drawReason) {
+                menuNode = hit
+                nodeMenu.x = mouse.x
+                nodeMenu.y = graph.y + controls.y + mouse.y
+                nodeMenu.open()
+            }
+            return
         }
-        pointer = pair
+        if (note) roll.selectNote(note)
+        if (!note || note.drawReason || !canEdit || tool === "inspect")
+            return
+        const pair = pointAt(mouse.x, mouse.y, mouse.modifiers, note)
+        if (tool === "nodes") {
+            if (hit) gesture = {note: note, kind: tool, hit: hit, x: mouse.x, y: mouse.y,
+                initial: hit.index >= 0 ? hit.row.offsets[hit.index] : hit.pair}
+        } else {
+            gesture = {note: note, kind: tool, x: mouse.x, y: mouse.y, first: pair, points: [pair]}
+        }
+        pointer = gesture && gesture.initial ? gesture.initial : pair
+        graph.requestPaint()
+    }
+
+    function dragPoint(current, mouse) {
+        if (current.kind !== "nodes" || current.hit.index < 0)
+            return pointAt(mouse.x, mouse.y, mouse.modifiers, current.note)
+        const idx = current.hit.index
+        const points = current.hit.row.offsets
+        const x = xForTime(current.initial[0]) + mouse.x - current.x
+        const y = yForValue(current.initial[1]) + mouse.y - current.y
+        const pair = pointAt(x, y, mouse.modifiers, current.note)
+        const low = idx === 0 ? current.note.start : points[idx - 1][0] + .000001
+        const high = idx === points.length - 1 ? current.note.end : points[idx + 1][0] - .000001
+        if (Math.abs(mouse.x - current.x) < 2 * uiScale) pair[0] = current.initial[0]
+        if (Math.abs(mouse.y - current.y) < 2 * uiScale) pair[1] = current.initial[1]
+        pair[0] = roll.clamp(pair[0], low, high)
+        return pair
+    }
+
+    function trackPointer(mouse) {
+        if (gesture && gesture.pan) {
+            roll.movePan(gesture.pan, mouse.x, mouse.y)
+            return
+        }
+        if (!gesture && (mouse.x < leftInset || mouse.x > rightInset)) {
+            resetPointer()
+            return
+        }
+        pointerTime = timeForX(mouse.x)
+        if (gesture) {
+            pointer = dragPoint(gesture, mouse)
+            if (gesture.kind === "freehand") {
+                const points = gesture.points
+                const last = points[points.length - 1]
+                if (Math.abs(xForTime(pointer[0]) - xForTime(last[0])) >= 2 * uiScale
+                        || Math.abs(pointer[1] - last[1]) >= 4) {
+                    if (points.length < 2047) points.push(pointer)
+                    else points[points.length - 1] = pointer
+                }
+            }
+        } else {
+            hoverNote = noteAt(pointerTime)
+            hoverNode = tool === "nodes" ? nodeAt(mouse.x, mouse.y) : null
+        }
         graph.requestPaint()
     }
 
@@ -133,24 +216,41 @@ Rectangle {
         gesture = null
         if (!current)
             return
-        let pair = pointAt(mouse.x, mouse.y, mouse.modifiers, current.note)
-        if (current.row) {
-            if (current.index < 0 &&
-                    !(current.row.offsets[0][0] < pair[0] &&
-                      pair[0] < current.row.offsets[current.row.offsets.length - 1][0]))
-                pair[0] = timeForX(mouse.x)
-            controller.editPitchNode(current.note.id, current.row.spanStart, current.index, pair[0], pair[1])
-        } else {
-            controller.drawPitchLine(current.note.id, current.first[0], current.first[1], pair[0], pair[1])
+        if (current.pan) {
+            roll.movePan(current.pan, mouse.x, mouse.y)
+            return
+        }
+        const moved = Math.hypot(mouse.x - current.x, mouse.y - current.y) >= 3 * uiScale
+        const pair = dragPoint(current, mouse)
+        const id = current.note.id
+        if (current.kind === "nodes") {
+            const hit = current.hit
+            if ((hit.index < 0 && !moved) || (hit.index >= 0 && moved)) {
+                const value = hit.index < 0 ? hit.pair : pair
+                controller.editPitchNode(id, hit.row.spanStart, hit.index, value[0], value[1])
+            }
+        } else if (current.kind === "erase") {
+            controller.editPitchStroke(id, "erase", moved ? [current.first, pair] : [current.first])
+        } else if (moved) {
+            const samples = current.kind === "line" ? [current.first, pair] : [...current.points, pair]
+            const times = samples.map(point => point[0])
+            if (Math.max(...times) - Math.min(...times) >= Number(view.pitchStrokeMinimum || .012)) {
+                if (current.kind === "line") controller.drawPitchLine(id, current.first[0], current.first[1], pair[0], pair[1])
+                else controller.editPitchStroke(id, "draw", samples)
+            }
         }
         graph.requestPaint()
     }
 
     onPlotChanged: graph.requestPaint()
     onManualChanged: graph.requestPaint()
+    onHasStrokesChanged: if (!hasStrokes && (tool === "nodes" || tool === "erase")) switchTool("line")
     onShowOriginalChanged: graph.requestPaint()
     onShowStyleChanged: graph.requestPaint()
-    onShowManualChanged: graph.requestPaint()
+    onShowManualChanged: {
+        if (!showManual) switchTool("inspect")
+        graph.requestPaint()
+    }
     onExtentChanged: graph.requestPaint()
     onToolChanged: graph.requestPaint()
     onCanEditChanged: if (!canEdit) resetPointer()
@@ -158,9 +258,9 @@ Rectangle {
 
     Connections {
         target: lane.roll
-        function onSourceKeyChanged() { lane.resetPointer() }
+        function onSourceKeyChanged() { lane.switchTool("line") }
         function onActiveTrackChanged() { lane.resetPointer() }
-        function onVisibleStartChanged() { lane.resetPointer() }
+        function onVisibleStartChanged() { if (!lane.gesture || !lane.gesture.pan) lane.resetPointer() }
         function onVisibleSpanChanged() { lane.resetPointer() }
         function onSelectionStartChanged() { graph.requestPaint() }
         function onSelectionEndChanged() { graph.requestPaint() }
@@ -193,6 +293,19 @@ Rectangle {
         }
     }
 
+    Menu {
+        id: nodeMenu
+        MenuItem {
+            objectName: "tuningDeletePitchNode"
+            text: lane.label("删除节点")
+            onTriggered: {
+                const node = lane.menuNode
+                if (node) lane.controller.removePitchNode(node.row.noteId, node.row.spanStart, node.index)
+            }
+        }
+        onClosed: lane.menuNode = null
+    }
+
     ColumnLayout {
         id: controls
         anchors.fill: parent
@@ -209,23 +322,27 @@ Rectangle {
                 font.pixelSize: Math.round(12 * lane.uiScale)
                 font.weight: Font.DemiBold
             }
-            LaneButton {
-                objectName: "tuningParameterLine"
-                text: lane.label("直线")
-                enabled: lane.canEdit
-                selected: lane.tool === "line"
-                ToolTip.visible: hovered || visualFocus
-                ToolTip.text: lane.label("在一个音符内拖动，画出两点之间的直线。")
-                onClicked: lane.switchTool("line")
-            }
-            LaneButton {
-                objectName: "tuningParameterNodes"
-                text: lane.label("节点")
-                enabled: lane.canEdit && lane.manual.length > 0
-                selected: lane.tool === "nodes"
-                ToolTip.visible: hovered || visualFocus
-                ToolTip.text: lane.label("单击手绘线插入节点，拖动已有节点。")
-                onClicked: lane.switchTool("nodes")
+            Repeater {
+                model: [
+                    {id: "Inspect", tool: "inspect", title: "查看", hint: "查看曲线全幅。"},
+                    {id: "Freehand", tool: "freehand", title: "画笔", hint: "在音符内连续拖动绘制。"},
+                    {id: "Line", tool: "line", title: "直线", hint: "在一个音符内拖动，画出两点之间的直线。"},
+                    {id: "Nodes", tool: "nodes", title: "节点", hint: "点击线条插入节点，拖圆点调整，右键可删除。"},
+                    {id: "Erase", tool: "erase", title: "橡皮", hint: "点手绘时间位置擦除整段，拖动擦除局部。"}
+                ]
+                LaneButton {
+                    required property var modelData
+                    objectName: "tuningParameter" + modelData.id
+                    text: lane.label(modelData.title)
+                    enabled: modelData.tool === "inspect" || (lane.canEdit
+                        && ((modelData.tool !== "nodes" && modelData.tool !== "erase") || lane.hasStrokes))
+                    selected: lane.tool === modelData.tool
+                    Accessible.checkable: true
+                    Accessible.checked: selected
+                    ToolTip.visible: hovered || visualFocus
+                    ToolTip.text: lane.label(modelData.hint)
+                    onClicked: lane.switchTool(modelData.tool)
+                }
             }
             UiComboBox {
                 objectName: "tuningBeatDivision"
@@ -292,6 +409,8 @@ Rectangle {
                 x: -parent.x - controls.x
                 width: lane.width
                 height: parent.height
+                activeFocusOnTab: true
+                Accessible.name: lane.label("音高参数轨")
 
                 function stroke(ctx, points, color, nodes) {
                     ctx.strokeStyle = color
@@ -356,18 +475,32 @@ Rectangle {
                         for (const row of lane.plot.original || []) stroke(ctx, row.points, lane.originalColor, false)
                     if (lane.showStyle)
                         for (const row of lane.plot.style || []) stroke(ctx, row.points, lane.styleColor, false)
-                    if (lane.showManual)
-                        for (const row of lane.manual)
-                            stroke(ctx, row.offsets, lane.manualColor, lane.tool === "nodes")
-                    if (lane.gesture && lane.pointer) {
-                        const g = lane.gesture
-                        if (g.first)
-                            stroke(ctx, [g.first, lane.pointer], lane.manualColor, true)
-                        else if (g.index >= 0) {
-                            const points = g.row.offsets.slice()
-                            points[g.index] = lane.pointer
-                            stroke(ctx, points, lane.manualColor, true)
+                    const g = lane.gesture
+                    if (g && g.note) {
+                        ctx.fillStyle = lane.theme.accent
+                        ctx.globalAlpha = .09
+                        ctx.fillRect(lane.xForTime(g.note.start), 0,
+                            lane.xForTime(g.note.end) - lane.xForTime(g.note.start), height)
+                        ctx.globalAlpha = 1
+                    }
+                    if (lane.showManual) {
+                        for (const row of lane.manual) {
+                            const moving = g && g.hit && g.hit.index >= 0 && g.hit.row === row
+                            const points = moving ? row.offsets.slice() : row.offsets
+                            if (moving) points[g.hit.index] = lane.pointer || g.initial
+                            stroke(ctx, points, lane.manualColor, lane.tool === "nodes")
                         }
+                    }
+                    if (g && lane.pointer && g.kind === "line")
+                        stroke(ctx, [g.first, lane.pointer], lane.manualColor, true)
+                    if (g && lane.pointer && g.kind === "freehand")
+                        stroke(ctx, [...g.points, lane.pointer], lane.manualColor, false)
+                    if (g && lane.pointer && g.kind === "erase") {
+                        const first = lane.xForTime(g.first[0]), last = lane.xForTime(lane.pointer[0])
+                        ctx.fillStyle = lane.theme.error
+                        ctx.globalAlpha = .28
+                        ctx.fillRect(Math.min(first, last), 0, Math.max(2, Math.abs(first - last)), height)
+                        ctx.globalAlpha = 1
                     }
                     if (isFinite(lane.roll.cursorTime)) {
                         ctx.fillStyle = lane.theme.accent
@@ -378,30 +511,23 @@ Rectangle {
 
                 MouseArea {
                     anchors.fill: parent
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+                    preventStealing: true
                     hoverEnabled: true
-                    cursorShape: lane.tool.length && lane.canEdit ? Qt.CrossCursor : Qt.ArrowCursor
-                    onPressed: mouse => {
-                        if (mouse.x >= lane.leftInset && mouse.x <= lane.rightInset)
-                            lane.startEdit(mouse)
-                    }
-                    onPositionChanged: mouse => {
-                        lane.pointerTime = lane.timeForX(mouse.x)
-                        lane.pointer = lane.pointAt(mouse.x, mouse.y, mouse.modifiers,
-                            lane.gesture ? lane.gesture.note : null)
-                        graph.requestPaint()
-                    }
+                    cursorShape: lane.gesture && lane.gesture.pan ? Qt.ClosedHandCursor
+                        : lane.hoverNode ? Qt.SizeAllCursor
+                        : !lane.canEdit || lane.tool === "inspect" ? Qt.ArrowCursor
+                        : lane.hoverNote && lane.hoverNote.drawReason ? Qt.ForbiddenCursor : Qt.CrossCursor
+                    ToolTip.visible: containsMouse && !pressed && (!!lane.view.pitchEditReason
+                        || (lane.hoverNote && !!lane.hoverNote.drawReason))
+                    ToolTip.delay: 600
+                    ToolTip.text: lane.label(lane.view.pitchEditReason || (lane.hoverNote ? lane.hoverNote.drawReason : ""))
+                    onPressed: mouse => lane.startEdit(mouse)
+                    onPositionChanged: mouse => lane.trackPointer(mouse)
                     onReleased: mouse => lane.finishEdit(mouse)
                     onCanceled: lane.resetPointer()
                     onExited: if (!pressed) lane.resetPointer()
-                    onWheel: wheel => {
-                        const amount = wheel.angleDelta.y || wheel.pixelDelta.y
-                        if (!amount || pressed) return
-                        if (wheel.modifiers & Qt.ShiftModifier)
-                            lane.roll.panBy(-amount / 120 * lane.roll.visibleSpan * 0.15)
-                        else
-                            lane.roll.zoomAt(amount > 0 ? 0.82 : 1.22, lane.timeForX(wheel.x))
-                        wheel.accepted = true
-                    }
+                    onWheel: wheel => wheel.accepted = pressed || lane.roll.viewportWheel(wheel, wheel.x - lane.leftInset)
                 }
             }
         }

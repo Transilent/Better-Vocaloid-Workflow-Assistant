@@ -258,9 +258,9 @@ def tuning_flow(folder):
     roll = visual('tuningTimelineCanvas')
     x = roll.property('plotLeft')
     w = roll.property('plotWidth')
-    y = roll.property('plotTop') + roll.property('plotHeight') * .7
-    drag(roll, x + w * .72, y, x + w * .89)
-    wait('one drag applies the brush to both selected harmonies', lambda: len(tune.regions) == 4)
+    upper_lane = visual('tuningTrackLane_' + tracks[1])
+    drag(upper_lane, x + w * .72, upper_lane.height() * .78, x + w * .89)
+    wait('a drag in the upper lanes applies the brush to both selected harmonies', lambda: len(tune.regions) == 4)
     assert {region['trackId'] for region in tune.regions if region['style'] == 'bold'} == set(tracks[1:])
     assert saved in tune.regions
     tap(visual('tuningModeSingle'))

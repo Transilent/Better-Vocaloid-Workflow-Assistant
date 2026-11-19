@@ -81,11 +81,12 @@ Item {
     readonly property int visibleNoteCount: visibleNotes.length
     readonly property var focusedNote: visibleNotes.find(entry =>
         entry.trackId === focusedTrackId && entry.id === focusedNoteId)
-    readonly property string selectedNoteId: String((view.selectedNote || {}).id || "")
+    readonly property var selectedNotes: view.selectedNoteIds || []
+    readonly property var selectedNoteSet: new Set(selectedNotes)
     readonly property var hoveredBox: scoreMouse.containsMouse && !noteGesture && !pitchGesture
         ? noteBoxAt(scoreMouse.mouseX + plotLeft, scoreMouse.mouseY + plotTop) : null
     readonly property var hoveredNote: hoveredBox ? hoveredBox.note : null
-    readonly property string instructions: "点击音符选段，拖拽选择时间。左右键找音符，回车选择；上下键或键轨滚轮移动音高。滚轮缩放，Shift 加滚轮平移。"
+    readonly property string instructions: vwaTr("左右键选择相邻音符。中键拖动平移，滚轮缩放，Shift 滚轮横移。")
 
     property real topRow: 63
     property bool centerOnSource: true
@@ -98,6 +99,8 @@ Item {
     property real dragTime: Number.NaN
     property bool selectOnly: false
     property string gestureType: ""
+    property var marqueeEnd: null
+    property var panGesture: null
     property var hoveredLaneNote: null
     property var noteGesture: null
     property var noteGhost: null
@@ -457,10 +460,20 @@ Item {
     }
 
     function pitchNoteAt(x, y) {
+        const exact = noteBoxAt(plotLeft + x, plotTop + y)
+        if (exact)
+            return exact.note
         const time = timeForPlotX(x)
-        const proximity = ((view.pitchMaxCents || 200) / 100 + 0.65) * pitchRowHeight
-        return visibleNotes.find(note => note.start <= time && time < note.end
-            && Math.abs(plotTop + y - yForPitch(note.pitch) - pitchRowHeight / 2) <= proximity)
+        let nearest = null
+        let distance = ((view.pitchMaxCents || 200) / 100 + 0.65) * pitchRowHeight
+        for (const note of visibleNotes) {
+            const gap = Math.abs(plotTop + y - yForPitch(note.pitch) - pitchRowHeight / 2)
+            if (note.start <= time && time < note.end && gap < distance) {
+                distance = gap
+                nearest = note
+            }
+        }
+        return nearest
     }
 
     function pitchSample(x, y, modifiers, force) {
@@ -521,21 +534,26 @@ Item {
     }
 
     function moveNoteCursor(direction) {
-        if (!visibleNotes.length)
+        const anchor = selectedNotes.length ? selectedNotes[selectedNotes.length - 1] : focusedNoteId
+        const next = controller.adjacentNote(anchor, direction > 0 ? visibleStart : visibleEnd, direction)
+        if (!next.id)
             return false
-        let index = focusedNote ? visibleNotes.indexOf(focusedNote) : -1
-        if (index < 0 && isFinite(selectionStart)) {
-            index = visibleNotes.findIndex(note => note.start >= selectionStart - 0.000001)
-            if (index < 0)
-                index = visibleNotes.length - 1
-        } else if (index < 0) {
-            index = direction > 0 ? 0 : visibleNotes.length - 1
-        } else {
-            index = clamp(index + direction, 0, visibleNotes.length - 1)
-        }
-        const next = visibleNotes[index]
-        revealPitch(next.pitch, next.trackId, next.id)
+        locateNote(next)
         return true
+    }
+
+    function pitchKey(direction, event) {
+        if (gestureType)
+            return true
+        const note = view.selectedNote || {}
+        const modifiers = event.modifiers
+        if (noteTool && note.id && (modifiers === Qt.NoModifier || modifiers === Qt.ControlModifier)) {
+            const next = note.pitch + direction * (modifiers === Qt.ControlModifier ? 12 : 1)
+            if (next >= 0 && next <= 127 && controller.editNoteGeometry(note.id, "move", note.start, next, false))
+                revealPitch(next, note.trackId, note.id)
+            return true
+        }
+        return movePitch(-direction)
     }
 
     function selectNote(note) {
@@ -547,10 +565,37 @@ Item {
             noteFocused()
     }
 
-    function locateNote(note) {
+    function locateNote(note, preserveSelection) {
         if (note.start < visibleStart || note.start >= visibleEnd)
             controller.setViewport(note.start - visibleSpan * 0.15, visibleSpan)
-        selectNote(note)
+        if (preserveSelection)
+            revealPitch(note.pitch, note.trackId, note.id)
+        else
+            selectNote(note)
+    }
+
+    function selectNoteWithModifiers(note, modifiers) {
+        if (noteTool && (modifiers & Qt.ControlModifier)) {
+            const ids = selectedNotes.filter(identity => identity !== note.id)
+            if (!selectedNoteSet.has(note.id)) ids.push(note.id)
+            controller.selectNotes(ids)
+            const current = view.selectedNote || {}
+            if (current.id) revealPitch(current.pitch, current.trackId, current.id)
+            else focusedNoteId = focusedTrackId = ""
+            noteFocused()
+        } else if (noteTool && (modifiers & Qt.ShiftModifier)) {
+            controller.extendNoteSelection(note.id)
+            revealPitch(note.pitch, note.trackId, note.id)
+            noteFocused()
+        } else {
+            selectNote(note)
+        }
+    }
+
+    function clearSelection() {
+        focusedNoteId = ""
+        focusedTrackId = ""
+        controller.clearSelection()
     }
 
     function openLyric(note) {
@@ -570,13 +615,13 @@ Item {
             lyricNote = null
     }
 
-    function finishLyric(advance) {
+    function finishLyric(direction) {
         if (!lyricNote || lyricInput.inputMethodComposing)
             return
         const noteId = lyricNote.id
         if (!controller.editNoteLyric(noteId, lyricInput.text))
             return
-        const next = advance ? controller.nextEditableLyric(noteId) : null
+        const next = direction ? controller.nextEditableLyric(noteId, direction) : null
         if (!next || !next.id || !openLyric(next)) {
             closeLyric()
             timeline.forceActiveFocus(Qt.OtherFocusReason)
@@ -593,6 +638,75 @@ Item {
         controller.setViewport(clamp(visibleStart + seconds, origin, fullEnd - visibleSpan), visibleSpan)
     }
 
+    function beginPan(x, y) {
+        return { x: x, y: y, left: visibleStart, top: pitchOffset, span: visibleSpan }
+    }
+
+    function movePan(pan, x, y) {
+        controller.setViewport(pan.left - (x - pan.x) * pan.span / plotWidth, pan.span)
+        topRow = clamp(pan.top - (y - pan.y) / pitchRowHeight, 0, 128 - rowsInView)
+    }
+
+    function viewportWheel(wheel, plotX) {
+        const vertical = wheel.pixelDelta.y || wheel.angleDelta.y
+        const horizontal = wheel.pixelDelta.x || wheel.angleDelta.x
+        if (!vertical && !horizontal)
+            return false
+        if (wheel.modifiers & Qt.AltModifier)
+            return vertical !== 0 && movePitch(vertical > 0 ? -2 : 2)
+        if ((wheel.modifiers & Qt.ShiftModifier) || Math.abs(horizontal) > Math.abs(vertical))
+            panBy(((horizontal || vertical) > 0 ? -1 : 1) * visibleSpan * 0.12)
+        else
+            zoomAt(vertical > 0 ? 0.82 : 1.22, timeForPlotX(plotX))
+        return true
+    }
+
+    function startRange(x, y, modifiers) {
+        pressX = x
+        pressY = y
+        selectOnly = !!(modifiers & Qt.ShiftModifier)
+        gestureType = styleTool && !selectOnly ? "style" : "range"
+        pressTime = snapTime(timeForPlotX(x), modifiers, "")
+        dragTime = pressTime
+    }
+
+    function finishRange(x, modifiers) {
+        const kind = gestureType
+        const moved = Math.abs(x - pressX) >= 3 * scale
+        const end = snapTime(timeForPlotX(x), modifiers, "")
+        const first = Math.min(pressTime, end)
+        const last = Math.max(pressTime, end)
+        clearGesture()
+        if (view.busy || !moved)
+            return false
+        if (last > first && kind === "style")
+            controller.finishTimelineSelection(first, last)
+        else if (last > first)
+            controller.selectSpan(first, last)
+        return true
+    }
+
+    function finishMarquee(x, y) {
+        const left = Math.min(x, pressX) + plotLeft
+        const right = Math.max(x, pressX) + plotLeft
+        const top = Math.min(y, pressY) + plotTop
+        const bottom = Math.max(y, pressY) + plotTop
+        const moved = right - left >= 3 * scale || bottom - top >= 3 * scale
+        clearGesture()
+        if (!moved) {
+            clearSelection()
+            return
+        }
+        const hits = noteRects.filter(box => box.x < right && box.x + box.width > left
+            && box.y < bottom && box.y + box.height > top)
+        controller.selectNotes(hits.map(box => box.note.id))
+        if (hits.length) {
+            const note = hits[hits.length - 1].note
+            revealPitch(note.pitch, note.trackId, note.id)
+            noteFocused()
+        }
+    }
+
     function clearGesture() {
         noteGesture = null
         noteGhost = null
@@ -606,6 +720,8 @@ Item {
         dragTime = Number.NaN
         selectOnly = false
         gestureType = ""
+        marqueeEnd = null
+        panGesture = null
     }
 
     function emptyMessage() {
@@ -656,7 +772,9 @@ Item {
     onBeatMarksChanged: score.requestPaint()
     onDragTimeChanged: score.requestPaint()
     onFocusedNoteChanged: score.requestPaint()
-    onSelectedNoteIdChanged: score.requestPaint()
+    onSelectedNoteSetChanged: score.requestPaint()
+    onMarqueeEndChanged: score.requestPaint()
+    onNoteGhostChanged: score.requestPaint()
     onHoveredNoteChanged: score.requestPaint()
     onHoveredLaneNoteChanged: score.requestPaint()
     onActiveFocusChanged: score.requestPaint()
@@ -668,12 +786,17 @@ Item {
         score.requestPaint()
     }
 
-    Keys.onLeftPressed: event => event.accepted = !pitchGesture && moveNoteCursor(-1)
-    Keys.onRightPressed: event => event.accepted = !pitchGesture && moveNoteCursor(1)
-    Keys.onUpPressed: event => event.accepted = !pitchGesture && movePitch(-1)
-    Keys.onDownPressed: event => event.accepted = !pitchGesture && movePitch(1)
+    Connections {
+        target: timeline.controller
+        function onNoteLocated(pitch, track, identity) { timeline.revealPitch(pitch, track, identity) }
+    }
+
+    Keys.onLeftPressed: event => event.accepted = !!gestureType || moveNoteCursor(-1)
+    Keys.onRightPressed: event => event.accepted = !!gestureType || moveNoteCursor(1)
+    Keys.onUpPressed: event => event.accepted = pitchKey(1, event)
+    Keys.onDownPressed: event => event.accepted = pitchKey(-1, event)
     Keys.onPressed: function(event) {
-        if (pitchGesture) {
+        if (gestureType) {
             event.accepted = true
         } else if (event.key === Qt.Key_F2 && scoreEditable) {
             event.accepted = openLyric(focusedNote)
@@ -945,6 +1068,39 @@ Item {
             ctx.globalAlpha = 1
         }
 
+        function paintGesture(ctx) {
+            ctx.save()
+            ctx.beginPath()
+            ctx.rect(timeline.plotLeft, timeline.plotTop, timeline.plotWidth, timeline.plotHeight)
+            ctx.clip()
+            if (timeline.marqueeEnd) {
+                const x = timeline.plotLeft + Math.min(timeline.pressX, timeline.marqueeEnd.x)
+                const y = timeline.plotTop + Math.min(timeline.pressY, timeline.marqueeEnd.y)
+                const w = Math.abs(timeline.pressX - timeline.marqueeEnd.x)
+                const h = Math.abs(timeline.pressY - timeline.marqueeEnd.y)
+                ctx.globalAlpha = .18
+                fill(ctx, timeline.theme.accent, x, y, w, h)
+                ctx.globalAlpha = 1
+                ctx.strokeStyle = timeline.theme.accent
+                ctx.lineWidth = 1
+                ctx.strokeRect(x, y, w, h)
+            }
+            const preview = timeline.noteGhost || {}
+            for (const note of preview.notes || []) {
+                const x = timeline.xForTime(note.start)
+                const y = timeline.yForPitch(note.pitch) + 2
+                const w = Math.max(2, timeline.xForTime(note.end) - x)
+                const h = timeline.pitchRowHeight - 4
+                ctx.globalAlpha = .78
+                fill(ctx, timeline.theme.accent, x, y, w, h)
+                ctx.globalAlpha = 1
+                ctx.strokeStyle = timeline.theme.text
+                ctx.lineWidth = 1
+                ctx.strokeRect(x + .5, y + .5, w - 1, h - 1)
+            }
+            ctx.restore()
+        }
+
         function paintNotes(ctx) {
             const font = Math.round(12 * timeline.scale)
             const pad = Math.round(5 * timeline.scale)
@@ -968,9 +1124,10 @@ Item {
                         ctx.fillText(label, box.x + pad, box.y + box.height / 2)
                     }
                 }
-                if (note.id === timeline.selectedNoteId || (timeline.activeFocus && note === timeline.focusedNote)
-                        || note === timeline.hoveredNote) {
-                    ctx.strokeStyle = timeline.theme.text
+                const selected = timeline.selectedNoteSet.has(note.id)
+                    || (timeline.activeFocus && note === timeline.focusedNote && !timeline.selectedNotes.length)
+                if (selected || note === timeline.hoveredNote) {
+                    ctx.strokeStyle = selected ? timeline.theme.text : timeline.theme.muted
                     ctx.lineWidth = 1
                     ctx.strokeRect(box.x + 0.5, box.y + 0.5,
                         Math.max(0, box.width - 1), Math.max(0, box.height - 1))
@@ -992,10 +1149,12 @@ Item {
             paintKeysAndRows(ctx)
             paintRegions(ctx)
             paintRuler(ctx)
-            paintSelection(ctx, timeline.selectionStart, timeline.selectionEnd, false)
+            if (!timeline.selectedNotes.length)
+                paintSelection(ctx, timeline.selectionStart, timeline.selectionEnd, false)
             paintSelection(ctx, Math.min(timeline.pressTime, timeline.dragTime),
                 Math.max(timeline.pressTime, timeline.dragTime), true)
             paintNotes(ctx)
+            paintGesture(ctx)
         }
     }
 
@@ -1028,12 +1187,33 @@ Item {
 
             MouseArea {
                 id: laneHit
+                property bool headerPress: false
                 anchors.fill: parent
-                acceptedButtons: Qt.LeftButton
+                acceptedButtons: Qt.LeftButton | Qt.MiddleButton
                 hoverEnabled: true
                 preventStealing: true
                 cursorShape: Qt.PointingHandCursor
+                onPressed: mouse => {
+                    if (timeline.view.busy) {
+                        mouse.accepted = false
+                        return
+                    }
+                    headerPress = mouse.button === Qt.LeftButton && mouse.x < timeline.plotLeft
+                    timeline.forceActiveFocus(Qt.MouseFocusReason)
+                    if (mouse.button === Qt.MiddleButton) {
+                        timeline.gestureType = "pan"
+                        timeline.panGesture = timeline.beginPan(mouse.x, mouse.y)
+                    } else if (mouse.x >= timeline.plotLeft) {
+                        timeline.startRange(mouse.x - timeline.plotLeft, mouse.y, mouse.modifiers)
+                    }
+                }
                 onPositionChanged: function(mouse) {
+                    if (pressed && timeline.panGesture) {
+                        timeline.movePan(timeline.panGesture, mouse.x, mouse.y)
+                        return
+                    }
+                    if (pressed && isFinite(timeline.pressTime))
+                        timeline.dragTime = timeline.snapTime(timeline.timeForPlotX(mouse.x - timeline.plotLeft), mouse.modifiers, "")
                     timeline.hoveredLaneNote = timeline.laneNoteAt(mouse.x,
                         mouse.y + laneInput.y, modelData.track.id)
                 }
@@ -1042,7 +1222,19 @@ Item {
                             && timeline.hoveredLaneNote.trackId === String(modelData.track.id))
                         timeline.hoveredLaneNote = null
                 }
-                onClicked: function(mouse) {
+                onReleased: function(mouse) {
+                    const header = headerPress
+                    headerPress = false
+                    if (timeline.view.busy || mouse.button !== Qt.LeftButton) {
+                        timeline.clearGesture()
+                        return
+                    }
+                    if (!header && !timeline.gestureType)
+                        return
+                    if (isFinite(timeline.pressTime) && timeline.finishRange(mouse.x - timeline.plotLeft, mouse.modifiers))
+                        return
+                    if (mouse.x < 0 || mouse.x > width || mouse.y < 0 || mouse.y > height)
+                        return
                     const note = timeline.laneNoteAt(mouse.x, mouse.y + laneInput.y,
                         modelData.track.id)
                     if (note)
@@ -1050,6 +1242,8 @@ Item {
                     else
                         timeline.controller.focusTrack(String(modelData.track.id))
                 }
+                onCanceled: { headerPress = false; timeline.clearGesture() }
+                onWheel: wheel => wheel.accepted = pressed || timeline.viewportWheel(wheel, wheel.x - timeline.plotLeft)
                 ToolTip.visible: containsMouse
                 ToolTip.delay: 500
                 ToolTip.text: timeline.laneDescription(modelData)
@@ -1123,7 +1317,7 @@ Item {
             }
 
             Rectangle {
-                visible: styleDrag.pressed && styleDrag.moved
+                visible: styleDrag.pressed && styleDrag.moved && timeline.gestureType === "clip"
                 x: Math.max(timeline.plotLeft, timeline.xForTime(styleDrag.start)) - styleBlock.x
                 width: Math.max(0, Math.min(timeline.plotRight, timeline.xForTime(styleDrag.end))
                     - styleBlock.x - x)
@@ -1152,6 +1346,7 @@ Item {
                 cursorShape: (pressed ? mode : grip(mouseX)) !== "move" ? Qt.SizeHorCursor
                     : (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor)
                 onPressed: mouse => {
+                    timeline.gestureType = "clip"
                     pressX = mouse.x
                     mode = grip(mouse.x)
                     start = Number(styleBlock.region.start)
@@ -1161,7 +1356,7 @@ Item {
                 }
                 onPositionChanged: mouse => {
                     const delta = mouse.x - pressX
-                    if (!pressed || (!moved && Math.abs(delta) < 3))
+                    if (!pressed || timeline.gestureType !== "clip" || (!moved && Math.abs(delta) < 3))
                         return
                     moved = true
                     const first = Number(styleBlock.region.start)
@@ -1185,6 +1380,9 @@ Item {
                     }
                 }
                 onReleased: {
+                    if (timeline.gestureType !== "clip")
+                        return
+                    timeline.clearGesture()
                     if (moved) {
                         const nextStart = start
                         const nextEnd = end
@@ -1195,7 +1393,7 @@ Item {
                         styleBlock.openRegion()
                     }
                 }
-                onCanceled: moved = false
+                onCanceled: { moved = false; timeline.clearGesture() }
             }
         }
     }
@@ -1223,11 +1421,12 @@ Item {
         y: timeline.plotTop
         width: timeline.plotWidth
         height: timeline.plotHeight
-        acceptedButtons: Qt.LeftButton
+        acceptedButtons: Qt.LeftButton | Qt.MiddleButton
         preventStealing: true
         hoverEnabled: true
         enabled: timeline.hasSource && timeline.activeTrack.length > 0
-        cursorShape: timeline.pitchTool ? (timeline.hoveredNote && timeline.hoveredNote.drawReason
+        cursorShape: timeline.panGesture ? Qt.ClosedHandCursor
+            : timeline.pitchTool ? (timeline.hoveredNote && timeline.hoveredNote.drawReason
                     ? Qt.ForbiddenCursor : Qt.CrossCursor)
             : timeline.noteGesture && timeline.noteGesture.action
                 ? (timeline.noteGesture.action === "resize" ? Qt.SizeHorCursor : Qt.ClosedHandCursor)
@@ -1240,8 +1439,13 @@ Item {
         ToolTip.text: timeline.hoveredNote ? timeline.noteDescription(timeline.hoveredNote) : ""
         onPressed: function(mouse) {
             timeline.forceActiveFocus(Qt.MouseFocusReason)
-            if (timeline.view.busy === true || !timeline.visibleNoteCount) {
+            if (timeline.view.busy === true) {
                 mouse.accepted = false
+                return
+            }
+            if (mouse.button === Qt.MiddleButton) {
+                timeline.gestureType = "pan"
+                timeline.panGesture = timeline.beginPan(mouse.x, mouse.y)
                 return
             }
             timeline.pressX = mouse.x
@@ -1259,21 +1463,34 @@ Item {
             }
             const box = timeline.noteBoxAt(mouse.x + x, mouse.y + y)
             if (!timeline.selectOnly && timeline.noteTool && box) {
+                if (mouse.modifiers & Qt.ControlModifier) {
+                    timeline.gestureType = "toggle"
+                    timeline.noteGesture = {note: box.note}
+                    return
+                }
                 timeline.gestureType = "note"
                 const action = timeline.resizeHit(box, mouse.x + x) ? "resize"
                     : box.note.timingReason && box.note.pitchReason ? "" : "move"
                 timeline.noteGesture = {note: box.note, action: action}
-                timeline.selectNote(box.note)
+                if (!timeline.selectedNoteSet.has(box.note.id)) timeline.selectNote(box.note)
                 return
             }
-            timeline.gestureType = timeline.styleTool && !timeline.selectOnly ? "style" : "range"
-            timeline.pressTime = timeline.snapTime(timeline.timeForPlotX(mouse.x), mouse.modifiers, "")
-            timeline.dragTime = timeline.pressTime
+            if (timeline.noteTool && !timeline.selectOnly) {
+                timeline.gestureType = "marquee"
+                return
+            }
+            timeline.startRange(mouse.x, mouse.y, mouse.modifiers)
         }
         onPositionChanged: function(mouse) {
-            if (pressed && timeline.pitchGesture) {
+            if (!pressed)
+                return
+            if (timeline.panGesture) {
+                timeline.movePan(timeline.panGesture, mouse.x, mouse.y)
+            } else if (timeline.gestureType === "marquee") {
+                timeline.marqueeEnd = {x: mouse.x, y: mouse.y}
+            } else if (timeline.pitchGesture) {
                 timeline.pitchSample(mouse.x, mouse.y, mouse.modifiers, false)
-            } else if (pressed && timeline.noteGesture && timeline.noteGesture.action) {
+            } else if (timeline.noteGesture && timeline.noteGesture.action) {
                 const gesture = timeline.noteGesture
                 const request = timeline.dragRequest(gesture, mouse.x, mouse.y, mouse.modifiers)
                 if (request.horizontal || request.pitch !== gesture.note.pitch) {
@@ -1282,19 +1499,38 @@ Item {
                 } else {
                     timeline.noteGhost = null
                 }
-            } else if (pressed && timeline.pressX >= 0 && isFinite(timeline.pressTime))
+            } else if (isFinite(timeline.pressTime))
                 timeline.dragTime = timeline.snapTime(timeline.timeForPlotX(mouse.x), mouse.modifiers, "")
         }
         onReleased: function(mouse) {
             const kind = timeline.gestureType
             if (!kind)
                 return
+            if (kind === "pan") {
+                timeline.movePan(timeline.panGesture, mouse.x, mouse.y)
+                timeline.clearGesture()
+                return
+            }
+            if (kind === "marquee") {
+                timeline.finishMarquee(mouse.x, mouse.y)
+                return
+            }
+            if (kind === "toggle") {
+                const note = timeline.noteGesture.note
+                const clicked = Math.hypot(mouse.x - timeline.pressX, mouse.y - timeline.pressY) < 4 * timeline.scale
+                timeline.clearGesture()
+                if (clicked) timeline.selectNoteWithModifiers(note, Qt.ControlModifier)
+                return
+            }
             if (kind === "pitch") {
                 const gesture = timeline.pitchGesture
                 if (gesture) {
                     timeline.pitchSample(mouse.x, mouse.y, mouse.modifiers, true)
                     timeline.clearGesture()
-                    timeline.controller.editPitchStroke(gesture.note.id, gesture.kind, gesture.points)
+                    const times = gesture.points.map(point => point[0])
+                    if (gesture.kind === "erase" || Math.max(...times) - Math.min(...times)
+                            >= Number(timeline.view.pitchStrokeMinimum || .012))
+                        timeline.controller.editPitchStroke(gesture.note.id, gesture.kind, gesture.points)
                 } else {
                     timeline.clearGesture()
                 }
@@ -1308,30 +1544,22 @@ Item {
                     if (timeline.controller.editNoteGeometry(gesture.note.id, gesture.action,
                             request.seconds, request.pitch, request.horizontal))
                         timeline.revealPitch(request.pitch, gesture.note.trackId, gesture.note.id)
-                }
+                } else timeline.selectNote(gesture.note)
                 return
             }
             const dx = Math.abs(mouse.x - timeline.pressX)
             const dy = Math.abs(mouse.y - timeline.pressY)
-            const end = timeline.snapTime(timeline.timeForPlotX(mouse.x), mouse.modifiers, "")
-            const first = Math.min(timeline.pressTime, end)
-            const last = Math.max(timeline.pressTime, end)
-            const box = dx < 2 && dy < 3 ? timeline.noteBoxAt(mouse.x + x, mouse.y + y) : null
-            timeline.clearGesture()
-            if (timeline.view.busy === true)
+            const click = dx < 3 * timeline.scale && dy < 3 * timeline.scale
+            const modifiers = timeline.selectOnly ? mouse.modifiers | Qt.ShiftModifier : mouse.modifiers
+            if (timeline.finishRange(mouse.x, mouse.modifiers) || !click || timeline.view.busy)
                 return
-            if (dx >= 2 && last > first) {
-                if (kind === "style")
-                    timeline.controller.finishTimelineSelection(first, last)
-                else
-                    timeline.controller.selectSpan(first, last)
-            } else if (box) {
-                timeline.selectNote(box.note)
-            }
+            const box = timeline.noteBoxAt(mouse.x + x, mouse.y + y)
+            if (box) timeline.selectNoteWithModifiers(box.note, modifiers)
+            else timeline.clearSelection()
         }
         onCanceled: timeline.clearGesture()
         onDoubleClicked: function(mouse) {
-            if (timeline.pitchTool)
+            if (timeline.pitchTool || mouse.button !== Qt.LeftButton || mouse.modifiers & (Qt.ShiftModifier | Qt.ControlModifier))
                 return
             const box = timeline.noteBoxAt(mouse.x + x, mouse.y + y)
             if (box)
@@ -1339,27 +1567,7 @@ Item {
             else
                 timeline.controller.setViewport(timeline.origin, timeline.fullSpan)
         }
-        onWheel: function(wheel) {
-            if (pressed || timeline.lyricNote) {
-                wheel.accepted = true
-                return
-            }
-            const vertical = wheel.pixelDelta.y || wheel.angleDelta.y
-            const horizontal = wheel.pixelDelta.x || wheel.angleDelta.x
-            if (!vertical && !horizontal) {
-                wheel.accepted = false
-                return
-            }
-            if (wheel.modifiers & Qt.AltModifier) {
-                wheel.accepted = vertical !== 0 && timeline.movePitch(vertical > 0 ? -2 : 2)
-                return
-            }
-            if ((wheel.modifiers & Qt.ShiftModifier) || !vertical)
-                timeline.panBy(((horizontal || vertical) > 0 ? -1 : 1) * timeline.visibleSpan * 0.12)
-            else
-                timeline.zoomAt(vertical > 0 ? 0.82 : 1.22, timeline.timeForPlotX(wheel.x))
-            wheel.accepted = true
-        }
+        onWheel: wheel => wheel.accepted = pressed || !!timeline.lyricNote || timeline.viewportWheel(wheel, wheel.x)
     }
 
     Canvas {
@@ -1433,24 +1641,24 @@ Item {
         }
     }
 
-    Item {
-        x: timeline.plotLeft
-        y: timeline.plotTop
-        width: timeline.plotWidth
-        height: timeline.plotHeight
-        clip: true
-        visible: !!timeline.noteGhost && timeline.noteGhost.start !== undefined
-        Rectangle {
-            x: visible ? timeline.xForTime(timeline.noteGhost.start) - timeline.plotLeft : 0
-            y: visible ? timeline.yForPitch(timeline.noteGhost.pitch) - timeline.plotTop + 2 : 0
-            width: visible ? Math.max(2, timeline.xForTime(timeline.noteGhost.end)
-                - timeline.xForTime(timeline.noteGhost.start)) : 0
-            height: timeline.pitchRowHeight - 4
-            radius: 2
-            border.width: 1
-            border.color: timeline.theme.text
-            color: timeline.theme.accent
-            opacity: 0.82
+    Rectangle {
+        visible: !!timeline.noteGhost && !!timeline.noteGhost.reason
+        x: timeline.plotLeft + Math.round(6 * timeline.scale)
+        y: timeline.plotTop + Math.round(6 * timeline.scale)
+        z: 2
+        width: Math.max(0, Math.min(timeline.plotWidth - 12 * timeline.scale, editReason.implicitWidth + 18 * timeline.scale))
+        height: editReason.implicitHeight + 8 * timeline.scale
+        radius: 4
+        color: timeline.theme.base
+        border.color: timeline.theme.error
+        Text {
+            id: editReason
+            anchors.centerIn: parent
+            width: Math.max(0, parent.width - 12 * timeline.scale)
+            text: (timeline.noteGhost || {}).reason || ""
+            elide: Text.ElideRight
+            color: timeline.theme.error
+            font.pixelSize: Math.round(12 * timeline.scale)
         }
     }
 
@@ -1473,20 +1681,32 @@ Item {
         selectedTextColor: timeline.theme.base
         placeholderText: timeline.vwaTr("音符歌词")
         Accessible.name: placeholderText
-        Accessible.description: timeline.vwaTr("回车保存，Tab 改下一字，Esc 取消。")
+        Accessible.description: timeline.vwaTr("回车保存，Tab 下一字，Shift+Tab 上一字，Esc 取消。")
         background: Rectangle {
             radius: 5
             color: timeline.theme.surface
             border.color: timeline.theme.accent
             border.width: 1
         }
-        onAccepted: timeline.finishLyric(false)
-        onActiveFocusChanged: if (!activeFocus) timeline.closeLyric()
+        onAccepted: timeline.finishLyric(0)
+        onActiveFocusChanged: {
+            if (activeFocus || !timeline.lyricNote)
+                return
+            const note = timeline.lyricNote
+            const draft = text
+            timeline.closeLyric()
+            if (!inputMethodComposing && draft !== note.lyric && note.trackId === timeline.activeTrack
+                    && timeline.scoreEditable)
+                timeline.controller.editNoteLyric(note.id, draft)
+        }
         Keys.onPressed: function(event) {
             if (inputMethodComposing)
                 return
             if (event.key === Qt.Key_Tab && event.modifiers === Qt.NoModifier) {
-                timeline.finishLyric(true)
+                timeline.finishLyric(1)
+                event.accepted = true
+            } else if (event.key === Qt.Key_Backtab || (event.key === Qt.Key_Tab && event.modifiers === Qt.ShiftModifier)) {
+                timeline.finishLyric(-1)
                 event.accepted = true
             } else if (event.key === Qt.Key_Escape) {
                 timeline.closeLyric()

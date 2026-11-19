@@ -1,6 +1,6 @@
 """Revision-bound note navigation and per-track style drafts for desktop and tools."""
 
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from copy import copy, deepcopy
 import hashlib
 import json
@@ -152,7 +152,8 @@ class ProjectNotes:
                            'start': row['start_seconds'], 'end': row['end_seconds'],
                            **(score_editor.capabilities(row['note_id']) if score_editor else {}),
                            **({'drawReason': pitch_layer.reason(row['note_id'], {
-                               'start': row['start_seconds'], 'end': row['end_seconds']})} if pitch_layer else {}),
+                               'start': row['start_seconds'], 'end': row['end_seconds'],
+                               'lyric': row['lyric'] or ''})} if pitch_layer else {}),
                            **({'readOnlyReason': row['read_only_reason']} if row.get('read_only_reason') else {})}
                           for row in values)
             if self.tracks[key]['editable'] and any(n.get('readOnlyReason') for n in notes):
@@ -215,16 +216,37 @@ class ProjectNotes:
         return ({self.score_editor.targets[row['note_id']].track for row in self.note_edits}
                 | {self.pitch_layer.notes[row['note_id']].track for row in self.pitch_strokes})
 
-    def next_note(self, identity):
-        row = self.notes.get(identity)
-        if row is None:
-            return None
-        notes, _ = self._windows[row['trackId']]
-        index = next(i for i, note in enumerate(notes) if note['id'] == identity)
-        return next((note for note in notes[index + 1:] if not note.get('lyricReason')), None)
+    def adjacent_note(self, track, identity, seconds, direction, *, editable_lyric=False):
+        notes, _ = self._windows.get(track, ((), ()))
+        step = 1 if direction > 0 else -1
+        index = next((i for i, note in enumerate(notes) if note['id'] == identity), None)
+        if index is None:
+            if step > 0:
+                indices = range(bisect_left(notes, seconds, key=lambda note: note['start']), len(notes))
+            else:
+                indices = range(bisect_right(notes, seconds, key=lambda note: note['start']) - 1, -1, -1)
+        else:
+            indices = range(index + step, len(notes) if step > 0 else -1, step)
+        return next((notes[i] for i in indices if not editable_lyric or not notes[i].get('lyricReason')), None)
 
-    def lyric_batch(self, track, start, end, text):
-        notes = self.visible((track,), start, end, limit=LYRIC_BATCH_LIMIT + 1) if end > start else []
+    def next_note(self, identity, direction=1):
+        row = self.notes.get(identity)
+        return (self.adjacent_note(row['trackId'], identity, row['start'], direction, editable_lyric=True)
+                if row else None)
+
+    def note_range(self, track, first, last):
+        notes, _ = self._windows.get(track, ((), ()))
+        indices = [i for i, row in enumerate(notes) if row['id'] in (first, last)]
+        if not indices:
+            return []
+        return [row['id'] for row in notes[indices[0]:indices[-1] + 1]]
+
+    def lyric_batch(self, track, start, end, text, *, selected=()):
+        if selected:
+            identities = set(selected)
+            notes = [row for row in self._windows.get(track, ((), ()))[0] if row['id'] in identities]
+        else:
+            notes = self.visible((track,), start, end, limit=LYRIC_BATCH_LIMIT + 1) if end > start else []
         if not notes:
             raise ValueError('请先框选当前轨道的一句歌词。')
         if len(notes) > LYRIC_BATCH_LIMIT:

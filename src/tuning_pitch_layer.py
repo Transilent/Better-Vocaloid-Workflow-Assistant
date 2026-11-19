@@ -268,7 +268,7 @@ class PitchLayer:
         return output
 
     def reason(self, identity, note):
-        if identity not in self.notes:
+        if identity not in self.notes or not _singing_lyric(note['lyric']):
             return PROTECTED
         return SHORT if note['end'] - note['start'] < MIN_NOTE_SECONDS else ''
 
@@ -371,6 +371,15 @@ class PitchLayer:
             if b - a < MIN_STROKE_SECONDS:
                 raise ValueError('节点靠得太近，请保留一小段手绘范围。')
             return normalize_strokes([*rows[:i], {'note_id': identity, 'points': points}, *rows[i+1:]])
+        raise ValueError('手绘线段已变化，请重新选择节点。')
+
+    def remove_node(self, rows, identity, first_tick, index):
+        for i, row in enumerate(rows):
+            points = row['points']
+            if row['note_id'] == identity and points[0][0] == first_tick and 0 <= index < len(points):
+                remaining = points[:index] + points[index + 1:]
+                replacement = [{'note_id': identity, 'points': remaining}] if len(remaining) >= 2 else []
+                return normalize_strokes([*rows[:i], *replacement, *rows[i + 1:]])
         raise ValueError('手绘线段已变化，请重新选择节点。')
 
     def display(self, strokes, patches, visible):

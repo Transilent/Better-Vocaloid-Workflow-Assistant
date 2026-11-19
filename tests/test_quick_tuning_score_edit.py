@@ -118,6 +118,10 @@ def exercise(root, viewport, scale):
     QTest.keyClick(window, Qt.Key.Key_Tab)
     wait('Tab applies and selects next note', lambda: tune.project.notes[identity]['lyric'] == '春'
          and visual('tuningInlineLyric') is not None and visual('tuningInlineLyric').property('text') == '好')
+    QTest.keyClick(window, Qt.Key.Key_Tab, Qt.KeyboardModifier.ShiftModifier)
+    wait('Shift+Tab selects the previous lyric',
+         lambda: visual('tuningInlineLyric') and visual('tuningInlineLyric').property('text') == '春')
+    QTest.keyClick(window, Qt.Key.Key_Tab)
     text('取消')
     QTest.keyClick(window, Qt.Key.Key_Escape)
     assert visual('tuningInlineLyric') is None and tune.project.notes[second['id']]['lyric'] == '好'
@@ -175,6 +179,42 @@ def exercise(root, viewport, scale):
         QTest.keyClick(window, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
         assert tune.project.notes[identity] == resized and tune.view['selectedNote']['pitch'] == 61
 
+    # Marquee and Ctrl-click select notes without applying the active style.
+    control = Qt.KeyboardModifier.ControlModifier
+    corner = note_point(resized, 0) - QPointF(12, 1.8 * roll.property('pitchRowHeight')).toPoint()
+    far = note_point(second, 1) + QPointF(8, 1.8 * roll.property('pitchRowHeight')).toPoint()
+    drag(corner, far.x() - corner.x(), far.y() - corner.y())
+    selected = {identity, second['id']}
+    assert set(tune.view['selectedNoteIds']) == selected and len(tune.regions) == 1
+    assert visual('tuningNoteField_pitch') is None
+    assert window.grabWindow().save(str(proof / f'group-selected-{scale}.png'))
+    QTest.mouseClick(window, left, control, pos=note_point(second))
+    assert tune.view['selectedNoteIds'] == [identity]
+    QTest.mouseClick(window, left, Qt.KeyboardModifier.ShiftModifier, pos=note_point(second))
+    assert set(tune.view['selectedNoteIds']) == selected
+    drag(note_point(resized), .92 * scale_x, 0)
+    assert tune.project.notes[identity] == resized and tune.project.notes[second['id']] == second
+    assert '重叠' in tune.view['message']
+    drag(note_point(resized), .07 * scale_x, -roll.property('pitchRowHeight'))
+    for note in (resized, second):
+        after = tune.project.notes[note['id']]
+        assert .058 < after['start'] - note['start'] < .082 and after['pitch'] == note['pitch'] + 1
+    assert set(tune.view['selectedNoteIds']) == selected and len(tune.regions) == 1
+    QTest.keyClick(window, Qt.Key.Key_Z, control)
+    assert tune.project.notes[identity] == resized and tune.project.notes[second['id']] == second
+    QTest.keyClick(window, Qt.Key.Key_Up)
+    assert tune.project.notes[identity]['pitch'] == 62 and tune.project.notes[second['id']]['pitch'] == 63
+    QTest.keyClick(window, Qt.Key.Key_Z, control)
+    assert tune.project.notes[identity] == resized and tune.project.notes[second['id']] == second
+    drag(note_point(resized, .99), .06 * scale_x, 0)
+    for note in (resized, second):
+        after = tune.project.notes[note['id']]
+        assert .048 < after['end'] - note['end'] < .072 and after['start'] == note['start']
+    QTest.keyClick(window, Qt.Key.Key_Z, control)
+    assert tune.project.notes[identity] == resized and tune.project.notes[second['id']] == second
+    QTest.mouseClick(window, left, pos=corner)
+    assert not tune.view['selectedNoteIds']
+
     # Move over a note in the explicit style tool, then adjust its saved region.
     tap('tuningStyleTool')
     assert tune.view['styleTool'] and not tune.view['noteTool'] and tune.view['autoApplySelection']
@@ -185,15 +225,20 @@ def exercise(root, viewport, scale):
     tap('tuningStyleBand_' + second_region['id'])
     assert tune.view['selectedRegion'] == second_region['id']
     tap('tuningStyleDetailToggle')
+    wait('detail slider laid out', lambda: visual('tuningStyleDetail_onset')
+         and visual('tuningStyleDetail_onset').width() >= 65 * scale / 100)
     detail = visual('tuningStyleDetail_onset')
-    assert detail and detail.isEnabled()
+    assert detail.isEnabled()
+    handle = detail.property('handle')
+    start = pointer(handle, handle.width() / 2, handle.height() / 2)
+    span = detail.property('availableWidth') - handle.width()
     initial = tune.view['styleBrush']['detail']['onset']
 
     def assert_detail_uncommitted():
         assert tune.view['styleBrush']['detail']['onset'] == initial
+        assert 18 <= detail.property('value') <= 42, (scale, detail.width(), detail.property('value'), warnings)
 
-    drag(pointer(detail, .92 * detail.width(), detail.height() / 2), -.62 * detail.width(), 0,
-         assert_detail_uncommitted)
+    drag(start, -.72 * span, 0, assert_detail_uncommitted)
     amount = tune.view['styleBrush']['detail']['onset']
     assert .18 < amount < .42 and tune.view['styleDetail']['onset'] == initial, (amount, warnings)
     assert window.grabWindow().save(str(proof / f'style-region-properties-{scale}.png'))
@@ -287,7 +332,7 @@ def exercise(root, viewport, scale):
     QTest.keyClick(window, Qt.Key.Key_Return)
     assert tune.project.notes[identity]['lyric'] == '山' and tune.view['candidateStale']
     assert file_hash(first_candidate) == verified['output_sha256']
-    print('PASS', viewport, scale, 'default note drag, inspector, scoped style, draw/erase, undo, draft and verified export')
+    print('PASS', viewport, scale, 'note marquee, grouped move/transpose, inspector, scope, draft and verified export')
 
     tune.setViewport(0., 2.6)
     tap('tuningParameterToggle')
@@ -305,7 +350,6 @@ def exercise(root, viewport, scale):
     assert len(beats) >= 5 and beats[:4] == [0., .5, 1., 1.5] and abs(beats[4] - 13 / 6) < 1e-6, beats
     tune.setBeatDivision(8)
     assert abs(tune.snapBeat(1.81) - 11 / 6) < 1e-6
-    tune.setBeatDivision(0)
 
     tune.freeze()
     wait('real style layer', lambda: tune.view['canRun'] and bool(tune.parameterPlot.get('style')))
@@ -334,32 +378,66 @@ def exercise(root, viewport, scale):
         QTest.mouseRelease(window, left, pos=b)
         app.processEvents()
 
-    tap('tuningParameterLine')
+    # The freshly opened lane is ready to draw. A click selects a note, and
+    # an overshooting drag clips to that note's guarded end in one transaction.
+    assert visual('tuningParameterLine').property('selected')
+    QTest.mouseClick(window, left, pos=parameter_point(1.05, 30))
+    assert tune.project.pitch_strokes == strokes and tune.view['selectedNote']['id'] == second['id']
+    style_preview = tune.parameterPlot['style']
     parameter_drag(parameter_point(1.05, 30), parameter_point(1.60, 50))
+    clipped = next(row for row in tune.pitchCurves if row['noteId'] == second['id'])
+    assert .015 < second['end'] - clipped['offsets'][-1][0] < .024, clipped
+    assert not tune.view['canRun'] and tune.parameterPlot['style'] == style_preview
+    QTest.keyClick(window, Qt.Key.Key_Z, control)
     assert tune.project.pitch_strokes == strokes
-    tap('tuningEditingIssues')
-    wait('issue location', lambda: visual('tuningIssueLocate_0') is not None)
-    tap('tuningIssueLocate_0')
-    wait('located correct note', lambda: roll.property('focusedNoteId') == second['id'])
     parameter_drag(parameter_point(1.05, 30), parameter_point(1.32, 80))
-    assert tune.view['pitchStrokeCount'] == 2 and not tune.parameterPlot.get('style')
+    assert tune.view['pitchStrokeCount'] == 2 and tune.parameterPlot['style'] == style_preview
     fresh = next(row for row in tune.pitchCurves if row['noteId'] == second['id'])
     assert len(fresh['offsets']) == 2
     for (x, y), (seconds, cents) in zip(fresh['offsets'], ((1.05, 30), (1.32, 80))):
         assert abs(x - seconds) < .008 and abs(y - cents) <= 10, fresh
 
     tap('tuningParameterNodes')
-    mid = parameter_point(1.18, 0)
+    QTest.mouseClick(window, left, pos=parameter_point(1.18, -135))
+    assert next(row for row in tune.pitchCurves if row['noteId'] == second['id']) == fresh
+    a, b = fresh['offsets']
+    middle_time = 1.18
+    middle_cents = a[1] + (b[1] - a[1]) * (middle_time - a[0]) / (b[0] - a[0])
+    mid = parameter_point(middle_time, middle_cents)
     QTest.mouseClick(window, left, pos=mid)
     wait('insert pitch node', lambda: any(row['noteId'] == second['id'] and len(row['offsets']) == 3
                                          for row in tune.pitchCurves))
+    inserted = next(row['offsets'][1] for row in tune.pitchCurves if row['noteId'] == second['id'])
+    assert abs(inserted[1] - middle_cents) <= 2, inserted
+    mid = parameter_point(*inserted)
     dest = parameter_point(1.21, -50)
     drag(mid, dest.x() - mid.x(), dest.y() - mid.y())
     node = next(row['offsets'][1] for row in tune.pitchCurves if row['noteId'] == second['id'])
     assert abs(node[0] - 1.21) < .008 and node[1] == -50, node
-    for _ in range(3):
-        QTest.keyClick(window, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert window.grabWindow().save(str(proof / f'pitch-nodes-{scale}.png'))
+    QTest.mouseClick(window, Qt.MouseButton.RightButton, pos=parameter_point(*node))
+    wait('node context action', lambda: visual('tuningDeletePitchNode') is not None)
+    tap('tuningDeletePitchNode')
+    assert next(row for row in tune.pitchCurves if row['noteId'] == second['id']) == fresh
+    for _ in range(4):
+        QTest.keyClick(window, Qt.Key.Key_Z, control)
     assert tune.project.pitch_strokes == strokes and tune.regions[0]['id'] == region_id
+
+    tap('tuningParameterFreehand')
+    QTest.mousePress(window, left, pos=parameter_point(1.04, 10))
+    QTest.mouseMove(window, parameter_point(1.16, 90), 20)
+    QTest.mouseMove(window, parameter_point(1.24, -60), 20)
+    QTest.mouseRelease(window, left, pos=parameter_point(1.32, 20))
+    freehand = next(row for row in tune.pitchCurves if row['noteId'] == second['id'])
+    assert len(freehand['offsets']) >= 3
+    tap('tuningParameterManual')
+    assert visual('tuningParameterInspect').property('selected')
+    QTest.mouseClick(window, left, pos=parameter_point(1.16, 90))
+    assert next(row for row in tune.pitchCurves if row['noteId'] == second['id']) == freehand
+    tap('tuningParameterErase')
+    QTest.mouseClick(window, left, pos=parameter_point(1.16, 90))
+    assert tune.project.pitch_strokes == strokes
+    tune.setBeatDivision(0)
 
     tap('tuningPitchDrawTool')
 
@@ -391,6 +469,17 @@ def exercise(root, viewport, scale):
     assert app.sendEvent(visual('tuningLyricBatchSlot_1'), event)
     wait('lyrics entered in second slot', lambda: visual('tuningLyricBatchApply').isEnabled())
     assert [row['after'] for row in tune.lyricBatch['rows']] == ['きゃー', '春']
+    before_peek = tune.view['start'], tune.view['end']
+    tap('tuningLyricBatchLocate_1')
+    wait('peek at the matching note in the roll', lambda: visual('tuningLyricBatchText') is None
+         and roll.property('focusedNoteId') == second['id'])
+    resume_button = visual('tuningLyricBatch')
+    assert resume_button.property('text') == '继续贴词'
+    assert (tune.view['start'], tune.view['end']) == before_peek and tune.lyricBatch['canApply']
+    tap('tuningLyricBatch')
+    wait('existing review reopened', lambda: visual('tuningLyricBatchApply') and visual('tuningLyricBatchApply').isEnabled())
+    paste = visual('tuningLyricBatchText')
+    assert paste.property('text') == 'きゃー' and [row['after'] for row in tune.lyricBatch['rows']] == ['きゃー', '春']
     harmony = next(key for key in tune.project.tracks if key != track)
     tune.focusTrack(harmony)
     assert not tune.lyricBatch['canApply'] and not tune.applyLyricBatch()
@@ -420,7 +509,66 @@ def exercise(root, viewport, scale):
     assert [tune.project.notes[i]['lyric'] for i in (identity, second['id'])] == ['山', '好']
     tap('tuningParameterToggle')
     assert visual('tuningParameterGraph') is None and file_hash(source) == original_sha
-    print('PASS', viewport, scale, 'parameter lane, two tempos, line/node gestures, issue locator, reviewed batch, one undo')
+    tap('tuningNoteTool')
+    tune.setViewport(0., tune.view['duration'])
+    tail = tune.project.visible([track], 1.9, 3.)[-1]
+    QTest.mouseClick(window, left, pos=note_point(tune.project.notes[identity]))
+    QTest.mouseClick(window, left, control, pos=note_point(tail))
+    scope = tune.view['start'], tune.view['end']
+    review = tune.previewLyricBatch('雨雪')
+    assert [row['id'] for row in review['rows']] == [identity, tail['id']] and review['canApply']
+    QTest.mouseClick(window, left, control, pos=note_point(tune.project.notes[second['id']]))
+    assert scope == (tune.view['start'], tune.view['end']) and not tune.lyricBatch['canApply']
+    tune.dismissLyricBatch()
+    print('PASS', viewport, scale, 'line clipping, node editing, erase, exact lyric scope and resumable review')
+
+    sparse_source = directory / 'long-song.ustx'
+    sparse = score('Sparse phrases')
+    sparse['voice_parts'][0].update(duration=70000, notes=[
+        {'position': 0, 'duration': 480, 'tone': 45, 'lyric': '光'},
+        {'position': 24000, 'duration': 480, 'tone': 88, 'lyric': '唱'},
+        {'position': 60000, 'duration': 480, 'tone': 38, 'lyric': '光'},
+    ])
+    sparse_source.write_bytes(encode(sparse, b''))
+    tune.chooseProject(QUrl.fromLocalFile(str(sparse_source)))
+    wait('long score shown', lambda: tune.view['title'] == sparse_source.stem and not tune.view['busy'])
+    low, high, last = tune.project.visible([tune.view['activeTrack']], 0., 100.)
+    wait('first note rendered', lambda: any(box['note']['id'] == low['id']
+         for box in roll.property('noteRects').toVariant()))
+    QTest.mouseClick(window, left, pos=note_point(low))
+    QTest.keyClick(window, Qt.Key.Key_Right)
+    assert tune.view['selectedNote']['id'] == high['id']
+    QTest.keyClick(window, Qt.Key.Key_F2)
+    wait('edit adjacent note outside the former viewport',
+         lambda: visual('tuningInlineLyric') and visual('tuningInlineLyric').property('text') == '唱')
+    QTest.keyClick(window, Qt.Key.Key_Escape)
+    QTest.keyClick(window, Qt.Key.Key_F, control)
+    search = visual('tuningLyricSearch')
+    assert search and search.hasActiveFocus()
+    event = QInputMethodEvent()
+    event.setCommitString('光')
+    assert app.sendEvent(search, event)
+    QTest.keyClick(window, Qt.Key.Key_Return)
+    assert tune.view['lyricMatchIndex'] >= 0
+    tap('tuningPreviousLyricOccurrence')
+    wait('search jumps across time and pitch', lambda: roll.property('focusedNoteId') == low['id'])
+    tap('tuningNextLyricOccurrence')
+    wait('second lyric match brought into view', lambda: roll.property('focusedNoteId') == last['id'])
+    before_view = tune.view['viewportStart']
+    before_range = tune.view['start'], tune.view['end']
+    tap('tuningParameterToggle')
+    wait('parameter lane restored', lambda: visual('tuningParameterGraph') is not None)
+    graph = visual('tuningParameterGraph')
+    point = pointer(graph, graph.width() * .5, graph.height() * .5)
+    destination = point + QPointF(130, 0).toPoint()
+    middle = Qt.MouseButton.MiddleButton
+    QTest.mousePress(window, middle, pos=point)
+    QTest.mouseMove(window, destination, 30)
+    QTest.mouseRelease(window, middle, pos=destination)
+    assert tune.view['viewportStart'] < before_view - .5 and before_range == (tune.view['start'], tune.view['end'])
+    assert tune.view['noteEditCount'] == tune.view['pitchStrokeCount'] == 0
+    tap('tuningParameterToggle')
+    print('PASS', viewport, scale, 'cross-viewport arrows, lyric search reveal, shared middle-button pan')
 
     owner.close()
     window.close()

@@ -7,12 +7,14 @@ Dialog {
     objectName: "tuningLyricBatchDialog"
     required property QtObject theme
     required property QtObject controller
+    required property string sourceKey
     signal noteRequested(var note)
     readonly property real uiScale: theme.scale || 1
     readonly property var review: controller.lyricBatch || ({})
     property var slots: []
     property bool reviewed: false
     property string previewText: ""
+    property bool peeking: false
     readonly property bool current: reviewed && previewText === words.text
 
     function label(text) { return controller.text(text) }
@@ -31,7 +33,15 @@ Dialog {
     width: Math.min(parent.width - 40, Math.round(710 * uiScale))
     height: Math.min(parent.height - 56, Math.round(540 * uiScale))
     closePolicy: Popup.CloseOnEscape
+    onSourceKeyChanged: {
+        peeking = false
+        if (visible) close()
+    }
     onOpened: {
+        if (peeking) {
+            peeking = false
+            return
+        }
         words.text = ""
         slots = []
         reviewed = false
@@ -40,8 +50,10 @@ Dialog {
         words.forceActiveFocus()
     }
     onClosed: {
-        controller.dismissLyricBatch()
-        slots = []
+        if (!peeking) {
+            controller.dismissLyricBatch()
+            slots = []
+        }
     }
 
     contentItem: ColumnLayout {
@@ -139,6 +151,7 @@ Dialog {
                         text: Number(slot.modelData.start).toFixed(2) + " s"
                         quiet: true
                         onClicked: {
+                            dialog.peeking = true
                             dialog.close()
                             dialog.noteRequested(slot.modelData)
                         }

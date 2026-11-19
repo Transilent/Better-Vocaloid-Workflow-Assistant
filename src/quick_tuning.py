@@ -17,7 +17,8 @@ from style_drafts import DraftConflict, DraftStore
 from style_presets import DETAIL_DEFAULTS, region_settings, time_range_settings
 import tuning_engine as engine
 from tuning_execution import EDITOR_OPTION_KEYS, PRESERVE_FOR_EDIT, editor_options
-from tuning_pitch_layer import EDGE_SECONDS, FORMATS as DRAW_FORMATS, MAX_CENTS, UNSUPPORTED as DRAW_UNSUPPORTED
+from tuning_pitch_layer import (EDGE_SECONDS, FORMATS as DRAW_FORMATS, MAX_CENTS, MIN_STROKE_SECONDS,
+                                UNSUPPORTED as DRAW_UNSUPPORTED)
 from tuning_score_edits import FORMATS as SCORE_EDIT_FORMATS, UNSUPPORTED as SCORE_EDIT_UNSUPPORTED
 from tuning_timeline import (ProjectNotes, TimelineDraftStore, batch_lyric_row, draft_options, freeze_plan,
                              normalize_timeline_draft)
@@ -256,6 +257,7 @@ class QuickTuning(QObject):
     regionsChanged = Signal()
     catalogChanged = Signal()
     presetLibraryChanged = Signal()
+    noteLocated = Signal(int, str, str)
 
     def __init__(self, parent, worker, *, root=ROOT):
         super().__init__(parent)
@@ -288,7 +290,7 @@ class QuickTuning(QObject):
         self._edit_issue = None
         self._start, self._end, self._left, self._span = 0., 0., 0., 18.
         self._selected_region = ''
-        self._selected_note = ''
+        self._selected_notes = ()
         self._query = ''
         self._matches, self._notes, self._regions = [], [], []
         self._lyric_match_index = -1
@@ -450,14 +452,15 @@ class QuickTuning(QObject):
         self._draft_revision, self._dirty = receipt['revision'], False
         return True
 
-    def _dirty_draft(self, *, invalidate=True):
+    def _dirty_draft(self, *, invalidate=True, keep_style=False):
         if self.project and not self._legacy:
             self._draft_review = None
             self._dirty = True
             self._autosave.start()
         if invalidate:
             self._plan, self._summary = None, ''
-            self._parameter_style = {}
+            if not keep_style:
+                self._parameter_style = {}
             self._invalidate_lyric_batch()
             self._candidate_stale = bool(self.candidate)
             if self.state in ('frozen', 'done', 'partial', 'registered'):
@@ -559,10 +562,12 @@ class QuickTuning(QObject):
             'pitchTool': self._score_tool if self._score_tool in ('draw', 'erase') and not draw_reason else '',
             'pitchEditReason': tr(draw_reason), 'pitchStrokeCount': pitch_count,
             'pitchMaxCents': MAX_CENTS, 'pitchEdgeSeconds': EDGE_SECONDS,
+            'pitchStrokeMinimum': MIN_STROKE_SECONDS,
             'noteEditCount': note_count,
             'selectedRegion': self._selected_region,
             'styleBrush': style_brush,
             'selectedNote': self._selected_note_view(),
+            'selectedNoteIds': list(self._selected_notes),
             'lyricContext': self._lyric_context(),
             'lyricMatchIndex': match_position,
             'lyricMatchCount': len(match_scope),
@@ -869,12 +874,10 @@ class QuickTuning(QObject):
     def parameterPlot(self):
         if not self.project or self._mode != 'single' or not self._view_preferences['parameter_open']:
             return {}
-        source = self._plan[0] if self._plan else None
-        key = self.project, self._active, self._left, self._span, source
+        key = self.project, self._active, self._left, self._span, self._parameter_style
         if key != self._plot_cache[0]:
             focused = [note for note in self._notes if note['trackId'] == self._active]
-            plot = self.project.pitch_layer.plot(focused, self._left, self._left + self._span,
-                                                   self._parameter_style if source else {})
+            plot = self.project.pitch_layer.plot(focused, self._left, self._left + self._span, self._parameter_style)
             self._plot_cache = key, plot
         return self._plot_cache[1]
 
@@ -931,7 +934,7 @@ class QuickTuning(QObject):
         self.notesChanged.emit()
 
     def _selected_note_view(self):
-        note = self.project.notes.get(self._selected_note) if self.project else None
+        note = self.project.notes.get(self._selected_notes[-1]) if self._selected_notes else None
         if not note:
             return {}
         editor = self.project.score_editor
@@ -968,8 +971,9 @@ class QuickTuning(QObject):
 
     def _lyric_match_scope(self):
         if self._mode == 'multi':
-            return list(range(len(self._matches)))
-        return [index for index, row in enumerate(self._matches) if row['trackId'] == self._active]
+            return range(len(self._matches))
+        focused = [index for index, row in enumerate(self._matches) if row['trackId'] == self._active]
+        return focused or range(len(self._matches))
 
     def _adopt_draft(self, stored):
         payload = stored['data']
@@ -1000,7 +1004,7 @@ class QuickTuning(QObject):
         self._active = next(iter(self._selected), next(iter(project.tracks)))
         self._mode = 'multi' if len(self._selected) > 1 else 'single'
         self._score_tool = 'note'
-        self._selected_region = self._selected_note = ''
+        self._selected_region, self._selected_notes = '', ()
 
     @staticmethod
     def _draft_description(payload):
@@ -1284,7 +1288,7 @@ class QuickTuning(QObject):
         if self.project and not self._editing_blocked and mode in ('single', 'multi') and mode != self._mode:
             old = self._indices()
             self._mode = mode
-            self._selected_region = self._selected_note = ''
+            self._selected_region, self._selected_notes = '', ()
             self._changed_tracks(old)
 
     def _changed_tracks(self, old):
@@ -1300,7 +1304,7 @@ class QuickTuning(QObject):
         if self.project and track in self.project.tracks and not self._editing_blocked and self._active != track:
             old = self._indices()
             self._active = track
-            self._selected_region = self._selected_note = ''
+            self._selected_region, self._selected_notes = '', ()
             if not (0 <= self._lyric_match_index < len(self._matches)
                     and self._matches[self._lyric_match_index]['trackId'] == track):
                 self._lyric_match_index = -1
@@ -1328,22 +1332,19 @@ class QuickTuning(QObject):
 
     @Slot(str, str)
     def selectMatch(self, track, note):
-        if not self.project or track not in self.project.tracks:
+        if not self.project or self.worker.kind or track not in self.project.tracks:
             return
         match_index = next((index for index, item in enumerate(self._matches)
                             if item['trackId'] == track and item['id'] == note), -1)
         row = self._matches[match_index] if match_index >= 0 else None
         row = row or self.project.notes.get(note)
         if row and row['trackId'] == track:
-            self.focusTrack(track)
-            self._lyric_match_index = match_index
-            self._set_selection(row['start'], row['end'], keep_match=True)
-            self.setViewport(row['start'] - self._span * .22, self._span)
+            self._locate_match(row, match_index)
 
     @Slot(int)
     def stepLyricMatch(self, direction):
         """Move through the current lyric search cursor without another search."""
-        if not self.project:
+        if not self.project or self.worker.kind:
             return
         scope = self._lyric_match_scope()
         if not scope:
@@ -1361,22 +1362,27 @@ class QuickTuning(QObject):
                              if self._matches[scope[position]]['start'] <= self._start + 1e-9),
                             len(scope) - 1)
         index = scope[position]
-        row = self._matches[index]
+        self._locate_match(self._matches[index], index)
+
+    def _locate_match(self, row, index):
         self.focusTrack(row['trackId'])
+        if self._active != row['trackId']:
+            return
         self._lyric_match_index = index
         self._set_selection(row['start'], row['end'], keep_match=True)
         self.setViewport(row['start'] - self._span * .22, self._span)
+        self.noteLocated.emit(row['pitch'], row['trackId'], row['id'])
 
-    def _set_selection(self, first, last, *, keep_match=False, note='', region=''):
+    def _set_selection(self, first, last, *, keep_match=False, notes=(), region=''):
         if self.project and math.isfinite(first) and math.isfinite(last):
             a, b = sorted((first, last))
-            self._selected_note, self._selected_region = note, region
+            previous = self._batch_scope()
+            self._selected_notes, self._selected_region = notes, region
             if not keep_match:
                 self._lyric_match_index = -1
-            previous = self._start, self._end
             self._start = min(max(a, self.project.minimum), self.project.maximum)
             self._end = min(max(b, self.project.minimum), self.project.maximum)
-            if previous != (self._start, self._end):
+            if previous != self._batch_scope():
                 self._invalidate_lyric_batch()
             self.changed.emit()
 
@@ -1390,7 +1396,36 @@ class QuickTuning(QObject):
         if note and not self.worker.kind:
             self.focusTrack(note['trackId'])
             if self._active == note['trackId']:
-                self._set_selection(note['start'], note['end'], note=identity)
+                self.selectNotes([identity])
+
+    @staticmethod
+    def _note_bounds(project, identities):
+        rows = [project.notes[identity] for identity in identities]
+        return min(row['start'] for row in rows), max(row['end'] for row in rows)
+
+    @Slot('QVariantList')
+    def selectNotes(self, identities):
+        if not self.project or self.worker.kind:
+            return
+        unique = tuple(dict.fromkeys(identities))
+        if not unique:
+            self.clearSelection()
+        elif all(identity in self.project.notes and self.project.notes[identity]['trackId'] == self._active
+                 for identity in unique):
+            self._set_selection(*self._note_bounds(self.project, unique), notes=unique)
+
+    @Slot(str)
+    def extendNoteSelection(self, identity):
+        first = self._selected_notes[0] if self._selected_notes else identity
+        if self.project and self.project.notes.get(identity, {}).get('trackId') == self._active:
+            ordered = self.project.note_range(self._active, first, identity)
+            self.selectNotes([first, *[note for note in ordered if note not in (first, identity)], identity])
+
+    @Slot(str, float, int, result='QVariantMap')
+    def adjacentNote(self, identity, seconds, direction):
+        if not self.project or self.worker.kind:
+            return {}
+        return self.project.adjacent_note(self._active, identity, seconds, direction) or {}
 
     @Slot()
     def clearSelection(self):
@@ -1678,8 +1713,6 @@ class QuickTuning(QObject):
 
     @Slot(str, str, 'QVariantList', result=bool)
     def editPitchStroke(self, identity, kind, samples):
-        if self._score_tool != kind:
-            return False
         return self._apply_pitch(identity, lambda project, _note: project.pitch_layer.gesture(
             project.pitch_strokes, project.note_patches, identity, kind, samples),
             '已保存手绘音高，可撤销。' if kind == 'draw' else '已擦除手绘，原曲线和风格保留。')
@@ -1724,6 +1757,11 @@ class QuickTuning(QObject):
 
         return self._apply_pitch(identity, apply, '已保存音高节点，可撤销。')
 
+    @Slot(str, float, int, result=bool)
+    def removePitchNode(self, identity, span_start, index):
+        return self._apply_pitch(identity, lambda project, _note: project.pitch_layer.remove_node(
+            project.pitch_strokes, identity, span_start, index), '已删除音高节点，可撤销。')
+
     def _editable_note(self, identity):
         if self._editing_blocked:
             return None
@@ -1749,7 +1787,7 @@ class QuickTuning(QObject):
             return False
 
     def _batch_scope(self):
-        return self.project, self._active, self._start, self._end
+        return self.project, self._active, self._start, self._end, self._selected_notes
 
     def _invalidate_lyric_batch(self):
         if self._lyric_batch is not None:
@@ -1779,7 +1817,8 @@ class QuickTuning(QObject):
         rows, extra, reason = [], [], self._score_block()
         if not reason and not self._editing_blocked:
             try:
-                rows, extra = self.project.lyric_batch(self._active, self._start, self._end, text)
+                rows, extra = self.project.lyric_batch(self._active, self._start, self._end, text,
+                                                       selected=self._selected_notes)
             except ValueError as error:
                 reason = str(error)
         self._lyric_batch = {'scope': scope, 'track': track, 'rows': rows, 'extra': extra, 'reason': reason}
@@ -1848,49 +1887,54 @@ class QuickTuning(QObject):
             raise ValueError(note['timingReason'])
         if action == 'move' and pitch != note['pitch'] and note['pitchReason']:
             raise ValueError(note['pitchReason'])
-        patch = self.project.note_patches.get(identity, {})
-        return self.project.score_editor.gesture(identity, patch, action, seconds, pitch, horizontal)
+        selected = self._selected_notes if identity in self._selected_notes else (identity,)
+        return self.project.score_editor.gesture_selection(self.project.note_patches, selected, identity,
+                                                           action, seconds, pitch, horizontal)
 
     @Slot(str, str, float, int, bool, result='QVariantMap')
     def previewNoteGeometry(self, identity, action, seconds, pitch, horizontal):
         try:
             changes = self._note_gesture(identity, action, seconds, pitch, horizontal)
             if changes is not None:
-                return self.project.score_editor.geometry(identity, self.project.note_patches.get(identity, {}), changes)
-        except (ValueError, ArithmeticError):
-            pass
+                return {'notes': [self.project.score_editor.geometry(note, self.project.note_patches.get(note, {}), change)
+                                  for note, change in changes.items()]}
+        except (ValueError, ArithmeticError) as error:
+            return {'reason': tr(str(error))}
         return {}
 
     @Slot(str, str, float, int, bool, result=bool)
     def editNoteGeometry(self, identity, action, seconds, pitch, horizontal):
         try:
             changes = self._note_gesture(identity, action, seconds, pitch, horizontal)
-            return changes is not None and self._commit_note(identity, changes, '音符已更新，可撤销。')
+            return changes is not None and self._commit_notes(changes, '音符已更新，可撤销。')
         except (ValueError, ArithmeticError) as error:
             self._remember_edit_issue(identity, error)
             self._error(error)
             return False
 
-    @Slot(str, result='QVariantMap')
-    def nextEditableLyric(self, identity):
+    @Slot(str, int, result='QVariantMap')
+    def nextEditableLyric(self, identity, direction):
         if not self._editing_blocked and not self._score_block():
-            next_note = self.project.next_note(identity)
+            next_note = self.project.next_note(identity, direction)
             if next_note and next_note['trackId'] == self._active:
                 return next_note
         return {}
 
     def _commit_note(self, identity, changes, notice):
+        return self._commit_notes({identity: changes}, notice)
+
+    def _commit_notes(self, changes, notice):
         previous = self.project
-        edits = self.project.score_editor.update(previous.note_edits, identity, changes)
+        edits = previous.score_editor.update_many(previous.note_edits, changes)
         if tuple(edits) == previous.note_edits:
             return True
         project = previous.with_note_edits(edits)
-        old, new = previous.notes[identity], project.notes[identity]
-        timing = (old['start'], old['end']) != (new['start'], new['end'])
+        timing = any((previous.notes[key]['start'], previous.notes[key]['end'])
+                     != (project.notes[key]['start'], project.notes[key]['end']) for key in changes)
         rows = project.rebase_regions(previous, self._regions) if timing else self._regions
         self._record_edit()
-        self._selected_region, self._selected_note = '', identity
-        self._start, self._end = new['start'], new['end']
+        self._selected_region, self._selected_notes = '', tuple(changes)
+        self._start, self._end = self._note_bounds(project, self._selected_notes)
         self._replace_edits(project, rows, notice)
         return True
 
@@ -1905,6 +1949,7 @@ class QuickTuning(QObject):
     def _replace_edits(self, project, rows, notice):
         changed_score = self.project.note_edits != project.note_edits
         changed_pitch = self.project.pitch_strokes != project.pitch_strokes
+        keep_style = changed_pitch and not changed_score and rows == self._regions
         self.project = project
         self._regions = rows
         if self._selected_region not in {row['id'] for row in rows}:
@@ -1922,7 +1967,7 @@ class QuickTuning(QObject):
             self.notesChanged.emit()
         self.state, self.message = 'ready', tr(notice)
         self.regionsChanged.emit()
-        self._dirty_draft()
+        self._dirty_draft(keep_style=keep_style)
 
     def _commit_regions(self, rows, notice):
         if rows == self._regions:
@@ -1944,7 +1989,7 @@ class QuickTuning(QObject):
                 raise ValueError('选区内没有所选演唱轨的音符。')
             updated = self.project.overlay_regions(self._regions, applied)
             if self._commit_regions(updated, '已添加逐轨片段；同轨重叠部分以新风格为准。'):
-                self._selected_region, self._selected_note = applied[-1]['id'], ''
+                self._selected_region, self._selected_notes = applied[-1]['id'], ()
                 self._start = min(float(row['recipe']['start']) for row in applied)
                 self._end = max(float(row['recipe']['end']) for row in applied)
                 self.message = tr('已添加 {count} 个逐轨片段；同轨重叠部分已按新风格整理。').format(count=len(applied))
@@ -2016,9 +2061,8 @@ class QuickTuning(QObject):
             project = self.project.with_edits(edits, strokes)
             other.append(self._edit_state())
             stack.pop()
-            if self.project.note_edits != project.note_edits:
-                note = project.notes.get(self._selected_note)
-                self._start, self._end = (note['start'], note['end']) if note else (0., 0.)
+            if self.project.note_edits != project.note_edits and self._selected_notes:
+                self._start, self._end = self._note_bounds(project, self._selected_notes)
             self._replace_edits(project, rows, notice)
 
     @Slot(str)

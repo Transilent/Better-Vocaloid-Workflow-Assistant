@@ -492,6 +492,34 @@ class ScoreEdits:
         return {'start': self.clock.to_seconds(first),
                 'end': self.clock.to_seconds(first + note['duration'] * target.step), 'pitch': note['pitch']}
 
+    def gesture_selection(self, patches, selected, primary, action, seconds, pitch, horizontal):
+        patch = patches.get(primary, {})
+        changes = self.gesture(primary, patch, action, seconds, pitch, horizontal)
+        if len(selected) == 1:
+            return {primary: changes}
+        anchor = self.targets[primary]
+        original = {**anchor.old, **patch}
+        delta = {name: (value - original[name]) * (anchor.step if name != 'pitch' else 1)
+                 for name, value in changes.items() if value != original[name]}
+        result = {}
+        for identity in selected:
+            target = self.targets.get(identity)
+            if target is None:
+                raise ValueError('选区内有受保护的音符。')
+            current = {**target.old, **patches.get(identity, {})}
+            proposed = {name: current[name] + round(value / (target.step if name != 'pitch' else 1))
+                        for name, value in delta.items()}
+            for field in proposed:
+                if reason := target.reason(field):
+                    raise ValueError(reason)
+            geometry = {**current, **proposed}
+            if (not 0 <= geometry['pitch'] <= 127 or geometry['onset'] < target.minimum
+                    or geometry['onset'] + geometry['duration'] > target.maximum
+                    or geometry['duration'] < target.minimum_duration):
+                raise ValueError('所选音符无法一起移到此位置或拉伸到此长度。')
+            result[identity] = proposed
+        return result
+
     def materialize(self, data, rows):
         edits = normalize_edits(rows)
         self.projected(edits)

@@ -22,6 +22,7 @@ Item {
     readonly property var bindings: controller.bindings || []
     readonly property var techniques: controller.techniques || []
     readonly property var currentNote: view.selectedNote || ({})
+    readonly property int selectedNoteCount: (view.selectedNoteIds || []).length
     readonly property string noteScope: textOf(view.sha256) + "|" + textOf(currentNote.id)
     readonly property string styleRegionId: textOf(view.selectedRegion)
     readonly property var styleRegion: regions.find(row => row.id === styleRegionId)
@@ -176,6 +177,12 @@ Item {
     }
 
     Shortcut {
+        sequence: "Ctrl+F"
+        enabled: page.visible && page.hasSource && !page.busy && !lyricBatchDialog.visible && !issuesDialog.visible
+        onActivated: { lyricSearch.forceActiveFocus(Qt.ShortcutFocusReason); lyricSearch.selectAll() }
+    }
+
+    Shortcut {
         objectName: "tuningEscapeShortcut"
         sequence: "Escape"
         context: Qt.WindowShortcut
@@ -187,16 +194,16 @@ Item {
                 parameterLane.resetPointer()
             else if (timelineRoll.gestureType)
                 timelineRoll.clearGesture()
-            else if (page.editorFocus)
-                page.editorFocus = false
+            else if (page.hasRange)
+                timelineRoll.clearSelection()
             else
-                page.controller.clearSelection()
+                page.editorFocus = false
         }
     }
 
     function editNoteField(key, value) {
         const note = currentNote
-        if (!note.id || !view.noteTool)
+        if (!note.id || selectedNoteCount !== 1 || !view.noteTool)
             return
         if (controller.editNoteGeometry(note.id, key === "end" ? "resize" : "move",
                 key === "pitch" ? note.start : value, key === "pitch" ? value : note.pitch, key === "start"))
@@ -1324,13 +1331,17 @@ Item {
                                 enabled: !page.busy && page.hasSource
                                 Accessible.name: page.vwaTr("搜索歌词")
                                 onTextEdited: page.controller.setQuery(text)
-                                onAccepted: page.controller.setQuery(text)
+                                onAccepted: {
+                                    page.controller.setQuery(text)
+                                    if (page.view.canNextLyricMatch) page.controller.stepLyricMatch(1)
+                                    timelineRoll.forceActiveFocus(Qt.OtherFocusReason)
+                                }
                             }
                             EditorButton {
                                 objectName: "tuningLyricBatch"
                                 theme: page.theme
-                                glyph: "lyrics"
-                                text: page.vwaTr("整句贴词")
+                                glyph: lyricBatchDialog.peeking ? "" : "lyrics"
+                                text: lyricBatchDialog.peeking ? page.vwaTr("继续贴词") : page.vwaTr("整句贴词")
                                 enabled: page.hasSource && !page.busy && !page.textOf(page.view.scoreEditReason)
                                 ToolTip.text: page.vwaTr("整句贴词 · 先框选音符。按住 Shift 可只选区。")
                                 onClicked: lyricBatchDialog.open()
@@ -1406,7 +1417,7 @@ Item {
                                 Accessible.description: ToolTip.text
                                 ToolTip.visible: hovered || visualFocus
                                 ToolTip.text: page.textOf(page.view.scoreEditReason)
-                                    || page.vwaTr("拖音符改变位置或音高，拖右端改变时长。单击在右侧调整参数。")
+                                    || page.vwaTr("拖动音符可移动，拖右端可拉伸。空白处框选音符，Ctrl 单击增减选择。")
                                 onClicked: {
                                     page.controller.setNoteTool(true)
                                     if (page.currentNote.id)
@@ -1511,12 +1522,7 @@ Item {
                                         + (modelData.trackName || page.trackName(modelData.trackId))
                                         + "，" + page.formatTime(modelData.start)
 
-                                    onClicked: {
-                                        page.controller.selectMatch(String(modelData.trackId),
-                                            String(modelData.id))
-                                        timelineRoll.revealPitch(modelData.pitch,
-                                            modelData.trackId, modelData.id)
-                                    }
+                                    onClicked: page.controller.selectMatch(String(modelData.trackId), String(modelData.id))
 
                                     contentItem: RowLayout {
                                         spacing: Math.round(8 * page.scale)
@@ -1867,8 +1873,16 @@ Item {
                                 HelperText {
                                     Layout.fillWidth: true
                                     theme: page.theme
-                                    text: page.currentNote.id ? page.textOf(page.currentNote.lyric)
-                                        : page.vwaTr("单击卷帘中的音符以调整参数。")
+                                    text: page.selectedNoteCount > 1
+                                        ? page.vwaTr("已选 {count} 个音符").replace("{count}", page.selectedNoteCount)
+                                        : page.currentNote.id ? page.textOf(page.currentNote.lyric)
+                                            : page.vwaTr("单击卷帘中的音符以调整参数。")
+                                }
+                                HelperText {
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    visible: page.selectedNoteCount > 1 && !!page.view.noteTool
+                                    text: page.vwaTr("拖动所选音符可一起移动。上下键升降半音，Ctrl 加上下键升降八度。")
                                 }
                                 Repeater {
                                     model: [{key:"pitch", label:page.vwaTr("音高")},
@@ -1880,7 +1894,7 @@ Item {
                                         readonly property string reason: page.textOf(page.view.scoreEditReason
                                             || (pitchField ? page.currentNote.pitchReason : page.currentNote.timingReason))
                                         Layout.fillWidth: true
-                                        visible: !!page.currentNote.id
+                                        visible: page.selectedNoteCount === 1
                                         HelperText {
                                             theme: page.theme
                                             Layout.minimumWidth: Math.round(38 * page.scale)
@@ -2065,7 +2079,7 @@ Item {
                                     objectName: "addTuningRegion"
                                     Layout.fillWidth: true
                                     theme: page.theme
-                                    text: page.vwaTr("应用为片段")
+                                    text: page.vwaTr("应用到时间选区")
                                     primary: true
                                     visible: !page.styleRegion
                                     enabled: page.canAddRegion
@@ -2078,7 +2092,7 @@ Item {
                                     checked: !!page.view.autoApplySelection
                                     onClicked: page.controller.setAutoApplySelection(checked)
                                     ToolTip.visible: hovered || visualFocus
-                                    ToolTip.text: page.vwaTr("在「框选风格」中松手即应用。按住 Shift 或在「改音符」中拖空白处只选区。")
+                                    ToolTip.text: page.vwaTr("在「框选风格」中松手即应用。按住 Shift 拖动只选时间。")
                                 }
                                 RowLayout {
                                     Layout.fillWidth: true
@@ -2966,7 +2980,11 @@ Item {
         id: lyricBatchDialog
         theme: page.theme
         controller: page.controller
-        onNoteRequested: note => timelineRoll.locateNote(note)
+        sourceKey: timelineRoll.sourceKey
+        onNoteRequested: note => {
+            timelineRoll.locateNote(note, true)
+            timelineRoll.forceActiveFocus(Qt.OtherFocusReason)
+        }
     }
 
     Dialog {
