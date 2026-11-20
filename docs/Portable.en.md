@@ -23,7 +23,7 @@ Review audio, lyrics and notes before use. Final publication is confirmed by you
 | --- | --- | --- |
 | Full | `VWA-Windows-x64.zip` | Clean installation for all users, including new users and users on every older version; includes the complete model set, runtime, preparation, tuning, simple mixing, video assembly and publishing. |
 | JPN | `VWA-Windows-x64-JPN.zip` | The same workflows without the Chinese Qwen weights; Japanese recognition and note extraction remain available. |
-| Update | As listed in the release | 2.0.0 updates only the released 1.0.0 and 1.1.0 installations. Update ZIPs are not complete installations. |
+| Update | As listed in the release | 2.1.0 updates only the released 1.0.0, 1.1.0 and 2.0.0 installations. Update ZIPs are not complete installations. |
 
 The update preserves the JPN model setup. It leaves omitted Chinese weights absent and keeps any weights installed separately. For all other versions, extract a full or JPN package into a new folder.
 
@@ -59,9 +59,9 @@ Review the creator page and confirm publication manually. Keep the finished vide
 
 ## Updates and diagnostics
 
-In 1.0.0 or 1.1.0, check for updates in Settings and updates, then follow the restart prompt to install 2.0.0. The update preserves settings, tasks, sign-in sessions, installed models and optional components. Back up projects you are editing before upgrading. Do not unpack an update archive over an installation.
+In 1.0.0, 1.1.0 or 2.0.0, check for updates in Settings and updates, then follow the restart prompt to install 2.1.0. The update preserves settings, tasks, sign-in sessions, installed models and optional components. Back up projects you are editing before upgrading. Do not unpack an update archive over an installation.
 
-2.0.0 uses Qt Quick. If validation of the old program or runtime fails, use a complete portable archive in a new folder. The 0.4 series has no direct update route.
+2.1.0 uses Qt Quick. If validation of the old program or runtime fails, use a complete portable archive in a new folder. The 0.4 series has no direct update route.
 
 Keep `dependencies`, `runtime/qt6`, `models`, `assets`, `components` and `vendor` with the executable. Find startup errors in `launcher.log`, open startup diagnostics with `tools/Start-Diagnostics.bat`, or check runtime files with `tools/Check-Dependencies.bat`.
 

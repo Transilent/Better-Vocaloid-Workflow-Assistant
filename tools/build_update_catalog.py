@@ -13,11 +13,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tools.build_portable import digest
 from tools.update_apply import (RUNTIME_PROGRAM_FILES, ROOT_FILES, TOOL_FILES, _runtime_path,
-                                QUICK_TRANSITION_QT_PREFIX, QUICK_TRANSITION_SOURCES, QUICK_TRANSITION_VERSION,
-                                _policy_from_runtime_item, program_name, quick_transition_identity,
+                                MAX_PROGRAM_BYTES, MAX_QUICK_PROGRAM_FILES, POLICY_TARGETS,
+                                QUICK_TRANSITION_QT_PREFIX, QUICK_TRANSITION_SOURCES, QUICK_TRANSITION_TARGETS,
+                                _policy_from_runtime_item, desktop_identity, program_name, quick_transition_identity,
                                 quick_transition_removals, select_update_route, validate_file,
                                 validate_destination, validate_quick_runtime_record,
-                                validate_quick_transition_payload)
+                                validate_quick_program, validate_quick_transition_payload)
 
 LAUNCHER_MIGRATION = {'from': 'BVWA.exe', 'to': 'VWA.exe', 'legacy_alias': True}
 COMPATIBILITY_TOOL_NAMES = {'VWA-Updater.exe', 'BVWA-Updater.exe'}
@@ -410,13 +411,39 @@ def _verify_gui_executable(path):
             raise ValueError('Compatibility tool must be a 64-bit Windows GUI executable')
 
 
+def _verify_quick_program_asset(catalog, folder, asset, runtime_sha):
+    program_name(asset)
+    identity = desktop_identity(asset)
+    if asset.get('runtime_sha256') != runtime_sha:
+        raise ValueError('Quick program update targets a different runtime')
+    with zipfile.ZipFile(_verified_asset(folder, asset)) as zipped:
+        inventory = json.loads(zipped.read('update-inventory.json'))
+        entries = inventory['entries']
+        version = json.loads(zipped.read('version.json'))
+        names = {entry['file'] for entry in entries}
+        infos = zipped.infolist()
+        if (desktop_identity(inventory) != identity or desktop_identity(version) != identity
+                or inventory['runtime_sha256'] != runtime_sha
+                or inventory['version'] != catalog['version'] or version['version'] != catalog['version']
+                or len(infos) > MAX_QUICK_PROGRAM_FILES or sum(info.file_size for info in infos) > MAX_PROGRAM_BYTES
+                or len(names) != len(entries) or len(infos) != len(entries) + 1
+                or {info.filename for info in infos} != names | {'update-inventory.json'}):
+            raise ValueError('Quick program update and its inventory disagree')
+        validate_quick_program(names)
+        for entry in entries:
+            validate_file(entry)
+            raw = zipped.read(entry['file'])
+            if len(raw) != entry['bytes'] or hashlib.sha256(raw).hexdigest() != entry['sha256']:
+                raise ValueError('Quick program update member checksum mismatch: ' + entry['file'])
+
+
 def verify_catalog_assets(catalog, folder, *, target_manifest=None, external_reason=None,
                           require_source_policy=False):
     """Recheck all migration files and bind them to one target runtime manifest."""
     folder = Path(folder).resolve()
     if not isinstance(catalog, dict):
         raise ValueError('Catalog must be an object')
-    require_source_policy = require_source_policy or catalog.get('version') in ('1.1.0', QUICK_TRANSITION_VERSION)
+    require_source_policy = require_source_policy or catalog.get('version') in POLICY_TARGETS
     routes = catalog.get('updates')
     if not isinstance(routes, list) or not routes:
         raise ValueError('Missing runtime update routes')
@@ -431,10 +458,10 @@ def verify_catalog_assets(catalog, folder, *, target_manifest=None, external_rea
         select_update_route(catalog, route_sha)
         route_sources = _route_sources(route)
         runtime_item = route.get('runtime_upgrade')
-        if catalog.get('version') == QUICK_TRANSITION_VERSION:
+        if catalog.get('version') in QUICK_TRANSITION_TARGETS:
             if set(route_sources) != QUICK_TRANSITION_SOURCES or len(routes) != 1:
-                raise ValueError('2.0.0 requires exactly one route covering only 1.0.0 and 1.1.0')
-            _policy_from_runtime_item(runtime_item, QUICK_TRANSITION_VERSION)
+                raise ValueError('Quick transition requires one legacy route covering 1.0.0 and 1.1.0')
+            _policy_from_runtime_item(runtime_item, catalog['version'])
         _validate_source_policy(runtime_item, route_sources, route_sha,
                                 required=require_source_policy)
         bootstrap = _verified_asset(folder, route['update'])
@@ -495,6 +522,9 @@ def verify_catalog_assets(catalog, folder, *, target_manifest=None, external_rea
         asset = catalog.get(field)
         if asset is None:
             continue
+        if field == 'program_update' and desktop_identity(asset):
+            _verify_quick_program_asset(catalog, folder, asset, target_sha)
+            continue
         if not isinstance(asset, dict) or asset.get('name') != name:
             raise ValueError('Invalid legacy update projection: ' + field)
         matches = [route for route in routes if _legacy_projection(route) == asset]
@@ -542,7 +572,7 @@ def build(folder, version, migrations, *, legacy_update=None, legacy_program=Non
           target_manifest=None, external_reason=None, require_source_policy=False,
           include_legacy=True, candidate=None):
     folder = Path(folder).resolve()
-    require_source_policy = require_source_policy or version in ('1.1.0', QUICK_TRANSITION_VERSION)
+    require_source_policy = require_source_policy or version in POLICY_TARGETS
     routes, route_by_runtime, labels, targets, manifests = [], {}, {}, set(), []
     candidate_id = candidate.get('candidate_id') if isinstance(candidate, dict) else None
     if candidate is not None:

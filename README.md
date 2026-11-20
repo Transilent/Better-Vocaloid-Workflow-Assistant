@@ -10,15 +10,15 @@ VWA is a Windows desktop assistant for preparing singing projects, tuning by lyr
 
 [Feedback and suggestions](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues/new/choose) · [Contribution guide](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/blob/main/CONTRIBUTING.md)
 
-**[Download VWA 2.0.0 for Windows x64](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.0.0)** · [User guide](docs/UserGuide.en.md)
+**[Download VWA 2.1.0 for Windows x64](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.1.0)** · [User guide](docs/UserGuide.en.md)
 
-VWA 2.0.0 introduces a Qt Quick workbench with single-track and multitrack tuning, continuous mix audition, and live analysis. The first launch offers a skippable tour. When an update is available, VWA shows the changes and lets you decide when to install it.
+VWA 2.1.0 adds native pitch drawing and note-level controls, reference audio for VPR, VSQX, USTX and writable ACEP projects, and English preparation. Mixing adds vocal alignment, de-essing and a dedicated reverb return. New installations default to the dark theme.
 
 ## Features
 
 | Workflow | What it does |
 | --- | --- |
-| Preparation | Import local audio or a Bilibili BV/link, separate lead vocals, backing vocals and accompaniment, transcribe Chinese or Japanese lyrics and notes, and export MIDI, USTX, VSQX or SVP. |
+| Preparation | Import local audio or a Bilibili BV/link, separate lead vocals, backing vocals and accompaniment, transcribe Chinese, Japanese or English lyrics and notes, and export MIDI, USTX, VSQX or SVP. |
 | Tuning | Open a task project or local SVP/SV2, USTX, VPR, ACEP, or UFData. Edit eligible notes on the piano roll, apply styles or draw pitch, and save a separate project in the same format. |
 | Simple mixing | Balance up to three rendered vocal WAVs and one accompaniment with track level, pan, mute/solo, vocal timing and reverb sends, shared vocal-bus EQ/compression/reverb, and editable A/B previews. |
 | Video assembly | Combine a video with your Mixdown, with automatic alignment, manual offset and optional loudness adjustment. |
@@ -33,13 +33,13 @@ VWA also provides task history and recovery, saved presets, optional model insta
 
 ## Download and installation
 
-Choose the full or JPN package under **Assets** on the [2.0.0 release page](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.0.0).
+Choose the full or JPN package under **Assets** on the [2.1.0 release page](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.1.0).
 
 | Package | Use and contents |
 | --- | --- |
 | Full | Clean installation for all users, including new users and users on any older version. Includes the complete model set and base runtime. |
 | JPN | The same workflows with only the Chinese Qwen weight files omitted. Japanese recognition and note extraction remain available; Chinese models can be installed later. |
-| Update | Available in the app for released **1.0.0 and 1.1.0** installations only. |
+| Update | Available in the app for released **1.0.0, 1.1.0 and 2.0.0** installations only. |
 
 Both full variants support all three interface languages. Interface language and lyric-recognition language are set separately. GitHub's **Source code** archives and update ZIPs are not complete installations.
 
@@ -71,7 +71,7 @@ Use **Tasks and results** to find, continue, or retry tasks. Install optional mo
 
 ## Upgrading
 
-**Released 1.0.0 or 1.1.0:** Check for updates in the old app under **Settings and updates**, then follow the restart prompt. Both full and JPN retain settings, tasks, presets, sign-in sessions, installed models, and optional components. JPN does not automatically add omitted Chinese weights.
+**Released 1.0.0, 1.1.0 or 2.0.0:** Check for updates in the old app under **Settings and updates** or **Settings and support**, then follow the restart prompt. Both full and JPN retain settings, tasks, presets, sign-in sessions, installed models, and optional components. JPN does not automatically add omitted Chinese weights.
 
 **All other versions:** Extract a full or JPN package into a new folder. Back up editor projects and apply an offered update through the app.
 
@@ -105,4 +105,4 @@ The integrated Vocal2Midi pipeline also uses [GAME](https://github.com/openvpi/G
 
 VWA's original code is licensed under [MIT](LICENSE). Third-party code, runtimes and model weights retain their own licenses and notices. See [Third-party notices](THIRD_PARTY_NOTICES.md).
 
-See [2.0.0 runtime notices and corresponding source](docs/ThirdPartyRuntime.md).
+See [2.1.0 runtime notices and corresponding source](docs/ThirdPartyRuntime.md).

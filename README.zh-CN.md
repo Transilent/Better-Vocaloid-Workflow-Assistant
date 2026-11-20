@@ -10,16 +10,16 @@ VWA 是面向 Windows 的歌声合成工作流助手，串联歌曲准备、逐�
 
 [问题反馈与建议](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues/new/choose) · [Issue 与 PR 贡献规范](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/blob/main/CONTRIBUTING.zh-CN.md)
 
-**[下载 VWA 2.0.0（Windows x64）](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.0.0)** · [使用指南](docs/UserGuide.zh-CN.md)
+**[下载 VWA 2.1.0（Windows x64）](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.1.0)** · [使用指南](docs/UserGuide.zh-CN.md)
 
-2.0.0 采用 Qt Quick 工作台。调音可在单轨卷帘和多轨编排间切换，混音支持整曲连续试听和实时分析。首次启动有可跳过的教程；发现更新时先显示版本和更新内容，由你决定何时更新。详见[启动提醒与教程](docs/StartupExperience.zh-CN.md)。
+2.1.0 可在参数轨绘制音高曲线、精调单个音符。VPR、VSQX、USTX 和可写 ACEP 可用参考人声。准备工作流支持英语，简易混音新增去齿音、波形对齐和独立混响返回。新安装默认使用深色主题。
 
 ## 功能
 
 | 工作流 | 用途 |
 | --- | --- |
-| 准备工作流 | 导入本地音频或 B站 BV 号／链接，分离主唱、和声与伴奏，识别中文或日语歌词与音符，导出 MIDI、USTX、VSQX 或 SVP。 |
-| 调音工作流 | 选择已有任务或导入 SVP／SV2、USTX、VPR、ACEP、UFData，在卷帘编辑符合条件的音符，应用风格或手绘音高，另存同格式工程。 |
+| 准备工作流 | 导入本地音频或 B站 BV 号／链接，分离主唱、和声与伴奏，识别中文、日语或英语歌词与音符，导出 MIDI、USTX、VSQX 或 SVP。 |
+| 调音工作流 | 选择已有任务或导入 SVP／SV2、USTX、VPR、VSQX、ACEP、UFData，在卷帘编辑符合条件的音符，应用风格或手绘音高，另存同格式工程。 |
 | 简易混音 | 平衡最多三条歌声 WAV 和一条伴奏，支持轨道音量、声像、静音／独奏、歌声时间偏移及混响发送，共用 EQ／压缩／混响，并提供可编辑的 A/B 试听。 |
 | 合成视频 | 将视频与 Mixdown 合成，支持自动对齐、手动偏移和可选响度处理。 |
 | 发布 | 整理封面、标题、简介与署名；B站支持辅助上传，小红书提供本地资料、文案复制与 AI 声明确认，由用户在官方端手动投稿。 |
@@ -33,13 +33,13 @@ VWA 是面向 Windows 的歌声合成工作流助手，串联歌曲准备、逐�
 
 ## 下载与安装
 
-在 [2.0.0 发行页](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.0.0)的 **Assets** 中选择普通版或 JPN 版。
+在 [2.1.0 发行页](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.1.0)的 **Assets** 中选择普通版或 JPN 版。
 
 | 包型 | 用途与内容 |
 | --- | --- |
 | 全量包 | 面向所有用户的干净安装路线，包括新用户和任意旧版本用户；包含完整模型集与基础运行环境。 |
 | JPN 包 | 工作流与全量包相同，仅省略中文 Qwen 权重，保留日语识别与音符提取；中文模型可后续安装。 |
-| 增量更新 | 仅面向正式发行的 **1.0.0 和 1.1.0**，从旧版设置页启动。 |
+| 增量更新 | 仅面向正式发行的 **1.0.0、1.1.0 和 2.0.0**，从旧版设置页启动。 |
 
 两种全量变体均支持三种界面语言。界面语言与歌词识别语言分别设置。GitHub 的 **Source code** 源码包和更新 ZIP 均不能作为完整安装使用。
 
@@ -56,7 +56,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Merge-PortableParts.ps1
 ## 使用流程
 
 1. 在**准备工作流**选择音乐来源、歌词语言、处理方式与保存目录，完成后核对音频、音符和歌词。
-2. 在**调音工作流**打开任务工程，或导入 Synthesizer V Studio 1／2 的 SVP、OpenUtau USTX、VOCALOID 5／6 VPR、ACE Studio ACEP 或 UFData。按歌词定位后可以改词、改音符或调整风格，再另存新工程，在对应编辑器中合成和试听。[可编辑版本与保护规则](docs/TuningWorkflow.zh-CN.md#改词与改音符)
+2. 在**调音工作流**打开任务工程，或导入 Synthesizer V Studio 1／2 的 SVP、OpenUtau USTX、VOCALOID VPR／VSQX、ACE Studio ACEP 或 UFData。按歌词定位后可以改词、改音符或调整风格，再另存新工程，在对应编辑器中合成和试听。[可编辑版本与保护规则](docs/TuningWorkflow.zh-CN.md#改词与改音符)
 3. 合成歌声干声后，在**简易混音**中平衡最多三条歌声与一条伴奏，试听并导出新 WAV，或显式登记为任务 Mixdown。
 4. 在**合成视频**中选择原视频和 Mixdown；已有成品视频可直接进入**发布**。
 5. 核对封面、平台文案与署名后准备上传，最后在创作页面检查并手动发布。
@@ -65,13 +65,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Merge-PortableParts.ps1
 
 OpenUtau USTX 可在「保留原表现」下叠加响度（DYN）与音高偏差（PITD），保留音符内的音高、颤音、音素和其他表情。完成后另存 USTX，再用 OpenUtau 打开试听。USTX 0.5 可预览，编辑前请先在 OpenUtau 中另存为较新格式。
 
-VOCALOID 5/6 VPR 可在「保留原表现」下叠加力度（DYN）与音高弯曲（PIT），保留 PBS、声库、原生音高和内嵌音频。重叠音符保持原样；已手绘音高的音符不叠加 PIT。完成后另存 VPR，再用 VOCALOID 打开试听。
+VOCALOID 5/6 VPR 可在「保留原表现」下叠加力度（DYN）与音高弯曲（PIT），保留 PBS、声库、原生音高和内嵌音频。重叠音符保持原样；已手绘音高的音符不叠加 PIT。在「来源 → 参考音频」逐轨绑定干声可生成 DYN，标准轨还可生成气声。完成后另存 VPR，再用 VOCALOID 打开试听。
 
 在**任务与结果**查找、继续或重试任务，在**模型与组件**按需安装模型。到**设置与支持**调整外观和界面语言、重看教程或管理[本机预设库](docs/PresetLibrary.zh-CN.md)。预设可导出分享，导入默认追加。
 
 ## 升级
 
-**1.0.0 或 1.1.0 正式版：** 在旧版的**设置与更新**中检查更新，按提示重启安装 2.0.0。普通版和 JPN 均可升级，保留设置、任务、预设、登录会话、已安装模型与可选组件。JPN 不会自动补装原来未安装的中文模型。
+**1.0.0、1.1.0 或 2.0.0 正式版：** 在旧版的**设置与更新**或**设置与支持**中检查更新，按提示重启安装 2.1.0。普通版和 JPN 均可升级，保留设置、任务、预设、登录会话、已安装模型与可选组件。JPN 不会自动补装原来未安装的中文模型。
 
 **其他版本：** 把普通版或 JPN 完整包解压到新目录。升级前请备份正在编辑的工程，通过应用更新，勿手工解压增量 ZIP 覆盖。
 
@@ -105,4 +105,4 @@ VOCALOID 5/6 VPR 可在「保留原表现」下叠加力度（DYN）与音高弯
 
 VWA 原创代码采用 [MIT 许可证](LICENSE)。第三方代码、运行库与模型权重分别保留其原有许可证与声明，详见[第三方说明](THIRD_PARTY_NOTICES.zh-CN.md)。
 
-[2.0.0 随包运行库、许可和对应源码](docs/ThirdPartyRuntime.md)。
+[2.1.0 随包运行库、许可和对应源码](docs/ThirdPartyRuntime.md)。

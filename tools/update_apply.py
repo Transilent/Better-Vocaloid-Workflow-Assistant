@@ -132,10 +132,18 @@ RUNTIME_PROGRAM_FILES = {'components/roformer.json', 'components/runtime-feature
                           'components/pedalboard-NOTICE.txt', 'components/pedalboard-THIRD_PARTY_NOTICES.md'}
 ROOT_FILES.add('VWA.exe')
 ROOT_FILES.update({'Start-Quick.bat', 'quick_ui/UiNumberField.qml', 'vocaloid_pitch.py'})
+ROOT_FILES.update({
+    'components/runtime-features.json', 'components/roformer.json',
+    'mixdown_deesser.py', 'mixdown_loudness.py', 'mixdown_waveform.py', 'quick_ui/MixdownAlignment.qml',
+    'tuning_clock.py', 'tuning_native.py', 'tuning_native_pitch.py', 'tuning_note_detail.py',
+    'tuning_pitch_layer.py', 'tuning_score_edits.py',
+})
 LAUNCHER_MIGRATION = {'from': 'BVWA.exe', 'to': 'VWA.exe', 'legacy_alias': True}
 SOURCE_POLICY_FORMAT = 1
 SOURCE_POLICY_REQUIRED_TARGET = '1.1.0'
 QUICK_TRANSITION_VERSION = '2.0.0'
+QUICK_TRANSITION_TARGETS = frozenset({QUICK_TRANSITION_VERSION, '2.1.0'})
+POLICY_TARGETS = QUICK_TRANSITION_TARGETS | {SOURCE_POLICY_REQUIRED_TARGET}
 QUICK_TRANSITION_SOURCES = frozenset({'1.0.0', '1.1.0'})
 QUICK_TRANSITION_IDENTITY = {'desktop_frontend': 'quick', 'qt_version': '6.10.3'}
 QUICK_TRANSITION_RUNTIME_SHA = '61a99c9f30945dab1ce1c2dd5f64567f909268856544f83b279231a20ea1a23c'
@@ -273,14 +281,14 @@ def validate_quick_program(names):
 
 def quick_transition_identity(plan):
     identity = plan.get('quick_transition')
-    if plan.get('version') != QUICK_TRANSITION_VERSION:
+    if plan.get('version') not in QUICK_TRANSITION_TARGETS:
         if identity is not None or 'retire_widgets' in plan:
             raise ValueError('此目标版本不支持 Qt Quick 迁移。')
         return None
     if (identity != QUICK_TRANSITION_IDENTITY or
             plan.get('source_runtime_sha256') != QUICK_TRANSITION_RUNTIME_SHA or
             plan.get('target_runtime_sha256') != QUICK_TRANSITION_RUNTIME_SHA):
-        raise ValueError('2.0.0 需要适用的 Qt Quick 迁移包。')
+        raise ValueError('此目标版本需要适用的 Qt Quick 迁移包。')
     return identity
 
 
@@ -595,15 +603,15 @@ def _source_binding(root, policy, target_version):
 
 def _policy_from_runtime_item(item, target_version):
     policy = item.get('source_policy') if isinstance(item, dict) else None
-    if target_version in (SOURCE_POLICY_REQUIRED_TARGET, QUICK_TRANSITION_VERSION) and policy is None:
+    if target_version in POLICY_TARGETS and policy is None:
         raise ValueError('该更新缺少 source_policy，已停止更新；请使用完整便携包。')
     result = _normalise_source_policy(policy) if policy is not None else None
-    if target_version == QUICK_TRANSITION_VERSION:
+    if target_version in QUICK_TRANSITION_TARGETS:
         sources = result['allowed_sources']
         if ({s['version'] for s in sources} != QUICK_TRANSITION_SOURCES or
                 len(sources) != len(QUICK_TRANSITION_SOURCES) or
                 any(s['runtime_sha256'] != QUICK_TRANSITION_RUNTIME_SHA or 'VWA.exe' not in s['files'] for s in sources)):
-            raise ValueError('2.0.0 只支持已验证的 1.0.0 与 1.1.0 安装。')
+            raise ValueError('Qt Quick 迁移只支持已验证的 1.0.0 与 1.1.0 安装。')
     return result
 
 
@@ -666,7 +674,7 @@ def _verify_bound_source(root, plan_path, plan):
     binding_keys = ('source_policy', 'source_policy_sha256', 'source_identity',
                     'source_identity_sha256', 'source_evidence', 'source_evidence_sha256')
     has_binding = any(key in plan for key in binding_keys)
-    if plan.get('version') in (SOURCE_POLICY_REQUIRED_TARGET, QUICK_TRANSITION_VERSION) and not has_binding:
+    if plan.get('version') in POLICY_TARGETS and not has_binding:
         raise ValueError('更新计划缺少 source_policy，已停止；请使用完整便携包。')
     if not has_binding:
         return None
@@ -798,19 +806,26 @@ def _require_forward_target(root, plan, plan_path):
         '暂存文件已保留，请重新检查更新或使用完整便携包恢复。')
 
 
-def apply_update(plan_path):
+def apply_update(plan_path, *, program_bridge_sha256=None):
     plan_path = Path(plan_path).resolve()
     root, plan = _read_plan(plan_path)
-    current = desktop_identity(json.loads((root / 'version.json').read_text(encoding='utf-8-sig')))
+    installed = _installed_metadata(root)
+    current = desktop_identity(installed)
     if desktop_identity(plan) != current:
         raise ValueError('更新计划与本机界面或 Qt 运行库不匹配。')
     if plan.get('kind') == 'runtime_upgrade':
         if current:
             raise ValueError('Quick 安装不使用历史运行库迁移计划。')
         return apply_runtime_upgrade(plan_path)
-    if plan.get('version') in (SOURCE_POLICY_REQUIRED_TARGET, QUICK_TRANSITION_VERSION):
+    if not current and plan.get('version') in POLICY_TARGETS:
         raise ValueError('该版本需要使用带 source_policy 的运行库更新流程。')
-    _require_forward_target(root, plan, plan_path)
+    if program_bridge_sha256 is None:
+        _require_forward_target(root, plan, plan_path)
+    else:
+        bridge = installed.get('program_upgrade_pending')
+        if (not current or not isinstance(bridge, dict) or bridge.get('sha256') != program_bridge_sha256
+                or installed['version'] != plan['version']):
+            raise ValueError('待完成的 Quick 更新与已安装的引导包不匹配。')
     if reason := installation_busy(root):
         raise RuntimeError(reason)
     if sha(root / 'dependencies/manifest.json') != plan['runtime_sha256']:
@@ -821,8 +836,11 @@ def apply_update(plan_path):
     if current:
         validate_quick_program(e['file'] for e in entries)
         target = validate_destination(stage / 'files', 'version.json')
-        if desktop_identity(json.loads(target.read_text(encoding='utf-8-sig'))) != current:
+        target_version = json.loads(target.read_text(encoding='utf-8-sig'))
+        if desktop_identity(target_version) != current:
             raise ValueError('待安装程序的界面身份不匹配。')
+        if program_bridge_sha256 is not None and target_version.get('program_upgrade_pending') is not None:
+            raise ValueError('Quick 引导只能安装完整的目标程序。')
     for entry in entries:
         validate_file(entry)
         validate_destination(root, entry['file'])
@@ -834,6 +852,9 @@ def apply_update(plan_path):
     try:
         for entry in sorted(entries, key=lambda item: (item['file'] == 'version.json', item['file'])):
             destination = validate_destination(root, entry['file'])
+            if (destination.is_file() and destination.stat().st_size == entry['bytes']
+                    and sha(destination) == entry['sha256']):
+                continue
             saved = backup / entry['file']
             existed = destination.exists()
             if existed:
@@ -1375,11 +1396,11 @@ def prepare_program_update(version, item, root, progress=lambda *args: None, che
     """One program staging implementation for the GUI and legacy repair tool."""
     if not isinstance(version, str) or not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', version):
         raise ValueError('更新版本号无效。')
-    if version in (SOURCE_POLICY_REQUIRED_TARGET, QUICK_TRANSITION_VERSION) and not allow_policy_bootstrap:
-        raise ValueError('该版本需要使用带 source_policy 的运行库更新流程。')
     _asset_record(item)
     root = Path(root).resolve()
     identity = desktop_identity(json.loads((root / 'version.json').read_text(encoding='utf-8-sig')))
+    if not identity and version in POLICY_TARGETS and not allow_policy_bootstrap:
+        raise ValueError('该版本需要使用带 source_policy 的运行库更新流程。')
     if desktop_identity(item) != identity:
         raise ValueError('此更新包与当前界面或 Qt 运行库不匹配，请下载适用的完整包。')
     runtime_sha = sha(root / 'dependencies/manifest.json')
@@ -1546,8 +1567,8 @@ def prepare_runtime_upgrade(item, root, progress=lambda *args: None, check=None,
                 ('sha256', 'source_runtime_sha256', 'target_runtime_sha256'))):
         raise ValueError('运行库升级信息无效，请使用完整便携包。')
     target_version = item['version']
-    if target_version == QUICK_TRANSITION_VERSION and desktop_identity(_installed_metadata(root)):
-        raise ValueError('仅从旧版界面迁移至 2.0.0。')
+    if target_version in QUICK_TRANSITION_TARGETS and desktop_identity(_installed_metadata(root)):
+        raise ValueError('Qt Quick 安装请使用适用的程序更新包。')
     policy = _policy_from_runtime_item(item, target_version)
     initial_source = _source_binding(root, policy, target_version) if policy is not None else None
     if sha(root / 'dependencies/manifest.json') != item['source_runtime_sha256']:

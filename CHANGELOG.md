@@ -2,7 +2,14 @@
 
 ## Unreleased
 
-- Fix Preparation format checkboxes so project and audio selections are saved and included in new tasks ([#3](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues/3)).
+## 2.1.0 — 2026-11-20
+
+- 在调音卷帘内改词、移动或缩放音符，并在参数轨用曲线笔、直线、节点和橡皮编辑音高。单轨检查器显示所选音符可写的原生参数。
+- 新增 VSQX3／4、ACEP 和 UFData 调音支持。VPR、VSQX、USTX 与可写 ACEP 可逐轨应用参考人声，并另存为原格式。参数按工程能力提供，同格式匹配工程可沿用原曲线。
+- 简易混音新增去齿音、歌声与伴奏波形对齐、A/B 响度匹配和独立混响返回。
+- 准备工作流接入英文识别与 USTX 输出，网易云歌词入口恢复按歌名搜索。修正准备页格式选择保存问题 ([#3](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues/3))。
+- 模型与组件按实际下载地址提供加速源，下载、长任务和错误增加进度及本机诊断。新安装默认使用深色主题。
+- 在应用内从正式 1.0.0、1.1.0 和 2.0.0 升级。普通版与 JPN 版均保留本地工程、设置和已安装模型。
 
 ## 2.0.0 — 2026-11-13
 

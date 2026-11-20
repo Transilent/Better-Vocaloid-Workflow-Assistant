@@ -8,7 +8,7 @@ Open the [local preset library](PresetLibrary.en.md) under **Settings and suppor
 
 The [VWA workspace guide](Frontend.en.md) describes the compact preparation layout, independent tuning, appearance settings and result states.
 
-Download the Windows x64 full or JPN package from the [2.0.0 release](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.0.0). Both include the runtime. Join the three full-package parts as described in the [portable guide](Portable.en.md), or extract the JPN ZIP directly. Choose a short, writable path.
+Download the Windows x64 full or JPN package from the [2.1.0 release](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.1.0). Both include the runtime. Join the three full-package parts as described in the [portable guide](Portable.en.md), or extract the JPN ZIP directly. Choose a short, writable path.
 
 Run **`VWA.exe`** from the extracted top-level `VWA` folder to start without a console window. Open **准备工作流** (Preparation workflow). Under **音乐来源**,
 select **B站 BV 号 / 链接** or **本地音乐文件**. **选择文件** opens the music chooser.
@@ -18,7 +18,7 @@ resume after the original is moved. The sidebar also contains **模型与组件*
 
 ## Upgrading
 
-**Released 1.0.0 or 1.1.0:** Check for updates in the old app under **Settings and updates**, then follow the restart prompt. Both full and JPN retain settings, tasks, presets, sign-in sessions, installed models, and optional components. JPN does not automatically add omitted Chinese weights.
+**Released 1.0.0, 1.1.0 or 2.0.0:** Check for updates in the old app under **Settings and updates** or **Settings and support**, then follow the restart prompt. Both full and JPN retain settings, tasks, presets, sign-in sessions, installed models, and optional components. JPN does not automatically add omitted Chinese weights.
 
 **All other versions:** Extract a full or JPN package into a new folder. Back up editor projects and apply an offered update through the app.
 

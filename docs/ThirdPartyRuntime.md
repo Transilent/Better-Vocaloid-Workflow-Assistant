@@ -1,6 +1,6 @@
-# VWA 2.0.0 runtime notices / 运行库与对应源码
+# VWA 2.1.0 runtime notices / 运行库与对应源码
 
-The Windows packages and the 2.0.0 update load separate Qt shared libraries from `runtime/qt6`. These are unmodified files selected from the public PyPI Windows x64 wheels for **PySide6 Essentials 6.10.3** and **Shiboken6 6.10.3**; see the [wheel lock](../packaging/requirements-quick.lock.txt). VWA's original source is under MIT; the third-party components retain their own terms.
+The Windows packages and the 2.1.0 update load separate Qt shared libraries from `runtime/qt6`. These are unmodified files selected from the public PyPI Windows x64 wheels for **PySide6 Essentials 6.10.3** and **Shiboken6 6.10.3**; see the [wheel lock](../packaging/requirements-quick.lock.txt). VWA's original source is under MIT; the third-party components retain their own terms.
 
 Windows 包及增量更新从 `runtime/qt6` 加载独立的 Qt 库。文件选自 PyPI 的 **PySide6 Essentials 6.10.3** 和 **Shiboken6 6.10.3** Windows x64 wheel，未修改二进制，原包摘要见[依赖锁](../packaging/requirements-quick.lock.txt)。VWA 原创源码采用 MIT，第三方文件适用各自许可。
 

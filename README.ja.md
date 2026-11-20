@@ -10,15 +10,15 @@ VWA は、楽曲の準備、歌詞に沿った調声、歌声のミックス、�
 
 [不具合・機能提案・使い方の質問](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/issues/new/choose) · [貢献ガイド（English）](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/blob/main/CONTRIBUTING.md)
 
-**[VWA 2.0.0 をダウンロード（Windows x64）](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.0.0)** · [利用ガイド（中文）](docs/UserGuide.zh-CN.md)
+**[VWA 2.1.0 をダウンロード（Windows x64）](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.1.0)** · [利用ガイド（中文）](docs/UserGuide.zh-CN.md)
 
-2.0.0 では Qt Quick の作業画面を採用しました。調声は単一トラックと複数トラックを切り替えられ、ミックスは曲全体を再生しながら調整できます。初回ガイドはスキップでき、起動時の更新通知は後で表示するよう設定できます。
+VWA 2.1.0 ではピッチ曲線の描画とノート単位の調整、VPR・VSQX・USTX・書き込み可能な ACEP の参照音声、英語の準備ワークフローに対応しました。ミックスに波形による位置合わせ、ディエッサー、独立したリバーブリターンを追加しました。新規インストールはダークテーマで起動します。
 
 ## 主な機能
 
 | ワークフロー | 内容 |
 | --- | --- |
-| 準備 | ローカル音声や Bilibili の BV 番号・リンクを読み込み、メインボーカル・コーラス・伴奏を分離します。中国語・日本語の歌詞と音符を認識し、MIDI、USTX、VSQX、SVP を出力します。 |
+| 準備 | ローカル音声や Bilibili の BV 番号・リンクを読み込み、メインボーカル・コーラス・伴奏を分離します。中国語・日本語・英語の歌詞と音符を認識し、MIDI、USTX、VSQX、SVP を出力します。 |
 | 調声 | タスクのプロジェクトや SVP・USTX・VPR を開き、歌詞を見ながら区間ごとにスタイルやピッチを調整し、同じ形式で別のファイルに保存します。 |
 | かんたんミックス | 最大 3 本のレンダリング済み歌声 WAV と 1 本の伴奏を、トラック音量、パン、ミュート／ソロ、歌声のタイミング、リバーブセンド、共有ボーカルバスの EQ／コンプレッサー／リバーブで整え、編集可能な A/B 試聴を行えます。 |
 | 動画合成 | 動画と Mixdown を組み合わせます。自動位置合わせ、手動オフセット、任意のラウドネス調整に対応します。 |
@@ -33,13 +33,13 @@ VWA は、楽曲の準備、歌詞に沿った調声、歌声のミックス、�
 
 ## ダウンロードとインストール
 
-[2.0.0 リリース](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.0.0)の **Assets** から完全版または JPN 版を選んでください。
+[2.1.0 リリース](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.1.0)の **Assets** から完全版または JPN 版を選んでください。
 
 | パッケージ | 用途と内容 |
 | --- | --- |
 | 完全版 | 新規ユーザーと任意の旧バージョンのユーザーを含む全ユーザー向けのクリーンインストール経路です。完全なモデル一式と基本ランタイムを含みます。 |
 | JPN 版 | ワークフローは完全版と同じで、中国語 Qwen の重みファイルだけを省略します。日本語認識と音符抽出を利用でき、中国語モデルは後から追加できます。 |
-| 更新版 | 正式版の **1.0.0 と 1.1.0** が対象です。旧版の設定画面から更新します。 |
+| 更新版 | 正式版の **1.0.0、1.1.0、2.0.0** が対象です。旧版の設定画面から更新します。 |
 
 どちらの完全版も 3 言語の表示に対応します。表示言語と歌詞の認識言語は別々に設定します。GitHub の **Source code** アーカイブと更新用 ZIP だけではアプリを利用できません。
 
@@ -65,7 +65,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Merge-PortableParts.ps1
 
 ## アップグレード
 
-**正式版の 1.0.0／1.1.0：** 旧版の**設定・更新**で更新を確認し、案内に従って再起動します。完全版・JPN 版ともに設定、タスク、プリセット、ログイン状態、追加済みモデルとコンポーネントを保持します。JPN 版では未導入の中国語モデルを自動で追加しません。
+**正式版の 1.0.0／1.1.0／2.0.0：** 旧版の**設定・更新**で更新を確認し、案内に従って再起動します。完全版・JPN 版ともに設定、タスク、プリセット、ログイン状態、追加済みモデルとコンポーネントを保持します。JPN 版では未導入の中国語モデルを自動で追加しません。
 
 **その他のバージョン：** 完全版または JPN 版を新しいフォルダーに展開してください。更新用 ZIP を手動で上書きせず、編集中のプロジェクトは事前にバックアップしてください。
 
@@ -99,4 +99,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Merge-PortableParts.ps1
 
 VWA 独自のコードは [MIT ライセンス](LICENSE)で提供します。第三者のコード、ランタイム、モデルの重みには、それぞれのライセンスと通知が適用されます。[第三者に関する通知（English）](THIRD_PARTY_NOTICES.md)をご確認ください。
 
-[2.0.0 ランタイムのライセンスと対応ソース（English／中文）](docs/ThirdPartyRuntime.md)。
+[2.1.0 ランタイムのライセンスと対応ソース（English／中文）](docs/ThirdPartyRuntime.md)。
