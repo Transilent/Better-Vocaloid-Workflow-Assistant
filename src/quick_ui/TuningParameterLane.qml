@@ -19,6 +19,9 @@ Rectangle {
     readonly property real rightInset: roll.x + roll.plotRight
     readonly property bool canEdit: !view.busy && !String(view.pitchEditReason || "")
     readonly property bool hasStrokes: Number(view.pitchStrokeCount || 0) > 0
+    readonly property bool rangeTool: tool === "freehand" || tool === "erase"
+    readonly property var brushWindows: rangeTool && canEdit
+        ? roll.visibleNotes.filter(note => !note.drawReason) : []
     readonly property real pitchLimit: Number(view.pitchMaxCents || 200)
     readonly property real extent: plotExtent()
     readonly property real inspectionTime: visible && isFinite(pointerTime) ? pointerTime : Number.NaN
@@ -72,7 +75,7 @@ Rectangle {
     }
 
     function pointAt(x, y, modifiers, note) {
-        const raw = timeForX(x)
+        const raw = timeForX(roll.clamp(x, leftInset, rightInset))
         const pad = 10 * uiScale
         const snap = view.snapEnabled && !(modifiers & Qt.AltModifier)
         const step = snap ? 10 : 1
@@ -154,14 +157,15 @@ Rectangle {
             return
         }
         if (note) roll.selectNote(note)
-        if (!note || note.drawReason || !canEdit || tool === "inspect")
+        if (!canEdit || tool === "inspect" || (!rangeTool && (!note || note.drawReason)))
             return
-        const pair = pointAt(mouse.x, mouse.y, mouse.modifiers, note)
+        const pair = pointAt(mouse.x, mouse.y, mouse.modifiers, rangeTool ? null : note)
         if (tool === "nodes") {
             if (hit) gesture = {note: note, kind: tool, hit: hit, x: mouse.x, y: mouse.y,
                 initial: hit.index >= 0 ? hit.row.offsets[hit.index] : hit.pair}
         } else {
-            gesture = {note: note, kind: tool, x: mouse.x, y: mouse.y, first: pair, points: [pair]}
+            gesture = {note: rangeTool ? null : note, kind: tool, track: roll.activeTrack,
+                x: mouse.x, y: mouse.y, first: pair, points: [pair]}
         }
         pointer = gesture && gesture.initial ? gesture.initial : pair
         graph.requestPaint()
@@ -177,7 +181,8 @@ Rectangle {
         const pair = pointAt(x, y, mouse.modifiers, current.note)
         const low = idx === 0 ? current.note.start : points[idx - 1][0] + .000001
         const high = idx === points.length - 1 ? current.note.end : points[idx + 1][0] - .000001
-        if (Math.abs(mouse.x - current.x) < 2 * uiScale) pair[0] = current.initial[0]
+        if ((mouse.modifiers & Qt.ShiftModifier) || Math.abs(mouse.x - current.x) < 2 * uiScale)
+            pair[0] = current.initial[0]
         if (Math.abs(mouse.y - current.y) < 2 * uiScale) pair[1] = current.initial[1]
         pair[0] = roll.clamp(pair[0], low, high)
         return pair
@@ -222,21 +227,22 @@ Rectangle {
         }
         const moved = Math.hypot(mouse.x - current.x, mouse.y - current.y) >= 3 * uiScale
         const pair = dragPoint(current, mouse)
-        const id = current.note.id
         if (current.kind === "nodes") {
             const hit = current.hit
             if ((hit.index < 0 && !moved) || (hit.index >= 0 && moved)) {
                 const value = hit.index < 0 ? hit.pair : pair
-                controller.editPitchNode(id, hit.row.spanStart, hit.index, value[0], value[1])
+                controller.editPitchNode(current.note.id, hit.row.spanStart, hit.index, value[0], value[1])
             }
         } else if (current.kind === "erase") {
-            controller.editPitchStroke(id, "erase", moved ? [current.first, pair] : [current.first])
+            controller.brushPitch(current.track, "erase", moved ? [current.first, pair] : [current.first])
         } else if (moved) {
             const samples = current.kind === "line" ? [current.first, pair] : [...current.points, pair]
             const times = samples.map(point => point[0])
             if (Math.max(...times) - Math.min(...times) >= Number(view.pitchStrokeMinimum || .012)) {
-                if (current.kind === "line") controller.drawPitchLine(id, current.first[0], current.first[1], pair[0], pair[1])
-                else controller.editPitchStroke(id, "draw", samples)
+                if (current.kind === "line")
+                    controller.drawPitchLine(current.note.id, current.first[0], current.first[1], pair[0], pair[1])
+                else
+                    controller.brushPitch(current.track, "draw", samples)
             }
         }
         graph.requestPaint()
@@ -325,10 +331,10 @@ Rectangle {
             Repeater {
                 model: [
                     {id: "Inspect", tool: "inspect", title: "查看", hint: "查看曲线全幅。"},
-                    {id: "Freehand", tool: "freehand", title: "画笔", hint: "在音符内连续拖动绘制。"},
+                    {id: "Freehand", tool: "freehand", title: "曲线笔", hint: "拖动绘制平滑音高曲线，可一笔跨多个音符。按 Alt 细调。"},
                     {id: "Line", tool: "line", title: "直线", hint: "在一个音符内拖动，画出两点之间的直线。"},
-                    {id: "Nodes", tool: "nodes", title: "节点", hint: "点击线条插入节点，拖圆点调整，右键可删除。"},
-                    {id: "Erase", tool: "erase", title: "橡皮", hint: "点手绘时间位置擦除整段，拖动擦除局部。"}
+                    {id: "Nodes", tool: "nodes", title: "节点", hint: "点击线条插入节点。拖动调整，按 Shift 锁定时间，右键删除。"},
+                    {id: "Erase", tool: "erase", title: "橡皮", hint: "单击擦除整段手绘，拖动按时间擦除，可跨音符。"}
                 ]
                 LaneButton {
                     required property var modelData
@@ -367,11 +373,11 @@ Rectangle {
             Item { Layout.fillWidth: true }
             CurveToggle {
                 objectName: "tuningParameterOriginal"
-                text: lane.label("原曲线")
+                text: lane.label("工程线")
                 selected: lane.showOriginal
                 tint: lane.originalColor
                 ToolTip.visible: hovered || visualFocus
-                ToolTip.text: lane.label("查看工程里的原生偏移、音符控制点和颤音。")
+                ToolTip.text: lane.label("查看工程音高偏移、音符弯音和当前微调与颤音。")
                 onClicked: lane.showOriginal = !lane.showOriginal
             }
             CurveToggle {
@@ -417,6 +423,8 @@ Rectangle {
                 function stroke(ctx, points, color, nodes, anchorsOnly) {
                     ctx.strokeStyle = color
                     ctx.lineWidth = 1.5 * lane.uiScale
+                    ctx.lineCap = "round"
+                    ctx.lineJoin = "round"
                     ctx.beginPath()
                     let started = false
                     for (const p of points) {
@@ -444,6 +452,24 @@ Rectangle {
                         ctx.arc(x, lane.yForValue(p[1]), 2.7 * lane.uiScale, 0, 2 * Math.PI)
                         ctx.fill()
                     }
+                }
+
+                function brushPreview(ctx, points) {
+                    ctx.save()
+                    ctx.globalAlpha = .25
+                    stroke(ctx, points, lane.manualColor, false)
+                    ctx.globalAlpha = 1
+                    ctx.beginPath()
+                    const guard = Number(lane.view.pitchEdgeSeconds || .018)
+                    for (const note of lane.brushWindows) {
+                        const left = lane.xForTime(note.start + guard)
+                        const right = lane.xForTime(note.end - guard)
+                        if (right > left && right >= lane.leftInset && left <= lane.rightInset)
+                            ctx.rect(left, 0, right - left, height)
+                    }
+                    ctx.clip()
+                    stroke(ctx, points, lane.manualColor, false)
+                    ctx.restore()
                 }
 
                 onPaint: {
@@ -501,7 +527,7 @@ Rectangle {
                     if (g && lane.pointer && g.kind === "line")
                         stroke(ctx, [g.first, lane.pointer], lane.manualColor, true)
                     if (g && lane.pointer && g.kind === "freehand")
-                        stroke(ctx, [...g.points, lane.pointer], lane.manualColor, false)
+                        brushPreview(ctx, [...g.points, lane.pointer])
                     if (g && lane.pointer && g.kind === "erase") {
                         const first = lane.xForTime(g.first[0]), last = lane.xForTime(lane.pointer[0])
                         ctx.fillStyle = lane.theme.error

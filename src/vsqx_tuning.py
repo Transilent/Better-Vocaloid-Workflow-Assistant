@@ -16,10 +16,10 @@ MAX_BYTES = 64 * 1024**2
 STYLE_ONLY = 'VSQX 支持「保留原表现」下的 DYN 力度与 PIT 音高弯曲。'
 _NAMES = {
     3: dict(part='musicalPart', name='trackName', tick='posTick', duration='durTick',
-            pitch='noteNum', lyric='lyric', phoneme='phnms', note_style='noteStyle',
+            pitch='noteNum', velocity='velocity', lyric='lyric', phoneme='phnms', note_style='noteStyle',
             bank='vBS', controller='mCtrl', value='attr', numerator='nume',
             denominator='denomi', measure='posMes', bpm='bpm'),
-    4: dict(part='vsPart', name='name', tick='t', duration='dur', pitch='n', lyric='y',
+    4: dict(part='vsPart', name='name', tick='t', duration='dur', pitch='n', velocity='v', lyric='y',
             phoneme='p', note_style='nStyle', bank='bs', controller='cc', value='v',
             numerator='nu', denominator='de', measure='m', bpm='v'),
 }
@@ -180,8 +180,12 @@ def _note(note, names, singers, singer_ticks):
         for field in _elements(style, names['value']):
             if field.getAttribute('id') == 'vibLen' and _text(field).strip() not in ('', '0'):
                 vibrato = 1
+    try:
+        velocity = _integer(note, names['velocity'], -1)
+    except ValueError:
+        velocity = -1
     return {'pos': position, 'duration': _integer(note, names['duration']), 'number': _integer(note, names['pitch']),
-            'lyric': _text(_child(note, names['lyric'])), 'phoneme': _text(phoneme),
+            'velocity': velocity, 'lyric': _text(_child(note, names['lyric'])), 'phoneme': _text(phoneme),
             'isProtected': lock not in ('', '0'), 'langID': singers[singer][1] if singer >= 0 else None,
             'vibrato': {'duration': vibrato}}
 
@@ -301,7 +305,8 @@ def merge_sequence(data, original, updated):
         return dict(data)
     document, version = _document(data['xml'])
     names = _NAMES[version]
-    fields = {'pos': 'tick', 'duration': 'duration', 'number': 'pitch', 'lyric': 'lyric', 'phoneme': 'phoneme'}
+    fields = {'pos': 'tick', 'duration': 'duration', 'number': 'pitch', 'velocity': 'velocity',
+              'lyric': 'lyric', 'phoneme': 'phoneme'}
     for track, before, after in zip(_elements(document.documentElement, 'vsTrack'), original['tracks'], updated['tracks']):
         if before == after:
             continue

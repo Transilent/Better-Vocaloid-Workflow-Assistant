@@ -32,7 +32,8 @@ def score(title):
         'tracks': [{'track_name': 'Lead'}, {'track_name': 'Harmony'}],
         'voice_parts': [
             {'track_no': 0, 'position': 0, 'duration': 2880, 'notes': [
-                {'position': 0, 'duration': 480, 'tone': 60, 'lyric': '你'},
+                {'position': 0, 'duration': 480, 'tone': 60, 'lyric': '你', 'tuning': 0,
+                 'vibrato': {'length': 0, 'period': 175, 'depth': 25, 'in': 10, 'out': 10}},
                 {'position': 960, 'duration': 360, 'tone': 62, 'lyric': '好'},
                 {'position': 1920, 'duration': 480, 'tone': 64, 'lyric': '呀'}]},
             {'track_no': 1, 'position': 0, 'duration': 2880, 'notes': [
@@ -181,6 +182,14 @@ def exercise(root, viewport, scale):
 
     # Marquee and Ctrl-click select notes without applying the active style.
     control = Qt.KeyboardModifier.ControlModifier
+    tap('tuningNoteDetail_fine_tune')
+    QTest.keyClick(window, Qt.Key.Key_Up)
+    assert tune.project.note_patches[identity]['fine_tune'] == 1
+    assert window.grabWindow().save(str(proof / f'native-note-properties-{scale}.png'))
+    QTest.mouseClick(window, left, pos=note_point(resized))
+    QTest.keyClick(window, Qt.Key.Key_Z, control)
+    assert 'fine_tune' not in tune.project.note_patches[identity]
+
     corner = note_point(resized, 0) - QPointF(12, 1.8 * roll.property('pitchRowHeight')).toPoint()
     far = note_point(second, 1) + QPointF(8, 1.8 * roll.property('pitchRowHeight')).toPoint()
     drag(corner, far.x() - corner.x(), far.y() - corner.y())
@@ -436,6 +445,16 @@ def exercise(root, viewport, scale):
     assert next(row for row in tune.pitchCurves if row['noteId'] == second['id']) == freehand
     tap('tuningParameterErase')
     QTest.mouseClick(window, left, pos=parameter_point(1.16, 90))
+    assert tune.project.pitch_strokes == strokes
+
+    tap('tuningParameterFreehand')
+    QTest.mousePress(window, left, pos=parameter_point(resized['end'] - .15, -10))
+    QTest.mouseMove(window, parameter_point(resized['end'] - .06, 70), 20)
+    QTest.mouseMove(window, parameter_point(1.05, -30), 20)
+    QTest.mouseRelease(window, left, pos=parameter_point(1.30, 50))
+    assert tune.project.pitch_strokes != strokes
+    assert {row['noteId'] for row in tune.pitchCurves} == {identity, second['id']}
+    QTest.keyClick(window, Qt.Key.Key_Z, control)
     assert tune.project.pitch_strokes == strokes
     tune.setBeatDivision(0)
 

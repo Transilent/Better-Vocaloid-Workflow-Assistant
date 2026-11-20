@@ -22,6 +22,7 @@ Item {
     readonly property var bindings: controller.bindings || []
     readonly property var techniques: controller.techniques || []
     readonly property var currentNote: view.selectedNote || ({})
+    readonly property var noteDetails: currentNote.details || []
     readonly property int selectedNoteCount: (view.selectedNoteIds || []).length
     readonly property string noteScope: textOf(view.sha256) + "|" + textOf(currentNote.id)
     readonly property string styleRegionId: textOf(view.selectedRegion)
@@ -1926,6 +1927,64 @@ Item {
                                             ToolTip.visible: lockReasonHover.hovered
                                             ToolTip.text: reason
                                             HoverHandler { id: lockReasonHover }
+                                        }
+                                    }
+                                }
+                                HelperText {
+                                    objectName: "tuningNotePronunciation"
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    visible: page.selectedNoteCount === 1 && !!page.currentNote.pronunciation
+                                    text: page.vwaTr("发音") + "  " + page.textOf(page.currentNote.pronunciation)
+                                    textFormat: Text.PlainText
+                                }
+                                PanelLabel {
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    visible: nativeNoteFields.visible
+                                    text: page.vwaTr("原生参数")
+                                }
+                                GridLayout {
+                                    id: nativeNoteFields
+                                    Layout.fillWidth: true
+                                    visible: page.selectedNoteCount === 1 && page.noteDetails.length > 0
+                                    columns: 2
+                                    columnSpacing: page.editorGap
+                                    rowSpacing: page.editorGap
+                                    Repeater {
+                                        model: nativeNoteFields.visible ? page.noteDetails.length : 0
+                                        ColumnLayout {
+                                            id: detailColumn
+                                            required property int index
+                                            readonly property var detail: page.noteDetails[index] || ({})
+                                            readonly property string title: page.vwaTr(page.textOf(detail.label))
+                                            Layout.fillWidth: true
+                                            Layout.preferredWidth: 1
+                                            spacing: Math.round(3 * page.scale)
+                                            HelperText {
+                                                Layout.fillWidth: true
+                                                theme: page.theme
+                                                text: detailColumn.title
+                                            }
+                                            UiNumberField {
+                                                objectName: "tuningNoteDetail_" + page.textOf(detail.key)
+                                                Layout.fillWidth: true
+                                                Layout.minimumWidth: 0
+                                                theme: page.theme
+                                                fieldLabel: detailColumn.title
+                                                unit: page.textOf(detail.unit)
+                                                currentValue: page.numberOr(detail.value, 0)
+                                                minimum: page.numberOr(detail.minimum, 0)
+                                                maximum: page.numberOr(detail.maximum, 0)
+                                                decimals: page.numberOr(detail.decimals, 0)
+                                                arrowStep: 1
+                                                scopeKey: page.noteScopeVersion
+                                                enabled: !page.busy && !!page.view.noteTool && !page.view.scoreEditReason
+                                                onCommitted: (scope, value) => {
+                                                    if (scope === page.noteScopeVersion && page.selectedNoteCount === 1)
+                                                        page.controller.editNoteDetail(page.currentNote.id, detail.key, value)
+                                                }
+                                            }
                                         }
                                     }
                                 }

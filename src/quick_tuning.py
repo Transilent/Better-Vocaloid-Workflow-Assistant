@@ -17,6 +17,7 @@ from style_drafts import DraftConflict, DraftStore
 from style_presets import DETAIL_DEFAULTS, region_settings, time_range_settings
 import tuning_engine as engine
 from tuning_execution import EDITOR_OPTION_KEYS, PRESERVE_FOR_EDIT, editor_options
+from tuning_note_detail import DETAILS
 from tuning_pitch_layer import (EDGE_SECONDS, FORMATS as DRAW_FORMATS, MAX_CENTS, MIN_STROKE_SECONDS,
                                 UNSUPPORTED as DRAW_UNSUPPORTED)
 from tuning_score_edits import FORMATS as SCORE_EDIT_FORMATS, UNSUPPORTED as SCORE_EDIT_UNSUPPORTED
@@ -876,7 +877,8 @@ class QuickTuning(QObject):
         key = self.project, self._active, self._left, self._span, self._parameter_style
         if key != self._plot_cache[0]:
             focused = [note for note in self._notes if note['trackId'] == self._active]
-            plot = self.project.pitch_layer.plot(focused, self._left, self._left + self._span, self._parameter_style)
+            plot = self.project.pitch_layer.plot(focused, self._left, self._left + self._span, self._parameter_style,
+                                                 self.project.note_patches)
             self._plot_cache = key, plot
         return self._plot_cache[1]
 
@@ -933,8 +935,10 @@ class QuickTuning(QObject):
         if target:
             minimum = editor.clock.to_seconds(target.offset + target.step * target.minimum)
             maximum = editor.clock.to_seconds(target.offset + target.step * target.maximum)
+        details, pronunciation = (editor.note_details(note['id'], self.project.note_patches.get(note['id'], {}))
+                                  if editor else ([], ''))
         return {**note, 'timingReason': tr(note.get('timingReason', '')), 'pitchReason': tr(note.get('pitchReason', '')),
-                'timeMin': minimum, 'timeMax': maximum}
+                'timeMin': minimum, 'timeMax': maximum, 'details': details, 'pronunciation': pronunciation}
 
     def _lyric_context(self):
         """Project the current search hit or focused-track lyric from visible notes."""
@@ -1707,6 +1711,23 @@ class QuickTuning(QObject):
             project.pitch_strokes, project.note_patches, identity, kind, samples),
             '已保存手绘音高，可撤销。' if kind == 'draw' else '已擦除手绘，原曲线和风格保留。')
 
+    @Slot(str, str, 'QVariantList', result=bool)
+    def brushPitch(self, track, kind, samples):
+        if self._editing_blocked or not track or track != self._active:
+            return False
+        try:
+            if reason := self._pitch_block():
+                raise ValueError(reason)
+            project = self.project
+            visible = [note for note in self._notes if note['trackId'] == track]
+            strokes = project.pitch_layer.brush(project.pitch_strokes, project.note_patches, visible, kind, samples)
+            notice = '已保存音高曲线，可撤销。' if kind == 'draw' else '已擦除手绘，原曲线和风格保留。'
+            self._commit_pitch(strokes, notice)
+            return True
+        except (ValueError, ArithmeticError) as error:
+            self._error(error)
+            return False
+
     def _apply_pitch(self, identity, operation, notice):
         if self._editing_blocked:
             return False
@@ -1716,16 +1737,19 @@ class QuickTuning(QObject):
             note = self.project.notes.get(identity)
             if not note or note['trackId'] != self._active:
                 raise ValueError('请在当前轨道选择要修改的音符。')
-            project = self.project.with_edits(self.project.note_edits, operation(self.project, note))
-            if project is not self.project:
-                self._edit_issue = None
-                self._record_edit()
-                self._replace_edits(project, self._regions, notice)
+            self._commit_pitch(operation(self.project, note), notice)
             return True
         except (ValueError, ArithmeticError) as error:
             self._remember_edit_issue(identity, error)
             self._error(error)
             return False
+
+    def _commit_pitch(self, strokes, notice):
+        project = self.project.with_edits(self.project.note_edits, strokes)
+        if project is not self.project:
+            self._edit_issue = None
+            self._record_edit()
+            self._replace_edits(project, self._regions, notice)
 
     @Slot(str, float, float, float, float, result=bool)
     def drawPitchLine(self, identity, first, first_cents, last, last_cents):
@@ -1761,6 +1785,19 @@ class QuickTuning(QObject):
         if not note or note['trackId'] != self._active:
             raise ValueError('请在当前轨道选择要修改的音符。')
         return note
+
+    @Slot(str, str, float, result=bool)
+    def editNoteDetail(self, identity, field, value):
+        try:
+            if not self._editable_note(identity) or self._selected_notes != (identity,):
+                return False
+            if field not in DETAILS:
+                raise ValueError('所选音符没有此原生参数，或该参数受保护。')
+            return self._commit_note(identity, {field: value}, '音符参数已更新，可撤销。')
+        except ValueError as error:
+            self._remember_edit_issue(identity, error)
+            self._error(error)
+            return False
 
     @Slot(str, str, result=bool)
     def editNoteLyric(self, identity, lyric):

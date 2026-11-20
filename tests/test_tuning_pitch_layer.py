@@ -100,6 +100,57 @@ class ManualPitchTest(unittest.TestCase):
         self.assertEqual(knots['points'][1][1], 75.)
         self.assertGreater(max(y for _, y in vibrato['points']), 20.)
 
+    def test_curve_brush_uses_note_interiors_and_preserves_accents(self):
+        _, project, a, b = self.load('ustx')
+        layer = project.pitch_layer
+        protected = project.visible([project.editable[1]], 0., 10.)[0]
+        notes = [a, dict(protected, id='protected'), b]
+        samples = [[a['start'] + .05, 15], [a['start'] + .16, 87], [a['start'] + .32, -25],
+                   [b['start'] + .10, 78], [b['start'] + .30, 35]]
+        strokes = layer.brush([], {}, notes, 'draw', samples)
+        self.assertEqual({row['note_id'] for row in strokes}, {a['id'], b['id']})
+        by_id = {n['id']: n for n in (a, b)}
+        for row in layer.display(strokes, {}, by_id):
+            note = by_id[row['noteId']]
+            self.assertGreaterEqual(row['offsets'][0][0] - note['start'], .018 - 1e-9)
+            self.assertGreaterEqual(note['end'] - row['offsets'][-1][0], .018 - 1e-9)
+        values = next(row['points'] for row in strokes if row['note_id'] == a['id'])
+        self.assertGreater(len(values), 4)
+        self.assertEqual(max(y for _, y in values), 87)
+        self.assertEqual(min(y for _, y in values), -25)
+        erased = layer.brush(strokes, {}, notes, 'erase', [[a['end'] - .07, 0], [b['start'] + .15, 0]])
+        self.assertEqual(len(erased), 2)
+        a_before, b_before = (next(row['points'] for row in strokes if row['note_id'] == note['id']) for note in (a, b))
+        a_after, b_after = (next(row['points'] for row in erased if row['note_id'] == note['id']) for note in (a, b))
+        self.assertLess(a_after[-1][0], a_before[-1][0])
+        self.assertGreater(b_after[0][0], b_before[0][0])
+
+    def test_native_note_detail_projection_and_write_keep_original_fields(self):
+        data = example('ustx', authored=False)
+        native = data['voice_parts'][0]['notes'][0]
+        native.update(tuning=0, vibrato={'length': 0, 'period': 175, 'depth': 25, 'in': 10, 'out': 20, 'vol_link': 4},
+                      phoneme_overrides=[{'index': 0, 'offset': -20}])
+        _, timeline, note, other = self.load('ustx', data=data)
+        editor, identity = timeline.score_editor, note['id']
+        edits = editor.update([], identity, {'fine_tune': -23, 'vibrato_length': 65.5, 'vibrato_depth': 48})
+        projected = timeline.with_note_edits(edits)
+        self.assertEqual(projected.notes[identity], note)
+        curves = projected.pitch_layer.plot([note], 0., note['end'], {}, projected.note_patches)['original']
+        self.assertEqual([value for _, value in curves[0]['points']], [-23., -23.])
+        self.assertGreater(max(value for _, value in curves[1]['points']), 38)
+        output, changes = editor.materialize(data, edits)
+        expected = deepcopy(data)
+        expected['voice_parts'][0]['notes'][0]['tuning'] = -23
+        expected['voice_parts'][0]['notes'][0]['vibrato'].update(length=65.5, depth=48)
+        self.assertEqual(output, expected)
+        self.assertEqual(changes[0]['fields']['fine_tune'], {'before': 0, 'after': -23})
+        with self.assertRaisesRegex(ValueError, '100%'):
+            timeline.with_note_edits(editor.update(edits, identity, {'vibrato_in': 80.1}))
+        with self.assertRaisesRegex(ValueError, '需要整数'):
+            timeline.with_note_edits(editor.update(edits, identity, {'fine_tune': .1}))
+        with self.assertRaisesRegex(ValueError, '原生参数'):
+            timeline.with_note_edits(editor.update(edits, other['id'], {'velocity': 70}))
+
     def test_style_replacement_does_not_change_manual_samples_and_erase_exposes_style(self):
         for format, channel in [('ustx', 'dyn'), ('svp', 'loudness')]:
             with self.subTest(format=format):

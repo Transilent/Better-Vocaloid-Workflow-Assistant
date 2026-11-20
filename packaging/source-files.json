@@ -27,6 +27,7 @@
     "src/quick_video.py",
     "src/tuning_timeline.py",
     "src/tuning_score_edits.py",
+    "src/tuning_note_detail.py",
     "src/tuning_pitch_layer.py",
     "src/tuning_clock.py",
     "src/tuning_native.py",

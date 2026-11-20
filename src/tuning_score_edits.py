@@ -9,6 +9,7 @@ import unicodedata
 
 from vocal_expression import SV_QUARTER
 from tuning_native import at_path as _native, native_group_path
+from tuning_note_detail import DETAILS, field_views, integer_field, read_fields, valid_value
 
 
 DIRECT_FORMATS = frozenset(('ustx', 'svp'))
@@ -20,7 +21,7 @@ ADAPTED_FIELDS = {
     'ufdata': {'lyric': 'lyric', 'pitch': 'key', 'onset': 'tickOn', 'duration': 'tickOff'},
 }
 FORMATS = DIRECT_FORMATS | frozenset(ADAPTED_FIELDS)
-FIELDS = frozenset(('lyric', 'pitch', 'onset', 'duration'))
+FIELDS = frozenset(('lyric', 'pitch', 'onset', 'duration')) | DETAILS.keys()
 MAX_EDITS = 4096
 MAX_EDIT_BYTES = 640 * 1024  # Leave room in the shared draft for styles and metadata.
 UNSUPPORTED = '此工程格式暂不支持改词或改音符。'
@@ -61,6 +62,10 @@ def normalize_edits(rows):
             value = row[key]
             if key == 'lyric':
                 item[key] = _lyric(value)
+            elif key in DETAILS:
+                if not valid_value(key, value):
+                    raise ValueError('音符参数超出可编辑范围。')
+                item[key] = int(value) if int(value) == value else value
             elif (type(value) is not int or value < (1 if key == 'duration' else 0)
                   or value > (127 if key == 'pitch' else 2**52 - 1)):
                 raise ValueError('音符音高、位置或时长无效。')
@@ -221,13 +226,16 @@ class Target:
     lyric_reason: str
     timing_reason: str
     pitch_reason: str
+    pronunciation: str
     minimum_duration: int = 1
     language: int | None = None
     phoneme_slots: int = 0
 
     def reason(self, field):
-        return (self.lyric_reason if field == 'lyric' else self.pitch_reason if field == 'pitch'
-                else self.timing_reason)
+        if field not in self.fields:
+            return '所选音符没有此原生参数，或该参数受保护。'
+        return {'lyric': self.lyric_reason, 'pitch': self.pitch_reason,
+                'onset': self.timing_reason, 'duration': self.timing_reason}.get(field, '')
 
     def capabilities(self):
         return {'lyricReason': self.lyric_reason, 'timingReason': self.timing_reason,
@@ -262,6 +270,7 @@ class ScoreEdits:
                 continue
             local_index = row['note_index']
             minimum = 0
+            absolute_pitch = False
             adapted = format in ADAPTED_FIELDS
             if adapted:
                 group_key = track, place.key
@@ -313,8 +322,9 @@ class ScoreEdits:
                          or bool(note.get('phonemes')) or
                          (isinstance(attributes, dict) and bool(attributes.get('dur'))))
                 params = group.get('parameters') or {}
-                pitched = (_nonempty(group.get('pitchControls')) or _nonempty(params.get('pitchDelta'))
-                           or bool(note.get('pitchControls') or note.get('retakes')))
+                absolute_pitch = (_nonempty(group.get('pitchControls')) or
+                                  bool(note.get('pitchControls') or note.get('retakes')))
+                pitched = absolute_pitch or _nonempty(params.get('pitchDelta'))
                 timed = timed or pitched
             old = {key: note.get(raw, '' if key == 'lyric' else None) for key, raw in fields.items()}
             if format == 'ufdata':
@@ -340,11 +350,23 @@ class ScoreEdits:
                     self.vpr_words[word] = phones if self.vpr_words.get(word, phones) == phones else None
             else:
                 lyric_reason = PHONEMES if manual_phones or _special_lyric(old['lyric'], extended=False) else ''
+            fields = {key: (value,) for key, value in fields.items()}
+            if row['singing'] and not _special_lyric(old['lyric']):
+                consonant_protected = format == 'vpr' and (
+                    data['tracks'][track].get('type') != 0 or group.raw.get('aiVoice') or note.get('phonemePositions'))
+                detail_fields, detail_values = read_fields(
+                    format, note, pitch_protected=absolute_pitch, consonant_protected=consonant_protected)
+                fields.update(detail_fields)
+                old.update(detail_values)
+            phones = note.get('phonemes' if format == 'svp' else 'phoneme')
+            if format == 'ustx' and (hint := re.search(r'\[([^\]]+)\]', old['lyric'])):
+                phones = hint[1]
             target = Target(
                 track, (*path, 'notes', local_index), place.offset, step, minimum, maximum, old, fields,
-                lyric_reason, TIMING if timed else '', PITCH if pitched else '', floor, language, slots)
+                lyric_reason, TIMING if timed else '', PITCH if pitched else '',
+                phones.strip()[:300] if isinstance(phones, str) else '', floor, language, slots)
             self.targets[row['note_id']] = target
-            if not (lyric_reason and timed and pitched):
+            if not (lyric_reason and timed and pitched) or DETAILS.keys() & fields.keys():
                 self.editable_tracks.add(track)
         for rows in self.group_rows.values():
             rows.sort(key=lambda row: row['note_index'])
@@ -382,6 +404,14 @@ class ScoreEdits:
                 self._phoneme(target, text)
         return text
 
+    def note_details(self, identity, patch):
+        target = self.targets.get(identity)
+        if target is None:
+            return [], ''
+        pronunciation = (self._phoneme(target, patch['lyric'])
+                         if self.format in VOCALOID_FORMATS and 'lyric' in patch else target.pronunciation)
+        return field_views(target.fields, {**target.old, **patch}), pronunciation
+
     def projected(self, rows):
         edits = normalize_edits(rows)
         if not edits:
@@ -396,13 +426,17 @@ class ScoreEdits:
                 raise ValueError('所选音符的身份或原生编辑能力已变化，请重新载入。')
             local = dict(target.old)
             for field in edit.keys() - {'note_id'}:
-                if edit[field] == local[field]:
+                if field in local and edit[field] == local[field]:
                     continue
                 if field == 'lyric':
                     self.validate_lyric(identity, edit[field])
                 elif problem := target.reason(field):
                     raise ValueError(problem)
+                if field in DETAILS and integer_field(field, target.fields[field]) and type(edit[field]) is not int:
+                    raise ValueError('此音符参数需要整数。')
                 local[field] = edit[field]
+            if edit.keys() & {'vibrato_in', 'vibrato_out'} and local.get('vibrato_in', 0) + local.get('vibrato_out', 0) > 100:
+                raise ValueError('颤音渐入与渐出的比例之和不能超过 100%。')
             onset, duration = local['onset'], local['duration']
             if onset != target.old['onset'] or duration != target.old['duration']:
                 if onset < target.minimum or onset + duration > target.maximum:
@@ -526,7 +560,8 @@ class ScoreEdits:
                 if field == 'note_id' or value == target.old[field]:
                     continue
                 if not (self.format == 'ufdata' and field == 'duration'):
-                    native[target.fields[field]] = value
+                    path = target.fields[field]
+                    _native(native, path[:-1])[path[-1]] = value
                 changed[field] = {'before': target.old[field], 'after': value}
             if changed:
                 if self.format == 'ufdata' and changed.keys() & {'onset', 'duration'}:

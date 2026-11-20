@@ -7,6 +7,7 @@ import numpy as np
 
 from calibration_refinement import _curve_points
 from tuning_native import at_path
+from tuning_note_detail import VIBRATO_PATHS
 
 
 POINT_BUDGET = 128
@@ -185,8 +186,12 @@ def _viewport(curve, first, last, key):
     return _reduce(grid, values)
 
 
-def _note_controls(format, raw, start, end, clock):
+def _note_controls(format, raw, start, end, clock, patch):
     """Read note-local control geometry. Authored controls remain separate layers."""
+    if format in ('svp', 'ustx'):
+        detune = patch.get('fine_tune', raw.get('detune' if format == 'svp' else 'tuning', 0))
+        if _number(detune) and detune:
+            yield _curve('constant', (start, end), (detune, detune)), float
     if format == 'vpr':
         items = raw.get('directPitches')
         if isinstance(items, list):
@@ -205,6 +210,8 @@ def _note_controls(format, raw, start, end, clock):
     vib = raw.get('vibrato')
     if not isinstance(vib, dict):
         return
+    if patch.keys() & VIBRATO_PATHS.keys():
+        vib = {**vib, **{key: patch[field] for field, (_, key) in VIBRATO_PATHS.items() if field in patch}}
     length, period, depth, fade_in, fade_out, shift, drift = (
         vib.get(name, 0) for name in ('length', 'period', 'depth', 'in', 'out', 'shift', 'drift'))
     if (not all(_number(x) for x in (length, period, depth, fade_in, fade_out, shift, drift))
@@ -241,8 +248,9 @@ class NativePitch:
                 result[path] = curves
         return result
 
-    def plot(self, notes, start, end, styled):
+    def plot(self, notes, start, end, styled, patches=None):
         output = {'original': [], 'style': []}
+        patches = patches or {}
         for note in notes[:300]:
             identity = note['id']
             item = self.parts.get(identity)
@@ -268,8 +276,9 @@ class NativePitch:
                         output[name].append({'noteId': identity, 'points': points,
                                              'anchors': curve.mode in ('anchors', 'absolute_anchors')})
             for curve, to_seconds in _note_controls(self.native.format, part.notes[index],
-                                                    note['start'], note['end'], self.clock):
-                xs, ys = _reduce(curve.positions, curve.values)
+                                                    note['start'], note['end'], self.clock, patches.get(identity, {})):
+                xs, ys = (([left, right], curve.values) if curve.mode == 'constant'
+                          else _reduce(curve.positions, curve.values))
                 points = []
                 for x, y in zip(xs, ys):
                     time = to_seconds(float(x))

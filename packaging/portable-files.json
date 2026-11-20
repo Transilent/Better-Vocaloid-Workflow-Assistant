@@ -86,6 +86,10 @@
       "source": "src/tuning_score_edits.py"
     },
     {
+      "file": "tuning_note_detail.py",
+      "source": "src/tuning_note_detail.py"
+    },
+    {
       "file": "tuning_pitch_layer.py",
       "source": "src/tuning_pitch_layer.py"
     },

@@ -5,6 +5,8 @@ import json
 import math
 import re
 
+import numpy as np
+
 from style_presets import _curve
 from tuning_native import at_path as _get
 from tuning_native_pitch import NativePitch
@@ -70,6 +72,70 @@ def _clip_points(points, first, last):
         return [x, round(y + (z - y) * (x - a) / (b - a))]
 
     return [sample(first), *(point for point in points if first < point[0] < last), sample(last)]
+
+
+def _pointer_samples(samples):
+    if not 1 <= len(samples) <= 2048:
+        raise ValueError(SPAN)
+    for sample in samples:
+        if (not isinstance(sample, list) or len(sample) != 2
+                or not all(type(value) in (int, float) and -1e7 <= value <= 1e7 for value in sample)):
+            raise ValueError(SPAN)
+        seconds, cents = sample
+        yield [seconds, max(-MAX_CENTS, min(MAX_CENTS, round(cents)))]
+
+
+def _simplify(points, tolerance):
+    """Keep the endpoints and accents within the given cents error."""
+    keep = {0, len(points) - 1}
+    intervals = [(0, len(points) - 1)]
+    while intervals:
+        first, last = intervals.pop()
+        if last - first < 2:
+            continue
+        a, b = points[first], points[last]
+        inside = points[first + 1:last]
+        expected = a[1] + (inside[:, 0] - a[0]) * ((b[1] - a[1]) / (b[0] - a[0]))
+        error = np.abs(inside[:, 1] - expected)
+        index = int(np.argmax(error))
+        if error[index] > tolerance:
+            pivot = first + 1 + index
+            keep.add(pivot)
+            intervals.extend(((first, pivot), (pivot, last)))
+    return points[sorted(keep)]
+
+
+def _brush_curve(points):
+    """Bake a shape-preserving curve to the same note-relative grid as the line tool."""
+    from scipy.interpolate import PchipInterpolator
+
+    pivots = _simplify(np.asarray(points, dtype=np.int64), 1.5)
+    if len(pivots) <= 2:
+        return pivots.tolist()
+    x, y = pivots.T
+    grid = np.unique(np.r_[x, np.rint(np.linspace(x[0], x[-1], min(257, len(x) * 5))).astype(np.int64)])
+    values = np.rint(PchipInterpolator(x, y)(grid)).astype(np.int64)
+    return _simplify(np.column_stack((grid, values)), 1).tolist()
+
+
+def _replace_spans(rows, kind, replacements):
+    changed = []
+    for row in rows:
+        identity, old = row['note_id'], row['points']
+        points = replacements.get(identity)
+        if points is None or points[-1][0] < old[0][0] or old[-1][0] < points[0][0]:
+            changed.append(row)
+            continue
+        a, b = points[0][0], points[-1][0]
+        if kind == 'draw' or b != a:
+            first, last = old[0][0], old[-1][0]
+            for lo, hi in ((first, min(last, a - 1)), (max(first, b + 1), last)):
+                if slice_ := _clip_points(old, lo, hi):
+                    changed.append({'note_id': identity, 'points': slice_})
+        # An eraser click removes the complete hit span.
+    if kind == 'draw':
+        changed.extend({'note_id': identity, 'points': points} for identity, points in replacements.items())
+    return normalize_strokes(changed)
 
 
 @dataclass(frozen=True)
@@ -189,8 +255,8 @@ class PitchLayer:
         paths = {note.placement for note in self.notes.values()}
         return self.preview.curves(data, paths, cancel=cancel)
 
-    def plot(self, notes, start, end, styled):
-        return self.preview.plot(notes, start, end, styled)
+    def plot(self, notes, start, end, styled, patches=None):
+        return self.preview.plot(notes, start, end, styled, patches)
 
     def reason(self, identity, note):
         if identity not in self.notes or not _singing_lyric(note['lyric']):
@@ -236,37 +302,63 @@ class PitchLayer:
         return rows
 
     def gesture(self, rows, patches, identity, kind, samples):
-        if kind not in ('draw', 'erase') or not 1 <= len(samples) <= 2048:
+        if kind not in ('draw', 'erase'):
             raise ValueError(SPAN)
-        target, _, absolute, _, lower, upper = self._basis(identity, patches.get(identity, {}))
-        clock, step = self.clock, target.step
+        basis = self._basis(identity, patches.get(identity, {}))
+        points = self._local_points(basis, _pointer_samples(samples))
+        if kind == 'draw' and not self._drawable(basis, points):
+            raise ValueError(SPAN)
+        return _replace_spans(rows, kind, {identity: points})
+
+    def _local_points(self, basis, samples):
+        target, _, absolute, _, lower, upper = basis
         if upper <= lower:
             raise ValueError(SHORT)
         points = {}
-        for sample in samples:
-            if (not isinstance(sample, list) or len(sample) != 2
-                    or not all(type(x) in (int, float) and math.isfinite(x) for x in sample)):
-                raise ValueError(SPAN)
-            x, cents = sample
-            offset = round((clock.to_position(max(-1e7, min(1e7, x))) - absolute) / step)
-            points[max(lower, min(upper, offset))] = max(-MAX_CENTS, min(MAX_CENTS, round(cents)))
-        a, b = min(points), max(points)
-        if kind == 'draw' and clock.to_seconds(absolute + b * step) - clock.to_seconds(absolute + a * step) < MIN_STROKE_SECONDS:
+        for seconds, cents in samples:
+            offset = round((self.clock.to_position(seconds) - absolute) / target.step)
+            points[max(lower, min(upper, offset))] = cents
+        return [[x, points[x]] for x in sorted(points)]
+
+    def _drawable(self, basis, points):
+        target, _, absolute, _, _, _ = basis
+        start, end = (self.clock.to_seconds(absolute + points[i][0] * target.step) for i in (0, -1))
+        return end - start >= MIN_STROKE_SECONDS
+
+    def brush(self, rows, patches, visible, kind, samples):
+        """Intersect a gesture with writable note interiors and commit it as one edit."""
+        if kind not in ('draw', 'erase'):
             raise ValueError(SPAN)
-        moved = []
-        for row in rows:
-            old = row['points']
-            first, last = old[0][0], old[-1][0]
-            if row['note_id'] != identity or b < first or last < a:
-                moved.append(row)
-            elif kind == 'draw' or b != a:
-                for lo, hi in ((first, min(last, a - 1)), (max(first, b + 1), last)):
-                    if slice_ := _clip_points(old, lo, hi):
-                        moved.append({'note_id': identity, 'points': slice_})
-            # An eraser click removes the complete hit span.
-        if kind == 'draw':
-            moved.append({'note_id': identity, 'points': [[x, points[x]] for x in sorted(points)]})
-        return normalize_strokes(moved)
+        by_time = dict(_pointer_samples(samples))
+        points = [[x, by_time[x]] for x in sorted(by_time)]
+        start, end = points[0][0], points[-1][0]
+        replacements = {}
+        for note in visible:
+            if note['end'] <= start or note['start'] > end or self.reason(note['id'], note):
+                continue
+            identity = note['id']
+            basis = self._basis(identity, patches.get(identity, {}))
+            target, _, absolute, _, lower, upper = basis
+            left, right = (self.clock.to_seconds(absolute + pos * target.step) for pos in (lower, upper))
+            a, b = max(left, start), min(right, end)
+            if b < a or upper <= lower:
+                continue
+            if start == end:
+                part = points
+            elif a < b:
+                part = _clip_points(points, a, b)
+            else:
+                continue
+            local = self._local_points(basis, part)
+            if kind == 'erase':
+                # A continuous eraser stroke must not become a span delete after rounding.
+                if a == b or len(local) > 1:
+                    replacements[identity] = local
+            elif self._drawable(basis, local):
+                replacements[identity] = _brush_curve(local)
+        if not replacements and kind == 'draw':
+            raise ValueError('请划过可编辑音符的内部，留出一小段曲线。')
+        return _replace_spans(rows, kind, replacements)
 
     def edit_node(self, rows, patches, identity, first_tick, index, seconds, cents):
         """Move a real saved node, or insert one within an existing stroke."""

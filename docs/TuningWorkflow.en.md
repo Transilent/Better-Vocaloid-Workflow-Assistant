@@ -31,6 +31,8 @@ Open an editable vocal track in single-track view:
 
 Existing notes can be edited in USTX 0.6–0.10, supported SVP/SV2 groups, VOCALOID 5/6 VPR, VOCALOID 3/4 VSQX, ACEP (JSON/Zstd, project schema 9 revision 0), and UFData v1. Shared, transposed, or cropped groups and native curves can restrict specific edits. The editor shows the reason. Moves and resizes stay within clips and cannot create same-track overlaps. Use **Keep original performance** while editing.
 
+Select one note in **Edit notes** to see its original pronunciation and available native properties in the inspector. These include fine pitch for SVP, fine pitch and vibrato for USTX, and consonant velocity (VEL) for standard VPR and VSQX. Set the vibrato span to 0% to turn it off. A shorter period produces faster vibrato. Higher VEL values shorten the consonant. Press Enter to apply a valid value.
+
 - **VPR:** a lyric change also writes the pronunciation for the original language. Use Japanese kana or its romaji, an unambiguous Mandarin character or untoned pinyin, or a word with a known pronunciation on the same track in the same language. Locked pronunciation stays intact. Where phoneme positions are stored, the new pronunciation must use the same number of phonemes. Native direct pitch stays protected.
 - **VSQX** uses the same pronunciation rules as VPR. Automation that changes over time, singer changes, and authored timing can lock a note's position and duration. Save as a new `.vsqx` in the original version. The saved copy points to the original audio on this computer. Relink or import the backing audio in the original editor when moving to another computer.
 - **ACEP:** custom pronunciation, frozen syllables, and manual timing remain protected. Clip edits respect the original crop. ACEP2 remains read-only; export UFData from ACE Studio to edit the exchange score instead.
@@ -40,7 +42,11 @@ Existing notes can be edited in USTX 0.6–0.10, supported SVP/SV2 groups, VOCAL
 
 Open **Parameter lane** beside the lyric search to draw lines immediately. Both views share the time viewport, selection, and cursor. The 1/4, 1/8, and 1/16 grids follow the project's tempo changes. Notes can snap to beats. Drawn pitch follows the native time resolution, with 10-cent steps when Snap is enabled.
 
-Show the original curve, styled preview, and drawn pitch offset individually. Edit within ±200 cents or choose **Inspect** to see the full span of the visible curves. Use **Line** or **Pencil** to draw within the note. The gesture stops at the note's safe edit boundary. In **Nodes**, click the drawn line to insert a point, drag a point to adjust it, or right-click to delete one. Use **Eraser** to click out a stroke or drag over part of it. All tools share the same draft and undo history.
+Show the **Project**, **Style**, and drawn pitch curves individually. The project curve updates with draft fine pitch and vibrato. Edit within ±200 cents or choose **Inspect** to see the full span of the visible curves.
+
+- Use **Curve** to draw a smooth offset across notes in a single drag. The preview highlights editable spans and skips gaps and protected sections on release. Hold Alt for one-cent steps.
+- Use **Line** to connect two points within a note. In **Nodes**, click the drawn line to insert a point, drag a point to adjust it, or right-click to delete one. Hold Shift to drag a node at a fixed time.
+- Click with **Eraser** to remove a stroke or drag across notes to erase a time range. Each completed gesture is one undo step.
 
 Choose **Preview** to recalculate the style curve after changing the notes or style. The existing style curve remains available while editing drawn pitch. Preview again before generating a candidate from the latest draft.
 
