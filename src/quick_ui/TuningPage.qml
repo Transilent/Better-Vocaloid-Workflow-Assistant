@@ -453,6 +453,10 @@ Item {
         return false
     }
 
+    function expressionSourceReason(mode) {
+        return textOf((view.expressionSourceReasons || {})[mode])
+    }
+
     function techniqueIndex(techniqueId) {
         const wanted = textOf(techniqueId)
         for (let index = 0; index < techniques.length; ++index) {
@@ -2322,7 +2326,8 @@ Item {
                                         theme: page.theme
                                         text: page.vwaTr("参考音频")
                                         selected: page.textOf(page.view.expressionMode) === "reference"
-                                        enabled: !page.busy && page.hasSource && !page.view.groupStyleOnly
+                                        enabled: !page.busy && page.hasSource && !page.view.formatReadOnly
+                                            && !page.expressionSourceReason("reference")
                                         onClicked: page.controller.setExpressionMode("reference")
                                     }
                                     EditorButton {
@@ -2331,7 +2336,8 @@ Item {
                                         theme: page.theme
                                         text: page.vwaTr("校准 + 参考")
                                         selected: page.textOf(page.view.expressionMode) === "calibrated"
-                                        enabled: !page.busy && page.hasSource && !page.view.groupStyleOnly
+                                        enabled: !page.busy && page.hasSource && !page.view.formatReadOnly
+                                            && !page.expressionSourceReason("calibrated")
                                         onClicked: page.controller.setExpressionMode("calibrated")
                                     }
                                     EditorButton {
@@ -2340,7 +2346,8 @@ Item {
                                         theme: page.theme
                                         text: page.vwaTr("沿用原参数")
                                         selected: page.textOf(page.view.expressionMode) === "retained"
-                                        enabled: !page.busy && page.hasSource && !page.view.groupStyleOnly
+                                        enabled: !page.busy && page.hasSource && !page.view.formatReadOnly
+                                            && !page.expressionSourceReason("retained")
                                         onClicked: page.controller.setExpressionMode("retained")
                                     }
                                 }
@@ -2348,10 +2355,15 @@ Item {
                                 HelperText {
                                     Layout.fillWidth: true
                                     theme: page.theme
-                                    text: page.view.groupStyleOnly ? page.textOf(page.view.groupStyleReason)
-                                        : page.expressionModeKnown
-                                        ? page.vwaTr("四种来源共用当前轨道与区间；外部声库渲染仍由你手动完成。")
-                                        : page.vwaTr("表达来源状态待后端回读；可先选择一种真实来源。")
+                                    readonly property string currentMode: page.textOf(page.view.expressionMode)
+                                    text: page.expressionSourceReason(currentMode)
+                                        || (currentMode === "reference"
+                                            ? page.vwaTr("选择与工程时间对齐的分轨干声，每条目标轨对应一份。")
+                                            : currentMode === "retained"
+                                                ? page.vwaTr("选择同格式、同音符时间的工程。源轨索引从首条演唱轨的 0 开始。")
+                                                : page.expressionSourceReason("reference")
+                                                    || page.expressionSourceReason("calibrated"))
+                                    visible: page.hasSource && text.length > 0
                                 }
 
                                 Text {
@@ -2455,7 +2467,7 @@ Item {
                                     HelperText {
                                         Layout.alignment: Qt.AlignVCenter
                                         theme: page.theme
-                                        text: page.vwaTr("沿用的原 SVP")
+                                        text: page.vwaTr("原参数工程")
                                         visible: page.view.expressionMode === "retained"
                                     }
                                     RowLayout {
@@ -2479,7 +2491,7 @@ Item {
                                             Layout.fillWidth: true
                                             theme: page.theme
                                             text: page.textOf(page.bindingField("retained", "")).length > 0
-                                                ? page.vwaTr("更换 SVP…") : page.vwaTr("选择 SVP…")
+                                                ? page.vwaTr("更换原工程…") : page.vwaTr("选择原工程…")
                                             enabled: !page.busy && page.activeId.length > 0
                                                 && page.activeTrackData !== null
                                                 && page.activeTrackData.editable !== false
@@ -2506,13 +2518,14 @@ Item {
 
                                 GridLayout {
                                     Layout.fillWidth: true
-                                    visible: page.expressionSourceAllows(["reference", "calibrated"])
+                                    visible: page.view.expressionMode === "reference"
                                     columns: 2
                                     columnSpacing: Math.round(5 * page.scale)
                                     rowSpacing: Math.round(5 * page.scale)
 
                                     EditorButton {
                                         objectName: "optionReferenceDynamics"
+                                        visible: selected || (page.view.referenceControls || []).indexOf("dynamics") >= 0
                                         Layout.fillWidth: true
                                         theme: page.theme
                                         text: page.boolOptionText("reference_dynamics", page.vwaTr("参考力度"))
@@ -2522,6 +2535,7 @@ Item {
                                     }
                                     EditorButton {
                                         objectName: "optionReferenceTension"
+                                        visible: selected || (page.view.referenceControls || []).indexOf("tension") >= 0
                                         Layout.fillWidth: true
                                         theme: page.theme
                                         text: page.boolOptionText("reference_tension", page.vwaTr("参考张力"))
@@ -2531,6 +2545,7 @@ Item {
                                     }
                                     EditorButton {
                                         objectName: "optionReferenceBreathiness"
+                                        visible: selected || (page.view.referenceControls || []).indexOf("breathiness") >= 0
                                         Layout.fillWidth: true
                                         theme: page.theme
                                         text: page.boolOptionText("reference_breathiness", page.vwaTr("参考气声"))
@@ -2540,6 +2555,7 @@ Item {
                                     }
                                     EditorButton {
                                         objectName: "optionReferenceVoicing"
+                                        visible: selected || (page.view.referenceControls || []).indexOf("voicing") >= 0
                                         Layout.fillWidth: true
                                         theme: page.theme
                                         text: page.boolOptionText("reference_voicing", page.vwaTr("参考发声"))
@@ -2551,6 +2567,7 @@ Item {
 
                                 RowLayout {
                                     Layout.fillWidth: true
+                                    visible: page.expressionSourceAllows(["reference", "calibrated"])
                                     spacing: Math.round(5 * page.scale)
                                     HelperText {
                                         Layout.alignment: Qt.AlignVCenter
@@ -3374,10 +3391,11 @@ Item {
         objectName: "tuningRetainedDialog"
         property string trackId: ""
         property int sourceTrackIndex: 0
-        title: page.vwaTr("绑定原参数 SVP")
+        readonly property string suffix: page.textOf(page.view.projectSuffix) || "svp"
+        title: page.vwaTr("绑定原参数工程")
         fileMode: FileDialog.OpenFile
         nameFilters: [
-            page.vwaTr("SynthV 工程 (*.svp)"),
+            suffix.toUpperCase() + " (*." + suffix + ")",
             page.vwaTr("所有文件 (*)")
         ]
         onAccepted: page.controller.bindRetained(trackId, selectedFile, sourceTrackIndex)

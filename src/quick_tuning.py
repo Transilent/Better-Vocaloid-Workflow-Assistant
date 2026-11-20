@@ -212,6 +212,11 @@ def _preview(project, options, stop, send):
         indices = workflow.check_targets(data, options, format)
         if options['expression_mode'] in ('reference', 'calibrated'):
             engine.sources_for(options, indices)
+        else:
+            for binding in engine.retained_rows(options, indices):
+                path = Path(binding['project'])
+                if not path.is_file() or workflow.project_format(path) != format:
+                    raise ValueError('沿用原参数需要选择与当前工程同格式的文件。')
         return tr('已核对轨道和参数来源。参考音频、校准或沿用参数将在生成时处理。'), {}
     style = {}
     cancel = lambda: _stop_check(stop)
@@ -383,11 +388,12 @@ class QuickTuning(QObject):
         keys = ([row['track_id'] for row in self._regions] if segments and self._regions else self._targets)
         return sorted({self.project.tracks[key]['index'] for key in keys}) if self.project else []
 
-    def _uses_group_styles(self):
-        if not self.project:
-            return False
-        options = (self._preset.get('options') or {}) if self._preset else {}
-        return self.project.requires_style_mode(options.get('track_indices') or self._indices(segments=True))
+    def _source_mode_reason(self, mode, indices):
+        if not self.project or mode == 'preserve':
+            return ''
+        if self.project.has_score_changes:
+            return PRESERVE_FOR_EDIT
+        return self.project.source_reason(mode, indices)
 
     def _execution(self):
         if not self.project:
@@ -412,8 +418,7 @@ class QuickTuning(QObject):
         if not indices:
             raise ValueError('请选择至少一条可编辑的演唱轨。')
         options = self._draft_options()
-        if options['expression_mode'] != 'preserve' and self.project.requires_style_mode(indices):
-            raise ValueError(self.project.style_only_reason)
+        self.project.validate_source(options, indices)
         options['track_indices'] = indices
         options['style_regions'] = self.project.verify_regions(self._regions)
         if self._regions or score_changes:
@@ -526,11 +531,13 @@ class QuickTuning(QObject):
         match_scope = self._lyric_match_scope()
         match_position = (match_scope.index(self._lyric_match_index)
                           if self._lyric_match_index in match_scope else -1)
-        group_styles = self._uses_group_styles()
         active = self.project.tracks.get(self._active, {}) if self.project else {}
         preset_options = (self._preset.get('options') or {}) if self._preset else {}
         mode = preset_options.get('expression_mode', self._options['expression_mode'])
-        usable = usable and (mode == 'preserve' or not group_styles)
+        source_indices = preset_options.get('track_indices') or self._indices(segments=True)
+        source_reasons = {value: tr(self._source_mode_reason(value, source_indices)) for value in _SOURCES}
+        reference_controls = self.project.reference_controls(source_indices) if self.project else ()
+        usable = usable and not source_reasons.get(mode)
         format = project.get('format', 'svp')
         score_reason = self._score_block()
         draw_reason = self._pitch_block()
@@ -544,10 +551,10 @@ class QuickTuning(QObject):
                              ('SV2 · ' + str(project['format_version'])) if project.get('synthesizer_v_2') else '',
             'projectSuffix': format,
             'formatNotice': tr(project['format_notice']) if project.get('format_notice') else '',
-            'formatReadOnly': bool(project and format in ('vsqx','acep','ufdata') and not self.project.editable),
+            'formatReadOnly': bool(project and format in workflow.STYLE_ADAPTERS and not self.project.editable),
             'trackReadOnlyReason': tr(active['reason']) if active.get('reason') else '',
-            'groupStyleOnly': group_styles,
-            'groupStyleReason': tr(self.project.style_only_reason) if group_styles else '',
+            'expressionSourceReasons': source_reasons,
+            'referenceControls': list(reference_controls),
             'session': str(self.session) if self.session else '',
             'sessionExists': session_exists,
             'sessionLocation': str(session_root),
@@ -587,8 +594,7 @@ class QuickTuning(QObject):
             'parameterOpen': self._view_preferences['parameter_open'],
             'beatDivision': self._view_preferences['beat_division'],
             'canUseBeatGrid': bool(self.project and self.project.score_editor.clock),
-            'canFreeze': bool(project and not busy and usable and (not self._origin or self._confirmed)
-                              and (not group_styles or mode == 'preserve')),
+            'canFreeze': bool(project and not busy and usable and (not self._origin or self._confirmed)),
             'canRun': bool(self._plan and not busy), 'canRegister': bool(self.job and receipt.get('receipt_verified')
                        and format != 'acep' and not self._candidate_stale and not busy and self.state != 'registered'),
             'candidate': receipt.get('output', ''), 'candidateStale': self._candidate_stale,
@@ -1511,8 +1517,8 @@ class QuickTuning(QObject):
 
     @Slot(str)
     def setExpressionMode(self, mode):
-        if mode != 'preserve' and self._uses_group_styles():
-            self._error(ValueError(self.project.style_only_reason))
+        if reason := self._source_mode_reason(mode, self._indices(segments=True)):
+            self._error(ValueError(reason))
             return
         if mode in _SOURCES and mode != self._options['expression_mode']:
             self._set_options({'expression_mode': mode, 'reference_sources': [], 'retained_sources': [],
@@ -1599,6 +1605,9 @@ class QuickTuning(QObject):
     def bindRetained(self, track, url, source_index):
         if (self.project and track in self.project.editable and (url.isLocalFile() or url.isEmpty())
                 and source_index >= 0 and self._options['expression_mode'] == 'retained'):
+            if not url.isEmpty() and Path(url.toLocalFile()).suffix.casefold() != '.' + self.project.project['format']:
+                self._error(ValueError('沿用原参数需要选择与当前工程同格式的文件。'))
+                return
             index = self.project.tracks[track]['index']
             rows = [row for row in self._options['retained_sources'] if row['track_index'] != index]
             if not url.isEmpty():
@@ -2192,10 +2201,14 @@ class QuickTuning(QObject):
             else:
                 partial = receipt['status'] == 'partial'
                 self.state = 'partial' if partial else 'done'
-                self.message = tr('本次没有可写入的音高变化，请检查所选音符和风格。'
-                                  if project.project['format'] in ('acep','ufdata') and receipt['status'] == 'unchanged' else
-                                  '候选已生成，部分参数保留原样；请打开工程核对。' if partial else
-                                  '候选已生成。请在编辑器中核对并合成歌声。')
+                if partial:
+                    self.message = tr('候选已生成，部分参数保留原样；请打开工程核对。')
+                elif receipt['status'] == 'unchanged' and receipt['report'].get('mode') in ('reference', 'retained'):
+                    self.message = tr('候选已生成，参数与原工程相同。')
+                elif receipt['status'] == 'unchanged' and project.project['format'] in ('acep', 'ufdata'):
+                    self.message = tr('本次没有可写入的音高变化，请检查所选音符和风格。')
+                else:
+                    self.message = tr('候选已生成。请在编辑器中核对并合成歌声。')
 
         self._command('running', '正在生成独立调音候选…', work, finish)
 
@@ -2333,10 +2346,12 @@ class QuickTuning(QObject):
         return plan_application(document, self.project.project, bindings, raw_document=raw, before=before)
 
     def _check_preset_source(self, document):
-        if document['payload']['expression_mode'] == 'preserve':
+        payload = document['payload']
+        mode = payload['expression_mode']
+        if mode == 'preserve':
             return
-        if self.project.requires_style_mode(self._indices(segments=True)):
-            raise ValueError(self.project.style_only_reason)
+        self.project.validate_source({'expression_mode': mode, **{
+            'reference_' + name: True for name in payload.get('reference_controls', [])}}, self._indices(segments=True))
         if self._regions or self.project.has_score_changes:
             raise ValueError('此预设包含参数来源。请在没有逐轨片段的工程上绑定。')
 

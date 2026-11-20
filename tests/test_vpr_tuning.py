@@ -20,7 +20,7 @@ sys.path[:0] = [str(APP), str(APP / 'src')]
 import agent_style
 from tuning_timeline import ProjectNotes, freeze_plan
 import tuning_workflow as workflow
-from vpr_tuning import DYN, PBS, PIT, SEQUENCE, Layout, process_project, read, score_phoneme
+from vpr_tuning import BRE, DYN, PBS, PIT, SEQUENCE, Layout, process_project, read, score_phoneme
 
 
 AUDIO = 'Project/Audio/demo.wav'
@@ -114,6 +114,47 @@ def sampled(part, channel, tick):
 
 
 class VprTuningTests(unittest.TestCase):
+    def test_reference_wav_writes_dynamics_and_classic_breathiness(self):
+        import soundfile as sf
+
+        data = project()
+        with tempfile.TemporaryDirectory() as work:
+            directory = Path(work)
+            source = write_source(directory / 'source.vpr', data)
+            reference = directory / 'reference.wav'
+            rate = 16000
+            time = np.arange(7 * rate) / rate
+            sf.write(reference, (.13 + .1 * np.sin(2 * np.pi * time)) * np.sin(2 * np.pi * 220 * time), rate)
+            session = workflow.create_session(source, directory / 'reference-session')
+            opts = {'expression_mode': 'reference', 'track_indices': [1],
+                    'reference_dynamics': True, 'reference_breathiness': True,
+                    'reference_sources': [{'path': str(reference), 'track_index': 1, 'voice': 'lead'}]}
+            # Fix the analyzer evidence for this routing test. Dynamics is measured from the WAV.
+            breaths = {'parameters': {'breathiness': {'status': 'applied', 'points': [
+                [.625, 0], [.75, .25], [.95, .2], [1.125, 0]]}}}
+            with patch('vocal_timbre.analyze', return_value=breaths):
+                result = workflow.run_session(session, opts)
+            output = workflow.read_project(Path(result['output']))
+            first = output['tracks'][1]['parts'][0]
+            old = data['tracks'][1]['parts'][0]
+            self.assertEqual(result['report']['mode'], 'reference')
+            self.assertNotEqual(curve(first, DYN), curve(old, DYN))
+            self.assertTrue(any(event['value'] > 0 for event in curve(first, BRE)['events']))
+            self.assertEqual(sampled(first, DYN, 0), sampled(old, DYN, 0))
+            self.assertEqual(sampled(first, DYN, 900), sampled(old, DYN, 900))
+            for part_key in ('notes', 'pos', 'duration', 'voice'):
+                self.assertEqual(first[part_key], old[part_key])
+            for control in (PIT, PBS, 'brightness'):
+                self.assertEqual(curve(first, control), curve(old, control))
+            self.assertEqual(output['tracks'][0], data['tracks'][0])
+            self.assertEqual(output['tracks'][2], data['tracks'][2])
+            with ZipFile(source) as original, ZipFile(result['output']) as candidate:
+                self.assertEqual(original.read(AUDIO), candidate.read(AUDIO))
+                self.assertEqual(original.read(EXTRA), candidate.read(EXTRA))
+            self.assertEqual(workflow.read_project(source), data)
+            with self.assertRaisesRegex(ValueError, '参考参数'):
+                workflow.check_targets(data, {**workflow.settings(opts), 'track_indices': [2]}, 'vpr')
+
     def test_preview_keeps_short_held_pulse_and_protected_ai_points(self):
         score = project()
         part = score['tracks'][1]['parts'][0]

@@ -8,6 +8,7 @@ import struct
 import sys
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -151,6 +152,43 @@ class AceFormats(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.zstd, _ = codecs()
+
+    def test_retain_ufdata_pitch_on_matching_score_only(self):
+        previous = uf_score(relative=True)
+        target = uf_score(empty=True)
+        old = self.root / 'prior.ufdata'
+        atomic_json(old, previous)
+        opts = {'track_indices': [0], 'expression_mode': 'retained',
+                'retained_sources': [{'track_index': 0, 'project': str(old), 'source_track_index': 0}]}
+        out, report = workflow.apply_project(target, opts, 'ufdata', cancel=lambda: None, progress=lambda _: None)
+        self.assertEqual(out, previous)
+        self.assertTrue(report['pitch_changed'])
+        self.assertIsNone(target['project']['tracks'][0]['pitch'])
+        changed = deepcopy(target)
+        changed['project']['tempos'][1]['bpm'] = 130
+        with self.assertRaisesRegex(ValueError, '速度、拍号或时间原点'):
+            workflow.apply_project(changed, opts, 'ufdata', cancel=lambda: None, progress=lambda _: None)
+
+    def test_ace_reference_timbre_keeps_pitch_and_other_expression(self):
+        score = ace_score()
+        data = ACEP.read(wrap_ace(score))
+        wav = self.root / 'ref.wav'
+        wav.write_bytes(b'fixture decoded by the reference analyzer')
+        opts = {'track_indices': [0], 'expression_mode': 'reference', 'reference_tension': True,
+                'reference_breathiness': True,
+                'reference_sources': [{'track_index': 0, 'path': str(wav), 'voice': 'lead'}]}
+        curves = {name: {'status': 'applied', 'points': [[.5, 0.], [.65, .21], [.88, .15], [1.1, 0.]]}
+                  for name in ('tension', 'breathiness')}
+        with patch('vocal_timbre.analyze', return_value={'parameters': curves}):
+            out, report = workflow.apply_project(data, opts, 'acep', cancel=lambda: None, progress=lambda _: None)
+        self.assertEqual({row['parameter'] for row in report['curve_changes']}, {'tension', 'breathiness'})
+        actual = out['project']['tracks'][0]['patterns'][0]['parameters']
+        original = score['tracks'][0]['patterns'][0]['parameters']
+        self.assertTrue(any(sample > 1. for span in actual['tension'] for sample in span['values']))
+        self.assertTrue(any(sample > 1. for span in actual['breathiness'] for sample in span['values']))
+        self.assertEqual({k: v for k, v in actual.items() if k not in ('tension', 'breathiness')},
+                         {k: v for k, v in original.items() if k not in ('tension', 'breathiness')})
+        self.assertFalse(report['pitch_changed'])
 
     def test_ace_score_edits_preserve_pronunciation_clip_bounds_and_resources(self):
         original = editable_ace_score()

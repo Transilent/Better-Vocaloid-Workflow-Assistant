@@ -10,9 +10,9 @@ import math
 from pathlib import Path
 
 from svp_tuning import GROUP_STYLE_ONLY, Layout
+from tuning_sources import REFERENCE_CONTROLS as REFERENCE, retained_rows
 
 VERSION=3
-REFERENCE=('dynamics','tension','breathiness','voicing')
 EXPRESSION=('loudness','tension','breathiness','voicing','gender','toneShift')
 DEFAULTS={'expression_mode':'preserve','track_indices':None,'reference_sources':[],
  'reference_dynamics':False,'reference_tension':False,'reference_breathiness':False,'reference_voicing':False,
@@ -382,12 +382,8 @@ def process_project(data,options,*,cancel=lambda:None,progress=lambda text:None,
     elif mode=='retained':
         from calibration_session import project_data
         from calibration_workflow import retain_project
-        rows=options['retained_sources'] or [{'track_index':i,'project':options['retained_project'],
-                'source_track_index':options['retained_track_index']} for i in indices]
-        if {row.get('track_index') for row in rows}!=set(indices) or len(rows)!=len(indices):
-            raise ValueError('沿用参数必须明确覆盖每条所选演唱轨，不能重复或漏配。')
         tracks=[]
-        for row in rows:
+        for row in retained_rows(options,indices):
             cancel();index=row['track_index'];path=Path(row['project']).resolve()
             prior=project_data(path)
             # retain_project indexes vocal tracks ordinally, not raw project indices.

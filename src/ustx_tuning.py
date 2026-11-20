@@ -295,7 +295,7 @@ def _native_samples(grid, xs, ys):
     return result
 
 
-def _add_native_delta(original, rendered, abbr):
+def _add_native_delta(original, rendered, abbr, *, saturate=False):
     """Quantize once on the OpenUtau tick grid and prove equality outside the edit."""
     import numpy as np
 
@@ -316,12 +316,18 @@ def _add_native_delta(original, rendered, abbr):
         delta[base == low] = 0  # The minimum is native hard mute, not -24 dB.
         low += 1
     positive, negative = delta > 1e-10, delta < -1e-10
-    scale = 1.
-    if positive.any():
-        scale = min(scale, float(np.min((high - base[positive]) / delta[positive])))
-    if negative.any():
-        scale = min(scale, float(np.min((low - base[negative]) / delta[negative])))
-    target = np.rint(base + delta * max(0., scale)).astype(np.int64)
+    if saturate:
+        # Values outside the requested span, including hard mute, stay exact.
+        active = positive | negative
+        target = base.copy()
+        target[active] = np.rint(np.clip(base[active] + delta[active], low, high))
+    else:
+        scale = 1.
+        if positive.any():
+            scale = min(scale, float(np.min((high - base[positive]) / delta[positive])))
+        if negative.any():
+            scale = min(scale, float(np.min((low - base[negative]) / delta[negative])))
+        target = np.rint(base + delta * max(0., scale)).astype(np.int64)
     changed = target != base
     if not changed.any():
         return None, 'ustx_no_native_delta'

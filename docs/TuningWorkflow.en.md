@@ -14,7 +14,7 @@ available as preservation rather than a new acoustic fit.
 
 Open a task project or import a Synthesizer V Studio 1/2 SVP, OpenUtau USTX, VOCALOID VPR or VSQX, ACE Studio ACEP, or UFData exchange score. Find the lyric, edit a range in single-track or multitrack view, and save a new file in the same format.
 
-You can preview USTX 0.5 and resave it in OpenUtau before editing. Style processing for USTX, VPR, and VSQX writes supported dynamics and pitch curves in **Keep original performance** mode. Reopen and audition the result in the original editor.
+You can preview USTX 0.5 and resave it in OpenUtau before editing. Each format writes to its supported native curves. Reopen and audition the result in the original editor.
 
 ## Edit lyrics and notes
 
@@ -57,6 +57,24 @@ Inside the stroke, the drawn offset replaces the style pitch offset and is added
 Click the stroke's time position with the eraser to remove the whole stroke, or drag to remove part of it. This reveals the existing style and source curve. Draw, erase, note and style edits share undo. Strokes follow their notes when moved; erase any out-of-bounds section before shortening a note past it.
 
 Drawing writes to supported USTX PITD, linear SVP pitchDelta, VPR and VSQX PIT pitch bend, ACEP data-form pitch offsets, and absolute or relative pitch in UFData v1. VPR and VSQX keep their existing pitch bend sensitivity. Reduce the offset if it exceeds that range. ACEP2, direct pitch anchors, and unsupported curve types stay protected. If a stroke or its transition crosses a protected pitch break, the preview asks you to adjust it before saving a new copy in the original format.
+
+## Reference audio and retained parameters
+
+In **Source**, select **Reference audio** and assign an aligned dry vocal to each target track. Begin the recording at the project's time origin. Choose the supported controls and strength, then preview, generate, and save a copy. Preview checks track bindings. Generation analyzes the audio and writes the native curves. Native adapters apply bounded offsets inside the analyzed notes and return to the original values at the boundaries. The receipt lists the channels written and skipped.
+
+| Project | Reference audio | Retained curves |
+| --- | --- | --- |
+| Eligible SVP/SV2 main groups | Dynamics, tension, breathiness, voicing, and compatible measured calibration | Authored curves and matching expression settings |
+| Standard VPR | DYN dynamics and BRE breathiness | DYN and BRE |
+| VPR AI | DYN dynamics | DYN |
+| VSQX 3/4 | DYN dynamics and BRE breathiness | DYN and BRE |
+| USTX 0.6–0.10 | DYN dynamics | DYN |
+| Writable ACEP | Energy, tension, and breathiness | Supported sampled Energy, Tension, Breathiness, and Falsetto |
+| UFData v1 | — (pitch-only format) | Supported native pitch |
+
+Reference tension and breathiness use the WORLD analyzer in **Models and components**.
+
+For **Retain parameters**, choose a project in the same format and select the original vocal track. The first vocal track is index 0. On the native adapters, the source and target timelines, clips, note positions, durations, and keys must match. The operation copies supported curves while preserving the target score and voicebank. ACEP2 supports browsing. Edit lyrics, notes, or drawn pitch in **Keep original performance**, then save a new input to use with reference audio.
 
 ## ACE Studio preview
 

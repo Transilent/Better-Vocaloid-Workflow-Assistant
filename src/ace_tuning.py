@@ -206,11 +206,11 @@ class _Part:
                 'mainGroup': {'notes': [n.data for n in self.notes], 'parameters': {}}}
 
 
-def _ace_curve(clip):
+def _ace_curve(clip, channel=PITCH_CHANNEL):
     params = clip.get('parameters', {})
     if not isinstance(params, dict):
         return None
-    curves = params.get(PITCH_CHANNEL, [])
+    curves = params.get(channel, [])
     if not isinstance(curves, list) or len(curves) > CURVE_LIMIT:
         return None
     spans, total = [], 0
@@ -406,10 +406,11 @@ def _delta(part, curve, clock, regions):
     return grid, amount, keys
 
 
-def _native_pitch(original, grid, amount):
+def _native_pitch(original, grid, amount, *, neutral=0., limits=(-MAX_EDIT_SEMITONES, MAX_EDIT_SEMITONES)):
     import numpy as np
     from itertools import groupby
     start = int(grid[0])
+    low, high = limits
     used = np.zeros(len(grid), dtype=bool)
     output = deepcopy(original)
     edited = 0
@@ -426,14 +427,15 @@ def _native_pitch(original, grid, amount):
             if previous is None:
                 continue
             value = round(previous + float(amount[i]),6)
-            if abs(previous) <= MAX_EDIT_SEMITONES and abs(value) <= MAX_EDIT_SEMITONES and value != previous:
+            if low <= previous <= high and low <= value <= high and value != previous:
                 values[j] = value
                 edited += 1
-    new = np.flatnonzero((~used) & (np.abs(amount) >= .000001) & (np.abs(amount) <= MAX_EDIT_SEMITONES)).tolist()
+    new_values = amount + neutral
+    new = np.flatnonzero((~used) & (np.abs(amount) >= .000001) & (low <= new_values) & (new_values <= high)).tolist()
     for _, group in groupby(enumerate(new), key=lambda item:item[1]-item[0]):
         run = [i for _, i in group]
         output.append({'type':'data','offset':start+run[0],
-                       'values':[round(float(amount[i]),6) for i in run]})
+                       'values':[round(float(new_values[i]),6) for i in run]})
     if not new and not edited:
         return None, 'no_native_pitch_delta', 0
     if len(output) > CURVE_LIMIT or sum(len(row['values']) for row in output) > 2_000_000:

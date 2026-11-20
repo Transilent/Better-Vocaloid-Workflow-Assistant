@@ -6,6 +6,8 @@ import tempfile
 from time import monotonic
 from unittest.mock import patch
 
+import numpy as np
+import soundfile as sf
 from PySide6.QtCore import QCoreApplication, QEvent, QMetaObject, QObject, QPointF, Qt, QUrl, QtMsgType, qInstallMessageHandler
 from PySide6.QtGui import QGuiApplication, QInputMethodEvent
 from PySide6.QtTest import QTest
@@ -206,6 +208,42 @@ try:
         tune.openCandidate()
         assert '导入另存的 UFData' in tune.view['message']
         open_file(source,vpr)
+        tune.setStyle('none')
+        QTest.qWait(65)
+        tap('tuningInspector_source')
+        QTest.qWait(65)
+        tap('expressionReference')
+        wait('VPR reference mode selected', lambda: tune.view['expressionMode'] == 'reference')
+        assert set(tune.view['referenceControls']) == {'dynamics', 'breathiness'}
+        assert not lookup('expressionCalibrated').property('enabled')
+        rate = 16000
+        timeline = np.arange(7 * rate) / rate
+        reference = root / '参考人声.wav'
+        sf.write(reference, (.13 + .1 * np.sin(2 * np.pi * timeline)) * np.sin(2 * np.pi * 220 * timeline), rate)
+        reference_dialog = lookup('tuningReferenceDialog')
+        assert reference_dialog.setProperty('trackId', tune.view['activeTrack'])
+        assert reference_dialog.setProperty('selectedFile', QUrl.fromLocalFile(str(reference)))
+        reference_dialog.accepted.emit()
+        wait('VPR reference is bound', lambda: any(row['reference'] and Path(row['reference']) == reference
+                                                    for row in tune.bindings))
+        tune.freeze()
+        wait('VPR reference preview', lambda: tune.view['canRun'])
+        tune.run()
+        wait('VPR reference candidate', lambda: not tune.view['busy'] and tune.view['candidateVerified'])
+        verified = workflow.verified_result(tune.session)
+        assert verified['report']['mode'] == 'reference' and verified['report']['changed']
+        assert lookup('tuningRetainedDialog').property('nameFilters')[0] == 'VPR (*.vpr)'
+        tune.setTuningOption('dynamics_strength', 0.)
+        tune.freeze()
+        wait('zero-strength reference preview', lambda: tune.view['canRun'] and not tune.view['busy'])
+        tune.run()
+        wait('zero-strength reference preserves the source', lambda: not tune.view['busy']
+             and tune.view['candidateVerified'] and tune.view['candidateDetails']['status'] == 'unchanged')
+        assert file_hash(Path(tune.view['candidate'])) == file_hash(vpr)
+        assert '参数与原工程相同' in tune.view['message']
+        print('PASS VPR reference selected in Quick, WAV bound and native DYN candidate verified', flush=True)
+        tune.setExpressionMode('preserve')
+        tune.setStyle('gentle')
         render_candidate(output,vpr,'青',root/'合成手绘.vpr')
         ace_notes = root/'编辑歌词.acep'
         ace_notes.write_bytes(wrap_ace(editable_ace_score()))

@@ -90,6 +90,10 @@
       "source": "src/tuning_note_detail.py"
     },
     {
+      "file": "tuning_sources.py",
+      "source": "src/tuning_sources.py"
+    },
+    {
       "file": "tuning_pitch_layer.py",
       "source": "src/tuning_pitch_layer.py"
     },

@@ -12,13 +12,14 @@ from uuid import uuid4
 import agent_style
 from style_drafts import DraftStore
 from style_presets import region_settings, time_range_settings
-from svp_tuning import GROUP_STYLE_ONLY, GROUPS_PARTLY_PROTECTED
+from svp_tuning import GROUPS_PARTLY_PROTECTED
 from tuning_engine import DEFAULTS, digest
 from tuning_execution import EDITOR_OPTION_KEYS, editor_options
 from tuning_pitch_layer import PitchLayer
 from tuning_preset_documents import plan_application, validate_plan
 from tuning_score_edits import PHONEMES, ScoreEdits, _special_lyric
-from tuning_workflow import STYLE_ADAPTERS, inspect_project, read_source, score_layout, style_adapter
+from tuning_sources import all_standard_vpr, reference_controls, source_reason, validate_source
+from tuning_workflow import inspect_project, read_source, score_layout
 
 
 _REGION_FIELDS = frozenset(('id', 'track_id', 'start_note_id', 'end_note_id', 'recipe'))
@@ -298,14 +299,18 @@ class ProjectNotes:
     def uses_group_styles(self, indices):
         return any(row['styleOnly'] and row['index'] in indices for row in self.tracks.values())
 
-    def requires_style_mode(self, indices):
-        return self.project.get('format') in STYLE_ADAPTERS or self.uses_group_styles(indices)
+    def source_reason(self, mode, indices):
+        return source_reason(self.project.get('format', 'svp'), mode, grouped=self.uses_group_styles(indices))
 
-    @property
-    def style_only_reason(self):
-        if adapter := style_adapter(self.project.get('format')):
-            return adapter.STYLE_ONLY
-        return GROUP_STYLE_ONLY
+    def reference_controls(self, indices):
+        format = self.project.get('format', 'svp')
+        return reference_controls(format, grouped=self.uses_group_styles(indices),
+                                  vpr_standard=format == 'vpr' and all_standard_vpr(self.native.tracks, indices))
+
+    def validate_source(self, options, indices):
+        format = self.project.get('format', 'svp')
+        validate_source(format, options, grouped=self.uses_group_styles(indices),
+                        vpr_standard=format == 'vpr' and all_standard_vpr(self.native.tracks, indices))
 
     def matches(self, query, *, limit=160):
         needle = _lyric_key(query[:256])
@@ -529,8 +534,7 @@ def freeze_plan(project, regions, options, preset):
         raise ValueError('草稿里的音符修改与本次执行计划不一致。')
     if tuple(normalized.get('pitch_strokes', [])) != project.pitch_strokes:
         raise ValueError('草稿里的手绘修改与本次执行计划不一致。')
-    if normalized['expression_mode'] != 'preserve' and project.requires_style_mode(normalized['track_indices'] or []):
-        raise ValueError(project.style_only_reason)
+    project.validate_source(normalized, normalized['track_indices'] or [])
     if project.verify_regions(regions) != normalized['style_regions']:
         raise ValueError('逐轨片段与本次执行计划不一致。')
     if preset is not None:

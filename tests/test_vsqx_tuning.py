@@ -16,7 +16,7 @@ from common import atomic_json, file_hash
 from tuning_timeline import ProjectNotes
 import tuning_workflow as workflow
 from vocaloid_pitch import step_values
-from vpr_tuning import CONTROLLERS, DYN, PBS, PIT, _curve
+from vpr_tuning import BRE, CONTROLLERS, DYN, PBS, PIT, _curve
 from vsqx_tuning import Layout, read
 
 
@@ -81,6 +81,32 @@ class VsqxTuningTests(unittest.TestCase):
         scratch = tempfile.TemporaryDirectory(dir=parent, prefix='vsqx-')
         self.addCleanup(scratch.cleanup)
         self.root = Path(scratch.name)
+
+    def test_retained_dynamics_leaves_off_clip_sensitivity_intact(self):
+        target = write_fixture(self.root / 'target.vsqx', 4)
+        prior = write_fixture(self.root / 'prior.vsqx', 4)
+        target.write_text(target.read_text(encoding='utf-8-sig').replace(
+            '</vsPart>', '<cc><t>4000</t><v id="S">12</v></cc></vsPart>'), encoding='utf-8')
+        prior.write_text(prior.read_text(encoding='utf-8-sig').replace(
+            '<cc><t>0</t><v id="D">64</v></cc>', '<cc><t>30</t><v id="D">82</v></cc>'
+        ).replace('<cc><t>190</t><v id="B">31</v></cc>', '<cc><t>45</t><v id="B">22</v></cc>'),
+                         encoding='utf-8')
+        data = workflow.read_project(target)
+        before = native_track(data, 1)
+        options = {'expression_mode': 'retained', 'track_indices': [1],
+                   'retained_sources': [{'track_index': 1, 'project': str(prior), 'source_track_index': 1}]}
+        out, report = workflow.apply_project(data, options, 'vsqx', cancel=lambda: None, progress=lambda _: None)
+        track = native_track(out, 1)
+        self.assertEqual(report['mode'], 'retained')
+        self.assertEqual({row['parameter'] for row in report['curve_changes']}, {DYN, BRE})
+        self.assertIn('<cc><t>4000</t><v id="S">12</v></cc>', track.toxml())
+        self.assertEqual(before.getElementsByTagName('note')[0].toxml(), track.getElementsByTagName('note')[0].toxml())
+        old = Layout(workflow.read_project(prior)).sequence['tracks'][1]['parts'][0]
+        new = Layout(out).sequence['tracks'][1]['parts'][0]
+        for channel in (DYN, BRE):
+            np.testing.assert_array_equal(samples(new, channel, np.arange(2840)),
+                                          samples(old, channel, np.arange(2840)))
+        self.assertIsNone(_curve(new, PBS)[1])
 
     def test_pickup_uses_actual_tempo_before_content_zero(self):
         source = write_fixture(self.root / 'pickup.vsqx', 4)

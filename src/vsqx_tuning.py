@@ -24,8 +24,8 @@ _NAMES = {
             numerator='nu', denominator='de', measure='m', bpm='v'),
 }
 _CONTROL_IDS = {
-    3: {'DYN': vocaloid.DYN, 'PIT': vocaloid.PIT, 'PBS': vocaloid.PBS},
-    4: {'D': vocaloid.DYN, 'P': vocaloid.PIT, 'S': vocaloid.PBS},
+    3: {'DYN': vocaloid.DYN, 'BRE': vocaloid.BRE, 'PIT': vocaloid.PIT, 'PBS': vocaloid.PBS},
+    4: {'D': vocaloid.DYN, 'B': vocaloid.BRE, 'P': vocaloid.PIT, 'S': vocaloid.PBS},
 }
 
 
@@ -141,17 +141,24 @@ def _tempo(root, names):
 def _control_rows(part, names, ids, length):
     """Keep original nodes addressable, with one held stream per controller."""
     grouped, known_nodes = {}, {}
+    invalid = set()
+    unknown_owner = False
     malformed = False
     for control in _elements(part, names['controller']):
+        identity = ''
         try:
-            position = _integer(control, names['tick'])
             field = _child(control, names['value'])
             identity = field.getAttribute('id') if field else ''
+            position = _integer(control, names['tick'])
             if not identity or not 0 <= position <= length:
                 raise ValueError('VSQX controller')
             value = _integer(control, names['value'])
         except ValueError:
             malformed = True
+            if identity:
+                invalid.add(identity)
+            else:
+                unknown_owner = True
             continue
         stream = grouped.setdefault(identity, [])
         stream.append({'pos': position, 'value': value})
@@ -160,8 +167,9 @@ def _control_rows(part, names, ids, length):
     currents = []
     for identity, name in ids.items():
         events = grouped.get(identity, [])
-        if malformed or events:
-            currents.append({'name': name, 'events': None if malformed else sorted(events, key=lambda row: row['pos'])})
+        blocked = unknown_owner or identity in invalid
+        if blocked or events:
+            currents.append({'name': name, 'events': None if blocked else sorted(events, key=lambda row: row['pos'])})
     for identity, rows in grouped.items():
         if identity not in ids:
             # An unknown time-varying lane is a reason to protect note timing.
@@ -197,7 +205,7 @@ class Layout(vocaloid.Layout):
     meters = staticmethod(lambda data: data['meters'])
     bounded_curves = True
     style_only = STYLE_ONLY
-    notice = STYLE_ONLY
+    notice = 'VSQX 支持参考力度和气声、沿用原参数和同格式另存。'
 
     def __init__(self, data):
         document, version = _document(data['xml'])
@@ -286,7 +294,10 @@ def _merge_controls(part, names, ids, old, updated):
         if anchor is None or anchor.localName in ('sCtrl', 'note', 'plane'):
             tick = float('inf')
         elif anchor.localName == names['controller']:
-            tick = _integer(anchor, names['tick'])
+            try:
+                tick = _integer(anchor, names['tick'])
+            except ValueError:
+                continue
         else:
             continue
         while pending and pending[-1][0] < tick:

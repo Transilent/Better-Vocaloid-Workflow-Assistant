@@ -26,7 +26,8 @@ MAX_SEQUENCE_BYTES = 32 * 1024**2
 MAX_MEMBER_BYTES = 2 * 1024**3 - 1
 BLICK = 705600000 // 480
 DYN, PIT, PBS = 'dynamics', 'pitchBend', 'pitchBendSens'
-CONTROLLERS = {DYN: (64, 0, 127), PIT: PIT_SPEC, PBS: PBS_SPEC}
+BRE = 'breathiness'
+CONTROLLERS = {DYN: (64, 0, 127), BRE: (0, 0, 127), PIT: PIT_SPEC, PBS: PBS_SPEC}
 STYLE_ONLY = 'VPR 支持「保留原表现」下的 DYN 力度和 PIT 音高弯曲。'
 MAX_EDIT_TICKS = 750_000
 MAX_EVENTS = 250_000
@@ -462,7 +463,7 @@ def _curve(part, name):
     return index, curve
 
 
-def _add_delta(part, raw, name, original, rendered):
+def _add_delta(part, raw, name, original, rendered, *, saturate=False):
     """Apply an additive, bounded delta and restore the authored step at every exit."""
     import numpy as np
 
@@ -504,17 +505,25 @@ def _add_delta(part, raw, name, original, rendered):
             return None, 'vpr_invalid_sensitivity_preserved', protections
         protect(part.direct_pitch_spans, 'vpr_direct_pitch_preserved', end_guard=1)
         delta *= 8192. / (100 * step_values(grid, sensitivity['events'], CONTROLLERS[PBS][0]))
-    else:
+    elif name == DYN:
         # A bounded DYN gesture, not a claim that DYN units are decibels.
         delta *= 4.
         delta[baseline == 0] = 0
-    scale = 1.
-    positive, negative = delta > 1e-10, delta < -1e-10
-    if positive.any():
-        scale = min(scale, float(np.min((high - baseline[positive]) / delta[positive])))
-    if negative.any():
-        scale = min(scale, float(np.min((low - baseline[negative]) / delta[negative])))
-    values = np.rint(baseline + max(scale, 0.) * delta).astype(np.int64)
+    elif name == BRE:
+        delta *= 64.
+    if saturate:
+        target = np.clip(baseline + delta, low, high)
+        if name == DYN:
+            target[baseline > 0] = np.maximum(target[baseline > 0], 1)
+    else:
+        scale = 1.
+        positive, negative = delta > 1e-10, delta < -1e-10
+        if positive.any():
+            scale = min(scale, float(np.min((high - baseline[positive]) / delta[positive])))
+        if negative.any():
+            scale = min(scale, float(np.min((low - baseline[negative]) / delta[negative])))
+        target = baseline + max(scale, 0.) * delta
+    values = np.rint(target).astype(np.int64)
     if not np.any(values != baseline):
         return None, 'vpr_no_native_delta', protections
     replacement = _write_step_grid(original, grid, values, baseline, default)

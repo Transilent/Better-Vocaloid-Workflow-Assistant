@@ -24,9 +24,10 @@ import uuid
 ROOT=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT))
 from common import atomic_json,file_hash,native_path,preserve_changed_file,exclusive_sidecar,SidecarBusy
-from tuning_engine import settings,digest,process_project,selected_indices
+from tuning_engine import REFERENCE,settings,digest,process_project,selected_indices
 from tuning_clock import ProjectClock
 from tuning_native import NativeProject
+from tuning_sources import all_standard_vpr, apply_native_source, validate_source
 from svp_tuning import Layout, SV2_MIN
 from tuning_execution import (EDITOR_OPTION_KEYS, normalize_options as _normalize,dependencies as _execution_dependencies,
                               preset_context as _preset_context,preset_dependency,receipt_binding_matches,
@@ -42,7 +43,7 @@ CONTRIBUTORS=('tuning_workflow.py','tuning_engine.py','vocal_expression.py','voc
  'expression_component.py','expression_calibration.py','calibration_refinement.py','calibration_workflow.py',
  'calibration_session.py','style_presets.py','style_catalog.py','expression_controls.py','style_pitch.py','common.py',
  'tuning_execution.py','tuning_preset_documents.py','preset_documents.py','tuning_project_identity.py','svp_tuning.py',
- 'tuning_clock.py','tuning_native.py','tuning_native_pitch.py',
+ 'tuning_clock.py','tuning_native.py','tuning_native_pitch.py','tuning_sources.py',
  'ustx_tuning.py','vpr_tuning.py','vocaloid_pitch.py')
 
 
@@ -383,7 +384,7 @@ def _dependencies(options,format):
         contributors+=('vsqx_tuning.py','agent_pronunciation.py')
     if EDITOR_OPTION_KEYS.intersection(options):
         contributors+=('tuning_score_edits.py','agent_style.py')
-    if options.get('pitch_strokes'):
+    if options.get('pitch_strokes') or (format in STYLE_ADAPTERS and options['expression_mode'] == 'reference'):
         contributors+=('tuning_pitch_layer.py',)
     return _execution_dependencies(options,contributors,ROOT)
 
@@ -430,15 +431,37 @@ def _exclusive(root):
         lock.release()
 
 
-def check_targets(data,options,format):
+def check_targets(data,options,format,*,layout=None):
     if adapter:=style_adapter(format):
-        return adapter.selected_indices(data,options)
-    return selected_indices(data,options)
+        indices=adapter.selected_indices(data,{**options,'expression_mode':'preserve'},layout=layout)
+        validate_source(format,options,vpr_standard=format=='vpr' and all_standard_vpr(data['tracks'],indices))
+        return indices
+    return selected_indices(data,options,layout=layout)
 
 
 def apply_project(data,options,format,*,cancel,progress,cache=None):
     if adapter:=style_adapter(format):
-        return adapter.process_project(data,options,cancel=cancel,progress=progress)
+        options=settings(options)
+        if options['expression_mode']=='preserve':
+            return adapter.process_project(data,options,cancel=cancel,progress=progress)
+        _,layout=score_layout(data,format)
+        indices=check_targets(data,options,format,layout=layout)
+        style_options=dict(options,expression_mode='preserve',reference_sources=[],reference_calibration=None,
+                           retained_project=None,retained_sources=[],retained_match_policy='exact',
+                           **{'reference_'+name:False for name in REFERENCE})
+        style_options['track_indices']=indices
+        primary,changes,skips,transfer=apply_native_source(data,format,layout,indices,options,
+                                                          cancel=cancel,progress=progress,cache=cache)
+        output,report=adapter.process_project(primary,style_options,cancel=cancel,progress=progress)
+        curves=changes+[row for row in report['curve_changes'] if row not in changes]
+        changed=output!=data
+        partial=bool(skips or transfer['status']=='partial' or report['status']=='partial')
+        report.update(mode=options['expression_mode'],primary=transfer,curve_changes=curves,
+                      native_curve_skips=skips+report['native_curve_skips'],changed=changed,
+                      status='partial' if partial else 'applied' if changed else 'unchanged',
+                      pitch_changed=report['pitch_changed'] or any(row['parameter']=='pitch' for row in changes),
+                      source_content_sha256=digest(data),expression_source_exclusive=True)
+        return output,report
     return process_project(data,options,cancel=cancel,progress=progress,cache=cache)
 
 
