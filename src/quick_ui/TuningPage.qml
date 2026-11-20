@@ -70,7 +70,7 @@ Item {
     readonly property bool targetEditable: editableTargets()
     readonly property bool canAddRegion: hasSource && hasRange && !busy && !hasLegacyDraft
         && targetIds().length > 0 && targetEditable
-        && (textOf(view.style) !== "none" || textOf(view.style_technique) !== "none")
+        && (textOf(view.style) !== "none" || !!view.hasStyleRecipe || textOf(view.style_technique) !== "none")
     readonly property bool candidatePresent: hasValue(view.candidate)
     readonly property bool expressionModeKnown: textOf(view.expressionMode).length > 0
     readonly property int regionCount: regions.length
@@ -358,7 +358,7 @@ Item {
     }
 
     function presetFieldName(field) {
-        const names = {performance_style:"风格", style_strength:"风格强度", style_pitch:"附加音高",
+        const names = {performance_style:"风格", style_recipe:"外部风格", style_strength:"风格强度", style_pitch:"附加音高",
             style_detail:"风格细节", style_technique:"唱腔", technique_strength:"唱腔强度",
             technique_pitch:"唱腔音高", dynamics_strength:"动态强度", expression_mode:"表达来源",
             expression_density:"表达采样", reference_dynamics:"参考力度", reference_tension:"参考张力",
@@ -2039,9 +2039,16 @@ Item {
                                         text: page.vwaTr("附加音高")
                                         quiet: true
                                         selected: !!page.styleBrush.pitch
-                                        enabled: !page.busy && page.hasSource
+                                        enabled: !page.busy && page.hasSource && !page.styleBrush.recipeName
                                         onClicked: page.controller.setBrushValue(page.styleRegionId, "pitch", !selected)
                                     }
+                                }
+                                HelperText {
+                                    objectName: "tuningExternalStyleName"
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    visible: !!page.styleBrush.recipeName
+                                    text: page.vwaTr("外部风格 · ") + page.textOf(page.styleBrush.recipeName)
                                 }
                                 GridLayout {
                                     Layout.fillWidth: true
@@ -2059,7 +2066,7 @@ Item {
                                             text: String(modelData.short || modelData.label)
                                             fullLabel: String(modelData.label)
                                             tint: modelData.color || page.theme.muted
-                                            selected: String(page.styleBrush.preset) === String(modelData.id)
+                                            selected: !page.styleBrush.recipeName && String(page.styleBrush.preset) === String(modelData.id)
                                             enabled: !page.busy && page.hasSource
                                             onClicked: page.controller.setBrushValue(page.styleRegionId, "preset", String(modelData.id))
                                         }
@@ -2090,6 +2097,7 @@ Item {
                                                 {key:"connection", label:page.vwaTr("衔接")}, {key:"release", label:page.vwaTr("收尾")}]
                                         StrengthRow {
                                             required property var modelData
+                                            visible: modelData.key !== "connection" || !page.styleBrush.recipeName
                                             label: modelData.label
                                             sliderName: "tuningStyleDetail_" + modelData.key
                                             field: modelData.key
@@ -2634,7 +2642,7 @@ Item {
                                 spacing: page.editorGap
                                 PanelLabel {
                                     theme: page.theme
-                                    text: page.vwaTr("工程预设")
+                                    text: page.vwaTr("调音预设与风格")
                                 }
 
                                 UiComboBox {
@@ -2647,7 +2655,7 @@ Item {
                                     valueRole: "key"
                                     currentIndex: page.presetKeyIndex(page.selectedPresetKey)
                                     enabled: !page.busy && page.presets.length > 0
-                                    Accessible.name: page.vwaTr("工程预设")
+                                    Accessible.name: page.vwaTr("调音预设与风格")
                                     onActivated: function(index) {
                                         if (index >= 0 && index < page.presets.length) {
                                             page.selectedPresetKey = String(page.presets[index].key)
@@ -2683,7 +2691,15 @@ Item {
                                     HelperText {
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: parent.review.name + (parent.review.brushOnly ? page.vwaTr(" · 仅下一片段") : page.vwaTr(" · 绑定当前工程"))
+                                        text: parent.review.name + (parent.review.isRecipe ? ""
+                                              : parent.review.brushOnly ? page.vwaTr(" · 仅下一片段") : page.vwaTr(" · 绑定当前工程"))
+                                    }
+                                    HelperText {
+                                        Layout.fillWidth: true
+                                        theme: page.theme
+                                        visible: !!parent.review.isRecipe
+                                        text: page.textOf(parent.review.channels) + " · " + page.vwaTr("默认强度")
+                                              + " " + page.strengthText(parent.review.strength)
                                     }
                                     Repeater {
                                         model: parent.review.changes || []
@@ -2706,10 +2722,16 @@ Item {
                                         objectName: "applyReviewedTuningPreset"
                                         Layout.fillWidth: true
                                         theme: page.theme
-                                        text: parent.review.brushOnly ? page.vwaTr("应用到下一片段") : page.vwaTr("确认绑定预设")
+                                        text: parent.review.isRecipe ? page.vwaTr("选用风格")
+                                            : parent.review.brushOnly ? page.vwaTr("应用到下一片段") : page.vwaTr("确认绑定预设")
                                         enabled: !page.busy
                                         primary: true
-                                        onClicked: page.controller.confirmPreset()
+                                        onClicked: {
+                                            const isRecipe = parent.review.isRecipe
+                                            page.controller.confirmPreset()
+                                            if (isRecipe)
+                                                page.inspectorTab = "style"
+                                        }
                                     }
                                 }
 

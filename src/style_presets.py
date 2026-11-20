@@ -104,6 +104,44 @@ MAX_POINTS = 2_000_000
 PHRASE_GAP = .25
 STYLE_GRID = .02
 DETAIL_DEFAULTS = {'onset': 1., 'sustain': 1., 'connection': 1., 'release': 1.}
+RECIPE_CAPABILITY = 'style.note-envelope'
+
+
+def _recipe_document(document):
+    from preset_documents import PresetError
+
+    if (document['type'] != 'style_recipe' or document['payload']['role'] != 'style'
+            or set(document['requires']['capabilities']) - {RECIPE_CAPABILITY}):
+        raise PresetError('unsupported_style_recipe', '当前支持按音符相位叠加的演唱风格配方。')
+    return document
+
+
+def freeze_recipe(raw, *, reference=None):
+    """Check the exact published bytes and keep a compact local recipe snapshot."""
+    from preset_documents import PresetError, decode_document, document_digest
+
+    document = _recipe_document(decode_document(raw))
+    recipe = {'document': document, 'sha256': document_digest(raw)}
+    if reference is not None and recipe_reference(recipe) != reference:
+        raise PresetError('dependency_mismatch', '风格配方的 ID、版本或内容摘要与依赖不符。')
+    return recipe
+
+
+def recipe_reference(recipe):
+    document = recipe['document']
+    return {'id': document['id'], 'version': document['version'], 'sha256': recipe['sha256']}
+
+
+def recipe_settings(recipe, preset, pitch):
+    from preset_documents import PresetError, validate_document
+
+    if (not isinstance(recipe, dict) or set(recipe) != {'document', 'sha256'}
+            or not isinstance(recipe['sha256'], str) or len(recipe['sha256']) != 64
+            or any(c not in '0123456789abcdef' for c in recipe['sha256'])):
+        raise PresetError('invalid_style_recipe', '风格配方快照无效。')
+    if preset != style_registry.DEFAULT_STYLE_ID or pitch is not False:
+        raise PresetError('invalid_style_recipe', '外部风格与内置风格二选一，v1 配方仅处理表现参数。')
+    return {'document': _recipe_document(validate_document(recipe['document'])), 'sha256': recipe['sha256']}
 
 
 def visible_presets():
@@ -165,7 +203,7 @@ def region_settings(value=None):
     scope = None
     for row in value:
         if (not isinstance(row, dict) or set(row)-{'start','end','preset','strength','detail','pitch',
-                'technique','technique_strength','technique_pitch','track_index'}):
+                'technique','technique_strength','technique_pitch','track_index','style_recipe'}):
             raise ValueError('风格时间片段格式无效。')
         scoped = 'track_index' in row
         if scope is not None and scope != scoped:
@@ -175,8 +213,10 @@ def region_settings(value=None):
             raise ValueError('风格片段的轨道索引无效。')
         technique=technique_settings({'style_technique':row.get('technique',style_registry.DEFAULT_TECHNIQUE_ID),
             'technique_strength':row.get('technique_strength',.6),'technique_pitch':row.get('technique_pitch',True)})
+        recipe = row.get('style_recipe')
         if not style_registry.is_visible_style(row.get('preset')) or (
-                row.get('preset')==style_registry.DEFAULT_STYLE_ID and technique['style_technique']==style_registry.DEFAULT_TECHNIQUE_ID):
+                row.get('preset')==style_registry.DEFAULT_STYLE_ID
+                and technique['style_technique']==style_registry.DEFAULT_TECHNIQUE_ID and recipe is None):
             raise ValueError('风格时间片段格式无效。')
         start, end = time_range_settings((row.get('start'), row.get('end')))
         preset = row['preset']
@@ -185,6 +225,8 @@ def region_settings(value=None):
         item={'start':start,'end':end,'preset':preset,'strength':strength,
                         'detail':detail_settings(row.get('detail')),
                         'pitch':row.get('pitch',pitch_default(preset))}
+        if recipe is not None:
+            item['style_recipe'] = recipe_settings(recipe, preset, item['pitch'])
         if scoped:
             item['track_index'] = row['track_index']
         if technique['style_technique']!=style_registry.DEFAULT_TECHNIQUE_ID:
@@ -408,7 +450,25 @@ def _note_weights(times, spans, phrases, values, recipe, phrase_recipe, detail, 
     return weights
 
 
-def apply_style(project, preset, *, strength=.6, track_indices=None, density_mode='dense', pitch_enabled=None, detail=None, time_range=None, cancel=lambda:None, finalize=True, controls_allowed=None):
+def _recipe_weights(times, spans, points, detail):
+    import numpy as np
+
+    weights = np.zeros(len(times))
+    phases, values = np.asarray(points).T
+    for start, end in spans:
+        first, last = np.searchsorted(times, (start, end))
+        local = times[first:last] - start
+        duration = end - start
+        phase = local / duration
+        edge = min(.025, duration * .1)
+        gate = np.clip(np.minimum(local, duration - local) / edge, 0, 1)
+        amount = np.interp(phase, [0, .25, .75, 1],
+                           [detail['onset'], detail['sustain'], detail['sustain'], detail['release']])
+        weights[first:last] = np.interp(phase, phases, values) * amount * gate**2 * (3 - 2 * gate)
+    return weights
+
+
+def apply_style(project, preset, *, strength=.6, track_indices=None, density_mode='dense', pitch_enabled=None, detail=None, time_range=None, cancel=lambda:None, finalize=True, controls_allowed=None, recipe=None):
     """Return an independent candidate and a receipt; no synthesis or I/O.
 
     Baseline linear knots are never removed. Changes are additive smooth
@@ -421,6 +481,14 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
     if pitch_enabled is None:
         pitch_enabled = pitch_default(preset)
     preset,strength,_=settings({'performance_style':preset,'style_strength':strength,'style_pitch':pitch_enabled})
+    if recipe is not None:
+        recipe = recipe_settings(recipe, preset, pitch_enabled)
+        authored = {row['channel']: row['points'] for row in recipe['document']['payload']['controls']}
+    else:
+        authored = None
+    definition = PRESETS[preset]
+    note_recipe = definition.get('note_envelope')
+    phrase_recipe = definition.get('phrase_envelope')
     detail = detail_settings(detail)
     time_range = time_range_settings(time_range) if time_range is not None else None
     density_settings({'expression_density':density_mode})
@@ -441,14 +509,17 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
         'learned_coefficients':False,'voicebank_calibrated':False,'rendered':False,'listened':False,
         'phrase_gap_seconds':PHRASE_GAP,'style_grid_seconds':STYLE_GRID,'tracks':rows,
         'pitch':{'enabled':pitch_enabled,'status':'not_selected'}}
-    if (preset==style_registry.DEFAULT_STYLE_ID or strength==0 or (not any(detail[k] for k in ('onset','sustain','release'))
+    if authored is not None:
+        receipt.update(label=recipe['document']['metadata']['name'], category='external',
+                       description=recipe['document']['metadata'].get('description', ''),
+                       recipe_origin='external_note_envelope', style_recipe=recipe_reference(recipe))
+    if ((preset==style_registry.DEFAULT_STYLE_ID and authored is None) or strength==0
+            or (not any(detail[k] for k in ('onset','sustain','release'))
                                         and (not pitch_enabled or not detail['connection']))):
         return out,receipt
     for index in selected:
         cancel();track=project['tracks'][index];phrases,offset=_phrases(track,clock)
-        note_recipe = PRESETS[preset].get('note_envelope')
-        phrase_recipe = PRESETS[preset].get('phrase_envelope')
-        segments, skipped_notes = _note_spans(track,clock,offset) if note_recipe else (phrases, [])
+        segments, skipped_notes = _note_spans(track,clock,offset) if note_recipe or authored else (phrases, [])
         edit_segments = ([(max(a,time_range[0]),min(b,time_range[1])) for a,b in segments
                           if min(b,time_range[1])-max(a,time_range[0]) >= .025]
                          if time_range else segments)
@@ -456,7 +527,7 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
             skipped_notes=[r for r in skipped_notes if r['start']<time_range[1] and r['end']>time_range[0]]
         controls={};row={'track_index':index,'name':track.get('name',''),
             'phrases':[{'start':a,'end':b} for a,b in phrases],'controls':controls,
-            'envelope_scope':'phrase+note' if phrase_recipe else 'note' if note_recipe else 'phrase',
+            'envelope_scope':'phrase+note' if phrase_recipe else 'note' if note_recipe or authored else 'phrase',
             'segments':[{'start':a,'end':b} for a,b in edit_segments],'skipped_notes':skipped_notes}
         rows.append(row)
         if not edit_segments:row['status']='no_eligible_singing_notes';continue
@@ -466,22 +537,43 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
         for a,b in edit_segments:
             count=math.ceil((b-a)/STYLE_GRID)
             if count>remaining:raise ValueError('风格选区超过参数采样容量。')
-            sample_seconds.extend(a+np.arange(count+1)*STYLE_GRID)
+            if authored is not None:
+                sample_seconds.extend(np.linspace(a, b, count + 1))
+            else:
+                sample_seconds.extend(a+np.arange(count+1)*STYLE_GRID)
             duration=b-a
-            if note_recipe:
+            if authored is not None:
+                edge = min(.025, duration * .1)
+                sample_seconds.extend((a + edge, b - edge))
+                if len(sample_seconds) > remaining:
+                    raise ValueError('风格工程超过参数采样容量。')
+            elif note_recipe:
                 sample_seconds.extend([a,b,a+min(.025,duration*.1),b-min(.025,duration*.1),
                     a+min(note_recipe['onset'],duration*.28),
                     b-min(note_recipe['release'],duration*.30),(a+b)/2])
             else:
                 sample_seconds.extend([a,b,a+min(.04,duration*.15),b-min(.04,duration*.15),
                     a+min(.16,duration*.25),b-min(.24,duration*.30)])
+        if authored is not None:
+            phases = sorted({phase for points in authored.values() for phase, _ in points})
+            for start, end in segments:
+                cancel()
+                knots = (start + phase * (end - start) for phase in phases)
+                sample_seconds.extend(t for t in knots if time_range is None or time_range[0] <= t <= time_range[1])
+                if len(sample_seconds) > remaining:
+                    raise ValueError('风格工程超过参数采样容量。')
         # Guards at one blick outside the edited interval preserve extrapolation
         # and all original piecewise-linear spans outside selected phrases.
         positions=[clock.to_position(float(t))-offset for t in sample_seconds]
         positions.extend(p for a,b in edit_segments for p in (clock.to_position(a)-offset-1,clock.to_position(b)-offset+1))
-        for name,values in PRESETS[preset]['controls'].items():
+        for name,values in (authored if authored is not None else definition['controls']).items():
             cancel();original=parameters.get(name)
-            state={'status':'skipped','recipe_start_core_release':list(values)};controls[name]=state
+            state={'status':'skipped'}
+            if authored is not None:
+                state['recipe_note_phase'] = copy.deepcopy(values)
+            else:
+                state['recipe_start_core_release'] = list(values)
+            controls[name]=state
             if controls_allowed is not None and name not in controls_allowed:
                 state['reason']='unsupported_format_channel';continue
             if phrase_recipe and phrase_recipe.get(name):
@@ -497,13 +589,16 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
             if remaining<0:raise ValueError('风格工程超过参数采样容量。')
             base=np.interp(grid,np.asarray(xs,dtype=np.float64),np.asarray(ys,dtype=np.float64)) if xs else np.full(len(grid),CONTROLS[name][2])
             times=np.asarray([clock.to_seconds(float(x)+offset) for x in grid])
-            # Three recipe values are interpolation anchors at onset/core/release.
-            # The duplicated core anchor makes long sustained notes retain shape.
-            definition=[values[0]*detail['onset'],values[1]*detail['sustain'],
-                        values[1]*detail['sustain'],values[2]*detail['release']]
-            delta=(_note_weights(times,segments,phrases,values,note_recipe,phrase_recipe,detail,name) if note_recipe
-                   else _weights(times,phrases,definition))*strength
-            delta *= _range_gate(times,time_range)
+            if authored is not None:
+                delta = _recipe_weights(times, segments, values, detail)
+            elif note_recipe:
+                delta = _note_weights(times,segments,phrases,values,note_recipe,phrase_recipe,detail,name)
+            else:
+                # A repeated core value retains the shape on long notes.
+                anchors = [values[0]*detail['onset'],values[1]*detail['sustain'],
+                           values[1]*detail['sustain'],values[2]*detail['release']]
+                delta = _weights(times,phrases,anchors)
+            delta *= strength * _range_gate(times,time_range)
             active=np.abs(delta)>1e-12
             if not active.any():state['reason']='no_effective_delta';continue
             low,high,_=CONTROLS[name]
@@ -553,7 +648,7 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
     assert _protected(project,changed)==_protected(out,changed),'Style changed protected project content'
     applied=sum(s['status']=='applied' for r in rows for s in r['controls'].values())
     skipped=sum(s['status']=='skipped' for r in rows for s in r['controls'].values())
-    protected_notes = sum(len(r['skipped_notes']) for r in rows) if PRESETS[preset].get('note_envelope') else 0
+    protected_notes = sum(len(r['skipped_notes']) for r in rows)
     if pitch_enabled:
         applied+=receipt['pitch']['applied_tracks'];skipped+=receipt['pitch']['skipped_tracks']+receipt['pitch']['partial_tracks']
     receipt.update(status='partial' if applied and (skipped or protected_notes) else 'applied' if applied else 'skipped',

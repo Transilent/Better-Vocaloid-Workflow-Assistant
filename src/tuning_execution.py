@@ -73,7 +73,8 @@ def preset_context(binding,spec,options,data):
         if not local['retained_project'] and options['retained_project']:
             local['retained_project']=[{'track_index':i,'project':options['retained_project'],
                                        'source_track_index':options['retained_track_index']} for i in indices]
-    context=plan_application(checked['document'],project,local,raw_document=checked['document_text'])
+    context=plan_application(checked['document'],project,local,raw_document=checked['document_text'],
+                             style_dependency=checked.get('style_dependency_text'))
     context=validate_plan(context,project=project)
     # A display diff must not create a new candidate for the same parameters.
     context['changes']=[]

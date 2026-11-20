@@ -306,7 +306,7 @@ class TuningPresetDocumentTests(unittest.TestCase):
         self.assertEqual(ordinary['missing'], [])
         self.assertNotIn('confirm_candidate_baseline', ordinary['bindings'])
 
-    def test_unknown_capability_external_reference_and_dependency_are_rejected(self):
+    def test_unknown_capability_and_unresolved_dependency_are_rejected(self):
         value = document('preserve')
         unknown = copy.deepcopy(value)
         unknown['requires']['capabilities'].append('tuning.future-source')
@@ -320,7 +320,7 @@ class TuningPresetDocumentTests(unittest.TestCase):
         dependency['requires']['dependencies'] = [copy.deepcopy(external)]
         with self.assertRaises(PresetError) as caught:
             plan_application(dependency, project(), {'vocal_tracks': [0, 2]})
-        self.assertEqual(caught.exception.code, 'unsupported_dependency')
+        self.assertEqual(caught.exception.code, 'missing_style_recipe')
 
     def test_plan_and_options_tampering_are_rejected_while_display_changes_are_ignored(self):
         value = document('reference')

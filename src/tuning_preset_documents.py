@@ -14,6 +14,7 @@ import uuid
 
 from preset_documents import PresetError, decode_document, document_digest, encode_document, validate_document
 from style_catalog import TECHNIQUE_IDS, VISIBLE_STYLES
+from style_presets import RECIPE_CAPABILITY, freeze_recipe, recipe_reference
 from tuning_engine import DEFAULTS, settings
 
 PLAN_SCHEMA = 'vwa.tuning-preset-plan/v1'
@@ -33,6 +34,7 @@ SUPPORTED_CAPABILITIES = frozenset({
     'tuning.reference-audio',
     'tuning.calibrated',
     'tuning.retained',
+    RECIPE_CAPABILITY,
     *(f'style.builtin.{name}' for name in VISIBLE_STYLES if name != 'none'),
     *(f'technique.builtin.{name}' for name in TECHNIQUE_IDS if name != 'none'),
 })
@@ -142,13 +144,15 @@ def _validated_current_options(options):
 def make_document(options, name, *, identifier=None):
     """Create a new user document containing only portable tuning intent."""
     normalized = _validated_current_options(options)
+    recipe = normalized.get('style_recipe')
+    style_ref = recipe_reference(recipe) if recipe is not None else _canonical_style(normalized['performance_style'])
     if identifier is not None:
         if not isinstance(identifier, str) or not identifier.startswith('user.'):
             _invalid('invalid_identifier', '新调音预设必须使用全新的 user 标识。')
     payload = {
         'expression_mode': normalized['expression_mode'],
         'style': {
-            'ref': _canonical_style(normalized['performance_style']),
+            'ref': style_ref,
             'strength': normalized['style_strength'],
             'pitch_enabled': normalized['style_pitch'],
             'detail': copy.deepcopy(normalized['style_detail']),
@@ -181,7 +185,9 @@ def make_document(options, name, *, identifier=None):
     source = SOURCE_CAPABILITIES.get(normalized['expression_mode'])
     if source:
         capabilities.append(source)
-    if normalized['performance_style'] != 'none':
+    if recipe is not None:
+        capabilities.append(RECIPE_CAPABILITY)
+    elif normalized['performance_style'] != 'none':
         capabilities.append('style.builtin.' + normalized['performance_style'])
     if normalized['style_technique'] != 'none':
         capabilities.append('technique.builtin.' + normalized['style_technique'])
@@ -201,6 +207,8 @@ def make_document(options, name, *, identifier=None):
         'binding_slots': slots,
         'payload': payload,
     }
+    if recipe is not None:
+        document['requires']['dependencies'] = [style_ref]
     return validate_document(document)
 
 
@@ -213,15 +221,35 @@ def _verified_document(document):
     if unsupported:
         raise PresetError('unsupported_capability', '当前调音流程不支持此预设要求的能力。',
                           capabilities=sorted(unsupported))
-    if requires.get('dependencies'):
-        raise PresetError('unsupported_dependency', '当前调音流程不支持外部依赖。')
     for layer, allowed in (('style', VISIBLE_STYLES), ('technique', TECHNIQUE_IDS)):
         reference = document['payload'][layer]['ref']
+        if layer == 'style' and isinstance(reference, dict):
+            continue
         name = _builtin_name(reference)
         if name not in allowed:
             raise PresetError('unsupported_reference', '当前调音流程不支持此外部引用。',
                               reference=copy.deepcopy(reference))
     return document
+
+
+def _resolve_style(document, dependency):
+    style = document['payload']['style']
+    reference = style['ref']
+    if not isinstance(reference, dict):
+        if dependency is not None:
+            raise PresetError('unexpected_dependency', '此调音预设未引用外部风格。')
+        return None, None
+    if dependency is None:
+        raise PresetError('missing_style_recipe', '请先导入此调音预设所引用的风格配方。',
+                          reference=reference)
+    if style['pitch_enabled']:
+        raise PresetError('unsupported_style_recipe', 'v1 外部风格不包含音高，请关闭风格音高。')
+    try:
+        raw = dependency.encode('utf-8') if isinstance(dependency, str) else dependency
+        recipe = freeze_recipe(raw, reference=reference)
+    except UnicodeError as error:
+        raise PresetError('invalid_document', '风格配方原文不是有效 UTF-8。') from error
+    return recipe, raw.decode('utf-8')
 
 
 def _exact_raw_document(document, raw_document):
@@ -450,12 +478,12 @@ def _prepare_bindings(document, project, bindings):
     return result, selected, missing
 
 
-def _safe_controls(document, selected):
+def _safe_controls(document, selected, recipe):
     payload = document['payload']
     reference = set(payload.get('reference_controls', []))
-    style = _builtin_name(payload['style']['ref'])
+    style = _builtin_name(payload['style']['ref']) or 'none'
     technique = _builtin_name(payload['technique']['ref'])
-    return {
+    controls = {
         'expression_mode': payload['expression_mode'],
         'track_indices': list(selected) if selected is not None else None,
         'reference_dynamics': 'dynamics' in reference,
@@ -474,6 +502,9 @@ def _safe_controls(document, selected):
         'technique_strength': payload['technique']['strength'],
         'technique_pitch': payload['technique']['pitch_enabled'],
     }
+    if recipe is not None:
+        controls['style_recipe'] = recipe
+    return controls
 
 
 def _engine_options(controls, bindings):
@@ -499,23 +530,34 @@ def _changes(before, after):
         raise PresetError('invalid_target', '当前控件参数必须是对象。')
     previous = {}
     for key, value in after.items():
-        previous[key] = copy.deepcopy(before.get(key, value))
-    return [
+        if key != 'style_recipe':
+            previous[key] = copy.deepcopy(before.get(key, value))
+    result = [
         {'field': key, 'before': copy.deepcopy(value), 'after': copy.deepcopy(after[key])}
         for key, value in previous.items()
         if value != after[key]
     ]
+    old_recipe, new_recipe = before.get('style_recipe'), after.get('style_recipe')
+    if old_recipe != new_recipe:
+        def name(recipe):
+            if recipe is None:
+                return None
+            document = recipe['document']
+            return document['metadata']['name'] + ' · v' + document['version']
+        result.append({'field': 'style_recipe', 'before': name(old_recipe), 'after': name(new_recipe)})
+    return result
 
 
-def _build_plan(document, project, bindings, raw_document, before):
+def _build_plan(document, project, bindings, raw_document, before, style_dependency):
     document = _verified_document(document)
+    recipe, dependency_text = _resolve_style(document, style_dependency)
     raw, document_text, raw_sha256 = _exact_raw_document(document, raw_document)
     canonical_sha256 = document_digest(encode_document(document, allow_builtin=True))
     if raw_sha256 != document_digest(raw):  # Keep this local recomputation explicit.
         raise AssertionError('raw tuning document digest changed while freezing')
     project = _project_parts(project)
     prepared, selected, missing = _prepare_bindings(document, project, bindings)
-    controls = _safe_controls(document, selected)
+    controls = _safe_controls(document, selected, recipe)
     options = None if missing else _engine_options(controls, prepared)
     project_reference = _project_reference(project, selected)
     preset = {
@@ -525,7 +567,7 @@ def _build_plan(document, project, bindings, raw_document, before):
         'canonical_sha256': canonical_sha256,
         'name': document['metadata']['name'],
     }
-    return {
+    plan = {
         'schema': PLAN_SCHEMA,
         'document': copy.deepcopy(document),
         'document_text': document_text,
@@ -541,20 +583,25 @@ def _build_plan(document, project, bindings, raw_document, before):
         'missing': list(missing),
         'changes': _changes(before, controls),
     }
+    if dependency_text is not None:
+        plan['style_dependency_text'] = dependency_text
+    return plan
 
 
-def plan_application(document, project, bindings, *, raw_document=None, before=None):
-    """Freeze a preview/application plan; absent local inputs remain pending."""
-    return _build_plan(document, project, bindings, raw_document, before)
+def plan_application(document, project, bindings, *, raw_document=None, before=None, style_dependency=None):
+    """Freeze a plan using the verified UTF-8 bytes of any external style."""
+    return _build_plan(document, project, bindings, raw_document, before, style_dependency)
 
 
 def _validate_shape(plan):
-    if not isinstance(plan, dict) or set(plan) != _PLAN_KEYS:
+    if not isinstance(plan, dict) or set(plan) - {'style_dependency_text'} != _PLAN_KEYS:
         raise PresetError('invalid_plan', '调音计划字段不完整或包含未知字段。')
     if plan.get('schema') != PLAN_SCHEMA:
         raise PresetError('invalid_plan', '调音计划版本无效。')
     if not isinstance(plan.get('document_text'), str):
         raise PresetError('invalid_plan', '调音计划原文必须是字符串。')
+    if 'style_dependency_text' in plan and not isinstance(plan['style_dependency_text'], str):
+        raise PresetError('invalid_plan', '风格配方原文必须是字符串。')
     if not isinstance(plan.get('preset'), dict) or set(plan['preset']) != _PRESET_KEYS:
         raise PresetError('invalid_plan', '调音计划预设身份无效。')
     if plan.get('project') is not None and (
@@ -578,7 +625,7 @@ def _mismatch(field):
     raise PresetError('plan_modified', '调音计划在冻结后被改写。', field=field)
 
 
-def validate_plan(plan, *, project=None, options=None):
+def validate_plan(plan, *, project=None, options=None, allow_pending=False):
     """Rebuild and verify a frozen plan, returning a canonical ready copy.
 
     ``changes`` is display-only and intentionally absent from the identity. The
@@ -593,11 +640,14 @@ def validate_plan(plan, *, project=None, options=None):
         copy.deepcopy(plan['bindings']),
         plan['document_text'],
         before=None,
+        style_dependency=plan.get('style_dependency_text'),
     )
     for field in ('schema', 'document', 'document_text', 'preset', 'input_sha256',
                   'project', 'bindings', 'controls', 'options', 'missing'):
         if plan[field] != rebuilt[field]:
             _mismatch(field)
+    if rebuilt['missing'] and allow_pending:
+        return rebuilt
     if rebuilt['missing']:
         raise PresetError('plan_incomplete', '调音计划仍有未绑定的必需输入。',
                           missing=list(rebuilt['missing']))

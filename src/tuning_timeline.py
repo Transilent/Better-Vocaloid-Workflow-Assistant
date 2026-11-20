@@ -16,7 +16,7 @@ from svp_tuning import GROUPS_PARTLY_PROTECTED
 from tuning_engine import DEFAULTS, digest
 from tuning_execution import EDITOR_OPTION_KEYS, editor_options
 from tuning_pitch_layer import PitchLayer
-from tuning_preset_documents import plan_application, validate_plan
+from tuning_preset_documents import validate_plan
 from tuning_score_edits import PHONEMES, ScoreEdits, _special_lyric
 from tuning_sources import all_standard_vpr, reference_controls, source_reason, validate_source
 from tuning_workflow import inspect_project, read_source, score_layout
@@ -510,14 +510,7 @@ def normalize_timeline_draft(input_sha256, data):
         if (cleaned or EDITOR_OPTION_KEYS.intersection(options) or not isinstance(preset, dict)
                 or preset.get('input_sha256') != input_sha256):
             raise ValueError('逐轨草稿的预设绑定与当前工程不符。')
-        if preset.get('missing'):
-            rebuilt = plan_application(preset['document'], preset['project'], preset['bindings'],
-                                       raw_document=preset['document_text'])
-            if {**preset, 'changes': []} != rebuilt:
-                raise ValueError('待绑定的预设已发生变化，请重新选择。')
-            preset = rebuilt
-        else:
-            preset = validate_plan(preset)
+        preset = validate_plan(preset, allow_pending=True)
     return {'schema_version': 2, 'input_sha256': input_sha256, 'regions': cleaned,
             'options': options, 'preset': preset, 'confirmed': data.get('confirmed', False)}
 

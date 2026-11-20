@@ -18,7 +18,7 @@ DEFAULTS={'expression_mode':'preserve','track_indices':None,'reference_sources':
  'reference_dynamics':False,'reference_tension':False,'reference_breathiness':False,'reference_voicing':False,
  'dynamics_strength':.6,'reference_calibration':None,'retained_project':None,'retained_track_index':0,
  'retained_sources':[],'retained_match_policy':'exact','performance_style':'none','style_strength':.6,'style_pitch':False,
- 'style_scope':'lead','style_detail':None,'style_regions':[],'expression_density':'dense',
+ 'style_scope':'lead','style_detail':None,'style_recipe':None,'style_regions':[],'expression_density':'dense',
  'style_technique':'none','technique_strength':.6,'technique_pitch':True}
 
 
@@ -40,12 +40,15 @@ def settings(options):
         if type(value) not in (int,float) or not math.isfinite(value) or not 0<=value<=1:
             raise ValueError('调音强度应为0到1的有限数值。')
         result[name]=float(value)
-    from style_presets import settings as style_settings, pitch_default, detail_settings, region_settings, technique_settings
+    from style_presets import settings as style_settings, pitch_default, detail_settings, recipe_settings, region_settings, technique_settings
     if 'style_pitch' not in options:
         result['style_pitch']=pitch_default(result['performance_style'])
     from calibration_refinement import density_settings
     style_settings(result);density_settings(result)
     result['style_detail']=detail_settings(result['style_detail'])
+    recipe = result.pop('style_recipe')
+    if recipe is not None:
+        result['style_recipe'] = recipe_settings(recipe, result['performance_style'], result['style_pitch'])
     result['style_regions']=region_settings(result['style_regions'])
     result.update(technique_settings(result))
     indices=result['track_indices']
@@ -134,12 +137,12 @@ def _has_incomplete(report):
     return False
 
 
-def _apply_style_layers(project,preset,*,strength,pitch,detail,technique,indices,time_range=None,cancel=lambda:None,controls=None):
+def _apply_style_layers(project,preset,*,strength,pitch,detail,technique,indices,time_range=None,cancel=lambda:None,controls=None,recipe=None):
     """Two explicitly selected layers in one transaction, with separate audit."""
     from style_presets import apply_style
     output,emotion=apply_style(project,preset,strength=strength,track_indices=indices,
         density_mode='original',pitch_enabled=pitch,detail=detail,time_range=time_range,cancel=cancel,finalize=False,
-        controls_allowed=controls)
+        controls_allowed=controls,recipe=recipe)
     if technique['style_technique']=='none' or technique['technique_strength']==0:return output,emotion
     output,layer=apply_style(output,technique['style_technique'],strength=technique['technique_strength'],
         track_indices=indices,density_mode='original',pitch_enabled=technique['technique_pitch'],
@@ -149,7 +152,7 @@ def _apply_style_layers(project,preset,*,strength,pitch,detail,technique,indices
     incomplete=any(r['status'] in ('partial','skipped') for r in selected)
     combined=copy.deepcopy(layer if emotion['status']=='not_selected' else emotion)
     combined.update(preset=preset,emotion=emotion,technique=layer,technique_id=technique['style_technique'],
-        label=(emotion['label']+' · ' if preset!='none' else '')+layer['label'],
+        label=(emotion['label']+' · ' if preset!='none' or recipe is not None else '')+layer['label'],
         status='partial' if applied and incomplete else 'applied' if applied else 'skipped' if incomplete else 'not_selected',
         applied_controls=sum(r.get('applied_controls',0) for r in selected),
         skipped_controls=sum(r.get('skipped_controls',0) for r in selected),
@@ -254,6 +257,7 @@ def apply_style_plan(targets,options,indices,*,controls=None,cancel=lambda:None,
                 continue
             targets.project,item=_apply_style_layers(targets.project,region['preset'],strength=region['strength'],pitch=region['pitch'],
                 indices=selection,detail=region['detail'],time_range=time_range,cancel=cancel,controls=controls,
+                recipe=region.get('style_recipe'),
                 technique={'style_technique':region.get('technique','none'),
                     'technique_strength':region.get('technique_strength',.6),'technique_pitch':region.get('technique_pitch',True)})
             receipts.append(targets.audit(item))
@@ -266,11 +270,12 @@ def apply_style_plan(targets,options,indices,*,controls=None,cancel=lambda:None,
                'pitch_changed':any(r.get('pitch_changed') for r in receipts),
                'outside_regions_style_unchanged':True}
         attempted=True
-    elif (options['performance_style']!='none' and options['style_strength']>0) or (
+    elif ((options['performance_style']!='none' or options.get('style_recipe')) and options['style_strength']>0) or (
             options['style_technique']!='none' and options['technique_strength']>0):
         progress('叠加所选风格增量')
         targets.project,style=_apply_style_layers(targets.project,options['performance_style'],strength=options['style_strength'],
-            indices=targets.indices(indices),pitch=options['style_pitch'],detail=options['style_detail'],technique=options,cancel=cancel,controls=controls)
+            indices=targets.indices(indices),pitch=options['style_pitch'],detail=options['style_detail'],technique=options,cancel=cancel,
+            controls=controls,recipe=options.get('style_recipe'))
         style=targets.audit(style)
         attempted=True
     return style,attempted
@@ -337,9 +342,16 @@ def _review_reference_offsets(data,indices,options):
                          '），不能静默叠加新曲线。请选择保留原表现，或为当前设置重新实测校准。')
 
 
-def finalize_project(output,indices,mode,cancel):
+def finalize_project(output,indices,mode,cancel,*,before=None):
     from calibration_refinement import finalize_expression
     view={'time':output['time'],'tracks':[output['tracks'][i] for i in indices]}
+    if before is not None:
+        for index, track in enumerate(view['tracks']):
+            group = track['mainGroup']
+            original = before['tracks'][indices[index]]['mainGroup'].get('parameters', {})
+            changed = {name: curve for name, curve in group.get('parameters', {}).items()
+                       if curve != original.get(name)}
+            view['tracks'][index] = {**track, 'mainGroup': {**group, 'parameters': changed}}
     report=finalize_expression(view,mode=mode,cancel=cancel)
     for row in report['tracks']:row['track_index']=indices[row['track_index']]
     return report
@@ -422,7 +434,9 @@ def process_project(data,options,*,cancel=lambda:None,progress=lambda text:None,
     progress('统一保形加密与保护校验')
     density_indices=[i for i in indices if not layout.tracks[i].style_only]
     finalized=bool(finalize and density_indices)
-    density=finalize_project(output,density_indices,options['expression_density'],cancel) if finalized else {
+    external_style = any(row.get('style_recipe') for row in regions) if regions else options.get('style_recipe')
+    density=finalize_project(output,density_indices,options['expression_density'],cancel,
+                             before=data if mode=='preserve' and external_style else None) if finalized else {
         'status':'deferred','mode':options['expression_density'],'added_points':0,'unsupported_nonlinear_controls':0}
     if targets.placements:
         density['preserved_native_group_tracks']=[i for i in indices if i not in density_indices]

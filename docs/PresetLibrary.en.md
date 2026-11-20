@@ -4,13 +4,13 @@
 
 The development version provides **Settings/updates → Local preset library** for preparation, mixing, tuning and style recipes. Inspect and confirm imports, copy built-ins, add local aliases/favorites, delete entries and export files. Six existing mixing presets and four preparation workflows are read-only; copy one to create your own identity.
 
-The manager stores data. The mixing console offers save, choose and undo. The tuning workflow now saves whole-track plans, previews changes, binds local project inputs and generates independent candidates. Imports append by default and preserve existing entries; importing does not apply processing. External style recipe execution and authoring remain deferred.
+The manager stores data. The mixing console offers save, choose and undo. In tuning, you can save whole-track plans, preview changes, bind local project inputs, and generate candidates with imported style recipes. Imports append by default. Selecting a style requires separate confirmation in the tuning workspace.
 
 ## Using and sharing
 
 Import a local `.vwa-preset.json` after reviewing its name, kind, version and JSON. Export individual files and share them manually through GitHub or another platform. Existing destination files are never overwritten. Aliases and favorites affect only the local index and preserve the imported package and digest. To change parameters, edit a conforming example/export and assign a new version; mixing controls can capture a new preset, while a dedicated external style editor is deferred. Built-in exports retain reserved `builtin.*` identities and are automatically imported as independent user copies. Normal identity/content conflicts are rejected without overwriting. Select Create independent copy, or use `import --as-copy`, to keep both. Copies receive a new ID and version `0.1.0` with canonical encoding; source files remain unchanged. All four kinds share these additive import rules.
 
-Examples: [preparation](examples/presets/preparation.vwa-preset.json), [mixing](examples/presets/mixdown.vwa-preset.json), [tuning](examples/presets/tuning.vwa-preset.json), [style recipe](examples/presets/style_recipe.vwa-preset.json). Tuning plans using supported built-in styles can be applied after binding; external recipes currently support storage and sharing.
+The examples cover [preparation](examples/presets/preparation.vwa-preset.json), [mixing](examples/presets/mixdown.vwa-preset.json), [tuning](examples/presets/tuning.vwa-preset.json), and [style recipes](examples/presets/style_recipe.vwa-preset.json).
 
 ## Using presets in the mixing console
 
@@ -26,6 +26,8 @@ Save a whole-track plan from the tuning controls, load a target SVP, then choose
 
 Application rechecks the project SHA, exact preset bytes and current form. Generation and recovery reuse the existing immutable-input candidate transaction. Receipts freeze the preset document, identity and local bindings, so restoring a session does not require the library entry to remain present. Manual processing edits detach the preset identity. Recognized candidates require explicit confirmation before becoming a new baseline. See the [Chinese operation and architecture guide](TuningPresets.zh-CN.md).
 
+Open a project, import the recipe in **Presets**, review its channels and default strength, then choose **Select style**. Adjust the strength in **Style**. Use **Apply to time range** for a specific passage, then preview and generate a candidate. Saving a whole-track tuning plan with an imported style records the recipe as a dependency.
+
 ## Version 1 contract
 
 Files are UTF-8 JSON (optional BOM), at most 256 KiB and 16 levels deep. Unknown fields, duplicate keys, non-finite numbers, malformed text, scripts, raw project paths and device bindings are rejected. Descriptive metadata is never executed as a path, URL or command.
@@ -39,7 +41,7 @@ The required envelope is `format: "vwa.preset"`, integer `format_version: 1`, `i
 | `tuning` | One expression source, style/technique references and strengths, density, and required target/source slots. No live project bindings. |
 | `style_recipe` | A `style` or `technique` role and additive curves over normalized note phase 0–1. Loudness, tension, breathiness and voicing only, 2–64 points per channel, strictly increasing from phase 0 to 1. Loudness deltas ±12; other channels ±1. Pitch recipes must be disabled in v1. |
 
-`requires` declares the API, matching engine contract and capability names. External style/technique references pin `id + version + sha256` and must exactly match dependencies. Storage accepts unresolved dependencies without fetching or applying them. Future adapters must check capabilities, reference kind/role, digest and project inputs before offering a change preview.
+`requires` declares the API, engine contract, capabilities, and dependencies. Tuning plans can resolve an installed v1 recipe with the `style` role by its exact `id + version + sha256`. Share the dependency file alongside any plan that references it. The receiver imports both original files before binding the plan. V1 style recipes apply expression envelopes. Pitch gestures and external techniques require a future execution contract.
 
 The [JSON Schema](../packaging/preset.schema.json) supports editor validation. Full validation uses `preset_documents.validate_document`: runtime checks additionally enforce duplicate-key rejection, byte/depth limits, strict integers, nonblank text and cross-field graph, slot, scope and dependency rules. Keep schema, examples and validation aligned when changing supported fields.
 

@@ -18,6 +18,7 @@ from common import file_hash,native_path
 from expression_calibration import score_identity
 from preset_documents import PresetError, encode_document
 from preset_library import PresetLibrary
+from style_presets import freeze_recipe
 from tuning_preset_documents import make_document, plan_application, validate_plan
 from tuning_workflow import create_session, inspect_project, register_result, run_session
 
@@ -188,6 +189,63 @@ def write_style_sidecar(candidate, *, source_sha='1' * 64):
 
 
 class TuningPresetWorkflowTests(unittest.TestCase):
+    def test_external_style_uses_exact_library_bytes_and_runs_after_dependency_is_deleted(self):
+        with LongPathTemporaryDirectory(prefix='external-style-', dir=TEST_TEMP) as temp:
+            root = Path(temp)
+            baseline = {
+                'loudness': {'mode': 'linear', 'points': [0, 1, Q, 1, 2*Q, 1]},
+                'gender': {'mode': 'linear', 'points': [0, 0, 2*Q, .2]},
+                'pitchDelta': {'mode': 'cubic', 'points': [0, 30, 2*Q, -20]},
+            }
+            original = mini_project(lead_parameters=baseline)
+            source = write_svp(root / 'source.svp', original)
+            recipe = {
+                'format': 'vwa.preset', 'format_version': 1, 'id': 'user.test.envelope',
+                'type': 'style_recipe', 'version': '1.0.0', 'metadata': {'name': 'Fixture envelope'},
+                'requires': {'preset_api': 1, 'engine_contract': 'style-recipe/v1',
+                             'capabilities': ['style.note-envelope']},
+                'binding_slots': [],
+                'payload': {'role': 'style', 'coordinate_system': 'normalized_note_phase',
+                            'default_strength': .5, 'pitch': {'enabled': False, 'gestures': []},
+                            'controls': [{'channel': 'loudness', 'operation': 'add',
+                                          'points': [[0, 0], [.5, 4], [1, 0]]}]},
+            }
+            recipe_file = root / 'recipe.vwa-preset.json'
+            recipe_file.write_bytes(exact_raw(recipe))
+            library = PresetLibrary(root / 'library')
+            imported = library.import_file(recipe_file, expected_revision=None)
+            saved = library.get_snapshot(recipe['id'], recipe['version'])
+            options = {**preserve_options(), 'style_recipe': freeze_recipe(saved['raw']),
+                       'style_strength': .5, 'expression_density': 'dense'}
+            document = make_document(options, 'Fixture tuning')
+            project = inspect_project(source)
+            binding = {'vocal_tracks': [0]}
+            plan = plan_application(document, project, binding, style_dependency=saved['raw'])
+            self.assertEqual(plan['style_dependency_text'].encode('utf-8'), saved['raw'])
+            for invalid in (saved['raw'] + b' ', encode_document(recipe)):
+                with self.assertRaises(PresetError) as caught:
+                    plan_application(document, project, binding, style_dependency=invalid)
+                self.assertEqual(caught.exception.code, 'dependency_mismatch')
+
+            library.delete(recipe['id'], recipe['version'], expected_revision=imported['revision'])
+            session = create_session(source, root / 'session')
+            result = run_session(session, plan['options'], preset_binding=plan)
+            self.assertTrue(result['receipt_verified'])
+            readback = tuning_workflow.read_project(result['output'])
+            params = readback['tracks'][0]['mainGroup']['parameters']
+            points = params['loudness']['points']
+            self.assertAlmostEqual(dict(zip(points[::2], points[1::2]))[Q//2], 3)
+            self.assertEqual(params['gender'], baseline['gender'])
+            self.assertEqual(params['pitchDelta'], baseline['pitchDelta'])
+            self.assertEqual(readback['tracks'][0]['mainGroup']['notes'], original['tracks'][0]['mainGroup']['notes'])
+            self.assertEqual(readback['tracks'][1:], original['tracks'][1:])
+            self.assertEqual(tuning_workflow.read_project(source), original)
+            self.assertEqual(tuning_workflow.read_preset_binding(session), validate_plan(plan))
+            self.assertTrue(run_session(session, plan['options'], preset_binding=plan)['cached'])
+
+            zero = run_session(session, {**plan['options'], 'style_strength': 0.})
+            self.assertEqual(Path(zero['output']).read_bytes(), source.read_bytes())
+
     def test_preserve_and_retained_candidates_keep_inputs_and_reuse_without_stacking(self):
         with LongPathTemporaryDirectory(prefix='preset-runs-', dir=TEST_TEMP) as temp:
             root = Path(temp)
