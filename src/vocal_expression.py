@@ -69,7 +69,7 @@ class TempoMap:
         return round(self.positions[index] + (seconds - self.seconds[index]) * self.bpms[index] / 60 * SV_QUARTER)
 
 
-def energy_frames(path, cancel=lambda: None):
+def energy_frames(path, cancel=lambda: None, *, window=None):
     """Centered, DC-removed RMS; bounded reads preserve stereo anti-phase signals."""
     import numpy as np
     import soundfile as sf
@@ -80,7 +80,13 @@ def energy_frames(path, cancel=lambda: None):
             raise ValueError('参考人声音频没有有效采样。')
         hop = max(1, round(rate * HOP_SECONDS))
         half = max(1, round(rate * WINDOW_SECONDS / 2))
-        centers = np.arange(0, length, hop, dtype=np.int64)
+        first, last = 0, length
+        if window is not None:
+            first = max(0, math.floor(window[0] * rate / hop) * hop)
+            last = min(length, math.ceil(window[1] * rate / hop) * hop + 1)
+            if first >= last:
+                raise ValueError('所选时间不在参考干声内。')
+        centers = np.arange(first, last, hop, dtype=np.int64)
         # Each read spans at most ten seconds, regardless of song duration.
         batch = max(1, round(10 * rate / hop))
         for first in range(0, len(centers), batch):

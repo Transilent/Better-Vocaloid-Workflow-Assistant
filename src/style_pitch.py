@@ -9,6 +9,9 @@ import math
 VERSION=6
 GRID_SECONDS=.005
 MAX_POINTS=2_000_000
+EXTERNAL_MIN_NOTE_SECONDS = .16
+EXTERNAL_EDGE_SECONDS = .24
+EXTERNAL_PEAKS = {'onset': .33, 'release': .72}
 # Entry cents/seconds, interval lag cents per semitone / limit / seconds,
 # release cents/seconds. Different phases; no constant detuning of whole notes.
 RECIPES={
@@ -38,7 +41,7 @@ def _pulse(t,a,b,peak):
     return v*v*(3.-2.*v)
 
 
-def apply_pitch(data,preset,*,strength,track_indices,detail=None,time_range=None,cancel=lambda:None):
+def apply_pitch(data,preset,*,strength,track_indices,detail=None,time_range=None,cancel=lambda:None,external=None):
     """Mutate only the independent output's selected pitchDelta, return audit data.
 
     Explicitly authored/generated pitch modes are not flattened or converted.
@@ -50,9 +53,12 @@ def apply_pitch(data,preset,*,strength,track_indices,detail=None,time_range=None
     from style_presets import _curve,_phrases,_note_spans,_range_gate,time_range_settings,detail_settings,PHRASE_GAP,PRESETS
     detail=detail_settings(detail)
     time_range=time_range_settings(time_range) if time_range is not None else None
-    recipe=RECIPES[preset];clock=TempoMap(data['time']['tempo'])
+    recipe=None if external is not None else RECIPES[preset]
+    clock=TempoMap(data['time']['tempo'])
     report={'enabled':True,'version':VERSION,'status':'skipped','units':'cents',
-            'recipe_origin':'manual_audition_draft','recipe':{k:list(v) if v is not None else None for k,v in recipe.items()},
+            'recipe_origin':'external_pitch_edges' if external is not None else 'manual_audition_draft',
+            'recipe':copy.deepcopy(external) if external is not None else
+                {k:list(v) if v is not None else None for k,v in recipe.items()},
             'sample_seconds':GRID_SECONDS,'detail':detail,'time_range_seconds':time_range,
             'tracks':[],'note_attributes_unchanged':True,
             'vibratoEnv_unchanged':True,'original_knot_positions_preserved':True}
@@ -61,7 +67,8 @@ def apply_pitch(data,preset,*,strength,track_indices,detail=None,time_range=None
     changed=set()
     for index in track_indices:
         cancel();track=data['tracks'][index];_,offset=_phrases(track,clock)
-        allowed = set(_note_spans(track,clock,offset)[0]) if PRESETS[preset].get('note_envelope') else None
+        bounded = external is not None or PRESETS[preset].get('note_envelope')
+        allowed = set(_note_spans(track,clock,offset)[0]) if bounded else None
         group=track['mainGroup'];params=group.get('parameters',{});original=params.get('pitchDelta')
         # Preserve the true score adjacency even when an intervening short,
         # muted, overlapping or non-singing note is omitted from editing.
@@ -106,8 +113,21 @@ def apply_pitch(data,preset,*,strength,track_indices,detail=None,time_range=None
             following=notes[j+1] if j+1<len(notes) else None
             if (previous and previous[1]>a+1e-8) or (following and following[0]<b-1e-8):
                 skipped.append({'note_index':ni,'reason':'overlapping_notes'});continue
-            if duration<.16:
+            if duration < EXTERNAL_MIN_NOTE_SECONDS:
                 skipped.append({'note_index':ni,'reason':'short_note_preserved'});continue
+            if external is not None:
+                if time_range and (a < time_range[0] - 1e-7 or b > time_range[1] + 1e-7):
+                    continue
+                if note.get('retakes') or note.get('pitchControls'):
+                    skipped.append({'note_index':ni,'reason':'native_pitch_controls_preserved'});continue
+                for action in external:
+                    kind = action['kind']
+                    width = min(EXTERNAL_EDGE_SECONDS, duration * action['fraction'])
+                    if kind == 'onset':
+                        add('phrase_entry', a, a+width, action['cents'], ni, peak=EXTERNAL_PEAKS[kind])
+                    else:
+                        add('phrase_release', b-width, b, action['cents'], ni, peak=EXTERNAL_PEAKS[kind])
+                continue
             if preset in ('chinese_opera','bold'):
                 position=physical_index[ni]
                 if previous and (position==0 or physical[position-1]!=previous[3]):previous=None
@@ -191,9 +211,9 @@ def apply_pitch(data,preset,*,strength,track_indices,detail=None,time_range=None
             local=shape*gesture['cents_at_full_strength']*strength
             local*=_range_gate(t,time_range)
             active_local=abs(local)>1e-10;source=base[left:right]
-            if (preset in ('chinese_opera','bold') and
-                    gesture['kind']=='interval_connection' and
-                    active_local.any() and
+            protect_transition = external is not None or (preset in ('chinese_opera','bold')
+                                                           and gesture['kind']=='interval_connection')
+            if (protect_transition and active_local.any() and
                     (np.ptp(source[active_local])>50. or np.max(np.abs(source[active_local]))>200.)):
                 omitted.append({**gesture,'reason':'authored_transition_preserved'});continue
             if np.any(abs(source[active_local])>1200.):

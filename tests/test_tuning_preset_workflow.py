@@ -189,6 +189,84 @@ def write_style_sidecar(candidate, *, source_sha='1' * 64):
 
 
 class TuningPresetWorkflowTests(unittest.TestCase):
+    def test_reference_sources_create_portable_style_and_pitch_on_different_notes(self):
+        import numpy as np
+        import soundfile as sf
+        from types import SimpleNamespace
+        from style_authoring import analyze_reference, make_recipe
+
+        with LongPathTemporaryDirectory(prefix='reference-style-', dir=TEST_TEMP) as temp:
+            root = Path(temp)
+            points = [0, 1, Q // 2, 4, Q, 1, Q * 3 // 2, 4, Q * 2, 1]
+            pitch = []
+            for start in (0, Q):
+                for phase, cents in ((0., 0), (.1155, -50), (.35, 0), (.65, 0), (.902, 35), (1., 0)):
+                    tick = start + round(phase * Q)
+                    if not pitch or pitch[-2] != tick:
+                        pitch.extend((tick, cents))
+            reference = mini_project(lead_parameters={
+                'loudness': {'mode': 'linear', 'points': points},
+                'pitchDelta': {'mode': 'linear', 'points': pitch},
+            })
+            source = write_svp(root / 'reference.svp', reference)
+            before = write_svp(root / 'flat.svp', mini_project(lead_parameters={
+                'loudness': {'mode': 'linear', 'points': [0, 1, Q * 2, 1]}}))
+            source_hash = file_hash(source)
+            value = analyze_reference(source, 0, (.125, 1.125), pitch=True, before=before)
+            self.assertEqual(value['report']['notes'], 2)
+            self.assertEqual(value['report']['source'], 'native_difference')
+            self.assertAlmostEqual(value['points'][4][1], 3.)
+            self.assertEqual(value['gestures'][0]['cents'], -50)
+            self.assertAlmostEqual(value['gestures'][1]['cents'], 35)
+
+            target = mini_project(marker='different-score')
+            target['time']['tempo'][0]['bpm'] = 92
+            target['tracks'][0]['mainGroup']['notes'][0].update(pitch=72, duration=Q * 3 // 4)
+            target['tracks'][0]['mainGroup']['notes'][1]['retakes'] = [{'id': 'authored'}]
+            path = write_svp(root / 'target.svp', target)
+            document = make_recipe('Reference envelope', value['points'], value['gestures'], strength=.5)
+            raw = encode_document(document)
+            recipe = freeze_recipe(raw)
+            self.assertEqual(document['requires']['engine_contract'], 'style-recipe/v2')
+            self.assertNotIn(b'reference.svp', raw)
+            self.assertNotIn('你'.encode(), raw)
+            options = {**preserve_options(), 'style_recipe': recipe, 'style_pitch': True, 'style_strength': .5}
+            plan = plan_application(make_document(options, 'Bound style'), inspect_project(path),
+                                    {'vocal_tracks': [0]}, style_dependency=raw)
+            result = run_session(create_session(path, root / 'session'), plan['options'], preset_binding=plan)
+            self.assertTrue(result['receipt_verified'])
+            output = tuning_workflow.read_project(result['output'])
+            group = output['tracks'][0]['mainGroup']
+            self.assertEqual(group['notes'], target['tracks'][0]['mainGroup']['notes'])
+            self.assertEqual(output['tracks'][1], target['tracks'][1])
+            self.assertTrue(result['report']['pitch_changed'])
+            curve = group['parameters']['pitchDelta']['points']
+            self.assertLess(min(curve[1::2]), -10)
+            self.assertTrue(all(y == 0 for x, y in zip(curve[::2], curve[1::2]) if x >= Q))
+            self.assertEqual(file_hash(source), source_hash)
+
+            # The dry vocal starts at project time .125, with its own file clock.
+            wav = root / 'aligned.wav'
+            sr = 16000
+            time = np.arange(sr) / sr
+            phase = (time % .5) * 2
+            sf.write(wav, (.03 + .16 * np.sin(phase * np.pi)) * np.sin(2 * np.pi * 250 * time), sr)
+            dry = analyze_reference(source, 0, (.125, 1.125), audio=wav, audio_zero=.125)
+            self.assertEqual(dry['report']['alignment']['accepted_notes'], 2)
+            self.assertLess(dry['points'][0][1], dry['points'][4][1] - 2)
+            self.assertEqual(make_recipe('Dry envelope', dry['points'])['requires']['engine_contract'], 'style-recipe/v1')
+            with self.assertRaisesRegex(ValueError, '对齐偏移'):
+                analyze_reference(source, 0, (.125, 1.125), audio=wav, audio_zero=1.5)
+
+            time = np.arange(100) / 100
+            phase = (time % .5) * 2
+            midi = np.where(time < .5, 60., 64.) - .44 * np.exp(-((phase - .116) / .08)**2)
+            with patch('calibration_workflow._infer_pitch', return_value=SimpleNamespace(
+                    midi_pitch=midi, time_step_seconds=.01)):
+                pitched = analyze_reference(source, 0, (.125, 1.125), audio=wav, audio_zero=.125, pitch=True)
+            self.assertEqual(pitched['report']['pitch_notes'], 2)
+            self.assertLess(pitched['gestures'][0]['cents'], -30.)
+
     def test_external_style_uses_exact_library_bytes_and_runs_after_dependency_is_deleted(self):
         with LongPathTemporaryDirectory(prefix='external-style-', dir=TEST_TEMP) as temp:
             root = Path(temp)

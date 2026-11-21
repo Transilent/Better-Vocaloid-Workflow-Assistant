@@ -12,9 +12,10 @@ import copy
 import json
 import uuid
 
-from preset_documents import PresetError, decode_document, document_digest, encode_document, validate_document
+from preset_documents import (PresetError, STYLE_PITCH_CAPABILITY, decode_document,
+                              document_digest, encode_document, validate_document)
 from style_catalog import TECHNIQUE_IDS, VISIBLE_STYLES
-from style_presets import RECIPE_CAPABILITY, freeze_recipe, recipe_reference
+from style_presets import RECIPE_CAPABILITY, freeze_recipe, recipe_has_pitch, recipe_reference
 from tuning_engine import DEFAULTS, settings
 
 PLAN_SCHEMA = 'vwa.tuning-preset-plan/v1'
@@ -35,6 +36,7 @@ SUPPORTED_CAPABILITIES = frozenset({
     'tuning.calibrated',
     'tuning.retained',
     RECIPE_CAPABILITY,
+    STYLE_PITCH_CAPABILITY,
     *(f'style.builtin.{name}' for name in VISIBLE_STYLES if name != 'none'),
     *(f'technique.builtin.{name}' for name in TECHNIQUE_IDS if name != 'none'),
 })
@@ -187,6 +189,8 @@ def make_document(options, name, *, identifier=None):
         capabilities.append(source)
     if recipe is not None:
         capabilities.append(RECIPE_CAPABILITY)
+        if normalized['style_pitch']:
+            capabilities.append(STYLE_PITCH_CAPABILITY)
     elif normalized['performance_style'] != 'none':
         capabilities.append('style.builtin.' + normalized['performance_style'])
     if normalized['style_technique'] != 'none':
@@ -242,13 +246,13 @@ def _resolve_style(document, dependency):
     if dependency is None:
         raise PresetError('missing_style_recipe', '请先导入此调音预设所引用的风格配方。',
                           reference=reference)
-    if style['pitch_enabled']:
-        raise PresetError('unsupported_style_recipe', 'v1 外部风格不包含音高，请关闭风格音高。')
     try:
         raw = dependency.encode('utf-8') if isinstance(dependency, str) else dependency
         recipe = freeze_recipe(raw, reference=reference)
     except UnicodeError as error:
         raise PresetError('invalid_document', '风格配方原文不是有效 UTF-8。') from error
+    if style['pitch_enabled'] and not recipe_has_pitch(recipe):
+        raise PresetError('unsupported_style_recipe', '此风格配方没有音高动作。')
     return recipe, raw.decode('utf-8')
 
 

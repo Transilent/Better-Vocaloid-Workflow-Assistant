@@ -25,6 +25,9 @@ FORMAT_VERSION = 1
 TYPES = ('preparation', 'mixdown', 'tuning', 'style_recipe')
 CONTRACTS = dict(zip(TYPES, ('preparation-parameters/v1', 'mixdown-parameters/v1',
                            'tuning-pipeline/v1', 'style-recipe/v1')))
+STYLE_PITCH_CONTRACT = 'style-recipe/v2'
+STYLE_PITCH_CAPABILITY = 'style.pitch-edges'
+STYLE_PITCH_MAX_CENTS = 120
 ID_PATTERN = r'^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$'
 EXTERNAL_ID_PATTERN = r'^(?!builtin\.)[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$'
 VERSION_PATTERN = (
@@ -136,12 +139,25 @@ _RECIPE = _object({
     'role': _enum('style', 'technique'),
     'coordinate_system': _enum('normalized_note_phase'),
     'default_strength': _number(0, 1),
-    # Pitch recipes deliberately need a future explicit capability/contract.
     'pitch': _object({'enabled': {'type': 'boolean', 'const': False}, 'gestures': _array({}, 0, 0)}),
     'controls': _array(_object({
         'channel': _enum('loudness', 'tension', 'breathiness', 'voicing'),
         'operation': _enum('add'), 'points': _array(_POINT, 2, 64),
     }), 1, 4),
+})
+_RECIPE_V2 = _object({
+    **_RECIPE['properties'],
+    'role': _enum('style'),
+    'pitch': _object({
+        'enabled': {'type': 'boolean', 'const': True},
+        'unit': _enum('cents'),
+        'gestures': _array(_object({
+            'kind': _enum('onset', 'release'),
+            'cents': _number(-STYLE_PITCH_MAX_CENTS, STYLE_PITCH_MAX_CENTS),
+            'fraction': _number(.12, .40),
+        }), 1, 2, unique=True),
+    }),
+    'controls': {**_RECIPE['properties']['controls'], 'minItems': 0},
 })
 PAYLOAD_SCHEMAS = {
     'preparation': _object({'graph': _GRAPH, 'options': _PREPARATION_OPTIONS}),
@@ -159,7 +175,7 @@ _FIELDS = {
     }, ('name',)),
     'requires': _object({
         'preset_api': {'type': 'integer', 'const': 1},
-        'engine_contract': _enum(*CONTRACTS.values()),
+        'engine_contract': _enum(*CONTRACTS.values(), STYLE_PITCH_CONTRACT),
         'capabilities': _array(_string(80, pattern=r'^[a-z][a-z0-9_.-]*$'), 0, 32, unique=True),
         'dependencies': _array(_REF, 0, 16, unique=True),
     }, ('preset_api', 'engine_contract', 'capabilities')),
@@ -177,10 +193,12 @@ def schema_document():
     schema = _object(copy.deepcopy(_FIELDS))
     schema['$schema'] = 'https://json-schema.org/draft/2020-12/schema'
     schema['title'] = 'VWA portable preset v1'
+    variants = [(kind, CONTRACTS[kind], payload) for kind, payload in PAYLOAD_SCHEMAS.items()]
+    variants.append(('style_recipe', STYLE_PITCH_CONTRACT, _RECIPE_V2))
     schema['oneOf'] = [
         {'properties': {'type': {'const': kind}, 'payload': copy.deepcopy(payload),
-                        'requires': {'properties': {'engine_contract': {'const': CONTRACTS[kind]}}}}}
-        for kind, payload in PAYLOAD_SCHEMAS.items()
+                        'requires': {'properties': {'engine_contract': {'const': contract}}}}}
+        for kind, contract, payload in variants
     ]
     return schema
 
@@ -359,6 +377,13 @@ def validate_document(value, *, allow_builtin=False):
     elif kind == 'style_recipe':
         if slots:
             _invalid('$.binding_slots', '风格配方不保存工程输入槽位。')
+        pitch = payload['pitch']
+        if pitch['enabled'] != (STYLE_PITCH_CAPABILITY in value['requires']['capabilities']):
+            _invalid('$.payload.pitch', '音高动作须与配方能力声明一致。')
+        if pitch['enabled']:
+            gestures = pitch['gestures']
+            if len({row['kind'] for row in gestures}) != len(gestures) or any(row['cents'] == 0 for row in gestures):
+                _invalid('$.payload.pitch.gestures', '起音和收尾动作各可指定一次，偏移须非零。')
         controls = payload['controls']
         if len({c['channel'] for c in controls}) != len(controls):
             _invalid('$.payload.controls', '控制通道不能重复。')

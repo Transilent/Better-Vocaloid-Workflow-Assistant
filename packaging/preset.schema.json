@@ -87,7 +87,8 @@
             "preparation-parameters/v1",
             "mixdown-parameters/v1",
             "tuning-pipeline/v1",
-            "style-recipe/v1"
+            "style-recipe/v1",
+            "style-recipe/v2"
           ]
         },
         "capabilities": {
@@ -324,7 +325,8 @@
                 "language": {
                   "enum": [
                     "zh",
-                    "ja"
+                    "ja",
+                    "en"
                   ]
                 },
                 "recognize_lyrics": {
@@ -951,6 +953,153 @@
           "properties": {
             "engine_contract": {
               "const": "style-recipe/v1"
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "style_recipe"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "role": {
+              "enum": [
+                "style"
+              ]
+            },
+            "coordinate_system": {
+              "enum": [
+                "normalized_note_phase"
+              ]
+            },
+            "default_strength": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "pitch": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "unit": {
+                  "enum": [
+                    "cents"
+                  ]
+                },
+                "gestures": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "enum": [
+                          "onset",
+                          "release"
+                        ]
+                      },
+                      "cents": {
+                        "type": "number",
+                        "minimum": -120,
+                        "maximum": 120
+                      },
+                      "fraction": {
+                        "type": "number",
+                        "minimum": 0.12,
+                        "maximum": 0.4
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "cents",
+                      "fraction"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "minItems": 1,
+                  "maxItems": 2,
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "enabled",
+                "unit",
+                "gestures"
+              ],
+              "additionalProperties": false
+            },
+            "controls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "channel": {
+                    "enum": [
+                      "loudness",
+                      "tension",
+                      "breathiness",
+                      "voicing"
+                    ]
+                  },
+                  "operation": {
+                    "enum": [
+                      "add"
+                    ]
+                  },
+                  "points": {
+                    "type": "array",
+                    "items": {
+                      "type": "array",
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "prefixItems": [
+                        {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 1
+                        },
+                        {
+                          "type": "number",
+                          "minimum": -12,
+                          "maximum": 12
+                        }
+                      ],
+                      "items": false
+                    },
+                    "minItems": 2,
+                    "maxItems": 64
+                  }
+                },
+                "required": [
+                  "channel",
+                  "operation",
+                  "points"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 0,
+              "maxItems": 4
+            }
+          },
+          "required": [
+            "role",
+            "coordinate_system",
+            "default_strength",
+            "pitch",
+            "controls"
+          ],
+          "additionalProperties": false
+        },
+        "requires": {
+          "properties": {
+            "engine_contract": {
+              "const": "style-recipe/v2"
             }
           }
         }

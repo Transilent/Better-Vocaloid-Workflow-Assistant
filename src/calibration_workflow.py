@@ -440,7 +440,7 @@ def inspect_inputs(project,reference,*,track_index=0,job=None,voice='lead',refer
     return result
 
 
-def _infer_pitch(reference,cancel,progress):
+def _infer_pitch(reference,cancel,progress,*,window=None):
     from common import ROOT
     import soundfile as sf
     from pitch_accuracy import prepare_audio,supported_pitch
@@ -451,7 +451,17 @@ def _infer_pitch(reference,cancel,progress):
     model=ROOT/'dependencies/vocal2midi/experiments/RMVPE/rmvpe.onnx'
     if not model.is_file():raise FileNotFoundError('缺少 RMVPE 音高模型，请检查助手运行库后重试。')
     cancel();progress('重建连续音高：读取参考演唱…')
-    audio,rate=sf.read(str(reference),dtype='float32',always_2d=True)
+    with sf.SoundFile(str(reference)) as stream:
+        rate = stream.samplerate
+        if window is None:
+            audio = stream.read(dtype='float32', always_2d=True)
+        else:
+            first = max(0, round(window[0] * rate))
+            last = min(stream.frames, round(window[1] * rate))
+            if first >= last:
+                raise ValueError('所选时间不在参考干声内。')
+            stream.seek(first)
+            audio = stream.read(last - first, dtype='float32', always_2d=True)
     audio=prepare_audio(audio,rate);cancel();runner=None
     import os
     old_env={key:os.environ.get(key) for key in ('VWA_CPU_THREADS','VWA_DML_ADAPTER','BVWA_CPU_THREADS','BVWA_DML_ADAPTER')}

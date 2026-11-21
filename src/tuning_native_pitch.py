@@ -122,6 +122,27 @@ def _collect(data, format, part):
     return ()
 
 
+def sample_authored_pitch(curves, positions, key):
+    """Evaluate supported native controls without viewport thinning."""
+    if any(curve.mode in ('anchors', 'absolute_anchors') for curve in curves):
+        return None
+    for curve in curves:
+        xs, ys = curve.positions, curve.values
+        if curve.mode == 'sampled' and not np.all((positions >= xs[0]) & (positions <= xs[-1])):
+            continue
+        if curve.mode in ('held', 'absolute'):
+            owners = np.searchsorted(xs, positions, side='right')
+            result = np.full(len(positions), curve.baseline)
+            known = owners > 0
+            result[known] = ys[owners[known] - 1]
+            return result - key * 100. if curve.mode == 'absolute' else result
+        if curve.mode == 'ustx':
+            from ustx_tuning import _native_samples
+            return _native_samples(np.rint(positions).astype(np.int64), xs, ys)
+        return np.interp(positions, xs, ys)
+    return None
+
+
 def _reduce(xs, ys):
     """Retain boundary values, gaps and both extrema within a visual bucket."""
     if len(xs) <= POINT_BUDGET:

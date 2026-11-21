@@ -146,6 +146,10 @@
       "source": "src/quick_ui/TuningParameterLane.qml"
     },
     {
+      "file": "quick_ui/TuningStyleAuthorDialog.qml",
+      "source": "src/quick_ui/TuningStyleAuthorDialog.qml"
+    },
+    {
       "file": "quick_ui/TuningTimeline.qml",
       "source": "src/quick_ui/TuningTimeline.qml"
     },
@@ -580,6 +584,10 @@
     {
       "file": "style_presets.py",
       "source": "src/style_presets.py"
+    },
+    {
+      "file": "style_authoring.py",
+      "source": "src/style_authoring.py"
     },
     {
       "file": "style_pitch.py",

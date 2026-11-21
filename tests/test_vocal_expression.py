@@ -155,8 +155,10 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='reference-dynamics-')
     request.update(reference_dynamics=True, dynamics_strength=.6)
     assert not outputs_intact(job, request)
     enriched = export_job(job, request)
-    expression = enriched['projects']['outputs'][-1]['reference_dynamics']
-    assert [row['status'] for row in expression['tracks']] == ['applied', 'skipped']
+    svp_result = enriched['projects']['outputs'][-1]
+    expression = svp_result['reference_dynamics']
+    assert [(row['voice'], row['status']) for row in expression['tracks']] == [('lead', 'applied')]
+    assert svp_result['tuning_transaction']['skipped_empty_tracks'] == [1]
     data = json.loads((job / 'exports/voices.svp').read_bytes().removesuffix(b'\x00'))
     for old, new in zip(plain['tracks'], data['tracks']):
         assert old['mainGroup']['parameters'].get('pitchDelta') == new['mainGroup']['parameters'].get('pitchDelta')

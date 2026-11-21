@@ -108,10 +108,10 @@ RECIPE_CAPABILITY = 'style.note-envelope'
 
 
 def _recipe_document(document):
-    from preset_documents import PresetError
+    from preset_documents import PresetError, STYLE_PITCH_CAPABILITY
 
     if (document['type'] != 'style_recipe' or document['payload']['role'] != 'style'
-            or set(document['requires']['capabilities']) - {RECIPE_CAPABILITY}):
+            or set(document['requires']['capabilities']) - {RECIPE_CAPABILITY, STYLE_PITCH_CAPABILITY}):
         raise PresetError('unsupported_style_recipe', '当前支持按音符相位叠加的演唱风格配方。')
     return document
 
@@ -132,6 +132,10 @@ def recipe_reference(recipe):
     return {'id': document['id'], 'version': document['version'], 'sha256': recipe['sha256']}
 
 
+def recipe_has_pitch(recipe):
+    return bool(recipe and recipe['document']['payload']['pitch']['enabled'])
+
+
 def recipe_settings(recipe, preset, pitch):
     from preset_documents import PresetError, validate_document
 
@@ -139,9 +143,12 @@ def recipe_settings(recipe, preset, pitch):
             or not isinstance(recipe['sha256'], str) or len(recipe['sha256']) != 64
             or any(c not in '0123456789abcdef' for c in recipe['sha256'])):
         raise PresetError('invalid_style_recipe', '风格配方快照无效。')
-    if preset != style_registry.DEFAULT_STYLE_ID or pitch is not False:
-        raise PresetError('invalid_style_recipe', '外部风格与内置风格二选一，v1 配方仅处理表现参数。')
-    return {'document': _recipe_document(validate_document(recipe['document'])), 'sha256': recipe['sha256']}
+    document = _recipe_document(validate_document(recipe['document']))
+    if preset != style_registry.DEFAULT_STYLE_ID:
+        raise PresetError('invalid_style_recipe', '请选择一种风格。')
+    if pitch and not document['payload']['pitch']['enabled']:
+        raise PresetError('invalid_style_recipe', '此风格配方没有音高动作。')
+    return {'document': document, 'sha256': recipe['sha256']}
 
 
 def visible_presets():
@@ -636,7 +643,9 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
                 changed_samples=int(np.count_nonzero(np.abs(delta*scale)>1e-12)))
     if pitch_enabled:
         from style_pitch import apply_pitch
-        receipt['pitch'],pitch_changed=apply_pitch(out,preset,strength=strength,detail=detail,time_range=time_range,track_indices=selected,cancel=cancel)
+        gestures = recipe['document']['payload']['pitch']['gestures'] if recipe is not None else None
+        receipt['pitch'],pitch_changed=apply_pitch(out,preset,strength=strength,detail=detail,time_range=time_range,
+                                                  track_indices=selected,cancel=cancel,external=gestures)
         changed.update(pitch_changed)
     view={'time':out['time'],'tracks':[]}
     for index in selected:

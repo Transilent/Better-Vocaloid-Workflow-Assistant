@@ -2039,7 +2039,8 @@ Item {
                                         text: page.vwaTr("附加音高")
                                         quiet: true
                                         selected: !!page.styleBrush.pitch
-                                        enabled: !page.busy && page.hasSource && !page.styleBrush.recipeName
+                                        enabled: !page.busy && page.hasSource
+                                            && (!page.styleBrush.recipeName || !!page.styleBrush.recipeHasPitch)
                                         onClicked: page.controller.setBrushValue(page.styleRegionId, "pitch", !selected)
                                     }
                                 }
@@ -2643,6 +2644,15 @@ Item {
                                 PanelLabel {
                                     theme: page.theme
                                     text: page.vwaTr("调音预设与风格")
+                                }
+
+                                EditorButton {
+                                    objectName: "openTuningStyleAuthor"
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    text: page.vwaTr("从参考制作风格")
+                                    enabled: !page.busy
+                                    onClicked: styleAuthorDialog.open()
                                 }
 
                                 UiComboBox {
@@ -3381,6 +3391,12 @@ Item {
                 }
             }
         }
+    }
+
+    TuningStyleAuthorDialog {
+        id: styleAuthorDialog
+        theme: page.theme
+        controller: page.controller
     }
 
     FileDialog {
