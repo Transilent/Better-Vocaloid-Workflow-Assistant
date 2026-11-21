@@ -196,7 +196,7 @@ Item {
             UiButton {
                 objectName: "styleMethodDesign"
                 theme: pane.theme
-                text: pane.label("制作新风格")
+                text: pane.label("从模板制作")
                 selected: pane.designMode
                 quiet: !selected
                 enabled: !pane.authorView.busy

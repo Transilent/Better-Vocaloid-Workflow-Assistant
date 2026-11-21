@@ -1,5 +1,6 @@
 """Application-owned workbench drafts, trials and calibration preset binding."""
 
+import json
 import math
 from copy import deepcopy
 from pathlib import Path
@@ -7,13 +8,14 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Property, QUrl, Signal, Slot
 
 from calibration_presets import TYPE as CALIBRATION_TYPE, LocalCalibrationBindings, resolve_trials
-from common import ROOT
+from common import ROOT, atomic_json
 from i18n import tr
 from expression_controls import STYLE_CONTROL_NAMES
-from preset_documents import STYLE_ACTION_BOUNDS, STYLE_STRUCTURE_CONTRACT, STYLE_TIMING_BOUNDS
+from preset_documents import (STYLE_ACTION_BOUNDS, STYLE_STRUCTURE_CONTRACT, STYLE_TIMING_BOUNDS,
+                              encode_document, read_regular_bytes)
 from preset_library import PresetLibrary
 from quick_media_handoff import verify_preparation_vocal
-from style_presets import freeze_recipe
+from style_presets import freeze_recipe, recipe_reference
 
 
 _STYLE_DEFAULTS = {'mode': 'project', 'track': -1, 'start': '', 'end': '', 'audio': '', 'offset': '0',
@@ -46,11 +48,14 @@ class QuickWorkshop(QObject):
         self._reference_panel = 'positions'
         self._chosen_positions = set()
         self._point = 0
-        from style_authoring import structure_draft
+        from style_authoring import structure_draft, structure_templates
 
         self._method = 'design'
         self._template = 'none'
+        self._factory_templates = {row['id']: row for row in structure_templates()}
         self._designs = {'none': {'name': '', **structure_draft()}}
+        self._local_defaults = {}
+        self._invalid_defaults = set()
         self._design_channel = 'loudness'
         self._design_panel = 'expression'
         self._connection_action = 'connection'
@@ -155,11 +160,12 @@ class QuickWorkshop(QObject):
                 'associatedFolder': self._associated}
 
     def _design_view(self):
-        from style_authoring import structure_contents, structure_preview, structure_templates
+        from style_authoring import structure_contents, structure_preview
 
         draft = self._designs[self._template]
+        saved_default = self._local_defaults.get(self._template)
         rows = [{'id': 'none', 'label': '新风格草稿', 'description': '先决定单音和整句的变化，再选择在哪些位置加唱腔动作。', 'color': ''},
-                *structure_templates()]
+                *self._factory_templates.values()]
         if 'library' in self._designs:
             rows.append({'id': 'library', 'label': '从预设库复制', 'description': '编辑预设的独立副本。',
                          'color': self._designs['library']['color'] or ''})
@@ -167,6 +173,11 @@ class QuickWorkshop(QObject):
         return {'template': self._template, 'templates': rows, 'draft': draft, 'channel': self._design_channel,
                 'panel': self._design_panel, 'connectionAction': self._connection_action,
                 'activeActions': list(actions), 'hasChanges': bool(controls or actions),
+                'isFactoryTemplate': self._template in self._factory_templates,
+                'hasLocalDefault': saved_default is not None,
+                'invalidLocalDefault': self._template in self._invalid_defaults,
+                'localDefaultEdited': saved_default is not None and draft != saved_default[0],
+                'canUseLocalDefault': saved_default is not None and self.tuning._can_edit_regions(),
                 'preview': structure_preview(draft, self._design_channel) if self._design_panel == 'expression' else {}}
 
     @Property('QVariantMap', constant=True)
@@ -189,18 +200,51 @@ class QuickWorkshop(QObject):
     def selectTemplate(self, template):
         if self.worker.kind:
             return
-        from style_authoring import structure_draft, structure_templates
-
         if template not in self._designs:
-            row = next((row for row in structure_templates() if row['id'] == template), None)
-            if template != 'none' and row is None:
+            if template not in self._factory_templates:
                 return
-            draft = structure_draft(template)
-            draft['name'] = tr('{name} · 自定义').format(name=tr(row['label'])) if row else ''
-            self._designs[template] = draft
+            self._load_default_template(template)
+        if self._template != template:
+            self._connection_action = 'connection'
         if self._method != 'design' or self._template != template:
             self._method, self._template, self._trial = 'design', template, None
             self._notice('')
+
+    def _factory_draft(self, template):
+        from style_authoring import structure_draft
+
+        row = self._factory_templates[template]
+        return {'name': tr('{name} · 自定义').format(name=tr(row['label'])), **structure_draft(template)}
+
+    def _style_default_path(self, template):
+        return self.library.root / 'style-defaults' / (template + '.json')
+
+    def _read_style_default(self, reference):
+        if (not isinstance(reference, dict) or set(reference) != {'id', 'version', 'sha256'}
+                or not all(isinstance(value, str) for value in reference.values())):
+            raise ValueError('本机默认风格关联无效。')
+        snapshot = self.library.get_snapshot(reference['id'], reference['version'])
+        recipe = freeze_recipe(snapshot['raw'])
+        if recipe_reference(recipe) != reference or recipe['document']['requires']['engine_contract'] != STYLE_STRUCTURE_CONTRACT:
+            raise ValueError('本机默认风格关联无效。')
+        return recipe
+
+    def _load_default_template(self, template):
+        from style_authoring import structure_draft
+
+        path = self._style_default_path(template)
+        self._designs[template] = self._factory_draft(template)
+        try:
+            if not path.exists():
+                return
+            recipe = self._read_style_default(json.loads(read_regular_bytes(path, limit=4096)))
+        except (OSError, ValueError):
+            self._invalid_defaults.add(template)
+            return
+        document = recipe['document']
+        draft = {'name': document['metadata']['name'], **structure_draft(document=document)}
+        self._designs[template] = draft
+        self._local_defaults[template] = deepcopy(draft), recipe
 
     @Slot(str)
     def selectDesignPanel(self, panel):
@@ -533,11 +577,13 @@ class QuickWorkshop(QObject):
         self.changed.emit()
 
     def _current_recipe(self):
-        from preset_documents import encode_document
         from style_authoring import make_recipe, make_structure_recipe
 
         if self._method == 'design':
             draft = self._designs[self._template]
+            saved = self._local_defaults.get(self._template)
+            if saved and draft == saved[0]:
+                return saved[1]
             key = ('structure', draft)
             if self._recipe is None or key != self._recipe[0]:
                 document = make_structure_recipe(draft['name'], draft)
@@ -592,10 +638,19 @@ class QuickWorkshop(QObject):
 
     @Slot()
     def saveStyle(self):
+        self._save_style()
+
+    @Slot()
+    def saveStyleDefault(self):
+        if self._method == 'design' and self._template in self._factory_templates:
+            self._save_style(template=self._template)
+
+    def _save_style(self, *, template=None):
         if self.worker.kind:
             return
         try:
-            document = self._current_recipe()['document']
+            recipe = self._current_recipe()
+            draft = deepcopy(self._designs[template]) if template else None
         except (ValueError, OSError) as error:
             self._notice(error)
             return
@@ -603,14 +658,57 @@ class QuickWorkshop(QObject):
         def work(stop, _send):
             snapshot = self.library.snapshot()
             _cancel(stop)
-            return self.library.put_document(document, expected_revision=snapshot['revision'])['entry']
+            entry = self.library.put_document(recipe['document'], expected_revision=snapshot['revision'])['entry']
+            if template:
+                atomic_json(self._style_default_path(template), recipe_reference(recipe))
+            return entry
 
         def finish(entry):
             self._select(entry)
             self.refreshLibrary()
-            self._notice('风格配方已添加到本机库，可从预设导出。')
+            if template:
+                self._local_defaults[template] = draft, recipe
+                self._invalid_defaults.discard(template)
+                self._notice('已保存为本机默认风格。')
+            else:
+                self._notice('风格配方已添加到本机库，可从预设导出。')
 
         self._command('save-style', '正在处理本机预设库…', work, finish)
+
+    @Slot()
+    def restoreStyleDefault(self):
+        template = self._template
+        if self.worker.kind or self._method != 'design' or template not in self._factory_templates:
+            return
+        try:
+            self._style_default_path(template).unlink(missing_ok=True)
+        except OSError as error:
+            self._notice(error)
+            return
+        self._local_defaults.pop(template, None)
+        self._invalid_defaults.discard(template)
+        self._designs[template] = self._factory_draft(template)
+        self._connection_action = 'connection'
+        self._trial = None
+        self._notice('已恢复内置风格参数。')
+
+    @Slot()
+    def useStyleDefault(self):
+        template = self._template
+        saved = self._local_defaults.get(template)
+        if self.worker.kind or self._method != 'design' or not saved or not self.tuning._can_edit_regions():
+            return
+        reference = recipe_reference(saved[1])
+
+        def work(stop, _send):
+            _cancel(stop)
+            return self._read_style_default(reference)
+
+        def finish(recipe):
+            self.tuning.use_workshop_style(recipe, default_template=template)
+            self.parent().navigate('tuning')
+
+        self._command('use-default-style', '正在核验并应用预设…', work, finish)
 
     def _select(self, entry):
         self._selection = dict(entry)

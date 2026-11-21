@@ -2428,13 +2428,18 @@ class QuickTuning(QObject):
             raise ValueError('风格或目标选区已变化，请重新试套。')
         return self._commit_regions(plan['regions'], '已应用风格配方，可冻结预览并生成候选。')
 
-    def use_workshop_style(self, recipe):
-        self._options = draft_options({**self._options, 'style_recipe': recipe, 'performance_style': 'none',
-                                       'style_pitch': recipe_has_pitch(recipe), 'style_detail': None,
-                                       'style_strength': recipe['document']['payload']['default_strength']})
+    def use_workshop_style(self, recipe, *, default_template=None):
+        changes = {'style_recipe': recipe, 'performance_style': 'none',
+                   'style_pitch': recipe_has_pitch(recipe), 'style_detail': None,
+                   'style_strength': recipe['document']['payload']['default_strength']}
+        if default_template == self._options['style_technique']:
+            changes.update(style_technique=style_catalog.DEFAULT_TECHNIQUE_ID, technique_pitch=False)
+        self._options = draft_options({**self._options, **changes})
         self._preset, self._selected_region = None, ''
         self._dirty_draft()
-        self.state, self.message = 'ready', tr('已选用外部风格。可以调节强度，或应用到时间选区。')
+        self.state = 'ready'
+        self.message = tr('已选用本机默认风格。可以调节强度，或应用到时间选区。' if default_template
+                          else '已选用外部风格。可以调节强度，或应用到时间选区。')
         self.changed.emit()
 
     def calibration_preset_context(self):

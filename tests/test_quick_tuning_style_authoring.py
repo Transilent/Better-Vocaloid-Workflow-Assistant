@@ -211,7 +211,6 @@ def exercise(root, viewport, scale):
         assert workshop.view['design']['draft']['pitch']['onset']['cents'] < 0
         assert workshop.view['design']['draft']['pitch']['vibrato']['depth'] == 0
         click('designPanelExpression')
-        click('designShowTemplates')
         click('designTemplate_bold')
         assert workshop.view['design']['draft']['controls']['loudness']['phrase']['body'] > 0
         click('designChannel_tension')
@@ -223,8 +222,8 @@ def exercise(root, viewport, scale):
         click('styleMethodReference')
         assert abs(workshop.view['points'][4][1] - 2.3) < .01
         click('styleMethodDesign')
-        click('designShowTemplates')
         click('designTemplate_chinese_opera')
+        assert workshop.view['design']['connectionAction'] == 'connection'
         click('designChannel_loudness')
         assert window.grabWindow().save(str(captures / f'workshop-envelope-{viewport[0]}.png'))
         click('designPanelPitch')
@@ -247,6 +246,37 @@ def exercise(root, viewport, scale):
         assert frozen['document']['requires']['engine_contract'] == 'style-recipe/v3'
         assert frozen['document']['payload']['pitch']['vibrato']['depth'] == 42
         assert not any(name.encode() in frozen['raw'] for name in ('reference.ustx', 'target.ustx'))
+        click('designSaveDefault')
+        wait('template default is saved', lambda: workshop.view['design'].get('hasLocalDefault') and not tune.view['busy'])
+        assert workshop.view['selectedPreset']['sha256'] == entry['sha256']
+        assert window.grabWindow().save(str(captures / f'workshop-local-default-{viewport[0]}.png'))
+
+        from quick_workshop import QuickWorkshop
+        reopened = QuickWorkshop(bridge, tune, bridge.support, tune.worker, root=ROOT)
+        reopened.selectTemplate('chinese_opera')
+        assert reopened.view['design']['hasLocalDefault']
+        assert reopened.view['design']['draft']['pitch']['vibrato']['depth'] == 42
+        assert reopened.view['design']['draft']['strength'] == .7
+        reopened.selectTemplate('gentle')
+        assert not reopened.view['design']['hasLocalDefault']
+        reopened.deleteLater()
+
+        workshop.edit('strength', .81)
+        assert workshop.view['design']['localDefaultEdited']
+        tune.setTuningOption('style_technique', 'chinese_opera')
+        assert tune.view['style_technique'] == 'chinese_opera'
+        click('designUseDefault')
+        wait('stored default becomes the tuning brush', lambda: bridge.route == 'tuning'
+             and tune.view['styleBrush'].get('recipeName') == f'Opera authoring {scale}')
+        assert tune.view['style_technique'] == 'none'
+        assert tune.view['styleBrush']['strength'] == .7
+        click('nav_tuning_workshop')
+        click('designRestoreDefault')
+        assert not workshop.view['design']['hasLocalDefault']
+        assert workshop.view['design']['draft']['pitch']['vibrato']['depth'] == 48
+        assert workshop.library.get_snapshot(entry['id'], entry['version'])['raw'] == frozen['raw']
+        print('PASS local default reload, tuning selection and factory restore', viewport, scale, flush=True)
+
         click('workshopTab_presets')
         wait('template can be reopened', lambda: item('workshopEditStructure'), timeout=35)
         click('workshopEditStructure')

@@ -10,7 +10,6 @@ Item {
     readonly property var design: view.design || ({})
     readonly property var draft: design.draft || ({})
     readonly property var preview: design.preview || ({})
-    property bool showTemplates: false
     readonly property real unit: theme.scale
     readonly property string channel: design.channel || "loudness"
     readonly property bool gain: channel === "loudness"
@@ -157,14 +156,12 @@ Item {
                 anchors.fill: parent
                 anchors.margins: Math.round(13 * editor.unit)
                 spacing: Math.round(7 * editor.unit)
-                Heading { text: editor.label("风格草稿") }
+                Heading { text: editor.label("起始配方") }
                 Repeater {
                     model: editor.design.templates || []
                     delegate: Item {
                         id: entry
                         required property var modelData
-                        visible: editor.showTemplates || modelData.id === "none" || modelData.id === "library"
-                            || modelData.id === editor.design.template
                         Layout.fillWidth: true
                         implicitHeight: templateButton.implicitHeight
                         UiButton {
@@ -199,15 +196,44 @@ Item {
                         return item ? editor.label(item.description) : ""
                     }
                 }
-                UiButton {
-                    objectName: "designShowTemplates"
+                Caption {
                     Layout.fillWidth: true
+                    visible: !!editor.design.hasLocalDefault || !!editor.design.invalidLocalDefault
+                    text: editor.label(editor.design.invalidLocalDefault ? "本机默认版本不可用"
+                        : editor.design.localDefaultEdited ? "当前调整尚未设为默认" : "已保存本机默认版本")
+                    color: editor.design.invalidLocalDefault || editor.design.localDefaultEdited
+                        ? editor.theme.attention : editor.theme.success
+                }
+                UiButton {
+                    objectName: "designSaveDefault"
+                    Layout.fillWidth: true
+                    visible: !!editor.design.isFactoryTemplate
                     theme: editor.theme
-                    text: editor.label("参考旧配方")
+                    text: editor.label("保存为本机默认")
+                    leftAligned: true
+                    enabled: !!editor.view.validRecipe && !editor.view.busy
+                    onClicked: editor.controller.saveStyleDefault()
+                }
+                UiButton {
+                    objectName: "designUseDefault"
+                    Layout.fillWidth: true
+                    visible: !!editor.design.hasLocalDefault
+                    theme: editor.theme
+                    text: editor.label("选用本机默认")
+                    leftAligned: true
+                    enabled: !!editor.design.canUseLocalDefault && !editor.view.busy
+                    onClicked: editor.controller.useStyleDefault()
+                }
+                UiButton {
+                    objectName: "designRestoreDefault"
+                    Layout.fillWidth: true
+                    visible: !!editor.design.isFactoryTemplate
+                    theme: editor.theme
+                    text: editor.label("恢复内置参数")
                     quiet: true
                     leftAligned: true
-                    disclosure: editor.showTemplates ? 1 : 0
-                    onClicked: editor.showTemplates = !editor.showTemplates
+                    enabled: !editor.view.busy
+                    onClicked: editor.controller.restoreStyleDefault()
                 }
                 Item { Layout.fillHeight: true }
             }
