@@ -1,6 +1,7 @@
 """Application-owned workbench drafts, trials and calibration preset binding."""
 
 import math
+from copy import deepcopy
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Property, QUrl, Signal, Slot
@@ -8,6 +9,8 @@ from PySide6.QtCore import QObject, Property, QUrl, Signal, Slot
 from calibration_presets import TYPE as CALIBRATION_TYPE, LocalCalibrationBindings, resolve_trials
 from common import ROOT
 from i18n import tr
+from expression_controls import STYLE_CONTROL_NAMES
+from preset_documents import STYLE_ACTION_BOUNDS, STYLE_STRUCTURE_CONTRACT, STYLE_TIMING_BOUNDS
 from preset_library import PresetLibrary
 from style_presets import freeze_recipe
 
@@ -34,7 +37,17 @@ class QuickWorkshop(QObject):
         self._pane = 'style'
         self._fields = dict(_STYLE_DEFAULTS)
         self._reference = self._result = self._analysis_key = self._trial = self._recipe = None
+        self._comparison = None
+        self._comparison_track = -1
         self._point = 0
+        from style_authoring import structure_draft
+
+        self._method = 'design'
+        self._template = 'none'
+        self._designs = {'none': {'name': '', **structure_draft()}}
+        self._design_channel = 'loudness'
+        self._design_panel = 'expression'
+        self._edited_preset_sha = ''
         self._message = ''
         self._selection = {}
         self._associated = ''
@@ -58,7 +71,7 @@ class QuickWorkshop(QObject):
 
     @Slot()
     def enter(self):
-        if self._pane == 'style' and self._reference is None and not self.worker.kind:
+        if self._pane == 'style' and self._method == 'reference' and self._reference is None and not self.worker.kind:
             self.useCurrentReference()
         if self._pane == 'presets':
             self.refreshLibrary()
@@ -71,14 +84,18 @@ class QuickWorkshop(QObject):
     def _analysis_stamp(self):
         fields = self._fields
         dry = fields['mode'] == 'audio'
+        comparison = (self._comparison['path'], self._comparison['sha256'], self._comparison_track
+                      ) if fields['mode'] == 'compare' and self._comparison else None
         return (self._reference and self._reference['sha256'], fields['track'], fields['start'], fields['end'],
-                fields['measurePitch'], fields['mode'], fields['audio'] if dry else '', fields['offset'] if dry else 0.)
+                fields['measurePitch'], fields['mode'], fields['audio'] if dry else '',
+                fields['offset'] if dry else 0., comparison)
 
     def _ready(self):
         return bool(self._result and self._analysis_key == self._analysis_stamp())
 
     def _trial_is_current(self):
-        return bool(self._ready() and self._trial and self._trial['plan']['target'] == self.tuning.style_trial_identity())
+        return bool(self._trial and self._trial['plan']['target'] == self.tuning.style_trial_identity()
+                    and (self._method == 'design' or self._ready()))
 
     def _notice(self, text):
         self._message = tr(str(text)[:1400])
@@ -86,31 +103,132 @@ class QuickWorkshop(QObject):
 
     @Property('QVariantMap', notify=changed)
     def view(self):
-        fields = self._fields
+        fields = dict(self._fields)
         try:
             start, end = (float(fields[key]) for key in ('start', 'end'))
             valid_range = math.isfinite(start) and math.isfinite(end) and start < end
         except ValueError:
             valid_range = False
         try:
-            valid_offset = fields['mode'] == 'project' or math.isfinite(float(fields['offset']))
+            valid_offset = fields['mode'] != 'audio' or math.isfinite(float(fields['offset']))
         except ValueError:
             valid_offset = False
         measured = self._result or {}
         ready = self._ready()
         valid_recipe = ready and bool(fields['name'].strip()) and (
             (fields['useGain'] and measured['points']) or (fields['usePitch'] and measured['gestures']))
+        design_view = self._design_view() if self._method == 'design' else {}
+        if design_view:
+            draft = design_view['draft']
+            fields.update(name=draft['name'], strength=draft['strength'])
+            ready = True
+            valid_recipe = bool(draft['name'].strip() and design_view['hasChanges'])
+        trial = self._trial if self._trial_is_current() else {}
         return {'busy': bool(self.worker.kind), 'running': self.worker.kind.startswith('workshop-'),
-                'message': self._message, 'pane': self._pane, 'fields': dict(fields),
+                'message': self._message, 'pane': self._pane, 'fields': fields,
+                'method': self._method, 'design': design_view,
                 'reference': self._reference or {}, 'points': measured.get('points', []),
+                'comparison': self._comparison or {}, 'comparisonTrack': self._comparison_track,
                 'gestures': measured.get('gestures', []), 'report': measured.get('report', {}),
                 'ready': ready, 'hasAnalysis': bool(measured), 'selectedPoint': self._point,
                 'canUseCurrent': bool(self.tuning.style_reference_seed()),
                 'canAnalyze': bool(self._reference and fields['track'] >= 0 and valid_range
-                                   and (fields['mode'] == 'project' or (valid_offset and fields['audio']))),
-                'validRecipe': bool(valid_recipe), 'trial': self._trial['summary'] if self._trial_is_current() else '',
+                                   and (fields['mode'] != 'audio' or (valid_offset and fields['audio']))
+                                   and (fields['mode'] != 'compare' or self._comparison)),
+                'validRecipe': bool(valid_recipe), 'trial': trial.get('summary', ''),
+                'canApplyTrial': bool(trial.get('hasEffect')),
                 'target': self.tuning.style_trial_target(), 'selectedPreset': self._selection,
                 'associatedFolder': self._associated}
+
+    def _design_view(self):
+        from style_authoring import structure_contents, structure_preview, structure_templates
+
+        draft = self._designs[self._template]
+        rows = [{'id': 'none', 'label': '新风格草稿', 'description': '先决定单音和整句的变化，再选择在哪些位置加唱腔动作。', 'color': ''},
+                *structure_templates()]
+        if 'library' in self._designs:
+            rows.append({'id': 'library', 'label': '从预设库复制', 'description': '编辑预设的独立副本。',
+                         'color': self._designs['library']['color'] or ''})
+        controls, actions = structure_contents(draft)
+        return {'template': self._template, 'templates': rows, 'draft': draft, 'channel': self._design_channel,
+                'panel': self._design_panel,
+                'activeActions': list(actions), 'hasChanges': bool(controls or actions),
+                'preview': structure_preview(draft, self._design_channel) if self._design_panel == 'expression' else {}}
+
+    @Property('QVariantMap', constant=True)
+    def designBounds(self):
+        return {section: {key: list(bounds) for key, bounds in fields.items()}
+                for section, fields in {'timing': STYLE_TIMING_BOUNDS, **STYLE_ACTION_BOUNDS}.items()}
+
+    @Slot(str)
+    def setAuthorMethod(self, method):
+        if self.worker.kind or method not in ('reference', 'design') or self._method == method:
+            return
+        if method == 'design':
+            self.selectTemplate(self._template)
+            return
+        self._method, self._trial = method, None
+        self._notice('')
+        self.enter()
+
+    @Slot(str)
+    def selectTemplate(self, template):
+        if self.worker.kind:
+            return
+        from style_authoring import structure_draft, structure_templates
+
+        if template not in self._designs:
+            row = next((row for row in structure_templates() if row['id'] == template), None)
+            if template != 'none' and row is None:
+                return
+            draft = structure_draft(template)
+            draft['name'] = tr('{name} · 自定义').format(name=tr(row['label'])) if row else ''
+            self._designs[template] = draft
+        if self._method != 'design' or self._template != template:
+            self._method, self._template, self._trial = 'design', template, None
+            self._notice('')
+
+    @Slot(str)
+    def selectDesignPanel(self, panel):
+        if panel in ('expression', 'pitch') and self._design_panel != panel:
+            self._design_panel = panel
+            self.changed.emit()
+
+    @Slot(str)
+    def selectDesignChannel(self, channel):
+        if channel in STYLE_CONTROL_NAMES and self._design_channel != channel:
+            self._design_channel = channel
+            self.changed.emit()
+
+    @Slot(str, str, 'QVariant')
+    def editDesign(self, section, key, value):
+        if self.worker.kind or self._method != 'design':
+            return
+        draft = self._designs[self._template]
+        if section == 'timing':
+            fields, bounds = draft['timing'], STYLE_TIMING_BOUNDS
+        elif section in draft['pitch']:
+            fields, bounds = draft['pitch'][section], STYLE_ACTION_BOUNDS[section]
+        else:
+            channel, _, layer = section.partition('.')
+            fields = draft['controls'].get(channel, {}).get(layer, {})
+            limit = 12 if channel == 'loudness' else 1
+            bounds = {field: (-limit, limit) for field in fields}
+        if key not in fields:
+            return
+        if key in bounds:
+            if type(value) not in (int, float) or not math.isfinite(value):
+                return
+            low, high = bounds[key]
+            value = round(max(low, min(high, value)), 4)
+        elif key == 'direction' and value not in ('settle', 'follow'):
+            return
+        elif key == 'anticipate_descent' and type(value) is not bool:
+            return
+        if fields[key] != value:
+            fields[key] = value
+            self._trial = None
+            self.changed.emit()
 
     def _command(self, kind, label, work, finish):
         if self.worker.kind:
@@ -153,7 +271,20 @@ class QuickWorkshop(QObject):
         if url.isLocalFile():
             self._load_reference(url.toLocalFile())
 
-    def _load_reference(self, path, seed=None):
+    @Slot(QUrl)
+    def loadComparison(self, url):
+        if url.isLocalFile():
+            self._load_reference(url.toLocalFile(), comparison=True)
+
+    @Slot(int)
+    def selectComparisonTrack(self, index):
+        if not self.worker.kind and self._comparison and self._comparison_track != index:
+            if any(row['index'] == index for row in self._comparison['tracks']):
+                self._comparison_track = index
+                self._trial = None
+                self.changed.emit()
+
+    def _load_reference(self, path, seed=None, *, comparison=False):
         from style_authoring import inspect_reference
 
         def work(stop, _send):
@@ -164,6 +295,13 @@ class QuickWorkshop(QObject):
 
         def finish(value):
             track = value['tracks'][0]
+            if comparison:
+                self._comparison = value
+                self._comparison_track = next((row['index'] for row in value['tracks']
+                                               if row['index'] == self._fields['track']), track['index'])
+                self._trial = None
+                self._notice('已读取对照底稿。提取时会核对两份工程的乐谱和时间轴。')
+                return
             span = None
             if seed and value['sha256'] == seed[1]:
                 match = next((row for row in value['tracks'] if row['index'] == seed[2]), None)
@@ -176,7 +314,7 @@ class QuickWorkshop(QObject):
             self._range(track, span)
             self._notice('已读取参考工程的演唱轨。')
 
-        self._command('reference', '正在读取参考工程…', work, finish)
+        self._command('reference', '正在读取对照底稿…' if comparison else '正在读取参考工程…', work, finish)
 
     @Slot(int)
     def selectReferenceTrack(self, index):
@@ -199,12 +337,18 @@ class QuickWorkshop(QObject):
         if self.worker.kind or name not in ('mode', 'start', 'end', 'offset', 'measurePitch',
                                             'name', 'strength', 'useGain', 'usePitch'):
             return
-        if name == 'mode' and value not in ('project', 'audio'):
+        if name == 'mode' and value not in ('project', 'audio', 'compare'):
             return
         if name == 'strength':
             value = round(float(value), 3)
             if not 0 <= value <= 1:
                 return
+        if self._method == 'design' and name in ('name', 'strength'):
+            draft = self._designs[self._template]
+            if draft[name] != value:
+                draft[name], self._trial = value, None
+                self.changed.emit()
+            return
         if value != self._fields[name]:
             self._fields[name] = value
             self._trial = None
@@ -212,26 +356,45 @@ class QuickWorkshop(QObject):
 
     @Slot()
     def analyze(self):
-        if self.worker.kind or not self.view['canAnalyze']:
+        if self.worker.kind or self._method != 'reference' or not self.view['canAnalyze']:
             return
         from style_authoring import analyze_reference
 
         path = self._reference['path']
-        sha, index, start, end, pitch, _mode, wave, offset = self._analysis_stamp()
+        stamp = self._analysis_stamp()
+        sha, index, start, end, pitch, _mode, wave, offset, comparison = stamp
+        before, before_sha, before_track = comparison or (None, None, None)
         self._result = self._trial = self._recipe = None
         self._point = 0
 
         def work(stop, send):
             return analyze_reference(path, index, (float(start), float(end)), audio=wave or None,
                                      audio_zero=float(offset), pitch=pitch, expected_sha256=sha,
+                                     before=before, before_track=before_track, expected_before_sha256=before_sha,
                                      cancel=lambda: _cancel(stop), progress=send)
 
         def finish(result):
             self._result = result
-            self._analysis_key = (sha, index, start, end, pitch, _mode, wave, offset)
+            self._analysis_key = stamp
             self._notice('已提取参考风格，可调整后试套或保存。')
 
         self._command('analysis', '正在分析参考唱段…', work, finish)
+
+    @Slot(str)
+    def adoptReference(self, part):
+        if self.worker.kind or self._method != 'reference' or not self._ready() or part not in ('loudness', 'pitch'):
+            return
+        from style_authoring import adopt_reference_part
+
+        try:
+            adopt_reference_part(self._designs['none'], self._result, part)
+        except ValueError as error:
+            self._notice(error)
+            return
+        self.selectTemplate('none')
+        self.selectDesignPanel('expression' if part == 'loudness' else 'pitch')
+        self.selectDesignChannel('loudness')
+        self._notice('参考力度已带入草稿的单音包络。' if part == 'loudness' else '参考起收音高已带入句首和句尾动作。')
 
     @Slot(int)
     def selectPoint(self, index):
@@ -264,7 +427,15 @@ class QuickWorkshop(QObject):
 
     def _current_recipe(self):
         from preset_documents import encode_document
-        from style_authoring import make_recipe
+        from style_authoring import make_recipe, make_structure_recipe
+
+        if self._method == 'design':
+            draft = self._designs[self._template]
+            key = ('structure', draft)
+            if self._recipe is None or key != self._recipe[0]:
+                document = make_structure_recipe(draft['name'], draft)
+                self._recipe = deepcopy(key), freeze_recipe(encode_document(document))
+            return self._recipe[1]
 
         if not self._ready():
             raise ValueError('请先提取参考风格。')
@@ -290,9 +461,9 @@ class QuickWorkshop(QObject):
             return
         self._trial = None
 
-        def finish(label):
-            self._trial = {'plan': plan, 'summary': label}
-            self._notice('已试套。确认后应用到选区。')
+        def finish(result):
+            self._trial = {'plan': plan, **result}
+            self._notice('已试套。确认后应用到选区。' if result['hasEffect'] else result['summary'])
 
         self._command('trial', '正在试算目标选区…',
                       lambda stop, send: self.tuning.run_style_trial(plan, stop, send), finish)
@@ -304,6 +475,8 @@ class QuickWorkshop(QObject):
         try:
             if not self._trial_is_current():
                 raise ValueError('风格或目标选区已变化，请重新试套。')
+            if not self._trial['hasEffect']:
+                raise ValueError('当前配方在该选区未产生可写变化。')
             if self.tuning.apply_style_trial(self._trial['plan']):
                 self._trial = None
                 self.parent().navigate('tuning')
@@ -358,6 +531,32 @@ class QuickWorkshop(QObject):
         if snapshot['entry']['sha256'] != row['sha256']:
             raise ValueError('预设已变化，请重新选择。')
         return snapshot
+
+    @Slot()
+    def editSelectedStructure(self):
+        row = self._selection
+        if self.worker.kind or row.get('type') != 'style_recipe':
+            return
+
+        def work(stop, _send):
+            _cancel(stop)
+            document = self._selected_document(row)['document']
+            if document['requires']['engine_contract'] != STYLE_STRUCTURE_CONTRACT:
+                raise ValueError('此配方使用参考提取的相位包络。')
+            return document
+
+        def finish(document):
+            from style_authoring import structure_draft
+
+            if self._edited_preset_sha != row['sha256']:
+                draft = structure_draft(document=document)
+                draft['name'] = tr('{name} · 自定义').format(name=row['name'][:60])
+                self._designs['library'] = draft
+                self._edited_preset_sha = row['sha256']
+            self.selectTemplate('library')
+            self.setPane('style')
+
+        self._command('open-recipe', '正在读取风格配方…', work, finish)
 
     @Slot(QUrl)
     def attachTrialFolder(self, url):

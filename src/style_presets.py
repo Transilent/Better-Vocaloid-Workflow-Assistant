@@ -108,11 +108,12 @@ RECIPE_CAPABILITY = 'style.note-envelope'
 
 
 def _recipe_document(document):
-    from preset_documents import PresetError, STYLE_PITCH_CAPABILITY
+    from preset_documents import PresetError, STYLE_PITCH_CAPABILITY, STYLE_STRUCTURE_CAPABILITY
 
     if (document['type'] != 'style_recipe' or document['payload']['role'] != 'style'
-            or set(document['requires']['capabilities']) - {RECIPE_CAPABILITY, STYLE_PITCH_CAPABILITY}):
-        raise PresetError('unsupported_style_recipe', '当前支持按音符相位叠加的演唱风格配方。')
+            or set(document['requires']['capabilities']) - {
+                RECIPE_CAPABILITY, STYLE_PITCH_CAPABILITY, STYLE_STRUCTURE_CAPABILITY}):
+        raise PresetError('unsupported_style_recipe', '请选择当前版本支持的演唱风格配方。')
     return document
 
 
@@ -475,6 +476,17 @@ def _recipe_weights(times, spans, points, detail):
     return weights
 
 
+def structure_definition(timing, controls):
+    """Use the same note and phrase shapes for built-in and authored styles."""
+    rows = {row['channel']: row for row in controls}
+    return {
+        'controls': {name: tuple(row['note'][key] for key in ('onset', 'sustain', 'release'))
+                     for name, row in rows.items()},
+        'note_envelope': {**timing, 'sustain_arc': {name: row['note']['arc'] for name, row in rows.items()}},
+        'phrase_envelope': {name: row['phrase'] for name, row in rows.items() if any(row['phrase'].values())},
+    }
+
+
 def apply_style(project, preset, *, strength=.6, track_indices=None, density_mode='dense', pitch_enabled=None, detail=None, time_range=None, cancel=lambda:None, finalize=True, controls_allowed=None, recipe=None):
     """Return an independent candidate and a receipt; no synthesis or I/O.
 
@@ -488,12 +500,18 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
     if pitch_enabled is None:
         pitch_enabled = pitch_default(preset)
     preset,strength,_=settings({'performance_style':preset,'style_strength':strength,'style_pitch':pitch_enabled})
-    if recipe is not None:
-        recipe = recipe_settings(recipe, preset, pitch_enabled)
-        authored = {row['channel']: row['points'] for row in recipe['document']['payload']['controls']}
-    else:
-        authored = None
     definition = PRESETS[preset]
+    authored = structured_pitch = None
+    if recipe is not None:
+        from preset_documents import STYLE_STRUCTURE_CONTRACT
+        recipe = recipe_settings(recipe, preset, pitch_enabled)
+        doc = recipe['document']
+        payload = doc['payload']
+        if doc['requires']['engine_contract'] == STYLE_STRUCTURE_CONTRACT:
+            definition = structure_definition(payload['timing'], payload['controls'])
+            structured_pitch = {key: value for key, value in payload['pitch'].items() if key != 'enabled'}
+        else:
+            authored = {row['channel']: row['points'] for row in payload['controls']}
     note_recipe = definition.get('note_envelope')
     phrase_recipe = definition.get('phrase_envelope')
     detail = detail_settings(detail)
@@ -516,11 +534,12 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
         'learned_coefficients':False,'voicebank_calibrated':False,'rendered':False,'listened':False,
         'phrase_gap_seconds':PHRASE_GAP,'style_grid_seconds':STYLE_GRID,'tracks':rows,
         'pitch':{'enabled':pitch_enabled,'status':'not_selected'}}
-    if authored is not None:
+    if recipe is not None:
         receipt.update(label=recipe['document']['metadata']['name'], category='external',
                        description=recipe['document']['metadata'].get('description', ''),
-                       recipe_origin='external_note_envelope', style_recipe=recipe_reference(recipe))
-    if ((preset==style_registry.DEFAULT_STYLE_ID and authored is None) or strength==0
+                       recipe_origin='external_phrase_structure' if structured_pitch is not None else 'external_note_envelope',
+                       style_recipe=recipe_reference(recipe))
+    if ((preset==style_registry.DEFAULT_STYLE_ID and recipe is None) or strength==0
             or (not any(detail[k] for k in ('onset','sustain','release'))
                                         and (not pitch_enabled or not detail['connection']))):
         return out,receipt
@@ -538,6 +557,8 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
             'segments':[{'start':a,'end':b} for a,b in edit_segments],'skipped_notes':skipped_notes}
         rows.append(row)
         if not edit_segments:row['status']='no_eligible_singing_notes';continue
+        if not (authored if authored is not None else definition['controls']):
+            continue
         parameters=track['mainGroup'].get('parameters',{})
         if not isinstance(parameters,dict):raise ValueError('风格目标参数列表无效。')
         sample_seconds=[]
@@ -643,9 +664,10 @@ def apply_style(project, preset, *, strength=.6, track_indices=None, density_mod
                 changed_samples=int(np.count_nonzero(np.abs(delta*scale)>1e-12)))
     if pitch_enabled:
         from style_pitch import apply_pitch
-        gestures = recipe['document']['payload']['pitch']['gestures'] if recipe is not None else None
+        gestures = recipe['document']['payload']['pitch']['gestures'] if authored is not None else None
         receipt['pitch'],pitch_changed=apply_pitch(out,preset,strength=strength,detail=detail,time_range=time_range,
-                                                  track_indices=selected,cancel=cancel,external=gestures)
+                                                  track_indices=selected,cancel=cancel,external=gestures,
+                                                  structure=structured_pitch)
         changed.update(pitch_changed)
     view={'time':out['time'],'tracks':[]}
     for index in selected:

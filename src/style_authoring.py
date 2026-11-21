@@ -1,6 +1,7 @@
 """Turn reference performances into portable note-relative style recipes."""
 
 import argparse
+from copy import deepcopy
 from dataclasses import dataclass
 import math
 from pathlib import Path
@@ -14,10 +15,15 @@ if str(ROOT) not in sys.path:
 import numpy as np
 
 from common import file_hash, native_path
+from expression_controls import STYLE_CONTROL_NAMES
 from preset_documents import (CONTRACTS, STYLE_PITCH_CAPABILITY, STYLE_PITCH_CONTRACT, STYLE_PITCH_MAX_CENTS,
-                              encode_document, read_regular_bytes, validate_document)
-from style_pitch import EXTERNAL_EDGE_SECONDS, EXTERNAL_MIN_NOTE_SECONDS, EXTERNAL_PEAKS
-from style_presets import RECIPE_CAPABILITY, _curve, freeze_recipe, recipe_has_pitch, time_range_settings
+                              STYLE_NOTE_FIELDS, STYLE_PHRASE_FIELDS, STYLE_STRUCTURE_CAPABILITY,
+                              STYLE_STRUCTURE_CONTRACT, active_style_action, encode_document,
+                              read_regular_bytes, validate_document)
+from style_catalog import VISIBLE_STYLES, style_color, style_description, style_label, technique_color
+from style_pitch import EXTERNAL_EDGE_SECONDS, EXTERNAL_MIN_NOTE_SECONDS, EXTERNAL_PEAKS, pitch_structure_seed
+from style_presets import (DETAIL_DEFAULTS, PRESETS, RECIPE_CAPABILITY, _curve, _note_weights, _phrase_weights,
+                           freeze_recipe, recipe_has_pitch, structure_definition, time_range_settings)
 
 
 PHASES = np.linspace(0, 1, 9)
@@ -296,7 +302,8 @@ def _dry_measurements(path, notes, offset, pitch, *, cancel, progress):
 
 
 def analyze_reference(path, track_index=None, span=None, *, audio=None, audio_zero=0., pitch=False,
-                      before=None, before_track=None, expected_sha256=None, cancel=lambda: None, progress=lambda _s: None):
+                      before=None, before_track=None, expected_sha256=None, expected_before_sha256=None,
+                      cancel=lambda: None, progress=lambda _s: None):
     """Read authored automation or measure a dry vocal against its aligned score."""
     cancel()
     progress('正在读取参考工程和演唱音符…')
@@ -316,6 +323,8 @@ def analyze_reference(path, track_index=None, span=None, *, audio=None, audio_ze
         prior, prior_layout, previous = None, None, {}
         if before:
             prior, _, prior_layout, _, prior_index = _score(before, before_track)
+            if expected_before_sha256 is not None and prior.sha256 != expected_before_sha256:
+                raise ValueError('对照底稿已变化，请重新载入。')
             prior_notes, _ = _selection(prior_layout, prior_index, span)
             if prior.format != snapshot.format or [n.identity for n in notes] != [n.identity for n in prior_notes]:
                 raise ValueError('原参数工程需要同格式、同音符和同一播放时间轴。')
@@ -358,6 +367,7 @@ def analyze_reference(path, track_index=None, span=None, *, audio=None, audio_ze
     return {'points': points, 'gestures': gestures, 'report': {
         'source': mode, 'format': snapshot.format, 'track_index': index, 'notes': len(notes),
         'range_seconds': [notes[0].start, max(note.end for note in notes)],
+        'typical_note_seconds': float(np.median([note.duration for note in notes])),
         'excluded': excluded, 'loudness_notes': len(loudness), 'pitch_requested': pitch,
         'pitch_notes': len(edges), 'alignment': align}}
 
@@ -378,6 +388,123 @@ def make_recipe(name, points, gestures=(), *, strength=.6, identifier=None):
                     'controls': controls, 'pitch': {'enabled': has_pitch, 'gestures': actions,
                                                     **({'unit': 'cents'} if has_pitch else {})}},
     })
+
+
+def structure_templates():
+    return [{'id': name, 'label': style_label(name, card=True), 'description': style_description(name, card=True),
+             'color': style_color(name) or technique_color(name)} for name in (*VISIBLE_STYLES, 'chinese_opera') if name != 'none']
+
+
+_EMPTY_ACTIONS = {
+    'onset': {'cents': 0., 'seconds': .12, 'peak': .22},
+    'release': {'cents': 0., 'seconds': .20, 'peak': .72},
+    'connection': {'cents_per_semitone': 0., 'limit': 32., 'seconds': .10,
+                   'direction': 'settle', 'repeat_cents': 0., 'anticipate_descent': False},
+    'vibrato': {'depth': 0., 'rate': 5.3, 'delay': .30, 'minimum_note': .85},
+}
+
+
+def structure_draft(template='none', document=None):
+    """Start from the actual built-in recipe or detach a library copy for editing."""
+    source = PRESETS[template]
+    envelope = source.get('note_envelope', {'onset': .14, 'release': .22, 'sustain_arc': {}})
+    controls = {}
+    for channel in STYLE_CONTROL_NAMES:
+        onset, sustain, release = source['controls'].get(channel, (0., 0., 0.))
+        controls[channel] = {
+            'note': dict(zip(STYLE_NOTE_FIELDS, (onset, sustain, release, envelope['sustain_arc'].get(channel, 0.)))),
+            'phrase': {key: source.get('phrase_envelope', {}).get(channel, {}).get(key, 0.)
+                       for key in STYLE_PHRASE_FIELDS},
+        }
+    result = {'timing': {key: envelope[key] for key in ('onset', 'release')}, 'controls': controls,
+              'pitch': {**deepcopy(_EMPTY_ACTIONS), **pitch_structure_seed(template)}, 'strength': .6,
+              'color': style_color(template) or technique_color(template)}
+    if document is not None:
+        payload = document['payload']
+        result.update(timing=dict(payload['timing']), strength=payload['default_strength'],
+                      color=document['metadata'].get('color'))
+        for row in payload['controls']:
+            controls[row['channel']] = {'note': dict(row['note']), 'phrase': dict(row['phrase'])}
+        result['pitch'].update({key: dict(value) for key, value in payload['pitch'].items() if key != 'enabled'})
+    return result
+
+
+def structure_contents(draft):
+    controls = [{'channel': channel, **row} for channel, row in draft['controls'].items()
+                if any((*row['note'].values(), *row['phrase'].values()))]
+    actions = {kind: action for kind, action in draft['pitch'].items() if active_style_action(kind, action)}
+    return controls, actions
+
+
+def make_structure_recipe(name, draft, *, identifier=None):
+    controls, actions = structure_contents(draft)
+    metadata = {'name': name.strip()}
+    if draft['color']:
+        metadata['color'] = draft['color']
+    return validate_document({
+        'format': 'vwa.preset', 'format_version': 1, 'id': identifier or 'user.' + uuid.uuid4().hex,
+        'type': 'style_recipe', 'version': '1.0.0', 'metadata': metadata,
+        'requires': {'preset_api': 1, 'engine_contract': STYLE_STRUCTURE_CONTRACT,
+                     'capabilities': [STYLE_STRUCTURE_CAPABILITY]},
+        'binding_slots': [],
+        'payload': {'role': 'style', 'coordinate_system': 'note_and_phrase',
+                    'timing': draft['timing'], 'controls': controls, 'default_strength': draft['strength'],
+                    'pitch': {'enabled': bool(actions), **actions}},
+    })
+
+
+def structure_preview(draft, channel):
+    """Illustrate the executable envelopes on independent note and phrase axes."""
+    row = {'channel': channel, **draft['controls'][channel]}
+    definition = structure_definition(draft['timing'], [row])
+    steps = np.linspace(0., 1., 81)
+    guide = draft.get('loudness_guide') if channel == 'loudness' else None
+    duration = guide['seconds'] if guide else 1.2
+    note = _note_weights(steps * duration, [(0., duration)], (), definition['controls'][channel],
+                         definition['note_envelope'], {}, DETAIL_DEFAULTS, channel)
+    phrase = _phrase_weights(steps * 3., (0., 3.), channel, definition['phrase_envelope'], DETAIL_DEFAULTS)
+    strength = draft['strength']
+    result = {'note': (note * strength).tolist(), 'phrase': (phrase * strength).tolist(),
+              'note_seconds': duration}
+    if guide:
+        phases, values = np.asarray(guide['points']).T
+        result['guide'] = (np.interp(steps, phases, values) * strength).tolist()
+        estimate = _note_weights(phases * duration, [(0., duration)], (), definition['controls'][channel],
+                                 definition['note_envelope'], {}, DETAIL_DEFAULTS, channel)
+        result['guide_rmse'] = float(np.sqrt(np.mean((estimate - values)**2)))
+    return result
+
+
+def adopt_reference_part(draft, measured, part):
+    """Take one measured layer into a fresh recipe, preserving the other design choices."""
+    duration = max(EXTERNAL_MIN_NOTE_SECONDS, measured['report']['typical_note_seconds'])
+    if part == 'loudness' and measured['points']:
+        points = measured['points']
+        phases, values = np.asarray(points).T
+        times = phases * duration
+        basis = []
+        for active in STYLE_NOTE_FIELDS:
+            anchors = {key: float(key == active) for key in STYLE_NOTE_FIELDS}
+            definition = structure_definition(draft['timing'], [{
+                'channel': 'loudness', 'note': anchors, 'phrase': {},
+            }])
+            basis.append(_note_weights(times, [(0., duration)], (), definition['controls']['loudness'],
+                                       definition['note_envelope'], {}, DETAIL_DEFAULTS, 'loudness'))
+        # A small ridge keeps poorly observed attack/release coefficients stable.
+        model = np.vstack((np.asarray(basis).T, .18 * np.eye(len(basis))))
+        estimate = np.linalg.lstsq(model, np.append(values, np.zeros(len(basis))), rcond=None)[0]
+        draft['controls']['loudness']['note'] = {
+            key: round(float(value), 3) for key, value in zip(STYLE_NOTE_FIELDS, np.clip(estimate, -12., 12.))
+        }
+        draft['loudness_guide'] = {'points': deepcopy(points), 'seconds': duration}
+        return
+    if part == 'pitch' and measured['gestures']:
+        for gesture in measured['gestures']:
+            kind = gesture['kind']
+            draft['pitch'][kind].update(cents=gesture['cents'], peak=EXTERNAL_PEAKS[kind],
+                                       seconds=max(.025, min(EXTERNAL_EDGE_SECONDS, duration * gesture['fraction'])))
+        return
+    raise ValueError('请先取得这一项可用的参考数据。')
 
 
 def brush_for_recipe(recipe, strength=None):

@@ -158,6 +158,10 @@
       "source": "src/quick_ui/WorkshopStylePane.qml"
     },
     {
+      "file": "quick_ui/WorkshopRecipeEditor.qml",
+      "source": "src/quick_ui/WorkshopRecipeEditor.qml"
+    },
+    {
       "file": "quick_ui/WorkshopCalibrationPane.qml",
       "source": "src/quick_ui/WorkshopCalibrationPane.qml"
     },

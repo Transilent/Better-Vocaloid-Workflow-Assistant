@@ -18,6 +18,9 @@ Item {
     readonly property var points: authorView.points || []
     readonly property var target: authorView.target || ({})
     readonly property bool audioMode: fields.mode === "audio"
+    readonly property bool compareMode: fields.mode === "compare"
+    readonly property bool designMode: authorView.method === "design"
+    readonly property var original: authorView.comparison || ({})
     readonly property int excluded: Object.values(evidence.excluded || {}).reduce((sum, value) => sum + value, 0)
 
     function label(text) { return typeof quickTranslation !== "undefined" && quickTranslation ? quickTranslation.text(text) : text }
@@ -92,12 +95,42 @@ Item {
         nameFilters: ["WAV (*.wav)"]
         onAccepted: pane.controller.chooseDryVocal(selectedFile)
     }
+    FileDialog {
+        id: comparisonFile
+        title: pane.label("选择同谱对照底稿")
+        nameFilters: sourceFile.nameFilters
+        onAccepted: pane.controller.loadComparison(selectedFile)
+    }
 
     ColumnLayout {
         anchors.fill: parent
         spacing: Math.round(14 * pane.unit)
 
         RowLayout {
+            Layout.fillWidth: true
+            UiButton {
+                objectName: "styleMethodDesign"
+                theme: pane.theme
+                text: pane.label("制作新风格")
+                selected: pane.designMode
+                quiet: !selected
+                enabled: !pane.authorView.busy
+                onClicked: pane.controller.setAuthorMethod("design")
+            }
+            UiButton {
+                objectName: "styleMethodReference"
+                theme: pane.theme
+                text: pane.label("参考取材")
+                selected: !pane.designMode
+                quiet: !selected
+                enabled: !pane.authorView.busy
+                onClicked: pane.controller.setAuthorMethod("reference")
+            }
+            Item { Layout.fillWidth: true }
+        }
+
+        RowLayout {
+            visible: !pane.designMode
             Layout.fillWidth: true
             Layout.fillHeight: true
             spacing: Math.round(14 * pane.unit)
@@ -121,24 +154,16 @@ Item {
                         width: sources.availableWidth
                         spacing: Math.round(11 * pane.unit)
                         Heading { text: pane.label("参考素材") }
-                        RowLayout {
+                        UiComboBox {
+                            objectName: "styleReferenceSourceMode"
+                            theme: pane.theme
                             Layout.fillWidth: true
-                            UiButton {
-                                theme: pane.theme
-                                Layout.fillWidth: true
-                                text: pane.label("参考工程")
-                                selected: !pane.audioMode
-                                enabled: !pane.authorView.busy
-                                onClicked: pane.controller.edit("mode", "project")
-                            }
-                            UiButton {
-                                theme: pane.theme
-                                Layout.fillWidth: true
-                                text: pane.label("对齐干声")
-                                selected: pane.audioMode
-                                enabled: !pane.authorView.busy
-                                onClicked: pane.controller.edit("mode", "audio")
-                            }
+                            model: [{value: "project", label: pane.label("参考工程")},
+                                    {value: "compare", label: pane.label("同谱前后对照")},
+                                    {value: "audio", label: pane.label("对齐干声")}]
+                            currentIndex: pane.compareMode ? 1 : pane.audioMode ? 2 : 0
+                            enabled: !pane.authorView.busy
+                            onActivated: pane.controller.edit("mode", currentValue)
                         }
                         RowLayout {
                             Layout.fillWidth: true
@@ -174,6 +199,39 @@ Item {
                             enabled: !pane.authorView.busy && pane.trackRows.length > 0
                             Accessible.name: pane.label("参考演唱轨")
                             onActivated: pane.controller.selectReferenceTrack(pane.trackRows[currentIndex].index)
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: pane.compareMode
+                            Label { text: pane.label("调音前稿") }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label {
+                                    Layout.fillWidth: true
+                                    elide: Text.ElideMiddle
+                                    text: pane.leaf(pane.original.path) || pane.label("未选择对照底稿")
+                                }
+                                UiButton {
+                                    objectName: "styleComparisonFile"
+                                    theme: pane.theme
+                                    glyph: "folder"
+                                    text: pane.label("选择同谱对照底稿")
+                                    enabled: !pane.authorView.busy
+                                    onClicked: comparisonFile.open()
+                                }
+                            }
+                            UiComboBox {
+                                objectName: "styleComparisonTrack"
+                                theme: pane.theme
+                                Layout.fillWidth: true
+                                model: pane.original.tracks || []
+                                textRole: "name"
+                                currentIndex: model.findIndex(row => row.index === pane.authorView.comparisonTrack)
+                                enabled: !pane.authorView.busy && model.length > 0
+                                fieldLabel: pane.label("底稿演唱轨")
+                                onActivated: pane.controller.selectComparisonTrack(model[currentIndex].index)
+                            }
+                            Hint { text: pane.label("提取参考工程相对底稿的变化。两份工程需保持同格式、同乐谱和同时间轴。") }
                         }
                         Label { text: pane.label("参考唱段（秒）") }
                         RowLayout {
@@ -238,7 +296,7 @@ Item {
                             objectName: "styleAuthorAnalyze"
                             Layout.fillWidth: true
                             theme: pane.theme
-                            text: pane.label("提取风格")
+                            text: pane.label(pane.compareMode ? "提取前后差值" : "提取风格")
                             primary: !pane.authorView.ready
                             enabled: !!pane.authorView.canAnalyze && !pane.authorView.busy
                             onClicked: pane.controller.analyze()
@@ -451,6 +509,38 @@ Item {
             }
         }
 
+        Loader {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: pane.designMode
+            active: visible
+            sourceComponent: WorkshopRecipeEditor {
+                theme: pane.theme
+                controller: pane.controller
+                view: pane.authorView
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            visible: !pane.designMode && !!pane.authorView.ready
+            Hint { text: pane.label("可分别取用力度或起收音高，新草稿的其他通道会保留。") }
+            UiButton {
+                objectName: "styleUseLoudness"
+                theme: pane.theme
+                text: pane.label("力度带入草稿")
+                enabled: !pane.authorView.busy && pane.points.length > 0
+                onClicked: pane.controller.adoptReference("loudness")
+            }
+            UiButton {
+                objectName: "styleUseEdges"
+                theme: pane.theme
+                text: pane.label("起收音高带入")
+                enabled: !pane.authorView.busy && (pane.authorView.gestures || []).length > 0
+                onClicked: pane.controller.adoptReference("pitch")
+            }
+        }
+
         RowLayout {
             Layout.fillWidth: true
             Hint {
@@ -516,7 +606,7 @@ Item {
                 objectName: "styleAuthorApply"
                 theme: pane.theme
                 text: pane.label("应用到时间选区")
-                enabled: !!pane.authorView.trial && !pane.authorView.busy
+                enabled: !!pane.authorView.canApplyTrial && !pane.authorView.busy
                 onClicked: pane.controller.applyStyle()
             }
             UiButton {

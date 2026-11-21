@@ -16,7 +16,7 @@ import re
 import stat
 
 from common import native_path
-from expression_controls import calibration_controls
+from expression_controls import STYLE_CONTROL_NAMES, calibration_controls
 from preparation_languages import LANGUAGES, validate_english_midi_options
 
 MAX_DOCUMENT_BYTES = 256 * 1024
@@ -29,6 +29,18 @@ CONTRACTS = dict(zip(TYPES, ('preparation-parameters/v1', 'mixdown-parameters/v1
 STYLE_PITCH_CONTRACT = 'style-recipe/v2'
 STYLE_PITCH_CAPABILITY = 'style.pitch-edges'
 STYLE_PITCH_MAX_CENTS = 120
+STYLE_STRUCTURE_CONTRACT = 'style-recipe/v3'
+STYLE_STRUCTURE_CAPABILITY = 'style.phrase-structure'
+STYLE_NOTE_FIELDS = ('onset', 'sustain', 'release', 'arc')
+STYLE_PHRASE_FIELDS = ('opening', 'body', 'closing')
+STYLE_TIMING_BOUNDS = {'onset': (.025, .30), 'release': (.025, .40)}
+STYLE_ACTION_BOUNDS = {
+    'onset': {'cents': (-240., 240.), 'seconds': (.025, .30), 'peak': (.10, .90)},
+    'release': {'cents': (-240., 240.), 'seconds': (.025, .40), 'peak': (.10, .90)},
+    'connection': {'cents_per_semitone': (0., 25.), 'limit': (0., 200.), 'seconds': (.025, .24),
+                   'repeat_cents': (-60., 60.)},
+    'vibrato': {'depth': (0., 60.), 'rate': (4., 8.), 'delay': (.10, .80), 'minimum_note': (.85, 2.)},
+}
 CALIBRATION_CAPABILITY = 'calibration.svp-response'
 ID_PATTERN = r'^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$'
 EXTERNAL_ID_PATTERN = r'^(?!builtin\.)[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$'
@@ -161,6 +173,24 @@ _RECIPE_V2 = _object({
     }),
     'controls': {**_RECIPE['properties']['controls'], 'minItems': 0},
 })
+_STRUCTURED_ACTIONS = {
+    kind: _object({**{key: _number(*bounds) for key, bounds in limits.items()},
+                   **({'direction': _enum('settle', 'follow'), 'anticipate_descent': _BOOL}
+                      if kind == 'connection' else {})})
+    for kind, limits in STYLE_ACTION_BOUNDS.items()
+}
+_RECIPE_V3 = _object({
+    'role': _enum('style'),
+    'coordinate_system': _enum('note_and_phrase'),
+    'default_strength': _number(0, 1),
+    'timing': _object({key: _number(*limits) for key, limits in STYLE_TIMING_BOUNDS.items()}),
+    'controls': _array(_object({
+        'channel': _enum(*STYLE_CONTROL_NAMES),
+        'note': _object({key: _number(-12, 12) for key in STYLE_NOTE_FIELDS}),
+        'phrase': _object({key: _number(-12, 12) for key in STYLE_PHRASE_FIELDS}),
+    }), 0, 4),
+    'pitch': _object({'enabled': _BOOL, **_STRUCTURED_ACTIONS}, ('enabled',)),
+})
 _TRIAL = _object({'token': _string(96, pattern=r'^(?:VWA|BVWA)_[a-zA-Z0-9_-]+$'),
                   'sha256': _string(64, pattern=SHA_PATTERN)})
 _PROBE = {**_TRIAL['properties']}
@@ -195,7 +225,7 @@ _FIELDS = {
     }, ('name',)),
     'requires': _object({
         'preset_api': {'type': 'integer', 'const': 1},
-        'engine_contract': _enum(*CONTRACTS.values(), STYLE_PITCH_CONTRACT),
+        'engine_contract': _enum(*CONTRACTS.values(), STYLE_PITCH_CONTRACT, STYLE_STRUCTURE_CONTRACT),
         'capabilities': _array(_string(80, pattern=r'^[a-z][a-z0-9_.-]*$'), 0, 32, unique=True),
         'dependencies': _array(_REF, 0, 16, unique=True),
     }, ('preset_api', 'engine_contract', 'capabilities')),
@@ -215,7 +245,8 @@ def schema_document():
     schema['$schema'] = 'https://json-schema.org/draft/2020-12/schema'
     schema['title'] = 'VWA portable preset v1'
     variants = [(kind, CONTRACTS[kind], payload) for kind, payload in PAYLOAD_SCHEMAS.items()]
-    variants.append(('style_recipe', STYLE_PITCH_CONTRACT, _RECIPE_V2))
+    variants.extend([('style_recipe', STYLE_PITCH_CONTRACT, _RECIPE_V2),
+                     ('style_recipe', STYLE_STRUCTURE_CONTRACT, _RECIPE_V3)])
     schema['oneOf'] = [
         {'properties': {'type': {'const': kind}, 'payload': copy.deepcopy(payload),
                         'requires': {'properties': {'engine_contract': {'const': contract}}}}}
@@ -226,6 +257,48 @@ def schema_document():
 
 def _invalid(path, message):
     raise PresetError('invalid_document', message, field=path)
+
+
+def active_style_action(kind, action):
+    if kind in ('onset', 'release'):
+        return action['cents'] != 0
+    if kind == 'connection':
+        return bool((action['limit'] and action['cents_per_semitone']) or action['repeat_cents'])
+    return action['depth'] > 0
+
+
+def _validate_structured_style(payload, capabilities):
+    if capabilities != [STYLE_STRUCTURE_CAPABILITY]:
+        _invalid('$.requires.capabilities', '结构配方需要声明乐句风格能力。')
+    pitch = payload['pitch']
+    actions = {key: value for key, value in pitch.items() if key != 'enabled'}
+    if pitch['enabled'] != bool(actions) or any(not active_style_action(key, value) for key, value in actions.items()):
+        _invalid('$.payload.pitch', '请仅保存启用且有实际幅度的唱腔动作。')
+    if not payload['controls'] and not actions:
+        _invalid('$.payload', '配方至少需要一项表达增量或唱腔动作。')
+    for row in payload['controls']:
+        values = [*row['note'].values(), *row['phrase'].values()]
+        limit = 12 if row['channel'] == 'loudness' else 1
+        if not any(values) or any(abs(value) > limit for value in values):
+            _invalid('$.payload.controls', '通道增量须非零且在许可范围内。')
+
+
+def _validate_phase_style(controls, pitch, capabilities):
+    if pitch['enabled'] != (STYLE_PITCH_CAPABILITY in capabilities):
+        _invalid('$.payload.pitch', '音高动作须与配方能力声明一致。')
+    if pitch['enabled']:
+        gestures = pitch['gestures']
+        if len({row['kind'] for row in gestures}) != len(gestures) or any(row['cents'] == 0 for row in gestures):
+            _invalid('$.payload.pitch.gestures', '起音和收尾动作各可指定一次，偏移须非零。')
+    if sum(len(c['points']) for c in controls) > MAX_CURVE_POINTS:
+        _invalid('$.payload.controls', '风格配方控制点过多。')
+    for i, row in enumerate(controls):
+        points = row['points']
+        if points[0][0] != 0 or points[-1][0] != 1 or any(a[0] >= b[0] for a, b in zip(points, points[1:])):
+            _invalid('$.payload.controls[' + str(i) + ']', '相位须从 0 到 1 严格递增。')
+        limit = 12 if row['channel'] == 'loudness' else 1
+        if any(abs(p[1]) > limit for p in points):
+            _invalid('$.payload.controls[' + str(i) + ']', '通道增量超出配方范围。')
 
 
 def _structural(value, schema, path='$'):
@@ -398,25 +471,15 @@ def validate_document(value, *, allow_builtin=False):
     elif kind == 'style_recipe':
         if slots:
             _invalid('$.binding_slots', '风格配方不保存工程输入槽位。')
-        pitch = payload['pitch']
-        if pitch['enabled'] != (STYLE_PITCH_CAPABILITY in value['requires']['capabilities']):
-            _invalid('$.payload.pitch', '音高动作须与配方能力声明一致。')
-        if pitch['enabled']:
-            gestures = pitch['gestures']
-            if len({row['kind'] for row in gestures}) != len(gestures) or any(row['cents'] == 0 for row in gestures):
-                _invalid('$.payload.pitch.gestures', '起音和收尾动作各可指定一次，偏移须非零。')
         controls = payload['controls']
         if len({c['channel'] for c in controls}) != len(controls):
             _invalid('$.payload.controls', '控制通道不能重复。')
-        if sum(len(c['points']) for c in controls) > MAX_CURVE_POINTS:
-            _invalid('$.payload.controls', '风格配方控制点过多。')
-        for i, row in enumerate(controls):
-            points = row['points']
-            if points[0][0] != 0 or points[-1][0] != 1 or any(a[0] >= b[0] for a, b in zip(points, points[1:])):
-                _invalid('$.payload.controls[' + str(i) + ']', '相位须从 0 到 1 严格递增。')
-            limit = 12 if row['channel'] == 'loudness' else 1
-            if any(abs(p[1]) > limit for p in points):
-                _invalid('$.payload.controls[' + str(i) + ']', '通道增量超出配方范围。')
+        pitch = payload['pitch']
+        capabilities = value['requires']['capabilities']
+        if value['requires']['engine_contract'] == STYLE_STRUCTURE_CONTRACT:
+            _validate_structured_style(payload, capabilities)
+        else:
+            _validate_phase_style(controls, pitch, capabilities)
     elif kind == 'voicebank_calibration':
         if slot_kinds != {'calibration_renders', 'reference_audio', 'vocal_tracks'}:
             _invalid('$.binding_slots', '声库校准需要目标轨、参考演唱及试音目录。')

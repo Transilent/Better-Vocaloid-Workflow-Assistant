@@ -205,7 +205,7 @@ def _resume_project(session, drafts, legacy, stop):
     return project, intent, previous, path, result, warning, spec['source'], spec.get('job') or ''
 
 
-def _preview(project, options, stop, send):
+def _preview(project, options, stop, send, *, inspect_report=None):
     """Compute parameter differences and the actual pitch layer before manual edits."""
     snapshot = workflow.read_source(project.project['path'])
     if snapshot.sha256 != project.sha256:
@@ -228,6 +228,8 @@ def _preview(project, options, stop, send):
         style.update(project.pitch_layer.curve_sources(data, cancel=cancel))
 
     _, report = workflow.apply_snapshot(snapshot, options, cancel=cancel, progress=send, observe_style=capture)
+    if inspect_report is not None:
+        inspect_report(report)
     indices = report['track_indices']
     curves = len(report['curve_changes'])
     if options.get('note_edits'):
@@ -2396,15 +2398,35 @@ class QuickTuning(QObject):
             options[key] = deepcopy(engine.DEFAULTS[key])
         selected = {region['recipe']['track_index'] for region in regions} | project.edit_track_indices()
         options.update(track_indices=sorted(selected), style_regions=project.verify_regions(regions))
-        return {'target': self.style_trial_identity(), 'project': project, 'regions': regions, 'options': options}
+        focus = next(index for index, entry in enumerate(regions) if entry['id'] == row['id'])
+        return {'target': self.style_trial_identity(), 'project': project, 'regions': regions, 'options': options,
+                'focus': focus}
 
     def run_style_trial(self, plan, stop, send):
-        return _preview(plan['project'], plan['options'], stop, send)[0]
+        details = {}
+
+        def inspect(report):
+            style = report.get('style', {})
+            rows = style.get('regions', [])
+            chosen = rows[plan['focus']] if plan['focus'] < len(rows) else {}
+            pitch = chosen.get('pitch', {})
+            actions = [action for track in pitch.get('tracks', []) for action in track.get('gestures', [])]
+            protected = sum(len(track.get('skipped_notes', [])) + len(track.get('omitted_gestures', []))
+                            for track in pitch.get('tracks', []))
+            details.update(hasEffect=bool(chosen.get('applied_controls') and report['curve_changes']),
+                           actions=len(actions), guarded=protected)
+
+        label, _ = _preview(plan['project'], plan['options'], stop, send, inspect_report=inspect)
+        if details.get('actions') or details.get('guarded'):
+            label += ' ' + tr('唱腔动作 {actions} 项，跳过 {guarded} 项。').format(**details)
+        if not details.get('hasEffect'):
+            label += ' ' + tr('当前配方在该选区未产生可写变化。')
+        return {'summary': label, 'hasEffect': details.get('hasEffect', False)}
 
     def apply_style_trial(self, plan):
         if not self._can_edit_regions() or plan['target'] != self.style_trial_identity():
             raise ValueError('风格或目标选区已变化，请重新试套。')
-        return self._commit_regions(plan['regions'], '已应用参考风格，可冻结预览并生成候选。')
+        return self._commit_regions(plan['regions'], '已应用风格配方，可冻结预览并生成候选。')
 
     def use_workshop_style(self, recipe):
         self._options = draft_options({**self._options, 'style_recipe': recipe, 'performance_style': 'none',

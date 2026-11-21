@@ -256,3 +256,49 @@ for preset in ('sad','melancholy','bright_joy','fragile_tender'):
     emotion_outputs.append(output)
 assert all(emotion_outputs[a]!=emotion_outputs[b] for a in range(len(emotion_outputs)) for b in range(a))
 print('PASS: canonical sad pitch, exact legacy recipes, four-phase guards, protected authored curves and joint emotion/timbre defaults with explicit opt-out')
+
+
+from preset_documents import encode_document
+from style_authoring import make_structure_recipe, structure_draft
+
+pattern = structure_draft('chinese_opera')
+pattern['pitch']['vibrato'].update(depth=32, rate=5., delay=.27)
+recipe = styles.freeze_recipe(encode_document(make_structure_recipe('Editable opera', pattern)))
+score = copy.deepcopy(opera)
+lead = score['tracks'][0]['mainGroup']
+lead['notes'][-1].update(duration=3 * Q, attributes={'dF0Vbr': 0})
+del lead['parameters']['vibratoEnv']
+baseline = copy.deepcopy(score)
+
+
+def apply_structured(source, **kwargs):
+    return styles.apply_style(source, 'none', track_indices=[0], recipe=recipe, pitch_enabled=True,
+                              strength=1., density_mode='original', **kwargs)
+
+
+result, audit = apply_structured(score)
+actions = audit['pitch']['tracks'][0]['gestures']
+assert {'phrase_entry','interval_connection','phrase_release','delayed_vibrato'} == {row['kind'] for row in actions}
+vibrato, = [row for row in actions if row['kind'] == 'delayed_vibrato']
+assert (vibrato['cents_at_full_strength'], vibrato['frequency_hz']) == (32, 5.)
+assert score == baseline and result['tracks'][1:] == score['tracks'][1:]
+assert result['tracks'][0]['mainGroup']['notes'] == lead['notes']
+
+for depth in (None, 17):
+    alternative = copy.deepcopy(score)
+    note = alternative['tracks'][0]['mainGroup']['notes'][-1]
+    note['attributes'] = {} if depth is None else {'dF0Vbr': depth}
+    _, receipt = apply_structured(alternative)
+    guarded = receipt['pitch']['tracks'][0]
+    assert not any(action['kind'] == 'delayed_vibrato' for action in guarded['gestures'])
+    assert any(note['reason'] == 'existing_or_unknown_vibrato_preserved' for note in guarded['skipped_notes'])
+
+_, protected_slide = apply_structured(sliding)
+assert any(item['reason'] == 'authored_transition_preserved'
+           for item in protected_slide['pitch']['tracks'][0]['omitted_gestures'])
+_, interrupted = apply_structured(protected)
+assert not any(action['kind'] == 'interval_connection' and action['note_index'] == 2
+               for action in interrupted['pitch']['tracks'][0]['gestures'])
+_, partial = apply_structured(score, time_range=(1.5, 2.0))
+assert all(action['start'] >= 1.5 for action in partial['pitch']['tracks'][0]['gestures'])
+print('PASS: structured tuning gestures, editable vibrato, explicit pitch protection and selected interval boundaries')

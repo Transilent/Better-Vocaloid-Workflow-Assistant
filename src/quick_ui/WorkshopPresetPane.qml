@@ -24,6 +24,7 @@ Item {
         try { return JSON.parse(catalog.inspect_text).payload || {} }
         catch (_) { return {} }
     }
+    readonly property bool structured: selected.type === "style_recipe" && payload.coordinate_system === "note_and_phrase"
     readonly property var filtered: {
         const query = search.text.trim().toLowerCase()
         return entries.filter(row => (filter.currentValue === "all" || filter.currentValue === row.type)
@@ -246,13 +247,16 @@ Item {
                         visible: pane.selected.type === "style_recipe" && !!pane.payload.controls
                         text: (pane.payload.controls || []).map(control =>
                             pane.label({loudness:"力度", tension:"张力", breathiness:"气声", voicing:"发声"}[control.channel])
-                            + " · " + control.points.length + " " + pane.label("控制点")).join("  /  ")
+                            + (control.points ? " · " + control.points.length + " " + pane.label("控制点") : "")).join("  /  ")
                     }
                     Caption {
                         Layout.fillWidth: true
                         visible: pane.selected.type === "style_recipe" && !!(pane.payload.pitch || {}).enabled
-                        text: (pane.payload.pitch || {}).enabled ? pane.payload.pitch.gestures.map(action =>
-                            pane.label(action.kind === "onset" ? "起音音高" : "收尾音高") + " " + action.cents + " ¢").join(" · ") : ""
+                        text: pane.structured ? ["onset", "connection", "release", "vibrato"].filter(key => pane.payload.pitch[key])
+                            .map(key => pane.label({onset: "句首倚滑", connection: "音间衔接", release: "句尾收腔",
+                                                    vibrato: "长音颤音"}[key])).join(" · ")
+                            : ((pane.payload.pitch || {}).gestures || []).map(action =>
+                                pane.label(action.kind === "onset" ? "起音音高" : "收尾音高") + " " + action.cents + " ¢").join(" · ")
                     }
                     Caption {
                         Layout.fillWidth: true
@@ -313,6 +317,14 @@ Item {
                 quiet: true
                 text: pane.label("去调音选择目标")
                 onClicked: pane.targetRequested()
+            }
+            UiButton {
+                objectName: "workshopEditStructure"
+                visible: pane.structured
+                theme: pane.theme
+                text: pane.label("复制到风格制作")
+                enabled: !pane.dataView.busy && !pane.catalog.busy
+                onClicked: pane.controller.editSelectedStructure()
             }
             UiButton {
                 objectName: "workshopUsePreset"

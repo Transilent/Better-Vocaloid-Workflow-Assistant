@@ -12,7 +12,8 @@ import copy
 import json
 import uuid
 
-from preset_documents import (PresetError, STYLE_PITCH_CAPABILITY, decode_document,
+from preset_documents import (PresetError, STYLE_PITCH_CAPABILITY, STYLE_STRUCTURE_CAPABILITY,
+                              STYLE_STRUCTURE_CONTRACT, decode_document,
                               document_digest, encode_document, validate_document)
 from style_catalog import TECHNIQUE_IDS, VISIBLE_STYLES
 from style_presets import RECIPE_CAPABILITY, freeze_recipe, recipe_has_pitch, recipe_reference
@@ -37,6 +38,7 @@ SUPPORTED_CAPABILITIES = frozenset({
     'tuning.retained',
     RECIPE_CAPABILITY,
     STYLE_PITCH_CAPABILITY,
+    STYLE_STRUCTURE_CAPABILITY,
     *(f'style.builtin.{name}' for name in VISIBLE_STYLES if name != 'none'),
     *(f'technique.builtin.{name}' for name in TECHNIQUE_IDS if name != 'none'),
 })
@@ -188,8 +190,9 @@ def make_document(options, name, *, identifier=None):
     if source:
         capabilities.append(source)
     if recipe is not None:
-        capabilities.append(RECIPE_CAPABILITY)
-        if normalized['style_pitch']:
+        structured = recipe['document']['requires']['engine_contract'] == STYLE_STRUCTURE_CONTRACT
+        capabilities.append(STYLE_STRUCTURE_CAPABILITY if structured else RECIPE_CAPABILITY)
+        if normalized['style_pitch'] and not structured:
             capabilities.append(STYLE_PITCH_CAPABILITY)
     elif normalized['performance_style'] != 'none':
         capabilities.append('style.builtin.' + normalized['performance_style'])

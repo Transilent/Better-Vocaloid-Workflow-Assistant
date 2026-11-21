@@ -45,6 +45,7 @@
     "src/quick_ui/TuningParameterLane.qml",
     "src/quick_ui/TuningWorkshopPage.qml",
     "src/quick_ui/WorkshopStylePane.qml",
+    "src/quick_ui/WorkshopRecipeEditor.qml",
     "src/quick_ui/WorkshopCalibrationPane.qml",
     "src/quick_ui/WorkshopPresetPane.qml",
     "src/quick_ui/WorkshopSlider.qml",

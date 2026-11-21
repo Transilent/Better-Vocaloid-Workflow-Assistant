@@ -90,7 +90,8 @@
             "tuning-pipeline/v1",
             "style-recipe/v1",
             "voicebank-calibration/v1",
-            "style-recipe/v2"
+            "style-recipe/v2",
+            "style-recipe/v3"
           ]
         },
         "capabilities": {
@@ -1381,6 +1382,290 @@
           "properties": {
             "engine_contract": {
               "const": "style-recipe/v2"
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "style_recipe"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "role": {
+              "enum": [
+                "style"
+              ]
+            },
+            "coordinate_system": {
+              "enum": [
+                "note_and_phrase"
+              ]
+            },
+            "default_strength": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "timing": {
+              "type": "object",
+              "properties": {
+                "onset": {
+                  "type": "number",
+                  "minimum": 0.025,
+                  "maximum": 0.3
+                },
+                "release": {
+                  "type": "number",
+                  "minimum": 0.025,
+                  "maximum": 0.4
+                }
+              },
+              "required": [
+                "onset",
+                "release"
+              ],
+              "additionalProperties": false
+            },
+            "controls": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "channel": {
+                    "enum": [
+                      "loudness",
+                      "tension",
+                      "breathiness",
+                      "voicing"
+                    ]
+                  },
+                  "note": {
+                    "type": "object",
+                    "properties": {
+                      "onset": {
+                        "type": "number",
+                        "minimum": -12,
+                        "maximum": 12
+                      },
+                      "sustain": {
+                        "type": "number",
+                        "minimum": -12,
+                        "maximum": 12
+                      },
+                      "release": {
+                        "type": "number",
+                        "minimum": -12,
+                        "maximum": 12
+                      },
+                      "arc": {
+                        "type": "number",
+                        "minimum": -12,
+                        "maximum": 12
+                      }
+                    },
+                    "required": [
+                      "onset",
+                      "sustain",
+                      "release",
+                      "arc"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "phrase": {
+                    "type": "object",
+                    "properties": {
+                      "opening": {
+                        "type": "number",
+                        "minimum": -12,
+                        "maximum": 12
+                      },
+                      "body": {
+                        "type": "number",
+                        "minimum": -12,
+                        "maximum": 12
+                      },
+                      "closing": {
+                        "type": "number",
+                        "minimum": -12,
+                        "maximum": 12
+                      }
+                    },
+                    "required": [
+                      "opening",
+                      "body",
+                      "closing"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "channel",
+                  "note",
+                  "phrase"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 0,
+              "maxItems": 4
+            },
+            "pitch": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "onset": {
+                  "type": "object",
+                  "properties": {
+                    "cents": {
+                      "type": "number",
+                      "minimum": -240.0,
+                      "maximum": 240.0
+                    },
+                    "seconds": {
+                      "type": "number",
+                      "minimum": 0.025,
+                      "maximum": 0.3
+                    },
+                    "peak": {
+                      "type": "number",
+                      "minimum": 0.1,
+                      "maximum": 0.9
+                    }
+                  },
+                  "required": [
+                    "cents",
+                    "seconds",
+                    "peak"
+                  ],
+                  "additionalProperties": false
+                },
+                "release": {
+                  "type": "object",
+                  "properties": {
+                    "cents": {
+                      "type": "number",
+                      "minimum": -240.0,
+                      "maximum": 240.0
+                    },
+                    "seconds": {
+                      "type": "number",
+                      "minimum": 0.025,
+                      "maximum": 0.4
+                    },
+                    "peak": {
+                      "type": "number",
+                      "minimum": 0.1,
+                      "maximum": 0.9
+                    }
+                  },
+                  "required": [
+                    "cents",
+                    "seconds",
+                    "peak"
+                  ],
+                  "additionalProperties": false
+                },
+                "connection": {
+                  "type": "object",
+                  "properties": {
+                    "cents_per_semitone": {
+                      "type": "number",
+                      "minimum": 0.0,
+                      "maximum": 25.0
+                    },
+                    "limit": {
+                      "type": "number",
+                      "minimum": 0.0,
+                      "maximum": 200.0
+                    },
+                    "seconds": {
+                      "type": "number",
+                      "minimum": 0.025,
+                      "maximum": 0.24
+                    },
+                    "repeat_cents": {
+                      "type": "number",
+                      "minimum": -60.0,
+                      "maximum": 60.0
+                    },
+                    "direction": {
+                      "enum": [
+                        "settle",
+                        "follow"
+                      ]
+                    },
+                    "anticipate_descent": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "cents_per_semitone",
+                    "limit",
+                    "seconds",
+                    "repeat_cents",
+                    "direction",
+                    "anticipate_descent"
+                  ],
+                  "additionalProperties": false
+                },
+                "vibrato": {
+                  "type": "object",
+                  "properties": {
+                    "depth": {
+                      "type": "number",
+                      "minimum": 0.0,
+                      "maximum": 60.0
+                    },
+                    "rate": {
+                      "type": "number",
+                      "minimum": 4.0,
+                      "maximum": 8.0
+                    },
+                    "delay": {
+                      "type": "number",
+                      "minimum": 0.1,
+                      "maximum": 0.8
+                    },
+                    "minimum_note": {
+                      "type": "number",
+                      "minimum": 0.85,
+                      "maximum": 2.0
+                    }
+                  },
+                  "required": [
+                    "depth",
+                    "rate",
+                    "delay",
+                    "minimum_note"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "enabled"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "role",
+            "coordinate_system",
+            "default_strength",
+            "timing",
+            "controls",
+            "pitch"
+          ],
+          "additionalProperties": false
+        },
+        "requires": {
+          "properties": {
+            "engine_contract": {
+              "const": "style-recipe/v3"
             }
           }
         }

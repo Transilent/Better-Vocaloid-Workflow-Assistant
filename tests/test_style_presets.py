@@ -321,3 +321,42 @@ assert rf['strength']==rl['strength']==.625
 assert delta_at(less,'loudness',.52)<delta_at(full,'loudness',.52)
 assert abs(delta_at(less,'loudness',2.)-delta_at(full,'loudness',2.))<1e-10
 print('PASS: canonical cards, bold phrase/note dynamics, strength/off/range guards, protected notes, headroom, independent I/O, no stacking and cancellation')
+
+
+# Exportable templates use the same envelope execution as their built-in seeds.
+from preset_documents import PresetError, encode_document
+from style_authoring import make_structure_recipe, structure_draft, structure_preview
+
+for template in ('gentle', 'sad', 'bold', 'chinese_opera'):
+    draft = structure_draft(template)
+    document = make_structure_recipe(template, draft, identifier='user.fixture')
+    recipe = styles.freeze_recipe(encode_document(document))
+    ordinary, _ = styles.apply_style(original, template, track_indices=[0], pitch_enabled=False)
+    exported, exported_report = styles.apply_style(original, 'none', track_indices=[0], pitch_enabled=False, recipe=recipe)
+    assert exported == ordinary, template
+    assert exported_report['style_recipe'] == styles.recipe_reference(recipe)
+    assert make_structure_recipe(template, structure_draft(document=document), identifier='user.fixture') == document
+
+joy = structure_draft('bold')
+example = structure_preview(joy, 'loudness')
+assert max(example['note']) > max(example['phrase']) > 0
+joy['controls']['loudness']['phrase']['closing'] = -2
+edited_recipe = styles.freeze_recipe(encode_document(make_structure_recipe('Edited phrase', joy)))
+edited, _ = styles.apply_style(original, 'none', track_indices=[0], pitch_enabled=False, recipe=edited_recipe)
+unmodified_template, _ = styles.apply_style(original, 'bold', track_indices=[0], pitch_enabled=False)
+assert edited != unmodified_template
+assert original == frozen
+
+for change in (
+    lambda value: value['pitch']['vibrato'].update(rate=8.1),
+    lambda value: value['controls']['tension']['note'].update(onset=1.01),
+    lambda value: value['timing'].update(path='C:/local/project.svp'),
+):
+    broken = structure_draft('chinese_opera')
+    change(broken)
+    try:
+        make_structure_recipe('Unsafe', broken)
+        raise AssertionError('Invalid structured recipe was accepted')
+    except PresetError:
+        pass
+print('PASS: built-in envelopes match portable templates, and detached edits observe recipe bounds')
