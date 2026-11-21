@@ -294,8 +294,6 @@ class QuickTuning(QObject):
         self._confirmed = False
         self._preset = None
         self._preset_review = None
-        self._author_reference, self._author_result, self._author_trial = None, None, None
-        self._author_recipe = None
         self._mode, self._active, self._selected = 'single', '', []
         self._score_tool = 'note'
         self._parameter_style = {}
@@ -1577,7 +1575,8 @@ class QuickTuning(QObject):
             self._set_options({'reference_calibration': url.toLocalFile() or None}, detach=False)
 
     def calibration_seed(self):
-        if not self.project or self._active not in self.project.editable:
+        if (not self.project or self.project.project['format'] != 'svp'
+                or self._active not in self.project.editable):
             return None
         index = self.project.tracks[self._active]['index']
         source = next((row for row in self._options['reference_sources'] if row['track_index'] == index), {})
@@ -1613,14 +1612,8 @@ class QuickTuning(QObject):
             return result
 
         def finish(result):
-            index = spec['track_index']
-            rows = [row for row in self._options['reference_sources'] if row['track_index'] != index]
-            rows.append({'track_index': index, 'voice': spec['voice'], 'path': spec['reference']})
-            self._set_options({'expression_mode': 'calibrated', 'reference_calibration': result['profile'],
-                               'reference_sources': rows, 'dynamics_strength': result['calibration_fit']['strength'],
-                               'retained_project': None, 'retained_sources': []})
-            if self._flush_draft():
-                self.state, self.message = 'ready', tr('已把校准和参考演唱绑定到当前调音轨。请重新预览。')
+            self.use_calibration_profile(spec['track_index'], spec['voice'], result['profile'],
+                                         result['calibration_fit']['strength'], spec['reference'])
 
         self._command('checking-calibration', '正在核验校准与当前调音轨…', work, finish)
 
@@ -2239,7 +2232,7 @@ class QuickTuning(QObject):
     @Slot()
     def cancel(self):
         if self.worker.kind in ('tuning-loading', 'tuning-freezing', 'tuning-running', 'tuning-checking-calibration',
-                                'tuning-exporting', 'tuning-author'):
+                                'tuning-exporting'):
             self.worker.cancel()
             self.message = tr('正在取消…')
             self.changed.emit()
@@ -2370,177 +2363,88 @@ class QuickTuning(QObject):
         return plan_application(document, self.project.project, bindings, raw_document=raw, before=before,
                                 style_dependency=style_dependency)
 
-    @Property('QVariantMap', notify=changed)
-    def styleAuthor(self):
-        reference = self._author_reference or {}
-        result = self._author_result or {}
-        trial = self._author_trial
-        fresh = bool(trial and trial['target'] == self._style_author_target())
-        return {**result, 'reference': reference,
-                'trial': trial['summary'] if fresh else '',
-                'targetReady': bool(self.project and self._active in self.project.editable and self._end > self._start
-                                    and not self._editor_block()),
-                'targetStart': self._start, 'targetEnd': self._end,
-                'targetTrack': self.project.tracks.get(self._active, {}).get('name', '') if self.project else ''}
-
-    @Slot()
-    def openStyleAuthor(self):
-        if self._author_reference is None and self.project:
-            self.loadStyleReference(QUrl.fromLocalFile(self.project.project['path']))
-
-    @Slot(QUrl)
-    def loadStyleReference(self, url):
-        if not url.isLocalFile() or self.worker.kind:
-            return
-        from style_authoring import inspect_reference
-
-        path = url.toLocalFile()
-
-        def work(stop, _send):
-            _stop_check(stop)
-            return inspect_reference(path)
-
-        def finish(value):
-            if self.project and value['sha256'] == self.project.sha256:
-                selected = self.project.tracks.get(self._active, {}).get('index')
-                value['selected'] = selected
-                if self._start < self._end:
-                    value['range'] = [self._start, self._end]
-            self._author_reference, self._author_result, self._author_trial, self._author_recipe = value, None, None, None
-            self.state, self.message = 'ready', tr('已读取参考工程的演唱轨。')
-
-        self._command('author', '正在读取参考工程…', work, finish)
-
-    @Slot(int, float, float, QUrl, float, bool)
-    def analyzeStyleReference(self, track, start, end, audio, offset, pitch):
-        if not self._author_reference or self.worker.kind:
-            return
-        from style_authoring import analyze_reference
-
-        path, sha = self._author_reference['path'], self._author_reference['sha256']
-        self._author_result, self._author_recipe, self._author_trial = None, None, None
-
-        def work(stop, send):
-            return analyze_reference(path, track, (start, end), audio=audio.toLocalFile() if audio.isLocalFile() else None,
-                                     audio_zero=offset, pitch=pitch, expected_sha256=sha,
-                                     cancel=lambda: _stop_check(stop), progress=send)
-
-        def finish(value):
-            self._author_result = value
-            self.state, self.message = 'ready', tr('已提取参考风格，可调整后试套或保存。')
-
-        self._command('author', '正在分析参考唱段…', work, finish)
-
-    @Slot(int, float)
-    def setStyleAuthorPoint(self, index, value):
-        if self._author_result is None or self.worker.kind or not math.isfinite(value):
-            return
-        points = self._author_result['points']
-        if 0 <= index < len(points):
-            points[index][1] = round(max(-12, min(12, value)), 2)
-            self._author_trial = None
-            self.changed.emit()
-
-    @Slot(str, float)
-    def setStyleAuthorPitch(self, kind, cents):
-        if (self._author_result is None or self.worker.kind or kind not in ('onset', 'release')
-                or not math.isfinite(cents)):
-            return
-        from preset_documents import STYLE_PITCH_MAX_CENTS
-        from style_authoring import EDGE_FRACTION
-
-        cents = round(max(-STYLE_PITCH_MAX_CENTS, min(STYLE_PITCH_MAX_CENTS, cents)), 1)
-        gestures = [row for row in self._author_result['gestures'] if row['kind'] != kind]
-        if cents:
-            gestures.append({'kind': kind, 'cents': cents, 'fraction': EDGE_FRACTION})
-        self._author_result['gestures'] = sorted(gestures, key=lambda row: row['kind'])
-        self._author_trial = None
-        self.changed.emit()
-
-    def _style_author_recipe(self, name, strength, use_gain, use_pitch):
-        from preset_documents import encode_document
-        from style_authoring import make_recipe
-
-        if self._author_result is None:
-            raise ValueError('请先提取参考风格。')
-        points = self._author_result['points'] if use_gain else []
-        gestures = self._author_result['gestures'] if use_pitch else []
-        stamp = engine.digest([name, strength, points, gestures])
-        if self._author_recipe is None or self._author_recipe[0] != stamp:
-            document = make_recipe(name, points, gestures, strength=strength)
-            self._author_recipe = stamp, freeze_recipe(encode_document(document))
-        return self._author_recipe
-
-    def _style_author_target(self):
+    def style_trial_identity(self):
         return (self.project, self._active, self._start, self._end, self._regions,
                 self._options['expression_mode'], self._preset)
 
-    @Slot(str, float, bool, bool)
-    def trialStyleAuthor(self, name, strength, use_gain, use_pitch):
-        if self.worker.kind:
-            return
+    def style_trial_target(self):
+        return {'ready': bool(self.project and self._active in self.project.editable
+                              and self._end > self._start and not self._editor_block()),
+                'title': Path(self._display_source or self.project.project['path']).stem if self.project else '',
+                'track': self.project.tracks.get(self._active, {}).get('name', '') if self.project else '',
+                'start': self._start, 'end': self._end, 'reason': tr(self._editor_block())}
+
+    def style_reference_seed(self):
+        if not self.project:
+            return None
+        return (self.project.project['path'], self.project.sha256,
+                self.project.tracks.get(self._active, {}).get('index'), (self._start, self._end))
+
+    def plan_style_trial(self, recipe):
         from style_authoring import brush_for_recipe
 
-        self._author_trial = None
-        try:
-            if reason := self._editor_block():
-                raise ValueError(reason)
-            stamp, recipe = self._style_author_recipe(name, strength, use_gain, use_pitch)
-            target = self._style_author_target()
-            project = self.project
-            time_range_settings((self._start, self._end))
-            row = project.region(self._active, self._start, self._end, brush_for_recipe(recipe))
-            if row is None:
-                raise ValueError('目标选区没有可试套的音符。')
-            regions = project.overlay_regions(self._regions, [row])
-            options = self._draft_options()
-            for key in _BRUSH_KEYS:
-                options[key] = deepcopy(engine.DEFAULTS[key])
-            selected = {region['recipe']['track_index'] for region in regions} | project.edit_track_indices()
-            options.update(track_indices=sorted(selected), style_regions=project.verify_regions(regions))
-        except (ValueError, OSError) as error:
-            self._error(error)
-            return
+        if reason := self._editor_block():
+            raise ValueError(reason)
+        time_range_settings((self._start, self._end))
+        project = self.project
+        row = project.region(self._active, self._start, self._end, brush_for_recipe(recipe))
+        if row is None:
+            raise ValueError('目标选区没有可试套的音符。')
+        regions = project.overlay_regions(self._regions, [row])
+        options = self._draft_options()
+        for key in _BRUSH_KEYS:
+            options[key] = deepcopy(engine.DEFAULTS[key])
+        selected = {region['recipe']['track_index'] for region in regions} | project.edit_track_indices()
+        options.update(track_indices=sorted(selected), style_regions=project.verify_regions(regions))
+        return {'target': self.style_trial_identity(), 'project': project, 'regions': regions, 'options': options}
 
-        def finish(value):
-            label, _ = value
-            self._author_trial = {'stamp': stamp, 'target': target, 'regions': regions, 'summary': label}
-            self.state, self.message = 'ready', tr('已试套。确认后应用到选区。')
+    def run_style_trial(self, plan, stop, send):
+        return _preview(plan['project'], plan['options'], stop, send)[0]
 
-        self._command('author', '正在试算目标选区…',
-                      lambda stop, send: _preview(project, options, stop, send), finish)
+    def apply_style_trial(self, plan):
+        if not self._can_edit_regions() or plan['target'] != self.style_trial_identity():
+            raise ValueError('风格或目标选区已变化，请重新试套。')
+        return self._commit_regions(plan['regions'], '已应用参考风格，可冻结预览并生成候选。')
 
-    @Slot(str, float, bool, bool, result=bool)
-    def applyStyleAuthor(self, name, strength, use_gain, use_pitch):
-        if self.worker.kind or not self._can_edit_regions():
-            return False
-        try:
-            stamp, _ = self._style_author_recipe(name, strength, use_gain, use_pitch)
-            trial = self._author_trial
-            if not trial or trial['stamp'] != stamp or trial['target'] != self._style_author_target():
-                raise ValueError('风格或目标选区已变化，请重新试套。')
-            self._commit_regions(trial['regions'], '已应用参考风格，可冻结预览并生成候选。')
-            self._author_trial = None
-            return True
-        except (ValueError, OSError) as error:
-            self._error(error)
-            return False
+    def use_workshop_style(self, recipe):
+        self._options = draft_options({**self._options, 'style_recipe': recipe, 'performance_style': 'none',
+                                       'style_pitch': recipe_has_pitch(recipe), 'style_detail': None,
+                                       'style_strength': recipe['document']['payload']['default_strength']})
+        self._preset, self._selected_region = None, ''
+        self._dirty_draft()
+        self.state, self.message = 'ready', tr('已选用外部风格。可以调节强度，或应用到时间选区。')
+        self.changed.emit()
 
-    @Slot(str, float, bool, bool)
-    def saveStyleAuthor(self, name, strength, use_gain, use_pitch):
-        if self.worker.kind:
-            return
-        try:
-            _, recipe = self._style_author_recipe(name, strength, use_gain, use_pitch)
-        except (ValueError, OSError) as error:
-            self._error(error)
-            return
+    def calibration_preset_context(self):
+        seed = self.calibration_seed()
+        if (not seed or self._mode != 'single' or self._editing_blocked or self._legacy
+                or self._preset or self._indices(segments=True) != [seed['index']]):
+            raise ValueError('请在调音工作流选中一条可校准的 SVP 演唱轨。')
+        if reason := self._source_mode_reason('calibrated', [seed['index']]):
+            raise ValueError(reason)
+        return self.project, self.job, self.artifact, seed
 
-        def work(_stop, _send):
-            self._library.put_document(recipe['document'], expected_revision=self._library.snapshot()['revision'])
-            return self._library.snapshot()
+    @Slot(str, result=str)
+    def calibrationLabel(self, path):
+        from calibration_presets import profile_label
+        return profile_label(path)
 
-        self._preset_task(work, '风格配方已添加到本机库，可从预设导出。')
+    def calibration_project_snapshot(self, context, stop):
+        project, job, artifact, _ = context
+        _verify_input(project, job, artifact, stop)
+        return workflow.read_source(project.project['path'])
+
+    def use_calibration_profile(self, index, voice, profile, strength, reference):
+        rows = [row for row in self._options['reference_sources'] if row['track_index'] != index]
+        if reference:
+            rows.append({'track_index': index, 'voice': voice, 'path': reference})
+        self._set_options({'expression_mode': 'calibrated', 'reference_calibration': profile,
+                           'reference_sources': rows, 'dynamics_strength': strength,
+                           'retained_project': None, 'retained_sources': []})
+        if self._flush_draft():
+            self.state, self.message = 'ready', tr('已把校准和参考演唱绑定到当前调音轨。请重新预览。'
+                                                 if reference else '已选用校准预设。请在来源中选择参考演唱和声部。')
+        self.changed.emit()
 
     def _check_preset_source(self, document):
         payload = document['payload']
@@ -2629,12 +2533,7 @@ class QuickTuning(QObject):
             if self._preset_review_stamp() != review['stamp']:
                 raise ValueError('工程或预设已变化，请重新预览。')
             if recipe := value.get('style_recipe'):
-                self._options = draft_options({**self._options, 'style_recipe': recipe, 'performance_style': 'none',
-                                               'style_pitch': recipe_has_pitch(recipe), 'style_detail': None,
-                                               'style_strength': recipe['document']['payload']['default_strength']})
-                self._preset, self._selected_region = None, ''
-                self._dirty_draft()
-                self.state, self.message = 'ready', tr('已选用外部风格。可以调节强度，或应用到时间选区。')
+                self.use_workshop_style(recipe)
                 return
             self._check_preset_source(value['document'])
             plan = self._bound(value['document'], value['raw'], style_dependency=value.get('style_dependency'))

@@ -24,6 +24,7 @@ from preset_documents import (
     ID_PATTERN,
     MAX_DOCUMENT_BYTES,
     PresetError,
+    TYPES,
     VERSION_PATTERN,
     decode_document,
     document_digest,
@@ -47,7 +48,7 @@ MAX_LIBRARY_BYTES = 64 * 1024 * 1024
 MAX_ALIAS_CHARACTERS = 80
 MAX_VERSION_BLOBS = 512
 
-PRESET_TYPES = frozenset({"preparation", "mixdown", "tuning", "style_recipe"})
+PRESET_TYPES = frozenset(TYPES)
 _REPARSE_ATTRIBUTE = 0x400
 _ID_PATTERN = re.compile(ID_PATTERN)
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")

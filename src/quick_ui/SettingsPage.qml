@@ -134,6 +134,7 @@ Rectangle {
         case "mixdown": return tr("简易混音")
         case "tuning": return tr("调音")
         case "style_recipe": return tr("风格配方")
+        case "voicebank_calibration": return tr("声库校准")
         default: return String(type || tr("未知类型"))
         }
     }
@@ -1423,7 +1424,7 @@ Rectangle {
                         }
                         UiComboBox {
                             theme: page.theme
-                            model: ["all", "preparation", "mixdown", "tuning", "style_recipe"].map(
+                            model: ["all", "preparation", "mixdown", "tuning", "style_recipe", "voicebank_calibration"].map(
                                        value => ({label:value === "all" ? page.tr("全部类型") : page.typeLabel(value), value:value}))
                             currentIndex: page.indexOfValue(model, page.presetType)
                             onActivated: page.presetType = currentValue
@@ -1554,7 +1555,7 @@ Rectangle {
                         Text {
                             Layout.fillWidth: true
                             text: page.presetView.error || (page.presetView.loaded ? page.presetView.message
-                                  : page.tr("四类预设共用本机库。导入默认附加；同版本冲突时可另存副本。"))
+                                  : page.tr("导入默认附加，同版本冲突时可创建独立副本。"))
                             color: page.presetView.error ? page.theme.error : page.theme.muted
                             font.pixelSize: 12 * page.theme.scale
                             wrapMode: Text.Wrap

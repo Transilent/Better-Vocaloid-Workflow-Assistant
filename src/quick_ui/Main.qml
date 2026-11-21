@@ -297,6 +297,7 @@ ApplicationWindow {
                 case "results": return resultsPage
                 case "updates": return settingsPage
                 case "tuning": return tuningPage
+                case "tuning_workshop": return workshopPage
                 case "audio_mixdown": return mixdownPage
                 case "video_mixdown": return videoPage
                 case "publishing": return publicationPage
@@ -329,8 +330,12 @@ ApplicationWindow {
             TuningPage {
                 theme: window.tokens
                 controller: window.controller.tuning
-                onCalibrationRequested: voiceCalibration.open()
+                onWorkshopRequested: pane => window.controller.openTuningWorkshop(pane)
             }
+        }
+        Component {
+            id: workshopPage
+            TuningWorkshopPage { theme: window.tokens; controller: window.controller }
         }
         Component {
             id: mixdownPage
@@ -346,35 +351,6 @@ ApplicationWindow {
                 theme: window.tokens
                 controller: window.controller.publication
                 onTaskVideoRequested: window.controller.navigate("results")
-            }
-        }
-
-        Rectangle {
-            objectName: "backgroundCalibration"
-            Layout.fillWidth: true
-            Layout.preferredHeight: calibrationBar.implicitHeight + 10
-            visible: !voiceCalibration.visible && window.controller.calibration.view.busy
-            color: theme.surface
-            Rectangle { width: parent.width; height: 1; color: theme.line }
-            RowLayout {
-                id: calibrationBar
-                anchors.fill: parent
-                anchors.leftMargin: 16
-                anchors.rightMargin: 16
-                Text {
-                    Layout.fillWidth: true
-                    text: window.controller.text("声库校准") + " · " + window.controller.calibration.view.message
-                    elide: Text.ElideRight
-                    color: theme.text
-                    font.pixelSize: 13 * theme.scale
-                    textFormat: Text.PlainText
-                }
-                UiButton {
-                    objectName: "returnBackgroundCalibration"
-                    theme: window.tokens
-                    text: window.controller.text("查看校准")
-                    onClicked: voiceCalibration.open()
-                }
             }
         }
 
@@ -479,7 +455,8 @@ ApplicationWindow {
                     objectName: "openOperationWorkspace"
                     visible: window.operations.length
                         ? (window.primaryOperation.route !== window.controller.route
-                            || String(window.primaryOperation.kind).indexOf("calibration-") === 0)
+                            || (String(window.primaryOperation.kind).indexOf("calibration-") === 0
+                                && window.controller.workshop.pane !== "calibration"))
                         : window.previewLoading ? window.controller.route !== "audio_mixdown"
                         : !!window.issue.route && window.issue.route !== window.controller.route
                     theme: window.tokens
@@ -490,7 +467,7 @@ ApplicationWindow {
                             : window.previewLoading ? {kind: "mixdown-preview", route: "audio_mixdown"}
                             : window.issue
                         if (String(entry.kind).indexOf("calibration-") === 0)
-                            voiceCalibration.open()
+                            window.controller.openTuningWorkshop("calibration")
                         else
                             window.controller.navigate(entry.route)
                     }
@@ -528,13 +505,6 @@ ApplicationWindow {
     DiagnosticsDialog {
         theme: window.tokens
         controller: window.controller.support
-    }
-
-    CalibrationDialog {
-        id: voiceCalibration
-        theme: window.tokens
-        controller: window.controller.calibration
-        onBindingRequested: window.controller.navigate("tuning")
     }
 
     SubtitleDialog {

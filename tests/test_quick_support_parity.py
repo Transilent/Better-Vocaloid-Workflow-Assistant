@@ -194,7 +194,9 @@ def dynamic_checks():
 
             class FakeLane:
                 kind = ''
-                def start(self, _kind, work, finish):
+                action_route = ''
+                def start(self, _kind, work, finish, *, route=''):
+                    self.action_route = route
                     finish(work(None, None), None)
                     return True
                 def close(self):
@@ -211,6 +213,9 @@ def dynamic_checks():
             assert support.inspectPreset('user.test', '0.1.0')
             assert '"user.test"' in support.presetLibrary['inspect_text']
             assert support.presetLibrary['inspect_error'] == ''
+            owner.route = 'tuning_workshop'
+            assert support.inspectPreset('user.test', '0.1.0')
+            assert support.inspect_lane.action_route == 'tuning_workshop'
 
             owner.operationKind = ''
             owner.taskMutationBusy = False

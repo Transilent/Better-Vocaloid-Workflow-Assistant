@@ -38,6 +38,14 @@
       "source": "src/quick_calibration.py"
     },
     {
+      "file": "calibration_presets.py",
+      "source": "src/calibration_presets.py"
+    },
+    {
+      "file": "quick_workshop.py",
+      "source": "src/quick_workshop.py"
+    },
+    {
       "file": "calibration_preparation.py",
       "source": "src/calibration_preparation.py"
     },
@@ -126,10 +134,6 @@
       "source": "src/quick_ui/MixdownPage.qml"
     },
     {
-      "file": "quick_ui/CalibrationDialog.qml",
-      "source": "src/quick_ui/CalibrationDialog.qml"
-    },
-    {
       "file": "quick_ui/PreparationSourcesDialog.qml",
       "source": "src/quick_ui/PreparationSourcesDialog.qml"
     },
@@ -146,8 +150,24 @@
       "source": "src/quick_ui/TuningParameterLane.qml"
     },
     {
-      "file": "quick_ui/TuningStyleAuthorDialog.qml",
-      "source": "src/quick_ui/TuningStyleAuthorDialog.qml"
+      "file": "quick_ui/TuningWorkshopPage.qml",
+      "source": "src/quick_ui/TuningWorkshopPage.qml"
+    },
+    {
+      "file": "quick_ui/WorkshopStylePane.qml",
+      "source": "src/quick_ui/WorkshopStylePane.qml"
+    },
+    {
+      "file": "quick_ui/WorkshopCalibrationPane.qml",
+      "source": "src/quick_ui/WorkshopCalibrationPane.qml"
+    },
+    {
+      "file": "quick_ui/WorkshopPresetPane.qml",
+      "source": "src/quick_ui/WorkshopPresetPane.qml"
+    },
+    {
+      "file": "quick_ui/WorkshopSlider.qml",
+      "source": "src/quick_ui/WorkshopSlider.qml"
     },
     {
       "file": "quick_ui/TuningTimeline.qml",

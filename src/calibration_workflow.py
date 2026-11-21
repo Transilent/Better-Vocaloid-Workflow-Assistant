@@ -411,6 +411,8 @@ def inspect_inputs(project,reference,*,track_index=0,job=None,voice='lead',refer
         data=project_data(project);_,track=selected_track(data,track_index)
         notes=track.get('mainGroup',{}).get('notes',[])
         if not notes:raise ValueError('所选轨道没有音符，请选择包含演唱音符的轨道。')
+        if track.get('mainRef',{}).get('mute') is True:
+            raise ValueError('所选音符组已静音。请在 SV 中解除静音并保存，再准备校准。')
         if track.get('groups'):raise ValueError('所选轨道包含引用音符组，请先在 SV 中合并到主音符组并保存副本。')
         result['bank']=track.get('mainRef',{}).get('database',{}).get('name','')
         if not result['bank']:

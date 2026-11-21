@@ -522,6 +522,12 @@ Item {
         checkTargetPitch = false
     }
 
+    Timer {
+        id: pitchSuggestion
+        interval: 0
+        onTriggered: timeline.suggestPitch()
+    }
+
     function suggestPitch() {
         if (!visibleNotes.length || (!centerOnSource && !checkTargetPitch))
             return
@@ -739,11 +745,11 @@ Item {
         focusedTrackId = ""
         focusedNoteId = ""
         centerOnSource = true
-        Qt.callLater(suggestPitch)
+        pitchSuggestion.restart()
     }
     onTargetKeyChanged: score.requestPaint()
     onVisibleNotesChanged: {
-        Qt.callLater(suggestPitch)
+        pitchSuggestion.restart()
         score.requestPaint()
     }
     onLaneNotesChanged: score.requestPaint()
@@ -782,7 +788,7 @@ Item {
     onWidthChanged: score.requestPaint()
     onHeightChanged: score.requestPaint()
     Component.onCompleted: {
-        Qt.callLater(suggestPitch)
+        pitchSuggestion.restart()
         score.requestPaint()
     }
 

@@ -193,7 +193,7 @@ try:
         assert all(f'*{suffix}' in filters[0] for suffix in ('.acep', '.ufdata', '.vsqx'))
         open_file(source,native)
         assert 'JSON / 9' in tune.view['projectFormat']
-        assert not lookup('openVoiceCalibration').property('enabled')
+        assert not owner.calibration.view['canUseTrack']
         target=root/'原始工程-VWA.acep'
         assert Path(tune.suggestedCandidatePath().toLocalFile())==target
         assert 'Samples' in tune.view['formatNotice']

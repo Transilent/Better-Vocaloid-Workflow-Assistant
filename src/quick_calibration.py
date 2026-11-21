@@ -27,7 +27,8 @@ def _tracks(path):
     for index, track in enumerate(sessions.project_data(path)['tracks']):
         if not track.get('mainRef', {}).get('isInstrumental'):
             rows.append({'index': index, 'name': str(track.get('name') or f'演唱轨 {len(rows) + 1}'),
-                         'notes': len(track.get('mainGroup', {}).get('notes', []))})
+                         'notes': len(track.get('mainGroup', {}).get('notes', [])),
+                         'bank': (track.get('mainRef', {}).get('database') or {}).get('name', '')})
     if not rows:
         raise ValueError('工程中没有演唱轨。')
     return rows
@@ -113,6 +114,7 @@ def _session_catalog(folder=None, *, stop):
 
 class QuickCalibration(QObject):
     changed = Signal()
+    presetSaved = Signal('QVariantMap')
 
     def __init__(self, parent, tuning):
         super().__init__(parent)
@@ -128,10 +130,13 @@ class QuickCalibration(QObject):
         self.prepared, self.session_choices = None, []
         self.message, self.hint = '', ''
         self.phase, self.files = 'setup', {}
+        self.preset_name, self.saved_preset = '', {}
 
     @Property('QVariantMap', notify=changed)
     def view(self):
         fit = (self.result or {}).get('calibration_fit', {})
+        bank = self.tracks[self.track].get('bank', '') if 0 <= self.track < len(self.tracks) else ''
+        written = [tr(_TRIALS.get(key, key)) for row in fit.get('tracks', []) for key in row.get('written_points', {})]
         trial_rows = [{'id': key, 'name': tr(_TRIALS.get(key, key)), 'state': self.files.get(key, 'missing')}
                       for key in ('neutral', *CONTROLS)]
         return {'busy': bool(self.worker.kind), 'project': self.project, 'reference': self.reference,
@@ -148,7 +153,9 @@ class QuickCalibration(QObject):
                                         and _reference_job(self.spec['reference'], self.spec['voice'])),
                 'neutral': (self.result or {}).get('neutral', ''), 'measured': fit.get('voicebank_calibrated') is True,
                 'canBind': bool(fit.get('voicebank_calibrated') is True and self.tuning.can_bind_calibration(self.spec)),
-                'report': (self.result or {}).get('report_path', '')}
+                'report': (self.result or {}).get('report_path', ''), 'bank': bank,
+                'fitStrength': fit.get('strength', 0), 'writtenControls': written,
+                'presetName': self.preset_name, 'savedPreset': self.saved_preset}
 
     def _command(self, kind, label, work, finish):
         if self.worker.kind:
@@ -267,6 +274,7 @@ class QuickCalibration(QObject):
         self.strength = (self.result['calibration_fit']['strength'] if self.result else self.spec['strength'])
         self.channels = self.spec.get('render_channel_mode', 'standard')
         self.phase = 'done' if self.result else 'ready'
+        self.saved_preset = {}
         self.files = dict.fromkeys(self.spec['outputs'], 'validated') if self.result else {}
         self.message = self._result_message() if self.result else tr('试音工程已就绪。请在 SV 分轨导出，再继续等待并拟合。')
 
@@ -424,6 +432,7 @@ class QuickCalibration(QObject):
 
         def finish(value):
             self.spec, self.result = value
+            self.saved_preset = {}
             self.files = dict.fromkeys(self.spec['outputs'], 'validated')
             self.phase = 'done' if self.result else 'ready'
             self.message = (self._result_message() if self.result else
@@ -438,6 +447,7 @@ class QuickCalibration(QObject):
             self.folder = str(self.session.parent.parent)
             self.session = self.spec = self.result = self.review = None
             self.renders, self.phase, self.files = '', 'setup', {}
+            self.preset_name, self.saved_preset = '', {}
             self.message, self.hint = tr('可调整输入后生成新会话。已有校准文件保留。'), ''
             self.changed.emit()
 
@@ -512,6 +522,32 @@ class QuickCalibration(QObject):
     def bindResult(self):
         if self.session and self.result and not self.worker.kind and self.view['canBind']:
             self.tuning.bind_calibration_result(self.session, self.spec, self.result)
+
+    @Slot(str)
+    def setPresetName(self, name):
+        if not self.worker.kind and self.preset_name != name:
+            self.preset_name = name
+            self.changed.emit()
+
+    @Slot()
+    def savePreset(self):
+        if self.worker.kind or not self.view['measured'] or not self.preset_name.strip():
+            return
+        from calibration_presets import save_fit_preset
+
+        workshop = self.parent().workshop
+        name, session, result = self.preset_name, self.session, self.result
+
+        def work(stop, _send):
+            return save_fit_preset(workshop.library, workshop.bindings, session, result, name,
+                                   cancel=lambda: _check_stop(stop))
+
+        def finish(entry):
+            self.saved_preset = entry
+            self.message = tr('已保存声库校准预设，可在工坊预设库中选用或导出。')
+            self.presetSaved.emit(entry)
+
+        self._command('save-preset', '正在核验并保存声库校准预设…', work, finish)
 
     def close(self):
         self.worker.close()

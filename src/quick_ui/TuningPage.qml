@@ -81,7 +81,7 @@ Item {
     property bool showStyleDetails: false
     property int noteScopeVersion: 0
     property bool editorFocus: false
-    signal calibrationRequested()
+    signal workshopRequested(string pane)
 
     clip: true
     onNoteScopeChanged: noteScopeVersion += 1
@@ -932,13 +932,6 @@ Item {
                     selected: page.mode === "multi"
                     enabled: !page.busy
                     onClicked: page.controller.setMode("multi")
-                }
-                EditorButton {
-                    objectName: "openVoiceCalibration"
-                    theme: page.theme
-                    text: page.vwaTr("声库校准…")
-                    enabled: !page.nativeStyleProject
-                    onClicked: page.calibrationRequested()
                 }
                 EditorButton {
                     objectName: "tuningOpenProject"
@@ -2462,11 +2455,21 @@ Item {
                                             && page.textOf(page.view.expressionMode) === "calibrated"
                                         onClicked: calibrationDialog.open()
                                     }
+                                    EditorButton {
+                                        objectName: "tuningChooseWorkshopCalibration"
+                                        visible: page.view.expressionMode === "calibrated"
+                                        Layout.fillWidth: true
+                                        Layout.columnSpan: page.compact ? 1 : 2
+                                        theme: page.theme
+                                        text: page.vwaTr("从工坊预设库选用")
+                                        enabled: !page.busy
+                                        onClicked: page.workshopRequested("presets")
+                                    }
                                     Text {
                                         Layout.fillWidth: true
                                         Layout.columnSpan: page.compact ? 1 : 2
                                         visible: page.textOf(page.view.calibration).length > 0
-                                        text: page.fileName(page.view.calibration)
+                                        text: page.controller.calibrationLabel(page.textOf(page.view.calibration))
                                         color: page.theme.muted
                                         font.pixelSize: Math.round(10 * page.scale)
                                         elide: Text.ElideMiddle
@@ -2646,14 +2649,6 @@ Item {
                                     text: page.vwaTr("调音预设与风格")
                                 }
 
-                                EditorButton {
-                                    objectName: "openTuningStyleAuthor"
-                                    Layout.fillWidth: true
-                                    theme: page.theme
-                                    text: page.vwaTr("从参考制作风格")
-                                    enabled: !page.busy
-                                    onClicked: styleAuthorDialog.open()
-                                }
 
                                 UiComboBox {
                                     id: presetPicker
@@ -3391,12 +3386,6 @@ Item {
                 }
             }
         }
-    }
-
-    TuningStyleAuthorDialog {
-        id: styleAuthorDialog
-        theme: page.theme
-        controller: page.controller
     }
 
     FileDialog {

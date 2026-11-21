@@ -23,16 +23,20 @@ expected = {
     'video_mixdown': (8, None, None),
     'tuning': (9, None, None),
     'audio_mixdown': (10, None, None),
+    'tuning_workshop': (11, None, None),
 }
 actual = {
     spec.page_id: (spec.legacy_index, spec.target, spec.focus_step)
     for spec in workspace_routes.PAGE_SPECS
 }
 assert actual == expected
-assert [spec.legacy_index for spec in workspace_routes.PAGE_SPECS] == list(range(11))
+assert [spec.legacy_index for spec in workspace_routes.PAGE_SPECS] == list(range(12))
 orders = [spec.sidebar_order for spec in workspace_routes.PAGE_SPECS
           if spec.sidebar_order is not None]
 assert len(orders) == len(set(orders))
+sidebar = sorted((spec for spec in workspace_routes.PAGE_SPECS if spec.sidebar_order is not None),
+                 key=lambda spec: spec.sidebar_order)
+assert [spec.page_id for spec in sidebar][1:3] == ['tuning', 'tuning_workshop']
 for spec in workspace_routes.PAGE_SPECS:
     if spec.target:
         destination = next(item for item in workspace_routes.PAGE_SPECS

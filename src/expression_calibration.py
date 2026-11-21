@@ -22,9 +22,17 @@ def score_identity(track, data):
     return hashlib.sha256(json.dumps(values,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 
 
+def calibration_identity(value):
+    return hashlib.sha256(json.dumps(value,ensure_ascii=False,sort_keys=True,
+                                     separators=(',',':'),allow_nan=False).encode('utf-8')).hexdigest()
+
+
 def read_profile(path, *, require_audio=True):
     path = Path(path).resolve()
     data = json.loads(path.read_text(encoding='utf-8-sig'))
+    if path.parent.name=='profiles' and path.parent.parent.name=='calibration-bindings':
+        if not isinstance(data,dict) or 'preset_sha256' not in data or calibration_identity(data)!=path.stem:
+            raise ValueError('本机校准绑定文件已改变，请检查或重新关联试音目录。')
     if not isinstance(data,dict) or data.get('schema')!=SCHEMA or not isinstance(data.get('tracks'),dict) or not data['tracks']:
         raise ValueError('声库校准配置格式无效。')
     result = copy.deepcopy(data)
@@ -52,9 +60,12 @@ def read_profile(path, *, require_audio=True):
             if abs(step)<1e-6 or not lo<=neutral+step<=hi:
                 raise ValueError('参数试音超出有效范围。')
             names.append(name)
-        for entry,key in [(row,'baseline')]+[(probe,'audio') for probe in probes]:
+        for entry,key,hash_key in [(row,'baseline','baseline_sha256')]+[(probe,'audio','sha256') for probe in probes]:
             value=entry.get(key)
             if not isinstance(value,str) or not value.strip(): raise ValueError('校准音频路径为空。')
+            if ('preset_sha256' in result or hash_key in entry) and (
+                    not isinstance(entry.get(hash_key),str) or not re.fullmatch('[a-f0-9]{64}',entry[hash_key])):
+                raise ValueError('校准预设缺少有效的试音摘要。')
             audio=(path.parent/value).resolve()
             if require_audio and not audio.is_file():
                 raise FileNotFoundError('缺少校准试音：'+audio.name+'。请先在同一声库中渲染校准工程。')
@@ -62,13 +73,29 @@ def read_profile(path, *, require_audio=True):
     return result
 
 
+def expected_render_digests(spec):
+    return {path: digest for row in spec['tracks'].values()
+            for path,digest in [(row['baseline'],row.get('baseline_sha256')),
+                                *((probe['audio'],probe.get('sha256')) for probe in row['probes'])]
+            if digest is not None}
+
+
+def check_render_digest(path,digest,expected):
+    if expected is not None and digest!=expected:
+        raise ValueError('试音文件内容与校准预设不匹配：'+Path(path).name)
+    return digest
+
+
 def signature(path):
     from common import file_hash
     data=read_profile(path)
     import calibration_refinement
+    expected=expected_render_digests(data)
+    def identify(audio):
+        return check_render_digest(audio,file_hash(audio),expected.get(audio))
     return {'profile':file_hash(path),'adapter':file_hash(Path(__file__)),
             'refinement':file_hash(Path(calibration_refinement.__file__)),
-            'audio':[(voice,file_hash(row['baseline']),[(p['parameter'],file_hash(p['audio'])) for p in row['probes']])
+            'audio':[(voice,identify(row['baseline']),[(p['parameter'],identify(p['audio'])) for p in row['probes']])
                      for voice,row in sorted(data['tracks'].items())]}
 
 
@@ -244,6 +271,7 @@ def apply_project(data, sources, profile, strength=.6, cancel=lambda:None, cache
     if not isinstance(data,dict):raise ValueError('SVP 工程数据格式无效。')
     if type(finalize) is not bool:raise ValueError('SVP 参数后处理开关必须为布尔值。')
     output=copy.deepcopy(data);sources=list(sources);spec=read_profile(profile)
+    expected=expected_render_digests(spec)
     strategy=spec.get('fit_strategy','detailed') if strategy is None else strategy
     if strategy not in ('detailed','preserve','match'):raise ValueError('校准拟合方式无效。')
     clock=TempoMap(output['time']['tempo'])
@@ -267,8 +295,9 @@ def apply_project(data, sources, profile, strength=.6, cancel=lambda:None, cache
         notes=[(clock.to_seconds(n['onset']+offset),clock.to_seconds(n['onset']+n['duration']+offset),n['pitch']) for n in track['mainGroup']['notes']]
         if not notes: continue
         def features(audio,key,channel_mode='standard'):
+            options={'expected_sha256':expected[audio]} if audio in expected else {}
             return cached_features(audio,notes,None if cache is None else Path(cache)/(cache_key+'-'+key+'.npz'),cancel,
-                                    channel_mode=channel_mode)
+                                    channel_mode=channel_mode,**options)
         progress('分析参考演唱 · 1 / '+str(2+len(row['probes'])))
         times,reference,mask,_=features(source['path'],'reference')
         def measured(audio):
@@ -362,17 +391,23 @@ def apply_svp(path, sources, profile, strength=.6, cancel=lambda:None, cache=Non
                            (b'\x00' if raw.endswith(b'\x00') else b''))
     return report
 
-def cached_features(path, notes, cache=None, cancel=lambda:None, *, channel_mode='standard'):
+def cached_features(path, notes, cache=None, cancel=lambda:None, *, channel_mode='standard', expected_sha256=None):
     """One small feature snapshot per render; never copy calibration audio."""
-    if cache is None: return acoustic_features(path,notes,cancel,channel_mode=channel_mode)
+    from common import file_hash,native_path
+    if cache is None:
+        if expected_sha256 is not None:
+            check_render_digest(path,file_hash(path,check=cancel),expected_sha256)
+        result=acoustic_features(path,notes,cancel,channel_mode=channel_mode)
+        if expected_sha256 is not None:
+            check_render_digest(path,file_hash(path,check=cancel),expected_sha256)
+        return result
     import os
     import tempfile
     import zipfile
     import numpy as np
-    from common import file_hash,native_path
     from vocal_timbre import _feature_code_signature
     from expression_component import SPEC
-    cancel();digest=file_hash(path)
+    cancel();digest=check_render_digest(path,file_hash(path,check=cancel),expected_sha256)
     # Fitting-only edits must not reanalyse unchanged audio. Fingerprint the
     # acoustic extractor independently from the solver and temporal guards.
     import ast

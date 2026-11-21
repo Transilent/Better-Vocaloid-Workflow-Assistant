@@ -586,7 +586,8 @@ class QuickSupport(QObject):
         )
         self.presetLibraryChanged.emit()
         if not self.preset_lane.start(
-                'preset-refresh', lambda _stop, _send: library.snapshot(), self._preset_refreshed):
+                'preset-refresh', lambda _stop, _send: library.snapshot(), self._preset_refreshed,
+                route=self._preset_route()):
             self._set_preset_error(ValueError('预设库正在执行其他操作。'))
 
     @Slot(str, str, result=bool)
@@ -635,11 +636,14 @@ class QuickSupport(QObject):
                 )
             self.presetLibraryChanged.emit()
 
-        if not self.inspect_lane.start('preset-inspect', work, finish):
+        if not self.inspect_lane.start('preset-inspect', work, finish, route=self._preset_route()):
             self._preset_view.update(inspect_busy=False, inspect_error='预设查看已在运行。')
             self.presetLibraryChanged.emit()
             return False
         return True
+
+    def _preset_route(self):
+        return 'tuning_workshop' if getattr(self.parent(), 'route', '') == 'tuning_workshop' else ''
 
     def _preset_refreshed(self, snapshot, error):
         if error is not None:
@@ -656,7 +660,7 @@ class QuickSupport(QObject):
             loaded=True,
             revision=revision,
             entries=entries,
-            message=f'已载入 {len(entries)} 个预设；四类预设共享同一本机库。',
+            message=tr('已载入 {0} 个预设。', len(entries)),
             error='',
             error_code='',
             conflict=False,
@@ -693,7 +697,7 @@ class QuickSupport(QObject):
             result = operation(library, revision)
             return {'result': result, 'snapshot': library.snapshot()}
 
-        if not self.preset_lane.start(kind, work, self._preset_finished):
+        if not self.preset_lane.start(kind, work, self._preset_finished, route=self._preset_route()):
             self._preset_request = None
             self._set_preset_error(ValueError('预设库正在执行其他操作。'))
             return False

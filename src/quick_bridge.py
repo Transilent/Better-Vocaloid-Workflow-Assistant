@@ -23,6 +23,7 @@ from quick_support import QuickSupport
 from quick_calibration import QuickCalibration
 from quick_preparation_sources import QuickPreparationSources
 from quick_tuning import QuickTuning
+from quick_workshop import QuickWorkshop
 from quick_mixdown import QuickMixdown
 from quick_video import QuickVideo
 from quick_work import WorkerLane
@@ -40,7 +41,7 @@ def _can_cancel(kind):
         return False
     return (kind in ('component', 'preparation', 'update-download', 'mixdown-export',
                      'mixdown-install', 'mixdown-support-probe') or kind in _CANCELLABLE_TUNING
-            or kind.startswith(('calibration-', 'video-', 'publication-')))
+            or kind.startswith(('calibration-', 'workshop-', 'video-', 'publication-')))
 
 
 _TASK_STATE_FILTERS = frozenset(('all', 'done', 'pending', 'failed', 'running'))
@@ -285,7 +286,9 @@ class QuickBridge(QObject):
         self.preparationTaskChanged.connect(self.taskPrimaryActionChanged)
         self._support = QuickSupport(self, self._work, update_source_options())
         self._tuning = QuickTuning(self, self._work)
+        self._workshop = QuickWorkshop(self, self._tuning, self._support, self._work)
         self._calibration = QuickCalibration(self, self._tuning)
+        self._calibration.presetSaved.connect(self._workshop.calibrationSaved)
         self._calibration.worker.changed.connect(self._work_changed)
         self._mixdown = QuickMixdown(self, self._work)
         self._video = QuickVideo(self, self._work)
@@ -388,6 +391,8 @@ class QuickBridge(QObject):
                 self._video.cancel()
             elif kind.startswith('calibration-'):
                 self._calibration.cancel()
+            elif kind.startswith('workshop-'):
+                self._workshop.cancel()
             elif kind.startswith('tuning-'):
                 self._tuning.cancel()
             elif kind in ('mixdown-export', 'mixdown-install', 'mixdown-support-probe'):
@@ -588,6 +593,10 @@ class QuickBridge(QObject):
         return self._calibration
 
     @Property(QObject, constant=True)
+    def workshop(self):
+        return self._workshop
+
+    @Property(QObject, constant=True)
     def preparationSources(self):
         return self._sources
 
@@ -618,7 +627,7 @@ class QuickBridge(QObject):
     @Property('QVariantList', constant=True)
     def routes(self):
         return [{'pageId': spec.page_id, 'title': tr('设置与支持' if spec.page_id == 'updates' else spec.title),
-                 'short': tr({'processing': '准备', 'tuning': '调音', 'audio_mixdown': '混音',
+                 'short': tr({'processing': '准备', 'tuning': '调音', 'tuning_workshop': '工坊', 'audio_mixdown': '混音',
                               'video_mixdown': '视频', 'publishing': '发布',
                               'components': '组件', 'results': '任务', 'updates': '设置'}[spec.page_id])}
                 for spec in self.state.routes]
@@ -801,6 +810,8 @@ class QuickBridge(QObject):
             self.refresh()
         elif self.state.route == 'tuning':
             self._tuning.refresh_presets()
+        elif self.state.route == 'tuning_workshop':
+            self._workshop.enter()
         elif self.state.route == 'audio_mixdown':
             self._mixdown.enter()
             self._mixdown.refresh_presets()
@@ -812,6 +823,11 @@ class QuickBridge(QObject):
     @Slot()
     def returnToPreparation(self):
         self.navigate(self.state.return_route)
+
+    @Slot(str)
+    def openTuningWorkshop(self, pane):
+        self._workshop.setPane(pane)
+        self.navigate('tuning_workshop')
 
     def _update_draft(self, call, *, persist=False):
         try:
@@ -1847,6 +1863,7 @@ class QuickBridge(QObject):
         self.cancelPreparation()
         self._support.cancelUpdate()
         self._tuning.cancel()
+        self._workshop.cancel()
         self._mixdown.cancel()
         self._video.cancel()
         self._publication.cancel()

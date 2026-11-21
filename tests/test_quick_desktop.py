@@ -43,7 +43,8 @@ try:
                 page = loader.property('item')
                 assert page is not None and page.width() > 0 and page.height() > 0, route.page_id
                 loaded.append(route.page_id)
-            for name in ('voiceCalibrationDialog', 'subtitleDialog', 'subtitleSourcesDialog'):
+            assert 'tuning_workshop' in loaded
+            for name in ('subtitleDialog', 'subtitleSourcesDialog'):
                 assert window.findChild(QObject, name) is not None, name
             assert (window.width(), window.height()) == viewport
             print(f'PASS {viewport[0]}×{viewport[1]} at {scale}% · {", ".join(loaded)}', flush=True)

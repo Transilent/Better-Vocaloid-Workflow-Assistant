@@ -20,7 +20,8 @@
         "preparation",
         "mixdown",
         "tuning",
-        "style_recipe"
+        "style_recipe",
+        "voicebank_calibration"
       ]
     },
     "version": {
@@ -88,6 +89,7 @@
             "mixdown-parameters/v1",
             "tuning-pipeline/v1",
             "style-recipe/v1",
+            "voicebank-calibration/v1",
             "style-recipe/v2"
           ]
         },
@@ -163,7 +165,8 @@
               "reference_audio",
               "calibration_profile",
               "retained_project",
-              "separated_stems"
+              "separated_stems",
+              "calibration_renders"
             ]
           },
           "required": {
@@ -953,6 +956,284 @@
           "properties": {
             "engine_contract": {
               "const": "style-recipe/v1"
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "voicebank_calibration"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "voice": {
+              "enum": [
+                "lead",
+                "backing",
+                "vocals"
+              ]
+            },
+            "voicebank": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "score_sha256": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+            },
+            "settings_sha256": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+            },
+            "strength": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "fit_strategy": {
+              "enum": [
+                "detailed",
+                "preserve",
+                "match"
+              ]
+            },
+            "render_channel_mode": {
+              "enum": [
+                "standard",
+                "sv-extra",
+                "sv-isolated"
+              ]
+            },
+            "trials": {
+              "type": "object",
+              "properties": {
+                "neutral": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 96,
+                      "pattern": "^(?:VWA|BVWA)_[a-zA-Z0-9_-]+$(?![\\s\\S])"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+                    }
+                  },
+                  "required": [
+                    "token",
+                    "sha256"
+                  ],
+                  "additionalProperties": false
+                },
+                "loudness": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 96,
+                      "pattern": "^(?:VWA|BVWA)_[a-zA-Z0-9_-]+$(?![\\s\\S])"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+                    },
+                    "step": {
+                      "type": "number",
+                      "minimum": -48.0,
+                      "maximum": 12.0
+                    }
+                  },
+                  "required": [
+                    "token",
+                    "sha256",
+                    "step"
+                  ],
+                  "additionalProperties": false
+                },
+                "tension": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 96,
+                      "pattern": "^(?:VWA|BVWA)_[a-zA-Z0-9_-]+$(?![\\s\\S])"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+                    },
+                    "step": {
+                      "type": "number",
+                      "minimum": -1.0,
+                      "maximum": 1.0
+                    }
+                  },
+                  "required": [
+                    "token",
+                    "sha256",
+                    "step"
+                  ],
+                  "additionalProperties": false
+                },
+                "breathiness": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 96,
+                      "pattern": "^(?:VWA|BVWA)_[a-zA-Z0-9_-]+$(?![\\s\\S])"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+                    },
+                    "step": {
+                      "type": "number",
+                      "minimum": -1.0,
+                      "maximum": 1.0
+                    }
+                  },
+                  "required": [
+                    "token",
+                    "sha256",
+                    "step"
+                  ],
+                  "additionalProperties": false
+                },
+                "voicing": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 96,
+                      "pattern": "^(?:VWA|BVWA)_[a-zA-Z0-9_-]+$(?![\\s\\S])"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+                    },
+                    "step": {
+                      "type": "number",
+                      "minimum": -1.0,
+                      "maximum": 0.0
+                    }
+                  },
+                  "required": [
+                    "token",
+                    "sha256",
+                    "step"
+                  ],
+                  "additionalProperties": false
+                },
+                "gender": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 96,
+                      "pattern": "^(?:VWA|BVWA)_[a-zA-Z0-9_-]+$(?![\\s\\S])"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+                    },
+                    "step": {
+                      "type": "number",
+                      "minimum": -1.0,
+                      "maximum": 1.0
+                    }
+                  },
+                  "required": [
+                    "token",
+                    "sha256",
+                    "step"
+                  ],
+                  "additionalProperties": false
+                },
+                "toneShift": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 96,
+                      "pattern": "^(?:VWA|BVWA)_[a-zA-Z0-9_-]+$(?![\\s\\S])"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"
+                    },
+                    "step": {
+                      "type": "number",
+                      "minimum": -800.0,
+                      "maximum": 800.0
+                    }
+                  },
+                  "required": [
+                    "token",
+                    "sha256",
+                    "step"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "neutral",
+                "loudness",
+                "tension",
+                "breathiness",
+                "voicing",
+                "gender",
+                "toneShift"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "voice",
+            "voicebank",
+            "score_sha256",
+            "settings_sha256",
+            "strength",
+            "fit_strategy",
+            "render_channel_mode",
+            "trials"
+          ],
+          "additionalProperties": false
+        },
+        "requires": {
+          "properties": {
+            "engine_contract": {
+              "const": "voicebank-calibration/v1"
             }
           }
         }

@@ -9,7 +9,7 @@ def verify(root):
     catalog = manifest['files']
     retired = manifest.get('retired_generated', ())
     if any((root / name).exists() for name in retired):
-        raise ValueError('A generated Widgets file remains in the development layout; run tools/Prepare-Source.ps1.')
+        raise ValueError('A retired generated file remains in the development layout; run tools/Prepare-Source.ps1.')
     if len(catalog) != len(set(catalog)):
         raise ValueError('packaging/source-files.json contains duplicate paths')
     catalogued_sources = {name for name in catalog

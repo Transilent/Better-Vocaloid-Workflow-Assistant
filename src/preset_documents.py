@@ -16,18 +16,20 @@ import re
 import stat
 
 from common import native_path
+from expression_controls import calibration_controls
 from preparation_languages import LANGUAGES, validate_english_midi_options
 
 MAX_DOCUMENT_BYTES = 256 * 1024
 MAX_DEPTH = 16
 MAX_CURVE_POINTS = 1024
 FORMAT_VERSION = 1
-TYPES = ('preparation', 'mixdown', 'tuning', 'style_recipe')
+TYPES = ('preparation', 'mixdown', 'tuning', 'style_recipe', 'voicebank_calibration')
 CONTRACTS = dict(zip(TYPES, ('preparation-parameters/v1', 'mixdown-parameters/v1',
-                           'tuning-pipeline/v1', 'style-recipe/v1')))
+                           'tuning-pipeline/v1', 'style-recipe/v1', 'voicebank-calibration/v1')))
 STYLE_PITCH_CONTRACT = 'style-recipe/v2'
 STYLE_PITCH_CAPABILITY = 'style.pitch-edges'
 STYLE_PITCH_MAX_CENTS = 120
+CALIBRATION_CAPABILITY = 'calibration.svp-response'
 ID_PATTERN = r'^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$'
 EXTERNAL_ID_PATTERN = r'^(?!builtin\.)[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$'
 VERSION_PATTERN = (
@@ -159,9 +161,27 @@ _RECIPE_V2 = _object({
     }),
     'controls': {**_RECIPE['properties']['controls'], 'minItems': 0},
 })
+_TRIAL = _object({'token': _string(96, pattern=r'^(?:VWA|BVWA)_[a-zA-Z0-9_-]+$'),
+                  'sha256': _string(64, pattern=SHA_PATTERN)})
+_PROBE = {**_TRIAL['properties']}
+_CALIBRATION = _object({
+    'voice': _enum('lead', 'backing', 'vocals'),
+    'voicebank': _string(160),
+    'score_sha256': _string(64, pattern=SHA_PATTERN),
+    'settings_sha256': _string(64, pattern=SHA_PATTERN),
+    'strength': _number(0, 1),
+    'fit_strategy': _enum('detailed', 'preserve', 'match'),
+    'render_channel_mode': _enum('standard', 'sv-extra', 'sv-isolated'),
+    'trials': _object({
+        'neutral': _TRIAL,
+        **{name: _object({**_PROBE, 'step': _number(low - neutral, high - neutral)})
+           for name, (low, high, neutral, _) in calibration_controls().items()},
+    }),
+})
 PAYLOAD_SCHEMAS = {
     'preparation': _object({'graph': _GRAPH, 'options': _PREPARATION_OPTIONS}),
     'mixdown': _MIX, 'tuning': _TUNING, 'style_recipe': _RECIPE,
+    'voicebank_calibration': _CALIBRATION,
 }
 _FIELDS = {
     'format': {'type': 'string', 'const': 'vwa.preset'},
@@ -181,7 +201,8 @@ _FIELDS = {
     }, ('preset_api', 'engine_contract', 'capabilities')),
     'binding_slots': _array(_object({
         'id': _string(64, pattern=r'^[a-z][a-z0-9_]*$'),
-        'kind': _enum('vocal_tracks', 'reference_audio', 'calibration_profile', 'retained_project', 'separated_stems'),
+        'kind': _enum('vocal_tracks', 'reference_audio', 'calibration_profile', 'retained_project',
+                      'separated_stems', 'calibration_renders'),
         'required': {'type': 'boolean', 'const': True},
     }), 0, 8),
     'payload': {'type': 'object'},
@@ -396,6 +417,15 @@ def validate_document(value, *, allow_builtin=False):
             limit = 12 if row['channel'] == 'loudness' else 1
             if any(abs(p[1]) > limit for p in points):
                 _invalid('$.payload.controls[' + str(i) + ']', '通道增量超出配方范围。')
+    elif kind == 'voicebank_calibration':
+        if slot_kinds != {'calibration_renders', 'reference_audio', 'vocal_tracks'}:
+            _invalid('$.binding_slots', '声库校准需要目标轨、参考演唱及试音目录。')
+        if value['requires']['capabilities'] != [CALIBRATION_CAPABILITY]:
+            _invalid('$.requires.capabilities', '声库校准能力声明无效。')
+        tokens = [row['token'].casefold() for row in payload['trials'].values()]
+        if len(set(tokens)) != len(tokens) or any(
+                abs(row['step']) < 1e-6 for name, row in payload['trials'].items() if name != 'neutral'):
+            _invalid('$.payload.trials', '试音标识不能重复，参数试音步长须非零。')
     if sorted(json.dumps(x, sort_keys=True) for x in used_refs) != sorted(json.dumps(x, sort_keys=True) for x in dependencies):
         _invalid('$.requires.dependencies', '依赖清单须与配方引用完全一致。')
     try:

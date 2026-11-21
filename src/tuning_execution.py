@@ -114,9 +114,13 @@ def dependencies(options,contributors,root):
     if options['retained_project']:paths.append(Path(options['retained_project']))
     paths.extend(Path(row['project']) for row in options['retained_sources'])
     profile=options['reference_calibration']
+    expected={}
     if profile:
-        from expression_calibration import read_profile
+        from expression_calibration import check_render_digest,expected_render_digests,read_profile
         spec=read_profile(profile);paths.append(Path(profile))
+        expected=expected_render_digests(spec)
         for row in spec['tracks'].values():paths.extend((Path(row['baseline']),*(Path(p['audio']) for p in row['probes'])))
-    return {'files':{str(p.resolve()):file_hash(p) for p in sorted(set(paths))},
+    actual={str(p.resolve()):file_hash(p) for p in sorted(set(paths))}
+    for path,digest in expected.items():check_render_digest(path,actual[path],digest)
+    return {'files':actual,
             'code':{name:file_hash(root/name) for name in contributors}}

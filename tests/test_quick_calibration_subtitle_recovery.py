@@ -93,8 +93,9 @@ try:
         model['tracks'][1]['mainGroup']['notes'][0]['lyrics'] = '另一首歌'
         atomic_json(template, model)
 
-        dialog = dialog_item(window, 'voiceCalibrationDialog')
-        QMetaObject.invokeMethod(dialog, 'open')
+        bridge.openTuningWorkshop('calibration')
+        app.processEvents()
+        dialog = dialog_item(window, 'workshopCalibrationPane')
         cal.chooseProject(url(original))
         wait('select vocal track when instrumental is first', lambda: not cal.worker.kind and cal.view['canInspect'] is False
              and len(cal.view['tracks']) == 1 and cal.view['tracks'][0]['index'] == 1)
@@ -137,6 +138,7 @@ try:
         spec = calibration_session.read_session(session)
         assert Path(spec['render_folder']) == renders and len(spec['outputs']) == 7 and spec['track_index'] == 1
         cal.newSession()
+        click(dialog, 'calibrationSessionHistory')
         click(dialog, 'calibrationFindTaskSessions')
         wait('task catalogue discovers owned session', lambda: not cal.worker.kind
              and any(Path(row['path']) == session for row in cal.view['sessionChoices']))
@@ -158,7 +160,7 @@ try:
         wait('explicit calibration registration writes task receipts', lambda: not cal.worker.kind
              and (job / 'expression-result.json').is_file()
              and bool(json.loads((job / 'task.json').read_text(encoding='utf-8')).get('calibration_sessions')))
-        QMetaObject.invokeMethod(dialog, 'close')
+        bridge.navigate('processing')
 
         bridge.openSubtitleTool()
         subtitle = dialog_item(window, 'subtitleDialog')

@@ -42,7 +42,7 @@ def exercise(root, viewport, scale):
     source, target = root / 'reference.ustx', root / 'target.ustx'
     source.write_bytes(encode(project(True), b''))
     original = project(False)
-    original['name'] = f'Test target {scale}'
+    original['name'] = f'Test target {root.parent.name} {scale}'
     target.write_bytes(encode(original, b''))
     hashes = file_hash(source), file_hash(target)
     try:
@@ -50,6 +50,7 @@ def exercise(root, viewport, scale):
     except RuntimeError as error:
         raise AssertionError(warnings) from error
     tune = bridge.tuning
+    workshop = bridge.workshop
 
     def item(name):
         pending = [window.contentItem()]
@@ -67,7 +68,7 @@ def exercise(root, viewport, scale):
             if predicate():
                 return
             sleep(.015)
-        raise AssertionError((label, scale, tune.worker.kind, tune.view['message'], tune.styleAuthor, warnings))
+        raise AssertionError((label, scale, tune.worker.kind, tune.view['message'], workshop.view, warnings))
 
     def click(name):
         control = item(name)
@@ -83,24 +84,37 @@ def exercise(root, viewport, scale):
         wait('loaded target', lambda: tune.project and not tune.view['busy'])
         tune.setSessionLocation(QUrl.fromLocalFile(str(root / 'sessions')))
         tune.selectSpan(0., .625)
-        click('tuningInspector_presets')
-        click('openTuningStyleAuthor')
-        wait('current-file reference', lambda: tune.styleAuthor['reference'] and not tune.view['busy'])
-        tune.loadStyleReference(QUrl.fromLocalFile(str(source)))
-        wait('external reference selected', lambda: tune.styleAuthor['reference'].get('path') == str(source))
-        item('styleAuthorFrom').setProperty('text', '0')
-        item('styleAuthorTo').setProperty('text', '0.5')
+        click('nav_tuning_workshop')
+        wait('current-file reference', lambda: workshop.view['reference'] and not tune.view['busy'])
+        workshop.loadReference(QUrl.fromLocalFile(str(source)))
+        wait('external reference selected', lambda: workshop.view['reference'].get('path') == str(source))
+        workshop.edit('start', '0')
+        workshop.edit('end', '0.5')
         click('styleAuthorMeasurePitch')
         click('styleAuthorAnalyze')
-        wait('reference envelope', lambda: item('styleAuthorEnvelope') and tune.styleAuthor.get('gestures'))
-        item('styleAuthorName').setProperty('text', f'Reference style {scale}')
+        wait('reference envelope', lambda: item('styleAuthorEnvelope') and workshop.view['gestures'])
+        workshop.edit('name', f'Reference style {scale}')
+        points = workshop.view['points']
+        click('workshopReturnTuning')
+        click('nav_tuning_workshop')
+        assert workshop.view['ready'] and workshop.view['points'] == points
         assert not item('styleAuthorApply').isEnabled()
         click('styleAuthorTrial')
-        wait('non-destructive preview', lambda: bool(tune.styleAuthor['trial']))
+        wait('non-destructive preview', lambda: bool(workshop.view['trial']))
         assert not tune.regions
+        captures = ROOT / 'work/test-results'
+        captures.mkdir(exist_ok=True)
+        assert window.grabWindow().save(str(captures / f'workshop-style-{viewport[0]}.png'))
         click('styleAuthorSave')
-        wait('append to library', lambda: not tune.view['busy'] and any(
-            f'Reference style {scale} · v' in entry['label'] for entry in tune.presets), timeout=35)
+        wait('append to library', lambda: not tune.view['busy']
+             and workshop.view['selectedPreset'].get('name') == f'Reference style {scale}', timeout=35)
+        click('workshopTab_presets')
+        wait('style in workbench library', lambda: item('workshopPresetRow_' + workshop.view['selectedPreset']['id']),
+             timeout=35)
+        wait('style details loaded', lambda: bool(bridge.support.presetLibrary['inspect_text']), timeout=35)
+        assert window.grabWindow().save(str(captures / f'workshop-presets-{viewport[0]}.png'))
+        click('workshopTab_style')
+        assert workshop.view['trial']
         click('styleAuthorApply')
         wait('accepted region', lambda: len(tune.regions) == 1)
         tune.freeze()

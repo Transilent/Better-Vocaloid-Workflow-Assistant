@@ -10,22 +10,24 @@ from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import numpy as np
 import soundfile as sf
-from common import ROOT,file_hash
+from common import ROOT,file_hash,native_path
 from vocal_expression import SV_QUARTER as Q
-from expression_calibration import CONTROLS,read_profile,score_identity
-from calibration_session import create_session,read_session,project_data,RenderCollector,fit_session,wait_and_fit,writer_closed,matches_task
+from expression_calibration import CONTROLS,read_profile,score_identity,signature
+from calibration_session import create_session,read_session,project_data,RenderCollector,fit_session,wait_and_fit,writer_closed,matches_task,verified_fit_result
+from calibration_presets import LocalCalibrationBindings,resolve_trials,save_fit_preset
+from preset_library import PresetLibrary
 
 def raises(kind,function,*args,**kwargs):
     try:function(*args,**kwargs)
     except kind:return
     raise AssertionError('Expected '+kind.__name__)
 
-with tempfile.TemporaryDirectory(dir=ROOT/'work',prefix='auto-calibration-') as directory:
-    root=Path(directory);rate=24000
+with tempfile.TemporaryDirectory(dir=native_path(ROOT/'work'),prefix='auto-calibration-') as directory:
+    root=ROOT/'work'/Path(directory).name;rate=24000
     wave=.1*np.sin(np.arange(rate*4)*2*np.pi*220/rate)
     source=root/'original.svp';reference=root/'reference.wav'
     sf.write(reference,np.r_[wave*10**(1.5/20),np.zeros(rate)],rate,subtype='FLOAT')
-    track={'name':'Lead','mainRef':{'blickOffset':0,'mute':True,'database':{'name':'Test Voice'},'groupID':'source-group'},
+    track={'name':'Lead','mainRef':{'blickOffset':0,'mute':False,'database':{'name':'Test Voice'},'groupID':'source-group'},
            'mainGroup':{'uuid':'source-group','notes':[{'onset':Q//2,'duration':5*Q,'pitch':57,'lyrics':'la'}],
                         'parameters':{'pitchDelta':{'mode':'linear','points':[0,0,Q,4]}}}}
     second=copy.deepcopy(track);second['name']='Backing';second['mainGroup']['notes'][0]['pitch']=60
@@ -77,6 +79,39 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work',prefix='auto-calibration-') as 
     assert Path(fitted['tracks'][2]['mainRef']['audio']['filename'])==root/'instrumental.wav'
     assert fitted['tracks'][0]['mainGroup']['parameters']['loudness']['points']
     assert not list(session.parent.glob('*.pending.svp'))
+    library_store=PresetLibrary(root/'presets')
+    bindings=LocalCalibrationBindings(library_store.root)
+    ready=verified_fit_result(session)
+    entry=save_fit_preset(library_store,bindings,session,ready,'Measured voicebank')
+    doc=library_store.get_document(entry['id'],entry['version'])
+    assert doc['payload']['voicebank']=='Test Voice'
+    assert bindings.get(entry['sha256'])['reference']==str(reference)
+    bundle=root/'test-voice.vwa-preset.json'
+    library_store.export_file(entry['id'],entry['version'],bundle)
+    assert all(str(path).encode() not in bundle.read_bytes() for path in (source,reference,folder))
+    imported_store=PresetLibrary(root/'imported-presets')
+    copied=imported_store.import_file(bundle,expected_revision=imported_store.snapshot()['revision'])['entry']
+    imported=LocalCalibrationBindings(imported_store.root)
+    assert copied['sha256']==entry['sha256'] and not imported.get(copied['sha256'])
+    new_renders=root/'moved-renders'
+    new_renders.mkdir()
+    for path in found.values():
+        shutil.copy2(path,new_renders/path.name)
+    assert len(resolve_trials(doc,new_renders))==7
+    imported.put(copied['sha256'],new_renders)
+    profile_path,reference_path=imported.profile(doc,copied['sha256'],score,0)
+    assert not reference_path and imported.profile(doc,copied['sha256'],score,0)[0]==profile_path
+    assert signature(profile_path)['audio'][0][1]==receipt['neutral']['sha256']
+    wrong_bank=copy.deepcopy(score)
+    wrong_bank['tracks'][0]['mainRef']['database']['name']='Other Voice'
+    raises(ValueError,imported.profile,doc,copied['sha256'],wrong_bank,0)
+    wrong_score=copy.deepcopy(score)
+    wrong_score['tracks'][0]['mainGroup']['notes'][0]['pitch']+=1
+    raises(ValueError,imported.profile,doc,copied['sha256'],wrong_score,0)
+    changed_path=new_renders/test_file.name
+    sf.write(changed_path,wave*.9,rate,subtype='FLOAT')
+    raises(ValueError,signature,profile_path)
+    raises(ValueError,resolve_trials,doc,new_renders)
     task=root/'task';(task/'exports').mkdir(parents=True);(task/'audio').mkdir()
     shutil.copy2(source,task/'exports/voices.svp');shutil.copy2(reference,task/'audio/lead.wav')
     (task/'request.json').write_text(json.dumps({'voice_mode':'dual'}))
@@ -101,4 +136,4 @@ with tempfile.TemporaryDirectory(dir=ROOT/'work',prefix='auto-calibration-') as 
     assert not (missing.parent/'calibrated.svp').exists()
     sf.write(reference,wave*.2,rate,subtype='FLOAT');raises(ValueError,RenderCollector(missing).collect)
 
-print('PASS: seven-track session, stable WAV detection, fitting, retry and cancellation')
+print('PASS: seven-track session, stable WAV detection, fitting, portable preset bindings, retry and cancellation')

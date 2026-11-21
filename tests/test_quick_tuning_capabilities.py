@@ -82,13 +82,15 @@ try:
         root = Path(directory)
         source = root / 'calibration-source.svp'
         quarter = 705600000
-        lead = {'name': '主唱', 'mainRef': {'blickOffset': 0, 'mute': True, 'database': {'name': 'Fixture Voice'},
+        lead = {'name': '主唱', 'mainRef': {'blickOffset': 0, 'mute': False, 'database': {'name': 'Fixture Voice'},
                                         'groupID': 'source-group'},
                 'mainGroup': {'uuid': 'source-group', 'notes': [
                     {'onset': quarter // 2, 'duration': 5 * quarter, 'pitch': 57, 'lyrics': '春'}],
                     'parameters': {'pitchDelta': {'mode': 'linear', 'points': [0, 0, quarter, 4]}}}}
         backing = deepcopy(lead)
         backing['name'] = '和声'
+        backing['mainRef']['groupID'] = 'backing-group'
+        backing['mainGroup']['uuid'] = 'backing-group'
         backing['mainGroup']['notes'][0]['pitch'] = 60
         score = {'version': 153, 'test_id': root.name, 'time': {'tempo': [{'position': 0, 'bpm': 120}],
                                          'meter': [{'index': 0, 'numerator': 4, 'denominator': 4}]},
@@ -155,7 +157,8 @@ try:
             pass
         print('PASS recovery copy is bound to source identity', flush=True)
 
-        click('openVoiceCalibration')
+        bridge.openTuningWorkshop('calibration')
+        tick()
         click('calibrationUseTuningTrack')
         wait('calibration takes current track from a real project', lambda: not cal.view['busy'] and cal.view['project'])
         rate = 24000
@@ -187,14 +190,13 @@ try:
         expect('seven probes bind exact track and names', spec['track_index'] == 1 and len(batch['tracks']) == 7
                and {t['name'] for t in batch['tracks']} == set(spec['outputs'].values()))
         expect('calibration fits inside the normal window',
-               find('voiceCalibrationDialog').property('height') < window.height()
+               find('workshopCalibrationPane').property('height') <= window.height()
                and find('calibrationFit').property('visible'))
         click('calibrationFit')
-        click('calibrationClose')
         bridge.navigate('audio_mixdown')
         tick()
         expect('calibration continues through page navigation',
-               cal.view['busy'] and find('backgroundCalibration').property('visible') and not bridge.workBusy)
+               cal.view['busy'] and find('openOperationWorkspace').property('visible') and not bridge.workBusy)
         renders = Path(spec['render_folder'])
         trials = list(spec['outputs'].items())
         for control, token in trials[:3]:
@@ -206,7 +208,7 @@ try:
             raise AssertionError('second writer was allowed')
         except ValueError as error:
             expect('same session rejects concurrent fitting', '其他窗口' in str(error))
-        click('returnBackgroundCalibration')
+        click('openOperationWorkspace')
         click('calibrationStop')
         wait('stop preserves the session and trial WAVs', lambda: not cal.view['busy'])
         expect('cancel before fitting creates no result', not cal.view['result'] and len(list(renders.glob('*.wav'))) == 3)
@@ -229,22 +231,33 @@ try:
                and fitted['tracks'][2] == backing
                and sorted(p.relative_to(job).as_posix() for p in job.rglob('*')) == task_files)
         assert window.grabWindow().save(str(proof / f'calibration-result-{viewport[0]}.png'))
-        click('calibrationClose')
+        cal.setPresetName('Fixture voicebank calibration')
+        click('calibrationSavePreset')
+        wait('verified voicebank fit saves to the shared library', lambda: not cal.worker.kind
+             and bool(cal.view['savedPreset']), timeout=35)
+        entry = cal.view['savedPreset']
+        click('workshopTab_presets')
+        wait('calibration appears alongside the style catalog', lambda: not bridge.support.presetLibrary['busy']
+             and any(row['id'] == entry['id'] for row in bridge.support.presetLibrary['entries']), timeout=35)
         bridge.navigate('tuning')
         tune.focusTrack(tune.project.editable[1])
         tick()
-        click('openVoiceCalibration')
+        bridge.openTuningWorkshop('calibration')
+        tick()
         expect('result cannot bind to the wrong track', not cal.view['canBind'])
-        click('calibrationClose')
         tune.focusTrack(tune.project.editable[0])
         tick()
-        click('openVoiceCalibration')
-        click('calibrationBindResult')
+        bridge.openTuningWorkshop('presets')
+        tick()
+        wait('calibration details ready to apply', lambda: not bridge.support.presetLibrary['busy'], timeout=35)
+        click('workshopUsePreset')
         wait('verified fit binds and saves actual profile and WAV', lambda: not bridge.workBusy
-             and tune.view['calibration'] == result['profile'])
+             and bridge.route == 'tuning' and 'calibration-bindings' in tune.view['calibration'], timeout=35)
+        expect('active source displays the chosen calibration name',
+               tune.calibrationLabel(tune.view['calibration']) == entry['name'])
+        stored, = tune._drafts.read(source_hash)['data']['options']['reference_sources']
         expect('binding persisted to the correct source track',
-               tune._drafts.read(source_hash)['data']['options']['reference_sources'] ==
-               [{'track_index': 1, 'path': str(reference), 'voice': 'lead'}])
+               stored['track_index'] == 1 and stored['voice'] == 'lead' and Path(stored['path']) == reference)
         click('freezeTuning')
         wait('calibrated tuning plan is usable', lambda: tune.view['canRun'])
         click('runTuning')

@@ -54,12 +54,14 @@ foreach ($copy in $copies) {
     if (!(Test-Path -LiteralPath $copy.Source -PathType Leaf)) { throw 'Source file is missing.' }
 }
 foreach ($name in $mapping.retired_generated) {
-    if ($name -notmatch '^[A-Za-z0-9_]+\.py$' -or $files -contains ('src/' + $name)) {
+    if (($name -notmatch '^[A-Za-z0-9_]+\.py$' -and $name -notmatch '^quick_ui/[A-Za-z0-9_]+\.qml$') -or
+        $files -contains ('src/' + $name)) {
         throw 'Invalid retired generated path.'
     }
     $old = Join-Path $app $name
     if (Test-Path -LiteralPath $old -PathType Leaf) {
-        if ((Get-Item -LiteralPath $old).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        if (((Get-Item -LiteralPath $old).Attributes -bor
+             (Get-Item -LiteralPath (Split-Path -Parent $old)).Attributes) -band [IO.FileAttributes]::ReparsePoint) {
             throw 'Refusing to remove a linked generated file.'
         }
         Remove-Item -LiteralPath $old
