@@ -84,6 +84,8 @@ Item {
                 theme: page.theme
                 controller: page.workshop
                 onTargetRequested: page.controller.navigate("tuning")
+                onPreparationRequested: page.controller.openWorkshopSeparation()
+                onPreparedVocalRequested: page.controller.chooseWorkshopVocal(false)
             }
         }
         Component {

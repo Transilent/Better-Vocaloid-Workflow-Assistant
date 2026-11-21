@@ -9,11 +9,16 @@ Item {
     required property QtObject theme
     required property QtObject controller
     signal targetRequested()
+    signal preparationRequested()
+    signal preparedVocalRequested()
     readonly property real unit: theme.scale
     readonly property var authorView: controller ? controller.view : ({})
     readonly property var fields: authorView.fields || ({})
     readonly property var reference: authorView.reference || ({})
     readonly property var evidence: authorView.report || ({})
+    readonly property var review: authorView.referenceReview || ({})
+    readonly property var dryReview: review.alignment || ({})
+    readonly property var preparedVocal: authorView.preparedVocal || ({})
     readonly property var trackRows: reference.tracks || []
     readonly property var points: authorView.points || []
     readonly property var target: authorView.target || ({})
@@ -25,6 +30,20 @@ Item {
 
     function label(text) { return typeof quickTranslation !== "undefined" && quickTranslation ? quickTranslation.text(text) : text }
     function leaf(path) { return (path || "").split(/[\\/]/).pop() }
+    function vocalLabel(role) {
+        return label({vocals: "全人声", lead: "主唱", backing: "和声"}[role] || "人声")
+    }
+    function reviewSummary() {
+        if (review.error) return review.error
+        if (review.alignment) {
+            return label("完整可用 {0}/{1} 个音符 · 干声 {2} 秒")
+                .replace("{0}", dryReview.accepted_notes).replace("{1}", review.notes)
+                .replace("{2}", Number(dryReview.audio_duration_seconds).toFixed(2))
+        }
+        if (review.source === "native_difference")
+            return label("选区内 {0} 个音符与底稿匹配。").replace("{0}", review.comparison_notes)
+        return review.notes ? label("选区内 {0} 个音符可供分析。").replace("{0}", review.notes) : ""
+    }
     function cents(kind) {
         const row = (authorView.gestures || []).find(value => value.kind === kind)
         return row ? row.cents : 0
@@ -100,6 +119,55 @@ Item {
         title: pane.label("选择同谱对照底稿")
         nameFilters: sourceFile.nameFilters
         onAccepted: pane.controller.loadComparison(selectedFile)
+    }
+    Dialog {
+        id: coverageDialog
+        objectName: "styleReferenceCoverageDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(parent.width - 48 * pane.unit, 650 * pane.unit)
+        height: Math.min(parent.height - 54 * pane.unit, 414 * pane.unit)
+        title: pane.label("干声逐音符覆盖")
+        modal: true
+        standardButtons: Dialog.Close
+        contentItem: ColumnLayout {
+            Hint {
+                text: pane.label("此处核对时间范围和信号活动。启用音高提取后才会测量音高。")
+            }
+            ListView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                model: pane.dryReview.notes || []
+                ScrollBar.vertical: ScrollBar {}
+                delegate: RowLayout {
+                    id: coverageRow
+                    required property var modelData
+                    width: ListView.view.width - 18 * pane.unit
+                    height: 29 * pane.unit
+                    Label {
+                        Layout.preferredWidth: 136 * pane.unit
+                        text: Number(coverageRow.modelData.start).toFixed(2) + "–"
+                            + Number(coverageRow.modelData.end).toFixed(2) + " s"
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        elide: Text.ElideRight
+                        text: String(coverageRow.modelData.lyric || "")
+                    }
+                    Label {
+                        Layout.preferredWidth: 66 * pane.unit
+                        text: Math.round(100 * coverageRow.modelData.active_fraction) + "%"
+                    }
+                    Label {
+                        Layout.preferredWidth: 139 * pane.unit
+                        color: coverageRow.modelData.state === "covered" ? pane.theme.success : pane.theme.attention
+                        text: pane.label({covered: "覆盖合格", outside_audio: "超出音频范围",
+                                          low_activity: "信号活动不足"}[coverageRow.modelData.state])
+                    }
+                }
+            }
+        }
     }
 
     ColumnLayout {
@@ -275,6 +343,31 @@ Item {
                                     onClicked: audioFile.open()
                                 }
                             }
+                            Hint {
+                                visible: !!pane.preparedVocal.title
+                                text: pane.label("准备任务") + " · " + (pane.preparedVocal.title || "")
+                                    + " · " + pane.vocalLabel(pane.preparedVocal.role)
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                UiButton {
+                                    objectName: "styleGoToPreparation"
+                                    Layout.fillWidth: true
+                                    theme: pane.theme
+                                    text: pane.label("去准备分离")
+                                    quiet: true
+                                    enabled: !pane.authorView.busy
+                                    onClicked: pane.preparationRequested()
+                                }
+                                UiButton {
+                                    objectName: "styleChoosePreparedVocal"
+                                    Layout.fillWidth: true
+                                    theme: pane.theme
+                                    text: pane.label("从任务选人声")
+                                    enabled: !pane.authorView.busy
+                                    onClicked: pane.preparedVocalRequested()
+                                }
+                            }
                             Label { text: pane.label("干声 0 秒对应的工程时间") }
                             Field {
                                 objectName: "styleAuthorAudioZero"
@@ -291,15 +384,6 @@ Item {
                             checked: !!pane.fields.measurePitch
                             enabled: !pane.authorView.busy
                             onToggled: pane.controller.edit("measurePitch", checked)
-                        }
-                        UiButton {
-                            objectName: "styleAuthorAnalyze"
-                            Layout.fillWidth: true
-                            theme: pane.theme
-                            text: pane.label(pane.compareMode ? "提取前后差值" : "提取风格")
-                            primary: !pane.authorView.ready
-                            enabled: !!pane.authorView.canAnalyze && !pane.authorView.busy
-                            onClicked: pane.controller.analyze()
                         }
                         Hint {
                             visible: !!pane.authorView.ready
@@ -518,6 +602,51 @@ Item {
                 theme: pane.theme
                 controller: pane.controller
                 view: pane.authorView
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            visible: !pane.designMode
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Math.round(2 * pane.unit)
+                Hint {
+                    objectName: "styleReferenceReview"
+                    visible: !!text
+                    text: pane.reviewSummary()
+                    color: pane.review.usable ? pane.theme.success : pane.theme.attention
+                }
+                Hint {
+                    visible: pane.review.usable === false
+                    text: pane.review.alignment
+                        ? pane.label("有效覆盖不足，请调整时间偏移或重新选择唱段。")
+                        : pane.label("所选参考中暂无可提取的变化。")
+                }
+            }
+            UiButton {
+                objectName: "styleReviewNoteCoverage"
+                theme: pane.theme
+                quiet: true
+                visible: !!pane.review.alignment
+                text: pane.label("查看逐音符覆盖")
+                onClicked: coverageDialog.open()
+            }
+            UiButton {
+                objectName: "styleCheckReference"
+                theme: pane.theme
+                text: pane.label("核对参考")
+                enabled: !!pane.authorView.canAnalyze && !pane.authorView.busy
+                onClicked: pane.controller.checkReference()
+            }
+            UiButton {
+                objectName: "styleAuthorAnalyze"
+                theme: pane.theme
+                text: pane.label(pane.compareMode ? "提取前后差值" : "提取风格")
+                primary: !pane.authorView.ready
+                enabled: !!pane.authorView.canAnalyze && !pane.authorView.busy
+                    && !(pane.review.error || pane.review.usable === false)
+                onClicked: pane.controller.analyze()
             }
         }
 

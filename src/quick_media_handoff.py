@@ -5,6 +5,29 @@ import task_contract
 import task_store
 
 
+_VOCAL_STEMS = {'vocals.wav': 'vocals', 'lead.wav': 'lead', 'backing.wav': 'backing'}
+
+
+def preparation_vocal_role(job, row):
+    """Use only registered, native preparation vocal stems as workshop material."""
+    if row.get('role') != 'audio' or row.get('producer') not in ('separation', 'exports'):
+        return ''
+    path = Path(row.get('path') or '')
+    if path.parent != Path(job) / 'audio':
+        return ''
+    return _VOCAL_STEMS.get(path.name.casefold(), '')
+
+
+def preparation_vocals(job, rows):
+    """Offer one verified receipt per stem, preferring the separation receipt."""
+    selected = {}
+    for row in rows:
+        role = preparation_vocal_role(job, row) if row.get('state') == 'verified' else ''
+        if role and (role not in selected or row['producer'] == 'separation'):
+            selected[role] = row
+    return {row['id']: role for role, row in selected.items()}
+
+
 def artifact_identity(row):
     return tuple(row.get(key) for key in ('id', 'revision', 'sha256', 'path', 'role'))
 
@@ -24,6 +47,14 @@ def verify_task_artifact(job, row, role, check=None, *, platform=None):
     if role in ('mixdown', 'video') and task_contract.selected(job, role, rows=rows) != Path(actual['path']):
         raise ValueError('任务已登记其他成品，请重新交接。')
     return actual
+
+
+def verify_preparation_vocal(job, row, check=None):
+    actual = verify_task_artifact(job, row, 'audio', check=check)
+    role = preparation_vocal_role(job, actual)
+    if not role:
+        raise ValueError('请选择准备任务中已核验的全人声、主唱或和声 WAV。')
+    return actual, role
 
 
 def verify_publication_bundle(job, bundle, check=None):

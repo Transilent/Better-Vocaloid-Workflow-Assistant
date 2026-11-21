@@ -16,7 +16,8 @@ from operation_diagnostics import clock_text, describe, error_text, journal_for,
 import preparation_commands as preparation
 from preparation_languages import PROFILES
 import quick_results
-from quick_media_handoff import artifact_identity, verify_publication_bundle, verify_task_artifact
+from quick_media_handoff import (artifact_identity, verify_preparation_vocal, verify_publication_bundle,
+                                  verify_task_artifact)
 from quick_publication import QuickPublication
 from quick_subtitles import QuickSubtitles, read_task_midi
 from quick_support import QuickSupport
@@ -287,6 +288,7 @@ class QuickBridge(QObject):
         self._support = QuickSupport(self, self._work, update_source_options())
         self._tuning = QuickTuning(self, self._work)
         self._workshop = QuickWorkshop(self, self._tuning, self._support, self._work)
+        self._workshop_vocal_pick = False
         self._calibration = QuickCalibration(self, self._tuning)
         self._calibration.presetSaved.connect(self._workshop.calibrationSaved)
         self._calibration.worker.changed.connect(self._work_changed)
@@ -801,6 +803,8 @@ class QuickBridge(QObject):
     def navigate(self, destination):
         if not self.state.navigate(destination):
             return
+        if self.state.route != 'results':
+            self._workshop_vocal_pick = False
         self.navigationChanged.emit()
         if self.state.route == 'results':
             self._invalidate_task_safety(emit=False)
@@ -828,6 +832,63 @@ class QuickBridge(QObject):
     def openTuningWorkshop(self, pane):
         self._workshop.setPane(pane)
         self.navigate('tuning_workshop')
+
+    @Property(bool, notify=taskChanged)
+    def workshopVocalPick(self):
+        return self._workshop_vocal_pick
+
+    @Slot()
+    def openWorkshopSeparation(self):
+        if self.workBusy or self._closed:
+            return
+        draft = self.state.draft.edit('target', 'separation')
+        if draft.voice_mode == 'import':
+            draft = draft.edit('voice_mode', 'dual')
+        self._update_draft(lambda: self.state.set_draft(draft))
+        self.navigate('processing')
+
+    @Slot(bool)
+    def chooseWorkshopVocal(self, from_preparation):
+        self._workshop_vocal_pick = True
+        self.state.task_query = ''
+        self.setTaskStateFilter('all')
+        if from_preparation and self.state.preparation_task['job']:
+            self.viewPreparationResult()
+        else:
+            self.navigate('results')
+        self.taskChanged.emit()
+
+    @Slot(str)
+    def attachWorkshopVocal(self, artifact_id):
+        job = self.state.selected_task_id
+        if self.workBusy or not job or self.route != 'results' or self._closed:
+            return
+        detail = self.state.task_detail
+        if artifact_id not in detail.get('referenceVocalRoles', {}):
+            return
+        row = next((item for item in detail.get('artifacts', ()) if item['id'] == artifact_id), None)
+        if row is None:
+            return
+
+        def work(stop, _send):
+            return verify_preparation_vocal(job, row, check=stop.is_set)
+
+        def finish(value, error):
+            self._clear_work_task_lock()
+            if self._exit_when_idle or isinstance(error, InterruptedError):
+                return
+            if error is not None:
+                self._error(error)
+                return
+            if self.route == 'results' and self.state.selected_task_id == job:
+                actual, role = value
+                self._workshop.acceptPreparedVocal(job, detail.get('title', ''), actual, role)
+                self.openTuningWorkshop('style')
+
+        self._set_work_task_lock('工坊干声 · 正在核验', job)
+        if not self._work.start('workshop-vocal-handoff', work, finish, route='results',
+                                label='正在核对准备任务的人声…'):
+            self._clear_work_task_lock()
 
     def _update_draft(self, call, *, persist=False):
         try:

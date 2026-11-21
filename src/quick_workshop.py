@@ -12,6 +12,7 @@ from i18n import tr
 from expression_controls import STYLE_CONTROL_NAMES
 from preset_documents import STYLE_ACTION_BOUNDS, STYLE_STRUCTURE_CONTRACT, STYLE_TIMING_BOUNDS
 from preset_library import PresetLibrary
+from quick_media_handoff import verify_preparation_vocal
 from style_presets import freeze_recipe
 
 
@@ -39,6 +40,8 @@ class QuickWorkshop(QObject):
         self._reference = self._result = self._analysis_key = self._trial = self._recipe = None
         self._comparison = None
         self._comparison_track = -1
+        self._audio_binding = None
+        self._reference_review = None
         self._point = 0
         from style_authoring import structure_draft
 
@@ -124,11 +127,15 @@ class QuickWorkshop(QObject):
             ready = True
             valid_recipe = bool(draft['name'].strip() and design_view['hasChanges'])
         trial = self._trial if self._trial_is_current() else {}
+        review = self._reference_review
+        audio = self._audio_binding or {}
         return {'busy': bool(self.worker.kind), 'running': self.worker.kind.startswith('workshop-'),
                 'message': self._message, 'pane': self._pane, 'fields': fields,
                 'method': self._method, 'design': design_view,
                 'reference': self._reference or {}, 'points': measured.get('points', []),
                 'comparison': self._comparison or {}, 'comparisonTrack': self._comparison_track,
+                'referenceReview': review['view'] if review and review['key'] == self._analysis_stamp() else {},
+                'preparedVocal': {'title': audio['title'], 'role': audio['role']} if audio else {},
                 'gestures': measured.get('gestures', []), 'report': measured.get('report', {}),
                 'ready': ready, 'hasAnalysis': bool(measured), 'selectedPoint': self._point,
                 'canUseCurrent': bool(self.tuning.style_reference_seed()),
@@ -329,8 +336,19 @@ class QuickWorkshop(QObject):
     def chooseDryVocal(self, url):
         if not self.worker.kind and (url.isLocalFile() or url.isEmpty()):
             self._fields['audio'] = url.toLocalFile()
+            self._audio_binding = self._reference_review = self._analysis_key = None
             self._trial = None
             self.changed.emit()
+
+    def acceptPreparedVocal(self, job, title, artifact, role):
+        same_file = self._fields['audio'] and Path(self._fields['audio']) == Path(artifact['path'])
+        self._audio_binding = {'job': job, 'title': title or Path(job).name, 'artifact': dict(artifact), 'role': role}
+        if not same_file:
+            self._fields['offset'] = '0'
+        self._fields.update(mode='audio', audio=artifact['path'])
+        self._method = 'reference'
+        self._reference_review = self._analysis_key = self._trial = None
+        self._notice('已承接准备任务的人声。请选择对应乐谱并核对干声时间。')
 
     @Slot(str, 'QVariant')
     def edit(self, name, value):
@@ -356,6 +374,13 @@ class QuickWorkshop(QObject):
 
     @Slot()
     def analyze(self):
+        self._run_reference(review_only=False)
+
+    @Slot()
+    def checkReference(self):
+        self._run_reference(review_only=True)
+
+    def _run_reference(self, *, review_only):
         if self.worker.kind or self._method != 'reference' or not self.view['canAnalyze']:
             return
         from style_authoring import analyze_reference
@@ -364,21 +389,52 @@ class QuickWorkshop(QObject):
         stamp = self._analysis_stamp()
         sha, index, start, end, pitch, _mode, wave, offset, comparison = stamp
         before, before_sha, before_track = comparison or (None, None, None)
-        self._result = self._trial = self._recipe = None
-        self._point = 0
+        binding = self._audio_binding if wave else None
+        review = self._reference_review or {}
+        expected_audio = review.get('audio_sha256') if review.get('key') == stamp else None
+        self._reference_review = None
+        if not review_only:
+            self._result = self._trial = self._recipe = None
+            self._point = 0
 
         def work(stop, send):
-            return analyze_reference(path, index, (float(start), float(end)), audio=wave or None,
-                                     audio_zero=float(offset), pitch=pitch, expected_sha256=sha,
-                                     before=before, before_track=before_track, expected_before_sha256=before_sha,
-                                     cancel=lambda: _cancel(stop), progress=send)
+            try:
+                digest = expected_audio
+                if binding:
+                    verified, _role = verify_preparation_vocal(binding['job'], binding['artifact'], check=stop.is_set)
+                    digest = verified['sha256']
+                return analyze_reference(path, index, (float(start), float(end)), audio=wave or None,
+                                         audio_zero=float(offset), pitch=pitch, expected_sha256=sha,
+                                         before=before, before_track=before_track, expected_before_sha256=before_sha,
+                                         expected_audio_sha256=digest, review_only=review_only,
+                                         cancel=lambda: _cancel(stop), progress=send)
+            except InterruptedError:
+                raise
+            except (OSError, ValueError, RuntimeError) as error:
+                if not review_only:
+                    raise
+                return {'error': str(error)}
 
         def finish(result):
+            if 'error' in result:
+                self._analysis_key = self._trial = None
+                self._reference_review = {'key': stamp, 'view': {'error': tr(result['error'])}}
+                self._notice('参考暂不可用，请查看核对结果。')
+                return
+            report = result['report']
+            self._reference_review = {'key': stamp, 'audio_sha256': result['audio_sha256'],
+                                      'view': {**report, 'review_only': review_only}}
+            if review_only:
+                if not report['usable']:
+                    self._analysis_key = self._trial = None
+                self._notice('参考已核对，可继续提取。' if report['usable'] else '参考暂不可用，请查看核对结果。')
+                return
             self._result = result
             self._analysis_key = stamp
             self._notice('已提取参考风格，可调整后试套或保存。')
 
-        self._command('analysis', '正在分析参考唱段…', work, finish)
+        self._command('review' if review_only else 'analysis',
+                      '正在核对参考唱段…' if review_only else '正在分析参考唱段…', work, finish)
 
     @Slot(str)
     def adoptReference(self, part):

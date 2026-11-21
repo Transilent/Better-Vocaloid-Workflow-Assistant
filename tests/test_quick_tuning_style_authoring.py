@@ -3,15 +3,20 @@ import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic, sleep
+from unittest.mock import patch
+
+import numpy as np
+import soundfile as sf
 
 from PySide6.QtCore import QCoreApplication, QEvent, QPointF, Qt, QtMsgType, QUrl, qInstallMessageHandler
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtTest import QTest
 
-from common import ROOT, file_hash
+from common import ROOT, atomic_json, file_hash
 from quick_app import create_workspace
 from tuning_workflow import read_project
 from ustx_tuning import encode
+import task_contract
 
 
 assert os.environ.get('VWA_TESTING') == '1'
@@ -46,6 +51,10 @@ def exercise(root, viewport, scale):
     comparison['voice_parts'][0]['curves'][0]['ys'] = [0, 12, 0]
     comparison['voice_parts'][0]['curves'][1]['ys'] = [0] * 6
     before.write_bytes(encode(comparison, b''))
+    different_clock = root / 'different-clock.ustx'
+    comparison['tempos'] = [{'position': 0, 'bpm': 240}, {'position': 240, 'bpm': 80},
+                            {'position': 480, 'bpm': 120}]
+    different_clock.write_bytes(encode(comparison, b''))
     original = project(False)
     original['name'] = f'Test target {root.parent.name} {scale}'
     target.write_bytes(encode(original, b''))
@@ -148,8 +157,16 @@ def exercise(root, viewport, scale):
 
         click('nav_tuning_workshop')
         workshop.edit('mode', 'compare')
+        workshop.loadComparison(QUrl.fromLocalFile(str(different_clock)))
+        wait('different clock loaded', lambda: workshop.view['canAnalyze'] and not workshop.view['busy'])
+        click('styleCheckReference')
+        wait('clock mismatch detected before extraction', lambda: workshop.view['referenceReview'].get('error'))
+        assert not item('styleAuthorAnalyze').isEnabled()
         workshop.loadComparison(QUrl.fromLocalFile(str(before)))
         wait('comparison project loaded', lambda: workshop.view['canAnalyze'] and not workshop.view['busy'])
+        click('styleCheckReference')
+        wait('same-score comparison checked', lambda: workshop.view['referenceReview'].get('usable'))
+        assert workshop.view['referenceReview']['comparison_notes'] == 1
         click('styleAuthorAnalyze')
         wait('same-score difference analyzed', lambda: workshop.view['ready'] and
              workshop.view['report'].get('source') == 'native_difference')
@@ -223,6 +240,81 @@ def exercise(root, viewport, scale):
         assert workshop.library.get_snapshot(entry['id'], entry['version'])['raw'] == frozen['raw']
         assert (file_hash(source), file_hash(target)) == hashes
         print('PASS editable style templates, no-effect guard, detached preset editing and native candidate', viewport, scale, flush=True)
+
+        job = root / '20261121_prepared_source'
+        audio_dir = job / 'audio'
+        audio_dir.mkdir(parents=True)
+        rate = 16000
+        times = np.arange(rate) / rate
+        tone = np.sin(2 * np.pi * 261.63 * times) * (.11 + .08 * np.sin(np.pi * 2 * times)**2)
+        for name, wave in (('source.wav', tone), ('lead.wav', tone), ('backing.wav', tone * .15),
+                           ('instrumental.wav', tone * .06)):
+            sf.write(audio_dir / name, wave, rate)
+        atomic_json(job / 'request.json', {'source_kind': 'local', 'source_title': 'Workshop vocal fixture',
+                                          'target': 'separation', 'voice_mode': 'dual'})
+        atomic_json(job / 'status.json', {'state': 'done'})
+        task_contract.register(job, [{'path': audio_dir / 'source.wav', 'role': 'audio'}], 'audio', parents=())
+        task_contract.register(job, [{'path': audio_dir / name, 'role': 'audio'}
+                                    for name in ('lead.wav', 'backing.wav', 'instrumental.wav')], 'separation')
+        click('nav_tuning_workshop')
+        click('styleMethodReference')
+        workshop.edit('mode', 'audio')
+        workshop.edit('measurePitch', False)
+        click('styleGoToPreparation')
+        wait('separation is configured', lambda: bridge.route == 'processing'
+             and bridge.preparation['target'] == 'separation')
+        assert not bridge.preparationBusy
+        bridge.chooseMusic(QUrl.fromLocalFile(str(audio_dir / 'source.wav')))
+
+        def separation_fixture(draft, _existing, _retry, _stop, _send, **_reuse):
+            assert draft.view['target'] == 'separation'
+            assert Path(draft.view['music_path']) == audio_dir / 'source.wav'
+            return {'job': str(job), 'state': 'done', 'message': 'Fixture separation completed'}
+
+        with patch('quick_bridge._run_preparation', separation_fixture):
+            bridge.startPreparation()
+            wait('separation results registered', lambda: not bridge.preparationBusy
+                 and bridge.preparationTask['state'] == 'done')
+        click('preparationChooseWorkshopVocal')
+        wait('only registered vocal stems are offered', lambda: bridge.route == 'results'
+             and set(bridge.taskDetail.get('referenceVocalRoles', {}).values()) == {'lead', 'backing'},
+             timeout=25)
+        assert item('workshopVocalArtifact').property('currentText').endswith('lead.wav')
+        click('useWorkshopVocal')
+        wait('prepared vocal handed back to the same score', lambda: bridge.route == 'tuning_workshop'
+             and workshop.view['preparedVocal'].get('role') == 'lead')
+        assert Path(workshop.view['reference']['path']) == source
+        assert Path(workshop.view['fields']['audio']) == audio_dir / 'lead.wav'
+        click('styleCheckReference')
+        wait('prepared audio checked', lambda: workshop.view['referenceReview'].get('usable'))
+        checked = workshop.view['referenceReview']['alignment']
+        assert checked['accepted_notes'] == 1 and checked['notes'][0]['state'] == 'covered'
+        assert checked['audio_duration_seconds'] == 1.
+        click('styleReviewNoteCoverage')
+        QTest.keyClick(window, Qt.Key.Key_Escape)
+        workshop.edit('offset', '2')
+        click('styleCheckReference')
+        wait('misplaced audio is marked out of range', lambda: workshop.view['referenceReview'].get('usable') is False)
+        assert workshop.view['referenceReview']['alignment']['notes'][0]['state'] == 'outside_audio'
+        assert not item('styleAuthorAnalyze').isEnabled()
+        workshop.edit('offset', '0')
+        click('styleAuthorAnalyze')
+        wait('approved audio can supply style loudness', lambda: workshop.view['ready'] and
+             workshop.view['report'].get('source') == 'aligned_dry_vocal')
+        assert window.grabWindow().save(str(captures / f'workshop-reference-{viewport[0]}.png'))
+
+        click('styleChoosePreparedVocal')
+        wait('workshop can browse existing preparation results', lambda: bridge.route == 'results'
+             and bridge.workshopVocalPick and not bridge.taskLoading)
+        assert window.grabWindow().save(str(captures / f'workshop-choose-vocal-{viewport[0]}.png'))
+        bridge.openTuningWorkshop('style')
+        wait('reference workspace visible again', lambda: item('styleCheckReference') and bridge.route == 'tuning_workshop')
+        sf.write(audio_dir / 'lead.wav', tone * .5, rate)
+        click('styleCheckReference')
+        wait('changed vocal rejected by task identity', lambda: workshop.view['referenceReview'].get('error'))
+        assert not workshop.view['ready']
+        print('PASS workshop reference checks, preparation routing, identified handoff and drift rejection',
+              viewport, scale, flush=True)
     finally:
         modes.close()
         bridge.close()

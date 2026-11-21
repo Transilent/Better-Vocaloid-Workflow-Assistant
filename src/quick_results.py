@@ -13,7 +13,7 @@ from i18n import tr
 
 import task_contract
 import task_store
-from quick_media_handoff import studio_targets
+from quick_media_handoff import preparation_vocals, studio_targets
 
 
 TASK_STATES = {
@@ -521,6 +521,7 @@ def detail(job, check=None, *, include_history=False):
     action = 'needs_review'
     artifacts, artifact_details, delivery, mix, open_path, targets = [], {}, [], [], None, {}
     binding_rows = {}
+    vocals = {}
     error_message = ''
     try:
         rows = task_contract.inspect(path, check=check)
@@ -539,6 +540,7 @@ def detail(job, check=None, *, include_history=False):
         ))
         if include_history:
             ordered.extend(_historical_rows(path, rows, check))
+        vocals = preparation_vocals(path, rows)
         artifacts = [_artifact(path, item) for item in ordered]
         by_id = {item['id']: item for item in ordered}
         artifact_details = {item['id']: _artifact_details(item, by_id) for item in ordered}
@@ -590,6 +592,7 @@ def detail(job, check=None, *, include_history=False):
         'bindings': binding_rows if manageable else {},
         **request,
         'artifacts': artifacts,
+        'referenceVocalRoles': vocals if not locked and not error_message and action != 'processing' else {},
         'artifactDetails': artifact_details,
         'handoff': action,
         'delivery': {

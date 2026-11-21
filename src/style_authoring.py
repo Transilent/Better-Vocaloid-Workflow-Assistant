@@ -237,49 +237,65 @@ def _edge_shape(note, sample):
     return relative
 
 
-def _dry_measurements(path, notes, offset, pitch, *, cancel, progress):
+def _dry_measurements(path, notes, offset, pitch, *, review_only=False, cancel, progress):
+    import soundfile as sf
     from vocal_expression import energy_frames
 
     if type(offset) not in (int, float) or not math.isfinite(offset):
         raise ValueError('请输入干声 0 秒对应的工程时间。')
+    info = sf.info(str(path))
+    if info.samplerate <= 0 or info.frames <= 0 or info.format not in ('WAV', 'WAVEX', 'RF64'):
+        raise ValueError('请选择可读取且包含有效采样的 WAV 干声。')
+    duration = info.frames / info.samplerate
     start, end = min(n.start for n in notes) - offset, max(n.end for n in notes) - offset
-    if end <= 0:
-        raise ValueError('参考唱段在干声起点之前，请核对对齐偏移。')
-    window = max(0., start - .12), end + .12
-    progress('正在测量对齐干声的力度…')
-    audio_times, db, metadata = energy_frames(path, cancel, window=window)
-    times = audio_times + offset
+    window = max(0., start - .12), min(duration, end + .12)
+    times, db = np.empty(0), np.empty(0)
+    if window[0] < window[1]:
+        progress('正在核对干声的音符覆盖…')
+        audio_times, db, _ = energy_frames(path, cancel, window=window)
+        times = audio_times + offset
     inside = np.zeros(len(times), dtype=bool)
     for note in notes:
         inside |= (times >= note.start) & (times < note.end)
-    if not inside.any():
-        raise ValueError('参考唱段未落在干声中，请核对对齐偏移。')
-    gate = max(-85., float(np.percentile(db[inside], 90)) - 30.)
+    gate = max(-85., float(np.percentile(db[inside], 90)) - 30.) if inside.any() else -85.
     usable = db > gate
-    loudness, accepted = [], []
+    loudness, accepted, checked = [], [], []
     for note in notes:
+        cancel()
         lo, hi = np.searchsorted(times, (note.start, note.end))
+        fraction = float(np.mean(usable[lo:hi])) if hi > lo else 0.
+        entry = {'start': note.start, 'end': note.end, 'lyric': note.lyric,
+                 'active_fraction': round(fraction, 3), 'state': 'covered'}
+        checked.append(entry)
         # Permit a rounding error at the file end, while requiring the note's whole time span.
-        if (note.start < offset - .001 or note.end > offset + metadata['duration_seconds'] + .001
-                or hi - lo < 4 or np.mean(usable[lo:hi]) < .55):
+        if note.start < offset - .001 or note.end > offset + duration + .001:
+            entry['state'] = 'outside_audio'
+            continue
+        if hi - lo < 4 or fraction < .55:
+            entry['state'] = 'low_activity'
             continue
         core = (times[lo:hi] >= note.start + note.duration * .18) & (times[lo:hi] <= note.end - note.duration * .18)
         supported = db[lo:hi][core & usable[lo:hi]]
         if not len(supported):
+            entry['state'] = 'low_activity'
             continue
         center = np.median(supported)
         # Use in-note edges instead of sampling adjacent notes or quiet gaps.
         curve = np.interp(note.start + PHASES * note.duration, times[lo:hi], db[lo:hi])
         loudness.append(curve - center)
         accepted.append(note)
-    if not accepted or len(accepted) < math.ceil(len(notes) * .6):
-        raise ValueError('干声与所选音符的有效重合不足，请调整对齐偏移或重选唱段。')
-    coverage = float(np.mean(usable[inside]))
+    adequate = len(accepted) >= math.ceil(len(notes) * .6)
+    coverage = float(np.mean(usable[inside])) if inside.any() else 0.
     evidence = {'mode': 'manual_audio_zero', 'audio_zero_project_seconds': offset,
+                'audio_duration_seconds': duration, 'samplerate': info.samplerate, 'channels': info.channels,
                 'accepted_notes': len(accepted), 'excluded_notes': len(notes) - len(accepted),
-                'in_note_signal_fraction': round(coverage, 3)}
+                'in_note_signal_fraction': round(coverage, 3), 'adequate': adequate, 'notes': checked}
     if np.count_nonzero(~inside) >= 10:
         evidence['rest_signal_fraction'] = round(float(np.mean(usable[~inside])), 3)
+    if review_only:
+        return loudness, [], evidence
+    if not adequate:
+        raise ValueError('干声与所选音符的有效重合不足，请调整对齐偏移或重选唱段。')
     if not pitch:
         return loudness, [], evidence
 
@@ -301,9 +317,26 @@ def _dry_measurements(path, notes, offset, pitch, *, cancel, progress):
     return loudness, edges, evidence
 
 
+def _comparison_notes(layout, index, prior_layout, prior_index, span):
+    start, end = span
+    left, right = layout.clock, prior_layout.clock
+    boundaries = {start, end, *(t for clock in (left, right) for t in clock.seconds if start < t < end)}
+    if any(abs(left.to_position(t) - right.to_position(t)) > 1 for t in boundaries):
+        raise ValueError('两份工程在选区内的速度或播放时间轴不同。')
+
+    def signature(geometry, track):
+        return sorted((note.start, note.end, note.key, str(note.lyric), singing)
+                      for note, singing in _notes(geometry, track) if note.start < end and note.end > start)
+
+    first, second = signature(layout, index), signature(prior_layout, prior_index)
+    if first != second:
+        raise ValueError('两份工程在选区内的音符时间、音高、歌词或演唱状态不同。')
+    return len(first)
+
+
 def analyze_reference(path, track_index=None, span=None, *, audio=None, audio_zero=0., pitch=False,
                       before=None, before_track=None, expected_sha256=None, expected_before_sha256=None,
-                      cancel=lambda: None, progress=lambda _s: None):
+                      expected_audio_sha256=None, review_only=False, cancel=lambda: None, progress=lambda _s: None):
     """Read authored automation or measure a dry vocal against its aligned score."""
     cancel()
     progress('正在读取参考工程和演唱音符…')
@@ -312,12 +345,17 @@ def analyze_reference(path, track_index=None, span=None, *, audio=None, audio_ze
         raise ValueError('参考工程已变化，请重新载入。')
     notes, excluded = _selection(layout, index, span)
     sources = {snapshot.path: snapshot.sha256}
+    compared = None
     if audio and before:
         raise ValueError('请在对齐干声和原参数工程差值中选择一种。')
     if audio:
         audio = Path(audio).resolve()
-        sources[audio] = file_hash(audio, check=cancel)
-        loudness, edges, align = _dry_measurements(audio, notes, audio_zero, pitch, cancel=cancel, progress=progress)
+        digest = file_hash(audio, check=cancel)
+        if expected_audio_sha256 is not None and digest != expected_audio_sha256:
+            raise ValueError('参考干声已变化，请重新选择并核对。')
+        sources[audio] = digest
+        loudness, edges, align = _dry_measurements(audio, notes, audio_zero, pitch, review_only=review_only,
+                                                   cancel=cancel, progress=progress)
         mode = 'aligned_dry_vocal'
     else:
         prior, prior_layout, previous = None, None, {}
@@ -325,9 +363,13 @@ def analyze_reference(path, track_index=None, span=None, *, audio=None, audio_ze
             prior, _, prior_layout, _, prior_index = _score(before, before_track)
             if expected_before_sha256 is not None and prior.sha256 != expected_before_sha256:
                 raise ValueError('对照底稿已变化，请重新载入。')
+            if prior.format != snapshot.format:
+                raise ValueError('参考与对照底稿需要使用相同的工程格式。')
+            compared = _comparison_notes(layout, index, prior_layout, prior_index,
+                                         span or (notes[0].start, max(note.end for note in notes)))
             prior_notes, _ = _selection(prior_layout, prior_index, span)
-            if prior.format != snapshot.format or [n.identity for n in notes] != [n.identity for n in prior_notes]:
-                raise ValueError('原参数工程需要同格式、同音符和同一播放时间轴。')
+            if [n.identity for n in notes] != [n.identity for n in prior_notes]:
+                raise ValueError('两份工程的可提取音符范围不同。')
             previous = {note.identity: old for note, old in zip(notes, prior_notes)}
             sources[prior.path] = prior.sha256
         loudness, edges, align = [], [], None
@@ -362,14 +404,16 @@ def analyze_reference(path, track_index=None, span=None, *, audio=None, audio_ze
         values = np.clip(np.median(edges, axis=0), -STYLE_PITCH_MAX_CENTS, STYLE_PITCH_MAX_CENTS)
         gestures = [{'kind': kind, 'cents': round(float(value), 2), 'fraction': EDGE_FRACTION}
                     for kind, value in zip(('onset', 'release'), values) if abs(value) >= 4]
-    if not points and not gestures:
+    if not review_only and not points and not gestures:
         raise ValueError('所选唱段没有可用的力度或受限音高动作。')
-    return {'points': points, 'gestures': gestures, 'report': {
+    return {'points': points, 'gestures': gestures, 'audio_sha256': sources[audio] if audio else '',
+            'report': {
         'source': mode, 'format': snapshot.format, 'track_index': index, 'notes': len(notes),
         'range_seconds': [notes[0].start, max(note.end for note in notes)],
         'typical_note_seconds': float(np.median([note.duration for note in notes])),
         'excluded': excluded, 'loudness_notes': len(loudness), 'pitch_requested': pitch,
-        'pitch_notes': len(edges), 'alignment': align}}
+        'pitch_notes': len(edges), 'alignment': align, 'comparison_notes': compared,
+        'usable': align['adequate'] if align else bool(points or gestures)}}
 
 
 def make_recipe(name, points, gestures=(), *, strength=.6, identifier=None):

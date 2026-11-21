@@ -8,7 +8,8 @@ from unittest.mock import patch
 APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP / 'src'))
 from common import atomic_json, file_hash
-from quick_media_handoff import studio_targets, verify_publication_bundle, verify_task_artifact
+from quick_media_handoff import (preparation_vocal_role, preparation_vocals, studio_targets, verify_preparation_vocal,
+                                 verify_publication_bundle, verify_task_artifact)
 import task_contract
 import task_store
 
@@ -70,6 +71,30 @@ class MediaHandoffTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '上游修订'):
             verify_task_artifact(self.job, self.video_row, 'video')
         self.assertEqual(studio_targets(self.job, task_contract.inspect(self.job)), {})
+
+    def test_workshop_accepts_registered_preparation_stems_and_rechecks_dependencies(self):
+        backing = self.asset('audio/backing.wav', b'backing')
+        accompaniment = self.asset('audio/instrumental.wav', b'accompaniment')
+        misleading = self.asset('audio/lead.wav', b'wrong producer')
+        task_contract.register(self.job, [{'path': misleading, 'role': 'audio'}], 'audio', parents=())
+        task_contract.register(self.job, [{'path': path, 'role': 'audio'}
+                                        for path in (self.stem, backing, accompaniment)], 'separation')
+        rows = {Path(row['path']).name: row for row in task_contract.inspect(self.job)}
+        self.assertEqual(verify_preparation_vocal(self.job, rows['backing.wav']), (rows['backing.wav'], 'backing'))
+        for name in ('instrumental.wav', 'lead.wav'):
+            self.assertFalse(preparation_vocal_role(self.job, rows[name]))
+            with self.assertRaisesRegex(ValueError, '分离|人声'):
+                verify_preparation_vocal(self.job, rows[name])
+        task_contract.register(self.job, [{'path': backing, 'role': 'audio'}], 'exports')
+        checked = task_contract.inspect(self.job)
+        copied = next(row for row in checked if row['producer'] == 'exports')
+        self.assertEqual(preparation_vocals(self.job, [copied]), {copied['id']: 'backing'})
+        offered = preparation_vocals(self.job, checked)
+        self.assertEqual(offered[rows['backing.wav']['id']], 'backing')
+        self.assertNotIn(copied['id'], offered)
+        misleading.write_bytes(b'changed upstream source')
+        with self.assertRaisesRegex(ValueError, '上游修订'):
+            verify_preparation_vocal(self.job, rows['backing.wav'])
 
     def test_publication_preserves_pinned_video_dependencies(self):
         bundle = self.bundle()

@@ -2183,6 +2183,15 @@ Item {
             }
 
             UiButton {
+                objectName: "preparationChooseWorkshopVocal"
+                theme: page.theme
+                text: page.controller.text("为工坊选人声")
+                quiet: true
+                visible: page.taskHasResult
+                enabled: !page.controller.workBusy
+                onClicked: page.controller.chooseWorkshopVocal(true)
+            }
+            UiButton {
                 objectName: "viewPreparationResult"
                 theme: page.theme
                 text: page.controller.text("查看准备结果")

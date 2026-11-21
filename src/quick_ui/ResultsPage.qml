@@ -14,6 +14,9 @@ Rectangle {
     readonly property bool idle: !controller.taskLoading && !controller.workBusy
     readonly property bool mutationIdle: !controller.taskLoading && !controller.taskMutationBusy
     readonly property var detail: controller.taskDetail
+    readonly property var workshopVocalRoles: detail.referenceVocalRoles || ({})
+    readonly property var workshopVocals: (detail.artifacts || []).filter(row => !!workshopVocalRoles[row.id])
+    property string workshopVocalId: ""
     readonly property int railWidth: Math.round(280 * theme.scale)
     readonly property int inspectorWidth: Math.round(320 * theme.scale)
     readonly property real bodyGap: Math.round(14 * theme.scale)
@@ -284,6 +287,56 @@ Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 1
             color: page.theme.line
+        }
+
+        RowLayout {
+            visible: page.controller.workshopVocalPick
+            Layout.fillWidth: true
+            Layout.leftMargin: Math.round(22 * page.theme.scale)
+            Layout.rightMargin: Math.round(22 * page.theme.scale)
+            Layout.topMargin: Math.round(10 * page.theme.scale)
+            spacing: Math.round(8 * page.theme.scale)
+            Text {
+                Layout.fillWidth: true
+                text: page.controller.text(page.workshopVocals.length ? "选择要交给工坊的人声"
+                                                                     : "请选择含有分离人声的准备任务。")
+                color: page.theme.muted
+                font.pixelSize: Math.round(12 * page.theme.scale)
+                elide: Text.ElideRight
+            }
+            UiComboBox {
+                id: workshopVocal
+                objectName: "workshopVocalArtifact"
+                Layout.preferredWidth: Math.round(224 * page.theme.scale)
+                theme: page.theme
+                fieldLabel: page.controller.text("工坊参考人声")
+                enabled: page.idle && page.workshopVocals.length > 0
+                model: page.workshopVocals.map(row => ({
+                    value: row.id,
+                    label: page.controller.text({lead: "主唱", backing: "和声", vocals: "全人声"}[page.workshopVocalRoles[row.id]])
+                        + " · " + String(row.path).split(/[\\/]/).pop()
+                }))
+                currentIndex: {
+                    const selected = page.workshopVocals.findIndex(row => row.id === page.workshopVocalId)
+                    const preferred = page.workshopVocals.findIndex(row => page.workshopVocalRoles[row.id] === "lead")
+                    return selected >= 0 ? selected : preferred >= 0 ? preferred : (model.length ? 0 : -1)
+                }
+                onActivated: page.workshopVocalId = currentValue
+            }
+            UiButton {
+                objectName: "useWorkshopVocal"
+                theme: page.theme
+                text: page.controller.text("带回工坊")
+                primary: true
+                enabled: page.idle && !!workshopVocal.currentValue
+                onClicked: page.controller.attachWorkshopVocal(workshopVocal.currentValue)
+            }
+            UiButton {
+                theme: page.theme
+                quiet: true
+                text: page.controller.text("返回工坊")
+                onClicked: page.controller.openTuningWorkshop("style")
+            }
         }
 
         RowLayout {
