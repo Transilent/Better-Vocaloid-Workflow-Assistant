@@ -1392,10 +1392,11 @@ Item {
                                 }
 
                                 HelperText {
+                                    objectName: "preparationProjectFormatHint"
                                     Layout.fillWidth: true
                                     theme: page.theme
-                                    visible: page.englishLyrics
-                                    text: page.controller.text("英文支持 MIDI 和 USTX。")
+                                    visible: !(page.field("project_formats") || []).length
+                                    text: page.controller.text("工程格式未选。将生成 MIDI，勾选格式后可同时导出工程。")
                                 }
 
                                 GridLayout {
@@ -1413,14 +1414,13 @@ Item {
 
                                         delegate: CheckOption {
                                             required property var modelData
-                                            readonly property bool available: !page.englishLyrics || modelData.value === "ustx"
                                             Layout.fillWidth: true
                                             theme: page.theme
                                             text: modelData.label
-                                            checked: available && page.listHas(page.field("project_formats"), modelData.value)
-                                            enabled: available && !page.editLocked
+                                            checked: page.listHas(page.field("project_formats"), modelData.value)
+                                            enabled: !page.editLocked
                                             ToolTip.visible: hovered
-                                            ToolTip.text: available ? modelData.hint : page.controller.text("英文支持 MIDI 和 USTX。")
+                                            ToolTip.text: modelData.hint
                                             onToggled: page.controller.setPreparationExportFormat(
                                                 "project_formats", modelData.value, checked)
                                         }
@@ -1930,6 +1930,14 @@ Item {
                                     : page.controller.text("{0} 个片段只有音符，请在对齐报告中核对。")
                                         .replace("{0}", modelData.chunks))
                         }
+                    }
+
+                    HelperText {
+                        Layout.fillWidth: true
+                        visible: Number(page.task.vsqx_pronunciation_reviews) > 0
+                        theme: page.theme
+                        text: page.controller.text("VSQX 有 {0} 处英文发音需核对。歌词和位置见导出回执。")
+                            .replace("{0}", page.task.vsqx_pronunciation_reviews)
                     }
 
                     Text {

@@ -5,9 +5,8 @@ Open **Settings & updates → Appearance → Interface language** and select
 launch. Active processing, tuning sessions and open drafts are not rebuilt when
 you change this preference.
 
-The interface language is separate from lyric recognition. Select Chinese or
-Japanese recognition in the preparation workflow; this setting does not add an
-English ASR model. Lyrics, user task names, project paths, receipts and raw
+The interface language is separate from lyric recognition. Select Chinese,
+Japanese or English recognition in the preparation workflow. Lyrics, user task names, project paths, receipts and raw
 diagnostic logs retain their original contents. Known application guidance is
 translated locally. Unknown third-party errors remain available in their original
 form, so the underlying reason is not lost.

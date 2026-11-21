@@ -11,10 +11,15 @@ ROOT=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT))
 from common import atomic_json, cancelled, file_hash, resolve_tools, preserve_changed_file
 from artifact_cache import fingerprint
-from preparation_languages import validate_project_formats
+from preparation_languages import lyric_continuation
 
 PROJECT_FORMATS=('ustx','vsqx','svp')
 AUDIO_FORMATS=('wav','flac','mp3','ogg')
+SVP_LANGUAGES = {'zh': 'mandarin', 'ja': 'japanese', 'en': 'english'}
+# Bank and program from Yamaha's English CYBER DIVA demonstration project.
+ENGLISH_VSQX_VOICE = {'default_lang_id': 1, 'default_comp_id': 'BCLPDYL3MBTL2CD5',
+                      'default_singer_name': 'CYBER_DIVA'}
+ENGLISH_VSQX_PROGRAM = 4
 
 
 def context_requested(request):
@@ -65,6 +70,10 @@ def project_signatures(job, request):
     signatures = {fmt: fingerprint([base, fmt]) for fmt in request.get('project_formats', [])}
     if 'vsqx' in signatures and request.get('export_pitch'):
         signatures['vsqx'] = fingerprint([signatures['vsqx'], file_hash(Path(__file__).with_name('vocaloid_pitch.py'))])
+    if 'vsqx' in signatures and request['language'] == 'en':
+        from vocaloid_english import DICTIONARY_PATH
+        signatures['vsqx'] = fingerprint([signatures['vsqx'], file_hash(ROOT / 'vocaloid_english.py'),
+                                           file_hash(ROOT / DICTIONARY_PATH)])
     if 'svp' in signatures and (enabled or timbre) and strength > 0:
         signatures['svp'] = fingerprint([base, 'svp', strength,
             file_hash(Path(__file__).with_name('vocal_expression.py')),
@@ -292,24 +301,150 @@ def library():
     return {'ustx':OpenUtauConverter,'vsqx':VsqxConverter,'svp':SynthVStudioConverter},Project,SingingTrack,InstrumentalTrack
 
 
-def restore_vsqx_lyrics(path, tracks):
-    """Keep the user's lyric script while retaining generated pronunciation data."""
-    tree=ET.parse(path)
-    root=tree.getroot()
-    namespace=root.tag.partition('}')[0].removeprefix('{')
-    ET.register_namespace('',namespace)
-    parts=[element for element in root.iter() if element.tag.rsplit('}',1)[-1]=='vsTrack']
-    if len(parts)!=len(tracks):
+def project_output_options(fmt, language):
+    if fmt == 'svp':
+        return {'down_sample': 0, 'language_override': SVP_LANGUAGES[language]}
+    if fmt == 'vsqx' and language == 'en':
+        return ENGLISH_VSQX_VOICE.copy()
+    return {}
+
+
+def _note_key(note):
+    return note.start_pos, note.length, note.key_number
+
+
+def _vsqx_export_rows(root, project):
+    """Match native note identities before restoring or verifying lyric data."""
+    from vsqx_tuning import _NAMES
+
+    version = 3 if root.tag.endswith('}vsq3') else 4
+    names = _NAMES[version]
+    space = root.tag.split('}')[0] + '}'
+    tracks = root.findall(space + 'vsTrack')
+    singing = [track for track in project.track_list if hasattr(track, 'note_list')]
+    if len(tracks) != len(singing):
         raise ValueError('VSQX 导出声部数量不一致。')
-    for part,track in zip(parts,tracks):
-        notes=[element for element in part.iter() if element.tag.rsplit('}',1)[-1]=='note']
-        if len(notes)!=len(track.note_list):
-            raise ValueError('VSQX 导出音符数量不一致。')
-        for element,note in zip(notes,track.note_list):
-            lyric=next((child for child in element if child.tag.rsplit('}',1)[-1] in ('y','lyric')),None)
-            if lyric is not None:
-                lyric.text=note.lyric
-    tree.write(path,encoding='utf-8',xml_declaration=True)
+    # The pinned exporter starts its generated parts after a single pre-measure.
+    origin = round(project.time_signature_list[0].bar_length())
+    for track, reference in zip(tracks, singing):
+        expected = {_note_key(note): note for note in reference.note_list}
+        if len(expected) != len(reference.note_list):
+            raise ValueError('VSQX 含重复音符，无法匹配歌词。')
+        rows = []
+        for part in track.findall(space + names['part']):
+            offset = int(part.findtext(space + names['tick'])) - origin
+            for element in part.findall(space + 'note'):
+                key = (offset + int(element.findtext(space + names['tick'])),
+                       int(element.findtext(space + names['duration'])),
+                       int(element.findtext(space + names['pitch'])))
+                lyric = element.find(space + names['lyric'])
+                phones = element.find(space + names['phoneme'])
+                if key not in expected or lyric is None or phones is None:
+                    raise ValueError('VSQX 导出音符位置、歌词或音素节点不一致。')
+                rows.append((expected.pop(key), lyric, phones))
+        if expected:
+            raise ValueError('VSQX 导出漏写音符。')
+        yield rows
+
+
+def restore_vsqx_lyrics(path, project, language):
+    """Keep exact lyrics and populate the native English singer and phonemes."""
+    tree = ET.parse(path)
+    root = tree.getroot()
+    namespace = root.tag.partition('}')[0].removeprefix('{')
+    ET.register_namespace('', namespace)
+    reviews, count = [], 0
+    if language == 'en':
+        from vocaloid_english import pronounce_notes
+        voices = root.findall('./{*}vVoiceTable/{*}vVoice')
+        singers = root.findall('./{*}vsTrack/{*}vsPart/{*}singer')
+        if len(voices) != 1:
+            raise ValueError('VSQX 导出缺少英文声库声明。')
+        for element in voices + singers:
+            element.find('{*}bs').text = str(ENGLISH_VSQX_VOICE['default_lang_id'])
+            element.find('{*}pc').text = str(ENGLISH_VSQX_PROGRAM)
+    for index, rows in enumerate(_vsqx_export_rows(root, project)):
+        for note, lyric, _ in rows:
+            lyric.text = note.lyric
+        count += len(rows)
+        if language == 'en':
+            phonemes, issues = pronounce_notes([(note.start_pos, note.length, note.lyric) for note, _, _ in rows])
+            for (_, _, field), text in zip(rows, phonemes, strict=True):
+                field.text = text
+            reviews.extend({'track': index, **issue} for issue in issues)
+    tree.write(path, encoding='utf-8', xml_declaration=True)
+    if language == 'en':
+        return {'notes': count, 'review_count': len(reviews), 'reviews': reviews[:128]}
+
+
+def read_vsqx_export_lyrics(path, project, *, english=False):
+    """Recover raw lyrics and verify the native English voice and phone fields."""
+    root = ET.parse(path).getroot()
+    rows = list(_vsqx_export_rows(root, project))
+    if english:
+        voice = root.find('./{*}vVoiceTable/{*}vVoice')
+        singers = root.findall('./{*}vsTrack/{*}vsPart/{*}singer')
+        if (voice is None or voice.findtext('{*}id') != ENGLISH_VSQX_VOICE['default_comp_id']
+                or len(singers) != sum(bool(track) for track in rows)
+                or any((record.findtext('{*}bs'), record.findtext('{*}pc')) != ('1', str(ENGLISH_VSQX_PROGRAM))
+                       for record in [voice, *singers])):
+            raise ValueError('VSQX 英文声库声明回读不一致。')
+        from vocaloid_english import pronounce_notes
+        for track in rows:
+            lyrics = [(note.start_pos, note.length, lyric.text or '') for note, lyric, _ in track]
+            phones, _ = pronounce_notes(lyrics)
+            if [field.text for _, _, field in track] != phones:
+                raise ValueError('VSQX 英文音素回读不一致。')
+    for track in rows:
+        for note, lyric, _ in track:
+            note.lyric = lyric.text or ''
+
+
+def english_project_lyric(fmt, text):
+    if fmt == 'ustx' and text == '-':
+        return '+~'
+    if fmt == 'svp' and (marker := lyric_continuation(text)):
+        return '-' if marker == 'hold' else '+'
+    return text
+
+
+def english_svp_project(project):
+    """Use Synthesizer V's syllable and sustain markers on a separate draft."""
+    tracks, numbered = [], []
+    for index, track in enumerate(project.track_list):
+        if not hasattr(track, 'note_list'):
+            tracks.append(track)
+            continue
+        notes = []
+        for note in track.note_list:
+            text = english_project_lyric('svp', note.lyric)
+            if lyric_continuation(note.lyric) == 'anchor':
+                numbered.append({'track': index, 'tick': note.start_pos, 'lyric': note.lyric})
+            notes.append(note.model_copy(update={'lyric': text}) if text != note.lyric else note)
+        tracks.append(track.model_copy(update={'note_list': notes}))
+    return project.model_copy(update={'track_list': tracks}), numbered
+
+
+def read_english_svp_lyrics(path, project):
+    from vocal_expression import SV_QUARTER
+
+    factor = SV_QUARTER // 480
+    data = json.loads(path.read_bytes().removesuffix(b'\x00').decode('utf-8-sig'))
+    native_tracks = []
+    for track in data['tracks']:
+        ref = track['mainRef']
+        if not ref.get('isInstrumental'):
+            database = ref.get('database', {})
+            if (database.get('languageOverride'), database.get('phonesetOverride')) != ('english', 'arpabet'):
+                raise ValueError('SVP 导出未写入英文发音设置。')
+            notes = {}
+            for note in track['mainGroup']['notes']:
+                key = note['onset'] // factor, note['duration'] // factor, note['pitch']
+                if key in notes:
+                    raise ValueError('SVP 含重复音符，无法回读英文歌词。')
+                notes[key] = note['lyrics']
+            native_tracks.append(notes)
+    _read_native_lyrics(project, native_tracks, 'SVP')
 
 
 def remove_pitch_data(path, fmt):
@@ -419,6 +554,33 @@ def english_ustx_input_options(language):
     return {'plus_handling_mode': 'polysyllabic', 'breath_lyrics': '', 'silence_lyrics': ''}
 
 
+def _read_native_lyrics(project, native_tracks, label):
+    singing = [track for track in project.track_list if hasattr(track, 'note_list')]
+    if len(native_tracks) != len(singing):
+        raise ValueError(label + ' 英文工程的声部回读不一致。')
+    for native, track in zip(native_tracks, singing):
+        for note in track.note_list:
+            key = _note_key(note)
+            if key not in native:
+                raise ValueError(label + ' 英文工程的音符位置回读不一致。')
+            note.lyric = native.pop(key)
+        if native:
+            raise ValueError(label + ' 英文工程还有未匹配音符。')
+
+
+def read_english_ustx_lyrics(path, project):
+    """Recover USTX markers that the generic reader collapses to + or -."""
+    tracks = {}
+    for part in read_ustx(path).get('voice_parts', []):
+        for note in part['notes']:
+            rows = tracks.setdefault(part['track_no'], {})
+            key = (part['position'] + note['position'], note['duration'], note['tone'])
+            if key in rows:
+                raise ValueError('USTX 含重复音符，无法回读英文歌词。')
+            rows[key] = note['lyric']
+    _read_native_lyrics(project, [tracks[index] for index in sorted(tracks)], 'USTX')
+
+
 def restore_english_ustx_lyrics(path, project):
     """Keep exact words and both continuation markers through LibreSVIP."""
     import yaml
@@ -430,7 +592,7 @@ def restore_english_ustx_lyrics(path, project):
             key = (track_index, note.start_pos, note.length, note.key_number)
             if key in expected:
                 raise ValueError('USTX 导出包含重复音符，无法匹配英文歌词。')
-            expected[key] = '+~' if note.lyric == '-' else note.lyric
+            expected[key] = english_project_lyric('ustx', note.lyric)
     restored = len(expected)
     for part in data.get('voice_parts', []):
         for note in part['notes']:
@@ -501,7 +663,8 @@ def export_projects(job, request):
     formats=request.get('project_formats',[])
     if not formats:
         return {'outputs':[], 'tracks':[]}
-    validate_project_formats(request['language'], formats)
+    validate_options(formats, [])
+    english = request['language'] == 'en'
     english_options = english_ustx_input_options(request['language'])
     receipts = read_receipts(job)
     signatures = project_signatures(job, request)
@@ -540,6 +703,8 @@ def export_projects(job, request):
         raw_pitch = unchanged and pitch_hash is not None and expected_pitch_hash == pitch_hash
         project=converters['ustx'].load(path, {'import_pitch':pitch_requested and not raw_pitch,'import_instrumental_track':False,
             'plus_handling_mode':'monosyllabic' if request['language']=='zh' else 'polysyllabic', **english_options})
+        if english:
+            read_english_ustx_lyrics(path, project)
         vocal=[track for track in project.track_list if isinstance(track,SingingTrack)]
         if not vocal:
             vocal=[SingingTrack(title=voice)]
@@ -581,9 +746,7 @@ def export_projects(job, request):
             continue
         path=destination/('voices.'+fmt)
         pending=path.with_name('voices.pending.' + fmt)
-        options={}
-        if fmt=='svp':
-            options={'down_sample':0,'language_override':'japanese' if request['language']=='ja' else 'mandarin'}
+        options = project_output_options(fmt, request['language'])
         audio_source = vsqx_audio_path(job) if fmt=='vsqx' and companion else instrumental
         for track in merged.track_list:
             if isinstance(track,InstrumentalTrack): track.audio_file_path=str(audio_source)
@@ -591,14 +754,22 @@ def export_projects(job, request):
             protected_vsqx = fmt=='vsqx' and bool(generated_tracks)
             playback = _ustx_playback(merged) if protected_vsqx else None
             draft = _vsqx_pitch_draft(playback, generated_tracks) if protected_vsqx else merged
-            converters[fmt].dump(pending,draft,options)
             details = {}
+            if english and fmt == 'svp':
+                draft, numbered = english_svp_project(draft)
+                if numbered:
+                    details['numbered_continuations'] = numbered
+            converters[fmt].dump(pending,draft,options)
             if request.get('include_instrumental',True) and instrumental.is_file():
                 portable_audio_reference(pending,fmt,audio_source)
-            if english_options and fmt == 'ustx':
+            if english and fmt == 'ustx':
                 details['english_lyric_notes'] = restore_english_ustx_lyrics(pending, merged)
             if fmt=='vsqx':
-                restore_vsqx_lyrics(pending,[track for track in merged.track_list if isinstance(track,SingingTrack)])
+                pronunciation = restore_vsqx_lyrics(pending, merged, request['language'])
+                if pronunciation:
+                    details['english_pronunciation'] = pronunciation
+                    if pronunciation['review_count']:
+                        print(f"VSQX 英文发音需核对 {pronunciation['review_count']} 处，位置见导出回执。", flush=True)
                 if protected_vsqx:
                     from vocaloid_pitch import write_vsqx_pitch
                     details['pitch_protection'] = write_vsqx_pitch(
@@ -611,7 +782,8 @@ def export_projects(job, request):
                 from tuning_engine import legacy_export
                 original=pending.read_bytes()
                 data=json.loads(original.decode('utf-8-sig').rstrip('\x00'))
-                data,details=legacy_export(data,job,request,tracks,cancel=lambda:cancelled(job))
+                data, expression_details = legacy_export(data,job,request,tracks,cancel=lambda:cancelled(job))
+                details.update(expression_details)
                 if project_signatures(job,request)['svp']!=signatures['svp']:
                     raise ValueError('调音处理期间来源或配置发生变化，请重试。')
                 pending.write_bytes(json.dumps(data,ensure_ascii=False,separators=(',',':'),allow_nan=False).encode('utf-8')+
@@ -626,14 +798,20 @@ def export_projects(job, request):
             actual=sum(len(track.note_list) for track in loaded.track_list if isinstance(track,SingingTrack))
             if expected!=actual:
                 raise ValueError(f'{fmt.upper()} 导出后的音符数量不一致，请查看导出日志。')
-            if english_options and fmt == 'ustx':
-                def lyrics(project):
-                    return sorted((index, note.start_pos, note.length, note.key_number, note.lyric)
-                                  for index, track in enumerate(project.track_list)
-                                  for note in getattr(track, 'note_list', ()))
-
-                if lyrics(loaded) != lyrics(merged) or project_signatures(job, request)[fmt] != signatures[fmt]:
-                    raise ValueError('USTX 英文歌词回读与来源不一致，请重新导出。')
+            if english:
+                if fmt == 'ustx':
+                    read_english_ustx_lyrics(pending, loaded)
+                elif fmt == 'svp':
+                    read_english_svp_lyrics(pending, loaded)
+                else:
+                    read_vsqx_export_lyrics(pending, loaded, english=True)
+                actual_lyrics = [sorted((*_note_key(note), note.lyric) for note in track.note_list)
+                                 for track in loaded.track_list if isinstance(track, SingingTrack)]
+                expected_lyrics = [sorted((*_note_key(note), english_project_lyric(fmt, note.lyric))
+                                          for note in track.note_list)
+                                   for track in merged.track_list if isinstance(track, SingingTrack)]
+                if actual_lyrics != expected_lyrics or project_signatures(job, request)[fmt] != signatures[fmt]:
+                    raise ValueError(fmt.upper() + ' 英文歌词回读与来源不一致，请重新导出。')
             if protected_vsqx:
                 clock = [(tempo.position, tempo.bpm) for tempo in playback.song_tempo_list]
                 read_clock = [(tempo.position, tempo.bpm) for tempo in loaded.song_tempo_list]

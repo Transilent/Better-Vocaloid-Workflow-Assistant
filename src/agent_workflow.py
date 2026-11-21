@@ -17,7 +17,7 @@ from agent_control import (ControlError, MAX_JSON, atomic_json, digest, file_loc
                            file_hash, io_path, safe_path)
 from agent_supervision import summarize_export, validate_export_review, SupervisionError
 from common import clean_lyrics
-from preparation_languages import LANGUAGES, validate_project_formats
+from preparation_languages import LANGUAGES
 
 
 class Workflow:
@@ -809,15 +809,11 @@ class Workflow:
         if language not in LANGUAGES or (language == 'en' and export_language != 'en'):
             raise ControlError('invalid_options', '歌词与导出语言设置无效。')
         if formats is None:
-            formats = ['ustx'] if export_language == 'en' else ['svp']
+            formats = ['ustx'] if export_language == 'en' and not brief else ['svp']
         if (not isinstance(formats, list) or not formats
                 or any(fmt not in ('svp', 'ustx', 'vsqx') for fmt in formats)
                 or len(set(formats)) != len(formats)):
             raise ControlError('invalid_formats', '工程格式支持 svp、ustx、vsqx，不能重复。')
-        try:
-            validate_project_formats(export_language, formats)
-        except ValueError as error:
-            raise ControlError('invalid_formats', str(error)) from error
         if brief and 'svp' not in formats:
             raise ControlError('style_requires_svp', '语义风格需要同时导出 SVP 工程。')
         request['formats'] = formats

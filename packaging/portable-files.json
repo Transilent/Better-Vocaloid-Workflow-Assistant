@@ -602,6 +602,10 @@
       "source": "src/ustx_tuning.py"
     },
     {
+      "file": "vocaloid_english.py",
+      "source": "src/vocaloid_english.py"
+    },
+    {
       "file": "vocaloid_pitch.py",
       "source": "src/vocaloid_pitch.py"
     },

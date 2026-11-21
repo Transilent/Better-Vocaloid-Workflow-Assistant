@@ -105,22 +105,30 @@ def check_at(viewport, scale, directory):
         assert '英文识别' in bridge.componentTaskPlan['summary']
         assert 'chinese' in bridge.componentTaskPlan['components']
         assert find(label='USTX').isEnabled() and find(label='USTX').property('checked')
-        assert not find(label='SVP').isEnabled() and not find(label='VSQX').property('checked')
-        assert restore_draft_settings(PreparationDraft()).preferences()['language'] == 'en'
-        QTest.keyClick(window, Qt.Key.Key_Up)
-        app.processEvents()
-        assert language.property('currentValue') == 'ja'
-        assert 'chinese' not in bridge.componentTaskPlan['components']
         assert find(label='SVP').isEnabled() and find(label='SVP').property('checked')
+        assert find(label='VSQX').isEnabled() and find(label='VSQX').property('checked')
+        assert restore_draft_settings(PreparationDraft()).preferences()['language'] == 'en'
 
         toggle('FLAC', 'audio_formats', ['wav'])
         toggle('VSQX', 'project_formats', ['ustx', 'svp'])
         toggle('SVP', 'project_formats', ['ustx'])
         toggle('USTX', 'project_formats', [])
+        assert find(name='preparationProjectFormatHint').isVisible()
         task = create_from_draft(bridge.state.draft)
         request = json.loads((task / 'request.json').read_text(encoding='utf-8'))
         steps, _, _ = planned_steps(request)
         assert not request['project_export_enabled'] and 'exports' not in [stage[0] for stage in steps]
+        toggle('SVP', 'project_formats', ['svp'])
+        toggle('VSQX', 'project_formats', ['vsqx', 'svp'])
+        task = create_from_draft(bridge.state.draft)
+        request = json.loads((task / 'request.json').read_text(encoding='utf-8'))
+        assert request['language'] == 'en' and request['project_formats'] == ['vsqx', 'svp']
+        language.forceActiveFocus()
+        QTest.keyClick(window, Qt.Key.Key_Up)
+        app.processEvents()
+        assert language.property('currentValue') == 'ja'
+        assert 'chinese' not in bridge.componentTaskPlan['components']
+        assert find(label='SVP').isEnabled() and find(label='SVP').property('checked')
         print(f'PASS {viewport[0]}: Quick format clicks update saved preferences, request and export plan', flush=True)
     finally:
         modes.close()

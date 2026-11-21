@@ -18,7 +18,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import io
 import json
@@ -1066,21 +1066,35 @@ def _audit_candidate(format_name: str, row: Any, source: dict[str, Any],
         blockers.append(_issue("candidate_parser_unavailable", "运行库未提供格式解析器。", format_name))
         return result
     try:
-        from project_exports import english_ustx_input_options
+        from project_exports import (english_project_lyric, english_ustx_input_options, read_english_svp_lyrics,
+                                     read_english_ustx_lyrics, read_vsqx_export_lyrics)
         input_options = english_ustx_input_options(language) if format_name == 'ustx' else {}
+        native_vsqx = False
         if pitch and pitch.get("status") in ("planned", "preserved"):
             from agent_pitch import load_pitch_project
-            project = load_pitch_project(_io_path(canonical_path), format_name, converters, input_options=input_options)
+            from vocaloid_pitch import NATIVE_PITCH_POLICY
+            encoding = (row.get("pitch") or {}).get("native_encoding") or {}
+            native_vsqx = format_name == 'vsqx' and encoding.get('policy') == NATIVE_PITCH_POLICY
+            project = load_pitch_project(_io_path(canonical_path), format_name, converters, input_options=input_options,
+                                         native_vsqx=native_vsqx)
         else:
             project = converter.load(_io_path(canonical_path),
                 {"import_pitch": False, "import_instrumental_track": False, **input_options})
+        if format_name == 'vsqx':
+            read_vsqx_export_lyrics(_io_path(canonical_path), project, english=language == 'en')
+        elif language == 'en':
+            if format_name == 'ustx':
+                read_english_ustx_lyrics(_io_path(canonical_path), project)
+            elif format_name == 'svp':
+                read_english_svp_lyrics(_io_path(canonical_path), project)
         parsed = _parse_project(project, format_name)
         if pitch and pitch.get("status") in ("planned", "preserved"):
             from agent_pitch import verify_pitch_plan
             from libresvip.model.base import SongTempo
             tempos, _ = _exports._loaded_clock(project, format_name)
             project.song_tempo_list = [SongTempo(position=position, bpm=bpm) for position,bpm in tempos]
-            result["continuous_pitch"] = verify_pitch_plan(project, pitch["plan"], cancel=cancel)
+            result["continuous_pitch"] = verify_pitch_plan(
+                project, pitch["plan"], cancel=cancel, clamp_to_note_ticks=native_vsqx)
             if not result["continuous_pitch"].get("verified", False):
                 blockers.append(_issue("continuous_pitch_not_preserved",
                     "独立回读发现原唱连续音高未保留。", format_name,
@@ -1118,7 +1132,17 @@ def _audit_candidate(format_name: str, row: Any, source: dict[str, Any],
         "candidate": parsed["tracks"],
         "association": {str(key): value for key, value in track_map.items()},
     }
-    matched = _match_notes(source["notes"], candidate_notes, track_map)
+    expected_notes = source["notes"]
+    if language == 'en':
+        expected_notes = [replace(note, lyric=english_project_lyric(format_name, note.lyric))
+                          if note.lyric is not None else note for note in expected_notes]
+    matched = _match_notes(expected_notes, candidate_notes, track_map)
+    if language == 'en' and isinstance(review := row.get("english_pronunciation"), dict) and review.get("review_count"):
+        warnings.append(_issue("english_pronunciation_review", "请在 VOCALOID 中检查未确定的英文发音。",
+                               format_name, count=review["review_count"], sample=review.get("reviews", [])[:8]))
+    if language == 'en' and row.get("numbered_continuations"):
+        warnings.append(_issue("numbered_continuation_normalized", "SVP 使用普通音节续音，编号位置需核对。",
+                               format_name, count=len(row["numbered_continuations"])))
     timing = _timing_comparison(source, matched["pairs"], len(source["notes"]))
     tempo = _tempo_comparison(source["tempos"], parsed["tempos"], source["notes"])
     signatures = _signature_comparison(source["signatures"], parsed["signatures"])

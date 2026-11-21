@@ -74,7 +74,7 @@ MCP 是可选运行环境；VWA GUI 和推理 Python 不需要安装 MCP SDK。�
 }
 ```
 
-准备选项 `options.language` 支持 `zh`、`ja` 和 `en`。英文默认选用 Vocal2Midi 2.0 和 HubertFA，实际参考歌词填入 `options.lyrics` 或 `options.backing_lyrics`，保留英文单词和缩约词。MIDI 审核用 `language: "en"` 按词比对参考歌词，英文工程候选用 USTX。
+准备选项 `options.language` 支持 `zh`、`ja` 和 `en`。英文使用 Vocal2Midi 2.0 和 HubertFA，实际参考歌词填入 `options.lyrics` 或 `options.backing_lyrics`。MIDI 审核用 `language: "en"` 按词比对。英文候选可用 `formats: ["ustx", "svp", "vsqx"]`，普通英文流程省略格式时默认 USTX。有伴奏的可移动工程包选 SVP。VSQX 的 `english_pronunciation` 回执列出需在 VOCALOID 中核对的英文词和续音位置。
 
 英文省略 `formats` 时为 `["ustx"]`。中文和日语默认 `["svp"]`，可显式选择不重复的 `svp`、`ustx`、`vsqx`；有非空 `brief` 时必须包含 `svp`。`review_mode` 默认 `full` 整曲审批；读取支持分页和紧凑摘要，Agent 读完所需谱面及疑点后提交一次有依据的整曲决定。显式 `segments` 保留逐段核验与修改后重读，`review_mode="legacy"` 保留历史工作流语义。整曲审批不表示自动接受未知读音或转换损失。
 

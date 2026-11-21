@@ -42,7 +42,13 @@ External stems must come from the same source and retain the full timeline from 
 
 Paste the sung text for each vocal part. English reference lyrics keep word boundaries, contractions and hyphens. Spell out numbers as sung. Leave the reference blank to transcribe that vocal part independently.
 
-Choose **英文** (English) to use Vocal2Midi 2.0 and HubertFA and export MIDI and USTX. The first note carries the word. A `+` marks the next syllable, and a sustain uses `-` in MIDI or `+~` in USTX. Select an English phonemizer that matches your voicebank in OpenUtau. Check the per-voice `*_alignment.json` for dictionary misses or unaligned passages kept as notes only.
+Choose **英文** (English) to use Vocal2Midi 2.0 and HubertFA. You can generate MIDI and optionally export USTX, SVP or VSQX. The first note carries the word. A `+` marks the next syllable, and a sustain uses `-` in MIDI or `+~` in USTX. Clear the project format selection for MIDI alone. Check the per-voice `*_alignment.json` for passages kept as notes only.
+
+- **USTX** uses an English phonemizer that matches your voicebank in OpenUtau.
+- **SVP** includes English pronunciation settings. In Synthesizer V Studio, select an English-capable voice for each singing track.
+- **VSQX** includes English phonemes and refers to CYBER DIVA by default. Select an installed English voice in VOCALOID. Unknown words retain their notes and text and use a temporary neutral vowel. Review the flagged words and positions in `exports/receipts.json`. VOCALOID 6 requires importing the backing WAV separately when opening VSQX.
+
+Lyric search matches straight and curly apostrophes. Batch paste preserves contractions, hyphenated words and existing continuation notes. English VPR and VSQX edits use the bundled dictionary and update compatible continuation phonemes. Use VOCALOID for edits to locked or manually arranged pronunciations.
 
 Use **歌词与语言** (Lyrics and language) to search NetEase or import and edit local reference lyrics. Devices remain in the top toolbar's **设备设置**. Logs are available through **处理日志**.
 

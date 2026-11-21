@@ -7,6 +7,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
+import xml.etree.ElementTree as ET
 
 import mido
 import numpy as np
@@ -37,6 +38,9 @@ from preparation_commands import (
 )
 from project_exports import export_projects, read_ustx
 from subtitles import midi_cues
+from tuning_timeline import ProjectNotes, split_batch_lyrics
+from tuning_workflow import read_project
+import yaml
 
 
 def make_word(text, start, end, phones):
@@ -79,7 +83,7 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='english-preparation-'
              .apply_lyrics('lead', from_file(text)))
     assert draft.view['lyrics'] == "Don't melody\nFlimzork"
     document = make_preset_document(draft, 'English fixture')
-    assert document['payload']['options']['project_formats'] == ['ustx']
+    assert document['payload']['options']['project_formats'] == ['ustx', 'vsqx', 'svp']
     assert 'lyrics' not in document['payload']['options']
     with patch('feature_components.status', return_value={'ready': False}):
         assert 'Qwen3-ASR' in selected_component_issues(draft)[0]
@@ -89,7 +93,7 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='english-preparation-'
         job = create_from_draft(draft.edit('export_pitch', False))
     request = json.loads((job / 'request.json').read_text(encoding='utf-8'))
     assert request['midi_backend'] == 'v2' and request['alignment_engine'] == 'hfa'
-    assert request['project_formats'] == ['ustx'] and request['lyrics'] == cleaned
+    assert request['project_formats'] == ['ustx', 'vsqx', 'svp'] and request['lyrics'] == cleaned
     assert request['lyric_lines'] == ["Don't melody", 'Flimzork']
     assert draft.edit('language', 'ja').preferences()['midi_backend'] == 'v1'
     assert draft.edit('language', 'ja').preferences()['project_formats'] == ['ustx', 'vsqx', 'svp']
@@ -99,7 +103,13 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='english-preparation-'
     cli_job = create_job(local_music=audio, language='en', parent=root / 'tasks', remember=False)
     cli_request = json.loads((cli_job / 'request.json').read_text(encoding='utf-8'))
     assert cli_request['midi_backend'] == 'v2'
-    for changes in ({'project_formats': ['vsqx']}, {'midi_backend': 'v1'}, {'alignment_engine': 'tifa'}):
+    explicit = create_job(local_music=audio, language='en', project_formats=['vsqx', 'svp'],
+                          parent=root / 'tasks', remember=False)
+    assert json.loads((explicit / 'request.json').read_text(encoding='utf-8'))['project_formats'] == ['vsqx', 'svp']
+    disabled = create_job(local_music=audio, language='en', project_formats=['vsqx', 'svp'],
+                          project_export_enabled=False, parent=root / 'tasks', remember=False)
+    assert json.loads((disabled / 'request.json').read_text(encoding='utf-8'))['project_formats'] == []
+    for changes in ({'midi_backend': 'v1'}, {'alignment_engine': 'tifa'}):
         try:
             create_job(local_music=audio, language='en', parent=root / 'tasks', remember=False, **changes)
         except ValueError as error:
@@ -163,19 +173,80 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='english-preparation-'
         assert any(hint['code'] == 'reference_mismatch' for hint in
                    review_lyrics(midi, reference_text="DON’T rhythm", language='en')['hints'])
 
-        export_projects(job, request)
+        projects = export_projects(job, request)
         project = read_ustx(job / 'exports/voices.ustx')
         notes = project['voice_parts'][0]['notes']
         assert [note['lyric'] for note in notes[:5]] == ["don't", '+~', 'melody', '+', '+']
         reference = project['wave_parts'][0]['relative_path']
         assert (job / 'exports' / reference).resolve() == job / 'audio/instrumental.wav'
+        svp = json.loads((job / 'exports/voices.svp').read_bytes().rstrip(b'\x00'))
+        assert svp['tracks'][0]['mainRef']['database']['languageOverride'] == 'english'
+        assert svp['tracks'][0]['mainRef']['database']['phonesetOverride'] == 'arpabet'
+        assert [note['lyrics'] for note in svp['tracks'][0]['mainGroup']['notes'][:5]] == markers
+        vsqx = ET.parse(job / 'exports/voices.vsqx')
+        assert vsqx.findtext('.//{*}vVoice/{*}bs') == vsqx.findtext('.//{*}singer/{*}bs') == '1'
+        assert vsqx.findtext('.//{*}vVoice/{*}pc') == vsqx.findtext('.//{*}singer/{*}pc') == '4'
+        assert [row.findtext('{*}y') for row in vsqx.findall('.//{*}note')[:5]] == markers[:1] + ['+~', *markers[2:]]
+        assert [row.findtext('{*}p') for row in vsqx.findall('.//{*}note')[:5]] == [
+            'd @U', '- n t', 'm e', 'l0 @', 'd i:'
+        ]
+        score_path = job / 'exports/voices.vsqx'
+        timeline = ProjectNotes.load(score_path)
+        first, = timeline.matches("Don't")
+        edited, changes = timeline.score_editor.materialize(
+            read_project(score_path), [{'note_id': first['id'], 'lyric': 'leave'}])
+        elements = ET.fromstring(edited['xml']).findall('.//{*}note')
+        assert [row.findtext('{*}p') for row in elements[:2]] == ['l0 i:', '- v']
+        assert [row.findtext('{*}y') for row in elements[:2]] == ['leave', '+~']
+        assert changes[0]['native_fields']['continuation_phonemes'][0]['after'] == '- v'
+        protected = root / 'locked.vsqx'
+        vsqx.findall('.//{*}note')[1].find('{*}p').set('lock', '1')
+        vsqx.write(protected, encoding='utf-8', xml_declaration=True)
+        locked = ProjectNotes.load(protected)
+        first, = locked.matches("Don't")
+        try:
+            locked.score_editor.validate_lyric(first['id'], 'leave')
+        except ValueError as error:
+            assert '保护' in str(error)
+        else:
+            raise AssertionError('A locked English continuation was overwritten.')
+        assert next(item for item in projects['outputs'] if item['file'].endswith('.vsqx'))['english_pronunciation']['notes'] == len(notes)
         export_plan = agent_exports.plan_export(midi, options={'language': 'en', 'preserve_pitch': False})
         assert export_plan['formats'] == ['ustx']
+        export_plan = agent_exports.plan_export(midi, ['ustx', 'svp', 'vsqx'],
+                                               {'language': 'en', 'preserve_pitch': False,
+                                                'include_instrumental': True, 'instrumental_path': str(audio)})
         runtime = APP / 'dependencies/export'
         receipt = agent_exports.apply_export(midi, export_plan, root / 'agent', export_runtime=runtime)
         agent_notes = read_ustx(Path(receipt['candidates'][0]['candidate_path']))['voice_parts'][0]['notes']
         assert [note['lyric'] for note in agent_notes[:5]] == ["don't", '+~', 'melody', '+', '+']
+        assert receipt['candidates'][1]['instrumental_included']
+        assert receipt['candidates'][2]['english_pronunciation']['notes'] == len(notes)
         assert not audit_export(midi, receipt, export_runtime=runtime, output_root=root / 'audit')['blockers']
+
+        native = job / 'midi/vocals.ustx'
+        score = read_ustx(native)
+        source_notes = score['voice_parts'][0]['notes']
+        replacement = ["Don't", '+*', 'Flimzork', '+2', '+']
+        for note, lyric in zip(source_notes, replacement):
+            note['lyric'] = lyric
+        native.write_text(yaml.safe_dump(score, allow_unicode=True, sort_keys=False), encoding='utf-8')
+        timeline = ProjectNotes.load(native)
+        assert timeline.matches("don’t")[0]['lyric'] == "Don't"
+        assert split_batch_lyrics("Don't, well‑known!") == ["Don't", 'well‑known']
+        phrase = list(timeline.notes.values())[:5]
+        rows, unused = timeline.lyric_batch(phrase[0]['trackId'], phrase[0]['start'], phrase[-1]['end'],
+                                           'Don’t well-known')
+        assert not unused and [row['after'] for row in rows] == ['Don’t', '+*', 'well-known', '+2', '+']
+        assert [row['preserved'] for row in rows] == [False, True, False, True, True]
+        assert not any(row.get('blocked') for row in rows)
+        candidate = export_projects(job, request)
+        vsqx_result = next(item for item in candidate['outputs'] if item['file'].endswith('.vsqx'))
+        reasons = [item['reason'] for item in vsqx_result['english_pronunciation']['reviews']]
+        assert 'numbered_continuation' in reasons and 'unknown_word' in reasons
+        assert read_ustx(job / 'exports/voices.ustx')['voice_parts'][0]['notes'][3]['lyric'] == '+2'
+        atomic_json(job / 'status.json', {'state': 'done', 'steps': {'midi': {'state': 'done'}, 'exports': {'state': 'done'}}})
+        assert progress_view(job)['vsqx_pronunciation_reviews'] == vsqx_result['english_pronunciation']['review_count']
 
         atomic_json(job / 'request.json', {**request, 'recognize_lyrics': False})
         asr.reset_mock()
@@ -189,4 +260,29 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='english-preparation-'
         assert alignment['state'] == 'unavailable' and alignment['pitch_only_chunks'] == 2
         assert all(item['reason'] == 'no_asr_text' for item in alignment['fallback'])
 
-print('PASS: English preparation, OOV reports, notes-only, MIDI and USTX round trips')
+    # The last voiced frame at 1.010 s rounds to tick 970, just outside
+    # the note. Native VSQX readback must use the sounding note at that frame.
+    boundary_midi = root / 'boundary.mid'
+    clip = mido.MidiFile(ticks_per_beat=480, charset='utf8')
+    clip.tracks.append(mido.MidiTrack([
+        mido.MetaMessage('lyrics', text="Don't"),
+        mido.Message('note_on', note=60, velocity=80),
+        mido.Message('note_off', note=60, time=970),
+    ]))
+    clip.save(boundary_midi)
+    boundary_pitch = root / 'boundary.pitch.npz'
+    f0 = 60.0 + .31 * np.sin(np.arange(102) * 1.12)
+    f0[-2:] = 60.12
+    np.savez_compressed(boundary_pitch, midi_pitch=f0, voiced_mask=np.ones(102, dtype=bool),
+                        time_step=.01, schema=1)
+    plan = agent_exports.plan_export(boundary_midi, ['ustx', 'svp', 'vsqx'], {
+        'language': 'en', 'pitch_sources': [{'vocal_track_index': 0, 'path': str(boundary_pitch)}],
+    })
+    result = agent_exports.apply_export(boundary_midi, plan, root / 'boundary-agent', export_runtime=runtime)
+    assert all(row['pitch']['readback']['verified'] for row in result['candidates'])
+    native = ET.parse(result['candidates'][-1]['candidate_path'])
+    assert native.findtext('.//{*}note/{*}y') == "Don't"
+    assert native.findtext('.//{*}note/{*}p') == 'd @U n t'
+    assert not audit_export(boundary_midi, result, export_runtime=runtime, output_root=root / 'audit')['blockers']
+
+print('PASS: English preparation, native lyrics and pitch, editing, unknown words, and three-format round trips')

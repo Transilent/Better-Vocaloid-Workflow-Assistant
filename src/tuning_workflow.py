@@ -384,6 +384,9 @@ def _dependencies(options,format):
         contributors+=('vsqx_tuning.py','agent_pronunciation.py')
     if EDITOR_OPTION_KEYS.intersection(options):
         contributors+=('tuning_score_edits.py','agent_style.py')
+        if format in ('vpr','vsqx'):
+            from vocaloid_english import DICTIONARY_PATH
+            contributors+=('vocaloid_english.py', 'preparation_languages.py', DICTIONARY_PATH.as_posix())
     if options.get('pitch_strokes') or (format in STYLE_ADAPTERS and options['expression_mode'] == 'reference'):
         contributors+=('tuning_pitch_layer.py',)
     return _execution_dependencies(options,contributors,ROOT)

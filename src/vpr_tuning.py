@@ -94,6 +94,9 @@ def score_phoneme(lang, lyric):
     """Strict single-note lookup, with no default phoneme for unknown text."""
     lyric = normalize('NFKC', lyric).lower()
     try:
+        if lang == 1:
+            from vocaloid_english import pronounce_word
+            return pronounce_word(lyric)
         if lang == 0:
             kana = bundled_export_module(ROOT, 'wanakana.japanese')
             table = _score_phone_table(ROOT, 'japanese', 'romaji2xsampa')

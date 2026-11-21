@@ -15,7 +15,7 @@ ROMAJI_MODEL = 'experiments/romajiASR'
 HUBERTFA_MODEL = 'experiments/1218_hfa_model_new_dict'
 ENGLISH_DICTIONARY = 'ds_cmudict-07b.txt'
 ENGLISH_ENGINE_HINT = '英文使用 Vocal2Midi 2.0 和 HubertFA。'
-ENGLISH_EXPORT_HINT = '英文支持 MIDI 和 USTX。'
+_ENGLISH_JOINERS = str.maketrans('‘’‐‑', "''--")
 
 
 @dataclass(frozen=True)
@@ -39,23 +39,32 @@ def validate_english_midi_options(language, backend, alignment_engine):
         raise ValueError(ENGLISH_ENGINE_HINT)
 
 
-def validate_project_formats(language, formats):
-    if language == 'en' and any(fmt != 'ustx' for fmt in formats):
-        raise ValueError(ENGLISH_EXPORT_HINT)
-
-
 def effective_preparation_options(options):
-    """Apply English engine and export constraints without overwriting saved choices."""
+    """Select the English recognition engines without overwriting export preferences."""
     if options['language'] != 'en':
         return options
-    formats = [fmt for fmt in options['project_formats'] if fmt == 'ustx']
-    return {**options, 'midi_backend': 'v2', 'alignment_engine': 'hfa', 'project_formats': formats,
-            'project_export_enabled': bool(formats) and options['project_export_enabled']}
+    return {**options, 'midi_backend': 'v2', 'alignment_engine': 'hfa'}
+
+
+def normalize_english_punctuation(text):
+    return unicodedata.normalize('NFKC', text).translate(_ENGLISH_JOINERS)
+
+
+def lyric_continuation(text):
+    """Classify continuation lyrics used by MIDI, OpenUtau and Synthesizer V."""
+    text = normalize_english_punctuation(text.strip())
+    if text in ('-', '−', 'ー', '++', '+~', '+*'):
+        return 'hold'
+    if text == '+':
+        return 'syllable'
+    if re.fullmatch(r'\+[0-9]+', text):
+        return 'anchor'
+    return None
 
 
 def english_words(text):
     """Match the bundled English ASR/HFA word alphabet and joiner rules."""
-    text = unicodedata.normalize('NFKC', text).translate(str.maketrans('‘’‐‑', "''--"))
+    text = normalize_english_punctuation(text)
     return re.findall(r"[A-Za-z]+(?:['-][A-Za-z]+)*", text)
 
 

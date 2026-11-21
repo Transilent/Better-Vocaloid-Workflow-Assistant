@@ -10,6 +10,7 @@ import unicodedata
 from uuid import uuid4
 
 import agent_style
+from preparation_languages import normalize_english_punctuation
 from style_drafts import DraftStore
 from style_presets import region_settings, time_range_settings
 from svp_tuning import GROUPS_PARTLY_PROTECTED
@@ -38,10 +39,13 @@ def split_batch_lyrics(text):
     if len(text) > 8192:
         raise ValueError('歌词太长，请分句粘贴。')
     words, run, kana = [], [], False
-    for char in unicodedata.normalize('NFC', text):
+    text = unicodedata.normalize('NFC', text)
+    for index, char in enumerate(text):
         is_kana = '\u3041' <= char <= '\u30fa' or char == 'ー'
         is_ideograph = _is_han(char)
-        separator = char.isspace() or unicodedata.category(char).startswith('P')
+        joiner = (normalize_english_punctuation(char) in ("'", '-') and 0 < index < len(text) - 1
+                  and all(letter.isascii() and letter.isalpha() for letter in (text[index - 1], text[index + 1])))
+        separator = char.isspace() or (unicodedata.category(char).startswith('P') and not joiner)
         if run and (separator or is_ideograph or (is_kana and not (kana and char in _SMALL_KANA)) or
                     (kana and not is_kana)):
             words.append(''.join(run))
@@ -101,7 +105,7 @@ def _identity(value, prefix):
 
 
 def _lyric_key(text):
-    return ''.join(c for c in unicodedata.normalize('NFKC', text).casefold() if not c.isspace())
+    return ''.join(c for c in normalize_english_punctuation(text).casefold() if not c.isspace())
 
 
 def _fragment_identity(parent_id, start, end, used):

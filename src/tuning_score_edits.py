@@ -7,6 +7,7 @@ import math
 import re
 import unicodedata
 
+from preparation_languages import lyric_continuation, normalize_english_punctuation
 from vocal_expression import SV_QUARTER
 from tuning_native import at_path as _native, native_group_path
 from tuning_note_detail import DETAILS, field_views, integer_field, read_fields, valid_value
@@ -30,6 +31,7 @@ TIMING = '此音符或片段有手工时序、曲线或音素，已保护原位�
 PITCH = '此片段有原生音高锚点或重录参数，已保护音符音高。'
 VPR_PHONEME = '无法为此 VOCALOID 歌词确定原语言的发音。可使用工程里同语言的已有词，或在 VOCALOID 中改词。'
 VPR_PHONE_COUNT = '新发音与原音素的数量不同，无法保留音素位置，请在 VOCALOID 中改词。'
+VOCALOID_LINKED_LYRIC = '这个英文词有需要保护的续唱发音，请在 VOCALOID 中一起修改。'
 
 
 def _lyric(text):
@@ -37,8 +39,7 @@ def _lyric(text):
         raise ValueError('歌词必须是文字。')
     text = text.strip()
     if (not text or len(text) > 300 or any(unicodedata.category(c) in ('Cc', 'Cs', 'Zl', 'Zp') for c in text)
-            or any(c in text for c in '[]') or text.startswith('.') or text.casefold() in
-            ('+', '++', '-', 'r', 'sil', 'pau', 'br', 'ap', 'sp')):
+            or _special_lyric(text, extended=False)):
         raise ValueError('请输入单个音符的歌词文字；延音、换气和手工发音请在原编辑器处理。')
     return text
 
@@ -86,9 +87,9 @@ def _nonempty(value):
 
 def _special_lyric(lyric, *, extended=True):
     lyric = lyric.strip().casefold()
-    return (not lyric or lyric in ('+', '++', '-', 'r', 'sil', 'pau', 'br', 'ap', 'sp')
+    return (not lyric or lyric_continuation(lyric) is not None or lyric in ('r', 'sil', 'pau', 'br', 'ap', 'sp')
             or lyric.startswith('.') or '[' in lyric or ']' in lyric or extended and
-            (lyric in ('ー', '−') or re.fullmatch(r'br\d+', lyric) or re.search(r'#\d+$', lyric)))
+            (lyric == '/' or re.fullmatch(r'br\d+', lyric) is not None or re.search(r'#\d+$', lyric) is not None))
 
 
 def _trim_phones(value):
@@ -177,7 +178,7 @@ def _adapted_target(format, group, index, old):
     if index + 1 < len(group.raw['notes']):
         next_note = group.raw['notes'][index + 1]
         next_lyric = next_note.get('lyric')
-        if isinstance(next_lyric, str) and next_lyric.strip() in ('+', '++', '-', 'ー', '−'):
+        if isinstance(next_lyric, str) and (lyric_continuation(next_lyric) is not None or next_lyric == '/'):
             timed = True
     lyric_reason, minimum_duration, lang, slots = '', 1, None, 0
     if format in VOCALOID_FORMATS:
@@ -191,6 +192,9 @@ def _adapted_target(format, group, index, old):
             lyric_reason = PHONEMES
         elif lang is None:
             lyric_reason = VPR_PHONEME
+        elif lang == 1 and old['lyric'].endswith('-'):
+            # Yamaha can store an already split English syllable here.
+            lyric_reason = VOCALOID_LINKED_LYRIC
         if positions:
             slots = len(positions) - 1
             minimum_duration = max(1, min(old['duration'], positions[-1] + 1))
@@ -213,6 +217,25 @@ def _adapted_target(format, group, index, old):
     return lyric_reason, timed, pitched, minimum_duration, lang, slots
 
 
+def _english_linked_notes(part, index):
+    """Find the original contiguous continuation notes for one word."""
+    from vpr_tuning import score_language
+
+    head = part['notes'][index]
+    end = head['pos'] + head['duration']
+    linked = []
+    for next_index in range(index + 1, len(part['notes'])):
+        note = part['notes'][next_index]
+        text = note.get('lyric')
+        if (not isinstance(text, str) or (not lyric_continuation(text) and text != '/')
+                or type(note.get('pos')) is not int or type(note.get('duration')) is not int
+                or not 0 <= note['pos'] - end <= 1 or score_language(part, note) != 1):
+            break
+        linked.append(note)
+        end = note['pos'] + note['duration']
+    return tuple(linked)
+
+
 @dataclass(frozen=True)
 class Target:
     track: int
@@ -230,6 +253,7 @@ class Target:
     minimum_duration: int = 1
     language: int | None = None
     phoneme_slots: int = 0
+    linked_notes: tuple = ()
 
     def reason(self, field):
         if field not in self.fields:
@@ -334,7 +358,7 @@ class ScoreEdits:
                     or type(old['pitch']) is not int or not 0 <= old['pitch'] <= 127
                     or not isinstance(old['lyric'], str)):
                 continue
-            floor, language, slots = 1, None, 0
+            floor, language, slots, linked = 1, None, 0, ()
             if adapted:
                 lyric_reason, timed, pitched, floor, language, slots = _adapted_target(format, group, local_index, old)
                 if format == 'ufdata':
@@ -345,8 +369,10 @@ class ScoreEdits:
                     lyric_reason = PHONEMES
                 if not row['singing'] or _special_lyric(old['lyric']):
                     timed = pitched = True
-                if format in VOCALOID_FORMATS and not lyric_reason and (phones := _trim_phones(note.get('phoneme'))):
-                    word = (track, language, old['lyric'].strip().casefold())
+                if language == 1 and not lyric_reason:
+                    linked = _english_linked_notes(group.raw, local_index)
+                if format in VOCALOID_FORMATS and not lyric_reason and not linked and (phones := _trim_phones(note.get('phoneme'))):
+                    word = self._word_key(track, language, old['lyric'])
                     self.vpr_words[word] = phones if self.vpr_words.get(word, phones) == phones else None
             else:
                 lyric_reason = PHONEMES if manual_phones or _special_lyric(old['lyric'], extended=False) else ''
@@ -364,22 +390,46 @@ class ScoreEdits:
             target = Target(
                 track, (*path, 'notes', local_index), place.offset, step, minimum, maximum, old, fields,
                 lyric_reason, TIMING if timed else '', PITCH if pitched else '',
-                phones.strip()[:300] if isinstance(phones, str) else '', floor, language, slots)
+                phones.strip()[:300] if isinstance(phones, str) else '', floor, language, slots, linked)
             self.targets[row['note_id']] = target
             if not (lyric_reason and timed and pitched) or DETAILS.keys() & fields.keys():
                 self.editable_tracks.add(track)
         for rows in self.group_rows.values():
             rows.sort(key=lambda row: row['note_index'])
 
-    def _phoneme(self, target, lyric):
+    @staticmethod
+    def _word_key(track, language, lyric):
+        text = normalize_english_punctuation(lyric) if language == 1 else lyric
+        return track, language, text.strip().casefold()
+
+    def _pronunciations(self, target, lyric):
         from vpr_tuning import score_phoneme
-        word = (target.track, target.language, lyric.casefold())
-        result = self.vpr_words[word] if word in self.vpr_words else score_phoneme(target.language, lyric)
-        if not result:
-            raise ValueError(VPR_PHONEME)
-        if target.phoneme_slots and len(result.split()) != target.phoneme_slots:
+
+        phones = []
+        if target.linked_notes:
+            from vocaloid_english import pronounce_notes
+            tails = [(row['pos'], row['duration'], '-' if row['lyric'] == '/' else row['lyric'])
+                     for row in target.linked_notes]
+            head = target.old['onset'], target.old['duration']
+            before, issues = pronounce_notes([(*head, target.old['lyric']), *tails])
+            phones, new_issues = pronounce_notes([(*head, lyric), *tails])
+            if issues or new_issues:
+                raise ValueError(VOCALOID_LINKED_LYRIC)
+            for old, expected, new in zip(target.linked_notes, before[1:], phones[1:]):
+                raw = old.get('phoneme')
+                if new != raw and (raw != expected or old.get('isProtected') or old.get('phonemePositions')):
+                    raise ValueError(VOCALOID_LINKED_LYRIC)
+            if before[0] != target.pronunciation and phones[0] != target.pronunciation:
+                raise ValueError(VOCALOID_LINKED_LYRIC)
+        else:
+            word = self._word_key(target.track, target.language, lyric)
+            result = self.vpr_words[word] if word in self.vpr_words else score_phoneme(target.language, lyric)
+            if not result:
+                raise ValueError(VPR_PHONEME)
+            phones = [result]
+        if target.phoneme_slots and len(phones[0].split()) != target.phoneme_slots:
             raise ValueError(VPR_PHONE_COUNT)
-        return result
+        return phones
 
     def capabilities(self, identity):
         target = self.targets.get(identity)
@@ -401,14 +451,14 @@ class ScoreEdits:
             if self.format in ADAPTED_FIELDS and _special_lyric(text):
                 raise ValueError(PHONEMES)
             if self.format in VOCALOID_FORMATS:
-                self._phoneme(target, text)
+                self._pronunciations(target, text)
         return text
 
     def note_details(self, identity, patch):
         target = self.targets.get(identity)
         if target is None:
             return [], ''
-        pronunciation = (self._phoneme(target, patch['lyric'])
+        pronunciation = (self._pronunciations(target, patch['lyric'])[0]
                          if self.format in VOCALOID_FORMATS and 'lyric' in patch else target.pronunciation)
         return field_views(target.fields, {**target.old, **patch}), pronunciation
 
@@ -569,10 +619,18 @@ class ScoreEdits:
                     derived['tickOff'] = {'before': native['tickOff'], 'after': end}
                     native['tickOff'] = end
                 elif self.format in VOCALOID_FORMATS and 'lyric' in changed:
-                    phones = self._phoneme(target, edit['lyric'])
+                    phones, *tails = self._pronunciations(target, edit['lyric'])
                     if phones != native.get('phoneme'):
                         derived['phoneme'] = {'before': native.get('phoneme'), 'after': phones}
                         native['phoneme'] = phones
+                    for offset, value in enumerate(tails, start=1):
+                        index = target.path[-1] + offset
+                        peer = _native(output, (*target.path[:-1], index))
+                        previous = peer.get('phoneme')
+                        if previous != value:
+                            derived.setdefault('continuation_phonemes', []).append({
+                                'note_index': index, 'before': previous, 'after': value})
+                            peer['phoneme'] = value
                 details.append({'note_id': edit['note_id'], 'track_index': target.track, 'fields': changed,
                                 **({'native_fields': derived} if derived else {})})
         if self.vsqx_sequence is not None:

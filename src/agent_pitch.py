@@ -788,6 +788,7 @@ def _evaluate_verify_candidate(
     candidate: Mapping[str, Any],
     tolerance_cents: float,
     check_cancel: Callable[[], None],
+    clamp_to_note_ticks: bool,
 ) -> dict[str, Any]:
     all_errors: list[float] = []
     interior_errors: list[float] = []
@@ -837,8 +838,13 @@ def _evaluate_verify_candidate(
         for position, frame in enumerate(indices):
             if position % 4096 == 0:
                 check_cancel()
-            tick = round(clock.get_actual_ticks_from_secs(float(times[frame]))) + PITCH_AXIS_OFFSET_TICKS
-            actual = _sample_curve(segments, tick)
+            tick = round(clock.get_actual_ticks_from_secs(float(times[frame])))
+            if clamp_to_note_ticks:
+                # At a fractional frame just before note-off, nearest-tick
+                # rounding can land in silence or the following note.
+                note = descriptors[owner[frame]]
+                tick = min(max(tick, note["start_tick"]), note["end_tick"] - 1)
+            actual = _sample_curve(segments, tick + PITCH_AXIS_OFFSET_TICKS)
             if actual is None:
                 missing += 1
                 if boundary[frame]:
@@ -914,7 +920,8 @@ def _evaluate_verify_candidate(
 
 def verify_pitch_plan(project: Any, plan: Mapping[str, Any], *,
                       cancel: Callable[[], Any] | None = None,
-                      tolerance_cents: float = DEFAULT_TOLERANCE_CENTS) -> dict[str, Any]:
+                      tolerance_cents: float = DEFAULT_TOLERANCE_CENTS,
+                      clamp_to_note_ticks: bool = False) -> dict[str, Any]:
     """Verify measured F0 detail in a reloaded LibreSVIP project.
 
     The caller must restore ``song_tempo_list`` to the explicit playback tempo
@@ -941,7 +948,7 @@ def verify_pitch_plan(project: Any, plan: Mapping[str, Any], *,
         hashes_before.append(str(data["source_sha256"]))
     tempo = _verification_tempo(project)
     best = _evaluate_verify_candidate(
-        project, sources, loaded, tracks, tempo, tolerance, check_cancel)
+        project, sources, loaded, tracks, tempo, tolerance, check_cancel, clamp_to_note_ticks)
     eligible = int(best["summary"]["eligible_frames"])
     sampled = int(best["summary"]["sampled_frames"])
     missing = int(best["summary"]["missing_samples"])
@@ -1094,9 +1101,66 @@ def bridge_evidence_by_pitch_runs(data: Mapping[str, Any], notes: Sequence[Any],
             output.append((start, end))
     return output
 
+def _read_native_ustx(path):
+    from libresvip.plugins.ustx.model import USTXProject
+    from libresvip.utils.text import to_unicode
+    from libresvip.utils.yamlutils import load_yaml_1_2
+
+    native = USTXProject.model_validate(load_yaml_1_2(to_unicode(path.read_bytes())), context={"path": path})
+    if sum(part.notes[-1].end for part in native.voice_parts if part.notes) > _MAX_PITCH_VERIFY_FRAMES:
+        raise ValueError("USTX 原生音高回读超出受管采样上限。")
+    return native
+
+
+def _restore_ustx_pitch(path, project, plan, *, cancel):
+    from libresvip.plugins.ustx.model import UCurve
+    from libresvip.plugins.ustx.util import BasePitchGenerator
+    from libresvip.utils.yamlutils import dump_yaml_1_2
+
+    native = _read_native_ustx(path)
+    baseline = BasePitchGenerator(native, pitch_interval=1)
+    tracks = _vocal_tracks(project)
+    if len(tracks) != len(native.voice_parts):
+        raise ValueError("USTX 原生音高重建的声部数不一致。")
+    receipts = []
+    for source in _validated_plan(plan)["sources"]:
+        cancel()
+        index = source["vocal_track_index"]
+        track, part = tracks[index], native.voice_parts[index]
+        if [(note.start_pos, note.length, note.key_number) for note in track.note_list] != [
+            (part.position + note.position, note.duration, note.tone) for note in part.notes
+        ]:
+            raise ValueError("USTX 原生音高重建的音符身份不一致。")
+        base = np.asarray(baseline.base_pitch(part))
+        points = {}
+        prefix = PITCH_AXIS_OFFSET_TICKS + part.position
+        for xs, ys in _curve_segments(track.edited_params.pitch.points.root):
+            cancel()
+            start = max(0, int(xs[0]) - prefix)
+            end = min(len(base) - 1, int(xs[-1]) - prefix)
+            if end < start:
+                continue
+            ticks = np.arange(start, end + 1)
+            targets = np.interp(ticks + prefix, xs, ys)
+            delta = np.rint(targets - base[start:end + 1]).astype(int)
+            if start:
+                points.setdefault(start - 1, 0)
+            points.update(zip(ticks.tolist(), delta.tolist()))
+            points.setdefault(end + 1, 0)
+        part.curves = [row for row in part.curves if row.abbr != "pitd"]
+        if points:
+            ticks = sorted(points)
+            part.curves.append(UCurve(abbr="pitd", xs=ticks, ys=[points[tick] for tick in ticks]))
+        receipts.append({"vocal_track_index": index, "points": len(points)})
+    cancel()
+    path.write_text(dump_yaml_1_2(native.model_dump(by_alias=True, exclude_none=True)), encoding="utf-8")
+    return {"applied": True, "algorithm": "native-openutau-baseline-v1", "sample_interval_ticks": 1,
+            "tracks": receipts, "total_points": sum(row["points"] for row in receipts)}
+
+
 def restore_native_pitch(path: Any, fmt: str, project: Any, plan: Any, *,
                          cancel: Callable[[], Any] | None = None) -> dict[str, Any]:
-    """Encode absolute F0 against the generated SVP's actual native baseline.
+    """Encode absolute F0 against the generated SVP or USTX baseline.
 
     The generic MIDI exporter subtracts a flat note baseline. SynthV adds its
     own transitions, so that delta cannot preserve measured F0 at adjacent
@@ -1104,6 +1168,8 @@ def restore_native_pitch(path: Any, fmt: str, project: Any, plan: Any, *,
     one-tick deltas only within the measured runs. This operates on a private
     conversion candidate; notes and all other native fields stay unchanged.
     """
+    if fmt == "ustx":
+        return _restore_ustx_pitch(Path(path), project, plan, cancel=_cancel_checker(cancel))
     if fmt != "svp":
         return {"applied": False, "reason": "native_correction_not_required"}
     from libresvip.model.base import SongTempo
@@ -1220,12 +1286,12 @@ def restore_native_pitch(path: Any, fmt: str, project: Any, plan: Any, *,
             "tracks": rows, "total_points": total_points}
 
 
-def load_pitch_project(path: Any, fmt: str, converters: Mapping[str, Any], *, input_options=None) -> Any:
-    """Load a verification project without SVP's five-tick pitch downsampling.
+def load_pitch_project(path: Any, fmt: str, converters: Mapping[str, Any], *, input_options=None,
+                       native_vsqx=False) -> Any:
+    """Load a verification project without five-tick pitch downsampling.
 
-    SVP is read through a local ``SynthVParser`` subclass that forces the pitch
-    curve interval to one tick. USTX and VSQX use their normal converter read
-    path. No global monkeypatch or runtime-file change is performed.
+    The SynthV and USTX parsers use one tick for replay. VSQX uses its native
+    controller reader.
     """
     if not isinstance(fmt, str) or fmt.lower() not in {"svp", "ustx", "vsqx"}:
         raise ValueError("fmt 必须是 svp、ustx 或 vsqx。")
@@ -1242,8 +1308,22 @@ def load_pitch_project(path: Any, fmt: str, converters: Mapping[str, Any], *, in
     if not source.is_file():
         raise ValueError("回读工程路径必须指向普通文件。")
     options = {"import_pitch": True, "import_instrumental_track": False}
-    if format_name != "svp":
+    if format_name == "vsqx":
+        if native_vsqx:
+            from vocaloid_pitch import read_generated_pitch
+            project = converter.load(source, {**options, **(input_options or {}), "import_pitch": False})
+            return read_generated_pitch(source, project, sample_limit=_MAX_PITCH_VERIFY_FRAMES)
         return converter.load(source, {**options, **(input_options or {})})
+    if format_name == "ustx":
+        from libresvip.plugins.ustx.ustx_parser import UstxParser
+
+        class FineUstxParser(UstxParser):
+            def parse_pitch(self, part):
+                self.base_pitch_generator.pitch_interval = 1
+                return super().parse_pitch(part)
+
+        native = _read_native_ustx(source)
+        return FineUstxParser(converter.input_option_cls(**{**options, **(input_options or {})})).parse_project(native)
 
     from libresvip.plugins.svp.model import SVProject
     from libresvip.plugins.svp.synthv_parser import SynthVParser

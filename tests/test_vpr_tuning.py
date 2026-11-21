@@ -99,7 +99,8 @@ def editable_score():
     second = data['tracks'][1]['parts'][1]
     second['voice']['langID'] = 1
     second['notes'][0].update(lyric='meet', phoneme='m i: t', isProtected=False)
-    second['notes'].append(note(380, 80, 62, 'you') | {'phoneme': 'j u:', 'isProtected': False})
+    second['notes'].append(note(380, 80, 62, 'you') | {'phoneme': 'j u:', 'isProtected': False,
+                            'phonemePositions': [{'pos': -15}, {'pos': 0}, {'pos': 35}]})
     return data
 
 
@@ -197,6 +198,17 @@ class VprTuningTests(unittest.TestCase):
             english, = timeline.matches('meet')
             self.assertEqual(timeline.score_editor.materialize(original, [
                 {'note_id': english['id'], 'lyric': 'you'}])[0]['tracks'][1]['parts'][1]['notes'][0]['phoneme'], 'j u:')
+            self.assertEqual(timeline.score_editor.materialize(original, [
+                {'note_id': english['id'], 'lyric': 'moon'}])[0]['tracks'][1]['parts'][1]['notes'][0]['phoneme'], 'm u: n')
+            timed, = timeline.matches('you')
+            updated, _ = timeline.score_editor.materialize(original, [{'note_id': timed['id'], 'lyric': 'bee'}])
+            notes = updated['tracks'][1]['parts'][1]['notes']
+            self.assertEqual((notes[1]['phoneme'], notes[1]['phonemePositions']),
+                             ('b i:', original['tracks'][1]['parts'][1]['notes'][1]['phonemePositions']))
+            with self.assertRaisesRegex(ValueError, '音素的数量'):
+                timeline.with_note_edits([{'note_id': timed['id'], 'lyric': 'moon'}])
+            with self.assertRaisesRegex(ValueError, '确定原语言'):
+                timeline.with_note_edits([{'note_id': english['id'], 'lyric': 'Flimzork'}])
             self.assertEqual(score_phoneme(4, '你'), score_phoneme(4, 'ni'))
             self.assertIsNotNone(score_phoneme(4, 'ni'))
             self.assertIsNone(score_phoneme(4, '行'))

@@ -16,7 +16,7 @@ import re
 import stat
 
 from common import native_path
-from preparation_languages import LANGUAGES, validate_english_midi_options, validate_project_formats
+from preparation_languages import LANGUAGES, validate_english_midi_options
 
 MAX_DOCUMENT_BYTES = 256 * 1024
 MAX_DEPTH = 16
@@ -326,7 +326,6 @@ def validate_document(value, *, allow_builtin=False):
         options = payload['options']
         try:
             validate_english_midi_options(options['language'], options['midi_backend'], options['alignment_engine'])
-            validate_project_formats(options['language'], options['project_formats'])
         except ValueError as error:
             _invalid('$.payload.options', str(error))
         if options['alignment_engine'] == 'tifa' and options['midi_backend'] != 'v2':

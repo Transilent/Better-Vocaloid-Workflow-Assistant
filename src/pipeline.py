@@ -26,7 +26,7 @@ from common import exclusive_sidecar, SidecarBusy
 from common import cancellation_requested
 from check_dependencies import validate as validate_dependencies
 from preparation_languages import (
-    LANGUAGES, PROFILES, QWEN_FEATURE, validate_english_midi_options, validate_project_formats,
+    LANGUAGES, PROFILES, QWEN_FEATURE, validate_english_midi_options,
 )
 from source_contract import reject_unsupported_bilibili_subpage
 
@@ -126,7 +126,6 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
             raise ValueError('字幕节点需要歌词事件，请开启歌词识别或移除字幕节点。')
         if end_stage=='subtitles' and subtitles_mode!='midi':
             raise ValueError('自动字幕使用 MIDI 匹配；网易云时间轴请在字幕卡片中编辑并导出。')
-    validate_project_formats(language, projects)
     tools = load_config(resolve_paths=False)
     if midi_backend is not None:
         tools['vocal2midi']='dependencies/vocal2midi2' if midi_backend=='v2' else 'dependencies/vocal2midi'

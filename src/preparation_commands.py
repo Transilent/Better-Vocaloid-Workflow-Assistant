@@ -12,7 +12,7 @@ from uuid import uuid4
 import workflow
 from common import ROOT, app_path, atomic_json, load_config, native_path, workspace_state
 from preparation_languages import (
-    LANGUAGES, PROFILES, QWEN_FEATURE, effective_preparation_options, validate_project_formats,
+    LANGUAGES, PROFILES, QWEN_FEATURE, effective_preparation_options,
 )
 
 
@@ -260,8 +260,6 @@ class PreparationDraft:
         """Apply one checkbox intent to the current draft's format selection."""
         if field not in _FORMATS or format_id not in _FORMATS[field] or type(selected) is not bool:
             raise ValueError('导出格式无效。')
-        if field == 'project_formats' and selected:
-            validate_project_formats(self.fields['language'], (format_id,))
         values = [value for value in self.fields[field] if value != format_id]
         if selected:
             values.append(format_id)
@@ -485,9 +483,15 @@ def progress_view(job):
                     if isinstance(alignment, dict) and alignment.get('state') in ('unavailable', 'partial'):
                         lyric_notices.append({'voice': voice, 'state': alignment['state'],
                                               'chunks': alignment.get('pitch_only_chunks', 0)})
+    pronunciation_reviews = 0
+    if steps.get('exports', {}).get('state') == 'done':
+        from project_exports import read_receipts
+        vsqx = read_receipts(Path(job)).get('exports/voices.vsqx', {})
+        pronunciation_reviews = vsqx.get('english_pronunciation', {}).get('review_count', 0)
     return {'state': state, 'job': str(job), 'current': data['current'] or '', 'message': message,
             'completed': data['completed'], 'total': len(stages), 'elapsed': data['elapsed'],
-            'stage_progress': stage_progress, 'stages': stages, 'lyric_notices': lyric_notices}
+            'stage_progress': stage_progress, 'stages': stages, 'lyric_notices': lyric_notices,
+            'vsqx_pronunciation_reviews': pronunciation_reviews}
 
 
 def recovery_view(job):

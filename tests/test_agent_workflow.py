@@ -789,9 +789,11 @@ class WorkflowCreateGetTests(WorkflowTestBase):
         artifact = self.control.import_asset(self.midi)
         flow = self.workflow.create(score_artifact_id=artifact['id'], options={'language': 'en'})
         self.assertEqual(self.workflow._read(flow['id'])['request']['formats'], ['ustx'])
-        with self.assertRaises(ControlError) as raised:
-            self.workflow.create(score_artifact_id=artifact['id'], options={'language': 'en'}, formats=['svp'])
-        self.assertEqual(raised.exception.code, 'invalid_formats')
+        formats = ['svp', 'vsqx']
+        explicit = self.workflow.create(score_artifact_id=artifact['id'], options={'language': 'en'}, formats=formats)
+        self.assertEqual(self.workflow._read(explicit['id'])['request']['formats'], formats)
+        styled = self.workflow.create(score_artifact_id=artifact['id'], options={'language': 'en'}, brief='轻柔')
+        self.assertEqual(self.workflow._read(styled['id'])['request']['formats'], ['svp'])
 
     def test_concurrent_same_export_intent_is_one_atomic_creation(self):
         bindings = {"pitch_source_job_id": "job_pitch_concurrent",

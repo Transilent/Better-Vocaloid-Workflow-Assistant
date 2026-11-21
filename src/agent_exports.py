@@ -24,12 +24,11 @@ import threading
 import time
 from typing import Any
 import unicodedata
-import xml.etree.ElementTree as ET
 
 import mido
 
 from common import native_path
-from preparation_languages import LANGUAGES, validate_project_formats
+from preparation_languages import LANGUAGES
 
 
 class ExportError(ValueError):
@@ -143,7 +142,6 @@ def _normalise_formats(formats: Any, language: str) -> list[str]:
         if fmt in result:
             raise ValueError("formats 不能包含重复格式。")
         result.append(fmt)
-    validate_project_formats(language, result)
     return result
 
 
@@ -484,7 +482,7 @@ def _format_targets(formats: list[str]) -> list[dict[str, Any]]:
     ]
 
 
-def _conversion_losses(evidence: dict[str, Any], formats: list[str]) -> list[dict[str, Any]]:
+def _conversion_losses(evidence: dict[str, Any], formats: list[str], language: str) -> list[dict[str, Any]]:
     losses = [
         {
             "code": "midi_controllers_not_automation",
@@ -523,7 +521,9 @@ def _conversion_losses(evidence: dict[str, Any], formats: list[str]) -> list[dic
     if "vsqx" in formats:
         losses.append({
             "code": "vsqx_lyrics_restored_after_dump",
-            "message": "VSQX 转换器会把中文/日文歌词改为读音；本 worker 在回读前恢复原歌词文本，发音/音素仍由转换器推导。",
+            "message": ("VSQX 保存英文原词和词典发音，未匹配或需检查的续音在候选回执中列出。"
+                        if language == "en" else
+                        "VSQX 转换器会把中文/日文歌词改为读音；本 worker 在回读前恢复原歌词文本，发音/音素仍由转换器推导。"),
         })
     return losses
 
@@ -646,7 +646,7 @@ def plan_export(path: Any, formats: Any = None, options: Any = None) -> dict[str
                  "policy": "preserve_absolute", "plan": None,
                  "reason": "no_continuous_pitch_source" if normal_options.get("preserve_pitch", True)
                            else "explicit_note_only"}
-    losses = _conversion_losses(evidence, normal_formats)
+    losses = _conversion_losses(evidence, normal_formats, normal_options["language"])
     if pitch["status"] in ("unavailable", "omitted"):
         losses.append({"code": "continuous_pitch_" + pitch["status"], "count": 1,
                        "message": "未绑定原唱连续音高；当前候选只有音符骨架及显式后续风格。"
@@ -817,16 +817,16 @@ def _input_options(plan: dict[str, Any]) -> dict[str, Any]:
 
 
 def _output_options(fmt: str, plan: dict[str, Any]) -> dict[str, Any]:
+    from project_exports import project_output_options
+
     language = plan["options"]["language"]
+    options = project_output_options(fmt, language)
     if fmt == "svp":
-        return {
-            "down_sample": 0,
-            "language_override": "mandarin" if language == "zh" else "japanese",
-            "version_compatibility": _SVP_VERSIONS[plan["options"]["svp_version"]],
-        }
+        options["version_compatibility"] = _SVP_VERSIONS[plan["options"]["svp_version"]]
     if fmt == "vsqx":
-        return {"pretty_xml": True, "default_lang_id": 4 if language == "zh" else 0}
-    return {}
+        options.setdefault("default_lang_id", 4 if language == "zh" else 0)
+        options["pretty_xml"] = True
+    return options
 
 
 def _project_notes(project: Any) -> list[tuple[int, int, int, str]]:
@@ -936,57 +936,6 @@ def _new_temp_path(root: Path, fmt: str) -> Path:
     except OSError as error:
         raise ValueError("无法准备候选临时路径：" + str(error)) from error
     return path
-
-
-def _restore_vsqx_lyrics(path: Path, project: Any) -> int:
-    """Restore exact lyric text while retaining generated VSQX phonemes."""
-    try:
-        tree = ET.parse(native_path(path))
-        root = tree.getroot()
-        namespace = root.tag.partition("}")[0].removeprefix("{")
-        if namespace:
-            ET.register_namespace("", namespace)
-        parts = [row for row in root.iter() if row.tag.rsplit("}", 1)[-1] == "vsTrack"]
-        tracks = [row for row in project.track_list if hasattr(row, "note_list")]
-        if len(parts) != len(tracks):
-            raise ValueError("VSQX 导出后的声部数量不一致。")
-        changed = 0
-        for part, track in zip(parts, tracks):
-            elements = [row for row in part.iter() if row.tag.rsplit("}", 1)[-1] == "note"]
-            if len(elements) != len(track.note_list):
-                raise ValueError("VSQX 导出后的音符数量不一致。")
-            for element, note in zip(elements, track.note_list):
-                lyric = next(
-                    (child for child in element
-                     if child.tag.rsplit("}", 1)[-1] in ("y", "lyric")),
-                    None,
-                )
-                if lyric is None:
-                    raise ValueError("VSQX 音符缺少歌词节点，无法恢复原歌词。")
-                lyric.text = _normalise_text(str(note.lyric or ""))
-                changed += 1
-        tree.write(native_path(path), encoding="utf-8", xml_declaration=True)
-        reread = ET.parse(native_path(path))
-        verified_parts = [
-            row for row in reread.getroot().iter()
-            if row.tag.rsplit("}", 1)[-1] == "vsTrack"
-        ]
-        if len(verified_parts) != len(tracks):
-            raise ValueError("VSQX 歌词恢复后的声部数量不一致。")
-        for part, track in zip(verified_parts, tracks):
-            values = [
-                _normalise_text(child.text or "")
-                for child in part.iter()
-                if child.tag.rsplit("}", 1)[-1] in ("y", "lyric")
-            ]
-            expected = [_normalise_text(str(note.lyric or "")) for note in track.note_list]
-            if values != expected:
-                raise ValueError("VSQX 歌词恢复后回读不一致。")
-        return changed
-    except ValueError:
-        raise
-    except (OSError, ET.ParseError) as error:
-        raise ValueError("恢复 VSQX 歌词失败：" + str(error)) from error
 
 
 def _publish_exclusive(path: Path, data: bytes) -> None:
@@ -1184,6 +1133,8 @@ def apply_export(
     report("loaded export plan and runtime")
     check_cancel()
     expected = _expected_notes(saved)
+    language = saved["options"]["language"]
+    english = language == "en"
     candidates: list[dict[str, Any]] = []
     pending_paths: list[Path] = []
     try:
@@ -1211,13 +1162,25 @@ def apply_export(
                 from agent_pitch import apply_pitch_plan
                 pitch_application = apply_pitch_plan(project, saved["pitch"]["plan"], cancel=cancel)
 
-            for candidate_index, fmt in enumerate(saved["formats"]):
+            from project_exports import (
+                _vsqx_pitch_draft, english_project_lyric, english_svp_project, english_ustx_input_options,
+                read_english_svp_lyrics, read_english_ustx_lyrics, read_vsqx_export_lyrics,
+                restore_english_ustx_lyrics, restore_vsqx_lyrics,
+            )
+            for fmt in saved["formats"]:
                 check_cancel()
                 report("exporting " + fmt)
                 temporary = _new_temp_path(root, fmt)
                 pending_paths.append(temporary)
                 instrumental_requested = bool(saved.get("instrumental", {}).get("requested"))
-                candidate_project = _converter_project(project, fmt)
+                vsqx_pitch_tracks = ({row["vocal_track_index"]: None for row in saved["pitch"]["plan"]["sources"]}
+                                     if fmt == "vsqx" and pitch_application is not None else {})
+                candidate_project = (_vsqx_pitch_draft(project, vsqx_pitch_tracks) if vsqx_pitch_tracks
+                                     else _converter_project(project, fmt))
+                numbered = []
+                pronunciation = None
+                if english and fmt == "svp":
+                    candidate_project, numbered = english_svp_project(candidate_project)
                 if fmt == "svp" and instrumental_requested:
                     from libresvip.model.base import InstrumentalTrack
                     candidate_project.track_list.append(InstrumentalTrack(
@@ -1230,16 +1193,19 @@ def apply_export(
                         _io_path(temporary), candidate_project, _output_options(fmt, saved)
                     )
                     pitch_native = None
-                    if pitch_application is not None:
+                    if vsqx_pitch_tracks:
+                        from vocaloid_pitch import write_vsqx_pitch
+                        pitch_native = write_vsqx_pitch(
+                            _io_path(temporary), project, vsqx_pitch_tracks, cancel=check_cancel)
+                    elif pitch_application is not None:
                         from agent_pitch import restore_native_pitch
                         pitch_native = restore_native_pitch(
                             _io_path(temporary), fmt, project, saved["pitch"]["plan"], cancel=cancel
                         )
                     if fmt == "vsqx":
-                        _restore_vsqx_lyrics(temporary, project)
+                        pronunciation = restore_vsqx_lyrics(_io_path(temporary), project, language)
                     input_options = {}
-                    if fmt == "ustx" and saved["options"]["language"] == "en":
-                        from project_exports import english_ustx_input_options, restore_english_ustx_lyrics
+                    if fmt == "ustx" and english:
                         restore_english_ustx_lyrics(_io_path(temporary), candidate_project)
                         input_options = english_ustx_input_options("en")
                     media = None
@@ -1271,12 +1237,19 @@ def apply_export(
                     check_cancel()
                     if pitch_application is not None:
                         from agent_pitch import load_pitch_project
-                        loaded = load_pitch_project(_io_path(temporary), fmt, converters, input_options=input_options)
+                        loaded = load_pitch_project(_io_path(temporary), fmt, converters, input_options=input_options,
+                                                    native_vsqx=bool(vsqx_pitch_tracks))
                     else:
                         loaded = converters[fmt].load(
                             _io_path(temporary),
                             {"import_pitch": False, "import_instrumental_track": False, **input_options},
                         )
+                    if fmt == "vsqx":
+                        read_vsqx_export_lyrics(_io_path(temporary), loaded, english=english)
+                    elif english and fmt == "ustx":
+                        read_english_ustx_lyrics(_io_path(temporary), loaded)
+                    elif english and fmt == "svp":
+                        read_english_svp_lyrics(_io_path(temporary), loaded)
                 except Exception as error:
                     if isinstance(error, InterruptedError):
                         raise
@@ -1284,8 +1257,10 @@ def apply_export(
                         raise
                     raise ValueError(f"{fmt.upper()} 转换或回读失败：{error}") from error
                 actual = _project_notes(loaded)
-                if actual != expected:
-                    diff = _counter_difference(expected, actual)
+                expected_candidate = (sorted((*row[:3], english_project_lyric(fmt, row[3])) for row in expected)
+                                      if english else expected)
+                if actual != expected_candidate:
+                    diff = _counter_difference(expected_candidate, actual)
                     raise ValueError(
                         f"{fmt.upper()} 回读后音符/歌词不一致：" + _canonical(diff)
                     )
@@ -1296,7 +1271,8 @@ def apply_export(
                     from agent_pitch import verify_pitch_plan
                     loaded.song_tempo_list = [SongTempo(position=position, bpm=bpm)
                                               for position,bpm in output_tempo]
-                    pitch_readback = verify_pitch_plan(loaded, saved["pitch"]["plan"], cancel=cancel)
+                    pitch_readback = verify_pitch_plan(
+                        loaded, saved["pitch"]["plan"], cancel=cancel, clamp_to_note_ticks=bool(vsqx_pitch_tracks))
                     if not pitch_readback.get("verified", False):
                         raise ExportError("continuous_pitch_not_preserved", "导出回读未保留原唱连续音高。",
                                           details={"format": fmt, "pitch": pitch_readback})
@@ -1357,7 +1333,11 @@ def apply_export(
                     "time_signatures": output_timesig,
                     "expected_tempo": input_tempo,
                     "output_tempo": output_tempo,
+                    **({"english_pronunciation": pronunciation} if pronunciation else {}),
+                    **({"numbered_continuations": numbered} if numbered else {}),
                     "loss_codes": ([]
+                        + (["english_pronunciation_review"] if pronunciation and pronunciation["review_count"] else [])
+                        + (["numbered_continuation_normalized"] if numbered else [])
                         + ([] if tempo_verified else ["tempo_table_normalized"])
                         + ([] if output_timesig == input_timesig
                            else ["time_signature_normalized"])),

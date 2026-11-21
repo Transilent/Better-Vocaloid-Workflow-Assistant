@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 PIT_SPEC = (0, -8192, 8191)
 PBS_SPEC = (2, 1, 24)
 REPLAY_TOLERANCE_CENTS = 2.0
+NATIVE_PITCH_POLICY = 'vocaloid-guarded-pit-pbs-v1'
 
 
 def pre_measure_ticks(signatures, resolution, count):
@@ -258,4 +259,53 @@ def write_vsqx_pitch(path, project, generated_tracks, *, cancel):
         receipt['max_readback_error_cents'] = _verify_bends(runs, end,
             [{'pos': pos, 'value': value} for pos, name, value in actual if name == pit_id],
             next((value for _, name, value in actual if name == pbs_id), PBS_SPEC[0]))
-    return {'policy': 'vocaloid-guarded-pit-pbs-v1', 'readback_verified': True, 'tracks': receipts}
+    return {'policy': NATIVE_PITCH_POLICY, 'readback_verified': True, 'tracks': receipts}
+
+
+def read_generated_pitch(path, project, *, sample_limit):
+    """Evaluate the emitted VSQX4 held controllers, including default zero bends."""
+    import numpy as np
+    from libresvip.core.time_sync import TimeSynchronizer
+    from libresvip.model.pitch_simulator import PitchSimulator
+    from libresvip.model.point import Point
+    from libresvip.model.portamento import PortamentoPitch
+    from libresvip.plugins.vsqx.models.vsqx4 import VSQ4_NS, ParameterNames
+    from pitch_accuracy import ABSOLUTE_F0_PITCH_AXIS_OFFSET_TICKS
+
+    root = ET.parse(path).getroot()
+    tag = '{' + VSQ4_NS + '}'
+    xml_tracks = root.findall(tag + 'vsTrack')
+    tracks = [track for track in project.track_list if hasattr(track, 'note_list')]
+    if root.tag != tag + 'vsq4' or len(xml_tracks) != len(tracks):
+        raise ValueError('VSQX 音高回读无法匹配声部。')
+    if sum(note.length for track in tracks for note in track.note_list) > sample_limit:
+        raise ValueError('VSQX 原生音高回读超出受管采样上限。')
+    prefix = round(project.time_signature_list[0].bar_length())
+    clock = TimeSynchronizer(project.song_tempo_list)
+    axis = ABSOLUTE_F0_PITCH_AXIS_OFFSET_TICKS
+    pit_id, pbs_id = ParameterNames.PIT.value, ParameterNames.PBS.value
+    for xml_track, track in zip(xml_tracks, tracks):
+        if not track.note_list:
+            continue
+        parts = xml_track.findall(tag + 'vsPart')
+        if len(parts) != 1 or int(parts[0].findtext(tag + 't')) != prefix:
+            raise ValueError('VSQX 音高回读无法匹配片段时间。')
+        streams = {pit_id: [], pbs_id: []}
+        for control in parts[0].findall(tag + 'cc'):
+            value = control.find(tag + 'v')
+            if value is not None and value.get('id') in streams:
+                streams[value.get('id')].append({'pos': int(control.findtext(tag + 't')), 'value': int(value.text)})
+        simulated = PitchSimulator(clock, PortamentoPitch.vocaloid_portamento(), track.note_list,
+                                   project.time_signature_list)
+        points = [Point.start_point()]
+        for note in track.note_list:
+            ticks = np.arange(note.start_pos, note.end_pos)
+            bends = step_values(ticks, streams[pit_id], PIT_SPEC[0])
+            span = 100 * step_values(ticks, streams[pbs_id], PBS_SPEC[0])
+            baseline = np.asarray(simulated.pitch_at_ticks_batch(ticks.tolist()))
+            values = np.rint(baseline + span * bends / np.where(bends < 0, -PIT_SPEC[1], PIT_SPEC[2]))
+            points.extend(Point(tick + axis, int(value)) for tick, value in zip(ticks.tolist(), values))
+            points.append(Point(note.end_pos + axis, -100))
+        points.append(Point.end_point())
+        track.edited_params.pitch.points.root = points
+    return project
