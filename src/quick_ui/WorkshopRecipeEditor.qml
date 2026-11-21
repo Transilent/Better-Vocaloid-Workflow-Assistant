@@ -43,6 +43,15 @@ Item {
             {key: "delay", label: "进入延迟", unit: "ms"}, {key: "minimum_note", label: "最短音符", unit: "ms"}
         ]}
     ]
+    readonly property var connectionTypes: [
+        {value: "connection", label: label("通用衔接")},
+        {value: "repeated", label: label("同音衔接")},
+        {value: "rising", label: label("上行衔接")},
+        {value: "falling", label: label("下行衔接")}
+    ]
+    readonly property var positionParameters: [
+        {key: "cents", label: "偏移", unit: "¢"}, {key: "seconds", label: "最长时间", unit: "ms"}
+    ]
 
     function label(text) { return typeof quickTranslation !== "undefined" && quickTranslation ? quickTranslation.text(text) : text }
     function parameter(section, key) {
@@ -417,8 +426,8 @@ Item {
                                 delegate: ColumnLayout {
                                     id: action
                                     required property var modelData
-                                    readonly property string kind: modelData.kind
-                                    readonly property bool connection: kind === "connection"
+                                    readonly property bool connection: modelData.kind === "connection"
+                                    readonly property string kind: connection ? (editor.design.connectionAction || "connection") : modelData.kind
                                     Layout.fillWidth: true
                                     Layout.preferredWidth: 1
                                     Layout.alignment: Qt.AlignTop
@@ -427,8 +436,19 @@ Item {
                                         color: (editor.design.activeActions || []).includes(action.kind)
                                             ? editor.theme.text : editor.theme.muted
                                     }
+                                    UiComboBox {
+                                        objectName: "designConnectionKind"
+                                        visible: action.connection
+                                        Layout.fillWidth: true
+                                        theme: editor.theme
+                                        fieldLabel: editor.label("衔接位置")
+                                        enabled: !editor.view.busy
+                                        model: editor.connectionTypes
+                                        currentIndex: Math.max(0, editor.connectionTypes.findIndex(row => row.value === action.kind))
+                                        onActivated: editor.controller.selectConnectionAction(currentValue)
+                                    }
                                     Repeater {
-                                        model: action.modelData.rows
+                                        model: action.connection && action.kind !== "connection" ? editor.positionParameters : action.modelData.rows
                                         delegate: Parameter {
                                             required property var modelData
                                             section: action.kind
@@ -438,7 +458,7 @@ Item {
                                         }
                                     }
                                     UiComboBox {
-                                        visible: action.connection
+                                        visible: action.kind === "connection"
                                         Layout.fillWidth: true
                                         theme: editor.theme
                                         fieldLabel: editor.label("衔接方向")
@@ -449,12 +469,17 @@ Item {
                                         onActivated: editor.controller.editDesign("connection", "direction", currentValue)
                                     }
                                     UiButton {
-                                        visible: action.connection
+                                        visible: action.kind === "connection"
                                         theme: editor.theme
                                         text: editor.label("大下行提前衔接")
                                         selected: editor.parameter("connection", "anticipate_descent") === true
                                         enabled: !editor.view.busy
                                         onClicked: editor.controller.editDesign("connection", "anticipate_descent", !selected)
+                                    }
+                                    Caption {
+                                        Layout.fillWidth: true
+                                        visible: action.connection && action.kind !== "connection"
+                                        text: editor.label("此位置的偏移设为 0 时，使用通用衔接。")
                                     }
                                     Caption {
                                         Layout.fillWidth: true

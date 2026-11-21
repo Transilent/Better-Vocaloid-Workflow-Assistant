@@ -19,6 +19,7 @@ from style_presets import freeze_recipe
 _STYLE_DEFAULTS = {'mode': 'project', 'track': -1, 'start': '', 'end': '', 'audio': '', 'offset': '0',
                    'measurePitch': False, 'useGain': True, 'usePitch': True, 'name': '', 'strength': .6}
 _PANES = ('style', 'calibration', 'presets')
+_CONNECTION_ACTIONS = ('connection', 'repeated', 'rising', 'falling')
 
 
 def _cancel(stop):
@@ -42,6 +43,8 @@ class QuickWorkshop(QObject):
         self._comparison_track = -1
         self._audio_binding = None
         self._reference_review = None
+        self._reference_panel = 'positions'
+        self._chosen_positions = set()
         self._point = 0
         from style_authoring import structure_draft
 
@@ -50,6 +53,7 @@ class QuickWorkshop(QObject):
         self._designs = {'none': {'name': '', **structure_draft()}}
         self._design_channel = 'loudness'
         self._design_panel = 'expression'
+        self._connection_action = 'connection'
         self._edited_preset_sha = ''
         self._message = ''
         self._selection = {}
@@ -137,6 +141,9 @@ class QuickWorkshop(QObject):
                 'referenceReview': review['view'] if review and review['key'] == self._analysis_stamp() else {},
                 'preparedVocal': {'title': audio['title'], 'role': audio['role']} if audio else {},
                 'gestures': measured.get('gestures', []), 'report': measured.get('report', {}),
+                'referencePanel': self._reference_panel,
+                'positions': measured.get('positions', []) if self._ready() else [],
+                'chosenPositions': sorted(self._chosen_positions) if self._ready() else [],
                 'ready': ready, 'hasAnalysis': bool(measured), 'selectedPoint': self._point,
                 'canUseCurrent': bool(self.tuning.style_reference_seed()),
                 'canAnalyze': bool(self._reference and fields['track'] >= 0 and valid_range
@@ -158,7 +165,7 @@ class QuickWorkshop(QObject):
                          'color': self._designs['library']['color'] or ''})
         controls, actions = structure_contents(draft)
         return {'template': self._template, 'templates': rows, 'draft': draft, 'channel': self._design_channel,
-                'panel': self._design_panel,
+                'panel': self._design_panel, 'connectionAction': self._connection_action,
                 'activeActions': list(actions), 'hasChanges': bool(controls or actions),
                 'preview': structure_preview(draft, self._design_channel) if self._design_panel == 'expression' else {}}
 
@@ -199,6 +206,12 @@ class QuickWorkshop(QObject):
     def selectDesignPanel(self, panel):
         if panel in ('expression', 'pitch') and self._design_panel != panel:
             self._design_panel = panel
+            self.changed.emit()
+
+    @Slot(str)
+    def selectConnectionAction(self, action):
+        if action in _CONNECTION_ACTIONS and self._connection_action != action:
+            self._connection_action = action
             self.changed.emit()
 
     @Slot(str)
@@ -395,6 +408,7 @@ class QuickWorkshop(QObject):
         self._reference_review = None
         if not review_only:
             self._result = self._trial = self._recipe = None
+            self._chosen_positions.clear()
             self._point = 0
 
         def work(stop, send):
@@ -431,7 +445,8 @@ class QuickWorkshop(QObject):
                 return
             self._result = result
             self._analysis_key = stamp
-            self._notice('已提取参考风格，可调整后试套或保存。')
+            self._notice('已提取参考风格，可调整后试套或保存。' if report['usable']
+                         else '已识别唱段位置，参考中暂无可用的表达变化。')
 
         self._command('review' if review_only else 'analysis',
                       '正在核对参考唱段…' if review_only else '正在分析参考唱段…', work, finish)
@@ -451,6 +466,42 @@ class QuickWorkshop(QObject):
         self.selectDesignPanel('expression' if part == 'loudness' else 'pitch')
         self.selectDesignChannel('loudness')
         self._notice('参考力度已带入草稿的单音包络。' if part == 'loudness' else '参考起收音高已带入句首和句尾动作。')
+
+    @Slot(str)
+    def selectReferencePanel(self, panel):
+        if panel in ('positions', 'envelope') and self._reference_panel != panel:
+            self._reference_panel = panel
+            self.changed.emit()
+
+    @Slot(str, bool)
+    def chooseReferencePosition(self, position, checked):
+        if self.worker.kind or self._method != 'reference' or not self._ready():
+            return
+        if not any(row['id'] == position and row['adoptable'] for row in self._result['positions']):
+            return
+        if checked:
+            self._chosen_positions.add(position)
+        else:
+            self._chosen_positions.discard(position)
+        self.changed.emit()
+
+    @Slot()
+    def adoptReferencePositions(self):
+        if self.worker.kind or self._method != 'reference' or not self._ready() or not self._chosen_positions:
+            return
+        from style_authoring import adopt_reference_position
+
+        positions = self._chosen_positions.copy()
+        for position in positions:
+            adopt_reference_position(self._designs['none'], self._result, position)
+        self._chosen_positions.clear()
+        self.selectTemplate('none')
+        self.selectDesignPanel('expression' if positions == {'sustain'} else 'pitch')
+        action = next((kind for kind in _CONNECTION_ACTIONS if kind in positions), None)
+        if action:
+            self.selectConnectionAction(action)
+        self.selectDesignChannel('loudness')
+        self._notice('所选唱段位置的变化已带入草稿。')
 
     @Slot(int)
     def selectPoint(self, index):

@@ -267,6 +267,77 @@ class TuningPresetWorkflowTests(unittest.TestCase):
             self.assertEqual(pitched['report']['pitch_notes'], 2)
             self.assertLess(pitched['gestures'][0]['cents'], -30.)
 
+    def test_positional_reference_keeps_score_neighbors_and_writes_only_selected_gestures(self):
+        from style_authoring import (adopt_reference_position, analyze_reference, make_structure_recipe,
+                                     structure_draft)
+        from style_pitch import apply_pitch
+
+        with LongPathTemporaryDirectory(prefix='position-style-', dir=TEST_TEMP) as temp:
+            root = Path(temp)
+            reference = mini_project()
+            part = reference['tracks'][0]['mainGroup']
+            part['notes'] = [note(0, Q, 60, 'la'), note(Q, Q, 60, 'la'),
+                             note(2 * Q, Q, 64, 'la'), note(3 * Q, Q, 61, 'la'),
+                             note(5 * Q, 2 * Q, 61, 'la')]
+            neutral = copy.deepcopy(reference)
+            pitch = [0, 0]
+            for index, first in enumerate((-55, -20, 42, -35)):
+                start = index * Q
+                attack = .1155 if index == 0 else .044
+                pitch.extend((start + round(Q * attack), first, start + Q // 4, 0))
+                if index == 3:
+                    pitch.extend((start + 3 * Q // 4, 0, start + round(.902 * Q), 38))
+                pitch.extend((start + Q, 0))
+            pitch.extend((5 * Q, 0, 7 * Q, 0))
+            part['parameters'] = {
+                'pitchDelta': {'mode': 'linear', 'points': pitch},
+                'loudness': {'mode': 'linear', 'points': [0, 0, 5 * Q, 0, 11 * Q // 2, 0,
+                                                         6 * Q, 4, 13 * Q // 2, 0, 7 * Q, 0]},
+            }
+            source = write_svp(root / 'position.svp', reference)
+            original = write_svp(root / 'neutral.svp', neutral)
+            source_hash = file_hash(source)
+            value = analyze_reference(source, 0, (.125, 3.625), pitch=True, before=original)
+            self.assertEqual(value['report']['source'], 'native_difference')
+            rows = {row['id']: row for row in value['positions']}
+            self.assertEqual({kind: row['count'] for kind, row in rows.items()},
+                             {'onset': 2, 'release': 2, 'repeated': 1, 'rising': 1, 'falling': 1, 'sustain': 1})
+            self.assertEqual(rows['rising']['median'], 42)
+            self.assertEqual(rows['falling']['median'], -35)
+            self.assertEqual(rows['repeated']['median'], -20)
+            self.assertGreater(rows['sustain']['median'], 2)
+            self.assertFalse(rows['onset']['adoptable'])  # Flat and curved phrase entries do not form a consistent rule.
+
+            partial = analyze_reference(source, 0, (.625, 1.625), pitch=True)
+            counts = {row['id']: row['count'] for row in partial['positions']}
+            self.assertEqual(counts, {'onset': 0, 'release': 0, 'repeated': 0, 'rising': 1, 'falling': 0, 'sustain': 0})
+            without_pitch = analyze_reference(source, 0, (.125, 3.625))
+            self.assertEqual([row['observed'] for row in without_pitch['positions']], [0, 0, 0, 0, 0, 1])
+            self.assertEqual(file_hash(source), source_hash)
+
+            draft = structure_draft()
+            draft['controls']['loudness']['note']['onset'] = 1.5
+            for position in ('rising', 'sustain'):
+                adopt_reference_position(draft, value, position)
+            self.assertEqual(draft['controls']['loudness']['note']['onset'], 1.5)
+            self.assertGreater(draft['controls']['loudness']['note']['arc'], 2)
+            document = make_structure_recipe('Positional style', draft)
+            raw = encode_document(document)
+            recipe = freeze_recipe(raw)['document']['payload']['pitch']
+            self.assertEqual(set(recipe), {'enabled', 'rising'})
+            self.assertNotIn(b'position.svp', raw)
+            pattern = {key: action for key, action in recipe.items() if key != 'enabled'}
+            report, changed = apply_pitch(copy.deepcopy(neutral), 'none', strength=.8, track_indices=[0],
+                                          structure=pattern)
+            self.assertEqual(changed, {(0, 'pitchDelta')})
+            actions = report['tracks'][0]['gestures']
+            self.assertEqual([(row['kind'], row['note_index']) for row in actions], [('interval_connection', 2)])
+            self.assertEqual(actions[0]['cents_at_full_strength'], 42)
+            cut, changed = apply_pitch(copy.deepcopy(neutral), 'none', strength=.8, track_indices=[0],
+                                       structure=pattern, time_range=(1.125, 1.625))
+            self.assertFalse(changed)
+            self.assertFalse(cut['tracks'][0]['gestures'])
+
     def test_external_style_uses_exact_library_bytes_and_runs_after_dependency_is_deleted(self):
         with LongPathTemporaryDirectory(prefix='external-style-', dir=TEST_TEMP) as temp:
             root = Path(temp)

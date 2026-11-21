@@ -39,6 +39,9 @@ STYLE_ACTION_BOUNDS = {
     'release': {'cents': (-240., 240.), 'seconds': (.025, .40), 'peak': (.10, .90)},
     'connection': {'cents_per_semitone': (0., 25.), 'limit': (0., 200.), 'seconds': (.025, .24),
                    'repeat_cents': (-60., 60.)},
+    'repeated': {'cents': (-60., 60.), 'seconds': (.025, .24)},
+    'rising': {'cents': (-120., 120.), 'seconds': (.025, .24)},
+    'falling': {'cents': (-120., 120.), 'seconds': (.025, .24)},
     'vibrato': {'depth': (0., 60.), 'rate': (4., 8.), 'delay': (.10, .80), 'minimum_note': (.85, 2.)},
 }
 CALIBRATION_CAPABILITY = 'calibration.svp-response'
@@ -260,7 +263,7 @@ def _invalid(path, message):
 
 
 def active_style_action(kind, action):
-    if kind in ('onset', 'release'):
+    if kind in ('onset', 'release', 'repeated', 'rising', 'falling'):
         return action['cents'] != 0
     if kind == 'connection':
         return bool((action['limit'] and action['cents_per_semitone']) or action['repeat_cents'])

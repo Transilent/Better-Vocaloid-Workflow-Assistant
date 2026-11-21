@@ -102,6 +102,7 @@ CONTROLS = control_limits(STYLE_CONTROL_NAMES)
 PRESET_MERGES = style_registry.STYLE_MERGES
 MAX_POINTS = 2_000_000
 PHRASE_GAP = .25
+LONG_NOTE_SECONDS = .65
 STYLE_GRID = .02
 DETAIL_DEFAULTS = {'onset': 1., 'sustain': 1., 'connection': 1., 'release': 1.}
 RECIPE_CAPABILITY = 'style.note-envelope'
@@ -444,7 +445,7 @@ def _note_weights(times, spans, phrases, values, recipe, phrase_recipe, detail, 
         local = (values[0]*detail['onset']*entry + values[1]*detail['sustain']*core
                  + values[2]*detail['release']*ending)
         arc = recipe['sustain_arc'].get(channel, 0.)
-        if duration >= .65 and arc:
+        if duration + 1e-9 >= LONG_NOTE_SECONDS and arc:
             u = np.clip((t-onset)/(duration-onset-release), 0., 1.)
             local += arc*detail['sustain']*np.sin(np.pi*u)**2
         if phrase_recipe.get(channel) and phrases:

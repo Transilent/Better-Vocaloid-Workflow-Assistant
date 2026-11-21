@@ -17,12 +17,14 @@ import numpy as np
 from common import file_hash, native_path
 from expression_controls import STYLE_CONTROL_NAMES
 from preset_documents import (CONTRACTS, STYLE_PITCH_CAPABILITY, STYLE_PITCH_CONTRACT, STYLE_PITCH_MAX_CENTS,
-                              STYLE_NOTE_FIELDS, STYLE_PHRASE_FIELDS, STYLE_STRUCTURE_CAPABILITY,
+                              STYLE_ACTION_BOUNDS, STYLE_NOTE_FIELDS, STYLE_PHRASE_FIELDS, STYLE_STRUCTURE_CAPABILITY,
                               STYLE_STRUCTURE_CONTRACT, active_style_action, encode_document,
                               read_regular_bytes, validate_document)
 from style_catalog import VISIBLE_STYLES, style_color, style_description, style_label, technique_color
-from style_pitch import EXTERNAL_EDGE_SECONDS, EXTERNAL_MIN_NOTE_SECONDS, EXTERNAL_PEAKS, pitch_structure_seed
-from style_presets import (DETAIL_DEFAULTS, PRESETS, RECIPE_CAPABILITY, _curve, _note_weights, _phrase_weights,
+from style_pitch import (CONNECTION_FRACTION, CONNECTION_GAP, CONNECTION_PEAK, EXTERNAL_EDGE_SECONDS,
+                         EXTERNAL_MIN_NOTE_SECONDS, EXTERNAL_PEAKS, connection_position, pitch_structure_seed)
+from style_presets import (DETAIL_DEFAULTS, LONG_NOTE_SECONDS, PHRASE_GAP, PRESETS, RECIPE_CAPABILITY,
+                           _curve, _note_weights, _phrase_weights,
                            freeze_recipe, recipe_has_pitch, structure_definition, time_range_settings)
 
 
@@ -31,6 +33,8 @@ EDGE_FRACTION = .35
 MAX_REFERENCE_SECONDS = 120.
 MAX_REFERENCE_NOTES = 128
 MIN_DYNAMICS_SECONDS = .12
+REFERENCE_POSITIONS = ('onset', 'release', 'repeated', 'rising', 'falling', 'sustain')
+REFERENCE_CONNECTION_SECONDS = .10
 _DYNAMICS = {'vpr': 'dynamics', 'vsqx': 'dynamics', 'ustx': 'dyn', 'acep': 'energy'}
 _UNAUTHORED = object()
 
@@ -105,8 +109,7 @@ def inspect_reference(path):
     return {'path': str(snapshot.path), 'sha256': snapshot.sha256, 'format': snapshot.format, 'tracks': choices}
 
 
-def _selection(layout, index, span):
-    rows = _notes(layout, index)
+def _selection(rows, span):
     if not rows:
         raise ValueError('参考轨道没有可分析的音符。')
     start, end = time_range_settings(span or (rows[0][0].start, max(note.end for note, _ in rows)))
@@ -138,6 +141,29 @@ def _selection(layout, index, span):
     if len(notes) > MAX_REFERENCE_NOTES:
         raise ValueError('参考唱段最多分析 128 个音符，请缩小范围。')
     return notes, excluded
+
+
+def _note_positions(rows, notes):
+    """Classify selected notes with their real neighbors, even outside the selection."""
+    positions = {note.identity: {} for note in notes}
+    for i, (note, singing) in enumerate(rows):
+        if not singing or note.identity not in positions:
+            continue
+        kinds = positions[note.identity]
+        if note.duration + 1e-9 >= LONG_NOTE_SECONDS:
+            kinds['sustain'] = None
+        if note.duration < EXTERNAL_MIN_NOTE_SECONDS:
+            continue
+        previous = rows[i - 1][0] if i and rows[i - 1][1] else None
+        following = rows[i + 1][0] if i + 1 < len(rows) and rows[i + 1][1] else None
+        if previous is None or note.start - previous.end > PHRASE_GAP + 1e-9:
+            kinds['onset'] = None
+        elif (note.start - previous.end <= CONNECTION_GAP + 1e-9
+              and previous.identity in positions and previous.duration >= EXTERNAL_MIN_NOTE_SECONDS):
+            kinds[connection_position(note.key - previous.key)] = previous.identity
+        if following is None or following.start - note.end > PHRASE_GAP + 1e-9:
+            kinds['release'] = None
+    return positions
 
 
 def _native_gain(snapshot, layout, note, times, cache):
@@ -224,20 +250,82 @@ def _edge_times(note):
                        note.end - (1 - EXTERNAL_PEAKS['release']) * width])
 
 
-def _edge_shape(note, sample):
+def _relative_pitch(note, sample, times):
     if note.duration < EXTERNAL_MIN_NOTE_SECONDS:
         return None
     core = note.start + note.duration * np.linspace(.42, .58, 5)
-    values = sample(np.r_[_edge_times(note), core])
-    if values is None or not np.isfinite(values).all() or np.ptp(values[2:]) > 75:
+    values = sample(np.r_[times, core])
+    if values is None or not np.isfinite(values).all() or np.ptp(values[-5:]) > 75:
         return None
-    relative = values[:2] - np.median(values[2:])
+    relative = values[:-5] - np.median(values[-5:])
     if np.any(abs(relative) > 250):
         return None
     return relative
 
 
-def _dry_measurements(path, notes, offset, pitch, *, review_only=False, cancel, progress):
+def _measure_pitch(note, sample, kinds, edges, localized):
+    identity = note.identity
+    edge = _relative_pitch(note, sample, _edge_times(note))
+    if edge is not None:
+        edges[identity] = edge
+    for kind in kinds:
+        if kind == 'sustain':
+            continue
+        if kind in EXTERNAL_PEAKS:
+            width = min(EXTERNAL_EDGE_SECONDS, EDGE_FRACTION * note.duration)
+            peak = EXTERNAL_PEAKS[kind]
+            instant = note.start + peak * width if kind == 'onset' else note.end - (1 - peak) * width
+            relative = edge[0 if kind == 'onset' else 1] if edge is not None else None
+        else:
+            width = min(REFERENCE_CONNECTION_SECONDS, CONNECTION_FRACTION * note.duration)
+            instant = note.start + CONNECTION_PEAK * width
+            relative = None
+        if relative is None:
+            values = _relative_pitch(note, sample, [instant])
+            if values is None:
+                continue
+            relative = values[0]
+        localized.setdefault(identity, {})[kind] = (float(relative), width)
+
+
+def _sustain_amount(note, values):
+    # Fit only the long-note arc, with a free level and slope over its middle half.
+    phases = PHASES[2:7]
+    timing = {'onset': .14, 'release': .22, 'sustain_arc': {'loudness': 1.}}
+    basis = _note_weights(phases * note.duration, [(0., note.duration)], (), (0., 0., 0.),
+                          timing, {}, DETAIL_DEFAULTS, 'loudness')
+    model = np.column_stack((np.ones(len(phases)), phases, basis))
+    return float(np.linalg.lstsq(model, values[2:7], rcond=None)[0][-1])
+
+
+def _position_summary(positions, notes, loudness, localized):
+    counts = {kind: 0 for kind in REFERENCE_POSITIONS}
+    samples_by_position = {kind: [] for kind in REFERENCE_POSITIONS}
+    for note in notes:
+        identity = note.identity
+        for kind in positions[identity]:
+            counts[kind] += 1
+            if kind == 'sustain' and identity in loudness:
+                samples_by_position[kind].append((_sustain_amount(note, loudness[identity]), note.duration))
+            elif kind in localized.get(identity, {}):
+                samples_by_position[kind].append(localized[identity][kind])
+    rows = []
+    for kind, count in counts.items():
+        samples = samples_by_position[kind]
+        result = {'id': kind, 'count': count, 'observed': len(samples), 'adoptable': False}
+        if samples:
+            amounts, widths = np.asarray(samples).T
+            median = float(np.median(amounts))
+            threshold = .30 if kind == 'sustain' else 4.
+            agreement = int(np.count_nonzero(amounts * np.sign(median) >= threshold))
+            result.update(median=round(median, 2), minimum=round(float(amounts.min()), 2),
+                          maximum=round(float(amounts.max()), 2), seconds=float(np.median(widths)),
+                          adoptable=abs(median) >= threshold and 3 * agreement >= 2 * len(samples))
+        rows.append(result)
+    return rows
+
+
+def _dry_measurements(path, notes, offset, pitch, positions, localized, *, review_only=False, cancel, progress):
     import soundfile as sf
     from vocal_expression import energy_frames
 
@@ -259,7 +347,7 @@ def _dry_measurements(path, notes, offset, pitch, *, review_only=False, cancel, 
         inside |= (times >= note.start) & (times < note.end)
     gate = max(-85., float(np.percentile(db[inside], 90)) - 30.) if inside.any() else -85.
     usable = db > gate
-    loudness, accepted, checked = [], [], []
+    loudness, accepted, checked = {}, [], []
     for note in notes:
         cancel()
         lo, hi = np.searchsorted(times, (note.start, note.end))
@@ -282,7 +370,7 @@ def _dry_measurements(path, notes, offset, pitch, *, review_only=False, cancel, 
         center = np.median(supported)
         # Use in-note edges instead of sampling adjacent notes or quiet gaps.
         curve = np.interp(note.start + PHASES * note.duration, times[lo:hi], db[lo:hi])
-        loudness.append(curve - center)
+        loudness[note.identity] = curve - center
         accepted.append(note)
     adequate = len(accepted) >= math.ceil(len(notes) * .6)
     coverage = float(np.mean(usable[inside])) if inside.any() else 0.
@@ -293,27 +381,28 @@ def _dry_measurements(path, notes, offset, pitch, *, review_only=False, cancel, 
     if np.count_nonzero(~inside) >= 10:
         evidence['rest_signal_fraction'] = round(float(np.mean(usable[~inside])), 3)
     if review_only:
-        return loudness, [], evidence
+        return loudness, {}, evidence
     if not adequate:
         raise ValueError('干声与所选音符的有效重合不足，请调整对齐偏移或重选唱段。')
     if not pitch:
-        return loudness, [], evidence
+        return loudness, {}, evidence
 
     from calibration_workflow import _infer_pitch
     result = _infer_pitch(path, cancel, progress, window=window)
     grid = offset + window[0] + np.arange(len(result.midi_pitch)) * result.time_step_seconds
-    midi = result.midi_pitch
-    edges = []
+    midi = np.where(result.midi_pitch > 0., result.midi_pitch, np.nan)
+    edges = {}
     for note in accepted:
         cancel()
         def sample(query):
             values = np.interp(query, grid, midi, left=np.nan, right=np.nan)
-            if abs(np.median(values[2:]) - note.key) > 1.8:
+            if abs(np.median(values[-5:]) - note.key) > 1.8:
                 return None
             return values * 100.
-        if (edge := _edge_shape(note, sample)) is not None:
-            edges.append(edge)
-    evidence['pitch_matched_notes'] = len(edges)
+        kinds = (kind for kind, predecessor in positions[note.identity].items()
+                 if predecessor is None or predecessor in loudness)
+        _measure_pitch(note, sample, kinds, edges, localized)
+    evidence['pitch_matched_notes'] = len(edges.keys() | localized.keys())
     return loudness, edges, evidence
 
 
@@ -343,7 +432,10 @@ def analyze_reference(path, track_index=None, span=None, *, audio=None, audio_ze
     snapshot, _, layout, _, index = _score(path, track_index)
     if expected_sha256 is not None and snapshot.sha256 != expected_sha256:
         raise ValueError('参考工程已变化，请重新载入。')
-    notes, excluded = _selection(layout, index, span)
+    rows = _notes(layout, index)
+    notes, excluded = _selection(rows, span)
+    positions = _note_positions(rows, notes)
+    localized = {}
     sources = {snapshot.path: snapshot.sha256}
     compared = None
     if audio and before:
@@ -354,7 +446,8 @@ def analyze_reference(path, track_index=None, span=None, *, audio=None, audio_ze
         if expected_audio_sha256 is not None and digest != expected_audio_sha256:
             raise ValueError('参考干声已变化，请重新选择并核对。')
         sources[audio] = digest
-        loudness, edges, align = _dry_measurements(audio, notes, audio_zero, pitch, review_only=review_only,
+        loudness, edges, align = _dry_measurements(audio, notes, audio_zero, pitch, positions, localized,
+                                                   review_only=review_only,
                                                    cancel=cancel, progress=progress)
         mode = 'aligned_dry_vocal'
     else:
@@ -367,12 +460,12 @@ def analyze_reference(path, track_index=None, span=None, *, audio=None, audio_ze
                 raise ValueError('参考与对照底稿需要使用相同的工程格式。')
             compared = _comparison_notes(layout, index, prior_layout, prior_index,
                                          span or (notes[0].start, max(note.end for note in notes)))
-            prior_notes, _ = _selection(prior_layout, prior_index, span)
+            prior_notes, _ = _selection(_notes(prior_layout, prior_index), span)
             if [n.identity for n in notes] != [n.identity for n in prior_notes]:
                 raise ValueError('两份工程的可提取音符范围不同。')
             previous = {note.identity: old for note, old in zip(notes, prior_notes)}
             sources[prior.path] = prior.sha256
-        loudness, edges, align = [], [], None
+        loudness, edges, align = {}, {}, None
         gain_cache, before_cache, pitch_cache, prior_pitch_cache = {}, {}, {}, {}
         for note in notes:
             cancel()
@@ -381,7 +474,8 @@ def analyze_reference(path, track_index=None, span=None, *, audio=None, audio_ze
             old = previous.get(note.identity)
             baseline = _native_gain(prior, prior_layout, old, times, before_cache) if old else _UNAUTHORED
             if gain is not None and baseline is not None and (gain is not _UNAUTHORED or baseline is not _UNAUTHORED):
-                loudness.append((0. if gain is _UNAUTHORED else gain) - (0. if baseline is _UNAUTHORED else baseline))
+                loudness[note.identity] = ((0. if gain is _UNAUTHORED else gain)
+                                           - (0. if baseline is _UNAUTHORED else baseline))
             if pitch:
                 def sample(query):
                     values = _pitch_samples(snapshot, layout, note, query, pitch_cache, include_default=old is not None)
@@ -389,31 +483,31 @@ def analyze_reference(path, track_index=None, span=None, *, audio=None, audio_ze
                         return values
                     base = _pitch_samples(prior, prior_layout, old, query, prior_pitch_cache, include_default=True)
                     return None if base is None else values - base
-                if (edge := _edge_shape(note, sample)) is not None:
-                    edges.append(edge)
+                _measure_pitch(note, sample, positions[note.identity], edges, localized)
         mode = 'native_difference' if before else 'authored_project'
     for source, sha in sources.items():
         if file_hash(source, check=cancel) != sha:
             raise ValueError('分析期间参考素材已改变，请重新提取。')
     points = []
     if loudness:
-        values = np.median(loudness, axis=0)
+        values = np.median(list(loudness.values()), axis=0)
         points = [[float(x), round(float(y), 3)] for x, y in zip(PHASES, np.clip(values, -12, 12))]
     gestures = []
     if edges:
-        values = np.clip(np.median(edges, axis=0), -STYLE_PITCH_MAX_CENTS, STYLE_PITCH_MAX_CENTS)
+        values = np.clip(np.median(list(edges.values()), axis=0), -STYLE_PITCH_MAX_CENTS, STYLE_PITCH_MAX_CENTS)
         gestures = [{'kind': kind, 'cents': round(float(value), 2), 'fraction': EDGE_FRACTION}
                     for kind, value in zip(('onset', 'release'), values) if abs(value) >= 4]
-    if not review_only and not points and not gestures:
-        raise ValueError('所选唱段没有可用的力度或受限音高动作。')
-    return {'points': points, 'gestures': gestures, 'audio_sha256': sources[audio] if audio else '',
+    position_rows = [] if review_only else _position_summary(positions, notes, loudness, localized)
+    pitch_count = len(edges.keys() | localized.keys())
+    return {'points': points, 'gestures': gestures, 'positions': position_rows,
+            'audio_sha256': sources[audio] if audio else '',
             'report': {
         'source': mode, 'format': snapshot.format, 'track_index': index, 'notes': len(notes),
         'range_seconds': [notes[0].start, max(note.end for note in notes)],
         'typical_note_seconds': float(np.median([note.duration for note in notes])),
         'excluded': excluded, 'loudness_notes': len(loudness), 'pitch_requested': pitch,
-        'pitch_notes': len(edges), 'alignment': align, 'comparison_notes': compared,
-        'usable': align['adequate'] if align else bool(points or gestures)}}
+        'pitch_notes': pitch_count, 'alignment': align, 'comparison_notes': compared,
+        'usable': align['adequate'] if align else bool(points or pitch_count)}}
 
 
 def make_recipe(name, points, gestures=(), *, strength=.6, identifier=None):
@@ -444,6 +538,9 @@ _EMPTY_ACTIONS = {
     'release': {'cents': 0., 'seconds': .20, 'peak': .72},
     'connection': {'cents_per_semitone': 0., 'limit': 32., 'seconds': .10,
                    'direction': 'settle', 'repeat_cents': 0., 'anticipate_descent': False},
+    'repeated': {'cents': 0., 'seconds': REFERENCE_CONNECTION_SECONDS},
+    'rising': {'cents': 0., 'seconds': REFERENCE_CONNECTION_SECONDS},
+    'falling': {'cents': 0., 'seconds': REFERENCE_CONNECTION_SECONDS},
     'vibrato': {'depth': 0., 'rate': 5.3, 'delay': .30, 'minimum_note': .85},
 }
 
@@ -551,6 +648,21 @@ def adopt_reference_part(draft, measured, part):
     raise ValueError('请先取得这一项可用的参考数据。')
 
 
+def adopt_reference_position(draft, measured, position):
+    row = next((item for item in measured['positions'] if item['id'] == position and item['adoptable']), None)
+    if row is None:
+        raise ValueError('请先取得这一项可用的参考数据。')
+    if position == 'sustain':
+        draft['controls']['loudness']['note']['arc'] = float(np.clip(row['median'], -12., 12.))
+        return
+    bounds = STYLE_ACTION_BOUNDS[position]
+    action = draft['pitch'][position]
+    action.update(cents=float(np.clip(row['median'], *bounds['cents'])),
+                  seconds=float(np.clip(row['seconds'], *bounds['seconds'])))
+    if position in EXTERNAL_PEAKS:
+        action['peak'] = EXTERNAL_PEAKS[position]
+
+
 def brush_for_recipe(recipe, strength=None):
     if strength is None:
         strength = recipe['document']['payload']['default_strength']
@@ -575,6 +687,8 @@ def main():
     extract.add_argument('--before', type=Path)
     extract.add_argument('--before-track', type=int)
     extract.add_argument('--pitch', action='store_true')
+    extract.add_argument('--position', choices=REFERENCE_POSITIONS, action='append',
+                         help='Adopt the specified reference position into a structural recipe; may be repeated.')
     preview = commands.add_parser('preview')
     preview.add_argument('project', type=Path)
     preview.add_argument('recipe', type=Path)
@@ -587,10 +701,18 @@ def main():
             value = analyze_reference(args.project, args.track, args.range, audio=args.audio,
                                       audio_zero=args.audio_zero, pitch=args.pitch, before=args.before,
                                       before_track=args.before_track, progress=lambda s: print(s, file=sys.stderr, flush=True))
-            document = make_recipe(args.name, value['points'], value['gestures'])
+            if args.position:
+                draft = structure_draft()
+                for position in args.position:
+                    adopt_reference_position(draft, value, position)
+                document = make_structure_recipe(args.name, draft)
+            elif value['points'] or value['gestures']:
+                document = make_recipe(args.name, value['points'], value['gestures'])
+            else:
+                raise ValueError('整体包络暂无可用变化。可用 --position 选取按位置提取的结果。')
             with open(native_path(args.output), 'xb') as stream:
                 stream.write(encode_document(document))
-            payload = value['report']
+            payload = {**value['report'], 'positions': value['positions']}
         else:
             recipe = freeze_recipe(read_regular_bytes(args.recipe))
             project = ProjectNotes.load(args.project)

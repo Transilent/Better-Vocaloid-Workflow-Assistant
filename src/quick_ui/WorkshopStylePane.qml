@@ -25,6 +25,14 @@ Item {
     readonly property bool audioMode: fields.mode === "audio"
     readonly property bool compareMode: fields.mode === "compare"
     readonly property bool designMode: authorView.method === "design"
+    readonly property bool positionMode: authorView.referencePanel === "positions"
+    readonly property bool recipeControlsVisible: designMode || !positionMode
+    readonly property var positionRows: authorView.positions || []
+    readonly property var chosenPositions: authorView.chosenPositions || []
+    readonly property var positionLabels: ({
+        onset: "句首倚滑", release: "句尾收腔", repeated: "同音衔接",
+        rising: "上行衔接", falling: "下行衔接", sustain: "长音力度展开"
+    })
     readonly property var original: authorView.comparison || ({})
     readonly property int excluded: Object.values(evidence.excluded || {}).reduce((sum, value) => sum + value, 0)
 
@@ -47,6 +55,15 @@ Item {
     function cents(kind) {
         const row = (authorView.gestures || []).find(value => value.kind === kind)
         return row ? row.cents : 0
+    }
+    function positionAmount(row) {
+        if (!row.count) return label("选区内无此位置")
+        if (!row.observed) return label(row.id !== "sustain" && !evidence.pitch_requested
+                                        ? "未启用音高提取" : "暂无有效测量")
+        const format = value => (value > 0 ? "+" : "") + Number(value).toFixed(row.id === "sustain" ? 1 : 0)
+        return label("{0} {1} · {2} 至 {3}")
+            .replace("{0}", format(row.median)).replace("{1}", row.id === "sustain" ? "dB" : "¢")
+            .replace("{2}", format(row.minimum)).replace("{3}", format(row.maximum))
     }
 
     component Heading: Text {
@@ -380,7 +397,7 @@ Item {
                         }
                         Option {
                             objectName: "styleAuthorMeasurePitch"
-                            text: pane.label("一并提取起音与收尾音高")
+                            text: pane.label("一并提取音高动作")
                             checked: !!pane.fields.measurePitch
                             enabled: !pane.authorView.busy
                             onToggled: pane.controller.edit("measurePitch", checked)
@@ -424,22 +441,135 @@ Item {
                     spacing: Math.round(10 * pane.unit)
                     RowLayout {
                         Layout.fillWidth: true
-                        Heading { text: pane.label("力度包络") }
+                        UiButton {
+                            objectName: "styleReferencePositions"
+                            theme: pane.theme
+                            text: pane.label("按唱段位置")
+                            selected: pane.positionMode
+                            quiet: !selected
+                            onClicked: pane.controller.selectReferencePanel("positions")
+                        }
+                        UiButton {
+                            objectName: "styleReferenceEnvelope"
+                            theme: pane.theme
+                            text: pane.label("整体包络")
+                            selected: !pane.positionMode
+                            quiet: !selected
+                            onClicked: pane.controller.selectReferencePanel("envelope")
+                        }
                         Item { Layout.fillWidth: true }
                         Option {
+                            visible: !pane.positionMode
                             text: pane.label("保留力度")
                             checked: !!pane.fields.useGain
                             enabled: !!pane.authorView.ready && pane.points.length > 0 && !pane.authorView.busy
                             onToggled: pane.controller.edit("useGain", checked)
                         }
                         Option {
+                            visible: !pane.positionMode
                             text: pane.label("保留音高动作")
                             checked: !!pane.fields.usePitch
                             enabled: !!pane.authorView.ready && !pane.authorView.busy
                             onToggled: pane.controller.edit("usePitch", checked)
                         }
                     }
+                    ScrollView {
+                        id: positionResults
+                        objectName: "stylePositionResults"
+                        visible: pane.positionMode
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        contentWidth: availableWidth
+                        clip: true
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+                        ColumnLayout {
+                            width: positionResults.availableWidth
+                            spacing: Math.round(7 * pane.unit)
+                            Hint {
+                                visible: pane.positionRows.length === 0
+                                text: pane.label("选好参考唱段后点击提取。勾选音高动作可同时提取句首、句尾和音间衔接。")
+                            }
+                            Hint {
+                                visible: pane.positionRows.length > 0
+                                text: pane.label("样本列显示有效测量数和候选数，幅度列显示中位数和范围。")
+                            }
+                            Repeater {
+                                model: pane.positionRows
+                                delegate: Rectangle {
+                                    id: resultRow
+                                    required property var modelData
+                                    readonly property string title: pane.label(pane.positionLabels[modelData.id])
+                                    Layout.fillWidth: true
+                                    implicitHeight: Math.max(Math.round(34 * pane.unit), resultContent.implicitHeight + 5 * pane.unit)
+                                    radius: Math.round(6 * pane.unit)
+                                    color: pane.theme.base
+                                    border.color: pane.chosenPositions.includes(modelData.id) ? pane.theme.accent : pane.theme.line
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        enabled: resultRow.modelData.adoptable && !pane.authorView.busy
+                                        onClicked: pane.controller.chooseReferencePosition(resultRow.modelData.id,
+                                            !pane.chosenPositions.includes(resultRow.modelData.id))
+                                    }
+                                    RowLayout {
+                                        id: resultContent
+                                        anchors.fill: parent
+                                        anchors.leftMargin: Math.round(10 * pane.unit)
+                                        anchors.rightMargin: Math.round(7 * pane.unit)
+                                        spacing: Math.round(8 * pane.unit)
+                                        Label {
+                                            Layout.preferredWidth: Math.round(122 * pane.unit)
+                                            text: resultRow.title
+                                            elide: Text.ElideRight
+                                        }
+                                        Label {
+                                            Layout.preferredWidth: Math.round(56 * pane.unit)
+                                            color: pane.theme.muted
+                                            text: resultRow.modelData.observed + " / " + resultRow.modelData.count
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: pane.positionAmount(resultRow.modelData)
+                                            color: resultRow.modelData.observed ? pane.theme.text : pane.theme.muted
+                                            elide: Text.ElideRight
+                                        }
+                                        Label {
+                                            visible: resultRow.modelData.observed > 0 && !resultRow.modelData.adoptable
+                                            text: pane.label("变化太小或样本方向不一致")
+                                            color: pane.theme.muted
+                                        }
+                                        Option {
+                                            objectName: "stylePickPosition_" + resultRow.modelData.id
+                                            text: pane.label("取用")
+                                            Accessible.name: pane.label("取用 {0}").replace("{0}", resultRow.title)
+                                            checked: pane.chosenPositions.includes(resultRow.modelData.id)
+                                            enabled: resultRow.modelData.adoptable && !pane.authorView.busy
+                                            onToggled: pane.controller.chooseReferencePosition(resultRow.modelData.id, checked)
+                                            ToolTip.visible: hovered
+                                            ToolTip.text: pane.label(resultRow.modelData.adoptable ? "更新草稿中的对应参数"
+                                                : resultRow.modelData.observed ? "变化太小或样本方向不一致" : "这一项没有可取用的测量")
+                                        }
+                                    }
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Layout.topMargin: Math.round(5 * pane.unit)
+                                visible: pane.positionRows.length > 0
+                                Hint { text: pane.label("取用所选位置后，可在草稿中继续调节和试套。") }
+                                UiButton {
+                                    objectName: "styleAdoptPositions"
+                                    theme: pane.theme
+                                    primary: true
+                                    text: pane.label("带入所选位置")
+                                    enabled: pane.chosenPositions.length > 0 && !pane.authorView.busy
+                                    onClicked: pane.controller.adoptReferencePositions()
+                                }
+                            }
+                        }
+                    }
                     Rectangle {
+                        visible: !pane.positionMode
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         Layout.minimumHeight: 160 * pane.unit
@@ -543,7 +673,7 @@ Item {
 
                     RowLayout {
                         Layout.fillWidth: true
-                        visible: !!pane.authorView.ready && pane.points.length > 0
+                        visible: !pane.positionMode && !!pane.authorView.ready && pane.points.length > 0
                         UiComboBox {
                             theme: pane.theme
                             Accessible.name: pane.label("力度相位")
@@ -566,7 +696,7 @@ Item {
                     }
                     RowLayout {
                         Layout.fillWidth: true
-                        visible: !!pane.authorView.ready
+                        visible: !pane.positionMode && !!pane.authorView.ready
                         spacing: Math.round(20 * pane.unit)
                         Repeater {
                             model: [{kind: "onset", text: "起音音高"}, {kind: "release", text: "收尾音高"}]
@@ -633,6 +763,13 @@ Item {
                 onClicked: coverageDialog.open()
             }
             UiButton {
+                visible: pane.positionMode && !!pane.authorView.running
+                theme: pane.theme
+                quiet: true
+                text: pane.label("取消")
+                onClicked: pane.controller.cancel()
+            }
+            UiButton {
                 objectName: "styleCheckReference"
                 theme: pane.theme
                 text: pane.label("核对参考")
@@ -645,14 +782,14 @@ Item {
                 text: pane.label(pane.compareMode ? "提取前后差值" : "提取风格")
                 primary: !pane.authorView.ready
                 enabled: !!pane.authorView.canAnalyze && !pane.authorView.busy
-                    && !(pane.review.error || pane.review.usable === false)
+                    && !pane.review.error && !(pane.review.alignment && pane.review.usable === false)
                 onClicked: pane.controller.analyze()
             }
         }
 
         RowLayout {
             Layout.fillWidth: true
-            visible: !pane.designMode && !!pane.authorView.ready
+            visible: !pane.designMode && !pane.positionMode && !!pane.authorView.ready
             Hint { text: pane.label("可分别取用力度或起收音高，新草稿的其他通道会保留。") }
             UiButton {
                 objectName: "styleUseLoudness"
@@ -672,6 +809,7 @@ Item {
 
         RowLayout {
             Layout.fillWidth: true
+            visible: pane.recipeControlsVisible
             Hint {
                 text: pane.target.ready
                     ? pane.target.title + "  ·  " + pane.label("试套目标 {0} · {1}–{2} 秒")
@@ -694,6 +832,7 @@ Item {
         }
         RowLayout {
             Layout.fillWidth: true
+            visible: pane.recipeControlsVisible
             Field {
                 objectName: "styleAuthorName"
                 Layout.fillWidth: true

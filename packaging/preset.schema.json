@@ -1613,6 +1613,66 @@
                   ],
                   "additionalProperties": false
                 },
+                "repeated": {
+                  "type": "object",
+                  "properties": {
+                    "cents": {
+                      "type": "number",
+                      "minimum": -60.0,
+                      "maximum": 60.0
+                    },
+                    "seconds": {
+                      "type": "number",
+                      "minimum": 0.025,
+                      "maximum": 0.24
+                    }
+                  },
+                  "required": [
+                    "cents",
+                    "seconds"
+                  ],
+                  "additionalProperties": false
+                },
+                "rising": {
+                  "type": "object",
+                  "properties": {
+                    "cents": {
+                      "type": "number",
+                      "minimum": -120.0,
+                      "maximum": 120.0
+                    },
+                    "seconds": {
+                      "type": "number",
+                      "minimum": 0.025,
+                      "maximum": 0.24
+                    }
+                  },
+                  "required": [
+                    "cents",
+                    "seconds"
+                  ],
+                  "additionalProperties": false
+                },
+                "falling": {
+                  "type": "object",
+                  "properties": {
+                    "cents": {
+                      "type": "number",
+                      "minimum": -120.0,
+                      "maximum": 120.0
+                    },
+                    "seconds": {
+                      "type": "number",
+                      "minimum": 0.025,
+                      "maximum": 0.24
+                    }
+                  },
+                  "required": [
+                    "cents",
+                    "seconds"
+                  ],
+                  "additionalProperties": false
+                },
                 "vibrato": {
                   "type": "object",
                   "properties": {

@@ -30,7 +30,7 @@ qInstallMessageHandler(lambda kind, _, text: warnings.append(text)
 def project(reference):
     curves = [
         {'abbr': 'dyn', 'xs': [0, 240, 480], 'ys': [0, 35, 0]},
-        {'abbr': 'pitd', 'xs': [0, 55, 168, 312, 433, 480], 'ys': [0, -48, 0, 0, 32, 0]},
+        {'abbr': 'pitd', 'xs': [0, 55, 168, 312, 433, 480, 501, 620, 840], 'ys': [0, -48, 0, 0, 32, 0, 40, 0, 0]},
     ] if reference else []
     return {'name': 'Test reference' if reference else 'Test target', 'ustx_version': '0.10', 'resolution': 480,
             'tempos': [{'position': 0, 'bpm': 120 if reference else 96}],
@@ -38,7 +38,7 @@ def project(reference):
             'tracks': [{'track_name': 'Reference' if reference else 'Target'}], 'wave_parts': [],
             'voice_parts': [{'track_no': 0, 'position': 0, 'duration': 1200, 'curves': curves, 'notes': [
                 {'position': 0, 'duration': 480, 'tone': 60 if reference else 68, 'lyric': 'la'},
-                {'position': 600, 'duration': 360, 'tone': 63, 'lyric': 'old'},
+                {'position': 480, 'duration': 360, 'tone': 63 if reference else 72, 'lyric': 'old'},
             ]}]}
 
 
@@ -49,7 +49,8 @@ def exercise(root, viewport, scale):
     before = root / 'before.ustx'
     comparison = project(True)
     comparison['voice_parts'][0]['curves'][0]['ys'] = [0, 12, 0]
-    comparison['voice_parts'][0]['curves'][1]['ys'] = [0] * 6
+    pitch_curve = comparison['voice_parts'][0]['curves'][1]
+    pitch_curve['ys'] = [0] * len(pitch_curve['xs'])
     before.write_bytes(encode(comparison, b''))
     different_clock = root / 'different-clock.ustx'
     comparison['tempos'] = [{'position': 0, 'bpm': 240}, {'position': 240, 'bpm': 80},
@@ -114,8 +115,39 @@ def exercise(root, viewport, scale):
         workshop.loadReference(QUrl.fromLocalFile(str(source)))
         wait('external reference selected', lambda: workshop.view['reference'].get('path') == str(source))
         workshop.edit('start', '0')
-        workshop.edit('end', '0.5')
+        workshop.edit('end', '0.875')
         click('styleAuthorMeasurePitch')
+        click('styleAuthorAnalyze')
+        wait('positional reference ready', lambda: len(workshop.view['positions']) == 6)
+        assert item('stylePositionResults') and not item('styleAuthorEnvelope')
+        assert item('stylePickPosition_onset').isEnabled() and item('stylePickPosition_rising').isEnabled()
+        assert not item('stylePickPosition_falling').isEnabled() and not item('styleAdoptPositions').isEnabled()
+        click('stylePickPosition_onset')
+        click('stylePickPosition_rising')
+        captures = ROOT / 'work/test-results'
+        captures.mkdir(exist_ok=True)
+        assert window.grabWindow().save(str(captures / f'workshop-positions-{viewport[0]}.png'))
+        click('styleAdoptPositions')
+        wait('scoped connection is editable', lambda: item('designSlider_rising_cents'))
+        structure = workshop.view['design']['draft']['pitch']
+        assert structure['onset']['cents'] < -30 and structure['rising']['cents'] > 20
+        assert structure['repeated']['cents'] == structure['falling']['cents'] == structure['release']['cents'] == 0
+        assert window.grabWindow().save(str(captures / f'workshop-position-draft-{viewport[0]}.png'))
+        tune.selectSpan(0., 1.094)
+        workshop.edit('name', f'Positional style {scale}')
+        click('styleAuthorTrial')
+        wait('positional draft can be applied', lambda: workshop.view['canApplyTrial'])
+        click('styleAuthorSave')
+        wait('positional recipe saved', lambda: workshop.view['selectedPreset'].get('name') == f'Positional style {scale}',
+             timeout=35)
+        position_entry = workshop.view['selectedPreset']
+        positional = workshop.library.get_snapshot(position_entry['id'], position_entry['version'])
+        assert set(positional['document']['payload']['pitch']) == {'enabled', 'onset', 'rising'}
+        tune.selectSpan(0., .625)
+        click('styleMethodReference')
+        click('styleReferenceEnvelope')
+        workshop.edit('end', '0.5')
+        assert not workshop.view['positions']
         click('styleAuthorAnalyze')
         wait('reference envelope', lambda: item('styleAuthorEnvelope') and workshop.view['gestures'])
         workshop.edit('name', f'Reference style {scale}')
@@ -127,8 +159,6 @@ def exercise(root, viewport, scale):
         click('styleAuthorTrial')
         wait('non-destructive preview', lambda: bool(workshop.view['trial']))
         assert not tune.regions
-        captures = ROOT / 'work/test-results'
-        captures.mkdir(exist_ok=True)
         assert window.grabWindow().save(str(captures / f'workshop-style-{viewport[0]}.png'))
         click('styleAuthorSave')
         wait('append to library', lambda: not tune.view['busy']

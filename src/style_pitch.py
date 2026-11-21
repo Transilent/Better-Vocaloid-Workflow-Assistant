@@ -12,6 +12,17 @@ MAX_POINTS=2_000_000
 EXTERNAL_MIN_NOTE_SECONDS = .16
 EXTERNAL_EDGE_SECONDS = .24
 EXTERNAL_PEAKS = {'onset': .33, 'release': .72}
+CONNECTION_GAP = .09
+CONNECTION_PEAK = .22
+CONNECTION_FRACTION = .32
+
+
+def connection_position(interval):
+    if abs(interval) < 1.:
+        return 'repeated'
+    return 'rising' if interval > 0 else 'falling'
+
+
 # Entry cents/seconds, interval lag cents per semitone / limit / seconds,
 # release cents/seconds. Different phases; no constant detuning of whole notes.
 RECIPES={
@@ -137,7 +148,7 @@ def apply_pitch(data,preset,*,strength,track_indices,detail=None,time_range=None
             notes.append((a,b,float(pitch),ni,note))
         notes.sort(key=lambda n:(n[0],n[1],n[3]))
         gestures=row['gestures'];skipped=row['skipped_notes']
-        def add(kind,a,b,amount,ni,peak=.22,frequency=None):
+        def add(kind,a,b,amount,ni,peak=CONNECTION_PEAK,frequency=None):
             phase={'phrase_entry':'onset','interval_connection':'connection',
                    'phrase_release':'release','delayed_vibrato':'sustain'}[kind]
             amount*=detail[phase]
@@ -176,20 +187,26 @@ def apply_pitch(data,preset,*,strength,track_indices,detail=None,time_range=None
                 action = pattern['onset']
                 add('phrase_entry', a, a + min(action['seconds'], duration*.36), action['cents'], ni,
                     peak=action['peak'])
-            if not entry and 'connection' in pattern and a-previous[1] <= .09:
-                action = pattern['connection']
+            if not entry and a-previous[1] <= CONNECTION_GAP + 1e-9:
                 interval = pitch - previous[2]
-                amount = _connection_amount(action, interval)
-                end = a + min(action['seconds'], duration*.32)
-                inside = not time_range or structure is None or previous[0] >= time_range[0] - 1e-7
-                if (action['anticipate_descent'] and interval <= -4. and inside
-                        and abs(a-previous[1]) <= 1e-8):
-                    start=previous[1]-min(.11,(previous[1]-previous[0])*.25)
-                    # One continuous residual across a real adjoining boundary.
-                    # Never bridge a rest or a protected intervening note.
-                    add('interval_connection',start,end,amount,ni,peak=(a-start)/(end-start))
-                else:
-                    add('interval_connection',a,end,amount,ni)
+                position = pattern.get(connection_position(interval))
+                shared = pattern.get('connection')
+                predecessor_inside = not time_range or structure is None or previous[0] >= time_range[0] - 1e-7
+                if position:
+                    if predecessor_inside and previous[1] - previous[0] >= EXTERNAL_MIN_NOTE_SECONDS:
+                        end = a + min(position['seconds'], duration * CONNECTION_FRACTION)
+                        add('interval_connection', a, end, position['cents'], ni)
+                elif shared:
+                    amount = _connection_amount(shared, interval)
+                    end = a + min(shared['seconds'], duration * CONNECTION_FRACTION)
+                    if (shared['anticipate_descent'] and interval <= -4. and predecessor_inside
+                            and abs(a-previous[1]) <= 1e-8):
+                        start=previous[1]-min(.11,(previous[1]-previous[0])*.25)
+                        # One continuous residual across a real adjoining boundary.
+                        # Never bridge a rest or a protected intervening note.
+                        add('interval_connection',start,end,amount,ni,peak=(a-start)/(end-start))
+                    else:
+                        add('interval_connection',a,end,amount,ni)
             if ending and 'release' in pattern:
                 action = pattern['release']
                 add('phrase_release', b - min(action['seconds'], duration*.35), b, action['cents'], ni,
