@@ -99,6 +99,38 @@ def check_precision(root, project, guide, take):
     print('PASS: confirmed lyrics, mixed-voice note anchors, local lock, draw, preserved harmony, gain and takes')
 
 
+def check_native_pitch_transitions(root):
+    from mixdown_runtime import component_manifest, optional_packages
+
+    app, spec, _ = component_manifest()
+    if optional_packages(app, spec) is None:
+        return
+    from scipy.signal import butter, sosfiltfilt
+
+    rate = 44100
+    clock = np.arange(round(2.8 * rate)) / rate
+    frequency = 240 + 23 * np.sin(12 * clock) + 3.7 * np.sin(33 * clock)
+    phase = 2 * np.pi * np.cumsum(frequency) / rate
+    syllables = ((.19, .075), (.34, .08), (.76, .165), (1.33, .21), (1.80, .06), (2.1, .11), (2.4, .09))
+    envelope = sum(np.exp(-((clock - at) / width) ** 2) for at, width in syllables)
+    pcm = .18 * envelope * (np.sin(phase) + .31 * np.sin(2 * phase) + .17 * np.sin(3 * phase))
+    path = root / 'variable-pitch.wav'
+    sf.write(path, pcm, rate, subtype='FLOAT')
+    voice = Recording.read(path)
+    offsets = (-30, 20, -23, 48, -41, 19, -34, 55, -41, 56, -29, -29, 13, 41, -63)
+    edits = tuple(Edit(voice.id, 'pitch', .13 + .157 * i, .254 + .157 * i, cents)
+                  for i, cents in enumerate(offsets))
+    project = replace(ChorusProject.fresh().add((voice,)), edits=edits)
+    rendered = render_track(project, voice, 'pitch')[:, 0]
+    assert len(rendered) == len(pcm) and np.max(np.abs(rendered - pcm)) > .01
+    sub = sosfiltfilt(butter(5, 65, 'lowpass', fs=rate, output='sos'), rendered)
+    # A 20 ms window over the old dynamic stretcher can exceed -41 dBFS.
+    frame_count = round(.020 * rate)
+    frames = sub[:len(sub) // frame_count * frame_count].reshape(-1, frame_count)
+    assert np.max(np.sqrt(np.mean(frames * frames, axis=1))) < .002
+    print('PASS: no low-frequency pulses on repeated native pitch transitions')
+
+
 def main():
     with TemporaryDirectory() as folder:
         root = Path(folder)
@@ -149,6 +181,7 @@ def main():
         assert Recording.read(target_path).sha == take.sha
         print('PASS: tempo-aware independent voice target, known offset, region undo, mixed-rate render and stem exactness')
         check_precision(root, project, guide, take)
+        check_native_pitch_transitions(root)
 
 
 if __name__ == '__main__':

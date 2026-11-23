@@ -18,6 +18,10 @@
       "source": "src/chorus_pitch.py"
     },
     {
+      "file": "chorus_pitch_dsp.py",
+      "source": "src/chorus_pitch_dsp.py"
+    },
+    {
       "file": "chorus_audio.py",
       "source": "src/chorus_audio.py"
     },

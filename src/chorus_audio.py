@@ -119,7 +119,7 @@ def analysis_recording(project, track, folder, check):
                    score_lane=track.score_lane, timing_ref=track.timing_ref)
 
 
-def pitch_processor():
+def _pedalboard():
     """Load the already managed optional DSP component via its public API."""
     import sys
 
@@ -132,10 +132,10 @@ def pitch_processor():
         if path not in sys.path:
             sys.path.insert(0, path)
     try:
-        from pedalboard import time_stretch
+        import pedalboard
     except (ImportError, OSError) as error:
         raise RuntimeError('修音需要混音效果组件（Pedalboard）。可先试听原声或仅对齐。') from error
-    return time_stretch
+    return pedalboard
 
 
 def _pitch_groups(regions, rate, size):
@@ -153,39 +153,37 @@ def _pitch_groups(regions, rate, size):
     return groups
 
 
-def _shift_pitch(samples, rate, regions, check, process):
+def _shift_pitch(samples, rate, regions, check):
+    from chorus_pitch_dsp import render_pitch
+
+    _pedalboard()
     context = round(.09 * rate)
     for group in _pitch_groups(regions, rate, len(samples)):
         check()
         left = max(0, group[0][0] - context)
         right = min(len(samples), group[-1][1] + context)
         shift = np.zeros(right - left, dtype=np.float64)
+        spans = []
         for start, end, region in group:
             cents = region.value
             if region.points:
                 x, y = zip(*region.points)
                 cents = np.interp(np.arange(start, end) / rate, x, y)
-            start, end = start - left, end - left
-            shift[start:end] = np.asarray(cents) / 100.
-        # Smooth pitch transitions on the voiced side. Rubber Band reads the
-        # public per-sample control signal at analysis hop boundaries.
+            shift[start - left:end - left] = np.asarray(cents) / 100.
+            if spans and spans[-1][1] == start:
+                spans[-1] = (spans[-1][0], end)
+            else:
+                spans.append((start, end))
+        # Smooth the requested trajectory separately from the audio splice.
         window = max(1, round(.012 * rate))
         edges = np.pad(shift, (window // 2, (window - 1) // 2), mode='edge')
         prefix = np.r_[0., np.cumsum(edges)]
         shift = (prefix[window:] - prefix[:-window]) / window
         clip = np.ascontiguousarray(samples[left:right].T)
-        edited = np.asarray(process(clip, rate, pitch_shift_in_semitones=shift,
-                                    preserve_formants=True), dtype=np.float32)
-        if edited.ndim == 1:
-            edited = edited[None, :]
-        edited = edited.T
-        if edited.shape[1] != samples.shape[1] or not np.isfinite(edited).all():
-            raise ValueError('修音组件返回的声道或采样无效。')
-        if len(edited) != right - left:
-            # With a dynamic pitch envelope Rubber Band can flush a suffix
-            # beyond the input. Keep the original timeline and discard it.
-            edited = _window(edited, 0, right - left)
-        for start, stop, _ in group:
+        edited = render_pitch(clip, rate, shift, check).T
+        if edited.shape != samples[left:right].shape or not np.isfinite(edited).all():
+            raise ValueError('修音组件返回的长度、声道或采样无效。')
+        for start, stop in spans:
             fade = min(round(.016 * rate), (stop - start) // 2)
             _crossfade(samples[start:stop], edited[start - left:stop - left], fade)
 
@@ -204,13 +202,14 @@ def _render_knots(points, tolerance):
     return (*kept, points[-1])
 
 
-def _warp_audio(placed, edit, origin, rate, check, processor):
+def _warp_audio(placed, edit, origin, rate, check):
     """Fit segments between source knots with pitch-preserving time stretch."""
     output, source = zip(*_render_knots(edit.points, .00025 if edit.manual else .003))
     outs = [round(time * rate) - origin for time in output]
     ins = [round(time * rate) - origin for time in source]
     warped = np.zeros((outs[-1] - outs[0], placed.shape[1]), dtype=np.float32)
     seam = round(.005 * rate)
+    processor = None
     for i, (a, b) in enumerate(zip(outs, outs[1:])):
         check()
         length = b - a
@@ -225,7 +224,7 @@ def _warp_audio(placed, edit, origin, rate, check, processor):
             pad = round(.08 * rate)
             audio = _window(placed, ins[i] - pad, consumed + pad * 2)
             if processor is None:
-                processor = pitch_processor()
+                processor = _pedalboard().time_stretch
             transformed = processor(np.ascontiguousarray(audio.T), rate, stretch_factor=factor,
                                     preserve_formants=True)
             transformed = np.asarray(transformed, dtype=np.float32).reshape(placed.shape[1], -1).T
@@ -242,16 +241,17 @@ def _warp_audio(placed, edit, origin, rate, check, processor):
     return warped
 
 
-def render_track(project, track, variant, check=lambda: None, *, pitch=None):
+def render_track(project, track, variant, check=lambda: None):
     """Render the take into the project's common half-open sample interval."""
     if variant not in VARIANTS:
         raise ValueError('试听版本无效。')
     rate = project.rate
     original = _comped_audio(project, track, rate, check)
     if variant in ('pitch', 'processed'):
-        regions = tuple(row for row in project.edits_for(track.id, 'pitch') if row.value or row.points)
+        regions = tuple(row for row in project.edits_for(track.id, 'pitch')
+                        if (any(y for _, y in row.points) if row.points else row.value))
         if regions:
-            _shift_pitch(original, rate, regions, check, pitch or pitch_processor())
+            _shift_pitch(original, rate, regions, check)
     placed = _window(original, project.first_frame - round(track.offset * rate), project.frames)
     regions = project.edits_for(track.id, 'timing') if variant in ('timing', 'processed') else ()
     rendered = placed.copy() if regions else placed
@@ -263,7 +263,7 @@ def render_track(project, track, variant, check=lambda: None, *, pitch=None):
         if start >= end or (not edit.points and not shift):
             continue
         if edit.points:
-            warped = _warp_audio(placed, edit, project.first_frame, rate, check, pitch)
+            warped = _warp_audio(placed, edit, project.first_frame, rate, check)
             source = _window(warped, start + project.first_frame - round(edit.start * rate), end - start)
         else:
             source = _window(placed, start - shift, end - start)

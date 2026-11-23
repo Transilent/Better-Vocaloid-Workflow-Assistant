@@ -21,6 +21,7 @@
     "src/chorus_project.py",
     "src/chorus_analysis.py",
     "src/chorus_pitch.py",
+    "src/chorus_pitch_dsp.py",
     "src/chorus_precision.py",
     "src/chorus_speech.py",
     "src/chorus_model_worker.py",
