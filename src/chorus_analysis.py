@@ -233,11 +233,12 @@ def _timing_candidates(project, targets, selection, strength, radius, features, 
                                                      features[track.id], phrase, radius)
             clips = phone_requests(phrase, reference, track, movement, audio) if speech is not None else ()
             pending.append((track, reference, phrase, movement, detail, review, clips))
-    evidence = speech[0] if speech is not None else {}
-    failure = phoneme_cache((row[-1] for row in pending), *speech, check, progress) if speech is not None else ''
+    facts, failure = (phoneme_cache((row[-1] for row in pending), *speech, check, progress,
+                                    project.alignment_engine) if speech is not None else ({}, ''))
     generated = []
     for track, ref, phrase, movement, detail, review, clips in pending:
         check()
+        evidence = facts.get(tuple(clip.key for clip in clips), {})
         route, anchors = phone_anchors(clips, evidence)
         first, last = max(selection[0], phrase.start), min(selection[1], phrase.end)
         points, matched, delay = warp(anchors, first, last, strength, radius)

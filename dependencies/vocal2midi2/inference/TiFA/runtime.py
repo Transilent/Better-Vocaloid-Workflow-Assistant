@@ -8,7 +8,7 @@ import pathlib
 import onnxruntime as ort
 
 from inference.TiFA.lib.vocabulary import Vocabulary
-from inference.device_utils import resolve_onnx_providers
+from inference.device_utils import configure_onnx_threads, resolve_onnx_providers
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ class TifaModel:
         self.vocabulary = Vocabulary.from_file(self.model_dir / "vocabulary.json")
 
         provider_name, providers = resolve_onnx_providers(device, label="TiFA ONNX")
-        options = ort.SessionOptions()
+        options = configure_onnx_threads(ort.SessionOptions())
         options.log_severity_level = 3
         self.sessions: dict[str, ort.InferenceSession] = {
             name: ort.InferenceSession(

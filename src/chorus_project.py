@@ -14,6 +14,7 @@ ROLES = ('vocal', 'guide', 'backing', 'take')
 VARIANTS = ('original', 'timing', 'pitch', 'processed')
 SCORE_SUFFIXES = ('.mid', '.midi', '.svp', '.ustx', '.vpr', '.vsqx', '.acep', '.ufdata')
 LYRIC_LANGUAGES = ('ja', 'zh', 'en', 'yue')
+ALIGNMENT_ENGINES = ('auto', 'tifa', 'hubertfa')
 
 
 def fingerprint(path):
@@ -234,6 +235,7 @@ class ChorusProject:
     guide: str = ''
     phrases: tuple = ()
     edits: tuple = ()
+    alignment_engine: str = 'auto'
 
     @classmethod
     def fresh(cls, title='未命名合唱'):
@@ -378,5 +380,8 @@ class ChorusProject:
         rate = int(data['rate'])
         if not 8000 <= rate <= 384000:
             raise ValueError('工程采样率无效。')
+        engine = data.get('alignment_engine', 'auto')
+        if engine not in ALIGNMENT_ENGINES:
+            raise ValueError('唱段对齐引擎无效。')
         return cls(str(data['title']), str(data['id']), rate, tuple(records), score,
-                   str(data['guide']) if data['guide'] in ids else '', phrases, edits)
+                   str(data['guide']) if data['guide'] in ids else '', phrases, edits, engine)

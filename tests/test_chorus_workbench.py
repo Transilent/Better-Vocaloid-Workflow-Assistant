@@ -3,6 +3,7 @@ from dataclasses import replace
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP / 'src'))
@@ -14,10 +15,10 @@ import soxr
 
 from chorus_analysis import Suggestion, apply_suggestions, feature_track, proposals
 from chorus_audio import export_stems, monitor_tracks, render_key, render_track
-from chorus_precision import (merge_speech_drafts, move_anchor, note_anchors, pitch_from_stroke, reference_pitch,
-                              update_phrase, warp)
+from chorus_precision import (merge_speech_drafts, move_anchor, note_anchors, phone_anchors, phoneme_cache,
+                              pitch_from_stroke, reference_pitch, update_phrase, warp)
 from chorus_project import ChorusProject, Edit, Lyric, Phrase, Recording, Score
-from chorus_speech import same_text
+from chorus_speech import SpeechClip, same_text
 
 
 def write_audio(path, rate, delay=0.):
@@ -93,10 +94,35 @@ def check_precision(root, project, guide, take):
     assert abs(after[project.rate] - .1 * 10 ** (-6 / 20)) < 1e-6
     assert stitched.remove(alt.id).edits == (gain,)
     saved = root / 'extended.vwachorus'
-    with_curve = replace(stitched, edits=(comp, gain, manual, *stroke))
+    with_curve = replace(stitched, edits=(comp, gain, manual, *stroke), alignment_engine='tifa')
     with_curve.save(saved)
     assert ChorusProject.open(saved) == with_curve
     print('PASS: confirmed lyrics, mixed-voice note anchors, local lock, draw, preserved harmony, gain and takes')
+
+    clips = SpeechClip(guide, .3, 2.3, 'ja', 'きっと'), SpeechClip(take, .3, 2.3, 'ja', 'きっと')
+    pair = tuple(clip.key for clip in clips)
+    phones = [['k', .05, .09], ['i', .09, .18], ['cl', .18, .23], ['t', .23, .34]]
+    calls = []
+
+    def measure(rows, _operation, _cache, _check, _progress, *, source):
+        engine = source[0]
+        calls.append(engine)
+        return [{'route': engine, 'phones': [] if engine == 'tifa' and row.track == take else phones}
+                for row in rows]
+
+    with patch('chorus_precision.alignment_source', side_effect=lambda value: (
+            'tifa' if value == 'auto' else value, root, ())), patch('chorus_precision.speech_batch', measure):
+        known = {}
+        auto, _ = phoneme_cache([clips], known, root, lambda: None, lambda *_: None, 'auto')
+        assert phone_anchors(clips, auto[pair])[0] == 'hubertfa' and calls == ['tifa', 'hubertfa']
+        strict, _ = phoneme_cache([clips], known, root, lambda: None, lambda *_: None, 'tifa')
+        assert not phone_anchors(clips, strict[pair])[1] and calls[-1] == 'tifa'
+        cached, _ = phoneme_cache([clips], known, root, lambda: None, lambda *_: None, 'hubertfa')
+        assert phone_anchors(clips, cached[pair])[0] == 'hubertfa' and len(calls) == 3
+    mixed = {clips[0].key: {'route': 'tifa', 'phones': phones},
+             clips[1].key: {'route': 'hubertfa', 'phones': phones}}
+    assert not phone_anchors(clips, mixed)[1]
+    print('PASS: selected aligner persists, its cache is separate and fallback uses one model per pair')
 
 
 def check_native_pitch_transitions(root):

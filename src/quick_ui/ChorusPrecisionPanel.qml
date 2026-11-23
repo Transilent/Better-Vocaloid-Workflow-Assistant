@@ -166,6 +166,23 @@ ColumnLayout {
             currentIndex: Math.max(0, indexOfValue(panel.lines.ref))
             onActivated: panel.controller.phraseReference(currentValue)
         }
+        UiComboBox {
+            id: aligner
+            objectName: "chorusAlignmentEngine"
+            Layout.fillWidth: true
+            visible: panel.vocal
+            enabled: !panel.view.busy
+            theme: panel.theme
+            fieldLabel: panel.t("唱段对齐引擎")
+            model: [{label: panel.t("自动 · 优先 TiFA"), value: "auto"},
+                    {label: "TiFA", value: "tifa"}, {label: "HubertFA", value: "hubertfa"}]
+            currentIndex: Math.max(0, indexOfValue(panel.view.alignmentEngine))
+            onActivated: panel.controller.setAlignmentEngine(currentValue)
+        }
+        Note {
+            visible: panel.vocal && panel.view.alignmentEngine === "tifa" && !panel.controller.alignmentReady("tifa")
+            text: panel.t("缺少 TiFA 模型。可使用自动或 HubertFA。")
+        }
         RowLayout {
             Layout.fillWidth: true
             visible: panel.vocal

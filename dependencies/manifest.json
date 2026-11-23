@@ -4,7 +4,7 @@
   "platform": "Windows x86_64",
   "legacy_tool_paths": {},
   "files": 10815,
-  "bytes": 7505758386,
+  "bytes": 7505758434,
   "entries": [
     {
       "file": "dependencies/browser/chrome/154.0.8037.98/154.0.8037.98.manifest",
@@ -47138,8 +47138,8 @@
     },
     {
       "file": "dependencies/vocal2midi2/inference/TiFA/runtime.py",
-      "bytes": 2992,
-      "sha256": "7d58dcca6b518bd43c6c8204b53e1baa5b88c6d7b58ec9305d296a668771b91f"
+      "bytes": 3040,
+      "sha256": "45a4943d496c12d23f9625c6f438ded700448a2cd0852acc777cd94917706fc9"
     },
     {
       "file": "dependencies/vocal2midi2/inference/TiFA/scoring_dp.py",

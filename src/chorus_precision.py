@@ -5,7 +5,7 @@ from statistics import median
 from uuid import uuid4
 
 from chorus_project import Edit, LYRIC_LANGUAGES, Lyric, Phrase
-from chorus_speech import SpeechClip, same_text, speech_batch
+from chorus_speech import SpeechClip, alignment_source, same_text, speech_batch
 
 
 def phrase_for(project, selection):
@@ -77,21 +77,41 @@ def phone_requests(phrase, ref, take, movement, audio):
                        bottom.language, bottom.text))
 
 
-def phoneme_cache(pairs, known, cache, check, progress):
-    missing = {}
-    for pair in pairs:
-        for clip in pair:
-            if clip.key not in known:
-                missing.setdefault(clip.key, clip)
-    if not missing:
-        return ''
+def _measure_phones(pairs, known, cache, check, progress, selection):
+    engine = selection
     try:
-        results = speech_batch(tuple(missing.values()), 'phones', cache, check,
-                               lambda index, text: progress(index, len(missing), text))
+        source = alignment_source(selection)
+        engine = source[0]
+        clips = {clip.key: clip for pair in pairs for clip in pair}
+        evidence = {key: known[source, key] for key in clips if (source, key) in known}
+        missing = {key: clip for key, clip in clips.items() if key not in evidence}
+        if missing:
+            results = speech_batch(tuple(missing.values()), 'phones', cache, check,
+                                   lambda index, text: progress(index, len(missing), text), source=source)
+            evidence.update(zip(missing, results))
+            known.update(((source, key), value) for key, value in zip(missing, results) if value.get('phones'))
+        return evidence, engine, ''
+    except InterruptedError:
+        raise
     except (OSError, RuntimeError) as error:
-        return str(error)
-    known.update(zip(missing, results))
-    return ''
+        return {}, engine, str(error)
+
+
+def phoneme_cache(pairs, known, cache, check, progress, selection):
+    pairs = tuple(pair for pair in pairs if pair)
+    if not pairs:
+        return {}, ''
+    primary, engine, failure = _measure_phones(pairs, known, cache, check, progress, selection)
+    evidence = {tuple(clip.key for clip in pair): primary for pair in pairs}
+    if selection == 'auto' and engine == 'tifa':
+        remaining = [pair for pair in pairs if not phone_anchors(pair, primary)[1]]
+        if remaining:
+            fallback, _, error = _measure_phones(remaining, known, cache, check, progress, 'hubertfa')
+            for pair in remaining:
+                if phone_anchors(pair, fallback)[1]:
+                    evidence[tuple(clip.key for clip in pair)] = fallback
+            failure = failure or error
+    return evidence, failure
 
 
 def phone_anchors(clips, results):
@@ -99,7 +119,7 @@ def phone_anchors(clips, results):
         return '', ()
     ref, dur = (results.get(clip.key, {}) for clip in clips)
     left, right = ref.get('phones') or (), dur.get('phones') or ()
-    if not left or not right:
+    if not left or not right or not ref.get('route') or ref.get('route') != dur.get('route'):
         return '', ()
     origins = tuple(clip.track.offset + clip.frames[0] / clip.track.rate for clip in clips)
     blocks = SequenceMatcher(None, [p[0] for p in left], [p[0] for p in right], autojunk=False)
@@ -109,8 +129,7 @@ def phone_anchors(clips, results):
     points = [(a[0], origins[0] + a[1], origins[1] + b[1]) for a, b in matches]
     a, b = matches[-1]
     points.append(('尾', origins[0] + a[2], origins[1] + b[2]))
-    routes = '/'.join(dict.fromkeys((ref['route'], dur['route'])))
-    return routes, tuple(points)
+    return ref['route'], tuple(points)
 
 
 def note_anchors(reference_notes, target_notes, phrase, shift):

@@ -7,6 +7,52 @@ import re
 import sys
 import unicodedata
 
+if __name__ == '__main__':
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from chorus_project import ALIGNMENT_ENGINES
+
+
+TIFA_FILES = (
+    'config.json', 'vocabulary.json', 'spectrogram.onnx', 'prepare.onnx',
+    'score.onnx', 'select.onnx', 'model.onnx', 'dictionaries/japanese_dict_full.txt',
+    'dictionaries/ds-zh-pinyin-lite.txt', 'dictionaries/ds_cmudict-07b.txt',
+)
+ALIGNER_LABELS = {'tifa': 'TiFA', 'hubertfa': 'HubertFA'}
+
+
+def _alignment_files(engine):
+    from common import ROOT
+
+    if engine == 'tifa':
+        return ROOT / 'dependencies/vocal2midi2/models/tifa-1.0-onnx', TIFA_FILES
+    return ROOT / 'dependencies/vocal2midi/experiments/1218_hfa_model_new_dict', ('model.onnx',)
+
+
+def alignment_ready(engine):
+    folder, names = _alignment_files(engine)
+    return all((folder / name).is_file() for name in names)
+
+
+def preferred_alignment(selection):
+    if selection not in ALIGNMENT_ENGINES:
+        raise ValueError('唱段对齐引擎无效。')
+    return ('tifa' if alignment_ready('tifa') else 'hubertfa') if selection == 'auto' else selection
+
+
+def alignment_source(selection):
+    """Resolve automatic mode and stamp the files backing cached boundaries."""
+    engine = preferred_alignment(selection)
+    folder, names = _alignment_files(engine)
+    stamps = []
+    for name in names:
+        try:
+            info = (folder / name).stat()
+        except FileNotFoundError:
+            raise FileNotFoundError(f'{ALIGNER_LABELS[engine]} 模型不完整，请检查 {folder.name}。') from None
+        stamps.append((info.st_size, info.st_mtime_ns))
+    return engine, folder, tuple(stamps)
+
 
 @dataclass(frozen=True)
 class SpeechClip:
@@ -38,7 +84,7 @@ def same_text(a, b):
                 and canonical(a.text) and canonical(a.text) == canonical(b.text))
 
 
-def speech_batch(clips, operation, cache, check, progress):
+def speech_batch(clips, operation, cache, check, progress, *, aligner='auto', source=None):
     from chorus_model_worker import model_batch
     from common import ROOT
 
@@ -55,7 +101,12 @@ def speech_batch(clips, operation, cache, check, progress):
     if not rows:
         return []
     spec = {'runtime': str(runtime), 'core': str(core), 'operation': operation, 'clips': rows}
-    label = '识别歌词' if operation == 'asr' else '提取音素'
+    if operation == 'phones':
+        engine, model, _ = source or alignment_source(aligner)
+        spec.update(engine=engine, model=str(model))
+        label = f'{ALIGNER_LABELS[engine]} · 提取音素'
+    else:
+        label = '识别歌词'
     with model_batch(__file__, spec, cache, check, progress, [f'{label} · {clip.track.name}' for clip in clips],
                      f'{label}运行失败') as folder:
         results = json.loads((folder / 'results.json').read_text(encoding='utf-8'))
@@ -123,71 +174,53 @@ def _phones(words):
             for phone in word.phonemes if phone.text.casefold() not in excluded and phone.end > phone.start]
 
 
-def _align(request, runtime, core):
-    bundle = runtime / 'models/tifa-1.0-onnx'
-    fallback = core / '1218_hfa_model_new_dict'
-    tifa = hfa = None
-    pipeline = None
-    tifa_note = ''
-    if all((bundle / name).is_file() for name in ('config.json', 'vocabulary.json', 'model.onnx',
-                                                 'spectrogram.onnx', 'select.onnx', 'score.onnx', 'prepare.onnx')):
-        try:
-            from inference.TiFA.aligner import run_tifa_fa
-            from inference.TiFA.g2p_pipeline import build_g2p_pipeline
-            from inference.TiFA.runtime import load_tifa_model
+def _align(request, runtime):
+    engine = request['engine']
+    route = ALIGNER_LABELS[engine]
+    model_dir = Path(request['model'])
+    folder = Path(request['folder'])
+    if engine == 'tifa':
+        from inference.TiFA.aligner import run_tifa_fa
+        from inference.TiFA.g2p_pipeline import build_g2p_pipeline
+        from inference.TiFA.runtime import load_tifa_model
 
-            tifa = load_tifa_model(bundle, device='cpu')
-            kashi = runtime / 'models/kashi-g2p-onnx'
-            pipeline = build_g2p_pipeline(bundle, 'kashi-g2p-onnx' if (kashi / 'model.onnx').is_file()
-                                          else 'pyopenjtalk', kashi)
-        except Exception as error:
-            tifa = None
-            tifa_note = f'TiFA 载入失败：{error}'
-    if tifa is None and not (fallback / 'model.onnx').is_file():
-        raise FileNotFoundError('未安装 TiFA 或 HubertFA 音素模型。')
+        model = load_tifa_model(model_dir, device='cpu')
+        kashi = runtime / 'models/kashi-g2p-onnx'
+        pipeline = build_g2p_pipeline(model_dir, 'kashi-g2p-onnx' if (kashi / 'model.onnx').is_file()
+                                      else 'pyopenjtalk', kashi)
+        rate = model.samplerate
+
+        def infer(wav, language, text):
+            wav.with_suffix('.txt').write_text(text, encoding='utf-8')
+            found, _ = run_tifa_fa(model, wav.parent, language=language, g2p_pipeline=pipeline)
+            return found
+    else:
+        from inference.API.hfa_api import load_hfa_model, run_hubert_fa
+
+        model = load_hfa_model(model_dir, device='cpu')
+        rate = 44100
+
+        def infer(wav, language, text):
+            if language == 'yue':
+                return {}
+            wav.with_suffix('.lab').write_text(_lab(text, language, runtime), encoding='utf-8')
+            return run_hubert_fa(model, wav.parent, language=language)
 
     for index, row in enumerate(request['clips']):
-        folder = Path(request['folder'])
         (folder / 'progress.txt').write_text(str(index), encoding='utf-8')
         one = folder / f'clip-{index}'
         one.mkdir()
         wav = one / 'chunk_0.wav'
-        language = row['lang']
-        phones = []
-        if tifa is not None:
-            try:
-                if not _read_clip(row, wav, tifa.samplerate):
-                    yield {'route': '', 'phones': [], 'detail': '唱段没有有效录音'}
-                    continue
-                wav.with_suffix('.txt').write_text(row['text'], encoding='utf-8')
-                found, _ = run_tifa_fa(tifa, one, language=language, g2p_pipeline=pipeline)
-                if 'chunk_0' in found:
-                    phones = _phones(found['chunk_0'][2])
-                if phones:
-                    yield {'route': 'TiFA', 'phones': phones}
-                    continue
-            except Exception as error:
-                tifa_note = f'TiFA 未完成此段：{error}'
         try:
-            if language == 'yue' or not (fallback / 'model.onnx').is_file():
-                yield {'route': '', 'phones': [], 'detail': tifa_note or '当前音素模型未给出边界'}
+            if not _read_clip(row, wav, rate):
+                yield {'route': route, 'phones': [], 'detail': '唱段没有有效录音'}
                 continue
-            from inference.API.hfa_api import load_hfa_model, run_hubert_fa
-
-            if hfa is None:
-                hfa = load_hfa_model(fallback, device='cpu')
-            if not _read_clip(row, wav, 44100):
-                yield {'route': '', 'phones': [], 'detail': '唱段没有有效录音'}
-                continue
-            lab = _lab(row['text'], language, runtime)
-            wav.with_suffix('.lab').write_text(lab, encoding='utf-8')
-            found = run_hubert_fa(hfa, one, language=language)
-            if 'chunk_0' in found:
-                phones = _phones(found['chunk_0'][2])
-            yield {'route': 'HubertFA' if phones else '', 'phones': phones,
-                   'detail': '' if phones else '歌词或读音未得到可用边界'}
+            found = infer(wav, row['lang'], row['text'])
+            phones = _phones(found[wav.stem][2]) if wav.stem in found else []
+            yield {'route': route, 'phones': phones,
+                   'detail': '' if phones else f'{route} 未从歌词取得可用音素边界'}
         except Exception as error:
-            yield {'route': '', 'phones': [], 'detail': str(error)[:300]}
+            yield {'route': route, 'phones': [], 'detail': f'{route}：{error}'[:300]}
 
 
 def _recognize(request, runtime, core):
@@ -232,7 +265,6 @@ def _recognize(request, runtime, core):
 
 
 def _worker(request):
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
     from runtime_devices import prepare_environment
     from v2m_runtime import configure
 
@@ -241,8 +273,7 @@ def _worker(request):
     runtime, core = Path(spec['runtime']), Path(spec['core'])
     configure(runtime, pitch_only=True)
     prepare_environment({'midi_device': 'cpu', 'cpu_threads': 4, 'dml_adapter': 'auto'})
-    analyze = _recognize if spec['operation'] == 'asr' else _align
-    result = list(analyze(spec, runtime, core))
+    result = list(_recognize(spec, runtime, core) if spec['operation'] == 'asr' else _align(spec, runtime))
     (request.parent / 'results.json').write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')
 
 

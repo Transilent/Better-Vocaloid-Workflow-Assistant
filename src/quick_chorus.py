@@ -11,7 +11,9 @@ from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
 from chorus_precision import mapped_time, phrase_for
-from chorus_project import ChorusProject, Edit, Lyric, Recording, Score, LYRIC_LANGUAGES, ROLES, VARIANTS, number
+from chorus_project import (ALIGNMENT_ENGINES, LYRIC_LANGUAGES, ROLES, VARIANTS, ChorusProject, Edit, Lyric,
+                            Recording, Score, number)
+from chorus_speech import alignment_ready
 from common import ROOT
 from quick_work import WorkerLane
 
@@ -166,6 +168,7 @@ class QuickChorus(QObject):
             'reference': self._track_row(reference) if reference else {}, 'shiftMs': shift * 1000,
             'phrase': {'id': phrase.id if phrase else '', 'ref': phrase.reference if phrase else '',
                        'shared': self._lyric_row(shared), 'local': self._lyric_row(local)},
+            'alignmentEngine': project.alignment_engine,
             'anchors': anchors, 'timingRoute': ('手工锚点' if current and current.manual and current.points else
                                                timing.route if timing else ''),
             'timingDetail': timing.detail if timing else current.basis if current else '', 'gain': gain, 'comp': comp,
@@ -612,6 +615,15 @@ class QuickChorus(QObject):
             self._say('已存入工程' if text.strip() else '已清除该轨歌词')
         except ValueError as error:
             self._say(error, error=True)
+
+    @Slot(str, result=bool)
+    def alignmentReady(self, engine):
+        return engine in ('tifa', 'hubertfa') and alignment_ready(engine)
+
+    @Slot(str)
+    def setAlignmentEngine(self, engine):
+        if engine in ALIGNMENT_ENGINES and not self.worker.kind and engine != self.project.alignment_engine:
+            self._commit(replace(self.project, alignment_engine=engine))
 
     @Slot(str, str, str)
     def lyricInput(self, scope, text, language):
