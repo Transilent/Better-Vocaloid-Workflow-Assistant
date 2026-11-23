@@ -1,5 +1,6 @@
 """The editable state of a song, independent of views and analysis caches."""
 from dataclasses import asdict, dataclass, replace
+from bisect import bisect_right
 from hashlib import file_digest
 import json
 import math
@@ -9,9 +10,10 @@ from tempfile import NamedTemporaryFile
 from uuid import uuid4
 
 
-ROLES = ('vocal', 'guide', 'backing')
+ROLES = ('vocal', 'guide', 'backing', 'take')
 VARIANTS = ('original', 'timing', 'pitch', 'processed')
 SCORE_SUFFIXES = ('.mid', '.midi', '.svp', '.ustx', '.vpr', '.vsqx', '.acep', '.ufdata')
+LYRIC_LANGUAGES = ('ja', 'zh', 'en', 'yue')
 
 
 def fingerprint(path):
@@ -141,10 +143,37 @@ class Score:
 
 
 @dataclass(frozen=True)
+class Lyric:
+    track: str
+    text: str
+    language: str = 'ja'
+    confirmed: bool = False
+
+
+@dataclass(frozen=True)
 class Phrase:
     start: float
     end: float
     label: str = ''
+    id: str = ''
+    lyrics: tuple = ()
+    reference: str = ''
+
+    def lyric(self, track=''):
+        return next((line for line in self.lyrics if line.track == track), None)
+
+    def resolved_lyric(self, track):
+        return self.lyric(track) or self.lyric()
+
+
+def interpolate(points, time):
+    if time <= points[0][0]:
+        return points[0][1]
+    if time >= points[-1][0]:
+        return points[-1][1]
+    index = bisect_right(points, (time, math.inf))
+    (a, left), (b, right) = points[index - 1:index + 1]
+    return left + (right - left) * (time - a) / (b - a)
 
 
 @dataclass(frozen=True)
@@ -154,13 +183,45 @@ class Edit:
     start: float
     end: float
     value: float
+    points: tuple = ()
+    source: str = ''
+    manual: bool = False
+    basis: str = ''
 
-    # Timing intervals use project seconds and values use seconds. Pitch
-    # intervals use take seconds and values use cents.
+    # Timing maps output project seconds to source project seconds. Pitch
+    # controls are in take seconds and cents. Gain and comps use output time.
     def __post_init__(self):
-        if self.kind not in ('timing', 'pitch') or number(self.start) >= number(self.end):
+        if self.kind not in ('timing', 'pitch', 'gain', 'take') or number(self.start) >= number(self.end):
             raise ValueError('处理区间无效。')
         number(self.value)
+        if self.kind == 'take' and (not self.source or self.source == self.track):
+            raise ValueError('请选择不同的备选录音。')
+        if self.points:
+            if self.kind not in ('timing', 'pitch'):
+                raise ValueError('此编辑类型不支持曲线。')
+            if len(self.points) < 2 or not all(math.isfinite(x) and math.isfinite(y) for x, y in self.points):
+                raise ValueError('曲线至少需要两个有效点。')
+            if self.points[0][0] != self.start or self.points[-1][0] != self.end:
+                raise ValueError('曲线需覆盖完整编辑区间。')
+            if any(a[0] >= b[0] or self.kind == 'timing' and a[1] >= b[1]
+                   for a, b in zip(self.points, self.points[1:])):
+                raise ValueError('时间锚点须保持先后顺序。')
+
+    def clip(self, start, end):
+        points = ()
+        if self.points:
+            points = ((start, interpolate(self.points, start)),
+                      *(p for p in self.points if start < p[0] < end),
+                      (end, interpolate(self.points, end)))
+        return replace(self, start=start, end=end, points=points)
+
+    def source_time(self, time):
+        return interpolate(self.points, time) if self.points else time - self.value
+
+    def output_time(self, time):
+        if self.points:
+            return interpolate(tuple((source, output) for output, source in self.points), time)
+        return time + self.value
 
 
 @dataclass(frozen=True)
@@ -179,12 +240,16 @@ class ChorusProject:
         return cls(title=title, id=uuid4().hex)
 
     @property
+    def timeline_tracks(self):
+        return tuple(track for track in self.tracks if track.role != 'take') or self.tracks
+
+    @property
     def start(self):
-        return min(0., *(track.offset for track in self.tracks)) if self.tracks else 0.
+        return min((0., *(track.offset for track in self.timeline_tracks)))
 
     @property
     def end(self):
-        return max((track.offset + track.duration for track in self.tracks), default=0.)
+        return max((track.offset + track.duration for track in self.timeline_tracks), default=0.)
 
     @property
     def first_frame(self):
@@ -197,8 +262,12 @@ class ChorusProject:
     def track(self, identity):
         return next((track for track in self.tracks if track.id == identity), None)
 
-    def reference(self, track=None):
-        return self.track(track.timing_ref if track and track.timing_ref else self.guide)
+    def reference(self, track=None, phrase=None):
+        for identity in (phrase.reference if phrase else '', track.timing_ref if track else '', self.guide):
+            source = self.track(identity) if identity else None
+            if source and source.role != 'backing' and (track is None or source.id != track.id):
+                return source
+        return None
 
     def add(self, tracks):
         tracks = self.tracks + tuple(tracks)
@@ -220,8 +289,12 @@ class ChorusProject:
     def remove(self, identity):
         tracks = tuple(replace(track, timing_ref='') if track.timing_ref == identity else track
                        for track in self.tracks if track.id != identity)
+        phrases = tuple(replace(phrase, reference='' if phrase.reference == identity else phrase.reference,
+                                lyrics=tuple(line for line in phrase.lyrics if line.track != identity))
+                        for phrase in self.phrases)
         updated = replace(self, tracks=(), guide='' if self.guide == identity else self.guide,
-                          edits=tuple(edit for edit in self.edits if edit.track != identity))
+                          edits=tuple(edit for edit in self.edits if identity not in (edit.track, edit.source)),
+                          phrases=phrases)
         return replace(updated.add(tracks), rate=self.rate)
 
     def replace_region(self, track, kind, start, end, edits):
@@ -232,9 +305,9 @@ class ChorusProject:
                 retained.append(edit)
                 continue
             if edit.start < start:
-                retained.append(replace(edit, end=start))
+                retained.append(edit.clip(edit.start, start))
             if edit.end > end:
-                retained.append(replace(edit, start=end))
+                retained.append(edit.clip(end, edit.end))
         entries = tuple(sorted((*retained, *edits), key=lambda edit: (edit.track, edit.kind, edit.start)))
         return replace(self, edits=entries)
 
@@ -287,11 +360,21 @@ class ChorusProject:
             if score.sha != raw_score['sha']:
                 raise ValueError('乐谱和保存工程时不一致，请重新绑定。')
             score = replace(score, offset=number(raw_score['offset']))
-        phrases = tuple(Phrase(number(row['start']), number(row['end']), str(row['label']))
+        phrases = tuple(Phrase(number(row['start']), number(row['end']), str(row['label']),
+                               str(row.get('id', '')),
+                               tuple(Lyric(str(line['track']), str(line['text']), str(line['language']),
+                                           bool(line['confirmed']))
+                                     for line in row.get('lyrics', ())
+                                     if not line['track'] or line['track'] in ids),
+                               str(row.get('reference', '')) if row.get('reference') in ids else '')
                         for row in data['phrases'] if number(row['start']) < number(row['end']))
         edits = tuple(Edit(str(row['track']), str(row['kind']), number(row['start']),
-                           number(row['end']), number(row['value']))
-                      for row in data['edits'] if row['track'] in ids)
+                           number(row['end']), number(row['value']),
+                           tuple((number(x), number(y)) for x, y in row.get('points', ())),
+                           str(row.get('source', '')), bool(row.get('manual', False)), str(row.get('basis', '')))
+                      for row in data['edits'] if row['track'] in ids and
+                      (row['kind'] != 'take' or any(item.id == row.get('source') and item.role == 'take'
+                                                   for item in records)))
         rate = int(data['rate'])
         if not 8000 <= rate <= 384000:
             raise ValueError('工程采样率无效。')

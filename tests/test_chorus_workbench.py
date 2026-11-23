@@ -12,9 +12,12 @@ import numpy as np
 import soundfile as sf
 import soxr
 
-from chorus_analysis import apply_suggestions, feature_track, proposals
-from chorus_audio import export_stems, render_track
-from chorus_project import ChorusProject, Edit, Recording, Score
+from chorus_analysis import Suggestion, apply_suggestions, feature_track, proposals
+from chorus_audio import export_stems, monitor_tracks, render_key, render_track
+from chorus_precision import (merge_speech_drafts, move_anchor, note_anchors, pitch_from_stroke, reference_pitch,
+                              update_phrase, warp)
+from chorus_project import ChorusProject, Edit, Lyric, Phrase, Recording, Score
+from chorus_speech import same_text
 
 
 def write_audio(path, rate, delay=0.):
@@ -39,6 +42,61 @@ def write_score(path):
         track.append(mido.Message('note_on', note=pitch, velocity=75, time=288))
         track.append(mido.Message('note_off', note=pitch, velocity=0, time=1850))
     score.save(path)
+
+
+def check_precision(root, project, guide, take):
+    assert same_text(Lyric('', 'きっと、歌う', 'ja', True), Lyric('b', 'キット 歌う', 'ja', True))
+    assert not same_text(Lyric('', '歌う', 'ja', True), Lyric('b', '歌う', 'ja'))
+    selection = (.30, 2.30)
+    project = update_phrase(project, selection, line=Lyric('', 'きっと', 'ja', True))
+    project = update_phrase(project, selection, line=Lyric(take.id, 'きっと', 'ja', True))
+    project = update_phrase(project, selection, reference=guide.id)
+    edited, count = merge_speech_drafts(project, take.id, 'ja', project.phrases, [{'text': '別の歌詞'}])
+    assert count == 0 and project == edited and project.phrases[0].id
+    melody = ((.50, .75, 62), (1., 1.2, 61), (1.6, 1.98, 63))
+    harmony = ((.62, .86, 55), (1.05, 1.28, 54), (1.75, 2.02, 56))
+    notes = note_anchors(melody, harmony, Phrase(*selection), -.12)
+    assert len(notes) == 3
+    knots, anchors, shift = warp(notes, *selection, 1., .60)
+    assert len(anchors) == 3 and knots[1][0] == .50
+    manual = move_anchor(take.id, selection, knots, 1., 1.03)
+    assert manual.manual and manual.points[2][0] == 1.03
+    lock = Edit(take.id, 'timing', .80, 1.36, 0., manual=True)
+    next_project = replace(project, edits=(lock,))
+    candidate = Suggestion(take.id, 'timing', *selection, shift, 'note evidence', points=knots)
+    protected = apply_suggestions(next_project, [candidate])
+    before, retained, after = protected.edits_for(take.id, 'timing')
+    assert retained == lock and before.end == lock.start and after.start == lock.end
+    assert before.points[-1][0] == lock.start
+    assert apply_suggestions(protected, [candidate], manual=True).edits[0].manual
+
+    midi = np.full(300, 57.7, dtype=np.float32)
+    stroke = pitch_from_stroke(project, take, (midi, .01), [(.6, 58.), (.91, 57.5)], False)
+    assert len(stroke) == 1 and len(stroke[0].points) >= 20
+    flat = reference_pitch(project, take, guide, (.4, 1.), {take.id: (midi, .01), guide.id: (midi + 7, .01)},
+                           'contour', 1.)
+    assert flat and all(abs(pitch) < .01 for row in flat for _, pitch in row.points)
+    absolute = reference_pitch(project, take, guide, (.4, 1.), {take.id: (midi, .01), guide.id: (midi + 7, .01)},
+                               'absolute', 1.)
+    assert all(abs(pitch - 700) < .01 for row in absolute for _, pitch in row.points)
+    alternative_path = root / 'alt.wav'
+    sf.write(alternative_path, np.full(4 * project.rate, .1, dtype=np.float32), project.rate, subtype='FLOAT')
+    alt = Recording.read(alternative_path, 'take')
+    comp = Edit(take.id, 'take', .5, 1.40, 0., source=alt.id, manual=True)
+    gain = Edit(take.id, 'gain', .6, 1.20, -6., manual=True)
+    stitched = replace(project.add((alt,)), edits=(comp, gain))
+    assert stitched.frames == project.frames and alt not in monitor_tracks(stitched, '')
+    assert render_key(stitched, 'original', '') != render_key(project, 'original', '')
+    original = render_track(stitched, take, 'original')[:, 0]
+    assert abs(original[project.rate] - .1) < 1e-6
+    after = render_track(stitched, take, 'processed')[:, 0]
+    assert abs(after[project.rate] - .1 * 10 ** (-6 / 20)) < 1e-6
+    assert stitched.remove(alt.id).edits == (gain,)
+    saved = root / 'extended.vwachorus'
+    with_curve = replace(stitched, edits=(comp, gain, manual, *stroke))
+    with_curve.save(saved)
+    assert ChorusProject.open(saved) == with_curve
+    print('PASS: confirmed lyrics, mixed-voice note anchors, local lock, draw, preserved harmony, gain and takes')
 
 
 def main():
@@ -90,6 +148,7 @@ def main():
         np.testing.assert_array_equal(result, after[4800:33600])
         assert Recording.read(target_path).sha == take.sha
         print('PASS: tempo-aware independent voice target, known offset, region undo, mixed-rate render and stem exactness')
+        check_precision(root, project, guide, take)
 
 
 if __name__ == '__main__':

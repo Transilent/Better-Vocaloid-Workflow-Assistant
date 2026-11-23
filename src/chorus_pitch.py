@@ -3,17 +3,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import subprocess
 import sys
-from tempfile import TemporaryDirectory
 
 
 def estimate_many(tracks, cache, check, progress):
     import numpy as np
 
     from common import ROOT
-    from mixdown_runtime import child_python, worker_environment
-    from process_control import terminate_tree
+    from chorus_model_worker import model_batch
 
     model = ROOT / 'dependencies/vocal2midi/experiments/RMVPE/rmvpe.onnx'
     runtime = ROOT / 'dependencies/vocal2midi2'
@@ -22,47 +19,9 @@ def estimate_many(tracks, cache, check, progress):
     for track in tracks:
         check()
         track.check_source()
-    cache.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(dir=cache, prefix='pitch-') as folder:
-        folder = Path(folder)
-        request = folder / 'request.json'
-        request.write_text(json.dumps({'model': str(model), 'runtime': str(runtime),
-                                        'paths': [track.path for track in tracks]}, ensure_ascii=False),
-                           encoding='utf-8')
-        process = subprocess.Popen([str(child_python()), '-B', '-u', str(Path(__file__).resolve()),
-                                    str(request)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   stdin=subprocess.DEVNULL, env=worker_environment(),
-                                   creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-        step = folder / 'progress.txt'
-        seen = -1
-        try:
-            while True:
-                check()
-                try:
-                    index = int(step.read_text(encoding='utf-8'))
-                    if index != seen:
-                        seen = index
-                        if 0 <= index < len(tracks):
-                            progress(index, f'提取音高 · {tracks[index].name}')
-                except (OSError, ValueError):
-                    pass
-                try:
-                    _, stderr = process.communicate(timeout=.15)
-                    break
-                except subprocess.TimeoutExpired:
-                    pass
-        finally:
-            if process.poll() is None:
-                try:
-                    terminate_tree(process)
-                finally:
-                    if process.poll() is None:
-                        process.kill()
-                    process.communicate()
-        if process.returncode:
-            tail = stderr.decode('utf-8', errors='replace').splitlines()
-            raise RuntimeError('音高分析失败' + (f'：{tail[-1][:320]}' if tail else '。'))
-        check()
+    spec = {'model': str(model), 'runtime': str(runtime), 'paths': [track.path for track in tracks]}
+    with model_batch(__file__, spec, cache, check, progress,
+                     [f'提取音高 · {track.name}' for track in tracks], '音高分析失败') as folder:
         curves = {}
         for index, track in enumerate(tracks):
             track.check_source()

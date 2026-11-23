@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "ChorusWaveform.js" as Wave
 
 Rectangle {
     id: editor
@@ -18,6 +19,7 @@ Rectangle {
     property real dragFirst: 0
     property real dragLast: 0
     signal takeSelected()
+    signal phraseSelected()
 
     color: theme.surface
     border.color: theme.line
@@ -33,7 +35,7 @@ Rectangle {
             + String(Math.floor(absolute % 60)).padStart(2, "0")
     }
     function roleName(role) {
-        return t(role === "guide" ? "导唱" : role === "backing" ? "伴奏" : "人声")
+        return t(role === "guide" ? "导唱" : role === "backing" ? "伴奏" : role === "take" ? "备选" : "人声")
     }
 
     ColumnLayout {
@@ -122,7 +124,7 @@ Rectangle {
                         visible: x + width > 0 && x < parent.width
                         color: modelData.end > editor.view.rangeFirst && modelData.start < editor.view.rangeLast
                             ? editor.theme.selected : editor.theme.raised
-                        border.color: editor.theme.selectedLine
+                        border.color: modelData.confirmed ? editor.theme.success : editor.theme.selectedLine
                         radius: 4
                         Text {
                             anchors.fill: parent
@@ -136,7 +138,10 @@ Rectangle {
                             textFormat: Text.PlainText
                         }
                         TapHandler {
-                            onTapped: editor.controller.focusPhrase(modelData.start, modelData.end)
+                            onTapped: {
+                                editor.controller.focusPhrase(modelData.start, modelData.end)
+                                editor.phraseSelected()
+                            }
                         }
                     }
                 }
@@ -174,7 +179,7 @@ Rectangle {
                         id: row
                         required property var modelData
                         width: trackStack.width
-                        height: Math.round(57 * editor.theme.scale)
+                        height: Math.round((editor.view.mode === "pitch" ? 43 : 57) * editor.theme.scale)
                         readonly property bool selected: modelData.id === editor.view.selected
                         readonly property color ink: modelData.lead ? editor.theme.success
                             : selected ? editor.theme.accent : editor.theme.muted
@@ -261,12 +266,14 @@ Rectangle {
                             width: editor.plotWidth
                             height: row.height - 1
                             property var peaks: []
+                            property var alternatePeaks: ({})
                             property real first: editor.leftTime
                             property real span: editor.span
                             property bool after: editor.movedWave
                             property color ink: row.ink
                             Component.onCompleted: {
                                 peaks = editor.controller.peaks(row.modelData.id)
+                                alternatePeaks = Wave.alternatePeaks(row.modelData, editor.controller)
                                 requestPaint()
                             }
                             onFirstChanged: requestPaint()
@@ -287,21 +294,17 @@ Rectangle {
                                 c.stroke()
                                 if (peaks.length === 0)
                                     return
-                                let region = 0
                                 const edits = after ? row.modelData.timing : []
                                 c.strokeStyle = row.ink
                                 c.globalAlpha = row.modelData.muted ? .3 : .88
                                 c.beginPath()
                                 for (let px = 0; px < width; px += 1.7) {
                                     const time = editor.toTime(px)
-                                    while (region < edits.length && edits[region].end <= time)
-                                        ++region
-                                    const delay = region < edits.length && edits[region].start <= time ? edits[region].shift : 0
-                                    const fromTake = time - row.modelData.offset - delay
-                                    const bin = Math.floor(fromTake * peaks.length / row.modelData.duration)
-                                    if (bin < 0 || bin >= peaks.length)
+                                    const sourceTime = Wave.sourceTime(edits, time)
+                                    const peak = Wave.valueAt(row.modelData, peaks, sourceTime, alternatePeaks)
+                                    if (peak < 0)
                                         continue
-                                    const value = Math.max(.35, Math.min(1, peaks[bin]) * (height * .44))
+                                    const value = Math.max(.35, Math.min(1, peak) * (height * .44))
                                     c.moveTo(px, mid - value)
                                     c.lineTo(px, mid + value)
                                 }

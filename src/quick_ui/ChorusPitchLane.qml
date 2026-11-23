@@ -8,6 +8,11 @@ Rectangle {
     required property var view
     required property int headerWidth
     property var curve: ({first: 0, step: .01, midi: [], target: []})
+    readonly property bool drawing: view.pitchDraw && canDraw
+    property real lowNote: 48
+    property real highNote: 72
+    property var stroke: []
+    readonly property bool canDraw: curve.midi.some(value => value >= 0) && view.take.role === "vocal"
     color: theme.base
     border.color: theme.line
     radius: Math.round(7 * theme.scale)
@@ -15,12 +20,27 @@ Rectangle {
     implicitHeight: Math.round(178 * theme.scale)
 
     function rebuild() {
-        if (lane.visible)
-            curve = lane.controller.curve(lane.view.selected)
+        if (!lane.visible)
+            return
+        curve = lane.controller.curve(lane.view.selected)
+        let low = 128, high = 0
+        for (const line of [curve.midi, curve.target]) {
+            for (const note of line) {
+                if (note < 0)
+                    continue
+                low = Math.min(low, note)
+                high = Math.max(high, note)
+            }
+        }
+        if (low <= high && stroke.length === 0) {
+            lowNote = Math.max(0, Math.floor(low) - 2)
+            highNote = Math.max(lowNote + 7, Math.ceil(high) + 2)
+        }
         plot.requestPaint()
     }
 
     onVisibleChanged: rebuild()
+    onStrokeChanged: plot.requestPaint()
     Connections {
         target: lane.controller
         function onChanged() { lane.rebuild() }
@@ -39,17 +59,8 @@ Rectangle {
             const span = Math.max(.01, lane.view.viewSpan)
             const source = lane.curve.midi
             const target = lane.curve.target
-            let low = 128, high = 0
-            for (let i = 0; i < source.length; i++) {
-                if (source[i] >= 0) {
-                    low = Math.min(low, source[i], target[i])
-                    high = Math.max(high, source[i], target[i])
-                }
-            }
-            if (low > high)
-                return
-            low = Math.floor(low) - 1
-            high = Math.max(low + 6, Math.ceil(high) + 1)
+            const low = lane.lowNote
+            const high = lane.highNote
             const rowHeight = height / (high - low + 1)
             const keys = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"]
             c.fillStyle = lane.theme.raised
@@ -100,12 +111,27 @@ Rectangle {
             }
             stroke(source, lane.theme.muted, 1.1, true)
             stroke(target, lane.theme.accent, 1.8, false)
+            if (lane.stroke.length) {
+                c.strokeStyle = lane.theme.success
+                c.lineWidth = 2.4
+                c.beginPath()
+                for (let i = 0; i < lane.stroke.length; i++) {
+                    const dot = lane.stroke[i]
+                    const x = lane.headerWidth + (dot.time - lane.view.viewFirst) * widthOfPlot / span
+                    const y = (high - dot.note + .5) * rowHeight
+                    if (i)
+                        c.lineTo(x, y)
+                    else
+                        c.moveTo(x, y)
+                }
+                c.stroke()
+            }
             c.restore()
         }
     }
     Text {
         anchors.centerIn: parent
-        visible: lane.curve.midi.length === 0
+        visible: !lane.curve.midi.some(value => value >= 0)
         color: lane.theme.muted
         font.pixelSize: Math.round(13 * lane.theme.scale)
         text: quickTranslation.text("分析修音后显示此轨的实测音高")
@@ -122,20 +148,39 @@ Rectangle {
             color: lane.theme.accent
         }
         MouseArea {
+            objectName: "chorusPitchDrawArea"
             anchors.fill: parent
+            cursorShape: lane.drawing ? Qt.CrossCursor : Qt.ArrowCursor
+            preventStealing: true
             property real startTime
             property real pressX
+            function at(x) { return lane.view.viewFirst + Math.max(0, Math.min(1, x / width)) * lane.view.viewSpan }
+            function dot(x, y) {
+                return {time: at(x), note: lane.highNote + .5 - Math.max(0, Math.min(1, y / height))
+                    * (lane.highNote - lane.lowNote + 1)}
+            }
             onPressed: mouse => {
                 pressX = mouse.x
-                startTime = lane.view.viewFirst + mouse.x / width * lane.view.viewSpan
+                startTime = at(mouse.x)
+                if (lane.drawing)
+                    lane.stroke = [dot(mouse.x, mouse.y)]
+            }
+            onPositionChanged: mouse => {
+                if (pressed && lane.drawing)
+                    lane.stroke = lane.stroke.concat([dot(mouse.x, mouse.y)])
             }
             onReleased: mouse => {
-                const end = lane.view.viewFirst + mouse.x / width * lane.view.viewSpan
-                if (Math.abs(mouse.x - pressX) >= 4)
+                const end = at(mouse.x)
+                if (lane.drawing) {
+                    const captured = lane.stroke.concat([dot(mouse.x, mouse.y)])
+                    lane.stroke = []
+                    lane.controller.drawPitch(captured)
+                } else if (Math.abs(mouse.x - pressX) >= 4)
                     lane.controller.selectRange(startTime, end)
                 else
                     lane.controller.seek(end)
             }
+            onCanceled: lane.stroke = []
         }
     }
 }

@@ -1,6 +1,8 @@
 """Qt projection of the chorus project and its resident audio transport."""
 from collections import OrderedDict
+from contextlib import contextmanager
 from dataclasses import replace
+from math import nextafter
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import os
@@ -8,7 +10,8 @@ import os
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
-from chorus_project import ChorusProject, Edit, Recording, Score, ROLES, VARIANTS, number
+from chorus_precision import mapped_time, phrase_for
+from chorus_project import ChorusProject, Edit, Lyric, Recording, Score, LYRIC_LANGUAGES, ROLES, VARIANTS, number
 from common import ROOT
 from quick_work import WorkerLane
 
@@ -32,6 +35,27 @@ def _meter(send, phase, done, total, message):
     send({'phase': phase, 'done': done, 'total': total, 'unit': 'items', 'message': message})
 
 
+@contextmanager
+def _analysis_sources(project, rows, cache, features, check, send):
+    from chorus_analysis import feature_track
+    from chorus_audio import analysis_recording, recording_key
+
+    audio, measured, added = {}, {}, {}
+    with TemporaryDirectory(dir=cache, prefix='sources-') as folder:
+        for index, track in enumerate(rows):
+            check()
+            source = analysis_recording(project, track, Path(folder), check)
+            key = recording_key(project, track)
+            audio[track.id] = source
+            if features is None:
+                continue
+            if key not in features and key not in added:
+                _meter(send, 'analyze', index, len(rows), f'分析当前录音 · {track.name}')
+                added[key] = feature_track(source, check)
+            measured[track.id] = features[key] if key in features else added[key]
+        yield audio, measured, added
+
+
 class QuickChorus(QObject):
     changed = Signal()
     tracksChanged = Signal()
@@ -53,6 +77,8 @@ class QuickChorus(QObject):
         self._path = None
         self._features = {}
         self._curves = {}
+        self._speech = OrderedDict()
+        self._lyric_inputs = {}
         self._suggestions = ()
         self._resolved = set()
         self._issue = -1
@@ -62,6 +88,9 @@ class QuickChorus(QObject):
         self._view_span = 1.
         self._selection = (0., 0.)
         self._mode = 'all'
+        self._inspector_open = True
+        self._inspector_section = 'batch'
+        self._pitch_draw = False
         self._variant = 'original'
         self._active_variant = ''
         self._solo = ''
@@ -103,10 +132,24 @@ class QuickChorus(QObject):
     def view(self):
         project = self.project
         selected = project.track(self._selected)
-        reference = project.reference(selected)
+        phrase = phrase_for(project, self._selection)
+        reference = project.reference(selected, phrase)
         middle = sum(self._selection) / 2
-        shift = next((edit.value for edit in project.edits_for(self._selected, 'timing')
-                      if edit.start <= middle < edit.end), 0.)
+        shift = middle - mapped_time(project, selected, middle) if selected else 0.
+        current, timing = self._timing_pose(selected, middle) if selected else (None, None)
+        knots = (current.points if current and current.manual else
+                 timing.points if timing and timing.points else current.points if current else ())
+        if not knots and timing and len(timing.anchors) >= 2:
+            knots = ((timing.start, timing.start), *((x, y) for _, x, y in timing.anchors),
+                     (timing.end, timing.end))
+        labels = {round(y, 5): label for label, _, y in timing.anchors} if timing else {}
+        anchors = [{'label': labels.get(round(y, 5), str(i + 1)), 'time': x, 'source': y}
+                   for i, (x, y) in enumerate(knots[1:-1])]
+        shared, local = ((phrase.lyric(), phrase.lyric(self._selected)) if phrase else (None, None))
+        gain = next((edit.value for edit in project.edits_for(self._selected, 'gain')
+                     if edit.start <= middle < edit.end), 0.)
+        comp = next((edit.source for edit in project.edits_for(self._selected, 'take')
+                     if edit.start <= (mapped_time(project, selected, middle) if selected else middle) < edit.end), '')
         score = project.score
         issues = []
         for index, row in enumerate(self._suggestions):
@@ -121,8 +164,17 @@ class QuickChorus(QObject):
             'count': len(project.tracks), 'vocals': sum(track.role == 'vocal' for track in project.tracks),
             'guide': project.guide, 'selected': self._selected, 'take': self._track_row(selected) if selected else {},
             'reference': self._track_row(reference) if reference else {}, 'shiftMs': shift * 1000,
+            'phrase': {'id': phrase.id if phrase else '', 'ref': phrase.reference if phrase else '',
+                       'shared': self._lyric_row(shared), 'local': self._lyric_row(local)},
+            'anchors': anchors, 'timingRoute': ('手工锚点' if current and current.manual and current.points else
+                                               timing.route if timing else ''),
+            'timingDetail': timing.detail if timing else current.basis if current else '', 'gain': gain, 'comp': comp,
+            'canApplyTiming': bool(timing and timing.can_apply and not (current and current.manual)
+                                   and self._suggestions.index(timing) not in self._resolved),
             'viewFirst': self._view_first, 'viewSpan': self._view_span,
             'rangeFirst': self._selection[0], 'rangeLast': self._selection[1], 'mode': self._mode,
+            'inspector': self._inspector_open, 'inspectorSection': self._inspector_section,
+            'pitchDraw': self._pitch_draw,
             'variant': self._variant, 'activeVariant': self._active_variant, 'solo': self._solo,
             'playing': self._intent, 'loop': self._loop, 'loading': bool(self.monitor_worker.kind),
             'busy': bool(self.worker.kind), 'notice': self._notice, 'error': self._error,
@@ -137,14 +189,21 @@ class QuickChorus(QObject):
                                for index, row in enumerate(self._suggestions)),
         }
 
+    @staticmethod
+    def _lyric_row(line):
+        return {'text': line.text, 'language': line.language, 'confirmed': line.confirmed} if line else {}
+
     def _track_row(self, track):
         project = self.project
         return {'id': track.id, 'name': track.name, 'role': track.role, 'part': track.part,
                 'offset': track.offset, 'duration': track.duration, 'muted': track.muted,
                 'scoreLane': track.score_lane, 'timeRef': track.timing_ref, 'lead': project.guide == track.id,
                 'edits': sum(edit.track == track.id for edit in project.edits),
-                'timing': [{'start': edit.start, 'end': edit.end, 'shift': edit.value}
-                           for edit in project.edits_for(track.id, 'timing')]}
+                'timing': [{'start': edit.start, 'end': edit.end, 'shift': edit.value,
+                            'points': [list(point) for point in edit.points]}
+                           for edit in project.edits_for(track.id, 'timing')],
+                'takes': [{'start': edit.start, 'end': edit.end, 'id': edit.source}
+                          for edit in project.edits_for(track.id, 'take')]}
 
     @Property('QVariantList', notify=tracksChanged)
     def tracks(self):
@@ -152,8 +211,13 @@ class QuickChorus(QObject):
 
     @Property('QVariantList', notify=phrasesChanged)
     def phrases(self):
-        return [{'start': phrase.start, 'end': phrase.end, 'name': phrase.label or f'唱段 {index + 1}'}
-                for index, phrase in enumerate(self.project.phrases)]
+        rows = []
+        for index, phrase in enumerate(self.project.phrases, 1):
+            line = phrase.lyric() or next(iter(phrase.lyrics), None)
+            rows.append({'start': phrase.start, 'end': phrase.end,
+                         'name': line.text if line else phrase.label or f'唱段 {index}',
+                         'confirmed': bool(line and line.confirmed)})
+        return rows
 
     def _say(self, text, *, error=False):
         self._notice, self._error = str(text or ''), error
@@ -168,6 +232,24 @@ class QuickChorus(QObject):
         if track is None:
             raise ValueError('请选择一条音轨。')
         return track
+
+    def _selected_vocal(self):
+        track = self.project.track(self._selected)
+        if track is None or track.role != 'vocal' or self._selection[0] >= self._selection[1]:
+            return None
+        return track
+
+    def _timing_pose(self, track, time):
+        current = next((row for row in self.project.edits_for(track.id, 'timing')
+                        if row.start <= time < row.end), None)
+        candidate = next((row for row in self._suggestions if row.track == track.id
+                          and row.kind == 'timing' and row.start <= time < row.end), None)
+        return current, candidate
+
+    def _take_span(self, track, first, last):
+        a = mapped_time(self.project, track, first)
+        b = mapped_time(self.project, track, nextafter(last, first))
+        return max(0., a - track.offset), min(track.duration, b - track.offset)
 
     def _commit(self, next_project, *, keep_suggestions=False):
         if next_project == self.project:
@@ -212,12 +294,15 @@ class QuickChorus(QObject):
         self._requested = None
         self._cache.clear()
         self._curves.clear()
+        self._speech.clear()
+        self._lyric_inputs.clear()
         self._features = features
         self._path = path
         self._saved = project
         self._undo.clear()
         self._redo.clear()
         self._mode, self._variant, self._solo = 'all', 'original', ''
+        self._inspector_section, self._pitch_draw = 'batch', False
         self._selection = (project.start, project.end)
         self._view_first, self._view_span = project.start, max(.01, project.end - project.start)
         self._export = None
@@ -383,8 +468,18 @@ class QuickChorus(QObject):
 
     @Slot(str, str)
     def trackRole(self, identity, role):
-        if self.project.track(identity) and role in ROLES:
-            self._commit(self.project.update_track(identity, role=role))
+        track = self.project.track(identity)
+        if track and role in ROLES and track.role != role:
+            if any(row.source == identity for row in self.project.edits):
+                self._say('这条备选录音正在使用，请先还原相应唱段。', error=True)
+                return
+            project = self.project.update_track(identity, role=role)
+            if role != 'vocal':
+                project = replace(project, edits=tuple(row for row in project.edits if row.track != identity))
+            if role in ('take', 'backing') and project.guide == identity:
+                updated = replace(project, guide='', tracks=())
+                project = replace(updated.add(project.tracks), rate=project.rate)
+            self._commit(project)
 
     @Slot(str, str)
     def bindScore(self, identity, lane):
@@ -394,7 +489,8 @@ class QuickChorus(QObject):
 
     @Slot(str)
     def setGuide(self, identity):
-        if self.project.track(identity):
+        track = self.project.track(identity)
+        if track and track.role in ('vocal', 'guide'):
             self._commit(replace(self.project, guide=identity))
 
     @Slot(str, str)
@@ -462,6 +558,23 @@ class QuickChorus(QObject):
         self._set_viewport(number(first), number(span))
         self.changed.emit()
 
+    @Slot(str)
+    def inspectorSection(self, section):
+        if section in ('phrase', 'batch', 'track') and section != self._inspector_section:
+            self._inspector_section = section
+            self.changed.emit()
+
+    @Slot()
+    def toggleInspector(self):
+        self._inspector_open = not self._inspector_open
+        self.changed.emit()
+
+    @Slot(bool)
+    def pitchDraw(self, enabled):
+        if self._pitch_draw != enabled:
+            self._pitch_draw = enabled
+            self.changed.emit()
+
     @Slot(float, float)
     def selectRange(self, first, last):
         self._selection = self._bounds(number(first), number(last))
@@ -484,6 +597,97 @@ class QuickChorus(QObject):
         self.setMode('pitch' if row.kind == 'pitch' else 'phrase')
         self.seek(row.start)
 
+    @Slot(str, str, str, bool)
+    def setLyrics(self, scope, text, language, confirmed):
+        from chorus_precision import update_phrase
+
+        identity = self._selected if scope == 'track' else ''
+        if scope == 'track' and not self.project.track(identity):
+            return
+        try:
+            project = update_phrase(self.project, self._selection,
+                                    line=Lyric(identity, text.strip(), language, bool(confirmed)))
+            self._lyric_inputs.pop((identity, self._selection), None)
+            self._commit(project)
+            self._say('已存入工程' if text.strip() else '已清除该轨歌词')
+        except ValueError as error:
+            self._say(error, error=True)
+
+    @Slot(str, str, str)
+    def lyricInput(self, scope, text, language):
+        identity = self._selected if scope == 'track' else ''
+        self._lyric_inputs[identity, self._selection] = {'text': text, 'language': language}
+
+    @Slot(str, result='QVariantMap')
+    def pendingLyricInput(self, scope):
+        identity = self._selected if scope == 'track' else ''
+        return self._lyric_inputs.get((identity, self._selection), {})
+
+    @Slot(str)
+    def phraseReference(self, identity):
+        from chorus_precision import update_phrase
+
+        track = self.project.track(identity)
+        if identity and (track is None or track.role == 'backing' or identity == self._selected):
+            return
+        try:
+            self._commit(update_phrase(self.project, self._selection, reference=identity))
+            self._say('已更新此唱段的时间参照')
+        except ValueError as error:
+            self._say(error, error=True)
+
+    @Slot(str, bool)
+    def recognizeLyrics(self, language, whole):
+        from chorus_speech import SpeechClip, speech_batch
+        from chorus_precision import merge_speech_drafts
+
+        project = self.project
+        track = project.track(self._selected)
+        selection = (project.start, project.end) if whole else self._selection
+        if not track or track.role == 'backing' or language not in LYRIC_LANGUAGES or selection[1] <= selection[0]:
+            self._say('请选择有人声的音轨和唱段。', error=True)
+            return
+        cache = self._cache_dir()
+        cached = self._features.copy()
+
+        def work(stop, send):
+            from chorus_analysis import phrase_regions
+            from chorus_project import Phrase
+
+            check = lambda: _check(stop)
+            with _analysis_sources(project, (track,), cache, cached, check, send) as (audio, metrics, added):
+                anchor = phrase_for(project, selection)
+                phrases = (phrase_regions(project, track, metrics[track.id], selection) if whole
+                           else (anchor or Phrase(*selection),))
+                phrases = tuple(phrase for phrase in phrases
+                                if not ((line := phrase.lyric(track.id)) and line.confirmed))
+                clips = [SpeechClip(audio[track.id], phrase.start, phrase.end, language) for phrase in phrases]
+                found = speech_batch(clips, 'asr', cache, check,
+                                     lambda i, label: _meter(send, 'analyze', i, len(clips), label))
+            return phrases, found, added
+
+        def done(result):
+            phrases, found, added = result
+            self._features.update(added)
+            if self.project != project:
+                self._say('工程已变化，请在当前版本重新识别。')
+                return
+            try:
+                updated, count = merge_speech_drafts(project, track.id, language, phrases, found)
+            except ValueError as error:
+                self._say(error, error=True)
+                return
+            self._commit(updated)
+            if not phrases:
+                self._say('范围内的歌词已核对。')
+            elif count:
+                self._say(f'写入 {count} 段歌词草稿。请核对后确认。')
+            else:
+                detail = next((row.get('detail') for row in found if row.get('detail')), '没有识别到可用歌词。')
+                self._say(detail)
+
+        self._start('lyrics', '正在识别所选轨歌词', work, done)
+
     @Slot(str, result='QVariantList')
     def peaks(self, identity):
         track = self.project.track(identity)
@@ -492,8 +696,10 @@ class QuickChorus(QObject):
 
     @Slot(str, result='QVariantMap')
     def curve(self, identity):
+        from chorus_audio import recording_key
+
         track = self.project.track(identity)
-        source = self._curves.get(track.sha) if track else None
+        source = self._curves.get(recording_key(self.project, track)) if track else None
         if source is None:
             return {'first': 0., 'step': .01, 'midi': [], 'target': []}
         import numpy as np
@@ -514,17 +720,30 @@ class QuickChorus(QObject):
         moved = local.copy()
         if variant in ('timing', 'processed'):
             for edit in self.project.edits_for(identity, 'timing'):
-                moved[(grid >= edit.start) & (grid < edit.end)] -= edit.value
+                covered = (grid >= edit.start) & (grid < edit.end)
+                if edit.points:
+                    x, y = zip(*edit.points)
+                    moved[covered] = np.interp(grid[covered], x, y) - track.offset
+                else:
+                    moved[covered] -= edit.value
         fixed = project_curve(moved)
         if variant in ('pitch', 'processed'):
             for pitch in self.project.edits_for(identity, 'pitch'):
-                fixed[(moved >= pitch.start) & (moved < pitch.end)] += pitch.value / 100
+                covered = (moved >= pitch.start) & (moved < pitch.end) & np.isfinite(fixed)
+                if pitch.points:
+                    x, y = zip(*pitch.points)
+                    fixed[covered] += np.interp(moved[covered], x, y) / 100.
+                else:
+                    fixed[covered] += pitch.value / 100.
         return {'first': self._view_first, 'step': step,
                 'midi': np.nan_to_num(original, nan=-1.).tolist(),
                 'target': np.nan_to_num(fixed, nan=-1.).tolist()}
 
     @Slot(str, str, bool, bool, bool, float)
     def analyze(self, kind, scope, full, commit, include_review, strength):
+        from chorus_audio import recording_key
+        from chorus_precision import remembered_phrases
+
         if kind not in ('timing', 'pitch', 'both'):
             return
         project = self.project
@@ -536,8 +755,11 @@ class QuickChorus(QObject):
         if not targets or selection[1] - selection[0] < .03:
             self._say('请选择有人声的处理范围。', error=True)
             return
-        features = {track.id: self._features[track.sha] for track in project.tracks}
-        curves = {track.id: self._curves[track.sha] for track in targets if track.sha in self._curves}
+        cached = self._features.copy()
+        voice_tracks = tuple(track for track in project.tracks if track.role in ('vocal', 'guide', 'take'))
+        curves = {track.id: self._curves[key] for track in voice_tracks
+                  if (key := recording_key(project, track)) in self._curves}
+        speech = dict(self._speech)
         strength = max(0., min(1., number(strength) / 100.))
         cache = self._cache_dir()
 
@@ -547,32 +769,43 @@ class QuickChorus(QObject):
 
             check = lambda: _check(stop)
             failure = ''
-            for track in project.tracks:
-                check()
-                track.check_source()
-            missing = tuple(track for track in targets if track.id not in curves)
-            if kind != 'timing' and missing:
-                try:
-                    curves.update(estimate_many(missing, cache, check,
-                                                lambda i, label: _meter(send, 'analyze', i, len(missing), label)))
-                except (OSError, RuntimeError) as error:
-                    failure = str(error)
-                    if kind == 'pitch':
-                        raise
-            result = proposals(project, targets, selection, kind, strength, .60, features, curves,
-                               check, lambda i, label: _meter(send, 'analyze', i, len(targets), f'比较唱段 · {label}'))
+            relevant = {ref.id for track in targets if (ref := project.reference(track))}
+            relevant.update(phrase.reference for phrase in project.phrases if phrase.reference
+                            and phrase.start < selection[1] and phrase.end > selection[0])
+            relevant.update(track.id for track in targets)
+            with _analysis_sources(project, voice_tracks, cache, cached, check, send) as (audio, features, added):
+                missing = tuple(audio[track.id] for track in voice_tracks if track.id not in curves and
+                                (track.id in relevant if kind == 'both' else track in targets))
+                if kind != 'timing' and missing:
+                    try:
+                        curves.update(estimate_many(missing, cache, check, lambda i, label:
+                                                    _meter(send, 'analyze', i, len(missing), label)))
+                    except (OSError, RuntimeError) as error:
+                        failure = str(error)
+                        if kind == 'pitch':
+                            raise
+                result = proposals(project, targets, selection, kind, strength, .60, features, curves,
+                                   check, lambda i, label: _meter(send, 'analyze', i, len(targets), f'比较唱段 · {label}'),
+                                   speech=(speech, cache), audio=audio,
+                                   phone_progress=lambda i, n, label: _meter(send, 'align', i, n, label))
             check()
-            return (*result, curves, failure)
+            return (*result, curves, speech, added, failure)
 
         def done(result):
-            phrases, suggestions, found, failure = result
-            self._curves.update({track.sha: found[track.id] for track in targets if track.id in found})
+            phrases, suggestions, found, measured, added, failure = result
+            self._features.update(added)
+            self._curves.update({recording_key(project, track): found[track.id]
+                                 for track in voice_tracks if track.id in found})
+            self._speech.update((key, row) for key, row in measured.items() if row.get('phones'))
+            while len(self._speech) > 6000:
+                self._speech.popitem(last=False)
             if self.project != project:
-                self._say('工程已变化，音高分析已缓存。请重新生成与当前版本对应的建议。')
+                self._say('工程已变化，请按当前版本重新生成建议。')
                 return
             self._suggestions, self._resolved, self._issue = suggestions, set(), -1
             if full:
-                self._commit(replace(self.project, phrases=phrases), keep_suggestions=True)
+                self._commit(replace(self.project, phrases=remembered_phrases(self.project, phrases)),
+                             keep_suggestions=True)
             if commit:
                 count = self._apply(include_review)
                 self._say(f'已应用 {count} 项处理' + (f'。{failure}' if failure else ''), error=bool(failure))
@@ -591,11 +824,17 @@ class QuickChorus(QObject):
                   and self._suggestions[i].can_apply and (include_review or not self._suggestions[i].review)]
         if not picked:
             return 0
-        project = apply_suggestions(self.project, [row for _, row in picked])
+        project = self.project
+        count = 0
+        for _, row in picked:
+            updated = apply_suggestions(project, (row,), manual=individual)
+            count += updated != project
+            project = updated
         self._commit(project, keep_suggestions=True)
-        self._resolved.update(i for i, row in picked if not row.review or individual)
-        self.setVariant('processed')
-        return len(picked)
+        self._resolved.update(i for i, _ in picked)
+        if count:
+            self.setVariant('processed')
+        return count
 
     @Slot(bool)
     def applySuggestions(self, include_review):
@@ -607,6 +846,14 @@ class QuickChorus(QObject):
             self._apply(True, (self._issue,))
 
     @Slot()
+    def acceptPhraseTiming(self):
+        track = self._selected_vocal()
+        if track:
+            current, candidate = self._timing_pose(track, sum(self._selection) / 2.)
+            if candidate and not (current and current.manual):
+                self._say(f'已应用 {self._apply(True, (self._suggestions.index(candidate),))} 项对齐')
+
+    @Slot()
     def keepIssue(self):
         if not 0 <= self._issue < len(self._suggestions):
             return
@@ -616,14 +863,16 @@ class QuickChorus(QObject):
             return
         bias = track.offset if row.kind == 'pitch' else 0.
         selected = self._issue
-        self._commit(self.project.replace_region(track.id, row.kind, row.start - bias, row.end - bias, ()),
+        first, last = row.start - bias, row.end - bias
+        self._commit(self.project.replace_region(track.id, row.kind, first, last,
+                                                 (Edit(track.id, row.kind, first, last, 0., manual=True),)),
                      keep_suggestions=True)
         self._resolved.add(selected)
         self._say('当前唱段已保留原样')
 
     @Slot(str, float)
     def editSelection(self, kind, value):
-        if kind not in ('timing', 'pitch'):
+        if kind not in ('timing', 'pitch', 'gain'):
             return
         track = self.project.track(self._selected)
         first, last = self._selection
@@ -631,16 +880,179 @@ class QuickChorus(QObject):
             self._say('请先在人声音轨上选中一个范围。', error=True)
             return
         if kind == 'pitch':
-            first, last = max(0., first - track.offset), min(track.duration, last - track.offset)
+            first, last = self._take_span(track, first, last)
+            value = max(-1200., min(1200., number(value)))
+        elif kind == 'timing':
+            value = max(-3., min(3., number(value) / 1000.))
         else:
-            value /= 1000.
+            value = max(-30., min(18., number(value)))
         if first >= last:
             self._say('选择的区间与音轨没有交集。', error=True)
             return
-        edits = (Edit(track.id, kind, first, last, number(value)),) if value else ()
+        edits = (Edit(track.id, kind, first, last, value, manual=True),)
         self._commit(self.project.replace_region(track.id, kind, first, last, edits), keep_suggestions=True)
         self.setVariant('processed')
         self._say('已更新所选范围')
+
+    @Slot(str)
+    def clearSelectionEdits(self, kind):
+        track = self._selected_vocal()
+        if not track or kind not in ('timing', 'pitch'):
+            return
+        first, last = self._take_span(track, *self._selection) if kind == 'pitch' else self._selection
+        if last > first:
+            project = self.project.replace_region(track.id, kind, first, last, ())
+            self._commit(project)
+            self._say('已清除选区的编辑，可以重新分析。')
+
+    @Slot(float)
+    def addTimeAnchor(self, time):
+        track = self._selected_vocal()
+        if track is None:
+            self._say('请先在人声音轨上选中一个范围。', error=True)
+            return
+        first, last = self._selection
+        current, _ = self._timing_pose(track, (first + last) / 2.)
+        if current:
+            first, last = current.start, current.end
+        mapping = current.source_time if current else lambda value: value
+        points = current.points if current and current.points else ((first, mapping(first)), (last, mapping(last)))
+        if time <= first + .015 or time >= last - .015 or any(abs(time - x) < .015 for x, _ in points):
+            self._say('把播放头移到唱段内部、两个锚点之间再添加。')
+            return
+        updated = tuple(sorted((*points, (time, mapping(time)))))
+        edit = Edit(track.id, 'timing', first, last, time - mapping(time), updated, manual=True)
+        self._commit(self.project.replace_region(track.id, 'timing', first, last, (edit,)),
+                     keep_suggestions=True)
+        self._say('已添加时间锚点，可在下方波形中拖动。')
+
+    @Slot(float)
+    def slideSelection(self, milliseconds):
+        track = self._selected_vocal()
+        if not track:
+            return
+        delta = max(-3., min(3., number(milliseconds) / 1000.))
+        first, last = self._selection
+        current, _ = self._timing_pose(track, sum(self._selection) / 2.)
+        if not current or not current.points or first < current.start or last > current.end:
+            self.editSelection('timing', 1000. * (delta + (current.value if current else 0.)))
+            return
+        clipped = current.clip(first, last)
+        edit = replace(clipped, points=tuple((x, y - delta) for x, y in clipped.points),
+                       value=clipped.value + delta, manual=True)
+        self._commit(self.project.replace_region(track.id, 'timing', first, last, (edit,)),
+                     keep_suggestions=True)
+        self.setVariant('processed')
+        self._say('已移动并锁定所选范围')
+
+    @Slot(float, float)
+    def moveTimeAnchor(self, origin, destination):
+        from chorus_precision import move_anchor
+
+        track = self._selected_vocal()
+        if track is None:
+            return
+        current, candidate = self._timing_pose(track, origin)
+        if not current or not current.manual:
+            if candidate and candidate.points:
+                current = Edit(track.id, 'timing', candidate.start, candidate.end, candidate.value, candidate.points)
+            elif candidate and candidate.anchors and (current is None or not current.points):
+                knots = ((candidate.start, candidate.start), *((x, y) for _, x, y in candidate.anchors),
+                         (candidate.end, candidate.end))
+                current = Edit(track.id, 'timing', candidate.start, candidate.end, 0., knots)
+        if not current or len(current.points) < 3:
+            return
+        try:
+            edit = move_anchor(track.id, (current.start, current.end), current.points, origin, destination)
+            self._commit(self.project.replace_region(track.id, 'timing', edit.start, edit.end, (edit,)),
+                         keep_suggestions=True)
+            self.setVariant('processed')
+            self._say('已锁定这一段时间锚点。')
+        except ValueError as error:
+            self._say(error, error=True)
+
+    @Slot('QVariantList')
+    def drawPitch(self, stroke):
+        from chorus_audio import recording_key
+        from chorus_precision import pitch_from_stroke
+
+        track = self.project.track(self._selected)
+        if not track or track.role != 'vocal':
+            return
+        curve = self._curves.get(recording_key(self.project, track))
+        if curve is None:
+            self._say('先提取本轨音高，再画曲线。', error=True)
+            return
+        points = sorted({number(point['time']): number(point['note']) for point in stroke}.items())
+        variant = self._active_variant if self._intent and self._active_variant else self._variant
+        edits = pitch_from_stroke(self.project, track, curve, points, variant in ('timing', 'processed'))
+        if edits:
+            self._commit_pitch(track, edits, '已保存手绘音高')
+        else:
+            self._say('这一笔没有覆盖可修音的人声。')
+
+    def _commit_pitch(self, track, edits, label):
+        project = self.project
+        for edit in edits:
+            project = project.replace_region(track.id, 'pitch', edit.start, edit.end, (edit,))
+        self._commit(project, keep_suggestions=True)
+        self.setVariant('processed')
+        self._say(label)
+
+    @Slot(str, float)
+    def followReference(self, mode, strength):
+        from chorus_audio import recording_key
+        from chorus_precision import reference_pitch
+
+        project = self.project
+        track = self._selected_vocal()
+        reference = project.reference(track, phrase_for(project, self._selection))
+        if mode not in ('contour', 'absolute') or not track or not reference or reference.id == track.id:
+            self._say('选中人声唱段，并指定一条不同的时间参照。', error=True)
+            return
+        tracks = track, reference
+        known = {row.id: self._curves[key] for row in tracks if (key := recording_key(project, row)) in self._curves}
+        span, cache = self._selection, self._cache_dir()
+        strength = max(0., min(1., number(strength) / 100.))
+
+        def work(stop, send):
+            from chorus_pitch import estimate_many
+
+            check = lambda: _check(stop)
+            with _analysis_sources(project, tracks, cache, None, check, send) as (audio, _, _):
+                missing = tuple(audio[row.id] for row in tracks if row.id not in known)
+                if missing:
+                    known.update(estimate_many(missing, cache, check, lambda i, label:
+                                               _meter(send, 'analyze', i, len(missing), label)))
+            check()
+            return reference_pitch(project, track, reference, span, known, mode, strength)
+
+        def done(edits):
+            self._curves.update({recording_key(project, row): known[row.id] for row in tracks})
+            if self.project != project:
+                self._say('工程已变化，请按当前版本重新生成。')
+            elif edits:
+                self._commit_pitch(track, edits, '已应用参照走势' if mode == 'contour' else '已跟随参照音高')
+            else:
+                self._say('本轨与参照在选段中没有重叠的有效音高。')
+
+        self._start('reference-pitch', '正在比较两轨音高', work, done)
+
+    @Slot(str)
+    def chooseTake(self, identity):
+        track = self._selected_vocal()
+        take = self.project.track(identity)
+        if track is None or (identity and (take is None or take.role != 'take')):
+            return
+        a, b = self._take_span(track, *self._selection)
+        first, last = a + track.offset, b + track.offset
+        if first >= last or (take and (first < take.offset - .002 or
+                                       last > take.offset + take.duration + .002)):
+            self._say('备选录音没有覆盖此选段。可先调整备选轨起点或缩小选区。', error=True)
+            return
+        edits = (Edit(track.id, 'take', first, last, 0., source=identity, manual=True),) if identity else ()
+        self._commit(self.project.replace_region(track.id, 'take', first, last, edits))
+        self._say('已切换此段录音' if take else '已还原此段录音')
 
     @Slot(QUrl, bool)
     def exportStems(self, folder, whole):
@@ -732,7 +1144,7 @@ class QuickChorus(QObject):
         return project.first_frame, project.frames, project.rate
 
     def _request_audio(self):
-        from chorus_audio import render_key
+        from chorus_audio import monitor_sources, render_key
 
         if self._closed or not self.project.frames:
             self._requested = None
@@ -743,9 +1155,8 @@ class QuickChorus(QObject):
         self._requested = key
         if key in self._cache:
             try:
-                for track in project.tracks:
-                    if not track.muted and (not solo or track.id == solo):
-                        track.check_source()
+                for track in monitor_sources(project, solo):
+                    track.check_source()
                 self._cache.move_to_end(key)
                 self._load_buffer(project, variant, key, self._cache[key])
             except (OSError, ValueError, RuntimeError) as error:

@@ -36,7 +36,7 @@ def _find_ffmpeg() -> str:
     found = shutil.which("ffmpeg")
     if found is None:
         raise AudioLoadError(
-            f"ffmpeg not found: expected the bundled copy at '{_FFFMPEG_PATH}' "
+            f"ffmpeg not found: expected the bundled copy at '{_FFMPEG_PATH}' "
             "or an 'ffmpeg' on PATH."
         )
     return found

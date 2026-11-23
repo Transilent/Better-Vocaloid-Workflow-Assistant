@@ -22,6 +22,18 @@
       "source": "src/chorus_audio.py"
     },
     {
+      "file": "chorus_precision.py",
+      "source": "src/chorus_precision.py"
+    },
+    {
+      "file": "chorus_speech.py",
+      "source": "src/chorus_speech.py"
+    },
+    {
+      "file": "chorus_model_worker.py",
+      "source": "src/chorus_model_worker.py"
+    },
+    {
       "file": "quick_ui/ChorusPage.qml",
       "source": "src/quick_ui/ChorusPage.qml"
     },
@@ -36,6 +48,14 @@
     {
       "file": "quick_ui/ChorusPairLane.qml",
       "source": "src/quick_ui/ChorusPairLane.qml"
+    },
+    {
+      "file": "quick_ui/ChorusPrecisionPanel.qml",
+      "source": "src/quick_ui/ChorusPrecisionPanel.qml"
+    },
+    {
+      "file": "quick_ui/ChorusWaveform.js",
+      "source": "src/quick_ui/ChorusWaveform.js"
     },
     {
       "file": "mixdown_eq_math.py",
