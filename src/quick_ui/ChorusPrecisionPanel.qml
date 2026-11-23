@@ -215,6 +215,19 @@ ColumnLayout {
             text: panel.t(panel.view.timingDetail)
         }
         UiButton {
+            objectName: "chorusMarkNoteTiming"
+            theme: panel.theme
+            Layout.fillWidth: true
+            visible: panel.vocal
+            enabled: !panel.view.busy
+            quiet: true
+            text: panel.t("标记音符首尾")
+            onClicked: {
+                panel.controller.setMode("phrase")
+                panel.controller.markNoteTiming()
+            }
+        }
+        UiButton {
             theme: panel.theme
             Layout.fillWidth: true
             quiet: true

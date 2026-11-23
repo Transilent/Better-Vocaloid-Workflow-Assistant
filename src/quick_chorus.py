@@ -957,6 +957,57 @@ class QuickChorus(QObject):
         self.setVariant('processed')
         self._say('已移动并锁定所选范围')
 
+    @Slot()
+    def markNoteTiming(self):
+        from chorus_audio import recording_key
+        from chorus_precision import mark_note_edges
+
+        track = self._selected_vocal()
+        if not track:
+            return
+        project, position, selection = self.project, self._position, self._selection
+        current, _ = self._timing_pose(track, position)
+        if current is None:
+            first, last = selection
+            for edit in project.edits_for(track.id, 'timing'):
+                if edit.end <= position:
+                    first = max(first, edit.end)
+                elif edit.start > position:
+                    last = min(last, edit.start)
+            selection = first, last
+        key = recording_key(project, track)
+
+        def apply(curve):
+            if self.project != project or self._selected != track.id:
+                self._say('工程已变化，请按当前版本重新生成建议。')
+                return
+            try:
+                marked = mark_note_edges(track, curve, position, selection, current)
+                self._commit(project.replace_region(track.id, 'timing', marked.start, marked.end, (marked,)))
+                self._say('已标记音符首尾。拖动锚点可以改变音符时长。')
+            except ValueError as error:
+                self._say(error, error=True)
+
+        if key in self._curves:
+            apply(self._curves[key])
+            return
+
+        cache = self._cache_dir()
+
+        def work(stop, send):
+            from chorus_pitch import estimate_many
+
+            check = lambda: _check(stop)
+            with _analysis_sources(project, (track,), cache, self._features.copy(), check, send) as (audio, _, _):
+                return estimate_many((audio[track.id],), cache, check,
+                                     lambda i, label: _meter(send, 'analyze', i, 1, label))[track.id]
+
+        def done(curve):
+            self._curves[key] = curve
+            apply(curve)
+
+        self._start('note-timing', '正在提取音符首尾', work, done)
+
     @Slot(float, float)
     def moveTimeAnchor(self, origin, destination):
         from chorus_precision import move_anchor
@@ -975,7 +1026,8 @@ class QuickChorus(QObject):
         if not current or len(current.points) < 3:
             return
         try:
-            edit = move_anchor(track.id, (current.start, current.end), current.points, origin, destination)
+            edit = replace(move_anchor(track.id, (current.start, current.end), current.points, origin, destination),
+                           basis=current.basis)
             self._commit(self.project.replace_region(track.id, 'timing', edit.start, edit.end, (edit,)),
                          keep_suggestions=True)
             self.setVariant('processed')

@@ -162,14 +162,15 @@ def _pitch_active(region):
 
 
 def _shift_pitch(samples, rate, regions, check):
-    from chorus_pitch_dsp import blend_pitch, preserve_level, render_pitch, voiced_short_gap
+    from chorus_pitch_dsp import blend_pitch, preserve_level, render_pitch, render_vocal_pitch, voiced_short_gap
 
-    _pedalboard()
     context = round(.09 * rate)
     untouched = [(round(edit.start * rate), round(edit.end * rate)) for edit in regions
                  if edit.manual and not _pitch_active(edit)]
     for group in _pitch_groups((row for row in regions if _pitch_active(row)), rate, len(samples)):
         check()
+        automatic = rate <= 96000 and all(not row.manual and not row.points and abs(row.value) <= 100.
+                                          for _, _, row in group)
         left = max(0, group[0][0] - context)
         right = min(len(samples), group[-1][1] + context)
         shift = np.zeros(right - left, dtype=np.float64)
@@ -185,7 +186,7 @@ def _shift_pitch(samples, rate, regions, check):
             if spans and not adjacent and not (previous.manual or region.manual):
                 gap = spans[-1][1]
                 if (not any(a < start and gap < b for a, b in untouched)
-                        and voiced_short_gap(samples, gap, start, rate)):
+                        and voiced_short_gap(samples, gap, start, rate, .10 if automatic else .058)):
                     shift[gap - left:start - left] = np.linspace(
                         shift[gap - left - 1], shift[start - left], start - gap + 2)[1:-1]
                     adjacent = True
@@ -195,18 +196,23 @@ def _shift_pitch(samples, rate, regions, check):
                 spans.append((start, end))
             previous = region
         # Smooth the requested trajectory separately from the audio splice.
-        window = max(1, round((.012 if any(row.manual or row.points for _, _, row in group) else .018) * rate))
+        smoothing = .036 if automatic else .012 if any(row.manual or row.points for _, _, row in group) else .018
+        window = max(1, round(smoothing * rate))
         edges = np.pad(shift, (window // 2, (window - 1) // 2), mode='edge')
         prefix = np.r_[0., np.cumsum(edges)]
         shift = (prefix[window:] - prefix[:-window]) / window
         dry = samples[left:right]
         clip = np.ascontiguousarray(dry.T)
-        edited = render_pitch(clip, rate, shift, check).T
+        if automatic:
+            edited = render_vocal_pitch(clip, rate, shift, check).T
+        else:
+            _pedalboard()
+            edited = render_pitch(clip, rate, shift, check).T
         if edited.shape != dry.shape or not np.isfinite(edited).all():
             raise ValueError('修音组件返回的长度、声道或采样无效。')
         mixed = dry.copy()
         for start, stop in spans:
-            fade = min(round(.016 * rate), (stop - start) // 2)
+            fade = min(round((.023 if automatic else .016) * rate), (stop - start) // 2)
             interval = slice(start - left, stop - left)
             blend_pitch(mixed[interval], edited[interval], fade)
         level = preserve_level(dry, mixed, rate)

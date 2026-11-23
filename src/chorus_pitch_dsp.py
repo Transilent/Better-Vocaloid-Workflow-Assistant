@@ -1,4 +1,4 @@
-"""Sample-aligned dynamic pitch using the managed Rubber Band C API."""
+"""Continuous vocal pitch correction and sample-aligned native pitch effects."""
 from ctypes import POINTER, PyDLL, c_double, c_float, c_int, c_uint, c_void_p, cast
 from functools import lru_cache
 
@@ -116,9 +116,70 @@ def render_pitch(clip, rate, shift, check):
     return restored[:, :len(shift)]
 
 
-def voiced_short_gap(audio, start, end, rate):
+def _waveform_overlap(source, rate, source_clock, check):
+    """Restore the output clock with phase-matched, overlapping waveform grains."""
+    from scipy.signal import correlate
+
+    frames = len(source_clock)
+    hop = max(16, round(rate * .017))
+    radius = max(4, round(rate * .010))
+    pad = hop + radius
+    expected = np.rint(source_clock[::hop]).astype(np.int64) + pad
+    padded = np.pad(source, ((pad, pad + 2 * hop), (0, 0)))
+    mono = padded.mean(axis=1)
+    channel_power = np.mean(padded ** 2, axis=0)
+    if np.mean(mono ** 2) < .2 * channel_power.max():
+        mono = padded[:, channel_power.argmax()]
+    energy = np.r_[0., np.cumsum(mono.astype(np.float64) ** 2)]
+    fade = (.5 - .5 * np.cos(np.pi * np.arange(hop) / hop)).astype(np.float32)[:, None]
+    output = np.empty((frames + 2 * hop, source.shape[1]), dtype=np.float32)
+    head = expected[0]
+    output[:2 * hop] = padded[head:head + 2 * hop]
+    for index, nominal in enumerate(expected[1:], 1):
+        check()
+        prior = head + hop
+        left, right = max(head + max(1, hop // 4), nominal - radius), nominal + radius
+        tail = mono[prior:prior + hop]
+        power = float(np.dot(tail, tail))
+        head = nominal
+        if left <= right and abs(prior - nominal) > 2 and power >= hop * 1e-9:
+            locations = np.arange(left, right + 1)
+            match = correlate(mono[left:right + hop], tail, mode='valid')
+            denominator = np.sqrt(power * np.maximum(energy[locations + hop] - energy[locations], 1e-10))
+            scores = match / denominator - .14 * ((locations - nominal) / radius) ** 2
+            nearest = int(np.argmax(scores))
+            if scores[nearest] > .32:
+                head = locations[nearest]
+        offset = index * hop
+        output[offset:offset + hop] *= 1. - fade
+        output[offset:offset + hop] += padded[head:head + hop] * fade
+        output[offset + hop:offset + 2 * hop] = padded[head + hop:head + 2 * hop]
+    return output[:frames]
+
+
+def render_vocal_pitch(clip, rate, shift, check):
+    """Resample to change pitch, then recover duration without resetting the phase at each note."""
+    if clip.shape[1] != len(shift):
+        raise ValueError('修音曲线与音频长度不一致。')
+    if not np.any(shift):
+        return clip
+    check()
+    # The inverse rate integrates an original-sample to converted-sample map.
+    # Interpolating an oversampled source keeps the time-varying conversion smooth.
+    clock = np.r_[0., np.cumsum(np.exp2(-np.asarray(shift, dtype=np.float64) / 12.))]
+    src_frames = np.interp(np.arange(round(clock[-1])), clock, np.arange(len(clock)))
+    expanded = soxr.resample(clip.T, rate, rate * 2, quality='HQ')
+    positions = np.minimum(src_frames * 2., len(expanded) - 1.)
+    left = positions.astype(np.int64)
+    right = np.minimum(left + 1, len(expanded) - 1)
+    fraction = (positions - left).astype(np.float32)[:, None]
+    converted = expanded[left] * (1. - fraction) + expanded[right] * fraction
+    return _waveform_overlap(converted, rate, clock[:-1], check).T
+
+
+def voiced_short_gap(audio, start, end, rate, max_seconds=.058):
     """A short correction gap can still be part of the same voiced sound."""
-    if not 0 < end - start <= round(.058 * rate):
+    if not 0 < end - start <= round(max_seconds * rate):
         return False
     from scipy.signal import correlate
 
@@ -129,13 +190,18 @@ def voiced_short_gap(audio, start, end, rate):
     level = float(np.mean(audio[start:end, channel] ** 2))
     if level < max(2e-8, .12 * float(np.mean(sides ** 2))):
         return False
-    center = (start + end) // 2
     radius = round(.022 * rate)
-    frame = audio[max(0, center - radius):center + radius, channel].astype(np.float64)
-    frame -= frame.mean()
-    periodic = correlate(frame, frame, mode='full', method='fft')[len(frame) - 1:]
-    best = np.max(periodic[rate // 950:rate // 70 + 1], initial=0.)
-    return bool(best >= .60 * max(periodic[0], 1e-12))
+    frames = max(1, round((end - start) / (.04 * rate)))
+    for center in np.linspace(start, end, frames + 2, dtype=int)[1:-1]:
+        frame = audio[max(0, center - radius):center + radius, channel].astype(np.float64)
+        if np.mean(frame ** 2) < max(2e-8, .10 * level):
+            return False
+        frame -= frame.mean()
+        periodic = correlate(frame, frame, mode='full', method='fft')[len(frame) - 1:]
+        best = np.max(periodic[rate // 950:rate // 70 + 1], initial=0.)
+        if best < .60 * max(periodic[0], 1e-12):
+            return False
+    return True
 
 
 def blend_pitch(dry, wet, frames):

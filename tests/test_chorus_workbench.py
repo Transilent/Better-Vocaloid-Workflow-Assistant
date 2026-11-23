@@ -15,7 +15,7 @@ import soxr
 
 from chorus_analysis import Suggestion, apply_suggestions, feature_track, proposals
 from chorus_audio import export_stems, monitor_tracks, render_key, render_track
-from chorus_precision import (merge_speech_drafts, move_anchor, note_anchors, phone_anchors, phoneme_cache,
+from chorus_precision import (mark_note_edges, merge_speech_drafts, move_anchor, note_anchors, phone_anchors, phoneme_cache,
                               pitch_from_stroke, reference_pitch, update_phrase, warp)
 from chorus_project import ChorusProject, Edit, Lyric, Phrase, Recording, Score
 from chorus_speech import SpeechClip, same_text
@@ -62,6 +62,14 @@ def check_precision(root, project, guide, take):
     assert len(anchors) == 3 and knots[1][0] == .50
     manual = move_anchor(take.id, selection, knots, 1., 1.03)
     assert manual.manual and manual.points[2][0] == 1.03
+    detected = np.full(300, np.nan, dtype=np.float32)
+    detected[42:63] = 58.
+    base = Edit(take.id, 'timing', *selection, .06, ((.30, .24), (2.30, 2.24)))
+    marked = mark_note_edges(take, (detected, .01), .58, selection, base)
+    np.testing.assert_allclose(marked.points[1:3], ((.48, .42), (.69, .63)), atol=1e-9)
+    longer = move_anchor(take.id, selection, marked.points, .69, .755)
+    assert longer.points[1] == marked.points[1] and longer.end == base.end
+    assert abs(longer.output_time(.63) - .755) < 1e-9 and longer.source_time(.31) == base.source_time(.31)
     lock = Edit(take.id, 'timing', .80, 1.36, 0., manual=True)
     next_project = replace(project, edits=(lock,))
     candidate = Suggestion(take.id, 'timing', *selection, shift, 'note evidence', points=knots)

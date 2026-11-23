@@ -194,6 +194,37 @@ def move_anchor(track, interval, points, original, destination):
     return Edit(track, 'timing', left, right, snapped - source, updated, manual=True)
 
 
+def mark_note_edges(track, curve, position, selection, edit=None):
+    """Insert a detected note's end points into the current time map."""
+    from chorus_analysis import _pitch_runs
+
+    first, last = (edit.start, edit.end) if edit else selection
+    if not first < position < last:
+        raise ValueError('把播放头放在所选唱段的音符上。')
+    midi, step = curve
+    source = (edit.source_time(position) if edit else position) - track.offset
+    note = next(((a + track.offset, b + track.offset) for a, b, _ in _pitch_runs(midi, step)
+                 if a <= source < b), None)
+    if note is None:
+        raise ValueError('播放头附近没有可标记的稳定音符。')
+
+    if edit and not (edit.source_time(first) <= note[0] < note[1] <= edit.source_time(last)):
+        raise ValueError('请选中包含音符首尾的唱段。')
+    start, end = tuple(edit.output_time(value) for value in note) if edit else note
+    if start <= first + .014 or end >= last - .014:
+        raise ValueError('请选中包含音符首尾的唱段。')
+    points = ((first, first), (last, last))
+    if edit:
+        points = edit.points or ((first, edit.source_time(first)), (last, edit.source_time(last)))
+    marks = []
+    for output, original in zip((start, end), note):
+        if not any(abs(output - at) < .014 for at, _ in points):
+            marks.append((output, original))
+    knots = tuple(sorted((*points, *marks)))
+    return Edit(track.id, 'timing', first, last, edit.value if edit else 0., knots,
+                manual=edit is None or edit.manual, basis='音符首尾')
+
+
 def merge_speech_drafts(project, track, language, phrases, results):
     count = 0
     for phrase, result in zip(phrases, results):
