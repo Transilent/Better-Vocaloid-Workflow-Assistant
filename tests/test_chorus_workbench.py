@@ -130,6 +130,27 @@ def check_native_pitch_transitions(root):
     assert np.max(np.sqrt(np.mean(frames * frames, axis=1))) < .002
     print('PASS: no low-frequency pulses on repeated native pitch transitions')
 
+    clock = np.arange(rate * 2) / rate
+    dry = (.14 * np.sin(2 * np.pi * 228 * clock)).astype(np.float32)
+    at = lambda time: round(time * rate)
+    dry[at(.78):at(.82)] = 0.
+    sf.write(path, dry, rate, subtype='FLOAT')
+    voice = Recording.read(path)
+    edits = (Edit(voice.id, 'pitch', .12, .49, 30.),
+             Edit(voice.id, 'pitch', .53, .78, -34.),
+             Edit(voice.id, 'pitch', .82, 1.3, 26.))
+    project = replace(ChorusProject.fresh().add((voice,)), edits=edits)
+    rendered = render_track(project, voice, 'pitch')[:, 0]
+    sustained = slice(at(.49), at(.53))
+    pause = slice(at(.78), at(.82))
+    assert np.max(np.abs(rendered[sustained] - dry[sustained])) > .03
+    np.testing.assert_array_equal(rendered[pause], dry[pause])
+    np.testing.assert_array_equal(rendered[at(1.3):], dry[at(1.3):])
+    lock = Edit(voice.id, 'pitch', .49, .53, 0., manual=True)
+    guarded = render_track(replace(project, edits=(*edits, lock)), voice, 'pitch')[:, 0]
+    np.testing.assert_array_equal(guarded[sustained], dry[sustained])
+    print('PASS: voiced correction gaps are continuous, with rests and manual keep-original preserved')
+
 
 def main():
     with TemporaryDirectory() as folder:

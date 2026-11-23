@@ -1166,10 +1166,10 @@ class QuickChorus(QObject):
             return
 
         def work(stop, send):
-            from chorus_audio import MonitorBuffer, render_mix
+            from chorus_audio import MonitorBuffer, render_monitor
 
-            return MonitorBuffer(render_mix(project, variant, solo, lambda: _check(stop),
-                                            lambda i, n, name: _meter(send, 'render', i, n, f'准备试听 · {name}')))
+            return MonitorBuffer(render_monitor(project, variant, solo, ROOT / 'work', lambda: _check(stop),
+                                                lambda i, n, name: _meter(send, 'render', i, n, f'准备试听 · {name}')))
 
         def finish(buffer, error):
             if self._closed:

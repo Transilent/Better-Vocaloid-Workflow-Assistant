@@ -1,14 +1,20 @@
 """One audio render plan for native audition and sample-aligned stem delivery."""
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import re
+import sys
 from tempfile import TemporaryDirectory
 
 import numpy as np
 import soundfile as sf
 import soxr
+
+if __name__ == '__main__':
+    extra = os.environ.get('VWA_MIXDOWN_EXTRA_PATHS', '').split(os.pathsep)
+    sys.path[:0] = [str(Path(__file__).resolve().parent), *(path for path in extra if path)]
 
 from chorus_project import Recording, VARIANTS, sha256 as source_digest
 
@@ -121,8 +127,6 @@ def analysis_recording(project, track, folder, check):
 
 def _pedalboard():
     """Load the already managed optional DSP component via its public API."""
-    import sys
-
     from mixdown_runtime import cached_optional_packages, component_manifest, optional_packages
 
     root, spec, _ = component_manifest()
@@ -153,39 +157,64 @@ def _pitch_groups(regions, rate, size):
     return groups
 
 
+def _pitch_active(region):
+    return any(y for _, y in region.points) if region.points else bool(region.value)
+
+
 def _shift_pitch(samples, rate, regions, check):
-    from chorus_pitch_dsp import render_pitch
+    from chorus_pitch_dsp import blend_pitch, preserve_level, render_pitch, voiced_short_gap
 
     _pedalboard()
     context = round(.09 * rate)
-    for group in _pitch_groups(regions, rate, len(samples)):
+    untouched = [(round(edit.start * rate), round(edit.end * rate)) for edit in regions
+                 if edit.manual and not _pitch_active(edit)]
+    for group in _pitch_groups((row for row in regions if _pitch_active(row)), rate, len(samples)):
         check()
         left = max(0, group[0][0] - context)
         right = min(len(samples), group[-1][1] + context)
         shift = np.zeros(right - left, dtype=np.float64)
         spans = []
+        previous = None
         for start, end, region in group:
             cents = region.value
             if region.points:
                 x, y = zip(*region.points)
                 cents = np.interp(np.arange(start, end) / rate, x, y)
             shift[start - left:end - left] = np.asarray(cents) / 100.
-            if spans and spans[-1][1] == start:
+            adjacent = spans and spans[-1][1] == start
+            if spans and not adjacent and not (previous.manual or region.manual):
+                gap = spans[-1][1]
+                if (not any(a < start and gap < b for a, b in untouched)
+                        and voiced_short_gap(samples, gap, start, rate)):
+                    shift[gap - left:start - left] = np.linspace(
+                        shift[gap - left - 1], shift[start - left], start - gap + 2)[1:-1]
+                    adjacent = True
+            if adjacent:
                 spans[-1] = (spans[-1][0], end)
             else:
                 spans.append((start, end))
+            previous = region
         # Smooth the requested trajectory separately from the audio splice.
-        window = max(1, round(.012 * rate))
+        window = max(1, round((.012 if any(row.manual or row.points for _, _, row in group) else .018) * rate))
         edges = np.pad(shift, (window // 2, (window - 1) // 2), mode='edge')
         prefix = np.r_[0., np.cumsum(edges)]
         shift = (prefix[window:] - prefix[:-window]) / window
-        clip = np.ascontiguousarray(samples[left:right].T)
+        dry = samples[left:right]
+        clip = np.ascontiguousarray(dry.T)
         edited = render_pitch(clip, rate, shift, check).T
-        if edited.shape != samples[left:right].shape or not np.isfinite(edited).all():
+        if edited.shape != dry.shape or not np.isfinite(edited).all():
             raise ValueError('修音组件返回的长度、声道或采样无效。')
+        mixed = dry.copy()
         for start, stop in spans:
             fade = min(round(.016 * rate), (stop - start) // 2)
-            _crossfade(samples[start:stop], edited[start - left:stop - left], fade)
+            interval = slice(start - left, stop - left)
+            blend_pitch(mixed[interval], edited[interval], fade)
+        level = preserve_level(dry, mixed, rate)
+        for start, stop in spans:
+            interval = slice(start - left, stop - left)
+            fade = min(round(.006 * rate), (stop - start) // 2)
+            _crossfade(mixed[interval], level[interval], fade)
+            samples[start:stop] = mixed[interval]
 
 
 def _render_knots(points, tolerance):
@@ -248,9 +277,8 @@ def render_track(project, track, variant, check=lambda: None):
     rate = project.rate
     original = _comped_audio(project, track, rate, check)
     if variant in ('pitch', 'processed'):
-        regions = tuple(row for row in project.edits_for(track.id, 'pitch')
-                        if (any(y for _, y in row.points) if row.points else row.value))
-        if regions:
+        regions = project.edits_for(track.id, 'pitch')
+        if any(_pitch_active(row) for row in regions):
             _shift_pitch(original, rate, regions, check)
     placed = _window(original, project.first_frame - round(track.offset * rate), project.frames)
     regions = project.edits_for(track.id, 'timing') if variant in ('timing', 'processed') else ()
@@ -297,6 +325,47 @@ def render_mix(project, variant, solo, check, progress):
         stereo *= .98 / peak
     stereo.setflags(write=False)
     return stereo
+
+
+def render_monitor(project, variant, solo, cache, check, progress):
+    """Generate pitch-corrected PCM away from the active output thread."""
+    rows = monitor_tracks(project, solo)
+    audible = {track.id for track in rows}
+    pitch = variant in ('pitch', 'processed') and any(
+        row.kind == 'pitch' and row.track in audible and _pitch_active(row) for row in project.edits)
+    if not pitch:
+        return render_mix(project, variant, solo, check, progress)
+
+    from chorus_model_worker import model_batch
+
+    spec = {
+        'rate': project.rate, 'variant': variant, 'solo': solo,
+        'tracks': [asdict(track) for track in project.tracks],
+        'edits': [asdict(edit) for edit in project.edits],
+    }
+    labels = [track.name for track in rows]
+    with model_batch(__file__, spec, cache, check, lambda i, name: progress(i, len(rows), name),
+                     labels, '修音试听渲染失败') as folder:
+        audio = np.load(folder / 'monitor.npy', allow_pickle=False)
+    if audio.dtype != np.float32 or audio.shape != (project.frames, 2) or not np.isfinite(audio).all():
+        raise RuntimeError('修音试听返回的采样或时间范围无效。')
+    audio.setflags(write=False)
+    return audio
+
+
+def _monitor_process(request):
+    from chorus_project import ChorusProject, Edit
+
+    spec = json.loads(request.read_text(encoding='utf-8'))
+    tracks = tuple(Recording(**(track | {'stamp': tuple(track['stamp'])})) for track in spec['tracks'])
+    edits = tuple(Edit(**(edit | {'points': tuple(map(tuple, edit['points']))})) for edit in spec['edits'])
+    project = ChorusProject(rate=spec['rate'], tracks=tracks, edits=edits)
+
+    def progress(index, _total, _name):
+        (request.parent / 'progress.txt').write_text(str(index), encoding='utf-8')
+
+    mix = render_mix(project, spec['variant'], spec['solo'], lambda: None, progress)
+    np.save(request.parent / 'monitor.npy', mix, allow_pickle=False)
 
 
 def _stem_name(value):
@@ -411,3 +480,7 @@ class MonitorBuffer:
         # PCM is published read-only. Reusing the reference avoids copying
         # the entire song on the Qt thread during an A/B switch.
         return self
+
+
+if __name__ == '__main__':
+    _monitor_process(Path(sys.argv[1]))

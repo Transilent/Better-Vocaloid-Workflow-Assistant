@@ -114,3 +114,64 @@ def render_pitch(clip, rate, shift, check):
     if restored.shape[1] < len(shift):
         return np.concatenate((restored, clip[:, restored.shape[1]:]), axis=1)
     return restored[:, :len(shift)]
+
+
+def voiced_short_gap(audio, start, end, rate):
+    """A short correction gap can still be part of the same voiced sound."""
+    if not 0 < end - start <= round(.058 * rate):
+        return False
+    from scipy.signal import correlate
+
+    margin = round(.009 * rate)
+    left, right = max(0, start - margin), min(len(audio), end + margin)
+    channel = np.argmax(np.mean(audio[left:right] ** 2, axis=0))
+    sides = np.r_[audio[left:start, channel], audio[end:right, channel]]
+    level = float(np.mean(audio[start:end, channel] ** 2))
+    if level < max(2e-8, .12 * float(np.mean(sides ** 2))):
+        return False
+    center = (start + end) // 2
+    radius = round(.022 * rate)
+    frame = audio[max(0, center - radius):center + radius, channel].astype(np.float64)
+    frame -= frame.mean()
+    periodic = correlate(frame, frame, mode='full', method='fft')[len(frame) - 1:]
+    best = np.max(periodic[rate // 950:rate // 70 + 1], initial=0.)
+    return bool(best >= .60 * max(periodic[0], 1e-12))
+
+
+def blend_pitch(dry, wet, frames):
+    """Account for the phase relationship at each wet/dry transition."""
+    if not frames:
+        dry[:] = wet
+        return
+    t = np.arange(frames, dtype=np.float64) / frames
+    fade = t * t * (3. - 2. * t)
+    for edge, weight in ((slice(None, frames), fade), (slice(-frames, None), fade[::-1])):
+        source, changed = dry[edge], wet[edge]
+        norm = max(np.linalg.norm(source) * np.linalg.norm(changed), 1e-12)
+        correlation = np.sum(source * changed) / norm
+        inverse = 1. - weight
+        # Bound the gain when the two signals nearly oppose one another.
+        power = np.maximum(.62, inverse ** 2 + weight ** 2 + 2. * correlation * inverse * weight)
+        dry[edge] = (source * inverse[:, None] + changed * weight[:, None]) / np.sqrt(power)[:, None]
+    dry[frames:len(dry) - frames] = wet[frames:len(wet) - frames]
+
+
+def preserve_level(dry, mixed, rate):
+    """Restore short-time vocal level while keeping the correction out of the low band."""
+    from scipy.signal import butter, sosfiltfilt
+
+    radius, hop = round(.007 * rate), round(.005 * rate)
+    if len(mixed) <= max(24, 2 * radius):
+        return mixed
+    positions = np.r_[np.arange(0, len(mixed) - 1, hop), len(mixed) - 1]
+    first = np.maximum(positions - radius, 0)
+    last = np.minimum(positions + radius, len(mixed))
+    levels = []
+    for audio in (dry, mixed):
+        integral = np.r_[0., np.cumsum(np.mean(audio.astype(np.float64) ** 2, axis=1))]
+        levels.append((integral[last] - integral[first]) / (last - first))
+    ratio = np.sqrt((levels[0] + 1e-8) / (levels[1] + 1e-8))
+    gain = np.interp(np.arange(len(mixed)), positions, np.clip(ratio, .72, 1.48))
+    delta = mixed * (gain[:, None] - 1.)
+    sos = butter(5, 145, 'highpass', fs=rate, output='sos')
+    return (mixed + sosfiltfilt(sos, delta, axis=0)).astype(np.float32)
