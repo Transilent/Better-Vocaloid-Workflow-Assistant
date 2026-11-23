@@ -1,0 +1,100 @@
+"""Batch the installed RMVPE model in an isolated worker process."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import sys
+from tempfile import TemporaryDirectory
+
+
+def estimate_many(tracks, cache, check, progress):
+    import numpy as np
+
+    from common import ROOT
+    from mixdown_runtime import child_python, worker_environment
+    from process_control import terminate_tree
+
+    model = ROOT / 'dependencies/vocal2midi/experiments/RMVPE/rmvpe.onnx'
+    runtime = ROOT / 'dependencies/vocal2midi2'
+    if not model.is_file() or not runtime.is_dir():
+        raise FileNotFoundError('缺少音高分析运行库。可继续做时间对齐，安装 RMVPE 后再修音。')
+    for track in tracks:
+        check()
+        track.check_source()
+    cache.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=cache, prefix='pitch-') as folder:
+        folder = Path(folder)
+        request = folder / 'request.json'
+        request.write_text(json.dumps({'model': str(model), 'runtime': str(runtime),
+                                        'paths': [track.path for track in tracks]}, ensure_ascii=False),
+                           encoding='utf-8')
+        process = subprocess.Popen([str(child_python()), '-B', '-u', str(Path(__file__).resolve()),
+                                    str(request)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   stdin=subprocess.DEVNULL, env=worker_environment(),
+                                   creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        step = folder / 'progress.txt'
+        seen = -1
+        try:
+            while True:
+                check()
+                try:
+                    index = int(step.read_text(encoding='utf-8'))
+                    if index != seen:
+                        seen = index
+                        if 0 <= index < len(tracks):
+                            progress(index, f'提取音高 · {tracks[index].name}')
+                except (OSError, ValueError):
+                    pass
+                try:
+                    _, stderr = process.communicate(timeout=.15)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+        finally:
+            if process.poll() is None:
+                try:
+                    terminate_tree(process)
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                    process.communicate()
+        if process.returncode:
+            tail = stderr.decode('utf-8', errors='replace').splitlines()
+            raise RuntimeError('音高分析失败' + (f'：{tail[-1][:320]}' if tail else '。'))
+        check()
+        curves = {}
+        for index, track in enumerate(tracks):
+            track.check_source()
+            with np.load(folder / f'{index}.npz', allow_pickle=False) as result:
+                curves[track.id] = (result['midi'], float(result['step'].item()))
+        return curves
+
+
+def _run(request):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import numpy as np
+    import soundfile as sf
+
+    from pitch_accuracy import prepare_audio, supported_pitch
+    from runtime_devices import prepare_environment
+    from v2m_runtime import configure
+
+    spec = json.loads(request.read_text(encoding='utf-8'))
+    configure(Path(spec['runtime']), pitch_only=True)
+    prepare_environment({'midi_device': 'cpu', 'cpu_threads': 4, 'dml_adapter': 'auto'})
+    from inference.API.rmvpe_api import RmvpeTranscriber
+
+    runner = RmvpeTranscriber(Path(spec['model']), device='cpu', batch_size=1)
+    try:
+        for index, source in enumerate(spec['paths']):
+            (request.parent / 'progress.txt').write_text(str(index), encoding='utf-8')
+            audio, rate = sf.read(source, dtype='float32', always_2d=True)
+            result = supported_pitch(runner.infer(prepare_audio(audio, rate), 16000))
+            np.savez(request.parent / f'{index}.npz', midi=result.midi_pitch, step=result.time_step_seconds)
+    finally:
+        runner.shutdown()
+
+
+if __name__ == '__main__':
+    _run(Path(sys.argv[1]))

@@ -47,6 +47,7 @@ _PREFIXES = {
     'preparation-': ('准备工作流', 'processing'),
     'tuning-': ('调音工作流', 'tuning'),
     'mixdown-': ('简易混音', 'audio_mixdown'),
+    'chorus-': ('合唱工作台', 'chorus'),
     'video-': ('合成视频', 'video_mixdown'),
     'publication-': ('发布准备', 'publishing'),
     'calibration-': ('声库拟合', 'tuning_workshop'),
@@ -59,7 +60,7 @@ _ROUTES = frozenset(route for _, route in (*_LABELS.values(), *_PREFIXES.values(
 _PHASES = frozenset(('metadata', 'download', 'audio', 'separation', 'midi', 'subtitles', 'exports',
                      'prepare', 'decode', 'mix', 'render', 'encode', 'verify', 'write', 'finalize',
                      'measuring', 'muxing', 'validation', 'hashing', 'waiting', 'fitting',
-                     'install', 'probe', 'resume', 'load', 'check'))
+                     'install', 'probe', 'resume', 'load', 'check', 'analyze', 'export'))
 _UNITS = frozenset(('bytes', 'items', 'media', 'fraction'))
 _EVENTS = frozenset(('started', 'progress', 'cancel_requested', 'finished', 'download_attempt',
                      'download_fallback', 'failure', 'session_start', 'session_end', 'qt_warning',

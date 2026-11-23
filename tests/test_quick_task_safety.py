@@ -59,6 +59,7 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='quick-task-safety-') 
         },
         preparation={'job': str(job_a)},
         operation={'label': '任务产物 · 正在核验', 'paths': [str(job_a)]},
+        chorus_paths=(str(audio_a),),
     )
     signature = QuickBridge._task_safety_signature(job_a, groups, [])
     signature_repeat = QuickBridge._task_safety_signature(job_a, [dict(row) for row in groups], [])
@@ -75,6 +76,7 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='quick-task-safety-') 
     assert '字幕工具 · LRC 草稿' in labels_a
     assert '准备任务 · 正在运行' in labels_a
     assert '任务产物 · 正在核验' in labels_a
+    assert '合唱工作台 · 已载入' in labels_a
     blockers_b = quick_results.task_reference_blockers(job_b, groups)
     labels_b = {row['label'] for row in blockers_b}
     assert '视频 · 已载入' in labels_b and '字幕工具 · 已载入来源' in labels_b
@@ -93,15 +95,22 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='quick-task-safety-') 
     assert '不能删除任务' in quick_results.task_mutation_error('删除任务', blockers_a)
     assert quick_results.protect_task_detail(base, [])['canDelete'] is True
 
-    for suffix in ('.svp', '.ustx', '.vpr'):
+    for suffix in ('.svp', '.ustx', '.vpr', '.vsqx'):
         assert quick_results.is_tuning_project({'available': True, 'role': 'tuned_project', 'path': 'a' + suffix})
-    assert not quick_results.is_tuning_project({'available': True, 'role': 'tuned_project', 'path': 'a.vsqx'})
+    assert not quick_results.is_tuning_project({'available': True, 'role': 'tuned_project', 'path': 'a.wav'})
     assert not quick_results.is_tuning_project({'available': False, 'role': 'tuned_project', 'path': 'a.svp'})
 
     ustx = outside / 'manual.ustx'
     ustx.write_text('voice_parts:\n  - notes:\n      - lyric: a\n      - lyric: b\n', encoding='utf-8')
     vsqx = outside / 'manual.vsqx'
-    vsqx.write_text('<vsq4><note/><note/></vsq4>', encoding='utf-8')
+    vsqx.write_text(
+        '<vsq4 xmlns="http://www.yamaha.co.jp/vocaloid/schema/vsq4/">'
+        '<masterTrack><resolution>480</resolution><preMeasure>0</preMeasure>'
+        '<tempo><t>0</t><v>12000</v></tempo></masterTrack>'
+        '<vsTrack><name>Fixture</name><vsPart><t>0</t><playTime>960</playTime>'
+        '<note><t>0</t><dur>480</dur><n>60</n><y>a</y><p>a</p></note>'
+        '<note><t>480</t><dur>480</dur><n>62</n><y>i</y><p>i</p></note>'
+        '</vsPart></vsTrack></vsq4>', encoding='utf-8')
     with patch.object(task_store, 'job_directories', return_value=[job_a, job_b, job_c]):
         first = quick_results.register_external(
             job_a, 'project', ustx, expected_binding_id='', expected_binding_revision='')
@@ -133,4 +142,4 @@ assert 'self._hold_tuning_handoff_lock(job)' in bridge
 assert 'quick_results.is_tuning_project(row)' in bridge
 assert '_DRAFT_FIELDS' in subtitles and 'def restoreSource' in subtitles
 
-print('PASS: task-scoped blockers, cached edge notifications, dormant drafts and SVP/USTX/VPR handoff guard')
+print('PASS: task-scoped blockers including chorus, cached edges, dormant drafts and editor handoff guard')

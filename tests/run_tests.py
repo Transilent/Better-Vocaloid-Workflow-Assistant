@@ -70,6 +70,7 @@ shared_tests = (
     'test_mixdown_realtime_core.py', 'test_tuning_timeline.py', 'test_tuning_pitch_layer.py', 'test_preparation_commands.py',
     'test_quick_results.py', 'test_component_operations.py', 'test_workspace_controller.py',
     'test_workspace_routes.py', 'test_expression_controls.py', 'test_style_catalog.py',
+    'test_chorus_workbench.py',
     'test_agent_style_schema.py', 'test_component_health.py', 'test_tuning_transforms.py',
     'test_tuning_engine.py', 'test_tuning_workflow.py', 'test_tuning_retention.py', 'test_tuning_curves.py',
     'test_sv2_tuning.py', 'test_ustx_tuning.py', 'test_vpr_tuning.py', 'test_vsqx_tuning.py', 'test_ace_tuning.py',

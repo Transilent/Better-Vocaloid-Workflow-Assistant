@@ -18,12 +18,14 @@ ApplicationWindow {
     readonly property bool useArtwork: preferences.material === "glass"
     readonly property var preferences: controller.support.settings
     readonly property bool mixAway: controller.route !== "audio_mixdown" && controller.mixdown.view.playing
+    readonly property bool chorusAway: controller.route !== "chorus" && controller.chorus.view.playing
     readonly property bool previewLoading: controller.mixdown.view.loading
     property int previewWait: 0
     readonly property var operations: controller.activeOperations
     readonly property var issue: controller.latestOperationIssue
     readonly property var primaryOperation: operations.length > 0 ? operations[0] : ({})
     property bool closingAfterTask: false
+    property bool discardChorusOnExit: false
 
     onPreviewLoadingChanged: previewWait = 0
     Timer {
@@ -79,7 +81,26 @@ ApplicationWindow {
         if ((controller.hasActiveOperations || window.previewLoading) && !closingAfterTask) {
             event.accepted = false
             exitDialog.open()
+        } else if (controller.chorus.dirty && !discardChorusOnExit) {
+            event.accepted = false
+            chorusExitDialog.open()
         }
+    }
+
+    Dialog {
+        id: chorusExitDialog
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        title: window.controller.text("合唱工程有未保存修改")
+        standardButtons: Dialog.Discard | Dialog.Cancel
+        Label { text: window.controller.text("请先保存工程，或放弃当前修改后继续。") }
+        onDiscarded: {
+            window.discardChorusOnExit = true
+            close()
+            window.close()
+        }
+        onRejected: window.closingAfterTask = false
     }
 
     Popup {
@@ -298,6 +319,7 @@ ApplicationWindow {
                 case "updates": return settingsPage
                 case "tuning": return tuningPage
                 case "tuning_workshop": return workshopPage
+                case "chorus": return chorusPage
                 case "audio_mixdown": return mixdownPage
                 case "video_mixdown": return videoPage
                 case "publishing": return publicationPage
@@ -336,6 +358,10 @@ ApplicationWindow {
         Component {
             id: workshopPage
             TuningWorkshopPage { theme: window.tokens; controller: window.controller }
+        }
+        Component {
+            id: chorusPage
+            ChorusPage { theme: window.tokens; controller: window.controller.chorus }
         }
         Component {
             id: mixdownPage
@@ -386,6 +412,38 @@ ApplicationWindow {
                     theme: window.tokens
                     text: window.controller.text("返回混音")
                     onClicked: window.controller.navigate("audio_mixdown")
+                }
+            }
+        }
+
+        Rectangle {
+            objectName: "backgroundChorusActivity"
+            Layout.fillWidth: true
+            Layout.preferredHeight: chorusBar.implicitHeight + 12
+            visible: window.chorusAway
+            color: theme.surface
+            Rectangle { width: parent.width; height: 1; color: theme.line }
+            RowLayout {
+                id: chorusBar
+                anchors.fill: parent
+                anchors.leftMargin: 16
+                anchors.rightMargin: 16
+                Text {
+                    Layout.fillWidth: true
+                    color: theme.text
+                    font.pixelSize: 13 * theme.scale
+                    elide: Text.ElideRight
+                    text: window.controller.text("合唱工作台 · 后台试听")
+                }
+                UiButton {
+                    theme: window.tokens
+                    text: window.controller.text("暂停")
+                    onClicked: window.controller.chorus.togglePlay()
+                }
+                UiButton {
+                    theme: window.tokens
+                    text: window.controller.text("返回合唱")
+                    onClicked: window.controller.navigate("chorus")
                 }
             }
         }

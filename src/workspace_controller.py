@@ -22,7 +22,7 @@ class ComponentRequest:
 class WorkspaceController:
     """All mutable state belongs to the application, independent of a page instance."""
 
-    available_routes = ('processing', 'tuning', 'tuning_workshop', 'audio_mixdown', 'video_mixdown', 'publishing',
+    available_routes = ('processing', 'tuning', 'tuning_workshop', 'chorus', 'audio_mixdown', 'video_mixdown', 'publishing',
                         'components', 'results', 'updates')
 
     def __init__(self, component_sources=None):

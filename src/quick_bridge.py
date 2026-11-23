@@ -26,6 +26,7 @@ from quick_preparation_sources import QuickPreparationSources
 from quick_tuning import QuickTuning
 from quick_workshop import QuickWorkshop
 from quick_mixdown import QuickMixdown
+from quick_chorus import QuickChorus
 from quick_video import QuickVideo
 from quick_work import WorkerLane
 from workspace_controller import WorkspaceController
@@ -42,7 +43,7 @@ def _can_cancel(kind):
         return False
     return (kind in ('component', 'preparation', 'update-download', 'mixdown-export',
                      'mixdown-install', 'mixdown-support-probe') or kind in _CANCELLABLE_TUNING
-            or kind.startswith(('calibration-', 'workshop-', 'video-', 'publication-')))
+            or kind.startswith(('calibration-', 'workshop-', 'video-', 'publication-', 'chorus-')))
 
 
 _TASK_STATE_FILTERS = frozenset(('all', 'done', 'pending', 'failed', 'running'))
@@ -182,7 +183,7 @@ def _reference_paths(values):
 
 def _task_reference_groups(*, mixdown=None, mixdown_tracks=(), tuning=None, video=None,
                            publication=None, calibration=None, subtitles=None, subtitle_drafts=None,
-                           preparation=None, operation=None, operations=None):
+                           preparation=None, operation=None, operations=None, chorus_paths=()):
     """Build task-reference groups without coupling task safety to any one page."""
     groups = []
 
@@ -225,6 +226,7 @@ def _task_reference_groups(*, mixdown=None, mixdown_tracks=(), tuning=None, vide
         row = drafts.get(kind) if isinstance(drafts.get(kind), dict) else {}
         add('字幕工具 · ' + str(kind).upper() + ' 草稿', row.get('_task_job_id'),
             row.get('_source_path'), row.get('_exported_path'))
+    add('合唱工作台 · 已载入', *chorus_paths)
 
     prep = preparation if isinstance(preparation, dict) else {}
     if prep.get('job'):
@@ -293,6 +295,8 @@ class QuickBridge(QObject):
         self._calibration.presetSaved.connect(self._workshop.calibrationSaved)
         self._calibration.worker.changed.connect(self._work_changed)
         self._mixdown = QuickMixdown(self, self._work)
+        self._chorus = QuickChorus(self)
+        self._chorus.worker.changed.connect(self._work_changed)
         self._video = QuickVideo(self, self._work)
         self._publication = QuickPublication(self, self._work)
         self._subtitles = QuickSubtitles(self)
@@ -301,7 +305,7 @@ class QuickBridge(QObject):
         self._tuning.presetLibraryChanged.connect(self._mixdown.refresh_presets)
         for signal in (self._mixdown.viewChanged, self._mixdown.tracksChanged, self._tuning.changed,
                        self._video.changed, self._publication.viewChanged, self._calibration.changed,
-                       self._subtitles.changed, self.preparationTaskChanged):
+                       self._subtitles.changed, self.preparationTaskChanged, self._chorus.tracksChanged):
             signal.connect(self._schedule_task_safety)
         # Settings observes the actual cross-page operation owners used by the
         # deferred update restart, not just the preparation/component lane.
@@ -346,7 +350,7 @@ class QuickBridge(QObject):
         self._activities = (self._work, self._task_work, self._calibration.worker, self._catalog,
                             self._read, self._details, self._support.storage_lane,
                             self._support.preset_lane, self._support.inspect_lane, self._support.discovery,
-                            self._mixdown.support_lane)
+                            self._mixdown.support_lane, self._chorus.worker)
         self._operation_timer = QTimer(self)
         self._operation_timer.setInterval(1000)
         self._operation_timer.timeout.connect(self.operationActivityChanged)
@@ -358,7 +362,8 @@ class QuickBridge(QObject):
         # Quiet catalog reads and the automatic startup check may finish while
         # closing. Only operations initiated by the user need the exit choice.
         return any(lane.kind for lane in (self._work, self._task_work, self._calibration.worker,
-                                          self._support.storage_lane, self._support.preset_lane))
+                                          self._support.storage_lane, self._support.preset_lane,
+                                          self._chorus.worker))
 
     def _refresh_activity(self):
         busy = any(lane.kind for lane in self._activities)
@@ -395,6 +400,8 @@ class QuickBridge(QObject):
                 self._calibration.cancel()
             elif kind.startswith('workshop-'):
                 self._workshop.cancel()
+            elif kind.startswith('chorus-'):
+                self._chorus.cancel()
             elif kind.startswith('tuning-'):
                 self._tuning.cancel()
             elif kind in ('mixdown-export', 'mixdown-install', 'mixdown-support-probe'):
@@ -480,6 +487,7 @@ class QuickBridge(QObject):
             mixdown=self._mixdown, mixdown_tracks=tracks, tuning=self._tuning, video=self._video,
             publication=self._publication, calibration=self._calibration, subtitles=self._subtitles,
             subtitle_drafts=drafts, preparation=preparation, operations=operations,
+            chorus_paths=self._chorus.source_paths,
         )
 
     def _task_blockers(self, job, *, canonical=False):
@@ -607,6 +615,10 @@ class QuickBridge(QObject):
         return self._mixdown
 
     @Property(QObject, constant=True)
+    def chorus(self):
+        return self._chorus
+
+    @Property(QObject, constant=True)
     def video(self):
         return self._video
 
@@ -629,7 +641,8 @@ class QuickBridge(QObject):
     @Property('QVariantList', constant=True)
     def routes(self):
         return [{'pageId': spec.page_id, 'title': tr('设置与支持' if spec.page_id == 'updates' else spec.title),
-                 'short': tr({'processing': '准备', 'tuning': '调音', 'tuning_workshop': '工坊', 'audio_mixdown': '混音',
+                 'short': tr({'processing': '准备', 'tuning': '调音', 'tuning_workshop': '工坊', 'chorus': '合唱',
+                              'audio_mixdown': '混音',
                               'video_mixdown': '视频', 'publishing': '发布',
                               'components': '组件', 'results': '任务', 'updates': '设置'}[spec.page_id])}
                 for spec in self.state.routes]
@@ -1948,6 +1961,7 @@ class QuickBridge(QObject):
             lane.close()
         self._tuning.close()
         self._mixdown.close()
+        self._chorus.close()
         self._video.close()
         self._publication.close()
         self._operation_timer.stop()
