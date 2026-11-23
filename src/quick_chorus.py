@@ -92,6 +92,7 @@ class QuickChorus(QObject):
         self._mode = 'all'
         self._inspector_open = True
         self._inspector_section = 'batch'
+        self._batch_strength = {'timing': 100., 'pitch': 72.}
         self._pitch_draw = False
         self._variant = 'original'
         self._active_variant = ''
@@ -169,8 +170,11 @@ class QuickChorus(QObject):
             'phrase': {'id': phrase.id if phrase else '', 'ref': phrase.reference if phrase else '',
                        'shared': self._lyric_row(shared), 'local': self._lyric_row(local)},
             'alignmentEngine': project.alignment_engine,
+            'ensembleLanguage': project.ensemble_language,
+            'timingStrength': self._batch_strength['timing'],
+            'pitchStrength': self._batch_strength['pitch'],
             'anchors': anchors, 'timingRoute': ('手工锚点' if current and current.manual and current.points else
-                                               timing.route if timing else ''),
+                                               timing.route if timing else current.basis if current else ''),
             'timingDetail': timing.detail if timing else current.basis if current else '', 'gain': gain, 'comp': comp,
             'canApplyTiming': bool(timing and timing.can_apply and not (current and current.manual)
                                    and self._suggestions.index(timing) not in self._resolved),
@@ -625,6 +629,19 @@ class QuickChorus(QObject):
         if engine in ALIGNMENT_ENGINES and not self.worker.kind and engine != self.project.alignment_engine:
             self._commit(replace(self.project, alignment_engine=engine))
 
+    @Slot(str)
+    def setEnsembleLanguage(self, language):
+        if language in ('', *LYRIC_LANGUAGES) and not self.worker.kind and language != self.project.ensemble_language:
+            self._commit(replace(self.project, ensemble_language=language))
+
+    @Slot(str, float)
+    def setBatchStrength(self, kind, value):
+        if kind in self._batch_strength and not self.worker.kind:
+            value = max(0., min(100., number(value)))
+            if value != self._batch_strength[kind]:
+                self._batch_strength[kind] = value
+                self.changed.emit()
+
     @Slot(str, str, str)
     def lyricInput(self, scope, text, language):
         identity = self._selected if scope == 'track' else ''
@@ -752,7 +769,8 @@ class QuickChorus(QObject):
                 'target': np.nan_to_num(fixed, nan=-1.).tolist()}
 
     @Slot(str, str, bool, bool, bool, float)
-    def analyze(self, kind, scope, full, commit, include_review, strength):
+    @Slot(str, str, bool, bool, bool, float, bool, float)
+    def analyze(self, kind, scope, full, commit, include_review, strength, ensemble=False, pitch_strength=None):
         from chorus_audio import recording_key
         from chorus_precision import remembered_phrases
 
@@ -767,12 +785,14 @@ class QuickChorus(QObject):
         if not targets or selection[1] - selection[0] < .03:
             self._say('请选择有人声的处理范围。', error=True)
             return
+        language = project.ensemble_language if ensemble and full and scope == 'all' and kind != 'pitch' else ''
         cached = self._features.copy()
         voice_tracks = tuple(track for track in project.tracks if track.role in ('vocal', 'guide', 'take'))
         curves = {track.id: self._curves[key] for track in voice_tracks
                   if (key := recording_key(project, track)) in self._curves}
         speech = dict(self._speech)
         strength = max(0., min(1., number(strength) / 100.))
+        pitch_strength = strength if pitch_strength is None else max(0., min(1., number(pitch_strength) / 100.))
         cache = self._cache_dir()
 
         def work(stop, send):
@@ -799,6 +819,7 @@ class QuickChorus(QObject):
                 result = proposals(project, targets, selection, kind, strength, .60, features, curves,
                                    check, lambda i, label: _meter(send, 'analyze', i, len(targets), f'比较唱段 · {label}'),
                                    speech=(speech, cache), audio=audio,
+                                   ensemble_language=language, pitch_strength=pitch_strength,
                                    phone_progress=lambda i, n, label: _meter(send, 'align', i, n, label))
             check()
             return (*result, curves, speech, added, failure)
@@ -808,7 +829,10 @@ class QuickChorus(QObject):
             self._features.update(added)
             self._curves.update({recording_key(project, track): found[track.id]
                                  for track in voice_tracks if track.id in found})
-            self._speech.update((key, row) for key, row in measured.items() if row.get('phones'))
+            used = ((key, row) for key, row in measured.items() if row.get('phones') or row.get('text'))
+            for key, row in used:
+                self._speech[key] = row
+                self._speech.move_to_end(key)
             while len(self._speech) > 6000:
                 self._speech.popitem(last=False)
             if self.project != project:
@@ -816,7 +840,7 @@ class QuickChorus(QObject):
                 return
             self._suggestions, self._resolved, self._issue = suggestions, set(), -1
             if full:
-                self._commit(replace(self.project, phrases=remembered_phrases(self.project, phrases)),
+                self._commit(replace(self.project, phrases=phrases if language else remembered_phrases(self.project, phrases)),
                              keep_suggestions=True)
             if commit:
                 count = self._apply(include_review)
@@ -1119,24 +1143,33 @@ class QuickChorus(QObject):
         self._say('已切换此段录音' if take else '已还原此段录音')
 
     @Slot(QUrl, bool)
-    def exportStems(self, folder, whole):
+    @Slot(QUrl, bool, bool)
+    @Slot(QUrl, bool, bool, str)
+    def exportStems(self, folder, whole, include_mix=False, variant=''):
         try:
             path = _path(folder)
         except (OSError, ValueError) as error:
             self._say(error, error=True)
             return
-        project, variant = self.project, self._variant
+        project = self.project
+        variant = variant or self._variant
+        if variant not in VARIANTS:
+            self._say('请选择有效的导出版本。', error=True)
+            return
         selection = (project.start, project.end) if whole else self._selection
+        cache = self._cache_dir()
 
         def work(stop, send):
-            from chorus_audio import export_stems
+            from chorus_audio import export_delivery
 
-            return export_stems(project, path, variant, selection, lambda: _check(stop),
-                                 lambda i, n, name: _meter(send, 'export', i, n, f'渲染分轨 · {name}'))
+            return export_delivery(project, path, variant, selection, cache, lambda: _check(stop),
+                                   lambda i, n, name: _meter(send, 'export', i, n, f'渲染分轨 · {name}'),
+                                   include_mix=include_mix)
 
         def done(result):
             self._export, receipt = result
-            self._say(f"已导出 {len(receipt['tracks'])} 路同起点 WAV")
+            suffix = '，含合唱干声' if 'vocal_mix' in receipt else ''
+            self._say(f"已导出 {len(receipt['tracks'])} 路同起点 WAV{suffix}")
 
         self._start('export', '正在导出分轨', work, done)
 

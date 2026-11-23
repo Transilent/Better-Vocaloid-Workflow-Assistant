@@ -16,6 +16,7 @@ FocusScope {
     property string pendingProjectAction: ""
     property url pendingProjectUrl
     property bool exportWhole: true
+    property string exportVariant: "original"
 
     function t(text) { return quickTranslation.text(text) }
     function stamp(seconds) {
@@ -31,6 +32,10 @@ FocusScope {
     function pickAudio(role) {
         importRole = role
         audioDialog.open()
+    }
+    function runBatch(apply) {
+        controller.analyze(kind.currentValue, scope.currentValue, range.currentValue === "whole",
+                           apply, review.checked, page.view.timingStrength, ensemble.visible, page.view.pitchStrength)
     }
     function textFocus(item) {
         for (let cursor = item; cursor; cursor = cursor.parent) {
@@ -374,19 +379,60 @@ FocusScope {
                                     model: [{label: page.t("整曲"), value: "whole"}, {label: page.t("选段"), value: "selection"}]
                                 }
                             }
+                            UiComboBox {
+                                id: ensemble
+                                objectName: "chorusEnsembleMode"
+                                theme: page.theme
+                                Layout.fillWidth: true
+                                visible: range.currentValue === "whole" && scope.currentValue === "all"
+                                    && kind.currentValue !== "pitch"
+                                enabled: !page.view.busy
+                                fieldLabel: page.t("整曲对齐方式")
+                                model: [
+                                    {label: page.t("按同词唱段 · 日语"), value: "ja"},
+                                    {label: page.t("按同词唱段 · 普通话"), value: "zh"},
+                                    {label: page.t("按同词唱段 · 英语"), value: "en"},
+                                    {label: page.t("按同词唱段 · 粤语"), value: "yue"},
+                                    {label: page.t("按指定参照对齐"), value: ""}
+                                ]
+                                currentIndex: Math.max(0, indexOfValue(page.view.ensembleLanguage))
+                                onActivated: page.controller.setEnsembleLanguage(currentValue)
+                            }
                             RowLayout {
                                 Layout.fillWidth: true
-                                Caption { text: page.t("强度") }
+                                visible: kind.currentValue !== "pitch"
+                                Caption { text: page.t("对齐力度") }
                                 Slider {
-                                    id: strength
+                                    id: timingStrength
+                                    objectName: "chorusTimingStrength"
                                     Layout.fillWidth: true
                                     from: 0
                                     to: 100
-                                    value: 75
+                                    value: page.view.timingStrength
+                                    enabled: !page.view.busy
                                     stepSize: 1
-                                    Accessible.name: page.t("处理强度")
+                                    Accessible.name: page.t("对齐力度")
+                                    onMoved: page.controller.setBatchStrength("timing", value)
                                 }
-                                Caption { text: Math.round(strength.value) + "%" }
+                                Caption { text: Math.round(timingStrength.value) + "%" }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                visible: kind.currentValue !== "timing"
+                                Caption { text: page.t("修音力度") }
+                                Slider {
+                                    id: pitchStrength
+                                    objectName: "chorusPitchStrength"
+                                    Layout.fillWidth: true
+                                    from: 0
+                                    to: 100
+                                    value: page.view.pitchStrength
+                                    enabled: !page.view.busy
+                                    stepSize: 1
+                                    Accessible.name: page.t("修音力度")
+                                    onMoved: page.controller.setBatchStrength("pitch", value)
+                                }
+                                Caption { text: Math.round(pitchStrength.value) + "%" }
                             }
                             CheckBox {
                                 id: review
@@ -400,8 +446,7 @@ FocusScope {
                                     theme: page.theme
                                     text: page.t("生成建议")
                                     enabled: page.view.vocals > 0 && !page.view.busy
-                                    onClicked: page.controller.analyze(kind.currentValue, scope.currentValue,
-                                        range.currentValue === "whole", false, review.checked, strength.value)
+                                    onClicked: page.runBatch(false)
                                 }
                                 UiButton {
                                     objectName: "chorusBatch"
@@ -409,12 +454,12 @@ FocusScope {
                                     text: page.t("生成并应用")
                                     primary: true
                                     enabled: page.view.vocals > 0 && !page.view.busy
-                                    onClicked: page.controller.analyze(kind.currentValue, scope.currentValue,
-                                        range.currentValue === "whole", true, review.checked, strength.value)
+                                    onClicked: page.runBatch(true)
                                 }
                             }
                             UiButton {
                                 theme: page.theme
+                                objectName: "chorusApplyBatch"
                                 visible: page.view.suggestions > 0
                                 text: page.t("应用已生成建议") + " · " + page.view.suggestions
                                 enabled: !page.view.busy
@@ -717,7 +762,7 @@ FocusScope {
     FolderDialog {
         id: exportFolder
         title: page.t("选择分轨导出目录")
-        onAccepted: page.controller.exportStems(selectedFolder, page.exportWhole)
+        onAccepted: page.controller.exportStems(selectedFolder, page.exportWhole, exportMix.checked, page.exportVariant)
     }
     Dialog {
         id: discardDialog
@@ -743,7 +788,16 @@ FocusScope {
         title: page.t("分轨交付")
         standardButtons: Dialog.Ok | Dialog.Cancel
         ColumnLayout {
-            Caption { text: page.modeName(page.view.variant) + "  ·  " + page.t("同起点 WAV") + "  ·  32-bit float" }
+            Caption { text: page.t("同起点 WAV") + "  ·  32-bit float" }
+            UiComboBox {
+                id: exportMode
+                objectName: "chorusExportVariant"
+                Layout.fillWidth: true
+                theme: page.theme
+                fieldLabel: page.t("导出版本")
+                model: ["original", "timing", "pitch", "processed"].map(
+                    (value) => ({label: page.modeName(value), value: value}))
+            }
             UiComboBox {
                 id: exportScope
                 Layout.fillWidth: true
@@ -751,9 +805,17 @@ FocusScope {
                 fieldLabel: page.t("导出范围")
                 model: [{label: page.t("整曲"), value: "whole"}, {label: page.t("选段"), value: "selection"}]
             }
+            CheckBox {
+                id: exportMix
+                objectName: "chorusExportVocalMix"
+                text: page.t("同时导出合唱干声")
+                checked: true
+            }
         }
+        onAboutToShow: exportMode.currentIndex = Math.max(0, exportMode.indexOfValue(page.view.variant))
         onAccepted: {
             page.exportWhole = exportScope.currentValue === "whole"
+            page.exportVariant = exportMode.currentValue
             exportFolder.open()
         }
     }

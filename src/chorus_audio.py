@@ -276,32 +276,50 @@ def _warp_audio(placed, edit, origin, rate, check):
     return warped
 
 
+def _timed_slice(placed, edit, origin, rate, start, end, check):
+    if not edit.points:
+        return _window(placed, start - round(edit.value * rate), end - start)
+    warped = _warp_audio(placed, edit, origin, rate, check)
+    return _window(warped, start + origin - round(edit.start * rate), end - start)
+
+
 def render_track(project, track, variant, check=lambda: None):
     """Render the take into the project's common half-open sample interval."""
     if variant not in VARIANTS:
         raise ValueError('试听版本无效。')
     rate = project.rate
     original = _comped_audio(project, track, rate, check)
+    origin = project.first_frame
+    offset = origin - round(track.offset * rate)
+    timing = project.edits_for(track.id, 'timing') if variant in ('timing', 'processed') else ()
+    dry_reference = None
     if variant in ('pitch', 'processed'):
         regions = project.edits_for(track.id, 'pitch')
-        if any(_pitch_active(row) for row in regions):
+        active = tuple(row for row in regions if _pitch_active(row))
+        if active:
+            if timing and all(not row.manual and not row.points and abs(row.value) <= 100. for row in active):
+                dry_reference = _window(original, offset, project.frames)
             _shift_pitch(original, rate, regions, check)
-    placed = _window(original, project.first_frame - round(track.offset * rate), project.frames)
-    regions = project.edits_for(track.id, 'timing') if variant in ('timing', 'processed') else ()
-    rendered = placed.copy() if regions else placed
-    for edit in regions:
+    placed = _window(original, offset, project.frames)
+    rendered = placed.copy() if timing else placed
+    for edit in timing:
         check()
         start = max(0, round(edit.start * rate) - project.first_frame)
         end = min(project.frames, round(edit.end * rate) - project.first_frame)
         shift = round(edit.value * rate)
         if start >= end or (not edit.points and not shift):
             continue
-        if edit.points:
-            warped = _warp_audio(placed, edit, project.first_frame, rate, check)
-            source = _window(warped, start + project.first_frame - round(edit.start * rate), end - start)
-        else:
-            source = _window(placed, start - shift, end - start)
-        _crossfade(rendered[start:end], source, min(round(.018 * rate), (end - start) // 2))
+        source = _timed_slice(placed, edit, origin, rate, start, end, check)
+        fade = min(round(.018 * rate), (end - start) // 2)
+        _crossfade(rendered[start:end], source, fade)
+        if dry_reference is not None and any(
+                row.start + track.offset < edit.source_time(edit.end) and
+                row.end + track.offset > edit.source_time(edit.start) for row in active):
+            from chorus_pitch_dsp import preserve_low_transients
+
+            dry = dry_reference[start:end].copy()
+            _crossfade(dry, _timed_slice(dry_reference, edit, origin, rate, start, end, check), fade)
+            preserve_low_transients(dry, rendered[start:end], rate)
     if variant == 'processed':
         for edit in project.edits_for(track.id, 'gain'):
             start = max(0, round(edit.start * rate) - project.first_frame)
@@ -312,6 +330,10 @@ def render_track(project, track, variant, check=lambda: None):
     return rendered
 
 
+def _stereo_channels(data):
+    return data if data.shape[1] <= 2 else data.mean(axis=1, keepdims=True)
+
+
 def render_mix(project, variant, solo, check, progress):
     rows = monitor_tracks(project, solo)
     stereo = np.zeros((project.frames, 2), dtype=np.float32)
@@ -320,12 +342,7 @@ def render_mix(project, variant, solo, check, progress):
         check()
         progress(index, len(rows), track.name)
         audio = render_track(project, track, variant, check)
-        if audio.shape[1] == 1:
-            stereo += audio * gain
-        elif audio.shape[1] == 2:
-            stereo += audio * gain
-        else:
-            stereo += audio.mean(axis=1, keepdims=True) * gain
+        stereo += _stereo_channels(audio) * gain
     peak = float(np.max(np.abs(stereo), initial=0.))
     if peak > .98:
         stereo *= .98 / peak
@@ -344,11 +361,7 @@ def render_monitor(project, variant, solo, cache, check, progress):
 
     from chorus_model_worker import model_batch
 
-    spec = {
-        'rate': project.rate, 'variant': variant, 'solo': solo,
-        'tracks': [asdict(track) for track in project.tracks],
-        'edits': [asdict(edit) for edit in project.edits],
-    }
+    spec = _render_spec(project, variant, solo=solo)
     labels = [track.name for track in rows]
     with model_batch(__file__, spec, cache, check, lambda i, name: progress(i, len(rows), name),
                      labels, '修音试听渲染失败') as folder:
@@ -359,26 +372,78 @@ def render_monitor(project, variant, solo, cache, check, progress):
     return audio
 
 
-def _monitor_process(request):
+def _render_spec(project, variant, **options):
+    return {'title': project.title, 'id': project.id, 'rate': project.rate, 'variant': variant,
+            'tracks': [asdict(track) for track in project.tracks], 'edits': [asdict(edit) for edit in project.edits],
+            **options}
+
+
+def _render_process(request):
     from chorus_project import ChorusProject, Edit
 
     spec = json.loads(request.read_text(encoding='utf-8'))
     tracks = tuple(Recording(**(track | {'stamp': tuple(track['stamp'])})) for track in spec['tracks'])
     edits = tuple(Edit(**(edit | {'points': tuple(map(tuple, edit['points']))})) for edit in spec['edits'])
-    project = ChorusProject(rate=spec['rate'], tracks=tracks, edits=edits)
+    project = ChorusProject(spec['title'], spec['id'], spec['rate'], tracks, edits=edits)
 
     def progress(index, _total, _name):
         (request.parent / 'progress.txt').write_text(str(index), encoding='utf-8')
 
-    mix = render_mix(project, spec['variant'], spec['solo'], lambda: None, progress)
-    np.save(request.parent / 'monitor.npy', mix, allow_pickle=False)
+    if spec.get('export'):
+        destination, receipt = export_stems(project, spec['folder'], spec['variant'], spec['selection'],
+                                           lambda: None, progress, include_mix=spec['include_mix'])
+        (request.parent / 'export.json').write_text(json.dumps({'folder': destination.name, 'receipt': receipt},
+                                                                ensure_ascii=False), encoding='utf-8')
+    else:
+        mix = render_mix(project, spec['variant'], spec['solo'], lambda: None, progress)
+        np.save(request.parent / 'monitor.npy', mix, allow_pickle=False)
 
 
 def _stem_name(value):
     return re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', value)[:80].rstrip(' .') or '音轨'
 
 
-def export_stems(project, folder, variant, selection, check, progress):
+def _publish_stems(stage, folder, title):
+    base = folder / (_stem_name(title) + ' - 分轨')
+    number = 1
+    while True:
+        destination = base if number == 1 else base.with_name(f'{base.name} {number}')
+        if not destination.exists():
+            try:
+                stage.rename(destination)
+                return destination
+            except FileExistsError:
+                pass
+        number += 1
+
+
+def export_delivery(project, folder, variant, selection, cache, check, progress, *, include_mix=False):
+    """Render delivery in a child process so the desktop stays responsive."""
+    from chorus_model_worker import model_batch
+
+    folder = Path(folder).expanduser().resolve(strict=True)
+    rows = [track.name for track in project.tracks if track.role == 'vocal']
+    if include_mix:
+        rows.append('合唱干声')
+    if variant == 'original':
+        return export_stems(project, folder, variant, selection, check, progress, include_mix=include_mix)
+    # The parent owns this directory. Cancellation removes everything here
+    # even if the render process was terminated while writing a stem.
+    with TemporaryDirectory(dir=folder, prefix='.vwa-delivery-') as directory:
+        stage = Path(directory).resolve()
+        spec = _render_spec(project, variant, export=True, folder=str(stage), selection=selection,
+                            include_mix=include_mix)
+        with model_batch(__file__, spec, cache, check, lambda i, text: progress(i, len(rows), text), rows,
+                         '分轨渲染失败') as worker:
+            result = json.loads((worker / 'export.json').read_text(encoding='utf-8'))
+        source = (stage / result['folder']).resolve(strict=True)
+        if source.parent != stage or not source.is_dir():
+            raise RuntimeError('分轨渲染返回的目录无效。')
+        check()
+        return _publish_stems(source, folder, project.title), result['receipt']
+
+
+def export_stems(project, folder, variant, selection, check, progress, *, include_mix=False):
     """Publish only the completed directory, without replacing an export."""
     folder = Path(folder).expanduser().resolve(strict=True)
     if not folder.is_dir():
@@ -391,19 +456,23 @@ def export_stems(project, folder, variant, selection, check, progress):
     if last <= first:
         raise ValueError('导出时间范围为空。')
     start, stop = first - project.first_frame, last - project.first_frame
+    total = len(rows) + int(include_mix)
     receipt = {'schema': 'vwa-chorus-stems/1', 'project': project.id, 'title': project.title,
                'variant': variant, 'sample_rate': project.rate, 'origin_frame': first,
                'origin_seconds': first / project.rate, 'frames': stop - start, 'tracks': []}
     with TemporaryDirectory(dir=folder, prefix='.vwa-chorus-') as scratch:
         stage = Path(scratch) / 'stems'
         stage.mkdir()
+        vocal_mix = np.zeros((stop - start, 2), dtype=np.float32) if include_mix else None
         for index, track in enumerate(rows, 1):
             check()
-            progress(index - 1, len(rows), track.name)
+            progress(index - 1, total, track.name)
             data = render_track(project, track, variant, check)[start:stop]
             filename = f'{index:02d} {_stem_name(track.name)}.wav'
             destination = stage / filename
             sf.write(destination, data, project.rate, format='WAV', subtype='FLOAT')
+            if vocal_mix is not None:
+                vocal_mix += _stereo_channels(data)
             takes = [{'source_sha256': source.sha, 'name': source.name, 'start': edit.start, 'end': edit.end}
                      for edit in project.edits_for(track.id, 'take')
                      if (source := project.track(edit.source)) is not None]
@@ -414,21 +483,20 @@ def export_stems(project, folder, variant, selection, check, progress):
                                       'pitch_edits': len(project.edits_for(track.id, 'pitch')),
                                       'gain_edits': len(project.edits_for(track.id, 'gain')),
                                       'take_selections': takes})
+        if vocal_mix is not None:
+            check()
+            progress(len(rows), total, '合唱干声')
+            peak = float(np.max(np.abs(vocal_mix), initial=0.))
+            gain = .98 / peak if peak > .98 else 1.
+            vocal_mix *= gain
+            destination = stage / '合唱干声.wav'
+            sf.write(destination, vocal_mix, project.rate, format='WAV', subtype='FLOAT')
+            receipt['vocal_mix'] = {'file': destination.name, 'channels': 2, 'gain': gain,
+                                    'sha256': source_digest(destination)}
         view = json.dumps(receipt, ensure_ascii=False, indent=2, allow_nan=False)
         (stage / '分轨说明.json').write_text(view + '\n', encoding='utf-8')
         check()
-        base = folder / (_stem_name(project.title) + ' - 分轨')
-        number = 1
-        while True:
-            destination = base if number == 1 else base.with_name(f'{base.name} {number}')
-            if not destination.exists():
-                try:
-                    stage.rename(destination)
-                    break
-                except FileExistsError:
-                    pass
-            number += 1
-        return destination, receipt
+        return _publish_stems(stage, folder, project.title), receipt
 
 
 class AuditionPCM:
@@ -489,4 +557,4 @@ class MonitorBuffer:
 
 
 if __name__ == '__main__':
-    _monitor_process(Path(sys.argv[1]))
+    _render_process(Path(sys.argv[1]))

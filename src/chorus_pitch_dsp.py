@@ -241,3 +241,36 @@ def preserve_level(dry, mixed, rate):
     delta = mixed * (gain[:, None] - 1.)
     sos = butter(5, 145, 'highpass', fs=rate, output='sos')
     return (mixed + sosfiltfilt(sos, delta, axis=0)).astype(np.float32)
+
+
+def preserve_low_transients(dry, tuned, rate):
+    """Restore low-band energy where pitch rendering has added a short impulse."""
+    from scipy.signal import butter, sosfiltfilt
+
+    width = max(1, round(.020 * rate))
+    step = max(1, round(.001 * rate))
+    if len(tuned) < 2 * width:
+        return
+    filt = butter(5, 100, 'lowpass', fs=rate, output='sos')
+    source, result = (sosfiltfilt(filt, wave, axis=0) for wave in (dry, tuned))
+    left = np.arange(0, len(tuned) - width + 1, step)
+
+    def level(audio):
+        integral = np.r_[0., np.cumsum(np.mean(audio ** 2, axis=1))]
+        return np.sqrt(np.maximum(0., integral[left + width] - integral[left]) / width)
+
+    old, new = level(source), level(result)
+    hits = left[(new > np.maximum(.001, 3 * old)) & (new > old + .0015)]
+    if not len(hits):
+        return
+    # Use one shared, gently eased envelope for all channels. Leave the
+    # fundamental and upper harmonics of the rest of the performance alone.
+    fade = max(1, round(.012 * rate))
+    weight = np.zeros(len(tuned), dtype=np.float32)
+    for position in hits:
+        a, b = max(0, position - fade), min(len(tuned), position + width + fade)
+        samples = np.arange(a, b)
+        strength = np.minimum(samples - position + fade, position + width + fade - samples) / fade
+        weight[a:b] = np.maximum(weight[a:b], np.clip(strength, 0., 1.))
+    weight *= weight * (3. - 2. * weight)
+    tuned += (source - result) * weight[:, None]

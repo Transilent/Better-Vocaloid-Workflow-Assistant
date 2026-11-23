@@ -268,13 +268,20 @@ def _timing_candidates(project, targets, selection, strength, radius, features, 
 
 
 def proposals(project, targets, selection, kind, strength, radius, features, curves, check, progress,
-              *, speech=None, audio=None, phone_progress=lambda *_: None):
+              *, speech=None, audio=None, phone_progress=lambda *_: None, ensemble_language='', pitch_strength=None):
     begin, end = selection
-    reference = project.reference()
-    phrases = phrase_regions(project, reference, features.get(reference.id) if reference else None, selection)
-    generated = (_timing_candidates(project, targets, selection, strength, radius, features, curves, check,
-                                    phone_progress, speech, audio or {track.id: track for track in project.tracks})
-                 if kind != 'pitch' else [])
+    audio = audio or {track.id: track for track in project.tracks}
+    if ensemble_language and speech is not None and kind != 'pitch':
+        from chorus_ensemble import ensemble_timing
+
+        phrases, generated = ensemble_timing(project, targets, selection, features, audio, ensemble_language,
+                                             strength, speech, check, phone_progress)
+    else:
+        reference = project.reference()
+        phrases = phrase_regions(project, reference, features.get(reference.id) if reference else None, selection)
+        generated = (_timing_candidates(project, targets, selection, strength, radius, features, curves, check,
+                                        phone_progress, speech, audio) if kind != 'pitch' else [])
+    pitch_strength = strength if pitch_strength is None else pitch_strength
     score = project.score
     notes_by_lane = {lane.id: tuple(type(note)(note.start + score.offset, note.end + score.offset,
                                              note.pitch, note.lyric) for note in lane.notes)
@@ -297,6 +304,11 @@ def proposals(project, targets, selection, kind, strength, radius, features, cur
             if finish - start < .05:
                 continue
             if lane is None:
+                if finish - start < .115:
+                    continue
+                lower, upper = np.percentile(midi[round(a / step):round(b / step)], (10, 90))
+                if upper - lower > 1.25:
+                    continue
                 target, uncertain = round(actual), False
             else:
                 center = (start + finish) / 2
@@ -311,9 +323,9 @@ def proposals(project, targets, selection, kind, strength, radius, features, cur
                                             '本声部乐谱在这里没有匹配音符', True, True))
                 continue
             cents = (target - actual) * 100
-            if abs(cents) >= 5:
+            if abs(cents) >= (6 if lane is None else 5):
                 uncertain = uncertain or abs(cents) > 240
-                generated.append(Suggestion(track.id, 'pitch', start, finish, cents * strength,
+                generated.append(Suggestion(track.id, 'pitch', start, finish, cents * pitch_strength,
                                             '本声部乐谱' if lane is not None else '本轨稳定音',
                                             uncertain, lane is not None))
     return phrases, tuple(generated)

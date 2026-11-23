@@ -236,6 +236,7 @@ class ChorusProject:
     phrases: tuple = ()
     edits: tuple = ()
     alignment_engine: str = 'auto'
+    ensemble_language: str = 'ja'
 
     @classmethod
     def fresh(cls, title='未命名合唱'):
@@ -383,5 +384,8 @@ class ChorusProject:
         engine = data.get('alignment_engine', 'auto')
         if engine not in ALIGNMENT_ENGINES:
             raise ValueError('唱段对齐引擎无效。')
+        language = data.get('ensemble_language', 'ja')
+        if language not in ('', *LYRIC_LANGUAGES):
+            raise ValueError('请选择受支持的歌词语言。')
         return cls(str(data['title']), str(data['id']), rate, tuple(records), score,
-                   str(data['guide']) if data['guide'] in ids else '', phrases, edits, engine)
+                   str(data['guide']) if data['guide'] in ids else '', phrases, edits, engine, language)

@@ -72,14 +72,16 @@ class SpeechClip:
         return self.track.sha, self.frames, self.language, self.text
 
 
+def normalized_lyrics(value):
+    value = unicodedata.normalize('NFKC', value).casefold()
+    # Compare the two kana scripts equivalently while preserving the input
+    # notation for pronunciation in the model.
+    return ''.join(chr(ord(c) - 0x60) if 'ァ' <= c <= 'ヶ' else c for c in value)
+
+
 def same_text(a, b):
     def canonical(value):
-        value = unicodedata.normalize('NFKC', value).casefold()
-        # Hiragana and katakana are equivalent here. The aligner still
-        # receives the user's original notation for pronunciation.
-        value = ''.join(chr(ord(c) - 0x60) if 'ァ' <= c <= 'ヶ' else c for c in value)
-        return ''.join(c for c in value if c.isalnum() or c == 'ー')
-
+        return ''.join(c for c in normalized_lyrics(value) if c.isalnum() or c == 'ー')
     return bool(a and b and a.confirmed and b.confirmed and a.language == b.language
                 and canonical(a.text) and canonical(a.text) == canonical(b.text))
 

@@ -97,18 +97,19 @@ def _measure_phones(pairs, known, cache, check, progress, selection):
         return {}, engine, str(error)
 
 
-def phoneme_cache(pairs, known, cache, check, progress, selection):
+def phoneme_cache(pairs, known, cache, check, progress, selection, *, matches=None):
     pairs = tuple(pair for pair in pairs if pair)
     if not pairs:
         return {}, ''
     primary, engine, failure = _measure_phones(pairs, known, cache, check, progress, selection)
     evidence = {tuple(clip.key for clip in pair): primary for pair in pairs}
     if selection == 'auto' and engine == 'tifa':
-        remaining = [pair for pair in pairs if not phone_anchors(pair, primary)[1]]
+        has_anchors = matches or (lambda pair, results: phone_anchors(pair, results)[1])
+        remaining = [pair for pair in pairs if not has_anchors(pair, primary)]
         if remaining:
             fallback, _, error = _measure_phones(remaining, known, cache, check, progress, 'hubertfa')
             for pair in remaining:
-                if phone_anchors(pair, fallback)[1]:
+                if has_anchors(pair, fallback):
                     evidence[tuple(clip.key for clip in pair)] = fallback
             failure = failure or error
     return evidence, failure

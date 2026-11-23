@@ -13,8 +13,9 @@ import numpy as np
 import soundfile as sf
 import soxr
 
-from chorus_analysis import Suggestion, apply_suggestions, feature_track, proposals
-from chorus_audio import export_stems, monitor_tracks, render_key, render_track
+from chorus_analysis import Features, Suggestion, apply_suggestions, feature_track, proposals
+from chorus_audio import export_delivery, export_stems, monitor_tracks, render_key, render_track
+from chorus_pitch_dsp import preserve_low_transients
 from chorus_precision import (mark_note_edges, merge_speech_drafts, move_anchor, note_anchors, phone_anchors, phoneme_cache,
                               pitch_from_stroke, reference_pitch, update_phrase, warp)
 from chorus_project import ChorusProject, Edit, Lyric, Phrase, Recording, Score
@@ -186,6 +187,60 @@ def check_native_pitch_transitions(root):
     print('PASS: voiced correction gaps are continuous, with rests and manual keep-original preserved')
 
 
+def check_ensemble(root, guide, take):
+    peer_path, other_path = root / 'peer.wav', root / 'other-lyrics.wav'
+    write_audio(peer_path, 16000, -.12)
+    write_audio(other_path, 16000, .07)
+    peer, other = Recording.read(peer_path), Recording.read(other_path)
+    project = ChorusProject.fresh().add((take, peer, other)).add((guide,))
+    assert project.guide == take.id
+    clocks = {take.id: ((.38, 1.35), (1.78, 2.54)), peer.id: ((.38, 1.35),),
+              other.id: ((.38, 1.35),), guide.id: ((0, 3.0),)}
+    features = {}
+    for track in project.tracks:
+        active = np.zeros(300, dtype=bool)
+        for first, last in clocks[track.id]:
+            active[round(first * 100):round(last * 100)] = True
+        features[track.id] = Features(.1 * active, np.zeros((300, 4)), active, [])
+    reads = []
+
+    def recognize(clips, operation, _cache, _check, _progress):
+        reads.append(operation)
+        return [{'route': 'RomajiASR', 'text': ('to se ya ni ho' if row.track.id == other.id
+                                                   else 'ka ki ku ke ko sa')} for row in clips]
+
+    def align(clips, operation, _cache, _check, _progress, *, source):
+        reads.append(operation)
+        result = []
+        for clip in clips:
+            origin = clip.frames[0] / clip.track.rate
+            first = .50 if clip.end < 2.10 else 1.89
+            shift = .13 if clip.track.id == take.id else 0.
+            phones = [[label, first + shift + i * .057 - origin, first + shift + i * .057 + .04 - origin]
+                      for i, label in enumerate(('k', 'a', 'k', 'i', 'k', 'u', 'k', 'e', 'k', 'o', 's', 'a'))]
+            result.append({'route': 'TiFA', 'phones': phones})
+        return result
+
+    state = {}
+    with (patch('chorus_ensemble.speech_batch', recognize),
+          patch('chorus_precision.alignment_source', return_value=('tifa', root, ())),
+          patch('chorus_precision.speech_batch', align)):
+        phrases, found = proposals(project, (take, peer, other), (0.,3.), 'timing', 1., .60, features, {},
+                                   lambda: None, lambda *_: None, speech=(state,root), ensemble_language='ja')
+        repeated = replace(project, phrases=phrases)
+        _, cached = proposals(repeated, (take, peer, other), (0.,3.), 'timing', 1., .60, features, {},
+                              lambda: None, lambda *_: None, speech=(state,root), ensemble_language='ja')
+    assert len(phrases)==2 and all(not line.confirmed for phrase in phrases for line in phrase.lyrics)
+    assert reads==['asr','phones'] and found==cached
+    ensemble = [row for row in found if row.track==take.id and row.can_apply]
+    assert len(ensemble)==2 and '同词合唱' in ensemble[0].detail and '导唱参照' in ensemble[1].detail, found
+    assert any(row.track==other.id and row.review and not row.can_apply for row in found)
+    lock = Edit(take.id,'timing',1.99,2.20,0.,manual=True)
+    committed = apply_suggestions(replace(project,edits=(lock,)), [row for row in found if not row.review])
+    assert lock in committed.edits
+    print('PASS: same-lyric ensemble voting, solo guide, draft and cached model evidence, timing lock')
+
+
 def main():
     with TemporaryDirectory() as folder:
         root = Path(folder)
@@ -212,6 +267,12 @@ def main():
         assert phrases and timing and tuning
         assert any(abs(row.value + .12) <= .02 for row in timing), timing
         assert tuning[0].from_score and abs(tuning[0].value - 40.) < 1e-3, tuning
+        separated = np.full(300, np.nan, dtype=np.float32)
+        separated[15:25] = 56.63
+        separated[80:112] = 57.65
+        _, stable = proposals(replace(project, score=None), [take], (0., 3.), 'pitch', 1., .60, features,
+                              {take.id: (separated, .01)}, check, update, pitch_strength=.5)
+        assert len(stable) == 1 and abs(stable[0].value - 17.5) < .001, stable
         committed = apply_suggestions(project, timing + tuning)
         assert len(committed.edits) == len(timing + tuning)
         active = committed.edits_for(take.id, 'pitch')[0]
@@ -229,13 +290,29 @@ def main():
         saved = root / 'project.vwachorus'
         aligned.save(saved)
         assert ChorusProject.open(saved) == aligned
-        destination, receipt = export_stems(aligned, root, 'timing', (.3, 2.1), check, update)
+        destination, receipt = export_stems(aligned, root, 'timing', (.3, 2.1), check, update, include_mix=True)
         result, rate = sf.read(destination / receipt['tracks'][0]['file'], dtype='float32')
         assert rate == 16000 and receipt['origin_frame'] == 4800 and receipt['frames'] == 28800
         np.testing.assert_array_equal(result, after[4800:33600])
+        combined, mix_rate = sf.read(destination / receipt['vocal_mix']['file'], dtype='float32')
+        assert mix_rate == rate and combined.shape == (28800, 2)
+        np.testing.assert_array_equal(combined, np.repeat(result[:, None], 2, axis=1))
+        isolated, report = export_delivery(aligned, root, 'timing', (.3, 2.1), root, check, update, include_mix=True)
+        assert isolated != destination and report['frames'] == receipt['frames']
+        np.testing.assert_array_equal(sf.read(isolated / report['vocal_mix']['file'],dtype='float32')[0],combined)
+        assert not list(root.glob('.vwa-delivery-*'))
         assert Recording.read(target_path).sha == take.sha
         print('PASS: tempo-aware independent voice target, known offset, region undo, mixed-rate render and stem exactness')
         check_precision(root, project, guide, take)
+        check_ensemble(root, guide, take)
+        clock = np.arange(16000) / 16000
+        dry = (.10 * np.sin(2 * np.pi * 240 * clock)).astype('float32')[:, None]
+        artifact = dry + (.029 * np.exp(-((clock - .5) / .008) ** 2)).astype('float32')[:, None]
+        untouched = artifact.copy()
+        preserve_low_transients(dry, artifact, 16000)
+        assert np.max(np.abs(artifact[7900:8100] - dry[7900:8100])) < .012
+        np.testing.assert_array_equal(artifact[:6500], untouched[:6500])
+        np.testing.assert_array_equal(artifact[9500:], untouched[9500:])
         check_native_pitch_transitions(root)
 
 

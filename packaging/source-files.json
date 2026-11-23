@@ -20,6 +20,7 @@
     "src/quick_chorus.py",
     "src/chorus_project.py",
     "src/chorus_analysis.py",
+    "src/chorus_ensemble.py",
     "src/chorus_pitch.py",
     "src/chorus_pitch_dsp.py",
     "src/chorus_precision.py",
