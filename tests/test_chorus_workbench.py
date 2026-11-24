@@ -15,10 +15,11 @@ import soxr
 
 from chorus_analysis import Features, Suggestion, apply_suggestions, feature_track, proposals
 from chorus_audio import export_delivery, export_stems, monitor_tracks, render_key, render_track
+from chorus_gain import apply_syllables, clear_syllables, gain_time, suggest_syllables, take_spans
 from chorus_pitch_dsp import preserve_low_transients
 from chorus_precision import (fit_timing, mark_note_edges, merge_speech_drafts, move_anchor, note_anchors, phone_anchors,
                               phoneme_cache, pitch_from_stroke, reference_pitch, update_phrase)
-from chorus_project import ChorusProject, Edit, Lyric, Phrase, Recording, Score
+from chorus_project import SYLLABLE_GAIN, ChorusProject, Edit, Lyric, Phrase, Recording, Score
 from chorus_speech import SpeechClip, same_text
 
 
@@ -44,6 +45,62 @@ def write_score(path):
         track.append(mido.Message('note_on', note=pitch, velocity=75, time=288))
         track.append(mido.Message('note_off', note=pitch, velocity=0, time=1850))
     score.save(path)
+
+
+def check_syllable_gain(root):
+    rate = 44100
+    first_syllable = 8.
+    clock = np.arange(11 * rate) / rate - first_syllable
+    pcm = np.zeros(len(clock), dtype='float32')
+    rng = np.random.default_rng(214)
+
+    for first, last, level, frequency in (
+            (.24, .34, .09, 3600), (.38, .83, .09, 204),
+            (1.05, 1.25, .02, 204), (1.27, 1.36, .05, 2900),
+            (1.42, 1.59, .018, 204), (1.75, 2.65, .09, 204)):
+        interval = (clock >= first) & (clock < last)
+        pcm[interval] = level * (np.sin(2 * np.pi * frequency * clock[interval])
+                                 if frequency == 204 else rng.uniform(-1., 1., interval.sum()))
+
+    path = root / 'syllables.wav'
+    sf.write(path, np.stack([pcm, pcm * .8], axis=-1), rate, subtype='FLOAT')
+    take = Recording.read(path)
+    project = ChorusProject.fresh().add((take,))
+    span = (first_syllable + .22, first_syllable + 1.68)
+    clip = SpeechClip(take, first_syllable, first_syllable + 2., 'ja', 'sa a')
+    phones = (('s', .22, .34), ('a', .36, .88), ('a', 1., 1.65))
+    rows = suggest_syllables(clip, (span,), phones)
+    assert [row.db for row in rows] == [0., 4.]
+    assert not suggest_syllables(clip, (span,), (('a', .24, .34),))
+    applied = apply_syllables(project, take.id, rows)
+    edit, = applied.edits_for(take.id, SYLLABLE_GAIN)
+    assert edit.points[0][1] == edit.points[-1][1] == 0.
+    raw = render_track(project, take, 'processed')
+    boosted = render_track(applied, take, 'processed')
+    np.testing.assert_array_equal(render_track(applied, take, 'timing'), raw)
+    mask = ((clock < .99) | ((clock >= 1.27) & (clock < 1.36)) | (clock >= 1.63))
+    np.testing.assert_array_equal(boosted[mask], raw[mask])
+    body = (clock >= 1.12) & (clock < 1.18)
+    np.testing.assert_allclose(boosted[body], raw[body] * 10 ** (4. / 20.))
+    assert render_key(applied, 'original') == render_key(project, 'original')
+    assert render_key(applied, 'processed') != render_key(project, 'processed')
+
+    alignment = Edit(take.id, 'timing', 8.90, 9.90, .20)
+    trim = Edit(take.id, 'gain', 8.95, 9.70, 1.5, manual=True)
+    moved = replace(applied, edits=(*applied.edits, alignment, trim))
+    spans = take_spans(moved, take, (9.21, 9.85))
+    np.testing.assert_allclose(spans, ((9.01, 9.65),), atol=1e-9)
+    assert abs(gain_time(moved, take, (9.21, 9.85), 9.14) - 9.34) < 1e-9
+    without = clear_syllables(moved, take.id, spans)
+    assert without.edits == (alignment, trim)
+    mapped = render_track(moved, take, 'processed')
+    baseline = render_track(without, take, 'processed')
+    shifted_body = slice(round(9.32 * rate), round(9.38 * rate))
+    np.testing.assert_allclose(mapped[shifted_body], baseline[shifted_body] * 10 ** (4. / 20.), atol=1e-7)
+    stored = root / 'syllable-gain.vwachorus'
+    moved.save(stored)
+    assert ChorusProject.open(stored) == moved
+    print('PASS: syllable gain preserves consonants and breaths, follows timing, and coexists with phrase trim')
 
 
 def check_precision(root, project, guide, take):
@@ -361,6 +418,7 @@ def main():
         assert Recording.read(target_path).sha == take.sha
         print('PASS: tempo-aware independent voice target, known offset, region undo, mixed-rate render and stem exactness')
         check_precision(root, project, guide, take)
+        check_syllable_gain(root)
         check_translation_first(root)
         check_ensemble(root, guide, take)
         clock = np.arange(16000) / 16000

@@ -16,7 +16,7 @@ if __name__ == '__main__':
     extra = os.environ.get('VWA_MIXDOWN_EXTRA_PATHS', '').split(os.pathsep)
     sys.path[:0] = [str(Path(__file__).resolve().parent), *(path for path in extra if path)]
 
-from chorus_project import Recording, VARIANTS, sha256 as source_digest
+from chorus_project import Recording, SYLLABLE_GAIN, VARIANTS, sha256 as source_digest
 
 
 def recording_key(project, track):
@@ -292,14 +292,21 @@ def render_track(project, track, variant, check=lambda: None):
     origin = project.first_frame
     offset = origin - round(track.offset * rate)
     timing = project.edits_for(track.id, 'timing') if variant in ('timing', 'processed') else ()
+    syllables = project.edits_for(track.id, SYLLABLE_GAIN) if variant == 'processed' else ()
     dry_reference = None
     if variant in ('pitch', 'processed'):
         regions = project.edits_for(track.id, 'pitch')
         active = tuple(row for row in regions if _pitch_active(row))
         if active:
             if timing and all(not row.manual and not row.points and abs(row.value) <= 100. for row in active):
-                dry_reference = _window(original, offset, project.frames)
+                dry_reference = original.copy() if syllables else _window(original, offset, project.frames)
             _shift_pitch(original, rate, regions, check)
+    if syllables:
+        from chorus_gain import render_syllable_gains
+
+        render_syllable_gains(original, rate, syllables, check, dry_reference)
+        if dry_reference is not None:
+            dry_reference = _window(dry_reference, offset, project.frames)
     placed = _window(original, offset, project.frames)
     rendered = placed.copy() if timing else placed
     for edit in timing:
@@ -482,6 +489,7 @@ def export_stems(project, folder, variant, selection, check, progress, *, includ
                                       'timing_edits': len(project.edits_for(track.id, 'timing')),
                                       'pitch_edits': len(project.edits_for(track.id, 'pitch')),
                                       'gain_edits': len(project.edits_for(track.id, 'gain')),
+                                      'syllable_gain_edits': len(project.edits_for(track.id, SYLLABLE_GAIN)),
                                       'take_selections': takes})
         if vocal_mix is not None:
             check()

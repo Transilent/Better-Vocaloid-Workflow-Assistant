@@ -12,6 +12,7 @@ from uuid import uuid4
 
 ROLES = ('vocal', 'guide', 'backing', 'take')
 VARIANTS = ('original', 'timing', 'pitch', 'processed')
+SYLLABLE_GAIN = 'syllable_gain'
 SCORE_SUFFIXES = ('.mid', '.midi', '.svp', '.ustx', '.vpr', '.vsqx', '.acep', '.ufdata')
 LYRIC_LANGUAGES = ('ja', 'zh', 'en', 'yue')
 ALIGNMENT_ENGINES = ('auto', 'tifa', 'hubertfa')
@@ -191,16 +192,16 @@ class Edit:
     manual: bool = False
     basis: str = ''
 
-    # Timing maps output project seconds to source project seconds. Pitch
-    # controls are in take seconds and cents. Gain and comps use output time.
+    # Timing maps output project seconds to source project seconds. Pitch and
+    # syllable gain follow take seconds. Phrase trim uses the output timeline.
     def __post_init__(self):
-        if self.kind not in ('timing', 'pitch', 'gain', 'take') or number(self.start) >= number(self.end):
+        if self.kind not in ('timing', 'pitch', 'gain', 'take', SYLLABLE_GAIN) or number(self.start) >= number(self.end):
             raise ValueError('处理区间无效。')
         number(self.value)
         if self.kind == 'take' and (not self.source or self.source == self.track):
             raise ValueError('请选择不同的备选录音。')
         if self.points:
-            if self.kind not in ('timing', 'pitch'):
+            if self.kind not in ('timing', 'pitch', SYLLABLE_GAIN):
                 raise ValueError('此编辑类型不支持曲线。')
             if len(self.points) < 2 or not all(math.isfinite(x) and math.isfinite(y) for x, y in self.points):
                 raise ValueError('曲线至少需要两个有效点。')
@@ -209,13 +210,27 @@ class Edit:
             if any(a[0] >= b[0] or self.kind == 'timing' and a[1] >= b[1]
                    for a, b in zip(self.points, self.points[1:])):
                 raise ValueError('时间锚点须保持先后顺序。')
+        if self.kind == SYLLABLE_GAIN and (
+                not self.points or not 0. < self.value <= 6.
+                or any(not 0. <= db <= self.value for _, db in self.points)
+                or self.points[0][1] != 0. or self.points[-1][1] != 0.):
+            raise ValueError('音节增益曲线无效。')
 
     def clip(self, start, end):
         points = ()
         if self.points:
-            points = ((start, interpolate(self.points, start)),
-                      *(p for p in self.points if start < p[0] < end),
-                      (end, interpolate(self.points, end)))
+            left, right = start, end
+            if self.kind == SYLLABLE_GAIN:
+                fade = min(.018, (end - start) * .4)
+                left = start + fade if start > self.start else start
+                right = end - fade if end < self.end else end
+            points = ((left, interpolate(self.points, left)),
+                      *(p for p in self.points if left < p[0] < right),
+                      (right, interpolate(self.points, right)))
+            if left > start:
+                points = ((start, 0.), *points)
+            if right < end:
+                points = (*points, (end, 0.))
         return replace(self, start=start, end=end, points=points)
 
     def source_time(self, time):

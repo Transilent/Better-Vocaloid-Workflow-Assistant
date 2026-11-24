@@ -319,6 +319,7 @@ FocusScope {
                             spacing: 3
                             Repeater {
                                 model: [{id: "phrase", label: page.t("唱段")},
+                                        {id: "gain", label: page.t("音节力度")},
                                         {id: "batch", label: page.t("批处理")},
                                         {id: "track", label: page.t("音轨")}]
                                 UiButton {
@@ -326,6 +327,8 @@ FocusScope {
                                     objectName: "chorusInspector-" + modelData.id
                                     theme: page.theme
                                     Layout.fillWidth: true
+                                    leftPadding: Math.round(6 * page.theme.scale)
+                                    rightPadding: leftPadding
                                     text: modelData.label
                                     selected: page.view.inspectorSection === modelData.id
                                     quiet: !selected
@@ -341,6 +344,13 @@ FocusScope {
                             visible: page.view.inspectorSection === "phrase"
                             onImportTake: page.pickAudio("take")
                             onImportReference: referenceDialog.open()
+                        }
+                        ChorusGainPanel {
+                            theme: page.theme
+                            controller: page.controller
+                            view: page.view
+                            Layout.fillWidth: true
+                            visible: page.view.inspectorSection === "gain"
                         }
                         ColumnLayout {
                             Layout.fillWidth: true

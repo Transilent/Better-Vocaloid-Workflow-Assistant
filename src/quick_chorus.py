@@ -11,8 +11,8 @@ from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
 from chorus_precision import mapped_time, phrase_for
-from chorus_project import (ALIGNMENT_ENGINES, LYRIC_LANGUAGES, ROLES, VARIANTS, ChorusProject, Edit, Lyric,
-                            Recording, Score, number)
+from chorus_project import (ALIGNMENT_ENGINES, LYRIC_LANGUAGES, ROLES, SYLLABLE_GAIN, VARIANTS,
+                            ChorusProject, Edit, Lyric, Recording, Score, number)
 from chorus_speech import alignment_ready
 from common import ROOT
 from quick_work import WorkerLane
@@ -82,6 +82,9 @@ class QuickChorus(QObject):
         self._speech = OrderedDict()
         self._lyric_inputs = {}
         self._suggestions = ()
+        self._syllables = ()
+        self._syllable_route = ''
+        self._gain_audition = ''
         self._resolved = set()
         self._issue = -1
         self._undo, self._redo = [], []
@@ -177,6 +180,7 @@ class QuickChorus(QObject):
             'anchors': anchors, 'timingRoute': ('手工锚点' if current and current.manual and current.points else
                                                timing.route if timing else current.basis if current else ''),
             'timingDetail': timing.detail if timing else current.basis if current else '', 'gain': gain, 'comp': comp,
+            'syllableGain': self._gain_view(selected, phrase),
             'canApplyTiming': bool(timing and timing.can_apply and not (current and current.manual)
                                    and self._suggestions.index(timing) not in self._resolved),
             'viewFirst': self._view_first, 'viewSpan': self._view_span,
@@ -276,6 +280,7 @@ class QuickChorus(QObject):
 
     def _restore(self, project, keep_suggestions=False):
         previous, self.project = self.project, project
+        self._reset_gain()
         if not keep_suggestions:
             self._suggestions, self._resolved, self._issue = (), set(), -1
         if not project.track(self._selected):
@@ -494,7 +499,8 @@ class QuickChorus(QObject):
     @Slot(str)
     def selectTrack(self, identity):
         if self.project.track(identity):
-            self._selected, self._issue = identity, -1
+            self._select(identity, self._selection)
+            self._issue = -1
             self.changed.emit()
 
     @Slot(str, str)
@@ -558,6 +564,7 @@ class QuickChorus(QObject):
     @Slot(str)
     def solo(self, identity):
         if self.project.track(identity):
+            self._gain_audition = ''
             self._solo = '' if self._solo == identity else identity
             self.changed.emit()
             if self._session or self._intent:
@@ -590,7 +597,7 @@ class QuickChorus(QObject):
                 match = next((phrase for phrase in self.project.phrases
                               if phrase.start <= self._position < phrase.end), None)
                 left, right = (match.start, match.end) if match else self._bounds(self._position - 2., self._position + 5.)
-                self._selection = left, right
+                self._select(self._selected, (left, right))
             self._set_viewport(left - .30, max(.6, right - left + .60))
         self.changed.emit()
 
@@ -606,13 +613,17 @@ class QuickChorus(QObject):
 
     @Slot(str)
     def inspectorSection(self, section):
-        if section in ('phrase', 'batch', 'track') and section != self._inspector_section:
+        if section in ('phrase', 'gain', 'batch', 'track') and section != self._inspector_section:
             self._inspector_section = section
+            if section != 'gain':
+                self.stopGainAudition()
             self.changed.emit()
 
     @Slot()
     def toggleInspector(self):
         self._inspector_open = not self._inspector_open
+        if not self._inspector_open:
+            self.stopGainAudition()
         self.changed.emit()
 
     @Slot(bool)
@@ -623,7 +634,7 @@ class QuickChorus(QObject):
 
     @Slot(float, float)
     def selectRange(self, first, last):
-        self._selection = self._bounds(number(first), number(last))
+        self._select(self._selected, self._bounds(number(first), number(last)))
         self._issue = -1
         self.changed.emit()
 
@@ -638,8 +649,8 @@ class QuickChorus(QObject):
         if not 0 <= index < len(self._suggestions):
             return
         row = self._suggestions[index]
-        self._selected, self._issue = row.track, index
-        self._selection = self._bounds(row.start, row.end)
+        self._select(row.track, self._bounds(row.start, row.end))
+        self._issue = index
         self.setMode('pitch' if row.kind == 'pitch' else 'phrase')
         self.seek(row.start)
 
@@ -868,12 +879,7 @@ class QuickChorus(QObject):
             self._features.update(added)
             self._curves.update({recording_key(project, track): found[track.id]
                                  for track in voice_tracks if track.id in found})
-            used = ((key, row) for key, row in measured.items() if row.get('phones') or row.get('text'))
-            for key, row in used:
-                self._speech[key] = row
-                self._speech.move_to_end(key)
-            while len(self._speech) > 6000:
-                self._speech.popitem(last=False)
+            self._remember_speech(measured)
             if self.project != project:
                 self._say('工程已变化，请按当前版本重新生成建议。')
                 return
@@ -889,6 +895,14 @@ class QuickChorus(QObject):
                 self._say(f'已生成 {count} 项建议' + (f'。{failure}' if failure else ''), error=bool(failure))
 
         self._start('analysis', '正在比较音轨', work, done)
+
+    def _remember_speech(self, measured):
+        for key, row in measured.items():
+            if row.get('phones') or row.get('text'):
+                self._speech[key] = row
+                self._speech.move_to_end(key)
+        while len(self._speech) > 6000:
+            self._speech.popitem(last=False)
 
     def _apply(self, include_review, indices=None):
         from chorus_analysis import apply_suggestions
@@ -979,6 +993,158 @@ class QuickChorus(QObject):
             project = self.project.replace_region(track.id, kind, first, last, ())
             self._commit(project)
             self._say('已清除选区的编辑，可以重新分析。')
+
+    def _select(self, identity, selection):
+        if (identity, selection) == (self._selected, self._selection):
+            return
+        self._selected, self._selection = identity, selection
+        audition = self._gain_audition
+        self._reset_gain()
+        if audition and (self._session or self._intent):
+            self._request_audio()
+
+    def _reset_gain(self):
+        self._syllables, self._syllable_route, self._gain_audition = (), '', ''
+
+    def _gain_view(self, track, phrase):
+        view = {'ready': False, 'applied': 0, 'rows': [], 'route': self._syllable_route,
+                'audition': self._gain_audition}
+        if not track or track.role != 'vocal' or self._selection[0] >= self._selection[1]:
+            return view
+        lyric = phrase.resolved_lyric(track.id) if phrase else None
+        view['ready'] = bool(lyric and lyric.confirmed and lyric.text.strip())
+        saved = self.project.edits_for(track.id, SYLLABLE_GAIN)
+        if not self._syllables and not saved:
+            return view
+        from chorus_gain import gain_time, take_spans
+
+        spans = take_spans(self.project, track, self._selection)
+        view['applied'] = sum(any(a < edit.end and b > edit.start for a, b in spans) for edit in saved)
+        view['rows'] = [
+            {'label': row.label, 'time': gain_time(self.project, track, self._selection, row.first),
+             'level': row.measured_db, 'limit': row.limit, 'db': row.db}
+            for row in self._syllables]
+        return view
+
+    @Slot()
+    def analyzeGain(self):
+        from chorus_gain import suggest_syllables, take_spans, vowel_phone
+        from chorus_precision import phoneme_cache
+        from chorus_speech import SpeechClip
+
+        project, selection = self.project, self._selection
+        track, phrase = self._selected_vocal(), phrase_for(project, selection)
+        lyric = phrase.resolved_lyric(track.id) if track and phrase else None
+        if not lyric or not lyric.confirmed or not lyric.text.strip():
+            self._say('请先核对并确认这句歌词。', error=True)
+            return
+        spans = take_spans(project, track, selection)
+        if not spans:
+            self._say('选区没有可分析的人声。')
+            return
+        cache = self._cache_dir()
+        previous = project.edits_for(track.id, SYLLABLE_GAIN)
+        known = OrderedDict(self._speech)
+
+        def work(stop, send):
+            check = lambda: _check(stop)
+            progress = lambda i, n, label: _meter(send, 'analyze', i, n, label)
+            with _analysis_sources(project, (track,), cache, None, check, send) as (audio, _, _):
+                source = audio[track.id]
+                clip = SpeechClip(source, source.offset + spans[0][0] - .09,
+                                  source.offset + spans[-1][1] + .10, lyric.language, lyric.text)
+
+                def has_vowels(_pair, results):
+                    return any(vowel_phone(label, lyric.language)
+                               for label, _, _ in results.get(clip.key, {}).get('phones', ()))
+
+                evidence, failure = phoneme_cache([(clip,)], known, cache, check, progress,
+                                                  project.alignment_engine, matches=has_vowels)
+                result = evidence.get((clip.key,), {}).get(clip.key, {})
+                if not has_vowels((clip,), {clip.key: result}):
+                    detail = failure or result.get('detail')
+                    raise RuntimeError(detail or '没有可用的音节边界。请核对选区和歌词读音。')
+                check()
+                progress(0, 1, '正在测量音节力度')
+                rows = suggest_syllables(clip, spans, result['phones'])
+                check()
+            return rows, result['route']
+
+        def done(value):
+            rows, route = value
+            if (project, track.id, selection) != (self.project, self._selected, self._selection):
+                self._say('选区或录音已变化，请重新分析。')
+                return
+            self._remember_speech(known)
+            self.stopGainAudition()
+            self._syllable_route = route
+            self._syllables = tuple(self._keep_syllable_level(row, previous) for row in rows)
+            self._say('可逐个试听和调整音节。' if rows else '这句没有足够清楚的有声音节。')
+
+        self._start('syllable-gain', '正在分析音节力度', work, done)
+
+    @staticmethod
+    def _keep_syllable_level(row, previous):
+        center = (row.first + row.last) * .5
+        saved = next((edit for edit in previous if edit.basis == row.label and edit.start < center < edit.end), None)
+        return replace(row, db=min(row.limit, saved.value)) if saved else row
+
+    @Slot(int, float)
+    def setSyllableGain(self, index, value):
+        if not 0 <= index < len(self._syllables):
+            return
+        row = self._syllables[index]
+        value = max(0., min(row.limit, number(value)))
+        if value == row.db:
+            return
+        self._syllables = (*self._syllables[:index], replace(row, db=value), *self._syllables[index + 1:])
+        self.changed.emit()
+        if self._gain_audition == 'suggested' and (self._session or self._intent):
+            self._request_audio()
+
+    @Slot(str)
+    def auditionGain(self, choice):
+        if choice not in ('current', 'suggested') or not self._syllables:
+            return
+        self._variant, self._gain_audition = 'processed', choice
+        first, last = self._selection
+        if not self._intent or not first <= self._position < last:
+            self.seek(first)
+        self._intent = True
+        self._request_audio()
+        self.changed.emit()
+
+    @Slot()
+    def stopGainAudition(self):
+        if not self._gain_audition:
+            return
+        self._gain_audition = ''
+        if self._session or self._intent:
+            self._request_audio()
+        self.changed.emit()
+
+    @Slot()
+    def applySyllableGain(self):
+        from chorus_gain import apply_syllables
+
+        if not self._syllables or self.worker.kind:
+            return
+        rows, route = self._syllables, self._syllable_route
+        self._commit(apply_syllables(self.project, self._selected, rows), keep_suggestions=True)
+        self._syllables, self._syllable_route = rows, route
+        self.setVariant('processed')
+        self._say('音节力度已写入工程。')
+
+    @Slot()
+    def clearSyllableGain(self):
+        from chorus_gain import clear_syllables, take_spans
+
+        track = self._selected_vocal()
+        if not track or self.worker.kind:
+            return
+        self._commit(clear_syllables(self.project, track.id, take_spans(self.project, track, self._selection)),
+                     keep_suggestions=True)
+        self._say('已清除所选音节的力度补偿。')
 
     @Slot(float)
     def addTimeAnchor(self, time):
@@ -1167,6 +1333,8 @@ class QuickChorus(QObject):
 
     @Slot(str)
     def chooseTake(self, identity):
+        from chorus_gain import clear_syllables
+
         track = self._selected_vocal()
         take = self.project.track(identity)
         if track is None or (identity and (take is None or take.role != 'take')):
@@ -1178,7 +1346,9 @@ class QuickChorus(QObject):
             self._say('备选录音没有覆盖此选段。可先调整备选轨起点或缩小选区。', error=True)
             return
         edits = (Edit(track.id, 'take', first, last, 0., source=identity, manual=True),) if identity else ()
-        self._commit(self.project.replace_region(track.id, 'take', first, last, edits))
+        project = self.project.replace_region(track.id, 'take', first, last, edits)
+        if project != self.project:
+            self._commit(clear_syllables(project, track.id, ((a, b),)))
         self._say('已切换此段录音' if take else '已还原此段录音')
 
     @Slot(QUrl, bool)
@@ -1231,7 +1401,7 @@ class QuickChorus(QObject):
     @Slot(str)
     def setVariant(self, variant):
         if variant in VARIANTS:
-            self._variant = variant
+            self._variant, self._gain_audition = variant, ''
             self.changed.emit()
             if self._session or self._intent:
                 self._request_audio()
@@ -1287,6 +1457,12 @@ class QuickChorus(QObject):
             self._stop_session()
             return
         project, variant, solo = self.project, self._variant, self._solo
+        if self._gain_audition:
+            solo = self._selected
+            if self._gain_audition == 'suggested':
+                from chorus_gain import apply_syllables
+
+                project = apply_syllables(project, solo, self._syllables)
         key = render_key(project, variant, solo)
         self._requested = key
         if key in self._cache:
@@ -1298,6 +1474,10 @@ class QuickChorus(QObject):
             except (OSError, ValueError, RuntimeError) as error:
                 self._audio_error(error)
             return
+        if self._gain_audition and self._intent and self._session:
+            # Hold the playhead during a cold A/B switch. The older buffer
+            # could otherwise reach the phrase end before the new one arrives.
+            self._session.pause()
         if self.monitor_worker.kind:
             return
 
@@ -1384,9 +1564,14 @@ class QuickChorus(QObject):
         origin, frames, rate = self._session_geometry
         frame = min(frames, int(native.get('media_frame', 0)))
         self._set_position((origin + frame) / rate)
+        if self._gain_audition and self._current_key != self._requested:
+            return
         first, last = self._selection
-        if self._intent and self._loop and first < last and self._position >= last:
-            self.seek(first)
+        if self._intent and first < last and self._position >= last and (self._loop or self._gain_audition):
+            if self._loop:
+                self.seek(first)
+            else:
+                self.togglePlay()
         elif self._intent and snapshot['state'] == 'ended':
             self._intent = False
             self.changed.emit()
