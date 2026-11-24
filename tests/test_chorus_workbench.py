@@ -490,6 +490,101 @@ def check_natural_pitch_and_score_matching(root):
     print('PASS: vocal note split/merge/drag, unified sample-exact rendering, ordered score match & draft score')
 
 
+def check_cas_cache_and_impact_selector(root):
+    import os
+    import chorus_cache
+    import chorus_pitch_dsp
+    from chorus_audio import _shift_pitch
+    import importlib.util
+
+    cas_dir = root / 'cas-cache'
+    model_stub = root / 'rmvpe-stub.onnx'
+    model_stub.write_bytes(b'fake-rmvpe-v1')
+    old_cas = os.environ.get('VWA_CAS_CACHE_DIR')
+    os.environ['VWA_CAS_CACHE_DIR'] = str(cas_dir)
+    chorus_cache.clear_memory_cache()
+    try:
+        # 1. RMVPE curve CAS round-trip & invalidation on model change
+        curve = np.array([60.0, 60.2, np.nan, 62.0], dtype=np.float32)
+        assert chorus_cache.load_rmvpe_curve('sha-track-1', model_stub) is None
+        chorus_cache.save_rmvpe_curve('sha-track-1', model_stub, curve, 0.01)
+        loaded = chorus_cache.load_rmvpe_curve('sha-track-1', model_stub)
+        assert loaded is not None and loaded[1] == 0.01
+        np.testing.assert_array_equal(loaded[0], curve)
+        model_stub.write_bytes(b'fake-rmvpe-v2-changed-size')
+        assert chorus_cache.load_rmvpe_curve('sha-track-1', model_stub) is None
+
+        # 2. Pitch span CAS hit/miss and bit-for-bit parity across memory & disk
+        rate = 16000
+        t = np.arange(int(rate * 1.4)) / rate
+        wave = np.zeros((len(t), 1), dtype=np.float32)
+        for a, b in ((.10, .45), (.80, 1.15)):
+            m = (t >= a) & (t < b)
+            wave[m, 0] = (.18 * np.sin(2 * np.pi * 240.0 * t[m])).astype(np.float32)
+        ed1 = Edit('t1', 'pitch', .12, .42, 35.0, manual=True)
+        ed2 = Edit('t1', 'pitch', .82, 1.12, -25.0, manual=True)
+        ed2_mod = Edit('t1', 'pitch', .82, 1.12, 45.0, manual=True)
+
+        # Reference uncached render
+        os.environ.pop('VWA_CAS_CACHE_DIR', None)
+        ref_a = wave.copy()
+        _shift_pitch(ref_a, rate, (ed1, ed2), lambda: None, engine='vwa')
+        ref_b = wave.copy()
+        _shift_pitch(ref_b, rate, (ed1, ed2_mod), lambda: None, engine='vwa')
+        os.environ['VWA_CAS_CACHE_DIR'] = str(cas_dir)
+
+        calls = []
+        orig_render = chorus_pitch_dsp.render_continuous_pitch
+
+        def counted_render(clip, sr, shift, check, **kwargs):
+            calls.append(len(shift))
+            return orig_render(clip, sr, shift, check, **kwargs)
+
+        chorus_pitch_dsp.render_continuous_pitch = counted_render
+        try:
+            # Cold run: both spans computed (2 calls)
+            out1 = wave.copy()
+            _shift_pitch(out1, rate, (ed1, ed2), lambda: None, engine='vwa')
+            assert len(calls) == 2, calls
+            np.testing.assert_array_equal(out1, ref_a)
+
+            # Edit only span 2: span 1 hits memory cache, only span 2 recomputed (1 call)
+            calls.clear()
+            out2 = wave.copy()
+            _shift_pitch(out2, rate, (ed1, ed2_mod), lambda: None, engine='vwa')
+            assert len(calls) == 1, calls
+            np.testing.assert_array_equal(out2, ref_b)
+
+            # Clear memory cache: both spans hit disk CAS cache (0 calls!)
+            calls.clear()
+            chorus_cache.clear_memory_cache()
+            out3 = wave.copy()
+            _shift_pitch(out3, rate, (ed1, ed2_mod), lambda: None, engine='vwa')
+            assert len(calls) == 0, calls
+            np.testing.assert_array_equal(out3, ref_b)
+        finally:
+            chorus_pitch_dsp.render_continuous_pitch = orig_render
+    finally:
+        chorus_cache.clear_memory_cache()
+        if old_cas is None:
+            os.environ.pop('VWA_CAS_CACHE_DIR', None)
+        else:
+            os.environ['VWA_CAS_CACHE_DIR'] = old_cas
+
+    # 3. Impacted test selector AST mapping
+    repo_root = Path(__file__).resolve().parents[1]
+    selector_path = repo_root / 'tools/select_impacted_tests.py'
+    if selector_path.is_file():
+        spec = importlib.util.spec_from_file_location('select_impacted_tests', selector_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        impacted_py = mod.impacted_tests(repo_root, ['src/chorus_cache.py'])
+        assert 'test_chorus_workbench.py' in impacted_py, impacted_py
+        impacted_qml = mod.impacted_tests(repo_root, ['src/quick_ui/ChorusPitchLane.qml'])
+        assert 'test_chorus_workbench.py' in impacted_qml, impacted_qml
+    print('PASS: CAS cache (RMVPE + span memory/disk parity) and impacted test selector')
+
+
 def main():
     with TemporaryDirectory() as folder:
         root = Path(folder)
@@ -566,6 +661,7 @@ def main():
         np.testing.assert_array_equal(artifact[9500:], untouched[9500:])
         check_native_pitch_transitions(root)
         check_natural_pitch_and_score_matching(root)
+        check_cas_cache_and_impact_selector(root)
 
 
 if __name__ == '__main__':

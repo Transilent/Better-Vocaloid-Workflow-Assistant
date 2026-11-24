@@ -258,29 +258,49 @@ def _pitch_groups(regions, rate, size, samples=None):
 
 
 def _shift_pitch(samples, rate, regions, check, *, engine='auto'):
-    from chorus_pitch_dsp import blend_pitch, preserve_level, render_continuous_pitch
+    from chorus_cache import load_pitch_span, save_pitch_span, span_cache_key
+    from chorus_pitch_dsp import (
+        blend_pitch, preserve_level, render_continuous_pitch,
+        resolve_pitch_engine, signalsmith_dll_path,
+    )
 
     spans = compile_pitch_spans(regions, rate, len(samples), samples)
     if not spans:
         return
+    resolved_engine = resolve_pitch_engine(engine)
+    engine_tag = f'{engine}->{resolved_engine}'
+    if resolved_engine == 'signalsmith':
+        dll = signalsmith_dll_path()
+        if dll is not None:
+            st = dll.stat()
+            engine_tag = f'{engine_tag}:{st.st_size}:{st.st_mtime_ns}'
     # Snapshot dry input so each independent voiced span reads immutable audio
     # and never perturbs a non-continuous neighbor.
     dry_source = samples.copy()
     for span_start, span_end, left, right, shift in spans:
         check()
         dry = dry_source[left:right]
+        interval = slice(span_start - left, span_end - left)
+        expected_shape = (span_end - span_start, dry.shape[1])
+        cache_key = span_cache_key(
+            dry, rate, shift, f'{engine_tag}:{span_start - left}:{span_end - left}')
+        cached = load_pitch_span(cache_key, expected_shape)
+        if cached is not None:
+            samples[span_start:span_end] = cached
+            continue
         clip = np.ascontiguousarray(dry.T)
         edited = render_continuous_pitch(
             clip, rate, shift, check, engine=engine, pedalboard_loader=_pedalboard).T
         if edited.shape != dry.shape or not np.isfinite(edited).all():
             raise ValueError('修音组件返回的长度、声道或采样无效。')
         mixed = dry.copy()
-        interval = slice(span_start - left, span_end - left)
         fade = min(round(PITCH_FADE_S * rate), (span_end - span_start) // 2)
         blend_pitch(mixed[interval], edited[interval], fade)
         level = preserve_level(dry, mixed, rate)
         _crossfade(mixed[interval], level[interval], min(round(.006 * rate), (span_end - span_start) // 2))
-        samples[span_start:span_end] = mixed[interval]
+        rendered_interval = np.ascontiguousarray(mixed[interval], dtype=np.float32)
+        save_pitch_span(cache_key, rendered_interval)
+        samples[span_start:span_end] = rendered_interval
 
 
 def _render_knots(points, tolerance):

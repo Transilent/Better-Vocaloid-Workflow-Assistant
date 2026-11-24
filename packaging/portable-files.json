@@ -38,6 +38,10 @@
       "source": "src/chorus_score_match.py"
     },
     {
+      "file": "chorus_cache.py",
+      "source": "src/chorus_cache.py"
+    },
+    {
       "file": "chorus_precision.py",
       "source": "src/chorus_precision.py"
     },

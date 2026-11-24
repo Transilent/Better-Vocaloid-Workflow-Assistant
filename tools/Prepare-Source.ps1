@@ -18,10 +18,10 @@ if ($unregistered.Count -or $missing.Count) {
     throw ('Source mapping is incomplete (' + ($details -join '; ') + ').')
 }
 $copies = @()
-$cataloguedQml = @($files | Where-Object { $_ -match '^src/quick_ui/[A-Za-z0-9_]+\.qml$' })
+$cataloguedQml = @($files | Where-Object { $_ -match '^src/quick_ui/[A-Za-z0-9_]+\.(qml|js)$' })
 $qmlDirectory = Join-Path $sourceDirectory 'quick_ui'
 $discoveredQml = @(if (Test-Path -LiteralPath $qmlDirectory -PathType Container) {
-    Get-ChildItem -LiteralPath $qmlDirectory -File -Filter '*.qml' |
+    Get-ChildItem -LiteralPath $qmlDirectory -File | Where-Object { $_.Extension -in @('.qml', '.js') } |
         ForEach-Object { 'src/quick_ui/' + $_.Name }
 })
 if (@($discoveredQml | Where-Object { $cataloguedQml -notcontains $_ }).Count -or

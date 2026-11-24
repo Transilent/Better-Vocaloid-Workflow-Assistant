@@ -9,6 +9,7 @@ import sys
 def estimate_many(tracks, cache, check, progress):
     import numpy as np
 
+    from chorus_cache import load_rmvpe_curve, save_rmvpe_curve
     from common import ROOT
     from chorus_model_worker import model_batch
 
@@ -16,17 +17,28 @@ def estimate_many(tracks, cache, check, progress):
     runtime = ROOT / 'dependencies/vocal2midi2'
     if not model.is_file() or not runtime.is_dir():
         raise FileNotFoundError('缺少音高分析运行库。可继续做时间对齐，安装 RMVPE 后再修音。')
+    curves = {}
+    missing = []
     for track in tracks:
         check()
         track.check_source()
-    spec = {'model': str(model), 'runtime': str(runtime), 'paths': [track.path for track in tracks]}
+        cached = load_rmvpe_curve(track.sha, model)
+        if cached is not None:
+            curves[track.id] = cached
+        else:
+            missing.append(track)
+    if not missing:
+        return curves
+    spec = {'model': str(model), 'runtime': str(runtime), 'paths': [track.path for track in missing]}
     with model_batch(__file__, spec, cache, check, progress,
-                     [f'提取音高 · {track.name}' for track in tracks], '音高分析失败') as folder:
-        curves = {}
-        for index, track in enumerate(tracks):
+                     [f'提取音高 · {track.name}' for track in missing], '音高分析失败') as folder:
+        for index, track in enumerate(missing):
             track.check_source()
             with np.load(folder / f'{index}.npz', allow_pickle=False) as result:
-                curves[track.id] = (result['midi'], float(result['step'].item()))
+                midi = result['midi'].copy()
+                step = float(result['step'].item())
+                curves[track.id] = (midi, step)
+                save_rmvpe_curve(track.sha, model, midi, step)
         return curves
 
 

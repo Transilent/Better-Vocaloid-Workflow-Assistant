@@ -41,13 +41,19 @@ def _resource_file(source, destination):
 
 
 @contextmanager
-def application_copy(source, parent):
-    """Yield an isolated APP root without changing dependency path validation."""
+def application_copy(source, parent, *, include_runtime=True):
+    """Yield an isolated APP root without changing dependency path validation.
+
+    When ``include_runtime=False`` (L0 pure-logic sandbox), multi-GB runtime
+    trees (``dependencies``, ``models``, ``vendor``) are omitted while keeping
+    ``components`` and all program sources isolated.
+    """
     source, parent = Path(source).resolve(), Path(parent).resolve()
     parent.mkdir(parents=True, exist_ok=True)
     sandbox = Path(tempfile.mkdtemp(prefix='app-', dir=parent)).absolute()
     if sandbox.parent != parent or not sandbox.name.startswith('app-'):
         raise ValueError('Invalid test sandbox path')
+    shared_dirs = SHARED_DIRECTORIES if include_runtime else ('components',)
     try:
         for path in source.iterdir():
             if path.is_file() and (path.suffix == '.py' or path.name in PROGRAM_FILES):
@@ -56,11 +62,16 @@ def application_copy(source, parent):
             if (source / name).is_dir():
                 shutil.copytree(source / name, sandbox / name,
                                 ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
-        for name in SHARED_DIRECTORIES:
+        for name in shared_dirs:
             target = source / name
             if target.is_dir():
                 shutil.copytree(_native(target), _native(sandbox / name), copy_function=_resource_file,
                                 ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+        if not include_runtime:
+            manifest = source / 'dependencies/manifest.json'
+            if manifest.is_file():
+                (sandbox / 'dependencies').mkdir(parents=True, exist_ok=True)
+                shutil.copy2(manifest, sandbox / 'dependencies/manifest.json')
         config = sandbox / 'packaging/config.example.json'
         if not config.is_file():
             config = sandbox / 'config.example.json'

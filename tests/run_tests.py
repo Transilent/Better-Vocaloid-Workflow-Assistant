@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import subprocess
@@ -101,42 +102,80 @@ names = qt6_tests + shared_tests
 
 if selected - set(names):
     raise ValueError('Unknown selected tests: ' + ', '.join(sorted(selected - set(names))))
-print('Preparing isolated application; installed user state will not be changed.', flush=True)
-with application_copy(APP, APP / 'work/test-sandboxes') as sandbox:
-    for name in names:
-        if selected and name not in selected: continue
-        started = time.monotonic()
-        output, code = b'', 1
-        try:
-            reset_state(sandbox)
-            test_env = dict(env, TEMP=str(sandbox / 'work/temp'), TMP=str(sandbox / 'work/temp'),
-                            NUMBA_CACHE_DIR=native_path(sandbox / 'cache/numba'))
-            test_file = str(sandbox / 'tests' / name)
-            command = [sys.executable, '-B', '-u', test_file]
-            if name in qt6_tests:
-                # Each Qt 6 test gets its own process, with an explicit verified runtime.
-                command = [sys.executable, '-B', '-u', str(sandbox / 'tests/qt6_bootstrap.py'), test_file]
-            result = run_bounded_process(command,
-                                         cwd=sandbox, env=test_env, timeout=180)
-            output = result.stdout + result.stderr
-            code = 1 if result.timed_out or result.returncode is None else result.returncode
-            if result.timed_out:
-                output += b'\nTest subprocess timed out; owned process tree reclaimed.\n'
-            else:
-                for artifact in (sandbox / 'work/test-results').iterdir():
-                    if artifact.is_file():
-                        shutil.copy2(artifact, folder / (name.removesuffix('.py') + '-' + artifact.name))
-        except Exception:
-            import traceback
-            output += traceback.format_exc().encode('utf-8')
-        (folder / (name + '.log')).write_bytes(output)
-        classification = classify_output(code, output)
-        reports[name] = {'exit_code': code, 'seconds': round(time.monotonic()-started, 2),
-                         'isolated': True, **classification}
-        label = {'skipped': 'SKIP', 'passed': 'PASS', 'passed_with_skips': 'PASS WITH SKIP',
-                 'failed': 'FAIL'}[classification['status']]
-        print(name + ': ' + label, flush=True)
-        if code:
-            print(output.decode('utf-8', errors='replace')[-4000:], flush=True)
+
+target_names = [name for name in names if not selected or name in selected]
+jobs = max(1, int(os.environ.get('BVWA_TEST_JOBS', '1') or '1'))
+light_mode = os.environ.get('BVWA_TEST_LIGHT', '0') == '1'
+sandbox_root = Path(os.environ.get('BVWA_TEST_SANDBOX_ROOT', str(APP / 'work/test-sandboxes')))
+
+
+def _run_one(sandbox, name):
+    started = time.monotonic()
+    output, code = b'', 1
+    try:
+        reset_state(sandbox)
+        test_env = dict(env, TEMP=str(sandbox / 'work/temp'), TMP=str(sandbox / 'work/temp'),
+                        NUMBA_CACHE_DIR=native_path(sandbox / 'cache/numba'))
+        test_file = str(sandbox / 'tests' / name)
+        command = [sys.executable, '-B', '-u', test_file]
+        if name in qt6_tests:
+            command = [sys.executable, '-B', '-u', str(sandbox / 'tests/qt6_bootstrap.py'), test_file]
+        result = run_bounded_process(command, cwd=sandbox, env=test_env, timeout=180)
+        output = result.stdout + result.stderr
+        code = 1 if result.timed_out or result.returncode is None else result.returncode
+        if result.timed_out:
+            output += b'\nTest subprocess timed out; owned process tree reclaimed.\n'
+        else:
+            for artifact in (sandbox / 'work/test-results').iterdir():
+                if artifact.is_file():
+                    shutil.copy2(artifact, folder / (name.removesuffix('.py') + '-' + artifact.name))
+    except Exception:
+        import traceback
+        output += traceback.format_exc().encode('utf-8')
+    (folder / (name + '.log')).write_bytes(output)
+    classification = classify_output(code, output)
+    entry = {'exit_code': code, 'seconds': round(time.monotonic() - started, 2),
+             'isolated': True, 'light': light_mode, **classification}
+    label = {'skipped': 'SKIP', 'passed': 'PASS', 'passed_with_skips': 'PASS WITH SKIP',
+             'failed': 'FAIL'}[classification['status']]
+    return name, entry, label, code, output
+
+
+def _sandbox_kwargs():
+    import inspect
+    sig = inspect.signature(application_copy)
+    return {'include_runtime': not light_mode} if 'include_runtime' in sig.parameters else {}
+
+
+mode_tag = f'L0 light, jobs={jobs}' if light_mode else f'full runtime, jobs={jobs}'
+print(f'Preparing isolated application ({mode_tag}); installed user state will not be changed.', flush=True)
+if jobs <= 1 or len(target_names) <= 1:
+    with application_copy(APP, sandbox_root, **_sandbox_kwargs()) as sandbox:
+        for name in target_names:
+            name, entry, label, code, output = _run_one(sandbox, name)
+            reports[name] = entry
+            print(f'{name}: {label} ({entry["seconds"]}s)', flush=True)
+            if code:
+                print(output.decode('utf-8', errors='replace')[-4000:], flush=True)
+else:
+    worker_count = min(jobs, len(target_names))
+    buckets = [target_names[i::worker_count] for i in range(worker_count)]
+
+    def run_bucket(bucket):
+        rows = []
+        with application_copy(APP, sandbox_root, **_sandbox_kwargs()) as sandbox:
+            for name in bucket:
+                rows.append(_run_one(sandbox, name))
+        return rows
+
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        futures = [pool.submit(run_bucket, bucket) for bucket in buckets if bucket]
+        for fut in as_completed(futures):
+            for name, entry, label, code, output in fut.result():
+                reports[name] = entry
+                print(f'{name}: {label} ({entry["seconds"]}s)', flush=True)
+                if code:
+                    print(output.decode('utf-8', errors='replace')[-4000:], flush=True)
+
 (folder / ('regression-subset.json' if selected else 'regression.json')).write_text(json.dumps(reports, ensure_ascii=False, indent=2), encoding='utf-8')
 sys.exit(0 if all(value['exit_code'] == 0 for value in reports.values()) else 1)

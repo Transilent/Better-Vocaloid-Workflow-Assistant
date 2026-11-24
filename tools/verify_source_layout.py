@@ -31,8 +31,9 @@ def verify(root):
     pairs = [(name, Path(name).name) for name in catalogued_sources]
     qml_folder = source_directory / 'quick_ui'
     catalogued_qml = {name for name in catalog if name.startswith('src/quick_ui/')
-                      and len(Path(name).parts) == 3 and Path(name).suffix == '.qml'}
-    discovered_qml = {f'src/quick_ui/{path.name}' for path in qml_folder.glob('*.qml')}
+                      and len(Path(name).parts) == 3 and Path(name).suffix in ('.qml', '.js')}
+    discovered_qml = {f'src/quick_ui/{path.name}' for path in qml_folder.iterdir()
+                      if path.is_file() and path.suffix in ('.qml', '.js')}
     if catalogued_qml != discovered_qml:
         raise ValueError('Quick resource mapping is incomplete: ' + ', '.join(sorted(catalogued_qml ^ discovered_qml)))
     pairs.extend((name, name.removeprefix('src/')) for name in sorted(catalogued_qml))
@@ -41,8 +42,9 @@ def verify(root):
                   'publish-selectors.json', 'version.json', 'requirements-runtime.lock.txt'))
     mismatches = [target for source, target in pairs
                   if not (root / target).is_file() or (root / source).read_bytes() != (root / target).read_bytes()]
-    mismatches.extend(f'quick_ui/{path.name}' for path in (root / 'quick_ui').glob('*.qml')
-                      if f'src/quick_ui/{path.name}' not in catalogued_qml)
+    mismatches.extend(f'quick_ui/{path.name}' for path in (root / 'quick_ui').iterdir()
+                      if path.is_file() and path.suffix in ('.qml', '.js')
+                      and f'src/quick_ui/{path.name}' not in catalogued_qml)
     if mismatches:
         raise ValueError('Generated application files differ from source: ' + ', '.join(mismatches) +
                          '. Run tools/Prepare-Source.ps1, then repeat validation.')
