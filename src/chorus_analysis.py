@@ -216,21 +216,11 @@ def timing_suggestion(track, span, fit, route, source, review_reason=''):
                       timing_residual_ms=fit.residual_ms if fit.anchors else None)
 
 
-def _pitch_runs(midi, step):
-    for start, stop in _runs(np.isfinite(midi)):
-        if (stop - start) * step < .08:
-            continue
-        part = midi[start:stop]
-        window = max(3, round(.08 / step) | 1)
-        windows = np.lib.stride_tricks.sliding_window_view(np.pad(part, window // 2, mode='edge'), window)
-        smooth = np.median(windows, axis=1)
-        centers = np.rint(smooth)
-        edges = np.r_[0, np.flatnonzero(np.diff(centers)) + 1, len(centers)]
-        for left, right in zip(edges, edges[1:]):
-            if (right - left) * step < .075:
-                continue
-            raw = part[left:right]
-            yield (start + left) * step, (start + right) * step, float(np.median(raw))
+def _pitch_runs(midi, step, *, note_edits=()):
+    from chorus_notes import segment_vocal_notes
+
+    for note in segment_vocal_notes(midi, step, note_edits=note_edits):
+        yield note.start, note.end, note.center_midi
 
 
 def _pitch_target(start, end, notes):
@@ -337,6 +327,9 @@ def proposals(project, targets, selection, kind, strength, radius, features, cur
     notes_by_lane = {lane.id: tuple(type(note)(note.start + score.offset, note.end + score.offset,
                                              note.pitch, note.lyric) for note in lane.notes)
                      for lane in score.lanes} if score else {}
+    from chorus_notes import segment_vocal_notes
+    from chorus_score_match import _normalize_token, match_vocal_to_score
+
     for index, track in enumerate(targets):
         check()
         progress(index, track.name)
@@ -350,35 +343,51 @@ def proposals(project, targets, selection, kind, strength, radius, features, cur
         applied_timing = project.edits_for(track.id, 'timing')
         time_edits = [row for row in applied_timing if row.manual] + timing + [row for row in applied_timing
                                                                                  if not row.manual]
-        for a, b, actual in _pitch_runs(midi, step):
-            start, finish = max(begin, track.offset + a), min(end, track.offset + b)
-            if finish - start < .05:
-                continue
-            if lane is None:
-                if finish - start < .115:
-                    continue
-                lower, upper = np.percentile(midi[round(a / step):round(b / step)], (10, 90))
-                if upper - lower > 1.25:
-                    continue
-                target, uncertain = round(actual), False
-            else:
-                center = (start + finish) / 2
+        vocal_notes = segment_vocal_notes(midi, step, note_edits=project.note_edits_for(track.id))
+        in_range = [note for note in vocal_notes
+                    if min(end, track.offset + note.end) - max(begin, track.offset + note.start) >= .05]
+        if lane is not None:
+            def to_output(take_a, take_b):
+                sa, sb = track.offset + take_a, track.offset + take_b
+                center = (sa + sb) / 2.
                 mapping = next((row for row in time_edits
                                 if row.source_time(row.start) <= center < row.source_time(row.end)), None)
-                shifted = (start, finish)
                 if mapping:
-                    shifted = (mapping.output_time(start), mapping.output_time(finish))
-                target, uncertain = _pitch_target(*shifted, lane)
-            if target is None:
-                generated.append(Suggestion(track.id, 'pitch', start, finish, None,
-                                            '本声部乐谱在这里没有匹配音符', True, True))
-                continue
-            cents = (target - actual) * 100
-            if abs(cents) >= (6 if lane is None else 5):
-                uncertain = uncertain or abs(cents) > 240
-                generated.append(Suggestion(track.id, 'pitch', start, finish, cents * pitch_strength,
-                                            '本声部乐谱' if lane is not None else '本轨稳定音',
-                                            uncertain, lane is not None))
+                    return mapping.output_time(sa), mapping.output_time(sb)
+                return sa, sb
+
+            phrase_texts = tuple(
+                (p.start, p.end, _normalize_token(line.text))
+                for p in project.phrases
+                if (line := p.resolved_lyric(track.id)) and line.text
+            )
+            matches = match_vocal_to_score(
+                in_range, lane, time_to_output=to_output, phrase_texts=phrase_texts,
+                draft=bool(score and not score.confirmed),
+            )
+            for note, match in zip(in_range, matches):
+                start, finish = max(begin, track.offset + note.start), min(end, track.offset + note.end)
+                if match.target_pitch is None:
+                    generated.append(Suggestion(track.id, 'pitch', start, finish, None,
+                                                match.reason, True, True))
+                    continue
+                cents = (match.target_pitch - note.center_midi) * 100.
+                if abs(cents) >= 5.:
+                    uncertain = match.review or abs(cents) > 240.
+                    generated.append(Suggestion(track.id, 'pitch', start, finish, cents * pitch_strength,
+                                                match.reason, uncertain, True))
+        else:
+            for note in in_range:
+                start, finish = max(begin, track.offset + note.start), min(end, track.offset + note.end)
+                if finish - start < .115:
+                    continue
+                if note.high_midi - note.low_midi > 1.25:
+                    continue
+                target = round(note.center_midi)
+                cents = (target - note.center_midi) * 100.
+                if abs(cents) >= 6.:
+                    generated.append(Suggestion(track.id, 'pitch', start, finish, cents * pitch_strength,
+                                                '本轨稳定音', abs(cents) > 240., False))
     return phrases, tuple(generated)
 
 

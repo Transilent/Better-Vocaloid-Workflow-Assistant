@@ -355,6 +355,141 @@ def check_ensemble(root, guide, take):
     print('PASS: same-lyric ensemble voting, solo guide, draft and cached model evidence, timing lock')
 
 
+def check_natural_pitch_and_score_matching(root):
+    from chorus_audio import _shift_pitch, compiled_pitch_semitones
+    from chorus_notes import (effective_note_offset, merge_vocal_notes, reset_vocal_notes,
+                              segment_vocal_notes, shift_vocal_notes, split_vocal_note)
+    from chorus_pitch_dsp import render_continuous_pitch, signalsmith_available
+    from chorus_project import ScoreLane, ScoreNote
+    from chorus_score_match import match_vocal_to_score, recommend_score_lanes
+
+    # 1. Vibrato-tolerant vocal note segmentation & split/merge/shift persistence
+    step = .01
+    midi = np.full(360, np.nan, dtype=np.float32)
+    t1 = np.arange(80) * step
+    # Note 1: 0.20..1.00s at 60.0 with +/-0.45 semitone 6 Hz vibrato -> must stay ONE note!
+    midi[20:100] = 60.0 + .45 * np.sin(2 * np.pi * 6.0 * t1)
+    # Note 2: 1.00..1.70s legato step up to 62.0 -> continuous linked second note
+    midi[100:170] = 62.0
+    # Breath/rest 1.70..2.10s -> unlinked
+    # Note 3: 2.10..2.90s at 64.0
+    midi[210:290] = 64.0
+    notes = segment_vocal_notes(midi, step)
+    assert len(notes) == 3, notes
+    assert abs(notes[0].center_midi - 60.0) < .15 and notes[0].linked_next and not notes[0].linked_prev
+    assert abs(notes[1].center_midi - 62.0) < .15 and notes[1].linked_prev and not notes[1].linked_next
+    assert abs(notes[2].center_midi - 64.0) < .15 and not notes[2].linked_prev
+
+    # Build a synthetic vocal WAV matching those 3 notes (with breath rest between note 2 and 3)
+    rate = 44100
+    clock = np.arange(round(3.6 * rate)) / rate
+    pcm = np.zeros((len(clock), 2), dtype=np.float32)
+    for (a, b), hz in (((.20, 1.00), 261.63), ((1.00, 1.70), 293.66), ((2.10, 2.90), 329.63)):
+        m = (clock >= a) & (clock < b)
+        ph = 2 * np.pi * hz * (clock[m] - a)
+        sig = (.20 * np.sin(ph) + .08 * np.sin(2 * ph)).astype(np.float32)
+        pcm[m, 0] = sig
+        pcm[m, 1] = sig * .92
+    wav_path = root / 'natural-notes.wav'
+    sf.write(wav_path, pcm, rate, subtype='FLOAT')
+    take = Recording.read(wav_path)
+    base_edits = (
+        Edit(take.id, 'pitch', notes[0].start, notes[0].end, 35.0, manual=False),
+        Edit(take.id, 'pitch', notes[2].start, notes[2].end, -40.0, manual=False),
+    )
+    proj = replace(ChorusProject.fresh('NaturalPitch').add((take,)), edits=base_edits, pitch_engine='auto')
+
+    # 2a. Auto == manual sample-exactness on both 'auto' and 'vwa'
+    for eng in (('auto', 'vwa') if signalsmith_available() else ('vwa',)):
+        p_auto = replace(proj, pitch_engine=eng)
+        p_man = replace(p_auto, edits=(replace(base_edits[0], manual=True), base_edits[1]))
+        out_auto = render_track(p_auto, take, 'pitch')
+        out_man = render_track(p_man, take, 'pitch')
+        np.testing.assert_array_equal(out_auto, out_man)
+
+        # 2b. Non-continuous neighbor isolation: shifting note 3 to +180¢ leaves note 1 bit-for-bit exact!
+        p_far = shift_vocal_notes(p_auto, take.id, [(notes[2].start, notes[2].end)], 220.0)
+        out_far = render_track(p_far, take, 'pitch')
+        s0, e0 = round(notes[0].start * rate), round(notes[0].end * rate)
+        np.testing.assert_array_equal(out_auto[s0:e0], out_far[s0:e0])
+        # Rest/breath between note 2 and note 3 stays bit-for-bit dry!
+        np.testing.assert_array_equal(out_far[round(1.75 * rate):round(2.05 * rate)],
+                                      pcm[round(1.75 * rate):round(2.05 * rate)])
+
+        # 2c. Splitting note 1 at midpoint preserves audio bit-for-bit!
+        mid_t = (notes[0].start + notes[0].end) / 2.0
+        p_split = split_vocal_note(p_auto, take.id, notes[0].start, notes[0].end, mid_t)
+        split_notes = segment_vocal_notes(midi, step, note_edits=p_split.note_edits_for(take.id))
+        assert len(split_notes) == 4 and abs(split_notes[0].end - mid_t) < 1e-6
+        out_split = render_track(p_split, take, 'pitch')
+        np.testing.assert_array_equal(out_auto, out_split)
+
+        # 2d. Dragging only the second half of the split note changes that half, preserves first half offset!
+        p_drag = shift_vocal_notes(p_split, take.id, [(split_notes[1].start, split_notes[1].end)], 100.0)
+        off0, _, _, _ = effective_note_offset(split_notes[0], p_drag.edits_for(take.id, 'pitch'))
+        off1, _, _, _ = effective_note_offset(split_notes[1], p_drag.edits_for(take.id, 'pitch'))
+        assert abs(off0 - 35.0) < .5 and abs(off1 - 135.0) < .5, (off0, off1)
+        out_drag = render_track(p_drag, take, 'pitch')
+        assert not np.array_equal(out_split[round(mid_t * rate):e0], out_drag[round(mid_t * rate):e0])
+        # Compiled display curve matches the two halves cleanly!
+        curve_st = compiled_pitch_semitones(p_drag.edits_for(take.id, 'pitch'),
+                                            np.array([notes[0].start + .12, notes[0].end - .12]),
+                                            duration=take.duration, voiced_curve=(midi, step))
+        assert abs(curve_st[0] - .35) < .03 and abs(curve_st[1] - 1.35) < .03, curve_st
+
+    # 2e. Merging the split halves back + save/reopen round-trip
+    p_merged = merge_vocal_notes(p_drag, take.id, [(split_notes[0].start, split_notes[0].end),
+                                                   (split_notes[1].start, split_notes[1].end)])
+    merged_notes = segment_vocal_notes(midi, step, note_edits=p_merged.note_edits_for(take.id))
+    assert len(merged_notes) == 3
+    p_reset = reset_vocal_notes(p_merged, take.id, [(merged_notes[0].start, merged_notes[0].end)], lock_original=True)
+    saved = root / 'natural-roundtrip.vwachorus'
+    p_reset.save(saved)
+    assert ChorusProject.open(saved) == p_reset
+
+    # 3. Ordered multi-part score matching: skipped score note, octave error, polyphonic chord, draft provenance
+    score_lane_lead = (
+        ScoreNote(.18, .98, 60, 'a'),
+        ScoreNote(1.00, 1.30, 61, 'i'),   # missed/skipped by singer
+        ScoreNote(1.32, 1.72, 62, 'u'),   # sung at 1.00..1.70
+        ScoreNote(2.08, 2.88, 76, 'e'),   # +12 semitones octave mismatch vs singer's 64!
+    )
+    matches = match_vocal_to_score(notes, score_lane_lead)
+    assert matches[0].target_pitch == 60 and not matches[0].review
+    assert matches[1].target_pitch == 62
+    assert matches[2].target_pitch == 76 and matches[2].review and '八度' in matches[2].reason
+
+    poly_lane = (ScoreNote(.20, 1.00, 60, 'a'), ScoreNote(.22, .98, 64, 'a'))
+    poly_matches = match_vocal_to_score([notes[0]], poly_lane)
+    assert poly_matches[0].review and '重叠' in poly_matches[0].reason
+
+    draft_matches = match_vocal_to_score([notes[0]], (ScoreNote(.18, .98, 60, 'a'),), draft=True)
+    assert draft_matches[0].review and '草稿' in draft_matches[0].reason
+
+    # 4. Score lane recommendation picks correct register for Lead vs Upper Harmony
+    midi_score = mido.MidiFile(ticks_per_beat=480)
+    t_meta = midi_score.add_track()
+    t_meta.append(mido.MetaMessage('set_tempo', tempo=500000, time=0))
+    for name, pitch in (('Lead', 60), ('Upper Harmony', 67)):
+        tr_m = midi_score.add_track()
+        tr_m.append(mido.MetaMessage('track_name', name=name))
+        tr_m.append(mido.Message('note_on', note=pitch, velocity=80, time=192))
+        tr_m.append(mido.Message('note_off', note=pitch, velocity=0, time=1920))
+    draft_mid = root / 'prep-draft.mid'
+    midi_score.save(draft_mid)
+    draft_score = Score.read(draft_mid, source_kind='preparation_draft', source_label='Demo · prep-draft.mid')
+    assert not draft_score.confirmed and draft_score.source_kind == 'preparation_draft'
+    high_midi = midi + 7.0
+    p_rec = replace(ChorusProject.fresh('Rec').add((replace(take, part='上和声'),)), score=draft_score)
+    recs = recommend_score_lanes(p_rec, {take.id: (high_midi, step)})
+    assert recs[take.id][0]['name'] == 'Upper Harmony', recs
+    draft_path = root / 'draft-score.vwachorus'
+    p_rec.save(draft_path)
+    reopened_draft = ChorusProject.open(draft_path)
+    assert reopened_draft == p_rec and not reopened_draft.score.confirmed
+    print('PASS: vocal note split/merge/drag, unified sample-exact rendering, ordered score match & draft score')
+
+
 def main():
     with TemporaryDirectory() as folder:
         root = Path(folder)
@@ -430,6 +565,7 @@ def main():
         np.testing.assert_array_equal(artifact[:6500], untouched[:6500])
         np.testing.assert_array_equal(artifact[9500:], untouched[9500:])
         check_native_pitch_transitions(root)
+        check_natural_pitch_and_score_matching(root)
 
 
 if __name__ == '__main__':

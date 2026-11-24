@@ -159,12 +159,31 @@ FocusScope {
                 enabled: !page.view.busy; onClicked: page.pickAudio("backing") }
             UiButton { theme: page.theme; text: "+ " + page.t("乐谱")
                 enabled: !page.view.busy; onClicked: scoreDialog.open() }
+            UiButton {
+                objectName: "chorusImportPrepScore"
+                theme: page.theme
+                quiet: true
+                text: page.t("准备任务谱轨")
+                enabled: !page.view.busy
+                onClicked: {
+                    page.controller.refreshPreparationScores()
+                    prepScoreDialog.open()
+                }
+            }
             Caption {
                 width: Math.min(350 * page.theme.scale, implicitWidth)
                 height: Math.round(36 * page.theme.scale)
                 verticalAlignment: Text.AlignVCenter
                 visible: !!page.view.score
-                text: page.view.score
+                text: page.view.score + (!page.view.scoreConfirmed ? " · " + page.t("草稿") : "")
+            }
+            UiButton {
+                objectName: "chorusConfirmScore"
+                theme: page.theme
+                visible: !!page.view.score && !page.view.scoreConfirmed
+                text: page.t("确认乐谱")
+                enabled: !page.view.busy
+                onClicked: page.controller.confirmScore(true)
             }
         }
 
@@ -219,24 +238,72 @@ FocusScope {
                     onTakeSelected: page.forceActiveFocus()
                     onPhraseSelected: page.controller.inspectorSection("phrase")
                 }
-                RowLayout {
+                Flow {
                     Layout.fillWidth: true
                     visible: page.view.mode === "pitch" && page.ready
                     spacing: 4
                     UiButton {
+                        objectName: "chorusNoteMode"
                         theme: page.theme
-                        text: page.t("选区")
+                        text: page.t("音符")
                         quiet: !selected
-                        selected: !pitchLane.drawing
-                        onClicked: page.controller.pitchDraw(false)
+                        selected: page.view.pitchTool === "note"
+                        onClicked: page.controller.setPitchTool("note")
+                    }
+                    UiButton {
+                        objectName: "chorusSplitMode"
+                        theme: page.theme
+                        text: page.t("拆分")
+                        quiet: !selected
+                        selected: page.view.pitchTool === "split"
+                        enabled: pitchLane.hasNotes && page.view.take.role === "vocal"
+                        onClicked: page.controller.setPitchTool(page.view.pitchTool === "split" ? "note" : "split")
                     }
                     UiButton {
                         objectName: "chorusDrawMode"
                         theme: page.theme
                         text: page.t("画音高")
+                        quiet: !selected
                         selected: pitchLane.drawing
                         enabled: pitchLane.canDraw
-                        onClicked: page.controller.pitchDraw(!pitchLane.drawing)
+                        onClicked: page.controller.setPitchTool(pitchLane.drawing ? "note" : "draw")
+                    }
+                    UiButton {
+                        objectName: "chorusSplitAtPlayhead"
+                        theme: page.theme
+                        text: page.t("在播放头拆分")
+                        quiet: true
+                        visible: pitchLane.hasNotes
+                        enabled: page.view.canSplitAtPlayhead && page.view.take.role === "vocal"
+                        onClicked: page.controller.splitSelectedNoteAtPlayhead()
+                    }
+                    UiButton {
+                        objectName: "chorusMergeNotes"
+                        theme: page.theme
+                        text: page.t("合并")
+                        quiet: true
+                        visible: pitchLane.hasNotes
+                        enabled: page.view.canMergeNotes && page.view.take.role === "vocal"
+                        onClicked: page.controller.mergePitchNotes([])
+                    }
+                    UiButton {
+                        objectName: "chorusPitchSnap"
+                        theme: page.theme
+                        text: page.t("吸附半音")
+                        quiet: !selected
+                        selected: page.view.pitchSnap
+                        ToolTip.visible: hovered
+                        ToolTip.text: page.t("拖动音符吸附到半音，按住 Alt 可细调音分")
+                        onClicked: page.controller.setPitchSnap(!page.view.pitchSnap)
+                    }
+                    UiButton {
+                        objectName: "chorusResetNotes"
+                        theme: page.theme
+                        text: page.t("还原音符")
+                        quiet: true
+                        visible: page.view.selectedNoteCount > 0
+                        enabled: page.view.take.role === "vocal"
+                        onClicked: page.controller.resetPitchNotes([], false)
                     }
                     UiButton {
                         objectName: "chorusExtractPitch"
@@ -254,10 +321,11 @@ FocusScope {
                         enabled: page.view.take.role === "vocal" && page.view.rangeLast > page.view.rangeFirst
                         onClicked: page.controller.clearSelectionEdits("pitch")
                     }
-                    Item { Layout.fillWidth: true }
                     Caption {
-                        text: page.t("虚线 · 原声") + "   " + page.t("实线 · 当前试听")
-                        Layout.maximumWidth: Math.round(215 * page.theme.scale)
+                        height: Math.round(32 * page.theme.scale)
+                        verticalAlignment: Text.AlignVCenter
+                        text: page.t("虚线 · 原声") + "   " + page.t("实线 · 渲染")
+                            + (pitchLane.hasScoreNotes ? "   " + page.t("轮廓 · 谱音") : "")
                     }
                 }
                 ChorusPitchLane {
@@ -445,6 +513,23 @@ FocusScope {
                                 }
                                 Caption { text: Math.round(pitchStrength.value) + "%" }
                             }
+                            UiComboBox {
+                                id: pitchEngine
+                                objectName: "chorusPitchEngine"
+                                theme: page.theme
+                                Layout.fillWidth: true
+                                visible: kind.currentValue !== "timing"
+                                enabled: !page.view.busy
+                                fieldLabel: page.t("修音引擎")
+                                model: [
+                                    {label: page.t("自动 · 优先 Signalsmith"), value: "auto"},
+                                    {label: "Signalsmith Stretch", value: "signalsmith"},
+                                    {label: page.t("VWA 波形叠加"), value: "vwa"},
+                                    {label: "Rubber Band R3", value: "r3"}
+                                ]
+                                currentIndex: Math.max(0, indexOfValue(page.view.pitchEngine))
+                                onActivated: page.controller.setPitchEngine(currentValue)
+                            }
                             CheckBox {
                                 id: review
                                 text: page.t("包含存疑建议")
@@ -600,6 +685,24 @@ FocusScope {
                                         page.view.scoreLanes.map(lane => ({label: lane.name, value: lane.id})))
                                     currentIndex: Math.max(0, indexOfValue(page.view.take.scoreLane || ""))
                                     onActivated: page.controller.bindScore(page.view.selected, currentValue)
+                                }
+                                Caption {
+                                    Layout.fillWidth: true
+                                    visible: (page.view.scoreRecommendations || []).length > 0
+                                    text: {
+                                        const rows = page.view.scoreRecommendations || []
+                                        if (!rows.length) return ""
+                                        return page.t("推荐谱轨") + " · " + rows[0].name + " (" + rows[0].reason + ")"
+                                    }
+                                }
+                                UiButton {
+                                    objectName: "chorusAutoBindScore"
+                                    theme: page.theme
+                                    quiet: true
+                                    visible: page.view.scoreLanes.length > 0
+                                    text: page.t("按音区推荐绑定")
+                                    enabled: !page.view.busy
+                                    onClicked: page.controller.applyRecommendedScoreLanes()
                                 }
                                 RowLayout {
                                     Layout.fillWidth: true
@@ -796,6 +899,51 @@ FocusScope {
             else
                 page.controller.openProject(page.pendingProjectUrl, true)
             close()
+        }
+    }
+    Dialog {
+        id: prepScoreDialog
+        objectName: "chorusPrepScoreDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        width: Math.min(page.width - 40, Math.round(460 * page.theme.scale))
+        title: page.t("从准备任务导入谱轨")
+        standardButtons: Dialog.Cancel
+        ColumnLayout {
+            width: parent.width
+            spacing: 6
+            Caption {
+                Layout.fillWidth: true
+                text: page.t("准备提取的 MIDI 先作为草稿载入，确认起点与声部后再参与批量修音。")
+                wrapMode: Text.Wrap
+            }
+            Caption {
+                Layout.fillWidth: true
+                visible: (page.view.prepScores || []).length === 0
+                text: page.view.busy ? page.t("正在读取准备任务谱轨…") : page.t("暂无可用的准备任务 MIDI 或工程。")
+            }
+            ListView {
+                objectName: "chorusPrepScoreList"
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.min(Math.round(240 * page.theme.scale), Math.max(40, contentHeight))
+                visible: count > 0
+                clip: true
+                spacing: 4
+                model: page.view.prepScores || []
+                delegate: UiButton {
+                    required property var modelData
+                    width: ListView.view.width
+                    theme: page.theme
+                    leftAligned: true
+                    quiet: true
+                    text: modelData.label + (modelData.draft ? "  [" + page.t("草稿") + "]" : "")
+                    onClicked: {
+                        prepScoreDialog.close()
+                        page.controller.importPreparationScore(modelData.path, modelData.sourceKind, modelData.label)
+                    }
+                }
+            }
         }
     }
     Dialog {

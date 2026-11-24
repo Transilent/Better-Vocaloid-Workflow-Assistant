@@ -7,40 +7,153 @@ Rectangle {
     required property QtObject controller
     required property var view
     required property int headerWidth
-    property var curve: ({first: 0, step: .01, midi: [], target: []})
-    readonly property bool drawing: view.pitchDraw && canDraw
+    property var curve: ({first: 0, step: .01, midi: [], target: [], notes: [], scoreNotes: []})
+    readonly property string tool: view.pitchTool || (view.pitchDraw ? "draw" : "note")
+    readonly property bool drawing: tool === "draw" && canDraw
+    readonly property bool splitting: tool === "split" && hasNotes
+    readonly property bool hasNotes: (curve.notes || []).length > 0
+    readonly property bool hasScoreNotes: (curve.scoreNotes || []).length > 0
+    readonly property int noteCount: (curve.notes || []).length
+    readonly property int scoreNoteCount: (curve.scoreNotes || []).length
+    readonly property bool canDraw: (curve.midi || []).some(value => value >= 0) && view.take.role === "vocal"
     property real lowNote: 48
     property real highNote: 72
     property var stroke: []
-    readonly property bool canDraw: curve.midi.some(value => value >= 0) && view.take.role === "vocal"
+    property var selectedKeys: []
+    property bool draggingNote: false
+    property real dragDeltaSemitones: 0
+    property real dragAnchorMidi: 60
+    property real dragMouseX: 0
+    property real dragMouseY: 0
+    property bool marqueeActive: false
+    property real marqueeX1: 0
+    property real marqueeY1: 0
+    property real marqueeX2: 0
+    property real marqueeY2: 0
+    property real hoverX: -1
+    property real hoverY: -1
+    property var hoveredNote: null
+
     color: theme.base
     border.color: theme.line
     radius: Math.round(7 * theme.scale)
     clip: true
-    implicitHeight: Math.round(178 * theme.scale)
+    implicitHeight: Math.round(210 * theme.scale)
+
+    function t(text) { return quickTranslation.text(text) }
+
+    function noteName(midi) {
+        const keys = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"]
+        const nearest = Math.round(midi)
+        const cents = Math.round((midi - nearest) * 100)
+        const label = keys[((nearest % 12) + 12) % 12] + (Math.floor(nearest / 12) - 1)
+        if (cents === 0)
+            return label
+        return label + " " + (cents > 0 ? "+" : "") + cents + "¢"
+    }
+
+    function isSelected(note) {
+        return selectedKeys.indexOf(note.id) >= 0
+    }
+
+    function selectedSpans() {
+        const list = []
+        const notes = curve.notes || []
+        for (let i = 0; i < notes.length; i++) {
+            if (isSelected(notes[i]))
+                list.push({takeStart: notes[i].takeStart, takeEnd: notes[i].takeEnd})
+        }
+        return list
+    }
+
+    function plotWidth() {
+        return Math.max(1, plot.width - lane.headerWidth)
+    }
+
+    function rowHeight() {
+        return plot.height / Math.max(1, highNote - lowNote + 1)
+    }
+
+    function timeToPlotX(time) {
+        const span = Math.max(.01, lane.view.viewSpan)
+        return (time - lane.view.viewFirst) * plotWidth() / span
+    }
+
+    function plotXToTime(px) {
+        const w = plotWidth()
+        return lane.view.viewFirst + Math.max(0, Math.min(1, px / w)) * lane.view.viewSpan
+    }
+
+    function midiToY(midi) {
+        return (highNote - midi + .5) * rowHeight()
+    }
+
+    function noteBox(note) {
+        const rh = rowHeight()
+        const x1 = timeToPlotX(note.start)
+        const x2 = timeToPlotX(note.end)
+        const activeDelta = draggingNote && isSelected(note) ? dragDeltaSemitones : 0
+        const centerY = midiToY(note.targetMidi + activeDelta)
+        const h = Math.max(Math.round(11 * theme.scale), Math.min(rh * .86, Math.round(22 * theme.scale)))
+        return {
+            x: x1,
+            y: centerY - h / 2,
+            w: Math.max(5, x2 - x1),
+            h: h,
+            centerY: centerY,
+        }
+    }
+
+    function noteAt(px, py) {
+        const notes = curve.notes || []
+        for (let i = notes.length - 1; i >= 0; i--) {
+            const box = noteBox(notes[i])
+            if (px >= box.x - 2 && px <= box.x + box.w + 2 && py >= box.y - 3 && py <= box.y + box.h + 3)
+                return notes[i]
+        }
+        return null
+    }
 
     function rebuild() {
         if (!lane.visible)
             return
         curve = lane.controller.curve(lane.view.selected)
+        const notes = curve.notes || []
+        const synced = []
+        for (let i = 0; i < notes.length; i++) {
+            if (notes[i].selected)
+                synced.push(notes[i].id)
+        }
+        if (!draggingNote)
+            selectedKeys = synced
+
         let low = 128, high = 0
-        for (const line of [curve.midi, curve.target]) {
-            for (const note of line) {
-                if (note < 0)
+        for (const line of [curve.midi || [], curve.target || []]) {
+            for (const val of line) {
+                if (val < 0)
                     continue
-                low = Math.min(low, note)
-                high = Math.max(high, note)
+                low = Math.min(low, val)
+                high = Math.max(high, val)
             }
         }
-        if (low <= high && stroke.length === 0) {
+        for (const sn of (curve.scoreNotes || [])) {
+            low = Math.min(low, sn.pitch)
+            high = Math.max(high, sn.pitch)
+        }
+        if (low <= high && stroke.length === 0 && !draggingNote) {
             lowNote = Math.max(0, Math.floor(low) - 2)
-            highNote = Math.max(lowNote + 7, Math.ceil(high) + 2)
+            highNote = Math.max(lowNote + 8, Math.ceil(high) + 2)
         }
         plot.requestPaint()
     }
 
     onVisibleChanged: rebuild()
     onStrokeChanged: plot.requestPaint()
+    onDragDeltaSemitonesChanged: plot.requestPaint()
+    onDraggingNoteChanged: plot.requestPaint()
+    onMarqueeActiveChanged: plot.requestPaint()
+    onHoverXChanged: if (splitting) plot.requestPaint()
+    onToolChanged: plot.requestPaint()
     Connections {
         target: lane.controller
         function onChanged() { lane.rebuild() }
@@ -57,37 +170,131 @@ Rectangle {
             c.reset()
             const widthOfPlot = Math.max(1, width - lane.headerWidth)
             const span = Math.max(.01, lane.view.viewSpan)
-            const source = lane.curve.midi
-            const target = lane.curve.target
+            const source = lane.curve.midi || []
+            const target = lane.curve.target || []
+            const notes = lane.curve.notes || []
+            const scoreNotes = lane.curve.scoreNotes || []
             const low = lane.lowNote
             const high = lane.highNote
-            const rowHeight = height / (high - low + 1)
+            const rh = height / Math.max(1, high - low + 1)
             const keys = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"]
+
+            // 1. Piano key gutter and pitch grid
             c.fillStyle = lane.theme.raised
             c.fillRect(0, 0, lane.headerWidth, height)
             c.font = Math.round(11 * lane.theme.scale) + "px sans-serif"
             c.textBaseline = "middle"
             for (let note = low; note <= high; note++) {
-                const y = (high - note) * rowHeight
+                const y = (high - note) * rh
                 if ([1, 3, 6, 8, 10].includes((note + 120) % 12)) {
                     c.fillStyle = lane.theme.surface
-                    c.fillRect(0, y, width, rowHeight)
+                    c.fillRect(0, y, width, rh)
                 }
                 c.fillStyle = lane.theme.line
                 c.fillRect(0, y, width, 1)
-                if (rowHeight > 12 * lane.theme.scale || note % 12 === 0) {
+                if (rh > 12 * lane.theme.scale || note % 12 === 0) {
                     c.fillStyle = lane.theme.muted
                     c.fillText(keys[(note + 120) % 12] + (Math.floor(note / 12) - 1),
-                               10, y + rowHeight / 2)
+                               10, y + rh / 2)
                 }
             }
             c.fillStyle = lane.theme.line
             c.fillRect(lane.headerWidth, 0, 1, height)
+
             c.save()
             c.beginPath()
             c.rect(lane.headerWidth, 0, widthOfPlot, height)
             c.clip()
-            function stroke(values, color, thick, dashed) {
+
+            function tx(t) { return lane.headerWidth + (t - lane.view.viewFirst) * widthOfPlot / span }
+            function py(m) { return (high - m + .5) * rh }
+
+            // 2. Bound score lane target notes (outline blocks behind vocal notes)
+            if (scoreNotes.length > 0) {
+                c.font = Math.round(10 * lane.theme.scale) + "px sans-serif"
+                for (let i = 0; i < scoreNotes.length; i++) {
+                    const sn = scoreNotes[i]
+                    const sx = tx(sn.start)
+                    const sw = Math.max(4, tx(sn.end) - sx)
+                    const sh = Math.max(8, rh * .78)
+                    const sy = py(sn.pitch) - sh / 2
+                    c.fillStyle = lane.theme.success
+                    c.globalAlpha = .13
+                    c.fillRect(sx, sy, sw, sh)
+                    c.globalAlpha = .72
+                    c.strokeStyle = lane.theme.success
+                    c.lineWidth = 1.2
+                    c.setLineDash([4, 3])
+                    c.strokeRect(sx + .5, sy + .5, Math.max(1, sw - 1), Math.max(1, sh - 1))
+                    c.setLineDash([])
+                    if (sn.lyric && sw > 16 * lane.theme.scale) {
+                        c.fillStyle = lane.theme.success
+                        c.globalAlpha = .92
+                        c.fillText(sn.lyric, sx + 4, sy + sh / 2)
+                    }
+                }
+                c.globalAlpha = 1
+            }
+
+            // 3. Editable vocal note blocks
+            const blockH = Math.max(Math.round(11 * lane.theme.scale), Math.min(rh * .86, Math.round(22 * lane.theme.scale)))
+            for (let i = 0; i < notes.length; i++) {
+                const n = notes[i]
+                const sel = lane.isSelected(n)
+                const activeDelta = lane.draggingNote && sel ? lane.dragDeltaSemitones : 0
+                const x1 = tx(n.start)
+                const x2 = tx(n.end)
+                const bw = Math.max(5, x2 - x1)
+                const origY = py(n.centerMidi)
+                const targetY = py(n.targetMidi + activeDelta)
+
+                // Ghost shadow at original pitch center when shifted
+                if (Math.abs((n.targetMidi + activeDelta) - n.centerMidi) > .04) {
+                    c.fillStyle = lane.theme.muted
+                    c.globalAlpha = .16
+                    c.fillRect(x1, origY - blockH * .38, bw, blockH * .76)
+                    c.strokeStyle = lane.theme.muted
+                    c.globalAlpha = .35
+                    c.lineWidth = 1
+                    c.beginPath()
+                    c.moveTo(x1 + bw / 2, origY)
+                    c.lineTo(x1 + bw / 2, targetY)
+                    c.stroke()
+                }
+
+                // Main vocal note block
+                const by = targetY - blockH / 2
+                c.fillStyle = sel ? lane.theme.accent : n.locked ? lane.theme.raised : n.manual ? lane.theme.accent : lane.theme.selected
+                c.globalAlpha = sel ? .34 : n.locked ? .55 : n.manual ? .22 : .42
+                c.fillRect(x1, by, bw, blockH)
+
+                c.globalAlpha = sel ? 1.0 : .78
+                c.strokeStyle = sel ? lane.theme.accent : n.locked ? lane.theme.muted : lane.theme.selectedLine
+                c.lineWidth = sel ? 2.0 : 1.1
+                c.setLineDash(n.locked ? [3, 2] : [])
+                c.strokeRect(x1 + .5, by + .5, Math.max(1, bw - 1), Math.max(1, blockH - 1))
+                c.setLineDash([])
+
+                // Continuous legato link tick at right edge
+                if (n.linkedNext) {
+                    c.fillStyle = lane.theme.accent
+                    c.globalAlpha = .55
+                    c.fillRect(x2 - 1, targetY - 3, 2, 6)
+                }
+
+                // Match-review warning dot
+                if (n.matchReview && n.scorePitch >= 0) {
+                    c.fillStyle = lane.theme.attention
+                    c.globalAlpha = .95
+                    c.beginPath()
+                    c.arc(x1 + bw - 5, by + 5, 3, 0, Math.PI * 2)
+                    c.fill()
+                }
+            }
+            c.globalAlpha = 1
+
+            // 4. Raw vocal F0 (dashed) and compiled rendered pitch curve (solid)
+            function drawCurve(values, color, thick, dashed, applyDrag) {
                 c.strokeStyle = color
                 c.lineWidth = thick
                 c.setLineDash(dashed ? [4, 4] : [])
@@ -99,8 +306,18 @@ Rectangle {
                         continue
                     }
                     const at = lane.curve.first + i * lane.curve.step
-                    const x = lane.headerWidth + (at - lane.view.viewFirst) * widthOfPlot / span
-                    const y = (high - values[i] + .5) * rowHeight
+                    let val = values[i]
+                    if (applyDrag && lane.draggingNote && Math.abs(lane.dragDeltaSemitones) > 1e-4) {
+                        for (let j = 0; j < notes.length; j++) {
+                            const n = notes[j]
+                            if (lane.isSelected(n) && at >= n.start && at <= n.end) {
+                                val += lane.dragDeltaSemitones
+                                break
+                            }
+                        }
+                    }
+                    const x = tx(at)
+                    const y = py(val)
                     if (pending)
                         c.moveTo(x, y)
                     else
@@ -108,17 +325,52 @@ Rectangle {
                     pending = false
                 }
                 c.stroke()
+                c.setLineDash([])
             }
-            stroke(source, lane.theme.muted, 1.1, true)
-            stroke(target, lane.theme.accent, 1.8, false)
+            drawCurve(source, lane.theme.muted, 1.1, true, false)
+            drawCurve(target, lane.theme.accent, 1.9, false, true)
+
+            // 5. Split tool hover indicator
+            if (lane.splitting && lane.hoverX >= 0) {
+                const hit = lane.noteAt(lane.hoverX, lane.hoverY)
+                if (hit) {
+                    const gx = lane.headerWidth + lane.hoverX
+                    c.strokeStyle = lane.theme.attention
+                    c.lineWidth = 1.6
+                    c.setLineDash([4, 3])
+                    c.beginPath()
+                    c.moveTo(gx, 0)
+                    c.lineTo(gx, height)
+                    c.stroke()
+                    c.setLineDash([])
+                }
+            }
+
+            // 6. Marquee selection box
+            if (lane.marqueeActive) {
+                const mx = lane.headerWidth + Math.min(lane.marqueeX1, lane.marqueeX2)
+                const my = Math.min(lane.marqueeY1, lane.marqueeY2)
+                const mw = Math.abs(lane.marqueeX2 - lane.marqueeX1)
+                const mh = Math.abs(lane.marqueeY2 - lane.marqueeY1)
+                c.fillStyle = lane.theme.accent
+                c.globalAlpha = .14
+                c.fillRect(mx, my, mw, mh)
+                c.globalAlpha = .8
+                c.strokeStyle = lane.theme.accent
+                c.lineWidth = 1
+                c.strokeRect(mx + .5, my + .5, mw, mh)
+                c.globalAlpha = 1
+            }
+
+            // 7. Hand-drawn pitch stroke preview
             if (lane.stroke.length) {
                 c.strokeStyle = lane.theme.success
                 c.lineWidth = 2.4
                 c.beginPath()
                 for (let i = 0; i < lane.stroke.length; i++) {
                     const dot = lane.stroke[i]
-                    const x = lane.headerWidth + (dot.time - lane.view.viewFirst) * widthOfPlot / span
-                    const y = (high - dot.note + .5) * rowHeight
+                    const x = tx(dot.time)
+                    const y = py(dot.note)
                     if (i)
                         c.lineTo(x, y)
                     else
@@ -129,13 +381,70 @@ Rectangle {
             c.restore()
         }
     }
+
     Text {
         anchors.centerIn: parent
-        visible: !lane.curve.midi.some(value => value >= 0)
+        visible: !lane.canDraw && !lane.hasScoreNotes
         color: lane.theme.muted
         font.pixelSize: Math.round(13 * lane.theme.scale)
-        text: quickTranslation.text("分析修音后显示此轨的实测音高")
+        text: lane.t("分析修音后显示此轨的实测音高")
     }
+
+    // Subtle status pill for hovered/selected vocal note or score match reason
+    Rectangle {
+        visible: !lane.draggingNote && !!lane.hoveredNote
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.margins: 6
+        radius: Math.round(5 * lane.theme.scale)
+        color: lane.theme.surface
+        border.color: lane.theme.line
+        implicitWidth: infoLabel.implicitWidth + 14
+        implicitHeight: infoLabel.implicitHeight + 6
+        Text {
+            id: infoLabel
+            anchors.centerIn: parent
+            color: lane.theme.text
+            font.pixelSize: Math.round(11 * lane.theme.scale)
+            text: {
+                const n = lane.hoveredNote
+                if (!n) return ""
+                let msg = lane.noteName(n.targetMidi)
+                if (Math.abs(n.offsetCents) >= 0.5)
+                    msg += "  (" + (n.offsetCents > 0 ? "+" : "") + Math.round(n.offsetCents) + "¢)"
+                if (n.scorePitch >= 0)
+                    msg += "  →  " + lane.noteName(n.scorePitch) + (n.scoreLyric ? " " + n.scoreLyric : "")
+                if (n.matchReason)
+                    msg += "  ·  " + lane.t(n.matchReason)
+                return msg
+            }
+        }
+    }
+
+    // Live vertical-drag pitch HUD badge
+    Rectangle {
+        visible: lane.draggingNote
+        x: Math.max(lane.headerWidth + 8, Math.min(lane.width - width - 8, lane.headerWidth + lane.dragMouseX + 12))
+        y: Math.max(6, Math.min(lane.height - height - 6, lane.dragMouseY - height - 8))
+        radius: Math.round(5 * lane.theme.scale)
+        color: lane.theme.surface
+        border.color: lane.theme.accent
+        implicitWidth: dragLabel.implicitWidth + 16
+        implicitHeight: dragLabel.implicitHeight + 8
+        Text {
+            id: dragLabel
+            anchors.centerIn: parent
+            color: lane.theme.text
+            font.pixelSize: Math.round(11 * lane.theme.scale)
+            font.weight: Font.DemiBold
+            text: {
+                const targetM = lane.dragAnchorMidi + lane.dragDeltaSemitones
+                const deltaCents = Math.round(lane.dragDeltaSemitones * 100)
+                return lane.noteName(targetM) + "  (" + (deltaCents >= 0 ? "+" : "") + deltaCents + "¢)"
+            }
+        }
+    }
+
     Item {
         x: lane.headerWidth + 1
         width: Math.max(1, parent.width - x - 1)
@@ -148,39 +457,177 @@ Rectangle {
             color: lane.theme.accent
         }
         MouseArea {
+            id: inputArea
             objectName: "chorusPitchDrawArea"
             anchors.fill: parent
-            cursorShape: lane.drawing ? Qt.CrossCursor : Qt.ArrowCursor
+            hoverEnabled: true
+            cursorShape: lane.drawing ? Qt.CrossCursor
+                : lane.splitting ? Qt.SplitHCursor
+                : lane.draggingNote ? Qt.SizeVerCursor
+                : (lane.hoveredNote && lane.tool === "note") ? Qt.OpenHandCursor
+                : Qt.ArrowCursor
             preventStealing: true
-            property real startTime
-            property real pressX
+            property real startTime: 0
+            property real pressX: 0
+            property real pressY: 0
+            property var pressedNote: null
+            property bool dragged: false
+
             function at(x) { return lane.view.viewFirst + Math.max(0, Math.min(1, x / width)) * lane.view.viewSpan }
             function dot(x, y) {
                 return {time: at(x), note: lane.highNote + .5 - Math.max(0, Math.min(1, y / height))
                     * (lane.highNote - lane.lowNote + 1)}
             }
+            function commitSelection(keys) {
+                lane.selectedKeys = keys
+                lane.controller.selectPitchNotes(lane.selectedSpans())
+                plot.requestPaint()
+            }
+
+            onEntered: { lane.hoverX = mouseX; lane.hoverY = mouseY }
+            onExited: { lane.hoverX = -1; lane.hoverY = -1; lane.hoveredNote = null; plot.requestPaint() }
+
             onPressed: mouse => {
                 pressX = mouse.x
+                pressY = mouse.y
                 startTime = at(mouse.x)
-                if (lane.drawing)
+                dragged = false
+                pressedNote = null
+                if (lane.drawing) {
                     lane.stroke = [dot(mouse.x, mouse.y)]
+                    return
+                }
+                if (lane.splitting) {
+                    const hit = lane.noteAt(mouse.x, mouse.y)
+                    if (hit)
+                        lane.controller.splitPitchNote(hit.takeStart, hit.takeEnd, startTime)
+                    return
+                }
+                const hit = lane.noteAt(mouse.x, mouse.y)
+                if (hit && lane.view.take.role === "vocal") {
+                    pressedNote = hit
+                    const multi = !!(mouse.modifiers & (Qt.ShiftModifier | Qt.ControlModifier))
+                    let next = lane.selectedKeys.slice()
+                    const idx = next.indexOf(hit.id)
+                    if (multi) {
+                        if (idx >= 0) next.splice(idx, 1)
+                        else next.push(hit.id)
+                    } else if (idx < 0) {
+                        next = [hit.id]
+                    }
+                    commitSelection(next)
+                    lane.dragAnchorMidi = hit.targetMidi
+                    lane.dragDeltaSemitones = 0
+                    lane.dragMouseX = mouse.x
+                    lane.dragMouseY = mouse.y
+                } else {
+                    lane.marqueeX1 = mouse.x
+                    lane.marqueeY1 = mouse.y
+                    lane.marqueeX2 = mouse.x
+                    lane.marqueeY2 = mouse.y
+                }
             }
+
             onPositionChanged: mouse => {
-                if (pressed && lane.drawing)
+                lane.hoverX = mouse.x
+                lane.hoverY = mouse.y
+                if (!pressed) {
+                    lane.hoveredNote = lane.noteAt(mouse.x, mouse.y)
+                    return
+                }
+                if (lane.drawing) {
                     lane.stroke = lane.stroke.concat([dot(mouse.x, mouse.y)])
+                    return
+                }
+                if (lane.splitting)
+                    return
+                if (pressedNote) {
+                    if (!dragged && Math.abs(mouse.y - pressY) >= 4)
+                        dragged = true
+                    if (dragged) {
+                        lane.draggingNote = true
+                        lane.dragMouseX = mouse.x
+                        lane.dragMouseY = mouse.y
+                        const rawDelta = (pressY - mouse.y) / Math.max(1, lane.rowHeight())
+                        const snap = lane.view.pitchSnap && !(mouse.modifiers & Qt.AltModifier)
+                        lane.dragDeltaSemitones = snap
+                            ? (Math.round(lane.dragAnchorMidi + rawDelta) - lane.dragAnchorMidi)
+                            : rawDelta
+                    }
+                } else {
+                    if (!dragged && (Math.abs(mouse.x - pressX) >= 5 || Math.abs(mouse.y - pressY) >= 5))
+                        dragged = true
+                    if (dragged) {
+                        lane.marqueeActive = true
+                        lane.marqueeX2 = mouse.x
+                        lane.marqueeY2 = mouse.y
+                        plot.requestPaint()
+                    }
+                }
             }
+
             onReleased: mouse => {
                 const end = at(mouse.x)
                 if (lane.drawing) {
                     const captured = lane.stroke.concat([dot(mouse.x, mouse.y)])
                     lane.stroke = []
                     lane.controller.drawPitch(captured)
-                } else if (Math.abs(mouse.x - pressX) >= 4)
-                    lane.controller.selectRange(startTime, end)
-                else
+                    return
+                }
+                if (lane.splitting)
+                    return
+                if (pressedNote) {
+                    const wasDragging = lane.draggingNote
+                    const deltaCents = lane.dragDeltaSemitones * 100
+                    lane.draggingNote = false
+                    lane.dragDeltaSemitones = 0
+                    pressedNote = null
+                    if (wasDragging && Math.abs(deltaCents) >= 0.5) {
+                        lane.controller.shiftPitchNotes(lane.selectedSpans(), deltaCents)
+                    } else if (!wasDragging && !(mouse.modifiers & (Qt.ShiftModifier | Qt.ControlModifier))) {
+                        lane.controller.seek(end)
+                    }
+                    return
+                }
+                if (lane.marqueeActive) {
+                    const xMin = Math.min(lane.marqueeX1, lane.marqueeX2)
+                    const xMax = Math.max(lane.marqueeX1, lane.marqueeX2)
+                    const yMin = Math.min(lane.marqueeY1, lane.marqueeY2)
+                    const yMax = Math.max(lane.marqueeY1, lane.marqueeY2)
+                    lane.marqueeActive = false
+                    const picked = []
+                    const notes = lane.curve.notes || []
+                    for (let i = 0; i < notes.length; i++) {
+                        const b = lane.noteBox(notes[i])
+                        if (b.x + b.w >= xMin && b.x <= xMax && b.y + b.h >= yMin && b.y <= yMax)
+                            picked.push(notes[i].id)
+                    }
+                    if (picked.length > 0)
+                        commitSelection(picked)
+                    else
+                        lane.controller.selectRange(startTime, end)
+                } else {
+                    if (lane.selectedKeys.length > 0)
+                        commitSelection([])
                     lane.controller.seek(end)
+                }
             }
-            onCanceled: lane.stroke = []
+
+            onDoubleClicked: mouse => {
+                if (lane.tool !== "note" || lane.view.take.role !== "vocal")
+                    return
+                const hit = lane.noteAt(mouse.x, mouse.y)
+                if (hit)
+                    lane.controller.resetPitchNotes([{takeStart: hit.takeStart, takeEnd: hit.takeEnd}], false)
+            }
+
+            onCanceled: {
+                lane.stroke = []
+                lane.draggingNote = false
+                lane.dragDeltaSemitones = 0
+                lane.marqueeActive = false
+                pressedNote = null
+            }
         }
     }
 }

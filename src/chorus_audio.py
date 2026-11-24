@@ -47,7 +47,8 @@ def render_key(project, variant, solo=''):
     edits = tuple(edit for edit in project.edits
                   if edit.track in ids and edit.kind != 'take'
                   and (variant == 'processed' or edit.kind == variant))
-    return (project.first_frame, project.frames, project.rate, rendered, variant, edits)
+    engine = project.pitch_engine if variant in ('pitch', 'processed') else ''
+    return (project.first_frame, project.frames, project.rate, rendered, variant, edits, engine)
 
 
 def _read_take(track, sample_rate, check):
@@ -142,85 +143,144 @@ def _pedalboard():
     return pedalboard
 
 
-def _pitch_groups(regions, rate, size):
-    groups = []
-    context = round(.09 * rate)
-    for region in sorted(regions, key=lambda edit: edit.start):
-        left = max(0, round(region.start * rate))
-        right = min(size, round(region.end * rate))
-        if right <= left:
-            continue
-        if groups and groups[-1][-1][1] + 2 * context >= left:
-            groups[-1].append((left, right, region))
-        else:
-            groups.append([(left, right, region)])
-    return groups
+PITCH_CONTEXT_S = .09
+PITCH_MAX_GAP_S = .095
+PITCH_SMOOTH_S = .028
+PITCH_FADE_S = .020
 
 
 def _pitch_active(region):
     return any(y for _, y in region.points) if region.points else bool(region.value)
 
 
-def _shift_pitch(samples, rate, regions, check):
-    from chorus_pitch_dsp import blend_pitch, preserve_level, render_pitch, render_vocal_pitch, voiced_short_gap
+def _voiced_curve_gap(voiced_curve, start, end, rate):
+    midi, step = voiced_curve
+    a = max(0, round((start / rate) / step))
+    b = min(len(midi), max(a + 1, round((end / rate) / step)))
+    if b <= a:
+        return False
+    return float(np.mean(np.isfinite(midi[a:b]))) >= .65
 
-    context = round(.09 * rate)
-    untouched = [(round(edit.start * rate), round(edit.end * rate)) for edit in regions
-                 if edit.manual and not _pitch_active(edit)]
-    for group in _pitch_groups((row for row in regions if _pitch_active(row)), rate, len(samples)):
-        check()
-        automatic = rate <= 96000 and all(not row.manual and not row.points and abs(row.value) <= 100.
-                                          for _, _, row in group)
-        left = max(0, group[0][0] - context)
-        right = min(len(samples), group[-1][1] + context)
+
+def compile_pitch_spans(regions, rate, size, samples=None, *, voiced_curve=None):
+    """Compile active pitch edits into independent continuous voiced spans.
+
+    Auto, manual, split and hand-drawn edits share one compilation rule so that
+    equal curves render identically, splits preserve PCM bit-for-bit, and editing
+    one span never perturbs any non-continuous neighbor.
+    """
+    from chorus_pitch_dsp import voiced_short_gap
+
+    context = round(PITCH_CONTEXT_S * rate)
+    max_gap = round(PITCH_MAX_GAP_S * rate)
+    untouched = tuple(
+        (max(0, round(edit.start * rate)), min(size, round(edit.end * rate)))
+        for edit in regions if edit.manual and not _pitch_active(edit)
+    )
+    active = []
+    for region in sorted((row for row in regions if _pitch_active(row)),
+                         key=lambda edit: (edit.start, edit.end)):
+        start = max(0, round(region.start * rate))
+        end = min(size, round(region.end * rate))
+        if end > start:
+            active.append((start, end, region))
+    if not active:
+        return ()
+
+    # Partition strictly by acoustic continuity and explicit keep-original locks.
+    grouped = [[active[0]]]
+    for item in active[1:]:
+        start, end, _ = item
+        prev_end = grouped[-1][-1][1]
+        blocked = any(a < start and prev_end < b for a, b in untouched)
+        if not blocked and start <= prev_end + 1:
+            grouped[-1].append(item)
+        elif not blocked and 0 < start - prev_end <= max_gap:
+            bridged = (voiced_short_gap(samples, prev_end, start, rate, PITCH_MAX_GAP_S)
+                       if samples is not None else
+                       _voiced_curve_gap(voiced_curve, prev_end, start, rate)
+                       if voiced_curve is not None else False)
+            if bridged:
+                grouped[-1].append(item)
+            else:
+                grouped.append([item])
+        else:
+            grouped.append([item])
+
+    window = max(1, round(PITCH_SMOOTH_S * rate))
+    compiled = []
+    for members in grouped:
+        span_start = members[0][0]
+        span_end = max(end for _, end, _ in members)
+        left = max(0, span_start - context)
+        right = min(size, span_end + context)
         shift = np.zeros(right - left, dtype=np.float64)
-        spans = []
-        previous = None
-        for start, end, region in group:
+        cursor = None
+        for start, end, region in members:
             cents = region.value
             if region.points:
                 x, y = zip(*region.points)
                 cents = np.interp(np.arange(start, end) / rate, x, y)
-            shift[start - left:end - left] = np.asarray(cents) / 100.
-            adjacent = spans and spans[-1][1] == start
-            if spans and not adjacent and not (previous.manual or region.manual):
-                gap = spans[-1][1]
-                if (not any(a < start and gap < b for a, b in untouched)
-                        and voiced_short_gap(samples, gap, start, rate, .10 if automatic else .058)):
-                    shift[gap - left:start - left] = np.linspace(
-                        shift[gap - left - 1], shift[start - left], start - gap + 2)[1:-1]
-                    adjacent = True
-            if adjacent:
-                spans[-1] = (spans[-1][0], end)
-            else:
-                spans.append((start, end))
-            previous = region
-        # Smooth the requested trajectory separately from the audio splice.
-        smoothing = .036 if automatic else .012 if any(row.manual or row.points for _, _, row in group) else .018
-        window = max(1, round(smoothing * rate))
+            shift[start - left:end - left] = np.asarray(cents, dtype=np.float64) / 100.
+            if cursor is not None and start > cursor:
+                shift[cursor - left:start - left] = np.linspace(
+                    shift[cursor - left - 1], shift[start - left], start - cursor + 2)[1:-1]
+            cursor = max(cursor, end) if cursor is not None else end
         edges = np.pad(shift, (window // 2, (window - 1) // 2), mode='edge')
         prefix = np.r_[0., np.cumsum(edges)]
         shift = (prefix[window:] - prefix[:-window]) / window
-        dry = samples[left:right]
+        compiled.append((span_start, span_end, left, right, shift))
+    return tuple(compiled)
+
+
+def compiled_pitch_semitones(regions, times, *, duration, voiced_curve=None, sample_rate=1000):
+    """Evaluate the exact compiled continuous pitch shift (in semitones) at take times."""
+    times = np.asarray(times, dtype=np.float64)
+    result = np.zeros(times.shape, dtype=np.float64)
+    if not regions or duration <= 0.:
+        return result
+    size = max(1, round(duration * sample_rate))
+    spans = compile_pitch_spans(regions, sample_rate, size, voiced_curve=voiced_curve)
+    if not spans:
+        return result
+    indices = np.rint(times * sample_rate).astype(np.int64)
+    for span_start, span_end, left, _right, shift in spans:
+        inside = (indices >= span_start) & (indices < span_end)
+        if np.any(inside):
+            result[inside] = shift[indices[inside] - left]
+    return result
+
+
+def _pitch_groups(regions, rate, size, samples=None):
+    """Compatibility helper returning compiled span bounds for diagnostics."""
+    return [(span_start, span_end, left, right)
+            for span_start, span_end, left, right, _ in compile_pitch_spans(regions, rate, size, samples)]
+
+
+def _shift_pitch(samples, rate, regions, check, *, engine='auto'):
+    from chorus_pitch_dsp import blend_pitch, preserve_level, render_continuous_pitch
+
+    spans = compile_pitch_spans(regions, rate, len(samples), samples)
+    if not spans:
+        return
+    # Snapshot dry input so each independent voiced span reads immutable audio
+    # and never perturbs a non-continuous neighbor.
+    dry_source = samples.copy()
+    for span_start, span_end, left, right, shift in spans:
+        check()
+        dry = dry_source[left:right]
         clip = np.ascontiguousarray(dry.T)
-        if automatic:
-            edited = render_vocal_pitch(clip, rate, shift, check).T
-        else:
-            _pedalboard()
-            edited = render_pitch(clip, rate, shift, check).T
+        edited = render_continuous_pitch(
+            clip, rate, shift, check, engine=engine, pedalboard_loader=_pedalboard).T
         if edited.shape != dry.shape or not np.isfinite(edited).all():
             raise ValueError('修音组件返回的长度、声道或采样无效。')
         mixed = dry.copy()
-        for start, stop in spans:
-            fade = min(round((.023 if automatic else .016) * rate), (stop - start) // 2)
-            interval = slice(start - left, stop - left)
-            blend_pitch(mixed[interval], edited[interval], fade)
+        interval = slice(span_start - left, span_end - left)
+        fade = min(round(PITCH_FADE_S * rate), (span_end - span_start) // 2)
+        blend_pitch(mixed[interval], edited[interval], fade)
         level = preserve_level(dry, mixed, rate)
-        for start, stop in spans:
-            interval = slice(start - left, stop - left)
-            fade = min(round(.006 * rate), (stop - start) // 2)
-            _crossfade(mixed[interval], level[interval], fade)
-            samples[start:stop] = mixed[interval]
+        _crossfade(mixed[interval], level[interval], min(round(.006 * rate), (span_end - span_start) // 2))
+        samples[span_start:span_end] = mixed[interval]
 
 
 def _render_knots(points, tolerance):
@@ -298,9 +358,9 @@ def render_track(project, track, variant, check=lambda: None):
         regions = project.edits_for(track.id, 'pitch')
         active = tuple(row for row in regions if _pitch_active(row))
         if active:
-            if timing and all(not row.manual and not row.points and abs(row.value) <= 100. for row in active):
+            if timing:
                 dry_reference = original.copy() if syllables else _window(original, offset, project.frames)
-            _shift_pitch(original, rate, regions, check)
+            _shift_pitch(original, rate, regions, check, engine=project.pitch_engine)
     if syllables:
         from chorus_gain import render_syllable_gains
 
@@ -381,6 +441,7 @@ def render_monitor(project, variant, solo, cache, check, progress):
 
 def _render_spec(project, variant, **options):
     return {'title': project.title, 'id': project.id, 'rate': project.rate, 'variant': variant,
+            'pitch_engine': project.pitch_engine,
             'tracks': [asdict(track) for track in project.tracks], 'edits': [asdict(edit) for edit in project.edits],
             **options}
 
@@ -391,7 +452,8 @@ def _render_process(request):
     spec = json.loads(request.read_text(encoding='utf-8'))
     tracks = tuple(Recording(**(track | {'stamp': tuple(track['stamp'])})) for track in spec['tracks'])
     edits = tuple(Edit(**(edit | {'points': tuple(map(tuple, edit['points']))})) for edit in spec['edits'])
-    project = ChorusProject(spec['title'], spec['id'], spec['rate'], tracks, edits=edits)
+    project = ChorusProject(spec['title'], spec['id'], spec['rate'], tracks, edits=edits,
+                            pitch_engine=spec.get('pitch_engine', 'auto'))
 
     def progress(index, _total, _name):
         (request.parent / 'progress.txt').write_text(str(index), encoding='utf-8')

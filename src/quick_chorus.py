@@ -10,8 +10,9 @@ import os
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
+from chorus_pitch_dsp import signalsmith_available
 from chorus_precision import mapped_time, phrase_for
-from chorus_project import (ALIGNMENT_ENGINES, LYRIC_LANGUAGES, ROLES, SYLLABLE_GAIN, VARIANTS,
+from chorus_project import (ALIGNMENT_ENGINES, LYRIC_LANGUAGES, PITCH_ENGINES, ROLES, SYLLABLE_GAIN, VARIANTS,
                             ChorusProject, Edit, Lyric, Recording, Score, number)
 from chorus_speech import alignment_ready
 from common import ROOT
@@ -97,6 +98,10 @@ class QuickChorus(QObject):
         self._inspector_section = 'batch'
         self._batch_strength = {'timing': 100., 'pitch': 72.}
         self._pitch_draw = False
+        self._pitch_tool = 'note'
+        self._pitch_snap = True
+        self._selected_notes = ()
+        self._prep_scores = ()
         self._variant = 'original'
         self._active_variant = ''
         self._solo = ''
@@ -175,6 +180,8 @@ class QuickChorus(QObject):
                        'shared': self._lyric_row(shared), 'local': self._lyric_row(local)},
             'alignmentEngine': project.alignment_engine,
             'ensembleLanguage': project.ensemble_language,
+            'pitchEngine': project.pitch_engine,
+            'signalsmithReady': signalsmith_available(),
             'timingStrength': self._batch_strength['timing'],
             'pitchStrength': self._batch_strength['pitch'],
             'anchors': anchors, 'timingRoute': ('手工锚点' if current and current.manual and current.points else
@@ -187,13 +194,23 @@ class QuickChorus(QObject):
             'rangeFirst': self._selection[0], 'rangeLast': self._selection[1], 'mode': self._mode,
             'inspector': self._inspector_open, 'inspectorSection': self._inspector_section,
             'pitchDraw': self._pitch_draw,
+            'pitchTool': self._pitch_tool,
+            'pitchSnap': self._pitch_snap,
+            'selectedNoteCount': len(self._selected_notes),
+            'canMergeNotes': len(self._selected_notes) >= 2,
+            'canSplitAtPlayhead': self._can_split_at_playhead(selected),
             'variant': self._variant, 'activeVariant': self._active_variant, 'solo': self._solo,
             'playing': self._intent, 'loop': self._loop, 'loading': bool(self.monitor_worker.kind),
             'busy': bool(self.worker.kind), 'notice': self._notice, 'error': self._error,
             'undo': bool(self._undo), 'redo': bool(self._redo), 'export': str(self._export or ''),
             'score': Path(score.path).name if score else '', 'scoreOffset': score.offset if score else 0.,
+            'scoreSourceKind': score.source_kind if score else '',
+            'scoreSourceLabel': score.source_label if score else '',
+            'scoreConfirmed': score.confirmed if score else True,
             'scoreLanes': [{'id': lane.id, 'name': lane.name, 'notes': len(lane.notes)} for lane in score.lanes]
             if score else [],
+            'scoreRecommendations': self._score_recommendations(selected),
+            'prepScores': list(self._prep_scores),
             'issues': issues, 'issue': self._issue,
             'canAcceptIssue': (0 <= self._issue < len(self._suggestions)
                                and self._issue not in self._resolved and self._suggestions[self._issue].can_apply),
@@ -316,6 +333,7 @@ class QuickChorus(QObject):
         self._redo.clear()
         self._mode, self._variant, self._solo = 'all', 'original', ''
         self._inspector_section, self._pitch_draw = 'batch', False
+        self._pitch_tool, self._selected_notes = 'note', ()
         self._selection = (project.start, project.end)
         self._view_first, self._view_span = project.start, max(.01, project.end - project.start)
         self._export = None
@@ -628,9 +646,141 @@ class QuickChorus(QObject):
 
     @Slot(bool)
     def pitchDraw(self, enabled):
-        if self._pitch_draw != enabled:
-            self._pitch_draw = enabled
+        self.setPitchTool('draw' if enabled else 'note')
+
+    @Slot(str)
+    def setPitchTool(self, tool):
+        if tool not in ('note', 'split', 'draw'):
+            return
+        draw = tool == 'draw'
+        if self._pitch_tool != tool or self._pitch_draw != draw:
+            self._pitch_tool = tool
+            self._pitch_draw = draw
             self.changed.emit()
+
+    @Slot(bool)
+    def setPitchSnap(self, enabled):
+        flag = bool(enabled)
+        if self._pitch_snap != flag:
+            self._pitch_snap = flag
+            self.changed.emit()
+
+    @Slot(str)
+    def setPitchEngine(self, engine):
+        if engine in PITCH_ENGINES and not self.worker.kind and engine != self.project.pitch_engine:
+            self._commit(replace(self.project, pitch_engine=engine), keep_suggestions=True)
+            self._say('已切换修音引擎')
+
+    @Slot()
+    def refreshPreparationScores(self):
+        def work(stop, _send):
+            from chorus_score_match import preparation_score_candidates
+
+            return preparation_score_candidates(check=stop.is_set)
+
+        def done(rows):
+            self._prep_scores = tuple(rows)
+            self.changed.emit()
+            if rows:
+                self._say(f'找到 {len(rows)} 份准备任务谱轨')
+            else:
+                self._say('未找到已核验的准备任务 MIDI 或工程')
+
+        self._start('prep-scores', '正在读取准备任务谱轨', work, done)
+
+    @Slot(str, str, str)
+    def importPreparationScore(self, path_text, source_kind='preparation_draft', label=''):
+        try:
+            path = _path(path_text)
+        except (OSError, ValueError) as error:
+            self._say(error, error=True)
+            return
+
+        def work(stop, _send):
+            score = Score.read(path, source_kind=source_kind or 'preparation_draft', source_label=label or path.name)
+            _check(stop)
+            return score
+
+        def done(score):
+            project = replace(self.project, score=score, tracks=tuple(
+                replace(track, score_lane='') for track in self.project.tracks))
+            self._commit(project)
+            if score.confirmed:
+                self._say(f'已载入 {len(score.lanes)} 条谱轨，请把人声关联到对应声部。')
+            else:
+                self._say(f'已载入准备提取草稿（{len(score.lanes)} 条谱轨），请先核对起点和声部再确认。')
+
+        self._start('score', '正在读取准备任务谱轨', work, done)
+
+    @Slot(bool)
+    def confirmScore(self, confirmed):
+        score = self.project.score
+        if score is None or score.confirmed == bool(confirmed):
+            return
+        self._commit(replace(self.project, score=replace(score, confirmed=bool(confirmed))))
+        self._say('已确认乐谱起点与声部，可参与批量修音' if confirmed else '已恢复为草稿乐谱')
+
+    @Slot()
+    def applyRecommendedScoreLanes(self):
+        from chorus_audio import recording_key
+        from chorus_score_match import recommend_score_lanes
+
+        score = self.project.score
+        if not score or not score.lanes:
+            return
+        curves = {t.id: self._curves[k] for t in self.project.tracks
+                  if (k := recording_key(self.project, t)) in self._curves}
+        recs = recommend_score_lanes(self.project, curves)
+        project = self.project
+        bound = 0
+        for track in project.tracks:
+            if track.role != 'vocal' or track.score_lane:
+                continue
+            rows = recs.get(track.id)
+            if rows:
+                project = project.update_track(track.id, score_lane=rows[0]['laneId'])
+                bound += 1
+        if bound:
+            self._commit(project)
+            self._say(f'已为 {bound} 条人声推荐绑定谱轨')
+        else:
+            self._say('当前没有待绑定的空闲人声轨')
+
+    def _score_recommendations(self, track):
+        if not track or track.role != 'vocal' or not self.project.score:
+            return []
+        from chorus_audio import recording_key
+        from chorus_score_match import recommend_score_lanes
+
+        key = recording_key(self.project, track)
+        curves = {track.id: self._curves[key]} if key in self._curves else {}
+        return recommend_score_lanes(self.project, curves).get(track.id, [])
+
+    def _take_time_at(self, track, display_time, use_timing):
+        source = mapped_time(self.project, track, display_time) if use_timing else display_time
+        return source - track.offset
+
+    def _display_time_for(self, track, take_time, timing_edits):
+        proj_t = take_time + track.offset
+        for edit in timing_edits:
+            a, b = edit.source_time(edit.start), edit.source_time(edit.end)
+            if a <= proj_t <= b:
+                return edit.output_time(proj_t)
+        return proj_t
+
+    def _can_split_at_playhead(self, track):
+        if not track or track.role != 'vocal':
+            return False
+        from chorus_audio import recording_key
+        from chorus_notes import MIN_SPLIT_MARGIN, segment_vocal_notes
+
+        source = self._curves.get(recording_key(self.project, track))
+        if source is None:
+            return False
+        variant = self._active_variant if self._intent and self._active_variant else self._variant
+        take_pos = self._take_time_at(track, self._position, variant in ('timing', 'processed'))
+        notes = segment_vocal_notes(*source, note_edits=self.project.note_edits_for(track.id))
+        return any(n.start + MIN_SPLIT_MARGIN <= take_pos <= n.end - MIN_SPLIT_MARGIN for n in notes)
 
     @Slot(float, float)
     def selectRange(self, first, last):
@@ -775,16 +925,38 @@ class QuickChorus(QObject):
 
     @Slot(str, result='QVariantMap')
     def curve(self, identity):
-        from chorus_audio import recording_key
+        from chorus_audio import compiled_pitch_semitones, recording_key
+        from chorus_notes import effective_note_offset, segment_vocal_notes
+        from chorus_score_match import _normalize_token, match_vocal_to_score
 
         track = self.project.track(identity)
+        view_first = self._view_first
+        view_last = self._view_first + self._view_span
+        score_rows = []
+        bound_lane = None
+        if track and self.project.score and track.score_lane:
+            score = self.project.score
+            lane = next((item for item in score.lanes if item.id == track.score_lane), None)
+            if lane is not None:
+                bound_lane = tuple(
+                    type(note)(note.start + score.offset, note.end + score.offset, note.pitch, note.lyric)
+                    for note in lane.notes
+                )
+                for note in bound_lane:
+                    if note.end >= view_first and note.start <= view_last:
+                        score_rows.append({
+                            'start': note.start, 'end': note.end,
+                            'pitch': note.pitch, 'lyric': note.lyric,
+                        })
+
         source = self._curves.get(recording_key(self.project, track)) if track else None
         if source is None:
-            return {'first': 0., 'step': .01, 'midi': [], 'target': []}
+            return {'first': view_first, 'step': .01, 'midi': [], 'target': [],
+                    'notes': [], 'scoreNotes': score_rows}
         import numpy as np
 
         midi, step = source
-        grid = self._view_first + np.arange(max(1, int(self._view_span / step) + 1)) * step
+        grid = view_first + np.arange(max(1, int(self._view_span / step) + 1)) * step
         local = grid - track.offset
 
         def project_curve(take_time):
@@ -796,9 +968,12 @@ class QuickChorus(QObject):
 
         original = project_curve(local)
         variant = self._active_variant if self._intent and self._active_variant else self._variant
+        use_timing = variant in ('timing', 'processed')
+        use_pitch = variant in ('pitch', 'processed')
+        timing_edits = self.project.edits_for(identity, 'timing') if use_timing else ()
         moved = local.copy()
-        if variant in ('timing', 'processed'):
-            for edit in self.project.edits_for(identity, 'timing'):
+        if use_timing:
+            for edit in timing_edits:
                 covered = (grid >= edit.start) & (grid < edit.end)
                 if edit.points:
                     x, y = zip(*edit.points)
@@ -806,17 +981,70 @@ class QuickChorus(QObject):
                 else:
                     moved[covered] -= edit.value
         fixed = project_curve(moved)
-        if variant in ('pitch', 'processed'):
-            for pitch in self.project.edits_for(identity, 'pitch'):
-                covered = (moved >= pitch.start) & (moved < pitch.end) & np.isfinite(fixed)
-                if pitch.points:
-                    x, y = zip(*pitch.points)
-                    fixed[covered] += np.interp(moved[covered], x, y) / 100.
-                else:
-                    fixed[covered] += pitch.value / 100.
-        return {'first': self._view_first, 'step': step,
+        pitch_edits = self.project.edits_for(identity, 'pitch')
+        if use_pitch and pitch_edits:
+            shift_semitones = compiled_pitch_semitones(
+                pitch_edits, moved, duration=track.duration, voiced_curve=source)
+            finite = np.isfinite(fixed)
+            fixed[finite] += shift_semitones[finite]
+
+        vocal_notes = segment_vocal_notes(midi, step, note_edits=self.project.note_edits_for(identity))
+        matches = None
+        if bound_lane is not None and vocal_notes:
+            all_timing = self.project.edits_for(identity, 'timing')
+
+            def to_output(ta, tb):
+                return (self._display_time_for(track, ta, all_timing),
+                        self._display_time_for(track, tb, all_timing))
+
+            phrase_texts = tuple(
+                (p.start, p.end, _normalize_token(line.text))
+                for p in self.project.phrases
+                if (line := p.resolved_lyric(identity)) and line.text
+            )
+            matches = match_vocal_to_score(
+                vocal_notes, bound_lane, time_to_output=to_output, phrase_texts=phrase_texts,
+                draft=bool(self.project.score and not self.project.score.confirmed),
+            )
+
+        selected_set = {(round(a, 4), round(b, 4)) for a, b in self._selected_notes}
+        note_rows = []
+        for idx, note in enumerate(vocal_notes):
+            disp_start = self._display_time_for(track, note.start, timing_edits)
+            disp_end = self._display_time_for(track, note.end, timing_edits)
+            if disp_end < view_first - .2 or disp_start > view_last + .2:
+                continue
+            offset_cents, manual, locked, has_curve = effective_note_offset(note, pitch_edits)
+            shown_offset = offset_cents if use_pitch else 0.
+            match = matches[idx] if matches is not None else None
+            note_rows.append({
+                'id': f'{note.start:.4f}-{note.end:.4f}',
+                'start': disp_start,
+                'end': disp_end,
+                'takeStart': note.start,
+                'takeEnd': note.end,
+                'centerMidi': note.center_midi,
+                'targetMidi': note.center_midi + shown_offset / 100.,
+                'offsetCents': round(offset_cents, 1),
+                'lowMidi': note.low_midi,
+                'highMidi': note.high_midi,
+                'manual': manual,
+                'locked': locked,
+                'hasCurve': has_curve,
+                'linkedPrev': note.linked_prev,
+                'linkedNext': note.linked_next,
+                'selected': (round(note.start, 4), round(note.end, 4)) in selected_set,
+                'scorePitch': match.target_pitch if (match and match.target_pitch is not None) else -1,
+                'scoreLyric': match.score_note.lyric if (match and match.score_note is not None) else '',
+                'matchReason': match.reason if match is not None else '',
+                'matchReview': bool(match.review) if match is not None else False,
+            })
+
+        return {'first': view_first, 'step': step,
                 'midi': np.nan_to_num(original, nan=-1.).tolist(),
-                'target': np.nan_to_num(fixed, nan=-1.).tolist()}
+                'target': np.nan_to_num(fixed, nan=-1.).tolist(),
+                'notes': note_rows,
+                'scoreNotes': score_rows}
 
     @Slot(str, str, bool, bool, bool, float)
     @Slot(str, str, bool, bool, bool, float, bool, float)
@@ -997,6 +1225,8 @@ class QuickChorus(QObject):
     def _select(self, identity, selection):
         if (identity, selection) == (self._selected, self._selection):
             return
+        if identity != self._selected:
+            self._selected_notes = ()
         self._selected, self._selection = identity, selection
         audition = self._gain_audition
         self._reset_gain()
@@ -1263,6 +1493,121 @@ class QuickChorus(QObject):
             self._say('已锁定这一段时间锚点。')
         except ValueError as error:
             self._say(error, error=True)
+
+    @staticmethod
+    def _parse_note_spans(spans):
+        parsed = []
+        for item in spans or ():
+            if isinstance(item, dict):
+                a, b = number(item['takeStart']), number(item['takeEnd'])
+            else:
+                a, b = number(item[0]), number(item[1])
+            if b > a:
+                parsed.append((a, b))
+        return tuple(sorted(set(parsed)))
+
+    @Slot('QVariantList')
+    def selectPitchNotes(self, spans):
+        parsed = self._parse_note_spans(spans)
+        if parsed != self._selected_notes:
+            self._selected_notes = parsed
+            self.changed.emit()
+
+    @Slot('QVariantList', float)
+    def shiftPitchNotes(self, spans, delta_cents):
+        from chorus_notes import shift_vocal_notes
+
+        track = self.project.track(self._selected)
+        if not track or track.role != 'vocal':
+            return
+        parsed = self._parse_note_spans(spans) or self._selected_notes
+        if not parsed:
+            return
+        try:
+            updated = shift_vocal_notes(self.project, track.id, parsed, number(delta_cents))
+        except ValueError as error:
+            self._say(error, error=True)
+            return
+        if updated != self.project:
+            self._selected_notes = parsed
+            self._commit(updated, keep_suggestions=True)
+            if self._variant not in ('pitch', 'processed'):
+                self.setVariant('processed')
+            self._say(f'已调整 {len(parsed)} 个音符音高')
+
+    @Slot(float, float, float)
+    def splitPitchNote(self, take_start, take_end, split_display_time):
+        from chorus_notes import split_vocal_note
+
+        track = self.project.track(self._selected)
+        if not track or track.role != 'vocal':
+            return
+        variant = self._active_variant if self._intent and self._active_variant else self._variant
+        split_take = self._take_time_at(track, number(split_display_time), variant in ('timing', 'processed'))
+        try:
+            updated = split_vocal_note(self.project, track.id, number(take_start), number(take_end), split_take)
+        except ValueError as error:
+            self._say(error, error=True)
+            return
+        self._selected_notes = ((split_take, number(take_end)),)
+        self._commit(updated, keep_suggestions=True)
+        self._say('已拆分音符，拆分前后声音保持一致')
+
+    @Slot()
+    def splitSelectedNoteAtPlayhead(self):
+        from chorus_audio import recording_key
+        from chorus_notes import MIN_SPLIT_MARGIN, segment_vocal_notes
+
+        track = self.project.track(self._selected)
+        if not track or track.role != 'vocal':
+            return
+        source = self._curves.get(recording_key(self.project, track))
+        if source is None:
+            self._say('先提取本轨音高再拆分音符。', error=True)
+            return
+        variant = self._active_variant if self._intent and self._active_variant else self._variant
+        take_pos = self._take_time_at(track, self._position, variant in ('timing', 'processed'))
+        notes = segment_vocal_notes(*source, note_edits=self.project.note_edits_for(track.id))
+        hit = next((n for n in notes if n.start + MIN_SPLIT_MARGIN <= take_pos <= n.end - MIN_SPLIT_MARGIN), None)
+        if hit is None:
+            self._say('请将播放头移到音符内部再拆分。', error=True)
+            return
+        self.splitPitchNote(hit.start, hit.end, self._position)
+
+    @Slot('QVariantList')
+    def mergePitchNotes(self, spans=None):
+        from chorus_notes import merge_vocal_notes
+
+        track = self.project.track(self._selected)
+        if not track or track.role != 'vocal':
+            return
+        parsed = self._parse_note_spans(spans) if spans else self._selected_notes
+        if len(parsed) < 2:
+            self._say('请选中至少两个相邻音符再合并。', error=True)
+            return
+        try:
+            updated = merge_vocal_notes(self.project, track.id, parsed)
+        except ValueError as error:
+            self._say(error, error=True)
+            return
+        self._selected_notes = ((parsed[0][0], parsed[-1][1]),)
+        self._commit(updated, keep_suggestions=True)
+        self._say(f'已合并 {len(parsed)} 个音符')
+
+    @Slot('QVariantList', bool)
+    def resetPitchNotes(self, spans=None, lock_original=False):
+        from chorus_notes import reset_vocal_notes
+
+        track = self.project.track(self._selected)
+        if not track or track.role != 'vocal':
+            return
+        parsed = self._parse_note_spans(spans) if spans else self._selected_notes
+        if not parsed:
+            return
+        updated = reset_vocal_notes(self.project, track.id, parsed, lock_original=bool(lock_original))
+        if updated != self.project:
+            self._commit(updated, keep_suggestions=True)
+            self._say('已保留所选音符原音' if lock_original else '已还原所选音符')
 
     @Slot('QVariantList')
     def drawPitch(self, stroke):

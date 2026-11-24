@@ -16,6 +16,9 @@ SYLLABLE_GAIN = 'syllable_gain'
 SCORE_SUFFIXES = ('.mid', '.midi', '.svp', '.ustx', '.vpr', '.vsqx', '.acep', '.ufdata')
 LYRIC_LANGUAGES = ('ja', 'zh', 'en', 'yue')
 ALIGNMENT_ENGINES = ('auto', 'tifa', 'hubertfa')
+PITCH_ENGINES = ('auto', 'signalsmith', 'vwa', 'r3')
+NOTE_EDIT_KINDS = ('split', 'merge')
+SCORE_SOURCE_KINDS = ('external', 'preparation_draft')
 
 
 def fingerprint(path):
@@ -100,9 +103,15 @@ class Score:
     sha: str
     lanes: tuple
     offset: float = 0.
+    source_kind: str = 'external'
+    source_job: str = ''
+    source_label: str = ''
+    confirmed: bool = True
 
     @staticmethod
-    def read(path):
+    def read(path, *, source_kind='external', source_job='', source_label='', confirmed=None):
+        if source_kind not in SCORE_SOURCE_KINDS:
+            raise ValueError('未知的乐谱来源类型。')
         path = Path(path).expanduser().resolve(strict=True)
         suffix = path.suffix.casefold()
         if suffix not in SCORE_SUFFIXES:
@@ -142,7 +151,9 @@ class Score:
         )
         if not lanes:
             raise ValueError('乐谱中没有可用音符。')
-        return Score(str(path), digest, lanes)
+        is_confirmed = (source_kind != 'preparation_draft') if confirmed is None else bool(confirmed)
+        return Score(str(path), digest, lanes, 0., source_kind, str(source_job or ''),
+                     str(source_label or ''), is_confirmed)
 
 
 @dataclass(frozen=True)
@@ -243,6 +254,25 @@ class Edit:
 
 
 @dataclass(frozen=True)
+class NoteEdit:
+    """Explicit user split or merge on source-recording vocal note boundaries."""
+    track: str
+    kind: str
+    start: float
+    end: float
+
+    def __post_init__(self):
+        if self.kind not in NOTE_EDIT_KINDS:
+            raise ValueError('音符结构编辑类型无效。')
+        a, b = number(self.start), number(self.end)
+        if self.kind == 'split':
+            if a < 0. or a != b:
+                raise ValueError('音符拆分位置无效。')
+        elif a < 0. or a >= b:
+            raise ValueError('音符合并范围无效。')
+
+
+@dataclass(frozen=True)
 class ChorusProject:
     title: str = '未命名合唱'
     id: str = ''
@@ -254,6 +284,8 @@ class ChorusProject:
     edits: tuple = ()
     alignment_engine: str = 'auto'
     ensemble_language: str = 'ja'
+    pitch_engine: str = 'auto'
+    note_edits: tuple = ()
 
     @classmethod
     def fresh(cls, title='未命名合唱'):
@@ -315,7 +347,8 @@ class ChorusProject:
                         for phrase in self.phrases)
         updated = replace(self, tracks=(), guide='' if self.guide == identity else self.guide,
                           edits=tuple(edit for edit in self.edits if identity not in (edit.track, edit.source)),
-                          phrases=phrases)
+                          phrases=phrases,
+                          note_edits=tuple(item for item in self.note_edits if item.track != identity))
         return replace(updated.add(tracks), rate=self.rate)
 
     def replace_region(self, track, kind, start, end, edits):
@@ -334,6 +367,9 @@ class ChorusProject:
 
     def edits_for(self, track, kind):
         return tuple(edit for edit in self.edits if edit.track == track and edit.kind == kind)
+
+    def note_edits_for(self, track):
+        return tuple(edit for edit in self.note_edits if edit.track == track)
 
     def save(self, path):
         path = Path(path).expanduser().resolve()
@@ -378,7 +414,14 @@ class ChorusProject:
         score = None
         if data['score']:
             raw_score = data['score']
-            score = Score.read(raw_score['path'])
+            source_kind = str(raw_score.get('source_kind', 'external'))
+            score = Score.read(
+                raw_score['path'],
+                source_kind=source_kind,
+                source_job=str(raw_score.get('source_job', '')),
+                source_label=str(raw_score.get('source_label', '')),
+                confirmed=raw_score.get('confirmed', source_kind != 'preparation_draft'),
+            )
             if score.sha != raw_score['sha']:
                 raise ValueError('乐谱和保存工程时不一致，请重新绑定。')
             score = replace(score, offset=number(raw_score['offset']))
@@ -397,6 +440,10 @@ class ChorusProject:
                       for row in data['edits'] if row['track'] in ids and
                       (row['kind'] != 'take' or any(item.id == row.get('source') and item.role == 'take'
                                                    for item in records)))
+        note_edits = tuple(
+            NoteEdit(str(row['track']), str(row['kind']), number(row['start']), number(row['end']))
+            for row in data.get('note_edits', ()) if row.get('track') in ids
+        )
         rate = int(data['rate'])
         if not 8000 <= rate <= 384000:
             raise ValueError('工程采样率无效。')
@@ -406,5 +453,9 @@ class ChorusProject:
         language = data.get('ensemble_language', 'ja')
         if language not in ('', *LYRIC_LANGUAGES):
             raise ValueError('请选择受支持的歌词语言。')
+        pitch_engine = data.get('pitch_engine', 'auto')
+        if pitch_engine not in PITCH_ENGINES:
+            raise ValueError('修音引擎无效。')
         return cls(str(data['title']), str(data['id']), rate, tuple(records), score,
-                   str(data['guide']) if data['guide'] in ids else '', phrases, edits, engine, language)
+                   str(data['guide']) if data['guide'] in ids else '', phrases, edits, engine, language,
+                   pitch_engine, note_edits)

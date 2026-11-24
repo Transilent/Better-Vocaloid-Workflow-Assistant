@@ -30,6 +30,14 @@
       "source": "src/chorus_gain.py"
     },
     {
+      "file": "chorus_notes.py",
+      "source": "src/chorus_notes.py"
+    },
+    {
+      "file": "chorus_score_match.py",
+      "source": "src/chorus_score_match.py"
+    },
+    {
       "file": "chorus_precision.py",
       "source": "src/chorus_precision.py"
     },

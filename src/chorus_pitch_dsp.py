@@ -1,13 +1,19 @@
 """Continuous vocal pitch correction and sample-aligned native pitch effects."""
-from ctypes import POINTER, PyDLL, c_double, c_float, c_int, c_uint, c_void_p, cast
+from ctypes import CDLL, POINTER, PyDLL, c_double, c_float, c_int, c_uint, c_void_p, cast
 from functools import lru_cache
+import hashlib
+import json
+import os
+from pathlib import Path
 
 import numpy as np
 import soxr
 
 
 _FLOAT_PTR = POINTER(c_float)
+_DOUBLE_PTR = POINTER(c_double)
 _PLANAR = POINTER(_FLOAT_PTR)
+_SIGNALSMITH_TONALITY_HZ = 8000.0
 _OPTIONS = (
     0x00000001  # ProcessRealTime
     | 0x00010000  # ThreadingNever
@@ -17,6 +23,143 @@ _OPTIONS = (
     | 0x10000000  # ChannelsTogether
     | 0x20000000  # EngineFiner
 )
+
+
+@lru_cache(maxsize=8)
+def _verified_signalsmith_dll(path_text, dll_stamp, manifest_stamp, manifest_text):
+    try:
+        manifest = json.loads(manifest_text)
+        digest = hashlib.sha256(Path(path_text).read_bytes()).hexdigest()
+        if manifest.get('dll_sha256', '').lower() == digest and int(manifest.get('abi', 0)) == 1:
+            return Path(path_text)
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+
+def signalsmith_dll_path(root=None, environment=None):
+    """Resolve an explicit developer Signalsmith DLL or the verified local component."""
+    env = os.environ if environment is None else environment
+    explicit = env.get('VWA_CHORUS_PITCH_DLL', '')
+    if explicit:
+        path = Path(explicit).expanduser().resolve()
+        return path if path.is_file() else None
+    root = Path(root) if root else Path(__file__).resolve().parent
+    if root.name == 'src':
+        root = root.parent
+    directory = root / 'components/native-audio'
+    manifest_path = directory / 'chorus-pitch.json'
+    dll_path = directory / 'vwa_chorus_pitch.dll'
+    try:
+        m_stat = manifest_path.stat()
+        d_stat = dll_path.stat()
+        manifest_text = manifest_path.read_text(encoding='utf-8-sig')
+    except OSError:
+        return None
+    return _verified_signalsmith_dll(
+        str(dll_path), (d_stat.st_size, d_stat.st_mtime_ns),
+        (m_stat.st_size, m_stat.st_mtime_ns), manifest_text,
+    )
+
+
+def signalsmith_available(root=None, environment=None):
+    return signalsmith_dll_path(root=root, environment=environment) is not None
+
+
+@lru_cache(maxsize=4)
+def _signalsmith_api(path_text):
+    api = CDLL(path_text)
+    abi_fn = api.vwa_chorus_pitch_abi
+    abi_fn.restype = c_int
+    abi_fn.argtypes = ()
+    if abi_fn() != 1:
+        raise RuntimeError('Signalsmith 原生修音组件 ABI 不匹配。')
+    stretch_fn = api.vwa_chorus_pitch_stretch
+    stretch_fn.restype = c_int
+    stretch_fn.argtypes = (c_int, c_int, c_int, _FLOAT_PTR, _DOUBLE_PTR, c_int, c_float, _FLOAT_PTR)
+    return stretch_fn
+
+
+def _signalsmith_stream(clip, rate, shift, check, *, tonality_hz=_SIGNALSMITH_TONALITY_HZ, formants=True):
+    dll = signalsmith_dll_path()
+    if dll is None:
+        raise RuntimeError('未找到 Signalsmith 原生修音组件。')
+    stretch_fn = _signalsmith_api(str(dll))
+    check()
+    channels, frames = clip.shape
+    source = np.ascontiguousarray(clip, dtype=np.float32)
+    control = np.ascontiguousarray(shift, dtype=np.float64)
+    output = np.empty_like(source)
+    latency = stretch_fn(
+        int(rate), int(channels), int(frames),
+        source.ctypes.data_as(_FLOAT_PTR),
+        control.ctypes.data_as(_DOUBLE_PTR),
+        1 if formants else 0,
+        c_float(float(tonality_hz)),
+        output.ctypes.data_as(_FLOAT_PTR),
+    )
+    check()
+    if latency < 0:
+        raise RuntimeError(f'Signalsmith 修音返回错误码：{latency}')
+    return output
+
+
+def render_signalsmith_pitch(clip, rate, shift, check, *, tonality_hz=_SIGNALSMITH_TONALITY_HZ, formants=True):
+    """Render continuous multichannel pitch shift via Signalsmith Stretch (MIT)."""
+    if clip.shape[1] != len(shift):
+        raise ValueError('修音曲线与音频长度不一致。')
+    if not np.any(shift):
+        return clip
+    if not np.isfinite(shift).all() or np.max(np.abs(shift)) > 72.:
+        raise ValueError('修音曲线包含无效音高。')
+    if rate <= 96000:
+        return _signalsmith_stream(clip, rate, shift, check, tonality_hz=tonality_hz, formants=formants)
+    work_rate = rate
+    while work_rate > 96000:
+        work_rate = round(work_rate / 2)
+    down = soxr.resample(clip.T, rate, work_rate)
+    control = np.interp(np.arange(len(down)) * (rate / work_rate), np.arange(len(shift)), shift)
+    changed = _signalsmith_stream(down.T, work_rate, control, check, tonality_hz=tonality_hz, formants=formants)
+    restored = soxr.resample(changed.T, work_rate, rate).T
+    if restored.shape[1] < len(shift):
+        return np.concatenate((restored, clip[:, restored.shape[1]:]), axis=1)
+    return restored[:, :len(shift)]
+
+
+def resolve_pitch_engine(engine='auto'):
+    """Choose the concrete pitch engine independent of auto/manual edit origin."""
+    if engine == 'signalsmith':
+        return 'signalsmith'
+    if engine == 'vwa':
+        return 'vwa'
+    if engine == 'r3':
+        return 'r3'
+    return 'signalsmith' if signalsmith_available() else 'vwa'
+
+
+def render_continuous_pitch(clip, rate, shift, check, *, engine='auto', pedalboard_loader=None):
+    """Unified continuous pitch rendering path independent of manual/auto edit flags."""
+    if clip.shape[1] != len(shift):
+        raise ValueError('修音曲线与音频长度不一致。')
+    if not np.any(shift):
+        return clip
+    resolved = resolve_pitch_engine(engine)
+    if resolved == 'signalsmith':
+        return render_signalsmith_pitch(clip, rate, shift, check)
+    if resolved == 'vwa':
+        if rate <= 96000 and (engine == 'vwa' or float(np.max(np.abs(shift))) <= 1.0):
+            return render_vocal_pitch(clip, rate, shift, check)
+        try:
+            if pedalboard_loader is not None:
+                pedalboard_loader()
+            return render_pitch(clip, rate, shift, check)
+        except RuntimeError:
+            if rate <= 96000:
+                return render_vocal_pitch(clip, rate, shift, check)
+            raise
+    if pedalboard_loader is not None:
+        pedalboard_loader()
+    return render_pitch(clip, rate, shift, check)
 
 
 @lru_cache(maxsize=1)

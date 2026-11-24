@@ -26,6 +26,7 @@ dependencies/vocal2midi/experiments/
 *.exe
 *.dll
 /components/native-audio/native-audio.json
+/components/native-audio/chorus-pitch.json
 *.pyd
 *.onnx
 *.gguf
