@@ -1,10 +1,12 @@
 """Measure phrase timing and target stable notes from each independent take."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import numpy as np
 import soxr
 
 from chorus_project import Edit, Phrase
-from chorus_precision import analysis_phrases, note_anchors, phone_anchors, phone_requests, phoneme_cache, warp
+from chorus_precision import (analysis_phrases, fit_timing, fit_translation, note_anchors, phone_anchors,
+                              phone_requests, phoneme_cache)
+from i18n import tr
 
 
 FRAME = .01
@@ -32,10 +34,12 @@ class Suggestion:
     points: tuple = ()
     anchors: tuple = ()
     route: str = ''
+    timing_residual_ms: int | None = None
+    restore_timing: bool = False
 
     @property
     def can_apply(self):
-        return bool(self.points) or (self.value is not None and abs(self.value) > 1e-6)
+        return self.restore_timing or bool(self.points) or (self.value is not None and abs(self.value) > 1e-6)
 
 
 def _mono(samples):
@@ -182,6 +186,36 @@ def _timing_match(reference, target, source, take, phrase, radius):
     return -lag * FRAME, ('起音候选接近，建议试听' if review else '声学起音'), review
 
 
+def quiet_timing(track, features):
+    """Return a predicate for guarded cuts on this track's project clock."""
+    def quiet(first, last):
+        grid = np.arange(round(first / FRAME), round(last / FRAME))
+        return not _project_slice(features.active, track.offset, grid).any()
+
+    return quiet
+
+
+def timing_suggestion(track, span, fit, route, source, review_reason=''):
+    if fit.movement is None:
+        method = tr('唱段边界过近，可扩展选区后再试')
+    elif fit.local:
+        method = tr('局部拉伸 · 基准 {0} ms', f'{fit.movement * 1000:+.0f}')
+    elif fit.movement:
+        method = tr('整句平移 {0} ms', f'{fit.movement * 1000:+.0f}')
+    else:
+        method = tr('原录音时序已接近参照' if fit.residual_ms <= 25 else '该力度下时序调整很小')
+    detail = f'{tr(route)} · {source} · {method}'
+    if fit.anchors:
+        detail += ' · ' + tr('{0} 个边界 · 中位余差 {1} ms', len(fit.anchors), fit.residual_ms)
+    if review_reason:
+        detail += ' · ' + tr(review_reason)
+    elif fit.review and fit.movement is not None:
+        detail += ' · ' + tr('边界意见不一致，建议试听')
+    return Suggestion(track, 'timing', *span, fit.movement, detail, fit.review or bool(review_reason),
+                      points=fit.points, anchors=fit.anchors, route=route,
+                      timing_residual_ms=fit.residual_ms if fit.anchors else None)
+
+
 def _pitch_runs(midi, step):
     for start, stop in _runs(np.isfinite(midi)):
         if (stop - start) * step < .08:
@@ -226,6 +260,8 @@ def _timing_candidates(project, targets, selection, strength, radius, features, 
         origin = ref or track
         for phrase in phrase_regions(project, origin, features[origin.id], selection):
             check()
+            if track.id == phrase.reference:
+                continue
             reference = project.reference(track, phrase)
             if reference is None or reference.id == track.id or reference.role == 'backing':
                 continue
@@ -241,29 +277,35 @@ def _timing_candidates(project, targets, selection, strength, radius, features, 
         evidence = facts.get(tuple(clip.key for clip in clips), {})
         route, anchors = phone_anchors(clips, evidence)
         first, last = max(selection[0], phrase.start), min(selection[1], phrase.end)
-        points, matched, delay = warp(anchors, first, last, strength, radius)
-        if not matched and track.id in curves and ref.id in curves:
+        quiet = quiet_timing(track, features[track.id])
+        fit = fit_timing(anchors, first, last, strength, radius, quiet)
+        if fit is None and track.id in curves and ref.id in curves:
             for item in (ref, track):
                 if item.id not in note_runs:
                     note_runs[item.id] = tuple((item.offset + a, item.offset + b, pitch)
                                                for a, b, pitch in _pitch_runs(*curves[item.id]))
             notes = note_anchors(note_runs[ref.id], note_runs[track.id], phrase, movement)
-            points, matched, delay = warp(notes, first, last, strength, radius)
+            fit = fit_timing(notes, first, last, strength, radius, quiet)
             route = '音符起音'
-        if matched:
-            label = f'{route} · {len(matched)} 个边界'
-            generated.append(Suggestion(track.id, 'timing', first, last, delay, label,
-                                        movement is None or (review and route == '音符起音'),
-                                        points=points, anchors=matched, route=route))
+        explicit = ref.id in (phrase.reference, track.timing_ref)
+        source = tr('指定参照 {0}' if explicit else '工程参照 {0}', ref.name)
+        if fit is not None:
+            reason = ('仅靠工程参照推断的大位移，建议先试听'
+                      if not explicit and abs(fit.movement or 0.) > .100
+                      else '音符起音匹配存疑，建议先试听' if review and route == '音符起音' else '')
+            generated.append(timing_suggestion(track.id, (first, last), fit, route, source, reason))
             continue
         if clips:
             reason = next((evidence[clip.key].get('detail') for clip in clips
                            if evidence.get(clip.key, {}).get('detail')), '')
             detail += f' · {reason or failure or "音素边界不足"}'
-        if movement is not None:
-            movement *= strength
-        generated.append(Suggestion(track.id, 'timing', first, last, movement, detail, review,
-                                    route='声学起音' if movement is not None else '需核对'))
+        if movement is None:
+            generated.append(Suggestion(track.id, 'timing', first, last, None, detail, True, route='需核对'))
+        else:
+            fit = fit_translation(first, last, movement * strength, quiet)
+            reason = detail if review else ('仅靠工程参照推断的大位移，建议先试听'
+                                            if not explicit and abs(movement) > .100 else '')
+            generated.append(timing_suggestion(track.id, (first, last), fit, '声学起音', source, reason))
     return generated
 
 
@@ -275,12 +317,21 @@ def proposals(project, targets, selection, kind, strength, radius, features, cur
         from chorus_ensemble import ensemble_timing
 
         phrases, generated = ensemble_timing(project, targets, selection, features, audio, ensemble_language,
-                                             strength, speech, check, phone_progress)
+                                             strength, radius, speech, check, phone_progress)
     else:
         reference = project.reference()
         phrases = phrase_regions(project, reference, features.get(reference.id) if reference else None, selection)
         generated = (_timing_candidates(project, targets, selection, strength, radius, features, curves, check,
                                         phone_progress, speech, audio) if kind != 'pitch' else [])
+    if strength:
+        for index, row in enumerate(generated):
+            # A fresh, closely matched original can supersede older automatic
+            # movement. Mere absence of evidence or strength zero may not.
+            if (row.kind == 'timing' and row.value == 0. and not row.points and not row.review and len(row.anchors) >= 4
+                    and row.timing_residual_ms is not None and row.timing_residual_ms <= 25
+                    and any(not edit.manual and edit.start < row.end and row.start < edit.end
+                            for edit in project.edits_for(row.track, 'timing'))):
+                generated[index] = replace(row, restore_timing=True, detail=row.detail + ' · ' + tr('恢复原录音时序'))
     pitch_strength = strength if pitch_strength is None else pitch_strength
     score = project.score
     notes_by_lane = {lane.id: tuple(type(note)(note.start + score.offset, note.end + score.offset,
@@ -341,7 +392,8 @@ def apply_suggestions(project, rows, *, manual=False):
             continue
         bias = track.offset if row.kind == 'pitch' else 0.
         start, end = row.start - bias, row.end - bias
-        edit = Edit(track.id, row.kind, start, end, row.value, row.points, manual=manual, basis=row.route)
+        edit = (None if row.restore_timing and not manual else
+                Edit(track.id, row.kind, start, end, row.value, row.points, manual=manual, basis=row.route))
         blocked = () if manual else tuple(region for region in project.edits_for(track.id, row.kind) if region.manual)
         cursor = start
         for lock in blocked:
@@ -349,8 +401,9 @@ def apply_suggestions(project, rows, *, manual=False):
                 continue
             if lock.start > cursor:
                 project = project.replace_region(track.id, row.kind, cursor, lock.start,
-                                                 (edit.clip(cursor, lock.start),))
+                                                 (edit.clip(cursor, lock.start),) if edit else ())
             cursor = max(cursor, lock.end)
         if cursor < end:
-            project = project.replace_region(track.id, row.kind, cursor, end, (edit.clip(cursor, end),))
+            project = project.replace_region(track.id, row.kind, cursor, end,
+                                             (edit.clip(cursor, end),) if edit else ())
     return project

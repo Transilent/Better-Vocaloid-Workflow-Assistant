@@ -16,8 +16,8 @@ import soxr
 from chorus_analysis import Features, Suggestion, apply_suggestions, feature_track, proposals
 from chorus_audio import export_delivery, export_stems, monitor_tracks, render_key, render_track
 from chorus_pitch_dsp import preserve_low_transients
-from chorus_precision import (mark_note_edges, merge_speech_drafts, move_anchor, note_anchors, phone_anchors, phoneme_cache,
-                              pitch_from_stroke, reference_pitch, update_phrase, warp)
+from chorus_precision import (fit_timing, mark_note_edges, merge_speech_drafts, move_anchor, note_anchors, phone_anchors,
+                              phoneme_cache, pitch_from_stroke, reference_pitch, update_phrase)
 from chorus_project import ChorusProject, Edit, Lyric, Phrase, Recording, Score
 from chorus_speech import SpeechClip, same_text
 
@@ -59,8 +59,8 @@ def check_precision(root, project, guide, take):
     harmony = ((.62, .86, 55), (1.05, 1.28, 54), (1.75, 2.02, 56))
     notes = note_anchors(melody, harmony, Phrase(*selection), -.12)
     assert len(notes) == 3
-    knots, anchors, shift = warp(notes, *selection, 1., .60)
-    assert len(anchors) == 3 and knots[1][0] == .50
+    knots = ((.30, .42), *((ref, source) for _, ref, source in notes), (2.30, 2.45))
+    assert knots[1][0] == .50
     manual = move_anchor(take.id, selection, knots, 1., 1.03)
     assert manual.manual and manual.points[2][0] == 1.03
     detected = np.full(300, np.nan, dtype=np.float32)
@@ -73,7 +73,7 @@ def check_precision(root, project, guide, take):
     assert abs(longer.output_time(.63) - .755) < 1e-9 and longer.source_time(.31) == base.source_time(.31)
     lock = Edit(take.id, 'timing', .80, 1.36, 0., manual=True)
     next_project = replace(project, edits=(lock,))
-    candidate = Suggestion(take.id, 'timing', *selection, shift, 'note evidence', points=knots)
+    candidate = Suggestion(take.id, 'timing', *selection, -.12, 'note evidence', points=knots)
     protected = apply_suggestions(next_project, [candidate])
     before, retained, after = protected.edits_for(take.id, 'timing')
     assert retained == lock and before.end == lock.start and after.start == lock.end
@@ -134,6 +134,51 @@ def check_precision(root, project, guide, take):
     print('PASS: selected aligner persists, its cache is separate and fallback uses one model per pair')
 
 
+def check_translation_first(root):
+    rate = 16000
+    t = np.arange(4 * rate) / rate
+    tone = (.2 * np.sin(2 * np.pi * 235. * t)).astype(np.float32)
+    tone[(t < .70) | (t > 3.24)] = 0.
+    path = root / 'translation-first.wav'
+    sf.write(path, tone, rate, subtype='FLOAT')
+    voice = Recording.read(path)
+    quiet = lambda a, b: not np.any(tone[max(0, round(a * rate)):round(b * rate)])
+    clock = np.linspace(.85, 3.02, 14)
+    anchors = [('a', at + .05 + (.23 if i == 5 else 0.), at) for i, at in enumerate(clock)]
+    fit = fit_timing(anchors, .36, 3.66, 1., .6, quiet)
+    assert not fit.points and not fit.local and not fit.review and abs(fit.movement - .05) < 1.e-7
+    assert len(fit.anchors) == 13 and fit.residual_ms == 0
+    project = ChorusProject.fresh().add((voice,))
+    with patch('chorus_audio._pedalboard', side_effect=AssertionError('translation needs no stretch')):
+        moved = render_track(replace(project, edits=(Edit(voice.id, 'timing', .36, 3.66, fit.movement),)),
+                             voice, 'timing')[:, 0]
+    np.testing.assert_array_equal(moved, np.pad(tone, (800, 0))[:len(tone)])
+    half = fit_timing(anchors, .36, 3.66, .5, .6, quiet)
+    assert abs(half.movement - .025) < 1.e-7 and not half.local
+    plateau = fit_timing(anchors, .70, 3.24, 1., .6, quiet)
+    assert plateau.points[0] == (.70, .70) and plateau.points[-1] == (3.24, 3.24)
+    assert not plateau.local and abs(plateau.points[1][0] - plateau.points[1][1] - .05) < 1.e-7
+    assert abs(plateau.points[2][0] - plateau.points[2][1] - .05) < 1.e-7
+    variable = [('a', at + delta, at) for at, delta in zip(clock, np.linspace(-.12, .12, len(clock)))]
+    localized = fit_timing(variable, .36, 3.66, 1., .6, quiet)
+    assert localized.local and localized.residual_ms < 18 and len(localized.points) > 4
+    rates = [((b[1] - a[1]) / (b[0] - a[0])) for a, b in zip(localized.points, localized.points[1:])]
+    assert all(.6 <= rate <= 2.6 for rate in rates)
+    repeated = Phrase(1., 2., lyrics=(Lyric('', '確認', 'ja', True), Lyric(voice.id, '新しい案')))
+    assert repeated.resolved_lyric(voice.id).text == '確認'
+    previous = Edit(voice.id, 'timing', .5, 1.4, .21)
+    locked = Edit(voice.id, 'timing', 1.4, 2., .11, manual=True)
+    reset = Suggestion(voice.id, 'timing', .4, 2.2, 0., '', restore_timing=True)
+    assert apply_suggestions(replace(project, edits=(previous, locked)), (reset,)).edits == (locked,)
+    warped = Suggestion(voice.id, 'timing', .36, 3.66, 0., '', points=localized.points,
+                        anchors=localized.anchors, timing_residual_ms=localized.residual_ms)
+    with patch('chorus_analysis._timing_candidates', return_value=[warped]):
+        _, rows = proposals(replace(project, edits=(previous,)), (voice,), (.36, 3.66), 'timing', 1., .6,
+                            {}, {}, lambda: None, lambda *_: None)
+    assert rows == (warped,) and not rows[0].restore_timing
+    print('PASS: translation preserves PCM, intermittent outliers stay put and real local drift earns a warp')
+
+
 def check_native_pitch_transitions(root):
     from mixdown_runtime import component_manifest, optional_packages
 
@@ -188,12 +233,24 @@ def check_native_pitch_transitions(root):
 
 
 def check_ensemble(root, guide, take):
+    from chorus_ensemble import _preferred_guide
+
+    local_guide = replace(guide, phrase_reference_only=True)
+    vocal_project = ChorusProject.fresh().add((local_guide, take))
+    assert vocal_project.guide == take.id and _preferred_guide(vocal_project) == take
+    assert _preferred_guide(replace(vocal_project, guide='')) is None
+    assert _preferred_guide(replace(vocal_project, guide=local_guide.id)) == local_guide
+    shifted_ref = vocal_project.update_track(local_guide.id, offset=-1.)
+    assert shifted_ref.start == 0. and shifted_ref.end == take.duration
+    assert shifted_ref.update_track(local_guide.id, offset=1.).end == take.duration
+    local_path = root / 'scoped-reference.vwachorus'
+    vocal_project.save(local_path)
+    assert ChorusProject.open(local_path) == vocal_project
     peer_path, other_path = root / 'peer.wav', root / 'other-lyrics.wav'
     write_audio(peer_path, 16000, -.12)
     write_audio(other_path, 16000, .07)
     peer, other = Recording.read(peer_path), Recording.read(other_path)
-    project = ChorusProject.fresh().add((take, peer, other)).add((guide,))
-    assert project.guide == take.id
+    project = replace(ChorusProject.fresh().add((take, peer, other, guide)), guide=guide.id)
     clocks = {take.id: ((.38, 1.35), (1.78, 2.54)), peer.id: ((.38, 1.35),),
               other.id: ((.38, 1.35),), guide.id: ((0, 3.0),)}
     features = {}
@@ -304,6 +361,7 @@ def main():
         assert Recording.read(target_path).sha == take.sha
         print('PASS: tempo-aware independent voice target, known offset, region undo, mixed-rate render and stem exactness')
         check_precision(root, project, guide, take)
+        check_translation_first(root)
         check_ensemble(root, guide, take)
         clock = np.arange(16000) / 16000
         dry = (.10 * np.sin(2 * np.pi * 240 * clock)).astype('float32')[:, None]

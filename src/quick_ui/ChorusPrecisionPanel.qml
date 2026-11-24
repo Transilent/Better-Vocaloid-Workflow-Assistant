@@ -8,6 +8,7 @@ ColumnLayout {
     required property QtObject theme
     required property var view
     signal importTake()
+    signal importReference()
     readonly property bool hasAudio: !!view.take.id && view.take.role !== "backing"
     readonly property bool selection: view.rangeLast > view.rangeFirst
     readonly property bool vocal: hasAudio && view.take.role === "vocal" && selection
@@ -165,6 +166,15 @@ ColumnLayout {
                 .map(row => ({label: row.name, value: row.id})))
             currentIndex: Math.max(0, indexOfValue(panel.lines.ref))
             onActivated: panel.controller.phraseReference(currentValue)
+        }
+        UiButton {
+            objectName: "chorusImportPhraseReference"
+            theme: panel.theme
+            Layout.fillWidth: true
+            quiet: true
+            text: panel.t("导入本句参照…")
+            enabled: panel.vocal && !panel.view.busy
+            onClicked: panel.importReference()
         }
         UiComboBox {
             id: aligner

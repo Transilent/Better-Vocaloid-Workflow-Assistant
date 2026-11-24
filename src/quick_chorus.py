@@ -143,8 +143,9 @@ class QuickChorus(QObject):
         knots = (current.points if current and current.manual else
                  timing.points if timing and timing.points else current.points if current else ())
         if not knots and timing and len(timing.anchors) >= 2:
-            knots = ((timing.start, timing.start), *((x, y) for _, x, y in timing.anchors),
-                     (timing.end, timing.end))
+            knots = ((timing.start, timing.start - (timing.value or 0.)),
+                     *((x, y) for _, x, y in timing.anchors if timing.start < x < timing.end),
+                     (timing.end, timing.end - (timing.value or 0.)))
         labels = {round(y, 5): label for label, _, y in timing.anchors} if timing else {}
         anchors = [{'label': labels.get(round(y, 5), str(i + 1)), 'time': x, 'source': y}
                    for i, (x, y) in enumerate(knots[1:-1])]
@@ -390,8 +391,38 @@ class QuickChorus(QObject):
 
     @Slot(str, 'QVariantList')
     def importAudio(self, role, urls):
+        self._import_audio(role, urls)
+
+    @Slot(QUrl)
+    def importPhraseReference(self, url):
+        if not self._selected_vocal() or self._selection[1] <= self._selection[0]:
+            self._say('请选择要核对的人声唱段。', error=True)
+            return
+        self._import_audio('guide', (url,), self._selection)
+
+    def _import_audio(self, role, urls, reference_span=None):
+        from chorus_precision import update_phrase
+
+        initial = self.project
+
+        def bind_reference(project, track):
+            try:
+                updated = update_phrase(project, reference_span, reference=track.id)
+            except ValueError as error:
+                self._say(error, error=True)
+                return
+            self._commit(updated)
+            self._say('已设为本唱段参照')
+
         try:
             paths = tuple(dict.fromkeys(_path(value) for value in urls))
+            if reference_span:
+                loaded = next((track for track in initial.tracks if track.role == 'guide'
+                               and Path(track.path) == paths[0]), None)
+                if loaded:
+                    loaded.check_source()
+                    bind_reference(initial, loaded)
+                    return
             known = {Path(track.path) for track in self.project.tracks if track.role == role}
             paths = tuple(path for path in paths if path not in known)
             if not paths:
@@ -410,6 +441,8 @@ class QuickChorus(QObject):
                 check()
                 _meter(send, 'analyze', index, len(paths), f'读取波形 · {path.name}')
                 track = Recording.read(path, role)
+                if reference_span:
+                    track = replace(track, muted=True, phrase_reference_only=True)
                 features[track.sha] = feature_track(track, check)
                 tracks.append(track)
             check()
@@ -418,6 +451,12 @@ class QuickChorus(QObject):
         def done(result):
             tracks, features = result
             self._features.update(features)
+            if reference_span:
+                if self.project != initial:
+                    self._say('工程已变化，请重新导入此唱段的参照。')
+                    return
+                bind_reference(initial.add(tracks), tracks[0])
+                return
             project = self.project.add(tracks)
             if role == 'guide':
                 project = replace(project, guide=tracks[0].id)

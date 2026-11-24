@@ -8,10 +8,11 @@ from uuid import uuid4
 
 import numpy as np
 
-from chorus_analysis import FRAME, Suggestion, _project_slice, _runs
-from chorus_precision import analysis_phrases, phoneme_cache
+from chorus_analysis import FRAME, Suggestion, _project_slice, _runs, quiet_timing, timing_suggestion
+from chorus_precision import analysis_phrases, fit_timing, phone_anchors, phoneme_cache
 from chorus_project import Lyric, Phrase
 from chorus_speech import SpeechClip, normalized_lyrics, same_text, speech_batch
+from i18n import tr
 
 
 def ensemble_phrases(project, targets, features, selection):
@@ -63,8 +64,8 @@ def _voice_has_audio(track, span, features):
 
 def _preferred_guide(project):
     selected = project.track(project.guide)
-    return selected if selected and selected.role == 'guide' else next(
-        (track for track in project.tracks if track.role == 'guide'), None)
+    return selected if selected and selected.role != 'backing' else next(
+        (track for track in project.tracks if track.role == 'guide' and not track.phrase_reference_only), None)
 
 
 def _words(text):
@@ -120,46 +121,14 @@ def _phone_edges(pair, evidence):
     return (route, tuple(found)) if len(found) >= max(5, .48 * min(width, length)) else ('', ())
 
 
-def _timing_map(span, anchors, strength):
-    """Use spaced time knots with bounded rates and pinned outer edges."""
-    first, last = span
-    inside = sorted((source, strength * (reference - source), label)
-                    for label, reference, source in anchors if first + .055 <= source <= last - .055)
-    if len(inside) < 4 or inside[-1][0] - inside[0][0] < .22:
-        return (), (), 0.
-    location, correction, labels = zip(*inside)
-    location, correction = np.array(location), np.array(correction)
-    center = float(np.median(correction))
-    sample = np.linspace(location[0], location[-1], 1 + max(1, int((location[-1] - location[0]) / .24)))
-    joints = [(first, 0., '')]
-    for source in sample:
-        near = np.abs(location - source)
-        active = correction[near <= .25]
-        value = np.median(active) if len(active) else center
-        joints.append((float(source), float(np.clip(.8 * value + .2 * center, -.24, .24)),
-                       labels[int(np.argmin(near))]))
-    joints.append((last, 0., ''))
-    positions, movements, knot_labels = (list(values) for values in zip(*joints))
-    for indexes, direction in ((range(1, len(joints) - 1), -1), (range(len(joints) - 2, 0, -1), 1)):
-        for i in indexes:
-            peer = i + direction
-            limit = .20 * abs(positions[i] - positions[peer])
-            movements[i] = min(movements[peer] + limit, max(movements[peer] - limit, movements[i]))
-    points = tuple((source + delta, source) for source, delta in zip(positions, movements))
-    labels = tuple((label, output, source) for label, (output, source) in zip(knot_labels[1:-1], points[1:-1]))
-    if max(abs(delta) for delta in movements) < .012:
-        return (), labels, 0.
-    return points, labels, float(np.median(movements[1:-1]))
-
-
 def _relevant_clips(project, targets, phrase, span, audio, features, language):
-    active = [track for track in targets if _voice_has_audio(track, span, features)]
+    active = [track for track in targets if track.id != phrase.reference and _voice_has_audio(track, span, features)]
     guide = _preferred_guide(project)
     refs, needed = {}, {track.id: track for track in active}
     for track in active:
         explicit = project.track(phrase.reference or track.timing_ref)
         chosen = explicit if explicit and explicit.id != track.id and explicit.role != 'backing' else None
-        ref = chosen or guide
+        ref = chosen or (guide if guide and guide.id != track.id else None)
         if ref:
             needed[ref.id] = ref
         refs[track.id] = (ref.id if ref else '', bool(chosen))
@@ -192,7 +161,7 @@ def _recognized(clips, known, cache, check, progress):
     return {key: known.get(('asr', key), {}).get('text', '') for key in clips}, failure
 
 
-def ensemble_timing(project, targets, selection, features, audio, language, strength, speech, check, progress):
+def ensemble_timing(project, targets, selection, features, audio, language, strength, radius, speech, check, progress):
     phrases = ensemble_phrases(project, targets, features, selection)
     contexts = []
     for phrase in phrases:
@@ -202,7 +171,7 @@ def ensemble_timing(project, targets, selection, features, audio, language, stre
     known, cache = speech
     drafts, asr_error = _recognized((clip for _, _, _, _, clips, lines in contexts
                                     for key, clip in clips.items() if key not in lines), known, cache, check, progress)
-    measured, all_pairs, saved = [], [], []
+    measured, all_pairs, saved, confirmed_pairs = [], [], [], set()
     for phrase, span, vocals, refs, clips, lines in contexts:
         check()
         new_lines = []
@@ -224,18 +193,25 @@ def ensemble_timing(project, targets, selection, features, audio, language, stre
                 continue
             # Confirmed text always supplies pronunciation; inferred text stays a draft.
             pair = (replace(clips[a], text=lines[a].text), replace(clips[b], text=lines[b].text))
+            if same_text(lines[a], lines[b]):
+                confirmed_pairs.add(tuple(clip.key for clip in pair))
             pairings.append((a, b, pair))
             all_pairs.append(pair)
         measured.append((span, vocals, refs, pairings))
+    def match_pair(pair, results):
+        if tuple(clip.key for clip in pair) in confirmed_pairs:
+            return phone_anchors(pair, results)
+        return _phone_edges(pair, results)
+
     evidence, align_error = phoneme_cache(all_pairs, known, cache, check, progress, project.alignment_engine,
-                                          matches=lambda pair, results: _phone_edges(pair, results)[1])
+                                          matches=lambda pair, results: match_pair(pair, results)[1])
     generated = []
     for span, vocals, refs, pairings in measured:
         check()
         peers = {track.id for track in vocals}
         votes = defaultdict(lambda: defaultdict(list))
         for a, b, pair in pairings:
-            route, points = _phone_edges(pair, evidence.get(tuple(clip.key for clip in pair), {}))
+            route, points = match_pair(pair, evidence.get(tuple(clip.key for clip in pair), {}))
             for label, source, other in points:
                 votes[a, route][label, source].append((b, other))
                 votes[b, route][label, other].append((a, source))
@@ -251,16 +227,24 @@ def ensemble_timing(project, targets, selection, features, audio, language, stre
                         target = source + .86 * (float(np.median([source, *ensemble])) - source)
                         same_group += 1
                     elif reference is not None:
-                        target = source + .72 * (reference - source)
+                        target = reference if explicit else source + .72 * (reference - source)
                     else:
                         continue
                     anchors.append((label, target, source))
-                points, shown, correction = _timing_map(span, anchors, strength)
-                if shown:
-                    basis = '同词合唱' if same_group else '导唱参照'
-                    row = Suggestion(track.id, 'timing', *span, correction, f'{route} · {basis} · {len(shown)} 个锚点',
-                                     points=points, anchors=shown, route=route)
-                    break
+                fit = fit_timing(anchors, *span, strength, radius, quiet_timing(track, features[track.id]))
+                if fit is None:
+                    continue
+                group = same_group >= max(2, len(anchors) * .5)
+                reference_track = project.track(ref)
+                if group:
+                    basis = tr('同词合唱')
+                else:
+                    basis = tr('指定参照 {0}' if explicit else '导唱参照 {0}',
+                               reference_track.name if reference_track else '')
+                reason = ('仅靠导唱推断的时序差，建议先试听'
+                          if not explicit and not group and (fit.local or abs(fit.movement or 0.) > .100) else '')
+                row = timing_suggestion(track.id, span, fit, route, basis, reason)
+                break
             if row is None:
                 reason = align_error or asr_error or '没有足够的同词参照，保留当前节奏。'
                 row = Suggestion(track.id, 'timing', *span, None, reason, review=True, route='需核对')

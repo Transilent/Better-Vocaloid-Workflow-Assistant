@@ -1,5 +1,5 @@
 """Confirmed lyrics, matching evidence and sub-phrase source maps."""
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from statistics import median
 from uuid import uuid4
@@ -155,28 +155,121 @@ def note_anchors(reference_notes, target_notes, phrase, shift):
     return tuple(out) if len(out) >= max(2, .55 * min(len(left), len(right))) else ()
 
 
-def warp(anchors, first, last, strength, radius):
-    knots, matched = [], []
-    if strength <= 0.:
-        return (), (), 0.
-    for label, reference, source in anchors:
-        output = source + (reference - source) * strength
-        if not first + .012 < output < last - .012 or abs(output - source) > radius:
-            continue
-        if knots:
-            a, b = knots[-1]
-            if output - a < .045 or not .45 <= (source - b) / (output - a) <= 2.2:
-                continue
-        knots.append((output, source))
-        matched.append((label, output, source))
-    if len(knots) < 2:
-        return (), (), 0.
-    lag = median(source - output for output, source in knots)
-    if all(abs(source - output) < .002 for output, source in knots):
-        return (), tuple(matched), 0.
-    a, b = knots[0]
-    c, d = knots[-1]
-    return ((first, first + b - a), *knots, (last, last + d - c)), tuple(matched), -lag
+_VOWELS = frozenset('a e i o u aa ae ah ao aw ay eh er ey ih iy ow oy uh uw'.split())
+
+
+@dataclass(frozen=True)
+class TimingFit:
+    movement: float | None
+    points: tuple
+    anchors: tuple
+    residual_ms: int
+    local: bool = False
+    review: bool = False
+
+
+def _offset_knots(times, offsets):
+    """Summarize nearby landmarks so one suspect phone can't drive a warp."""
+    import numpy as np
+
+    bucket = np.floor((times - times[0]) / .28)
+    groups = (bucket == key for key in np.unique(bucket))
+    return tuple(zip(*((float(np.median(times[which])), float(np.median(offsets[which]))) for which in groups)))
+
+
+def _local_timing_supported(times, offsets):
+    import numpy as np
+
+    if len(times) < 6 or np.ptp(times) < .55 or np.ptp(np.percentile(offsets, (10, 90))) < .065:
+        return False
+    # Predict alternate observed landmarks from the other half. A curve should
+    # explain phrasing that a translation misses, even at unseen landmarks.
+    flat, local = [], []
+    for test, train in ((slice(0, None, 2), slice(1, None, 2)), (slice(1, None, 2), slice(0, None, 2))):
+        coordinates, values = _offset_knots(times[train], offsets[train])
+        flat.extend(abs(offsets[test] - np.median(offsets[train])))
+        local.extend(abs(offsets[test] - np.interp(times[test], coordinates, values)))
+    return float(np.median(flat) - np.median(local)) >= .016
+
+
+def _timing_geometry(first, last, times, aim, local, quiet):
+    import numpy as np
+
+    if not local and quiet:
+        margin = abs(aim[0]) + .024
+        if quiet(first - margin, first + margin) and quiet(last - margin, last + margin):
+            return (), aim
+    # Keep a constant rate through the body of a translated phrase. The
+    # shoulders join the original clock without borrowing adjacent words.
+    span = max(.035, float(np.max(abs(aim))) / .60)
+    left, right = first + span, last - span
+    if right - left < .056:
+        return None, np.zeros(len(times))
+    interior = np.arange(left + .24, right - .12, .24) if local else ()
+    positions = np.asarray((first, left, *interior, right, last))
+    shifts = np.r_[0., np.interp(positions[1:-1], times, aim), 0.]
+    for i in range(2, len(shifts) - 1):
+        limit = .22 * (positions[i] - positions[i - 1])
+        shifts[i] = np.clip(shifts[i], shifts[i - 1] - limit, shifts[i - 1] + limit)
+    points = tuple((float(t + d), float(t)) for t, d in zip(positions, shifts))
+    return points, np.interp(times, positions, shifts)
+
+
+def fit_translation(first, last, movement, quiet):
+    """Render a measured envelope delay as a time shift, without phone markers."""
+    import numpy as np
+
+    if abs(movement) < .010:
+        return TimingFit(0., (), (), 0)
+    points, _ = _timing_geometry(first, last, (first, last), np.full(2, movement), False, quiet)
+    return TimingFit(movement if points is not None else None, points or (), (), 0, review=points is None)
+
+
+def fit_timing(anchors, first, last, strength, radius, quiet=None):
+    """Prefer a translation, with localized time changes only if supported."""
+    import numpy as np
+
+    ordered = sorted((source, reference, label) for label, reference, source in anchors
+                     if first + .012 < source < last - .012 and abs(reference - source) <= radius)
+    ordered = [row for i, row in enumerate(ordered) if not i or row[0] - ordered[i - 1][0] >= .012]
+    if len(ordered) < 2:
+        return None
+    vowels = [row for row in ordered if row[2].casefold().rstrip('0123456789') in _VOWELS]
+    if len(vowels) >= 4 and vowels[-1][0] - vowels[0][0] >= .22:
+        ordered = vowels
+    sources, references, labels = zip(*ordered)
+    times = np.asarray(sources)
+    offsets = np.subtract(references, times)
+    center = float(np.median(offsets))
+    consistent = abs(offsets - center) <= max(.10, 3.5 * np.median(abs(offsets - center)))
+    if np.count_nonzero(consistent) >= max(2, .70 * len(times)):
+        times, offsets = times[consistent], offsets[consistent]
+        labels = tuple(label for label, usable in zip(labels, consistent) if usable)
+        center = float(np.median(offsets))
+
+    def result(local):
+        aim = np.full(len(times), center)
+        if local:
+            at, value = _offset_knots(times, offsets)
+            aim = np.clip(np.interp(times, at, value), center - .14, center + .14)
+        aim = np.asarray(aim) * strength
+        movement = center * strength
+        if np.max(abs(aim)) < .010:
+            return TimingFit(0., (), tuple((label, t, t) for label, t in zip(labels, times)),
+                             round(1000 * float(np.median(abs(offsets)))),
+                             review=float(np.percentile(abs(offsets), 80)) > .115 and strength >= .85)
+        points, delta = _timing_geometry(first, last, times, aim, local, quiet)
+        remaining = float(np.median(abs(offsets - delta)))
+        disagreement = float(np.percentile(abs(offsets - delta), 80))
+        matched = tuple((label, float(t + d), float(t)) for label, t, d in zip(labels, times, delta))
+        return TimingFit(movement if points is not None else None, points or (), matched,
+                         round(1000 * remaining), local, points is None or disagreement > .115 and strength >= .85)
+
+    slide = result(False)
+    if not _local_timing_supported(times, offsets):
+        return slide
+    local = result(True)
+    return local if local.points and local.residual_ms + 12 <= slide.residual_ms else slide
 
 
 def move_anchor(track, interval, points, original, destination):

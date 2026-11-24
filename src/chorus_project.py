@@ -50,6 +50,7 @@ class Recording:
     score_lane: str = ''
     timing_ref: str = ''
     muted: bool = False
+    phrase_reference_only: bool = False
 
     @property
     def duration(self):
@@ -164,7 +165,8 @@ class Phrase:
         return next((line for line in self.lyrics if line.track == track), None)
 
     def resolved_lyric(self, track):
-        return self.lyric(track) or self.lyric()
+        local, shared = self.lyric(track), self.lyric()
+        return local if local and (local.confirmed or not (shared and shared.confirmed)) else shared
 
 
 def interpolate(points, time):
@@ -244,7 +246,8 @@ class ChorusProject:
 
     @property
     def timeline_tracks(self):
-        return tuple(track for track in self.tracks if track.role != 'take') or self.tracks
+        return tuple(track for track in self.tracks if track.role != 'take' and
+                     not (track.role == 'guide' and track.phrase_reference_only)) or self.tracks
 
     @property
     def start(self):
@@ -276,7 +279,7 @@ class ChorusProject:
         tracks = self.tracks + tuple(tracks)
         guide = self.guide
         if not guide:
-            reference = next((item for item in tracks if item.role == 'guide'), None)
+            reference = next((item for item in tracks if item.role == 'guide' and not item.phrase_reference_only), None)
             reference = reference or next((item for item in tracks if item.role == 'vocal'), None)
             guide = reference.id if reference else ''
         if not self.tracks and tracks:
@@ -352,7 +355,8 @@ class ChorusProject:
                 raise ValueError(f'源文件和保存工程时不一致：{source.name}')
             records.append(replace(source, name=str(raw['name']), offset=number(raw['offset']),
                                    part=str(raw['part']), score_lane=str(raw['score_lane']),
-                                   timing_ref=str(raw['timing_ref']), muted=bool(raw['muted'])))
+                                   timing_ref=str(raw['timing_ref']), muted=bool(raw['muted']),
+                                   phrase_reference_only=bool(raw.get('phrase_reference_only', False))))
         ids = {track.id for track in records}
         if len(ids) != len(records) or not data['id']:
             raise ValueError('工程标识重复或无效。')

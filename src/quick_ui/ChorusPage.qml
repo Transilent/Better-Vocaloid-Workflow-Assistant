@@ -340,6 +340,7 @@ FocusScope {
                             Layout.fillWidth: true
                             visible: page.view.inspectorSection === "phrase"
                             onImportTake: page.pickAudio("take")
+                            onImportReference: referenceDialog.open()
                         }
                         ColumnLayout {
                             Layout.fillWidth: true
@@ -744,6 +745,13 @@ FocusScope {
         title: page.t("导入乐谱")
         nameFilters: [page.t("乐谱与歌声工程") + " (*.mid *.midi *.svp *.ustx *.vpr *.vsqx *.acep *.ufdata)"]
         onAccepted: page.controller.importScore(selectedFile)
+    }
+    FileDialog {
+        id: referenceDialog
+        objectName: "chorusReferenceDialog"
+        title: page.t("导入本句参照…")
+        nameFilters: [page.t("音频文件") + " (*.wav *.flac *.aif *.aiff *.mp3 *.ogg *.opus)", page.t("所有文件") + " (*)"]
+        onAccepted: page.controller.importPhraseReference(selectedFile)
     }
     FileDialog {
         id: openDialog
