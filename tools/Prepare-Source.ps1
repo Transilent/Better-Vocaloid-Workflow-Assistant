@@ -67,11 +67,27 @@ foreach ($name in $mapping.retired_generated) {
         Remove-Item -LiteralPath $old
     }
 }
+$updated = 0
 foreach ($copy in $copies) {
     $parent = Split-Path -Parent $copy.Destination
     if (!(Test-Path -LiteralPath $parent -PathType Container)) {
         New-Item -Path $parent -ItemType Directory | Out-Null
     }
-    Copy-Item -LiteralPath $copy.Source -Destination $copy.Destination -Force
+    $needsCopy = $true
+    if (Test-Path -LiteralPath $copy.Destination -PathType Leaf) {
+        $srcInfo = Get-Item -LiteralPath $copy.Source
+        $dstInfo = Get-Item -LiteralPath $copy.Destination
+        if ($srcInfo.Length -eq $dstInfo.Length) {
+            $srcBytes = [IO.File]::ReadAllBytes($copy.Source)
+            $dstBytes = [IO.File]::ReadAllBytes($copy.Destination)
+            if ([Linq.Enumerable]::SequenceEqual($srcBytes, $dstBytes)) {
+                $needsCopy = $false
+            }
+        }
+    }
+    if ($needsCopy) {
+        Copy-Item -LiteralPath $copy.Source -Destination $copy.Destination -Force
+        $updated++
+    }
 }
-Write-Host ('Prepared {0} development files. Edit application code in src/.' -f $copies.Count)
+Write-Host ('Prepared {0} development files ({1} updated). Edit application code in src/.' -f $copies.Count, $updated)
