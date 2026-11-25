@@ -86,6 +86,18 @@ Rectangle {
         }
     }
 
+    function categoryIcon(category) {
+        switch (String(category || "")) {
+        case "appearance": return "palette"
+        case "update": return "refresh"
+        case "storage": return "storage"
+        case "presets": return "layers"
+        case "support": return "help_circle"
+        case "about": return "info_circle"
+        default: return ""
+        }
+    }
+
     function selectCategory(category) {
         settingsCategory = String(category || "appearance")
         if (settingsFlick) {
@@ -914,6 +926,8 @@ Rectangle {
                                 width: page.showSupportRail ? categoryFlow.width : implicitWidth
                                 theme: page.theme
                                 text: page.categoryTitle(modelData)
+                                leadingGlyph: page.categoryIcon(modelData)
+                                leadingIconSize: 16
                                 selected: page.settingsCategory === modelData
                                 leftAligned: true
                                 checkable: false

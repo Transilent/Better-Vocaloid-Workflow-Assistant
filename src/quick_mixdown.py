@@ -1978,6 +1978,59 @@ class QuickMixdown(QObject):
             self._notice('载入任务分轨失败：' + str(error))
             return False
 
+    def accept_chorus_handoff(self, payload):
+        """Load same-origin vocal stems (and optional backing) handed off from the Pitch & Timing workbench."""
+        if not self._ensure_entered():
+            return False
+        try:
+            if not isinstance(payload, dict):
+                raise ValueError('修音交接数据无效。')
+            vocals = payload.get('vocals') or ()
+            backing = payload.get('backing')
+            title = str(payload.get('title') or '').strip()
+            variant = str(payload.get('variant') or 'processed')
+            variant_label = {'original': '原声', 'timing': '仅对齐', 'pitch': '仅修音',
+                             'processed': '处理后'}.get(variant, variant)
+            safe_title = ''.join('_' if ch in '\\/:*?"<>|' else ch for ch in title).strip(' .')
+            output_path = None
+            if safe_title:
+                from common import output_directory
+                stamp = time.strftime('%Y%m%d-%H%M%S')
+                root = Path(output_directory()).expanduser().resolve()
+                candidate = root / f'{safe_title}-mixdown-{stamp}.wav'
+                while candidate.exists():
+                    candidate = root / f'{safe_title}-mixdown-{stamp}-{uuid.uuid4().hex[:6]}.wav'
+                output_path = candidate
+            with self._lock:
+                if self._active_kind:
+                    raise ValueError('简易混音后台操作进行中，请完成后再送入。')
+                old_has_media = self._state.has_media()
+                if backing and backing.get('path'):
+                    notice = f'已从修音工作台载入 {len(vocals)} 路人声（{variant_label}）与伴奏，可直接试听混音。'
+                else:
+                    notice = f'已从修音工作台载入 {len(vocals)} 路人声（{variant_label}）；请选择伴奏文件即可开始试听。'
+                self._state.load_studio_sources(vocals, backing, message=notice, output=output_path)
+                self._clear_match()
+                self._listen_reduction = ''
+                self._state.preset_name = '自定义'
+                self._preset_plan = None
+                self._preset_undo = None
+                self._result_fingerprint = ''
+                self._export_plan, self._export_receipt, self._export_task_artifacts = None, None, []
+                self._registered_mix_id = ''
+                self._state.clear_export_progress()
+            if old_has_media and self._preview is not None:
+                self._preview.release()
+            self._clear_hotspots()
+            if self._state.has_media():
+                self._schedule_preview(0)
+            self._refresh_alignment()
+            self._recompute_and_emit()
+            return True
+        except Exception as error:
+            self._notice('接收修音分轨失败：' + str(error))
+            return False
+
     def close(self):
         if self._closed:
             return

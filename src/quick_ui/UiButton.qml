@@ -12,6 +12,10 @@ Button {
     // Only familiar operations use a standalone pictogram. text still names
     // the command for focus, tools and assistive technology.
     property string glyph: ""
+    // Optional leading vector icon shown alongside text (e.g. sidebar navigation & tabs).
+    property string leadingGlyph: ""
+    property bool stackedIcon: false
+    property int leadingIconSize: 0
 
     font.pixelSize: Math.round(13 * theme.scale)
     font.weight: selected || primary ? Font.DemiBold : Font.Normal
@@ -42,20 +46,47 @@ Button {
     }
     contentItem: Item {
         readonly property int iconSize: Math.round(18 * control.theme.scale)
+        readonly property int leadingSize: Math.round((control.leadingIconSize > 0 ? control.leadingIconSize : (control.stackedIcon ? 16 : 15)) * control.theme.scale)
+        readonly property int leadingGap: Math.round((control.leadingIconSize >= 17 ? 9 : 6) * control.theme.scale)
+        readonly property bool hasLeading: control.glyph.length === 0 && control.leadingGlyph.length > 0
         readonly property int disclosureInset: control.disclosure >= 0 ? Math.round(21 * control.theme.scale) : 0
-        implicitWidth: control.glyph.length > 0 ? iconSize : label.implicitWidth + disclosureInset
-        implicitHeight: control.glyph.length > 0 ? Math.round(18 * control.theme.scale) : label.implicitHeight
+        readonly property int textLeftInset: disclosureInset + (hasLeading && !control.stackedIcon ? leadingSize + leadingGap : 0)
+        implicitWidth: control.glyph.length > 0 ? iconSize
+            : (hasLeading && control.stackedIcon ? Math.max(leadingSize, label.implicitWidth)
+                : label.implicitWidth + textLeftInset)
+        implicitHeight: control.glyph.length > 0 ? Math.round(18 * control.theme.scale)
+            : (hasLeading && control.stackedIcon ? leadingSize + Math.round(2 * control.theme.scale) + label.implicitHeight
+                : Math.max(label.implicitHeight, hasLeading ? leadingSize : 0))
         readonly property color ink: control.primary ? control.theme.onAccent : control.theme.text
+        readonly property color leadingInk: control.primary ? control.theme.onAccent
+            : control.selected ? control.theme.accent
+            : control.hovered ? control.theme.text : control.theme.muted
         opacity: control.enabled ? 1 : 0.45
+        Loader {
+            objectName: control.leadingGlyph.length > 0 ? "leadingIcon_" + control.leadingGlyph : ""
+            active: parent.hasLeading
+            x: control.stackedIcon ? Math.round((parent.width - width) / 2) : parent.disclosureInset
+            y: control.stackedIcon ? Math.round((parent.height - (parent.leadingSize + Math.round(2 * control.theme.scale) + label.implicitHeight)) / 2)
+                : Math.round((parent.height - height) / 2)
+            width: parent.leadingSize
+            height: parent.leadingSize
+            sourceComponent: UiIcon { glyph: control.leadingGlyph; tint: control.contentItem.leadingInk }
+        }
         Text {
             id: label
-            anchors.fill: parent
-            anchors.leftMargin: parent.disclosureInset
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: control.stackedIcon && parent.hasLeading ? undefined : parent.top
+            anchors.bottom: parent.bottom
+            anchors.leftMargin: parent.textLeftInset
             visible: control.glyph.length === 0
             text: control.text
-            font: control.font
+            font.family: control.font.family
+            font.pixelSize: control.stackedIcon && parent.hasLeading ? Math.round(10 * control.theme.scale) : control.font.pixelSize
+            font.weight: control.font.weight
             color: parent.ink
-            horizontalAlignment: control.leftAligned ? Text.AlignLeft : Text.AlignHCenter
+            horizontalAlignment: control.stackedIcon && parent.hasLeading ? Text.AlignHCenter
+                : (control.leftAligned ? Text.AlignLeft : Text.AlignHCenter)
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
             textFormat: Text.PlainText

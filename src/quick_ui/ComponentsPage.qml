@@ -222,70 +222,68 @@ ScrollView {
 
     ColumnLayout {
         width: page.availableWidth
-        spacing: 12
+        spacing: 10
 
         RowLayout {
             Layout.fillWidth: true
-            Layout.topMargin: 22
-            Layout.leftMargin: 20
-            Layout.rightMargin: 20
-            spacing: 10
+            Layout.topMargin: 14
+            Layout.leftMargin: 16
+            Layout.rightMargin: 16
+            spacing: 8
             Text {
-                Layout.fillWidth: true
                 text: page.controller.text("模型与组件")
-                font.pixelSize: Math.round(25 * page.theme.scale)
+                font.pixelSize: Math.round(18 * page.theme.scale)
                 font.weight: Font.DemiBold
                 color: page.theme.text
-                wrapMode: Text.Wrap
             }
-            UiButton {
-                objectName: "returnToPreparation"
-                theme: page.theme
-                text: page.controller.text("返回准备")
-                onClicked: page.controller.returnToPreparation()
-            }
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.leftMargin: 20
-            Layout.rightMargin: 20
-            spacing: 8
             TextField {
                 id: search
                 objectName: "componentSearch"
                 Layout.fillWidth: true
-                Layout.maximumWidth: 440
-                Layout.preferredHeight: Math.max(36, implicitHeight)
-                placeholderText: page.controller.text("查找组件")
+                Layout.maximumWidth: 340
+                Layout.preferredHeight: Math.round(30 * page.theme.scale)
+                placeholderText: page.controller.text("查找组件…")
                 text: page.controller.query
-                font.pixelSize: Math.round(13 * page.theme.scale)
+                font.pixelSize: Math.round(12 * page.theme.scale)
                 color: page.theme.text
                 placeholderTextColor: page.theme.muted
                 Accessible.name: placeholderText
                 selectByMouse: true
                 onTextEdited: page.controller.setQuery(text)
                 background: Rectangle {
-                    radius: 7
+                    radius: 6
                     color: page.theme.surface
                     border.color: search.activeFocus ? page.theme.accent : page.theme.line
                 }
             }
+            Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
             UiButton {
                 objectName: "refreshComponents"
                 theme: page.theme
+                implicitHeight: Math.round(30 * page.theme.scale)
+                quiet: true
                 text: page.controller.text(page.controller.loading ? "正在检查…" : "刷新状态")
+                leadingGlyph: "refresh"
+                leadingIconSize: 14
                 enabled: page.idle
                 onClicked: page.controller.refresh()
             }
-            Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
+            UiButton {
+                objectName: "returnToPreparation"
+                theme: page.theme
+                implicitHeight: Math.round(30 * page.theme.scale)
+                text: page.controller.text("返回准备")
+                leadingGlyph: "arrow_left"
+                leadingIconSize: 14
+                onClicked: page.controller.returnToPreparation()
+            }
         }
 
         GridLayout {
             Layout.fillWidth: true
-            Layout.leftMargin: 20
-            Layout.rightMargin: 20
-            Layout.bottomMargin: 20
+            Layout.leftMargin: 16
+            Layout.rightMargin: 16
+            Layout.bottomMargin: 16
             columns: page.stacked ? 1 : 2
             columnSpacing: 14
             rowSpacing: 12

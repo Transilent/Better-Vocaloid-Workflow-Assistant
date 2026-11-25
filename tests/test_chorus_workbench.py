@@ -692,6 +692,118 @@ def main():
         check_native_pitch_transitions(root)
         check_natural_pitch_and_score_matching(root)
         check_cas_cache_and_impact_selector(root)
+        check_continuous_time_warp_and_valley_knots(root)
+
+
+def check_continuous_time_warp_and_valley_knots(root):
+    """Multi-knot timing edits stay phase-continuous without seam dips and snap toward valleys."""
+    rate = 44100
+    t = np.arange(round(2.4 * rate)) / rate
+    tone = sum((1. / (k ** .8)) * np.sin(2 * np.pi * 261.63 * k * t) for k in range(1, 10))
+    tone = (.22 * tone / np.max(np.abs(tone))).astype(np.float32)
+    # Add two transient envelope markers to check exact sample timing across variable warp.
+    env = 1. + 1.2 * np.exp(-.5 * ((t - .70) / .006) ** 2) + 1.2 * np.exp(-.5 * ((t - 1.50) / .006) ** 2)
+    wave = (tone * env).astype(np.float32)
+    path = root / 'continuous-warp.wav'
+    sf.write(path, wave, rate, subtype='FLOAT')
+    voice = Recording.read(path)
+    # Multi-knot edit switching speed 1.08 -> 0.92 -> 1.00 -> 1.05 right through the sustained tone.
+    points = ((.20, .20), (.60, .632), (1.00, 1.00), (1.40, 1.40), (1.80, 1.82), (2.20, 2.20))
+    edit = Edit(voice.id, 'timing', .20, 2.20, 0., points, manual=True)
+    project = replace(ChorusProject.fresh().add((voice,)), edits=(edit,))
+    warped = render_track(project, voice, 'timing')[:, 0]
+    assert len(warped) == len(wave) and np.isfinite(warped).all()
+    # Verify NO phase-cancellation dip (>2.5 dB) at any interior knot (.60, 1.00, 1.40, 1.80).
+    win = round(.010 * rate)
+    for knot_t, _ in points[1:-1]:
+        c = round(knot_t * rate)
+        rms_at = float(np.sqrt(np.mean(warped[c - win // 2:c + win // 2] ** 2)))
+        rms_nb = .5 * (float(np.sqrt(np.mean(warped[c - 3 * win:c - win] ** 2)))
+                       + float(np.sqrt(np.mean(warped[c + win:c + 3 * win] ** 2))))
+        dip_db = 20. * np.log10((rms_at + 1e-9) / (rms_nb + 1e-9))
+        assert dip_db > -2.5, f'knot at {knot_t}s dipped {dip_db:.2f} dB'
+    # Verify envelope markers land within 3 ms of mapped output times.
+    for src_t in (.70, 1.50):
+        exp_out = edit.output_time(src_t)
+        lo, hi = round((exp_out - .04) * rate), round((exp_out + .04) * rate)
+        w4 = round(.004 * rate)
+        rms = np.sqrt(np.convolve(warped[lo:hi] ** 2, np.ones(w4) / w4, mode='same'))
+        peak_t = (lo + int(np.argmax(rms))) / rate
+        assert abs(peak_t - exp_out) < .004, f'marker {src_t}s landed at {peak_t:.4f}s vs {exp_out:.4f}s'
+    # Verify valley snapping pulls interior local knots away from sustained vowel peaks.
+    clock = np.linspace(.60, 3.00, 14)
+    variable = [('a', at + delta, at) for at, delta in zip(clock, np.linspace(-.11, .11, len(clock)))]
+    valleys = (.95, 1.37, 1.70, 2.21, 2.54)
+
+    def snap_to_valley(pos, radius):
+        nearest = min(valleys, key=lambda v: abs(v - pos))
+        return nearest if abs(nearest - pos) <= radius else pos
+
+    snapped = fit_timing(variable, .30, 3.30, 1., .6, snap=snap_to_valley)
+    assert snapped.local and len(snapped.points) > 4
+    interior_src = [src for _, src in snapped.points[2:-2]]
+    assert all(min(abs(s - v) for v in valleys) < .002 for s in interior_src), interior_src
+    # Verify a pitch edit ending inside a continuous sustained vowel extends phase-coherently
+    # through the zero-shift voiced tail instead of cutting the note in two at edit.end.
+    vowel_t = np.arange(round(1.6 * rate)) / rate
+    vowel = sum((1. / (k ** .8)) * np.sin(2 * np.pi * 246.94 * k * vowel_t) for k in range(1, 10))
+    vowel = (.24 * vowel / np.max(np.abs(vowel))).astype(np.float32)
+    vowel[(vowel_t < .15) | (vowel_t > 1.25)] = 0.
+    v_path = root / 'voiced-tail-exit.wav'
+    sf.write(v_path, vowel, rate, subtype='FLOAT')
+    v_take = Recording.read(v_path)
+    mid_edit = Edit(v_take.id, 'pitch', .15, .55, 28.0, manual=False)
+    v_proj = replace(ChorusProject.fresh().add((v_take,)), edits=(mid_edit,), pitch_engine='auto')
+    tuned = render_track(v_proj, v_take, 'pitch')[:, 0]
+    # Check 10 ms RMS dip and 5 ms spectral jump right across edit.end = 0.55s!
+    c55 = round(.55 * rate)
+    w10 = round(.010 * rate)
+    rms_at = float(np.sqrt(np.mean(tuned[c55 - w10:c55 + w10] ** 2)))
+    rms_nb = .5 * (float(np.sqrt(np.mean(tuned[c55 - 4 * w10:c55 - 2 * w10] ** 2)))
+                   + float(np.sqrt(np.mean(tuned[c55 + 2 * w10:c55 + 4 * w10] ** 2))))
+    assert 20. * np.log10((rms_at + 1e-9) / (rms_nb + 1e-9)) > -1.5
+    # Verify silent tail after 1.35s stays untouched bit-for-bit dry.
+    np.testing.assert_array_equal(tuned[round(1.35 * rate):], vowel[round(1.35 * rate):])
+    # Verify ensemble scale-aware auto-pitch handles short notes (85 ms), scoops and out-of-key notes.
+    from chorus_analysis import _estimate_ensemble_scale, _scale_aware_target
+    eb_major = {0, 2, 3, 5, 7, 8, 10}
+    step = .01
+    fake_midi = np.full(600, np.nan, dtype=np.float32)
+    melody = (51.0, 50.0, 53.0, 55.0, 56.0, 58.0, 60.0, 58.0, 56.0, 55.0, 53.0, 50.0, 51.0, 58.0, 51.0, 53.0)
+    for idx, m_val in enumerate(melody):
+        a = 10 + idx * 30
+        fake_midi[a:a + 24] = m_val
+    # Add an 85 ms short note and an out-of-key C#3+15c (49.15) note
+    fake_midi[510:519] = 53.35
+    fake_midi[530:555] = 49.15
+    from chorus_notes import segment_vocal_notes
+    seg_notes = segment_vocal_notes(fake_midi, step)
+    detected = _estimate_ensemble_scale({'t1': seg_notes})
+    assert detected == frozenset(eb_major), detected
+    assert _scale_aware_target(49.15, .25, detected) == 50  # pulled into Eb major (D3) instead of C#3
+    assert _scale_aware_target(49.02, .60, detected) == 49  # long deliberate chromatic note preserved
+    # Verify single-pass joint pitch+time warp stays clean and accurate on simultaneous edits.
+    joint_proj = replace(
+        ChorusProject.fresh().add((voice,)),
+        edits=(edit, Edit(voice.id, 'pitch', .40, 1.80, 45.0, manual=False)),
+        pitch_engine='auto',
+    )
+    joint_out = render_track(joint_proj, voice, 'processed')[:, 0]
+    assert len(joint_out) == len(wave) and np.isfinite(joint_out).all()
+    for src_t in (.70, 1.50):
+        exp_out = edit.output_time(src_t)
+        lo, hi = round((exp_out - .04) * rate), round((exp_out + .04) * rate)
+        w4 = round(.004 * rate)
+        rms = np.sqrt(np.convolve(joint_out[lo:hi] ** 2, np.ones(w4) / w4, mode='same'))
+        peak_t = (lo + int(np.argmax(rms))) / rate
+        assert abs(peak_t - exp_out) < .004, f'joint marker {src_t}s landed at {peak_t:.4f}s vs {exp_out:.4f}s'
+    # Verify directional quiet allows a +150 ms shift across a 210 ms breath (where old
+    # symmetric +/-174 ms check failed) without creating shoulder warps.
+    breath_quiet = lambda a, b: not (a < .98 and b > .20) and not (a < 2.20 and b > 1.19)
+    breath_anchors = [('a', at + .15, at) for at in np.linspace(.30, .92, 8)]
+    breath_fit = fit_timing(breath_anchors, .17, 1.17, 1., .4, breath_quiet)
+    assert not breath_fit.points and abs(breath_fit.movement - .15) < 1e-6, breath_fit
+    print('PASS: continuous time warp, single-pass pitch+time, directional quiet and scale-aware pitch stay clean')
 
 
 if __name__ == '__main__':

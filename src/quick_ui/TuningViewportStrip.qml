@@ -14,6 +14,7 @@ Item {
     required property real viewportSpan
     property real leadingInset: 0
     property real trailingInset: 0
+    property real playheadPosition: NaN
     signal viewportRequested(real start, real span)
 
     implicitHeight: Math.round(32 * theme.scale)
@@ -158,6 +159,17 @@ Item {
                     }
                 }
             }
+        }
+
+        Rectangle {
+            objectName: "tuningViewportPlayhead"
+            visible: strip.enabled && isFinite(strip.playheadPosition)
+            x: Math.round(strip.bound((strip.playheadPosition - strip.timelineStart) / strip.total, 0, 1) * rail.width)
+            y: 1
+            width: Math.max(1, Math.round(1.5 * strip.theme.scale))
+            height: Math.max(0, rail.height - 2)
+            color: strip.theme.accent
+            z: 2
         }
 
         MouseArea {

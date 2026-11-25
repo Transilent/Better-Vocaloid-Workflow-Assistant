@@ -9,7 +9,9 @@ Rectangle {
     required property QtObject theme
     required property QtObject controller
     required property var view
-    readonly property int headerWidth: Math.round((width < 690 ? 126 : 169) * theme.scale)
+    property int customHeaderWidth: 0
+    readonly property int headerWidth: customHeaderWidth > 0 ? customHeaderWidth
+        : Math.round((width < 690 ? 126 : 169) * theme.scale)
     readonly property real plotWidth: Math.max(1, width - headerWidth - 2)
     readonly property real leftTime: view.viewFirst
     readonly property real span: Math.max(.01, view.viewSpan)
@@ -45,7 +47,7 @@ Rectangle {
 
         Item {
             Layout.fillWidth: true
-            Layout.preferredHeight: Math.round(28 * editor.theme.scale)
+            Layout.preferredHeight: Math.round((editor.view.mode === "all" ? 26 : 22) * editor.theme.scale)
             Text {
                 anchors.left: parent.left
                 anchors.leftMargin: 10
@@ -90,14 +92,24 @@ Rectangle {
                     anchors.fill: parent
                     enabled: editor.view.count > 0
                     cursorShape: Qt.SizeHorCursor
-                    onClicked: mouse => editor.controller.seek(editor.toTime(mouse.x))
+                    preventStealing: true
+                    onPressed: mouse => {
+                        editor.controller.setFollowHold(true)
+                        editor.controller.seek(editor.toTime(mouse.x))
+                    }
+                    onPositionChanged: mouse => {
+                        if (pressed)
+                            editor.controller.seek(editor.toTime(mouse.x))
+                    }
+                    onReleased: editor.controller.setFollowHold(false)
+                    onCanceled: editor.controller.setFollowHold(false)
                 }
             }
         }
 
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: Math.round(32 * editor.theme.scale)
+            Layout.preferredHeight: Math.round((editor.view.mode === "all" ? 30 : 24) * editor.theme.scale)
             color: editor.theme.raised
             Text {
                 anchors.left: parent.left
@@ -179,7 +191,7 @@ Rectangle {
                         id: row
                         required property var modelData
                         width: trackStack.width
-                        height: Math.round((editor.view.mode === "pitch" ? 43 : 57) * editor.theme.scale)
+                        height: Math.round((editor.view.mode === "all" ? 54 : 38) * editor.theme.scale)
                         readonly property bool selected: modelData.id === editor.view.selected
                         readonly property color ink: modelData.lead ? editor.theme.success
                             : selected ? editor.theme.accent : editor.theme.muted
@@ -379,28 +391,69 @@ Rectangle {
         }
     }
     Item {
-        x: editor.headerWidth
+        x: editor.headerWidth + 1
         y: 1
         width: editor.plotWidth
         height: editor.height - 2
         clip: true
+        WheelHandler {
+            id: timelineWheel
+            enabled: editor.view.count > 0
+            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+            onWheel: event => {
+                const dy = event.angleDelta.y
+                const dx = event.angleDelta.x
+                if (event.modifiers & Qt.ControlModifier) {
+                    if (dy !== 0) {
+                        const factor = dy > 0 ? .8 : 1.25
+                        editor.controller.zoomViewportAt(factor, editor.toTime(timelineWheel.point.position.x))
+                        event.accepted = true
+                    }
+                } else if ((event.modifiers & Qt.ShiftModifier) || (Math.abs(dx) > Math.abs(dy) && dx !== 0)) {
+                    const delta = Math.abs(dx) > Math.abs(dy) ? dx : dy
+                    if (delta !== 0) {
+                        editor.controller.panViewport((-delta / 120) * editor.span * .14)
+                        event.accepted = true
+                    }
+                } else {
+                    event.accepted = false
+                }
+            }
+        }
         Rectangle {
             readonly property real first: editor.dragging ? editor.dragFirst : editor.view.rangeFirst
             readonly property real last: editor.dragging ? editor.dragLast : editor.view.rangeLast
             x: editor.toX(Math.min(first, last))
             width: editor.toX(Math.max(first, last)) - x
-            y: Math.round(60 * editor.theme.scale)
+            y: Math.round((editor.view.mode === "all" ? 56 : 46) * editor.theme.scale)
             height: Math.max(0, parent.height - y)
             visible: editor.view.count > 0 && width < editor.plotWidth && width > 1
             color: editor.theme.accent
             opacity: .14
         }
-        Rectangle {
-            x: editor.toX(editor.controller.position)
+        Item {
+            objectName: "chorusTimelinePlayhead"
+            readonly property real px: Math.round(editor.toX(editor.controller.position))
+            x: px
+            y: 0
             width: 1
             height: parent.height
-            color: editor.theme.accent
-            visible: editor.view.count > 0
+            visible: editor.view.count > 0 && px >= -1 && px <= editor.plotWidth + 1
+            Rectangle {
+                x: 0
+                y: 0
+                width: 1
+                height: parent.height
+                color: editor.theme.accent
+            }
+            Rectangle {
+                x: -Math.floor(width / 2)
+                y: 0
+                width: Math.round(7 * editor.theme.scale)
+                height: Math.round(5 * editor.theme.scale)
+                radius: 2
+                color: editor.theme.accent
+            }
         }
     }
 }

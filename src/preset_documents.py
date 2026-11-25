@@ -99,6 +99,8 @@ def _array(items, low=0, high=16, *, unique=False):
     return result
 
 
+from mixdown_contract import MAX_VOCALS as _MIXDOWN_MAX_VOCALS
+
 _BOOL = {'type': 'boolean'}
 _REF = _object({'id': _string(128, pattern=EXTERNAL_ID_PATTERN),
                 'version': _string(80, pattern=VERSION_PATTERN),
@@ -136,7 +138,7 @@ _MIX = _object({
     'track_template': _object({'pan_mode': _enum('center', 'alternate', 'lead_harmony'),
                                'pan': _number(-1, 1), 'harmony_pan': _number(0, 1),
                                'reverb_send': _number(0, 1)}),
-    'vocal_deess': _array(_object({'enabled': _BOOL, 'strength': _number(0, 1)}), 1, 3),
+    'vocal_deess': _array(_object({'enabled': _BOOL, 'strength': _number(0, 1)}), 1, _MIXDOWN_MAX_VOCALS),
 }, ('apply_scope', 'eq_enabled', 'eq_bands', 'compression_enabled', 'compression_strength',
     'reverb_enabled', 'reverb_profile', 'reverb_mix', 'reverb_predelay_ms'))
 _STYLE_REF = {'oneOf': [_enum('builtin:none', 'builtin:gentle', 'builtin:sad', 'builtin:bold'), _REF]}

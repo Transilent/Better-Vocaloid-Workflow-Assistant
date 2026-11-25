@@ -612,7 +612,7 @@
                 "additionalProperties": false
               },
               "minItems": 1,
-              "maxItems": 3
+              "maxItems": 16
             }
           },
           "required": [

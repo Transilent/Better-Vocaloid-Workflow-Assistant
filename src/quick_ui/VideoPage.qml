@@ -41,8 +41,8 @@ Item {
     readonly property string restoreMessageText: page.textOf(view.restoreMessage)
     readonly property bool sideBySide: page.width >= Math.round(980 * Math.min(1.2, page.theme.scale))
     readonly property bool narrow: page.width < Math.round(700 * page.theme.scale)
-    readonly property int pageMargin: Math.round((page.narrow ? 14 : 22) * page.theme.scale)
-    readonly property int cardPadding: Math.round((page.narrow ? 13 : 16) * page.theme.scale)
+    readonly property int pageMargin: Math.round((page.narrow ? 11 : 14) * page.theme.scale)
+    readonly property int cardPadding: Math.round((page.narrow ? 10 : 12) * page.theme.scale)
     readonly property int contentAvailableWidth: Math.max(0, page.width - page.pageMargin * 2)
     readonly property int contentMaxWidth: Math.round(1360 * page.theme.scale)
     readonly property int workspaceWidth: Math.min(page.contentAvailableWidth, page.contentMaxWidth)
@@ -380,6 +380,7 @@ Item {
         required property QtObject theme
         property string title
         property string hint
+        property string icon: ""
         property string value
         property string placeholder
         property string fieldObjectName
@@ -395,13 +396,25 @@ Item {
             Layout.fillWidth: true
             Layout.minimumWidth: 0
             spacing: Math.round(3 * row.theme.scale)
-            Text {
+            RowLayout {
                 Layout.fillWidth: true
-                text: row.title
-                color: row.theme.text
-                font.pixelSize: Math.round(12 * row.theme.scale)
-                font.weight: Font.DemiBold
-                textFormat: Text.PlainText
+                spacing: Math.round(6 * row.theme.scale)
+                Loader {
+                    active: row.icon.length > 0
+                    visible: active
+                    Layout.preferredWidth: Math.round(14 * row.theme.scale)
+                    Layout.preferredHeight: Layout.preferredWidth
+                    Layout.alignment: Qt.AlignVCenter
+                    sourceComponent: UiIcon { glyph: row.icon; tint: row.theme.accent }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: row.title
+                    color: row.theme.text
+                    font.pixelSize: Math.round(12 * row.theme.scale)
+                    font.weight: Font.DemiBold
+                    textFormat: Text.PlainText
+                }
             }
             Text {
                 objectName: row.fieldObjectName
@@ -448,45 +461,31 @@ Item {
 
             RowLayout {
                 Layout.fillWidth: true
-                Layout.topMargin: Math.round(16 * page.theme.scale)
-                spacing: Math.round(14 * page.theme.scale)
+                Layout.topMargin: Math.round(10 * page.theme.scale)
+                spacing: Math.round(10 * page.theme.scale)
 
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    Layout.minimumWidth: 0
-                    spacing: Math.round(3 * page.theme.scale)
-
-                    Text {
-                        Layout.fillWidth: true
-                        text: page.tr("视频工作台")
-                        color: page.theme.accent
-                        font.pixelSize: Math.round(10.5 * page.theme.scale)
-                        font.weight: Font.DemiBold
-                        font.letterSpacing: 1.2
-                        textFormat: Text.PlainText
-                    }
-                    Text {
-                        Layout.fillWidth: true
-                        text: page.tr("合成视频")
-                        color: page.theme.text
-                        font.pixelSize: Math.round(24 * page.theme.scale)
-                        font.weight: Font.DemiBold
-                        textFormat: Text.PlainText
-                    }
-                    Text {
-                        Layout.fillWidth: true
-                        text: page.tr("检查原片、声音与对齐，再合成新的 MP4。")
-                        color: page.theme.muted
-                        font.pixelSize: Math.round(11.5 * page.theme.scale)
-                        textFormat: Text.PlainText
-                        wrapMode: Text.Wrap
-                    }
+                Text {
+                    text: page.tr("合成视频")
+                    color: page.theme.text
+                    font.pixelSize: Math.round(18 * page.theme.scale)
+                    font.weight: Font.DemiBold
+                    textFormat: Text.PlainText
                 }
+                Text {
+                    Layout.fillWidth: true
+                    visible: !page.narrow
+                    text: page.tr("检查原片、声音与对齐，再合成新的 MP4")
+                    color: page.theme.muted
+                    font.pixelSize: Math.round(11.5 * page.theme.scale)
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                }
+                Item { visible: page.narrow; Layout.fillWidth: true }
 
                 Rectangle {
                     Layout.alignment: Qt.AlignVCenter
                     implicitWidth: headerState.implicitWidth + Math.round(18 * page.theme.scale)
-                    implicitHeight: Math.round(25 * page.theme.scale)
+                    implicitHeight: Math.round(24 * page.theme.scale)
                     radius: height / 2
                     color: Qt.rgba(page.stateColor().r, page.stateColor().g,
                                    page.stateColor().b, 0.13)
@@ -750,6 +749,7 @@ Item {
                                 Layout.leftMargin: Math.round(13 * page.theme.scale)
                                 Layout.rightMargin: Math.round(13 * page.theme.scale)
                                 theme: page.theme
+                                icon: "nav_video"
                                 title: page.tr("原视频")
                                 hint: page.tr("保留原始画面与时长")
                                 value: page.sourceText
@@ -769,6 +769,7 @@ Item {
                                 Layout.leftMargin: Math.round(13 * page.theme.scale)
                                 Layout.rightMargin: Math.round(13 * page.theme.scale)
                                 theme: page.theme
+                                icon: "nav_mixdown"
                                 title: page.tr("Mixdown")
                                 hint: page.tr("用作成品的音频轨道")
                                 value: page.mixdownText
@@ -1234,6 +1235,7 @@ Item {
                                         || page.isPrimary("output")
                                     Layout.fillWidth: true
                                     theme: page.theme
+                                    icon: "folder"
                                     title: page.tr("成品位置")
                                     hint: page.tr("输出 MP4；不改变输入文件")
                                     value: page.outputText

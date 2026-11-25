@@ -690,11 +690,80 @@ class MixdownWorkspaceState:
         vocals = [row for row in rows if row['id'] != 'instrumental']
         backing = [row for row in rows if row['id'] == 'instrumental']
         if not 1 <= len(vocals) <= MAX_VOCALS or len(backing) != 1:
-            raise ValueError('任务分轨必须包含一路伴奏和一至三路歌声。')
+            raise ValueError(f'任务分轨必须包含一路伴奏和 1 至 {MAX_VOCALS} 路歌声。')
         replacement = type(self)()
         replacement.job = str(job_path)
         replacement._tracks = vocals + backing
         replacement.message = '已载入任务原分轨；它们不是调音后或合成歌声。'
+        self.__dict__.clear()
+        self.__dict__.update(replacement.__dict__)
+
+    def load_studio_sources(
+        self,
+        vocals: Sequence[Mapping[str, Any]],
+        backing: Mapping[str, Any] | None = None,
+        *,
+        message: str = '',
+        output: Any = None,
+    ) -> None:
+        """Replace the mix with vocal stems (and optional backing) handed off from the Pitch & Timing workbench."""
+        if not vocals:
+            raise ValueError('至少需要一路人声 WAV 才能送入简易混音。')
+        if len(vocals) > MAX_VOCALS:
+            raise ValueError(f'最多只能混入 {MAX_VOCALS} 路歌声；可改为“合轨人声”送入混音。')
+        seen: set[str] = set()
+        rows: list[dict[str, Any]] = []
+        for index, source in enumerate(vocals, 1):
+            path = Path(_path_text(source.get('path'), 'vocal path')).expanduser().resolve()
+            if not path.is_file():
+                raise ValueError(f'第 {index} 路人声文件不存在或不可读取。')
+            if path.suffix.casefold() != '.wav':
+                raise ValueError(f'第 {index} 路人声分轨必须为 WAV 文件。')
+            key = _normal_path(path)
+            if key in seen:
+                raise ValueError('同一音频文件不能重复载入混音。')
+            seen.add(key)
+            label = str(source.get('label') or '').strip() or f'歌声 {index}'
+            rows.append({
+                'id': f'vocal-{index}',
+                'label': label[:64],
+                'path': str(path),
+                'name': path.name,
+                'gain': _clamp(source.get('gain', 0.0), -120.0, 24.0, 'gain'),
+                'muted': bool(source.get('muted', False)),
+                'solo': False,
+                'pan': _clamp(source.get('pan', 0.0), -1.0, 1.0, 'pan'),
+                'offset': _clamp(source.get('offset', 0.0), -30.0, 30.0, 'offset'),
+                'send': _clamp(source.get('send', 1.0), 0.0, 1.0, 'send'),
+                'deess_enabled': False,
+                'deess_strength': DEFAULT_DEESS_STRENGTH,
+                '_artifact': None,
+            })
+        backing_row = {
+            'id': 'instrumental', 'label': '伴奏', 'path': '', 'name': '', 'gain': 0.0,
+            'muted': False, 'solo': False, 'pan': 0.0, 'offset': 0.0, 'send': 0.0, '_artifact': None,
+        }
+        if backing and backing.get('path'):
+            bpath = Path(_path_text(backing.get('path'), 'backing path')).expanduser().resolve()
+            if not bpath.is_file():
+                raise ValueError('伴奏文件不存在或不可读取。')
+            if bpath.suffix.casefold() not in AUDIO_SUFFIXES:
+                raise ValueError('伴奏格式不受支持。')
+            bkey = _normal_path(bpath)
+            if bkey in seen:
+                raise ValueError('伴奏文件不能与歌声文件重复。')
+            backing_row['path'] = str(bpath)
+            backing_row['name'] = bpath.name
+            if backing.get('label'):
+                backing_row['label'] = str(backing.get('label')).strip()[:64] or '伴奏'
+        replacement = type(self)(output=output)
+        replacement._tracks = [*rows, backing_row]
+        if message:
+            replacement.message = message
+        elif backing_row['path']:
+            replacement.message = f'已从修音工作台载入 {len(rows)} 路人声与伴奏，可直接试听混音。'
+        else:
+            replacement.message = f'已从修音工作台载入 {len(rows)} 路人声；请为伴奏通道选择伴奏文件即可试听。'
         self.__dict__.clear()
         self.__dict__.update(replacement.__dict__)
 

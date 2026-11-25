@@ -59,8 +59,8 @@ Item {
     readonly property string activeId: textOf(view.activeTrack)
     readonly property string mode: String(view.mode || "single") === "multi" ? "multi" : "single"
     readonly property var activeTrackData: findTrack(activeId)
-    readonly property int contentMargin: stacked ? 12 : 18
-    readonly property int editorPadding: Math.round(10 * scale)
+    readonly property int contentMargin: stacked ? 10 : 12
+    readonly property int editorPadding: Math.round(7 * scale)
     readonly property int editorGap: Math.round(6 * scale)
     readonly property real railWidth: Math.round(246 * scale)
     readonly property real minimumRollHeight: Math.round((mode === "multi"
@@ -888,7 +888,7 @@ Item {
                 Text {
                     text: page.vwaTr("逐轨调音")
                     color: page.theme.text
-                    font.pixelSize: Math.round(19 * page.scale)
+                    font.pixelSize: Math.round(17 * page.scale)
                     font.weight: Font.DemiBold
                     textFormat: Text.PlainText
                 }
@@ -917,21 +917,45 @@ Item {
 
             RowLayout {
                 spacing: page.editorGap
-                EditorButton {
-                    objectName: "tuningModeSingle"
-                    theme: page.theme
-                    text: page.vwaTr("单轨精修")
-                    selected: page.mode === "single"
-                    enabled: !page.busy
-                    onClicked: page.controller.setMode("single")
-                }
-                EditorButton {
-                    objectName: "tuningModeMulti"
-                    theme: page.theme
-                    text: page.vwaTr("多轨编排")
-                    selected: page.mode === "multi"
-                    enabled: !page.busy
-                    onClicked: page.controller.setMode("multi")
+                Rectangle {
+                    radius: Math.round(7 * page.scale)
+                    color: page.theme.raised
+                    border.color: page.theme.line
+                    Layout.preferredWidth: tuningModePillRow.implicitWidth + 4
+                    Layout.minimumWidth: Layout.preferredWidth
+                    Layout.preferredHeight: tuningModePillRow.implicitHeight + 4
+                    implicitWidth: Layout.preferredWidth
+                    implicitHeight: Layout.preferredHeight
+                    RowLayout {
+                        id: tuningModePillRow
+                        anchors.fill: parent
+                        anchors.margins: 2
+                        spacing: 2
+                        EditorButton {
+                            objectName: "tuningModeSingle"
+                            theme: page.theme
+                            implicitHeight: Math.round(26 * page.scale)
+                            quiet: !selected
+                            text: page.vwaTr("单轨精修")
+                            leadingGlyph: "nav_tuning"
+                            leadingIconSize: 14
+                            selected: page.mode === "single"
+                            enabled: !page.busy
+                            onClicked: page.controller.setMode("single")
+                        }
+                        EditorButton {
+                            objectName: "tuningModeMulti"
+                            theme: page.theme
+                            implicitHeight: Math.round(26 * page.scale)
+                            quiet: !selected
+                            text: page.vwaTr("多轨编排")
+                            leadingGlyph: "layers"
+                            leadingIconSize: 14
+                            selected: page.mode === "multi"
+                            enabled: !page.busy
+                            onClicked: page.controller.setMode("multi")
+                        }
+                    }
                 }
                 EditorButton {
                     objectName: "tuningOpenProject"
@@ -1318,6 +1342,147 @@ Item {
                             Layout.fillWidth: true
                             spacing: page.editorGap
 
+                            // 1. Primary editing tools grouped in one segmented pill
+                            Rectangle {
+                                radius: Math.round(7 * page.scale)
+                                color: page.theme.raised
+                                border.color: page.theme.line
+                                Layout.preferredWidth: tuningToolsRow.implicitWidth + 4
+                                Layout.minimumWidth: Layout.preferredWidth
+                                Layout.preferredHeight: tuningToolsRow.implicitHeight + 4
+                                implicitWidth: Layout.preferredWidth
+                                implicitHeight: Layout.preferredHeight
+                                RowLayout {
+                                    id: tuningToolsRow
+                                    anchors.fill: parent
+                                    anchors.margins: 2
+                                    spacing: 2
+                                    EditorButton {
+                                        objectName: "tuningNoteTool"
+                                        theme: page.theme
+                                        implicitHeight: Math.round(26 * page.scale)
+                                        text: page.vwaTr("改音符")
+                                        leadingGlyph: "music_note"
+                                        leadingIconSize: 14
+                                        quiet: !selected
+                                        selected: !!page.view.noteTool
+                                        enabled: page.hasSource && !page.busy && !page.textOf(page.view.scoreEditReason)
+                                        Accessible.checkable: true
+                                        Accessible.checked: selected
+                                        Accessible.description: ToolTip.text
+                                        ToolTip.visible: hovered || visualFocus
+                                        ToolTip.text: page.textOf(page.view.scoreEditReason)
+                                            || page.vwaTr("拖动音符可移动，拖右端可拉伸。空白处框选音符，Ctrl 单击增减选择。")
+                                        onClicked: {
+                                            page.controller.setNoteTool(true)
+                                            if (page.currentNote.id)
+                                                page.inspectorTab = "note"
+                                        }
+                                    }
+                                    EditorButton {
+                                        objectName: "tuningStyleTool"
+                                        theme: page.theme
+                                        implicitHeight: Math.round(26 * page.scale)
+                                        text: page.vwaTr("框选风格")
+                                        leadingGlyph: "nav_workshop"
+                                        leadingIconSize: 14
+                                        quiet: !selected
+                                        selected: !!page.view.styleTool
+                                        enabled: page.hasSource && !page.busy && !page.view.formatReadOnly
+                                        Accessible.checkable: true
+                                        Accessible.checked: selected
+                                        Accessible.description: ToolTip.text
+                                        ToolTip.visible: hovered || visualFocus
+                                        ToolTip.text: page.vwaTr("拖出风格区间。按住 Shift 拖动只选区。")
+                                        onClicked: {
+                                            if (page.mode === "single")
+                                                page.controller.setNoteTool(false)
+                                            page.inspectorTab = "style"
+                                        }
+                                    }
+                                    EditorButton {
+                                        objectName: "tuningPitchDrawTool"
+                                        theme: page.theme
+                                        implicitHeight: Math.round(26 * page.scale)
+                                        quiet: !selected
+                                        glyph: "edit"
+                                        text: page.vwaTr("手绘音高")
+                                        selected: page.view.pitchTool === "draw"
+                                        visible: page.hasSource && page.mode === "single"
+                                        enabled: !page.busy && !page.textOf(page.view.pitchEditReason)
+                                        Accessible.checkable: true
+                                        Accessible.checked: selected
+                                        Accessible.description: ToolTip.text
+                                        ToolTip.text: page.textOf(page.view.pitchEditReason)
+                                            || page.vwaTr("沿一个音符画音高偏移，松手保存。")
+                                        onClicked: selected && !page.view.scoreEditReason
+                                            ? page.controller.setNoteTool(true)
+                                            : page.controller.setPitchTool(selected ? "style" : "draw")
+                                    }
+                                    EditorButton {
+                                        objectName: "tuningPitchEraseTool"
+                                        theme: page.theme
+                                        implicitHeight: Math.round(26 * page.scale)
+                                        quiet: !selected
+                                        glyph: "eraser"
+                                        text: page.vwaTr("擦除手绘")
+                                        selected: page.view.pitchTool === "erase"
+                                        visible: page.hasSource && page.mode === "single"
+                                        enabled: !page.busy && !page.textOf(page.view.pitchEditReason)
+                                            && (selected || (page.view.pitchStrokeCount || 0) > 0)
+                                        Accessible.checkable: true
+                                        Accessible.checked: selected
+                                        ToolTip.text: page.vwaTr("点笔触擦掉一整段，拖动擦掉局部。原曲线和风格保留。")
+                                        onClicked: selected && !page.view.scoreEditReason
+                                            ? page.controller.setNoteTool(true)
+                                            : page.controller.setPitchTool(selected ? "style" : "erase")
+                                    }
+                                }
+                            }
+
+                            // 2. View & editing toggles
+                            EditorButton {
+                                objectName: "tuningParameterToggle"
+                                theme: page.theme
+                                glyph: "sliders"
+                                quiet: !selected
+                                text: page.vwaTr("参数轨")
+                                selected: parameterLane.visible
+                                enabled: page.hasSource && page.mode === "single"
+                                Accessible.checkable: true
+                                Accessible.checked: selected
+                                onClicked: page.controller.setParameterOpen(!page.view.parameterOpen)
+                            }
+                            EditorButton {
+                                objectName: "tuningSnapToNotes"
+                                theme: page.theme
+                                text: page.vwaTr("吸附")
+                                quiet: !selected
+                                selected: !!page.view.snapEnabled
+                                enabled: page.hasSource
+                                Accessible.checkable: true
+                                Accessible.checked: selected
+                                ToolTip.visible: hovered || visualFocus
+                                ToolTip.text: page.view.pitchTool === "draw"
+                                    ? page.vwaTr("手绘每 10 音分吸附 · Alt 临时跳过")
+                                    : page.vwaTr("吸附到附近音符边界 · Alt 临时跳过")
+                                onClicked: page.controller.setSnapEnabled(!page.view.snapEnabled)
+                            }
+                            EditorButton {
+                                objectName: "timelineFit"
+                                theme: page.theme
+                                readonly property bool returning: page.wholeTimelineVisible && page.canReturnToWord
+                                text: returning ? page.vwaTr("回当前词") : page.vwaTr("全曲")
+                                Layout.minimumWidth: Math.max(implicitWidth, Math.round(58 * page.scale))
+                                quiet: true
+                                enabled: page.hasSource
+                                ToolTip.visible: hovered || visualFocus
+                                ToolTip.text: returning ? page.vwaTr("回到当前词附近，只调整视野")
+                                    : page.vwaTr("显示全曲，只调整视野")
+                                onClicked: returning ? page.returnToCurrentWord() : page.fitTimelineView()
+                            }
+
+                            // 3. Lyric search & QA tools on the right
                             ThemedTextField {
                                 id: lyricSearch
                                 objectName: "tuningLyricSearch"
@@ -1325,6 +1490,7 @@ Item {
                                 topPadding: 0
                                 bottomPadding: 0
                                 Layout.fillWidth: true
+                                Layout.minimumWidth: Math.round(92 * page.scale)
                                 theme: page.theme
                                 placeholderText: page.vwaTr("搜索歌词…")
                                 text: page.textOf(page.view.query)
@@ -1338,37 +1504,6 @@ Item {
                                 }
                             }
                             EditorButton {
-                                objectName: "tuningLyricBatch"
-                                theme: page.theme
-                                glyph: lyricBatchDialog.peeking ? "" : "lyrics"
-                                text: lyricBatchDialog.peeking ? page.vwaTr("继续贴词") : page.vwaTr("整句贴词")
-                                enabled: page.hasSource && !page.busy && !page.textOf(page.view.scoreEditReason)
-                                ToolTip.text: page.vwaTr("整句贴词 · 先框选音符。按住 Shift 可只选区。")
-                                onClicked: lyricBatchDialog.open()
-                            }
-                            EditorButton {
-                                objectName: "tuningEditingIssues"
-                                theme: page.theme
-                                glyph: "issues"
-                                text: page.vwaTr("检查编辑问题")
-                                enabled: page.hasSource && !page.busy
-                                onClicked: {
-                                    issuesDialog.review = page.controller.editingIssues()
-                                    issuesDialog.open()
-                                }
-                            }
-                            EditorButton {
-                                objectName: "tuningParameterToggle"
-                                theme: page.theme
-                                glyph: "sliders"
-                                text: page.vwaTr("参数轨")
-                                selected: parameterLane.visible
-                                enabled: page.hasSource && page.mode === "single"
-                                Accessible.checkable: true
-                                Accessible.checked: selected
-                                onClicked: page.controller.setParameterOpen(!page.view.parameterOpen)
-                            }
-                            EditorButton {
                                 objectName: "tuningClearLyricSearch"
                                 theme: page.theme
                                 text: page.vwaTr("清空")
@@ -1378,102 +1513,29 @@ Item {
                                 onClicked: page.controller.setQuery("")
                             }
                             EditorButton {
-                                objectName: "timelineFit"
+                                objectName: "tuningLyricBatch"
                                 theme: page.theme
-                                readonly property bool returning: page.wholeTimelineVisible && page.canReturnToWord
-                                text: returning ? page.vwaTr("回当前词") : page.vwaTr("全曲")
-                                Layout.minimumWidth: Math.max(implicitWidth, Math.round(66 * page.scale))
-                                quiet: true
-                                enabled: page.hasSource
-                                ToolTip.visible: hovered || visualFocus
-                                ToolTip.text: returning ? page.vwaTr("回到当前词附近，只调整视野")
-                                    : page.vwaTr("显示全曲，只调整视野")
-                                onClicked: returning ? page.returnToCurrentWord() : page.fitTimelineView()
-                            }
-                            EditorButton {
-                                objectName: "tuningSnapToNotes"
-                                theme: page.theme
-                                text: page.vwaTr("吸附")
-                                quiet: true
-                                selected: !!page.view.snapEnabled
-                                enabled: page.hasSource
-                                Accessible.checkable: true
-                                Accessible.checked: selected
-                                ToolTip.visible: hovered || visualFocus
-                                ToolTip.text: page.view.pitchTool === "draw"
-                                    ? page.vwaTr("手绘每 10 音分吸附 · Alt 临时跳过")
-                                    : page.vwaTr("吸附到附近音符边界 · Alt 临时跳过")
-                                onClicked: page.controller.setSnapEnabled(!page.view.snapEnabled)
-                            }
-                            EditorButton {
-                                objectName: "tuningNoteTool"
-                                theme: page.theme
-                                text: page.vwaTr("改音符")
-                                quiet: true
-                                selected: !!page.view.noteTool
+                                quiet: !lyricBatchDialog.peeking
+                                glyph: lyricBatchDialog.peeking ? "" : "lyrics"
+                                text: lyricBatchDialog.peeking ? page.vwaTr("继续贴词") : page.vwaTr("贴词")
                                 enabled: page.hasSource && !page.busy && !page.textOf(page.view.scoreEditReason)
-                                Accessible.checkable: true
-                                Accessible.checked: selected
-                                Accessible.description: ToolTip.text
-                                ToolTip.visible: hovered || visualFocus
-                                ToolTip.text: page.textOf(page.view.scoreEditReason)
-                                    || page.vwaTr("拖动音符可移动，拖右端可拉伸。空白处框选音符，Ctrl 单击增减选择。")
-                                onClicked: {
-                                    page.controller.setNoteTool(true)
-                                    if (page.currentNote.id)
-                                        page.inspectorTab = "note"
-                                }
+                                ToolTip.visible: hovered
+                                ToolTip.text: page.vwaTr("整句贴词 · 先框选音符。按住 Shift 可只选区。")
+                                onClicked: lyricBatchDialog.open()
                             }
                             EditorButton {
-                                objectName: "tuningStyleTool"
+                                objectName: "tuningEditingIssues"
                                 theme: page.theme
-                                text: page.vwaTr("框选风格")
                                 quiet: true
-                                selected: !!page.view.styleTool
-                                enabled: page.hasSource && !page.busy && !page.view.formatReadOnly
-                                Accessible.checkable: true
-                                Accessible.checked: selected
-                                Accessible.description: ToolTip.text
-                                ToolTip.visible: hovered || visualFocus
-                                ToolTip.text: page.vwaTr("拖出风格区间。按住 Shift 拖动只选区。")
+                                glyph: "issues"
+                                text: page.vwaTr("检查")
+                                enabled: page.hasSource && !page.busy
+                                ToolTip.visible: hovered
+                                ToolTip.text: page.vwaTr("检查编辑问题")
                                 onClicked: {
-                                    if (page.mode === "single")
-                                        page.controller.setNoteTool(false)
-                                    page.inspectorTab = "style"
+                                    issuesDialog.review = page.controller.editingIssues()
+                                    issuesDialog.open()
                                 }
-                            }
-                            EditorButton {
-                                objectName: "tuningPitchDrawTool"
-                                theme: page.theme
-                                glyph: "edit"
-                                text: page.vwaTr("手绘音高")
-                                selected: page.view.pitchTool === "draw"
-                                visible: page.hasSource && page.mode === "single"
-                                enabled: !page.busy && !page.textOf(page.view.pitchEditReason)
-                                Accessible.checkable: true
-                                Accessible.checked: selected
-                                Accessible.description: ToolTip.text
-                                ToolTip.text: page.textOf(page.view.pitchEditReason)
-                                    || page.vwaTr("沿一个音符画音高偏移，松手保存。")
-                                onClicked: selected && !page.view.scoreEditReason
-                                    ? page.controller.setNoteTool(true)
-                                    : page.controller.setPitchTool(selected ? "style" : "draw")
-                            }
-                            EditorButton {
-                                objectName: "tuningPitchEraseTool"
-                                theme: page.theme
-                                glyph: "eraser"
-                                text: page.vwaTr("擦除手绘")
-                                selected: page.view.pitchTool === "erase"
-                                visible: page.hasSource && page.mode === "single"
-                                enabled: !page.busy && !page.textOf(page.view.pitchEditReason)
-                                    && (selected || (page.view.pitchStrokeCount || 0) > 0)
-                                Accessible.checkable: true
-                                Accessible.checked: selected
-                                ToolTip.text: page.vwaTr("点笔触擦掉一整段，拖动擦掉局部。原曲线和风格保留。")
-                                onClicked: selected && !page.view.scoreEditReason
-                                    ? page.controller.setNoteTool(true)
-                                    : page.controller.setPitchTool(selected ? "style" : "erase")
                             }
                         }
 

@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 
 Rectangle {
     id: lane
@@ -16,6 +17,8 @@ Rectangle {
     readonly property bool canDraw: (curve.midi || []).some(value => value >= 0) && view.take.role === "vocal"
     property real lowNote: 48
     property real highNote: 72
+    property bool manualPitchRange: false
+    property string lastTrackId: ""
     property var stroke: []
     property var selectedKeys: []
     property bool draggingNote: false
@@ -31,6 +34,8 @@ Rectangle {
     property real hoverX: -1
     property real hoverY: -1
     property var hoveredNote: null
+    property var contextNote: null
+    property real contextTime: 0
 
     color: theme.base
     border.color: theme.line
@@ -112,9 +117,46 @@ Rectangle {
         return null
     }
 
+    function noteShortName(midi) {
+        const keys = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"]
+        const nearest = Math.round(midi)
+        return keys[((nearest % 12) + 12) % 12] + (Math.floor(nearest / 12) - 1)
+    }
+
+    function scrollPitch(semitones) {
+        const span = highNote - lowNote
+        const nextLow = Math.max(24, Math.min(96 - span, lowNote + semitones))
+        lowNote = Math.round(nextLow)
+        highNote = lowNote + span
+        manualPitchRange = true
+        plot.requestPaint()
+    }
+
+    function zoomPitch(factor, anchorMidi) {
+        const oldSpan = Math.max(8, highNote - lowNote)
+        const nextSpan = Math.max(8, Math.min(48, Math.round(oldSpan * factor)))
+        if (nextSpan === oldSpan)
+            return
+        const ratio = Math.max(0, Math.min(1, (anchorMidi - lowNote) / oldSpan))
+        const nextLow = Math.max(24, Math.min(96 - nextSpan, Math.round(anchorMidi - ratio * nextSpan)))
+        lowNote = nextLow
+        highNote = nextLow + nextSpan
+        manualPitchRange = true
+        plot.requestPaint()
+    }
+
+    function resetPitchRange() {
+        manualPitchRange = false
+        rebuild()
+    }
+
     function rebuild() {
         if (!lane.visible)
             return
+        if (lastTrackId !== lane.view.selected) {
+            lastTrackId = lane.view.selected || ""
+            manualPitchRange = false
+        }
         curve = lane.controller.curve(lane.view.selected)
         const notes = curve.notes || []
         const synced = []
@@ -138,7 +180,7 @@ Rectangle {
             low = Math.min(low, sn.pitch)
             high = Math.max(high, sn.pitch)
         }
-        if (low <= high && stroke.length === 0 && !draggingNote) {
+        if (low <= high && stroke.length === 0 && !draggingNote && !manualPitchRange) {
             lowNote = Math.max(0, Math.floor(low) - 2)
             highNote = Math.max(lowNote + 8, Math.ceil(high) + 2)
         }
@@ -182,16 +224,22 @@ Rectangle {
             c.fillRect(0, 0, lane.headerWidth, height)
             c.font = Math.round(11 * lane.theme.scale) + "px sans-serif"
             c.textBaseline = "middle"
+            const activeDragRow = lane.draggingNote ? Math.round(lane.dragAnchorMidi + lane.dragDeltaSemitones) : -999
             for (let note = low; note <= high; note++) {
                 const y = (high - note) * rh
-                if ([1, 3, 6, 8, 10].includes((note + 120) % 12)) {
+                if (note === activeDragRow) {
+                    c.fillStyle = lane.theme.accent
+                    c.globalAlpha = .15
+                    c.fillRect(0, y, width, rh)
+                    c.globalAlpha = 1
+                } else if ([1, 3, 6, 8, 10].includes((note + 120) % 12)) {
                     c.fillStyle = lane.theme.surface
                     c.fillRect(0, y, width, rh)
                 }
                 c.fillStyle = lane.theme.line
                 c.fillRect(0, y, width, 1)
-                if (rh > 12 * lane.theme.scale || note % 12 === 0) {
-                    c.fillStyle = lane.theme.muted
+                if (rh > 12 * lane.theme.scale || note % 12 === 0 || note === activeDragRow) {
+                    c.fillStyle = note === activeDragRow ? lane.theme.accent : lane.theme.muted
                     c.fillText(keys[(note + 120) % 12] + (Math.floor(note / 12) - 1),
                                10, y + rh / 2)
                 }
@@ -206,6 +254,19 @@ Rectangle {
 
             function tx(t) { return lane.headerWidth + (t - lane.view.viewFirst) * widthOfPlot / span }
             function py(m) { return (high - m + .5) * rh }
+
+            // 1b. Selection / loop range highlight
+            const selA = tx(lane.view.rangeFirst)
+            const selB = tx(lane.view.rangeLast)
+            if (selB - selA > 1 && selB - selA < widthOfPlot - 1) {
+                c.fillStyle = lane.theme.accent
+                c.globalAlpha = .08
+                c.fillRect(selA, 0, selB - selA, height)
+                c.globalAlpha = .35
+                c.fillRect(selA, 0, 1, height)
+                c.fillRect(selB, 0, 1, height)
+                c.globalAlpha = 1
+            }
 
             // 2. Bound score lane target notes (outline blocks behind vocal notes)
             if (scoreNotes.length > 0) {
@@ -278,6 +339,19 @@ Rectangle {
                     c.fillStyle = lane.theme.accent
                     c.globalAlpha = .55
                     c.fillRect(x2 - 1, targetY - 3, 2, 6)
+                }
+
+                // Inline pitch / cent readout on wider note blocks
+                if (bw >= Math.round(28 * lane.theme.scale)) {
+                    const shownMidi = n.targetMidi + activeDelta
+                    const shownOffset = Math.round(n.offsetCents + activeDelta * 100)
+                    let noteText = lane.noteShortName(shownMidi)
+                    if (bw >= Math.round(64 * lane.theme.scale) && Math.abs(shownOffset) >= 1)
+                        noteText += " " + (shownOffset > 0 ? "+" : "") + shownOffset + "¢"
+                    c.fillStyle = lane.theme.text
+                    c.globalAlpha = sel ? .96 : .82
+                    c.font = Math.round(10 * lane.theme.scale) + "px sans-serif"
+                    c.fillText(noteText, x1 + 4, targetY)
                 }
 
                 // Match-review warning dot
@@ -443,23 +517,74 @@ Rectangle {
         }
     }
 
+    MouseArea {
+        id: pianoGutterArea
+        x: 1
+        y: 1
+        width: lane.headerWidth
+        height: Math.max(1, parent.height - 2)
+        cursorShape: Qt.SizeVerCursor
+        property real pressY: 0
+        property real startLow: 48
+        onPressed: mouse => {
+            pressY = mouse.y
+            startLow = lane.lowNote
+        }
+        onPositionChanged: mouse => {
+            if (!pressed)
+                return
+            const deltaSemis = Math.round((mouse.y - pressY) / Math.max(6, lane.rowHeight()))
+            const span = lane.highNote - lane.lowNote
+            const nextLow = Math.max(24, Math.min(96 - span, startLow + deltaSemis))
+            if (nextLow !== lane.lowNote) {
+                lane.lowNote = nextLow
+                lane.highNote = nextLow + span
+                lane.manualPitchRange = true
+                plot.requestPaint()
+            }
+        }
+        onDoubleClicked: lane.resetPitchRange()
+    }
+
     Item {
         x: lane.headerWidth + 1
+        y: 1
         width: Math.max(1, parent.width - x - 1)
-        height: parent.height
+        height: Math.max(1, parent.height - 2)
         clip: true
-        Rectangle {
-            x: (lane.controller.position - lane.view.viewFirst) * parent.width / Math.max(.01, lane.view.viewSpan)
+        Item {
+            objectName: "chorusPitchPlayhead"
+            readonly property real px: Math.round((lane.controller.position - lane.view.viewFirst)
+                * parent.width / Math.max(.01, lane.view.viewSpan))
+            x: px
+            y: 0
             width: 1
             height: parent.height
-            color: lane.theme.accent
+            visible: px >= -1 && px <= parent.width + 1
+            Rectangle {
+                x: 0
+                y: 0
+                width: 1
+                height: parent.height
+                color: lane.theme.accent
+            }
+            Rectangle {
+                x: -Math.floor(width / 2)
+                y: 0
+                width: Math.round(7 * lane.theme.scale)
+                height: Math.round(5 * lane.theme.scale)
+                radius: 2
+                color: lane.theme.accent
+            }
         }
         MouseArea {
             id: inputArea
             objectName: "chorusPitchDrawArea"
             anchors.fill: parent
+            acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
             hoverEnabled: true
-            cursorShape: lane.drawing ? Qt.CrossCursor
+            cursorShape: panning ? Qt.ClosedHandCursor
+                : lane.drawing ? Qt.CrossCursor
                 : lane.splitting ? Qt.SplitHCursor
                 : lane.draggingNote ? Qt.SizeVerCursor
                 : (lane.hoveredNote && lane.tool === "note") ? Qt.OpenHandCursor
@@ -470,10 +595,14 @@ Rectangle {
             property real pressY: 0
             property var pressedNote: null
             property bool dragged: false
+            property bool panning: false
+            property real panLastX: 0
+            property real panStartY: 0
+            property real panStartLow: 48
 
-            function at(x) { return lane.view.viewFirst + Math.max(0, Math.min(1, x / width)) * lane.view.viewSpan }
+            function at(x) { return lane.view.viewFirst + Math.max(0, Math.min(1, x / Math.max(1, width))) * lane.view.viewSpan }
             function dot(x, y) {
-                return {time: at(x), note: lane.highNote + .5 - Math.max(0, Math.min(1, y / height))
+                return {time: at(x), note: lane.highNote + .5 - Math.max(0, Math.min(1, y / Math.max(1, height)))
                     * (lane.highNote - lane.lowNote + 1)}
             }
             function commitSelection(keys) {
@@ -485,12 +614,62 @@ Rectangle {
             onEntered: { lane.hoverX = mouseX; lane.hoverY = mouseY }
             onExited: { lane.hoverX = -1; lane.hoverY = -1; lane.hoveredNote = null; plot.requestPaint() }
 
+            onWheel: wheel => {
+                const dy = wheel.angleDelta.y
+                const dx = wheel.angleDelta.x
+                if (wheel.modifiers & Qt.ControlModifier) {
+                    if (dy !== 0)
+                        lane.controller.zoomViewportAt(dy > 0 ? .8 : 1.25, at(wheel.x))
+                    wheel.accepted = true
+                    return
+                }
+                if ((wheel.modifiers & Qt.ShiftModifier) || (Math.abs(dx) > Math.abs(dy) && dx !== 0)) {
+                    const delta = Math.abs(dx) > Math.abs(dy) ? dx : dy
+                    if (delta !== 0)
+                        lane.controller.panViewport((-delta / 120) * lane.view.viewSpan * .14)
+                    wheel.accepted = true
+                    return
+                }
+                if (wheel.modifiers & Qt.AltModifier) {
+                    if (dy !== 0)
+                        lane.zoomPitch(dy > 0 ? .85 : 1.18, dot(wheel.x, wheel.y).note)
+                    wheel.accepted = true
+                    return
+                }
+                if (dy !== 0) {
+                    lane.scrollPitch(dy > 0 ? 2 : -2)
+                    wheel.accepted = true
+                }
+            }
+
             onPressed: mouse => {
                 pressX = mouse.x
                 pressY = mouse.y
                 startTime = at(mouse.x)
                 dragged = false
                 pressedNote = null
+                panning = false
+
+                if (mouse.button === Qt.MiddleButton) {
+                    panning = true
+                    panLastX = mouse.x
+                    panStartY = mouse.y
+                    panStartLow = lane.lowNote
+                    lane.controller.setFollowHold(true)
+                    return
+                }
+
+                if (mouse.button === Qt.RightButton) {
+                    const hit = lane.noteAt(mouse.x, mouse.y)
+                    lane.contextNote = hit
+                    lane.contextTime = startTime
+                    if (hit && lane.view.take.role === "vocal" && !lane.isSelected(hit))
+                        commitSelection([hit.id])
+                    noteContextMenu.popup(mouse.x, mouse.y)
+                    return
+                }
+
+                lane.controller.setFollowHold(true)
                 if (lane.drawing) {
                     lane.stroke = [dot(mouse.x, mouse.y)]
                     return
@@ -539,6 +718,22 @@ Rectangle {
                     lane.hoveredNote = lane.noteAt(mouse.x, mouse.y)
                     return
                 }
+                if (panning) {
+                    const dxPx = mouse.x - panLastX
+                    panLastX = mouse.x
+                    if (Math.abs(dxPx) >= 1)
+                        lane.controller.panViewport(-dxPx * lane.view.viewSpan / Math.max(1, width))
+                    const deltaSemis = Math.round((mouse.y - panStartY) / Math.max(6, lane.rowHeight()))
+                    const span = lane.highNote - lane.lowNote
+                    const nextLow = Math.max(24, Math.min(96 - span, panStartLow + deltaSemis))
+                    if (nextLow !== lane.lowNote) {
+                        lane.lowNote = nextLow
+                        lane.highNote = nextLow + span
+                        lane.manualPitchRange = true
+                        plot.requestPaint()
+                    }
+                    return
+                }
                 if (lane.drawing) {
                     lane.stroke = lane.stroke.concat([dot(mouse.x, mouse.y)])
                     return
@@ -571,6 +766,13 @@ Rectangle {
             }
 
             onReleased: mouse => {
+                lane.controller.setFollowHold(false)
+                if (panning) {
+                    panning = false
+                    return
+                }
+                if (mouse.button === Qt.RightButton)
+                    return
                 const end = at(mouse.x)
                 if (lane.drawing) {
                     const captured = lane.stroke.concat([dot(mouse.x, mouse.y)])
@@ -618,19 +820,65 @@ Rectangle {
             }
 
             onDoubleClicked: mouse => {
-                if (lane.tool !== "note" || lane.view.take.role !== "vocal")
+                if (mouse.button !== Qt.LeftButton || lane.tool !== "note" || lane.view.take.role !== "vocal")
                     return
                 const hit = lane.noteAt(mouse.x, mouse.y)
                 if (hit)
-                    lane.controller.resetPitchNotes([{takeStart: hit.takeStart, takeEnd: hit.takeEnd}], false)
+                    lane.controller.snapPitchNotesToSemitone([{takeStart: hit.takeStart, takeEnd: hit.takeEnd}])
             }
 
             onCanceled: {
+                lane.controller.setFollowHold(false)
                 lane.stroke = []
                 lane.draggingNote = false
                 lane.dragDeltaSemitones = 0
                 lane.marqueeActive = false
+                panning = false
                 pressedNote = null
+            }
+
+            Menu {
+                id: noteContextMenu
+                MenuItem {
+                    text: lane.t("对齐到最近半音 (Q)")
+                    enabled: lane.selectedKeys.length > 0 && lane.view.take.role === "vocal"
+                    onTriggered: lane.controller.snapPitchNotesToSemitone([])
+                }
+                MenuItem {
+                    text: lane.t("在此处拆分音符")
+                    enabled: !!lane.contextNote && lane.view.take.role === "vocal"
+                    onTriggered: {
+                        if (lane.contextNote)
+                            lane.controller.splitPitchNote(lane.contextNote.takeStart, lane.contextNote.takeEnd, lane.contextTime)
+                    }
+                }
+                MenuItem {
+                    text: lane.t("合并所选音符 (M)")
+                    enabled: lane.view.canMergeNotes && lane.view.take.role === "vocal"
+                    onTriggered: lane.controller.mergePitchNotes([])
+                }
+                MenuItem {
+                    text: lane.t("循环试听选中音符")
+                    enabled: lane.selectedKeys.length > 0
+                    onTriggered: lane.controller.loopSelectedNotes()
+                }
+                MenuSeparator {}
+                MenuItem {
+                    text: lane.t("还原所选音符 (Del)")
+                    enabled: lane.selectedKeys.length > 0 && lane.view.take.role === "vocal"
+                    onTriggered: lane.controller.resetPitchNotes([], false)
+                }
+                MenuItem {
+                    text: lane.t("保留原音（锁定）")
+                    enabled: lane.selectedKeys.length > 0 && lane.view.take.role === "vocal"
+                    onTriggered: lane.controller.resetPitchNotes([], true)
+                }
+                MenuSeparator { visible: lane.manualPitchRange }
+                MenuItem {
+                    visible: lane.manualPitchRange
+                    text: lane.t("自动适配纵轴音域")
+                    onTriggered: lane.resetPitchRange()
+                }
             }
         }
     }

@@ -250,34 +250,32 @@ Rectangle {
 
         RowLayout {
             Layout.fillWidth: true
-            Layout.preferredHeight: Math.round(68 * page.theme.scale)
-            Layout.leftMargin: Math.round(22 * page.theme.scale)
-            Layout.rightMargin: Math.round(22 * page.theme.scale)
-            spacing: Math.round(14 * page.theme.scale)
+            Layout.preferredHeight: Math.round(46 * page.theme.scale)
+            Layout.leftMargin: Math.round(16 * page.theme.scale)
+            Layout.rightMargin: Math.round(16 * page.theme.scale)
+            spacing: Math.round(10 * page.theme.scale)
 
-            ColumnLayout {
+            Text {
+                text: page.controller.text("任务与结果")
+                color: page.theme.text
+                font.pixelSize: Math.round(18 * page.theme.scale)
+                font.weight: Font.DemiBold
+            }
+            Text {
                 Layout.fillWidth: true
-                spacing: Math.round(2 * page.theme.scale)
-                Text {
-                    Layout.fillWidth: true
-                    text: page.controller.text("任务与结果")
-                    color: page.theme.text
-                    font.pixelSize: Math.round(24 * page.theme.scale)
-                    font.weight: Font.DemiBold
-                }
-                Text {
-                    Layout.fillWidth: true
-                    text: page.controller.text("选择任务，查看产物并继续制作。")
-                    color: page.theme.muted
-                    font.pixelSize: Math.round(12 * page.theme.scale)
-                    elide: Text.ElideRight
-                }
+                text: page.controller.text("选择任务，查看产物并继续制作")
+                color: page.theme.muted
+                font.pixelSize: Math.round(11.5 * page.theme.scale)
+                elide: Text.ElideRight
             }
 
             UiButton {
                 objectName: "openTaskManagement"
                 theme: page.theme
+                implicitHeight: Math.round(28 * page.theme.scale)
                 text: page.controller.text("任务管理…")
+                leadingGlyph: "sliders"
+                leadingIconSize: 14
                 enabled: !!page.controller.selectedTaskId
                 onClicked: taskManagementDrawer.open()
             }
@@ -327,6 +325,8 @@ Rectangle {
                 objectName: "useWorkshopVocal"
                 theme: page.theme
                 text: page.controller.text("带回工坊")
+                leadingGlyph: "nav_workshop"
+                leadingIconSize: 14
                 primary: true
                 enabled: page.idle && !!workshopVocal.currentValue
                 onClicked: page.controller.attachWorkshopVocal(workshopVocal.currentValue)
@@ -335,6 +335,8 @@ Rectangle {
                 theme: page.theme
                 quiet: true
                 text: page.controller.text("返回工坊")
+                leadingGlyph: "arrow_left"
+                leadingIconSize: 14
                 onClicked: page.controller.openTuningWorkshop("style")
             }
         }

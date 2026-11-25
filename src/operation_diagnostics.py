@@ -47,7 +47,7 @@ _PREFIXES = {
     'preparation-': ('准备工作流', 'processing'),
     'tuning-': ('调音工作流', 'tuning'),
     'mixdown-': ('简易混音', 'audio_mixdown'),
-    'chorus-': ('合唱工作台', 'chorus'),
+    'chorus-': ('修音工作台', 'chorus'),
     'video-': ('合成视频', 'video_mixdown'),
     'publication-': ('发布准备', 'publishing'),
     'calibration-': ('声库拟合', 'tuning_workshop'),

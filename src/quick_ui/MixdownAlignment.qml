@@ -178,22 +178,40 @@ ColumnLayout {
                 }
             }
 
-            Repeater {
-                model: root.lanes.length
-                RowLayout {
-                    id: lane
-                    required property int index
-                    readonly property var row: root.lanes[index] || ({})
-                    readonly property string identifier: row.id || ""
-                    readonly property bool backing: identifier === "instrumental"
-                    readonly property bool loaded: !!root.durations[identifier]
-                    readonly property bool selected: !backing && root.active !== null && root.active.id === identifier
-                    readonly property real offset: Number(row.offset || 0) * 1000
-                    readonly property color ink: root.inks[index % root.inks.length]
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    Layout.preferredHeight: Math.round(52 * root.theme.scale)
+            Flickable {
+                id: laneViewport
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentWidth: width
+                contentHeight: laneColumn.implicitHeight
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                flickableDirection: Flickable.VerticalFlick
+                interactive: contentHeight > height && !root.draggingId
+                ScrollBar.vertical: ScrollBar { policy: laneViewport.contentHeight > laneViewport.height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
+
+                ColumnLayout {
+                    id: laneColumn
+                    width: laneViewport.width
+                    height: Math.max(laneViewport.height, implicitHeight)
                     spacing: 1
+                    Repeater {
+                        model: root.lanes.length
+                        RowLayout {
+                            id: lane
+                            required property int index
+                            readonly property var row: root.lanes[index] || ({})
+                            readonly property string identifier: row.id || ""
+                            readonly property bool backing: identifier === "instrumental"
+                            readonly property bool loaded: !!root.durations[identifier]
+                            readonly property bool selected: !backing && root.active !== null && root.active.id === identifier
+                            readonly property real offset: Number(row.offset || 0) * 1000
+                            readonly property color ink: root.inks[index % root.inks.length]
+                            Layout.fillWidth: true
+                            Layout.fillHeight: root.lanes.length <= 5
+                            Layout.minimumHeight: Math.round(44 * root.theme.scale)
+                            Layout.preferredHeight: Math.round(52 * root.theme.scale)
+                            spacing: 1
 
                     UiButton {
                         Layout.preferredWidth: root.labelWidth
@@ -335,6 +353,8 @@ ColumnLayout {
                             onCanceled: root.clearDrag()
                         }
                     }
+                }
+            }
                 }
             }
         }

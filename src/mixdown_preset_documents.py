@@ -6,7 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import math
 import uuid
 
-from mixdown_contract import project_eq_band, valid_sample_rate
+from mixdown_contract import MAX_VOCALS, project_eq_band, valid_sample_rate
 from preset_documents import PresetError, validate_document
 
 SUPPORTED_CAPABILITIES = frozenset({
@@ -49,7 +49,7 @@ def _snapshot(before):
                                identifier='user.snapshot.mixdown')['payload']
     processing.pop('track_template', None)
     tracks = before['tracks']
-    if type(tracks) is not list or not 1 <= len(tracks) <= 3:
+    if type(tracks) is not list or not 1 <= len(tracks) <= MAX_VOCALS:
         raise PresetError('invalid_target', '当前演唱轨数量无效。')
     for track in tracks:
         if type(track) is not dict or set(track) not in (

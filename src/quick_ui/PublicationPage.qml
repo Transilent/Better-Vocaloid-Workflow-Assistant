@@ -15,7 +15,7 @@ Item {
     readonly property bool busy: !!view.busy
     readonly property bool dense: width < Math.round(760 * theme.scale) || height < Math.round(500 * theme.scale)
     readonly property bool compact: width < Math.round(900 * theme.scale)
-    readonly property int pageMargin: Math.round((dense ? 13 : 20) * theme.scale)
+    readonly property int pageMargin: Math.round((dense ? 10 : 14) * theme.scale)
     readonly property string platform: page.platformValue(view.platform)
     readonly property string titleText: page.textOf(view.title)
     readonly property string descriptionText: page.textOf(view.description)
@@ -713,48 +713,31 @@ Item {
                     Layout.fillWidth: true
                     spacing: Math.round(10 * page.theme.scale)
 
-                    ColumnLayout {
+                    Text {
+                        text: page.controller.text("发布")
+                        color: page.theme.text
+                        font.pixelSize: Math.round(18 * page.theme.scale)
+                        font.weight: Font.DemiBold
+                        textFormat: Text.PlainText
+                    }
+
+                    Text {
                         Layout.fillWidth: true
                         Layout.minimumWidth: 0
-                        spacing: Math.round(2 * page.theme.scale)
-
-                        Text {
-                            Layout.fillWidth: true
-                            text: page.controller.text("发布")
-                            color: page.theme.text
-                            font.pixelSize: Math.round(22 * page.theme.scale)
-                            font.weight: Font.DemiBold
-                            textFormat: Text.PlainText
-                        }
-
-                        Text {
-                            Layout.fillWidth: true
-                            Layout.minimumWidth: 0
-                            text: page.contextLine().length > 0
-                                ? page.contextLine()
-                                : page.controller.text("先关联已完成任务和成品视频")
-                            color: page.theme.muted
-                            font.pixelSize: Math.round(11 * page.theme.scale)
-                            elide: Text.ElideRight
-                            textFormat: Text.PlainText
-                            ToolTip.visible: contextHover.hovered && truncated
-                            ToolTip.text: text
-                            HoverHandler { id: contextHover }
-                        }
-
-                        Text {
-                            Layout.fillWidth: true
-                            visible: !page.dense
-                            text: page.controller.text("核对素材、封面和文案，再按平台手动交接；这里不会代替你提交发布。")
-                            color: page.theme.muted
-                            font.pixelSize: Math.round(11 * page.theme.scale)
-                            wrapMode: Text.Wrap
-                            textFormat: Text.PlainText
-                        }
+                        text: page.contextLine().length > 0
+                            ? page.contextLine()
+                            : page.controller.text("核对素材、封面与文案，按平台手动交接")
+                        color: page.theme.muted
+                        font.pixelSize: Math.round(11.5 * page.theme.scale)
+                        elide: Text.ElideRight
+                        textFormat: Text.PlainText
+                        ToolTip.visible: contextHover.hovered && truncated
+                        ToolTip.text: text
+                        HoverHandler { id: contextHover }
                     }
 
                     BusyIndicator {
-                        Layout.preferredWidth: Math.round(24 * page.theme.scale)
+                        Layout.preferredWidth: Math.round(22 * page.theme.scale)
                         Layout.preferredHeight: Layout.preferredWidth
                         running: page.busy
                         visible: page.busy
@@ -764,6 +747,7 @@ Item {
                     UiButton {
                         objectName: "publicationCancel"
                         theme: page.theme
+                        implicitHeight: Math.round(28 * page.theme.scale)
                         text: page.busy ? page.controller.text("取消操作") : page.controller.text("退出引导")
                         quiet: true
                         onClicked: page.controller.requestExit()
@@ -809,7 +793,7 @@ Item {
         Rectangle {
             objectName: "publicationStepper"
             Layout.fillWidth: true
-            Layout.preferredHeight: Math.round(43 * page.theme.scale)
+            Layout.preferredHeight: Math.round(36 * page.theme.scale)
             color: page.theme.sidebar
             Rectangle { width: parent.width; height: 1; color: page.theme.line }
 
@@ -821,14 +805,14 @@ Item {
 
                 Repeater {
                     model: [
-                        page.controller.text("素材与文案"),
-                        page.controller.text("封面"),
-                        page.controller.text("核对与交接")
+                        {label: page.controller.text("素材与文案"), icon: "lyrics"},
+                        {label: page.controller.text("封面"), icon: "image_frame"},
+                        {label: page.controller.text("核对与交接"), icon: "nav_publishing"}
                     ]
                     delegate: Rectangle {
                         id: stepCard
                         objectName: "publicationStep_" + index
-                        required property string modelData
+                        required property var modelData
                         required property int index
 
                         Layout.fillWidth: true
@@ -864,10 +848,18 @@ Item {
                                 }
                             }
 
+                            UiIcon {
+                                Layout.preferredWidth: Math.round(13 * page.theme.scale)
+                                Layout.preferredHeight: Layout.preferredWidth
+                                glyph: modelData.icon
+                                tint: index === page.step ? page.theme.accent
+                                    : index < page.step ? page.theme.success : page.theme.muted
+                            }
+
                             Text {
                                 Layout.fillWidth: true
                                 Layout.minimumWidth: 0
-                                text: modelData
+                                text: modelData.label
                                 color: index <= page.step ? page.theme.text : page.theme.muted
                                 font.pixelSize: Math.round(10 * page.theme.scale)
                                 font.weight: index === page.step ? Font.DemiBold : Font.Normal
@@ -2290,6 +2282,8 @@ Item {
                     visible: page.step > 0
                     theme: page.theme
                     text: page.controller.text("上一步")
+                    leadingGlyph: "arrow_left"
+                    leadingIconSize: 14
                     enabled: !page.busy
                     onClicked: page.controller.previousStep()
                 }
@@ -2300,6 +2294,8 @@ Item {
                     theme: page.theme
                     primary: true
                     text: page.step === 0 ? page.controller.text("检查封面") : page.controller.text("检查文案与声明")
+                    leadingGlyph: page.step === 0 ? "image_frame" : "check"
+                    leadingIconSize: 14
                     enabled: !page.busy && (page.hasVideo || page.view.bundleOnly === true)
                     onClicked: page.controller.nextStep()
                 }
@@ -2312,6 +2308,8 @@ Item {
                     text: page.busy ? page.controller.text("正在生成…")
                         : page.bundleText.length > 0 && page.bundleStale ? page.controller.text("重新生成")
                         : page.bundleText.length > 0 ? page.controller.text("重新生成资料") : page.controller.text("生成发布资料")
+                    leadingGlyph: "nav_publishing"
+                    leadingIconSize: 14
                     enabled: page.canPrepare
                     onClicked: page.controller.prepareBundle()
                 }
@@ -2323,6 +2321,8 @@ Item {
                     primary: page.bundleText.length > 0 && !page.bundleStale && !page.verified
                     text: page.busy ? page.controller.text("正在核对…")
                         : page.verified ? page.controller.text("重新核对") : page.controller.text("核对资料")
+                    leadingGlyph: "check"
+                    leadingIconSize: 14
                     enabled: page.canCheck
                     onClicked: page.controller.checkBundle()
                 }

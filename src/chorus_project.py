@@ -274,7 +274,7 @@ class NoteEdit:
 
 @dataclass(frozen=True)
 class ChorusProject:
-    title: str = '未命名合唱'
+    title: str = '未命名修音'
     id: str = ''
     rate: int = 44100
     tracks: tuple = ()
@@ -288,7 +288,7 @@ class ChorusProject:
     note_edits: tuple = ()
 
     @classmethod
-    def fresh(cls, title='未命名合唱'):
+    def fresh(cls, title='未命名修音'):
         return cls(title=title, id=uuid4().hex)
 
     @property
@@ -396,7 +396,7 @@ class ChorusProject:
     def open(cls, path, check=lambda: None, progress=lambda _: None):
         data = json.loads(Path(path).read_text(encoding='utf-8-sig'))
         if data.get('schema') != 'vwa-chorus/1':
-            raise ValueError('请选择新版 VWA 合唱工程。')
+            raise ValueError('请选择新版 VWA 修音工程。')
         records = []
         for raw in data['tracks']:
             check()

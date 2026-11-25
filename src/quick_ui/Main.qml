@@ -92,7 +92,7 @@ ApplicationWindow {
         parent: Overlay.overlay
         anchors.centerIn: parent
         modal: true
-        title: window.controller.text("合唱工程有未保存修改")
+        title: window.controller.text("修音工程有未保存修改")
         standardButtons: Dialog.Discard | Dialog.Cancel
         Label { text: window.controller.text("请先保存工程，或放弃当前修改后继续。") }
         onDiscarded: {
@@ -257,12 +257,17 @@ ApplicationWindow {
                         id: navButton
                         objectName: "nav_" + modelData.pageId
                         Layout.fillWidth: true
-                        Layout.preferredHeight: Math.round(41 * Math.min(1.15, theme.scale))
+                        Layout.preferredHeight: Math.round((window.compact ? 45 : 40) * Math.min(1.15, theme.scale))
                         theme: window.tokens
                         text: window.compact ? modelData.short : modelData.title
+                        leadingGlyph: modelData.icon || ""
+                        leadingIconSize: window.compact ? 16 : 17
+                        stackedIcon: window.compact
                         Accessible.name: modelData.title
                         leftPadding: window.compact ? 3 : 10
                         rightPadding: leftPadding
+                        topPadding: window.compact ? 4 : Math.round(7 * theme.scale)
+                        bottomPadding: window.compact ? 4 : Math.round(7 * theme.scale)
                         leftAligned: !window.compact
                         quiet: true
                         selected: window.controller.route === modelData.pageId
@@ -433,7 +438,7 @@ ApplicationWindow {
                     color: theme.text
                     font.pixelSize: 13 * theme.scale
                     elide: Text.ElideRight
-                    text: window.controller.text("合唱工作台 · 后台试听")
+                    text: window.controller.text("修音工作台 · 后台试听")
                 }
                 UiButton {
                     theme: window.tokens
@@ -442,7 +447,7 @@ ApplicationWindow {
                 }
                 UiButton {
                     theme: window.tokens
-                    text: window.controller.text("返回合唱")
+                    text: window.controller.text("返回修音")
                     onClicked: window.controller.navigate("chorus")
                 }
             }

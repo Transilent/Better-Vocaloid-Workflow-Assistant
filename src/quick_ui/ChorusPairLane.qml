@@ -44,8 +44,10 @@ Rectangle {
     }
 
     Rectangle {
+        x: 1
+        y: 1
         width: pair.headerWidth
-        height: parent.height
+        height: Math.max(1, parent.height - 2)
         color: pair.theme.raised
         Text {
             x: 8
@@ -70,9 +72,11 @@ Rectangle {
     }
     Canvas {
         id: wave
-        x: pair.headerWidth
-        width: Math.max(1, parent.width - x)
-        height: parent.height
+        x: pair.headerWidth + 1
+        y: 1
+        width: Math.max(1, parent.width - x - 1)
+        height: Math.max(1, parent.height - 2)
+        clip: true
         onWidthChanged: requestPaint()
         onHeightChanged: requestPaint()
         onPaint: {
@@ -159,11 +163,71 @@ Rectangle {
             color: pair.theme.text
             font.pixelSize: Math.round(11 * pair.theme.scale)
         }
-        Rectangle {
-            x: (pair.controller.position - pair.view.viewFirst) * wave.width / Math.max(.01, pair.view.viewSpan)
+        Item {
+            objectName: "chorusPairPlayhead"
+            readonly property real px: Math.round((pair.controller.position - pair.view.viewFirst)
+                * wave.width / Math.max(.01, pair.view.viewSpan))
+            x: px
+            y: 0
             width: 1
             height: parent.height
-            color: pair.theme.accent
+            visible: px >= -1 && px <= wave.width + 1
+            Rectangle {
+                x: 0
+                y: 0
+                width: 1
+                height: parent.height
+                color: pair.theme.accent
+            }
+            Rectangle {
+                x: -Math.floor(width / 2)
+                y: 0
+                width: Math.round(7 * pair.theme.scale)
+                height: Math.round(5 * pair.theme.scale)
+                radius: 2
+                color: pair.theme.accent
+            }
+        }
+        WheelHandler {
+            id: pairWheel
+            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+            onWheel: event => {
+                const dy = event.angleDelta.y
+                const dx = event.angleDelta.x
+                const range = Math.max(.01, pair.view.viewSpan)
+                const atTime = pair.view.viewFirst
+                    + Math.max(0, Math.min(1, pairWheel.point.position.x / Math.max(1, wave.width))) * range
+                if (event.modifiers & Qt.ControlModifier) {
+                    if (dy !== 0) {
+                        pair.controller.zoomViewportAt(dy > 0 ? .8 : 1.25, atTime)
+                        event.accepted = true
+                    }
+                } else {
+                    const delta = Math.abs(dx) > Math.abs(dy) ? dx : dy
+                    if (delta !== 0) {
+                        pair.controller.panViewport((-delta / 120) * range * .14)
+                        event.accepted = true
+                    }
+                }
+            }
+        }
+        MouseArea {
+            id: guideSeek
+            y: 0
+            height: parent.height / 2
+            width: parent.width
+            cursorShape: Qt.PointingHandCursor
+            preventStealing: true
+            function seekAt(x) {
+                pair.controller.seek(pair.view.viewFirst + Math.max(0, Math.min(1, x / Math.max(1, width))) * pair.view.viewSpan)
+            }
+            onPressed: mouse => {
+                pair.controller.setFollowHold(true)
+                seekAt(mouse.x)
+            }
+            onPositionChanged: mouse => { if (pressed) seekAt(mouse.x) }
+            onReleased: pair.controller.setFollowHold(false)
+            onCanceled: pair.controller.setFollowHold(false)
         }
         MouseArea {
             id: hand
@@ -171,16 +235,18 @@ Rectangle {
             y: parent.height / 2
             height: parent.height / 2
             width: parent.width
-            enabled: pair.canAlign
-            cursorShape: Qt.SizeHorCursor
+            cursorShape: pair.canAlign ? Qt.SizeHorCursor : Qt.PointingHandCursor
             property real pressX
             function seek(x) {
-                pair.controller.seek(pair.view.viewFirst + x * pair.view.viewSpan / width)
+                pair.controller.seek(pair.view.viewFirst + Math.max(0, Math.min(1, x / Math.max(1, width))) * pair.view.viewSpan)
             }
             onPressed: mouse => {
+                pair.controller.setFollowHold(true)
                 pressX = mouse.x
                 pair.movement = 0
                 pair.anchorTime = NaN
+                if (!pair.canAlign)
+                    return
                 let near = 13 * pair.theme.scale
                 for (const item of pair.view.anchors) {
                     const x = (item.time - pair.view.viewFirst) * width / pair.view.viewSpan
@@ -191,10 +257,15 @@ Rectangle {
                 }
             }
             onPositionChanged: mouse => {
-                if (pressed)
+                if (pressed && pair.canAlign)
                     pair.movement = 1000 * (mouse.x - pressX) * pair.view.viewSpan / width
             }
             onReleased: mouse => {
+                pair.controller.setFollowHold(false)
+                if (!pair.canAlign) {
+                    seek(mouse.x)
+                    return
+                }
                 const drag = Math.abs(mouse.x - pressX) >= 4
                 const delta = 1000 * (mouse.x - pressX) * pair.view.viewSpan / width
                 const anchor = pair.anchorTime
@@ -207,7 +278,11 @@ Rectangle {
                 else
                     seek(mouse.x)
             }
-            onCanceled: { pair.movement = 0; pair.anchorTime = NaN }
+            onCanceled: {
+                pair.controller.setFollowHold(false)
+                pair.movement = 0
+                pair.anchorTime = NaN
+            }
         }
     }
 }

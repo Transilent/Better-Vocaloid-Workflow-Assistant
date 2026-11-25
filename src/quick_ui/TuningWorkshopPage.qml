@@ -14,54 +14,65 @@ Item {
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: Math.round(22 * page.unit)
-        spacing: Math.round(15 * page.unit)
+        anchors.margins: Math.round(12 * page.unit)
+        spacing: Math.round(8 * page.unit)
 
+        // Unified single-row studio header with segmented tab pill
         RowLayout {
             Layout.fillWidth: true
+            spacing: Math.round(10 * page.unit)
             Text {
                 text: page.label("调音工坊")
-                font.pixelSize: Math.round(27 * page.unit)
+                font.pixelSize: Math.round(17 * page.unit)
                 font.weight: Font.DemiBold
                 color: page.theme.text
+            }
+            Item { Layout.fillWidth: true }
+            Rectangle {
+                radius: Math.round(7 * page.unit)
+                color: page.theme.raised
+                border.color: page.theme.line
+                Layout.preferredWidth: tabs.implicitWidth + 4
+                Layout.minimumWidth: Layout.preferredWidth
+                Layout.preferredHeight: tabs.implicitHeight + 4
+                implicitWidth: Layout.preferredWidth
+                implicitHeight: Layout.preferredHeight
+                RowLayout {
+                    id: tabs
+                    anchors.fill: parent
+                    anchors.margins: 2
+                    spacing: 2
+                    Repeater {
+                        model: [{key: "style", text: "风格制作", icon: "nav_workshop"},
+                                {key: "calibration", text: "声库拟合", icon: "target"},
+                                {key: "presets", text: "预设库", icon: "layers"}]
+                        UiButton {
+                            required property var modelData
+                            objectName: "workshopTab_" + modelData.key
+                            theme: page.theme
+                            implicitHeight: Math.round(26 * page.unit)
+                            quiet: !selected
+                            selected: page.workshop.pane === modelData.key
+                            text: page.label(modelData.text)
+                            leadingGlyph: modelData.icon
+                            leadingIconSize: 14
+                            Accessible.checkable: true
+                            Accessible.checked: selected
+                            onClicked: page.workshop.setPane(modelData.key)
+                        }
+                    }
+                }
             }
             Item { Layout.fillWidth: true }
             UiButton {
                 objectName: "workshopReturnTuning"
                 theme: page.theme
+                implicitHeight: Math.round(28 * page.unit)
                 quiet: true
                 text: page.label("返回调音")
+                leadingGlyph: "arrow_left"
+                leadingIconSize: 14
                 onClicked: page.controller.navigate("tuning")
-            }
-        }
-
-        Item {
-            Layout.fillWidth: true
-            Layout.preferredHeight: tabs.implicitHeight + Math.round(8 * page.unit)
-            Rectangle {
-                anchors.bottom: parent.bottom
-                width: parent.width
-                height: 1
-                color: page.theme.line
-            }
-            RowLayout {
-                id: tabs
-                spacing: Math.round(8 * page.unit)
-                Repeater {
-                    model: [{key: "style", text: "风格制作"}, {key: "calibration", text: "声库拟合"},
-                            {key: "presets", text: "预设库"}]
-                    UiButton {
-                        required property var modelData
-                        objectName: "workshopTab_" + modelData.key
-                        theme: page.theme
-                        quiet: true
-                        selected: page.workshop.pane === modelData.key
-                        text: page.label(modelData.text)
-                        Accessible.checkable: true
-                        Accessible.checked: selected
-                        onClicked: page.workshop.setPane(modelData.key)
-                    }
-                }
             }
         }
 

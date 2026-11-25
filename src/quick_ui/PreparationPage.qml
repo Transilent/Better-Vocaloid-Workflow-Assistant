@@ -28,7 +28,7 @@ Item {
     readonly property bool taskHasResult: taskSucceeded || taskPartial
     readonly property real taskTotal: task && task.total !== undefined ? Number(task.total) : 0
     readonly property real taskCompleted: task && task.completed !== undefined ? Number(task.completed) : 0
-    readonly property int contentMargin: narrow ? 14 : 24
+    readonly property int contentMargin: narrow ? 12 : 16
     readonly property var presetChoices: [{name: controller.text("选择工作流预设"), key: ""}]
         .concat(controller.preparationPresets || [])
     readonly property bool selectedPresetRemovable: {
@@ -305,9 +305,10 @@ Item {
         required property QtObject theme
         property string title
         property string subtitle
+        property string icon: ""
         default property alias contentData: contentColumn.data
 
-        implicitHeight: cardColumn.implicitHeight + Math.round(32 * card.theme.scale)
+        implicitHeight: cardColumn.implicitHeight + Math.round(24 * card.theme.scale)
         color: card.theme.surface
         radius: Math.round(10 * card.theme.scale)
         border.width: 1
@@ -322,14 +323,28 @@ Item {
             anchors.margins: Math.round(16 * card.theme.scale)
             spacing: Math.round(11 * card.theme.scale)
 
-            Text {
+            RowLayout {
                 Layout.fillWidth: true
-                text: card.title
-                color: card.theme.text
-                font.pixelSize: Math.round(17 * card.theme.scale)
-                font.weight: Font.DemiBold
-                textFormat: Text.PlainText
-                wrapMode: Text.Wrap
+                spacing: Math.round(7 * card.theme.scale)
+
+                Loader {
+                    active: card.icon.length > 0
+                    visible: active
+                    Layout.preferredWidth: Math.round(16 * card.theme.scale)
+                    Layout.preferredHeight: Layout.preferredWidth
+                    Layout.alignment: Qt.AlignVCenter
+                    sourceComponent: UiIcon { glyph: card.icon; tint: card.theme.accent }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    text: card.title
+                    color: card.theme.text
+                    font.pixelSize: Math.round(17 * card.theme.scale)
+                    font.weight: Font.DemiBold
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                }
             }
 
             Text {
@@ -528,120 +543,97 @@ Item {
 
         ColumnLayout {
             width: prepScroll.availableWidth
-            spacing: page.narrow ? 11 : 14
+            spacing: page.narrow ? 9 : 10
 
-            ColumnLayout {
+            // Unified compact header + inline preset bar
+            GridLayout {
                 Layout.fillWidth: true
-                Layout.topMargin: Math.round(20 * page.theme.scale)
+                Layout.topMargin: Math.round(12 * page.theme.scale)
                 Layout.leftMargin: page.contentMargin
                 Layout.rightMargin: page.contentMargin
-                spacing: Math.round(6 * page.theme.scale)
+                columns: page.narrow ? 1 : 2
+                columnSpacing: Math.round(10 * page.theme.scale)
+                rowSpacing: Math.round(6 * page.theme.scale)
 
-                Text {
+                RowLayout {
                     Layout.fillWidth: true
-                    text: page.controller.text("准备一首歌")
-                    color: page.theme.text
-                    font.pixelSize: Math.round(25 * page.theme.scale)
-                    font.weight: Font.DemiBold
-                    textFormat: Text.PlainText
-                    wrapMode: Text.Wrap
-                }
-
-                Text {
-                    Layout.fillWidth: true
-                    text: page.controller.text("依次选择素材、核对歌词与声部，然后开始准备。常用项已经展开，技术选项收在高级设置中。")
-                    color: page.theme.muted
-                    font.pixelSize: Math.round(13 * page.theme.scale)
-                    lineHeight: 1.2
-                    textFormat: Text.PlainText
-                    wrapMode: Text.Wrap
-                }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    implicitHeight: guide.implicitHeight + Math.round(16 * page.theme.scale)
-                    color: page.theme.raised
-                    radius: Math.round(8 * page.theme.scale)
-
+                    spacing: Math.round(10 * page.theme.scale)
                     Text {
-                        id: guide
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.leftMargin: Math.round(12 * page.theme.scale)
-                        anchors.rightMargin: Math.round(12 * page.theme.scale)
-                        text: page.controller.text("01 选择素材  ·  02 歌词与声部  ·  03 检查输出并开始")
+                        text: page.controller.text("准备工作流")
                         color: page.theme.text
-                        font.pixelSize: Math.round(12 * page.theme.scale)
+                        font.pixelSize: Math.round(18 * page.theme.scale)
                         font.weight: Font.DemiBold
                         textFormat: Text.PlainText
-                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        visible: !page.narrow
+                        text: page.controller.text("01 素材 → 02 歌词与声部 → 03 输出")
+                        color: page.theme.muted
+                        font.pixelSize: Math.round(11 * page.theme.scale)
+                        elide: Text.ElideRight
+                        textFormat: Text.PlainText
                     }
                 }
 
-                GridLayout {
-                    Layout.fillWidth: true
-                    columns: page.narrow ? 1 : 2
-                    columnSpacing: Math.round(8 * page.theme.scale)
-                    rowSpacing: Math.round(5 * page.theme.scale)
+                RowLayout {
+                    Layout.fillWidth: page.narrow
+                    spacing: Math.round(5 * page.theme.scale)
 
-                    LabelText {
-                        Layout.alignment: Qt.AlignVCenter
+                    UiComboBox {
+                        id: preparationPreset
+                        objectName: "preparationPreset"
+                        Layout.fillWidth: page.narrow
+                        Layout.preferredWidth: Math.round(192 * page.theme.scale)
+                        Layout.preferredHeight: Math.round(30 * page.theme.scale)
                         theme: page.theme
-                        text: page.controller.text("沿用工作流预设")
+                        model: page.presetChoices
+                        textRole: "name"
+                        currentIndex: 0
+                        enabled: !page.editLocked && (page.controller.preparationPresets || []).length > 0
+                        Accessible.name: page.controller.text("工作流预设")
+                        onActivated: {
+                            if (index > 0)
+                                page.controller.applyPreparationPreset(currentValue)
+                        }
                     }
 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: Math.round(7 * page.theme.scale)
-
-                        UiComboBox {
-                            id: preparationPreset
-                            objectName: "preparationPreset"
-                            Layout.fillWidth: true
-                            theme: page.theme
-                            model: page.presetChoices
-                            textRole: "name"
-                            currentIndex: 0
-                            enabled: !page.editLocked && (page.controller.preparationPresets || []).length > 0
-                            Accessible.name: page.controller.text("工作流预设")
-                            onActivated: {
-                                if (index > 0)
-                                    page.controller.applyPreparationPreset(currentValue)
-                            }
+                    UiButton {
+                        objectName: "savePreparationPreset"
+                        theme: page.theme
+                        implicitHeight: Math.round(30 * page.theme.scale)
+                        quiet: true
+                        text: page.controller.text("保存预设")
+                        leadingGlyph: "save"
+                        leadingIconSize: 14
+                        enabled: !page.editLocked
+                        Accessible.name: page.controller.text("保存当前准备设置为预设")
+                        onClicked: {
+                            const index = preparationPreset.currentIndex - 1
+                            const values = page.controller.preparationPresets || []
+                            preparationPresetNameField.text = index >= 0 && index < values.length
+                                ? String(values[index].preset_name || "") : ""
+                            savePreparationPresetDialog.open()
                         }
+                    }
 
-                        UiButton {
-                            objectName: "savePreparationPreset"
-                            theme: page.theme
-                            text: page.controller.text("保存当前")
-                            enabled: !page.editLocked
-                            Accessible.name: page.controller.text("保存当前准备设置为预设")
-                            onClicked: {
-                                const index = preparationPreset.currentIndex - 1
-                                const values = page.controller.preparationPresets || []
-                                preparationPresetNameField.text = index >= 0 && index < values.length
-                                    ? String(values[index].preset_name || "") : ""
-                                savePreparationPresetDialog.open()
-                            }
-                        }
-
-                        UiButton {
-                            objectName: "removePreparationPreset"
-                            theme: page.theme
-                            text: page.controller.text("移除所选")
-                            quiet: true
-                            enabled: !page.editLocked && page.selectedPresetRemovable
-                            Accessible.name: page.controller.text("移除所选自定义准备预设")
-                            onClicked: {
-                                const index = preparationPreset.currentIndex - 1
-                                const values = page.controller.preparationPresets || []
-                                if (index < 0 || index >= values.length)
-                                    return
-                                removePreparationPresetDialog.presetKey = String(values[index].key || "")
-                                removePreparationPresetDialog.presetLabel = String(values[index].name || "")
-                                removePreparationPresetDialog.open()
-                            }
+                    UiButton {
+                        objectName: "removePreparationPreset"
+                        visible: page.selectedPresetRemovable
+                        theme: page.theme
+                        implicitHeight: Math.round(30 * page.theme.scale)
+                        text: page.controller.text("移除")
+                        quiet: true
+                        enabled: !page.editLocked && page.selectedPresetRemovable
+                        Accessible.name: page.controller.text("移除所选自定义准备预设")
+                        onClicked: {
+                            const index = preparationPreset.currentIndex - 1
+                            const values = page.controller.preparationPresets || []
+                            if (index < 0 || index >= values.length)
+                                return
+                            removePreparationPresetDialog.presetKey = String(values[index].key || "")
+                            removePreparationPresetDialog.presetLabel = String(values[index].name || "")
+                            removePreparationPresetDialog.open()
                         }
                     }
                 }
@@ -667,6 +659,7 @@ Item {
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignTop
                         theme: page.theme
+                        icon: "music_note"
                         title: page.controller.text("音乐来源")
                         subtitle: page.controller.text("使用本地音频，或从 B站视频下载。")
 
@@ -887,6 +880,7 @@ Item {
                     SectionCard {
                         Layout.fillWidth: true
                         theme: page.theme
+                        icon: "lyrics"
                         title: page.controller.text("歌词与语言")
                         subtitle: page.controller.text("已有歌词可直接填入或导入；留空时按所选语言从人声音频识别。")
 
@@ -1120,6 +1114,7 @@ Item {
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignTop
                         theme: page.theme
+                        icon: "nav_processing"
                         title: page.controller.text("分离与分轨")
                         subtitle: page.controller.text("选择内置分离、BS-RoFormer，或直接导入已有分轨。")
 
@@ -1347,6 +1342,7 @@ Item {
                     SectionCard {
                         Layout.fillWidth: true
                         theme: page.theme
+                        icon: "target"
                         title: page.controller.text("工作目标")
 
                         UiComboBox {
@@ -2146,6 +2142,8 @@ Item {
                 objectName: "checkPreparationComponents"
                 theme: page.theme
                 text: page.vwaTr("检查组件…")
+                leadingGlyph: "check"
+                leadingIconSize: 14
                 enabled: !page.editLocked
                 visible: !page.taskRunning
                 onClicked: sourceTools.openPane("check")
@@ -2156,6 +2154,8 @@ Item {
                 theme: page.theme
                 text: page.taskState === "idle" ? page.controller.text("开始准备")
                     : page.controller.text("用当前设置新建任务")
+                leadingGlyph: "play"
+                leadingIconSize: 14
                 primary: !page.taskHasResult && !(page.taskRecoverable && page.task.can_retry)
                 visible: !page.taskRunning
                 enabled: !page.editLocked && !page.inputBlocker && page.componentCheck.state !== "issues"

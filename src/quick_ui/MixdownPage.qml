@@ -87,7 +87,7 @@ Item {
     readonly property real shownPositionMs: seeking ? pendingPosition : positionMs
     readonly property int pendingSeekId: controller.pendingSeekId
     readonly property bool compact: width / theme.scale < 1010 || height / theme.scale < 575
-    readonly property int pageMargin: Math.round((compact ? 14 : 20) * theme.scale)
+    readonly property int pageMargin: Math.round((compact ? 10 : 12) * theme.scale)
     readonly property int vocalTrackCount: page.countVocalTracks()
     readonly property int vocalTrackLimit: page.number(view.maxVocalTracks, 0)
     readonly property bool canAddTrack: vocalTrackCount < vocalTrackLimit
@@ -553,12 +553,12 @@ Item {
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: Math.round(9 * page.theme.scale)
+            spacing: Math.round(7 * page.theme.scale)
 
             Text {
                 text: page.vwaTr("简易混音")
                 color: page.theme.text
-                font.pixelSize: Math.round(22 * page.theme.scale)
+                font.pixelSize: Math.round(17 * page.theme.scale)
                 font.weight: Font.DemiBold
             }
             Rectangle {
@@ -614,9 +614,65 @@ Item {
                 onClicked: page.controller.addTrack()
             }
             Item { visible: page.compact; Layout.fillWidth: true }
+
+            // Inline preset picker + grouped preset menu (collapses old 2nd header row)
+            UiComboBox {
+                id: presetCombo
+                objectName: "mixdownPreset"
+                visible: !page.expanded && !page.compact
+                Layout.preferredWidth: Math.round(188 * page.theme.scale)
+                Layout.preferredHeight: Math.round(30 * page.theme.scale)
+                theme: page.theme
+                model: page.presets
+                currentIndex: page.presetIndex(page.view.presetName)
+                enabled: page.presets.length > 0 && !page.busy && !page.loading
+                Accessible.name: page.vwaTr("混音预设")
+                onActivated: page.reviewPreset(String(currentValue || ""))
+            }
+            UiButton {
+                objectName: "mixdownUndoPreset"
+                theme: page.theme
+                implicitHeight: Math.round(30 * page.theme.scale)
+                quiet: true
+                visible: !page.expanded && !!page.view.canUndoPreset
+                enabled: !page.busy && !page.loading
+                text: page.vwaTr("撤销预设")
+                onClicked: page.controller.undoPreset()
+            }
+            UiButton {
+                theme: page.theme
+                implicitHeight: Math.round(30 * page.theme.scale)
+                quiet: true
+                visible: !page.expanded && !page.compact
+                enabled: !page.busy && !page.loading
+                text: page.vwaTr("预设") + " ▾"
+                onClicked: mixdownPresetMenu.popup()
+                Menu {
+                    id: mixdownPresetMenu
+                    MenuItem {
+                        objectName: "mixdownSavePreset"
+                        text: page.vwaTr("另存当前为预设…")
+                        enabled: !page.busy && !page.loading
+                        onTriggered: savePresetDialog.open()
+                    }
+                    MenuSeparator {}
+                    MenuItem {
+                        objectName: "mixdownImportPresets"
+                        text: page.vwaTr("导入预设…")
+                        enabled: !page.busy && !page.loading
+                        onTriggered: page.openManagedDialog(importPresetDialog)
+                    }
+                    MenuItem {
+                        objectName: "mixdownExportPreset"
+                        text: page.vwaTr("导出当前预设…")
+                        enabled: !page.busy && !page.loading && page.currentPresetKey().length > 0
+                        onTriggered: page.openManagedDialog(exportPresetDialog)
+                    }
+                }
+            }
             Text {
                 visible: page.resultText(page.view.result).length > 0
-                text: page.view.resultStale ? page.vwaTr("旧结果已过期") : page.vwaTr("已有导出结果")
+                text: page.view.resultStale ? page.vwaTr("结果已过期") : page.vwaTr("已有导出")
                 color: page.view.resultStale ? page.theme.attention : page.theme.success
                 font.pixelSize: Math.round(11 * page.theme.scale)
             }
@@ -624,6 +680,7 @@ Item {
                 objectName: "mixdownInstallComponents"
                 visible: !!page.view.componentMissing && !page.busy
                 theme: page.theme
+                implicitHeight: Math.round(30 * page.theme.scale)
                 primary: true
                 text: page.vwaTr("安装混音组件")
                 enabled: !page.busy
@@ -632,21 +689,14 @@ Item {
             }
         }
 
+        // Compact-only preset drawer (hidden on normal desktop windows)
         RowLayout {
             Layout.fillWidth: true
-            visible: !page.expanded && (!page.compact || page.showCompactPresets)
-            spacing: Math.round(7 * page.theme.scale)
+            visible: !page.expanded && page.compact && page.showCompactPresets
+            spacing: Math.round(6 * page.theme.scale)
 
-            Text {
-                text: page.vwaTr("方案")
-                color: page.theme.muted
-                font.pixelSize: Math.round(11 * page.theme.scale)
-            }
             UiComboBox {
-                id: presetCombo
-                objectName: "mixdownPreset"
                 Layout.fillWidth: true
-                Layout.maximumWidth: Math.round(250 * page.theme.scale)
                 theme: page.theme
                 model: page.presets
                 currentIndex: page.presetIndex(page.view.presetName)
@@ -654,46 +704,23 @@ Item {
                 Accessible.name: page.vwaTr("混音预设")
                 onActivated: page.reviewPreset(String(currentValue || ""))
             }
-            Text {
-                visible: !page.compact
-                text: page.vwaTr("当前 · ") + page.textValue(page.view.presetName, page.vwaTr("自定义"))
-                color: page.theme.muted
-                font.pixelSize: Math.round(10 * page.theme.scale)
-                elide: Text.ElideRight
-                Layout.maximumWidth: Math.round(130 * page.theme.scale)
-            }
-            Item {
-                Layout.fillWidth: true
-            }
             UiButton {
-                objectName: "mixdownUndoPreset"
                 theme: page.theme
-                quiet: true
-                visible: !!page.view.canUndoPreset
-                enabled: !page.busy && !page.loading
-                text: page.vwaTr("撤销应用")
-                onClicked: page.controller.undoPreset()
-            }
-            UiButton {
-                objectName: "mixdownSavePreset"
-                theme: page.theme
-                text: page.vwaTr("另存预设…")
+                text: page.vwaTr("另存…")
                 enabled: !page.busy && !page.loading
                 onClicked: savePresetDialog.open()
             }
             UiButton {
-                objectName: "mixdownImportPresets"
                 theme: page.theme
                 quiet: true
-                text: page.vwaTr("导入预设")
+                text: page.vwaTr("导入")
                 enabled: !page.busy && !page.loading
                 onClicked: page.openManagedDialog(importPresetDialog)
             }
             UiButton {
-                objectName: "mixdownExportPreset"
                 theme: page.theme
                 quiet: true
-                text: page.vwaTr("导出预设")
+                text: page.vwaTr("导出")
                 enabled: !page.busy && !page.loading && page.currentPresetKey().length > 0
                 onClicked: page.openManagedDialog(exportPresetDialog)
             }
@@ -770,6 +797,21 @@ Item {
                     ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
                     ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+                    WheelHandler {
+                        enabled: channelViewport.contentWidth > channelViewport.width
+                        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                        onWheel: event => {
+                            const delta = Math.abs(event.angleDelta.x) > Math.abs(event.angleDelta.y)
+                                ? event.angleDelta.x : event.angleDelta.y
+                            if (delta === 0)
+                                return
+                            const maxX = Math.max(0, channelViewport.contentWidth - channelViewport.width)
+                            channelViewport.contentX = page.clamp(
+                                channelViewport.contentX - (delta / 120) * 84 * page.theme.scale, 0, maxX)
+                            event.accepted = true
+                        }
+                    }
+
                     Row {
                         id: channelRow
                         height: Math.max(channelViewport.height, Math.round((page.compact ? 174 : 330) * page.theme.scale))
@@ -839,41 +881,73 @@ Item {
 
                 RowLayout {
                     Layout.fillWidth: true
-                    UiButton {
-                        objectName: "mixdownAnalysisEq"
-                        theme: page.theme
-                        selected: page.analysisMode === "eq"
-                        text: "EQ"
-                        ToolTip.visible: hovered
-                        ToolTip.text: page.vwaTr("EQ 曲线 · Alt+1")
-                            onClicked: page.selectAnalysis("eq")
-                    }
-                    UiButton {
-                        objectName: "mixdownAnalysisGr"
-                        theme: page.theme
-                        selected: page.analysisMode === "gr"
-                        text: page.vwaTr("动态 GR")
-                        ToolTip.visible: hovered
-                        ToolTip.text: page.vwaTr("压缩与限制器增益衰减 · Alt+2")
-                            onClicked: page.selectAnalysis("gr")
-                    }
-                    UiButton {
-                        objectName: "mixdownAnalysisReverb"
-                        theme: page.theme
-                        selected: page.analysisMode === "reverb"
-                        text: page.vwaTr("混响")
-                        ToolTip.visible: hovered
-                        ToolTip.text: page.vwaTr("混响空间 · Alt+3")
-                            onClicked: page.selectAnalysis("reverb")
-                    }
-                    UiButton {
-                        objectName: "mixdownAnalysisAlignment"
-                        theme: page.theme
-                        selected: page.analysisMode === "align"
-                        text: page.vwaTr("对齐")
-                        ToolTip.visible: hovered
-                        ToolTip.text: page.vwaTr("波形对齐 · Alt+4")
-                        onClicked: page.selectAnalysis("align")
+                    Rectangle {
+                        radius: Math.round(7 * page.theme.scale)
+                        color: page.theme.raised
+                        border.color: page.theme.line
+                        Layout.preferredWidth: analysisTabsRow.implicitWidth + 4
+                        Layout.minimumWidth: Layout.preferredWidth
+                        Layout.preferredHeight: analysisTabsRow.implicitHeight + 4
+                        implicitWidth: Layout.preferredWidth
+                        implicitHeight: Layout.preferredHeight
+                        RowLayout {
+                            id: analysisTabsRow
+                            anchors.fill: parent
+                            anchors.margins: 2
+                            spacing: 2
+                            UiButton {
+                                objectName: "mixdownAnalysisEq"
+                                theme: page.theme
+                                implicitHeight: Math.round(26 * page.theme.scale)
+                                quiet: !selected
+                                selected: page.analysisMode === "eq"
+                                text: "EQ"
+                                leadingGlyph: "pitch_curve"
+                                leadingIconSize: 14
+                                ToolTip.visible: hovered
+                                ToolTip.text: page.vwaTr("EQ 曲线 · Alt+1")
+                                onClicked: page.selectAnalysis("eq")
+                            }
+                            UiButton {
+                                objectName: "mixdownAnalysisGr"
+                                theme: page.theme
+                                implicitHeight: Math.round(26 * page.theme.scale)
+                                quiet: !selected
+                                selected: page.analysisMode === "gr"
+                                text: page.vwaTr("动态 GR")
+                                leadingGlyph: "dynamics"
+                                leadingIconSize: 14
+                                ToolTip.visible: hovered
+                                ToolTip.text: page.vwaTr("压缩与限制器增益衰减 · Alt+2")
+                                onClicked: page.selectAnalysis("gr")
+                            }
+                            UiButton {
+                                objectName: "mixdownAnalysisReverb"
+                                theme: page.theme
+                                implicitHeight: Math.round(26 * page.theme.scale)
+                                quiet: !selected
+                                selected: page.analysisMode === "reverb"
+                                text: page.vwaTr("混响")
+                                leadingGlyph: "reverb"
+                                leadingIconSize: 14
+                                ToolTip.visible: hovered
+                                ToolTip.text: page.vwaTr("混响空间 · Alt+3")
+                                onClicked: page.selectAnalysis("reverb")
+                            }
+                            UiButton {
+                                objectName: "mixdownAnalysisAlignment"
+                                theme: page.theme
+                                implicitHeight: Math.round(26 * page.theme.scale)
+                                quiet: !selected
+                                selected: page.analysisMode === "align"
+                                text: page.vwaTr("对齐")
+                                leadingGlyph: "align_tracks"
+                                leadingIconSize: 14
+                                ToolTip.visible: hovered
+                                ToolTip.text: page.vwaTr("波形对齐 · Alt+4")
+                                onClicked: page.selectAnalysis("align")
+                            }
+                        }
                     }
                     Item {
                         Layout.fillWidth: true
@@ -1225,6 +1299,8 @@ Item {
                     theme: page.theme
                     visible: page.primaryHandoffAction === "export"
                     text: page.handoffActionLabel()
+                    leadingGlyph: "export_file"
+                    leadingIconSize: 15
                     primary: true
                     enabled: page.handoffActionEnabled()
                     ToolTip.text: page.exportTargetReusesResult
@@ -1242,6 +1318,8 @@ Item {
                     theme: page.theme
                     visible: page.primaryHandoffAction === "register"
                     text: page.handoffActionLabel()
+                    leadingGlyph: "check"
+                    leadingIconSize: 15
                     primary: true
                     enabled: page.handoffActionEnabled()
                     onClicked: page.controller.registerMix()
@@ -1251,6 +1329,8 @@ Item {
                     theme: page.theme
                     visible: page.primaryHandoffAction === "compose"
                     text: page.handoffActionLabel()
+                    leadingGlyph: "nav_video"
+                    leadingIconSize: 15
                     primary: true
                     enabled: page.handoffActionEnabled()
                     onClicked: page.controller.composeVideo()
@@ -1411,7 +1491,7 @@ Item {
                 id: seekSlider
                 objectName: "mixdownProgress"
                 Layout.fillWidth: true
-                Layout.preferredHeight: Math.round(48 * page.theme.scale)
+                Layout.preferredHeight: Math.round(38 * page.theme.scale)
                 Layout.minimumHeight: Layout.preferredHeight
                 from: 0
                 to: Math.max(1, page.durationMs)

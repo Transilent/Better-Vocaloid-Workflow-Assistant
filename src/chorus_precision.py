@@ -192,12 +192,41 @@ def _local_timing_supported(times, offsets):
     return float(np.median(flat) - np.median(local)) >= .016
 
 
-def _timing_geometry(first, last, times, aim, local, quiet):
+def _local_interior_positions(left, right, snap):
+    """Choose coarser local timing knots, snapping them toward quiet note valleys."""
+    import numpy as np
+
+    step = .42
+    raw = list(np.arange(left + step, right - .18, step))
+    if not raw and right - left >= .28:
+        raw = [.5 * (left + right)]
+    if not raw or snap is None:
+        return tuple(raw)
+    snapped = []
+    min_gap = .14
+    for index, pos in enumerate(raw):
+        low = (snapped[-1] if snapped else left) + min_gap
+        high = (raw[index + 1] if index + 1 < len(raw) else right) - min_gap
+        if low >= high:
+            snapped.append(pos)
+            continue
+        radius = min(.085, pos - low, high - pos)
+        candidate = float(snap(pos, radius)) if radius >= .015 else pos
+        snapped.append(min(high, max(low, candidate)))
+    return tuple(snapped)
+
+
+def _timing_geometry(first, last, times, aim, local, quiet, snap=None):
     import numpy as np
 
     if not local and quiet:
-        margin = abs(aim[0]) + .024
-        if quiet(first - margin, first + margin) and quiet(last - margin, last + margin):
+        shift = float(aim[0])
+        pad = .018
+        # Directional quiet check: only the shifted overlap side needs silence,
+        # allowing ~190 ms real singing breaths to translate without shoulder warps.
+        lead = max(0., shift) + pad
+        trail = max(0., -shift) + pad
+        if quiet(first - lead, first + trail) and quiet(last - lead, last + trail):
             return (), aim
     # Keep a constant rate through the body of a translated phrase. The
     # shoulders join the original clock without borrowing adjacent words.
@@ -205,11 +234,19 @@ def _timing_geometry(first, last, times, aim, local, quiet):
     left, right = first + span, last - span
     if right - left < .056:
         return None, np.zeros(len(times))
-    interior = np.arange(left + .24, right - .12, .24) if local else ()
-    positions = np.asarray((first, left, *interior, right, last))
+    interior = _local_interior_positions(left, right, snap) if local else ()
+    positions = np.asarray((first, left, *interior, right, last), dtype=np.float64)
     shifts = np.r_[0., np.interp(positions[1:-1], times, aim), 0.]
+    if local and len(shifts) > 4:
+        # Smooth minor 1-2% local rate reversals inside sustained vowels while
+        # preserving phrase-scale drift.
+        body = shifts[1:-1].copy()
+        smoothed = body.copy()
+        smoothed[1:-1] = .25 * body[:-2] + .50 * body[1:-1] + .25 * body[2:]
+        if float(np.max(np.abs(smoothed - body))) <= .012:
+            shifts[1:-1] = smoothed
     for i in range(2, len(shifts) - 1):
-        limit = .22 * (positions[i] - positions[i - 1])
+        limit = .18 * (positions[i] - positions[i - 1])
         shifts[i] = np.clip(shifts[i], shifts[i - 1] - limit, shifts[i - 1] + limit)
     points = tuple((float(t + d), float(t)) for t, d in zip(positions, shifts))
     return points, np.interp(times, positions, shifts)
@@ -225,7 +262,7 @@ def fit_translation(first, last, movement, quiet):
     return TimingFit(movement if points is not None else None, points or (), (), 0, review=points is None)
 
 
-def fit_timing(anchors, first, last, strength, radius, quiet=None):
+def fit_timing(anchors, first, last, strength, radius, quiet=None, *, snap=None):
     """Prefer a translation, with localized time changes only if supported."""
     import numpy as np
 
@@ -258,7 +295,7 @@ def fit_timing(anchors, first, last, strength, radius, quiet=None):
             return TimingFit(0., (), tuple((label, t, t) for label, t in zip(labels, times)),
                              round(1000 * float(np.median(abs(offsets)))),
                              review=float(np.percentile(abs(offsets), 80)) > .115 and strength >= .85)
-        points, delta = _timing_geometry(first, last, times, aim, local, quiet)
+        points, delta = _timing_geometry(first, last, times, aim, local, quiet, snap=snap)
         remaining = float(np.median(abs(offsets - delta)))
         disagreement = float(np.percentile(abs(offsets - delta), 80))
         matched = tuple((label, float(t + d), float(t)) for label, t, d in zip(labels, times, delta))

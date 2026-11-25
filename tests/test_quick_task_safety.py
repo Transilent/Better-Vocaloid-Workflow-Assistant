@@ -76,7 +76,7 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='quick-task-safety-') 
     assert '字幕工具 · LRC 草稿' in labels_a
     assert '准备任务 · 正在运行' in labels_a
     assert '任务产物 · 正在核验' in labels_a
-    assert '合唱工作台 · 已载入' in labels_a
+    assert '修音工作台 · 已载入' in labels_a
     blockers_b = quick_results.task_reference_blockers(job_b, groups)
     labels_b = {row['label'] for row in blockers_b}
     assert '视频 · 已载入' in labels_b and '字幕工具 · 已载入来源' in labels_b

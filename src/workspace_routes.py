@@ -34,8 +34,8 @@ PAGE_SPECS = (
     PageSpec(page_id='tuning', legacy_index=9, title='调音工作流', sidebar_order=1),
     PageSpec(page_id='audio_mixdown', legacy_index=10, title='简易混音', sidebar_order=4),
     PageSpec(page_id='tuning_workshop', legacy_index=11, title='调音工坊', sidebar_order=2),
-    PageSpec(page_id='chorus', legacy_index=12, title='合唱工作台', sidebar_order=3,
-             english_title='Chorus'),
+    PageSpec(page_id='chorus', legacy_index=12, title='修音工作台', sidebar_order=3,
+             english_title='Pitch & Timing'),
 )
 
 

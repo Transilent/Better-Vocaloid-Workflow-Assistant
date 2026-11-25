@@ -419,7 +419,7 @@ def _vocal_tracks(request: Mapping[str, Any]) -> tuple[_VocalTrack, ...]:
             )
         value = request["vocals"]
         if not isinstance(value, list):
-            raise ValueError("vocals 必须是包含 1–3 个歌声轨对象的列表。")
+            raise ValueError(f"vocals 必须是包含 1–{MAX_VOCALS} 个歌声轨对象的列表。")
         if not 1 <= len(value) <= MAX_VOCALS:
             raise ValueError(f"vocals 必须包含 1–{MAX_VOCALS} 个歌声轨。")
         tracks = []

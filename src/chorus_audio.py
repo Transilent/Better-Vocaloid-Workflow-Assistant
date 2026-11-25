@@ -147,6 +147,7 @@ PITCH_CONTEXT_S = .09
 PITCH_MAX_GAP_S = .095
 PITCH_SMOOTH_S = .028
 PITCH_FADE_S = .020
+PITCH_TAIL_MAX_S = 1.50
 
 
 def _pitch_active(region):
@@ -169,10 +170,15 @@ def compile_pitch_spans(regions, rate, size, samples=None, *, voiced_curve=None)
     equal curves render identically, splits preserve PCM bit-for-bit, and editing
     one span never perturbs any non-continuous neighbor.
     """
-    from chorus_pitch_dsp import voiced_short_gap
+    from chorus_pitch_dsp import voiced_short_gap, voiced_tail_end
 
     context = round(PITCH_CONTEXT_S * rate)
     max_gap = round(PITCH_MAX_GAP_S * rate)
+    window = max(1, round(PITCH_SMOOTH_S * rate))
+    half_smooth = window // 2
+    fade = round(PITCH_FADE_S * rate)
+    edge_margin = half_smooth + fade
+    tail_max = round(PITCH_TAIL_MAX_S * rate)
     untouched = tuple(
         (max(0, round(edit.start * rate)), min(size, round(edit.end * rate)))
         for edit in regions if edit.manual and not _pitch_active(edit)
@@ -191,7 +197,7 @@ def compile_pitch_spans(regions, rate, size, samples=None, *, voiced_curve=None)
     grouped = [[active[0]]]
     for item in active[1:]:
         start, end, _ = item
-        prev_end = grouped[-1][-1][1]
+        prev_end = max(stop for _, stop, _ in grouped[-1])
         blocked = any(a < start and prev_end < b for a, b in untouched)
         if not blocked and start <= prev_end + 1:
             grouped[-1].append(item)
@@ -207,11 +213,42 @@ def compile_pitch_spans(regions, rate, size, samples=None, *, voiced_curve=None)
         else:
             grouped.append([item])
 
-    window = max(1, round(PITCH_SMOOTH_S * rate))
+    # When actual PCM is present, keep phase-shifted voiced vowels inside one
+    # continuous stream until the voice naturally releases to silence/unvoiced
+    # audio instead of crossfading phase-rotated wet audio back into dry mid-note.
+    if samples is not None:
+        merged = [list(grouped[0])]
+        for nxt in grouped[1:]:
+            prev_end = max(stop for _, stop, _ in merged[-1])
+            nxt_start = nxt[0][0]
+            blocked = any(a < nxt_start and prev_end < b for a, b in untouched)
+            if not blocked and nxt_start - prev_end <= tail_max:
+                tail = voiced_tail_end(samples, prev_end, nxt_start, rate)
+                if tail >= nxt_start - edge_margin:
+                    merged[-1].extend(nxt)
+                    continue
+            merged.append(list(nxt))
+        grouped = merged
+
     compiled = []
-    for members in grouped:
-        span_start = members[0][0]
-        span_end = max(end for _, end, _ in members)
+    prev_span_end = 0
+    for idx, members in enumerate(grouped):
+        raw_start = members[0][0]
+        raw_end = max(end for _, end, _ in members)
+        if samples is not None:
+            lock_before = max((b for a, b in untouched if b <= raw_start), default=0)
+            span_start = max(prev_span_end, lock_before, raw_start - edge_margin)
+            next_raw_start = grouped[idx + 1][0][0] if idx + 1 < len(grouped) else size
+            lock_after = min((a for a, b in untouched if a >= raw_end), default=size)
+            upper = min(size, lock_after, max(raw_end, next_raw_start - edge_margin))
+            min_end = min(upper, raw_end + edge_margin)
+            tail_limit = min(upper, raw_end + tail_max)
+            tail_end = voiced_tail_end(samples, raw_end, tail_limit, rate)
+            span_end = min(upper, max(min_end, tail_end + fade))
+        else:
+            span_start = raw_start
+            span_end = raw_end
+        prev_span_end = span_end
         left = max(0, span_start - context)
         right = min(size, span_end + context)
         shift = np.zeros(right - left, dtype=np.float64)
@@ -222,7 +259,7 @@ def compile_pitch_spans(regions, rate, size, samples=None, *, voiced_curve=None)
                 x, y = zip(*region.points)
                 cents = np.interp(np.arange(start, end) / rate, x, y)
             shift[start - left:end - left] = np.asarray(cents, dtype=np.float64) / 100.
-            if cursor is not None and start > cursor:
+            if cursor is not None and 0 < start - cursor <= max_gap:
                 shift[cursor - left:start - left] = np.linspace(
                     shift[cursor - left - 1], shift[start - left], start - cursor + 2)[1:-1]
             cursor = max(cursor, end) if cursor is not None else end
@@ -319,49 +356,76 @@ def _render_knots(points, tolerance):
     return (*kept, points[-1])
 
 
-def _warp_audio(placed, edit, origin, rate, check):
-    """Fit segments between source knots with pitch-preserving time stretch."""
-    output, source = zip(*_render_knots(edit.points, .00025 if edit.manual else .003))
+def _compiled_shift_curve(regions, rate, size, samples):
+    """Build a dense take-time semitone shift curve matching compile_pitch_spans."""
+    curve = np.zeros(size, dtype=np.float64)
+    for span_start, span_end, left, _right, shift in compile_pitch_spans(regions, rate, size, samples):
+        curve[span_start:span_end] = shift[span_start - left:span_end - left]
+    return curve
+
+
+def _warp_audio(placed, edit, origin, rate, check, *, pitch_curve=None):
+    """Fit segments between source knots with one continuous phase-coherent time stretch."""
+    from chorus_pitch_dsp import render_continuous_pitch_time_warp, render_continuous_time_warp
+
+    knots = _render_knots(edit.points, .00025 if edit.manual else .004)
+    output, source = zip(*knots)
     outs = [round(time * rate) - origin for time in output]
     ins = [round(time * rate) - origin for time in source]
-    warped = np.zeros((outs[-1] - outs[0], placed.shape[1]), dtype=np.float32)
-    seam = round(.005 * rate)
-    processor = None
-    for i, (a, b) in enumerate(zip(outs, outs[1:])):
-        check()
-        length = b - a
-        consumed = ins[i + 1] - ins[i]
-        if not length:
-            continue
-        tail = min(seam, outs[-1] - b)
-        if consumed <= 0 or abs(consumed - length) <= round(.0005 * rate):
-            result = _window(placed, ins[i], length + tail)
-        else:
-            factor = consumed / length
-            pad = round(.08 * rate)
-            audio = _window(placed, ins[i] - pad, consumed + pad * 2)
-            if processor is None:
-                processor = _pedalboard().time_stretch
-            transformed = processor(np.ascontiguousarray(audio.T), rate, stretch_factor=factor,
-                                    preserve_formants=True)
-            transformed = np.asarray(transformed, dtype=np.float32).reshape(placed.shape[1], -1).T
-            if not np.isfinite(transformed).all():
-                raise ValueError('时间拉伸组件返回了无效采样。')
-            result = _window(transformed, round(pad / factor), length + tail)
-        start = a - outs[0]
-        # Use the previous slice's real continuation at the seam.
-        fade = min(seam, length) if start else 0
-        if fade:
-            blend = np.linspace(0., 1., fade, endpoint=False, dtype=np.float32)[:, None]
-            result[:fade] = warped[start:start + fade] * (1. - blend) + result[:fade] * blend
-        warped[start:start + length + tail] = result
-    return warped
+    out_total = outs[-1] - outs[0]
+    in_total = ins[-1] - ins[0]
+    if out_total <= 0:
+        return np.zeros((0, placed.shape[1]), dtype=np.float32)
+    # Preserve untouched dry PCM when all segments stay within 0.5 ms of 1:1 speed
+    # and no joint pitch curve needs rendering.
+    near_identity = all(
+        (ins[i + 1] - ins[i]) <= 0 or abs((ins[i + 1] - ins[i]) - (outs[i + 1] - outs[i])) <= round(.0005 * rate)
+        for i in range(len(outs) - 1)
+    )
+    if near_identity and abs(in_total - out_total) <= round(.001 * rate) and pitch_curve is None:
+        return _window(placed, ins[0], out_total)
+    rel_outs = np.asarray(outs, dtype=np.float64) - outs[0]
+    rel_ins = np.maximum.accumulate(np.asarray(ins, dtype=np.float64) - ins[0])
+    source_map = np.interp(np.arange(out_total + 1, dtype=np.float64), rel_outs, rel_ins)
+    if len(knots) > 2:
+        # Ease rate transitions across interior knots without drifting endpoints.
+        slopes = np.diff(source_map)
+        rate_span = float(np.max(slopes) - np.min(slopes)) if len(slopes) else 0.
+        smooth_s = .030 if rate_span > .15 else .015
+        smooth_width = max(1, round(smooth_s * rate))
+        if smooth_width < len(slopes):
+            kernel = np.ones(smooth_width, dtype=np.float64) / smooth_width
+            pad_left = smooth_width // 2
+            pad_right = smooth_width - 1 - pad_left
+            eased = np.convolve(np.pad(slopes, (pad_left, pad_right), mode='edge'), kernel, mode='valid')
+            eased = np.maximum(0., eased)
+            total = float(np.sum(eased))
+            if total > 1e-9 and source_map[-1] > 0.:
+                eased *= source_map[-1] / total
+                source_map = np.r_[0., np.cumsum(eased)]
+    pad = round(.15 * rate)
+    audio = _window(placed, ins[0] - pad, max(1, in_total) + pad * 2)
+    if pitch_curve is not None:
+        src_pos = ins[0] + source_map[:-1]
+        in_bounds = (src_pos >= 0.) & (src_pos < len(pitch_curve))
+        out_shift = np.zeros(out_total, dtype=np.float64)
+        if np.any(in_bounds):
+            idx = np.clip(np.rint(src_pos[in_bounds]).astype(np.int64), 0, len(pitch_curve) - 1)
+            out_shift[in_bounds] = pitch_curve[idx]
+        warped = render_continuous_pitch_time_warp(
+            np.ascontiguousarray(audio.T), rate, pad, source_map, out_shift, check).T
+    else:
+        warped = render_continuous_time_warp(
+            np.ascontiguousarray(audio.T), rate, pad, source_map, check).T
+    if warped.shape != (out_total, placed.shape[1]) or not np.isfinite(warped).all():
+        raise ValueError('时间拉伸组件返回了无效采样。')
+    return np.ascontiguousarray(warped, dtype=np.float32)
 
 
-def _timed_slice(placed, edit, origin, rate, start, end, check):
+def _timed_slice(placed, edit, origin, rate, start, end, check, *, pitch_curve=None):
     if not edit.points:
         return _window(placed, start - round(edit.value * rate), end - start)
-    warped = _warp_audio(placed, edit, origin, rate, check)
+    warped = _warp_audio(placed, edit, origin, rate, check, pitch_curve=pitch_curve)
     return _window(warped, start + origin - round(edit.start * rate), end - start)
 
 
@@ -376,11 +440,28 @@ def render_track(project, track, variant, check=lambda: None):
     timing = project.edits_for(track.id, 'timing') if variant in ('timing', 'processed') else ()
     syllables = project.edits_for(track.id, SYLLABLE_GAIN) if variant == 'processed' else ()
     dry_reference = None
+    joint_dry_placed = None
+    joint_pitch_curve = None
     if variant in ('pitch', 'processed'):
         regions = project.edits_for(track.id, 'pitch')
         active = tuple(row for row in regions if _pitch_active(row))
         if active:
             dry_pitch = original.copy() if (timing or syllables) else None
+            # When warped timing edits and Signalsmith pitch both apply without
+            # intermediate syllable gain, keep dry PCM + dense pitch curve so
+            # warped phrases render in ONE single STFT pass (no double vocoding).
+            if (variant == 'processed' and not syllables and any(edit.points for edit in timing)
+                    and dry_pitch is not None):
+                from chorus_pitch_dsp import resolve_pitch_engine, signalsmith_pitch_time_warp_available
+                if resolve_pitch_engine(project.pitch_engine) == 'signalsmith' and signalsmith_pitch_time_warp_available():
+                    take_curve = _compiled_shift_curve(regions, rate, len(dry_pitch), dry_pitch)
+                    joint_dry_placed = _window(dry_pitch, offset, project.frames)
+                    placed_curve = np.zeros(project.frames, dtype=np.float64)
+                    left = max(0, offset)
+                    right = min(len(take_curve), offset + project.frames)
+                    if left < right:
+                        placed_curve[left - offset:right - offset] = take_curve[left:right]
+                    joint_pitch_curve = placed_curve
             _shift_pitch(original, rate, regions, check, engine=project.pitch_engine)
             if timing and dry_pitch is not None:
                 from chorus_pitch_dsp import preserve_low_transients
@@ -396,6 +477,8 @@ def render_track(project, track, variant, check=lambda: None):
         render_syllable_gains(original, rate, syllables, check, dry_reference)
     placed = _window(original, offset, project.frames)
     rendered = placed.copy() if timing else placed
+    if timing:
+        from chorus_pitch_dsp import blend_pitch
     for edit in timing:
         check()
         start = max(0, round(edit.start * rate) - project.first_frame)
@@ -403,9 +486,13 @@ def render_track(project, track, variant, check=lambda: None):
         shift = round(edit.value * rate)
         if start >= end or (not edit.points and not shift):
             continue
-        source = _timed_slice(placed, edit, origin, rate, start, end, check)
+        if edit.points and joint_dry_placed is not None and joint_pitch_curve is not None:
+            source = _timed_slice(joint_dry_placed, edit, origin, rate, start, end, check,
+                                  pitch_curve=joint_pitch_curve)
+        else:
+            source = _timed_slice(placed, edit, origin, rate, start, end, check)
         fade = min(round(.018 * rate), (end - start) // 2)
-        _crossfade(rendered[start:end], source, fade)
+        blend_pitch(rendered[start:end], source, fade)
     if variant == 'processed':
         for edit in project.edits_for(track.id, 'gain'):
             start = max(0, round(edit.start * rate) - project.first_frame)
@@ -586,6 +673,86 @@ def export_stems(project, folder, variant, selection, check, progress, *, includ
         (stage / '分轨说明.json').write_text(view + '\n', encoding='utf-8')
         check()
         return _publish_stems(stage, folder, project.title), receipt
+
+
+def prepare_mixdown_handoff(project, destination, receipt, selection, check, *, merged_vocals=False):
+    """Build a same-origin handoff payload from exported chorus stems into Simple Mixdown."""
+    from mixdown_contract import MAX_VOCALS
+    from mixdown_workspace_state import AUDIO_SUFFIXES
+
+    destination = Path(destination).expanduser().resolve(strict=True)
+    vocal_rows = []
+    if merged_vocals:
+        mix_info = receipt.get('vocal_mix')
+        if not isinstance(mix_info, dict) or not mix_info.get('file'):
+            raise RuntimeError('缺少合并人声文件，无法以合轨模式送入简易混音。')
+        vocal_rows.append({
+            'label': f'{project.title} · 人声合轨',
+            'path': str((destination / mix_info['file']).resolve()),
+            'muted': False,
+        })
+    else:
+        for entry in receipt.get('tracks', ()):
+            track = project.track(entry.get('id', ''))
+            part = str(entry.get('part') or '').strip()
+            name = str(entry.get('name') or '').strip() or '人声'
+            label = f'{name} ({part})' if part and part not in name else name
+            vocal_rows.append({
+                'label': label,
+                'path': str((destination / entry['file']).resolve()),
+                'muted': bool(track.muted) if track is not None else False,
+            })
+        if len(vocal_rows) > MAX_VOCALS:
+            raise ValueError(f'分轨数量（{len(vocal_rows)} 路）超过简易混音上限（{MAX_VOCALS} 路），请改用“合轨人声”模式送入。')
+    if not vocal_rows:
+        raise ValueError('没有可送入简易混音的人声分轨。')
+
+    backing_payload = None
+    backing_track = next((t for t in project.tracks if t.role == 'backing' and not t.muted), None)
+    if backing_track is None:
+        backing_track = next((t for t in project.tracks if t.role == 'backing'), None)
+    if backing_track is not None:
+        check()
+        origin_frame = int(receipt.get('origin_frame', project.first_frame))
+        origin_seconds = float(receipt.get('origin_seconds', origin_frame / project.rate))
+        frames = int(receipt.get('frames', project.frames))
+        full_span = (origin_frame == project.first_frame and frames == project.frames)
+        src_path = Path(backing_track.path).expanduser().resolve()
+        if (full_span and abs(backing_track.offset - origin_seconds) < 1e-4
+                and src_path.is_file() and src_path.suffix.casefold() in AUDIO_SUFFIXES):
+            backing_payload = {'label': backing_track.name or '伴奏', 'path': str(src_path)}
+        else:
+            start = max(0, origin_frame - project.first_frame)
+            stop = min(project.frames, start + frames)
+            rendered = render_track(project, backing_track, 'original', check)[start:stop]
+            backing_file = destination / f'00 伴奏 {_stem_name(backing_track.name)}.wav'
+            sf.write(backing_file, rendered, project.rate, format='WAV', subtype='FLOAT')
+            backing_payload = {'label': backing_track.name or '伴奏', 'path': str(backing_file.resolve())}
+
+    return {
+        'title': project.title,
+        'variant': receipt.get('variant', 'processed'),
+        'folder': str(destination),
+        'merged': bool(merged_vocals),
+        'vocals': vocal_rows,
+        'backing': backing_payload,
+    }
+
+
+def export_mixdown_handoff(project, folder, variant, selection, cache, check, progress, *, merged_vocals=False):
+    """Render chorus stems and build a ready-to-load payload for Simple Mixdown."""
+    from mixdown_contract import MAX_VOCALS
+
+    vocal_count = sum(track.role == 'vocal' for track in project.tracks)
+    if vocal_count <= 0:
+        raise ValueError('至少需要一条待处理人声音轨。')
+    if not merged_vocals and vocal_count > MAX_VOCALS:
+        raise ValueError(f'当前共有 {vocal_count} 路人声，超过简易混音分轨上限（{MAX_VOCALS} 路），请选择“合轨人声”模式送入。')
+    folder = Path(folder).expanduser().resolve()
+    folder.mkdir(parents=True, exist_ok=True)
+    destination, receipt = export_delivery(
+        project, folder, variant, selection, cache, check, progress, include_mix=bool(merged_vocals))
+    return prepare_mixdown_handoff(project, destination, receipt, selection, check, merged_vocals=bool(merged_vocals))
 
 
 class AuditionPCM:

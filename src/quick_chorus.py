@@ -65,6 +65,7 @@ class QuickChorus(QObject):
     phrasesChanged = Signal()
     positionChanged = Signal()
     activityChanged = Signal()
+    mixdownHandoffReady = Signal('QVariantMap')
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -99,7 +100,7 @@ class QuickChorus(QObject):
         self._mode = 'all'
         self._inspector_open = True
         self._inspector_section = 'batch'
-        self._batch_strength = {'timing': 100., 'pitch': 72.}
+        self._batch_strength = {'timing': 100., 'pitch': 88.}
         self._pitch_draw = False
         self._pitch_tool = 'note'
         self._pitch_snap = True
@@ -110,6 +111,9 @@ class QuickChorus(QObject):
         self._solo = ''
         self._intent = False
         self._loop = False
+        self._follow_playhead = True
+        self._follow_hold = False
+        self._last_nav_action = 'selection'
         self._position = 0.
         self._session = None
         self._session_geometry = None
@@ -177,10 +181,15 @@ class QuickChorus(QObject):
                 if track is not None:
                     issues.append({'id': index, 'track': track.name, 'kind': row.kind, 'time': row.start,
                                    'reason': row.detail, 'canApply': row.can_apply})
+        from mixdown_contract import MAX_VOCALS
+
         return {
             'title': project.title, 'path': str(self._path or ''), 'dirty': self.dirty,
             'first': project.start, 'last': project.end, 'rate': project.rate,
             'count': len(project.tracks), 'vocals': sum(track.role == 'vocal' for track in project.tracks),
+            'hasBacking': any(track.role == 'backing' for track in project.tracks),
+            'hasEdits': bool(project.edits),
+            'maxMixdownVocals': MAX_VOCALS,
             'guide': project.guide, 'selected': self._selected, 'take': self._track_row(selected) if selected else {},
             'reference': self._track_row(reference) if reference else {}, 'shiftMs': shift * 1000,
             'phrase': {'id': phrase.id if phrase else '', 'ref': phrase.reference if phrase else '',
@@ -207,7 +216,8 @@ class QuickChorus(QObject):
             'canMergeNotes': len(self._selected_notes) >= 2,
             'canSplitAtPlayhead': self._can_split_at_playhead(selected),
             'variant': self._variant, 'activeVariant': self._active_variant, 'solo': self._solo,
-            'playing': self._intent, 'loop': self._loop, 'loading': bool(self.monitor_worker.kind),
+            'playing': self._intent, 'loop': self._loop, 'followPlayhead': self._follow_playhead,
+            'loading': bool(self.monitor_worker.kind),
             'busy': bool(self.worker.kind), 'notice': self._notice, 'error': self._error,
             'undo': bool(self._undo), 'redo': bool(self._redo), 'export': str(self._export or ''),
             'score': Path(score.path).name if score else '', 'scoreOffset': score.offset if score else 0.,
@@ -373,6 +383,8 @@ class QuickChorus(QObject):
         self._mode, self._variant, self._solo = 'all', 'original', ''
         self._inspector_section, self._pitch_draw = 'batch', False
         self._pitch_tool, self._selected_notes = 'note', ()
+        self._follow_hold = False
+        self._last_nav_action = 'selection'
         self._selection = (project.start, project.end)
         self._view_first, self._view_span = project.start, max(.01, project.end - project.start)
         self._export = None
@@ -401,7 +413,7 @@ class QuickChorus(QObject):
         if self.worker.kind or self.dirty and not replace_dirty:
             return
         self._replace(ChorusProject.fresh(), {}, None)
-        self._say('新建合唱工程')
+        self._say('新建修音工程')
 
     @Slot(QUrl, bool)
     def openProject(self, url, replace_dirty=False):
@@ -428,9 +440,9 @@ class QuickChorus(QObject):
         def done(result):
             job, features = result
             self._replace(job, features, path)
-            self._say('已打开合唱工程')
+            self._say('已打开修音工程')
 
-        self._start('open', '正在打开合唱工程', work, done)
+        self._start('open', '正在打开修音工程', work, done)
 
     @Slot(QUrl)
     def saveProject(self, url=QUrl()):
@@ -444,13 +456,13 @@ class QuickChorus(QObject):
                 target = path.with_name(path.name + '.vwachorus')
             self.project.save(target)
             self._path, self._saved = target, self.project
-            self._say('已保存合唱工程')
+            self._say('已保存修音工程')
         except (OSError, ValueError) as error:
             self._say(error, error=True)
 
     @Slot(str)
     def nameProject(self, name):
-        self._commit(replace(self.project, title=name.strip() or '未命名合唱'), keep_suggestions=True)
+        self._commit(replace(self.project, title=name.strip() or '未命名修音'), keep_suggestions=True)
 
     @Slot(str, 'QVariantList')
     def importAudio(self, role, urls):
@@ -660,11 +672,23 @@ class QuickChorus(QObject):
             self._view_first, self._view_span = self.project.start, max(.01, self.project.end - self.project.start)
         else:
             left, right = self._selection
-            if self._selection == (self.project.start, self.project.end) and right - left > 18.:
+            whole_wide = self._selection == (self.project.start, self.project.end) and right - left > 18.
+            follow_pos = (
+                whole_wide
+                or self._intent
+                or (self._last_nav_action == 'playhead' and not (left - .30 <= self._position <= right + .30))
+            )
+            if follow_pos:
                 match = next((phrase for phrase in self.project.phrases
                               if phrase.start <= self._position < phrase.end), None)
-                left, right = (match.start, match.end) if match else self._bounds(self._position - 2., self._position + 5.)
-                self._select(self._selected, (left, right))
+                if match is not None:
+                    left, right = match.start, match.end
+                    if whole_wide or mode == 'phrase':
+                        self._select(self._selected, (left, right))
+                else:
+                    left, right = self._bounds(self._position - 1.5, self._position + 5.5)
+                    if whole_wide:
+                        self._select(self._selected, (left, right))
             self._set_viewport(left - .30, max(.6, right - left + .60))
         self.changed.emit()
 
@@ -673,10 +697,52 @@ class QuickChorus(QObject):
         self._view_span = max(min(.35, total), min(span, total))
         self._view_first = max(self.project.start, min(first, self.project.start + total - self._view_span))
 
+    def _follow_position(self, position, *, lead_ratio=.15, edge_ratio=.90):
+        if not self._follow_playhead or self._follow_hold:
+            return False
+        total = max(.01, self.project.end - self.project.start)
+        if self._view_span >= total - .01:
+            return False
+        left = self._view_first
+        right = left + self._view_span
+        if position < left or position > left + self._view_span * edge_ratio or position > right:
+            previous = self._view_first
+            self._set_viewport(position - self._view_span * lead_ratio, self._view_span)
+            return abs(self._view_first - previous) > 1e-6
+        return False
+
     @Slot(float, float)
     def viewport(self, first, span):
         self._set_viewport(number(first), number(span))
         self.changed.emit()
+
+    @Slot(float, float)
+    def zoomViewportAt(self, factor, anchor_time):
+        total = max(.01, self.project.end - self.project.start)
+        old_span = max(.01, self._view_span)
+        anchor = max(self.project.start, min(self.project.end, number(anchor_time)))
+        ratio = max(0., min(1., (anchor - self._view_first) / old_span))
+        new_span = max(min(.35, total), min(total, old_span * max(.1, min(10., number(factor)))))
+        self._set_viewport(anchor - ratio * new_span, new_span)
+        self.changed.emit()
+
+    @Slot(float)
+    def panViewport(self, delta_seconds):
+        self._set_viewport(self._view_first + number(delta_seconds), self._view_span)
+        self.changed.emit()
+
+    @Slot(bool)
+    def setFollowPlayhead(self, enabled):
+        flag = bool(enabled)
+        if self._follow_playhead != flag:
+            self._follow_playhead = flag
+            if flag:
+                self._follow_position(self._position, lead_ratio=.25, edge_ratio=1.0)
+            self.changed.emit()
+
+    @Slot(bool)
+    def setFollowHold(self, held):
+        self._follow_hold = bool(held)
 
     @Slot(str)
     def inspectorSection(self, section):
@@ -863,6 +929,7 @@ class QuickChorus(QObject):
     @Slot(float, float)
     def selectRange(self, first, last):
         self._select(self._selected, self._bounds(number(first), number(last)))
+        self._last_nav_action = 'selection'
         self._issue = -1
         self.changed.emit()
 
@@ -1728,6 +1795,66 @@ class QuickChorus(QObject):
             self._say('已保留所选音符原音' if lock_original else '已还原所选音符')
 
     @Slot('QVariantList')
+    def snapPitchNotesToSemitone(self, spans=None):
+        from chorus_notes import effective_note_offset, shift_vocal_notes
+
+        track = self.project.track(self._selected)
+        if not track or track.role != 'vocal':
+            return
+        parsed = self._parse_note_spans(spans) if spans else self._selected_notes
+        if not parsed:
+            return
+        notes = self._cached_vocal_notes(track)
+        if not notes:
+            return
+        pitch_edits = self.project.edits_for(track.id, 'pitch')
+        selected_set = {(round(a, 4), round(b, 4)) for a, b in parsed}
+        project = self.project
+        snapped = 0
+        for note in notes:
+            if (round(note.start, 4), round(note.end, 4)) not in selected_set:
+                continue
+            offset_cents, _, _, _ = effective_note_offset(note, pitch_edits)
+            target_midi = note.center_midi + offset_cents / 100.
+            delta_cents = (round(target_midi) - target_midi) * 100.
+            if abs(delta_cents) < .5:
+                continue
+            project = shift_vocal_notes(project, track.id, ((note.start, note.end),), delta_cents)
+            snapped += 1
+        if snapped and project != self.project:
+            self._selected_notes = parsed
+            self._commit(project, keep_suggestions=True)
+            if self._variant not in ('pitch', 'processed'):
+                self.setVariant('processed')
+            self._say(f'已将 {snapped} 个音符对齐到最近半音')
+
+    @Slot()
+    def loopSelectedNotes(self):
+        track = self.project.track(self._selected)
+        if not track or not self._selected_notes:
+            return
+        variant = self._active_variant if self._intent and self._active_variant else self._variant
+        timing_edits = self.project.edits_for(track.id, 'timing') if variant in ('timing', 'processed') else ()
+        starts = [self._display_time_for(track, a, timing_edits) for a, _ in self._selected_notes]
+        ends = [self._display_time_for(track, b, timing_edits) for _, b in self._selected_notes]
+        first, last = self._bounds(min(starts) - .15, max(ends) + .22)
+        if last <= first:
+            return
+        self._select(self._selected, (first, last))
+        self._loop = True
+        self.seek(first)
+        if not self._intent:
+            self._intent = True
+            self._request_audio()
+        self.changed.emit()
+
+    @Slot(float)
+    def stepPosition(self, delta_seconds):
+        if self.project.frames <= 0:
+            return
+        self.seek(self._position + number(delta_seconds))
+
+    @Slot('QVariantList')
     def drawPitch(self, stroke):
         from chorus_audio import recording_key
         from chorus_precision import pitch_from_stroke
@@ -1817,7 +1944,8 @@ class QuickChorus(QObject):
     @Slot(QUrl, bool)
     @Slot(QUrl, bool, bool)
     @Slot(QUrl, bool, bool, str)
-    def exportStems(self, folder, whole, include_mix=False, variant=''):
+    @Slot(QUrl, bool, bool, str, bool)
+    def exportStems(self, folder, whole, include_mix=False, variant='', send_to_mixdown=False):
         try:
             path = _path(folder)
         except (OSError, ValueError) as error:
@@ -1832,18 +1960,69 @@ class QuickChorus(QObject):
         cache = self._cache_dir()
 
         def work(stop, send):
-            from chorus_audio import export_delivery
+            from chorus_audio import export_delivery, prepare_mixdown_handoff
+            from mixdown_contract import MAX_VOCALS
 
-            return export_delivery(project, path, variant, selection, cache, lambda: _check(stop),
-                                   lambda i, n, name: _meter(send, 'export', i, n, f'渲染分轨 · {name}'),
-                                   include_mix=include_mix)
+            check = lambda: _check(stop)
+            destination, receipt = export_delivery(
+                project, path, variant, selection, cache, check,
+                lambda i, n, name: _meter(send, 'export', i, n, f'渲染分轨 · {name}'),
+                include_mix=include_mix)
+            handoff = None
+            if send_to_mixdown:
+                vocal_count = len(receipt.get('tracks', ()))
+                merged = vocal_count > MAX_VOCALS and bool(include_mix)
+                handoff = prepare_mixdown_handoff(project, destination, receipt, selection, check,
+                                                  merged_vocals=merged)
+            return destination, receipt, handoff
 
         def done(result):
-            self._export, receipt = result
-            suffix = '，含合唱干声' if 'vocal_mix' in receipt else ''
+            self._export, receipt, handoff = result
+            suffix = '，含人声合轨' if 'vocal_mix' in receipt else ''
             self._say(f"已导出 {len(receipt['tracks'])} 路同起点 WAV{suffix}")
+            if handoff is not None:
+                if self._intent:
+                    self._intent = False
+                    if self._session:
+                        self._session.pause()
+                    self.changed.emit()
+                self.mixdownHandoffReady.emit(handoff)
 
         self._start('export', '正在导出分轨', work, done)
+
+    @Slot(bool, str, bool)
+    def sendToMixdown(self, whole=True, variant='', merged_vocals=False):
+        project = self.project
+        if not any(track.role == 'vocal' for track in project.tracks):
+            self._say('请先导入至少一条待处理人声轨。', error=True)
+            return
+        variant = variant or ('processed' if project.edits else self._variant)
+        if variant not in VARIANTS:
+            self._say('请选择有效的渲染版本。', error=True)
+            return
+        selection = (project.start, project.end) if whole else self._selection
+        handoff_root = ROOT / 'cache' / 'chorus-mixdown'
+        cache = self._cache_dir()
+
+        def work(stop, send):
+            from chorus_audio import export_mixdown_handoff
+
+            return export_mixdown_handoff(
+                project, handoff_root, variant, selection, cache, lambda: _check(stop),
+                lambda i, n, name: _meter(send, 'export', i, n, f'准备送入混音 · {name}'),
+                merged_vocals=bool(merged_vocals))
+
+        def done(payload):
+            if self._intent:
+                self._intent = False
+                if self._session:
+                    self._session.pause()
+                self.changed.emit()
+            self._export = Path(payload['folder'])
+            self._say(f"已送入 {len(payload['vocals'])} 路人声到简易混音")
+            self.mixdownHandoffReady.emit(payload)
+
+        self._start('mixdown-handoff', '正在准备送入简易混音', work, done)
 
     @Slot()
     def openExport(self):
@@ -1889,6 +2068,8 @@ class QuickChorus(QObject):
             self.seek(first)
         elif self._position >= self.project.end - 1 / self.project.rate:
             self.seek(self.project.start)
+        self._last_nav_action = 'playhead'
+        self._follow_position(self._position, lead_ratio=.18, edge_ratio=.92)
         self._intent = True
         self._request_audio()
         self.changed.emit()
@@ -1901,7 +2082,10 @@ class QuickChorus(QObject):
     @Slot(float)
     def seek(self, seconds):
         target = max(self.project.start, min(number(seconds), self.project.end))
+        self._last_nav_action = 'playhead'
         self._set_position(target)
+        if self._follow_position(target, lead_ratio=.25, edge_ratio=1.0):
+            self.changed.emit()
         if self._session and self._session_geometry == self._geometry():
             self._seek_serial = self._session.seek(self._frame(target))
 
@@ -2029,6 +2213,8 @@ class QuickChorus(QObject):
         origin, frames, rate = self._session_geometry
         frame = min(frames, int(native.get('media_frame', 0)))
         self._set_position((origin + frame) / rate)
+        if self._intent and self._follow_position(self._position, lead_ratio=.15, edge_ratio=.90):
+            self.changed.emit()
         if self._gain_audition and self._current_key != self._requested:
             return
         first, last = self._selection

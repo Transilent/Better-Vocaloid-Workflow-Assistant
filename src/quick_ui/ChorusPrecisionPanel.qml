@@ -17,6 +17,8 @@ ColumnLayout {
     readonly property bool canFollow: vocal && !!view.reference.id && view.reference.id !== view.selected
     property string shownSignature: ""
     property bool syncing: false
+    property bool showAdvancedAlign: false
+    property bool showLyricsSection: true
 
     function t(text) { return quickTranslation.text(text) }
     function syncForm() {
@@ -41,7 +43,7 @@ ColumnLayout {
     component Heading: Text {
         Layout.fillWidth: true
         color: panel.theme.text
-        font.pixelSize: Math.round(14 * panel.theme.scale)
+        font.pixelSize: Math.round(13 * panel.theme.scale)
         font.weight: Font.DemiBold
     }
     component Note: Text {
@@ -57,150 +59,22 @@ ColumnLayout {
         color: panel.theme.line
     }
 
-    Heading { text: panel.t("歌词与时间参照") }
-    Note { visible: !panel.hasAudio || !panel.selection; text: panel.t("在时间轴上选中一段人声。") }
+    Note { visible: !panel.hasAudio || !panel.selection; text: panel.t("在时间轴上选中一段人声即可精修。") }
+
+    // 1. Phrase timing alignment (primary task in phrase mode)
     ColumnLayout {
         Layout.fillWidth: true
-        visible: panel.hasAudio && panel.selection
+        visible: panel.vocal
         spacing: 5
-
+        Heading { text: panel.t("本句时间对齐") }
         RowLayout {
             Layout.fillWidth: true
-            spacing: 4
-            UiComboBox {
-                id: lyricScope
-                objectName: "chorusLyricScope"
-                theme: panel.theme
-                Layout.fillWidth: true
-                fieldLabel: panel.t("歌词用途")
-                model: [{label: panel.t("本轨"), value: "track"},
-                        {label: panel.t("同词共用"), value: "shared"}]
-                onActivated: panel.syncForm()
-            }
-            UiComboBox {
-                id: language
-                objectName: "chorusLyricLanguage"
-                theme: panel.theme
-                Layout.fillWidth: true
-                fieldLabel: panel.t("歌词语言")
-                model: [{label: panel.t("日语"), value: "ja"}, {label: panel.t("普通话"), value: "zh"},
-                        {label: panel.t("英语"), value: "en"}, {label: panel.t("粤语"), value: "yue"}]
-                onActivated: panel.controller.lyricInput(lyricScope.currentValue, lyric.text, currentValue)
-            }
-        }
-        TextArea {
-            id: lyric
-            objectName: "chorusLyricInput"
-            Layout.fillWidth: true
-            Layout.preferredHeight: Math.round(63 * panel.theme.scale)
-            selectByMouse: true
-            wrapMode: TextEdit.Wrap
-            clip: true
-            placeholderText: panel.t("输入歌词或读音")
-            placeholderTextColor: panel.theme.muted
-            color: panel.theme.text
-            font.pixelSize: Math.round(13 * panel.theme.scale)
-            Accessible.name: panel.t("当前唱段歌词")
-            onTextChanged: if (!panel.syncing && activeFocus)
-                panel.controller.lyricInput(lyricScope.currentValue, text, language.currentValue)
-            background: Rectangle {
-                color: panel.theme.base
-                border.color: lyric.activeFocus ? panel.theme.accent : panel.theme.line
-                radius: Math.round(6 * panel.theme.scale)
-            }
-        }
-        Note {
-            visible: !!panel.record.text || (lyricScope.currentValue === "track" && !!panel.lines.shared.text)
-            text: panel.record.text
-                ? panel.t(panel.record.confirmed ? "已核对" : "草稿 · 核对读音后确认")
-                : panel.t("继承共用歌词") + "  ·  " + panel.lines.shared.text
-        }
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 4
-            UiButton {
-                objectName: "chorusConfirmLyrics"
-                theme: panel.theme
-                Layout.fillWidth: true
-                text: panel.t("确认歌词")
-                enabled: !!lyric.text.trim()
-                onClicked: panel.controller.setLyrics(lyricScope.currentValue, lyric.text, language.currentValue, true)
-            }
-            UiButton {
-                theme: panel.theme
-                quiet: true
-                text: panel.t("清除")
-                enabled: !!panel.record.text
-                onClicked: panel.controller.setLyrics(lyricScope.currentValue, "", language.currentValue, false)
-            }
-        }
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 4
-            UiButton {
-                objectName: "chorusRecognize"
-                theme: panel.theme
-                Layout.fillWidth: true
-                quiet: true
-                text: panel.t("识别本句")
-                enabled: !panel.view.busy && !panel.lines.local.confirmed
-                onClicked: { lyricScope.currentIndex = 0; panel.controller.recognizeLyrics(language.currentValue, false) }
-            }
-            UiButton {
-                objectName: "chorusRecognizeTrack"
-                theme: panel.theme
-                quiet: true
-                text: panel.t("识别整轨")
-                enabled: !panel.view.busy
-                onClicked: { lyricScope.currentIndex = 0; panel.controller.recognizeLyrics(language.currentValue, true) }
-            }
-        }
-        UiComboBox {
-            id: localRef
-            objectName: "chorusPhraseReference"
-            theme: panel.theme
-            Layout.fillWidth: true
-            fieldLabel: panel.t("本唱段时间参照")
-            model: [{label: panel.t("音轨默认参照"), value: ""}].concat(
-                panel.controller.tracks.filter(row => row.role !== "backing" && row.id !== panel.view.selected)
-                .map(row => ({label: row.name, value: row.id})))
-            currentIndex: Math.max(0, indexOfValue(panel.lines.ref))
-            onActivated: panel.controller.phraseReference(currentValue)
-        }
-        UiButton {
-            objectName: "chorusImportPhraseReference"
-            theme: panel.theme
-            Layout.fillWidth: true
-            quiet: true
-            text: panel.t("导入本句参照…")
-            enabled: panel.vocal && !panel.view.busy
-            onClicked: panel.importReference()
-        }
-        UiComboBox {
-            id: aligner
-            objectName: "chorusAlignmentEngine"
-            Layout.fillWidth: true
-            visible: panel.vocal
-            enabled: !panel.view.busy
-            theme: panel.theme
-            fieldLabel: panel.t("唱段对齐引擎")
-            model: [{label: panel.t("自动 · 优先 TiFA"), value: "auto"},
-                    {label: "TiFA", value: "tifa"}, {label: "HubertFA", value: "hubertfa"}]
-            currentIndex: Math.max(0, indexOfValue(panel.view.alignmentEngine))
-            onActivated: panel.controller.setAlignmentEngine(currentValue)
-        }
-        Note {
-            visible: panel.vocal && panel.view.alignmentEngine === "tifa" && !panel.controller.alignmentReady("tifa")
-            text: panel.t("缺少 TiFA 模型。可使用自动或 HubertFA。")
-        }
-        RowLayout {
-            Layout.fillWidth: true
-            visible: panel.vocal
             spacing: 4
             UiButton {
                 objectName: "chorusAnalyzePhrase"
                 theme: panel.theme
                 Layout.fillWidth: true
+                primary: !panel.view.canApplyTiming
                 text: panel.t("分析本句")
                 enabled: !panel.view.busy && panel.canFollow
                 onClicked: {
@@ -219,52 +93,108 @@ ColumnLayout {
                 }
             }
         }
+        UiButton {
+            objectName: "chorusApplyPhrase"
+            theme: panel.theme
+            Layout.fillWidth: true
+            primary: true
+            visible: !!panel.view.canApplyTiming
+            text: panel.t("应用本句对齐")
+            enabled: !panel.view.busy
+            onClicked: panel.controller.acceptPhraseTiming()
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 4
+            UiButton {
+                objectName: "chorusMarkNoteTiming"
+                theme: panel.theme
+                Layout.fillWidth: true
+                enabled: !panel.view.busy
+                quiet: true
+                text: panel.t("标记音符首尾")
+                onClicked: {
+                    panel.controller.setMode("phrase")
+                    panel.controller.markNoteTiming()
+                }
+            }
+            UiButton {
+                theme: panel.theme
+                quiet: true
+                visible: ((panel.view.take && panel.view.take.timing) || []).some(row => row.start < panel.view.rangeLast
+                                                            && row.end > panel.view.rangeFirst)
+                text: panel.t("还原时间")
+                onClicked: panel.controller.clearSelectionEdits("timing")
+            }
+        }
         Note {
             objectName: "chorusTimingEvidence"
             visible: !!panel.view.timingDetail
             text: panel.t(panel.view.timingDetail)
         }
         UiButton {
-            objectName: "chorusMarkNoteTiming"
             theme: panel.theme
             Layout.fillWidth: true
-            visible: panel.vocal
-            enabled: !panel.view.busy
+            leftAligned: true
             quiet: true
-            text: panel.t("标记音符首尾")
-            onClicked: {
-                panel.controller.setMode("phrase")
-                panel.controller.markNoteTiming()
+            disclosure: panel.showAdvancedAlign ? 1 : 0
+            text: panel.t("参照与对齐引擎")
+            onClicked: panel.showAdvancedAlign = !panel.showAdvancedAlign
+        }
+        ColumnLayout {
+            Layout.fillWidth: true
+            visible: panel.showAdvancedAlign
+            spacing: 5
+            UiComboBox {
+                id: localRef
+                objectName: "chorusPhraseReference"
+                theme: panel.theme
+                Layout.fillWidth: true
+                fieldLabel: panel.t("本唱段时间参照")
+                model: [{label: panel.t("音轨默认参照"), value: ""}].concat(
+                    panel.controller.tracks.filter(row => row.role !== "backing" && row.id !== panel.view.selected)
+                    .map(row => ({label: row.name, value: row.id})))
+                currentIndex: Math.max(0, indexOfValue(panel.lines.ref))
+                onActivated: panel.controller.phraseReference(currentValue)
             }
-        }
-        UiButton {
-            theme: panel.theme
-            Layout.fillWidth: true
-            quiet: true
-            visible: panel.vocal && panel.view.take.timing.some(row => row.start < panel.view.rangeLast
-                                                                   && row.end > panel.view.rangeFirst)
-            text: panel.t("还原选段时间")
-            onClicked: panel.controller.clearSelectionEdits("timing")
-        }
-        UiButton {
-            objectName: "chorusApplyPhrase"
-            theme: panel.theme
-            Layout.fillWidth: true
-            visible: !!panel.view.canApplyTiming
-            text: panel.t("应用本句对齐")
-            enabled: !panel.view.busy
-            onClicked: panel.controller.acceptPhraseTiming()
+            UiButton {
+                objectName: "chorusImportPhraseReference"
+                theme: panel.theme
+                Layout.fillWidth: true
+                quiet: true
+                text: panel.t("导入本句参照…")
+                enabled: panel.vocal && !panel.view.busy
+                onClicked: panel.importReference()
+            }
+            UiComboBox {
+                id: aligner
+                objectName: "chorusAlignmentEngine"
+                Layout.fillWidth: true
+                enabled: !panel.view.busy
+                theme: panel.theme
+                fieldLabel: panel.t("唱段对齐引擎")
+                model: [{label: panel.t("自动 · 优先 TiFA"), value: "auto"},
+                        {label: "TiFA", value: "tifa"}, {label: "HubertFA", value: "hubertfa"}]
+                currentIndex: Math.max(0, indexOfValue(panel.view.alignmentEngine))
+                onActivated: panel.controller.setAlignmentEngine(currentValue)
+            }
+            Note {
+                visible: panel.view.alignmentEngine === "tifa" && !panel.controller.alignmentReady("tifa")
+                text: panel.t("缺少 TiFA 模型。可使用自动或 HubertFA。")
+            }
         }
     }
 
+    // 2. Pitch follow, phrase gain & comp take
     Rule { visible: panel.vocal }
     ColumnLayout {
         Layout.fillWidth: true
         visible: panel.vocal
         spacing: 5
-        Heading { text: panel.t("唱段精修") }
+        Heading { text: panel.t("音高跟随与响度") }
         RowLayout {
             Layout.fillWidth: true
+            spacing: 4
             UiButton {
                 objectName: "chorusFollowContour"
                 theme: panel.theme
@@ -282,6 +212,7 @@ ColumnLayout {
                 objectName: "chorusFollowAbsolute"
                 theme: panel.theme
                 text: panel.t("跟音高")
+                Layout.fillWidth: true
                 enabled: panel.canFollow && !panel.view.busy
                 ToolTip.visible: hovered
                 ToolTip.text: panel.t("使用参照的实测音高")
@@ -335,6 +266,121 @@ ColumnLayout {
             }
             UiButton { theme: panel.theme; text: "+ " + panel.t("备选"); quiet: true
                 enabled: !panel.view.busy; onClicked: panel.importTake() }
+        }
+    }
+
+    // 3. Lyrics (for phoneme alignment & syllable gain)
+    Rule { visible: panel.hasAudio && panel.selection }
+    ColumnLayout {
+        Layout.fillWidth: true
+        visible: panel.hasAudio && panel.selection
+        spacing: 5
+        UiButton {
+            theme: panel.theme
+            Layout.fillWidth: true
+            leftAligned: true
+            quiet: true
+            disclosure: panel.showLyricsSection ? 1 : 0
+            text: panel.t("歌词核对") + (panel.record.confirmed ? " · " + panel.t("已核对") : "")
+            onClicked: panel.showLyricsSection = !panel.showLyricsSection
+        }
+        ColumnLayout {
+            Layout.fillWidth: true
+            visible: panel.showLyricsSection
+            spacing: 5
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 4
+                UiComboBox {
+                    id: lyricScope
+                    objectName: "chorusLyricScope"
+                    theme: panel.theme
+                    Layout.fillWidth: true
+                    fieldLabel: panel.t("歌词用途")
+                    model: [{label: panel.t("本轨"), value: "track"},
+                            {label: panel.t("同词共用"), value: "shared"}]
+                    onActivated: panel.syncForm()
+                }
+                UiComboBox {
+                    id: language
+                    objectName: "chorusLyricLanguage"
+                    theme: panel.theme
+                    Layout.fillWidth: true
+                    fieldLabel: panel.t("歌词语言")
+                    model: [{label: panel.t("日语"), value: "ja"}, {label: panel.t("普通话"), value: "zh"},
+                            {label: panel.t("英语"), value: "en"}, {label: panel.t("粤语"), value: "yue"}]
+                    onActivated: panel.controller.lyricInput(lyricScope.currentValue, lyric.text, currentValue)
+                }
+            }
+            TextArea {
+                id: lyric
+                objectName: "chorusLyricInput"
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.round(54 * panel.theme.scale)
+                selectByMouse: true
+                wrapMode: TextEdit.Wrap
+                clip: true
+                placeholderText: panel.t("输入歌词或读音")
+                placeholderTextColor: panel.theme.muted
+                color: panel.theme.text
+                font.pixelSize: Math.round(13 * panel.theme.scale)
+                Accessible.name: panel.t("当前唱段歌词")
+                onTextChanged: if (!panel.syncing && activeFocus)
+                    panel.controller.lyricInput(lyricScope.currentValue, text, language.currentValue)
+                background: Rectangle {
+                    color: panel.theme.base
+                    border.color: lyric.activeFocus ? panel.theme.accent : panel.theme.line
+                    radius: Math.round(6 * panel.theme.scale)
+                }
+            }
+            Note {
+                visible: !!panel.record.text || (lyricScope.currentValue === "track" && !!panel.lines.shared.text)
+                text: panel.record.text
+                    ? panel.t(panel.record.confirmed ? "已核对" : "草稿 · 核对读音后确认")
+                    : panel.t("继承共用歌词") + "  ·  " + panel.lines.shared.text
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 4
+                UiButton {
+                    objectName: "chorusConfirmLyrics"
+                    theme: panel.theme
+                    Layout.fillWidth: true
+                    text: panel.t("确认歌词")
+                    enabled: !!lyric.text.trim()
+                    onClicked: panel.controller.setLyrics(lyricScope.currentValue, lyric.text, language.currentValue, true)
+                }
+                UiButton {
+                    objectName: "chorusRecognize"
+                    theme: panel.theme
+                    quiet: true
+                    text: panel.t("识别本句")
+                    enabled: !panel.view.busy && !panel.lines.local.confirmed
+                    onClicked: { lyricScope.currentIndex = 0; panel.controller.recognizeLyrics(language.currentValue, false) }
+                }
+                UiButton {
+                    theme: panel.theme
+                    quiet: true
+                    text: "⋯"
+                    ToolTip.visible: hovered
+                    ToolTip.text: panel.t("更多歌词操作")
+                    onClicked: lyricMoreMenu.popup()
+                    Menu {
+                        id: lyricMoreMenu
+                        MenuItem {
+                            objectName: "chorusRecognizeTrack"
+                            text: panel.t("识别整轨歌词")
+                            enabled: !panel.view.busy
+                            onTriggered: { lyricScope.currentIndex = 0; panel.controller.recognizeLyrics(language.currentValue, true) }
+                        }
+                        MenuItem {
+                            text: panel.t("清除当前歌词")
+                            enabled: !!panel.record.text
+                            onTriggered: panel.controller.setLyrics(lyricScope.currentValue, "", language.currentValue, false)
+                        }
+                    }
+                }
+            }
         }
     }
 }

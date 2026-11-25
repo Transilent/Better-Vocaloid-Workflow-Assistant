@@ -80,6 +80,192 @@ def _signalsmith_api(path_text):
     return stretch_fn
 
 
+@lru_cache(maxsize=4)
+def _signalsmith_time_warp_api(path_text):
+    api = CDLL(path_text)
+    abi_fn = api.vwa_chorus_pitch_abi
+    abi_fn.restype = c_int
+    abi_fn.argtypes = ()
+    if abi_fn() != 1:
+        return None
+    warp_fn = getattr(api, 'vwa_chorus_time_warp', None)
+    if warp_fn is None:
+        return None
+    warp_fn.restype = c_int
+    warp_fn.argtypes = (
+        c_int, c_int, c_int, c_int, c_int,
+        _FLOAT_PTR, _DOUBLE_PTR, _FLOAT_PTR,
+    )
+    return warp_fn
+
+
+def _signalsmith_time_warp_stream(clip, rate, pad_frames, source_map, check):
+    dll = signalsmith_dll_path()
+    if dll is None:
+        return None
+    warp_fn = _signalsmith_time_warp_api(str(dll))
+    if warp_fn is None:
+        return None
+    check()
+    channels, in_frames = clip.shape
+    out_frames = len(source_map) - 1
+    source = np.ascontiguousarray(clip, dtype=np.float32)
+    control = np.ascontiguousarray(source_map, dtype=np.float64)
+    output = np.empty((channels, out_frames), dtype=np.float32)
+    latency = warp_fn(
+        int(rate), int(channels), int(in_frames), int(out_frames), int(pad_frames),
+        source.ctypes.data_as(_FLOAT_PTR),
+        control.ctypes.data_as(_DOUBLE_PTR),
+        output.ctypes.data_as(_FLOAT_PTR),
+    )
+    check()
+    if latency < 0:
+        raise RuntimeError(f'Signalsmith 连续时间拉伸返回错误码：{latency}')
+    return output
+
+
+def render_continuous_time_warp(clip, rate, pad_frames, source_map, check):
+    """Continuously time-warp multichannel audio along a monotone output->source sample map."""
+    channels, in_frames = clip.shape
+    out_frames = len(source_map) - 1
+    if out_frames <= 0:
+        return np.zeros((channels, 0), dtype=np.float32)
+    if not np.isfinite(source_map).all() or np.any(np.diff(source_map) < -1e-9):
+        raise ValueError('时间拉伸映射包含无效或倒退节点。')
+    if rate > 96000:
+        work_rate = rate
+        while work_rate > 96000:
+            work_rate = round(work_rate / 2)
+        scale = work_rate / rate
+        down = soxr.resample(clip.T, rate, work_rate)
+        work_out = max(1, round(out_frames * scale))
+        work_pad = min(len(down) - 1, max(0, round(pad_frames * scale)))
+        work_map = np.interp(
+            np.linspace(0., out_frames, work_out + 1),
+            np.arange(out_frames + 1),
+            source_map,
+        ) * scale
+        work_map = np.maximum.accumulate(np.clip(work_map, 0., max(0., len(down) - work_pad - 1.)))
+        warped = render_continuous_time_warp(down.T, work_rate, work_pad, work_map, check)
+        restored = soxr.resample(warped.T, work_rate, rate).T
+        if restored.shape[1] < out_frames:
+            tail = np.repeat(restored[:, -1:], out_frames - restored.shape[1], axis=1)
+            return np.ascontiguousarray(np.concatenate((restored, tail), axis=1), dtype=np.float32)
+        return np.ascontiguousarray(restored[:, :out_frames], dtype=np.float32)
+    rendered = _signalsmith_time_warp_stream(clip, rate, pad_frames, source_map, check)
+    if rendered is not None:
+        return rendered
+    return np.ascontiguousarray(
+        _waveform_overlap(clip[:, pad_frames:].T, rate, source_map[:-1], check).T,
+        dtype=np.float32,
+    )
+
+
+@lru_cache(maxsize=4)
+def _signalsmith_pitch_time_warp_api(path_text):
+    api = CDLL(path_text)
+    abi_fn = api.vwa_chorus_pitch_abi
+    abi_fn.restype = c_int
+    abi_fn.argtypes = ()
+    if abi_fn() != 1:
+        return None
+    fn = getattr(api, 'vwa_chorus_pitch_time_warp', None)
+    if fn is None:
+        return None
+    fn.restype = c_int
+    fn.argtypes = (
+        c_int, c_int, c_int, c_int, c_int,
+        _FLOAT_PTR, _DOUBLE_PTR, _DOUBLE_PTR, c_int, c_float, _FLOAT_PTR,
+    )
+    return fn
+
+
+def signalsmith_pitch_time_warp_available(root=None, environment=None):
+    dll = signalsmith_dll_path(root=root, environment=environment)
+    return dll is not None and _signalsmith_pitch_time_warp_api(str(dll)) is not None
+
+
+def _signalsmith_pitch_time_warp_stream(
+    clip, rate, pad_frames, source_map, shift, check,
+    *, tonality_hz=_SIGNALSMITH_TONALITY_HZ, formants=True,
+):
+    dll = signalsmith_dll_path()
+    if dll is None:
+        return None
+    fn = _signalsmith_pitch_time_warp_api(str(dll))
+    if fn is None:
+        return None
+    check()
+    channels, in_frames = clip.shape
+    out_frames = len(source_map) - 1
+    source = np.ascontiguousarray(clip, dtype=np.float32)
+    smap = np.ascontiguousarray(source_map, dtype=np.float64)
+    ctrl = np.ascontiguousarray(shift, dtype=np.float64) if shift is not None else None
+    output = np.empty((channels, out_frames), dtype=np.float32)
+    latency = fn(
+        int(rate), int(channels), int(in_frames), int(out_frames), int(pad_frames),
+        source.ctypes.data_as(_FLOAT_PTR),
+        smap.ctypes.data_as(_DOUBLE_PTR),
+        ctrl.ctypes.data_as(_DOUBLE_PTR) if ctrl is not None else None,
+        1 if formants else 0,
+        c_float(float(tonality_hz)),
+        output.ctypes.data_as(_FLOAT_PTR),
+    )
+    check()
+    if latency < 0:
+        raise RuntimeError(f'Signalsmith 联合修音拉伸返回错误码：{latency}')
+    return output
+
+
+def render_continuous_pitch_time_warp(
+    clip, rate, pad_frames, source_map, shift, check,
+    *, tonality_hz=_SIGNALSMITH_TONALITY_HZ, formants=True,
+):
+    """Render time warp and continuous pitch shift in one single phase-coherent STFT pass."""
+    channels, _ = clip.shape
+    out_frames = len(source_map) - 1
+    if out_frames <= 0:
+        return np.zeros((channels, 0), dtype=np.float32)
+    if shift is None or not np.any(shift):
+        return render_continuous_time_warp(clip, rate, pad_frames, source_map, check)
+    if len(shift) != out_frames or not np.isfinite(shift).all() or np.max(np.abs(shift)) > 72.:
+        raise ValueError('联合修音曲线长度或音高无效。')
+    if not np.isfinite(source_map).all() or np.any(np.diff(source_map) < -1e-9):
+        raise ValueError('时间拉伸映射包含无效或倒退节点。')
+    if rate > 96000:
+        work_rate = rate
+        while work_rate > 96000:
+            work_rate = round(work_rate / 2)
+        scale = work_rate / rate
+        down = soxr.resample(clip.T, rate, work_rate)
+        work_out = max(1, round(out_frames * scale))
+        work_pad = min(len(down) - 1, max(0, round(pad_frames * scale)))
+        work_map = np.interp(
+            np.linspace(0., out_frames, work_out + 1),
+            np.arange(out_frames + 1),
+            source_map,
+        ) * scale
+        work_map = np.maximum.accumulate(np.clip(work_map, 0., max(0., len(down) - work_pad - 1.)))
+        work_shift = np.interp(np.linspace(0., out_frames - 1, work_out), np.arange(out_frames), shift)
+        warped = render_continuous_pitch_time_warp(
+            down.T, work_rate, work_pad, work_map, work_shift, check,
+            tonality_hz=tonality_hz, formants=formants,
+        )
+        restored = soxr.resample(warped.T, work_rate, rate).T
+        if restored.shape[1] < out_frames:
+            tail = np.repeat(restored[:, -1:], out_frames - restored.shape[1], axis=1)
+            return np.ascontiguousarray(np.concatenate((restored, tail), axis=1), dtype=np.float32)
+        return np.ascontiguousarray(restored[:, :out_frames], dtype=np.float32)
+    rendered = _signalsmith_pitch_time_warp_stream(
+        clip, rate, pad_frames, source_map, shift, check,
+        tonality_hz=tonality_hz, formants=formants,
+    )
+    if rendered is not None:
+        return rendered
+    warped = render_continuous_time_warp(clip, rate, pad_frames, source_map, check)
+    return render_continuous_pitch(warped, rate, shift, check, engine='auto')
+
+
 def _signalsmith_stream(clip, rate, shift, check, *, tonality_hz=_SIGNALSMITH_TONALITY_HZ, formants=True):
     dll = signalsmith_dll_path()
     if dll is None:
@@ -332,6 +518,48 @@ def render_vocal_pitch(clip, rate, shift, check):
     return _waveform_overlap(converted, rate, clock[:-1], check).T
 
 
+def voiced_tail_end(audio, start, limit, rate):
+    """Walk forward from a pitch edit end until continuous voiced audio naturally releases."""
+    if limit <= start or start <= 0:
+        return start
+    from scipy.signal import correlate
+
+    ref_win = round(.040 * rate)
+    a0 = max(0, start - ref_win)
+    b0 = min(len(audio), start + ref_win)
+    if b0 <= a0:
+        return start
+    channel = int(np.argmax(np.mean(audio[a0:b0] ** 2, axis=0)))
+    ref_slice = audio[a0:start, channel].astype(np.float64)
+    ref_rms = float(np.sqrt(np.mean(ref_slice ** 2))) if len(ref_slice) else 0.
+    if ref_rms < 1.5e-3:
+        return start
+    floor_rms = max(1.5e-3, .08 * ref_rms)
+    hop = max(1, round(.010 * rate))
+    radius = max(1, round(.015 * rate))
+    min_lag = max(1, rate // 750)
+    max_lag = max(min_lag + 1, rate // 75)
+    pos = start
+    while pos < limit:
+        left, right = max(0, pos - radius), min(len(audio), pos + radius)
+        frame = audio[left:right, channel].astype(np.float64)
+        if len(frame) <= max_lag:
+            break
+        rms = float(np.sqrt(np.mean(frame ** 2)))
+        if rms < floor_rms:
+            return min(limit, pos + hop)
+        frame -= frame.mean()
+        energy = float(np.dot(frame, frame))
+        if energy <= 1e-12:
+            return min(limit, pos + hop)
+        periodic = correlate(frame, frame, mode='full', method='fft')[len(frame) - 1:]
+        best = float(np.max(periodic[min_lag:min(max_lag + 1, len(periodic))], initial=0.))
+        if best < .45 * energy:
+            return min(limit, pos + hop)
+        pos += hop
+    return limit
+
+
 def voiced_short_gap(audio, start, end, rate, max_seconds=.058):
     """A short correction gap can still be part of the same voiced sound."""
     if not 0 < end - start <= round(max_seconds * rate):
@@ -378,10 +606,10 @@ def blend_pitch(dry, wet, frames):
 
 
 def preserve_level(dry, mixed, rate):
-    """Restore short-time vocal level while keeping the correction out of the low band."""
+    """Restore macro vocal level smoothly without injecting 12-90 Hz pitch-period flutter."""
     from scipy.signal import butter, sosfiltfilt
 
-    radius, hop = round(.007 * rate), round(.005 * rate)
+    radius, hop = round(.015 * rate), round(.008 * rate)
     if len(mixed) <= max(24, 2 * radius):
         return mixed
     positions = np.r_[np.arange(0, len(mixed) - 1, hop), len(mixed) - 1]
@@ -392,9 +620,9 @@ def preserve_level(dry, mixed, rate):
         integral = np.r_[0., np.cumsum(np.mean(audio.astype(np.float64) ** 2, axis=1))]
         levels.append((integral[last] - integral[first]) / (last - first))
     ratio = np.sqrt((levels[0] + 1e-8) / (levels[1] + 1e-8))
-    gain = np.interp(np.arange(len(mixed)), positions, np.clip(ratio, .72, 1.48))
+    gain = np.interp(np.arange(len(mixed)), positions, np.clip(ratio, .78, 1.35))
     delta = mixed * (gain[:, None] - 1.)
-    sos = butter(5, 145, 'highpass', fs=rate, output='sos')
+    sos = butter(5, 115, 'highpass', fs=rate, output='sos')
     return (mixed + sosfiltfilt(sos, delta, axis=0)).astype(np.float32)
 
 

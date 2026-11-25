@@ -225,7 +225,7 @@ def _task_reference_groups(*, mixdown=None, mixdown_tracks=(), tuning=None, vide
         row = drafts.get(kind) if isinstance(drafts.get(kind), dict) else {}
         add('字幕工具 · ' + str(kind).upper() + ' 草稿', row.get('_task_job_id'),
             row.get('_source_path'), row.get('_exported_path'))
-    add('合唱工作台 · 已载入', *chorus_paths)
+    add('修音工作台 · 已载入', *chorus_paths)
 
     prep = preparation if isinstance(preparation, dict) else {}
     if prep.get('job'):
@@ -296,6 +296,7 @@ class QuickBridge(QObject):
         self._mixdown = QuickMixdown(self, self._work)
         self._chorus = QuickChorus(self)
         self._chorus.worker.changed.connect(self._work_changed)
+        self._chorus.mixdownHandoffReady.connect(self._open_chorus_mixdown)
         self._video = QuickVideo(self, self._work)
         self._publication = QuickPublication(self, self._work)
         self._subtitles = QuickSubtitles(self)
@@ -639,11 +640,24 @@ class QuickBridge(QObject):
 
     @Property('QVariantList', constant=True)
     def routes(self):
+        icons = {
+            'processing': 'nav_processing',
+            'tuning': 'nav_tuning',
+            'tuning_workshop': 'nav_workshop',
+            'chorus': 'nav_chorus',
+            'audio_mixdown': 'nav_mixdown',
+            'video_mixdown': 'nav_video',
+            'publishing': 'nav_publishing',
+            'components': 'nav_components',
+            'results': 'nav_results',
+            'updates': 'nav_settings',
+        }
         return [{'pageId': spec.page_id, 'title': tr('设置与支持' if spec.page_id == 'updates' else spec.title),
-                 'short': tr({'processing': '准备', 'tuning': '调音', 'tuning_workshop': '工坊', 'chorus': '合唱',
+                 'short': tr({'processing': '准备', 'tuning': '调音', 'tuning_workshop': '工坊', 'chorus': '修音',
                               'audio_mixdown': '混音',
                               'video_mixdown': '视频', 'publishing': '发布',
-                              'components': '组件', 'results': '任务', 'updates': '设置'}[spec.page_id])}
+                              'components': '组件', 'results': '任务', 'updates': '设置'}[spec.page_id]),
+                 'icon': icons.get(spec.page_id, '')}
                 for spec in self.state.routes]
 
     @Property('QVariantMap', notify=draftChanged)
@@ -1739,6 +1753,11 @@ class QuickBridge(QObject):
             self._clear_work_task_lock()
             return
         QTimer.singleShot(100, lambda: self._hold_tuning_handoff_lock(job))
+    def _open_chorus_mixdown(self, payload):
+        """Receive same-origin stems from the Pitch & Timing workbench and open Simple Mixdown."""
+        self.navigate('audio_mixdown')
+        self._mixdown.accept_chorus_handoff(payload)
+
     @Slot(str, str)
     def open_independent_mix(self, path, sha256):
         """Send one verified standalone WAV to Video without claiming a task."""

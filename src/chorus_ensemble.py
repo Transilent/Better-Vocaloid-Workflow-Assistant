@@ -8,7 +8,8 @@ from uuid import uuid4
 
 import numpy as np
 
-from chorus_analysis import FRAME, Suggestion, _project_slice, _runs, quiet_timing, timing_suggestion
+from chorus_analysis import (FRAME, Suggestion, _project_slice, _runs, quiet_timing,
+                             timing_suggestion, valley_timing)
 from chorus_precision import analysis_phrases, fit_timing, phone_anchors, phoneme_cache
 from chorus_project import Lyric, Phrase
 from chorus_speech import SpeechClip, normalized_lyrics, same_text, speech_batch
@@ -231,7 +232,11 @@ def ensemble_timing(project, targets, selection, features, audio, language, stre
                     else:
                         continue
                     anchors.append((label, target, source))
-                fit = fit_timing(anchors, *span, strength, radius, quiet_timing(track, features[track.id]))
+                fit = fit_timing(
+                    anchors, *span, strength, radius,
+                    quiet_timing(track, features[track.id]),
+                    snap=valley_timing(track, features[track.id]),
+                )
                 if fit is None:
                     continue
                 group = same_group >= max(2, len(anchors) * .5)

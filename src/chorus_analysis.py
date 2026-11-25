@@ -107,7 +107,7 @@ def phrases_from_reference(reference, features, first, last, score=None):
         if (b - a) * FRAME < .075:
             continue
         start, end = reference.offset + a * FRAME, reference.offset + b * FRAME
-        if bounds and start - bounds[-1][1] < .40:
+        if bounds and start - bounds[-1][1] < .22:
             bounds[-1] = (bounds[-1][0], end)
         else:
             bounds.append((start, end))
@@ -195,6 +195,26 @@ def quiet_timing(track, features):
     return quiet
 
 
+def valley_timing(track, features):
+    """Return a snapper that nudges local timing knots toward low-energy valleys."""
+    energy = features.energy
+
+    def snap(position, radius):
+        grid = np.arange(round((position - radius) / FRAME), round((position + radius) / FRAME) + 1)
+        if not len(grid):
+            return position
+        values = _project_slice(energy, track.offset, grid)
+        # Prefer quiet gaps / note boundaries while breaking ties toward the nominal spot.
+        dist = np.abs(grid * FRAME - position) / max(radius, FRAME)
+        scale = float(np.max(values)) if len(values) else 0.
+        if scale <= 1e-8:
+            return position
+        score = values / scale + .08 * dist
+        return float(grid[int(np.argmin(score))] * FRAME)
+
+    return snap
+
+
 def timing_suggestion(track, span, fit, route, source, review_reason=''):
     if fit.movement is None:
         method = tr('唱段边界过近，可扩展选区后再试')
@@ -257,7 +277,8 @@ def _timing_candidates(project, targets, selection, strength, radius, features, 
         route, anchors = phone_anchors(clips, evidence)
         first, last = max(selection[0], phrase.start), min(selection[1], phrase.end)
         quiet = quiet_timing(track, features[track.id])
-        fit = fit_timing(anchors, first, last, strength, radius, quiet)
+        snap = valley_timing(track, features[track.id])
+        fit = fit_timing(anchors, first, last, strength, radius, quiet, snap=snap)
         if fit is None and track.id in curves and ref.id in curves:
             for item in (ref, track):
                 if item.id not in note_runs:
@@ -266,7 +287,7 @@ def _timing_candidates(project, targets, selection, strength, radius, features, 
                         for a, b, pitch in _pitch_runs(*curves[item.id], note_edits=project.note_edits_for(item.id))
                     )
             notes = note_anchors(note_runs[ref.id], note_runs[track.id], phrase, movement)
-            fit = fit_timing(notes, first, last, strength, radius, quiet)
+            fit = fit_timing(notes, first, last, strength, radius, quiet, snap=snap)
             route = '音符起音'
         explicit = ref.id in (phrase.reference, track.timing_ref)
         source = tr('指定参照 {0}' if explicit else '工程参照 {0}', ref.name)
@@ -288,6 +309,86 @@ def _timing_candidates(project, targets, selection, strength, radius, features, 
                                             if not explicit and abs(movement) > .100 else '')
             generated.append(timing_suggestion(track.id, (first, last), fit, '声学起音', source, reason))
     return generated
+
+
+_DIATONIC_SCALES = tuple(
+    (root, frozenset((root + degree) % 12 for degree in (0, 2, 4, 5, 7, 9, 11)))
+    for root in range(12)
+)
+
+
+def _note_body_span(midi, step, note):
+    """Measure pitch spread inside the trimmed musical body of a note (ignoring onset/release scoops)."""
+    dur = note.end - note.start
+    trim = min(.035, dur * .15) if dur >= .14 else 0.
+    a = max(0, min(len(midi), round((note.start + trim) / step)))
+    b = max(a + 1, min(len(midi), round((note.end - trim) / step)))
+    seg = midi[a:b]
+    valid = seg[np.isfinite(seg)]
+    if len(valid) < 3:
+        return note.high_midi - note.low_midi
+    low, high = np.percentile(valid, (10, 90))
+    return float(high - low)
+
+
+def _estimate_ensemble_scale(notes_by_track, *, guide_id=''):
+    """Estimate a high-confidence diatonic pitch-class set from guide/chorus vocal notes."""
+    def _histogram(track_ids):
+        hist = np.zeros(12, dtype=np.float64)
+        count = 0
+        for tid in track_ids:
+            for note in notes_by_track.get(tid, ()):
+                dur = note.end - note.start
+                if dur < .075 or note.high_midi - note.low_midi > 2.4:
+                    continue
+                hist[round(note.center_midi) % 12] += dur
+                count += 1
+        return hist, count
+
+    def _pick_scale(hist, count):
+        total = float(hist.sum())
+        if count < 12 or total < 4.0:
+            return None
+        scores = sorted(
+            ((float(sum(hist[pc] for pc in scale)) / total,
+              float(hist[root] + hist[(root + 7) % 12]) / total,
+              scale) for root, scale in _DIATONIC_SCALES),
+            key=lambda item: (item[0], item[1]),
+            reverse=True,
+        )
+        best_cov, best_td, best_scale = scores[0]
+        second_cov, second_td, second_scale = scores[1] if len(scores) > 1 else (0., 0., frozenset())
+        if best_cov >= .78 and best_cov - second_cov >= .03:
+            return best_scale
+        # Tie-break two fifth-related scales both >=82% by tonic+dominant weight
+        # (e.g. Eb+Bb=47% picks 7-note Eb major over Ab major).
+        if best_cov >= .82 and second_cov >= .82 and len(best_scale | second_scale) == 8:
+            if abs(best_td - second_td) >= .04:
+                return best_scale if best_td > second_td else second_scale
+            return best_scale | second_scale
+        return None
+
+    if guide_id and guide_id in notes_by_track:
+        guide_scale = _pick_scale(*_histogram((guide_id,)))
+        if guide_scale is not None:
+            return guide_scale
+    return _pick_scale(*_histogram(tuple(notes_by_track.keys())))
+
+
+def _scale_aware_target(center_midi, dur, scale):
+    """Snap to nearest semitone, steering out-of-key singing back into the detected diatonic scale."""
+    nearest = round(center_midi)
+    if scale is None or (nearest % 12) in scale:
+        return nearest
+    # Keep long, dead-center chromatic accidentals untouched.
+    if dur >= .45 and abs(center_midi - nearest) <= .12:
+        return nearest
+    candidates = [
+        int(np.floor(center_midi)) + delta
+        for delta in range(-2, 3)
+        if (int(np.floor(center_midi)) + delta) % 12 in scale
+    ]
+    return min(candidates, key=lambda pitch: abs(pitch - center_midi)) if candidates else nearest
 
 
 def proposals(project, targets, selection, kind, strength, radius, features, curves, check, progress,
@@ -321,6 +422,17 @@ def proposals(project, targets, selection, kind, strength, radius, features, cur
     from chorus_notes import segment_vocal_notes
     from chorus_score_match import _normalize_token, match_vocal_to_score
 
+    vocal_notes_by_track = {}
+    if kind != 'timing':
+        for track_id, (curve_midi, curve_step) in curves.items():
+            vocal_notes_by_track[track_id] = segment_vocal_notes(
+                curve_midi, curve_step, note_edits=project.note_edits_for(track_id))
+    guide_track = project.reference()
+    ensemble_scale = (
+        _estimate_ensemble_scale(vocal_notes_by_track, guide_id=guide_track.id if guide_track else '')
+        if kind != 'timing' else None
+    )
+
     for index, track in enumerate(targets):
         check()
         progress(index, track.name)
@@ -334,7 +446,7 @@ def proposals(project, targets, selection, kind, strength, radius, features, cur
         applied_timing = project.edits_for(track.id, 'timing')
         time_edits = [row for row in applied_timing if row.manual] + timing + [row for row in applied_timing
                                                                                  if not row.manual]
-        vocal_notes = segment_vocal_notes(midi, step, note_edits=project.note_edits_for(track.id))
+        vocal_notes = vocal_notes_by_track[track.id]
 
         def to_output(take_a, take_b):
             sa, sb = track.offset + take_a, track.offset + take_b
@@ -370,17 +482,20 @@ def proposals(project, targets, selection, kind, strength, radius, features, cur
                     generated.append(Suggestion(track.id, 'pitch', start, finish, cents * pitch_strength,
                                                 match.reason, uncertain, True))
         else:
+            min_dur = .075 if ensemble_scale is not None else .115
             for note in in_range:
                 start, finish = max(begin, track.offset + note.start), min(end, track.offset + note.end)
-                if finish - start < .115:
+                dur = finish - start
+                if dur < (min_dur if not (note.linked_prev or note.linked_next) else .075):
                     continue
-                if note.high_midi - note.low_midi > 1.25:
+                if _note_body_span(midi, step, note) > 2.20:
                     continue
-                target = round(note.center_midi)
+                target = _scale_aware_target(note.center_midi, dur, ensemble_scale)
                 cents = (target - note.center_midi) * 100.
                 if abs(cents) >= 6.:
+                    detail = '本轨调内音' if ensemble_scale is not None else '本轨稳定音'
                     generated.append(Suggestion(track.id, 'pitch', start, finish, cents * pitch_strength,
-                                                '本轨稳定音', abs(cents) > 240., False))
+                                                detail, abs(cents) > 240., False))
     return phrases, tuple(generated)
 
 
