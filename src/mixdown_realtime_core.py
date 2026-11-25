@@ -315,7 +315,7 @@ class RealtimePreviewPlayerCore:
                 self.loading = False
                 self._ready = True
                 rate = int(event['sample_rate'])
-                self._duration = int(round(int(event['duration_frames']) * 1000 / rate))
+                self._duration = int(int(event['duration_frames']) * 1000 // rate) if rate > 0 else 0
                 # A source replacement may shorten the song while retaining an
                 # old playhead. The service resets that position to the start;
                 # mirror its effective position here instead of showing a stale

@@ -274,7 +274,7 @@ FocusScope {
                         text: page.t("在播放头拆分")
                         quiet: true
                         visible: pitchLane.hasNotes
-                        enabled: page.view.canSplitAtPlayhead && page.view.take.role === "vocal"
+                        enabled: page.controller.canSplitAtPlayhead && page.view.take.role === "vocal"
                         onClicked: page.controller.splitSelectedNoteAtPlayhead()
                     }
                     UiButton {
@@ -312,7 +312,7 @@ FocusScope {
                         quiet: true
                         visible: !pitchLane.canDraw
                         enabled: page.view.take.role === "vocal" && !page.view.busy
-                        onClicked: page.controller.analyze("pitch", "track", false, false, false, 75)
+                        onClicked: page.controller.analyze("pitch", "track", false, false, false, page.view.pitchStrength)
                     }
                     UiButton {
                         theme: page.theme
@@ -937,6 +937,7 @@ FocusScope {
                     theme: page.theme
                     leftAligned: true
                     quiet: true
+                    enabled: !page.view.busy
                     text: modelData.label + (modelData.draft ? "  [" + page.t("草稿") + "]" : "")
                     onClicked: {
                         prepScoreDialog.close()

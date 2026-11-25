@@ -84,7 +84,7 @@ _STEP_KEYS = frozenset((
     'next', 'details_tool', 'import_tool', 'audio_excerpt_next', 'full_entry',
 ))
 _STEP_LIST_KEYS = frozenset(('alternatives', 'pronunciation_reads'))
-_NESTED_STEP_KEYS = frozenset(('after_wait', 'then'))
+_NESTED_STEP_KEYS = frozenset(('after_wait', 'then', 'repair'))
 # Descend only through envelopes emitted by the service. Arbitrary result fields,
 # including request, plans, notes, lyrics and raw evidence, stay opaque; details
 # expose only its typed action_suggestions field.

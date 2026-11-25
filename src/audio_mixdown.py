@@ -860,24 +860,13 @@ def _make_reverb(pedalboard: Any, settings: _Settings) -> Any | None:
     )
 
 
-def _make_predelay(pedalboard: Any, settings: _Settings) -> None:
-    """Use the frame-driven local delay in _render_mix_v3.
-
-    Pedalboard 0.9.26 converts delay seconds through a float and truncates to
-    frames internally.  That can land one frame before the shared half-up
-    quantization at common 44.1 kHz settings, so both render paths use
-    _delay_block instead.
-    """
-    return None
-
-
 def _make_v3_processors(pedalboard: Any, settings: _Settings,
-                        sample_rate: int) -> tuple[Any | None, Any | None, Any | None, Any | None]:
+                        sample_rate: int) -> tuple[Any | None, Any | None, Any | None, None]:
     eq_chain = _make_eq_chain(pedalboard, settings, sample_rate)
     compressor = _make_compressor(pedalboard, settings)
     reverb = _make_reverb(pedalboard, settings)
-    predelay = _make_predelay(pedalboard, settings)
-    return eq_chain, compressor, reverb, predelay
+    # Frame-driven local delay (_delay_block) avoids Pedalboard 0.9.26 float truncation.
+    return eq_chain, compressor, reverb, None
 
 
 def _emit_progress(callback: Callable[[dict[str, Any]], Any] | None, *,
@@ -1480,12 +1469,8 @@ def _render_mix_v3(settings: _Settings, vocal_inputs: list[tuple[Path, int]],
 
                 dry_vocal = vocal_block
                 if reverb is not None:
-                    if predelay is not None:
-                        delayed_send = _pedalboard_process(
-                            predelay, send_block, sample_rate, first, numpy)
-                    else:
-                        delayed_send, delay_state = _delay_block(
-                            send_block, delay_frames, delay_state, numpy)
+                    delayed_send, delay_state = _delay_block(
+                        send_block, delay_frames, delay_state, numpy)
                     wet = _pedalboard_process(
                         reverb, delayed_send, sample_rate, first, numpy
                     )

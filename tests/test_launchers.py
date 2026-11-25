@@ -52,7 +52,7 @@ try:
         text = log.read_text(encoding='utf-8')
         assert 'VWA Quick' in text and 'Quick GUI ready' in text
     diagnostic=run('Start-Diagnostics.bat', '--check', '--quick-runtime', env['VWA_TEST_QT6_ROOT'])
-    assert '8 workspaces' in diagnostic_log.read_text(encoding='utf-8'), (
+    assert '10 workspaces' in diagnostic_log.read_text(encoding='utf-8'), (
         diagnostic_log.read_text(encoding='utf-8'),diagnostic.stdout.decode(errors='replace'),diagnostic.stderr.decode(errors='replace'))
     original_state = json.loads(before_workspace) if before_workspace else {}
     from workflow import default_graph, DEFAULT_OPTIONS

@@ -703,7 +703,10 @@ def register(mcp, control, workflow, invoke):
                 request.rationale,
             )
             workflow_id = result.data.get('workflow_id') or result.data.get('id')
-            operation_id = result.data.get('operation_id') or result.data.get('id')
+            op_obj = result.data.get('operation')
+            operation_id = result.data.get('operation_id') or (
+                op_obj.get('id') if isinstance(op_obj, dict) else None
+            )
             steps = []
             if isinstance(operation_id, str) and operation_id:
                 steps.append(_status_step('operations_get', operation_id=operation_id))

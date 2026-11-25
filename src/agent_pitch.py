@@ -1052,55 +1052,6 @@ def verify_pitch_plan(project: Any, plan: Mapping[str, Any], *,
         "provider_access_performed": False,
     }
 
-def bridge_evidence_by_pitch_runs(data: Mapping[str, Any], notes: Sequence[Any], clock: Any,
-                                  *, min_frames: int = 3) -> list[tuple[float, float]]:
-    """Return only gaps with independent voiced evidence inside one note.
-
-    A caller can use this helper after upstream pitch inference or a bounded
-    acoustic check supplies a second, trustworthy pitch track. A raw NPZ's
-    ``voiced_mask=false`` remains silence and is never evidence by itself.
-    """
-    evidence = data.get("bridge_evidence")
-    if evidence is None:
-        return []
-    if not isinstance(evidence, Mapping):
-        raise ValueError("bridge_evidence 必须是按声部索引的对象。")
-    by_voice = evidence.get("by_vocal_track_index")
-    if not isinstance(by_voice, Mapping):
-        return []
-    index = data["vocal_track_index"]
-    item = by_voice.get(str(index), by_voice.get(index))
-    if item is None:
-        return []
-    if not isinstance(item, Mapping):
-        raise ValueError("bridge_evidence 声部项必须是对象。")
-    pitch = np.asarray(item.get("midi_pitch"), dtype=np.float64)
-    mask = np.asarray(item.get("voiced_mask"), dtype=np.bool_)
-    step = float(item.get("time_step_seconds"))
-    origin = float(item.get("time_origin_seconds", 0.))
-    if pitch.ndim != 1 or mask.shape != pitch.shape or not math.isfinite(step) or not 0 < step <= .1:
-        raise ValueError("bridge_evidence 音高数组或时间步长无效。")
-    if not math.isfinite(origin):
-        raise ValueError("bridge_evidence 时间偏移无效。")
-    times = np.arange(pitch.size, dtype=np.float64) * step + origin
-    owner = assign_note_owners(times, _note_intervals(notes, clock))
-    supported = mask & np.isfinite(pitch) & (owner >= 0)
-    runs = []
-    indices = np.flatnonzero(supported)
-    if indices.size:
-        boundaries = np.flatnonzero((np.diff(indices) != 1)
-                                    | (owner[indices[1:]] != owner[indices[:-1]])) + 1
-        runs = [group for group in np.split(indices, boundaries) if group.size >= min_frames]
-    output = []
-    for left, right in zip(runs, runs[1:]):
-        if owner[left[0]] != owner[right[0]]:
-            continue
-        start = float(times[int(left[-1]) + 1])
-        end = float(times[int(right[0])])
-        if end > start:
-            output.append((start, end))
-    return output
-
 def _read_native_ustx(path):
     from libresvip.plugins.ustx.model import USTXProject
     from libresvip.utils.text import to_unicode

@@ -8,32 +8,18 @@ import json
 import math
 import os
 from pathlib import Path
-import tempfile
 import threading
-import time
 from typing import Any, Callable, Mapping
 import uuid
 
 import audio_mixdown as backend
-import mixdown_contract as contract
 
 
 AUDITION_CACHE_SCHEMA = "vwa.audio_mixdown.audition-cache/v3"
-AUDITION_REPORT_SCHEMA = "vwa.audio_mixdown.audition/v1"
-AUDITION_API_VERSION = 2
-AUDITION_IDENTITY_SCHEMA = "vwa.audio_mixdown.audition-identity/v1"
-ENVELOPE_SCHEMA = "vwa.audio_mixdown.short-envelope/v1"
 REVERB_EDC_SCHEMA = "vwa.audio_mixdown.reverb-edc/v1"
-SPECTRUM_SCHEMA = "vwa.audio_mixdown.spectrum/v1"
 AUDITION_PREROLL_SECONDS = 0.35
 # Bound only pathological low-frequency/high-Q EQ history.
 AUDITION_EQ_PREROLL_MAX_SECONDS = 8.0
-# The export limiter has a 5 ms lookahead. Render a little beyond the visible
-# segment so a following transient influences its end just as in a full mix.
-AUDITION_LOOKAHEAD_SECONDS = 0.02
-AUDITION_DEFAULT_SEGMENT_SECONDS = 12.0
-AUDITION_MAX_SEGMENT_SECONDS = 30.0
-AUDITION_ENVELOPE_HZ = 30.0
 AUDITION_EDC_TAIL_SECONDS = 2.0
 AUDITION_EDC_HZ = 120.0
 AUDITION_EDC_MIN_DB = -60.0
@@ -47,8 +33,6 @@ AUDITION_SPECTRUM_MAX_FFT_SIZE = 16384
 AUDITION_SPECTRUM_DB_DECIMALS = 3
 AUDITION_SPECTRUM_FREQUENCY_DECIMALS = 4
 AUDITION_MEMORY_CACHE_GENERATIONS = 2
-_SILENCE = float(backend.SILENCE_DBFS)
-_VARIANTS = ("before", "after", "both")
 
 
 @dataclass(frozen=True)

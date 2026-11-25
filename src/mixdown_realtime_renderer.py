@@ -1382,16 +1382,21 @@ class PreLimiterMixSession:
             structure = self._effect_structure(options, settings)
             if structure != self._effects_signature:
                 built = prepared.effects
+                reverb_edc = prepared.reverb_edc
                 if built is None or built.structure != structure:
-                    raise ValueError(
-                        "候选 DSP 计划与当前结构不一致，请重新准备参数。"
+                    # Recover safely from rapid control-thread toggles (S0 -> S1 -> S0)
+                    # where prepare_parameters saw the previous signature before DSP applied S1.
+                    built = self._build_effects(settings, options)
+                    reverb_edc = (
+                        self._prepare_reverb_edc(built, settings, options)
+                        if self._measure_reverb else None
                     )
                 self._effects_signature = structure
                 self._telemetry_records.clear()
                 # The window is a measurement of consecutive rendered audio.
                 # Keep it across an edit: rebuilding every 65 ms must not
                 # starve the 100 ms analysis window. Seeks still reset it.
-                self._rebuild_effects(built, reverb_edc=prepared.reverb_edc)
+                self._rebuild_effects(built, reverb_edc=reverb_edc)
                 self._warm_to(
                     previous_position, None,
                     "structural_parameter_change",
@@ -1471,15 +1476,3 @@ class PreLimiterMixSession:
             self._telemetry_records.clear()
             self._spectrum = None
             self._closed = True
-
-
-def pre_limiter_renderer(request: Mapping[str, Any], cache_dir: str | Path,
-                         numpy: Any = None, soundfile: Any = None,
-                         pedalboard: Any = None,
-                         ffmpeg: str | Path | None = None
-                         ) -> PreLimiterMixSession:
-    """Convenience factory with the same explicit injection contract."""
-    return PreLimiterMixSession(
-        request, cache_dir, numpy=numpy, soundfile=soundfile,
-        pedalboard=pedalboard, ffmpeg=ffmpeg,
-    )

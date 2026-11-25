@@ -582,7 +582,37 @@ def check_cas_cache_and_impact_selector(root):
         assert 'test_chorus_workbench.py' in impacted_py, impacted_py
         impacted_qml = mod.impacted_tests(repo_root, ['src/quick_ui/ChorusPitchLane.qml'])
         assert 'test_chorus_workbench.py' in impacted_qml, impacted_qml
-    print('PASS: CAS cache (RMVPE + span memory/disk parity) and impacted test selector')
+
+    # 4. Regression guards: AuditionPCM EOF A/B fade, merge adjacency/weighting, MCP repair rewrite
+    from chorus_audio import AuditionPCM, MonitorBuffer
+    from chorus_notes import VocalNote, merge_vocal_notes
+
+    pcm_a = np.ones((200, 2), dtype=np.float32) * .25
+    pcm_b = np.ones((200, 2), dtype=np.float32) * .50
+    aud = AuditionPCM(16000, pcm_a, position=190)
+    aud.set_parameters({'pcm': MonitorBuffer(pcm_b)})
+    tail = aud.render(64)
+    assert tail.shape == (10, 2) and np.isfinite(tail).all()
+
+    notes_3 = (
+        VocalNote(.1, .4, 60., 59.8, 60.2),
+        VocalNote(.42, .7, 62., 61.8, 62.2),
+        VocalNote(.72, 1.0, 64., 63.8, 64.2),
+    )
+    proj_m = replace(ChorusProject.fresh('Merge'), edits=(Edit('t1', 'pitch', .1, .4, 100., manual=True),))
+    try:
+        merge_vocal_notes(proj_m, 't1', [(.1, .4), (.72, 1.0)], all_notes=notes_3)
+        raise AssertionError('Non-adjacent merge should fail')
+    except ValueError:
+        pass
+    merged_adj = merge_vocal_notes(proj_m, 't1', [(.1, .4), (.42, .7)], all_notes=notes_3)
+    m_edit = merged_adj.edits_for('t1', 'pitch')[0]
+    assert 45. <= m_edit.value <= 55., m_edit
+
+    import agent_mcp_standard_routing as routing
+    rewritten = routing.standardize({'next': {'tool': 'vwa_workflow_get', 'repair': {'tool': 'vwa_workflow_advance'}}})
+    assert rewritten['next']['repair']['tool'] == 'vwa_run', rewritten
+    print('PASS: CAS cache, impacted selector, AuditionPCM EOF fade, merge adjacency & MCP repair rewrite')
 
 
 def main():

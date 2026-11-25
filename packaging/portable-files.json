@@ -14,6 +14,10 @@
       "source": "src/chorus_analysis.py"
     },
     {
+      "file": "chorus_ensemble.py",
+      "source": "src/chorus_ensemble.py"
+    },
+    {
       "file": "chorus_pitch.py",
       "source": "src/chorus_pitch.py"
     },
@@ -1100,6 +1104,18 @@
     {
       "file": "components/native-audio/native-audio.json",
       "source": "components/native-audio/native-audio.json"
+    },
+    {
+      "file": "components/native-audio/vwa_chorus_pitch.dll",
+      "source": "components/native-audio/vwa_chorus_pitch.dll"
+    },
+    {
+      "file": "components/native-audio/chorus-pitch.json",
+      "source": "components/native-audio/chorus-pitch.json"
+    },
+    {
+      "file": "components/signalsmith-stretch-LICENSE.txt",
+      "source": "components/signalsmith-stretch-LICENSE.txt"
     },
     {
       "file": "components/miniaudio-LICENSE.txt",

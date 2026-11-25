@@ -575,9 +575,6 @@ class MixdownWorkspaceState:
                 ('id', 'label', 'path', 'name', 'gain', 'muted', 'solo', 'pan', 'offset', 'send',
                  'deess_enabled', 'deess_strength')}
 
-    def set_job(self, job: Any) -> None:
-        self.job = str(Path(job).resolve()) if job else ''
-
     def set_position(self, value: Any) -> None:
         self.position = max(0, int(round(finite_number(value, 'position'))))
 
@@ -586,17 +583,6 @@ class MixdownWorkspaceState:
         if duration != self.duration:
             self.duration = duration
             self.position = min(self.position, duration)
-
-    def set_transport(self, *, playing: Any = None, loading: Any = None,
-                      state: Any = None, message: Any = None) -> None:
-        if playing is not None:
-            self.playing = bool(playing)
-        if loading is not None:
-            self.loading = bool(loading)
-        if state is not None:
-            self.state = str(state)
-        if message is not None:
-            self.message = str(message)[:1600]
 
     def add_vocal(self) -> str:
         vocals = [row for row in self._tracks if row['id'] != 'instrumental']

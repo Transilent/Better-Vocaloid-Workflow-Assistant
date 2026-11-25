@@ -44,7 +44,7 @@ class SegmentWorkflowTests(unittest.TestCase):
         started=self.workflow.apply_review(flow['id'],flow['revision'],'只核对本段音符与原字。',
             note_edits=note_edits,segment_id=segment['id'])
         args=self.control.operation_get(started['operation_id'])['request']['arguments']
-        output=self.root/('review-'+str(started['revision']));output.mkdir()
+        output=self.control.state/'operations'/('review-'+str(started['revision']));output.mkdir(parents=True,exist_ok=True)
         result=self.workflow.execute_review(started['operation_id'],args,output,lambda:None,lambda text:None)
         self.control.set_operation(started['operation_id'],'succeeded',result=result)
         return self.workflow.advance(started['id'],started['revision'])

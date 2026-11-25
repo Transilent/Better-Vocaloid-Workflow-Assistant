@@ -196,8 +196,8 @@ Rectangle {
                             }
                             TapHandler {
                                 onTapped: {
-                                    editor.controller.selectTrack(row.modelData.id)
                                     editor.takeSelected()
+                                    editor.controller.selectTrack(row.modelData.id)
                                 }
                             }
                             Column {
@@ -279,6 +279,7 @@ Rectangle {
                             onFirstChanged: requestPaint()
                             onSpanChanged: requestPaint()
                             onWidthChanged: requestPaint()
+                            onHeightChanged: requestPaint()
                             onAfterChanged: requestPaint()
                             onInkChanged: requestPaint()
                             onPaint: {
@@ -316,8 +317,8 @@ Rectangle {
                                 property real pressX
                                 onPressed: mouse => {
                                     pressX = mouse.x
-                                    editor.controller.selectTrack(row.modelData.id)
                                     editor.takeSelected()
+                                    editor.controller.selectTrack(row.modelData.id)
                                     editor.dragFirst = editor.toTime(mouse.x)
                                     editor.dragLast = editor.dragFirst
                                 }

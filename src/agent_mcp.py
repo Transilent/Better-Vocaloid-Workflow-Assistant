@@ -40,11 +40,23 @@ class StandardMCPServer(MCPServer):
         return await super().call_tool(name, arguments, context)
 
 
+def _server_version(app_root):
+    for candidate in (app_root / 'packaging/version.json', app_root / 'version.json'):
+        try:
+            if candidate.is_file():
+                ver = json.loads(candidate.read_text(encoding='utf-8-sig')).get('version')
+                if isinstance(ver, str) and ver.strip():
+                    return ver.strip()
+        except (OSError, ValueError):
+            pass
+    return '2.1.0'
+
+
 def build_server(config_path):
     control = Control(config_path)
     interface_revision = interface_identity(control.app)
     mcp = StandardMCPServer(
-        'VWA Agent', version='0.5.0', log_level='WARNING',
+        'VWA Agent', version=_server_version(control.app), log_level='WARNING',
         instructions=STANDARD_INSTRUCTIONS,
     )
 

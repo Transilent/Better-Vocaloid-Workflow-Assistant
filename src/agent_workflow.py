@@ -1004,7 +1004,16 @@ class Workflow:
         artifact = self.control.artifact(value['score_artifact_id'])
         try:
             score_stamp = self._artifact_stamp(artifact)
-        except (ControlError, OSError) as error:
+        except ControlError as error:
+            if getattr(error, 'code', None) in ('path_outside_allowed_roots', 'forbidden_path'):
+                raise
+            raise self._review_changed_error(
+                '核对源文件在读取前已改变；请重新读取后核对。',
+                cause='artifact_changed', workflow_id=identifier,
+                revision=value['revision'], artifact_id=artifact['id'],
+                expected_sha256=artifact['sha256'], files=[{'role': 'score'}],
+            ) from error
+        except OSError as error:
             raise self._review_changed_error(
                 '核对源文件在读取前已改变；请重新读取后核对。',
                 cause='artifact_changed', workflow_id=identifier,

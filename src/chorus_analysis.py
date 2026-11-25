@@ -223,17 +223,6 @@ def _pitch_runs(midi, step, *, note_edits=()):
         yield note.start, note.end, note.center_midi
 
 
-def _pitch_target(start, end, notes):
-    overlap = sorted(
-        ((min(end, note.end) - max(start, note.start), note.pitch) for note in notes
-         if note.start < end and start < note.end),
-        reverse=True)
-    if not overlap or overlap[0][0] < (end - start) * .30:
-        return None, False
-    ambiguous = len(overlap) > 1 and overlap[0][1] != overlap[1][1] and overlap[1][0] >= overlap[0][0] * .76
-    return overlap[0][1], ambiguous
-
-
 def phrase_regions(project, reference, features, selection):
     first, last = selection
     inferred = phrases_from_reference(reference, features, first, last, project.score)
@@ -272,8 +261,10 @@ def _timing_candidates(project, targets, selection, strength, radius, features, 
         if fit is None and track.id in curves and ref.id in curves:
             for item in (ref, track):
                 if item.id not in note_runs:
-                    note_runs[item.id] = tuple((item.offset + a, item.offset + b, pitch)
-                                               for a, b, pitch in _pitch_runs(*curves[item.id]))
+                    note_runs[item.id] = tuple(
+                        (item.offset + a, item.offset + b, pitch)
+                        for a, b, pitch in _pitch_runs(*curves[item.id], note_edits=project.note_edits_for(item.id))
+                    )
             notes = note_anchors(note_runs[ref.id], note_runs[track.id], phrase, movement)
             fit = fit_timing(notes, first, last, strength, radius, quiet)
             route = '音符起音'
@@ -344,18 +335,20 @@ def proposals(project, targets, selection, kind, strength, radius, features, cur
         time_edits = [row for row in applied_timing if row.manual] + timing + [row for row in applied_timing
                                                                                  if not row.manual]
         vocal_notes = segment_vocal_notes(midi, step, note_edits=project.note_edits_for(track.id))
-        in_range = [note for note in vocal_notes
-                    if min(end, track.offset + note.end) - max(begin, track.offset + note.start) >= .05]
-        if lane is not None:
-            def to_output(take_a, take_b):
-                sa, sb = track.offset + take_a, track.offset + take_b
-                center = (sa + sb) / 2.
-                mapping = next((row for row in time_edits
-                                if row.source_time(row.start) <= center < row.source_time(row.end)), None)
-                if mapping:
-                    return mapping.output_time(sa), mapping.output_time(sb)
-                return sa, sb
 
+        def to_output(take_a, take_b):
+            sa, sb = track.offset + take_a, track.offset + take_b
+            center = (sa + sb) / 2.
+            mapping = next((row for row in time_edits
+                            if row.source_time(row.start) <= center < row.source_time(row.end)), None)
+            if mapping:
+                oa, ob = mapping.output_time(sa), mapping.output_time(sb)
+                return (oa, ob) if ob > oa else (ob, oa)
+            return sa, sb
+
+        in_range = [note for note in vocal_notes
+                    if min(end, to_output(note.start, note.end)[1]) - max(begin, to_output(note.start, note.end)[0]) >= .05]
+        if lane is not None:
             phrase_texts = tuple(
                 (p.start, p.end, _normalize_token(line.text))
                 for p in project.phrases

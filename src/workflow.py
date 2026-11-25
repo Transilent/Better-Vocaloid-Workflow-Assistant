@@ -7,10 +7,6 @@ import style_catalog
 
 NODES = {'source': '音乐输入', 'separation': '分离声部', 'midi': '生成 MIDI', 'subtitles': '导出字幕'}
 LINKS = {('source', 'separation'), ('separation', 'midi'), ('midi', 'subtitles')}
-NODE_WIDTH = 192
-SNAP_GAP = 32
-SNAP_DISTANCE = 100
-DISCONNECT_DISTANCE = 150
 DEFAULT_OPTIONS = {'language': 'zh', 'recognize_lyrics': True, 'zh_lyric_mode': 'hanzi',
                    'voice_mode': 'dual', 'midi_steps': 16, 'bpm':None, 'roformer_device': 'auto', 'separation_flow':'cascade',
                    'separation_device': 'dml', 'midi_device': 'dml', 'midi_backend':'v2',
@@ -33,38 +29,6 @@ def default_graph(subtitles=False):
     names = ['source', 'separation', 'midi'] + (['subtitles'] if subtitles else [])
     return {'nodes': {name: [60 + index * 235, 150] for index, name in enumerate(names)},
             'edges': [list(pair) for pair in zip(names, names[1:])]}
-
-
-def connection_distance(graph, pair):
-    """Distance from an adjacent pair's aligned, left-to-right snap position."""
-    left, right = (graph['nodes'][name] for name in pair)
-    if right[0] - left[0] < NODE_WIDTH * .55:
-        return math.inf
-    return math.hypot(right[0] - left[0] - NODE_WIDTH - SNAP_GAP, right[1] - left[1])
-
-
-def nearby_connection(graph, name):
-    candidates = []
-    for pair in sorted(LINKS):
-        if name not in pair or any(n not in graph['nodes'] for n in pair):
-            continue
-        distance = connection_distance(graph, pair)
-        if distance <= SNAP_DISTANCE:
-            other = graph['nodes'][pair[0] if name == pair[1] else pair[1]]
-            x = other[0] + NODE_WIDTH + SNAP_GAP if name == pair[1] else other[0] - NODE_WIDTH - SNAP_GAP
-            candidates.append({'pair': list(pair), 'position': [x, other[1]], 'distance': distance})
-    return min(candidates, key=lambda candidate: candidate['distance'], default=None)
-
-
-def reconnect_nearby(graph, name):
-    """On drop, connect compatible neighbors and detach pairs pulled well apart."""
-    edges = [edge for edge in graph['edges']
-             if name not in edge or connection_distance(graph, edge) <= DISCONNECT_DISTANCE]
-    for pair in sorted(LINKS):
-        if (name in pair and all(n in graph['nodes'] for n in pair) and
-                connection_distance(graph, pair) <= SNAP_DISTANCE and list(pair) not in edges):
-            edges.append(list(pair))
-    graph['edges'] = edges
 
 
 def validate_graph(graph):

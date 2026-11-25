@@ -898,12 +898,16 @@ class QuickTuning(QObject):
     def parameterPlot(self):
         if not self.project or self._mode != 'single' or not self._view_preferences['parameter_open']:
             return {}
-        key = self.project, self._active, self._left, self._span, self._parameter_style
+        style_ref = self._parameter_style
+        # Use identity (with strong ref held below) so dict comparison never invokes
+        # NumPy ndarray equality on Curve dataclasses.
+        key = self.project, self._active, self._left, self._span, id(style_ref)
         if key != self._plot_cache[0]:
             focused = [note for note in self._notes if note['trackId'] == self._active]
-            plot = self.project.pitch_layer.plot(focused, self._left, self._left + self._span, self._parameter_style,
+            plot = self.project.pitch_layer.plot(focused, self._left, self._left + self._span, style_ref,
                                                  self.project.note_patches)
             self._plot_cache = key, plot
+            self._plot_style_ref = style_ref
         return self._plot_cache[1]
 
     @Property('QVariantList', notify=changed)
@@ -1527,11 +1531,6 @@ class QuickTuning(QObject):
     @Slot(bool)
     def setStylePitch(self, value):
         self._set_options({'style_pitch': value})
-
-    @Slot(str, float)
-    def setStyleDetail(self, phase, value):
-        if phase in DETAIL_DEFAULTS:
-            self._set_options({'style_detail': {**self._options['style_detail'], phase: value}})
 
     @Slot(str, 'QVariant')
     def setTuningOption(self, key, value):

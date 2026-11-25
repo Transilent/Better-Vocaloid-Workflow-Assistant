@@ -47,7 +47,7 @@ JPN 包可直接在准备工作流选择日语识别。需要中文或英文歌�
 
 连续试听使用同一原生音频流播放整曲，参数和 A/B 在会话中更新。切换页面和最小化保留播放状态，可返回后暂停、继续和定位；旧分段播放器已移除。设备失败时明确停止，由用户点击播放重试。EQ 显示实际处理前后频谱，混音台显示 RMS/采样峰值，GR 为音频块差值估计；混响提供实际发送/返回电平和后台测得的空间衰减。请仍在完整歌曲上检查时间、尾音及设备表现。
 
-首次使用时，在混音界面选择本地的 Pedalboard 0.9.26 Windows x64 wheel。VWA 会校验并解包到 `dependencies/optional/pedalboard/current`，不修改基础运行环境。命令行也可从[支持的下载源](DownloadSources.zh-CN.md)安装。导出新 WAV 后，可在合成视频前显式登记为任务 Mixdown。
+首次使用时，在混音界面选择本地的 Pedalboard 0.9.26 Windows x64 wheel。VWA 会校验并解包到 `dependencies/optional/pedalboard/current`，不修改基础运行环境。命令行也可从[支持的下载源](docs/DownloadSources.zh-CN.md)安装。导出新 WAV 后，可在合成视频前显式登记为任务 Mixdown。
 
 ## 视频与发布
 

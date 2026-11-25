@@ -262,16 +262,31 @@ def split_vocal_note(project, track_id, note_start, note_end, split_time):
                    note_edits=tuple(kept_ops))
 
 
-def merge_vocal_notes(project, track_id, spans):
-    """Merge two or more vocal notes into one editable note."""
+def merge_vocal_notes(project, track_id, spans, *, all_notes=None):
+    """Merge two or more adjacent vocal notes into one editable note."""
     ordered = sorted((float(a), float(b)) for a, b in spans if b > a)
     if len(ordered) < 2:
-        raise ValueError('请选择至少两个音符再合并。')
+        raise ValueError('请选择至少两个相邻音符再合并。')
+    if all_notes is not None:
+        indices = []
+        for a, b in ordered:
+            idx = next((i for i, n in enumerate(all_notes)
+                        if abs(n.start - a) < .015 and abs(n.end - b) < .015), None)
+            if idx is not None:
+                indices.append(idx)
+        if len(indices) == len(ordered):
+            indices.sort()
+            if any(b - a != 1 for a, b in zip(indices, indices[1:])):
+                raise ValueError('只能合并相邻的音符，请不要跨音符合并。')
+    for (_, prev_end), (next_start, _) in zip(ordered, ordered[1:]):
+        if next_start - prev_end > .35:
+            raise ValueError('所选音符之间存在明显休止或气口，无法合并。')
     start, end = ordered[0][0], ordered[-1][1]
     existing = [e for e in project.edits_for(track_id, 'pitch') if e.end > start + 1e-5 and e.start < end - 1e-5]
-    # Compute duration-weighted average offset across the merged span.
+    # Weight across the FULL merged duration so merging an edited note with an
+    # unedited note does not spread 100% of the edit to the untouched note.
     weighted_sum = 0.
-    total_dur = 0.
+    full_dur = max(1e-6, end - start)
     has_active = False
     for edit in existing:
         ov_a, ov_b = max(start, edit.start), min(end, edit.end)
@@ -287,11 +302,10 @@ def merge_vocal_notes(project, track_id, spans):
         if abs(val) > 1e-4:
             has_active = True
         weighted_sum += val * dur
-        total_dur += dur
 
     replacement = ()
-    if has_active and total_dur > 0.:
-        avg_cents = max(-1200., min(1200., weighted_sum / total_dur))
+    if has_active:
+        avg_cents = max(-1200., min(1200., weighted_sum / full_dur))
         replacement = (Edit(track_id, 'pitch', start, end, avg_cents, manual=True, basis='音符合并'),)
 
     updated = project.replace_region(track_id, 'pitch', start, end, replacement)

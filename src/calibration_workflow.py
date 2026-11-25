@@ -357,16 +357,6 @@ def retained_signature(job,request):
     return {'spec':spec,'adapter':file_hash(Path(__file__))}
 
 
-def apply_retained_expression(path,job,request):
-    from project_exports import voices_for
-    retained_signature(job,request)
-    result={}
-    for voice,row in request['retained_expression']['tracks'].items():
-        result[voice]=retain_parameters(path,Path(job)/row['file'],
-            track_index=voices_for(request).index(voice),source_track_index=row['track_index'])
-    return result
-
-
 def selected_track(data,index):
     tracks=[(i,t) for i,t in enumerate(data.get('tracks',[])) if not t.get('mainRef',{}).get('isInstrumental')]
     if type(index) is not int or not 0<=index<len(tracks):raise ValueError('请选择有效的演唱轨。')

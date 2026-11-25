@@ -137,6 +137,21 @@ ROOT_FILES.update({
     'mixdown_deesser.py', 'mixdown_loudness.py', 'mixdown_waveform.py', 'quick_ui/MixdownAlignment.qml',
     'tuning_clock.py', 'tuning_native.py', 'tuning_native_pitch.py', 'tuning_note_detail.py',
     'tuning_pitch_layer.py', 'tuning_score_edits.py',
+    'style_authoring.py', 'vocaloid_english.py',
+    'calibration_presets.py', 'quick_workshop.py',
+    'quick_ui/TuningWorkshopPage.qml', 'quick_ui/WorkshopStylePane.qml',
+    'quick_ui/WorkshopRecipeEditor.qml', 'quick_ui/WorkshopCalibrationPane.qml',
+    'quick_ui/WorkshopPresetPane.qml', 'quick_ui/WorkshopSlider.qml',
+    'quick_chorus.py', 'chorus_project.py', 'chorus_analysis.py', 'chorus_ensemble.py',
+    'chorus_pitch.py', 'chorus_pitch_dsp.py', 'chorus_audio.py', 'chorus_gain.py',
+    'chorus_notes.py', 'chorus_score_match.py', 'chorus_cache.py',
+    'chorus_precision.py', 'chorus_speech.py', 'chorus_model_worker.py',
+    'quick_ui/ChorusPage.qml', 'quick_ui/ChorusTimeline.qml', 'quick_ui/ChorusPitchLane.qml',
+    'quick_ui/ChorusPairLane.qml', 'quick_ui/ChorusPrecisionPanel.qml',
+    'quick_ui/ChorusGainPanel.qml', 'quick_ui/ChorusWaveform.js',
+    'components/signalsmith-stretch-LICENSE.txt',
+    'components/native-audio/vwa_chorus_pitch.dll',
+    'components/native-audio/chorus-pitch.json',
 })
 LAUNCHER_MIGRATION = {'from': 'BVWA.exe', 'to': 'VWA.exe', 'legacy_alias': True}
 SOURCE_POLICY_FORMAT = 1

@@ -415,7 +415,13 @@ class QuickWorkshop(QObject):
         if name == 'mode' and value not in ('project', 'audio', 'compare'):
             return
         if name == 'strength':
-            value = round(float(value), 3)
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                return
+            if not math.isfinite(parsed):
+                return
+            value = round(parsed, 3)
             if not 0 <= value <= 1:
                 return
         if self._method == 'design' and name in ('name', 'strength'):

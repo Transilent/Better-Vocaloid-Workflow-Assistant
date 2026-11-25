@@ -174,7 +174,10 @@ def _resolve_runtime(value: Any) -> Path:
     try:
         return _exports._runtime_path(None)
     except FileNotFoundError:
-        paths_file = Path(__file__).resolve().parents[2] / "paths.json"
+        here = Path(__file__).resolve()
+        paths_file = next((p / "paths.json" for p in here.parents if (p / "paths.json").is_file()), None)
+        if paths_file is None:
+            raise FileNotFoundError("无法从 workspace/paths.json 定位只读导出运行库。")
         try:
             with _io_path(paths_file).open("r", encoding="utf-8") as stream:
                 paths = json.load(stream)
@@ -183,7 +186,10 @@ def _resolve_runtime(value: Any) -> Path:
         legacy = paths.get("legacy_installation") if isinstance(paths, Mapping) else None
         if not isinstance(legacy, str) or not legacy:
             raise FileNotFoundError("workspace/paths.json 缺少 legacy_installation。")
-        return _exports._runtime_path(Path(legacy) / "dependencies" / "export")
+        legacy_path = Path(legacy)
+        if not legacy_path.is_absolute():
+            legacy_path = (paths_file.parent / legacy_path).resolve()
+        return _exports._runtime_path(legacy_path / "dependencies" / "export")
 
 
 @contextmanager

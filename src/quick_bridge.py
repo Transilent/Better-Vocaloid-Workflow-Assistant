@@ -1,6 +1,5 @@
 """Qt projections of the shared workspace, task library and worker commands."""
 
-from dataclasses import replace
 import os
 from pathlib import Path
 from uuid import uuid4
@@ -800,10 +799,6 @@ class QuickBridge(QObject):
         return quick_results.task_primary_action(self.state.task_detail, running_here=running_here,
                                                  work_busy=self.workBusy or self.taskLoading)
 
-    @Property('QVariantMap', notify=taskChanged)
-    def taskHandoff(self):
-        return dict(self.state.handoff)
-
     @Property(bool, notify=taskChanged)
     def taskLoading(self):
         return bool(self._read.kind or self._details.kind or self._task_work.kind)
@@ -1265,11 +1260,14 @@ class QuickBridge(QObject):
             if not self._exit_when_idle:
                 self.refresh()
 
-        self._work.start('component', lambda stop, send: _component_result(request, stop, send), finish, progress,
+        started = self._work.start('component', lambda stop, send: _component_result(request, stop, send), finish, progress,
                          label='正在准备组件…', facts={'component': request.component_id, 'runtime': request.runtime
                              if request.component_id == 'roformer' else '', 'action': request.action,
                              'source': request.source if request.action == 'install' else ''},
                          outcome=lambda value: value[:2])
+        if not started:
+            self.state.complete(request.operation_id, 'failed', '已有正在执行的组件操作，请稍候。')
+            self.activityChanged.emit()
 
     @Slot()
     def cancelOperation(self):
@@ -1939,6 +1937,7 @@ class QuickBridge(QObject):
         self._tuning.cancel()
         self._workshop.cancel()
         self._mixdown.cancel()
+        self._chorus.cancel()
         self._video.cancel()
         self._publication.cancel()
         self._calibration.cancel()
@@ -1964,4 +1963,3 @@ class QuickBridge(QObject):
         self._chorus.close()
         self._video.close()
         self._publication.close()
-        self._operation_timer.stop()

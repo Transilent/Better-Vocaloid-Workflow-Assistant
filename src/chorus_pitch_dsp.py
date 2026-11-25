@@ -147,16 +147,14 @@ def render_continuous_pitch(clip, rate, shift, check, *, engine='auto', pedalboa
     if resolved == 'signalsmith':
         return render_signalsmith_pitch(clip, rate, shift, check)
     if resolved == 'vwa':
-        if rate <= 96000 and (engine == 'vwa' or float(np.max(np.abs(shift))) <= 1.0):
+        if engine == 'vwa' or (rate <= 96000 and float(np.max(np.abs(shift))) <= 1.0):
             return render_vocal_pitch(clip, rate, shift, check)
         try:
             if pedalboard_loader is not None:
                 pedalboard_loader()
             return render_pitch(clip, rate, shift, check)
         except RuntimeError:
-            if rate <= 96000:
-                return render_vocal_pitch(clip, rate, shift, check)
-            raise
+            return render_vocal_pitch(clip, rate, shift, check)
     if pedalboard_loader is not None:
         pedalboard_loader()
     return render_pitch(clip, rate, shift, check)
@@ -306,11 +304,25 @@ def render_vocal_pitch(clip, rate, shift, check):
         raise ValueError('修音曲线与音频长度不一致。')
     if not np.any(shift):
         return clip
+    if not np.isfinite(shift).all() or np.max(np.abs(shift)) > 72.:
+        raise ValueError('修音曲线包含无效音高。')
+    if rate > 96000:
+        work_rate = rate
+        while work_rate > 96000:
+            work_rate = round(work_rate / 2)
+        down = soxr.resample(clip.T, rate, work_rate)
+        control = np.interp(np.arange(len(down)) * (rate / work_rate), np.arange(len(shift)), shift)
+        changed = render_vocal_pitch(down.T, work_rate, control, check)
+        restored = soxr.resample(changed.T, work_rate, rate).T
+        if restored.shape[1] < len(shift):
+            return np.concatenate((restored, clip[:, restored.shape[1]:]), axis=1)
+        return restored[:, :len(shift)]
     check()
     # The inverse rate integrates an original-sample to converted-sample map.
     # Interpolating an oversampled source keeps the time-varying conversion smooth.
     clock = np.r_[0., np.cumsum(np.exp2(-np.asarray(shift, dtype=np.float64) / 12.))]
-    src_frames = np.interp(np.arange(round(clock[-1])), clock, np.arange(len(clock)))
+    target_len = max(1, round(clock[-1]))
+    src_frames = np.interp(np.arange(target_len), clock, np.arange(len(clock)))
     expanded = soxr.resample(clip.T, rate, rate * 2, quality='HQ')
     positions = np.minimum(src_frames * 2., len(expanded) - 1.)
     left = positions.astype(np.int64)

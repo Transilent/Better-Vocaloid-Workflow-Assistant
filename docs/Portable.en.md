@@ -47,7 +47,7 @@ Simple mixing is an independent workflow for up to three vocal WAVs rendered by 
 
 Continuous preview uses one native audio stream for the complete song. Parameter and A/B changes update that session. Navigation and minimizing preserve playback, position, pause and resume; the old segmented players have been removed. A device failure stops playback explicitly and requires the user to retry. EQ shows measured before/after spectra; channel meters show RMS and sample peaks. Gain reduction is estimated from aligned audio blocks. Reverb displays measured send/return levels and a separately measured impulse decay. Check timing, tails and device behaviour on the complete song.
 
-On first use, select a local Pedalboard 0.9.26 Windows x64 wheel in the mixing workspace. VWA verifies and extracts it under `dependencies/optional/pedalboard/current` without changing the base runtime. The command-line installer can also use a [supported download source](DownloadSources.en.md). Export a new WAV or explicitly register it as a task Mixdown before video assembly.
+On first use, select a local Pedalboard 0.9.26 Windows x64 wheel in the mixing workspace. VWA verifies and extracts it under `dependencies/optional/pedalboard/current` without changing the base runtime. The command-line installer can also use a [supported download source](docs/DownloadSources.en.md). Export a new WAV or explicitly register it as a task Mixdown before video assembly.
 
 ## Video and publishing
 

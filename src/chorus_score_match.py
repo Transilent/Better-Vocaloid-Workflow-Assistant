@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from pathlib import Path
 import re
 
@@ -103,9 +102,11 @@ def match_vocal_to_score(vocal_notes, score_notes, *, time_to_output=None, phras
     for v in vocal_notes:
         if time_to_output is not None:
             a, b = time_to_output(v.start, v.end)
+            if b < a:
+                a, b = b, a
+            if b - a < 1e-4:
+                b = a + max(.02, v.end - v.start)
         else:
-            a, b = v.start, v.end
-        if b <= a:
             a, b = v.start, v.end
         mid = .5 * (a + b)
         p_text = ''

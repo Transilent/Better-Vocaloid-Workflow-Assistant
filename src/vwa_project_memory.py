@@ -486,10 +486,12 @@ class ProjectMemory:
         finally:pending.unlink(missing_ok=True)
         return path, documents
 
+    _ALLOWED_DOC_ROOTS = frozenset({'outputs/VWA项目工作台', 'workspace/vwa/docs', 'workspace/vwa-chorus-rebuild/docs', 'docs'})
+
     def _documents(self):
         result = {}
         for name in self._manifest().get('reference_roots', []):
-            if name not in {'outputs/VWA项目工作台', 'workspace/vwa/docs', 'docs'}:
+            if name not in self._ALLOWED_DOC_ROOTS:
                 raise MemoryError('Unreviewed document-index root')
             root = ordinary(self.root / name, self.root)
             if not root.is_dir():raise MemoryError('Configured reference directory is missing: ' + name)
@@ -516,7 +518,7 @@ class ProjectMemory:
 
     def index_documents(self, roots):
         if not roots or len(roots) != len(set(roots)):raise MemoryError('Choose unique document roots')
-        if any(name not in {'outputs/VWA项目工作台', 'workspace/vwa/docs', 'docs'} for name in roots):
+        if any(name not in self._ALLOWED_DOC_ROOTS for name in roots):
             raise MemoryError('Document indexing is restricted to reviewed documentation directories')
         with self.locked():
             for name in roots:

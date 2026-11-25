@@ -1112,7 +1112,9 @@ Item {
                     objectName: "preparationPlanInspector"
                     Layout.alignment: Qt.AlignTop
                     Layout.fillWidth: page.narrow
+                    Layout.minimumWidth: page.narrow ? 0 : Math.round(320 * page.theme.scale)
                     Layout.preferredWidth: Math.round(335 * page.theme.scale)
+                    Layout.maximumWidth: page.narrow ? 16777215 : Math.round(355 * page.theme.scale)
                     spacing: Math.round(12 * page.theme.scale)
                     SectionCard {
                         Layout.fillWidth: true

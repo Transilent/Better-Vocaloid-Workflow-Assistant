@@ -80,6 +80,9 @@ class QuickChorus(QObject):
         self._path = None
         self._features = {}
         self._curves = {}
+        self._notes_cache = {}
+        self._match_cache = {}
+        self._rec_cache = {}
         self._speech = OrderedDict()
         self._lyric_inputs = {}
         self._suggestions = ()
@@ -134,6 +137,10 @@ class QuickChorus(QObject):
     @Property(float, notify=positionChanged)
     def position(self):
         return self._position
+
+    @Property(bool, notify=positionChanged)
+    def canSplitAtPlayhead(self):
+        return self._can_split_at_playhead(self.project.track(self._selected))
 
     @Property('QVariantMap', notify=activityChanged)
     def activity(self):
@@ -276,9 +283,27 @@ class QuickChorus(QObject):
         return current, candidate
 
     def _take_span(self, track, first, last):
-        a = mapped_time(self.project, track, first)
-        b = mapped_time(self.project, track, nextafter(last, first))
+        variant = self._active_variant if self._intent and self._active_variant else self._variant
+        use_timing = variant in ('timing', 'processed')
+        a = mapped_time(self.project, track, first) if use_timing else first
+        b = mapped_time(self.project, track, nextafter(last, first)) if use_timing else nextafter(last, first)
+        if b < a:
+            a, b = b, a
         return max(0., a - track.offset), min(track.duration, b - track.offset)
+
+    @staticmethod
+    def _tracks_signature(project):
+        return (
+            project.guide,
+            tuple(
+                (t.id, t.name, t.role, t.part, t.offset, t.duration, t.muted,
+                 t.score_lane, t.timing_ref,
+                 project.edits_for(t.id, 'timing'),
+                 project.edits_for(t.id, 'take'),
+                 sum(e.track == t.id for e in project.edits))
+                for t in project.tracks
+            ),
+        )
 
     def _commit(self, next_project, *, keep_suggestions=False):
         if next_project == self.project:
@@ -293,6 +318,7 @@ class QuickChorus(QObject):
     def _load_revision(self, revision):
         project, self._suggestions, resolved, self._issue = revision
         self._resolved = set(resolved)
+        self._selected_notes = ()
         self._restore(project, keep_suggestions=True)
 
     def _restore(self, project, keep_suggestions=False):
@@ -303,6 +329,7 @@ class QuickChorus(QObject):
         if not project.track(self._selected):
             self._selected = next((track.id for track in project.tracks if track.role == 'vocal'),
                                   project.tracks[0].id if project.tracks else '')
+            self._selected_notes = ()
         if not project.track(self._solo):
             self._solo = ''
         if (previous.start, previous.end) != (project.start, project.end):
@@ -312,8 +339,15 @@ class QuickChorus(QObject):
             if self._selection[0] == self._selection[1]:
                 self._selection = (project.start, project.end)
             self._set_position(min(project.end, max(project.start, self._position)))
+        # Emit tracksChanged BEFORE changed so ComboBoxes bound to controller.tracks
+        # rebuild their model before view/currentIndex re-evaluates, and skip
+        # emitting tracksChanged when track rows are unchanged to avoid rebuilding
+        # all ChorusTimeline waveform delegates on pitch/gain/phrase edits.
+        if self._tracks_signature(previous) != self._tracks_signature(project):
+            self.tracksChanged.emit()
         self.changed.emit()
-        self.tracksChanged.emit()
+        if previous.note_edits != project.note_edits or previous.tracks != project.tracks:
+            self.positionChanged.emit()
         if previous.phrases != project.phrases:
             self.phrasesChanged.emit()
         if self._session or self._intent:
@@ -321,9 +355,14 @@ class QuickChorus(QObject):
 
     def _replace(self, project, features, path):
         self._stop_session()
+        if self.monitor_worker.kind:
+            self.monitor_worker.cancel()
         self._requested = None
         self._cache.clear()
         self._curves.clear()
+        self._notes_cache.clear()
+        self._match_cache.clear()
+        self._rec_cache.clear()
         self._speech.clear()
         self._lyric_inputs.clear()
         self._features = features
@@ -339,6 +378,7 @@ class QuickChorus(QObject):
         self._export = None
         self._set_position(project.start)
         self._restore(project)
+        self.tracksChanged.emit()
 
     def _start(self, kind, label, work, done):
         if self.worker.kind:
@@ -570,6 +610,9 @@ class QuickChorus(QObject):
 
     @Slot(str)
     def removeTrack(self, identity):
+        if self.worker.kind:
+            self._say('请等待当前合唱操作完成，或先取消。')
+            return
         if self.project.track(identity):
             self._commit(self.project.remove(identity))
 
@@ -590,6 +633,9 @@ class QuickChorus(QObject):
 
     @Slot()
     def undo(self):
+        if self.worker.kind:
+            self._say('请等待当前合唱操作完成，或先取消。')
+            return
         if self._undo:
             self._redo.append(self._revision())
             self._load_revision(self._undo.pop())
@@ -597,6 +643,9 @@ class QuickChorus(QObject):
 
     @Slot()
     def redo(self):
+        if self.worker.kind:
+            self._say('请等待当前合唱操作完成，或先取消。')
+            return
         if self._redo:
             self._undo.append(self._revision())
             self._load_revision(self._redo.pop())
@@ -746,15 +795,46 @@ class QuickChorus(QObject):
         else:
             self._say('当前没有待绑定的空闲人声轨')
 
+    def _cached_vocal_notes(self, track):
+        if not track:
+            return ()
+        from chorus_audio import recording_key
+        from chorus_notes import segment_vocal_notes
+
+        rec_key = recording_key(self.project, track)
+        source = self._curves.get(rec_key)
+        if source is None:
+            return ()
+        note_edits = self.project.note_edits_for(track.id)
+        cache_key = (rec_key, note_edits)
+        cached = self._notes_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        notes = tuple(segment_vocal_notes(*source, note_edits=note_edits))
+        if len(self._notes_cache) > 32:
+            self._notes_cache.clear()
+        self._notes_cache[cache_key] = notes
+        return notes
+
     def _score_recommendations(self, track):
         if not track or track.role != 'vocal' or not self.project.score:
             return []
         from chorus_audio import recording_key
         from chorus_score_match import recommend_score_lanes
 
-        key = recording_key(self.project, track)
-        curves = {track.id: self._curves[key]} if key in self._curves else {}
-        return recommend_score_lanes(self.project, curves).get(track.id, [])
+        rec_key = recording_key(self.project, track)
+        score = self.project.score
+        has_curve = rec_key in self._curves
+        cache_key = (track.id, track.part, track.name, track.offset, rec_key, score.sha, score.offset, has_curve)
+        cached = self._rec_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        curves = {track.id: self._curves[rec_key]} if has_curve else {}
+        result = recommend_score_lanes(self.project, curves).get(track.id, [])
+        if len(self._rec_cache) > 32:
+            self._rec_cache.clear()
+        self._rec_cache[cache_key] = result
+        return result
 
     def _take_time_at(self, track, display_time, use_timing):
         source = mapped_time(self.project, track, display_time) if use_timing else display_time
@@ -771,15 +851,13 @@ class QuickChorus(QObject):
     def _can_split_at_playhead(self, track):
         if not track or track.role != 'vocal':
             return False
-        from chorus_audio import recording_key
-        from chorus_notes import MIN_SPLIT_MARGIN, segment_vocal_notes
+        from chorus_notes import MIN_SPLIT_MARGIN
 
-        source = self._curves.get(recording_key(self.project, track))
-        if source is None:
+        notes = self._cached_vocal_notes(track)
+        if not notes:
             return False
         variant = self._active_variant if self._intent and self._active_variant else self._variant
         take_pos = self._take_time_at(track, self._position, variant in ('timing', 'processed'))
-        notes = segment_vocal_notes(*source, note_edits=self.project.note_edits_for(track.id))
         return any(n.start + MIN_SPLIT_MARGIN <= take_pos <= n.end - MIN_SPLIT_MARGIN for n in notes)
 
     @Slot(float, float)
@@ -799,10 +877,19 @@ class QuickChorus(QObject):
         if not 0 <= index < len(self._suggestions):
             return
         row = self._suggestions[index]
-        self._select(row.track, self._bounds(row.start, row.end))
+        start, end = row.start, row.end
+        if row.kind == 'pitch':
+            track = self.project.track(row.track)
+            if track is not None:
+                timing_edits = self.project.edits_for(track.id, 'timing')
+                if timing_edits:
+                    da = self._display_time_for(track, row.start - track.offset, timing_edits)
+                    db = self._display_time_for(track, row.end - track.offset, timing_edits)
+                    start, end = (da, db) if db >= da else (db, da)
+        self._select(row.track, self._bounds(start, end))
         self._issue = index
         self.setMode('pitch' if row.kind == 'pitch' else 'phrase')
-        self.seek(row.start)
+        self.seek(start)
 
     @Slot(str, str, str, bool)
     def setLyrics(self, scope, text, language, confirmed):
@@ -988,24 +1075,34 @@ class QuickChorus(QObject):
             finite = np.isfinite(fixed)
             fixed[finite] += shift_semitones[finite]
 
-        vocal_notes = segment_vocal_notes(midi, step, note_edits=self.project.note_edits_for(identity))
+        vocal_notes = self._cached_vocal_notes(track)
         matches = None
         if bound_lane is not None and vocal_notes:
             all_timing = self.project.edits_for(identity, 'timing')
-
-            def to_output(ta, tb):
-                return (self._display_time_for(track, ta, all_timing),
-                        self._display_time_for(track, tb, all_timing))
-
             phrase_texts = tuple(
                 (p.start, p.end, _normalize_token(line.text))
                 for p in self.project.phrases
                 if (line := p.resolved_lyric(identity)) and line.text
             )
-            matches = match_vocal_to_score(
-                vocal_notes, bound_lane, time_to_output=to_output, phrase_texts=phrase_texts,
-                draft=bool(self.project.score and not self.project.score.confirmed),
+            score_obj = self.project.score
+            match_key = (
+                recording_key(self.project, track), self.project.note_edits_for(identity),
+                track.offset, track.score_lane, score_obj.sha, score_obj.offset,
+                score_obj.confirmed, all_timing, phrase_texts,
             )
+            matches = self._match_cache.get(match_key)
+            if matches is None:
+                def to_output(ta, tb):
+                    return (self._display_time_for(track, ta, all_timing),
+                            self._display_time_for(track, tb, all_timing))
+
+                matches = match_vocal_to_score(
+                    vocal_notes, bound_lane, time_to_output=to_output, phrase_texts=phrase_texts,
+                    draft=bool(score_obj and not score_obj.confirmed),
+                )
+                if len(self._match_cache) > 32:
+                    self._match_cache.clear()
+                self._match_cache[match_key] = matches
 
         selected_set = {(round(a, 4), round(b, 4)) for a, b in self._selected_notes}
         note_rows = []
@@ -1111,14 +1208,32 @@ class QuickChorus(QObject):
             if self.project != project:
                 self._say('工程已变化，请按当前版本重新生成建议。')
                 return
-            self._suggestions, self._resolved, self._issue = suggestions, set(), -1
+            next_project = self.project
             if full:
-                self._commit(replace(self.project, phrases=phrases if language else remembered_phrases(self.project, phrases)),
-                             keep_suggestions=True)
+                next_project = replace(
+                    next_project,
+                    phrases=phrases if language else remembered_phrases(next_project, phrases),
+                )
             if commit:
-                count = self._apply(include_review)
+                from chorus_analysis import apply_suggestions
+
+                picked = [(i, row) for i, row in enumerate(suggestions)
+                          if row.can_apply and (include_review or not row.review)]
+                count = 0
+                for _, row in picked:
+                    updated = apply_suggestions(next_project, (row,), manual=False)
+                    count += updated != next_project
+                    next_project = updated
+                if next_project != self.project:
+                    self._commit(next_project, keep_suggestions=True)
+                self._suggestions, self._resolved, self._issue = suggestions, {i for i, _ in picked}, -1
+                if count:
+                    self.setVariant('processed')
                 self._say(f'已应用 {count} 项处理' + (f'。{failure}' if failure else ''), error=bool(failure))
             else:
+                if next_project != self.project:
+                    self._commit(next_project, keep_suggestions=True)
+                self._suggestions, self._resolved, self._issue = suggestions, set(), -1
                 count = sum(row.can_apply for row in suggestions)
                 self._say(f'已生成 {count} 项建议' + (f'。{failure}' if failure else ''), error=bool(failure))
 
@@ -1474,17 +1589,19 @@ class QuickChorus(QObject):
         track = self._selected_vocal()
         if track is None:
             return
-        current, candidate = self._timing_pose(track, origin)
-        if not current or not current.manual:
-            if candidate and candidate.points:
-                current = Edit(track.id, 'timing', candidate.start, candidate.end, candidate.value, candidate.points)
-            elif candidate and candidate.anchors and (current is None or not current.points):
-                knots = ((candidate.start, candidate.start), *((x, y) for _, x, y in candidate.anchors),
-                         (candidate.end, candidate.end))
-                current = Edit(track.id, 'timing', candidate.start, candidate.end, 0., knots)
-        if not current or len(current.points) < 3:
-            return
         try:
+            current, candidate = self._timing_pose(track, origin)
+            if not current or not current.manual:
+                if candidate and candidate.points:
+                    current = Edit(track.id, 'timing', candidate.start, candidate.end, candidate.value, candidate.points)
+                elif candidate and candidate.anchors and (current is None or not current.points):
+                    shift = candidate.value or 0.
+                    knots = ((candidate.start, candidate.start - shift),
+                             *((x, y) for _, x, y in candidate.anchors if candidate.start < x < candidate.end),
+                             (candidate.end, candidate.end - shift))
+                    current = Edit(track.id, 'timing', candidate.start, candidate.end, 0., knots)
+            if not current or len(current.points) < 3:
+                return
             edit = replace(move_anchor(track.id, (current.start, current.end), current.points, origin, destination),
                            basis=current.basis)
             self._commit(self.project.replace_region(track.id, 'timing', edit.start, edit.end, (edit,)),
@@ -1586,7 +1703,8 @@ class QuickChorus(QObject):
             self._say('请选中至少两个相邻音符再合并。', error=True)
             return
         try:
-            updated = merge_vocal_notes(self.project, track.id, parsed)
+            updated = merge_vocal_notes(
+                self.project, track.id, parsed, all_notes=self._cached_vocal_notes(track) or None)
         except ValueError as error:
             self._say(error, error=True)
             return
@@ -1824,6 +1942,8 @@ class QuickChorus(QObject):
             # could otherwise reach the phrase end before the new one arrives.
             self._session.pause()
         if self.monitor_worker.kind:
+            # Cancel obsolete render immediately so the latest edit/A-B switch does not wait 5-15 s.
+            self.monitor_worker.cancel()
             return
 
         def work(stop, send):

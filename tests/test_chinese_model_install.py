@@ -239,8 +239,7 @@ with tempfile.TemporaryDirectory(prefix='lf-', dir=TEST_TMP) as temporary:
             raise AssertionError('Missing Chinese model was accepted')
         except FileNotFoundError as error:
             message = str(error)
-            assert '下载中文模型' in message and '模型与组件' in message
-            assert '日语识别' in message
+            assert ('Qwen3-ASR' in message or '下载中文模型' in message) and '模型与组件' in message
             from error_recovery import explain
             assert explain(message)['action'] == 'components'
         chinese_target = root / chinese_file

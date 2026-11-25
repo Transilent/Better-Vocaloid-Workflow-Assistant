@@ -235,32 +235,35 @@ def _recognize(request, runtime, core):
         for index, row in enumerate(request['clips']):
             (folder / 'progress.txt').write_text(str(index), encoding='utf-8')
             lang = row['lang']
-            if not _read_clip(row, wav, 16000, subtype='PCM_16'):
-                yield {'text': '', 'route': '', 'detail': '唱段没有有效录音'}
-                continue
-            if lang == 'ja' and (core / 'romajiASR/model.onnx').is_file():
-                from inference.romaji_asr.runtime import RomajiASROnnxModel
-                from inference.API.lfa_api import _phoneme_tokens_to_romaji_moras
+            try:
+                if not _read_clip(row, wav, 16000, subtype='PCM_16'):
+                    yield {'text': '', 'route': '', 'detail': '唱段没有有效录音'}
+                    continue
+                if lang == 'ja' and (core / 'romajiASR/model.onnx').is_file():
+                    from inference.romaji_asr.runtime import RomajiASROnnxModel
+                    from inference.API.lfa_api import _phoneme_tokens_to_romaji_moras
 
-                if romaji is None:
-                    romaji = RomajiASROnnxModel.from_model_path(core / 'romajiASR', device='cpu')
-                rows = romaji.transcribe(wav)
-                tokens = _phoneme_tokens_to_romaji_moras(rows[0]['phonemes']) if rows else []
-                yield {'text': ' '.join(tokens), 'route': 'RomajiASR'}
-                continue
-            directory = core / 'Qwen3-ASR-1.7B-dml'
-            if not directory.is_dir():
-                yield {'text': '', 'route': '', 'detail': '请先通过模型与组件安装歌词识别模型'}
-                continue
-            if qwen is None:
-                configure(runtime)
-                from inference.qwen3asr_dml.runtime import Qwen3ASRDmlModel
+                    if romaji is None:
+                        romaji = RomajiASROnnxModel.from_model_path(core / 'romajiASR', device='cpu')
+                    rows = romaji.transcribe(wav)
+                    tokens = _phoneme_tokens_to_romaji_moras(rows[0]['phonemes']) if rows else []
+                    yield {'text': ' '.join(tokens), 'route': 'RomajiASR'}
+                    continue
+                directory = core / 'Qwen3-ASR-1.7B-dml'
+                if not directory.is_dir():
+                    yield {'text': '', 'route': '', 'detail': '请先通过模型与组件安装歌词识别模型'}
+                    continue
+                if qwen is None:
+                    configure(runtime)
+                    from inference.qwen3asr_dml.runtime import Qwen3ASRDmlModel
 
-                qwen = Qwen3ASRDmlModel.from_model_path(directory, device='auto', llama_backend='auto',
-                                                        chunk_size=28, max_decode_tokens=384, verbose=False)
-            language = {'ja': 'Japanese', 'zh': 'Chinese', 'yue': 'Cantonese', 'en': 'English'}[lang]
-            result = qwen.transcribe(wav, language=language)
-            yield {'text': result.text.strip(), 'route': 'Qwen3-ASR'}
+                    qwen = Qwen3ASRDmlModel.from_model_path(directory, device='auto', llama_backend='auto',
+                                                            chunk_size=28, max_decode_tokens=384, verbose=False)
+                language = {'ja': 'Japanese', 'zh': 'Chinese', 'yue': 'Cantonese', 'en': 'English'}[lang]
+                result = qwen.transcribe(wav, language=language)
+                yield {'text': result.text.strip(), 'route': 'Qwen3-ASR'}
+            except Exception as error:
+                yield {'text': '', 'route': '', 'detail': f'歌词识别失败：{error}'[:300]}
     finally:
         if qwen is not None:
             qwen.shutdown()

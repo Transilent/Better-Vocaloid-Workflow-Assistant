@@ -251,12 +251,6 @@ def compiled_pitch_semitones(regions, times, *, duration, voiced_curve=None, sam
     return result
 
 
-def _pitch_groups(regions, rate, size, samples=None):
-    """Compatibility helper returning compiled span bounds for diagnostics."""
-    return [(span_start, span_end, left, right)
-            for span_start, span_end, left, right, _ in compile_pitch_spans(regions, rate, size, samples)]
-
-
 def _shift_pitch(samples, rate, regions, check, *, engine='auto'):
     from chorus_cache import load_pitch_span, save_pitch_span, span_cache_key
     from chorus_pitch_dsp import (
@@ -274,6 +268,14 @@ def _shift_pitch(samples, rate, regions, check, *, engine='auto'):
         if dll is not None:
             st = dll.stat()
             engine_tag = f'{engine_tag}:{st.st_size}:{st.st_mtime_ns}'
+    elif resolved_engine == 'vwa' and engine == 'auto':
+        # Distinguish whether Pedalboard R3 is available so installing Pedalboard
+        # later invalidates fallback cache entries for >1 st shifts.
+        try:
+            _pedalboard()
+            engine_tag = f'{engine_tag}:r3ok'
+        except RuntimeError:
+            engine_tag = f'{engine_tag}:vwaonly'
     # Snapshot dry input so each independent voiced span reads immutable audio
     # and never perturbs a non-continuous neighbor.
     dry_source = samples.copy()
@@ -378,15 +380,20 @@ def render_track(project, track, variant, check=lambda: None):
         regions = project.edits_for(track.id, 'pitch')
         active = tuple(row for row in regions if _pitch_active(row))
         if active:
-            if timing:
-                dry_reference = original.copy() if syllables else _window(original, offset, project.frames)
+            dry_pitch = original.copy() if (timing or syllables) else None
             _shift_pitch(original, rate, regions, check, engine=project.pitch_engine)
+            if timing and dry_pitch is not None:
+                from chorus_pitch_dsp import preserve_low_transients
+
+                # Suppress pitch-induced low-band impulses once in take-time so timed
+                # phrases do not run a redundant second Pedalboard time_stretch on dry audio.
+                preserve_low_transients(dry_pitch, original, rate)
+            if syllables and dry_pitch is not None:
+                dry_reference = dry_pitch
     if syllables:
         from chorus_gain import render_syllable_gains
 
         render_syllable_gains(original, rate, syllables, check, dry_reference)
-        if dry_reference is not None:
-            dry_reference = _window(dry_reference, offset, project.frames)
     placed = _window(original, offset, project.frames)
     rendered = placed.copy() if timing else placed
     for edit in timing:
@@ -399,14 +406,6 @@ def render_track(project, track, variant, check=lambda: None):
         source = _timed_slice(placed, edit, origin, rate, start, end, check)
         fade = min(round(.018 * rate), (end - start) // 2)
         _crossfade(rendered[start:end], source, fade)
-        if dry_reference is not None and any(
-                row.start + track.offset < edit.source_time(edit.end) and
-                row.end + track.offset > edit.source_time(edit.start) for row in active):
-            from chorus_pitch_dsp import preserve_low_transients
-
-            dry = dry_reference[start:end].copy()
-            _crossfade(dry, _timed_slice(dry_reference, edit, origin, rate, start, end, check), fade)
-            preserve_low_transients(dry, rendered[start:end], rate)
     if variant == 'processed':
         for edit in project.edits_for(track.id, 'gain'):
             start = max(0, round(edit.start * rate) - project.first_frame)
@@ -622,13 +621,15 @@ class AuditionPCM:
         end = start + frames
         data = self.audio[start:end] * self.volume
         if self.previous is not None and self.fade_remaining:
-            length = min(frames, self.fade_remaining)
-            duration = max(1, round(.012 * self.sample_rate))
-            weight = ((duration - self.fade_remaining + np.arange(length)) / duration)[:, None]
-            data[:length] = data[:length] * weight + self.previous[start:start + length] * self.volume * (1. - weight)
-            self.fade_remaining -= length
-            if not self.fade_remaining:
+            length = min(len(data), self.fade_remaining)
+            if length > 0:
+                duration = max(1, round(.012 * self.sample_rate))
+                weight = ((duration - self.fade_remaining + np.arange(length)) / duration)[:, None]
+                data[:length] = data[:length] * weight + self.previous[start:start + length] * self.volume * (1. - weight)
+                self.fade_remaining -= length
+            if not self.fade_remaining or length < frames:
                 self.previous = None
+                self.fade_remaining = 0
         self.position_frame = end
         return np.ascontiguousarray(data, dtype=np.float32)
 

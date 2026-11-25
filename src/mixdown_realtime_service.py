@@ -885,6 +885,9 @@ class _RealtimeWorkerServer:
                 sample_rate = int(getattr(graph, "sample_rate"))
                 duration_frames = int(getattr(graph, "duration_frames"))
                 frame = int(round(position_ms * sample_rate / 1000.0))
+                # Tolerate 1 ms client-side millisecond rounding at song end.
+                if duration_frames < frame <= duration_frames + max(1, int(round(sample_rate / 1000.0))):
+                    frame = duration_frames
                 if not 0 <= frame <= duration_frames:
                     raise ValueError("seek position is outside the prepared song")
                 autoplay = pending.payload.get("autoplay")
@@ -985,8 +988,9 @@ class _RealtimeWorkerServer:
     def _ticker_loop(self) -> None:
         next_tick = time.perf_counter()
         while not self._stop_event.is_set():
-            next_tick += self._tick_seconds
-            delay = max(0.0, next_tick - time.perf_counter())
+            now = time.perf_counter()
+            next_tick = max(now, next_tick + self._tick_seconds)
+            delay = max(0.0, next_tick - now)
             if self._stop_event.wait(delay):
                 return
             with self._condition:

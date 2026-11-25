@@ -351,9 +351,11 @@ def pitch_from_stroke(project, track, curve, points, timing):
         index = round(time / step)
         if not 0 <= index < len(midi) or not np.isfinite(midi[index]):
             continue
-        if groups and time - groups[-1][-1][0] < .004:
+        if groups and time <= groups[-1][-1][0]:
+            groups.append([])
+        elif groups and time - groups[-1][-1][0] < .004:
             continue
-        if not groups or time - groups[-1][-1][0] > .075:
+        elif not groups or time - groups[-1][-1][0] > .075:
             groups.append([])
         groups[-1].append((time, max(-1200., min(1200., (note - midi[index]) * 100))))
     return pitch_edits(track.id, groups)
@@ -368,8 +370,9 @@ def reference_pitch(project, track, ref, selection, curves, mode, strength):
     last = None
     for time in np.arange(*selection, max(.012, own_step, ref_step)):
         source = mapped_time(project, track, time) - track.offset
+        ref_source = mapped_time(project, ref, time) - ref.offset
         a = round(source / own_step)
-        b = round((time - ref.offset) / ref_step)
+        b = round(ref_source / ref_step)
         if not (0 <= a < len(own) and 0 <= b < len(guide)
                 and np.isfinite(own[a]) and np.isfinite(guide[b])):
             if present:

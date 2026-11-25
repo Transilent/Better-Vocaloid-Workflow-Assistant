@@ -13,8 +13,10 @@ import numpy as np
 
 _MAX_MEMORY_SPANS = 64
 _MAX_DISK_SPAN_BYTES = 128 * 1024 * 1024
+_PRUNE_EVERY_WRITES = 32
 _LOCK = threading.Lock()
 _MEMORY_SPANS: OrderedDict[str, np.ndarray] = OrderedDict()
+_DISK_WRITES = 0
 
 
 def _cache_root() -> Path | None:
@@ -131,7 +133,12 @@ def save_pitch_span(key: str, audio: np.ndarray):
             tmp = Path(handle.name)
         np.save(tmp, arr, allow_pickle=False)
         os.replace(tmp, target)
-        _prune_disk_spans(folder)
+        global _DISK_WRITES
+        with _LOCK:
+            _DISK_WRITES += 1
+            should_prune = (_DISK_WRITES % _PRUNE_EVERY_WRITES == 0)
+        if should_prune:
+            _prune_disk_spans(folder)
     except OSError:
         if tmp is not None:
             tmp.unlink(missing_ok=True)

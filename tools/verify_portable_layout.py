@@ -28,7 +28,10 @@ def main():
         mapping.update({e['file']: e['file'] for e in json.loads((ROOT/'dependencies/manifest.json').read_text(encoding='utf-8'))['entries']})
         mapping.update(package_sources())
         # Source-checkout inventories can include files intentionally pruned from the runtime.
-        from optimize_inventory import exclusion
+        try:
+            from optimize_inventory import exclusion
+        except ImportError:
+            exclusion = lambda _name: False
         mapping = {name: source for name, source in mapping.items() if not exclusion(name)}
         for name, source_name in mapping.items():
             source = checked_path(ROOT, source_name)

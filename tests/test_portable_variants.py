@@ -14,9 +14,10 @@ import zipfile
 
 APP=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(APP))
-assert os.environ.get('BVWA_TESTING')=='1' and APP.parent.name=='test-sandboxes', 'Use the isolated runner'
+assert os.environ.get('BVWA_TESTING')=='1' and APP.parent.name in ('test-sandboxes', 'sb'), 'Use the isolated runner'
 from common import native_path
 from tools import build_portable as builder
+from tools import update_apply
 
 def record(name,data):
     return {'file':name,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()}
@@ -40,6 +41,12 @@ actual_sources,actual_dependencies,actual_omitted=builder.package_selection('jpn
 runtime_modules = {path.name for path in (APP / 'src').glob('*.py')} - {
     'separate_audio.py', 'upgrade_bootstrap.py'}
 assert runtime_modules <= set(actual_sources), sorted(runtime_modules - set(actual_sources))
+# Every program file shipped in portable-files.json must be allowed by update_apply.validate_file().
+portable_entries = json.loads((APP / 'packaging/portable-files.json').read_text(encoding='utf-8'))['entries']
+for entry in portable_entries:
+    if entry['file'] == 'config.json' or entry['file'].startswith(('dependencies/', 'models/', 'vendor/')):
+        continue
+    update_apply.validate_file({'file': entry['file'], 'bytes': 1, 'sha256': '0' * 64})
 assert len(actual_omitted)==3 and sum(e['bytes'] for e in actual_omitted)>4*1024**3
 assert not any('Qwen3-ASR-1.7B-dml/' in name for name in set(actual_sources)|set(actual_dependencies))
 assert any('/romajiASR/' in name for name in actual_dependencies)

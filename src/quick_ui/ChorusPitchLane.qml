@@ -13,8 +13,6 @@ Rectangle {
     readonly property bool splitting: tool === "split" && hasNotes
     readonly property bool hasNotes: (curve.notes || []).length > 0
     readonly property bool hasScoreNotes: (curve.scoreNotes || []).length > 0
-    readonly property int noteCount: (curve.notes || []).length
-    readonly property int scoreNoteCount: (curve.scoreNotes || []).length
     readonly property bool canDraw: (curve.midi || []).some(value => value >= 0) && view.take.role === "vocal"
     property real lowNote: 48
     property real highNote: 72
@@ -510,16 +508,22 @@ Rectangle {
                     let next = lane.selectedKeys.slice()
                     const idx = next.indexOf(hit.id)
                     if (multi) {
-                        if (idx >= 0) next.splice(idx, 1)
-                        else next.push(hit.id)
+                        if (idx >= 0) {
+                            next.splice(idx, 1)
+                            pressedNote = null
+                        } else {
+                            next.push(hit.id)
+                        }
                     } else if (idx < 0) {
                         next = [hit.id]
                     }
                     commitSelection(next)
-                    lane.dragAnchorMidi = hit.targetMidi
-                    lane.dragDeltaSemitones = 0
-                    lane.dragMouseX = mouse.x
-                    lane.dragMouseY = mouse.y
+                    if (pressedNote) {
+                        lane.dragAnchorMidi = hit.targetMidi
+                        lane.dragDeltaSemitones = 0
+                        lane.dragMouseX = mouse.x
+                        lane.dragMouseY = mouse.y
+                    }
                 } else {
                     lane.marqueeX1 = mouse.x
                     lane.marqueeY1 = mouse.y

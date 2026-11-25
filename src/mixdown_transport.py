@@ -2,9 +2,6 @@
 from __future__ import annotations
 
 from collections import deque
-import copy
-from dataclasses import dataclass
-import importlib
 import json
 import os
 from pathlib import Path
@@ -15,7 +12,6 @@ import sys
 import threading
 import time
 from typing import Any, Mapping
-import uuid
 
 
 SERVICE_SCHEMA = "vwa.audio_mixdown.audition-service/v1"
@@ -35,10 +31,6 @@ class ServiceStartError(AuditionServiceError):
 
 class ServiceUnavailable(AuditionServiceError):
     """The resident worker is not running or has exited."""
-
-
-class ServiceProtocolError(AuditionServiceError):
-    """The resident worker returned malformed protocol data."""
 
 
 def _json_line(value: Mapping[str, Any]) -> str:
@@ -170,17 +162,17 @@ class ResidentProcessClient:
     def start(self) -> dict[str, Any]:
         """Start the resident worker and wait for its runtime-ready event."""
         with self._state_lock:
+            if self._closing:
+                raise ServiceUnavailable('常驻试听进程正在关闭')
             if self.is_alive and self._ready is not None:
                 return dict(self._ready)
             if self._process is not None:
                 self._discard_dead_process()
             self._events = queue.Queue()
-            with self._state_lock:
-                self._stderr.clear()
+            self._stderr.clear()
             self._ready_event = threading.Event()
             self._reader_done = threading.Event()
             self._ready = None
-            self._closing = False
             bootstrap = (
                 "import os,sys; "
                 "paths=[p for p in "
@@ -193,6 +185,8 @@ class ResidentProcessClient:
                 self.python_executable, '-B', '-u', '-c', bootstrap,
             ]
             creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+            module_dir = Path(__file__).resolve().parent
+            worker_cwd = module_dir.parent if module_dir.name == 'src' else module_dir
             try:
                 process = subprocess.Popen(
                     command,
@@ -204,7 +198,7 @@ class ResidentProcessClient:
                     errors='replace',
                     bufsize=1,
                     env=self._worker_environment(),
-                    cwd=str(Path(__file__).resolve().parents[1]),
+                    cwd=str(worker_cwd),
                     creationflags=creationflags,
                     start_new_session=(os.name != 'nt'),
                 )
@@ -229,6 +223,8 @@ class ResidentProcessClient:
 
         deadline = time.monotonic() + self.startup_timeout
         while time.monotonic() < deadline:
+            if self._closing:
+                break
             if self._ready_event.wait(min(0.05, max(0.0, deadline - time.monotonic()))):
                 break
             if process.poll() is not None:

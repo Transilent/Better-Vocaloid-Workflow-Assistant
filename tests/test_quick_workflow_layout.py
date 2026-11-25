@@ -100,6 +100,7 @@ def escape():
 
 
 def capture(name, *, keep_cursor=False):
+    app.processEvents()
     if os.environ.get('VWA_QA_LAYOUT_CAPTURE') == '1':
         if not keep_cursor:
             QTest.mouseMove(window, QPointF(8, 8).toPoint())
