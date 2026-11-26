@@ -132,12 +132,74 @@ class UserExperienceGuardTests(unittest.TestCase):
             QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def test_03_all_pages_render_without_qml_warnings_or_horizontal_overflow(self):
-        """Navigate every route at 1280x720 and 1440x900 and catch clipped/overflowing top-level buttons."""
-        save_appearance({'theme': 'dark', 'ui_language': 'zh-CN'})
-        for viewport in ((1280, 720), (1440, 900)):
+        """Navigate every route at 1280x720@100% and 1920x1080@125%, guarding sidebar layout & page overflow."""
+        import workspace_routes
+
+        expected_sidebar_ids = [
+            spec.page_id for spec in sorted(
+                (s for s in workspace_routes.PAGE_SPECS if s.sidebar_order is not None),
+                key=lambda s: s.sidebar_order,
+            )
+        ]
+        save_appearance({'ui_language': 'zh-CN'})
+        for viewport, scale in (((1280, 720), 100), ((1920, 1080), 125)):
             _QT_WARNINGS.clear()
-            engine, window, owner, modes = create_workspace(self.app, viewport=viewport, scale=100)
+            engine, window, owner, modes = create_workspace(self.app, viewport=viewport, scale=scale)
             try:
+                self.app.processEvents()
+                # 1) Every sidebar route declared in workspace_routes must be exposed & visible in the sidebar.
+                actual_ids = [route.page_id for route in owner.state.routes]
+                self.assertEqual(
+                    actual_ids, expected_sidebar_ids,
+                    f'Sidebar routes mismatch (missing from available_routes?): {actual_ids} vs {expected_sidebar_ids}',
+                )
+
+                # 2) Sidebar clipping & stretch guard (catches Ctrl+K cutoffs and broken Layout.fillHeight spacing).
+                sidebar = window.findChild(QObject, 'workspaceNavigation')
+                self.assertIsNotNone(sidebar)
+                sidebar_right = sidebar.mapToScene(sidebar.boundingRect().bottomRight()).x()
+
+                def find_item(root_item, name):
+                    stack = [root_item]
+                    while stack:
+                        node = stack.pop()
+                        if node.objectName() == name:
+                            return node
+                        stack.extend(node.childItems())
+                    return None
+
+                badge = find_item(sidebar, 'sidebarCommandShortcutBadge')
+                self.assertIsNotNone(badge, 'Ctrl+K shortcut badge missing')
+                self.assertTrue(badge.isVisible())
+                badge_right = badge.mapToScene(badge.boundingRect().bottomRight()).x()
+                self.assertLessEqual(
+                    badge_right, sidebar_right - 2.0,
+                    f'Ctrl+K badge clipped at {viewport}@{scale}%: right={badge_right:.1f} > sidebar={sidebar_right:.1f}',
+                )
+
+                nav_buttons = {}
+                for page_id in expected_sidebar_ids:
+                    btn = find_item(sidebar, 'nav_' + page_id)
+                    self.assertIsNotNone(btn, f'Missing sidebar button nav_{page_id}')
+                    self.assertTrue(btn.isVisible(), f'Sidebar button nav_{page_id} not visible')
+                    btn_right = btn.mapToScene(btn.boundingRect().bottomRight()).x()
+                    self.assertLessEqual(
+                        btn_right, sidebar_right + 0.5,
+                        f'nav_{page_id} clipped at {viewport}@{scale}%: {btn_right:.1f} > {sidebar_right:.1f}',
+                    )
+                    nav_buttons[page_id] = btn
+
+                # Adjacent buttons in the same sidebar group must stay tightly spaced (not stretched across height).
+                for a_id, b_id in (('processing', 'tuning'), ('tuning', 'tuning_workshop'), ('tuning_workshop', 'chorus')):
+                    a_bottom = nav_buttons[a_id].mapToScene(nav_buttons[a_id].boundingRect().bottomLeft()).y()
+                    b_top = nav_buttons[b_id].mapToScene(nav_buttons[b_id].boundingRect().topLeft()).y()
+                    gap = b_top - a_bottom
+                    self.assertLessEqual(
+                        gap, 16.0,
+                        f'Sidebar items stretched apart at {viewport}@{scale}%: gap({a_id}->{b_id})={gap:.1f}px',
+                    )
+
+                # 3) Navigate every route and verify zero page overflow and zero QML warnings.
                 loader = window.findChild(QObject, 'pageLoader')
                 self.assertIsNotNone(loader)
                 for route in owner.state.routes:
@@ -148,6 +210,8 @@ class UserExperienceGuardTests(unittest.TestCase):
                     self.assertIsNotNone(page, f'Route {route.page_id} failed to instantiate')
                     self.assertGreater(page.width(), 0, route.page_id)
                     self.assertGreater(page.height(), 0, route.page_id)
+                    if route.page_id == 'project_convert':
+                        self.assertEqual(page.objectName(), 'projectConvertPage')
                     # Check visible named buttons do not poke outside the window horizontally.
                     overflows = []
                     stack = [page]
@@ -170,8 +234,8 @@ class UserExperienceGuardTests(unittest.TestCase):
                                 if right > viewport[0] + 4.0:
                                     overflows.append((route.page_id, item.objectName(), round(right, 1), viewport[0]))
                         stack.extend(item.childItems())
-                    self.assertEqual(overflows, [], f'Horizontal overflow at {viewport}: {overflows}')
-                self.assertEqual(_QT_WARNINGS, [], f'QML warnings at {viewport}: {_QT_WARNINGS}')
+                    self.assertEqual(overflows, [], f'Horizontal overflow at {viewport}@{scale}%: {overflows}')
+                self.assertEqual(_QT_WARNINGS, [], f'QML warnings at {viewport}@{scale}%: {_QT_WARNINGS}')
             finally:
                 window.close()
                 modes.close()

@@ -196,7 +196,7 @@ ApplicationWindow {
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.bottom: parent.bottom
-        width: window.compact ? 66 : 186
+        width: window.compact ? Math.round(66 * Math.min(1.15, theme.scale)) : Math.round(198 * Math.min(1.18, theme.scale))
         color: theme.sidebar
         clip: true
 
@@ -312,25 +312,30 @@ ApplicationWindow {
                     Text {
                         visible: !window.compact
                         Layout.fillWidth: true
+                        Layout.minimumWidth: 0
                         text: window.controller.text("快捷命令")
                         color: theme.muted
-                        font.pixelSize: 12
+                        font.pixelSize: Math.round(12 * Math.min(1.12, theme.scale))
                         elide: Text.ElideRight
                         textFormat: Text.PlainText
                     }
                     Rectangle {
+                        objectName: "sidebarCommandShortcutBadge"
                         visible: !window.compact
                         radius: 4
                         color: theme.surface
                         border.color: theme.line
-                        implicitWidth: kbdTxt.implicitWidth + 8
-                        implicitHeight: kbdTxt.implicitHeight + 3
+                        Layout.preferredWidth: kbdTxt.implicitWidth + 10
+                        Layout.minimumWidth: Layout.preferredWidth
+                        Layout.preferredHeight: kbdTxt.implicitHeight + 4
+                        implicitWidth: Layout.preferredWidth
+                        implicitHeight: Layout.preferredHeight
                         Text {
                             id: kbdTxt
                             anchors.centerIn: parent
                             text: "Ctrl+K"
                             color: theme.muted
-                            font.pixelSize: 10
+                            font.pixelSize: Math.round(10 * Math.min(1.12, theme.scale))
                             font.family: theme.monoFont
                         }
                     }

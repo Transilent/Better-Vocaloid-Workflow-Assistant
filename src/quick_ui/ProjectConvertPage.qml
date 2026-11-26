@@ -141,8 +141,8 @@ Item {
             dropHint: page.vwaTr("松手立即体检工程结构")
             formatTags: [
                 "SVP / SV2", "USTX", "VPR", "VSQX",
-                "ACEP / ACEP2", "UFData", "MIDI",
-                "UST · SVIP · CCS · DS · DSPX · MusicXML"
+                "ACEP / ACEP2", "UFData", "MIDI", "LRC / SRT",
+                "UST", "SVIP", "CCS", "DS / DSPX", "MusicXML"
             ]
             primaryText: page.vwaTr("选择工程文件")
             primaryIcon: "folder"
