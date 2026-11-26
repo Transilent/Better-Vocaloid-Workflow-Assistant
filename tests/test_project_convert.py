@@ -218,6 +218,26 @@ class ProjectConvertServiceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 svc.plan_output_paths(svp, 'acep', root)
 
+    def test_vsqx_language_options_and_still_image_detection(self):
+        """Regression tests for ISS-006 (still image detection) and ISS-007 (Japanese VSQX voice)."""
+        import project_exports
+        import video_mixdown
+
+        ja_opts = project_exports.project_output_options('vsqx', 'ja')
+        self.assertEqual(ja_opts.get('default_lang_id'), 0)
+        self.assertEqual(ja_opts.get('default_singer_name'), 'VY1V4')
+
+        en_opts = project_exports.project_output_options('vsqx', 'en')
+        self.assertEqual(en_opts.get('default_lang_id'), 1)
+
+        zh_opts = project_exports.project_output_options('vsqx', 'zh')
+        self.assertNotEqual(zh_opts.get('default_lang_id'), 0)
+
+        self.assertTrue(video_mixdown._is_still_image(Path('cover.PNG')))
+        self.assertTrue(video_mixdown._is_still_image(Path('cover.jpg')))
+        self.assertFalse(video_mixdown._is_still_image(Path('source.mp4')))
+        self.assertFalse(video_mixdown._is_still_image(Path('clip.mkv')))
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

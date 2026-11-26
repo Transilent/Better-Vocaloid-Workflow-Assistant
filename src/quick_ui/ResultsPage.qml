@@ -17,9 +17,12 @@ Rectangle {
     readonly property var workshopVocalRoles: detail.referenceVocalRoles || ({})
     readonly property var workshopVocals: (detail.artifacts || []).filter(row => !!workshopVocalRoles[row.id])
     property string workshopVocalId: ""
-    readonly property int railWidth: Math.round(280 * theme.scale)
-    readonly property int inspectorWidth: Math.round(320 * theme.scale)
-    readonly property real bodyGap: Math.round(14 * theme.scale)
+    readonly property real layoutScale: Math.min(1.15, theme.scale)
+    readonly property int railWidth: Math.max(Math.round(196 * layoutScale),
+                                              Math.min(Math.round(268 * layoutScale), Math.round(width * 0.24)))
+    readonly property int inspectorWidth: Math.max(Math.round(220 * layoutScale),
+                                                   Math.min(Math.round(310 * layoutScale), Math.round(width * 0.27)))
+    readonly property real bodyGap: Math.round(12 * layoutScale)
     readonly property var selectedArtifact: {
         const row = page.controller.selectedTaskArtifact
         return row && String(row.id || "").length > 0 ? row : ({})
@@ -680,7 +683,7 @@ Rectangle {
             Item {
                 objectName: "taskDetailPanel"
                 Layout.fillWidth: true
-                Layout.minimumWidth: Math.round(390 * page.theme.scale)
+                Layout.minimumWidth: Math.round(220 * page.layoutScale)
                 Layout.fillHeight: true
 
                 ColumnLayout {

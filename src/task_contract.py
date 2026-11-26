@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import stat as _stat
 import threading
 import time
 
@@ -86,12 +87,19 @@ def _sha(value):
     return isinstance(value, str) and re.fullmatch('[a-f0-9]{64}', value) is not None
 
 
-def _safe(path, boundary=None):
+def _safe(path, boundary=None, *, _verified_dirs=None):
     path = Path(path).absolute()
     for part in (path, *path.parents):
-        io_part = Path(native_path(part))
-        if io_part.is_symlink() or (io_part.exists() and getattr(io_part.lstat(), 'st_file_attributes', 0) & 1024):
+        if _verified_dirs is not None and part in _verified_dirs:
+            break
+        try:
+            st = os.lstat(native_path(part))
+        except FileNotFoundError:
+            st = None
+        if st is not None and (getattr(st, 'st_file_attributes', 0) & 1024 or _stat.S_ISLNK(st.st_mode)):
             raise ContractError('文件路径包含链接或重解析点：' + str(path))
+        if _verified_dirs is not None and st is not None and part != path:
+            _verified_dirs.add(part)
         if boundary and part == boundary:
             break
     path = path.resolve()
@@ -107,7 +115,7 @@ def location(job, path):
     return {'kind': 'external', 'path': saved_path(path)}
 
 
-def resolve(job, entry):
+def resolve(job, entry, *, _job_root=None, _verified_dirs=None):
     loc = entry['location']
     if not isinstance(loc, dict) or not isinstance(loc.get('path'), str):
         raise ContractError('产物位置无效。')
@@ -117,20 +125,26 @@ def resolve(job, entry):
         if (not name or relative.is_absolute() or '..' in relative.parts or '\\' in name
                 or ':' in name or name in ('.', '')):
             raise ContractError('产物相对路径无效。')
-        return _safe(Path(job).resolve() / name, Path(job).resolve())
+        root = _job_root if _job_root is not None else Path(job).resolve()
+        return _safe(root / name, root, _verified_dirs=_verified_dirs)
     if loc.get('kind') != 'external' or not (name.startswith('@/') or Path(name).is_absolute()):
         raise ContractError('外部引用必须使用明确的完整路径。')
-    return _safe(app_path(name))
+    return _safe(app_path(name), _verified_dirs=_verified_dirs)
 
 
-def read(job):
+def read(job, *, _resolved_cache=None):
     data = _json(Path(job) / 'artifacts.json', {'schema': SCHEMA, 'entries': {}, 'stages': {}})
     if data.get('schema') != SCHEMA:
         raise ContractError('产物清单版本不受支持，请升级助手后继续。')
     entries, stages = data.get('entries'), data.get('stages')
     if not isinstance(entries, dict) or len(entries) > MAX_ENTRIES or not isinstance(stages, dict):
         raise ContractError('产物清单结构无效。')
-    for key, entry in entries.items(): _validate_entry(job, key, entry)
+    job_root = Path(job).resolve()
+    verified_dirs: set[Path] = set()
+    for key, entry in entries.items():
+        resolved = _validate_entry(job, key, entry, _job_root=job_root, _verified_dirs=verified_dirs)
+        if _resolved_cache is not None:
+            _resolved_cache[key] = resolved
     if any(key not in STAGES or not isinstance(value, dict)
            or value.get('state') not in ('ready', 'running', 'failed', 'cancelled', 'invalidated')
            or (value.get('generation') is not None and not _sha(value['generation']))
@@ -139,18 +153,19 @@ def read(job):
     return data
 
 
-def _validate_entry(job, key, entry):
+def _validate_entry(job, key, entry, *, _job_root=None, _verified_dirs=None):
     if (not isinstance(entry, dict) or not isinstance(key, str) or not re.fullmatch('[a-f0-9]{32}', key)
             or not _sha(entry.get('sha256')) or not _sha(entry.get('revision')) or type(entry.get('bytes')) is not int
             or entry['bytes'] < 0 or entry.get('retention') not in ('source', 'result', 'reference', 'cache')
             or not isinstance(entry.get('producer'), str) or not isinstance(entry.get('role'), str)
             or not isinstance(entry.get('dependencies'), list) or len(entry['dependencies']) > MAX_ENTRIES):
         raise ContractError('产物条目无效：' + str(key))
-    resolve(job, entry)
+    resolved = resolve(job, entry, _job_root=_job_root, _verified_dirs=_verified_dirs)
     for dep in entry['dependencies']:
         if (not isinstance(dep, dict) or not isinstance(dep.get('id'), str)
                 or not re.fullmatch('[a-f0-9]{32}', dep['id']) or not _sha(dep.get('revision'))):
             raise ContractError('产物依赖无效。')
+    return resolved
 
 
 def _metadata(job):
@@ -502,7 +517,8 @@ def rebuild(job):
 
 
 def inspect(job, *, verify=True, check=None, artifact_ids=None, publication_platform=None):
-    data = read(job)
+    resolved_cache: dict[str, Path] = {}
+    data = read(job, _resolved_cache=resolved_cache)
     entries = data['entries']
     if publication_platform is not None and publication_platform not in ('bilibili', 'xiaohongshu'):
         raise ContractError('未知发布平台。')
@@ -512,7 +528,7 @@ def inspect(job, *, verify=True, check=None, artifact_ids=None, publication_plat
             if publication_platform is not None and entry['role'] == 'publication':
                 asset = entries.get(dep['id'])
                 if asset and asset['role'] == 'publication_asset':
-                    name = resolve(job, asset).name
+                    name = (resolved_cache.get(dep['id']) or resolve(job, asset)).name
                     # Only the fixed, generated assets of the other platform are
                     # optional. A bad manifest, video, base cover or source is
                     # a failure on both paths.
@@ -541,7 +557,7 @@ def inspect(job, *, verify=True, check=None, artifact_ids=None, publication_plat
             raise InterruptedError('已取消产物校验。')
         if not entry.get('active', True): continue
         try:
-            path = resolve(job, entry)
+            path = resolved_cache.get(key) or resolve(job, entry)
             stat = path.stat()
             if not path.is_file() or stat.st_size != entry['bytes']:
                 own[key] = 'modified'
@@ -579,7 +595,7 @@ def inspect(job, *, verify=True, check=None, artifact_ids=None, publication_plat
         return value
     for key in own: state(key, set())
     return [{'id': key, **data['entries'][key], 'state': value,
-             'path': str(resolve(job, data['entries'][key]))} for key, value in results.items()]
+             'path': str(resolved_cache.get(key) or resolve(job, data['entries'][key]))} for key, value in results.items()]
 
 
 def bind(job, kind, path, *, validate=True, dependencies=None, expected_sha256=None,

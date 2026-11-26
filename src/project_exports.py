@@ -20,6 +20,8 @@ SVP_LANGUAGES = {'zh': 'mandarin', 'ja': 'japanese', 'en': 'english'}
 ENGLISH_VSQX_VOICE = {'default_lang_id': 1, 'default_comp_id': 'BCLPDYL3MBTL2CD5',
                       'default_singer_name': 'CYBER_DIVA'}
 ENGLISH_VSQX_PROGRAM = 4
+JAPANESE_VSQX_VOICE = {'default_lang_id': 0, 'default_comp_id': 'BCX538C32N675365',
+                       'default_singer_name': 'VY1V4'}
 
 
 from export_receipts import cached_output, commit_receipt, project_input, project_signatures, read_receipts
@@ -216,6 +218,8 @@ def project_output_options(fmt, language):
         return {'down_sample': 0, 'language_override': SVP_LANGUAGES[language]}
     if fmt == 'vsqx' and language == 'en':
         return ENGLISH_VSQX_VOICE.copy()
+    if fmt == 'vsqx' and language == 'ja':
+        return JAPANESE_VSQX_VOICE.copy()
     return {}
 
 
@@ -273,6 +277,13 @@ def restore_vsqx_lyrics(path, project, language):
         for element in voices + singers:
             element.find('{*}bs').text = str(ENGLISH_VSQX_VOICE['default_lang_id'])
             element.find('{*}pc').text = str(ENGLISH_VSQX_PROGRAM)
+    elif language == 'ja':
+        voices = root.findall('./{*}vVoiceTable/{*}vVoice')
+        singers = root.findall('./{*}vsTrack/{*}vsPart/{*}singer')
+        for element in voices + singers:
+            bs = element.find('{*}bs')
+            if bs is not None:
+                bs.text = str(JAPANESE_VSQX_VOICE['default_lang_id'])
     for index, rows in enumerate(_vsqx_export_rows(root, project)):
         for note, lyric, _ in rows:
             lyric.text = note.lyric

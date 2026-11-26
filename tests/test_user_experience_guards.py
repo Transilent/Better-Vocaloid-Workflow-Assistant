@@ -142,7 +142,7 @@ class UserExperienceGuardTests(unittest.TestCase):
             )
         ]
         save_appearance({'ui_language': 'zh-CN'})
-        for viewport, scale in (((1280, 720), 100), ((1920, 1080), 125)):
+        for viewport, scale in (((1280, 720), 100), ((1366, 768), 125), ((1440, 900), 130), ((1920, 1080), 125)):
             _QT_WARNINGS.clear()
             engine, window, owner, modes = create_workspace(self.app, viewport=viewport, scale=scale)
             try:

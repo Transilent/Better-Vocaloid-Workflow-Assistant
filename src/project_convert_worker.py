@@ -64,6 +64,45 @@ def _bootstrap_libresvip():
     os.environ['APPDATA'] = os.environ['LOCALAPPDATA'] = str(settings)
     if str(runtime) not in sys.path:
         sys.path.insert(0, str(runtime))
+    # Work around LibreSVIP 2.9.2 upstream bugs in vsqx/vocaloid_controllers.py:
+    # 1) `param_def.vsqx_name` typo (actual field is `vsq_name`, mapped via `self.param_names[...].value`)
+    # 2) `mctrl_class.__dataclass_fields__["attr"]` fails on Pydantic `Vsq3MCtrl`/`Vsq4MCtrl`.
+    try:
+        from libresvip.model.vocaloid.controller_registry import VocaloidParameterDef, get_param_def
+        from libresvip.plugins.vsqx.model import Vsq3MCtrl, Vsq3TypeParamAttr, Vsq4MCtrl, Vsq4TypeParamAttr
+        from libresvip.plugins.vsqx.vocaloid_controllers import VsqxControllerAdapter
+
+        if not hasattr(VocaloidParameterDef, 'vsqx_name'):
+            VocaloidParameterDef.vsqx_name = property(lambda self: self.vsq_name)
+
+        if not getattr(VsqxControllerAdapter, '_vwa_patched', False):
+            def _patched_create_mctrl_list(self, curve, mctrl_class):
+                if curve.is_empty():
+                    return []
+                param_def = get_param_def(curve.name)
+                if param_def is not None and param_def.vsq_name and hasattr(self.param_names, param_def.vsq_name):
+                    vsqx_param_id = self.param_names[param_def.vsq_name].value
+                elif param_def is not None and param_def.vsq_name:
+                    vsqx_param_id = param_def.vsq_name
+                else:
+                    vsqx_param_id = curve.name
+                attr_cls = Vsq4TypeParamAttr if mctrl_class is Vsq4MCtrl else (
+                    Vsq3TypeParamAttr if mctrl_class is Vsq3MCtrl else None
+                )
+                mctrl_list = []
+                for event in curve.events:
+                    attr_val = (
+                        attr_cls(type_param_attr_id=vsqx_param_id, value=event.value)
+                        if attr_cls is not None
+                        else {'type_param_attr_id': vsqx_param_id, 'value': event.value}
+                    )
+                    mctrl_list.append(mctrl_class(pos_tick=event.pos, attr=attr_val))
+                return mctrl_list
+
+            VsqxControllerAdapter.create_mctrl_list = _patched_create_mctrl_list
+            VsqxControllerAdapter._vwa_patched = True
+    except ImportError:
+        pass
 
 
 def _get_converter(fmt: str):
@@ -214,9 +253,17 @@ def _build_output_options(fmt: str, *, language: str, lyric_mode: str, source_st
         if lyric_mode == 'adapt':
             opts['language_override'] = lang_map.get(language, 'mandarin')
         return opts
-    if fmt == 'vsqx' and lyric_mode == 'adapt' and language == 'en':
-        from project_exports import ENGLISH_VSQX_VOICE
-        return ENGLISH_VSQX_VOICE.copy()
+    if fmt == 'vsqx' and lyric_mode == 'adapt':
+        from project_exports import ENGLISH_VSQX_VOICE, JAPANESE_VSQX_VOICE
+        if language == 'en':
+            return ENGLISH_VSQX_VOICE.copy()
+        if language == 'ja':
+            return JAPANESE_VSQX_VOICE.copy()
+        return {}
+    if fmt == 'ds':
+        return {
+            'dict_name': 'japanese_dict_full' if language == 'ja' else 'opencpop-extension',
+        }
     if fmt == 'mid':
         return {'export_lyrics': True, 'lyric_encoding': 'utf-8'}
     if fmt == 'lrc':
@@ -391,7 +438,6 @@ def _dump_and_verify_one(
     draft = sub_project
     if options['lyric_mode'] == 'adapt' and language == 'en' and target_format == 'svp':
         draft, _ = english_svp_project(draft)
-
     out_opts = _build_output_options(
         target_format,
         language=language,
@@ -399,9 +445,102 @@ def _dump_and_verify_one(
         source_stem=source_stem,
     )
 
+    ds_skipped_rests = 0
+    if target_format == 'ds':
+        # DiffSinger dictionary lookup fails on rest markers, OpenUtau slur markers, or ASCII
+        # pinyin/romaji lyrics when `note.pronunciation` is blank (get_pinyin_series strips non-CJK).
+        # Score both bundled dictionaries against the actual track notes so romaji Japanese projects
+        # (which lack kana) also select `japanese_dict_full` automatically.
+        from libresvip.core.lyric_phoneme.chinese import get_pinyin_series
+        from libresvip.core.lyric_phoneme.japanese import to_romaji
+        from libresvip.plugins.ds.utils.phoneme_dict import get_opencpop_dict
+
+        zh_table = get_opencpop_dict('opencpop-extension')
+        ja_table = get_opencpop_dict('japanese_dict_full')
+        rest_markers = {'', 'r', 'sil', 'sp', 'pau', 'br', 'ap'}
+        slur_markers = {'+', '~', '+~', '+*', 'ー'}
+
+        def _resolve_ds_pron(lyr: str, pron: str, table: dict[str, str], is_ja: bool) -> str | None:
+            if pron and pron in table:
+                return pron
+            if pron and pron.lower() in table:
+                return pron.lower()
+            if lyr.lower() in table:
+                return lyr.lower()
+            if is_ja:
+                rom = to_romaji(lyr).strip().lower()
+                if rom in table:
+                    return rom
+            else:
+                py_list = get_pinyin_series([lyr])
+                py = (py_list[0] if py_list else '').strip().lower()
+                if py in table:
+                    return py
+            return None
+
+        singing_notes = [
+            n
+            for tr in draft.track_list
+            if isinstance(tr, SingingTrack)
+            for n in tr.note_list
+        ]
+        zh_hits = ja_hits = 0
+        for note in singing_notes:
+            lyr = str(note.lyric or '').strip()
+            pron = str(note.pronunciation or '').strip() if note.pronunciation is not None else ''
+            if (lyr.casefold() in rest_markers and not pron) or lyr in slur_markers or '-' in lyr:
+                continue
+            if _resolve_ds_pron(lyr, pron, zh_table, False) is not None:
+                zh_hits += 1
+            if _resolve_ds_pron(lyr, pron, ja_table, True) is not None:
+                ja_hits += 1
+
+        use_ja_dict = (ja_hits > zh_hits) or (ja_hits == zh_hits and language == 'ja')
+        dict_name = 'japanese_dict_full' if use_ja_dict else 'opencpop-extension'
+        out_opts['dict_name'] = dict_name
+        phoneme_table = ja_table if use_ja_dict else zh_table
+
+        cleaned_tracks = []
+        for tr in draft.track_list:
+            if isinstance(tr, SingingTrack):
+                kept = []
+                for note in tr.note_list:
+                    lyr = str(note.lyric or '').strip()
+                    pron = str(note.pronunciation or '').strip() if note.pronunciation is not None else ''
+                    if lyr.casefold() in rest_markers and not pron:
+                        ds_skipped_rests += 1
+                        continue
+                    if lyr in slur_markers or '-' in lyr:
+                        if not kept:
+                            ds_skipped_rests += 1
+                            continue
+                        kept.append(note.model_copy(update={'lyric': '-', 'pronunciation': None}))
+                        continue
+                    resolved_pron = _resolve_ds_pron(lyr, pron, phoneme_table, use_ja_dict)
+                    updates: dict[str, Any] = {}
+                    if resolved_pron is not None:
+                        updates['pronunciation'] = resolved_pron
+                    elif note.pronunciation is not None and not pron:
+                        updates['pronunciation'] = None
+                    if not lyr and resolved_pron:
+                        updates['lyric'] = resolved_pron
+                    kept.append(note.model_copy(update=updates) if updates else note)
+                cleaned_tracks.append(tr.model_copy(update={'note_list': kept}))
+            else:
+                cleaned_tracks.append(tr)
+        draft = draft.model_copy(update={'track_list': cleaned_tracks})
+
     pending = target_path.with_name(f'.pending-{os.getpid()}-{target_path.name}')
     try:
-        converter.dump(pending, draft, out_opts)
+        try:
+            converter.dump(pending, draft, out_opts)
+        except Exception as exc:
+            if target_format == 'ds' and 'dictionary' in str(exc).lower():
+                raise ValueError(
+                    f'DiffSinger 词典（{out_opts.get("dict_name", "")}）未能匹配部分音节：{exc}。'
+                    '建议检查原工程是否存在空歌词、特殊符号或混合语种音符。'
+                ) from exc
+            raise
 
         # Apply VWA's proven post-dump fixes
         if options['lyric_mode'] == 'adapt' and language == 'en' and target_format == 'ustx':
@@ -422,17 +561,26 @@ def _dump_and_verify_one(
             if not lines:
                 raise ValueError(f'导出的 {spec.short_label} 歌词文件为空，请确认所选轨道包含有效歌词。')
             verified = True
+        elif target_format in ('svp', 'ustx', 'vpr', 'vsqx', 'ufdata'):
+            # Use VWA's own lossless native layout reader so breath notes (`br`) are not
+            # dropped by LibreSVIP's default SVP import filter during verification.
+            from project_io import read_source, score_layout
+            snap_out = read_source(pending)
+            _, lay_out = score_layout(snap_out.data, target_format)
+            output_notes = sum(t.note_count for t in lay_out.tracks if not t.instrumental)
+            verified = (output_notes == source_notes)
         elif spec.can_read:
             reloaded = converter.load(pending, _build_input_options(target_format))
             output_notes = sum(
                 len(t.note_list) for t in reloaded.track_list if isinstance(t, SingingTrack)
             )
             # Single-track targets only keep the first vocal track if user didn't split
-            expected_notes = (
+            base_expected = (
                 len(vocal_tracks[0].note_list)
                 if (not spec.supports_multitrack and vocal_tracks)
                 else source_notes
             )
+            expected_notes = max(0, base_expected - ds_skipped_rests)
             verified = (output_notes == expected_notes)
         else:
             verified = pending.is_file() and pending.stat().st_size > 0
