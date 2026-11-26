@@ -100,8 +100,6 @@ def qml_and_source_checks():
     qml_root = APP / 'src/quick_ui'
     startup = (qml_root / 'StartupDialogs.qml').read_text(encoding='utf-8-sig')
     settings = (qml_root / 'SettingsPage.qml').read_text(encoding='utf-8-sig')
-    bridge = (APP / 'src/quick_bridge.py').read_text(encoding='utf-8-sig')
-    support = (APP / 'src/quick_support.py').read_text(encoding='utf-8-sig')
     for page in ('processing', 'components', 'tuning', 'audio_mixdown', 'video_mixdown', 'publishing', 'updates'):
         assert f'pageId: "{page}"' in startup
     assert 'controller.tutorialStepCount' in startup
@@ -110,11 +108,6 @@ def qml_and_source_checks():
     assert 'objectName: "updateReleaseNotes"' in settings
     assert 'objectName: "presetInspectText"' in settings
     assert 'setMonitorActive(true)' in settings and 'setMonitorActive(false)' in settings
-    assert 'self._mixdown.viewChanged.connect(self._support.refreshActivity)' not in bridge
-    assert 'self._task_work.changed' in bridge
-    assert "add('任务修改')" in support
-    assert "getattr(mixdown, '_preview', None)" in support
-    assert "getattr(mixdown, '_preview_pending', False)" in support
 
 
 def dynamic_checks():

@@ -141,6 +141,8 @@
     "tests/test_workspace_controller.py",
     "tests/test_workspace_routes.py",
     "tests/test_chorus_workbench.py",
+    "tests/test_user_experience_guards.py",
+    "tests/test_stability_and_perf_guards.py",
     ".gitattributes",
     ".github/RELEASE_TEMPLATE.md",
     ".gitignore",

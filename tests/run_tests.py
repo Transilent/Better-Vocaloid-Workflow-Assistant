@@ -43,6 +43,7 @@ qt6_tests = (
     'test_quick_workflow_layout.py',
     'test_quick_operation_diagnostics.py',
     'test_quick_ace_tuning.py',
+    'test_user_experience_guards.py',
 )
 
 # Shared/backend tests and Quick controller tests that do not need Qt 6.
@@ -96,8 +97,70 @@ shared_tests = (
     'test_chinese_lyrics.py', 'test_components.py', 'test_local_music.py', 'test_output_directory.py',
     'test_subtitles.py', 'test_publish_browser.py', 'test_publish_adapters.py',
     'test_bilibili_dual_cover.py', 'test_launchers.py', 'test_source_layout.py',
-    'test_architecture_guards.py',
+    'test_architecture_guards.py', 'test_stability_and_perf_guards.py',
 )
+
+# L1 integration tests that depend on external multi-GB runtime packages/binaries
+# omitted from the L0 --light sandbox. In --light mode these are transparently
+# reported as SKIP (L1 requires: ...) instead of crashing with false reds, while
+# full-runtime runs execute every one of them.
+L1_RUNTIME_REQUIREMENTS = {
+    # External ffmpeg binary
+    'test_core.py': ('ffmpeg',),
+    'test_local_music.py': ('ffmpeg',),
+    'test_video_mixdown.py': ('ffmpeg',),
+    'test_reproducible_fixes.py': ('ffmpeg',),
+    'test_quick_publication_controls.py': ('ffmpeg',),
+    'test_quick_priority_layout_20261112.py': ('ffmpeg',),
+    'test_quick_calibration_subtitle_recovery.py': ('ffmpeg',),
+    'test_quick_component_video_workspace.py': ('ffmpeg',),
+    'test_quick_workspace_capabilities.py': ('ffmpeg',),
+    'test_quick_workflow_layout.py': ('ffmpeg', 'full_runtime'),
+    'test_launchers.py': ('full_runtime',),
+    'test_mixdown_full_sample_acceptance.py': ('ffmpeg', 'full_runtime'),
+    # vocal2midi2 / Qwen3-ASR / ONNX inference runtime
+    'test_context_workflow.py': ('vocal2midi2',),
+    'test_context_proposal.py': ('vocal2midi2',),
+    'test_manual_bpm.py': ('vocal2midi2',),
+    'test_dependency_profiles.py': ('vocal2midi2',),
+    'test_v2_backend.py': ('vocal2midi2',),
+    'test_preparation_english.py': ('vocal2midi2',),
+    'test_transcription_quality.py': ('vocal2midi2',),
+    'test_chinese_lyrics.py': ('vocal2midi2',),
+    'test_slicing_bounds.py': ('vocal2midi2',),
+    'test_pitch_accuracy.py': ('vocal2midi2',),
+    'test_vocal_expression.py': ('vocal2midi2',),
+    'test_project_exports.py': ('vocal2midi2', 'export_runtime'),
+    'test_quick_preparation_formats.py': ('vocal2midi2',),
+    'test_task_contract.py': ('vocal2midi2',),
+    'test_cache_integrity.py': ('vocal2midi2',),
+    'test_japanese_midi.py': ('vocal2midi2',),
+    'test_note_benchmark.py': ('vocal2midi2',),
+    # LibreSVIP / wanakana / pypinyin export runtime
+    'test_calibration_workflow.py': ('export_runtime',),
+    'test_calibration_session.py': ('export_runtime',),
+    'test_tuning_audit_fixes.py': ('export_runtime',),
+    'test_preparation_vsqx_pitch.py': ('export_runtime',),
+    'test_vocal_timbre.py': ('export_runtime',),
+    'test_vpr_tuning.py': ('export_runtime',),
+    'test_vsqx_tuning.py': ('export_runtime',),
+    'test_ustx_tuning.py': ('export_runtime',),
+    # Optional WORLD acoustic analyzer component
+    'test_calibration_channels.py': ('world',),
+    'test_expression_calibration.py': ('world',),
+    'test_quick_tuning_capabilities.py': ('world',),
+    # Playwright browser automation
+    'test_publish_browser.py': ('playwright',),
+    'test_publish_adapters.py': ('playwright',),
+    'test_bilibili_dual_cover.py': ('playwright',),
+    # yt-dlp Bilibili downloader
+    'test_bilibili_login.py': ('yt_dlp',),
+    'test_bilibili_network.py': ('yt_dlp',),
+    'test_output_directory.py': ('yt_dlp',),
+    # backports.zstd codec for ACEP/UFData
+    'test_ace_tuning.py': ('backports_zstd',),
+    'test_quick_ace_tuning.py': ('backports_zstd',),
+}
 
 names = qt6_tests + shared_tests
 
@@ -108,6 +171,25 @@ target_names = [name for name in names if not selected or name in selected]
 jobs = max(1, int(os.environ.get('BVWA_TEST_JOBS', '1') or '1'))
 light_mode = os.environ.get('BVWA_TEST_LIGHT', '0') == '1'
 sandbox_root = Path(os.environ.get('BVWA_TEST_SANDBOX_ROOT', str(APP / 'work/test-sandboxes')))
+
+if light_mode:
+    runnable_names = []
+    for name in target_names:
+        reqs = L1_RUNTIME_REQUIREMENTS.get(name)
+        if reqs:
+            reason = f"L1 requires: {', '.join(reqs)} (run without --light for full runtime)"
+            reports[name] = {
+                'exit_code': 0, 'seconds': 0.0, 'isolated': True, 'light': True,
+                'status': 'skipped', 'outcome': 'passed', 'skip_count': 1,
+                'skip_source': 'light_env_filter', 'skip_reasons_complete': True,
+                'skips': [{'line': None, 'reason': reason, 'message': reason, 'source': 'light_env_filter'}],
+                'skip_messages': [reason], 'pass_markers': [],
+                'unittest': {'ran': None, 'summary': None, 'skipped': None},
+            }
+            print(f'{name}: SKIP ({reason})', flush=True)
+        else:
+            runnable_names.append(name)
+    target_names = runnable_names
 
 
 def _run_one(sandbox, name):
@@ -149,8 +231,10 @@ def _sandbox_kwargs():
 
 
 mode_tag = f'L0 light, jobs={jobs}' if light_mode else f'full runtime, jobs={jobs}'
-print(f'Preparing isolated application ({mode_tag}); installed user state will not be changed.', flush=True)
-if jobs <= 1 or len(target_names) <= 1:
+if not target_names:
+    print(f'All selected tests deferred to L1 full runtime ({mode_tag}).', flush=True)
+elif jobs <= 1 or len(target_names) <= 1:
+    print(f'Preparing isolated application ({mode_tag}); installed user state will not be changed.', flush=True)
     with application_copy(APP, sandbox_root, **_sandbox_kwargs()) as sandbox:
         for name in target_names:
             name, entry, label, code, output = _run_one(sandbox, name)
@@ -159,6 +243,7 @@ if jobs <= 1 or len(target_names) <= 1:
             if code:
                 print(output.decode('utf-8', errors='replace')[-4000:], flush=True)
 else:
+    print(f'Preparing isolated application ({mode_tag}); installed user state will not be changed.', flush=True)
     worker_count = min(jobs, len(target_names))
     buckets = [target_names[i::worker_count] for i in range(worker_count)]
 

@@ -128,18 +128,14 @@ with tempfile.TemporaryDirectory(dir=APP / 'work', prefix='quick-task-safety-') 
         assert ustx.is_file() and vsqx.is_file()
 
 qml = (APP / 'src/quick_ui/ResultsPage.qml').read_text(encoding='utf-8')
-bridge = (APP / 'src/quick_bridge.py').read_text(encoding='utf-8')
-subtitles = (APP / 'src/quick_subtitles.py').read_text(encoding='utf-8')
 assert 'readonly property bool mutationIdle' in qml
 assert 'taskBlockReason' in qml
 assert '编辑器工程 (*.svp *.ustx *.vpr *.vsqx *.acep *.ufdata)' in qml
 assert 'inspectTaskProgress' in qml and 'reprocessSelectedTask' in qml
-assert 'signal.connect(self.taskSafetyChanged)' not in bridge
-assert 'signal.connect(self._schedule_task_safety)' in bridge
-assert 'subtitle_drafts=drafts' in bridge
-assert 'self._subtitles._drafts' in bridge
-assert 'self._hold_tuning_handoff_lock(job)' in bridge
-assert 'quick_results.is_tuning_project(row)' in bridge
-assert '_DRAFT_FIELDS' in subtitles and 'def restoreSource' in subtitles
+assert callable(getattr(QuickBridge, '_schedule_task_safety', None))
+assert callable(getattr(QuickBridge, '_hold_tuning_handoff_lock', None))
+# Verify subtitle_drafts safety group behavior directly instead of grepping private field names.
+draft_groups = _task_reference_groups(subtitle_drafts={'srt': {'_task_job_id': str(APP / 'jobs/demo')}})
+assert any('SRT' in g['label'] and g['paths'] for g in draft_groups), draft_groups
 
 print('PASS: task-scoped blockers including chorus, cached edges, dormant drafts and editor handoff guard')

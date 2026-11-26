@@ -53,9 +53,8 @@ try:
                 'storage': 'storageSection', 'presets': 'presetLibrarySection',
                 'support': 'supportSection', 'about': 'aboutSection',
             }
-            rail = window.findChild(QObject, 'settingsSupportSidebar')
-            group = window.findChild(QObject, 'supportSidebarQQGroup')
-            assert rail.property('visible') and '490619616' in group.property('text')
+            top_support = named(window, 'topSupportEntry')
+            assert top_support is not None and top_support.property('visible'), 'topSupportEntry'
             for category, active in categories.items():
                 content = named(window, 'settingsContentFlickable')
                 if content.property('contentHeight') > content.height() + 30:
@@ -64,8 +63,11 @@ try:
                 assert content.property('contentY') == 0
                 for section in categories.values():
                     assert window.findChild(QObject, section).property('visible') == (section == active), section
-                assert window.findChild(QObject, 'supportSidebarOpenFeedback').property('visible')
-            print('PASS all six settings groups and persistent support at this size', flush=True)
+            click(window, 'settingsCategory_support')
+            group = window.findChild(QObject, 'supportSidebarQQGroup')
+            assert group is not None and group.property('visible') and '490619616' in group.property('text')
+            assert window.findChild(QObject, 'supportSidebarOpenFeedback').property('visible')
+            print('PASS all six settings groups and support section at this size', flush=True)
             if scale == 100:
                 owner.support.showTutorial()
                 app.processEvents()

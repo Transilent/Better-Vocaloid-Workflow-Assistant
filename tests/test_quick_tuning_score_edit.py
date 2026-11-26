@@ -268,6 +268,9 @@ def exercise(root, viewport, scale):
     tap('tuningModeMulti')
     assert not tune.view['noteTool'] and not visual('tuningNoteTool').isEnabled()
     tap('tuningModeSingle')
+    # Wait one Qt polish frame so RowLayout finishes laying out newly visible single-track tools under parallel load.
+    QTest.qWait(20)
+    app.processEvents()
     assert tune.project.notes[identity] == resized and tune.view['noteEditCount'] == 1
 
     tap('tuningPitchDrawTool')
