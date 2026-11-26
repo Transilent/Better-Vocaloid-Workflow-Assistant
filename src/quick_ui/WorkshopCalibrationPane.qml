@@ -422,8 +422,9 @@ Item {
                                 }
                             }
                             PathLabel { text: pane.leaf(pane.fit.renders); fullPath: pane.fit.renders || "" }
-                            ProgressBar {
+                            UiProgressBar {
                                 objectName: "calibrationTrialProgress"
+                                theme: pane.theme
                                 Layout.fillWidth: true
                                 from: 0
                                 to: 7

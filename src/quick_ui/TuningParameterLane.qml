@@ -299,8 +299,9 @@ Rectangle {
         }
     }
 
-    Menu {
+    UiMenu {
         id: nodeMenu
+        theme: lane.theme
         MenuItem {
             objectName: "tuningDeletePitchNode"
             text: lane.label("删除节点")

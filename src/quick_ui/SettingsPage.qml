@@ -21,13 +21,10 @@ Rectangle {
     readonly property var storageView: controller.storage || ({})
     readonly property var presetView: controller.presetLibrary || ({})
     readonly property bool narrow: width < (theme.scale > 1.2 ? 840 : 680)
-    readonly property bool showSupportRail: width >= (theme.scale > 1.2 ? 1200 : 1000)
+    readonly property bool showCategoryRail: width >= (theme.scale > 1.2 ? 960 : 820)
     readonly property int categoryRailWidth: Math.round(184 * theme.scale)
-    readonly property int supportRailWidth: Math.round(282 * theme.scale)
-    readonly property int centralContentWidth: Math.max(0, width
-        - (showSupportRail ? categoryRailWidth + supportRailWidth : 0))
-    readonly property bool storageSideBySide: showSupportRail
-        && centralContentWidth >= Math.round(860 * theme.scale)
+    readonly property bool storageSideBySide: showCategoryRail
+        && width >= Math.round(1480 * theme.scale)
     readonly property string supportLogGuideUrl: "https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/blob/main/.github/SUPPORT.md"
     readonly property var categoryIds: ["appearance", "update", "storage", "presets", "support", "about"]
     property string settingsCategory: "appearance"
@@ -388,14 +385,11 @@ Rectangle {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: storageCleanDialog
         objectName: "storageCleanConfirmDialog"
-        parent: Overlay.overlay
-        modal: true
-        focus: true
+        theme: page.theme
         closePolicy: Popup.CloseOnEscape
-        anchors.centerIn: parent
         width: Math.min(parent ? parent.width - Math.round(30 * page.theme.scale) : Math.round(540 * page.theme.scale),
                         Math.round(540 * page.theme.scale))
         padding: Math.round(18 * page.theme.scale)
@@ -448,12 +442,10 @@ Rectangle {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: presetImportPreviewDialog
         objectName: "presetImportPreviewDialog"
-        parent: Overlay.overlay
-        modal: true
-        focus: true
+        theme: page.theme
         closePolicy: Popup.CloseOnEscape
         anchors.centerIn: parent
         width: Math.min(parent ? parent.width - Math.round(30 * page.theme.scale) : Math.round(600 * page.theme.scale),
@@ -518,9 +510,10 @@ Rectangle {
                     }
                 }
             }
-            CheckBox {
+            UiCheckBox {
                 id: presetImportCopy
                 objectName: "presetImportAsCopy"
+                theme: page.theme
                 Layout.fillWidth: true
                 text: page.tr("创建独立副本（新 ID 与版本 0.1.0）")
                 enabled: !presetImportPreviewDialog.preview.copy_required
@@ -559,12 +552,10 @@ Rectangle {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: presetConflictDialog
         objectName: "presetVersionConflictDialog"
-        parent: Overlay.overlay
-        modal: true
-        focus: true
+        theme: page.theme
         closePolicy: Popup.CloseOnEscape
         anchors.centerIn: parent
         width: Math.min(parent ? parent.width - Math.round(30 * page.theme.scale) : Math.round(590 * page.theme.scale),
@@ -620,12 +611,10 @@ Rectangle {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: presetTextDialog
         objectName: "presetLibraryTextDialog"
-        parent: Overlay.overlay
-        modal: true
-        focus: true
+        theme: page.theme
         closePolicy: Popup.CloseOnEscape
         anchors.centerIn: parent
         width: Math.min(parent ? parent.width - Math.round(30 * page.theme.scale) : Math.round(480 * page.theme.scale),
@@ -687,12 +676,10 @@ Rectangle {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: presetRemoveDialog
         objectName: "presetLibraryRemoveDialog"
-        parent: Overlay.overlay
-        modal: true
-        focus: true
+        theme: page.theme
         closePolicy: Popup.CloseOnEscape
         anchors.centerIn: parent
         width: Math.min(parent ? parent.width - Math.round(30 * page.theme.scale) : Math.round(540 * page.theme.scale),
@@ -743,12 +730,10 @@ Rectangle {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: presetRecoverDialog
         objectName: "presetLibraryRecoverDialog"
-        parent: Overlay.overlay
-        modal: true
-        focus: true
+        theme: page.theme
         closePolicy: Popup.CloseOnEscape
         anchors.centerIn: parent
         width: Math.min(parent ? parent.width - Math.round(30 * page.theme.scale) : Math.round(540 * page.theme.scale),
@@ -855,7 +840,10 @@ Rectangle {
             UiButton {
                 objectName: "topSupportEntry"
                 theme: page.theme
-                visible: !page.showSupportRail
+                quiet: true
+                visible: page.settingsCategory !== "support"
+                leadingGlyph: "help_circle"
+                leadingIconSize: 15
                 text: page.tr("支持与日志")
                 onClicked: page.selectCategory("support")
             }
@@ -864,13 +852,13 @@ Rectangle {
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: Math.max(1, Math.round(1 * page.theme.scale))
-            color: page.theme.line
+            color: page.theme.lineSubtle !== undefined ? page.theme.lineSubtle : page.theme.line
         }
 
         GridLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            columns: page.showSupportRail ? 3 : 1
+            columns: page.showCategoryRail ? 2 : 1
             columnSpacing: 0
             rowSpacing: 0
 
@@ -879,10 +867,10 @@ Rectangle {
                 objectName: "settingsCategoryNavigation"
                 Layout.row: 0
                 Layout.column: 0
-                Layout.fillWidth: !page.showSupportRail
-                Layout.fillHeight: page.showSupportRail
-                Layout.preferredWidth: page.showSupportRail ? page.categoryRailWidth : -1
-                Layout.preferredHeight: page.showSupportRail ? -1
+                Layout.fillWidth: !page.showCategoryRail
+                Layout.fillHeight: page.showCategoryRail
+                Layout.preferredWidth: page.showCategoryRail ? page.categoryRailWidth : -1
+                Layout.preferredHeight: page.showCategoryRail ? -1
                     : categoryFlow.implicitHeight + Math.round(20 * page.theme.scale)
                 color: page.theme.base
                 clip: true
@@ -891,17 +879,17 @@ Rectangle {
                     anchors.right: parent.right
                     anchors.top: parent.top
                     anchors.bottom: parent.bottom
-                    visible: page.showSupportRail
-                    width: Math.max(1, Math.round(1 * page.theme.scale))
-                    color: page.theme.line
+                    visible: page.showCategoryRail
+                    width: 1
+                    color: page.theme.lineSubtle !== undefined ? page.theme.lineSubtle : page.theme.line
                 }
                 Rectangle {
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.bottom: parent.bottom
-                    visible: !page.showSupportRail
-                    height: Math.max(1, Math.round(1 * page.theme.scale))
-                    color: page.theme.line
+                    visible: !page.showCategoryRail
+                    height: 1
+                    color: page.theme.lineSubtle !== undefined ? page.theme.lineSubtle : page.theme.line
                 }
 
                 ColumnLayout {
@@ -909,25 +897,27 @@ Rectangle {
                     anchors.fill: parent
                     anchors.leftMargin: Math.round(10 * page.theme.scale)
                     anchors.rightMargin: Math.round(10 * page.theme.scale)
-                    anchors.topMargin: Math.round(10 * page.theme.scale)
+                    anchors.topMargin: Math.round(12 * page.theme.scale)
                     anchors.bottomMargin: Math.round(10 * page.theme.scale)
-                    spacing: Math.round(6 * page.theme.scale)
+                    spacing: Math.round(4 * page.theme.scale)
 
                     Flow {
                         id: categoryFlow
                         Layout.fillWidth: true
-                        spacing: Math.round(6 * page.theme.scale)
+                        spacing: Math.round(4 * page.theme.scale)
 
                         Repeater {
                             model: page.categoryIds
                             delegate: UiButton {
                                 required property string modelData
                                 objectName: "settingsCategory_" + modelData
-                                width: page.showSupportRail ? categoryFlow.width : implicitWidth
+                                width: page.showCategoryRail ? categoryFlow.width : implicitWidth
                                 theme: page.theme
                                 text: page.categoryTitle(modelData)
                                 leadingGlyph: page.categoryIcon(modelData)
                                 leadingIconSize: 16
+                                quiet: true
+                                borderlessSelected: true
                                 selected: page.settingsCategory === modelData
                                 leftAligned: true
                                 checkable: false
@@ -942,7 +932,7 @@ Rectangle {
                     Item {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        visible: page.showSupportRail
+                        visible: page.showCategoryRail
                     }
                 }
             }
@@ -950,15 +940,15 @@ Rectangle {
             ScrollView {
                 id: settingsScroll
                 objectName: "settingsCategoryContent"
-                Layout.row: page.showSupportRail ? 0 : 1
-                Layout.column: page.showSupportRail ? 1 : 0
+                Layout.row: page.showCategoryRail ? 0 : 1
+                Layout.column: page.showCategoryRail ? 1 : 0
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 contentWidth: availableWidth
                 clip: true
                 focus: true
                 ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-                ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                ScrollBar.vertical: UiScrollBar { theme: page.theme; policy: ScrollBar.AsNeeded }
                 background: Rectangle { color: "transparent" }
 
                 Flickable {
@@ -1889,35 +1879,48 @@ Rectangle {
                             onClicked: Qt.openUrlExternally(page.supportLogGuideUrl)
                         }
                         UiButton {
-                            objectName: "openFeedback"
+                            objectName: "supportSidebarOpenFeedback"
                             theme: page.theme
-                            visible: !page.showSupportRail
+                            primary: true
                             text: page.tr("GitHub 反馈")
                             onClicked: page.controller.openFeedback()
                         }
                         UiButton {
-                            objectName: "replayTutorial"
+                            objectName: "supportSidebarReplayTutorial"
                             theme: page.theme
                             quiet: true
-                            visible: !page.showSupportRail
                             text: page.tr("重新查看教程")
                             onClicked: page.controller.showTutorial()
                         }
                     }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: 1
+                        color: page.theme.lineSubtle !== undefined ? page.theme.lineSubtle : page.theme.line
+                    }
                     RowLayout {
                         Layout.fillWidth: true
-                        visible: !page.showSupportRail
-                        spacing: Math.round(8 * page.theme.scale)
-                        Text {
-                            objectName: "qqGroup"
-                            text: page.tr("QQ 群") + "  " + page.communityNumber
-                            color: page.theme.text
-                            font.pixelSize: Math.round(14 * page.theme.scale)
-                            font.weight: Font.DemiBold
+                        spacing: Math.round(10 * page.theme.scale)
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+                            Text {
+                                text: page.tr("交流社区 · QQ 群")
+                                color: page.theme.muted
+                                font.pixelSize: Math.round(12 * page.theme.scale)
+                            }
+                            Text {
+                                objectName: "supportSidebarQQGroup"
+                                text: page.communityNumber
+                                color: page.theme.text
+                                font.pixelSize: Math.round(20 * page.theme.scale)
+                                font.weight: Font.DemiBold
+                                font.family: page.theme.monoFont || "Consolas"
+                                textFormat: Text.PlainText
+                            }
                         }
-                        Item { Layout.fillWidth: true }
                         UiButton {
-                            objectName: "copyQQGroup"
+                            objectName: "supportSidebarCopyQQGroup"
                             theme: page.theme
                             text: page.tr("复制群号")
                             onClicked: page.controller.copyCommunity()
@@ -1986,119 +1989,6 @@ Rectangle {
                         Layout.fillWidth: true
                         Layout.preferredHeight: page.pageMargin
                     }
-                    }
-                }
-            }
-
-            Rectangle {
-                id: sideSupportPanel
-                objectName: "settingsSupportSidebar"
-                Layout.row: 0
-                Layout.column: 2
-                Layout.fillHeight: true
-                Layout.preferredWidth: page.supportRailWidth
-                visible: page.showSupportRail
-                color: page.theme.base
-
-                Rectangle {
-                    anchors.left: parent.left
-                    anchors.top: parent.top
-                    anchors.bottom: parent.bottom
-                    width: Math.max(1, Math.round(1 * page.theme.scale))
-                    color: page.theme.line
-                }
-
-                ColumnLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: Math.round(20 * page.theme.scale)
-                    anchors.rightMargin: Math.round(20 * page.theme.scale)
-                    anchors.topMargin: Math.round(19 * page.theme.scale)
-                    anchors.bottomMargin: Math.round(18 * page.theme.scale)
-                    spacing: Math.round(11 * page.theme.scale)
-
-                    Text {
-                        Layout.fillWidth: true
-                        text: page.tr("帮助与社区")
-                        color: page.theme.text
-                        font.pixelSize: Math.round(18 * page.theme.scale)
-                        font.weight: Font.DemiBold
-                    }
-                    Text {
-                        Layout.fillWidth: true
-                        text: page.tr("常用交流请加入 QQ 群；可复现问题通过 GitHub 反馈。本机诊断和日志说明在「支持与日志」分类。")
-                        color: page.theme.muted
-                        font.pixelSize: Math.round(12 * page.theme.scale)
-                        wrapMode: Text.Wrap
-                    }
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: supportQqContent.implicitHeight + Math.round(20 * page.theme.scale)
-                        color: page.theme.surface
-                        radius: Math.round(8 * page.theme.scale)
-                        border.color: page.theme.line
-
-                        ColumnLayout {
-                            id: supportQqContent
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.top: parent.top
-                            anchors.margins: Math.round(12 * page.theme.scale)
-                            spacing: Math.round(5 * page.theme.scale)
-
-                            Text {
-                                Layout.fillWidth: true
-                                text: page.tr("QQ 群")
-                                color: page.theme.muted
-                                font.pixelSize: Math.round(12 * page.theme.scale)
-                            }
-                            Text {
-                                objectName: "supportSidebarQQGroup"
-                                Layout.fillWidth: true
-                                text: page.communityNumber
-                                color: page.theme.text
-                                font.pixelSize: Math.round(23 * page.theme.scale)
-                                font.weight: Font.DemiBold
-                                textFormat: Text.PlainText
-                            }
-                            UiButton {
-                                objectName: "supportSidebarCopyQQGroup"
-                                theme: page.theme
-                                quiet: true
-                                text: page.tr("复制群号")
-                                onClicked: page.controller.copyCommunity()
-                            }
-                        }
-                    }
-
-                    UiButton {
-                        objectName: "supportSidebarOpenFeedback"
-                        Layout.fillWidth: true
-                        theme: page.theme
-                        primary: true
-                        text: page.tr("GitHub 反馈")
-                        onClicked: page.controller.openFeedback()
-                    }
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: Math.max(1, Math.round(1 * page.theme.scale))
-                        color: page.theme.line
-                    }
-
-
-                    UiButton {
-                        objectName: "supportSidebarReplayTutorial"
-                        Layout.fillWidth: true
-                        theme: page.theme
-                        quiet: true
-                        leftAligned: true
-                        text: page.tr("重新查看教程")
-                        onClicked: page.controller.showTutorial()
-                    }
-                    Item {
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
                     }
                 }
             }

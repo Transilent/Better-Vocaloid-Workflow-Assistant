@@ -34,13 +34,51 @@ FocusScope {
         return t(value === "timing" ? "仅对齐" : value === "pitch" ? "仅修音"
                  : value === "processed" ? "处理后" : "原声")
     }
+    function issueCategoryLabel(cat) {
+        if (cat === "transpose") return t("整轨偏调")
+        if (cat === "octave") return t("八度偏差")
+        if (cat === "pitch_jump") return t("大跨度跳变")
+        if (cat === "pitch_large" || cat === "large_shift") return t("大幅变调")
+        if (cat === "pitch_unmatched" || cat === "unmatched") return t("未匹配谱音")
+        if (cat === "chord_overlap") return t("和弦重叠")
+        if (cat === "score_draft" || cat === "draft_score") return t("草稿谱轨")
+        if (cat === "timing" || cat === "timing_large" || cat === "timing_uncertain") return t("节奏核对")
+        return t("待核对")
+    }
     function pickAudio(role) {
         importRole = role
         audioDialog.open()
     }
+    function handleDroppedUrls(urls) {
+        if (!urls || urls.length === 0)
+            return
+        const vocals = []
+        let scoreUrl = null
+        let projectUrl = null
+        for (let i = 0; i < urls.length; ++i) {
+            const raw = String(urls[i] || "")
+            const lower = raw.toLowerCase()
+            if (lower.endsWith(".vwachorus"))
+                projectUrl = urls[i]
+            else if (/\.(mid|midi|svp|ustx|vpr|vsqx|acep|ufdata)$/.test(lower))
+                scoreUrl = urls[i]
+            else if (/\.(wav|flac|aif|aiff|mp3|ogg|opus)$/.test(lower))
+                vocals.push(urls[i])
+        }
+        if (projectUrl) {
+            projectAction("open", projectUrl)
+            return
+        }
+        if (vocals.length > 0)
+            controller.importAudio("vocal", vocals)
+        if (scoreUrl && vocals.length === 0)
+            controller.importScore(scoreUrl)
+    }
     function runBatch(apply) {
+        const refMode = page.view.timingRefMode || (page.view.score ? "midi" : "lead")
         controller.analyze(kind.currentValue, scope.currentValue, range.currentValue === "whole",
-                           apply, review.checked, page.view.timingStrength, ensemble.visible, page.view.pitchStrength)
+                           apply, review.checked, page.view.timingStrength,
+                           refMode === "ensemble", page.view.pitchStrength, refMode)
     }
     function textFocus(item) {
         for (let cursor = item; cursor; cursor = cursor.parent) {
@@ -172,6 +210,12 @@ FocusScope {
         onActivated: page.controller.mergePitchNotes([])
     }
     Shortcut {
+        sequence: "N"
+        context: Qt.WindowShortcut
+        enabled: page.pitchShortcutReady && pitchLane.hasNotes
+        onActivated: page.controller.focusNextReviewNote()
+    }
+    Shortcut {
         sequences: [StandardKey.Delete, "Backspace"]
         context: Qt.WindowShortcut
         enabled: page.pitchShortcutReady && page.view.selectedNoteCount > 0
@@ -212,6 +256,18 @@ FocusScope {
             color: page.theme.base
             border.color: parent.activeFocus ? page.theme.accent : page.theme.line
             radius: Math.round(6 * page.theme.scale)
+        }
+    }
+
+    DropArea {
+        anchors.fill: parent
+        enabled: page.ready && !page.view.busy
+        onEntered: drag => { if (drag.hasUrls) drag.accept(Qt.CopyAction) }
+        onDropped: drop => {
+            if (drop.hasUrls && drop.urls && drop.urls.length > 0) {
+                drop.accept(Qt.CopyAction)
+                page.handleDroppedUrls(drop.urls)
+            }
         }
     }
 
@@ -312,8 +368,9 @@ FocusScope {
                 text: "+ " + page.t("导入") + " ▾"
                 enabled: !page.view.busy
                 onClicked: importMenu.popup()
-                Menu {
+                UiMenu {
                     id: importMenu
+                    theme: page.theme
                     MenuItem {
                         objectName: "chorusImportVocal"
                         text: page.t("导入干声…")
@@ -349,8 +406,9 @@ FocusScope {
                 text: page.t("工程") + " ▾"
                 enabled: !page.view.busy
                 onClicked: projectMenu.popup()
-                Menu {
+                UiMenu {
                     id: projectMenu
+                    theme: page.theme
                     MenuItem {
                         text: page.t("新建工程")
                         onTriggered: page.projectAction("new", "")
@@ -408,11 +466,40 @@ FocusScope {
             }
         }
 
-        // 2. Main workspace (Left multi-track + detail editor | Right inspector)
+        // 2a. Magnetic Drag-and-Drop Launch Stage when no tracks are loaded yet
+        UiDropStage {
+            id: emptyDropStage
+            objectName: "chorusDropStage"
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: !page.ready
+            theme: page.theme
+            iconGlyph: "nav_chorus"
+            title: page.t("开始你的合唱与人声精修")
+            subtitle: page.t("直接拖入人声干声、MIDI / 调音工程或 .vwachorus 工程文件；支持背景 MIDI 参照、自动对齐节奏与防电音自然修音。")
+            dropHint: page.t("松开鼠标以导入人声或工程")
+            formatTags: ["WAV / FLAC / MP3", "MIDI / SVP / USTX", ".vwachorus"]
+            primaryText: page.t("导入干声…")
+            primaryIcon: "plus"
+            primaryEnabled: !page.view.busy
+            secondaryText: page.t("打开工程…")
+            secondaryIcon: "folder"
+            secondaryEnabled: !page.view.busy
+            tertiaryText: page.t("导入 MIDI 谱轨…")
+            tertiaryIcon: "music_note"
+            tertiaryEnabled: !page.view.busy
+            onPrimaryClicked: page.pickAudio("vocal")
+            onSecondaryClicked: openDialog.open()
+            onTertiaryClicked: scoreDialog.open()
+            onFilesDropped: urls => page.handleDroppedUrls(urls)
+        }
+
+        // 2b. Main workspace (Left multi-track + detail editor | Right inspector)
         RowLayout {
             id: workspaceArea
             Layout.fillWidth: true
             Layout.fillHeight: true
+            visible: page.ready
             spacing: Math.round(8 * page.theme.scale)
 
             ColumnLayout {
@@ -587,6 +674,21 @@ FocusScope {
                         onClicked: page.controller.snapPitchNotesToSemitone([])
                     }
                     UiButton {
+                        objectName: "chorusSnapScore"
+                        theme: page.theme
+                        implicitHeight: Math.round(28 * page.theme.scale)
+                        quiet: true
+                        visible: page.view.mode === "pitch" && page.view.selectedNoteCount > 0
+                            && !!page.view.score && !!page.view.take.scoreLane
+                        enabled: page.view.take.role === "vocal"
+                        text: page.t("对齐 MIDI")
+                        leadingGlyph: "music_note"
+                        leadingIconSize: 13
+                        ToolTip.visible: hovered
+                        ToolTip.text: page.t("将选中音符直接对齐到对应背景 MIDI 音高")
+                        onClicked: page.controller.snapPitchNotesToScore([])
+                    }
+                    UiButton {
                         objectName: "chorusMergeNotes"
                         theme: page.theme
                         implicitHeight: Math.round(28 * page.theme.scale)
@@ -649,12 +751,228 @@ FocusScope {
                         onClicked: page.controller.splitSelectedNoteAtPlayhead()
                     }
 
+                    // Single-track MIDI reference & one-click MIDI auto-tune controls
+                    UiButton {
+                        objectName: "chorusImportMidiQuick"
+                        theme: page.theme
+                        implicitHeight: Math.round(28 * page.theme.scale)
+                        quiet: true
+                        visible: page.view.mode === "pitch" && !page.view.score && page.view.selectedNoteCount === 0
+                        enabled: !page.view.busy
+                        text: page.t("导入 MIDI")
+                        leadingGlyph: "music_note"
+                        leadingIconSize: 13
+                        ToolTip.visible: hovered
+                        ToolTip.text: page.t("导入 MIDI 或调音工程作为背景音高参照并自动修音")
+                        onClicked: scoreDialog.open()
+                    }
+                    UiButton {
+                        objectName: "chorusScoreBackground"
+                        theme: page.theme
+                        implicitHeight: Math.round(28 * page.theme.scale)
+                        visible: page.view.mode === "pitch" && !!page.view.score && page.view.selectedNoteCount === 0
+                        quiet: !selected
+                        selected: page.view.showScoreBackground
+                        text: page.t("背景 MIDI")
+                        leadingGlyph: "music_note"
+                        leadingIconSize: 13
+                        ToolTip.visible: hovered
+                        ToolTip.text: page.t("显示或隐藏钢琴卷帘中的绿色虚框 MIDI 参照音符")
+                        onClicked: page.controller.setShowScoreBackground(!page.view.showScoreBackground)
+                    }
+                    UiButton {
+                        objectName: "chorusMidiAudition"
+                        theme: page.theme
+                        implicitHeight: Math.round(28 * page.theme.scale)
+                        visible: page.view.mode === "pitch" && !!page.view.score && page.view.selectedNoteCount === 0
+                        quiet: !selected
+                        selected: page.view.midiAudition
+                        text: page.t("听 MIDI")
+                        leadingGlyph: "headphones"
+                        leadingIconSize: 13
+                        ToolTip.visible: hovered
+                        ToolTip.text: page.t("试听时叠放轻柔的背景 MIDI 导音（-14 dB，仅试听不写入导出分轨）")
+                        onClicked: page.controller.setMidiAudition(!page.view.midiAudition)
+                    }
+                    UiButton {
+                        objectName: "chorusAutoTuneScore"
+                        theme: page.theme
+                        implicitHeight: Math.round(28 * page.theme.scale)
+                        visible: page.view.mode === "pitch" && !!page.view.score && page.view.selectedNoteCount === 0
+                        enabled: page.view.take.role === "vocal" && !page.view.busy
+                        primary: true
+                        text: page.t("对照 MIDI 修音")
+                        leadingGlyph: "pitch_curve"
+                        leadingIconSize: 13
+                        ToolTip.visible: hovered
+                        ToolTip.text: page.t("自动对齐 MIDI 起点与八度，并对照背景 MIDI 修整本轨音准（含和声保护与防电音保护）")
+                        onClicked: page.controller.autoTuneToScore("track", "pitch")
+                    }
+                    UiButton {
+                        objectName: "chorusMidiMenu"
+                        theme: page.theme
+                        implicitHeight: Math.round(28 * page.theme.scale)
+                        quiet: true
+                        visible: page.view.mode === "pitch" && !!page.view.score && page.view.selectedNoteCount === 0
+                        enabled: !page.view.busy
+                        text: "MIDI ▾"
+                        onClicked: midiQuickMenu.popup()
+                        UiMenu {
+                            id: midiQuickMenu
+                            theme: page.theme
+                            MenuItem {
+                                text: page.t("对照 MIDI 对齐节奏 + 修音（本轨）")
+                                enabled: page.view.take.role === "vocal" && !page.view.busy
+                                onTriggered: page.controller.autoTuneToScore("track", "both")
+                            }
+                            MenuItem {
+                                text: page.t("仅对照 MIDI 对齐节奏（本轨）")
+                                enabled: page.view.take.role === "vocal" && !page.view.busy
+                                onTriggered: page.controller.autoTuneToScore("track", "timing")
+                            }
+                            MenuItem {
+                                text: page.t("对照 MIDI 批量修全组人声（仅音高）")
+                                enabled: page.view.vocals > 0 && !page.view.busy
+                                onTriggered: page.controller.autoTuneToScore("all", "pitch")
+                            }
+                            MenuItem {
+                                text: page.t("对照 MIDI 批量对齐节奏 + 修全组人声")
+                                enabled: page.view.vocals > 0 && !page.view.busy
+                                onTriggered: page.controller.autoTuneToScore("all", "both")
+                            }
+                            MenuSeparator {}
+                            MenuItem {
+                                text: page.t("自动对齐 MIDI 起点与八度")
+                                enabled: page.view.vocals > 0 && !page.view.busy
+                                onTriggered: page.controller.autoAlignScore()
+                            }
+                            MenuItem {
+                                text: page.t("定位下一处高风险/待核对音符 (N)")
+                                enabled: pitchLane.hasNotes
+                                onTriggered: page.controller.focusNextReviewNote()
+                            }
+                            MenuSeparator {}
+                            MenuItem {
+                                enabled: false
+                                text: page.t("当前偏移") + " " + (page.view.scoreOffset >= 0 ? "+" : "")
+                                    + Number(page.view.scoreOffset || 0).toFixed(2) + " s · "
+                                    + page.t("八度") + " " + ((page.view.take.scoreOctave || 0) >= 0 ? "+" : "")
+                                    + (page.view.take.scoreOctave || 0) + " st"
+                            }
+                            MenuItem {
+                                text: ((page.view.take.scoreOctave || 0) === -12 ? "✓ " : "") + page.t("低八度 (-12 半音 · 常用男声)")
+                                enabled: !!page.view.take.id
+                                onTriggered: page.controller.setTrackScoreOctave(page.view.selected, -12)
+                            }
+                            MenuItem {
+                                text: ((page.view.take.scoreOctave || 0) === 0 ? "✓ " : "") + page.t("原八度 (0 半音)")
+                                enabled: !!page.view.take.id
+                                onTriggered: page.controller.setTrackScoreOctave(page.view.selected, 0)
+                            }
+                            MenuItem {
+                                text: ((page.view.take.scoreOctave || 0) === 12 ? "✓ " : "") + page.t("高八度 (+12 半音)")
+                                enabled: !!page.view.take.id
+                                onTriggered: page.controller.setTrackScoreOctave(page.view.selected, 12)
+                            }
+                            MenuSeparator {}
+                            MenuItem {
+                                text: page.t("MIDI 提前 100 ms")
+                                onTriggered: page.controller.offsetScore(Number(page.view.scoreOffset || 0) - 0.1)
+                            }
+                            MenuItem {
+                                text: page.t("MIDI 提前 20 ms")
+                                onTriggered: page.controller.offsetScore(Number(page.view.scoreOffset || 0) - 0.02)
+                            }
+                            MenuItem {
+                                text: page.t("MIDI 延后 20 ms")
+                                onTriggered: page.controller.offsetScore(Number(page.view.scoreOffset || 0) + 0.02)
+                            }
+                            MenuItem {
+                                text: page.t("MIDI 延后 100 ms")
+                                onTriggered: page.controller.offsetScore(Number(page.view.scoreOffset || 0) + 0.1)
+                            }
+                            MenuSeparator {}
+                            MenuItem {
+                                text: page.t("更换 MIDI / 调音工程…")
+                                onTriggered: scoreDialog.open()
+                            }
+                        }
+                    }
+
                     // Phrase-mode compact inline hints & quick actions
                     Caption {
                         visible: page.view.mode === "phrase"
                         text: (page.view.take.name || page.t("选中音轨"))
                             + (page.view.reference.name ? "  ⇄  " + page.view.reference.name : "")
                             + "  ·  " + page.t("拖动下方波形或菱形锚点对齐")
+                    }
+
+                    // Clickable color-coded review issue badge pill (jumps straight to review list & first issue)
+                    Rectangle {
+                        objectName: "chorusReviewBadge"
+                        readonly property bool hasHigh: (page.view.highIssueCount || 0) > 0
+                        visible: (page.view.issues || []).length > 0
+                        radius: Math.round(5 * page.theme.scale)
+                        color: page.theme.raised
+                        border.color: hasHigh ? "#f87171" : page.theme.attention
+                        border.width: 1.5
+                        implicitWidth: revBadgeRow.implicitWidth + 14
+                        implicitHeight: Math.round(24 * page.theme.scale)
+                        Row {
+                            id: revBadgeRow
+                            anchors.centerIn: parent
+                            spacing: 5
+                            Rectangle {
+                                width: 7
+                                height: 7
+                                radius: 4
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: parent.parent.hasHigh ? "#f87171" : page.theme.attention
+                            }
+                            Text {
+                                color: parent.parent.hasHigh ? "#f87171" : page.theme.attention
+                                font.pixelSize: Math.round(11 * page.theme.scale)
+                                font.weight: Font.DemiBold
+                                text: page.t("待核对") + " " + (page.view.issues || []).length
+                            }
+                        }
+                        ToolTip.visible: revBadgeMouse.containsMouse
+                        ToolTip.text: page.t("点击打开右侧待核对清单并跳转到下一处待核对位置 (N)")
+                        MouseArea {
+                            id: revBadgeMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                if (!page.view.inspector)
+                                    page.controller.toggleInspector()
+                                page.controller.inspectorSection("batch")
+                                page.controller.focusNextReviewNote()
+                            }
+                        }
+                    }
+
+                    // Subtle wet/reverb vocal input warning badge
+                    Rectangle {
+                        objectName: "chorusWetWarning"
+                        visible: !!page.view.take.wetWarning
+                        radius: Math.round(5 * page.theme.scale)
+                        color: page.theme.raised
+                        border.color: page.theme.attention
+                        implicitWidth: wetWarnText.implicitWidth + 14
+                        implicitHeight: Math.round(24 * page.theme.scale)
+                        Text {
+                            id: wetWarnText
+                            anchors.centerIn: parent
+                            color: page.theme.attention
+                            font.pixelSize: Math.round(11 * page.theme.scale)
+                            text: page.t("含混响湿声 · 建议用纯干声")
+                        }
+                        ToolTip.visible: wetWarnHover.hovered
+                        ToolTip.text: page.t("检测到当前人声立体声侧频能量较高（Side/Mid "
+                            + Number(page.view.take.sideMidDb || -120).toFixed(1)
+                            + " dB），可能已带混响，修音容易产生空洞感，建议导入未加效果的纯干声。")
+                        HoverHandler { id: wetWarnHover }
                     }
 
                     Item { Layout.fillWidth: true }
@@ -666,8 +984,9 @@ FocusScope {
                         visible: page.view.mode === "pitch"
                         text: page.t("更多") + " ▾"
                         onClicked: pitchMoreMenu.popup()
-                        Menu {
+                        UiMenu {
                             id: pitchMoreMenu
+                            theme: page.theme
                             MenuItem {
                                 text: page.view.pitchSnap ? page.t("✓ 拖动吸附半音") : page.t("拖动吸附半音")
                                 onTriggered: page.controller.setPitchSnap(!page.view.pitchSnap)
@@ -842,13 +1161,63 @@ FocusScope {
                                     model: [{label: page.t("整曲"), value: "whole"}, {label: page.t("选段"), value: "selection"}]
                                 }
                             }
+                            UiComboBox {
+                                id: timingRefCombo
+                                objectName: "chorusTimingRefMode"
+                                theme: page.theme
+                                Layout.fillWidth: true
+                                visible: kind.currentValue !== "pitch"
+                                enabled: !page.view.busy
+                                fieldLabel: page.t("对齐参照")
+                                model: [
+                                    {label: page.t("对照 MIDI 谱轨对齐") + (!page.view.score ? " (" + page.t("未导入MIDI") + ")" : ""), value: "midi"},
+                                    {label: page.t("按指定主唱 / 导唱对齐"), value: "lead"},
+                                    {label: page.t("按同词唱段共识对齐"), value: "ensemble"}
+                                ]
+                                currentIndex: Math.max(0, indexOfValue(page.view.timingRefMode || (page.view.score ? "midi" : "lead")))
+                                onActivated: page.controller.setTimingRefMode(currentValue)
+                            }
+                            UiComboBox {
+                                id: leadTrackCombo
+                                objectName: "chorusLeadTrackPicker"
+                                theme: page.theme
+                                Layout.fillWidth: true
+                                visible: timingRefCombo.visible && page.view.timingRefMode === "lead"
+                                    && page.controller.tracks.some(row => row.role === "vocal" || row.role === "guide")
+                                enabled: !page.view.busy
+                                fieldLabel: page.t("指定主唱 / 导唱")
+                                model: page.controller.tracks.filter(row => row.role === "vocal" || row.role === "guide")
+                                    .map(row => ({label: row.name + (row.role === "guide" ? " (" + page.t("导唱") + ")" : ""), value: row.id}))
+                                currentIndex: Math.max(0, indexOfValue(page.view.guide || ""))
+                                onActivated: page.controller.setGuide(currentValue)
+                            }
+                            UiComboBox {
+                                id: ensemble
+                                objectName: "chorusEnsembleMode"
+                                theme: page.theme
+                                Layout.fillWidth: true
+                                visible: timingRefCombo.visible && page.view.timingRefMode === "ensemble"
+                                    && range.currentValue === "whole" && scope.currentValue === "all"
+                                enabled: !page.view.busy
+                                fieldLabel: page.t("同词识别语种")
+                                model: [
+                                    {label: page.t("日语 (ja)"), value: "ja"},
+                                    {label: page.t("普通话 (zh)"), value: "zh"},
+                                    {label: page.t("英语 (en)"), value: "en"},
+                                    {label: page.t("粤语 (yue)"), value: "yue"}
+                                ]
+                                currentIndex: Math.max(0, indexOfValue(page.view.ensembleLanguage || "ja"))
+                                onActivated: page.controller.setEnsembleLanguage(currentValue)
+                            }
                             RowLayout {
                                 Layout.fillWidth: true
                                 visible: kind.currentValue !== "pitch"
                                 Caption { text: page.t("对齐力度") }
-                                Slider {
+                                UiSlider {
                                     id: timingStrength
                                     objectName: "chorusTimingStrength"
+                                    theme: page.theme
+                                    compact: true
                                     Layout.fillWidth: true
                                     from: 0
                                     to: 100
@@ -858,15 +1227,17 @@ FocusScope {
                                     Accessible.name: page.t("对齐力度")
                                     onMoved: page.controller.setBatchStrength("timing", value)
                                 }
-                                Caption { text: Math.round(timingStrength.value) + "%" }
+                                Caption { font.family: page.theme.monoFont || "Consolas"; text: Math.round(timingStrength.value) + "%" }
                             }
                             RowLayout {
                                 Layout.fillWidth: true
                                 visible: kind.currentValue !== "timing"
                                 Caption { text: page.t("修音力度") }
-                                Slider {
+                                UiSlider {
                                     id: pitchStrength
                                     objectName: "chorusPitchStrength"
+                                    theme: page.theme
+                                    compact: true
                                     Layout.fillWidth: true
                                     from: 0
                                     to: 100
@@ -876,7 +1247,7 @@ FocusScope {
                                     Accessible.name: page.t("修音力度")
                                     onMoved: page.controller.setBatchStrength("pitch", value)
                                 }
-                                Caption { text: Math.round(pitchStrength.value) + "%" }
+                                Caption { font.family: page.theme.monoFont || "Consolas"; text: Math.round(pitchStrength.value) + "%" }
                             }
                             RowLayout {
                                 Layout.fillWidth: true
@@ -922,25 +1293,6 @@ FocusScope {
                                 visible: page.showBatchAdvanced
                                 spacing: 5
                                 UiComboBox {
-                                    id: ensemble
-                                    objectName: "chorusEnsembleMode"
-                                    theme: page.theme
-                                    Layout.fillWidth: true
-                                    visible: range.currentValue === "whole" && scope.currentValue === "all"
-                                        && kind.currentValue !== "pitch"
-                                    enabled: !page.view.busy
-                                    fieldLabel: page.t("整曲对齐方式")
-                                    model: [
-                                        {label: page.t("按同词唱段 · 日语"), value: "ja"},
-                                        {label: page.t("按同词唱段 · 普通话"), value: "zh"},
-                                        {label: page.t("按同词唱段 · 英语"), value: "en"},
-                                        {label: page.t("按同词唱段 · 粤语"), value: "yue"},
-                                        {label: page.t("按指定参照对齐"), value: ""}
-                                    ]
-                                    currentIndex: Math.max(0, indexOfValue(page.view.ensembleLanguage))
-                                    onActivated: page.controller.setEnsembleLanguage(currentValue)
-                                }
-                                UiComboBox {
                                     id: pitchEngine
                                     objectName: "chorusPitchEngine"
                                     theme: page.theme
@@ -957,8 +1309,9 @@ FocusScope {
                                     currentIndex: Math.max(0, indexOfValue(page.view.pitchEngine))
                                     onActivated: page.controller.setPitchEngine(currentValue)
                                 }
-                                CheckBox {
+                                UiCheckBox {
                                     id: review
+                                    theme: page.theme
                                     text: page.t("包含存疑建议")
                                     font.pixelSize: Math.round(12 * page.theme.scale)
                                 }
@@ -968,39 +1321,158 @@ FocusScope {
                                 visible: page.view.issues.length > 0
                                 spacing: 5
                                 Rectangle { Layout.fillWidth: true; height: 1; color: page.theme.line }
-                                Text {
-                                    text: page.t("待核对") + "  " + page.view.issues.length
-                                    color: page.theme.attention
-                                    font.pixelSize: Math.round(12 * page.theme.scale)
-                                    font.weight: Font.DemiBold
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 4
+                                    Rectangle {
+                                        width: 8
+                                        height: 8
+                                        radius: 4
+                                        color: (page.view.highIssueCount || 0) > 0 ? "#f87171" : page.theme.attention
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: page.t("待核对") + "  " + page.view.issues.length
+                                        color: (page.view.highIssueCount || 0) > 0 ? "#f87171" : page.theme.attention
+                                        font.pixelSize: Math.round(12 * page.theme.scale)
+                                        font.weight: Font.DemiBold
+                                    }
+                                    UiButton {
+                                        objectName: "chorusNextIssue"
+                                        theme: page.theme
+                                        implicitHeight: Math.round(22 * page.theme.scale)
+                                        leftPadding: Math.round(6 * page.theme.scale)
+                                        rightPadding: leftPadding
+                                        quiet: true
+                                        text: page.t("下一处 (N)")
+                                        onClicked: page.controller.focusNextReviewNote()
+                                    }
                                 }
                                 ListView {
                                     objectName: "chorusIssueList"
                                     Layout.fillWidth: true
-                                    Layout.preferredHeight: Math.min(contentHeight, Math.round(128 * page.theme.scale))
+                                    Layout.preferredHeight: Math.min(contentHeight, Math.round(280 * page.theme.scale))
                                     clip: true
                                     model: page.view.issues
-                                    spacing: 3
-                                    delegate: UiButton {
+                                    spacing: 6
+                                    delegate: Rectangle {
+                                        id: issueCard
                                         required property var modelData
+                                        readonly property bool isHigh: modelData.severity === "high" || modelData.category === "transpose"
+                                        readonly property color sevColor: isHigh ? "#f87171" : page.theme.attention
+                                        readonly property bool isFocused: page.view.issue === modelData.id
                                         width: ListView.view.width
-                                        theme: page.theme
-                                        leftAligned: true
-                                        quiet: true
-                                        selected: page.view.issue === modelData.id
-                                        text: "◇  " + page.stamp(modelData.time) + "  " + modelData.track
-                                        ToolTip.visible: hovered
-                                        ToolTip.text: page.t(modelData.reason)
-                                        onClicked: page.controller.focusIssue(modelData.id)
+                                        implicitHeight: issueCol.implicitHeight + 12
+                                        radius: Math.round(6 * page.theme.scale)
+                                        color: isFocused ? page.theme.selected : page.theme.raised
+                                        border.color: isFocused ? sevColor : page.theme.line
+                                        border.width: isFocused ? 1.5 : 1
+
+                                        Rectangle {
+                                            anchors.left: parent.left
+                                            anchors.top: parent.top
+                                            anchors.bottom: parent.bottom
+                                            width: 4
+                                            radius: 2
+                                            color: issueCard.sevColor
+                                        }
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: page.controller.focusIssue(issueCard.modelData.id)
+                                        }
+                                        ColumnLayout {
+                                            id: issueCol
+                                            anchors.left: parent.left
+                                            anchors.right: parent.right
+                                            anchors.top: parent.top
+                                            anchors.leftMargin: 10
+                                            anchors.rightMargin: 7
+                                            anchors.topMargin: 6
+                                            spacing: 3
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 4
+                                                Rectangle {
+                                                    radius: 3
+                                                    color: issueCard.sevColor
+                                                    implicitWidth: catTxt.implicitWidth + 8
+                                                    implicitHeight: catTxt.implicitHeight + 2
+                                                    Text {
+                                                        id: catTxt
+                                                        anchors.centerIn: parent
+                                                        color: "#111318"
+                                                        font.pixelSize: Math.round(9 * page.theme.scale)
+                                                        font.weight: Font.Bold
+                                                        text: page.issueCategoryLabel(issueCard.modelData.category)
+                                                    }
+                                                }
+                                                Text {
+                                                    color: page.theme.text
+                                                    font.pixelSize: Math.round(11 * page.theme.scale)
+                                                    font.weight: Font.DemiBold
+                                                    text: page.stamp(issueCard.modelData.time)
+                                                }
+                                                Text {
+                                                    Layout.fillWidth: true
+                                                    color: page.theme.muted
+                                                    font.pixelSize: Math.round(11 * page.theme.scale)
+                                                    elide: Text.ElideRight
+                                                    textFormat: Text.PlainText
+                                                    text: issueCard.modelData.track
+                                                }
+                                            }
+                                            Text {
+                                                Layout.fillWidth: true
+                                                color: page.theme.text
+                                                font.pixelSize: Math.round(11 * page.theme.scale)
+                                                wrapMode: Text.Wrap
+                                                textFormat: Text.PlainText
+                                                text: page.t(issueCard.modelData.reason)
+                                            }
+                                            Text {
+                                                Layout.fillWidth: true
+                                                visible: !!(issueCard.modelData.actionHint)
+                                                color: issueCard.sevColor
+                                                font.pixelSize: Math.round(10 * page.theme.scale)
+                                                wrapMode: Text.Wrap
+                                                textFormat: Text.PlainText
+                                                text: page.t("建议：") + page.t(issueCard.modelData.actionHint)
+                                            }
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 4
+                                                UiButton {
+                                                    theme: page.theme
+                                                    implicitHeight: Math.round(22 * page.theme.scale)
+                                                    leftPadding: Math.round(6 * page.theme.scale)
+                                                    rightPadding: leftPadding
+                                                    quiet: true
+                                                    text: page.t("跳转")
+                                                    onClicked: page.controller.focusIssue(issueCard.modelData.id)
+                                                }
+                                                UiButton {
+                                                    theme: page.theme
+                                                    implicitHeight: Math.round(22 * page.theme.scale)
+                                                    leftPadding: Math.round(6 * page.theme.scale)
+                                                    rightPadding: leftPadding
+                                                    primary: issueCard.modelData.category === "transpose"
+                                                    visible: !!issueCard.modelData.canApply
+                                                    text: issueCard.modelData.category === "transpose" ? page.t("一键移调") : page.t("接受")
+                                                    onClicked: page.controller.acceptIssueAt(issueCard.modelData.id)
+                                                }
+                                                UiButton {
+                                                    theme: page.theme
+                                                    implicitHeight: Math.round(22 * page.theme.scale)
+                                                    leftPadding: Math.round(6 * page.theme.scale)
+                                                    rightPadding: leftPadding
+                                                    quiet: true
+                                                    text: issueCard.modelData.category === "transpose" ? page.t("忽略") : page.t("保留原样")
+                                                    onClicked: page.controller.keepIssueAt(issueCard.modelData.id)
+                                                }
+                                            }
+                                        }
                                     }
-                                }
-                                RowLayout {
-                                    visible: page.view.issue >= 0
-                                    spacing: 4
-                                    UiButton { theme: page.theme; Layout.fillWidth: true; text: page.t("接受本处")
-                                        enabled: page.view.canAcceptIssue; onClicked: page.controller.acceptIssue() }
-                                    UiButton { theme: page.theme; Layout.fillWidth: true; quiet: true; text: page.t("保留原样")
-                                        onClicked: page.controller.keepIssue() }
                                 }
                             }
                         }
@@ -1114,6 +1586,35 @@ FocusScope {
                                             return page.t("推荐谱轨") + " · " + rows[0].name + " (" + rows[0].reason + ")"
                                         }
                                     }
+                                    UiComboBox {
+                                        id: pitchOctave
+                                        objectName: "chorusScoreOctave"
+                                        theme: page.theme
+                                        Layout.fillWidth: true
+                                        visible: !!page.view.take.scoreLane
+                                        fieldLabel: page.t("谱轨八度参照")
+                                        model: [
+                                            {label: page.t("低两八度 (-24)"), value: -24},
+                                            {label: page.t("低八度 (-12 · 男声)"), value: -12},
+                                            {label: page.t("原八度 (0)"), value: 0},
+                                            {label: page.t("高八度 (+12)"), value: 12},
+                                            {label: page.t("高两八度 (+24)"), value: 24}
+                                        ]
+                                        currentIndex: Math.max(0, indexOfValue(page.view.take.scoreOctave || 0))
+                                        onActivated: page.controller.setTrackScoreOctave(page.view.selected, Number(currentValue))
+                                    }
+                                    UiButton {
+                                        objectName: "chorusAutoAlignScore"
+                                        theme: page.theme
+                                        Layout.fillWidth: true
+                                        quiet: true
+                                        visible: page.view.scoreLanes.length > 0
+                                        text: page.t("自动对齐 MIDI 起点与八度")
+                                        leadingGlyph: "align_tracks"
+                                        leadingIconSize: 13
+                                        enabled: !page.view.busy
+                                        onClicked: page.controller.autoAlignScore()
+                                    }
                                     UiButton {
                                         objectName: "chorusAutoBindScore"
                                         theme: page.theme
@@ -1226,7 +1727,8 @@ FocusScope {
                 ToolTip.text: text
                 HoverHandler { id: statusHit }
             }
-            ProgressBar {
+            UiProgressBar {
+                theme: page.theme
                 Layout.preferredWidth: Math.round(94 * page.theme.scale)
                 visible: page.view.busy || page.view.loading
                 from: 0
@@ -1243,6 +1745,7 @@ FocusScope {
         // 4. Unified studio transport bar (Play, Loop, Follow, Scrub, A/B, Undo, Zoom)
         RowLayout {
             Layout.fillWidth: true
+            visible: page.ready
             spacing: Math.round(5 * page.theme.scale)
             UiButton {
                 objectName: "chorusPlay"
@@ -1279,11 +1782,14 @@ FocusScope {
             }
             Caption {
                 text: page.stamp(page.controller.position)
-                Layout.minimumWidth: Math.round(62 * page.theme.scale)
+                font.family: page.theme.monoFont || "Consolas"
+                Layout.minimumWidth: Math.round(64 * page.theme.scale)
             }
-            Slider {
+            UiSlider {
                 id: seek
                 objectName: "chorusSeek"
+                theme: page.theme
+                compact: true
                 property real seekTarget: 0
                 Layout.fillWidth: true
                 Layout.minimumWidth: Math.round(70 * page.theme.scale)
@@ -1407,16 +1913,14 @@ FocusScope {
         id: exportFolder
         title: page.t("选择分轨导出目录")
         onAccepted: page.controller.exportStems(selectedFolder, page.exportWhole,
-            exportMix.checked, page.exportVariant, exportSendMixdown.checked)
+            exportMix.checked, page.exportVariant, exportSendMixdown.checked, exportBalance.checked)
     }
-    Dialog {
+    UiDialog {
         id: discardDialog
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        modal: true
+        theme: page.theme
         title: page.t("修音工程有未保存修改")
         standardButtons: Dialog.Discard | Dialog.Cancel
-        Label { text: page.t("请先保存工程，或放弃当前修改后继续。") }
+        Label { text: page.t("请先保存工程，或放弃当前修改后继续。"); color: page.theme.text; font.pixelSize: Math.round(13 * page.theme.scale) }
         onDiscarded: {
             if (page.pendingProjectAction === "new")
                 page.controller.newProject(true)
@@ -1425,12 +1929,10 @@ FocusScope {
             close()
         }
     }
-    Dialog {
+    UiDialog {
         id: prepScoreDialog
         objectName: "chorusPrepScoreDialog"
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        modal: true
+        theme: page.theme
         width: Math.min(page.width - 40, Math.round(460 * page.theme.scale))
         title: page.t("从准备任务导入谱轨")
         standardButtons: Dialog.Cancel
@@ -1471,12 +1973,10 @@ FocusScope {
             }
         }
     }
-    Dialog {
+    UiDialog {
         id: mixdownHandoffDialog
         objectName: "chorusMixdownHandoffDialog"
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        modal: true
+        theme: page.theme
         width: Math.min(page.width - 40, Math.round(400 * page.theme.scale))
         title: page.t("送入简易混音")
         standardButtons: Dialog.Ok | Dialog.Cancel
@@ -1515,6 +2015,13 @@ FocusScope {
                 fieldLabel: page.t("范围")
                 model: [{label: page.t("整曲"), value: "whole"}, {label: page.t("选段"), value: "selection"}]
             }
+            UiCheckBox {
+                id: handoffBalance
+                objectName: "chorusHandoffBalance"
+                theme: page.theme
+                text: page.t("自动平衡各轨干声响度 (-18 dBFS)")
+                checked: true
+            }
             Caption {
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
@@ -1535,14 +2042,13 @@ FocusScope {
             page.controller.sendToMixdown(
                 handoffScope.currentValue === "whole",
                 handoffVariant.currentValue,
-                handoffLayout.currentValue === "merged")
+                handoffLayout.currentValue === "merged",
+                handoffBalance.checked)
         }
     }
-    Dialog {
+    UiDialog {
         id: exportDialog
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        modal: true
+        theme: page.theme
         title: page.t("分轨导出")
         standardButtons: Dialog.Ok | Dialog.Cancel
         ColumnLayout {
@@ -1563,15 +2069,24 @@ FocusScope {
                 fieldLabel: page.t("导出范围")
                 model: [{label: page.t("整曲"), value: "whole"}, {label: page.t("选段"), value: "selection"}]
             }
-            CheckBox {
+            UiCheckBox {
                 id: exportMix
                 objectName: "chorusExportVocalMix"
+                theme: page.theme
                 text: page.t("同时导出人声合轨")
                 checked: true
             }
-            CheckBox {
+            UiCheckBox {
+                id: exportBalance
+                objectName: "chorusExportBalance"
+                theme: page.theme
+                text: page.t("自动平衡各轨干声响度 (-18 dBFS)")
+                checked: false
+            }
+            UiCheckBox {
                 id: exportSendMixdown
                 objectName: "chorusExportSendMixdown"
+                theme: page.theme
                 text: page.t("导出后直接送入简易混音")
                 checked: false
             }

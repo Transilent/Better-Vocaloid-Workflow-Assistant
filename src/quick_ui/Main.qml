@@ -58,23 +58,40 @@ ApplicationWindow {
         readonly property real scale: window.initialScale || (window.preferences.ui_scale || 100) / 100
         readonly property bool reduceMotion: window.initialReducedMotion || !!window.preferences.reduce_motion
         readonly property int panelMotionMs: reduceMotion ? 0 : 140
-        readonly property color base: dark ? "#13141a" : "#f5f4f9"
-        readonly property color surface: dark ? "#191b23" : "#ffffff"
-        readonly property color raised: dark ? "#20222b" : "#eeebf5"
-        readonly property color sidebar: dark ? "#171822" : "#eae7f2"
-        readonly property color text: dark ? "#eeeef5" : "#242233"
-        readonly property color muted: dark ? "#a6a9ba" : "#5c576d"
-        readonly property color line: dark ? "#30323d" : "#d8d3e3"
-        readonly property color accent: dark ? "#c2a8ff" : "#6544a5"
-        readonly property color onAccent: dark ? "#211930" : "#ffffff"
-        readonly property color accentPressed: dark ? "#a48ad9" : "#503289"
-        readonly property color selected: dark ? "#312940" : "#e1d8f5"
-        readonly property color selectedLine: dark ? "#564369" : "#b6a4d5"
-        readonly property color hover: dark ? "#262833" : "#e8e3f2"
-        readonly property color pressed: dark ? "#30313d" : "#dcd4e9"
-        readonly property color success: dark ? "#91cdbb" : "#286a53"
-        readonly property color error: dark ? "#efabac" : "#9f3545"
-        readonly property color attention: dark ? "#d4ad80" : "#825320"
+        // Refined Apple-HIG / Linear surface elevation ladder
+        readonly property color base: dark ? "#0e1016" : "#f3f2f7"
+        readonly property color surface: dark ? "#171a24" : "#ffffff"
+        readonly property color raised: dark ? "#202433" : "#efedf6"
+        readonly property color sidebar: dark ? "#13151e" : "#eae8f2"
+        readonly property color text: dark ? "#f0f1f8" : "#1f1d2e"
+        readonly property color muted: dark ? "#989cb2" : "#5e5970"
+        readonly property color line: dark ? "#252938" : "#ddd9e8"
+        readonly property color lineSubtle: dark ? "#1d202d" : "#ebe8f2"
+        readonly property color highlightTop: dark ? "#14ffffff" : "#99ffffff"
+        readonly property color disabledBg: dark ? "#232634" : "#e4e1ec"
+        // Brand moonlight-lavender accent + purified semantic tones
+        readonly property color accent: dark ? "#b99cff" : "#6544a5"
+        readonly property color accentHover: dark ? "#c8b0ff" : "#7453b6"
+        readonly property color onAccent: dark ? "#181226" : "#ffffff"
+        readonly property color accentPressed: dark ? "#9f7ee8" : "#503289"
+        readonly property color selected: dark ? "#2b2440" : "#e4dbf7"
+        readonly property color selectedLine: dark ? "#5a4685" : "#b39fd9"
+        readonly property color hover: dark ? "#272c3d" : "#e6e2f2"
+        readonly property color pressed: dark ? "#30364a" : "#dbd5ec"
+        readonly property color success: dark ? "#56d39a" : "#1f7a55"
+        readonly property color error: dark ? "#f87171" : "#c83349"
+        readonly property color attention: dark ? "#f5b841" : "#a86214"
+        // Unified radius & 5-step Apple typography scale
+        readonly property int radiusSm: Math.round(6 * scale)
+        readonly property int radiusMd: Math.round(8 * scale)
+        readonly property int radiusLg: Math.round(11 * scale)
+        readonly property int radiusXl: Math.round(14 * scale)
+        readonly property int fontXs: Math.round(11 * scale)
+        readonly property int fontSm: Math.round(12 * scale)
+        readonly property int fontBody: Math.round(13 * scale)
+        readonly property int fontTitle: Math.round(15 * scale)
+        readonly property int fontDisplay: Math.round(19 * scale)
+        readonly property string monoFont: "Consolas"
     }
 
     onClosing: function(event) {
@@ -87,14 +104,16 @@ ApplicationWindow {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: chorusExitDialog
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        modal: true
+        theme: window.tokens
         title: window.controller.text("修音工程有未保存修改")
         standardButtons: Dialog.Discard | Dialog.Cancel
-        Label { text: window.controller.text("请先保存工程，或放弃当前修改后继续。") }
+        Label {
+            text: window.controller.text("请先保存工程，或放弃当前修改后继续。")
+            color: theme.text
+            font.pixelSize: theme.fontBody
+        }
         onDiscarded: {
             window.discardChorusOnExit = true
             close()
@@ -176,9 +195,28 @@ ApplicationWindow {
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.bottom: parent.bottom
-        width: window.compact ? 66 : 176
+        width: window.compact ? 66 : 186
         color: theme.sidebar
         clip: true
+
+        function routeSectionTitle(pageId) {
+            if (pageId === "processing") return window.controller.text("前期与人声")
+            if (pageId === "audio_mixdown") return window.controller.text("后期与交付")
+            if (pageId === "components") return window.controller.text("系统")
+            return ""
+        }
+        function routeHasOperation(pageId) {
+            for (let i = 0; i < window.operations.length; ++i) {
+                if (window.operations[i] && window.operations[i].route === pageId)
+                    return true
+            }
+            return false
+        }
+        function routePlaying(pageId) {
+            if (pageId === "chorus") return !!window.controller.chorus.view.playing
+            if (pageId === "audio_mixdown") return !!window.controller.mixdown.view.playing
+            return false
+        }
 
         Image {
             anchors.left: parent.left
@@ -189,28 +227,28 @@ ApplicationWindow {
             source: window.assets + "moonlight-background.png"
             fillMode: Image.PreserveAspectCrop
             sourceSize.width: 480
-            opacity: theme.dark ? 0.22 : 0.18
+            opacity: theme.dark ? 0.18 : 0.14
         }
         Rectangle {
             anchors.fill: parent
             visible: window.useArtwork
             gradient: Gradient {
-                GradientStop { position: 0.64; color: theme.sidebar }
-                GradientStop { position: 1; color: Qt.rgba(theme.sidebar.r, theme.sidebar.g, theme.sidebar.b, 0.28) }
+                GradientStop { position: 0.62; color: theme.sidebar }
+                GradientStop { position: 1; color: Qt.rgba(theme.sidebar.r, theme.sidebar.g, theme.sidebar.b, 0.30) }
             }
         }
-        Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: theme.line }
+        Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: theme.lineSubtle }
 
         Flickable {
             id: navScroll
             objectName: "workspaceNavigationViewport"
             anchors.fill: parent
-            anchors.margins: window.compact ? 8 : 12
+            anchors.margins: window.compact ? 7 : 10
             contentWidth: width
             contentHeight: navColumn.height
             boundsBehavior: Flickable.StopAtBounds
             clip: true
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            ScrollBar.vertical: UiScrollBar { theme: window.tokens; policy: ScrollBar.AsNeeded }
 
             function reveal(item) {
                 if (!item || contentHeight <= height)
@@ -225,51 +263,144 @@ ApplicationWindow {
             id: navColumn
             width: navScroll.width
             height: Math.max(implicitHeight, navScroll.height)
-            spacing: 9
+            spacing: 4
             RowLayout {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 48
-                spacing: 10
+                Layout.preferredHeight: 40
+                Layout.leftMargin: window.compact ? 0 : 4
+                spacing: 9
                 Image {
                     Layout.alignment: window.compact ? Qt.AlignHCenter : Qt.AlignVCenter
-                    Layout.preferredWidth: 33
-                    Layout.preferredHeight: 33
+                    Layout.preferredWidth: 30
+                    Layout.preferredHeight: 30
                     source: window.assets + "app.png"
-                    sourceSize: Qt.size(66, 66)
+                    sourceSize: Qt.size(64, 64)
                 }
                 Text {
                     visible: !window.compact
                     text: "VWA"
                     color: theme.text
-                    font.pixelSize: 20
+                    font.pixelSize: 18
                     font.weight: Font.DemiBold
+                    font.letterSpacing: 0.6
                 }
                 Item { visible: !window.compact; Layout.fillWidth: true }
+            }
+            Rectangle {
+                objectName: "sidebarCommandTrigger"
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.round((window.compact ? 30 : 30) * Math.min(1.15, theme.scale))
+                Layout.bottomMargin: 4
+                radius: theme.radiusMd
+                color: cmdTriggerHover.containsMouse ? theme.hover : theme.raised
+                border.width: 1
+                border.color: cmdTriggerHover.containsMouse ? theme.selectedLine : theme.lineSubtle
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: window.compact ? 0 : 9
+                    anchors.rightMargin: window.compact ? 0 : 7
+                    spacing: 6
+                    UiIcon {
+                        Layout.alignment: window.compact ? Qt.AlignHCenter : Qt.AlignVCenter
+                        Layout.preferredWidth: 13
+                        Layout.preferredHeight: 13
+                        glyph: "target"
+                        tint: theme.muted
+                    }
+                    Text {
+                        visible: !window.compact
+                        Layout.fillWidth: true
+                        text: window.controller.text("快捷命令")
+                        color: theme.muted
+                        font.pixelSize: 12
+                        elide: Text.ElideRight
+                        textFormat: Text.PlainText
+                    }
+                    Rectangle {
+                        visible: !window.compact
+                        radius: 4
+                        color: theme.surface
+                        border.color: theme.line
+                        implicitWidth: kbdTxt.implicitWidth + 8
+                        implicitHeight: kbdTxt.implicitHeight + 3
+                        Text {
+                            id: kbdTxt
+                            anchors.centerIn: parent
+                            text: "Ctrl+K"
+                            color: theme.muted
+                            font.pixelSize: 10
+                            font.family: theme.monoFont
+                        }
+                    }
+                }
+                MouseArea {
+                    id: cmdTriggerHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: commandPalette.open()
+                }
+                ToolTip.visible: cmdTriggerHover.containsMouse
+                ToolTip.text: window.controller.text("打开全局快捷命令面板 (Ctrl+K)")
             }
             Repeater {
                 model: window.controller.routes
                 delegate: ColumnLayout {
                     required property var modelData
+                    readonly property string sectionLabel: sidebar.routeSectionTitle(modelData.pageId)
+                    readonly property bool isBusyRoute: sidebar.routeHasOperation(modelData.pageId)
+                    readonly property bool isPlayingRoute: sidebar.routePlaying(modelData.pageId)
+                    readonly property int chorusReviewCount: modelData.pageId === "chorus"
+                        ? ((window.controller.chorus.view.issues || []).length) : 0
+                    readonly property bool chorusHasHigh: modelData.pageId === "chorus"
+                        && ((window.controller.chorus.view.highIssueCount || 0) > 0)
+                    readonly property bool isDirtyRoute: modelData.pageId === "chorus" && !!window.controller.chorus.dirty
                     Layout.fillWidth: true
                     Layout.fillHeight: modelData.pageId === "components"
-                    Item { visible: modelData.pageId === "components"; Layout.fillHeight: true }
+                    spacing: 3
+                    Item { visible: modelData.pageId === "components"; Layout.fillHeight: true; Layout.minimumHeight: 8 }
+                    Rectangle {
+                        visible: sectionLabel.length > 0 && modelData.pageId !== "processing"
+                        Layout.fillWidth: true
+                        Layout.topMargin: 6
+                        Layout.bottomMargin: window.compact ? 4 : 2
+                        Layout.leftMargin: window.compact ? 8 : 6
+                        Layout.rightMargin: window.compact ? 8 : 6
+                        height: 1
+                        color: theme.lineSubtle
+                    }
+                    Text {
+                        visible: !window.compact && sectionLabel.length > 0
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 10
+                        Layout.topMargin: modelData.pageId === "processing" ? 2 : 3
+                        Layout.bottomMargin: 2
+                        text: sectionLabel
+                        color: theme.muted
+                        opacity: 0.78
+                        font.pixelSize: Math.round(10.5 * Math.min(1.15, theme.scale))
+                        font.weight: Font.DemiBold
+                        font.letterSpacing: 0.5
+                        textFormat: Text.PlainText
+                    }
                     UiButton {
                         id: navButton
                         objectName: "nav_" + modelData.pageId
                         Layout.fillWidth: true
-                        Layout.preferredHeight: Math.round((window.compact ? 45 : 40) * Math.min(1.15, theme.scale))
+                        Layout.preferredHeight: Math.round((window.compact ? 44 : 36) * Math.min(1.15, theme.scale))
                         theme: window.tokens
                         text: window.compact ? modelData.short : modelData.title
                         leadingGlyph: modelData.icon || ""
-                        leadingIconSize: window.compact ? 16 : 17
+                        leadingIconSize: window.compact ? 16 : 16
                         stackedIcon: window.compact
                         Accessible.name: modelData.title
-                        leftPadding: window.compact ? 3 : 10
-                        rightPadding: leftPadding
-                        topPadding: window.compact ? 4 : Math.round(7 * theme.scale)
-                        bottomPadding: window.compact ? 4 : Math.round(7 * theme.scale)
+                        leftPadding: window.compact ? 3 : 11
+                        rightPadding: window.compact ? 3 : 10
+                        topPadding: window.compact ? 4 : Math.round(6 * theme.scale)
+                        bottomPadding: topPadding
                         leftAligned: !window.compact
                         quiet: true
+                        borderlessSelected: true
                         selected: window.controller.route === modelData.pageId
                         Accessible.checkable: true
                         Accessible.checked: selected
@@ -288,14 +419,62 @@ ApplicationWindow {
                             anchors.left: parent.left
                             anchors.leftMargin: 2
                             anchors.verticalCenter: parent.verticalCenter
-                            width: 2
+                            width: 3
                             height: Math.round(16 * theme.scale)
                             radius: width / 2
                             color: theme.accent
                             opacity: navButton.selected ? 1 : 0
                             Behavior on opacity {
                                 enabled: !theme.reduceMotion
-                                NumberAnimation { duration: 90; easing.type: Easing.OutCubic }
+                                NumberAnimation { duration: 100; easing.type: Easing.OutCubic }
+                            }
+                        }
+                        // Live route activity badges (playing / running / pending review / unsaved)
+                        Row {
+                            anchors.right: parent.right
+                            anchors.rightMargin: window.compact ? 4 : 8
+                            anchors.verticalCenter: window.compact ? undefined : parent.verticalCenter
+                            anchors.top: window.compact ? parent.top : undefined
+                            anchors.topMargin: window.compact ? 4 : 0
+                            spacing: 4
+                            Rectangle {
+                                visible: isPlayingRoute
+                                width: 7
+                                height: 7
+                                radius: 4
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: theme.success
+                            }
+                            Rectangle {
+                                visible: isBusyRoute
+                                width: 7
+                                height: 7
+                                radius: 4
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: theme.accent
+                            }
+                            Rectangle {
+                                visible: !window.compact && chorusReviewCount > 0
+                                radius: 8
+                                color: chorusHasHigh ? theme.error : theme.attention
+                                implicitWidth: Math.max(16, badgeTxt.implicitWidth + 8)
+                                implicitHeight: 16
+                                Text {
+                                    id: badgeTxt
+                                    anchors.centerIn: parent
+                                    text: chorusReviewCount > 99 ? "99+" : String(chorusReviewCount)
+                                    color: "#111318"
+                                    font.pixelSize: 10
+                                    font.weight: Font.Bold
+                                }
+                            }
+                            Rectangle {
+                                visible: isDirtyRoute && chorusReviewCount === 0 && !isBusyRoute && !isPlayingRoute
+                                width: 6
+                                height: 6
+                                radius: 3
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: theme.attention
                             }
                         }
                     }
@@ -312,23 +491,276 @@ ApplicationWindow {
         anchors.right: parent.right
         spacing: 0
 
-        Loader {
-            id: pageLoader
-            objectName: "pageLoader"
+        Item {
+            id: workspaceStage
             Layout.fillWidth: true
             Layout.fillHeight: true
-            sourceComponent: {
-                switch (window.controller.route) {
-                case "components": return componentsPage
-                case "results": return resultsPage
-                case "updates": return settingsPage
-                case "tuning": return tuningPage
-                case "tuning_workshop": return workshopPage
-                case "chorus": return chorusPage
-                case "audio_mixdown": return mixdownPage
-                case "video_mixdown": return videoPage
-                case "publishing": return publicationPage
-                default: return preparationPage
+
+            Loader {
+                id: pageLoader
+                objectName: "pageLoader"
+                anchors.fill: parent
+                onLoaded: {
+                    if (item && !window.tokens.reduceMotion) {
+                        pageFadeAnim.stop()
+                        item.opacity = 0.72
+                        pageFadeAnim.target = item
+                        pageFadeAnim.start()
+                    }
+                }
+                sourceComponent: {
+                    switch (window.controller.route) {
+                    case "components": return componentsPage
+                    case "results": return resultsPage
+                    case "updates": return settingsPage
+                    case "tuning": return tuningPage
+                    case "tuning_workshop": return workshopPage
+                    case "chorus": return chorusPage
+                    case "audio_mixdown": return mixdownPage
+                    case "video_mixdown": return videoPage
+                    case "publishing": return publicationPage
+                    default: return preparationPage
+                    }
+                }
+            }
+
+            NumberAnimation {
+                id: pageFadeAnim
+                property: "opacity"
+                from: 0.72
+                to: 1.0
+                duration: 110
+                easing.type: Easing.OutCubic
+            }
+
+            // Floating Activity Island (overlays bottom edge without compressing editor canvas height)
+            Column {
+                id: floatingStack
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: Math.round(14 * theme.scale)
+                width: Math.min(parent.width - Math.round(32 * theme.scale), Math.round(620 * theme.scale))
+                spacing: Math.round(8 * theme.scale)
+                z: 40
+
+                Rectangle {
+                    objectName: "backgroundStudioActivity"
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: Math.min(parent.width, Math.max(Math.round(320 * theme.scale), studioBar.implicitWidth + Math.round(28 * theme.scale)))
+                    height: studioBar.implicitHeight + Math.round(12 * theme.scale)
+                    visible: window.mixAway
+                    radius: Math.round(14 * theme.scale)
+                    color: theme.surface
+                    border.width: 1
+                    border.color: theme.selectedLine
+                    Rectangle {
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                        anchors.leftMargin: parent.radius; anchors.rightMargin: parent.radius
+                        height: 1; color: theme.highlightTop
+                    }
+                    RowLayout {
+                        id: studioBar
+                        anchors.fill: parent
+                        anchors.leftMargin: Math.round(14 * theme.scale)
+                        anchors.rightMargin: Math.round(10 * theme.scale)
+                        spacing: Math.round(8 * theme.scale)
+                        Rectangle { width: 8; height: 8; radius: 4; color: theme.success }
+                        Text {
+                            Layout.fillWidth: true
+                            color: theme.text
+                            font.pixelSize: Math.round(13 * theme.scale)
+                            font.weight: Font.DemiBold
+                            elide: Text.ElideRight
+                            textFormat: Text.PlainText
+                            text: window.controller.text("简易混音 · 后台试听")
+                        }
+                        UiButton {
+                            objectName: "pauseBackgroundMix"
+                            visible: window.mixAway && window.controller.mixdown.view.playing
+                            theme: window.tokens
+                            implicitHeight: Math.round(28 * theme.scale)
+                            text: window.controller.text("暂停")
+                            onClicked: window.controller.mixdown.togglePlay()
+                        }
+                        UiButton {
+                            objectName: "returnBackgroundStudio"
+                            theme: window.tokens
+                            primary: true
+                            implicitHeight: Math.round(28 * theme.scale)
+                            text: window.controller.text("返回混音")
+                            onClicked: window.controller.navigate("audio_mixdown")
+                        }
+                    }
+                }
+
+                Rectangle {
+                    objectName: "backgroundChorusActivity"
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: Math.min(parent.width, Math.max(Math.round(320 * theme.scale), chorusBar.implicitWidth + Math.round(28 * theme.scale)))
+                    height: chorusBar.implicitHeight + Math.round(12 * theme.scale)
+                    visible: window.chorusAway
+                    radius: Math.round(14 * theme.scale)
+                    color: theme.surface
+                    border.width: 1
+                    border.color: theme.selectedLine
+                    Rectangle {
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                        anchors.leftMargin: parent.radius; anchors.rightMargin: parent.radius
+                        height: 1; color: theme.highlightTop
+                    }
+                    RowLayout {
+                        id: chorusBar
+                        anchors.fill: parent
+                        anchors.leftMargin: Math.round(14 * theme.scale)
+                        anchors.rightMargin: Math.round(10 * theme.scale)
+                        spacing: Math.round(8 * theme.scale)
+                        Rectangle { width: 8; height: 8; radius: 4; color: theme.success }
+                        Text {
+                            Layout.fillWidth: true
+                            color: theme.text
+                            font.pixelSize: Math.round(13 * theme.scale)
+                            font.weight: Font.DemiBold
+                            elide: Text.ElideRight
+                            text: window.controller.text("修音工作台 · 后台试听")
+                        }
+                        UiButton {
+                            theme: window.tokens
+                            implicitHeight: Math.round(28 * theme.scale)
+                            text: window.controller.text("暂停")
+                            onClicked: window.controller.chorus.togglePlay()
+                        }
+                        UiButton {
+                            theme: window.tokens
+                            primary: true
+                            implicitHeight: Math.round(28 * theme.scale)
+                            text: window.controller.text("返回修音")
+                            onClicked: window.controller.navigate("chorus")
+                        }
+                    }
+                }
+
+                Rectangle {
+                    objectName: "workspaceActivity"
+                    width: parent.width
+                    height: footer.implicitHeight + Math.round(18 * theme.scale)
+                    visible: window.operations.length > 0 || !!window.issue.id || window.previewLoading
+                        || window.controller.notice.length > 0
+                    radius: Math.round(14 * theme.scale)
+                    color: theme.surface
+                    border.width: 1
+                    border.color: (!window.operations.length && !window.previewLoading && !!window.issue.id)
+                        ? theme.error : theme.line
+                    Rectangle {
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                        anchors.leftMargin: parent.radius; anchors.rightMargin: parent.radius
+                        height: 1; color: theme.highlightTop
+                    }
+                    RowLayout {
+                        id: footer
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.leftMargin: Math.round(14 * theme.scale)
+                        anchors.rightMargin: Math.round(12 * theme.scale)
+                        spacing: Math.round(10 * theme.scale)
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 4
+                            Text {
+                                objectName: "operationHeadline"
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                text: window.operations.length ? window.primaryOperation.detail
+                                    : window.previewLoading ? window.controller.text("正在准备连续试听…")
+                                    : window.issue.title || window.controller.notice
+                                color: window.operations.length || window.previewLoading || !window.issue.id ? theme.text : theme.error
+                                font.pixelSize: 13 * theme.scale
+                                font.weight: Font.DemiBold
+                                textFormat: Text.PlainText
+                                elide: Text.ElideRight
+                                ToolTip.visible: activityHover.hovered && (truncated || !!window.issue.details)
+                                ToolTip.text: window.operations.length || window.previewLoading ? text
+                                    : window.issue.details || text
+                                HoverHandler { id: activityHover }
+                            }
+                            Text {
+                                objectName: "operationTiming"
+                                Layout.fillWidth: true
+                                visible: text.length > 0
+                                text: window.operations.length ? [window.primaryOperation.timing,
+                                      window.primaryOperation.count].filter(s => s).join(" · ")
+                                    : window.previewLoading ? window.controller.text("已等待 {0}")
+                                        .replace("{0}", Math.floor(window.previewWait / 60).toString().padStart(2, "0")
+                                            + ":" + (window.previewWait % 60).toString().padStart(2, "0"))
+                                    : window.issue.hint || ""
+                                font.pixelSize: 11 * theme.scale
+                                color: theme.muted
+                                elide: Text.ElideRight
+                                textFormat: Text.PlainText
+                            }
+                            UiProgressBar {
+                                objectName: "workspaceOperationProgress"
+                                theme: window.tokens
+                                Layout.fillWidth: true
+                                visible: (window.operations.length || window.previewLoading)
+                                    && (window.primaryOperation.fraction !== undefined || !theme.reduceMotion)
+                                indeterminate: window.primaryOperation.fraction === undefined && !theme.reduceMotion
+                                value: window.primaryOperation.fraction === undefined ? 0 : window.primaryOperation.fraction
+                                Accessible.name: window.controller.text("当前操作进度")
+                            }
+                        }
+                        UiButton {
+                            objectName: "openOperationWorkspace"
+                            visible: window.operations.length
+                                ? (window.primaryOperation.route !== window.controller.route
+                                    || (String(window.primaryOperation.kind).indexOf("calibration-") === 0
+                                        && window.controller.workshop.pane !== "calibration"))
+                                : window.previewLoading ? window.controller.route !== "audio_mixdown"
+                                : !!window.issue.route && window.issue.route !== window.controller.route
+                            theme: window.tokens
+                            implicitHeight: Math.round(28 * theme.scale)
+                            text: window.controller.text(window.operations.length ? "查看进度"
+                                : window.previewLoading ? "返回混音" : "查看工作区")
+                            onClicked: {
+                                const entry = window.operations.length ? window.primaryOperation
+                                    : window.previewLoading ? {kind: "mixdown-preview", route: "audio_mixdown"}
+                                    : window.issue
+                                if (String(entry.kind).indexOf("calibration-") === 0)
+                                    window.controller.openTuningWorkshop("calibration")
+                                else
+                                    window.controller.navigate(entry.route)
+                            }
+                        }
+                        UiButton {
+                            objectName: "activityDiagnostics"
+                            theme: window.tokens
+                            quiet: true
+                            implicitHeight: Math.round(28 * theme.scale)
+                            text: window.operations.length > 1
+                                ? window.controller.text("{0} 项操作").replace("{0}", window.operations.length)
+                                : window.controller.text("本机诊断")
+                            onClicked: window.controller.support.showDiagnostics()
+                        }
+                        UiButton {
+                            objectName: "dismissOperationIssue"
+                            visible: !window.operations.length && !window.previewLoading
+                                && (!!window.issue.id || window.controller.notice.length > 0)
+                            theme: window.tokens
+                            quiet: true
+                            implicitHeight: Math.round(28 * theme.scale)
+                            text: window.controller.text("关闭")
+                            onClicked: window.controller.dismissOperationIssue(window.issue.id || "")
+                        }
+                        UiButton {
+                            objectName: "cancelWorkspaceOperation"
+                            visible: !!window.primaryOperation.canCancel
+                            enabled: !window.primaryOperation.cancelling
+                            theme: window.tokens
+                            implicitHeight: Math.round(28 * theme.scale)
+                            text: window.controller.text("取消")
+                            onClicked: window.controller.cancelActiveOperation(window.primaryOperation.id)
+                        }
+                    }
                 }
             }
         }
@@ -384,185 +816,36 @@ ApplicationWindow {
                 onTaskVideoRequested: window.controller.navigate("results")
             }
         }
+    }
 
-        Rectangle {
-            objectName: "backgroundStudioActivity"
-            Layout.fillWidth: true
-            Layout.preferredHeight: studioBar.implicitHeight + 12
-            visible: window.mixAway
-            color: theme.surface
-            Rectangle { width: parent.width; height: 1; color: theme.line }
-            RowLayout {
-                id: studioBar
-                anchors.fill: parent
-                anchors.leftMargin: 16
-                anchors.rightMargin: 16
-                Text {
-                    Layout.fillWidth: true
-                    color: theme.text
-                    font.pixelSize: 13 * theme.scale
-                    elide: Text.ElideRight
-                    textFormat: Text.PlainText
-                    text: window.controller.text("简易混音 · 后台试听")
-                }
-                UiButton {
-                    objectName: "pauseBackgroundMix"
-                    visible: window.mixAway && window.controller.mixdown.view.playing
-                    theme: window.tokens
-                    text: window.controller.text("暂停")
-                    onClicked: window.controller.mixdown.togglePlay()
-                }
-                UiButton {
-                    objectName: "returnBackgroundStudio"
-                    theme: window.tokens
-                    text: window.controller.text("返回混音")
-                    onClicked: window.controller.navigate("audio_mixdown")
-                }
-            }
-        }
+    function navigateByRouteIndex(index) {
+        if (commandPalette.visible)
+            return
+        const routes = window.controller.routes || []
+        if (index >= 0 && index < routes.length && routes[index] && routes[index].pageId)
+            window.controller.navigate(routes[index].pageId)
+    }
 
-        Rectangle {
-            objectName: "backgroundChorusActivity"
-            Layout.fillWidth: true
-            Layout.preferredHeight: chorusBar.implicitHeight + 12
-            visible: window.chorusAway
-            color: theme.surface
-            Rectangle { width: parent.width; height: 1; color: theme.line }
-            RowLayout {
-                id: chorusBar
-                anchors.fill: parent
-                anchors.leftMargin: 16
-                anchors.rightMargin: 16
-                Text {
-                    Layout.fillWidth: true
-                    color: theme.text
-                    font.pixelSize: 13 * theme.scale
-                    elide: Text.ElideRight
-                    text: window.controller.text("修音工作台 · 后台试听")
-                }
-                UiButton {
-                    theme: window.tokens
-                    text: window.controller.text("暂停")
-                    onClicked: window.controller.chorus.togglePlay()
-                }
-                UiButton {
-                    theme: window.tokens
-                    text: window.controller.text("返回修音")
-                    onClicked: window.controller.navigate("chorus")
-                }
-            }
-        }
+    Shortcut {
+        objectName: "globalCommandPaletteShortcut"
+        sequence: "Ctrl+K"
+        context: Qt.WindowShortcut
+        onActivated: commandPalette.visible ? commandPalette.close() : commandPalette.open()
+    }
+    Shortcut { sequence: "Ctrl+1"; context: Qt.WindowShortcut; onActivated: window.navigateByRouteIndex(0) }
+    Shortcut { sequence: "Ctrl+2"; context: Qt.WindowShortcut; onActivated: window.navigateByRouteIndex(1) }
+    Shortcut { sequence: "Ctrl+3"; context: Qt.WindowShortcut; onActivated: window.navigateByRouteIndex(2) }
+    Shortcut { sequence: "Ctrl+4"; context: Qt.WindowShortcut; onActivated: window.navigateByRouteIndex(3) }
+    Shortcut { sequence: "Ctrl+5"; context: Qt.WindowShortcut; onActivated: window.navigateByRouteIndex(4) }
+    Shortcut { sequence: "Ctrl+6"; context: Qt.WindowShortcut; onActivated: window.navigateByRouteIndex(5) }
+    Shortcut { sequence: "Ctrl+7"; context: Qt.WindowShortcut; onActivated: window.navigateByRouteIndex(6) }
+    Shortcut { sequence: "Ctrl+8"; context: Qt.WindowShortcut; onActivated: window.navigateByRouteIndex(7) }
+    Shortcut { sequence: "Ctrl+9"; context: Qt.WindowShortcut; onActivated: window.navigateByRouteIndex(8) }
 
-        Rectangle {
-            objectName: "workspaceActivity"
-            Layout.fillWidth: true
-            Layout.preferredHeight: footer.implicitHeight + 16
-            visible: window.operations.length > 0 || !!window.issue.id || window.previewLoading
-                || window.controller.notice.length > 0
-            color: theme.surface
-            Rectangle { width: parent.width; height: 1; color: theme.line }
-            RowLayout {
-                id: footer
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.leftMargin: 16
-                anchors.rightMargin: 16
-                spacing: 10
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 5
-                    Text {
-                        objectName: "operationHeadline"
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: 0
-                        text: window.operations.length ? window.primaryOperation.detail
-                            : window.previewLoading ? window.controller.text("正在准备连续试听…")
-                            : window.issue.title || window.controller.notice
-                        color: window.operations.length || window.previewLoading || !window.issue.id ? theme.text : theme.error
-                        font.pixelSize: 13 * theme.scale
-                        textFormat: Text.PlainText
-                        elide: Text.ElideRight
-                        ToolTip.visible: activityHover.hovered && (truncated || !!window.issue.details)
-                        ToolTip.text: window.operations.length || window.previewLoading ? text
-                            : window.issue.details || text
-                        HoverHandler { id: activityHover }
-                    }
-                    Text {
-                        objectName: "operationTiming"
-                        Layout.fillWidth: true
-                        visible: text.length > 0
-                        text: window.operations.length ? [window.primaryOperation.timing,
-                              window.primaryOperation.count].filter(s => s).join(" · ")
-                            : window.previewLoading ? window.controller.text("已等待 {0}")
-                                .replace("{0}", Math.floor(window.previewWait / 60).toString().padStart(2, "0")
-                                    + ":" + (window.previewWait % 60).toString().padStart(2, "0"))
-                            : window.issue.hint || ""
-                        font.pixelSize: 11 * theme.scale
-                        color: theme.muted
-                        elide: Text.ElideRight
-                        textFormat: Text.PlainText
-                    }
-                    ProgressBar {
-                        objectName: "workspaceOperationProgress"
-                        Layout.fillWidth: true
-                        visible: (window.operations.length || window.previewLoading)
-                            && (window.primaryOperation.fraction !== undefined || !theme.reduceMotion)
-                        indeterminate: window.primaryOperation.fraction === undefined && !theme.reduceMotion
-                        value: window.primaryOperation.fraction === undefined ? 0 : window.primaryOperation.fraction
-                        implicitHeight: Math.round(5 * theme.scale)
-                        Accessible.name: window.controller.text("当前操作进度")
-                    }
-                }
-                UiButton {
-                    objectName: "openOperationWorkspace"
-                    visible: window.operations.length
-                        ? (window.primaryOperation.route !== window.controller.route
-                            || (String(window.primaryOperation.kind).indexOf("calibration-") === 0
-                                && window.controller.workshop.pane !== "calibration"))
-                        : window.previewLoading ? window.controller.route !== "audio_mixdown"
-                        : !!window.issue.route && window.issue.route !== window.controller.route
-                    theme: window.tokens
-                    text: window.controller.text(window.operations.length ? "查看进度"
-                        : window.previewLoading ? "返回混音" : "查看工作区")
-                    onClicked: {
-                        const entry = window.operations.length ? window.primaryOperation
-                            : window.previewLoading ? {kind: "mixdown-preview", route: "audio_mixdown"}
-                            : window.issue
-                        if (String(entry.kind).indexOf("calibration-") === 0)
-                            window.controller.openTuningWorkshop("calibration")
-                        else
-                            window.controller.navigate(entry.route)
-                    }
-                }
-                UiButton {
-                    objectName: "activityDiagnostics"
-                    theme: window.tokens
-                    quiet: true
-                    text: window.operations.length > 1
-                        ? window.controller.text("{0} 项操作").replace("{0}", window.operations.length)
-                        : window.controller.text("本机诊断")
-                    onClicked: window.controller.support.showDiagnostics()
-                }
-                UiButton {
-                    objectName: "dismissOperationIssue"
-                    visible: !window.operations.length && !window.previewLoading
-                        && (!!window.issue.id || window.controller.notice.length > 0)
-                    theme: window.tokens
-                    quiet: true
-                    text: window.controller.text("关闭提示")
-                    onClicked: window.controller.dismissOperationIssue(window.issue.id || "")
-                }
-                UiButton {
-                    objectName: "cancelWorkspaceOperation"
-                    visible: !!window.primaryOperation.canCancel
-                    enabled: !window.primaryOperation.cancelling
-                    theme: window.tokens
-                    text: window.controller.text("取消")
-                    onClicked: window.controller.cancelActiveOperation(window.primaryOperation.id)
-                }
-            }
-        }
+    UiCommandPalette {
+        id: commandPalette
+        theme: window.tokens
+        controller: window.controller
     }
 
     DiagnosticsDialog {

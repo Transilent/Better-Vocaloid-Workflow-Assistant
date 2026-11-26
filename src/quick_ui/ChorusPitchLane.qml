@@ -8,12 +8,13 @@ Rectangle {
     required property QtObject controller
     required property var view
     required property int headerWidth
-    property var curve: ({first: 0, step: .01, midi: [], target: [], notes: [], scoreNotes: []})
+    property var curve: ({first: 0, step: .01, midi: [], target: [], notes: [], scoreNotes: [], trackReview: ({})})
     readonly property string tool: view.pitchTool || (view.pitchDraw ? "draw" : "note")
     readonly property bool drawing: tool === "draw" && canDraw
     readonly property bool splitting: tool === "split" && hasNotes
     readonly property bool hasNotes: (curve.notes || []).length > 0
     readonly property bool hasScoreNotes: (curve.scoreNotes || []).length > 0
+    readonly property bool showScoreBg: view.showScoreBackground !== false
     readonly property bool canDraw: (curve.midi || []).some(value => value >= 0) && view.take.role === "vocal"
     property real lowNote: 48
     property real highNote: 72
@@ -167,18 +168,24 @@ Rectangle {
         if (!draggingNote)
             selectedKeys = synced
 
-        let low = 128, high = 0
+        let vLow = 128, vHigh = 0
         for (const line of [curve.midi || [], curve.target || []]) {
             for (const val of line) {
                 if (val < 0)
                     continue
-                low = Math.min(low, val)
-                high = Math.max(high, val)
+                vLow = Math.min(vLow, val)
+                vHigh = Math.max(vHigh, val)
             }
         }
-        for (const sn of (curve.scoreNotes || [])) {
-            low = Math.min(low, sn.pitch)
-            high = Math.max(high, sn.pitch)
+        let low = vLow, high = vHigh
+        if (lane.showScoreBg) {
+            for (const sn of (curve.scoreNotes || [])) {
+                // Only widen vertical range to MIDI notes near the vocal register (avoid squashing on unaligned octaves)
+                if (vLow <= vHigh && (sn.pitch < vLow - 8 || sn.pitch > vHigh + 8))
+                    continue
+                low = Math.min(low, sn.pitch)
+                high = Math.max(high, sn.pitch)
+            }
         }
         if (low <= high && stroke.length === 0 && !draggingNote && !manualPitchRange) {
             lowNote = Math.max(0, Math.floor(low) - 2)
@@ -188,6 +195,7 @@ Rectangle {
     }
 
     onVisibleChanged: rebuild()
+    onShowScoreBgChanged: plot.requestPaint()
     onStrokeChanged: plot.requestPaint()
     onDragDeltaSemitonesChanged: plot.requestPaint()
     onDraggingNoteChanged: plot.requestPaint()
@@ -268,28 +276,29 @@ Rectangle {
                 c.globalAlpha = 1
             }
 
-            // 2. Bound score lane target notes (outline blocks behind vocal notes)
-            if (scoreNotes.length > 0) {
+            // 2. Bound score lane target notes (background MIDI ghost blocks behind vocal notes)
+            if (lane.showScoreBg && scoreNotes.length > 0) {
                 c.font = Math.round(10 * lane.theme.scale) + "px sans-serif"
                 for (let i = 0; i < scoreNotes.length; i++) {
                     const sn = scoreNotes[i]
                     const sx = tx(sn.start)
                     const sw = Math.max(4, tx(sn.end) - sx)
-                    const sh = Math.max(8, rh * .78)
+                    const sh = Math.max(9, rh * .82)
                     const sy = py(sn.pitch) - sh / 2
                     c.fillStyle = lane.theme.success
-                    c.globalAlpha = .13
+                    c.globalAlpha = .16
                     c.fillRect(sx, sy, sw, sh)
-                    c.globalAlpha = .72
+                    c.globalAlpha = .78
                     c.strokeStyle = lane.theme.success
-                    c.lineWidth = 1.2
+                    c.lineWidth = 1.25
                     c.setLineDash([4, 3])
                     c.strokeRect(sx + .5, sy + .5, Math.max(1, sw - 1), Math.max(1, sh - 1))
                     c.setLineDash([])
-                    if (sn.lyric && sw > 16 * lane.theme.scale) {
+                    const label = sn.lyric ? sn.lyric : lane.noteShortName(sn.pitch)
+                    if (label && sw > 20 * lane.theme.scale) {
                         c.fillStyle = lane.theme.success
                         c.globalAlpha = .92
-                        c.fillText(sn.lyric, sx + 4, sy + sh / 2)
+                        c.fillText(label, sx + 4, sy + sh / 2)
                     }
                 }
                 c.globalAlpha = 1
@@ -321,15 +330,20 @@ Rectangle {
                     c.stroke()
                 }
 
-                // Main vocal note block
+                // Main vocal note block with prominent severity-coded review highlight
+                const isHighRisk = (n.reviewSeverity === "high" || n.reviewCategory === "transpose" || !!n.largeShift)
+                const isMedRisk = !isHighRisk && (n.reviewSeverity === "medium" || !!n.matchReview || n.matchIntent === "review")
+                const isRisk = isHighRisk || isMedRisk
+                const riskColor = isHighRisk ? "#f87171" : lane.theme.attention
                 const by = targetY - blockH / 2
-                c.fillStyle = sel ? lane.theme.accent : n.locked ? lane.theme.raised : n.manual ? lane.theme.accent : lane.theme.selected
-                c.globalAlpha = sel ? .34 : n.locked ? .55 : n.manual ? .22 : .42
+                c.fillStyle = sel ? lane.theme.accent : isHighRisk ? "#f87171" : isMedRisk ? lane.theme.attention
+                    : n.locked ? lane.theme.raised : n.manual ? lane.theme.accent : lane.theme.selected
+                c.globalAlpha = sel ? .36 : isHighRisk ? .26 : isMedRisk ? .22 : n.locked ? .55 : n.manual ? .22 : .42
                 c.fillRect(x1, by, bw, blockH)
 
-                c.globalAlpha = sel ? 1.0 : .78
-                c.strokeStyle = sel ? lane.theme.accent : n.locked ? lane.theme.muted : lane.theme.selectedLine
-                c.lineWidth = sel ? 2.0 : 1.1
+                c.globalAlpha = sel ? 1.0 : isRisk ? .96 : .78
+                c.strokeStyle = sel ? lane.theme.accent : isRisk ? riskColor : n.locked ? lane.theme.muted : lane.theme.selectedLine
+                c.lineWidth = sel ? 2.0 : isHighRisk ? 1.8 : isMedRisk ? 1.5 : 1.1
                 c.setLineDash(n.locked ? [3, 2] : [])
                 c.strokeRect(x1 + .5, by + .5, Math.max(1, bw - 1), Math.max(1, blockH - 1))
                 c.setLineDash([])
@@ -341,6 +355,21 @@ Rectangle {
                     c.fillRect(x2 - 1, targetY - 3, 2, 6)
                 }
 
+                // Semantic indicator bar (Coral=high risk/transpose, Amber=medium review, Cyan=protected harmony, Green=melody match)
+                const isHarmony = !isRisk && n.matchIntent === "harmony"
+                const isMelody = !isRisk && n.matchIntent === "melody"
+                if (isRisk || isHarmony || isMelody) {
+                    c.fillStyle = isRisk ? riskColor : isHarmony ? "#38bdf8" : lane.theme.success
+                    c.globalAlpha = sel ? 1.0 : .95
+                    c.fillRect(x1 + 1, by + 1, Math.min(isRisk ? 4 : 3, Math.max(2, bw - 2)), Math.max(2, blockH - 2))
+                }
+                if (isRisk && bw >= 8) {
+                    // Prominent top highlight stripe for review-flagged notes
+                    c.fillStyle = riskColor
+                    c.globalAlpha = .95
+                    c.fillRect(x1 + 1, by + 1, Math.max(2, bw - 2), 2)
+                }
+
                 // Inline pitch / cent readout on wider note blocks
                 if (bw >= Math.round(28 * lane.theme.scale)) {
                     const shownMidi = n.targetMidi + activeDelta
@@ -349,17 +378,17 @@ Rectangle {
                     if (bw >= Math.round(64 * lane.theme.scale) && Math.abs(shownOffset) >= 1)
                         noteText += " " + (shownOffset > 0 ? "+" : "") + shownOffset + "¢"
                     c.fillStyle = lane.theme.text
-                    c.globalAlpha = sel ? .96 : .82
+                    c.globalAlpha = sel ? .98 : .86
                     c.font = Math.round(10 * lane.theme.scale) + "px sans-serif"
-                    c.fillText(noteText, x1 + 4, targetY)
+                    c.fillText(noteText, x1 + (isRisk ? 7 : 6), targetY)
                 }
 
-                // Match-review warning dot
-                if (n.matchReview && n.scorePitch >= 0) {
-                    c.fillStyle = lane.theme.attention
-                    c.globalAlpha = .95
+                // Corner badge dot for review / protected harmony
+                if (isRisk || isHarmony) {
+                    c.fillStyle = isRisk ? riskColor : "#38bdf8"
+                    c.globalAlpha = 1.0
                     c.beginPath()
-                    c.arc(x1 + bw - 5, by + 5, 3, 0, Math.PI * 2)
+                    c.arc(x1 + bw - 5, by + 5, isHighRisk ? 3.5 : 3.0, 0, Math.PI * 2)
                     c.fill()
                 }
             }
@@ -462,33 +491,122 @@ Rectangle {
         text: lane.t("分析修音后显示此轨的实测音高")
     }
 
-    // Subtle status pill for hovered/selected vocal note or score match reason
+    // Track-level wrong-key / transposition advisory banner right inside the piano roll
     Rectangle {
-        visible: !lane.draggingNote && !!lane.hoveredNote
+        id: trackReviewBanner
+        objectName: "chorusTrackReviewBanner"
+        readonly property var rev: lane.curve.trackReview || ({})
+        visible: !!rev.reason && !lane.draggingNote
+        x: lane.headerWidth + 8
+        y: 6
+        width: Math.min(Math.max(180, lane.width - lane.headerWidth - 16), Math.round(520 * lane.theme.scale))
+        implicitHeight: trackReviewCol.implicitHeight + 12
+        radius: Math.round(6 * lane.theme.scale)
+        color: lane.theme.surface
+        border.color: "#f87171"
+        border.width: 1.5
+        z: 6
+        Column {
+            id: trackReviewCol
+            anchors.fill: parent
+            anchors.margins: 6
+            spacing: 4
+            Text {
+                width: parent.width
+                color: "#f87171"
+                font.pixelSize: Math.round(11 * lane.theme.scale)
+                font.weight: Font.DemiBold
+                wrapMode: Text.Wrap
+                text: lane.t("整轨偏调待核对：") + (trackReviewBanner.rev.reason || "")
+            }
+            Text {
+                width: parent.width
+                visible: !!(trackReviewBanner.rev.actionHint)
+                color: lane.theme.text
+                font.pixelSize: Math.round(10 * lane.theme.scale)
+                wrapMode: Text.Wrap
+                text: lane.t("建议：") + (trackReviewBanner.rev.actionHint || "")
+            }
+            Row {
+                spacing: 6
+                UiButton {
+                    theme: lane.theme
+                    implicitHeight: Math.round(24 * lane.theme.scale)
+                    primary: true
+                    visible: !!trackReviewBanner.rev.canApply
+                    text: lane.t("一键移调修音")
+                    onClicked: lane.controller.acceptIssueAt(trackReviewBanner.rev.id)
+                }
+                UiButton {
+                    theme: lane.theme
+                    implicitHeight: Math.round(24 * lane.theme.scale)
+                    quiet: true
+                    text: lane.t("忽略提示")
+                    onClicked: lane.controller.keepIssueAt(trackReviewBanner.rev.id)
+                }
+            }
+        }
+    }
+
+    // Enriched status pill for hovered vocal note (with review reason & action hint)
+    Rectangle {
+        id: hoverPill
+        readonly property var n: lane.hoveredNote
+        readonly property bool isHigh: !!n && (n.reviewSeverity === "high" || n.reviewCategory === "transpose" || !!n.largeShift)
+        readonly property bool isMed: !!n && !isHigh && (n.reviewSeverity === "medium" || !!n.matchReview || n.matchIntent === "review")
+        visible: !lane.draggingNote && !!n
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.margins: 6
-        radius: Math.round(5 * lane.theme.scale)
+        z: 5
+        radius: Math.round(6 * lane.theme.scale)
         color: lane.theme.surface
-        border.color: lane.theme.line
-        implicitWidth: infoLabel.implicitWidth + 14
-        implicitHeight: infoLabel.implicitHeight + 6
-        Text {
-            id: infoLabel
-            anchors.centerIn: parent
-            color: lane.theme.text
-            font.pixelSize: Math.round(11 * lane.theme.scale)
-            text: {
-                const n = lane.hoveredNote
-                if (!n) return ""
-                let msg = lane.noteName(n.targetMidi)
-                if (Math.abs(n.offsetCents) >= 0.5)
-                    msg += "  (" + (n.offsetCents > 0 ? "+" : "") + Math.round(n.offsetCents) + "¢)"
-                if (n.scorePitch >= 0)
-                    msg += "  →  " + lane.noteName(n.scorePitch) + (n.scoreLyric ? " " + n.scoreLyric : "")
-                if (n.matchReason)
-                    msg += "  ·  " + lane.t(n.matchReason)
-                return msg
+        border.color: isHigh ? "#f87171" : isMed ? lane.theme.attention : lane.theme.line
+        border.width: (isHigh || isMed) ? 1.5 : 1
+        implicitWidth: Math.min(Math.max(140, lane.width - lane.headerWidth - 20), infoCol.implicitWidth + 16)
+        implicitHeight: infoCol.implicitHeight + 10
+        Column {
+            id: infoCol
+            anchors.fill: parent
+            anchors.margins: 5
+            spacing: 2
+            Text {
+                id: infoLabel
+                width: Math.min(implicitWidth, hoverPill.implicitWidth - 10)
+                color: lane.theme.text
+                font.pixelSize: Math.round(11 * lane.theme.scale)
+                font.weight: (hoverPill.isHigh || hoverPill.isMed) ? Font.DemiBold : Font.Normal
+                elide: Text.ElideRight
+                text: {
+                    const n = lane.hoveredNote
+                    if (!n) return ""
+                    let msg = lane.noteName(n.targetMidi)
+                    if (Math.abs(n.offsetCents) >= 0.5)
+                        msg += "  (" + (n.offsetCents > 0 ? "+" : "") + Math.round(n.offsetCents) + "¢)"
+                    if (n.scorePitch >= 0)
+                        msg += "  →  " + lane.noteName(n.scorePitch) + (n.scoreLyric ? " " + n.scoreLyric : "")
+                    else if (n.matchReason && !n.reviewReason)
+                        msg += "  ·  " + lane.t(n.matchReason)
+                    return msg
+                }
+            }
+            Text {
+                width: Math.min(implicitWidth, Math.round(360 * lane.theme.scale))
+                visible: !!(lane.hoveredNote && lane.hoveredNote.reviewReason)
+                color: hoverPill.isHigh ? "#f87171" : lane.theme.attention
+                font.pixelSize: Math.round(10 * lane.theme.scale)
+                wrapMode: Text.Wrap
+                text: lane.hoveredNote && lane.hoveredNote.reviewReason
+                    ? (lane.t("原因：") + lane.t(lane.hoveredNote.reviewReason)) : ""
+            }
+            Text {
+                width: Math.min(implicitWidth, Math.round(360 * lane.theme.scale))
+                visible: !!(lane.hoveredNote && lane.hoveredNote.reviewHint)
+                color: lane.theme.muted
+                font.pixelSize: Math.round(10 * lane.theme.scale)
+                wrapMode: Text.Wrap
+                text: lane.hoveredNote && lane.hoveredNote.reviewHint
+                    ? (lane.t("建议：") + lane.t(lane.hoveredNote.reviewHint)) : ""
             }
         }
     }
@@ -837,12 +955,19 @@ Rectangle {
                 pressedNote = null
             }
 
-            Menu {
+            UiMenu {
                 id: noteContextMenu
+                theme: lane.theme
                 MenuItem {
                     text: lane.t("对齐到最近半音 (Q)")
                     enabled: lane.selectedKeys.length > 0 && lane.view.take.role === "vocal"
                     onTriggered: lane.controller.snapPitchNotesToSemitone([])
+                }
+                MenuItem {
+                    text: lane.t("对齐到背景 MIDI 音高")
+                    visible: !!lane.view.score && !!lane.view.take.scoreLane
+                    enabled: lane.selectedKeys.length > 0 && lane.view.take.role === "vocal"
+                    onTriggered: lane.controller.snapPitchNotesToScore([])
                 }
                 MenuItem {
                     text: lane.t("在此处拆分音符")

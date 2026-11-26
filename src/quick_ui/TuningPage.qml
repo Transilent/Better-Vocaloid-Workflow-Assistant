@@ -972,8 +972,9 @@ Item {
                     text: page.vwaTr("工程与恢复…")
                     enabled: !page.busy || !page.hasSource
                     onClicked: workspaceMenu.open()
-                    Menu {
+                    UiMenu {
                         id: workspaceMenu
+                        theme: page.theme
                         y: workspaceMenuButton.height
                         width: Math.round(222 * page.scale)
                         MenuItem {
@@ -2214,8 +2215,9 @@ Item {
                                     enabled: page.canAddRegion
                                     onClicked: page.controller.addRegion()
                                 }
-                                CheckBox {
+                                UiCheckBox {
                                     objectName: "tuningAutoApplySelection"
+                                    theme: page.theme
                                     text: page.vwaTr("框选即应用")
                                     font.pixelSize: Math.round(12 * page.scale)
                                     checked: !!page.view.autoApplySelection
@@ -3155,16 +3157,13 @@ Item {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: issuesDialog
         objectName: "tuningIssuesDialog"
+        theme: page.theme
         title: page.vwaTr("编辑问题")
         property var review: ({})
         readonly property var rows: review.rows || []
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        modal: true
-        focus: true
         width: Math.min(parent.width - 40, Math.round(570 * page.scale))
         height: Math.min(parent.height - 48, Math.round((rows.length ? 380 : 175) * page.scale))
         standardButtons: Dialog.Close
@@ -3210,13 +3209,11 @@ Item {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: draftRecovery
         objectName: "tuningDraftRecoveryDialog"
+        theme: page.theme
         title: page.vwaTr("核对调音草稿")
-        modal: true
-        parent: Overlay.overlay
-        anchors.centerIn: parent
         width: Math.min(parent.width - 40, Math.round(590 * page.scale))
         closePolicy: Popup.NoAutoClose
         readonly property var review: page.view.draftReview || ({})
@@ -3298,12 +3295,11 @@ Item {
         onAccepted: page.controller.exportCandidate(selectedFile)
     }
 
-    Dialog {
+    UiDialog {
         id: clearRegionsDialog
         objectName: "tuningClearRegionsDialog"
+        theme: page.theme
         title: page.vwaTr("清空风格片段")
-        modal: true
-        anchors.centerIn: parent
         width: Math.min(page.width - 28, Math.round(375 * page.scale))
         standardButtons: Dialog.Cancel | Dialog.Ok
         onAccepted: page.controller.clearRegions()
@@ -3352,12 +3348,11 @@ Item {
         onAccepted: page.controller.setSessionLocation(selectedFolder)
     }
 
-    Dialog {
+    UiDialog {
         id: taskPickerDialog
         objectName: "tuningTaskPickerDialog"
+        theme: page.theme
         title: page.vwaTr("从任务与结果载入工程")
-        modal: true
-        parent: Overlay.overlay
         anchors.centerIn: parent
         width: Math.min(parent.width - 40, Math.round(580 * page.scale))
         closePolicy: Popup.CloseOnEscape
@@ -3517,12 +3512,11 @@ Item {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: presetNameDialog
         objectName: "tuningPresetNameDialog"
+        theme: page.theme
         title: page.vwaTr("保存到本机预设库")
-        parent: Overlay.overlay
-        modal: true
         focus: true
         closePolicy: Popup.CloseOnEscape
         x: parent ? Math.max(18, (parent.width - width) / 2) : 18

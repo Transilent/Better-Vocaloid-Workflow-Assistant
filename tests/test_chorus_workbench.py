@@ -803,7 +803,218 @@ def check_continuous_time_warp_and_valley_knots(root):
     breath_anchors = [('a', at + .15, at) for at in np.linspace(.30, .92, 8)]
     breath_fit = fit_timing(breath_anchors, .17, 1.17, 1., .4, breath_quiet)
     assert not breath_fit.points and abs(breath_fit.movement - .15) < 1e-6, breath_fit
-    print('PASS: continuous time warp, single-pass pitch+time, directional quiet and scale-aware pitch stay clean')
+    # Verify MIDI auto-alignment (time offset + per-track octave), score-guided sub-splitting, and score_octave persistence.
+    from chorus_project import Score, ScoreLane, ScoreNote
+    from chorus_score_match import estimate_score_alignment, expand_vocal_notes_for_score, shift_score_notes
+    midi_lane = ScoreLane('0', 'Lead', (
+        ScoreNote(2.40, 2.80, 70),
+        ScoreNote(2.80, 3.20, 67),
+        ScoreNote(3.20, 3.60, 65),
+        ScoreNote(3.60, 4.00, 63),
+    ))
+    score_obj = Score(str(root / 'fake.mid'), 'sha-fake', (midi_lane,), offset=0., confirmed=True)
+    male_v = Recording('m1', str(voice.path), voice.sha, voice.stamp, rate, round(4.5 * rate), 1, 'Male', 'vocal')
+    female_v = Recording('f1', str(voice.path), voice.sha, voice.stamp, rate, round(4.5 * rate), 1, 'Female', 'vocal')
+    align_proj = ChorusProject('align-test', 'align-id', rate, (male_v, female_v), score_obj)
+    # Vocals sing the exact melody 1.40 s EARLIER than the MIDI (score.offset = -1.40 s), male -12 st, female 0 st.
+    m_curve = np.full(450, np.nan, dtype=np.float32)
+    f_curve = np.full(450, np.nan, dtype=np.float32)
+    for idx, p_val in enumerate((70, 67, 65, 63)):
+        a = 100 + idx * 40
+        m_curve[a:a + 38] = p_val - 12.0 + .15
+        f_curve[a:a + 38] = p_val + 0.0 - .10
+    aligned = estimate_score_alignment(align_proj, {'m1': (m_curve, .01), 'f1': (f_curve, .01)})
+    assert abs(aligned['offset'] - (-1.40)) <= .02, aligned
+    assert aligned['tracks']['m1']['octave'] == -12, aligned
+    assert aligned['tracks']['f1']['octave'] == 0, aligned
+    # Sub-split one slurred vocal note spanning two different MIDI notes (58 -> 55).
+    shifted_lane = shift_score_notes(midi_lane.notes, offset=-1.40, octave_semitones=-12)
+    from chorus_notes import VocalNote
+    slurred = (VocalNote(1.00, 1.80, 57.2, 55.0, 58.2),)
+    sub = expand_vocal_notes_for_score(slurred, shifted_lane, curve=(m_curve, .01))
+    assert len(sub) == 2 and abs(sub[0].end - 1.40) < .03 and abs(sub[1].start - 1.40) < .03, sub
+    assert abs(sub[0].center_midi - 58.15) < .2 and abs(sub[1].center_midi - 55.15) < .2, sub
+    # Steady held vowel must NOT be chopped by a passing MIDI dip (e.g. hhz holding 51 over 51->48->51).
+    steady_curve = np.full(300, 51.0, dtype=np.float32)
+    dip_lane = (ScoreNote(1.00, 1.35, 51), ScoreNote(1.35, 1.65, 48), ScoreNote(1.65, 2.00, 51))
+    steady_note = (VocalNote(1.00, 2.00, 51.0, 50.8, 51.2),)
+    kept_steady = expand_vocal_notes_for_score(steady_note, dip_lane, curve=(steady_curve, .01))
+    assert len(kept_steady) == 1, kept_steady
+    # Phrase pitch-contour shift un-aliases a fast 8th-note phrase sung +200 ms early.
+    from chorus_score_match import estimate_phrase_score_shift
+    fast_midi = (
+        ScoreNote(1.20, 1.40, 58), ScoreNote(1.40, 1.60, 55),
+        ScoreNote(1.60, 1.80, 53), ScoreNote(1.80, 2.00, 51),
+        ScoreNote(2.00, 2.20, 58), ScoreNote(2.20, 2.40, 60),
+    )
+    early_curve = np.full(300, np.nan, dtype=np.float32)
+    for n in fast_midi:
+        a_f, b_f = round((n.start - .20) / .01), round((n.end - .20) / .01)
+        early_curve[a_f:b_f] = float(n.pitch) + .1
+    c_shift, err0, err_best, c_ok = estimate_phrase_score_shift(early_curve, .01, fast_midi, .95, 2.25)
+    assert c_ok and abs(c_shift - .20) <= .02 and err_best < err0, (c_shift, err0, err_best, c_ok)
+
+    # P0/P1 checks:
+    # 1) Unvoiced sibilant bypass preserves unvoiced noise dry while leaving periodic vowels shifted.
+    from chorus_pitch_dsp import bypass_unvoiced_sibilants
+    rng = np.random.default_rng(7)
+    n_sib = round(.60 * rate)
+    t_s = np.arange(n_sib) / rate
+    dry_mix = np.zeros((n_sib, 1), dtype=np.float32)
+    # First 0.25s: high-frequency sibilant noise (4-9 kHz)
+    noise = rng.standard_normal(round(.25 * rate))
+    from scipy.signal import butter, sosfiltfilt
+    sib_bp = sosfiltfilt(butter(4, (4200, 9000), 'bandpass', fs=rate, output='sos'), noise)
+    dry_mix[:len(sib_bp), 0] = (.18 * sib_bp / max(1e-6, np.max(np.abs(sib_bp)))).astype(np.float32)
+    # Last 0.30s: periodic 220 Hz vowel
+    v_idx = slice(round(.30 * rate), n_sib)
+    dry_mix[v_idx, 0] = (.22 * np.sin(2 * np.pi * 220. * t_s[v_idx])).astype(np.float32)
+    wet_fake = np.zeros_like(dry_mix)  # distinct from dry so we can verify bypass ratio cleanly
+    out_bp = bypass_unvoiced_sibilants(dry_mix, wet_fake, rate, np.full(n_sib, 1.5))
+    sib_core = slice(round(.05 * rate), round(.20 * rate))
+    vow_core = slice(round(.38 * rate), round(.54 * rate))
+    assert np.allclose(out_bp[sib_core], dry_mix[sib_core], atol=1e-4), 'sibilant was not bypassed to dry'
+    assert float(np.max(np.abs(out_bp[vow_core]))) < 1e-4, 'periodic vowel was erroneously bypassed'
+
+    # 2) Harmony phrase guard protects steady +7 st fifth harmony while matching unison melody.
+    from chorus_score_match import detect_harmony_phrases, match_vocal_to_score
+    harm_vocal = (
+        VocalNote(1.00, 1.38, 65.05, 64.9, 65.2),
+        VocalNote(1.40, 1.78, 62.08, 61.9, 62.2),
+        VocalNote(1.80, 2.18, 60.02, 59.9, 60.1),
+        VocalNote(2.20, 2.58, 58.10, 58.0, 58.2),
+    )
+    h_map = detect_harmony_phrases(harm_vocal, shifted_lane)
+    assert len(h_map) == 4 and '+7' in h_map[0][1], h_map
+    h_matches = match_vocal_to_score(harm_vocal, shifted_lane)
+    assert all(m.intent == 'harmony' and m.target_pitch is None and not m.review for m in h_matches), h_matches
+
+    # 3) 3-layer pitch decomposition stabilizes slow drift (<2 Hz) while preserving 6 Hz vibrato.
+    from chorus_analysis import _build_natural_pitch_curve
+    t_vib = np.arange(80) * .01
+    slow_drift = np.linspace(-.35, .35, 80)  # 70c slow drift
+    vibrato_6hz = .45 * np.sin(2. * np.pi * 6.0 * t_vib)  # +/-45c natural vibrato
+    vib_midi = (60.0 + slow_drift + vibrato_6hz).astype(np.float32)
+    vib_note = VocalNote(.05, .75, 60.0, 59.3, 60.7)
+    pts = _build_natural_pitch_curve(vib_midi, .01, vib_note, 20.0, 1.0)
+    assert len(pts) >= 10, pts
+    px, py = zip(*pts)
+    corr = np.interp(t_vib[10:70], px, py) / 100.0
+    corrected_f0 = vib_midi[10:70] + corr
+    # Slow drift across [0.15..0.65s] should drop substantially while 6 Hz vibrato stays intact.
+    raw_slope = float(np.polyfit(t_vib[10:70], vib_midi[10:70], 1)[0])
+    new_slope = float(np.polyfit(t_vib[10:70], corrected_f0, 1)[0])
+    assert abs(new_slope) < .60 * abs(raw_slope), (raw_slope, new_slope)
+    raw_hp = vib_midi[10:70] - np.polyval(np.polyfit(t_vib[10:70], vib_midi[10:70], 1), t_vib[10:70])
+    new_hp = corrected_f0 - np.polyval(np.polyfit(t_vib[10:70], corrected_f0, 1), t_vib[10:70])
+    assert float(np.std(new_hp)) > .88 * float(np.std(raw_hp)), (np.std(raw_hp), np.std(new_hp))
+
+    # 4) MIDI-guided hierarchical timing + scoop guard + wet-input detection + score guide synth.
+    from chorus_analysis import feature_track, proposals
+    from chorus_audio import render_score_guide
+    # Create a stereo wet vocal (Side/Mid ~ -12 dB) vs mono dry vocal
+    wet_stereo = np.column_stack((vowel, np.roll(vowel, 441) * .85)).astype(np.float32)
+    wet_path = root / 'wet-vocal.wav'
+    sf.write(wet_path, wet_stereo, rate, subtype='FLOAT')
+    wet_rec = Recording.read(wet_path)
+    wet_feat = feature_track(wet_rec, lambda: None)
+    dry_feat = feature_track(v_take, lambda: None)
+    assert wet_feat.wet_warning and wet_feat.side_mid_db > -32.0, wet_feat
+    assert not dry_feat.wet_warning, dry_feat
+    # Score guide synth matches project length & stays quiet monitor-only.
+    guide_pcm = render_score_guide(align_proj, male_v)
+    assert guide_pcm.shape == (align_proj.frames, 2) and float(np.max(np.abs(guide_pcm))) <= .46
+
+    # MIDI timing: vocal enters 140 ms late relative to shifted_lane -> pure phrase translation.
+    late_midi = np.full(450, np.nan, dtype=np.float32)
+    for idx, p_val in enumerate((58, 55, 53, 51)):
+        a = 114 + idx * 40  # +140 ms late vs shifted_lane starts at 1.00, 1.40, 1.80, 2.20
+        late_midi[a:a + 36] = float(p_val)
+    # Add a 75 ms linked onset scoop at 1.065..1.140 that is 220c flat (should be protected by scoop guard).
+    late_midi[106:114] = 55.8
+    late_audio = np.zeros(round(4.5 * rate), dtype=np.float32)
+    t_late = np.arange(round(1.6 * rate)) / rate
+    late_audio[round(1.06 * rate):round(2.66 * rate)] = (.2 * np.sin(2 * np.pi * 220. * t_late)).astype(np.float32)
+    late_path = root / 'late-vocal.wav'
+    sf.write(late_path, late_audio, rate, subtype='FLOAT')
+    late_rec = replace(Recording.read(late_path), score_lane='0', score_octave=-12)
+    late_proj = ChorusProject('midi-time', 'mt-id', rate, (late_rec,), replace(score_obj, offset=-1.40))
+    late_feat = feature_track(late_rec, lambda: None)
+    _, midi_sugs = proposals(
+        late_proj, (late_rec,), (0., 4.5), 'both', 1.0, .60,
+        {late_rec.id: late_feat}, {late_rec.id: (late_midi, .01)},
+        lambda: None, lambda *_: None, use_midi_timing=True, pitch_strength=1.0,
+    )
+    t_sugs = [s for s in midi_sugs if s.kind == 'timing' and s.can_apply]
+    assert len(t_sugs) == 1 and abs(t_sugs[0].value - (-.14)) < .035 and not t_sugs[0].points, t_sugs
+    p_sugs = [s for s in midi_sugs if s.kind == 'pitch']
+    # Scoop segment (1.06..1.14, dur=80ms, 220c off) must NOT have a 200c yank!
+    scoop_yanks = [s for s in p_sugs if s.end - s.start < .09 and s.value is not None and abs(s.value) > 130.]
+    assert not scoop_yanks, scoop_yanks
+
+    # V2.3 checks:
+    # 1) Whole-track wrong-key detector catches -6 st off-key track & ignores normal melody track.
+    from chorus_score_match import detect_track_key_mismatch
+    from chorus_audio import balance_vocal_level, compile_pitch_spans
+    flat6_midi = np.full(450, np.nan, dtype=np.float32)
+    for idx, p_val in enumerate((70, 67, 65, 63)):
+        a = 100 + idx * 40
+        flat6_midi[a:a + 38] = float(p_val - 6.0) + .05
+    mismatch_hit = detect_track_key_mismatch(
+        flat6_midi, .01, midi_lane.notes, score_offset=-1.40, current_octave=-12,
+    )
+    assert mismatch_hit['mismatch'] and mismatch_hit['target_octave'] == 0, mismatch_hit
+    assert mismatch_hit['reason'] and mismatch_hit['action_hint'], mismatch_hit
+    mismatch_ok = detect_track_key_mismatch(
+        m_curve, .01, midi_lane.notes, score_offset=-1.40, current_octave=-12,
+    )
+    assert mismatch_ok is None, mismatch_ok
+
+    # proposals() emits ONE high-severity 'transpose' card for an off-key track instead of spamming notes.
+    off_rec = replace(late_rec, score_lane='0', score_octave=-12)
+    off_proj = ChorusProject('off-key', 'ok-id', rate, (off_rec,), replace(score_obj, offset=-1.40))
+    _, off_sugs = proposals(
+        off_proj, (off_rec,), (0., 4.5), 'pitch', 1.0, .60,
+        {off_rec.id: late_feat}, {off_rec.id: (flat6_midi, .01)},
+        lambda: None, lambda *_: None, pitch_strength=1.0,
+    )
+    trans_sugs = [s for s in off_sugs if s.category == 'transpose']
+    assert len(trans_sugs) == 1 and trans_sugs[0].severity == 'high' and trans_sugs[0].target_octave == 0, off_sugs
+    assert trans_sugs[0].can_apply and trans_sugs[0].detail and trans_sugs[0].action_hint, trans_sugs[0]
+    from chorus_analysis import transpose_track_to_score
+    trans_proj, trans_cnt = transpose_track_to_score(
+        off_proj, off_rec, (flat6_midi, .01),
+        target_octave=trans_sugs[0].target_octave,
+        shift_hint=trans_sugs[0].value / 100.,
+        pitch_strength=1.0,
+    )
+    assert trans_cnt == 4 and trans_proj.track(off_rec.id).score_octave == 0, (trans_cnt, trans_proj.track(off_rec.id))
+    assert all(abs((e.points[0][1] if e.points else e.value) - 595.0) < 25.0
+               for e in trans_proj.edits_for(off_rec.id, 'pitch')), trans_proj.edits_for(off_rec.id, 'pitch')
+
+    # 2) Opposing pitch jump S-curve widening softens +/-1.5 st reversals without touching delta==0 splits.
+    opp_edits = (
+        Edit('t1', 'pitch', .20, .80, 150.0, manual=True),
+        Edit('t1', 'pitch', .80, 1.40, -150.0, manual=True),
+    )
+    spans_opp = compile_pitch_spans(opp_edits, rate, round(2.0 * rate))
+    assert len(spans_opp) == 1
+    s0, e0, left0, right0, sh_opp = spans_opp[0]
+    # Transition across 0.80s should span wider than 40 ms (half-width up to 47.5 ms -> >15 ms still transitioning)
+    mid_idx = round(.80 * rate) - left0
+    at_minus_25ms = float(sh_opp[mid_idx - round(.025 * rate)])
+    at_plus_25ms = float(sh_opp[mid_idx + round(.025 * rate)])
+    assert abs(at_minus_25ms) < 1.45 and abs(at_plus_25ms) < 1.45, (at_minus_25ms, at_plus_25ms)
+
+    # 3) Vocal loudness balance brings quiet -30 dBFS vocal close to -18 dBFS without clipping.
+    quiet_vox = np.zeros((round(2.0 * rate), 2), dtype=np.float32)
+    t_q = np.arange(round(1.2 * rate)) / rate
+    # RMS ~ 0.0316 (-30 dBFS)
+    quiet_vox[round(.3 * rate):round(1.5 * rate), :] = (.0447 * np.sin(2 * np.pi * 260. * t_q))[:, None].astype(np.float32)
+    bal_vox, gain_db = balance_vocal_level(quiet_vox, target_dbfs=-18.0, max_gain_db=9.0, peak_ceiling=.891)
+    assert abs(gain_db - 9.0) < .15, gain_db
+    assert float(np.max(np.abs(bal_vox))) <= .892
+    print('PASS: P0/P1/V2.3 vocal DSP, wrong-key review advisor, opposing S-curve, loudness balance & MIDI timing')
 
 
 if __name__ == '__main__':

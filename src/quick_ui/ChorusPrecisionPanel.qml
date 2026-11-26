@@ -225,9 +225,11 @@ ColumnLayout {
         RowLayout {
             Layout.fillWidth: true
             Note { Layout.fillWidth: false; text: panel.t("增益") }
-            Slider {
+            UiSlider {
                 id: phraseGain
                 objectName: "chorusPhraseGain"
+                theme: panel.theme
+                compact: true
                 Layout.fillWidth: true
                 from: -18
                 to: 12
@@ -365,8 +367,9 @@ ColumnLayout {
                     ToolTip.visible: hovered
                     ToolTip.text: panel.t("更多歌词操作")
                     onClicked: lyricMoreMenu.popup()
-                    Menu {
+                    UiMenu {
                         id: lyricMoreMenu
+                        theme: panel.theme
                         MenuItem {
                             objectName: "chorusRecognizeTrack"
                             text: panel.t("识别整轨歌词")

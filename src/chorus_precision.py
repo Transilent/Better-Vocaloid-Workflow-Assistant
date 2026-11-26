@@ -216,7 +216,7 @@ def _local_interior_positions(left, right, snap):
     return tuple(snapped)
 
 
-def _timing_geometry(first, last, times, aim, local, quiet, snap=None):
+def _timing_geometry(first, last, times, aim, local, quiet, snap=None, *, max_slope=.18, shoulder_rate=.60):
     import numpy as np
 
     if not local and quiet:
@@ -230,7 +230,7 @@ def _timing_geometry(first, last, times, aim, local, quiet, snap=None):
             return (), aim
     # Keep a constant rate through the body of a translated phrase. The
     # shoulders join the original clock without borrowing adjacent words.
-    span = max(.035, float(np.max(abs(aim))) / .60)
+    span = max(.035, float(np.max(abs(aim))) / shoulder_rate)
     left, right = first + span, last - span
     if right - left < .056:
         return None, np.zeros(len(times))
@@ -246,23 +246,25 @@ def _timing_geometry(first, last, times, aim, local, quiet, snap=None):
         if float(np.max(np.abs(smoothed - body))) <= .012:
             shifts[1:-1] = smoothed
     for i in range(2, len(shifts) - 1):
-        limit = .18 * (positions[i] - positions[i - 1])
+        limit = max_slope * (positions[i] - positions[i - 1])
         shifts[i] = np.clip(shifts[i], shifts[i - 1] - limit, shifts[i - 1] + limit)
     points = tuple((float(t + d), float(t)) for t, d in zip(positions, shifts))
     return points, np.interp(times, positions, shifts)
 
 
-def fit_translation(first, last, movement, quiet):
+def fit_translation(first, last, movement, quiet, *, shoulder_rate=.60):
     """Render a measured envelope delay as a time shift, without phone markers."""
     import numpy as np
 
     if abs(movement) < .010:
         return TimingFit(0., (), (), 0)
-    points, _ = _timing_geometry(first, last, (first, last), np.full(2, movement), False, quiet)
+    points, _ = _timing_geometry(first, last, (first, last), np.full(2, movement), False, quiet,
+                                 shoulder_rate=shoulder_rate)
     return TimingFit(movement if points is not None else None, points or (), (), 0, review=points is None)
 
 
-def fit_timing(anchors, first, last, strength, radius, quiet=None, *, snap=None):
+def fit_timing(anchors, first, last, strength, radius, quiet=None, *, snap=None,
+               max_slope=.18, shoulder_rate=.60, allow_local=True):
     """Prefer a translation, with localized time changes only if supported."""
     import numpy as np
 
@@ -295,7 +297,8 @@ def fit_timing(anchors, first, last, strength, radius, quiet=None, *, snap=None)
             return TimingFit(0., (), tuple((label, t, t) for label, t in zip(labels, times)),
                              round(1000 * float(np.median(abs(offsets)))),
                              review=float(np.percentile(abs(offsets), 80)) > .115 and strength >= .85)
-        points, delta = _timing_geometry(first, last, times, aim, local, quiet, snap=snap)
+        points, delta = _timing_geometry(first, last, times, aim, local, quiet, snap=snap,
+                                         max_slope=max_slope, shoulder_rate=shoulder_rate)
         remaining = float(np.median(abs(offsets - delta)))
         disagreement = float(np.percentile(abs(offsets - delta), 80))
         matched = tuple((label, float(t + d), float(t)) for label, t, d in zip(labels, times, delta))
@@ -303,7 +306,7 @@ def fit_timing(anchors, first, last, strength, radius, quiet=None, *, snap=None)
                          round(1000 * remaining), local, points is None or disagreement > .115 and strength >= .85)
 
     slide = result(False)
-    if not _local_timing_supported(times, offsets):
+    if not allow_local or not _local_timing_supported(times, offsets):
         return slide
     local = result(True)
     return local if local.points and local.residual_ms + 12 <= slide.residual_ms else slide

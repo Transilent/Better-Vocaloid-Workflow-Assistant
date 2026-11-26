@@ -362,11 +362,9 @@ Item {
         title: pane.label("关联试音目录…")
         onAccepted: pane.controller.attachTrialFolder(selectedFolder)
     }
-    Dialog {
+    UiDialog {
         id: importPreview
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        modal: true
+        theme: pane.theme
         title: pane.label("确认附加导入")
         width: Math.round(430 * pane.unit)
         standardButtons: Dialog.Ok | Dialog.Cancel
@@ -376,8 +374,9 @@ Item {
                 text: (pane.preview.name || "") + " · " + pane.typeLabel(pane.preview.type)
                     + "\n" + pane.label("导入会添加到本机预设库。")
             }
-            CheckBox {
+            UiCheckBox {
                 id: importCopy
+                theme: pane.theme
                 text: pane.label("创建独立副本")
                 visible: !pane.preview.copy_required
             }
@@ -385,22 +384,18 @@ Item {
         onAccepted: pane.support.importPreset(!!pane.preview.copy_required || importCopy.checked)
         onRejected: pane.support.cancelPresetImport()
     }
-    Dialog {
+    UiDialog {
         id: aliasDialog
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        modal: true
+        theme: pane.theme
         title: pane.label("重命名…")
         width: Math.round(400 * pane.unit)
         standardButtons: Dialog.Ok | Dialog.Cancel
-        contentItem: TextField { id: aliasName; maximumLength: 80; placeholderText: pane.label("本机别名") }
+        contentItem: TextField { id: aliasName; maximumLength: 80; placeholderText: pane.label("本机别名"); color: pane.theme.text }
         onAccepted: pane.support.renamePreset(pane.actionEntry.id, pane.actionEntry.version, aliasName.text.trim())
     }
-    Dialog {
+    UiDialog {
         id: removeDialog
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        modal: true
+        theme: pane.theme
         title: pane.label("移除预设")
         width: Math.round(400 * pane.unit)
         standardButtons: Dialog.Ok | Dialog.Cancel

@@ -358,6 +358,14 @@
       "source": "src/quick_ui/UiButton.qml"
     },
     {
+      "file": "quick_ui/UiCard.qml",
+      "source": "src/quick_ui/UiCard.qml"
+    },
+    {
+      "file": "quick_ui/UiCheckBox.qml",
+      "source": "src/quick_ui/UiCheckBox.qml"
+    },
+    {
       "file": "quick_ui/UiIcon.qml",
       "source": "src/quick_ui/UiIcon.qml"
     },
@@ -366,8 +374,36 @@
       "source": "src/quick_ui/UiComboBox.qml"
     },
     {
+      "file": "quick_ui/UiCommandPalette.qml",
+      "source": "src/quick_ui/UiCommandPalette.qml"
+    },
+    {
+      "file": "quick_ui/UiDialog.qml",
+      "source": "src/quick_ui/UiDialog.qml"
+    },
+    {
+      "file": "quick_ui/UiDropStage.qml",
+      "source": "src/quick_ui/UiDropStage.qml"
+    },
+    {
+      "file": "quick_ui/UiMenu.qml",
+      "source": "src/quick_ui/UiMenu.qml"
+    },
+    {
       "file": "quick_ui/UiNumberField.qml",
       "source": "src/quick_ui/UiNumberField.qml"
+    },
+    {
+      "file": "quick_ui/UiProgressBar.qml",
+      "source": "src/quick_ui/UiProgressBar.qml"
+    },
+    {
+      "file": "quick_ui/UiScrollBar.qml",
+      "source": "src/quick_ui/UiScrollBar.qml"
+    },
+    {
+      "file": "quick_ui/UiSlider.qml",
+      "source": "src/quick_ui/UiSlider.qml"
     },
     {
       "file": "context_structure.py",

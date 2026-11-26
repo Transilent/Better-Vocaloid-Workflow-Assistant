@@ -187,6 +187,111 @@ Rectangle {
         return page.controller.text("检查文件与依赖")
     }
 
+    function pipelineSteps() {
+        const d = page.detail || ({})
+        const kind = page.primaryKind
+        const handoff = String(d.handoff || "")
+        const targets = d.studioTargets || ({})
+        const hasStems = (d.mixArtifactIds || []).length > 0
+        const hasMix = (targets.video_mixdown || []).length > 0 || !!page.bindingInfo("mixdown")
+        const hasVideo = (targets.publishing || []).length > 0 || !!page.bindingInfo("video")
+        const isRunning = kind === "progress"
+        const isError = kind === "retry" || (!!d.recovery && String(d.recovery.message || "").length > 0)
+        const prepDone = !isRunning && !isError && (hasStems || hasMix || hasVideo || handoff.length > 0)
+        const tuneDone = handoff === "audio_ready" || handoff === "mixdown_ready" || handoff === "video_ready" || hasMix || hasVideo
+        const mixDone = handoff === "mixdown_ready" || handoff === "video_ready" || hasMix || hasVideo
+        const videoDone = handoff === "video_ready" || hasVideo
+        const pubDone = handoff === "published" || (kind === "delivery" && videoDone)
+
+        return [
+            {
+                key: "prepare",
+                label: page.controller.text("准备"),
+                glyph: "nav_processing",
+                state: isRunning ? "running" : isError ? "error" : (prepDone ? "done" : "next"),
+                actionable: page.idle || isRunning,
+                tip: isRunning ? page.controller.text("查看进度与错误")
+                    : isError ? page.controller.text("继续或重试准备")
+                    : page.controller.text("查看任务准备进度与日志")
+            },
+            {
+                key: "tuning",
+                label: page.controller.text("调音/修音"),
+                glyph: "nav_tuning",
+                state: kind === "tuning" ? "next" : (tuneDone ? "done" : "pending"),
+                actionable: page.idle,
+                tip: kind === "tuning" ? page.controller.text("调音或查看工程") : page.controller.text("前往调音 / 工程页")
+            },
+            {
+                key: "mixdown",
+                label: page.controller.text("简易混音"),
+                glyph: "nav_mixdown",
+                state: kind === "audio_mixdown" ? "next" : (mixDone ? "done" : "pending"),
+                actionable: page.idle && (kind === "audio_mixdown" || hasStems || mixDone),
+                tip: hasStems ? page.controller.text("将当前任务分轨送入简易混音") : page.controller.text("前往简易混音")
+            },
+            {
+                key: "video",
+                label: page.controller.text("合成视频"),
+                glyph: "nav_video",
+                state: kind === "video_mixdown" ? "next" : (videoDone ? "done" : "pending"),
+                actionable: page.idle && (kind === "video_mixdown" || hasMix || videoDone),
+                tip: hasMix ? page.controller.text("从当前任务混音合成视频") : page.controller.text("前往合成视频")
+            },
+            {
+                key: "publish",
+                label: page.controller.text("发布"),
+                glyph: "nav_publishing",
+                state: kind === "publishing" ? "next" : (pubDone ? "done" : "pending"),
+                actionable: page.idle && (kind === "publishing" || hasVideo || pubDone),
+                tip: hasVideo ? page.controller.text("使用当前视频准备发布") : page.controller.text("前往发布页")
+            }
+        ]
+    }
+
+    function triggerPipelineStep(stepKey) {
+        const d = page.detail || ({})
+        const targets = d.studioTargets || ({})
+        if (stepKey === "prepare") {
+            if (page.primaryKind === "retry" && !!d.canResume)
+                page.controller.resumeSelectedTask()
+            else if (page.controller.selectedTaskId)
+                page.controller.inspectTaskProgress(page.controller.selectedTaskId)
+            else
+                page.controller.navigate("processing")
+            return
+        }
+        if (stepKey === "tuning") {
+            if (page.primaryKind === "tuning")
+                page.controller.runTaskPrimaryAction()
+            else if (String(d.handoff || "") === "awaiting_tuning" && !!d.canDispatch)
+                page.controller.dispatchTaskHandoff()
+            else
+                page.controller.navigate("tuning")
+            return
+        }
+        if (stepKey === "mixdown") {
+            if ((d.mixArtifactIds || []).length > 0)
+                page.controller.mixTaskStems()
+            else
+                page.controller.navigate("audio_mixdown")
+            return
+        }
+        if (stepKey === "video") {
+            if ((targets.video_mixdown || []).length > 0)
+                page.controller.composeTaskVideo()
+            else
+                page.controller.navigate("video_mixdown")
+            return
+        }
+        if (stepKey === "publish") {
+            if ((targets.publishing || []).length > 0)
+                page.controller.prepareTaskPublication()
+            else
+                page.controller.navigate("publishing")
+        }
+    }
+
     function bindingInfo(kind) {
         const all = page.detail.bindings
         return all && all[kind] ? all[kind] : null
@@ -463,7 +568,7 @@ Rectangle {
                         clip: true
                         model: page.controller.taskModel
                         boundsBehavior: Flickable.StopAtBounds
-                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                        ScrollBar.vertical: UiScrollBar { theme: page.theme }
 
                         delegate: ItemDelegate {
                             id: taskRow
@@ -582,22 +687,81 @@ Rectangle {
                     anchors.fill: parent
                     spacing: Math.round(10 * page.theme.scale)
 
-                    ColumnLayout {
+                    Item {
                         Layout.fillWidth: true
+                        Layout.fillHeight: true
                         visible: !page.controller.selectedTaskId
-                        spacing: Math.round(6 * page.theme.scale)
-                        Text {
-                            text: page.controller.text("选择任务")
-                            color: page.theme.text
-                            font.pixelSize: Math.round(18 * page.theme.scale)
-                            font.weight: Font.DemiBold
-                        }
-                        Text {
-                            Layout.fillWidth: true
-                            text: page.controller.text("从左侧选择一个任务。")
-                            color: page.theme.muted
-                            font.pixelSize: Math.round(13 * page.theme.scale)
-                            wrapMode: Text.Wrap
+
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: Math.min(parent.width - Math.round(24 * page.theme.scale), Math.round(380 * page.theme.scale))
+                            implicitHeight: emptyDetailCol.implicitHeight + Math.round(36 * page.theme.scale)
+                            radius: page.theme.radiusLg !== undefined ? page.theme.radiusLg : Math.round(12 * page.theme.scale)
+                            color: page.theme.surface
+                            border.width: 1
+                            border.color: page.theme.lineSubtle !== undefined ? page.theme.lineSubtle : page.theme.line
+
+                            Rectangle {
+                                anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                                anchors.leftMargin: parent.radius; anchors.rightMargin: parent.radius
+                                height: 1
+                                color: page.theme.highlightTop !== undefined ? page.theme.highlightTop : "transparent"
+                            }
+
+                            ColumnLayout {
+                                id: emptyDetailCol
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.margins: Math.round(20 * page.theme.scale)
+                                spacing: Math.round(10 * page.theme.scale)
+
+                                Rectangle {
+                                    Layout.alignment: Qt.AlignHCenter
+                                    width: Math.round(42 * page.theme.scale)
+                                    height: width
+                                    radius: Math.round(12 * page.theme.scale)
+                                    color: page.theme.raised
+                                    border.width: 1
+                                    border.color: page.theme.lineSubtle !== undefined ? page.theme.lineSubtle : page.theme.line
+                                    UiIcon {
+                                        anchors.centerIn: parent
+                                        width: Math.round(20 * page.theme.scale)
+                                        height: width
+                                        glyph: "nav_results"
+                                        tint: page.theme.accent
+                                    }
+                                }
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignHCenter
+                                    text: page.controller.text("选择任务查看制作进度")
+                                    color: page.theme.text
+                                    font.pixelSize: Math.round(16 * page.theme.scale)
+                                    font.weight: Font.DemiBold
+                                    textFormat: Text.PlainText
+                                }
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignHCenter
+                                    text: page.controller.text("从左侧选择一个任务查看完整管线与产物，或开始新的歌曲准备。")
+                                    color: page.theme.muted
+                                    font.pixelSize: Math.round(12 * page.theme.scale)
+                                    wrapMode: Text.Wrap
+                                    textFormat: Text.PlainText
+                                }
+
+                                UiButton {
+                                    Layout.alignment: Qt.AlignHCenter
+                                    Layout.topMargin: Math.round(4 * page.theme.scale)
+                                    theme: page.theme
+                                    primary: true
+                                    text: page.controller.text("前往准备工作流")
+                                    onClicked: page.controller.navigate("processing")
+                                }
+                            }
                         }
                     }
 
@@ -671,13 +835,150 @@ Rectangle {
                         }
                     }
 
+                    // Visual 5-Step Production Pipeline Map
+                    Rectangle {
+                        id: taskPipelineStepper
+                        objectName: "taskPipelineStepper"
+                        Layout.fillWidth: true
+                        visible: !!page.controller.selectedTaskId
+                        implicitHeight: pipelineRow.implicitHeight + Math.round(18 * page.theme.scale)
+                        radius: page.theme.radiusLg !== undefined ? page.theme.radiusLg : Math.round(10 * page.theme.scale)
+                        color: page.theme.surface
+                        border.width: 1
+                        border.color: page.theme.lineSubtle !== undefined ? page.theme.lineSubtle : page.theme.line
+
+                        Rectangle {
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                            anchors.leftMargin: parent.radius; anchors.rightMargin: parent.radius
+                            height: 1
+                            color: page.theme.highlightTop !== undefined ? page.theme.highlightTop : "transparent"
+                        }
+
+                        RowLayout {
+                            id: pipelineRow
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.leftMargin: Math.round(10 * page.theme.scale)
+                            anchors.rightMargin: Math.round(10 * page.theme.scale)
+                            spacing: 0
+
+                            readonly property var steps: page.pipelineSteps()
+
+                            Repeater {
+                                model: pipelineRow.steps
+                                delegate: RowLayout {
+                                    id: pipeItem
+                                    required property var modelData
+                                    required property int index
+                                    readonly property bool isLast: index === pipelineRow.steps.length - 1
+                                    readonly property string st: String(modelData.state || "pending")
+                                    Layout.fillWidth: !isLast
+                                    spacing: 0
+
+                                    AbstractButton {
+                                        id: stepBtn
+                                        objectName: "pipelineStep_" + String(pipeItem.modelData.key || "")
+                                        enabled: !!pipeItem.modelData.actionable
+                                        hoverEnabled: true
+                                        implicitWidth: stepPillRow.implicitWidth + Math.round(12 * page.theme.scale)
+                                        implicitHeight: Math.round(32 * page.theme.scale)
+                                        Accessible.name: String(pipeItem.modelData.label || "")
+                                        ToolTip.visible: hovered && String(pipeItem.modelData.tip || "").length > 0
+                                        ToolTip.text: String(pipeItem.modelData.tip || "")
+                                        onClicked: page.triggerPipelineStep(String(pipeItem.modelData.key || ""))
+
+                                        background: Rectangle {
+                                            radius: Math.round(8 * page.theme.scale)
+                                            color: stepBtn.down ? page.theme.selected
+                                                : stepBtn.hovered && stepBtn.enabled ? page.theme.hover
+                                                : pipeItem.st === "next" ? Qt.rgba(page.theme.accent.r, page.theme.accent.g, page.theme.accent.b, 0.12)
+                                                : "transparent"
+                                            border.width: pipeItem.st === "next" ? 1 : 0
+                                            border.color: Qt.rgba(page.theme.accent.r, page.theme.accent.g, page.theme.accent.b, 0.38)
+                                        }
+
+                                        contentItem: RowLayout {
+                                            id: stepPillRow
+                                            anchors.centerIn: parent
+                                            spacing: Math.round(6 * page.theme.scale)
+
+                                            Rectangle {
+                                                width: Math.round(20 * page.theme.scale)
+                                                height: width
+                                                radius: Math.round(width / 2)
+                                                color: pipeItem.st === "done"
+                                                    ? Qt.rgba(page.theme.success.r, page.theme.success.g, page.theme.success.b, 0.18)
+                                                    : pipeItem.st === "next"
+                                                        ? page.theme.accent
+                                                        : pipeItem.st === "error"
+                                                            ? Qt.rgba(page.theme.error.r, page.theme.error.g, page.theme.error.b, 0.18)
+                                                            : pipeItem.st === "running"
+                                                                ? Qt.rgba(page.theme.accent.r, page.theme.accent.g, page.theme.accent.b, 0.22)
+                                                                : page.theme.raised
+                                                border.width: 1
+                                                border.color: pipeItem.st === "done" ? page.theme.success
+                                                    : pipeItem.st === "next" || pipeItem.st === "running" ? page.theme.accent
+                                                    : pipeItem.st === "error" ? page.theme.error
+                                                    : page.theme.line
+
+                                                Text {
+                                                    anchors.centerIn: parent
+                                                    visible: pipeItem.st === "done" || pipeItem.st === "error" || pipeItem.st === "running"
+                                                    text: pipeItem.st === "done" ? "✓" : pipeItem.st === "error" ? "!" : "…"
+                                                    color: pipeItem.st === "done" ? page.theme.success
+                                                        : pipeItem.st === "error" ? page.theme.error : page.theme.accent
+                                                    font.pixelSize: Math.round(10 * page.theme.scale)
+                                                    font.weight: Font.Bold
+                                                    textFormat: Text.PlainText
+                                                }
+
+                                                UiIcon {
+                                                    anchors.centerIn: parent
+                                                    visible: pipeItem.st === "next" || pipeItem.st === "pending"
+                                                    width: Math.round(11 * page.theme.scale)
+                                                    height: width
+                                                    glyph: String(pipeItem.modelData.glyph || "nav_results")
+                                                    tint: pipeItem.st === "next" ? page.theme.base : page.theme.muted
+                                                }
+                                            }
+
+                                            Text {
+                                                text: String(pipeItem.modelData.label || "")
+                                                color: pipeItem.st === "next" || pipeItem.st === "done"
+                                                    ? page.theme.text
+                                                    : pipeItem.st === "error" ? page.theme.error : page.theme.muted
+                                                font.pixelSize: Math.round(11 * page.theme.scale)
+                                                font.weight: pipeItem.st === "next" ? Font.DemiBold : Font.Normal
+                                                textFormat: Text.PlainText
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        visible: !pipeItem.isLast
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: Math.round(8 * page.theme.scale)
+                                        Layout.preferredHeight: 2
+                                        Layout.leftMargin: Math.round(3 * page.theme.scale)
+                                        Layout.rightMargin: Math.round(3 * page.theme.scale)
+                                        radius: 1
+                                        color: pipeItem.st === "done"
+                                            ? Qt.rgba(page.theme.success.r, page.theme.success.g, page.theme.success.b, 0.55)
+                                            : page.theme.line
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     Rectangle {
                         Layout.fillWidth: true
                         visible: !!page.controller.selectedTaskId
                         implicitHeight: deliveryContent.implicitHeight + Math.round(20 * page.theme.scale)
-                        radius: Math.round(8 * page.theme.scale)
+                        radius: page.theme.radiusLg !== undefined ? page.theme.radiusLg : Math.round(10 * page.theme.scale)
                         color: page.theme.raised
-                        border.color: page.theme.line
+                        border.color: page.theme.lineSubtle !== undefined ? page.theme.lineSubtle : page.theme.line
 
                         RowLayout {
                             id: deliveryContent
@@ -781,7 +1082,7 @@ Rectangle {
                             clip: true
                             model: page.detail.artifacts || []
                             boundsBehavior: Flickable.StopAtBounds
-                            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                            ScrollBar.vertical: UiScrollBar { theme: page.theme }
                             delegate: ItemDelegate {
                                 id: artifactRow
                                 required property var modelData
@@ -1678,15 +1979,13 @@ Rectangle {
     }
 
 
-    Dialog {
+    UiDialog {
         id: reprocessConfirm
         objectName: "reprocessTaskConfirm"
+        theme: page.theme
         property string job: ""
         property string taskTitle: ""
         title: page.controller.text("用当前准备设置另建任务")
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        modal: true
         width: Math.min(parent.width - 40, 470 * page.theme.scale)
         standardButtons: Dialog.Cancel | Dialog.Ok
         onAccepted: page.controller.reprocessSelectedTask(job)
@@ -1714,9 +2013,10 @@ Rectangle {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: registerArtifactDialog
         objectName: "registerTaskArtifactDialog"
+        theme: page.theme
         property string expectedBindingJobId: ""
         property string expectedBindingTitle: ""
         property string expectedBindingKind: "project"
@@ -1813,9 +2113,10 @@ Rectangle {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: unlinkBindingDialog
         objectName: "unlinkTaskBindingDialog"
+        theme: page.theme
         property string expectedBindingJobId: ""
         property string expectedBindingTitle: ""
         property string expectedBindingKind: ""
@@ -1908,9 +2209,10 @@ Rectangle {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: rebuildArtifactsDialog
         objectName: "rebuildTaskArtifactsDialog"
+        theme: page.theme
         property string expectedRebuildJobId: ""
         property string expectedRebuildTitle: ""
         property string expectedIndexRevision: ""
@@ -1985,9 +2287,10 @@ Rectangle {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: renameDialog
         objectName: "renameTaskDialog"
+        theme: page.theme
         property string expectedJobId: ""
         property string expectedTitle: ""
         parent: Overlay.overlay
@@ -2062,9 +2365,10 @@ Rectangle {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: deleteDialog
         objectName: "deleteTaskDialog"
+        theme: page.theme
         property string expectedJobId: ""
         property string expectedTitle: ""
         parent: Overlay.overlay
@@ -2149,9 +2453,10 @@ Rectangle {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: registerVideoDialog
         objectName: "registerExistingVideoDialog"
+        theme: page.theme
         property string expectedVideoJobId: ""
         property string expectedVideoTitle: ""
         property url pendingVideoUrl

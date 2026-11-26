@@ -52,6 +52,7 @@ class Recording:
     part: str = ''
     offset: float = 0.
     score_lane: str = ''
+    score_octave: int = 0
     timing_ref: str = ''
     muted: bool = False
     phrase_reference_only: bool = False
@@ -406,6 +407,7 @@ class ChorusProject:
                 raise ValueError(f'源文件和保存工程时不一致：{source.name}')
             records.append(replace(source, name=str(raw['name']), offset=number(raw['offset']),
                                    part=str(raw['part']), score_lane=str(raw['score_lane']),
+                                   score_octave=int(raw.get('score_octave', 0) or 0),
                                    timing_ref=str(raw['timing_ref']), muted=bool(raw['muted']),
                                    phrase_reference_only=bool(raw.get('phrase_reference_only', False))))
         ids = {track.id for track in records}

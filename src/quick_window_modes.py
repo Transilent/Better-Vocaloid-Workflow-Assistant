@@ -15,6 +15,49 @@ SC_SIZE = 0xF000
 HTBORDER = 18
 SIZING_HITS = range(10, 18)
 
+DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+DWMWA_USE_IMMERSIVE_DARK_MODE_PRE20H1 = 19
+DWMWA_BORDER_COLOR = 34
+DWMWA_CAPTION_COLOR = 35
+DWMWA_TEXT_COLOR = 36
+
+
+def _hex_to_colorref(hex_color: str) -> int:
+    text = str(hex_color or '').strip().lstrip('#')
+    if len(text) != 6:
+        return 0x0016100E
+    r = int(text[0:2], 16)
+    g = int(text[2:4], 16)
+    b = int(text[4:6], 16)
+    return (b << 16) | (g << 8) | r
+
+
+def apply_windows_titlebar_theme(window, dark: bool, caption_hex: str = '', text_hex: str = '', border_hex: str = ''):
+    """Sync Windows 10/11 DWM native titlebar chrome with VWA's active dark/light surface."""
+    try:
+        hwnd = int(window.winId())
+        if not hwnd:
+            return False
+        dwmapi = ctypes.WinDLL('dwmapi', use_last_error=True)
+        set_attr = dwmapi.DwmSetWindowAttribute
+        set_attr.argtypes = (wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD)
+        set_attr.restype = ctypes.c_long
+        flag = ctypes.c_int(1 if dark else 0)
+        hr = set_attr(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(flag), ctypes.sizeof(flag))
+        if hr != 0:
+            set_attr(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_PRE20H1, ctypes.byref(flag), ctypes.sizeof(flag))
+        # Win11 22000+ supports exact caption, text, and window border tinting (ignored gracefully on Win10).
+        cap_val = ctypes.c_uint32(_hex_to_colorref(caption_hex or ('#0e1016' if dark else '#f3f2f7')))
+        set_attr(hwnd, DWMWA_CAPTION_COLOR, ctypes.byref(cap_val), ctypes.sizeof(cap_val))
+        txt_val = ctypes.c_uint32(_hex_to_colorref(text_hex or ('#eeeef5' if dark else '#242233')))
+        set_attr(hwnd, DWMWA_TEXT_COLOR, ctypes.byref(txt_val), ctypes.sizeof(txt_val))
+        if border_hex:
+            brd_val = ctypes.c_uint32(_hex_to_colorref(border_hex))
+            set_attr(hwnd, DWMWA_BORDER_COLOR, ctypes.byref(brd_val), ctypes.sizeof(brd_val))
+        return True
+    except (OSError, AttributeError, ValueError, RuntimeError):
+        return False
+
 
 def _disconnect(signal, slot):
     """Drop one signal connection without depending on sender lifetime."""
@@ -87,10 +130,29 @@ class WindowModes(QObject):
         for signal, slot in self._window_signals:
             signal.connect(slot)
         self.native_filter = None
+        self._theme_tokens = None
         if app.platformName() == 'windows':
             self.native_filter = WindowsSizingFilter(window)
             app.installNativeEventFilter(self.native_filter)
+            self._bind_titlebar_theme()
         self.set_screen(window.screen())
+
+    def _bind_titlebar_theme(self):
+        tokens = self.window.property('tokens')
+        self._theme_tokens = tokens
+        self._sync_titlebar_theme()
+        if tokens is not None and hasattr(tokens, 'darkChanged'):
+            tokens.darkChanged.connect(self._sync_titlebar_theme)
+
+    def _sync_titlebar_theme(self, *_):
+        if self._closed:
+            return
+        tokens = self._theme_tokens
+        dark = bool(tokens.property('dark')) if tokens is not None else True
+        cap = str(tokens.property('sidebar').name()) if (tokens is not None and tokens.property('sidebar')) else ''
+        txt = str(tokens.property('text').name()) if (tokens is not None and tokens.property('text')) else ''
+        brd = str(tokens.property('line').name()) if (tokens is not None and tokens.property('line')) else ''
+        apply_windows_titlebar_theme(self.window, dark, cap, txt, brd)
 
     def close(self):
         """Release all native and signal connections; safe to call repeatedly."""
@@ -99,6 +161,9 @@ class WindowModes(QObject):
         self._closed = True
         self.timer.stop()
         _disconnect(self.timer.timeout, self.fit_normal_window)
+        if self._theme_tokens is not None and hasattr(self._theme_tokens, 'darkChanged'):
+            _disconnect(self._theme_tokens.darkChanged, self._sync_titlebar_theme)
+        self._theme_tokens = None
         if self.native_filter is not None:
             native_filter = self.native_filter
             try:
@@ -189,6 +254,7 @@ class WindowModes(QObject):
 __all__ = (
     'WindowModes',
     'WindowsSizingFilter',
+    'apply_windows_titlebar_theme',
     'WM_NCHITTEST',
     'WM_SYSCOMMAND',
     'SC_SIZE',
