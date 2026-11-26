@@ -533,7 +533,7 @@ def _uf_pitch_samples(curve, grid, keys):
 def apply_manual_pitch(original, dest, format, spans, *, cancel):
     """Reuse the native and exchange writers after replacing the style contribution."""
     import numpy as np
-    from tuning_pitch_layer import CAPACITY, LIMIT, PROTECTED, mix_pitch_samples, pitch_tick_grid
+    from tuning_pitch_math import CAPACITY, LIMIT, PROTECTED, mix_pitch_samples, pitch_tick_grid
 
     native = format == 'acep'
     read_curve, samples = (_ace_curve, _ace_pitch_samples) if native else (_uf_curve, _uf_pitch_samples)

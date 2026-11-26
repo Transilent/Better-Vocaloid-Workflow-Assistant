@@ -280,7 +280,7 @@ class TuningEngineTests(unittest.TestCase):
             ],
             'expression_density': 'original',
         }
-        with patch('calibration_session.project_data', side_effect=fake_project_data), \
+        with patch('project_io.project_data', side_effect=fake_project_data), \
              patch('calibration_workflow.retain_project', side_effect=fake_retain):
             output, report = process_project(data, options)
         self.assertEqual(calls, [(1, 1), (0, 0)])

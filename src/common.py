@@ -404,8 +404,105 @@ def legacy_midi_signature(job, request, voice):
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
+def fingerprint(data):
+    return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False,
+                                     separators=(',', ':')).encode('utf-8')).hexdigest()
+
+
+@lru_cache(maxsize=1)
+def pinned_files():
+    return {item['file']: item for item in dependency_manifest().get('entries', [])}
+
+
+@lru_cache(maxsize=128)
+def _custom_hash(path, size, modified):
+    return file_hash(path)
+
+
+def model_identity(value):
+    """Use the verified distribution catalog for immutable bundled weights.
+
+    Custom models are hashed once per size/mtime within the worker. The separate
+    dependency check remains responsible for verifying the installed catalog.
+    """
+    path = Path(value).resolve()
+    catalog = pinned_files()
+    if path.is_relative_to(ROOT):
+        name = path.relative_to(ROOT).as_posix()
+        entries = [item for key, item in catalog.items()
+                   if key == name or key.startswith(name + '/')]
+        if entries:
+            return [(item['file'].removeprefix(name), item['sha256'],
+                     (ROOT / item['file']).stat().st_size) for item in sorted(entries, key=lambda x: x['file'])]
+    files = sorted(path.rglob('*')) if path.is_dir() else [path]
+    return [(p.relative_to(path).as_posix() if path.is_dir() else p.name,
+             _custom_hash(str(p), p.stat().st_size, p.stat().st_mtime_ns))
+            for p in files if p.is_file()]
+
+
+def inference_inputs(job, request, voice):
+    import configparser
+    tools = resolve_tools(request['tools'])
+    backend = Path(tools['vocal2midi'])
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.read(backend / 'settings/vocal2midi.ini', encoding='utf-8-sig')
+    settings = dict(parser['General']) if parser.has_section('General') else {}
+    # These are the values actually consumed by midi_bridge. GUI, export-list,
+    # download and publishing preferences do not affect recognition.
+    defaults = {'t0': 0., 'slice_min_sec': 5., 'slice_max_sec': 10.,
+                'round_pitch': True, 'seg_thresh': .2, 'seg_rad': .02,
+                'est_thresh': .2, 'batch_size': 1, 'asr_batch': 2}
+    effective = {}
+    for key, default in defaults.items():
+        raw = settings.get(key, str(default))
+        effective[key] = raw.lower() in ('true', '1') if isinstance(default, bool) else type(default)(raw)
+    effective['nsteps'] = request.get('midi_steps', int(settings.get('nsteps', 8)))
+    from music_timing import effective_bpm
+    effective['tempo'] = effective_bpm(request)
+    recognize = request.get('recognize_lyrics', True)
+    pitch = bool(request.get('export_pitch') and request.get('project_formats'))
+    analyze_pitch = pitch or (backend / 'backend-version.json').is_file()
+    from preparation_languages import HUBERTFA_MODEL, PROFILES, lyric_output_mode
+    language = request['language']
+    models = {'game_model': 'experiments/GAME-1.0.3-medium-onnx'}
+    if recognize:
+        profile = PROFILES[language]
+        models['hfa_model'] = HUBERTFA_MODEL
+        models[profile.asr_settings_key] = profile.asr_model
+    if analyze_pitch:
+        models['rmvpe_model'] = 'experiments/RMVPE/rmvpe.onnx'
+    identities = {}
+    for key, default in models.items():
+        path = Path(settings.get(key, default))
+        candidate = path if path.is_absolute() else backend / path
+        if not candidate.exists() and not path.is_absolute() and (backend / 'backend-version.json').is_file():
+            candidate = ROOT / 'dependencies/vocal2midi' / path
+        identities[key] = model_identity(candidate)
+    code = [(str(p.relative_to(backend)), file_hash(p))
+            for directory in ('application', 'inference') for p in sorted((backend / directory).rglob('*.py'))]
+    cross_voice = {}
+    if voice == 'backing' and analyze_pitch and (backend / 'backend-version.json').is_file():
+        peer = Path(job) / 'midi/lead/lead.pitch.npz'
+        partition = Path(job) / 'separation-report.json'
+        cross_voice = {'lead_signature': fingerprint(inference_inputs(job, request, 'lead')),
+                       'lead_pitch': file_hash(peer) if peer.is_file() else None,
+                       'partition_report': file_hash(partition) if partition.is_file() else None,
+                       'adapter': file_hash(ROOT / 'vocal_partition.py')}
+    return {'schema': 8, 'audio': file_hash(Path(job) / 'audio' / (voice + '.wav')),
+            **({'cross_voice': cross_voice} if cross_voice else {}),
+            'worker_code': {name: file_hash(ROOT / name) for name in ('midi_bridge.py', 'v2m_runtime.py', 'music_timing.py')},
+            **({'pitch_adapter': file_hash(ROOT / 'pitch_accuracy.py')} if analyze_pitch and (backend / 'backend-version.json').is_file() else {}),
+            **({'transcription_adapter': file_hash(ROOT / 'transcription_quality.py')}
+               if (backend / 'backend-version.json').is_file() else {}),
+            'voice': voice, 'language': language, 'recognize_lyrics': recognize,
+            'lyrics': request.get('backing_lyrics', '') if voice == 'backing' else request.get('lyrics', ''),
+            'lyric_mode': lyric_output_mode(request, settings.get),
+            'native_project': bool(request.get('project_formats')), 'pitch': pitch,
+            'alignment': request.get('alignment_engine', 'hfa'), 'models': identities, 'code': code,
+            'parameters': effective, 'device': tools.get('midi_device', 'dml'), 'adapter': tools.get('dml_adapter', 'auto')}
+
+
 def midi_signature(job, request, voice):
-    from artifact_cache import fingerprint, inference_inputs
     return fingerprint(inference_inputs(job, request, voice))
 
 

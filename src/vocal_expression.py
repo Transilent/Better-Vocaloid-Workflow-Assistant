@@ -5,12 +5,12 @@ import json
 import math
 from pathlib import Path
 from expression_controls import STYLE_CONTROL_NAMES, control_labels, control_limits
+from tuning_clock import SV_QUARTER, TempoMap
+from tuning_pitch_math import CURVE_TOLERANCE_DB, simplify
 
 ALGORITHM_VERSION = 3
-SV_QUARTER = 705600000
 HOP_SECONDS = .02
 WINDOW_SECONDS = .06
-CURVE_TOLERANCE_DB = .12
 CONTROL_NAMES = control_labels()
 _CONTROL_LIMITS = control_limits(STYLE_CONTROL_NAMES)
 SKIP_REASONS = {'no_notes_or_zero_strength': '没有有效音符或强度为零',
@@ -34,39 +34,7 @@ def expression_settings(options):
     return dynamics, strength, timbre_settings(options)
 
 
-class TempoMap:
-    """Convert musical positions and seconds about content time zero."""
-    def __init__(self, tempos):
-        if not isinstance(tempos, (list, tuple)) or any(
-                not isinstance(row, dict) or type(row.get('position')) is not int for row in tempos):
-            raise ValueError('工程速度表的位置格式无效。')
-        tempos = sorted(tempos, key=lambda item: item['position'])
-        if not tempos or tempos[0]['position'] > 0:
-            raise ValueError('工程速度表需要覆盖内容起点。')
-        self.positions, self.bpms, self.seconds = [], [], []
-        elapsed = 0.
-        for item in tempos:
-            position, bpm = item['position'], item['bpm']
-            if type(position) is not int or type(bpm) not in (int, float) or not math.isfinite(bpm) or bpm <= 0:
-                raise ValueError('SVP 速度表包含无效数值。')
-            if self.positions:
-                if position <= self.positions[-1]:
-                    raise ValueError('SVP 速度表包含重复位置。')
-                elapsed += (position - self.positions[-1]) / SV_QUARTER * 60 / self.bpms[-1]
-            self.positions.append(position)
-            self.bpms.append(bpm)
-            self.seconds.append(elapsed)
-        zero = self.to_seconds(0)
-        if zero:
-            self.seconds = [seconds - zero for seconds in self.seconds]
-
-    def to_seconds(self, position):
-        index = max(0, bisect.bisect_right(self.positions, position) - 1)
-        return self.seconds[index] + (position - self.positions[index]) / SV_QUARTER * 60 / self.bpms[index]
-
-    def to_position(self, seconds):
-        index = max(0, bisect.bisect_right(self.seconds, seconds) - 1)
-        return round(self.positions[index] + (seconds - self.seconds[index]) * self.bpms[index] / 60 * SV_QUARTER)
+# TempoMap re-exported from tuning_clock above.
 
 
 def energy_frames(path, cancel=lambda: None, *, window=None):
@@ -110,25 +78,7 @@ def energy_frames(path, cancel=lambda: None, *, window=None):
             'hop_seconds': hop / rate, 'window_seconds': (2 * half + 1) / rate}
 
 
-def simplify(points, tolerance=CURVE_TOLERANCE_DB):
-    """Keep endpoints and bound the vertical error of linear interpolation in dB."""
-    import numpy as np
-    if len(points) < 3:
-        return points
-    data = np.asarray(points, dtype=np.float64)
-    keep, pending = {0, len(points) - 1}, [(0, len(points) - 1)]
-    while pending:
-        left, right = pending.pop()
-        if right <= left + 1:
-            continue
-        estimated = data[left, 1] + (data[left + 1:right, 0] - data[left, 0]) / (data[right, 0] - data[left, 0]) * (data[right, 1] - data[left, 1])
-        errors = np.abs(estimated - data[left + 1:right, 1])
-        offset = int(np.argmax(errors))
-        if errors[offset] > tolerance:
-            split = left + 1 + offset
-            keep.add(split)
-            pending.extend([(left, split), (split, right)])
-    return [points[index] for index in sorted(keep)]
+# simplify re-exported from tuning_pitch_math above.
 
 
 def analyze(path, intervals, strength=.6, cancel=lambda: None, *, preserve_samples=False):

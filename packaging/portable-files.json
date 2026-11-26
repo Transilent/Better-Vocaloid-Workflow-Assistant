@@ -190,6 +190,18 @@
       "source": "src/tuning_pitch_layer.py"
     },
     {
+      "file": "tuning_pitch_math.py",
+      "source": "src/tuning_pitch_math.py"
+    },
+    {
+      "file": "style_helpers.py",
+      "source": "src/style_helpers.py"
+    },
+    {
+      "file": "export_receipts.py",
+      "source": "src/export_receipts.py"
+    },
+    {
       "file": "tuning_clock.py",
       "source": "src/tuning_clock.py"
     },
@@ -556,6 +568,10 @@
     {
       "file": "project_exports.py",
       "source": "src/project_exports.py"
+    },
+    {
+      "file": "project_io.py",
+      "source": "src/project_io.py"
     },
     {
       "file": "vocal_expression.py",
@@ -1184,6 +1200,10 @@
     {
       "file": "mixdown_export.py",
       "source": "src/mixdown_export.py"
+    },
+    {
+      "file": "mixdown_ffmpeg.py",
+      "source": "src/mixdown_ffmpeg.py"
     },
     {
       "file": "mixdown_runtime.py",

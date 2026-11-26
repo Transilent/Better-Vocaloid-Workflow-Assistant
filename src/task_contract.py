@@ -386,12 +386,12 @@ def _project_audio_paths(path):
     if path.stat().st_size > 64 * 1024**2: raise ContractError('工程文件过大。')
     base = path.parent
     if path.suffix.lower() == '.svp':
-        from calibration_session import project_data
+        from project_io import project_data
         value = project_data(path)
         names = [t.get('mainRef', {}).get('audio', {}).get('filename') for t in value.get('tracks', [])
                  if t.get('mainRef', {}).get('isInstrumental')]
     elif path.suffix.lower() == '.ustx':
-        from project_exports import read_ustx
+        from project_io import read_ustx
         names = [part.get('relative_path') or part.get('file_path') for part in read_ustx(path).get('wave_parts', [])]
     elif path.suffix.lower() == '.vsqx':
         import xml.etree.ElementTree as ET
@@ -592,7 +592,7 @@ def bind(job, kind, path, *, validate=True, dependencies=None, expected_sha256=N
         raise ContractError('请选择存在且非空的文件。')
     if validate:
         if kind == 'video':
-            from publication import inspect_video
+            from project_io import inspect_video
             inspect_video(path)
         elif kind == 'mixdown':
             import numpy as np
@@ -603,18 +603,18 @@ def bind(job, kind, path, *, validate=True, dependencies=None, expected_sha256=N
                 if not np.isfinite(block).all(): raise ContractError('Mixdown 含有无效采样。')
         elif path.suffix.lower() == '.svp':
             if path.stat().st_size > 64 * 1024**2: raise ContractError('工程文件过大。')
-            from calibration_session import project_data
+            from project_io import project_data
             value = project_data(path)
             if not any(track.get('mainGroup', {}).get('notes') for track in value.get('tracks', [])
                        if not track.get('mainRef', {}).get('isInstrumental')):
                 raise ContractError('工程中没有演唱音符。')
         elif path.suffix.lower() in ('.vpr', '.vsqx', '.acep', '.ufdata'):
-            from tuning_workflow import inspect_project
+            from project_io import inspect_project
             if not any(row['note_count'] for row in inspect_project(path)['tracks'] if not row['instrumental']):
                 raise ContractError('工程中没有音符。')
         elif path.suffix.lower() == '.ustx':
             if path.stat().st_size > 64 * 1024**2: raise ContractError('工程文件过大。')
-            from project_exports import read_ustx
+            from project_io import read_ustx
             count = sum(len(part.get('notes', [])) for part in read_ustx(path).get('voice_parts', []))
             if count <= 0: raise ContractError('工程中没有音符。')
         else:

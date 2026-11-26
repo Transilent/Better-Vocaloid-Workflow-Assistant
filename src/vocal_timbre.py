@@ -377,7 +377,7 @@ def _bridge_control(delta, support, active, gaps):
 def map_features(frames, intervals, strength, chosen, *, nuclei=None, pitches=None, preserve_samples=False):
     """Neutral gaps and small, bounded changes; unreliable regions stay neutral."""
     import numpy as np
-    from vocal_expression import simplify
+    from tuning_pitch_math import simplify
     times, tilt, breath, periodic, level, pitch, voiced = np.asarray(frames).T
     inside = np.zeros(len(times), dtype=bool)
     short = np.zeros(len(times), dtype=bool)

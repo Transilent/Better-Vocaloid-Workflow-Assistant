@@ -19,8 +19,7 @@ from expression_calibration import CONTROLS,create_probe_set,score_identity
 COMMIT_SCHEMA=1
 
 
-def project_data(path):
-    return json.loads(Path(native_path(path)).read_bytes().removesuffix(b'\x00').decode('utf-8-sig'))
+from project_io import project_data
 
 
 def create_session(project,reference,destination,*,voice='lead',track_index=0,strength=.6,render_folder=None,register=True):
@@ -70,21 +69,7 @@ def create_session(project,reference,destination,*,voice='lead',track_index=0,st
     return destination/'session.json'
 
 
-def read_session(path):
-    path=Path(path).resolve();spec=json.loads(Path(native_path(path)).read_text(encoding='utf-8-sig'))
-    if (not isinstance(spec,dict) or spec.get('schema')!=1 or spec.get('voice') not in ('lead','backing','vocals')
-            or not isinstance(spec.get('outputs'),dict) or set(spec['outputs'])!={'neutral',*CONTROLS}
-            or any(not isinstance(v,str) or not v.startswith(('VWA_', 'BVWA_')) or any(c in v for c in '/\\:') for v in spec['outputs'].values())
-            or len(set(spec['outputs'].values()))!=7 or type(spec.get('track_index')) is not int
-            or type(spec.get('minimum_duration')) not in (float,int) or not math.isfinite(spec['minimum_duration'])
-            or spec['minimum_duration']<=0 or type(spec.get('strength')) not in (float,int)
-            or not math.isfinite(spec['strength']) or not 0<spec['strength']<=1):
-        raise ValueError('自动校准会话无效。')
-    for key in ('project','reference','project_sha256','reference_sha256','score_sha256','render_folder'):
-        if not isinstance(spec.get(key),str) or not spec[key]:raise ValueError('自动校准会话缺少输入记录。')
-    if spec.get('render_channel_mode','standard') not in ('standard','sv-extra','sv-isolated'):
-        raise ValueError('校准会话中的气声输出方式无效。')
-    return spec
+from calibration_workflow import read_session
 
 
 def unchanged_inputs(spec):

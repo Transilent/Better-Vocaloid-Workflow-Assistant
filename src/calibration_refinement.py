@@ -58,8 +58,9 @@ def finalize_expression(data, *, step=.005, mode='dense', cancel=lambda:None):
     Nonlinear editor curves retain their original interpolation unchanged.
     """
     import numpy as np
-    from expression_calibration import CONTROLS
-    from vocal_expression import TempoMap,SV_QUARTER
+    from expression_controls import calibration_controls
+    from tuning_clock import SV_QUARTER, TempoMap
+    CONTROLS = calibration_controls()
     if type(step) not in (int,float) or not math.isfinite(step) or not .001<=step<=.02:
         raise ValueError('参数曲线的采样间隔无效。')
     density_settings({'expression_density':mode})

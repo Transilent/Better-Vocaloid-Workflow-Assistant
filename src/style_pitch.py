@@ -91,8 +91,9 @@ def apply_pitch(data,preset,*,strength,track_indices,detail=None,time_range=None
     outside those windows the original piecewise-linear function is retained.
     """
     import numpy as np
-    from vocal_expression import TempoMap
-    from style_presets import _curve,_phrases,_note_spans,_range_gate,time_range_settings,detail_settings,PHRASE_GAP,PRESETS
+    from tuning_clock import TempoMap
+    from style_helpers import (_curve, _phrases, _note_spans, _range_gate, time_range_settings,
+                               detail_settings, PHRASE_GAP, NOTE_ENVELOPE_PRESETS)
     detail=detail_settings(detail)
     time_range=time_range_settings(time_range) if time_range is not None else None
     authored = external is not None or structure is not None
@@ -114,7 +115,7 @@ def apply_pitch(data,preset,*,strength,track_indices,detail=None,time_range=None
     changed=set()
     for index in track_indices:
         cancel();track=data['tracks'][index];_,offset=_phrases(track,clock)
-        bounded = authored or PRESETS[preset].get('note_envelope')
+        bounded = authored or preset in NOTE_ENVELOPE_PRESETS
         allowed = set(_note_spans(track,clock,offset)[0]) if bounded else None
         group=track['mainGroup'];params=group.get('parameters',{});original=params.get('pitchDelta')
         # Preserve the true score adjacency even when an intervening short,

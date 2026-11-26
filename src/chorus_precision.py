@@ -330,7 +330,7 @@ def move_anchor(track, interval, points, original, destination):
 
 def mark_note_edges(track, curve, position, selection, edit=None):
     """Insert a detected note's end points into the current time map."""
-    from chorus_analysis import _pitch_runs
+    from chorus_notes import _pitch_runs
 
     first, last = (edit.start, edit.end) if edit else selection
     if not first < position < last:

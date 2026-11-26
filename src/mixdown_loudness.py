@@ -22,7 +22,7 @@ def _summary_number(summary, expression):
 
 def measure_file(path, ffmpeg, log_path, sample_rate, frames, cancel=None, *, true_peak=True):
     """Measure a fixed, post-limiter WAV using the bundled FFmpeg ebur128 filter."""
-    from audio_mixdown import _run_ffmpeg
+    from mixdown_ffmpeg import _run_ffmpeg
 
     peaks = ':peak=true' if true_peak else ''
     _, report = _run_ffmpeg(
@@ -89,7 +89,7 @@ def compare_range(before, after, start_ms, end_ms, cache_dir, dll_path, cancel=N
 
     import soundfile
 
-    from audio_mixdown import _check_cancel, _ffmpeg_executable
+    from mixdown_ffmpeg import _check_cancel, _ffmpeg_executable
     from mixdown_realtime_graph import LimitedMixSession
 
     if not (type(start_ms) is int and type(end_ms) is int

@@ -29,15 +29,24 @@ from tuning_clock import ProjectClock
 from tuning_native import NativeProject
 from tuning_sources import all_standard_vpr, apply_native_source, validate_source
 from svp_tuning import Layout, SV2_MIN
-from tuning_execution import (EDITOR_OPTION_KEYS, normalize_options as _normalize,dependencies as _execution_dependencies,
+from project_io import (
+    STYLE_ADAPTERS,
+    TUNING_SUFFIXES,
+    SourceSnapshot,
+    _project,
+    inspect_project,
+    project_format,
+    read_project,
+    read_source,
+    score_layout,
+    style_adapter,
+)
+from tuning_execution import (EDITOR_OPTION_KEYS, check_targets, normalize_options as _normalize,dependencies as _execution_dependencies,
                               preset_context as _preset_context,preset_dependency,receipt_binding_matches,
                               project_context)
 
 SCHEMA=1
 COMMIT_SCHEMA=1
-STYLE_ADAPTERS={'ustx':'ustx_tuning','vpr':'vpr_tuning','vsqx':'vsqx_tuning',
-                'acep':'ace_tuning:ACEP','ufdata':'ace_tuning:UFDATA'}
-TUNING_SUFFIXES=frozenset('.'+fmt for fmt in ('svp',*STYLE_ADAPTERS))
 _LOCKS={};_LOCK_GUARD=threading.Lock()
 CONTRIBUTORS=('tuning_workflow.py','tuning_engine.py','vocal_expression.py','vocal_timbre.py',
  'expression_component.py','expression_calibration.py','calibration_refinement.py','calibration_workflow.py',
@@ -67,79 +76,8 @@ def _stat(path):
     return Path(native_path(path)).stat()
 
 
-def project_format(path):
-    suffix=Path(path).suffix.casefold()
-    if suffix not in TUNING_SUFFIXES:
-        raise ValueError('请选择 SVP、USTX、VPR、VSQX、ACEP 或 UFData 工程。')
-    return suffix[1:]
-
-
 def receipt_path_for(path):
     return path.with_name(path.name+'.tuning.json')
-
-
-def style_adapter(format):
-    name=STYLE_ADAPTERS.get(format)
-    if not name:return None
-    module,_,symbol=name.partition(':')
-    adapter=import_module(module)
-    return getattr(adapter,symbol) if symbol else adapter
-
-
-def _project(raw,format='svp'):
-    if adapter:=style_adapter(format):
-        return adapter.read(raw)
-    value=json.loads(raw.decode('utf-8-sig').rstrip('\x00'))
-    if not isinstance(value,dict) or not isinstance(value.get('tracks'),list) or not isinstance(value.get('time'),dict):
-        raise ValueError('请选择有效的SVP工程。')
-    return value
-
-
-def read_project(path,format=None):
-    format=format or project_format(path)
-    return _project(path if format=='vpr' else _raw(path),format)
-
-
-@dataclass(frozen=True)
-class SourceSnapshot:
-    path: Path
-    format: str
-    sha256: str
-    size: int
-    data: dict
-
-
-def read_source(path):
-    """Read one stable project view; for VPR hash the container without loading its audio into RAM."""
-    path=Path(path).resolve()
-    format=project_format(path)
-    size=_stat(path).st_size
-    if format=='vpr':
-        limit=style_adapter(format).MAX_FILE_BYTES
-        if not 0<size<=limit:raise ValueError('VPR 工程为空或超过 512 MiB。')
-        sha=file_hash(path);data=read_project(path,format)
-        if file_hash(path)!=sha or _stat(path).st_size!=size:
-            raise ValueError('读取期间 VPR 工程发生变化，请重新载入。')
-    else:
-        if not 0<size<=64*1024**2:raise ValueError('工程为空或超过 64 MiB。')
-        raw=_raw(path);data=_project(raw,format)
-        size=len(raw);sha=hashlib.sha256(raw).hexdigest()
-    return SourceSnapshot(path,format,sha,size,data)
-
-
-def score_layout(data,format):
-    if adapter:=style_adapter(format):
-        layout=adapter.Layout(data)
-        score=layout.score
-    else:
-        score,layout=data,Layout(data)
-    layout.clock = ProjectClock(
-        score['time'], step=getattr(layout, 'step', 1),
-        native_origin=getattr(layout, 'native_origin', 0),
-        measure_prefix=getattr(layout, 'measure_prefix', 0),
-    )
-    layout.native = NativeProject(data, format, layout)
-    return score,layout
 
 
 def _candidate_payload(output, original, raw, format='svp'):
@@ -186,21 +124,7 @@ def _relocate_media(data,source,format='svp'):
     return changes
 
 
-def inspect_project(path,*,snapshot=None,geometry=None):
-    snapshot=read_source(path) if snapshot is None else snapshot
-    path,format,sha=snapshot.path,snapshot.format,snapshot.sha256
-    score,layout=geometry or score_layout(snapshot.data,format)
-    tracks=[]
-    for row,track in zip(layout.tracks,score['tracks']):
-        if row.instrumental is None:raise ValueError('SVP轨道格式无效。')
-        tracks.append({'track_index':row.index,'name':track.get('name','演唱轨'),
-            'note_count':row.note_count,'instrumental':row.instrumental})
-    if not any(not row['instrumental'] for row in tracks):raise ValueError('工程中没有演唱轨。')
-    from tuning_project_identity import inspect_candidate_origin
-    return {'path':str(path),'sha256':sha,'bytes':snapshot.size,'tracks':tracks,
-            'format':format,'format_version':layout.version,'synthesizer_v_2':getattr(layout,'sv2',False),
-            'candidate_origin':inspect_candidate_origin(path,sha256=sha),
-            **({'format_notice':layout.notice} if hasattr(layout,'notice') else {})}
+# inspect_project re-exported from project_io above.
 
 
 def job_projects(job):
@@ -434,12 +358,7 @@ def _exclusive(root):
         lock.release()
 
 
-def check_targets(data,options,format,*,layout=None):
-    if adapter:=style_adapter(format):
-        indices=adapter.selected_indices(data,{**options,'expression_mode':'preserve'},layout=layout)
-        validate_source(format,options,vpr_standard=format=='vpr' and all_standard_vpr(data['tracks'],indices))
-        return indices
-    return selected_indices(data,options,layout=layout)
+# check_targets re-exported from tuning_execution above.
 
 
 def apply_project(data,options,format,*,cancel,progress,cache=None):
@@ -477,7 +396,7 @@ def apply_snapshot(snapshot,options,*,cancel,progress,cache=None,observe_style=N
         if observe_style is not None and report.get('pitch_changed'):
             observe_style(output)
         return output,report
-    from agent_style import context_for_snapshot
+    from project_io import context_for_snapshot
     from tuning_score_edits import ScoreEdits
     cancel()
     geometry=score_layout(data,format)

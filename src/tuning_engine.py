@@ -10,7 +10,7 @@ import math
 from pathlib import Path
 
 from svp_tuning import GROUP_STYLE_ONLY, Layout
-from tuning_sources import REFERENCE_CONTROLS as REFERENCE, retained_rows
+from tuning_sources import REFERENCE_CONTROLS as REFERENCE, retained_rows, sources_for
 
 VERSION=3
 EXPRESSION=('loudness','tension','breathiness','voicing','gender','toneShift')
@@ -93,17 +93,7 @@ def selected_indices(data,options,*,layout=None):
     return list(indices)
 
 
-def sources_for(options,indices):
-    rows=options['reference_sources'];mapping={}
-    for row in rows:
-        if not isinstance(row,dict) or type(row.get('track_index')) is not int:raise ValueError('参考音频缺少明确的工程轨索引。')
-        index=row['track_index'];voice=row.get('voice');path=row.get('path')
-        if index in mapping or not isinstance(voice,str) or voice not in ('lead','backing','vocals'):
-            raise ValueError('参考声部映射重复或名称无效。')
-        if not isinstance(path,str) or not path.strip() or not Path(path).is_file():raise ValueError('参考音频不存在。')
-        mapping[index]={'voice':voice,'path':Path(path).resolve(),'cache_key':'track-'+str(index)}
-    if set(mapping)!=set(indices):raise ValueError('每条所选演唱轨都需要明确对应的参考音频；不能把主唱静默套用到和声。')
-    return [mapping[index] for index in indices]
+# sources_for re-exported from tuning_sources above.
 
 
 def _protected(data,indices,controls,pitch=False,calibrated=False,*,layout=None):
@@ -392,7 +382,7 @@ def process_project(data,options,*,cancel=lambda:None,progress=lambda text:None,
         else:primary={'status':'not_selected','reason':'zero_strength','mode':mode,'strength':strength,
                       'tracks':[],'voicebank_calibrated':False}
     elif mode=='retained':
-        from calibration_session import project_data
+        from project_io import project_data
         from calibration_workflow import retain_project
         tracks=[]
         for row in retained_rows(options,indices):

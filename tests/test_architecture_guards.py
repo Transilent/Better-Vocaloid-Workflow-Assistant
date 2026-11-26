@@ -14,7 +14,7 @@ if str(SRC) not in sys.path:
 
 # Ratchet ceiling for 2-way circular imports across flat src/*.py.
 # Whenever a cycle is eliminated, lower this number so cycles can only shrink.
-MAX_CIRCULAR_IMPORT_PAIRS = 24
+MAX_CIRCULAR_IMPORT_PAIRS = 0
 
 HEAVY_FORBIDDEN_IN_STARTUP = frozenset({'torch', 'onnxruntime', 'scipy', 'librosa', 'playwright'})
 QT_MODULES = frozenset({'PySide6', 'PyQt6', 'PyQt5'})

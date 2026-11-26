@@ -3,13 +3,14 @@ from dataclasses import dataclass, replace
 import numpy as np
 import soxr
 
+from chorus_notes import (FRAME, Suggestion, _pitch_runs, _project_slice, _runs, quiet_timing,
+                          timing_suggestion, valley_timing)
 from chorus_project import Edit, Phrase
 from chorus_precision import (analysis_phrases, fit_timing, fit_translation, note_anchors, phone_anchors,
                               phone_requests, phoneme_cache)
 from i18n import tr
 
 
-FRAME = .01
 FEATURE_RATE = 8000
 
 
@@ -29,32 +30,6 @@ _NOTE_NAMES = ('C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A�
 def _midi_note_name(midi_val):
     nearest = int(round(float(midi_val)))
     return f'{_NOTE_NAMES[nearest % 12]}{(nearest // 12) - 1}'
-
-
-@dataclass(frozen=True)
-class Suggestion:
-    track: str
-    kind: str
-    start: float
-    end: float
-    value: float | None
-    detail: str
-    review: bool = False
-    from_score: bool = False
-    points: tuple = ()
-    anchors: tuple = ()
-    route: str = ''
-    timing_residual_ms: int | None = None
-    restore_timing: bool = False
-    category: str = ''
-    severity: str = ''
-    action_hint: str = ''
-    target_octave: int | None = None
-
-    @property
-    def can_apply(self):
-        return (self.restore_timing or bool(self.points) or self.target_octave is not None
-                or (self.value is not None and abs(self.value) > 1e-6))
 
 
 def _mono(samples):
@@ -124,11 +99,6 @@ def feature_track(track, check):
     return Features(energy, shape, active, peaks.round(4).tolist(), side_mid_db, wet_warning)
 
 
-def _runs(mask):
-    edges = np.flatnonzero(np.diff(np.r_[False, mask, False]))
-    return zip(edges[::2], edges[1::2])
-
-
 def phrases_from_reference(reference, features, first, last, score=None):
     if reference is None or features is None:
         return (Phrase(first, last),) if first < last else ()
@@ -176,14 +146,6 @@ def phrases_from_reference(reference, features, first, last, score=None):
     return tuple(phrases)
 
 
-def _project_slice(values, offset, indices):
-    local = indices - round(offset / FRAME)
-    valid = (local >= 0) & (local < len(values))
-    output = values[np.clip(local, 0, len(values) - 1)].copy()
-    output[~valid] = 0
-    return output
-
-
 def _timing_match(reference, target, source, take, phrase, radius):
     span = np.arange(round(phrase.start / FRAME), round(phrase.end / FRAME))
     if len(span) < 8:
@@ -216,69 +178,6 @@ def _timing_match(reference, target, source, take, phrase, radius):
         return None, '没有明确的起音匹配，可手动移动', True
     review = score < .47 or coverage[pick] < .72 or separated < .05 or abs(lag) >= step - 1
     return -lag * FRAME, ('起音候选接近，建议试听' if review else '声学起音'), review
-
-
-def quiet_timing(track, features):
-    """Return a predicate for guarded cuts on this track's project clock."""
-    def quiet(first, last):
-        grid = np.arange(round(first / FRAME), round(last / FRAME))
-        return not _project_slice(features.active, track.offset, grid).any()
-
-    return quiet
-
-
-def valley_timing(track, features):
-    """Return a snapper that nudges local timing knots toward low-energy valleys."""
-    energy = features.energy
-
-    def snap(position, radius):
-        grid = np.arange(round((position - radius) / FRAME), round((position + radius) / FRAME) + 1)
-        if not len(grid):
-            return position
-        values = _project_slice(energy, track.offset, grid)
-        # Prefer quiet gaps / note boundaries while breaking ties toward the nominal spot.
-        dist = np.abs(grid * FRAME - position) / max(radius, FRAME)
-        scale = float(np.max(values)) if len(values) else 0.
-        if scale <= 1e-8:
-            return position
-        score = values / scale + .08 * dist
-        return float(grid[int(np.argmin(score))] * FRAME)
-
-    return snap
-
-
-def timing_suggestion(track, span, fit, route, source, review_reason=''):
-    if fit.movement is None:
-        method = tr('唱段边界过近，可扩展选区后再试')
-    elif fit.local:
-        method = tr('局部拉伸 · 基准 {0} ms', f'{fit.movement * 1000:+.0f}')
-    elif fit.movement:
-        method = tr('整句平移 {0} ms', f'{fit.movement * 1000:+.0f}')
-    else:
-        method = tr('原录音时序已接近参照' if fit.residual_ms <= 25 else '该力度下时序调整很小')
-    detail = f'{tr(route)} · {source} · {method}'
-    if fit.anchors:
-        detail += ' · ' + tr('{0} 个边界 · 中位余差 {1} ms', len(fit.anchors), fit.residual_ms)
-    if review_reason:
-        detail += ' · ' + tr(review_reason)
-    elif fit.review and fit.movement is not None:
-        detail += ' · ' + tr('边界意见不一致，建议试听')
-    is_review = fit.review or bool(review_reason)
-    cat = 'timing_large' if (is_review and abs(fit.movement or 0.) > .16) else ('timing_review' if is_review else '')
-    sev = 'high' if (is_review and abs(fit.movement or 0.) > .22) else ('medium' if is_review else '')
-    hint = ('建议点击跳转试听节奏后再决定是否接受，或在唱段对齐中手动微调菱形锚点'
-            if is_review else '')
-    return Suggestion(track, 'timing', *span, fit.movement, detail, is_review,
-                      points=fit.points, anchors=fit.anchors, route=route,
-                      timing_residual_ms=fit.residual_ms if fit.anchors else None,
-                      category=cat, severity=sev, action_hint=hint)
-
-
-def _pitch_runs(midi, step, *, note_edits=()):
-    from chorus_notes import segment_vocal_notes
-
-    for note in segment_vocal_notes(midi, step, note_edits=note_edits):
-        yield note.start, note.end, note.center_midi
 
 
 def phrase_regions(project, reference, features, selection):

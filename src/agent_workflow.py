@@ -13,8 +13,8 @@ import math
 from pathlib import Path
 import stat
 import time
-from agent_control import (ControlError, MAX_JSON, atomic_json, digest, file_lock,
-                           file_hash, io_path, safe_path)
+from agent_primitives import (ControlError, MAX_JSON, atomic_json, digest, file_lock,
+                              file_hash, io_path, read_json, safe_path)
 from agent_supervision import summarize_export, validate_export_review, SupervisionError
 from common import clean_lyrics
 from preparation_languages import LANGUAGES
@@ -159,7 +159,6 @@ class Workflow:
         path=safe_path(self.control.state/'workflow-evidence'/value['id']/('revision-'+str(value['revision'])+'.json'),
                        [self.control.state])
         if io_path(path).exists():
-            from agent_control import read_json
             if read_json(path)!=value:
                 raise ControlError('workflow_evidence_conflict','旧修订证据路径已有不同内容。')
         else:atomic_json(path,value)
@@ -213,7 +212,6 @@ class Workflow:
         return self.get(identifier)
 
     def list(self,limit=20,offset=0,status=None,query=''):
-        from agent_control import read_json
         if type(limit) is not int or not 1<=limit<=100 or type(offset) is not int or offset<0:
             raise ControlError('invalid_page','工作流列表 limit 为1–100，offset非负。')
         if not isinstance(query,str) or len(query)>1000:

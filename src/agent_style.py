@@ -127,10 +127,7 @@ class StyleNoteBoundaryError(ValueError):
         self.details = {**copy.deepcopy(details), "changes_applied": False}
 
 # _canonical and _digest imported from agent_primitives above.
-
-
-def _stable_id(prefix: str, value: dict[str, Any]) -> str:
-    return prefix + "_" + _digest(value)[:24]
+# _stable_id imported from project_io below.
 
 
 def _file_sha256(path: Path) -> str:
@@ -151,7 +148,7 @@ def _source_path(path: Any) -> Path:
         result = Path(path).expanduser().resolve()
     except (OSError, TypeError, ValueError) as error:
         raise ValueError("工程路径无效。") from error
-    from tuning_workflow import project_format
+    from project_io import project_format
     project_format(result)
     if not _io_path(result).is_file():
         raise ValueError("工程不存在或不是文件：" + str(result))
@@ -159,7 +156,7 @@ def _source_path(path: Any) -> Path:
 
 
 def _read_source(path: Any):
-    from tuning_workflow import read_source
+    from project_io import read_source
 
     source = _source_path(path)
     try:
@@ -198,257 +195,10 @@ def _indices(value: Any, track_count: int, *, allow_none: bool) -> list[int] | N
     return sorted(result)
 
 
-def _preset_catalog() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    return style_catalog.style_descriptors(PRESET_IDS), style_catalog.technique_descriptors(TECHNIQUE_IDS)
-
-
-def _lyric(note: dict[str, Any]) -> tuple[str | None, str | None, bool]:
-    raw = note.get("lyrics", note.get("lyric"))
-    if not isinstance(raw, str):
-        return None, None if raw is None else str(raw), False
-    text = raw.strip()
-    if not text or text == "+":
-        return None, raw, False
-    return text, raw, True
-
-
-def _note_is_singing(note: dict[str, Any], lyric: str | None) -> bool:
-    marker = (lyric or "").lower()
-    attributes = note.get("attributes")
-    muted = isinstance(attributes, dict) and attributes.get("muted") is True
-    non_singing = (
-        marker in ("sil", "sp", "pau", "br")
-        or (marker.startswith("br") and marker[2:].isdigit())
-        or note.get("musicalType") == "rap"
-        or muted
-    )
-    return not non_singing
-
-
-def _context_unknown(
-    code: str, message: str, track_index: int,
-    *, note_index: int | None = None,
-) -> dict[str, Any]:
-    value = {
-        "code": code,
-        "message": message,
-        "track_index": track_index,
-    }
-    if note_index is not None:
-        value["note_index"] = note_index
-    return value
-
-
-def context_for_snapshot(snapshot, geometry=None) -> dict[str, Any]:
-    from tuning_workflow import score_layout
-    source, format, source_sha = snapshot.path, snapshot.format, snapshot.sha256
-    project, layout = geometry or score_layout(snapshot.data, format)
-    clock = layout.clock
-    track_rows: list[dict[str, Any]] = []
-    note_rows: list[dict[str, Any]] = []
-    unknown_rows: list[dict[str, Any]] = []
-
-    for track_index, raw_track in enumerate(project["tracks"]):
-        if not isinstance(raw_track, dict):
-            track_id = _stable_id("track", {
-                "source_sha256": source_sha,
-                "track_index": track_index,
-                "invalid": True,
-            })
-            track_rows.append({
-                "track_id": track_id,
-                "track_index": track_index,
-                "name": None,
-                "vocal": False,
-                "instrumental": None,
-                "offset_tick": None,
-                "offset_quarters": None,
-                "main_group_present": False,
-                "note_count_raw": 0,
-                "note_count_parsed": 0,
-                "database": None,
-                "voice": None,
-                "eligible_for_style": False,
-                "ineligibility_reasons": ["track.invalid"],
-            })
-            unknown_rows.append(_context_unknown(
-                "track.invalid", "轨道不是对象，无法生成风格证据。", track_index,
-            ))
-            continue
-
-        name = raw_track.get("name") if isinstance(raw_track.get("name"), str) else None
-        track_id = _stable_id("track", {
-            "source_sha256": source_sha,
-            "track_index": track_index,
-            "name": name,
-        })
-        reasons: list[str] = []
-        first_reason = ""
-
-        def reason(code: str, message: str) -> None:
-            nonlocal first_reason
-            if code not in reasons:
-                if not reasons:
-                    first_reason = message
-                reasons.append(code)
-                unknown_rows.append(_context_unknown(code, message, track_index))
-
-        raw_ref = raw_track.get("mainRef", {})
-        if raw_ref is None:
-            raw_ref = {}
-        if not isinstance(raw_ref, dict):
-            reason("track.main_ref_invalid", "mainRef 不是对象，不能安全应用风格。")
-            raw_ref = {}
-
-        instrumental_value = raw_ref.get("isInstrumental", False)
-        if type(instrumental_value) is not bool:
-            reason("track.instrumental_unknown", "伴奏标记不是布尔值，不能确认是否为演唱轨。")
-            instrumental = None
-            vocal = False
-        else:
-            instrumental = instrumental_value
-            vocal = not instrumental_value
-            if instrumental_value:
-                reason("track.instrumental", "该轨道是伴奏轨，不能作为风格目标。")
-
-        main_offset = raw_ref.get("blickOffset", 0)
-        main_offset = main_offset if type(main_offset) is int else None
-        track = layout.tracks[track_index]
-        for code, message in track.issues.items():
-            reason(code, message)
-
-        parsed_count = 0
-        placed_notes = ((placement, note) for placement in track.placements for note in placement.notes)
-        for placement, note in placed_notes:
-            note_index, raw_note = note.index, note.data
-            onset, duration = raw_note["onset"], raw_note["duration"]
-            offset, project_onset = placement.offset, note.start
-            try:
-                start_seconds = float(clock.to_seconds(project_onset))
-                end_seconds = float(clock.to_seconds(note.end))
-            except (TypeError, ValueError, OverflowError) as error:
-                reason("note.time_invalid", "音符时间无法通过速度表换算。")
-                unknown_rows.append(_context_unknown(
-                    "note.time_invalid", "音符时间无法换算：" + str(error),
-                    track_index, note_index=note_index,
-                ))
-                continue
-            if not all(math.isfinite(value) for value in (start_seconds, end_seconds)) or end_seconds <= start_seconds:
-                reason("note.time_invalid", "音符换算后的起止秒无效。")
-                unknown_rows.append(_context_unknown(
-                    "note.time_invalid", "音符换算后的起止秒无效。",
-                    track_index, note_index=note_index,
-                ))
-                continue
-
-            singing = _note_is_singing(raw_note, _lyric(raw_note)[0])
-            lyric, lyric_raw, lyric_known = _lyric(
-                {"lyrics": raw_note["source_lyric"]} if "source_lyric" in raw_note else raw_note)
-            pitch = note.pitch
-            pitch_known = pitch is not None
-            reference = {"group_placement": placement.key} if format != "svp" or placement.library_index is not None else {}
-            note_payload = {
-                "source_sha256": source_sha,
-                "track_index": track_index,
-                "track_id": track_id,
-                "note_index": note_index,
-                "onset_tick": onset,
-                "duration_tick": duration,
-                "track_offset_tick": offset,
-                "pitch": pitch,
-                "lyric": lyric,
-                "lyric_raw": lyric_raw,
-                **reference,
-            }
-            note_id = _stable_id("note", note_payload)
-            if not lyric_known:
-                unknown_rows.append(_context_unknown(
-                    "lyric.unknown", "歌词缺失或为未知占位符。",
-                    track_index, note_index=note_index,
-                ))
-            if not pitch_known:
-                unknown_rows.append(_context_unknown(
-                    "pitch.unknown", "音符音高缺失或不是有限数字。",
-                    track_index, note_index=note_index,
-                ))
-            protection = getattr(placement, 'protection', None)
-            note_rows.append({
-                "note_id": note_id,
-                "track_id": track_id,
-                "track_index": track_index,
-                "note_index": note_index,
-                "pitch": pitch,
-                "pitch_known": pitch_known,
-                "onset_tick": onset,
-                "duration_tick": duration,
-                "track_offset_tick": offset,
-                "project_onset_tick": project_onset,
-                **({"project_end_tick": note.end, **reference} if placement.adapted else {}),
-                "start_seconds": start_seconds,
-                "end_seconds": end_seconds,
-                "lyric": lyric,
-                "lyric_raw": lyric_raw,
-                "lyric_known": lyric_known,
-                "singing": singing,
-                **({"read_only_reason": protection[1]} if protection else {}),
-            })
-            parsed_count += 1
-
-        if parsed_count == 0:
-            reason("track.no_notes", "轨道没有可安全定位的音符。")
-        track_rows.append({
-            "track_id": track_id,
-            "track_index": track_index,
-            "name": name,
-            "vocal": vocal,
-            "instrumental": instrumental,
-            "offset_tick": main_offset,
-            "offset_quarters": None if main_offset is None else main_offset / _SV_QUARTER,
-            "main_group_present": isinstance(raw_track.get("mainGroup"), dict),
-            "note_count_raw": track.raw_count,
-            "note_count_parsed": parsed_count,
-            "database": copy.deepcopy(raw_ref.get("database")),
-            "voice": copy.deepcopy(raw_ref.get("voice")),
-            "eligible_for_style": bool(vocal and parsed_count and not reasons),
-            "ineligibility_reasons": reasons,
-            "read_only_reason": first_reason,
-            "style_only": track.style_only,
-        })
-
-    presets, techniques = _preset_catalog()
-    return {
-        "schema": SCHEMA_VERSION,
-        "kind": CONTEXT_KIND,
-        "source_path": str(source),
-        "source_sha256": source_sha,
-        "format": format,
-        "format_version": layout.version,
-        "synthesizer_v_2": getattr(layout, "sv2", False),
-        "tempo": [{"position_tick": tick, "bpm": float(bpm), "start_seconds": seconds}
-                  for tick, bpm, seconds in zip(clock.positions, clock.bpms, clock.seconds)],
-        "meter": [{"index": row.bar, "numerator": row.numerator, "denominator": row.denominator,
-                   "position_tick": clock.position_at_bar(row.bar)} for row in clock.meters],
-        "time_basis": {
-            "tick": ("SVP blick" if format == "svp"
-                     else f"shared score blick (1 native tick = {getattr(layout, 'step', 1470000)} blick)"),
-            "quarter_ticks": _SV_QUARTER,
-            "native_tick_step": clock.step,
-            "native_content_origin": clock.native_origin,
-            "project_start_tick": clock.project_start,
-            "measure_prefix": clock.measure_prefix,
-            "note_fields": "onset_tick/duration_tick are group-local; start_seconds/end_seconds are project positions including placement offset and trim",
-            "region_fields": "project seconds",
-        },
-        "tracks": track_rows,
-        "notes": note_rows,
-        "presets": presets,
-        "preset_ids": list(PRESET_IDS),
-        "techniques": techniques,
-        "technique_ids": list(TECHNIQUE_IDS),
-        "unknowns": unknown_rows,
-        "semantic_model_used": False,
-        "local_only": True,
-    }
+from project_io import (
+    _context_unknown, _lyric, _note_is_singing, _preset_catalog, _stable_id,
+    context_for_snapshot,
+)
 
 
 def _selected_context(context: dict[str, Any], indices: list[int]) -> dict[str, Any]:

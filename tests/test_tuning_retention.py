@@ -98,7 +98,7 @@ class TuningRetentionTests(unittest.TestCase):
                                  'source_track_index': 0, 'voice': 'lead'}],
             'expression_density': 'original',
         }
-        with patch('calibration_session.project_data', return_value=source):
+        with patch('project_io.project_data', return_value=source):
             with self.assertRaisesRegex(ValueError, '严格沿用参数.*未匹配'):
                 process_project(target, options)
         self.assertEqual(target, target_before)
