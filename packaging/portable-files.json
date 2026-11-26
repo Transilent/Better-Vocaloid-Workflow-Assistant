@@ -6,6 +6,10 @@
       "source": "src/quick_chorus.py"
     },
     {
+      "file": "chorus_review_service.py",
+      "source": "src/chorus_review_service.py"
+    },
+    {
       "file": "chorus_project.py",
       "source": "src/chorus_project.py"
     },
@@ -114,6 +118,10 @@
       "source": "src/quick_mixdown.py"
     },
     {
+      "file": "mixdown_handoff_service.py",
+      "source": "src/mixdown_handoff_service.py"
+    },
+    {
       "file": "quick_mixdown_player.py",
       "source": "src/quick_mixdown_player.py"
     },
@@ -142,12 +150,24 @@
       "source": "src/quick_tuning.py"
     },
     {
+      "file": "tuning_session_store.py",
+      "source": "src/tuning_session_store.py"
+    },
+    {
       "file": "quick_media_handoff.py",
       "source": "src/quick_media_handoff.py"
     },
     {
       "file": "quick_publication.py",
       "source": "src/quick_publication.py"
+    },
+    {
+      "file": "publication_browser_service.py",
+      "source": "src/publication_browser_service.py"
+    },
+    {
+      "file": "publication_draft_service.py",
+      "source": "src/publication_draft_service.py"
     },
     {
       "file": "quick_subtitles.py",
@@ -300,6 +320,10 @@
     {
       "file": "quick_bridge.py",
       "source": "src/quick_bridge.py"
+    },
+    {
+      "file": "task_actions_service.py",
+      "source": "src/task_actions_service.py"
     },
     {
       "file": "quick_results.py",

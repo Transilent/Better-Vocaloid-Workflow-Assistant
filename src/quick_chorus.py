@@ -14,6 +14,8 @@ from chorus_pitch_dsp import signalsmith_available
 from chorus_precision import mapped_time, phrase_for
 from chorus_project import (ALIGNMENT_ENGINES, LYRIC_LANGUAGES, PITCH_ENGINES, ROLES, SYLLABLE_GAIN, VARIANTS,
                             ChorusProject, Edit, Lyric, Recording, Score, number)
+import chorus_review_service as _review_svc
+from chorus_review_service import _analysis_sources, _check, _meter
 from chorus_speech import alignment_ready
 from common import ROOT
 from quick_work import WorkerLane
@@ -27,36 +29,6 @@ def _path(value):
     if not value:
         raise ValueError('请选择文件或目录。')
     return Path(str(value)).expanduser().resolve()
-
-
-def _check(stop):
-    if stop.is_set():
-        raise InterruptedError('操作已取消。')
-
-
-def _meter(send, phase, done, total, message):
-    send({'phase': phase, 'done': done, 'total': total, 'unit': 'items', 'message': message})
-
-
-@contextmanager
-def _analysis_sources(project, rows, cache, features, check, send):
-    from chorus_analysis import feature_track
-    from chorus_audio import analysis_recording, recording_key
-
-    audio, measured, added = {}, {}, {}
-    with TemporaryDirectory(dir=cache, prefix='sources-') as folder:
-        for index, track in enumerate(rows):
-            check()
-            source = analysis_recording(project, track, Path(folder), check)
-            key = recording_key(project, track)
-            audio[track.id] = source
-            if features is None:
-                continue
-            if key not in features and key not in added:
-                _meter(send, 'analyze', index, len(rows), f'分析当前录音 · {track.name}')
-                added[key] = feature_track(source, check)
-            measured[track.id] = features[key] if key in features else added[key]
-        yield audio, measured, added
 
 
 class QuickChorus(QObject):
@@ -155,131 +127,50 @@ class QuickChorus(QObject):
 
     @Property('QVariantMap', notify=changed)
     def view(self):
-        project = self.project
-        selected = project.track(self._selected)
-        phrase = phrase_for(project, self._selection)
-        reference = project.reference(selected, phrase)
-        middle = sum(self._selection) / 2
-        shift = middle - mapped_time(project, selected, middle) if selected else 0.
-        current, timing = self._timing_pose(selected, middle) if selected else (None, None)
-        knots = (current.points if current and current.manual else
-                 timing.points if timing and timing.points else current.points if current else ())
-        if not knots and timing and len(timing.anchors) >= 2:
-            knots = ((timing.start, timing.start - (timing.value or 0.)),
-                     *((x, y) for _, x, y in timing.anchors if timing.start < x < timing.end),
-                     (timing.end, timing.end - (timing.value or 0.)))
-        labels = {round(y, 5): label for label, _, y in timing.anchors} if timing else {}
-        anchors = [{'label': labels.get(round(y, 5), str(i + 1)), 'time': x, 'source': y}
-                   for i, (x, y) in enumerate(knots[1:-1])]
-        shared, local = ((phrase.lyric(), phrase.lyric(self._selected)) if phrase else (None, None))
-        gain = next((edit.value for edit in project.edits_for(self._selected, 'gain')
-                     if edit.start <= middle < edit.end), 0.)
-        comp = next((edit.source for edit in project.edits_for(self._selected, 'take')
-                     if edit.start <= (mapped_time(project, selected, middle) if selected else middle) < edit.end), '')
-        score = project.score
-        vocal_names = [t.name for t in project.tracks if t.role in ('vocal', 'guide') and t.name]
-        shared_prefix = ''
-        if len(vocal_names) >= 2:
-            raw_prefix = os.path.commonprefix(vocal_names)
-            for sep in (' - ', '_', ' ', '-'):
-                cut = raw_prefix.rfind(sep)
-                if cut >= 0:
-                    cand = raw_prefix[:cut + len(sep)]
-                    if all(len(n[len(cand):].strip()) >= 2 for n in vocal_names):
-                        shared_prefix = cand
-                        break
-        issues = []
-        for index, row in enumerate(self._suggestions):
-            if row.review and index not in self._resolved:
-                track = project.track(row.track)
-                if track is not None:
-                    category = row.category or ('timing' if row.kind == 'timing' else 'review')
-                    severity = row.severity or ('high' if category in ('transpose', 'octave', 'large_shift') else 'medium')
-                    hint = row.action_hint or (
-                        '可点击接受建议自动应用，或跳转钢琴窗试听微调' if row.can_apply
-                        else '点击跳转钢琴窗定位该处并试听修正'
-                    )
-                    short_name = track.name[len(shared_prefix):].strip() if shared_prefix and track.name.startswith(shared_prefix) else track.name
-                    disp_start = max(0., row.start) if row.end > 0. else row.start
-                    disp_end = max(disp_start, row.end)
-                    issues.append({
-                        'id': index,
-                        'track': track.name,
-                        'shortTrack': short_name or track.name,
-                        'trackId': track.id,
-                        'kind': row.kind,
-                        'time': disp_start,
-                        'end': disp_end,
-                        'reason': row.detail or '需要人工核对',
-                        'actionHint': hint,
-                        'category': category,
-                        'severity': severity,
-                        'canApply': bool(row.can_apply),
-                        'targetOctave': row.target_octave if row.target_octave is not None else 999,
-                    })
-        issues.sort(key=lambda item: (
-            0 if item['category'] == 'transpose' else (1 if item['severity'] == 'high' else 2),
-            item['time'],
-            item['shortTrack'],
-        ))
-        from mixdown_contract import MAX_VOCALS
-
-        return {
-            'title': project.title, 'path': str(self._path or ''), 'dirty': self.dirty,
-            'first': project.start, 'last': project.end, 'rate': project.rate,
-            'count': len(project.tracks), 'vocals': sum(track.role == 'vocal' for track in project.tracks),
-            'hasBacking': any(track.role == 'backing' for track in project.tracks),
-            'hasEdits': bool(project.edits),
-            'maxMixdownVocals': MAX_VOCALS,
-            'guide': project.guide, 'selected': self._selected, 'take': self._track_row(selected) if selected else {},
-            'reference': self._track_row(reference) if reference else {}, 'shiftMs': shift * 1000,
-            'phrase': {'id': phrase.id if phrase else '', 'ref': phrase.reference if phrase else '',
-                       'shared': self._lyric_row(shared), 'local': self._lyric_row(local)},
-            'alignmentEngine': project.alignment_engine,
-            'ensembleLanguage': project.ensemble_language,
-            'timingRefMode': self._effective_timing_ref_mode(),
-            'pitchEngine': project.pitch_engine,
-            'signalsmithReady': signalsmith_available(),
-            'timingStrength': self._batch_strength['timing'],
-            'pitchStrength': self._batch_strength['pitch'],
-            'anchors': anchors, 'timingRoute': ('手工锚点' if current and current.manual and current.points else
-                                               timing.route if timing else current.basis if current else ''),
-            'timingDetail': timing.detail if timing else current.basis if current else '', 'gain': gain, 'comp': comp,
-            'syllableGain': self._gain_view(selected, phrase),
-            'canApplyTiming': bool(timing and timing.can_apply and not (current and current.manual)
-                                   and self._suggestions.index(timing) not in self._resolved),
-            'viewFirst': self._view_first, 'viewSpan': self._view_span,
-            'rangeFirst': self._selection[0], 'rangeLast': self._selection[1], 'mode': self._mode,
-            'inspector': self._inspector_open, 'inspectorSection': self._inspector_section,
-            'pitchDraw': self._pitch_draw,
-            'pitchTool': self._pitch_tool,
-            'pitchSnap': self._pitch_snap,
-            'showScoreBackground': self._show_score_background,
-            'midiAudition': self._midi_audition,
-            'selectedNoteCount': len(self._selected_notes),
-            'canMergeNotes': len(self._selected_notes) >= 2,
-            'canSplitAtPlayhead': self._can_split_at_playhead(selected),
-            'variant': self._variant, 'activeVariant': self._active_variant, 'solo': self._solo,
-            'playing': self._intent, 'loop': self._loop, 'followPlayhead': self._follow_playhead,
-            'loading': bool(self.monitor_worker.kind),
-            'busy': bool(self.worker.kind), 'notice': self._notice, 'error': self._error,
-            'undo': bool(self._undo), 'redo': bool(self._redo), 'export': str(self._export or ''),
-            'score': Path(score.path).name if score else '', 'scoreOffset': score.offset if score else 0.,
-            'scoreSourceKind': score.source_kind if score else '',
-            'scoreSourceLabel': score.source_label if score else '',
-            'scoreConfirmed': score.confirmed if score else True,
-            'scoreLanes': [{'id': lane.id, 'name': lane.name, 'notes': len(lane.notes)} for lane in score.lanes]
-            if score else [],
-            'scoreRecommendations': self._score_recommendations(selected),
-            'prepScores': list(self._prep_scores),
-            'issues': issues, 'issue': self._issue,
-            'focusRevision': getattr(self, '_focus_revision', 0),
-            'highIssueCount': sum(1 for item in issues if item['severity'] == 'high'),
-            'canAcceptIssue': (0 <= self._issue < len(self._suggestions)
-                               and self._issue not in self._resolved and self._suggestions[self._issue].can_apply),
-            'suggestions': sum(row.can_apply and index not in self._resolved
-                               for index, row in enumerate(self._suggestions)),
-        }
+        return _review_svc.build_view(
+            project=self.project,
+            selected_id=self._selected,
+            selection=self._selection,
+            suggestions=self._suggestions,
+            resolved=self._resolved,
+            issue_index=self._issue,
+            timing_pose_fn=self._timing_pose,
+            track_row_fn=self._track_row,
+            lyric_row_fn=self._lyric_row,
+            effective_timing_ref_mode=self._effective_timing_ref_mode(),
+            gain_view_fn=self._gain_view,
+            can_split_fn=self._can_split_at_playhead,
+            score_recommendations_fn=self._score_recommendations,
+            path_str=str(self._path or ''),
+            dirty=self.dirty,
+            batch_strength=self._batch_strength,
+            view_first=self._view_first,
+            view_span=self._view_span,
+            mode=self._mode,
+            inspector_open=self._inspector_open,
+            inspector_section=self._inspector_section,
+            pitch_draw=self._pitch_draw,
+            pitch_tool=self._pitch_tool,
+            pitch_snap=self._pitch_snap,
+            show_score_background=self._show_score_background,
+            midi_audition=self._midi_audition,
+            selected_notes=self._selected_notes,
+            variant=self._variant,
+            active_variant=self._active_variant,
+            solo=self._solo,
+            playing=self._intent,
+            loop=self._loop,
+            follow_playhead=self._follow_playhead,
+            loading=bool(self.monitor_worker.kind),
+            busy=bool(self.worker.kind),
+            notice=self._notice,
+            error=self._error,
+            has_undo=bool(self._undo),
+            has_redo=bool(self._redo),
+            export_str=str(self._export or ''),
+            prep_scores=self._prep_scores,
+            focus_revision=getattr(self, '_focus_revision', 0),
+        )
 
     def _effective_timing_ref_mode(self):
         has_score = bool(self.project.score and self.project.score.lanes)
@@ -1049,9 +940,7 @@ class QuickChorus(QObject):
     @Slot(str, str)
     def autoTuneToScore(self, scope='track', kind='pitch'):
         """One-click MIDI-guided auto pitch and/or timing alignment (auto-extracts F0 & aligns MIDI if needed)."""
-        from chorus_analysis import apply_suggestions, proposals
         from chorus_audio import recording_key
-        from chorus_score_match import estimate_score_alignment
 
         if kind not in ('pitch', 'timing', 'both'):
             kind = 'pitch'
@@ -1075,50 +964,11 @@ class QuickChorus(QObject):
         cache = self._cache_dir()
 
         def work(stop, send):
-            from chorus_pitch import estimate_many
-
-            check = lambda: _check(stop)
-            with _analysis_sources(project, all_vocals, cache, self._features.copy(), check, send) as (audio, features, added):
-                # Estimate pitch for targets (and other vocals if score offset is still unaligned at 0).
-                need_align = (abs(project.score.offset) < 1e-4
-                              and all(t.score_octave == 0 for t in all_vocals))
-                need_tracks = all_vocals if need_align else targets
-                missing = tuple(audio[t.id] for t in need_tracks if t.id not in known)
-                if missing:
-                    known.update(estimate_many(missing, cache, check, lambda i, label:
-                                               _meter(send, 'analyze', i, len(missing), label)))
-                check()
-                working = project
-                aligned_info = None
-                if need_align or any(not t.score_lane for t in targets):
-                    aligned_info = estimate_score_alignment(working, known)
-                    if aligned_info['tracks'] and aligned_info['coverage'] >= .25 and aligned_info['median_err'] <= 2.5:
-                        if need_align:
-                            working = replace(working, score=replace(working.score, offset=aligned_info['offset']))
-                        for tid, info in aligned_info['tracks'].items():
-                            tr = working.track(tid)
-                            if tr is not None and (need_align or not tr.score_lane):
-                                working = working.update_track(
-                                    tid,
-                                    score_lane=tr.score_lane or info['laneId'],
-                                    score_octave=info['octave'] if (need_align or not tr.score_lane) else tr.score_octave,
-                                )
-                # Ensure targets are bound if single-lane score
-                if len(working.score.lanes) == 1:
-                    only_lane = working.score.lanes[0].id
-                    for t in targets:
-                        tr = working.track(t.id)
-                        if tr and not tr.score_lane:
-                            working = working.update_track(t.id, score_lane=only_lane)
-                active_targets = tuple(working.track(t.id) for t in targets if working.track(t.id))
-                _, suggestions = proposals(
-                    working, active_targets, selection, kind, timing_strength, .60,
-                    features, known, check,
-                    lambda i, label: _meter(send, 'analyze', i, len(active_targets), f'对照 MIDI 修音 · {label}'),
-                    audio=audio, pitch_strength=pitch_strength, use_midi_timing=(kind != 'pitch'),
-                )
-            check()
-            return working, suggestions, known, added, aligned_info
+            return _review_svc.run_auto_tune_work(
+                project=project, all_vocals=all_vocals, targets=targets, kind=kind,
+                selection=selection, timing_strength=timing_strength, pitch_strength=pitch_strength,
+                known=known, cached_features=self._features.copy(), cache=cache, stop=stop, send=send,
+            )
 
         def done(result):
             working, suggestions, found, added, aligned_info = result
@@ -1127,33 +977,15 @@ class QuickChorus(QObject):
             if self.project != project:
                 self._say('工程已变化，请重新执行对照 MIDI 修音。')
                 return
-            picked = [(i, row) for i, row in enumerate(suggestions) if row.can_apply and not row.review]
-            next_project = working
-            pitch_count = 0
-            timing_count = 0
-            for _, row in picked:
-                updated = apply_suggestions(next_project, (row,), manual=False)
-                if updated != next_project:
-                    if row.kind == 'timing':
-                        timing_count += 1
-                    else:
-                        pitch_count += 1
-                next_project = updated
+            next_project, resolved, changed, msg = _review_svc.apply_auto_tune_result(
+                working, suggestions, aligned_info, kind=kind,
+            )
             if next_project != self.project:
                 self._commit(next_project, keep_suggestions=True)
-            self._suggestions, self._resolved, self._issue = suggestions, {i for i, _ in picked}, -1
-            if pitch_count or timing_count:
+            self._suggestions, self._resolved, self._issue = suggestions, resolved, -1
+            if changed:
                 self.setVariant('processed')
-            extra = (f'（MIDI 偏移 {next_project.score.offset:+.2f}s）'
-                     if aligned_info and abs(next_project.score.offset) > 1e-4 else '')
-            review_cnt = sum(1 for i, r in enumerate(suggestions) if r.review and i not in self._resolved)
-            tail = f'，另有 {review_cnt} 处待核对' if review_cnt else ''
-            if kind == 'both':
-                self._say(f'已对照 MIDI 对齐 {timing_count} 段节奏并修音 {pitch_count} 个音符{extra}{tail}')
-            elif kind == 'timing':
-                self._say(f'已对照 MIDI 对齐 {timing_count} 段节奏{extra}{tail}')
-            else:
-                self._say(f'已对照 MIDI 修音 {pitch_count} 个音符{extra}{tail}')
+            self._say(msg)
 
         label = '正在对照 MIDI 对齐节奏并修音' if kind == 'both' else ('正在对照 MIDI 对齐节奏' if kind == 'timing' else '正在对照 MIDI 自动修音')
         self._start('midi-autotune', label, work, done)
@@ -1204,12 +1036,7 @@ class QuickChorus(QObject):
         return source - track.offset
 
     def _display_time_for(self, track, take_time, timing_edits):
-        proj_t = take_time + track.offset
-        for edit in timing_edits:
-            a, b = edit.source_time(edit.start), edit.source_time(edit.end)
-            if a <= proj_t <= b:
-                return edit.output_time(proj_t)
-        return proj_t
+        return _review_svc.display_time_for(track, take_time, timing_edits)
 
     def _can_split_at_playhead(self, track):
         if not track or track.role != 'vocal':
@@ -1241,39 +1068,16 @@ class QuickChorus(QObject):
         if not 0 <= index < len(self._suggestions):
             return
         row = self._suggestions[index]
-        start, end = row.start, row.end
-        track = self.project.track(row.track)
-        if track is not None:
-            timing_edits = self.project.edits_for(track.id, 'timing')
-            if row.kind == 'pitch' and timing_edits:
-                da = self._display_time_for(track, row.start - track.offset, timing_edits)
-                db = self._display_time_for(track, row.end - track.offset, timing_edits)
-                start, end = (da, db) if db >= da else (db, da)
-            # For whole-track issues (e.g. transpose), jump to the first sung note instead of silent intro.
-            if row.category == 'transpose' or (end - start) > 18.0:
-                notes = self._cached_vocal_notes(track)
-                if notes:
-                    first_t = notes[0].start + track.offset
-                    if timing_edits:
-                        first_t = self._display_time_for(track, notes[0].start, timing_edits)
-                    start = max(self.project.start, first_t)
-                    end = min(self.project.end, start + 5.0)
-        start = max(self.project.start, start)
-        end = max(start + .2, min(self.project.end, end))
+        start, end, span, selected_notes, target_pos = _review_svc.compute_issue_focus(
+            self.project, row, cached_vocal_notes_fn=self._cached_vocal_notes,
+        )
         self._select(row.track, self._bounds(start, end))
         self._issue = index
         # Always open the Piano Roll so the user can directly inspect & edit notes/timing against MIDI.
         self._mode = 'pitch'
-        span = max(3.5, min(8.5, (end - start) + 2.8))
         self._set_viewport(start - span * .25, span)
-        if track is not None and row.category != 'transpose':
-            take_a = row.start - track.offset
-            take_b = row.end - track.offset
-            notes = self._cached_vocal_notes(track)
-            hit = next((n for n in notes if n.end > take_a + .01 and n.start < take_b - .01), None)
-            if hit is not None:
-                self._selected_notes = ((hit.start, hit.end),)
-        target_pos = max(self.project.start, min(self.project.end, start - .12))
+        if selected_notes is not None:
+            self._selected_notes = selected_notes
         self._last_nav_action = 'issue'
         self._set_position(target_pos)
         if self._session and self._session_geometry == self._geometry():
@@ -1412,202 +1216,26 @@ class QuickChorus(QObject):
 
     @Slot(str, result='QVariantMap')
     def curve(self, identity):
-        from chorus_audio import compiled_pitch_semitones, recording_key
-        from chorus_notes import effective_note_offset, segment_vocal_notes
-        from chorus_score_match import _normalize_token, match_vocal_to_score, shift_score_notes
-
-        track = self.project.track(identity)
-        view_first = self._view_first
-        view_last = self._view_first + self._view_span
-        score_rows = []
-        bound_lane = None
-        if track and self.project.score and track.score_lane:
-            score = self.project.score
-            lane = next((item for item in score.lanes if item.id == track.score_lane), None)
-            if lane is not None:
-                bound_lane = shift_score_notes(
-                    lane.notes, offset=score.offset, octave_semitones=track.score_octave)
-                for note in bound_lane:
-                    if note.end >= view_first and note.start <= view_last:
-                        score_rows.append({
-                            'start': note.start, 'end': note.end,
-                            'pitch': note.pitch, 'lyric': note.lyric,
-                        })
-
-        source = self._curves.get(recording_key(self.project, track)) if track else None
-        if source is None:
-            return {'first': view_first, 'step': .01, 'midi': [], 'target': [],
-                    'notes': [], 'scoreNotes': score_rows, 'trackReview': {}}
-        import numpy as np
-
-        midi, step = source
-        grid = view_first + np.arange(max(1, int(self._view_span / step) + 1)) * step
-        local = grid - track.offset
-
-        def project_curve(take_time):
-            frames = np.rint(take_time / step).astype('int64')
-            found = np.full(grid.shape, np.nan, dtype=np.float32)
-            valid = (frames >= 0) & (frames < len(midi))
-            found[valid] = midi[frames[valid]]
-            return found
-
-        original = project_curve(local)
         variant = self._active_variant if self._intent and self._active_variant else self._variant
-        use_timing = variant in ('timing', 'processed')
-        use_pitch = variant in ('pitch', 'processed')
-        timing_edits = self.project.edits_for(identity, 'timing') if use_timing else ()
-        moved = local.copy()
-        if use_timing:
-            for edit in timing_edits:
-                covered = (grid >= edit.start) & (grid < edit.end)
-                if edit.points:
-                    x, y = zip(*edit.points)
-                    moved[covered] = np.interp(grid[covered], x, y) - track.offset
-                else:
-                    moved[covered] -= edit.value
-        fixed = project_curve(moved)
-        pitch_edits = self.project.edits_for(identity, 'pitch')
-        if use_pitch and pitch_edits:
-            shift_semitones = compiled_pitch_semitones(
-                pitch_edits, moved, duration=track.duration, voiced_curve=source)
-            finite = np.isfinite(fixed)
-            fixed[finite] += shift_semitones[finite]
-
-        vocal_notes = self._cached_vocal_notes(track)
-        matches = None
-        if bound_lane is not None and vocal_notes:
-            all_timing = self.project.edits_for(identity, 'timing')
-            phrase_texts = tuple(
-                (p.start, p.end, _normalize_token(line.text))
-                for p in self.project.phrases
-                if (line := p.resolved_lyric(identity)) and line.text
-            )
-            score_obj = self.project.score
-            match_key = (
-                recording_key(self.project, track), self.project.note_edits_for(identity),
-                track.offset, track.score_lane, track.score_octave, score_obj.sha, score_obj.offset,
-                score_obj.confirmed, all_timing, phrase_texts,
-            )
-            matches = self._match_cache.get(match_key)
-            if matches is None:
-                def to_output(ta, tb):
-                    return (self._display_time_for(track, ta, all_timing),
-                            self._display_time_for(track, tb, all_timing))
-
-                matches = match_vocal_to_score(
-                    vocal_notes, bound_lane, time_to_output=to_output, phrase_texts=phrase_texts,
-                    draft=bool(score_obj and not score_obj.confirmed),
-                )
-                if len(self._match_cache) > 32:
-                    self._match_cache.clear()
-                self._match_cache[match_key] = matches
-
-        unresolved_pitch = [
-            (s_idx, row) for s_idx, row in enumerate(self._suggestions)
-            if row.review and s_idx not in self._resolved and row.track == identity and row.kind == 'pitch'
-        ]
-        track_review = {}
-        for s_idx, row in unresolved_pitch:
-            if row.category == 'transpose':
-                track_review = {
-                    'id': s_idx,
-                    'category': row.category,
-                    'severity': row.severity or 'high',
-                    'reason': row.detail,
-                    'actionHint': row.action_hint,
-                    'canApply': bool(row.can_apply),
-                    'targetOctave': row.target_octave if row.target_octave is not None else 999,
-                }
-                break
-
-        selected_set = {(round(a, 4), round(b, 4)) for a, b in self._selected_notes}
-        note_rows = []
-        for idx, note in enumerate(vocal_notes):
-            disp_start = self._display_time_for(track, note.start, timing_edits)
-            disp_end = self._display_time_for(track, note.end, timing_edits)
-            if disp_end < view_first - .2 or disp_start > view_last + .2:
-                continue
-            offset_cents, manual, locked, has_curve = effective_note_offset(note, pitch_edits)
-            shown_offset = offset_cents if use_pitch else 0.
-            match = matches[idx] if matches is not None else None
-            # Overlay structured review reason & action hint from suggestions / large shift / score match
-            note_a = note.start + track.offset
-            note_b = note.end + track.offset
-            sug_hit = next(
-                ((s_idx, row) for s_idx, row in unresolved_pitch
-                 if row.category != 'transpose' and row.end > note_a + .01 and row.start < note_b - .01),
-                None,
-            )
-            rev_sev = ''
-            rev_cat = ''
-            rev_reason = ''
-            rev_hint = ''
-            issue_id = -1
-            if sug_hit is not None:
-                issue_id, s_row = sug_hit
-                rev_cat = s_row.category or 'review'
-                rev_sev = s_row.severity or ('high' if rev_cat in ('octave', 'large_shift') else 'medium')
-                rev_reason = s_row.detail
-                rev_hint = s_row.action_hint
-            elif abs(offset_cents) > 250.:
-                rev_sev = 'high'
-                rev_cat = 'large_shift'
-                rev_reason = f'大幅变调 {offset_cents:+.0f}¢（超过 2.5 半音），易产生音色异常'
-                rev_hint = '建议试听后决定是否手动微调或保留原音'
-            elif match is not None and (match.review or match.intent == 'review'):
-                rev_sev = 'medium'
-                rev_cat = 'match_review'
-                rev_reason = match.reason or '与背景谱轨匹配存疑'
-                rev_hint = '建议对照背景 MIDI 核对并手动拖动音符'
-            elif track_review:
-                issue_id = track_review['id']
-                rev_sev = 'high'
-                rev_cat = 'transpose'
-                rev_reason = track_review['reason']
-                rev_hint = track_review['actionHint']
-            note_rows.append({
-                'id': f'{note.start:.4f}-{note.end:.4f}',
-                'start': disp_start,
-                'end': disp_end,
-                'takeStart': note.start,
-                'takeEnd': note.end,
-                'centerMidi': note.center_midi,
-                'targetMidi': note.center_midi + shown_offset / 100.,
-                'offsetCents': round(offset_cents, 1),
-                'lowMidi': note.low_midi,
-                'highMidi': note.high_midi,
-                'manual': manual,
-                'locked': locked,
-                'hasCurve': has_curve,
-                'linkedPrev': note.linked_prev,
-                'linkedNext': note.linked_next,
-                'selected': (round(note.start, 4), round(note.end, 4)) in selected_set,
-                'scorePitch': match.target_pitch if (match and match.target_pitch is not None) else -1,
-                'scoreLyric': match.score_note.lyric if (match and match.score_note is not None) else '',
-                'matchReason': match.reason if match is not None else '',
-                'matchReview': bool(match.review) if match is not None else False,
-                'matchIntent': match.intent if match is not None else '',
-                'largeShift': abs(offset_cents) > 250.,
-                'reviewSeverity': rev_sev,
-                'reviewCategory': rev_cat,
-                'reviewReason': rev_reason,
-                'reviewHint': rev_hint,
-                'issueId': issue_id,
-            })
-
-        return {'first': view_first, 'step': step,
-                'midi': np.nan_to_num(original, nan=-1.).tolist(),
-                'target': np.nan_to_num(fixed, nan=-1.).tolist(),
-                'notes': note_rows,
-                'scoreNotes': score_rows,
-                'trackReview': track_review}
+        return _review_svc.build_curve_payload(
+            project=self.project,
+            identity=identity,
+            view_first=self._view_first,
+            view_span=self._view_span,
+            curves_map=self._curves,
+            variant=variant,
+            suggestions=self._suggestions,
+            resolved=self._resolved,
+            selected_notes=self._selected_notes,
+            cached_vocal_notes_fn=self._cached_vocal_notes,
+            match_cache=self._match_cache,
+        )
 
     @Slot(str, str, bool, bool, bool, float)
     @Slot(str, str, bool, bool, bool, float, bool, float)
     @Slot(str, str, bool, bool, bool, float, bool, float, str)
     def analyze(self, kind, scope, full, commit, include_review, strength, ensemble=False, pitch_strength=None, timing_ref=''):
         from chorus_audio import recording_key
-        from chorus_precision import remembered_phrases
 
         if kind not in ('timing', 'pitch', 'both'):
             return
@@ -1644,71 +1272,12 @@ class QuickChorus(QObject):
         cache = self._cache_dir()
 
         def work(stop, send):
-            from chorus_analysis import proposals
-            from chorus_pitch import estimate_many
-            from chorus_score_match import estimate_score_alignment
-
-            check = lambda: _check(stop)
-            failure = ''
-            working = project
-            relevant = {ref.id for track in targets if (ref := project.reference(track))}
-            relevant.update(phrase.reference for phrase in project.phrases if phrase.reference
-                            and phrase.start < selection[1] and phrase.end > selection[0])
-            relevant.update(track.id for track in targets)
-            need_score_align = (
-                has_score
-                and (use_midi_timing or kind != 'timing')
-                and abs(project.score.offset) < 1e-4
-                and all(t.score_octave == 0 for t in all_vocals)
+            return _review_svc.run_analysis_work(
+                project=project, voice_tracks=voice_tracks, all_vocals=all_vocals, targets=targets,
+                selection=selection, kind=kind, strength=strength, pitch_strength=pitch_strength,
+                has_score=has_score, use_midi_timing=use_midi_timing, language=language,
+                cached_features=cached, curves=curves, speech=speech, cache=cache, stop=stop, send=send,
             )
-            with _analysis_sources(project, voice_tracks, cache, cached, check, send) as (audio, features, added):
-                if need_score_align:
-                    curve_need = tuple(audio[t.id] for t in all_vocals if t.id not in curves)
-                elif use_midi_timing or kind != 'timing':
-                    curve_need = tuple(
-                        audio[track.id] for track in voice_tracks if track.id not in curves and (
-                            track.id in relevant if kind == 'both' else track in targets
-                        )
-                    )
-                else:
-                    curve_need = ()
-                if curve_need:
-                    try:
-                        curves.update(estimate_many(curve_need, cache, check, lambda i, label:
-                                                    _meter(send, 'analyze', i, len(curve_need), label)))
-                    except (OSError, RuntimeError) as error:
-                        failure = str(error)
-                        if kind == 'pitch' or use_midi_timing:
-                            raise
-                if has_score and (use_midi_timing or kind != 'timing'):
-                    if need_score_align or any(not t.score_lane for t in targets):
-                        aligned_info = estimate_score_alignment(working, curves)
-                        if aligned_info['tracks'] and aligned_info['coverage'] >= .25 and aligned_info['median_err'] <= 2.5:
-                            if need_score_align:
-                                working = replace(working, score=replace(working.score, offset=aligned_info['offset']))
-                            for tid, info in aligned_info['tracks'].items():
-                                tr = working.track(tid)
-                                if tr is not None and (need_score_align or not tr.score_lane):
-                                    working = working.update_track(
-                                        tid,
-                                        score_lane=tr.score_lane or info['laneId'],
-                                        score_octave=info['octave'] if (need_score_align or not tr.score_lane) else tr.score_octave,
-                                    )
-                    if len(working.score.lanes) == 1:
-                        only_lane = working.score.lanes[0].id
-                        for t in targets:
-                            tr = working.track(t.id)
-                            if tr and not tr.score_lane:
-                                working = working.update_track(t.id, score_lane=only_lane)
-                active_targets = tuple(working.track(t.id) for t in targets if working.track(t.id))
-                result = proposals(working, active_targets, selection, kind, strength, .60, features, curves,
-                                   check, lambda i, label: _meter(send, 'analyze', i, len(active_targets), f'比较唱段 · {label}'),
-                                   speech=(speech, cache), audio=audio,
-                                   ensemble_language=language, pitch_strength=pitch_strength,
-                                   use_midi_timing=use_midi_timing,
-                                   phone_progress=lambda i, n, label: _meter(send, 'align', i, n, label))
-            check()
-            return (working, *result, curves, speech, added, failure)
 
         def done(result):
             working, phrases, suggestions, found, measured, added, failure = result
@@ -1719,38 +1288,16 @@ class QuickChorus(QObject):
             if self.project != project:
                 self._say('工程已变化，请按当前版本重新生成建议。')
                 return
-            next_project = working
-            if full:
-                next_project = replace(
-                    next_project,
-                    phrases=phrases if language else remembered_phrases(next_project, phrases),
-                )
-            if commit:
-                from chorus_analysis import apply_suggestions
-
-                picked = [(i, row) for i, row in enumerate(suggestions)
-                          if row.can_apply and (include_review or not row.review)]
-                count = 0
-                for _, row in picked:
-                    updated = apply_suggestions(next_project, (row,), manual=False)
-                    count += updated != next_project
-                    next_project = updated
-                if next_project != self.project:
-                    self._commit(next_project, keep_suggestions=True)
-                self._suggestions, self._resolved, self._issue = suggestions, {i for i, _ in picked}, -1
-                if count:
-                    self.setVariant('processed')
-                review_cnt = sum(1 for i, r in enumerate(suggestions) if r.review and i not in self._resolved)
-                tail = f'，另有 {review_cnt} 处待核对' if review_cnt else ''
-                self._say(f'已应用 {count} 项处理{tail}' + (f'。{failure}' if failure else ''), error=bool(failure))
-            else:
-                if next_project != self.project:
-                    self._commit(next_project, keep_suggestions=True)
-                self._suggestions, self._resolved, self._issue = suggestions, set(), -1
-                count = sum(row.can_apply for row in suggestions)
-                review_cnt = sum(1 for r in suggestions if r.review)
-                tail = f'（含 {review_cnt} 处待核对）' if review_cnt else ''
-                self._say(f'已生成 {count} 项建议{tail}' + (f'。{failure}' if failure else ''), error=bool(failure))
+            next_project, resolved, applied, msg = _review_svc.apply_analysis_result(
+                working, phrases, suggestions, failure,
+                full=full, language=language, commit=commit, include_review=include_review,
+            )
+            if next_project != self.project:
+                self._commit(next_project, keep_suggestions=True)
+            self._suggestions, self._resolved, self._issue = suggestions, resolved, -1
+            if applied:
+                self.setVariant('processed')
+            self._say(msg, error=bool(failure))
 
         self._start('analysis', '正在比较音轨', work, done)
 
@@ -2306,8 +1853,6 @@ class QuickChorus(QObject):
 
     @Slot('QVariantList')
     def snapPitchNotesToSemitone(self, spans=None):
-        from chorus_notes import effective_note_offset, shift_vocal_notes
-
         track = self.project.track(self._selected)
         if not track or track.role != 'vocal':
             return
@@ -2317,20 +1862,7 @@ class QuickChorus(QObject):
         notes = self._cached_vocal_notes(track)
         if not notes:
             return
-        pitch_edits = self.project.edits_for(track.id, 'pitch')
-        selected_set = {(round(a, 4), round(b, 4)) for a, b in parsed}
-        project = self.project
-        snapped = 0
-        for note in notes:
-            if (round(note.start, 4), round(note.end, 4)) not in selected_set:
-                continue
-            offset_cents, _, _, _ = effective_note_offset(note, pitch_edits)
-            target_midi = note.center_midi + offset_cents / 100.
-            delta_cents = (round(target_midi) - target_midi) * 100.
-            if abs(delta_cents) < .5:
-                continue
-            project = shift_vocal_notes(project, track.id, ((note.start, note.end),), delta_cents)
-            snapped += 1
+        project, snapped = _review_svc.snap_notes_to_semitone(self.project, track, parsed, notes)
         if snapped and project != self.project:
             self._selected_notes = parsed
             self._commit(project, keep_suggestions=True)
@@ -2341,9 +1873,6 @@ class QuickChorus(QObject):
     @Slot('QVariantList')
     def snapPitchNotesToScore(self, spans=None):
         """Snap selected vocal notes directly to their matched octave-adjusted MIDI pitch."""
-        from chorus_notes import effective_note_offset, shift_vocal_notes
-        from chorus_score_match import _normalize_token, match_vocal_to_score, shift_score_notes
-
         track = self.project.track(self._selected)
         score = self.project.score
         if not track or track.role != 'vocal' or not score or not track.score_lane:
@@ -2358,35 +1887,7 @@ class QuickChorus(QObject):
         notes = self._cached_vocal_notes(track)
         if not notes:
             return
-        bound_lane = shift_score_notes(lane.notes, offset=score.offset, octave_semitones=track.score_octave)
-        all_timing = self.project.edits_for(track.id, 'timing')
-        phrase_texts = tuple(
-            (p.start, p.end, _normalize_token(line.text))
-            for p in self.project.phrases
-            if (line := p.resolved_lyric(track.id)) and line.text
-        )
-        matches = match_vocal_to_score(
-            notes, bound_lane,
-            time_to_output=lambda ta, tb: (self._display_time_for(track, ta, all_timing),
-                                           self._display_time_for(track, tb, all_timing)),
-            phrase_texts=phrase_texts, draft=False,
-        )
-        pitch_edits = self.project.edits_for(track.id, 'pitch')
-        selected_set = {(round(a, 4), round(b, 4)) for a, b in parsed}
-        project = self.project
-        snapped = 0
-        for note, match in zip(notes, matches):
-            if (round(note.start, 4), round(note.end, 4)) not in selected_set:
-                continue
-            if match.target_pitch is None:
-                continue
-            offset_cents, _, _, _ = effective_note_offset(note, pitch_edits)
-            current_midi = note.center_midi + offset_cents / 100.
-            delta_cents = (match.target_pitch - current_midi) * 100.
-            if abs(delta_cents) < .5:
-                continue
-            project = shift_vocal_notes(project, track.id, ((note.start, note.end),), delta_cents)
-            snapped += 1
+        project, snapped = _review_svc.snap_notes_to_score(self.project, track, lane, parsed, notes)
         if snapped and project != self.project:
             self._selected_notes = parsed
             self._commit(project, keep_suggestions=True)
@@ -2399,82 +1900,31 @@ class QuickChorus(QObject):
     @Slot()
     def focusNextReviewNote(self):
         """Jump to the next unresolved review issue (across suggestions or flagged pitch notes, N shortcut)."""
-        from chorus_notes import effective_note_offset
-        from chorus_score_match import _normalize_token, match_vocal_to_score, shift_score_notes
-
-        # First cycle through unresolved structured review issues if any exist
-        unresolved = [
-            (i, r) for i, r in enumerate(self._suggestions)
-            if r.review and i not in self._resolved and self.project.track(r.track) is not None
-        ]
-        if unresolved:
-            unresolved.sort(key=lambda item: (
-                0 if item[1].category == 'transpose' else (1 if item[1].severity == 'high' else 2),
-                item[1].start,
-                item[0],
-            ))
-            ids = [i for i, _ in unresolved]
-            if self._issue in ids:
-                nxt_id = ids[(ids.index(self._issue) + 1) % len(ids)]
-            else:
-                nxt_id = next((i for i, r in unresolved if r.start > self._position + .03), ids[0])
-            self.focusIssue(nxt_id)
-            row = self._suggestions[nxt_id]
-            tr = self.project.track(row.track)
-            self._say(f'待核对 ({ids.index(nxt_id) + 1}/{len(ids)}) · {tr.name if tr else ""} · {row.detail}')
-            return
-
-        track = self.project.track(self._selected)
-        if not track or track.role != 'vocal':
-            return
-        notes = self._cached_vocal_notes(track)
-        if not notes:
-            self._say('先提取本轨音高再定位待核对音符。')
-            return
         variant = self._active_variant if self._intent and self._active_variant else self._variant
-        timing_edits = self.project.edits_for(track.id, 'timing') if variant in ('timing', 'processed') else ()
-        pitch_edits = self.project.edits_for(track.id, 'pitch')
-        matches = None
-        score = self.project.score
-        if score and track.score_lane:
-            lane = next((item for item in score.lanes if item.id == track.score_lane), None)
-            if lane is not None:
-                bound = shift_score_notes(lane.notes, offset=score.offset, octave_semitones=track.score_octave)
-                all_timing = self.project.edits_for(track.id, 'timing')
-                phrase_texts = tuple(
-                    (p.start, p.end, _normalize_token(line.text))
-                    for p in self.project.phrases
-                    if (line := p.resolved_lyric(track.id)) and line.text
-                )
-                matches = match_vocal_to_score(
-                    notes, bound,
-                    time_to_output=lambda ta, tb: (self._display_time_for(track, ta, all_timing),
-                                                   self._display_time_for(track, tb, all_timing)),
-                    phrase_texts=phrase_texts, draft=bool(not score.confirmed),
-                )
-        flagged = []
-        for idx, note in enumerate(notes):
-            offset_cents, _, _, _ = effective_note_offset(note, pitch_edits)
-            match = matches[idx] if matches is not None else None
-            is_large = abs(offset_cents) > 250.
-            is_rev = bool(match and (match.review or match.intent == 'review'))
-            if is_large or is_rev:
-                disp_a = self._display_time_for(track, note.start, timing_edits)
-                disp_b = self._display_time_for(track, note.end, timing_edits)
-                reason = '大幅变调 (>2.5 半音)' if is_large else (match.reason if match else '待核对')
-                flagged.append((disp_a, disp_b, note, reason))
-        if not flagged:
-            self._say('当前没有高风险或待核对位置。')
-            return
-        flagged.sort(key=lambda item: item[0])
-        nxt = next((item for item in flagged if item[0] > self._position + .03), flagged[0])
-        disp_a, disp_b, note, reason = nxt
-        self._selected_notes = ((note.start, note.end),)
-        span = max(3.0, min(self._view_span, 8.0))
-        self._set_viewport(disp_a - span * .25, span)
-        self.seek(max(self.project.start, disp_a - .15))
-        self.changed.emit()
-        self._say(f'已定位待核对音符（共 {len(flagged)} 处）· {reason}')
+        target = _review_svc.find_next_review_target(
+            project=self.project,
+            selected_id=self._selected,
+            suggestions=self._suggestions,
+            resolved=self._resolved,
+            current_issue=self._issue,
+            position=self._position,
+            variant=variant,
+            cached_vocal_notes_fn=self._cached_vocal_notes,
+        )
+        kind = target['kind']
+        if kind == 'issue':
+            self.focusIssue(target['issue_id'])
+            self._say(target['message'])
+        elif kind == 'note':
+            note = target['note']
+            self._selected_notes = ((note.start, note.end),)
+            span = max(3.0, min(self._view_span, 8.0))
+            self._set_viewport(target['disp_a'] - span * .25, span)
+            self.seek(max(self.project.start, target['disp_a'] - .15))
+            self.changed.emit()
+            self._say(target['message'])
+        elif kind == 'message':
+            self._say(target['message'])
 
     @Slot()
     def loopSelectedNotes(self):

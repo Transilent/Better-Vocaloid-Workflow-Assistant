@@ -24,6 +24,7 @@ from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
 import mixdown_export
+import mixdown_handoff_service as _handoff_svc
 from mixdown_contract import DEFAULT_DEESS_STRENGTH, MAX_VOCALS
 from mixdown_limiter_spec import PEAK_CEILING_DBFS
 from mixdown_preview_controller import MixdownPreviewController
@@ -73,16 +74,7 @@ def _local_url(value: Any) -> Path:
 
 
 def _artifacts_list(value: Any) -> list[dict[str, Any]]:
-    if isinstance(value, dict) and isinstance(value.get('artifacts'), list):
-        value = value['artifacts']
-    if not isinstance(value, (list, tuple)):
-        raise ValueError('任务分轨必须来自 quick_results 的 artifacts 列表。')
-    rows = []
-    for item in value:
-        if not isinstance(item, dict):
-            raise ValueError('任务产物条目无效。')
-        rows.append(dict(item))
-    return rows
+    return _handoff_svc.artifacts_list(value)
 
 
 class QuickMixdown(QObject):
@@ -617,78 +609,24 @@ class QuickMixdown(QObject):
                 signal.emit()
 
     def _recompute_view_locked(self):
-        player = self._player
-        if self._preview is not None and player is not None:
-            self._state.set_duration(player.duration())
-            self._state.playing = bool(player.play_intent and not player.failed)
-            self._state.loading = bool(player.loading)
-        can_play = bool(self._support_ready and player is not None and player.available
-                        and self._state.has_media())
-        try:
-            self._state.validate_output()
-            inputs_ready = True
-        except (OSError, ValueError, TypeError):
-            inputs_ready = False
-        support_probe_busy = bool(self._support_lane.kind)
-        can_export = bool(self._support_ready and inputs_ready and not self._active_kind
-                          and not support_probe_busy)
-        can_register = bool(self._state.job and self._state.result and not self._state.result_stale
-                            and self._export_receipt and not self._active_kind
-                            and not support_probe_busy and not self._registered_mix_id)
-        if self._active_kind == 'mixdown-export':
-            state_name = 'exporting'
-        elif self._active_kind == 'mixdown-register':
-            state_name = 'registering'
-        elif support_probe_busy or self._active_kind == 'mixdown-install':
-            state_name = 'checking'
-        elif player is not None and player.failed:
-            state_name = 'error'
-        elif self._state.loading:
-            state_name = 'loading'
-        elif self._state.playing:
-            state_name = 'playing'
-        elif self._state.result:
-            state_name = 'result'
-        elif self._state.has_media():
-            state_name = 'ready'
-        else:
-            state_name = 'idle'
-        self._state.state = state_name
-        self._state.busy = bool(self._active_kind or self._state.loading or support_probe_busy)
-        self._support['busy'] = bool(support_probe_busy or self._active_kind == 'mixdown-install')
-        self._support['playerAvailable'] = bool(player is not None and player.available)
-        self._support['visible'] = bool(
-            self._initialized and (not self._support_ready or not self._support['playerAvailable']))
-        self._support['canInstall'] = bool(
-            self._initialized and not self._support_ready
-            and self._support.get('installerAvailable')
-            and not self._active_kind and not support_probe_busy)
-        view = self._state.view(can_export=can_export, can_register=can_register,
-                                can_play=can_play)
-        view['canSeek'] = bool(can_play and player.ready and not self._source_edit_pending)
-        view['canMatchLoudness'] = bool(view['canSeek'] and not player.failed and not self._match_lane.kind)
-        view['loudnessMatch'] = copy.deepcopy(self._match)
-        view['listenReductionTrack'] = self._listen_reduction
-        receipt_output = ((self._export_receipt or {}).get('output')
-                          if isinstance(self._export_receipt, dict) else {})
-        export_sha = str((receipt_output or {}).get('sha256') or '')
-        export_fresh = bool(self._state.result and export_sha
-                            and not self._state.result_stale and not self._active_kind)
-        registered_video = bool(export_fresh and self._state.job and self._registered_mix_id)
-        independent_video = bool(export_fresh and not self._state.job)
-        view['canComposeVideo'] = registered_video or independent_video
-        render_result = (self._export_receipt or {}).get('render_result') or {}
-        view['exportQuality'] = copy.deepcopy(render_result.get('quality') or {})
-        view['videoHandoffMode'] = ('registered' if registered_video else
-                                    'independent' if independent_video else '')
-        view['support'] = copy.deepcopy(self._support)
-        view['supportVisible'] = bool(self._support['visible'])
-        view['componentMissing'] = bool(self._initialized and not self._support_ready)
-        view['supportMessage'] = str(self._support.get('message') or '')
-        view['nativeOutputAvailable'] = bool(player is not None and player.available)
-        view['presetPreview'] = copy.deepcopy(self._preset_plan['view']) if self._preset_plan else {}
-        view['canUndoPreset'] = self._preset_undo is not None
-        return view
+        return _handoff_svc.recompute_view(
+            self._state,
+            player=self._player,
+            preview=self._preview,
+            support=self._support,
+            support_ready=self._support_ready,
+            support_probe_busy=bool(self._support_lane.kind),
+            initialized=self._initialized,
+            active_kind=self._active_kind,
+            source_edit_pending=self._source_edit_pending,
+            match_busy=bool(self._match_lane.kind),
+            match_state=self._match,
+            listen_reduction=self._listen_reduction,
+            export_receipt=self._export_receipt,
+            registered_mix_id=self._registered_mix_id,
+            preset_plan=self._preset_plan,
+            preset_undo=self._preset_undo,
+        )
 
     def _recompute_and_emit(self):
         self._sync_position()
@@ -1357,56 +1295,7 @@ class QuickMixdown(QObject):
 
     @staticmethod
     def _build_export_receipt(report, context, source_rows, task_artifacts):
-        output = Path(report['output_path']).resolve()
-        info = output.stat()
-        parameters = dict(context.get('parameters') or {})
-        parameters['output_path'] = str(output)
-        inputs = dict(context.get('inputs') or {})
-        hashes = report.get('source_sha256') or {}
-        hashes = {normal_path_key(path): value for path, value in hashes.items()}
-
-        def with_hash(entry):
-            row = dict(entry)
-            row['sha256'] = hashes.get(normal_path_key(row['path']))
-            return row
-
-        saved_inputs = {
-            'vocals': [with_hash(entry) for entry in inputs.get('vocals', [])],
-            'instrumental_path': with_hash(inputs['instrumental_path']),
-        }
-        provenance = [
-            {'track_id': row['id'], 'path': row['path'],
-             'artifact_id': row.get('artifact_id'),
-             'artifact_revision': row.get('artifact_revision'),
-             'provenance': row.get('provenance')}
-            for row in source_rows
-        ]
-        dependencies = [
-            {'id': str(row.get('id') or ''), 'revision': str(row.get('revision') or '')}
-            for row in task_artifacts
-            if row.get('id') and row.get('revision')
-        ]
-        return {
-            'schema': 'vwa.audio_mixdown.receipt/v2',
-            'created_at': datetime.now().astimezone().isoformat(timespec='seconds'),
-            'backend': 'audio_mixdown.render',
-            'registration': 'explicit_user_action',
-            'source_job': context.get('source_job'),
-            'dependencies': dependencies,
-            'inputs': saved_inputs,
-            'input_provenance': provenance,
-            'parameters': parameters,
-            'output': {'path': str(output), 'bytes': info.st_size,
-                       'mtime_ns': info.st_mtime_ns,
-                       'sha256': report.get('output_sha256')},
-            'render_result': {
-                'sample_rate': report.get('sample_rate'),
-                'duration_seconds': report.get('duration_seconds'),
-                'peak_dbfs': report.get('peak_dbfs'),
-                'quality': copy.deepcopy(report.get('quality') or {}),
-                'warnings': list(report.get('warnings') or []),
-            },
-        }
+        return _handoff_svc.build_export_receipt(report, context, source_rows, task_artifacts)
 
     @Slot()
     def exportMix(self):
@@ -1499,8 +1388,7 @@ class QuickMixdown(QObject):
 
     @staticmethod
     def _artifact_identities(rows):
-        return sorted((str(row.get('id') or ''), str(row.get('revision') or ''),
-                       str(row.get('sha256') or '')) for row in rows)
+        return _handoff_svc.artifact_identities(rows)
 
     @Slot()
     def registerMix(self):
@@ -1541,40 +1429,12 @@ class QuickMixdown(QObject):
             return
 
         def work(stop, _send):
-            from task_store import locked
-            from task_contract import bind, inspect, update_metadata
-            if locked(job):
-                raise ValueError('任务在登记开始前进入运行状态；本次没有写入任务登记。')
-            if self._registration_token() != expected_token:
-                raise ValueError('登记期间混音输入或参数已变化；本次没有写入任务登记。')
-            if not self._export_plan.signatures_unchanged():
-                raise ValueError('登记期间源音频已变化；本次没有写入任务登记。')
-            if file_sha256(destination, stop.is_set) != expected_sha:
-                raise ValueError('导出 WAV 在登记前发生变化；请重新导出后再登记。')
-            if expected_artifacts:
-                rows = inspect(job, check=stop.is_set,
-                               artifact_ids=[identifier for identifier, _, _ in expected_artifacts])
-                by_id = {str(row.get('id') or ''): row for row in rows}
-                for identifier, revision, digest in expected_artifacts:
-                    row = by_id.get(identifier)
-                    if (row is None or str(row.get('revision') or '') != revision
-                            or str(row.get('sha256') or '') != digest
-                            or row.get('state') != 'verified'):
-                        raise ValueError('任务分轨已变化或校验失效；本次没有写入任务登记。')
-            if self._registration_token() != expected_token:
-                raise ValueError('登记写入前混音输入或参数已变化；本次没有写入任务登记。')
-            if locked(job):
-                raise ValueError('任务在登记写入前进入运行状态；本次没有写入任务登记。')
-            dependencies = [{'id': identifier, 'revision': revision}
-                            for identifier, revision, _digest in expected_artifacts]
-            artifact_id = bind(job, 'mixdown', destination,
-                               dependencies=dependencies,
-                               expected_sha256=expected_sha)
-            saved = copy.deepcopy(receipt)
-            saved['artifact_id'] = artifact_id
-            saved['registered_at'] = datetime.now().astimezone().isoformat(timespec='seconds')
-            update_metadata(job, audio_mixdown=saved)
-            return artifact_id, str(destination)
+            return _handoff_svc.execute_mix_registration(
+                job=job, destination=destination, expected_sha=expected_sha,
+                expected_artifacts=expected_artifacts, expected_token=expected_token,
+                get_token_fn=self._registration_token, export_plan=self._export_plan,
+                receipt=receipt, stop=stop,
+            )
 
         def finish(value, error):
             if isinstance(error, (InterruptedError, MixdownCancelled)):
@@ -1644,30 +1504,7 @@ class QuickMixdown(QObject):
     def _load_presets(self):
         custom = {'key': 'custom', 'label': '自定义', 'value': 'custom'}
         try:
-            snapshot = self._library.snapshot()
-            rows = [custom]
-            meta = {}
-            labels = {}
-            for entry in snapshot.get('entries', []):
-                if entry.get('type') != 'mixdown':
-                    continue
-                identifier = str(entry.get('id') or '')
-                version = str(entry.get('version') or '')
-                if not identifier or not version:
-                    continue
-                if identifier.startswith('builtin.mixdown.'):
-                    key = identifier[len('builtin.mixdown.'):]
-                else:
-                    key = identifier + '@' + version
-                label = str(entry.get('name') or identifier)
-                labels[label] = labels.get(label, 0) + 1
-                if labels[label] > 1:
-                    label += ' · 本机'
-                rows.append({'key': key, 'label': label, 'value': key})
-                meta[key] = {'id': identifier, 'version': version,
-                             'sha256': entry.get('sha256'), 'label': label}
-            self._presets = rows
-            self._preset_meta = meta
+            self._presets, self._preset_meta = _handoff_svc.load_preset_catalog(self._library)
         except Exception as error:
             self._presets = [custom]
             self._preset_meta = {}
@@ -1685,21 +1522,13 @@ class QuickMixdown(QObject):
             self._notice('后台操作进行中，暂时不能预览预设。')
             return False
         try:
-            from mixdown_preset_documents import plan_application
             document, entry = self._resolve_preset(key)
-            label = str(entry.get('name') or key)
             with self._lock:
                 stamp = self._preset_stamp()
-                plan = plan_application(document, stamp[4], sample_rate=stamp[2],
-                                        include_width=include_width, include_tracks=include_tracks)
-                self._preset_plan = {'stamp': stamp, 'plan': plan, 'view': {
-                    'key': key, 'name': label, 'changes': plan['changes'], 'adjusted': plan['adjusted'],
-                    'hasWidth': 'width' in document['payload'],
-                    'hasTracks': 'track_template' in document['payload'] or 'vocal_deess' in document['payload'],
-                    'hasTrackTemplate': 'track_template' in document['payload'],
-                    'hasDeess': 'vocal_deess' in document['payload'],
-                    'includeWidth': include_width, 'includeTracks': include_tracks,
-                }}
+                self._preset_plan = _handoff_svc.build_preset_preview(
+                    document, entry, key, stamp,
+                    include_width=include_width, include_tracks=include_tracks,
+                )
             self._recompute_and_emit()
             return True
         except Exception as error:
@@ -1767,19 +1596,11 @@ class QuickMixdown(QObject):
             self._notice('后台操作进行中，暂时不能追加预设。')
             return False
         try:
-            if not isinstance(name, str) or not name.strip():
-                raise ValueError('预设名称不能为空。')
-            from mixdown_preset_documents import make_document
             with self._lock:
                 state = self._state.preset_state()
-            payload = state['processing']
-            if any(row['deess_enabled'] or row['deess_strength'] != DEFAULT_DEESS_STRENGTH
-                   for row in state['tracks']):
-                payload['vocal_deess'] = [
-                    {'enabled': row['deess_enabled'], 'strength': row['deess_strength']}
-                    for row in state['tracks']
-                ]
-            document = make_document(payload, name.strip(), include_width=include_width)
+            document = _handoff_svc.build_saved_preset_document(
+                state, name, include_width=include_width,
+            )
             revision = self._library.snapshot()['revision']
             result = self._library.put_document(document, expected_revision=revision)
             self._load_presets()
@@ -1896,67 +1717,7 @@ class QuickMixdown(QObject):
             with self._lock:
                 if self._active_kind:
                     raise ValueError('后台操作进行中，不能切换任务。')
-                job_path = Path(job).expanduser().resolve()
-                if not (job_path / 'request.json').is_file():
-                    raise ValueError('任务缺少 request.json。')
-                rows = _artifacts_list(artifacts)
-            by_relative = {}
-            for row in rows:
-                if row.get('state') != 'verified' or row.get('available') is False:
-                    continue
-                path_text = str(row.get('path') or '')
-                if not path_text:
-                    continue
-                path = Path(path_text).expanduser().resolve()
-                if not path.is_file() or not path.is_relative_to(job_path):
-                    raise ValueError('任务分轨必须位于该任务目录内。')
-                relative = path.relative_to(job_path).as_posix()
-                if relative not in ('audio/vocals.wav', 'audio/lead.wav',
-                                    'audio/backing.wav', 'audio/instrumental.wav'):
-                    continue
-                if row.get('role') != 'audio':
-                    continue
-                identity = {
-                    'id': str(row.get('id') or ''), 'revision': str(row.get('revision') or ''),
-                    'sha256': str(row.get('sha256') or ''), 'provenance': 'task_separation',
-                    'relative': relative,
-                }
-                if not identity['id'] or not identity['revision'] or not identity['sha256']:
-                    raise ValueError('任务分轨缺少完整产物身份。')
-                by_relative[relative] = {'path': str(path), 'artifact': identity}
-            backing = by_relative.get('audio/instrumental.wav')
-            if backing is None:
-                raise ValueError('任务缺少已核验的 audio/instrumental.wav。')
-            request_config = json.loads((job_path / 'request.json').read_text(encoding='utf-8'))
-            if not isinstance(request_config, dict):
-                raise ValueError('任务 request.json 必须是对象。')
-            voice_mode = str(request_config.get('voice_mode') or 'single')
-            if voice_mode in ('dual', 'roformer'):
-                if not ('audio/lead.wav' in by_relative
-                        and 'audio/backing.wav' in by_relative):
-                    raise ValueError('双声部任务缺少已核验的 lead/backing 分轨。')
-                vocal_names = (('audio/lead.wav', '主唱分轨'),
-                               ('audio/backing.wav', '和声分轨'))
-            elif voice_mode == 'single':
-                if 'audio/vocals.wav' not in by_relative:
-                    raise ValueError('单声部任务缺少已核验的 vocals.wav。')
-                vocal_names = (('audio/vocals.wav', '人声分轨'),)
-            elif 'audio/lead.wav' in by_relative and 'audio/backing.wav' in by_relative:
-                vocal_names = (('audio/lead.wav', '主唱分轨'),
-                               ('audio/backing.wav', '和声分轨'))
-            elif 'audio/vocals.wav' in by_relative:
-                vocal_names = (('audio/vocals.wav', '人声分轨'),)
-            else:
-                raise ValueError('任务缺少已核验的真实歌声分轨。')
-            if len(vocal_names) > MAX_VOCALS:
-                raise ValueError('任务歌声分轨数量超过混音上限。')
-            sources = []
-            for index, (name, label) in enumerate(vocal_names):
-                item = by_relative[name]
-                sources.append({'id': f'vocal-{index + 1}', 'label': label,
-                                'path': item['path'], 'artifact': item['artifact']})
-            sources.append({'id': 'instrumental', 'label': '伴奏',
-                            'path': backing['path'], 'artifact': backing['artifact']})
+            job_path, sources = _handoff_svc.resolve_task_sources(job, artifacts)
             with self._lock:
                 old_has_media = self._state.has_media()
                 self._state.load_task_sources(job_path, sources)
@@ -1986,32 +1747,11 @@ class QuickMixdown(QObject):
         if not self._ensure_entered():
             return False
         try:
-            if not isinstance(payload, dict):
-                raise ValueError('修音交接数据无效。')
-            vocals = payload.get('vocals') or ()
-            backing = payload.get('backing')
-            title = str(payload.get('title') or '').strip()
-            variant = str(payload.get('variant') or 'processed')
-            variant_label = {'original': '原声', 'timing': '仅对齐', 'pitch': '仅修音',
-                             'processed': '处理后'}.get(variant, variant)
-            safe_title = ''.join('_' if ch in '\\/:*?"<>|' else ch for ch in title).strip(' .')
-            output_path = None
-            if safe_title:
-                from common import output_directory
-                stamp = time.strftime('%Y%m%d-%H%M%S')
-                root = Path(output_directory()).expanduser().resolve()
-                candidate = root / f'{safe_title}-mixdown-{stamp}.wav'
-                while candidate.exists():
-                    candidate = root / f'{safe_title}-mixdown-{stamp}-{uuid.uuid4().hex[:6]}.wav'
-                output_path = candidate
+            vocals, backing, output_path, notice = _handoff_svc.resolve_chorus_handoff(payload)
             with self._lock:
                 if self._active_kind:
                     raise ValueError('简易混音后台操作进行中，请完成后再送入。')
                 old_has_media = self._state.has_media()
-                if backing and backing.get('path'):
-                    notice = f'已从修音工作台载入 {len(vocals)} 路人声（{variant_label}）与伴奏，可直接试听混音。'
-                else:
-                    notice = f'已从修音工作台载入 {len(vocals)} 路人声（{variant_label}）；请选择伴奏文件即可开始试听。'
                 self._state.load_studio_sources(vocals, backing, message=notice, output=output_path)
                 self._clear_match()
                 self._listen_reduction = ''

@@ -30,32 +30,50 @@ from PySide6.QtGui import QDesktopServices, QGuiApplication
 from common import ROOT, atomic_json, file_hash, load_config
 from i18n import tr
 import publication
+import publication_browser_service as _browser_svc
+import publication_draft_service as _draft_svc
 import quick_results
 
-
-BILIBILI = 'bilibili'
-XIAOHONGSHU = 'xiaohongshu'
-PLATFORMS = (BILIBILI, XIAOHONGSHU)
-PLATFORM_LABELS = {BILIBILI: 'B站', XIAOHONGSHU: '小红书'}
-COVER_MODES = ('original', 'custom', 'frame', 'original-frame')
-COVER_LABELS = {'original': '本家原封面', 'custom': '本地图片', 'frame': '成品视频截帧',
-                'original-frame': '本家原视频截帧'}
-TAG_LIMITS = {BILIBILI: (10, 20), XIAOHONGSHU: (10, 20)}
-RIGHTS_MAX_CHARS = 500
-IMAGE_SUFFIXES = frozenset(('.jpg', '.jpeg', '.png', '.webp'))
-XIAOHONGSHU_CREATOR_URL = publication.XIAOHONGSHU_CREATOR_URL
-BILIBILI_COVER_RATIOS = ('4:3', '16:9')
-BILIBILI_COVER_SIZES = {'4:3': (1440, 1080), '16:9': (1920, 1080)}
-BROWSER_STATUS_FILENAME = BILIBILI + '_上传状态.json'
-_HEX_ID = re.compile(r'^[a-f0-9]{32}$')
-_HEX_SHA = re.compile(r'^[a-f0-9]{64}$')
-_MAX_DRAFT_BYTES = 256 * 1024
-_MAX_BROWSER_STATUS_BYTES = 64 * 1024
-_TAG_SPLIT = re.compile(r'[\s,，、]+')
-
-
-def _text(value: Any) -> str:
-    return value if isinstance(value, str) else ''
+from publication_browser_service import (
+    BILIBILI,
+    BROWSER_STATUS_FILENAME,
+    _BrowserSession,
+    _MAX_BROWSER_STATUS_BYTES,
+    _read_json,
+    _text,
+)
+from publication_draft_service import (
+    BILIBILI_COVER_RATIOS,
+    BILIBILI_COVER_SIZES,
+    COVER_LABELS,
+    COVER_MODES,
+    IMAGE_SUFFIXES,
+    PLATFORMS,
+    PLATFORM_LABELS,
+    RIGHTS_MAX_CHARS,
+    TAG_LIMITS,
+    XIAOHONGSHU,
+    XIAOHONGSHU_CREATOR_URL,
+    _ArtifactRef,
+    _HEX_ID,
+    _HEX_SHA,
+    _LocalVideoRef,
+    _MAX_DRAFT_BYTES,
+    _PlatformDraft,
+    _PreviewRequest,
+    _PublicationState,
+    _Snapshot,
+    _TAG_SPLIT,
+    _check_stop,
+    _inspect_bundle,
+    _optional_json,
+    _same_path,
+    _sniff_image,
+    _song_title,
+    _stat_stamp,
+    _tags,
+    _tags_text,
+)
 
 
 def _local_path(value: Any) -> Path:
@@ -66,13 +84,6 @@ def _local_path(value: Any) -> Path:
     if not isinstance(value, str) or not value.strip():
         raise ValueError('文件路径为空。')
     return Path(value).expanduser().resolve()
-
-
-def _same_path(left: Any, right: Any) -> bool:
-    try:
-        return bool(left and right and Path(left).expanduser().resolve() == Path(right).expanduser().resolve())
-    except (OSError, TypeError, ValueError):
-        return False
 
 
 def _bundle_directory(value: Any) -> Path:
@@ -86,255 +97,13 @@ def _bundle_directory(value: Any) -> Path:
     return path.resolve()
 
 
-def _inspect_bundle(bundle: Path) -> dict[str, Any]:
-    data = _read_json(Path(bundle) / 'manifest.json')
-    if not isinstance(data, dict):
-        raise ValueError('发布资料 manifest 格式无效。')
-    if data.get('state') not in (None, 'prepared'):
-        raise ValueError('发布资料尚未处于可读的准备状态。')
-    if data.get('final_publish') not in (None, 'human_only'):
-        raise ValueError('发布资料未声明最终投稿由用户完成。')
-    content = data.get('content')
-    if not isinstance(content, dict) or not content:
-        raise ValueError('发布资料没有可恢复的平台文稿。')
-    unsupported = set(content) - set(PLATFORMS)
-    if unsupported:
-        raise ValueError('发布资料包含不支持的平台。')
-    for platform in content:
-        publication.load_bundle(Path(bundle), platform, verify_hash=False)
-    return data
-
-
-def _read_json(path: Path, limit: int = 2 * 1024 * 1024) -> Any:
-    path = Path(path)
-    if path.stat().st_size > limit:
-        raise ValueError(f'{path.name} 文件过大。')
-    return json.loads(path.read_text(encoding='utf-8'))
-
-
-def _optional_json(path: Path, limit: int = 2 * 1024 * 1024) -> Any:
-    try:
-        return _read_json(path, limit)
-    except (OSError, ValueError, TypeError):
-        return None
-
-
-def _check_stop(stop) -> None:
-    if stop is not None and stop.is_set():
-        raise InterruptedError('发布操作已取消。')
-
-
-def _sniff_image(path: Path) -> None:
-    path = Path(path)
-    if not path.is_file() or path.stat().st_size <= 0:
-        raise ValueError('封面图片不存在或为空。')
-    if path.suffix.casefold() not in IMAGE_SUFFIXES:
-        raise ValueError('请选择 JPG、PNG 或 WebP 封面。')
-    with path.open('rb') as stream:
-        head = stream.read(16)
-    if head.startswith(b'\xff\xd8\xff'):
-        return
-    if head.startswith(b'\x89PNG\r\n\x1a\n'):
-        return
-    if head.startswith(b'RIFF') and head[8:12] == b'WEBP':
-        return
-    raise ValueError('封面图片格式无法识别。')
-
-
-def _song_title(value: str) -> str:
-    title = re.sub(r'^(?:\s*【[^】]+】\s*)+', '', value or '').strip()
-    return title.split('丨', 1)[0].split('|', 1)[0].strip().strip('《》')
-
-
-def _tags(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        parts = _TAG_SPLIT.split(value.strip())
-    elif isinstance(value, (list, tuple)):
-        parts = []
-        for item in value:
-            if not isinstance(item, str):
-                raise ValueError('标签必须是文本。')
-            parts.extend(_TAG_SPLIT.split(item.strip().lstrip('#')))
-    else:
-        raise ValueError('标签必须是文本。')
-    result = []
-    for item in parts:
-        item = item.strip().lstrip('#').strip()
-        if item:
-            result.append(item)
-    return result
-
-
-def _tags_text(value: Any) -> str:
-    return ' '.join('#' + item for item in _tags(value))
-
-
 def _local_url(path: Any) -> str:
     return QUrl.fromLocalFile(str(Path(path).resolve())).toString() if path else ''
 
 
-def _stat_stamp(path: Any) -> tuple[str, int, int] | None:
-    try:
-        item = Path(path).resolve()
-        stat = item.stat()
-        return str(item), int(stat.st_size), int(stat.st_mtime_ns)
-    except (OSError, TypeError, ValueError):
-        return None
-
-
-@dataclass(frozen=True)
-class _ArtifactRef:
-    id: str
-    revision: str
-    sha256: str
-    path: Path
-    bytes: int
-    role: str
-    row: Mapping[str, Any] = field(repr=False, compare=False)
-
-    def as_row(self) -> dict[str, Any]:
-        value = copy.deepcopy(dict(self.row))
-        value.update({'id': self.id, 'revision': self.revision, 'sha256': self.sha256,
-                      'path': str(self.path), 'bytes': self.bytes,
-                      'role': self.role, 'state': 'verified'})
-        return value
-
-    def same_identity(self, other: '_ArtifactRef') -> bool:
-        return (self.id == other.id and self.revision == other.revision
-                and self.sha256 == other.sha256 and self.path == other.path
-                and self.bytes == other.bytes)
-
-
 def _artifact_ref(row: Any, role: str) -> _ArtifactRef:
-    if not isinstance(row, Mapping):
-        raise ValueError('任务产物条目无效。')
-    if row.get('state') != 'verified' or row.get('available') is False:
-        raise ValueError('选中的任务产物尚未通过核验。')
-    if row.get('role') != role:
-        raise ValueError(f'任务产物角色不是 {role}。')
-    identifier = _text(row.get('id'))
-    revision = _text(row.get('revision'))
-    sha256 = _text(row.get('sha256'))
-    if (not _HEX_ID.fullmatch(identifier) or not _HEX_SHA.fullmatch(revision)
-            or not _HEX_SHA.fullmatch(sha256)):
-        raise ValueError('任务产物缺少完整 id、revision 或 sha256。')
-    path = _local_path(row.get('path'))
-    if not path.is_file():
-        raise ValueError('任务产物文件不存在，可能已移动或清理。')
-    size = row.get('bytes')
-    if type(size) is not int or size < 0 or path.stat().st_size != size:
-        raise ValueError('任务产物字节数与当前文件不一致，请刷新任务后重试。')
-    return _ArtifactRef(identifier, revision, sha256, path, size, role, copy.deepcopy(dict(row)))
+    return _draft_svc._artifact_ref(row, role, local_path_fn=_local_path)
 
-
-@dataclass(frozen=True)
-class _LocalVideoRef:
-    path: Path
-    sha256: str
-    bytes: int
-
-
-@dataclass
-class _PlatformDraft:
-    title: str = ''
-    description: str = ''
-    tags: str = ''
-    ai: bool | None = None
-    rights: str | None = None
-    cover_mode: str = 'frame'
-    cover_seconds: float = 20.0
-    cover_file: str = ''
-    cover_preview: str = ''
-
-
-@dataclass
-class _BrowserSession:
-    process: Any = field(default=None, repr=False, compare=False)
-    log_stream: Any = field(default=None, repr=False, compare=False)
-    mode: str = ''
-    output: str = ''
-    control_bundle: str = ''
-    log_path: str = ''
-    state: str = 'idle'
-    message: str = '尚未启动 B站填写会话。'
-    updated_at: str = ''
-    checks: dict[str, bool] = field(default_factory=dict)
-    returncode: int | None = None
-    started_ns: int = 0
-
-
-@dataclass
-class _PublicationState:
-    step: int = 0
-    job: str = ''
-    video: str = ''
-    platform: str = BILIBILI
-    selected_platforms: tuple[str, ...] = (BILIBILI,)
-    drafts: dict[str, _PlatformDraft] = field(default_factory=lambda: {
-        platform: _PlatformDraft() for platform in PLATFORMS})
-    busy: bool = False
-    message: str = '请选择一个已核验的成品视频和来源任务。'
-    state: str = 'empty'
-    bundle: str = ''
-    bundle_stale: bool = False
-    can_prepare: bool = False
-    can_check: bool = False
-    verified: bool = False
-    video_ref: _ArtifactRef | _LocalVideoRef | None = None
-    bundle_ref: _ArtifactRef | None = None
-    original_cover: str = ''
-    source_ready: bool = False
-    source_problem: str = '尚未载入来源任务。'
-    source_mode: str = 'unknown'
-    source_stamp: tuple = ()
-    bundle_stamp: tuple = ()
-    handoffs: dict[str, dict[str, Any]] = field(default_factory=dict)
-    platform_errors: dict[str, str] = field(default_factory=dict)
-    cover_ratio: str = '16:9'
-    cover_variants: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
-    browser: _BrowserSession = field(default_factory=_BrowserSession)
-    source_drift: bool = False
-    bundle_only: bool = False
-    task_choices: list[dict[str, Any]] = field(default_factory=list)
-    task_message: str = '尚未读取任务列表。'
-
-    def draft(self) -> _PlatformDraft:
-        if self.platform not in self.drafts:
-            self.drafts[self.platform] = _PlatformDraft()
-        return self.drafts[self.platform]
-
-
-@dataclass(frozen=True)
-class _Snapshot:
-    job: str
-    video: _ArtifactRef | _LocalVideoRef | None
-    bundle_ref: _ArtifactRef | None
-    bundle: str
-    platform: str
-    selected_platforms: tuple[str, ...]
-    title: str
-    description: str
-    tags: tuple[str, ...]
-    ai: bool
-    rights: str
-    cover_mode: str
-    cover_seconds: float
-    cover_file: str
-    contents: Mapping[str, Mapping[str, Any]]
-    source_stamp: tuple
-    bundle_stamp: tuple
-
-
-@dataclass(frozen=True)
-class _PreviewRequest:
-    job: str
-    video: _ArtifactRef
-    mode: str
-    seconds: float
-    cover_file: str
-    original_cover: str
 
 class QuickPublication(QObject):
     """Application-owned state for the three-step Quick publication page."""
@@ -2062,152 +1831,37 @@ class QuickPublication(QObject):
         self._emit()
 
     def _browser_root_path(self) -> Path:
-        override = getattr(self._owner, 'quick_publication_browser_root', None)
-        return Path(override or (Path(ROOT) / 'cache/publish-browser')).resolve()
+        return _browser_svc.browser_root_path(self._owner)
 
     def _browser_profile_path(self) -> Path:
-        root = self._browser_root_path()
-        return (root if root.name == BILIBILI else root / BILIBILI).resolve()
+        return _browser_svc.browser_profile_path(self._owner)
 
     def _read_active_browser_record(self):
-        path = self._browser_profile_path() / 'active.json'
-        try:
-            value = _read_json(path, limit=_MAX_BROWSER_STATUS_BYTES)
-            return value if isinstance(value, dict) else None
-        except (OSError, ValueError, TypeError):
-            return None
+        return _browser_svc.read_active_browser_record(self._owner)
 
     def _browser_output_allowed(self, path: Path) -> bool:
-        candidate = Path(path).resolve()
-        profile = self._browser_profile_path()
-        if candidate == profile:
-            return True
-        if self._state.bundle:
-            try:
-                if candidate == Path(self._state.bundle).resolve():
-                    return True
-            except (OSError, ValueError):
-                pass
-        try:
-            return candidate.is_relative_to((Path(ROOT) / 'publish-packages').resolve())
-        except (OSError, ValueError):
-            return False
+        return _browser_svc.browser_output_allowed(self._owner, self._state, path)
 
     def _browser_profile_locked(self) -> bool:
-        profile = self._browser_profile_path()
-        try:
-            from task_store import locked
-            return bool(locked(profile))
-        except (OSError, ValueError, TypeError, RuntimeError):
-            return False
+        return _browser_svc.browser_profile_locked(self._owner)
 
     def _browser_live_locked(self) -> bool:
-        process = self._state.browser.process
-        if process is not None:
-            try:
-                return process.poll() is None
-            except OSError:
-                return True
-        return self._read_active_browser_record() is not None and self._browser_profile_locked()
+        return _browser_svc.browser_live(self._owner, self._state)
 
     def _storage_busy_locked(self) -> bool:
-        storage = getattr(self._owner, 'storage', None)
-        if storage is None:
-            support = getattr(self._owner, 'support', None)
-            storage = getattr(support, 'storage', None)
-        if isinstance(storage, Mapping):
-            return bool(storage.get('busy'))
-        busy = getattr(storage, 'busy', None)
-        try:
-            return bool(callable(busy) and busy())
-        except Exception:
-            return True
+        return _browser_svc.storage_busy(self._owner)
 
     def _launch_browser_locked(self, *, login_only: bool, bundle: Path | None):
-        if self._browser_live_locked():
-            raise ValueError('B站填写会话已经打开。')
-        if self._storage_busy_locked():
-            raise ValueError('缓存管理正在进行，请稍后再打开 B站。')
-        script = Path(__file__).with_name('publish_browser.py').resolve()
-        if not script.is_file():
-            raise ValueError('找不到现有 B站填写服务 publish_browser.py。')
-        override = getattr(self._owner, 'quick_publication_python', '')
-        try:
-            if override:
-                python = Path(str(override)).resolve()
-            else:
-                python = Path(str(load_config().get('python') or sys.executable)).resolve()
-        except (OSError, ValueError, TypeError) as exc:
-            raise ValueError('无法确定 Python 运行环境。') from exc
-        if not python.is_file():
-            raise ValueError('配置的 Python 运行环境不存在。')
-        profile = self._browser_profile_path()
-        profile.mkdir(parents=True, exist_ok=True)
-        output = profile if login_only else Path(bundle).resolve()
-        if not login_only and (bundle is None or not output.is_dir()):
-            raise ValueError('请先生成并核对当前发布资料。')
-        log_path = output / (BILIBILI + '_浏览器.log')
-        log = log_path.open('a', encoding='utf-8')
-        argv = [str(python), '-B', '-u', str(script), '--platform', BILIBILI]
-        if login_only:
-            argv.append('--login')
-        else:
-            argv.extend(['--bundle', str(output)])
-        env = os.environ.copy()
-        env.update(PYTHONUTF8='1', PYTHONDONTWRITEBYTECODE='1')
-        flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-        try:
-            process = subprocess.Popen(
-                argv, cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=log,
-                stderr=subprocess.STDOUT, env=env, creationflags=flags, close_fds=True,
-            )
-        except Exception:
-            log.close()
-            raise
-        old = self._state.browser
-        if old.log_stream is not None:
-            try:
-                old.log_stream.close()
-            except OSError:
-                pass
-        self._state.browser = _BrowserSession(
-            process=process, log_stream=log, mode='login' if login_only else 'fill',
-            output=str(output), control_bundle=str(output), log_path=str(log_path),
-            state='starting',
-            message=('正在打开隔离登录窗口…' if login_only else '正在打开 B站填写会话…'),
-            started_ns=time.time_ns(),
+        _browser_svc.launch_browser(
+            self._owner, self._state, login_only=login_only, bundle=bundle,
+            script_dir=Path(__file__).resolve().parent,
         )
-        self._state.message = ('正在打开 B站隔离登录会话；登录后请关闭窗口。'
-                               if login_only else
-                               '正在打开 B站填写会话；登录、核对与最终发布由你完成。')
 
     def _status_candidates_locked(self) -> list[Path]:
-        session = self._state.browser
-        paths = []
-        for value in (session.output, session.control_bundle):
-            if value:
-                path = Path(value).resolve() / BROWSER_STATUS_FILENAME
-                if path not in paths:
-                    paths.append(path)
-        return paths
+        return _browser_svc.status_candidates(self._state)
 
     def _browser_log_locked(self):
-        session = self._state.browser
-        profile = self._browser_profile_path()
-        for directory in (session.output, self._state.bundle, str(profile)):
-            if not directory:
-                continue
-            try:
-                folder = Path(directory).resolve(strict=True)
-                if not self._browser_output_allowed(folder):
-                    continue
-                path = folder / (BILIBILI + '_浏览器.log')
-                if (path.is_file() and path.resolve(strict=True) == path and not path.is_symlink()
-                        and not getattr(path.lstat(), 'st_file_attributes', 0) & 1024):
-                    return path
-            except (OSError, ValueError):
-                continue
-        return None
+        return _browser_svc.browser_log_path(self._owner, self._state)
 
     @Slot(result=str)
     def browserLogTail(self):
@@ -2220,109 +1874,13 @@ class QuickPublication(QObject):
             return '无法读取填写日志：' + str(exc)[:500]
 
     def _refresh_browser_locked(self):
-        session = self._state.browser
-        active = self._read_active_browser_record()
-        process = session.process
-        own_live = False
-        if process is not None:
-            try:
-                own_live = process.poll() is None
-            except OSError:
-                own_live = True
-        if process is None and active is not None and self._browser_profile_locked():
-            output = Path(_text(active.get('bundle'))).resolve()
-            if not self._browser_output_allowed(output):
-                return
-            self._state.browser = _BrowserSession(
-                mode='login' if output == self._browser_profile_path() else 'fill',
-                output=str(output),
-                control_bundle=str(Path(_text(active.get('control_bundle')) or output).resolve()),
-                state='active',
-                message='已发现现有 B站填写会话，正在读取回执…',
-            )
-            session = self._state.browser
-            own_live = True
-        live = own_live
-        candidates = []
-        for path in self._status_candidates_locked():
-            try:
-                modified = path.stat().st_mtime_ns
-            except OSError:
-                continue
-            if session.started_ns and modified < session.started_ns:
-                continue
-            candidates.append((modified, path))
-        if candidates:
-            path = max(candidates)[1]
-            try:
-                status = _read_json(path, limit=_MAX_BROWSER_STATUS_BYTES)
-            except (OSError, ValueError, TypeError):
-                status = None
-            if isinstance(status, dict):
-                state = _text(status.get('state')) or 'active'
-                checks = status.get('checks') if isinstance(status.get('checks'), dict) else {}
-                session.state = state
-                session.message = _text(status.get('message')) or state
-                session.updated_at = _text(status.get('updated_at'))
-                session.checks = {key: value for key, value in checks.items() if type(value) is bool}
-                control = status.get('control_bundle')
-                if isinstance(control, str) and control.strip():
-                    session.control_bundle = str(Path(control).resolve())
-        if not live and session.process is not None:
-            try:
-                returncode = session.process.poll()
-            except OSError:
-                returncode = None
-            session.returncode = returncode
-            stream, session.log_stream = session.log_stream, None
-            if stream is not None:
-                try:
-                    stream.close()
-                except OSError:
-                    pass
-            if session.state not in ('failed', 'cancelled', 'login_window_closed', 'needs_manual'):
-                session.state = 'closed'
-                session.message = ('B站填写会话已关闭；最终发布状态必须由你在网页确认。'
-                                   if returncode in (None, 0) else
-                                   'B站填写会话异常结束，请查看填写日志。')
+        _browser_svc.refresh_browser(self._owner, self._state)
 
     def _browser_view_locked(self):
-        session = self._state.browser
-        live = bool(self._browser_live_locked())
-        selected = BILIBILI in self._state.selected_platforms
-        verified = bool(
-            selected and self._state.verified and not self._state.bundle_stale
-            and self._state.handoffs.get(BILIBILI)
-        )
-        active = self._active_kind
-        return {
-            'state': session.state,
-            'message': session.message,
-            'active': live,
-            'mode': session.mode,
-            'pid': int(getattr(session.process, 'pid', 0) or 0),
-            'updatedAt': session.updated_at,
-            'checks': copy.deepcopy(session.checks),
-            'output': session.output,
-            'controlBundle': session.control_bundle,
-            'returncode': session.returncode,
-            'finalPublish': 'human_only',
-            'hasLog': self._browser_log_locked() is not None,
-            'canLogin': bool(not live and not self._state.busy and not active),
-            'canOpen': bool(verified and not live and not self._state.busy and not active),
-            'canContinue': bool(verified and live and session.mode == 'fill'
-                                and session.state != 'stopping'
-                                and session.checks.get('video_selected')
-                                and not self._state.busy and not active),
-            'canStop': bool(live and session.state != 'stopping'
-                            and not self._state.busy and not active),
-        }
+        return _browser_svc.browser_view(self._owner, self._state, self._active_kind)
 
     def _browser_signature_locked(self):
-        browser = self._browser_view_locked()
-        return (browser['state'], browser['message'], browser['active'], browser['mode'],
-                tuple(sorted(browser['checks'].items())), browser['updatedAt'],
-                browser['controlBundle'], browser['returncode'])
+        return _browser_svc.browser_signature(self._owner, self._state, self._active_kind)
 
     def _poll_browser(self):
         changed = False
@@ -2339,488 +1897,95 @@ class QuickPublication(QObject):
             self._emit()
 
     def _verify_video(self, job: str, expected: _ArtifactRef | _LocalVideoRef, stop):
-        _check_stop(stop)
-        if isinstance(expected, _LocalVideoRef):
-            path = Path(expected.path).resolve()
-            if not path.is_file() or path.stat().st_size != expected.bytes:
-                raise ValueError('所选本地成品已移动或大小发生变化，请重新选择。')
-            publication.inspect_video(path)
-            if file_hash(path, check=stop.is_set) != expected.sha256:
-                raise ValueError('所选本地成品内容已变化，请重新选择。')
-            _check_stop(stop)
-            return expected
-        verifier = getattr(self._owner, 'verify_task_artifact', None)
-        if not callable(verifier):
-            raise RuntimeError('主控制器未提供任务产物核验入口。')
-        row = verifier(job, expected.as_row(), 'video', check=stop.is_set)
-        _check_stop(stop)
-        verified = _artifact_ref(row, 'video')
-        if not expected.same_identity(verified):
-            raise ValueError('成品视频在核验期间发生变化。')
-        return verified
+        return _draft_svc.verify_video(self._owner, job, expected, stop, local_path_fn=_local_path)
 
     def _verify_bundle_row(self, job: str, expected: _ArtifactRef, stop, *, platform: str) -> _ArtifactRef:
-        verifier = getattr(self._owner, 'verify_task_artifact', None)
-        if not callable(verifier):
-            raise RuntimeError('主控制器未提供任务产物核验入口。')
-        _check_stop(stop)
-        row = verifier(job, expected.as_row(), 'publication', check=stop.is_set, platform=platform)
-        _check_stop(stop)
-        verified = _artifact_ref(row, 'publication')
-        if not expected.same_identity(verified):
-            raise ValueError('发布资料 manifest 在核验期间发生变化。')
-        return verified
+        return _draft_svc.verify_bundle_row(
+            self._owner, job, expected, stop, platform=platform, local_path_fn=_local_path,
+        )
 
     def _verify_current_bundle(self, snapshot: _Snapshot, bundle_ref: _ArtifactRef | None, stop, *, platform=None):
-        _check_stop(stop)
-        verified_video = (self._verify_video(snapshot.job, snapshot.video, stop)
-                          if snapshot.video is not None else None)
-        bundle = Path(snapshot.bundle).resolve() if snapshot.bundle else None
-        if bundle is None or not bundle.is_dir():
-            raise ValueError('当前没有可核对的发布资料。')
-        manifest_path = bundle / 'manifest.json'
-        data = _read_json(manifest_path)
-        if not isinstance(data, dict):
-            raise ValueError('发布资料 manifest 格式无效。')
-        if data.get('state') not in (None, 'prepared') or data.get('final_publish') not in (None, 'human_only'):
-            raise ValueError('发布资料未处于只读准备状态。')
-        video_data = data.get('video') if isinstance(data.get('video'), dict) else {}
-        if verified_video is not None:
-            if (Path(publication.clean_path(video_data.get('path', ''))).resolve() != verified_video.path
-                    or video_data.get('sha256') != verified_video.sha256):
-                raise ValueError('发布资料绑定的成品与当前已核验视频不一致。')
-            if snapshot.job:
-                if Path(publication.clean_path(data.get('source_job', ''))).resolve() != Path(snapshot.job).resolve():
-                    raise ValueError('发布资料来源任务不一致。')
-        else:
-            if not self._state.bundle_only:
-                raise ValueError('当前发布资料没有可核验的成品视频。')
-        if bundle_ref is not None:
-            expected_manifest = bundle / 'manifest.json'
-            if not snapshot.job or bundle_ref.path.resolve() != expected_manifest.resolve():
-                raise ValueError('登记的发布资料入口与当前目录不一致。')
-        content = data.get('content') if isinstance(data.get('content'), dict) else {}
-        if set(snapshot.selected_platforms) != set(content):
-            raise ValueError('发布资料平台集合与当前选择不一致，请重新生成同一发布包。')
-        self._assert_snapshot_content(snapshot, data)
-        handoffs, errors = self._handoffs_for_snapshot(
-            snapshot, bundle, data, stop, bundle_ref=bundle_ref, only=platform)
-        if platform and platform not in handoffs:
-            raise ValueError(errors.get(platform, '该平台没有可用交接。'))
-        return {'data': data, 'handoffs': handoffs, 'platform_errors': errors,
-                'cover_variants': self._cover_variants(bundle, data) if BILIBILI in handoffs else {}}
+        return _draft_svc.verify_current_bundle(
+            self._owner, self._state, snapshot, bundle_ref, stop, platform=platform,
+            handoffs_fn=self._handoffs_for_snapshot, local_path_fn=_local_path, local_url_fn=_local_url,
+        )
 
     def _assert_snapshot_content(self, snapshot: _Snapshot, data: Mapping[str, Any]):
-        content = data.get('content') if isinstance(data, Mapping) else None
-        if not isinstance(content, Mapping):
-            raise ValueError('发布资料平台文稿无效。')
-        for platform in snapshot.selected_platforms:
-            fields = content.get(platform)
-            expected = snapshot.contents.get(platform)
-            if not isinstance(fields, dict) or not isinstance(expected, Mapping):
-                raise ValueError('发布资料平台文稿无效。')
-            if (fields.get('title') != expected.get('title')
-                    or fields.get('description') != expected.get('description')
-                    or _tags(fields.get('tags')) != list(expected.get('tags') or [])
-                    or fields.get('ai_generated') is not expected.get('ai_generated')
-                    or fields.get('rights') != expected.get('rights')):
-                raise ValueError(
-                    f'{PLATFORM_LABELS[platform]}文稿与当前编辑内容不一致，请重新生成。')
+        _draft_svc.assert_snapshot_content(snapshot, data)
 
     def _handoffs_for_snapshot(self, snapshot: _Snapshot, bundle: Path, data: dict, stop, *,
                                bundle_ref=None, only=None):
-        handoffs, errors = {}, {}
-        for platform in ((only,) if only else snapshot.selected_platforms):
-            _check_stop(stop)
-            try:
-                if platform not in snapshot.selected_platforms:
-                    raise ValueError('该平台未被选中。')
-                if bundle_ref is not None:
-                    self._verify_bundle_row(snapshot.job, bundle_ref, stop, platform=platform)
-                handoff = (publication.xiaohongshu_handoff(bundle)
-                           if platform == XIAOHONGSHU else self._handoff_for_bilibili(bundle, data, stop))
-                fields = handoff.get('fields') if isinstance(handoff, dict) else None
-                if fields != data['content'][platform]:
-                    raise ValueError('平台文稿在核对期间已变化。')
-                # These files are optional for imported historical bundles, but
-                # if present their removal invalidates the affected handoff.
-                for suffix in ('标题.txt', '简介.txt'):
-                    path = bundle / (platform + '_' + suffix)
-                    if path.is_file():
-                        handoff['stamps'][path] = publication.publication_file_stamp(path)
-                handoffs[platform] = handoff
-            except InterruptedError:
-                raise
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                errors[platform] = PLATFORM_LABELS[platform] + '核对失败：' + str(exc)[:500]
-        return handoffs, errors
+        return _draft_svc.handoffs_for_snapshot(
+            self._owner, snapshot, bundle, data, stop, bundle_ref=bundle_ref,
+            only=only, local_path_fn=_local_path,
+        )
 
     def _handoff_for_bilibili(self, bundle: Path, data: dict, stop) -> dict[str, Any]:
-        bundle = Path(bundle).resolve()
-        manifest = bundle / 'manifest.json'
-        video = Path(publication.clean_path(data['video']['path'])).resolve()
-        cover = bundle / 'cover.jpg'
-        paths = [manifest, video, cover]
-        variants = data.get('platform_covers', {}).get(BILIBILI, {}) if isinstance(data.get('platform_covers'), dict) else {}
-        if isinstance(variants, dict):
-            for item in variants.values():
-                if isinstance(item, dict) and isinstance(item.get('file'), str):
-                    paths.append(bundle / item['file'])
-        before = {path: publication.publication_file_stamp(path) for path in paths}
-        _check_stop(stop)
-        verified = publication.load_bundle(bundle, BILIBILI, verify_hash=True, require_ai=True)
-        _check_stop(stop)
-        if verified != data:
-            raise ValueError('核对期间发布资料发生变化，请重新核对。')
-        after = {path: publication.publication_file_stamp(path) for path in paths}
-        if before != after:
-            raise ValueError('核对期间发布资料或素材发生变化，请重新核对。')
-        return {'fields': verified['content'][BILIBILI], 'video': video, 'cover': cover,
-                'stamps': after}
+        return _draft_svc.handoff_for_bilibili(bundle, data, stop)
 
     def _cover_variants(self, bundle: Path, data: Mapping[str, Any]):
-        bundle = Path(bundle).resolve()
-        result = {}
-        covers = data.get('platform_covers') if isinstance(data, Mapping) else None
-        bilibili = covers.get(BILIBILI) if isinstance(covers, Mapping) else None
-        if not isinstance(bilibili, Mapping):
-            return result
-        items = []
-        for ratio in BILIBILI_COVER_RATIOS:
-            asset = bilibili.get(ratio)
-            if not isinstance(asset, Mapping):
-                continue
-            name = _text(asset.get('file'))
-            if not name or Path(name).name != name:
-                continue
-            path = bundle / name
-            if not path.is_file():
-                continue
-            expected_width, expected_height = BILIBILI_COVER_SIZES[ratio]
-            width = asset.get('width')
-            height = asset.get('height')
-            items.append({
-                'ratio': ratio,
-                'file': name,
-                'path': str(path),
-                'preview': _local_url(path),
-                'width': int(width) if type(width) is int else expected_width,
-                'height': int(height) if type(height) is int else expected_height,
-            })
-        if items:
-            result[BILIBILI] = items
-        return result
+        return _draft_svc.cover_variants(bundle, data, local_url_fn=_local_url)
 
     def _cover_path_from_verified_locked(self, platform: str, verified: Mapping[str, Any]) -> Path:
-        handoff = verified.get('handoffs', {}).get(platform) if isinstance(verified.get('handoffs'), dict) else {}
-        if not isinstance(handoff, Mapping):
-            raise ValueError('该平台没有已核验的封面交接。')
-        if platform != BILIBILI:
-            return Path(handoff.get('cover')).resolve()
-        bundle = Path(self._state.bundle).resolve()
-        variants = (verified.get('cover_variants', {}).get(BILIBILI, [])
-                    if isinstance(verified.get('cover_variants'), dict) else [])
-        ratio = self._state.cover_ratio
-        item = next((value for value in variants if value.get('ratio') == ratio), None)
-        target = bundle / item['file'] if isinstance(item, Mapping) else bundle / 'cover.jpg'
-        if not target.is_file():
-            raise ValueError('所选 B站封面比例文件不存在。')
-        return target.resolve()
+        return _draft_svc.cover_path_from_verified(self._state, platform, verified)
 
     def _handoff_cover_path_locked(self, platform: str) -> Path | None:
-        handoff = self._state.handoffs.get(platform)
-        if not isinstance(handoff, dict):
-            return None
-        if platform != BILIBILI:
-            return Path(handoff.get('cover')).resolve() if handoff.get('cover') else None
-        bundle = Path(self._state.bundle).resolve()
-        variants = self._state.cover_variants.get(BILIBILI, [])
-        item = next((value for value in variants if value.get('ratio') == self._state.cover_ratio), None)
-        return (bundle / item['file']).resolve() if isinstance(item, Mapping) else Path(handoff.get('cover')).resolve()
+        return _draft_svc.handoff_cover_path(self._state, platform)
 
     def _snapshot_locked(self, *, check_only: bool = False) -> _Snapshot:
-        draft = self._state.draft()
-        if check_only and self._state.bundle_only:
-            data = _read_json(Path(self._state.bundle) / 'manifest.json')
-            stored = data.get('content') if isinstance(data, dict) else None
-            if not isinstance(stored, dict):
-                raise ValueError('发布资料平台文稿无效。')
-            contents = {platform: copy.deepcopy(dict(stored[platform]))
-                        for platform in self._state.selected_platforms}
-        else:
-            contents = self._contents_locked()
-        problem = (self._bundle_declaration_problem_locked() if check_only else self._prepare_problem_locked())
-        if problem:
-            raise ValueError(problem)
-        return _Snapshot(
-            self._state.job, self._state.video_ref, self._state.bundle_ref, self._state.bundle,
-            self._state.platform, self._state.selected_platforms,
-            draft.title.strip(), draft.description, tuple(_tags(draft.tags)),
-            bool(draft.ai), _text(draft.rights), draft.cover_mode,
-            float(draft.cover_seconds), draft.cover_file, contents,
-            self._state.source_stamp, self._state.bundle_stamp,
-        )
+        return _draft_svc.build_snapshot(self._state, check_only=check_only)
 
     @staticmethod
     def _declaration_problem(platform, draft):
-        if type(draft.ai) is not bool:
-            return (publication.AI_REQUIRED if platform == XIAOHONGSHU else
-                    f'请明确声明{PLATFORM_LABELS[platform]}素材是否包含 AI 生成或合成内容。')
-        if not _text(draft.rights).strip():
-            return f'请填写{PLATFORM_LABELS[platform]}的原创、转载、署名与授权声明。'
-        return ''
+        return _draft_svc.declaration_problem(platform, draft)
 
     def _content_for_draft_locked(self, platform: str, draft: _PlatformDraft, *, require_declarations=True) -> dict[str, Any]:
-        content = {
-            'title': draft.title.strip(),
-            'description': draft.description,
-            'tags': _tags(draft.tags),
-            'rights': draft.rights,
-        }
-        if type(draft.ai) is bool:
-            content['ai_generated'] = draft.ai
-        publication.validate_content(content, platform)
-        tags = content['tags']
-        maximum, each = TAG_LIMITS[platform]
-        if len(tags) > maximum:
-            raise ValueError(f'{PLATFORM_LABELS[platform]}最多填写 {maximum} 个标签。')
-        if any(len(tag) > each for tag in tags):
-            raise ValueError(f'{PLATFORM_LABELS[platform]}每个标签最多 {each} 字，请删减或拆分。')
-        if require_declarations and (problem := self._declaration_problem(platform, draft)):
-            raise ValueError(problem)
-        return content
+        return _draft_svc.content_for_draft(platform, draft, require_declarations=require_declarations)
 
     def _contents_locked(self) -> dict[str, dict[str, Any]]:
-        if not self._state.selected_platforms:
-            raise ValueError('至少选择一个发布平台。')
-        return {
-            platform: self._content_for_draft_locked(platform, self._state.drafts[platform])
-            for platform in self._state.selected_platforms
-        }
+        return _draft_svc.contents_for_state(self._state)
 
     def _bundle_declaration_problem_locked(self) -> str:
-        if not self._state.bundle:
-            return ''
-        if self._state.bundle_only:
-            return ''
-        try:
-            self._contents_locked()
-        except Exception as exc:
-            return str(exc)
-        return ''
+        return _draft_svc.bundle_declaration_problem(self._state)
 
     def _prepare_problem_locked(self) -> str:
-        if self._state.video_ref is None or not self._state.job:
-            return '请选择一个已核验的成品视频和来源任务。'
-        if not self._state.source_ready:
-            return self._state.source_problem or '来源任务资料尚未准备完整。'
-        try:
-            self._contents_locked()
-        except Exception as exc:
-            return str(exc)
-        return self._cover_problem_locked()
+        return _draft_svc.prepare_problem(self._state)
 
     def _cover_problem_locked(self):
-        draft = self._state.draft()
-        if draft.cover_mode == 'original':
-            if not Path(self._state.original_cover).is_file():
-                return '没有可核验的本家原封面；请选择本地图片或视频画面。'
-        elif draft.cover_mode == 'custom':
-            try:
-                _sniff_image(Path(draft.cover_file))
-            except (OSError, ValueError) as exc:
-                return str(exc)
-        elif draft.cover_mode == 'frame':
-            if self._state.video_ref is None or not Path(self._state.video).is_file():
-                return '没有可截取封面的已核验成品。'
-        elif draft.cover_mode == 'original-frame':
-            if self._state.source_mode != 'bilibili':
-                return '只有 B站来源任务可以截取本家原视频。'
-        else:
-            return '请选择封面来源。'
-        if not math.isfinite(float(draft.cover_seconds)) or not 0 <= float(draft.cover_seconds) < 86400:
-            return '截图时间必须在 0 到 86400 秒之间。'
-        return ''
+        return _draft_svc.cover_problem(self._state)
 
     def _validate_current_page_locked(self, step: int, *, raise_error: bool) -> bool:
-        problem = ''
-        if step == 0:
-            if self._state.video_ref is None or not self._state.job:
-                problem = '请选择一个已核验的成品视频和来源任务。'
-            elif not self._state.source_ready:
-                problem = self._state.source_problem or '来源任务资料尚未准备完整。'
-            else:
-                try:
-                    self._contents_locked()
-                except Exception as exc:
-                    problem = str(exc)
-        elif step == 1:
-            problem = self._cover_problem_locked()
+        problem = _draft_svc.page_validation_problem(self._state, step)
         if problem and raise_error:
             self._notice(problem)
         return not problem
 
     def _mark_stale_locked(self, reason: str):
-        self._state.verified = False
-        self._state.handoffs = {}
-        self._state.platform_errors = {}
-        self._state.cover_variants = {}
-        if self._state.bundle:
-            self._state.bundle_stale = True
-            self._state.state = 'outdated'
-            self._state.message = reason
+        _draft_svc.mark_stale(self._state, reason)
 
     def _recompute_locked(self):
-        self._state.busy = bool(self._active_kind)
-        validation = self._prepare_problem_locked()
-        declaration = self._bundle_declaration_problem_locked()
-        if self._state.bundle and declaration:
-            self._state.bundle_stale = True
-            self._state.verified = False
-            self._state.handoffs = {}
-            self._state.cover_variants = {}
-            if not self._state.busy and self._state.state not in ('error', 'failed'):
-                self._state.state = 'outdated'
-        self._state.can_prepare = bool(
-            self._state.step == 2 and not self._state.busy
-            and self._state.video_ref is not None and not validation)
-        self._state.can_check = bool(
-            self._state.bundle and not self._state.busy and not self._state.bundle_stale)
-        if self._state.bundle_stale or (self._state.verified and declaration):
-            self._state.verified = False
-        self._view = self._recompute_view_locked()
-
+        self._view = _draft_svc.recompute_state(self._owner, self._state, self._active_kind)
 
     def _platform_handoffs_view_locked(self):
-        result = {}
-        for platform, handoff in self._state.handoffs.items():
-            if not isinstance(handoff, dict):
-                continue
-            fields = handoff.get('fields') if isinstance(handoff.get('fields'), dict) else {}
-            cover = self._handoff_cover_path_locked(platform)
-            result[platform] = {
-                'platform': platform,
-                'fields': copy.deepcopy(fields),
-                'video': str(handoff.get('video') or ''),
-                'cover': str(cover or ''),
-                'baseCover': str(handoff.get('cover') or ''),
-                'ready': True,
-            }
-        for platform, message in self._state.platform_errors.items():
-            if platform not in result and platform in self._state.selected_platforms:
-                result[platform] = {'platform': platform, 'ready': False, 'error': message}
-        return result
+        return _draft_svc.platform_handoffs_view(self._state)
 
     def _review_locked(self):
-        state = self._state
-        draft = state.draft()
-        video_ready = bool(state.video_ref or (state.bundle_only and state.video and not state.bundle_stale))
-        video_problem = ('' if video_ready and state.source_ready else
-                         state.source_problem if video_ready else '请选择已核验的成品视频。')
-        cover_problem = '' if state.bundle_only and draft.cover_preview else self._cover_problem_locked()
-        platform_checks = {}
-        for platform in state.selected_platforms:
-            item = state.drafts[platform]
-            copy_problem = ''
-            try:
-                self._content_for_draft_locked(platform, item, require_declarations=False)
-            except ValueError as error:
-                copy_problem = str(error)
-            platform_checks[platform] = {'copyProblem': copy_problem,
-                                         'declarationProblem': self._declaration_problem(platform, item)}
-        return {'videoReady': video_ready, 'videoProblem': video_problem,
-                'coverState': 'previewed' if not cover_problem and draft.cover_preview else
-                              'configured' if not cover_problem else 'missing',
-                'coverProblem': cover_problem,
-                'platforms': platform_checks,
-                'packageState': 'stale' if state.bundle_stale else 'verified' if state.verified else
-                                'unchecked' if state.bundle else 'missing'}
+        return _draft_svc.review_view(self._state)
 
     def _recompute_view_locked(self):
-        draft = self._state.draft()
-        view = {
-            'step': int(self._state.step),
-            'job': self._state.job,
-            'video': self._state.video,
-            'platform': self._state.platform,
-            'title': draft.title,
-            'description': draft.description,
-            'tags': draft.tags,
-            'ai': draft.ai,
-            'rights': draft.rights,
-            'coverMode': draft.cover_mode,
-            'coverSeconds': float(draft.cover_seconds),
-            'coverFile': draft.cover_file,
-            'coverPreview': draft.cover_preview,
-            'busy': bool(self._state.busy),
-            'message': self._state.message,
-            'state': self._state.state,
-            'bundle': self._state.bundle,
-            'bundleStale': bool(self._state.bundle_stale),
-            'canPrepare': bool(self._state.can_prepare),
-            'canCheck': bool(self._state.can_check),
-            'verified': bool(self._state.verified),
-            'actions': self._actions_locked(),
-            'taskChoices': copy.deepcopy(self._state.task_choices),
-            'taskMessage': self._state.task_message,
-            'taskScanBusy': self._active_kind == 'publication-task-scan',
-            'sourceReady': bool(self._state.source_ready),
-            'sourceProblem': self._state.source_problem,
-            'bundleOnly': bool(self._state.bundle_only),
-            'review': self._review_locked(),
-        }
-        if (self._state.job or self._state.bundle or self._state.browser.state != 'idle'
-                or self._state.selected_platforms != (BILIBILI,)):
-            selected = list(self._state.selected_platforms)
-            view.update({
-                'selectedPlatforms': selected,
-                'canFetchOriginalCover': self._state.source_mode == 'bilibili',
-                'platformLabels': {platform: PLATFORM_LABELS[platform] for platform in selected},
-                'coverRatio': self._state.cover_ratio,
-                'coverVariants': copy.deepcopy(self._state.cover_variants.get(BILIBILI, [])),
-                'handoffs': self._platform_handoffs_view_locked(),
-                'browserSession': self._browser_view_locked(),
-            })
-        return view
+        return _draft_svc.build_view(self._owner, self._state, self._active_kind)
 
     def _actions_locked(self):
-        if not self._state.bundle or not self._state.verified or self._state.bundle_stale:
-            return {}
-        return {
-            'video': tr('打开成品视频'),
-            'cover': tr('打开封面'),
-            'bundle': tr('打开发布包'),
-            'checklist': tr('打开核对清单'),
-        }
-
+        return _draft_svc.actions_view(self._state)
 
     def _source_stamp(self, job: Path, video: Path, cover: Path | None) -> tuple:
-        job = Path(job).resolve()
-        paths = [job / name for name in ('request.json', 'source-info.json', 'upstream-info.json',
-                                         '发布简介草稿.txt', 'original-cover.json')]
-        paths.append(Path(video).resolve())
-        if cover is not None:
-            paths.append(Path(cover).resolve())
-        return tuple(_stat_stamp(path) for path in paths)
+        return _draft_svc.source_stamp(job, video, cover)
 
     def _bundle_stamp(self, bundle: Path, data: Mapping[str, Any]) -> tuple:
-        bundle = Path(bundle).resolve()
-        paths = [bundle / 'manifest.json', bundle / 'cover.jpg']
-        video = data.get('video') if isinstance(data, Mapping) else None
-        if isinstance(video, Mapping) and isinstance(video.get('path'), str):
-            try:
-                paths.append(Path(publication.clean_path(video['path'])).resolve())
-            except (OSError, ValueError):
-                pass
-        return tuple(_stat_stamp(path) for path in paths)
+        return _draft_svc.bundle_stamp(bundle, data)
 
     def _bundle_platforms_locked(self) -> set[str]:
-        try:
-            data = _read_json(Path(self._state.bundle) / 'manifest.json')
-            content = data.get('content') if isinstance(data, dict) else None
-            return set(content) & set(PLATFORMS) if isinstance(content, dict) else set()
-        except (OSError, ValueError, TypeError):
-            return set()
+        return _draft_svc.bundle_platforms(self._state)
 
     def _poll_drift(self):
         with self._lock:
@@ -2830,171 +1995,32 @@ class QuickPublication(QObject):
         if changed:
             self._emit()
 
-
     def _maybe_mark_drift_locked(self) -> bool:
-        if self._state.video_ref is None and not self._state.bundle:
-            return False
-        drift = False
-        if self._state.video_ref is not None and self._state.job and self._state.video:
-            cover = Path(self._state.original_cover) if self._state.original_cover else None
-            current_source = self._source_stamp(Path(self._state.job), Path(self._state.video), cover)
-            if (not self._state.source_drift and self._state.source_stamp
-                    and current_source != self._state.source_stamp):
-                self._state.source_drift = True
-                self._state.source_ready = False if self._state.source_mode != 'local' else self._state.source_ready
-                self._mark_stale_locked('来源资料或成品已发生变化；请重新载入任务或重新生成发布资料。')
-                self._state.state = 'outdated' if self._state.bundle else 'editing'
-                drift = True
-        if self._state.bundle and not self._state.bundle_stale:
-            try:
-                data = _read_json(Path(self._state.bundle) / 'manifest.json')
-                current_bundle = self._bundle_stamp(Path(self._state.bundle), data)
-            except (OSError, ValueError, TypeError):
-                current_bundle = ()
-            if self._state.bundle_stamp and current_bundle != self._state.bundle_stamp:
-                self._state.bundle_stamp = current_bundle
-                self._mark_stale_locked('发布资料或本地素材已发生变化，请重新生成。')
-                self._state.state = 'outdated'
-                drift = True
-            else:
-                for platform, handoff in tuple(self._state.handoffs.items()):
-                    stamps = handoff['stamps']
-                    try:
-                        unchanged = all(publication.publication_file_stamp(path) == stamp
-                                        for path, stamp in stamps.items())
-                    except OSError:
-                        unchanged = False
-                    if not unchanged:
-                        self._state.handoffs.pop(platform, None)
-                        self._state.platform_errors[platform] = PLATFORM_LABELS[platform] + '资料已变化，请重新核对。'
-                        self._state.cover_variants.pop(platform, None)
-                        drift = True
-                if drift and not self._state.bundle_stale:
-                    self._state.verified = bool(self._state.handoffs)
-                    self._state.message = '；'.join(self._state.platform_errors.values())
+        drift = _draft_svc.maybe_mark_drift(self._state)
         if drift:
             self._recompute_locked()
         return drift
 
     def _cached_original_cover(self, job: Path) -> Path | None:
-        try:
-            info = publication.read_source_info(job)
-            if not _text(info.get('bvid')):
-                return None
-            from cover_art import cached_cover
-            found = cached_cover(info, Path(job).resolve())
-            return found[0].resolve() if found is not None else None
-        except (OSError, ValueError, KeyError, TypeError):
-            return None
+        return _draft_svc.cached_original_cover(job)
 
     def _probe_image(self, path: Path, stop) -> None:
-        _check_stop(stop)
-        executable = Path(str(load_config().get('ffmpeg', ''))).resolve()
-        if not executable.is_file():
-            return
-        result = subprocess.run(
-            [str(executable), '-hide_banner', '-loglevel', 'error', '-i', str(path),
-             '-frames:v', '1', '-f', 'null', '-'],
-            capture_output=True, encoding='utf-8', errors='replace', timeout=30,
-            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
-        )
-        _check_stop(stop)
-        if result.returncode:
-            raise ValueError('封面图片无法读取：' + (result.stderr[-400:] or '媒体解码失败。'))
+        _draft_svc.probe_image(path, stop)
 
     def _draft_path(self) -> Path:
-        override = getattr(self._owner, 'quick_publication_draft_path', None)
-        return Path(override or (Path(ROOT) / 'quick-publication-draft.json')).resolve()
+        return _draft_svc.draft_path(self._owner)
 
     def _load_saved_draft(self, job: Path, video: _ArtifactRef, source_stamp: tuple):
-        try:
-            path = self._draft_path()
-            if path.stat().st_size > _MAX_DRAFT_BYTES:
-                return None
-            value = json.loads(path.read_text(encoding='utf-8'))
-            if not isinstance(value, dict) or value.get('version') != 1:
-                return None
-            if (Path(_text(value.get('job'))).resolve() != Path(job).resolve()
-                    or Path(_text(value.get('video'))).resolve() != Path(video.path).resolve()
-                    or value.get('videoSha256') != video.sha256):
-                return None
-            saved_stamp = value.get('sourceStamp')
-            if isinstance(saved_stamp, list):
-                saved_stamp = tuple(tuple(item) if isinstance(item, list) else item for item in saved_stamp)
-            if saved_stamp != source_stamp:
-                return None
-            return value
-        except (OSError, ValueError, TypeError):
-            return None
+        return _draft_svc.load_saved_draft(self._owner, job, video, source_stamp)
 
     def _draft_from_saved(self, value: Mapping[str, Any], fallback: _PlatformDraft) -> _PlatformDraft:
-        def optional_bool(item):
-            return item if type(item) is bool else None
-        try:
-            seconds = float(value.get('coverSeconds', fallback.cover_seconds))
-        except (TypeError, ValueError):
-            seconds = fallback.cover_seconds
-        if not math.isfinite(seconds) or not 0 <= seconds < 86400:
-            seconds = fallback.cover_seconds
-        mode = _text(value.get('coverMode'))
-        rights = _text(value.get('rights')) or None
-        cover_file = _text(value.get('coverFile'))
-        result_mode = mode if mode in COVER_MODES else fallback.cover_mode
-        preview = fallback.cover_preview if result_mode == 'original' else (
-            _local_url(cover_file) if result_mode == 'custom' and cover_file else '')
-        return _PlatformDraft(
-            title=_text(value.get('title')), description=_text(value.get('description')),
-            tags=_text(value.get('tags')), ai=optional_bool(value.get('ai')),
-            rights=rights,
-            cover_mode=result_mode,
-            cover_seconds=seconds, cover_file=cover_file,
-            cover_preview=preview,
-        )
-
+        return _draft_svc.draft_from_saved(value, fallback, local_url_fn=_local_url)
 
     def _save_draft_safe_locked(self):
-        if not self._state.bundle and (not self._state.job or self._state.video_ref is None):
-            return
-        payload = {
-            'version': 1,
-            'job': self._state.job,
-            'video': self._state.video,
-            'videoSha256': self._state.video_ref.sha256 if self._state.video_ref is not None else '',
-            'sourceStamp': [list(item) if item is not None else None for item in self._state.source_stamp],
-            'bundle': self._state.bundle,
-            'bundleOnly': bool(self._state.bundle_only),
-            'platform': self._state.platform,
-            'selectedPlatforms': list(self._state.selected_platforms),
-            'coverRatio': self._state.cover_ratio,
-            'step': self._state.step,
-            'drafts': {
-                platform: {
-                    'title': draft.title, 'description': draft.description, 'tags': draft.tags,
-                    'ai': draft.ai, 'rights': draft.rights, 'coverMode': draft.cover_mode,
-                    'coverSeconds': draft.cover_seconds, 'coverFile': draft.cover_file,
-                }
-                for platform, draft in self._state.drafts.items()
-            },
-        }
-        try:
-            atomic_json(self._draft_path(), payload)
-        except OSError:
-            # Draft persistence is a convenience; the immutable bundle remains authoritative.
-            pass
+        _draft_svc.save_draft_safe(self._owner, self._state)
 
     def _discard_preview_dir(self, directory: Path | None, keep: Path | None):
-        if directory is None:
-            return
-        try:
-            directory = Path(directory).resolve()
-            keep_path = Path(keep).resolve() if keep is not None else None
-            temp_root = Path(tempfile.gettempdir()).resolve()
-            if keep_path is not None and directory == keep_path:
-                return
-            if directory.parent == temp_root and directory.name.startswith('vwa-quick-publication-'):
-                shutil.rmtree(directory, ignore_errors=True)
-        except (OSError, ValueError):
-            pass
+        _draft_svc.discard_preview_dir(directory, keep)
 
     def _open_local(self, path: Path) -> bool:
         return QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).resolve())))
