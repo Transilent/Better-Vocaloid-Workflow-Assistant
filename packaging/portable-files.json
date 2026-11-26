@@ -678,6 +678,10 @@
       "source": "src/bilibili_session.py"
     },
     {
+      "file": "browser_runtime.py",
+      "source": "src/browser_runtime.py"
+    },
+    {
       "file": "video_mixdown.py",
       "source": "src/video_mixdown.py"
     },

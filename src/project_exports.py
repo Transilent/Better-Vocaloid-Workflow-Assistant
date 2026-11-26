@@ -506,7 +506,7 @@ def prepare_vsqx_audio(job, request, receipts):
     """VSQX accepts only 44.1-kHz 16-bit WAV. Preserve the original float stem."""
     import numpy as np
     import soundfile as sf
-    from pipeline import run_process
+    from process_control import run_process
     source, destination = job/'audio/instrumental.wav', vsqx_audio_path(job)
     signature = vsqx_audio_signature(job)
     if saved := cached_output(job, destination, signature, receipts):
@@ -834,7 +834,7 @@ def export_projects(job, request):
 
 
 def export_audio(job, request):
-    from pipeline import run_process
+    from process_control import run_process
     formats=request.get('audio_formats',['wav'])
     if not formats:
         return []

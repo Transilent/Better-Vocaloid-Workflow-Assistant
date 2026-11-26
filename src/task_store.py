@@ -31,16 +31,7 @@ def read_json(path):
         return {}
 
 
-def locked(job):
-    path = Path(job) / 'run.lock'
-    try:
-        with exclusive_sidecar(path, create=False):
-            pass
-        return False
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return True
+from common import checked_tree, locked
 
 
 def _metadata_row(path, modified):
@@ -121,25 +112,7 @@ def records(check=None):
     return rows
 
 
-def checked_tree(path, boundary):
-    """Refuse links/junctions before any recursive operation; never follow them."""
-    path, boundary = Path(path).absolute(), Path(boundary).resolve()
-    if path == boundary or not path.resolve().is_relative_to(boundary):
-        raise ValueError('清理目标超出允许的目录。')
-    for candidate in (path, *path.parents):
-        if candidate == boundary:
-            break
-        if candidate.is_symlink() or (candidate.exists() and getattr(candidate.lstat(), 'st_file_attributes', 0) & 1024):
-            raise ValueError('目录包含链接或重解析点，已跳过清理。')
-    if path.is_dir():
-        for directory, dirs, files in os.walk(path, followlinks=False):
-            for name in dirs + files:
-                candidate = Path(directory)/name
-                if candidate.is_symlink() or getattr(candidate.lstat(), 'st_file_attributes', 0) & 1024:
-                    raise ValueError('目录包含链接或重解析点，已跳过清理。')
-                if not candidate.resolve().is_relative_to(path.resolve()):
-                    raise ValueError('清理目标包含外部文件。')
-    return path
+# checked_tree and locked re-exported from common above.
 
 
 def size(path):

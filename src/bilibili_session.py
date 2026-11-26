@@ -6,7 +6,12 @@ import math
 import time
 from pathlib import Path
 
-from common import ROOT, atomic_json, load_config
+from common import ROOT, atomic_json, direct_urlopen, load_config
+
+BILIBILI_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Referer': 'https://www.bilibili.com/',
+}
 
 
 def options(tools=None):
@@ -110,9 +115,9 @@ def capture(context):
 
 def refresh_from_profile():
     """Import an existing dedicated profile once, without opening a visible UI."""
-    from pipeline import job_lock
-    from publish_browser import browser_options, restore_migrated_session
+    from browser_runtime import browser_options, restore_migrated_session
     from playwright.sync_api import sync_playwright
+    from process_control import job_lock
     profile = ROOT / 'cache/publish-browser/bilibili'
     if not (profile / 'Default').is_dir():
         raise ValueError('请先点击“登录 B站”，在专用窗口完成登录后关闭窗口。')
@@ -128,6 +133,34 @@ def refresh_from_profile():
         raise
     except Exception:
         raise ValueError('无法读取助手的B站登录状态。请关闭登录或上传窗口后重试，必要时重新登录。') from None
+
+
+def fetch_view(bv, tools=None, *, headers=None, urlopen=None, sleeper=None):
+    """Fetch public Bilibili video metadata, using optional opt-in cookies."""
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    settings = task_options(tools)
+    url = 'https://api.bilibili.com/x/web-interface/view?' + urllib.parse.urlencode({'bvid': bv})
+    req = urllib.request.Request(url, headers=dict(headers or BILIBILI_HEADERS))
+    if cookie := cookie_header(download_cookies(settings), url):
+        req.add_unredirected_header('Cookie', cookie)
+    opener = direct_urlopen if urlopen is None else urlopen
+    wait = time.sleep if sleeper is None else sleeper
+    for attempt in range(settings['retries'] + 1):
+        try:
+            with opener(req, timeout=settings['timeout']) as response:
+                data = json.load(response)
+            break
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+            if (attempt == settings['retries'] or
+                    isinstance(error, urllib.error.HTTPError) and error.code not in (429, 500, 502, 503, 504)):
+                raise
+            wait(min(4, .5 * 2 ** attempt))
+    if data.get('code') != 0:
+        raise RuntimeError(f"读取 B站简介失败：{data.get('message', data.get('code'))}")
+    return data['data']
 
 
 def download_cookies(settings):

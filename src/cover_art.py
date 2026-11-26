@@ -117,7 +117,7 @@ def main():
     parser.add_argument("--output", required=True, help="封面输出目录")
     parser.add_argument("--refresh", action="store_true")
     args = parser.parse_args()
-    from pipeline import get_view
+    from bilibili_session import fetch_view as get_view
     image, _ = original_cover(get_view(extract_bv(args.source)), args.output, args.refresh)
     print(image, flush=True)
 

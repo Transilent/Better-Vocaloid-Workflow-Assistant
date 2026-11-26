@@ -59,3 +59,24 @@ def reject_unsupported_bilibili_subpage(source):
         is_bare_bv = not parts.scheme and bool(_BVID_PREFIX.match(candidate))
         if is_bilibili_url or is_bare_bv:
             bilibili_query_pairs(parts.query)
+
+
+def normalize_source_url(value):
+    """Canonicalize a caller declaration without accessing the network."""
+    if (not isinstance(value, str) or not value or len(value) > 2048
+            or value != value.strip() or any(ord(char) < 32 or ord(char) == 127 for char in value)):
+        raise ValueError("source_url 必须是有效的 Bilibili HTTPS 视频链接。")
+    parts = urlsplit(value)
+    try:
+        port = parts.port
+    except ValueError as error:
+        raise ValueError("source_url 端口无效。") from error
+    if (parts.scheme.lower() != 'https' or (parts.hostname or '').lower() not in
+            ('bilibili.com', 'www.bilibili.com') or parts.username is not None
+            or parts.password is not None or port not in (None, 443) or parts.fragment):
+        raise ValueError("source_url 仅支持 Bilibili HTTPS 视频链接。")
+    bilibili_query_pairs(parts.query)
+    match = re.fullmatch(r'/video/(BV1[A-Za-z0-9]{9})/?', parts.path)
+    if not match:
+        raise ValueError("source_url 必须指向 /video/BV… 视频。")
+    return 'https://www.bilibili.com/video/' + match.group(1) + '/'

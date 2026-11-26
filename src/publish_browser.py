@@ -540,45 +540,26 @@ def fill_existing(page, settings, data, cover, update, check=lambda: None, timeo
 
 
 def browser_engine_options(headless=False):
-    # Keep cache and temporary files inside this application, and maintain a
-    # separate login profile; never open/read the user's ordinary browser profile.
-    temp = ROOT / "cache/browser-temp"
-    temp.mkdir(parents=True, exist_ok=True)
-    os.environ["TEMP"] = os.environ["TMP"] = str(temp)
-    config = load_config()
-    executable = config.get("publish_browser_executable")
-    if executable:
-        if not Path(executable).is_file():
-            raise FileNotFoundError("助手内浏览器不存在，请恢复 dependencies/browser/chrome 目录。")
-        return {"executable_path": executable, "headless": headless, "args": ["--no-proxy-server"]}
-    return {"channel": config.get("publish_browser", "chrome"), "headless": headless, "args": ["--no-proxy-server"]}
+    from browser_runtime import browser_engine_options as _engine_options
+    return _engine_options(headless, root=ROOT, config=load_config())
 
 
 def browser_options(headless=False):
-    return {**browser_engine_options(headless),
-            "viewport": {"width": 1440, "height": 960}, "locale": "zh-CN"}
+    from browser_runtime import browser_options as _options
+    return _options(headless, root=ROOT, config=load_config())
 
 
 def restore_migrated_session(context, profile):
     """One-time transfer of this assistant's existing dedicated login session."""
-    path = Path(profile) / "browser-migration-session.json"
-    if not path.is_file():
-        return False
-    state = json.loads(path.read_text(encoding="utf-8"))
-    if state.get("cookies"):
-        context.add_cookies(state["cookies"])
-    origins = json.dumps(state.get("origins", []), ensure_ascii=True)
-    context.add_init_script("const vfSavedOrigins=" + origins + ";"
-                            "for(const o of vfSavedOrigins){if(location.origin===o.origin){"
-                            "for(const item of o.localStorage||[])localStorage.setItem(item.name,item.value);}}")
-    path.unlink()
-    return True
+    from browser_runtime import restore_migrated_session as _restore
+    return _restore(context, profile)
 
 
 def run(platform, bundle=None, headless=False, login_only=False):
     require_browser_platform(platform)
     from playwright.sync_api import sync_playwright
-    from pipeline import job_lock
+    from process_control import job_lock
+    from browser_runtime import prune_browser_profile_cache
     settings = load_selectors(platform)
     data = load_bundle(bundle, platform) if bundle is not None else None
     if not login_only and data is None:
@@ -697,6 +678,7 @@ def run(platform, bundle=None, headless=False, login_only=False):
                                 break
                             update("needs_manual", message=str(exc)[:1200])
                 context.close()
+                prune_browser_profile_cache(profile)
                 (output / (platform + "_helper.json")).unlink(missing_ok=True)
                 (profile / "active.json").unlink(missing_ok=True)
 

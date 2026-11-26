@@ -13,12 +13,37 @@ import re
 import threading
 import time
 
-from common import app_path, atomic_json, file_hash, native_path, saved_path
+from common import app_path, atomic_json, file_hash, locked, native_path, saved_path
 
 SCHEMA = 1
 MAX_BYTES = 8 * 1024**2
 MAX_ENTRIES = 4096
 STAGES = ('metadata', 'download', 'audio', 'separation', 'midi', 'subtitles', 'exports')
+REQUIRED = {
+    'metadata': ['source-info.json', 'upstream-info.json', '发布简介草稿.txt'],
+    'download': ['video/source.mp4', 'download-report.json'],
+    'audio': ['audio/source.wav', 'cover.jpg', 'audio-info.json'],
+    'separation': ['audio/vocals.wav', 'audio/instrumental.wav', 'separation-report.json'],
+    'midi': ['midi/vocals.mid', 'midi/report.json'],
+    'subtitles': ['subtitles/report.json'],
+    'exports': ['exports/report.json'],
+}
+
+
+def requirements(key, request):
+    if key == 'subtitles':
+        return REQUIRED[key]
+    if request.get('source_kind') == 'local':
+        if key == 'download':
+            return [request['input_file'], 'import-report.json']
+        if key == 'audio':
+            return ['audio/source.wav', 'audio-info.json']
+    if request.get('voice_mode', 'single') != 'single':
+        if key == 'separation':
+            return REQUIRED[key] + ['audio/lead.wav', 'audio/backing.wav']
+        if key == 'midi':
+            return ['midi/voices.mid', 'midi/report.json', 'midi/lead/lead.mid', 'midi/backing/backing.mid', 'midi/需要核对的音符.csv']
+    return REQUIRED[key]
 PARENTS = {'metadata': (), 'download': ('metadata',), 'audio': ('download',),
            'separation': ('audio',), 'midi': ('separation',),
            'subtitles': ('midi',), 'exports': ('midi', 'separation')}
@@ -402,7 +427,6 @@ def reconcile(job):
     read(job)  # Refuse an unsupported/corrupt index before writing anything.
     status = _json(job / 'status.json')
     request = _json(job / 'request.json')
-    from pipeline import requirements
     for stage in STAGES:
         if stage == 'midi':
             for voice in ('vocals', 'lead', 'backing'):
@@ -463,7 +487,6 @@ def reconcile(job):
 def rebuild(job):
     """Explicit recovery: preserve the old index and rebuild from producer evidence."""
     job = Path(job).resolve()
-    from task_store import locked
     if locked(job): raise ContractError('任务正在运行，暂不能重建清单。')
     original = job / 'artifacts.json'
     backup = job / ('artifacts.backup-' + str(time.time_ns()) + '.json')
@@ -722,7 +745,6 @@ def selected(job, kind, *, verify=True, rows=None):
 
 def _midi_artifacts_complete(job, request, rows):
     """Check stage requirements instead of accepting any one MIDI file."""
-    from pipeline import requirements
     expected = {(Path(job) / name).resolve() for name in requirements('midi', request)}
     states = {}
     for row in rows:
@@ -737,7 +759,6 @@ def handoff(job, *, verify=False, rows=None):
     status = _json(Path(job) / 'status.json')
     state = status.get('state', 'ready')
     if state == 'running':
-        from task_store import locked
         return 'processing' if locked(job) else 'retry'
     if state in ('failed', 'cancelled', 'interrupted'): return 'retry'
     rows = inspect(job, verify=verify) if rows is None else rows

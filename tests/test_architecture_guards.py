@@ -14,7 +14,7 @@ if str(SRC) not in sys.path:
 
 # Ratchet ceiling for 2-way circular imports across flat src/*.py.
 # Whenever a cycle is eliminated, lower this number so cycles can only shrink.
-MAX_CIRCULAR_IMPORT_PAIRS = 33
+MAX_CIRCULAR_IMPORT_PAIRS = 24
 
 HEAVY_FORBIDDEN_IN_STARTUP = frozenset({'torch', 'onnxruntime', 'scipy', 'librosa', 'playwright'})
 QT_MODULES = frozenset({'PySide6', 'PyQt6', 'PyQt5'})
@@ -168,6 +168,36 @@ def test_agent_primitives_contract():
         pass
 
 
+def test_browser_runtime_edge_fallback_and_cache_prune():
+    import tempfile
+    from unittest.mock import patch
+    import browser_runtime as br
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        missing_bundled = str(root / 'dependencies/browser/chrome/chrome.exe')
+        with patch.object(br, 'find_system_edge', return_value=Path('C:/Edge/msedge.exe')):
+            opts = br.browser_engine_options(
+                headless=True,
+                root=root,
+                config={'publish_browser_executable': missing_bundled},
+            )
+            assert opts['channel'] == 'msedge' and opts['headless'] is True
+
+        # Verify cache pruner removes disposable cache dirs while preserving Cookies & Local Storage
+        profile = root / 'profile'
+        (profile / 'Default/Cache').mkdir(parents=True)
+        (profile / 'Default/Cache/blob.bin').write_bytes(b'x' * 4096)
+        (profile / 'Default/Local Storage').mkdir(parents=True)
+        (profile / 'Default/Local Storage/keep.db').write_bytes(b'login-token')
+        (profile / 'Default/Cookies').write_bytes(b'cookie-jar')
+        reclaimed = br.prune_browser_profile_cache(profile)
+        assert reclaimed >= 4096
+        assert not (profile / 'Default/Cache').exists()
+        assert (profile / 'Default/Cookies').read_bytes() == b'cookie-jar'
+        assert (profile / 'Default/Local Storage/keep.db').read_bytes() == b'login-token'
+
+
 def main():
     test_no_qt_in_domain_modules()
     test_no_silent_except_exception()
@@ -176,6 +206,7 @@ def main():
     test_no_exact_duplicate_agent_helpers()
     test_chorus_cache_never_inside_src()
     test_agent_primitives_contract()
+    test_browser_runtime_edge_fallback_and_cache_prune()
     print('PASS test_architecture_guards')
 
 

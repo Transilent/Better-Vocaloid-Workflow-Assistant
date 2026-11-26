@@ -446,6 +446,7 @@
     "README.zh-CN.md",
     "src/artifact_cache.py",
     "src/bilibili_session.py",
+    "src/browser_runtime.py",
     "src/calibration_refinement.py",
     "src/calibration_session.py",
     "src/calibration_workflow.py",
