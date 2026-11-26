@@ -105,10 +105,12 @@ def _load_high_fidelity_project(path: Path, fmt: str, *, include_pitch: bool = T
         Project, SingingTrack, SongTempo, TimeSignature,
     )
     from project_io import read_source, score_layout
+    from tuning_native import at_path
     from tuning_native_pitch import _collect, sample_authored_pitch
 
     snapshot = read_source(path)
     score, layout = score_layout(snapshot.data, fmt)
+    curve_data = layout.sequence if fmt == 'vsqx' else snapshot.data
 
     tempos = [
         SongTempo(position=max(0, int(round(row['position'] / _TICK_FACTOR))), bpm=float(row['bpm']))
@@ -146,7 +148,8 @@ def _load_high_fidelity_project(path: Path, fmt: str, *, include_pitch: bool = T
 
         for placement in row.placements:
             part_ref = layout.native.parts.get((row.index, placement.key))
-            curves = _collect(snapshot.data, fmt, part_ref.raw) if (include_pitch and part_ref is not None) else ()
+            part_obj = at_path(curve_data, part_ref.path) if part_ref is not None else None
+            curves = _collect(curve_data, fmt, part_obj) if (include_pitch and part_obj is not None) else ()
 
             for note in placement.notes:
                 if note.pitch is None:
@@ -249,6 +252,34 @@ def _duration_from_project(project) -> float:
     return round((max_tick / 480.0) * (60.0 / max(1.0, bpm)), 2)
 
 
+_CCS_FLOAT_PARTITION_RE = re.compile(
+    r'(<(?:SongEditor|TalkEditor)\b[^>]*\bPartition=")(\d+\.\d+)(")'
+)
+
+
+def _load_with_converter(converter, path: Path, fmt: str):
+    opts = _build_input_options(fmt)
+    try:
+        return converter.load(path, opts)
+    except Exception as exc:
+        # Official CeVIO projects can store decimal splitter positions (e.g. Partition="76.8")
+        # on SongEditor/TalkEditor UI layout tags, which LibreSVIP's Pydantic int field rejects.
+        if fmt != 'ccs' or 'partition' not in str(exc).lower():
+            raise
+        raw_text = path.read_text(encoding='utf-8-sig')
+        patched, count = _CCS_FLOAT_PARTITION_RE.subn(
+            lambda m: f'{m.group(1)}{round(float(m.group(2)))}{m.group(3)}',
+            raw_text,
+        )
+        if not count:
+            raise
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix='vwa-ccs-compat-') as tmp:
+            temp_path = Path(tmp) / path.name
+            temp_path.write_text(patched, encoding='utf-8')
+            return converter.load(temp_path, opts)
+
+
 def _handle_inspect(payload: dict[str, Any]) -> dict[str, Any]:
     _bootstrap_libresvip()
     from libresvip.model.base import InstrumentalTrack, SingingTrack
@@ -257,7 +288,7 @@ def _handle_inspect(payload: dict[str, Any]) -> dict[str, Any]:
     path = Path(payload['path']).resolve()
     fmt = payload['format']
     converter = _get_converter(fmt)
-    project = converter.load(path, _build_input_options(fmt))
+    project = _load_with_converter(converter, path, fmt)
     spec = SPECS_BY_ID[fmt]
 
     tracks = []
@@ -446,7 +477,7 @@ def _handle_convert(payload: dict[str, Any]) -> dict[str, Any]:
         reader_engine = 'vwa_high_fidelity'
     else:
         in_converter = _get_converter(source_format)
-        project = in_converter.load(source_path, _build_input_options(source_format))
+        project = _load_with_converter(in_converter, source_path, source_format)
         reader_engine = 'libresvip'
 
     all_vocals = [t for t in project.track_list if isinstance(t, SingingTrack)]

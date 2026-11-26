@@ -315,10 +315,12 @@ def _format_meter_summary(meters: list[dict[str, Any]]) -> str:
 def _inspect_native_project(path: Path, fmt: str) -> dict[str, Any]:
     """Zero-subprocess inspection using VWA's own verified parsers for SVP/USTX/VPR/VSQX/ACEP/UFData."""
     from project_io import read_source, score_layout
+    from tuning_native import at_path
     from tuning_native_pitch import _collect
 
     snapshot = read_source(path)
     score, layout = score_layout(snapshot.data, fmt)
+    curve_data = layout.sequence if fmt == 'vsqx' else snapshot.data
     spec = SPECS_BY_ID[fmt]
     clock = layout.clock
 
@@ -339,7 +341,8 @@ def _inspect_native_project(path: Path, fmt: str) -> dict[str, Any]:
                 part_ref = layout.native.parts.get((row.index, placement.key))
                 if part_ref is not None:
                     try:
-                        if _collect(snapshot.data, fmt, part_ref.raw):
+                        part_obj = at_path(curve_data, part_ref.path)
+                        if _collect(curve_data, fmt, part_obj):
                             has_pitch = True
                     except (KeyError, TypeError, ValueError, OverflowError):
                         has_pitch = has_pitch

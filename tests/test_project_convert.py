@@ -86,6 +86,34 @@ def _sample_ufdata(path: Path) -> Path:
     return path
 
 
+def _sample_vsqx(path: Path) -> Path:
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
+        '<vsq4 xmlns="http://www.yamaha.co.jp/vocaloid/schema/vsq4/">\n'
+        '  <masterTrack>\n'
+        '    <resolution>480</resolution>\n'
+        '    <preMeasure>1</preMeasure>\n'
+        '    <timeSig><m>0</m><nu>4</nu><de>4</de></timeSig>\n'
+        '    <tempo><t>0</t><v>13200</v></tempo>\n'
+        '  </masterTrack>\n'
+        '  <vsTrack>\n'
+        '    <tNo>0</tNo>\n'
+        '    <name><![CDATA[Lead]]></name>\n'
+        '    <vsPart>\n'
+        '      <t>1920</t><playTime>3840</playTime>\n'
+        '      <singer><t>0</t><bs>0</bs><pc>0</pc></singer>\n'
+        '      <cc><t>0</t><v id="S">2</v></cc>\n'
+        '      <cc><t>240</t><v id="P">1024</v></cc>\n'
+        '      <note><t>0</t><dur>480</dur><n>60</n><v>64</v><y><![CDATA[あ]]></y><p><![CDATA[a]]></p></note>\n'
+        '      <note><t>480</t><dur>480</dur><n>62</n><v>64</v><y><![CDATA[い]]></y><p><![CDATA[i]]></p></note>\n'
+        '    </vsPart>\n'
+        '  </vsTrack>\n'
+        '</vsq4>\n'
+    )
+    path.write_text(xml, encoding='utf-8')
+    return path
+
+
 def _sample_midi(path: Path) -> Path:
     mid = mido.MidiFile(ticks_per_beat=480)
     track = mido.MidiTrack()
@@ -145,6 +173,13 @@ class ProjectConvertServiceTests(unittest.TestCase):
             self.assertEqual(info_uf['format'], 'ufdata')
             self.assertEqual(info_uf['totalNotes'], 2)
             self.assertTrue(info_uf['tracks'][0]['hasPitch'])
+
+            vsqx = _sample_vsqx(root / 'demo.vsqx')
+            info_vsqx = svc.inspect_project_file(vsqx)
+            self.assertEqual(info_vsqx['format'], 'vsqx')
+            self.assertEqual(info_vsqx['totalNotes'], 2)
+            self.assertTrue(info_vsqx['tracks'][0]['hasPitch'])
+            self.assertTrue(info_vsqx['tracks'][0]['hasLyrics'])
 
             mid = _sample_midi(root / 'demo.mid')
             info_mid = svc.inspect_project_file(mid)
