@@ -203,6 +203,7 @@ ApplicationWindow {
         function routeSectionTitle(pageId) {
             if (pageId === "processing") return window.controller.text("前期与人声")
             if (pageId === "audio_mixdown") return window.controller.text("后期与交付")
+            if (pageId === "project_convert") return window.controller.text("实用工具")
             if (pageId === "components") return window.controller.text("系统")
             return ""
         }
@@ -357,9 +358,9 @@ ApplicationWindow {
                         && ((window.controller.chorus.view.highIssueCount || 0) > 0)
                     readonly property bool isDirtyRoute: modelData.pageId === "chorus" && !!window.controller.chorus.dirty
                     Layout.fillWidth: true
-                    Layout.fillHeight: modelData.pageId === "components"
+                    Layout.fillHeight: modelData.pageId === "project_convert"
                     spacing: 3
-                    Item { visible: modelData.pageId === "components"; Layout.fillHeight: true; Layout.minimumHeight: 8 }
+                    Item { visible: modelData.pageId === "project_convert"; Layout.fillHeight: true; Layout.minimumHeight: 8 }
                     Rectangle {
                         visible: sectionLabel.length > 0 && modelData.pageId !== "processing"
                         Layout.fillWidth: true
@@ -520,6 +521,7 @@ ApplicationWindow {
                     case "audio_mixdown": return mixdownPage
                     case "video_mixdown": return videoPage
                     case "publishing": return publicationPage
+                    case "project_convert": return convertPage
                     default: return preparationPage
                     }
                 }
@@ -815,6 +817,13 @@ ApplicationWindow {
                 theme: window.tokens
                 controller: window.controller.publication
                 onTaskVideoRequested: window.controller.navigate("results")
+            }
+        }
+        Component {
+            id: convertPage
+            ProjectConvertPage {
+                theme: window.tokens
+                controller: window.controller.converter
             }
         }
     }

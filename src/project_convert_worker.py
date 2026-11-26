@@ -1,0 +1,555 @@
+"""Isolated subprocess worker for project format inspection & conversion.
+
+Runs outside the Qt GUI process so importing LibreSVIP never slows cold startup
+or mutates process-wide YAML / plugin state in the desktop application.
+"""
+from __future__ import annotations
+
+import json
+import math
+import os
+from pathlib import Path
+import re
+import sys
+import traceback
+from typing import Any
+
+SRC_DIR = Path(__file__).resolve().parent
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+if str(SRC_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR.parent))
+
+from common import ROOT, file_hash
+
+
+CONVERTER_REGISTRY: dict[str, tuple[str, str]] = {
+    'svp': ('libresvip.plugins.svp.synthv_studio_converter', 'SynthVStudioConverter'),
+    'ustx': ('libresvip.plugins.ustx.ustx_converter', 'OpenUtauConverter'),
+    'vpr': ('libresvip.plugins.vpr.vpr_converter', 'VocaloidConverter'),
+    'vsqx': ('libresvip.plugins.vsqx.vsqx_converter', 'VsqxConverter'),
+    'acep': ('libresvip.plugins.acep.ace_studio_converter', 'ACEStudioConverter'),
+    'ufdata': ('libresvip.plugins.ufdata.ufdata_converter', 'UFDataConverter'),
+    'mid': ('libresvip.plugins.mid.midi_converter', 'MidiConverter'),
+    'ust': ('libresvip.plugins.ust.ust_converter', 'USTConverter'),
+    'svip': ('libresvip.plugins.svip.binsvip_converter', 'SvipConverter'),
+    'ccs': ('libresvip.plugins.ccs.cevio_converter', 'CeVIOConverter'),
+    'ds': ('libresvip.plugins.ds.diffsinger_converter', 'DiffSingerConverter'),
+    'dspx': ('libresvip.plugins.dspx.dspx_converter', 'DspxConverter'),
+    'musicxml': ('libresvip.plugins.musicxml.musicxml_converter', 'MusicXMLConverter'),
+    'lrc': ('libresvip.plugins.lrc.lrc_converter', 'LrcConverter'),
+    'srt': ('libresvip.plugins.srt.srt_converter', 'SrtConverter'),
+}
+
+_CJK_RE = re.compile(r'[\u4e00-\u9fff]')
+_KANA_RE = re.compile(r'[\u3040-\u30ff]')
+_LATIN_RE = re.compile(r'[A-Za-z]')
+_SV_QUARTER = 705_600_000
+_TICK_FACTOR = _SV_QUARTER // 480
+
+
+def _bootstrap_libresvip():
+    explicit = os.environ.get('VWA_EXPORT_RUNTIME', '').strip()
+    candidates = (
+        *([Path(explicit)] if explicit else ()),
+        ROOT / 'dependencies/export',
+        ROOT.parent / 'dependencies/export',
+        SRC_DIR.parent / 'dependencies/export',
+    )
+    runtime = next((p for p in candidates if (p / 'libresvip/__init__.py').is_file()), None)
+    if runtime is None:
+        raise FileNotFoundError('工程互转运行库缺失（dependencies/export/libresvip）。')
+    settings = ROOT / 'cache/export-app'
+    settings.mkdir(parents=True, exist_ok=True)
+    os.environ['APPDATA'] = os.environ['LOCALAPPDATA'] = str(settings)
+    if str(runtime) not in sys.path:
+        sys.path.insert(0, str(runtime))
+
+
+def _get_converter(fmt: str):
+    from importlib import import_module
+
+    if fmt not in CONVERTER_REGISTRY:
+        raise ValueError(f'未知格式插件：{fmt}')
+    mod_name, cls_name = CONVERTER_REGISTRY[fmt]
+    return getattr(import_module(mod_name), cls_name)
+
+
+def _detect_language(tracks) -> str:
+    cjk = kana = latin = 0
+    for track in tracks:
+        for note in getattr(track, 'note_list', ()):
+            lyr = str(getattr(note, 'lyric', '') or '').strip()
+            if not lyr or lyr in ('-', '+', '+~', 'R', 'r', 'sil', 'sp', 'pau', 'br'):
+                continue
+            if _KANA_RE.search(lyr):
+                kana += 1
+            elif _CJK_RE.search(lyr):
+                cjk += 1
+            elif _LATIN_RE.search(lyr):
+                latin += 1
+    if kana >= cjk and kana >= latin and kana > 0:
+        return 'ja'
+    if cjk >= latin and cjk > 0:
+        return 'zh'
+    if latin > 0:
+        return 'en'
+    return 'zh'
+
+
+def _load_high_fidelity_project(path: Path, fmt: str, *, include_pitch: bool = True):
+    """Build a standard LibreSVIP Project directly from VWA's verified SV2 / ACEP2 readers."""
+    import numpy as np
+    from libresvip.model.base import (
+        InstrumentalTrack, Note, ParamCurve, Params, Point, Points,
+        Project, SingingTrack, SongTempo, TimeSignature,
+    )
+    from project_io import read_source, score_layout
+    from tuning_native_pitch import _collect, sample_authored_pitch
+
+    snapshot = read_source(path)
+    score, layout = score_layout(snapshot.data, fmt)
+
+    tempos = [
+        SongTempo(position=max(0, int(round(row['position'] / _TICK_FACTOR))), bpm=float(row['bpm']))
+        for row in score['time'].get('tempo', [])
+    ] or [SongTempo(position=0, bpm=120.0)]
+    if tempos[0].position != 0:
+        tempos.insert(0, SongTempo(position=0, bpm=tempos[0].bpm))
+
+    meters = [
+        TimeSignature(
+            bar_index=max(0, int(row.get('index', 0))),
+            numerator=int(row.get('numerator', 4)),
+            denominator=int(row.get('denominator', 4)),
+        )
+        for row in score['time'].get('meter', [])
+    ] or [TimeSignature(bar_index=0, numerator=4, denominator=4)]
+    if meters[0].bar_index != 0:
+        meters.insert(0, TimeSignature(bar_index=0, numerator=4, denominator=4))
+
+    track_list = []
+    for row, raw_track in zip(layout.tracks, score['tracks']):
+        title = str(raw_track.get('name') or f'Track {row.index + 1}')
+        if row.instrumental:
+            media_ref = next((m.reference for m in layout.native.media if m.track == row.index and m.reference), '')
+            if media_ref:
+                audio_path = Path(media_ref)
+                if not audio_path.is_absolute():
+                    audio_path = (path.parent / audio_path).resolve()
+                track_list.append(InstrumentalTrack(title=title, audio_file_path=str(audio_path), offset=0))
+            continue
+
+        notes_out: list[Note] = []
+        pitch_points: list[Point] = []
+        step_native = getattr(layout, 'step', _TICK_FACTOR) or _TICK_FACTOR
+
+        for placement in row.placements:
+            part_ref = layout.native.parts.get((row.index, placement.key))
+            curves = _collect(snapshot.data, fmt, part_ref.raw) if (include_pitch and part_ref is not None) else ()
+
+            for note in placement.notes:
+                if note.pitch is None:
+                    continue
+                start_tick = int(round(note.start / _TICK_FACTOR))
+                end_tick = int(round(note.end / _TICK_FACTOR))
+                length = max(1, end_tick - start_tick)
+                if start_tick < 0:
+                    continue
+                key = max(0, min(127, int(round(note.pitch))))
+                lyr = str(note.data.get('source_lyric', note.data.get('lyrics', '')) or 'a')
+                notes_out.append(Note(start_pos=start_tick, length=length, key_number=key, lyric=lyr))
+
+                if curves:
+                    local_start = note.data['onset'] / step_native
+                    local_end = (note.data['onset'] + note.data['duration']) / step_native
+                    if fmt == 'svp':
+                        local_start = float(note.data['onset'])
+                        local_end = float(note.data['onset'] + note.data['duration'])
+                    sample_count = max(2, min(200, int(length // 10) + 1))
+                    grid_native = np.linspace(local_start, local_end, sample_count)
+                    grid_ticks = np.rint(np.linspace(start_tick, start_tick + length, sample_count)).astype(np.int64)
+                    sampled = sample_authored_pitch(curves, grid_native, key)
+                    if sampled is not None and np.isfinite(sampled).any():
+                        abs_cents = np.rint(key * 100.0 + sampled)
+                        valid = np.isfinite(abs_cents) & (np.abs(sampled) > 0.5)
+                        if valid.any():
+                            pitch_points.append(Point(x=int(grid_ticks[0]), y=-100))
+                            for t_val, c_val, ok in zip(grid_ticks.tolist(), abs_cents.tolist(), valid.tolist()):
+                                if ok and 0 <= int(c_val) <= 12700:
+                                    pitch_points.append(Point(x=int(t_val), y=int(c_val)))
+                            pitch_points.append(Point(x=int(grid_ticks[-1]), y=-100))
+
+        notes_out.sort(key=lambda n: (n.start_pos, n.key_number))
+        params = Params()
+        if pitch_points:
+            # Ensure monotonic x and start/end sentinel points per LibreSVIP convention
+            pitch_points.sort(key=lambda p: p.x)
+            params = Params(pitch=ParamCurve(points=Points(root=pitch_points)))
+        track_list.append(SingingTrack(title=title, note_list=notes_out, edited_params=params))
+
+    return Project(song_tempo_list=tempos, time_signature_list=meters, track_list=track_list)
+
+
+def _strip_project_pitch(project):
+    for track in project.track_list:
+        if hasattr(track, 'edited_params') and track.edited_params is not None:
+            track.edited_params.pitch.points.root.clear()
+            for attr in ('volume', 'breath', 'gender', 'strength'):
+                curve = getattr(track.edited_params, attr, None)
+                if curve is not None and hasattr(curve, 'points'):
+                    curve.points.root.clear()
+        for note in getattr(track, 'note_list', ()):
+            if hasattr(note, 'vibrato'):
+                note.vibrato = None
+
+
+def _build_output_options(fmt: str, *, language: str, lyric_mode: str, source_stem: str) -> dict[str, Any]:
+    if fmt == 'svp':
+        lang_map = {'zh': 'mandarin', 'ja': 'japanese', 'en': 'english'}
+        opts: dict[str, Any] = {'down_sample': 0}
+        if lyric_mode == 'adapt':
+            opts['language_override'] = lang_map.get(language, 'mandarin')
+        return opts
+    if fmt == 'vsqx' and lyric_mode == 'adapt' and language == 'en':
+        from project_exports import ENGLISH_VSQX_VOICE
+        return ENGLISH_VSQX_VOICE.copy()
+    if fmt == 'mid':
+        return {'export_lyrics': True, 'lyric_encoding': 'utf-8'}
+    if fmt == 'lrc':
+        return {'title': source_stem, 'by': 'VWA', 'ignore_slur_notes': lyric_mode == 'adapt', 'encoding': 'utf-8'}
+    if fmt == 'srt':
+        return {'track_index': 0, 'ignore_slur_notes': lyric_mode == 'adapt', 'encoding': 'utf-8'}
+    return {}
+
+
+def _build_input_options(fmt: str) -> dict[str, Any]:
+    if fmt == 'ustx':
+        return {'import_pitch': True, 'import_instrumental_track': True}
+    if fmt == 'mid':
+        return {'import_lyrics': True, 'lyric_encoding': 'utf-8'}
+    return {}
+
+
+def _duration_from_project(project) -> float:
+    from libresvip.model.base import SingingTrack
+
+    tempos = sorted(project.song_tempo_list or [], key=lambda t: t.position)
+    if not tempos:
+        bpm = 120.0
+    else:
+        bpm = float(tempos[0].bpm) or 120.0
+    max_tick = 0
+    for track in project.track_list:
+        if isinstance(track, SingingTrack):
+            for note in track.note_list:
+                end = int(note.start_pos) + int(note.length)
+                if end > max_tick:
+                    max_tick = end
+    return round((max_tick / 480.0) * (60.0 / max(1.0, bpm)), 2)
+
+
+def _handle_inspect(payload: dict[str, Any]) -> dict[str, Any]:
+    _bootstrap_libresvip()
+    from libresvip.model.base import InstrumentalTrack, SingingTrack
+    from project_convert_service import SPECS_BY_ID, _format_meter_summary, _format_tempo_summary
+
+    path = Path(payload['path']).resolve()
+    fmt = payload['format']
+    converter = _get_converter(fmt)
+    project = converter.load(path, _build_input_options(fmt))
+    spec = SPECS_BY_ID[fmt]
+
+    tracks = []
+    vocal_idx = 0
+    total_notes = 0
+    for idx, track in enumerate(project.track_list):
+        if isinstance(track, SingingTrack):
+            note_count = len(track.note_list)
+            total_notes += note_count
+            pitch_pts = getattr(getattr(getattr(track, 'edited_params', None), 'pitch', None), 'points', None)
+            has_pitch = bool(pitch_pts and any(p.y != -100 for p in pitch_pts.root))
+            has_lyrics = any(
+                str(n.lyric or '').strip() not in ('', '-', '+', 'R', 'r', 'sil')
+                for n in track.note_list
+            )
+            tracks.append({
+                'index': idx,
+                'vocalIndex': vocal_idx,
+                'name': str(track.title or f'演唱轨 {vocal_idx + 1}'),
+                'kind': 'vocal',
+                'noteCount': note_count,
+                'hasPitch': has_pitch,
+                'hasLyrics': has_lyrics,
+                'audioPath': '',
+                'selected': note_count > 0,
+            })
+            vocal_idx += 1
+        elif isinstance(track, InstrumentalTrack):
+            tracks.append({
+                'index': idx,
+                'vocalIndex': None,
+                'name': str(track.title or f'伴奏轨 {idx + 1}'),
+                'kind': 'instrumental',
+                'noteCount': 0,
+                'hasPitch': False,
+                'hasLyrics': False,
+                'audioPath': str(track.audio_file_path or ''),
+                'selected': False,
+            })
+
+    tempos = [{'bpm': float(t.bpm)} for t in (project.song_tempo_list or [])]
+    meters = [{'numerator': m.numerator, 'denominator': m.denominator} for m in (project.time_signature_list or [])]
+    return {
+        'path': str(path),
+        'fileName': path.name,
+        'sizeBytes': path.stat().st_size,
+        'sha256': file_hash(path),
+        'format': fmt,
+        'formatLabel': spec.label,
+        'formatShort': spec.short_label,
+        'formatVersion': str(getattr(project, 'version', '') or ''),
+        'sv2': False,
+        'acep2': False,
+        'engineSource': 'libresvip',
+        'tempoSummary': _format_tempo_summary(tempos),
+        'meterSummary': _format_meter_summary(meters),
+        'durationSeconds': _duration_from_project(project),
+        'totalNotes': total_notes,
+        'vocalTrackCount': vocal_idx,
+        'instrumentalTrackCount': sum(1 for t in tracks if t['kind'] == 'instrumental'),
+        'tracks': tracks,
+        'sourceNotes': [f'已通过 LibreSVIP 插件解析 {spec.short_label} 工程。'],
+        'defaultOutputDir': str(path.parent),
+    }
+
+
+def _dump_and_verify_one(
+    sub_project,
+    target_path: Path,
+    target_format: str,
+    *,
+    language: str,
+    options: dict[str, Any],
+    source_stem: str,
+) -> dict[str, Any]:
+    from libresvip.model.base import InstrumentalTrack, SingingTrack
+    from project_convert_service import SPECS_BY_ID
+    from project_exports import (
+        english_svp_project,
+        remove_pitch_data,
+        restore_english_ustx_lyrics,
+        restore_vsqx_lyrics,
+    )
+
+    spec = SPECS_BY_ID[target_format]
+    converter = _get_converter(target_format)
+    vocal_tracks = [t for t in sub_project.track_list if isinstance(t, SingingTrack)]
+    source_notes = sum(len(t.note_list) for t in vocal_tracks)
+    track_names = [str(t.title or f'轨道 {i + 1}') for i, t in enumerate(vocal_tracks)]
+
+    # Strip instrumental tracks if disabled or unsupported by target
+    if not options['include_instrumental'] or not spec.supports_instrumental:
+        sub_project = sub_project.model_copy(
+            update={'track_list': [t for t in sub_project.track_list if not isinstance(t, InstrumentalTrack)]}
+        )
+
+    if options['pitch_mode'] == 'strip':
+        _strip_project_pitch(sub_project)
+
+    draft = sub_project
+    if options['lyric_mode'] == 'adapt' and language == 'en' and target_format == 'svp':
+        draft, _ = english_svp_project(draft)
+
+    out_opts = _build_output_options(
+        target_format,
+        language=language,
+        lyric_mode=options['lyric_mode'],
+        source_stem=source_stem,
+    )
+
+    pending = target_path.with_name(f'.pending-{os.getpid()}-{target_path.name}')
+    try:
+        converter.dump(pending, draft, out_opts)
+
+        # Apply VWA's proven post-dump fixes
+        if options['lyric_mode'] == 'adapt' and language == 'en' and target_format == 'ustx':
+            restore_english_ustx_lyrics(pending, sub_project)
+        elif target_format == 'vsqx':
+            restore_vsqx_lyrics(pending, sub_project, language if options['lyric_mode'] == 'adapt' else 'zh')
+        if options['pitch_mode'] == 'strip' and target_format in ('ustx', 'svp', 'vsqx'):
+            remove_pitch_data(pending, target_format)
+
+        # Read-back verification before atomic commit
+        verified = False
+        output_notes = source_notes
+        line_count = 0
+        if spec.group == 'lyrics':
+            text = pending.read_text(encoding='utf-8-sig')
+            lines = [ln for ln in text.splitlines() if ln.strip()]
+            line_count = len(lines)
+            if not lines:
+                raise ValueError(f'导出的 {spec.short_label} 歌词文件为空，请确认所选轨道包含有效歌词。')
+            verified = True
+        elif spec.can_read:
+            reloaded = converter.load(pending, _build_input_options(target_format))
+            output_notes = sum(
+                len(t.note_list) for t in reloaded.track_list if isinstance(t, SingingTrack)
+            )
+            # Single-track targets only keep the first vocal track if user didn't split
+            expected_notes = (
+                len(vocal_tracks[0].note_list)
+                if (not spec.supports_multitrack and vocal_tracks)
+                else source_notes
+            )
+            verified = (output_notes == expected_notes)
+        else:
+            verified = pending.is_file() and pending.stat().st_size > 0
+
+        os.replace(pending, target_path)
+    finally:
+        pending.unlink(missing_ok=True)
+
+    return {
+        'path': str(target_path),
+        'fileName': target_path.name,
+        'trackNames': track_names,
+        'sourceNotes': source_notes,
+        'outputNotes': output_notes,
+        'lineCount': line_count,
+        'verified': verified,
+        'sizeBytes': target_path.stat().st_size,
+        'sha256': file_hash(target_path),
+    }
+
+
+def _handle_convert(payload: dict[str, Any]) -> dict[str, Any]:
+    _bootstrap_libresvip()
+    from libresvip.model.base import InstrumentalTrack, SingingTrack
+    from project_convert_service import SPECS_BY_ID
+
+    source_path = Path(payload['source_path']).resolve()
+    source_format = payload['source_format']
+    target_format = payload['target_format']
+    options = payload['options']
+    selected_vocal_indices = set(payload['selected_vocal_indices'])
+    planned_outputs = payload['planned_outputs']
+    use_hf = bool(payload.get('use_high_fidelity_reader'))
+
+    source_spec = SPECS_BY_ID[source_format]
+    target_spec = SPECS_BY_ID[target_format]
+
+    if use_hf:
+        project = _load_high_fidelity_project(
+            source_path, source_format, include_pitch=(options['pitch_mode'] == 'keep')
+        )
+        reader_engine = 'vwa_high_fidelity'
+    else:
+        in_converter = _get_converter(source_format)
+        project = in_converter.load(source_path, _build_input_options(source_format))
+        reader_engine = 'libresvip'
+
+    all_vocals = [t for t in project.track_list if isinstance(t, SingingTrack)]
+    all_insts = [t for t in project.track_list if isinstance(t, InstrumentalTrack)]
+    chosen_vocals = [t for i, t in enumerate(all_vocals) if i in selected_vocal_indices]
+    if not chosen_vocals:
+        raise ValueError('源工程中未找到选中的人声轨。')
+
+    language = _detect_language(chosen_vocals)
+    inst_tracks = all_insts if (options['include_instrumental'] and target_spec.supports_instrumental) else []
+
+    results = []
+    if options['split_tracks'] and len(chosen_vocals) > 1:
+        for vocal, plan in zip(chosen_vocals, planned_outputs, strict=True):
+            sub = project.model_copy(update={'track_list': [vocal, *inst_tracks]})
+            results.append(
+                _dump_and_verify_one(
+                    sub,
+                    Path(plan['path']),
+                    target_format,
+                    language=language,
+                    options=options,
+                    source_stem=source_path.stem,
+                )
+            )
+    else:
+        sub = project.model_copy(update={'track_list': [*chosen_vocals, *inst_tracks]})
+        results.append(
+            _dump_and_verify_one(
+                sub,
+                Path(planned_outputs[0]['path']),
+                target_format,
+                language=language,
+                options=options,
+                source_stem=source_path.stem,
+            )
+        )
+
+    # Honest preserved vs omitted summary
+    preserved: list[str] = ['速度表与拍号']
+    if target_spec.group == 'lyrics':
+        preserved.append('按音符时间轴对齐的歌词文本')
+    else:
+        preserved.append(f'所选 {len(chosen_vocals)} 条人声轨音符、时长与歌词')
+        if options['pitch_mode'] == 'keep' and target_spec.supports_pitch:
+            preserved.append('音高曲线（按目标格式坐标系换算）')
+        if inst_tracks:
+            preserved.append(f'{len(inst_tracks)} 条伴奏轨引用')
+
+    omitted: list[str] = ['原编辑器专有声库音色、AI 参数与混音插件']
+    if options['pitch_mode'] == 'strip':
+        omitted.append('音高曲线与颤音（按所选「剥离音高」策略主动清除）')
+    elif not target_spec.supports_pitch and target_spec.group != 'lyrics':
+        omitted.append(f'连续音高曲线（{target_spec.short_label} 格式不支持）')
+    if all_insts and not inst_tracks:
+        if not options['include_instrumental']:
+            omitted.append('伴奏轨（按所选「仅导出人声轨」策略跳过）')
+        else:
+            omitted.append(f'伴奏轨（{target_spec.short_label} 格式不含伴奏轨）')
+
+    warnings: list[str] = []
+    if not all(r['verified'] for r in results):
+        warnings.append('部分输出文件的回读音符数与源轨道存在差异（可能因目标格式合并/截断重叠音符），请在目标软件中复核。')
+
+    return {
+        'sourcePath': str(source_path),
+        'sourceFormat': source_format,
+        'sourceLabel': source_spec.label,
+        'targetFormat': target_format,
+        'targetLabel': target_spec.label,
+        'targetGroup': target_spec.group,
+        'readerEngine': reader_engine,
+        'detectedLanguage': language,
+        'outputDir': payload['output_dir'],
+        'outputs': results,
+        'preserved': preserved,
+        'omitted': omitted,
+        'warnings': warnings,
+        'canSendToTuning': target_format in ('svp', 'ustx', 'vpr', 'vsqx', 'ufdata'),
+        'canSendToChorus': target_format in ('svp', 'ustx', 'vpr', 'vsqx', 'ufdata', 'mid'),
+    }
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 4 or argv[1] not in ('inspect', 'convert'):
+        sys.stderr.write('Usage: project_convert_worker.py <inspect|convert> <request.json> <response.json>\n')
+        return 2
+    command, req_path, res_path = argv[1], Path(argv[2]), Path(argv[3])
+    try:
+        payload = json.loads(req_path.read_text(encoding='utf-8'))
+        result = _handle_inspect(payload) if command == 'inspect' else _handle_convert(payload)
+        res_path.write_text(json.dumps({'ok': True, 'result': result}, ensure_ascii=False), encoding='utf-8')
+        return 0
+    except Exception as exc:
+        res_path.write_text(
+            json.dumps(
+                {'ok': False, 'error': str(exc) or type(exc).__name__, 'traceback': traceback.format_exc()},
+                ensure_ascii=False,
+            ),
+            encoding='utf-8',
+        )
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main(sys.argv))

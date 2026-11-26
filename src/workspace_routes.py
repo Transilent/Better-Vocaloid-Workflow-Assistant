@@ -19,12 +19,12 @@ class PageSpec:
 
 PAGE_SPECS = (
     PageSpec(page_id='processing', legacy_index=0, title='准备工作流', sidebar_order=0),
-    PageSpec(page_id='components', legacy_index=1, title='模型与组件', sidebar_order=7,
-             sidebar_gap_before=True, english_title='Models'),
-    PageSpec(page_id='results', legacy_index=2, title='任务与结果', sidebar_order=8,
+    PageSpec(page_id='components', legacy_index=1, title='模型与组件', sidebar_order=8,
+             english_title='Models'),
+    PageSpec(page_id='results', legacy_index=2, title='任务与结果', sidebar_order=9,
              english_title='Tasks and results'),
     PageSpec(page_id='publishing', legacy_index=3, title='发布', sidebar_order=6),
-    PageSpec(page_id='updates', legacy_index=4, title='设置与更新', sidebar_order=9,
+    PageSpec(page_id='updates', legacy_index=4, title='设置与更新', sidebar_order=10,
              english_title='Settings'),
     PageSpec(page_id='workflow', legacy_index=5, title='工作流', target='processing'),
     PageSpec(page_id='storage', legacy_index=6, title='缓存与磁盘', target='updates'),
@@ -36,6 +36,8 @@ PAGE_SPECS = (
     PageSpec(page_id='tuning_workshop', legacy_index=11, title='调音工坊', sidebar_order=2),
     PageSpec(page_id='chorus', legacy_index=12, title='修音工作台', sidebar_order=3,
              english_title='Pitch & Timing'),
+    PageSpec(page_id='project_convert', legacy_index=13, title='工程互转', sidebar_order=7,
+             sidebar_gap_before=True, english_title='Convert'),
 )
 
 

@@ -26,6 +26,7 @@ from quick_tuning import QuickTuning
 from quick_workshop import QuickWorkshop
 from quick_mixdown import QuickMixdown
 from quick_chorus import QuickChorus
+from quick_convert import QuickConvert
 from quick_video import QuickVideo
 from quick_work import WorkerLane
 import task_actions_service as _task_actions
@@ -170,6 +171,10 @@ class QuickBridge(QObject):
         self._chorus = QuickChorus(self)
         self._chorus.worker.changed.connect(self._work_changed)
         self._chorus.mixdownHandoffReady.connect(self._open_chorus_mixdown)
+        self._converter = QuickConvert(self)
+        self._converter.worker.changed.connect(self._work_changed)
+        self._converter.tuningHandoffRequested.connect(self._open_converted_in_tuning)
+        self._converter.chorusScoreHandoffRequested.connect(self._open_converted_in_chorus)
         self._video = QuickVideo(self, self._work)
         self._publication = QuickPublication(self, self._work)
         self._subtitles = QuickSubtitles(self)
@@ -223,7 +228,7 @@ class QuickBridge(QObject):
         self._activities = (self._work, self._task_work, self._calibration.worker, self._catalog,
                             self._read, self._details, self._support.storage_lane,
                             self._support.preset_lane, self._support.inspect_lane, self._support.discovery,
-                            self._mixdown.support_lane, self._chorus.worker)
+                            self._mixdown.support_lane, self._chorus.worker, self._converter.worker)
         self._operation_timer = QTimer(self)
         self._operation_timer.setInterval(1000)
         self._operation_timer.timeout.connect(self.operationActivityChanged)
@@ -503,6 +508,10 @@ class QuickBridge(QObject):
     def subtitles(self):
         return self._subtitles
 
+    @Property(QObject, constant=True)
+    def converter(self):
+        return self._converter
+
     @Property(str, notify=activityChanged)
     def operationKind(self):
         return self._task_work.kind or self._work.kind
@@ -521,6 +530,7 @@ class QuickBridge(QObject):
             'audio_mixdown': 'nav_mixdown',
             'video_mixdown': 'nav_video',
             'publishing': 'nav_publishing',
+            'project_convert': 'nav_convert',
             'components': 'nav_components',
             'results': 'nav_results',
             'updates': 'nav_settings',
@@ -528,7 +538,7 @@ class QuickBridge(QObject):
         return [{'pageId': spec.page_id, 'title': tr('设置与支持' if spec.page_id == 'updates' else spec.title),
                  'short': tr({'processing': '准备', 'tuning': '调音', 'tuning_workshop': '工坊', 'chorus': '修音',
                               'audio_mixdown': '混音',
-                              'video_mixdown': '视频', 'publishing': '发布',
+                              'video_mixdown': '视频', 'publishing': '发布', 'project_convert': '互转',
                               'components': '组件', 'results': '任务', 'updates': '设置'}[spec.page_id]),
                  'icon': icons.get(spec.page_id, '')}
                 for spec in self.state.routes]
@@ -1757,6 +1767,18 @@ class QuickBridge(QObject):
 
         self._start_task_mutation('task-edit', job, action + '…', lambda _stop, _send: command(job), finish)
 
+    def _open_converted_in_tuning(self, path_str):
+        if self._closed or not path_str:
+            return
+        self.navigate('tuning')
+        self._tuning.chooseProject(QUrl.fromLocalFile(str(path_str)))
+
+    def _open_converted_in_chorus(self, path_str):
+        if self._closed or not path_str:
+            return
+        self.navigate('chorus')
+        self._chorus.importScore(QUrl.fromLocalFile(str(path_str)))
+
     @Slot()
     def cancelAndClose(self):
         self._exit_when_idle = True
@@ -1767,6 +1789,7 @@ class QuickBridge(QObject):
         self._workshop.cancel()
         self._mixdown.cancel()
         self._chorus.cancel()
+        self._converter.cancel()
         self._video.cancel()
         self._publication.cancel()
         self._calibration.cancel()
@@ -1790,5 +1813,6 @@ class QuickBridge(QObject):
         self._tuning.close()
         self._mixdown.close()
         self._chorus.close()
+        self._converter.close()
         self._video.close()
         self._publication.close()

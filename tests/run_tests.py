@@ -98,6 +98,7 @@ shared_tests = (
     'test_subtitles.py', 'test_publish_browser.py', 'test_publish_adapters.py',
     'test_bilibili_dual_cover.py', 'test_launchers.py', 'test_source_layout.py',
     'test_architecture_guards.py', 'test_stability_and_perf_guards.py',
+    'test_project_convert.py', 'test_project_convert_e2e.py',
 )
 
 # L1 integration tests that depend on external multi-GB runtime packages/binaries
@@ -145,6 +146,7 @@ L1_RUNTIME_REQUIREMENTS = {
     'test_vpr_tuning.py': ('export_runtime',),
     'test_vsqx_tuning.py': ('export_runtime',),
     'test_ustx_tuning.py': ('export_runtime',),
+    'test_project_convert_e2e.py': ('export_runtime',),
     # Optional WORLD acoustic analyzer component
     'test_calibration_channels.py': ('world',),
     'test_expression_calibration.py': ('world',),

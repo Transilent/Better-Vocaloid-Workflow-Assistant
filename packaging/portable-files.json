@@ -6,6 +6,18 @@
       "source": "src/quick_chorus.py"
     },
     {
+      "file": "quick_convert.py",
+      "source": "src/quick_convert.py"
+    },
+    {
+      "file": "project_convert_service.py",
+      "source": "src/project_convert_service.py"
+    },
+    {
+      "file": "project_convert_worker.py",
+      "source": "src/project_convert_worker.py"
+    },
+    {
       "file": "chorus_review_service.py",
       "source": "src/chorus_review_service.py"
     },
@@ -64,6 +76,10 @@
     {
       "file": "quick_ui/ChorusPage.qml",
       "source": "src/quick_ui/ChorusPage.qml"
+    },
+    {
+      "file": "quick_ui/ProjectConvertPage.qml",
+      "source": "src/quick_ui/ProjectConvertPage.qml"
     },
     {
       "file": "quick_ui/ChorusTimeline.qml",
