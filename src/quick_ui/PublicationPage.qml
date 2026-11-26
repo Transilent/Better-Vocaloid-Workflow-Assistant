@@ -838,8 +838,8 @@ Item {
                                 Text {
                                     anchors.centerIn: parent
                                     text: index < page.step ? "✓" : String(index + 1)
-                                    color: index === page.step ? page.theme.onAccent
-                                        : index < page.step ? page.theme.base : page.theme.muted
+                                    color: index === page.step ? page.theme.accentInk
+                                        : index < page.step ? page.theme.accentInk : page.theme.muted
                                     font.pixelSize: Math.round(10 * page.theme.scale)
                                     font.weight: Font.DemiBold
                                 }

@@ -505,6 +505,7 @@ FocusScope {
             ColumnLayout {
                 id: canvasColumn
                 Layout.fillWidth: true
+                Layout.minimumWidth: 0
                 Layout.fillHeight: true
                 spacing: 4
                 readonly property int laneHeaderWidth: Math.round((width < 690 ? 126 : 169) * page.theme.scale)
@@ -573,9 +574,10 @@ FocusScope {
                     }
                 }
 
-                // Slim single-row contextual toolbar for detail editor (pitch or phrase)
-                RowLayout {
+                // Responsive contextual toolbar for detail editor (wraps cleanly without pushing right inspector)
+                Flow {
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 0
                     visible: page.view.mode !== "all" && page.ready
                     spacing: Math.round(4 * page.theme.scale)
 
@@ -584,8 +586,8 @@ FocusScope {
                         id: quickTrackPicker
                         theme: page.theme
                         visible: page.controller.tracks.filter(row => row.role === "vocal").length > 1
-                        Layout.preferredWidth: Math.round(132 * page.theme.scale)
-                        Layout.preferredHeight: Math.round(28 * page.theme.scale)
+                        width: Math.round(126 * page.theme.scale)
+                        height: Math.round(28 * page.theme.scale)
                         fieldLabel: page.t("当前修音轨")
                         model: page.controller.tracks.filter(row => row.role !== "backing")
                             .map(row => ({label: row.name, value: row.id}))
@@ -914,7 +916,7 @@ FocusScope {
                         visible: (page.view.issues || []).length > 0
                         radius: Math.round(5 * page.theme.scale)
                         color: page.theme.raised
-                        border.color: hasHigh ? "#f87171" : page.theme.attention
+                        border.color: hasHigh ? page.theme.error : page.theme.attention
                         border.width: 1.5
                         implicitWidth: revBadgeRow.implicitWidth + 14
                         implicitHeight: Math.round(24 * page.theme.scale)
@@ -927,10 +929,10 @@ FocusScope {
                                 height: 7
                                 radius: 4
                                 anchors.verticalCenter: parent.verticalCenter
-                                color: parent.parent.hasHigh ? "#f87171" : page.theme.attention
+                                color: parent.parent.hasHigh ? page.theme.error : page.theme.attention
                             }
                             Text {
-                                color: parent.parent.hasHigh ? "#f87171" : page.theme.attention
+                                color: parent.parent.hasHigh ? page.theme.error : page.theme.attention
                                 font.pixelSize: Math.round(11 * page.theme.scale)
                                 font.weight: Font.DemiBold
                                 text: page.t("待核对") + " " + (page.view.issues || []).length
@@ -974,8 +976,6 @@ FocusScope {
                             + " dB），可能已带混响，修音容易产生空洞感，建议导入未加效果的纯干声。")
                         HoverHandler { id: wetWarnHover }
                     }
-
-                    Item { Layout.fillWidth: true }
 
                     UiButton {
                         theme: page.theme
@@ -1328,12 +1328,12 @@ FocusScope {
                                         width: 8
                                         height: 8
                                         radius: 4
-                                        color: (page.view.highIssueCount || 0) > 0 ? "#f87171" : page.theme.attention
+                                        color: (page.view.highIssueCount || 0) > 0 ? page.theme.error : page.theme.attention
                                     }
                                     Text {
                                         Layout.fillWidth: true
                                         text: page.t("待核对") + "  " + page.view.issues.length
-                                        color: (page.view.highIssueCount || 0) > 0 ? "#f87171" : page.theme.attention
+                                        color: (page.view.highIssueCount || 0) > 0 ? page.theme.error : page.theme.attention
                                         font.pixelSize: Math.round(12 * page.theme.scale)
                                         font.weight: Font.DemiBold
                                     }
@@ -1351,19 +1351,30 @@ FocusScope {
                                 ListView {
                                     objectName: "chorusIssueList"
                                     Layout.fillWidth: true
-                                    Layout.preferredHeight: Math.min(contentHeight, Math.round(280 * page.theme.scale))
+                                    Layout.preferredHeight: Math.min(contentHeight, Math.round(300 * page.theme.scale))
                                     clip: true
                                     model: page.view.issues
                                     spacing: 6
+                                    ScrollBar.vertical: UiScrollBar { theme: page.theme }
                                     delegate: Rectangle {
                                         id: issueCard
                                         required property var modelData
                                         readonly property bool isHigh: modelData.severity === "high" || modelData.category === "transpose"
-                                        readonly property color sevColor: isHigh ? "#f87171" : page.theme.attention
+                                        readonly property color sevColor: isHigh ? page.theme.error : page.theme.attention
                                         readonly property bool isFocused: page.view.issue === modelData.id
+                                        readonly property string timeRangeText: {
+                                            const a = Math.max(0, Number(modelData.time || 0))
+                                            const b = Math.max(a, Number(modelData.end || a))
+                                            function fmt(sec) {
+                                                const m = Math.floor(sec / 60)
+                                                const s = (sec % 60).toFixed(1).padStart(4, "0")
+                                                return m + ":" + s
+                                            }
+                                            return (b - a >= 0.25 && b - a <= 25.0) ? (fmt(a) + "–" + fmt(b)) : fmt(a)
+                                        }
                                         width: ListView.view.width
                                         implicitHeight: issueCol.implicitHeight + 12
-                                        radius: Math.round(6 * page.theme.scale)
+                                        radius: Math.round(7 * page.theme.scale)
                                         color: isFocused ? page.theme.selected : page.theme.raised
                                         border.color: isFocused ? sevColor : page.theme.line
                                         border.width: isFocused ? 1.5 : 1
@@ -1389,51 +1400,64 @@ FocusScope {
                                             anchors.leftMargin: 10
                                             anchors.rightMargin: 7
                                             anchors.topMargin: 6
-                                            spacing: 3
+                                            spacing: 4
+                                            // Line 1: Track name & exact time range FIRST for instant scanability
                                             RowLayout {
                                                 Layout.fillWidth: true
-                                                spacing: 4
+                                                spacing: 6
+                                                Text {
+                                                    Layout.fillWidth: true
+                                                    color: page.theme.text
+                                                    font.pixelSize: Math.round(12 * page.theme.scale)
+                                                    font.weight: Font.DemiBold
+                                                    elide: Text.ElideMiddle
+                                                    textFormat: Text.PlainText
+                                                    text: issueCard.modelData.shortTrack || issueCard.modelData.track
+                                                    ToolTip.visible: trkHover.hovered && String(issueCard.modelData.track || "").length > 0
+                                                    ToolTip.text: String(issueCard.modelData.track || "")
+                                                    HoverHandler { id: trkHover }
+                                                }
+                                                Text {
+                                                    color: page.theme.accent
+                                                    font.family: page.theme.monoFont || "Consolas"
+                                                    font.pixelSize: Math.round(10 * page.theme.scale)
+                                                    font.weight: Font.DemiBold
+                                                    text: issueCard.timeRangeText
+                                                }
+                                            }
+                                            // Line 2: Category badge + concise reason
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 5
                                                 Rectangle {
-                                                    radius: 3
+                                                    Layout.alignment: Qt.AlignTop
+                                                    Layout.topMargin: 1
+                                                    radius: 4
                                                     color: issueCard.sevColor
                                                     implicitWidth: catTxt.implicitWidth + 8
                                                     implicitHeight: catTxt.implicitHeight + 2
                                                     Text {
                                                         id: catTxt
                                                         anchors.centerIn: parent
-                                                        color: "#111318"
+                                                        color: page.theme.accentInk !== undefined ? page.theme.accentInk : "#ffffff"
                                                         font.pixelSize: Math.round(9 * page.theme.scale)
                                                         font.weight: Font.Bold
                                                         text: page.issueCategoryLabel(issueCard.modelData.category)
                                                     }
                                                 }
                                                 Text {
+                                                    Layout.fillWidth: true
                                                     color: page.theme.text
                                                     font.pixelSize: Math.round(11 * page.theme.scale)
-                                                    font.weight: Font.DemiBold
-                                                    text: page.stamp(issueCard.modelData.time)
-                                                }
-                                                Text {
-                                                    Layout.fillWidth: true
-                                                    color: page.theme.muted
-                                                    font.pixelSize: Math.round(11 * page.theme.scale)
-                                                    elide: Text.ElideRight
+                                                    wrapMode: Text.Wrap
                                                     textFormat: Text.PlainText
-                                                    text: issueCard.modelData.track
+                                                    text: page.t(issueCard.modelData.reason)
                                                 }
-                                            }
-                                            Text {
-                                                Layout.fillWidth: true
-                                                color: page.theme.text
-                                                font.pixelSize: Math.round(11 * page.theme.scale)
-                                                wrapMode: Text.Wrap
-                                                textFormat: Text.PlainText
-                                                text: page.t(issueCard.modelData.reason)
                                             }
                                             Text {
                                                 Layout.fillWidth: true
                                                 visible: !!(issueCard.modelData.actionHint)
-                                                color: issueCard.sevColor
+                                                color: page.theme.muted
                                                 font.pixelSize: Math.round(10 * page.theme.scale)
                                                 wrapMode: Text.Wrap
                                                 textFormat: Text.PlainText
@@ -1448,7 +1472,7 @@ FocusScope {
                                                     leftPadding: Math.round(6 * page.theme.scale)
                                                     rightPadding: leftPadding
                                                     quiet: true
-                                                    text: page.t("跳转")
+                                                    text: page.t("跳转钢琴窗")
                                                     onClicked: page.controller.focusIssue(issueCard.modelData.id)
                                                 }
                                                 UiButton {

@@ -177,6 +177,17 @@ class QuickChorus(QObject):
         comp = next((edit.source for edit in project.edits_for(self._selected, 'take')
                      if edit.start <= (mapped_time(project, selected, middle) if selected else middle) < edit.end), '')
         score = project.score
+        vocal_names = [t.name for t in project.tracks if t.role in ('vocal', 'guide') and t.name]
+        shared_prefix = ''
+        if len(vocal_names) >= 2:
+            raw_prefix = os.path.commonprefix(vocal_names)
+            for sep in (' - ', '_', ' ', '-'):
+                cut = raw_prefix.rfind(sep)
+                if cut >= 0:
+                    cand = raw_prefix[:cut + len(sep)]
+                    if all(len(n[len(cand):].strip()) >= 2 for n in vocal_names):
+                        shared_prefix = cand
+                        break
         issues = []
         for index, row in enumerate(self._suggestions):
             if row.review and index not in self._resolved:
@@ -185,16 +196,20 @@ class QuickChorus(QObject):
                     category = row.category or ('timing' if row.kind == 'timing' else 'review')
                     severity = row.severity or ('high' if category in ('transpose', 'octave', 'large_shift') else 'medium')
                     hint = row.action_hint or (
-                        '可点击接受建议自动应用，或试听后手动微调' if row.can_apply
-                        else '点击跳转后可试听并手动拖动修正'
+                        '可点击接受建议自动应用，或跳转钢琴窗试听微调' if row.can_apply
+                        else '点击跳转钢琴窗定位该处并试听修正'
                     )
+                    short_name = track.name[len(shared_prefix):].strip() if shared_prefix and track.name.startswith(shared_prefix) else track.name
+                    disp_start = max(0., row.start) if row.end > 0. else row.start
+                    disp_end = max(disp_start, row.end)
                     issues.append({
                         'id': index,
                         'track': track.name,
+                        'shortTrack': short_name or track.name,
                         'trackId': track.id,
                         'kind': row.kind,
-                        'time': row.start,
-                        'end': row.end,
+                        'time': disp_start,
+                        'end': disp_end,
                         'reason': row.detail or '需要人工核对',
                         'actionHint': hint,
                         'category': category,
@@ -205,7 +220,7 @@ class QuickChorus(QObject):
         issues.sort(key=lambda item: (
             0 if item['category'] == 'transpose' else (1 if item['severity'] == 'high' else 2),
             item['time'],
-            item['track'],
+            item['shortTrack'],
         ))
         from mixdown_contract import MAX_VOCALS
 
@@ -258,6 +273,7 @@ class QuickChorus(QObject):
             'scoreRecommendations': self._score_recommendations(selected),
             'prepScores': list(self._prep_scores),
             'issues': issues, 'issue': self._issue,
+            'focusRevision': getattr(self, '_focus_revision', 0),
             'highIssueCount': sum(1 for item in issues if item['severity'] == 'high'),
             'canAcceptIssue': (0 <= self._issue < len(self._suggestions)
                                and self._issue not in self._resolved and self._suggestions[self._issue].can_apply),
@@ -1227,26 +1243,42 @@ class QuickChorus(QObject):
         row = self._suggestions[index]
         start, end = row.start, row.end
         track = self.project.track(row.track)
-        if row.kind == 'pitch' and track is not None:
+        if track is not None:
             timing_edits = self.project.edits_for(track.id, 'timing')
-            if timing_edits:
+            if row.kind == 'pitch' and timing_edits:
                 da = self._display_time_for(track, row.start - track.offset, timing_edits)
                 db = self._display_time_for(track, row.end - track.offset, timing_edits)
                 start, end = (da, db) if db >= da else (db, da)
+            # For whole-track issues (e.g. transpose), jump to the first sung note instead of silent intro.
+            if row.category == 'transpose' or (end - start) > 18.0:
+                notes = self._cached_vocal_notes(track)
+                if notes:
+                    first_t = notes[0].start + track.offset
+                    if timing_edits:
+                        first_t = self._display_time_for(track, notes[0].start, timing_edits)
+                    start = max(self.project.start, first_t)
+                    end = min(self.project.end, start + 5.0)
+        start = max(self.project.start, start)
+        end = max(start + .2, min(self.project.end, end))
         self._select(row.track, self._bounds(start, end))
         self._issue = index
-        target_mode = 'pitch' if row.kind == 'pitch' else 'phrase'
-        self._mode = target_mode
-        span = max(3.5, min(9.0, (end - start) + 3.0))
+        # Always open the Piano Roll so the user can directly inspect & edit notes/timing against MIDI.
+        self._mode = 'pitch'
+        span = max(3.5, min(8.5, (end - start) + 2.8))
         self._set_viewport(start - span * .25, span)
-        if row.kind == 'pitch' and track is not None and row.category != 'transpose':
+        if track is not None and row.category != 'transpose':
             take_a = row.start - track.offset
             take_b = row.end - track.offset
             notes = self._cached_vocal_notes(track)
             hit = next((n for n in notes if n.end > take_a + .01 and n.start < take_b - .01), None)
             if hit is not None:
                 self._selected_notes = ((hit.start, hit.end),)
-        self.seek(max(self.project.start, start - .15))
+        target_pos = max(self.project.start, min(self.project.end, start - .12))
+        self._last_nav_action = 'issue'
+        self._set_position(target_pos)
+        if self._session and self._session_geometry == self._geometry():
+            self._seek_serial = self._session.seek(self._frame(target_pos))
+        self._focus_revision = getattr(self, '_focus_revision', 0) + 1
         self.changed.emit()
 
     @Slot(str)

@@ -195,7 +195,9 @@ def _timing_match(reference, target, source, take, phrase, radius):
     clips = _project_slice(take.shape, target.offset, span[None, :] + lags[:, None])
     presence = _project_slice(take.active, target.offset, span[None, :] + lags[:, None])
     if vocal.sum() < 7 or presence.sum(axis=1).max(initial=0) < 6:
-        return None, '没有足够的发音可配对', True
+        # Either the reference or this singer is silent in this phrase (e.g. solo verse / rest / intro);
+        # silence is NOT a rhythm alignment error and should not flood the review list.
+        return None, '', False
     origin -= origin.mean(axis=0)
     clips -= clips.mean(axis=1, keepdims=True)
     denom = np.sqrt((origin * origin).sum(axis=0) * (clips * clips).sum(axis=1))
@@ -338,7 +340,8 @@ def _timing_candidates(project, targets, selection, strength, radius, features, 
                            if evidence.get(clip.key, {}).get('detail')), '')
             detail += f' · {reason or failure or "音素边界不足"}'
         if movement is None:
-            generated.append(Suggestion(track.id, 'timing', first, last, None, detail, True, route='需核对'))
+            if review and detail and last > 0.05:
+                generated.append(Suggestion(track.id, 'timing', max(0., first), last, None, detail, True, route='需核对'))
         else:
             fit = fit_translation(first, last, movement * strength, quiet)
             reason = detail if review else ('仅靠工程参照推断的大位移，建议先试听'

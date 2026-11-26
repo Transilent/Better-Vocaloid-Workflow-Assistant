@@ -1351,7 +1351,7 @@ Rectangle {
                             visible: count > 0
                             clip: true
                             model: page.storageView.rows || []
-                            ScrollBar.vertical: ScrollBar {}
+                            ScrollBar.vertical: UiScrollBar { theme: page.theme }
                             delegate: CheckDelegate {
                                 required property var modelData
                                 width: cacheRows.width
@@ -1442,7 +1442,7 @@ Rectangle {
                         visible: count > 0
                         clip: true
                         model: page.filteredPresets
-                        ScrollBar.vertical: ScrollBar {}
+                        ScrollBar.vertical: UiScrollBar { theme: page.theme }
                         delegate: ItemDelegate {
                             required property var modelData
                             width: presetRows.width
@@ -1727,29 +1727,18 @@ Rectangle {
                         }
                     }
 
-                    ProgressBar {
+                    UiProgressBar {
                         id: updateProgress
                         objectName: "updateProgress"
+                        theme: page.theme
                         Layout.fillWidth: true
                         visible: page.downloading || Number(page.updateInfo.total || 0) > 0
                         indeterminate: page.downloading && Number(page.updateInfo.total || 0) <= 0 && !page.theme.reduceMotion
+                        fillColor: page.currentUpdateState === "failed" || page.currentUpdateState === "error"
+                            ? page.theme.error : page.theme.accent
                         value: Number(page.updateInfo.total || 0) > 0
                             ? Math.max(0, Math.min(1, Number(page.updateInfo.done || 0) / Number(page.updateInfo.total)))
                             : 0
-                        background: Rectangle {
-                            implicitHeight: Math.max(5, Math.round(6 * page.theme.scale))
-                            radius: height / 2
-                            color: page.theme.base
-                        }
-                        contentItem: Item {
-                            Rectangle {
-                                width: parent.width * Math.max(0, Math.min(1, updateProgress.visualPosition))
-                                height: parent.height
-                                radius: height / 2
-                                color: page.currentUpdateState === "failed" || page.currentUpdateState === "error"
-                                    ? page.theme.error : page.theme.accent
-                            }
-                        }
                     }
 
                     Flow {
@@ -2017,7 +2006,7 @@ Rectangle {
             radius: Math.round(16 * tokens.scale)
             color: chip.selected
                 ? tokens.accent
-                : chip.hovered ? Qt.lighter(tokens.surface, 1.12) : tokens.base
+                : chip.hovered ? tokens.hover : tokens.raised
             border.width: 1
             border.color: chip.visualFocus || chip.selected ? tokens.accent : tokens.line
             Behavior on color {
@@ -2028,7 +2017,7 @@ Rectangle {
         contentItem: Text {
             text: chip.text
             font: chip.font
-            color: chip.selected ? tokens.onAccent : tokens.text
+            color: chip.selected ? tokens.accentInk : tokens.text
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             textFormat: Text.PlainText

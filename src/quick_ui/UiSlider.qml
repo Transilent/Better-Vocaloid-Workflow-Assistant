@@ -16,7 +16,7 @@ Slider {
         width: control.availableWidth
         height: Math.round((control.hovered || control.pressed ? 5 : 4) * control.theme.scale)
         radius: height / 2
-        color: control.theme.dark ? "#282c3d" : "#dcd8e8"
+        color: control.theme.dark ? "#282c3d" : "#c7cde0"
         Behavior on height {
             enabled: !control.theme.reduceMotion
             NumberAnimation { duration: 90; easing.type: Easing.OutCubic }
@@ -53,7 +53,7 @@ Slider {
             width: Math.round((control.pressed ? 14 : control.hovered ? 13 : 12) * control.theme.scale)
             height: width
             radius: width / 2
-            color: control.enabled ? (control.theme.dark ? "#f4f2fc" : "#ffffff") : control.theme.muted
+            color: control.enabled ? (control.theme.dark ? "#f4f2fc" : "#f8f9fc") : control.theme.muted
             border.width: control.visualFocus ? 2 : 1.5
             border.color: control.enabled ? control.theme.accent : control.theme.line
             opacity: control.enabled ? 1.0 : 0.55

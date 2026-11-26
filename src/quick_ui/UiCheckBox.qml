@@ -36,7 +36,7 @@ CheckBox {
             height: width
             visible: control.checked
             glyph: "check"
-            tint: control.theme.onAccent
+            tint: control.theme.accentInk !== undefined ? control.theme.accentInk : (control.theme.dark ? "#141022" : "#ffffff")
         }
     }
 

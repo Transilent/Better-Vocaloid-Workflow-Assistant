@@ -79,8 +79,11 @@ Button {
         implicitHeight: control.glyph.length > 0 ? Math.round(18 * control.theme.scale)
             : (hasLeading && control.stackedIcon ? leadingSize + Math.round(2 * control.theme.scale) + label.implicitHeight
                 : Math.max(label.implicitHeight, hasLeading ? leadingSize : 0))
-        readonly property color ink: (control.primary && control.enabled) ? control.theme.onAccent : control.theme.text
-        readonly property color leadingInk: (control.primary && control.enabled) ? control.theme.onAccent
+        readonly property color ink: (control.primary && control.enabled)
+            ? (control.theme.accentInk !== undefined ? control.theme.accentInk : (control.theme.dark ? "#141022" : "#ffffff"))
+            : control.theme.text
+        readonly property color leadingInk: (control.primary && control.enabled)
+            ? (control.theme.accentInk !== undefined ? control.theme.accentInk : (control.theme.dark ? "#141022" : "#ffffff"))
             : control.selected ? control.theme.accent
             : control.hovered ? control.theme.text : control.theme.muted
         opacity: control.enabled ? 1 : 0.45

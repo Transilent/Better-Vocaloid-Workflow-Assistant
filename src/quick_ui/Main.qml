@@ -49,7 +49,7 @@ ApplicationWindow {
     palette.button: theme.surface
     palette.buttonText: theme.text
     palette.highlight: theme.accent
-    palette.highlightedText: theme.onAccent
+    palette.highlightedText: theme.accentInk
 
     QtObject {
         id: theme
@@ -58,29 +58,30 @@ ApplicationWindow {
         readonly property real scale: window.initialScale || (window.preferences.ui_scale || 100) / 100
         readonly property bool reduceMotion: window.initialReducedMotion || !!window.preferences.reduce_motion
         readonly property int panelMotionMs: reduceMotion ? 0 : 140
-        // Refined Apple-HIG / Linear surface elevation ladder
-        readonly property color base: dark ? "#0e1016" : "#f3f2f7"
-        readonly property color surface: dark ? "#171a24" : "#ffffff"
-        readonly property color raised: dark ? "#202433" : "#efedf6"
-        readonly property color sidebar: dark ? "#13151e" : "#eae8f2"
-        readonly property color text: dark ? "#f0f1f8" : "#1f1d2e"
-        readonly property color muted: dark ? "#989cb2" : "#5e5970"
-        readonly property color line: dark ? "#252938" : "#ddd9e8"
-        readonly property color lineSubtle: dark ? "#1d202d" : "#ebe8f2"
-        readonly property color highlightTop: dark ? "#14ffffff" : "#99ffffff"
-        readonly property color disabledBg: dark ? "#232634" : "#e4e1ec"
-        // Brand moonlight-lavender accent + purified semantic tones
-        readonly property color accent: dark ? "#b99cff" : "#6544a5"
-        readonly property color accentHover: dark ? "#c8b0ff" : "#7453b6"
-        readonly property color onAccent: dark ? "#181226" : "#ffffff"
-        readonly property color accentPressed: dark ? "#9f7ee8" : "#503289"
-        readonly property color selected: dark ? "#2b2440" : "#e4dbf7"
-        readonly property color selectedLine: dark ? "#5a4685" : "#b39fd9"
-        readonly property color hover: dark ? "#272c3d" : "#e6e2f2"
-        readonly property color pressed: dark ? "#30364a" : "#dbd5ec"
-        readonly property color success: dark ? "#56d39a" : "#1f7a55"
-        readonly property color error: dark ? "#f87171" : "#c83349"
-        readonly property color attention: dark ? "#f5b841" : "#a86214"
+        // Refined Apple-HIG / Linear surface elevation ladder (eye-friendly matte paper in Light Mode)
+        readonly property color base: dark ? "#0e1016" : "#e4e7ef"
+        readonly property color surface: dark ? "#171a24" : "#f2f3f7"
+        readonly property color raised: dark ? "#202433" : "#e7eaf2"
+        readonly property color sidebar: dark ? "#13151e" : "#dbdfe9"
+        readonly property color text: dark ? "#f0f1f8" : "#141724"
+        readonly property color muted: dark ? "#989cb2" : "#485066"
+        readonly property color line: dark ? "#252938" : "#c0c6d6"
+        readonly property color lineSubtle: dark ? "#1d202d" : "#d0d5e2"
+        readonly property color highlightTop: dark ? "#14ffffff" : "#70ffffff"
+        readonly property color disabledBg: dark ? "#232634" : "#d5dae6"
+        // Brand moonlight-lavender accent + high-contrast semantic tones
+        // NOTE: Never name a property `onAccent` in Qt 6 QML when `accent` exists (it collides with signal handler parsing!)
+        readonly property color accent: dark ? "#b99cff" : "#5a3bc2"
+        readonly property color accentHover: dark ? "#c8b0ff" : "#4c2fb0"
+        readonly property color accentInk: dark ? "#141022" : "#ffffff"
+        readonly property color accentPressed: dark ? "#9f7ee8" : "#3e2494"
+        readonly property color selected: dark ? "#2b2440" : "#dbd2f6"
+        readonly property color selectedLine: dark ? "#5a4685" : "#7a5ed4"
+        readonly property color hover: dark ? "#272c3d" : "#dce0ec"
+        readonly property color pressed: dark ? "#30364a" : "#cfd5e4"
+        readonly property color success: dark ? "#56d39a" : "#16794b"
+        readonly property color error: dark ? "#f87171" : "#c42b3b"
+        readonly property color attention: dark ? "#f5b841" : "#a65808"
         // Unified radius & 5-step Apple typography scale
         readonly property int radiusSm: Math.round(6 * scale)
         readonly property int radiusMd: Math.round(8 * scale)

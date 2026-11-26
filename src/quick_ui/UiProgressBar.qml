@@ -11,7 +11,7 @@ ProgressBar {
 
     background: Rectangle {
         radius: height / 2
-        color: control.theme.dark ? "#242838" : "#dfdce9"
+        color: control.theme.dark ? "#242838" : "#cbd0de"
     }
 
     contentItem: Item {

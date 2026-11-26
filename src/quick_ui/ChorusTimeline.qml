@@ -180,7 +180,7 @@ Rectangle {
             boundsBehavior: Flickable.StopAtBounds
             flickableDirection: Flickable.VerticalFlick
             interactive: contentHeight > height && !editor.dragging
-            ScrollBar.vertical: ScrollBar { policy: lanes.interactive ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
+            ScrollBar.vertical: UiScrollBar { theme: editor.theme; policy: lanes.interactive ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
 
             Column {
                 id: trackStack

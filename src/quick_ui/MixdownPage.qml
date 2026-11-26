@@ -795,8 +795,8 @@ Item {
                     contentHeight: channelRow.height
                     boundsBehavior: Flickable.StopAtBounds
                     interactive: contentWidth > width || contentHeight > height
-                    ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
-                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                    ScrollBar.horizontal: UiScrollBar { theme: page.theme }
+                    ScrollBar.vertical: UiScrollBar { theme: page.theme }
 
                     WheelHandler {
                         enabled: channelViewport.contentWidth > channelViewport.width
@@ -1003,7 +1003,7 @@ Item {
                         : page.analysisMode === "gr" ? 486
                         : page.analysisMode === "align" ? 400
                         : page.compact ? (page.showCompactEqDetails ? 440 : 112) : 408
-                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                    ScrollBar.vertical: UiScrollBar { theme: page.theme }
 
                     StackLayout {
                         width: analysisScroll.width

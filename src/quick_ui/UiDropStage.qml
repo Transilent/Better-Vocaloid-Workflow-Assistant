@@ -108,7 +108,7 @@ Item {
                     width: Math.round(26 * stage.theme.scale)
                     height: width
                     glyph: stage.iconGlyph
-                    tint: stage.dragActive ? stage.theme.onAccent : stage.theme.accent
+                    tint: stage.dragActive ? (stage.theme.accentInk !== undefined ? stage.theme.accentInk : "#ffffff") : stage.theme.accent
                 }
             }
 

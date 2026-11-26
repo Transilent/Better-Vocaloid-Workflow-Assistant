@@ -10,6 +10,7 @@ ScrollView {
     contentWidth: availableWidth
     clip: true
     ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+    ScrollBar.vertical: UiScrollBar { theme: page.theme }
 
     readonly property bool stacked: availableWidth < (theme.scale > 1.2 ? 1050 : 875)
     readonly property var component: controller.selected || ({})
@@ -295,9 +296,15 @@ ScrollView {
                 Layout.alignment: Qt.AlignTop
                 Layout.preferredHeight: Math.round(370 * page.theme.scale)
                 color: page.theme.surface
-                radius: 8
-                border.color: page.theme.line
+                radius: page.theme.radiusLg !== undefined ? page.theme.radiusLg : Math.round(11 * page.theme.scale)
+                border.color: page.theme.lineSubtle !== undefined ? page.theme.lineSubtle : page.theme.line
                 clip: true
+
+                Rectangle {
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                    anchors.leftMargin: parent.radius; anchors.rightMargin: parent.radius
+                    height: 1; color: page.theme.highlightTop !== undefined ? page.theme.highlightTop : "transparent"
+                }
 
                 ColumnLayout {
                     anchors.fill: parent
@@ -318,8 +325,8 @@ ScrollView {
                             Layout.preferredHeight: Math.round(25 * page.theme.scale)
                             Layout.preferredWidth: planBadge.width + Math.round(16 * page.theme.scale)
                             radius: height / 2
-                            color: Qt.tint(page.planBadgeColor, Qt.rgba(0, 0, 0, 0.88))
-                            border.color: page.planBadgeColor
+                            color: Qt.rgba(page.planBadgeColor.r, page.planBadgeColor.g, page.planBadgeColor.b, page.theme.dark ? 0.18 : 0.13)
+                            border.color: Qt.rgba(page.planBadgeColor.r, page.planBadgeColor.g, page.planBadgeColor.b, page.theme.dark ? 0.55 : 0.45)
                             Text {
                                 id: planBadge
                                 anchors.centerIn: parent
@@ -374,7 +381,7 @@ ScrollView {
                                 font.weight: Font.DemiBold
                             }
                         }
-                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                        ScrollBar.vertical: UiScrollBar { theme: page.theme }
                         Text {
                             anchors.centerIn: parent
                             width: Math.max(0, parent.width - 24)
@@ -396,8 +403,14 @@ ScrollView {
                 Layout.alignment: Qt.AlignTop
                 Layout.preferredHeight: details.implicitHeight + Math.round(30 * page.theme.scale)
                 color: page.theme.surface
-                radius: 8
-                border.color: page.theme.line
+                radius: page.theme.radiusLg !== undefined ? page.theme.radiusLg : Math.round(11 * page.theme.scale)
+                border.color: page.theme.lineSubtle !== undefined ? page.theme.lineSubtle : page.theme.line
+
+                Rectangle {
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                    anchors.leftMargin: parent.radius; anchors.rightMargin: parent.radius
+                    height: 1; color: page.theme.highlightTop !== undefined ? page.theme.highlightTop : "transparent"
+                }
 
                 ColumnLayout {
                     id: details

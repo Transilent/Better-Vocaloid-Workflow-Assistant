@@ -20,6 +20,7 @@ Rectangle {
     property real highNote: 72
     property bool manualPitchRange: false
     property string lastTrackId: ""
+    property int lastFocusRevision: -1
     property var stroke: []
     property var selectedKeys: []
     property bool draggingNote: false
@@ -156,6 +157,11 @@ Rectangle {
             return
         if (lastTrackId !== lane.view.selected) {
             lastTrackId = lane.view.selected || ""
+            manualPitchRange = false
+        }
+        const curFocusRev = Number(lane.view.focusRevision || 0)
+        if (curFocusRev !== lastFocusRevision) {
+            lastFocusRevision = curFocusRev
             manualPitchRange = false
         }
         curve = lane.controller.curve(lane.view.selected)
@@ -334,9 +340,10 @@ Rectangle {
                 const isHighRisk = (n.reviewSeverity === "high" || n.reviewCategory === "transpose" || !!n.largeShift)
                 const isMedRisk = !isHighRisk && (n.reviewSeverity === "medium" || !!n.matchReview || n.matchIntent === "review")
                 const isRisk = isHighRisk || isMedRisk
-                const riskColor = isHighRisk ? "#f87171" : lane.theme.attention
+                const riskColor = isHighRisk ? lane.theme.error : lane.theme.attention
+                const harmonyColor = lane.theme.dark ? "#38bdf8" : "#0369a1"
                 const by = targetY - blockH / 2
-                c.fillStyle = sel ? lane.theme.accent : isHighRisk ? "#f87171" : isMedRisk ? lane.theme.attention
+                c.fillStyle = sel ? lane.theme.accent : isHighRisk ? lane.theme.error : isMedRisk ? lane.theme.attention
                     : n.locked ? lane.theme.raised : n.manual ? lane.theme.accent : lane.theme.selected
                 c.globalAlpha = sel ? .36 : isHighRisk ? .26 : isMedRisk ? .22 : n.locked ? .55 : n.manual ? .22 : .42
                 c.fillRect(x1, by, bw, blockH)
@@ -359,7 +366,7 @@ Rectangle {
                 const isHarmony = !isRisk && n.matchIntent === "harmony"
                 const isMelody = !isRisk && n.matchIntent === "melody"
                 if (isRisk || isHarmony || isMelody) {
-                    c.fillStyle = isRisk ? riskColor : isHarmony ? "#38bdf8" : lane.theme.success
+                    c.fillStyle = isRisk ? riskColor : isHarmony ? harmonyColor : lane.theme.success
                     c.globalAlpha = sel ? 1.0 : .95
                     c.fillRect(x1 + 1, by + 1, Math.min(isRisk ? 4 : 3, Math.max(2, bw - 2)), Math.max(2, blockH - 2))
                 }
@@ -385,7 +392,7 @@ Rectangle {
 
                 // Corner badge dot for review / protected harmony
                 if (isRisk || isHarmony) {
-                    c.fillStyle = isRisk ? riskColor : "#38bdf8"
+                    c.fillStyle = isRisk ? riskColor : harmonyColor
                     c.globalAlpha = 1.0
                     c.beginPath()
                     c.arc(x1 + bw - 5, by + 5, isHighRisk ? 3.5 : 3.0, 0, Math.PI * 2)
@@ -503,7 +510,7 @@ Rectangle {
         implicitHeight: trackReviewCol.implicitHeight + 12
         radius: Math.round(6 * lane.theme.scale)
         color: lane.theme.surface
-        border.color: "#f87171"
+        border.color: lane.theme.error
         border.width: 1.5
         z: 6
         Column {
@@ -513,7 +520,7 @@ Rectangle {
             spacing: 4
             Text {
                 width: parent.width
-                color: "#f87171"
+                color: lane.theme.error
                 font.pixelSize: Math.round(11 * lane.theme.scale)
                 font.weight: Font.DemiBold
                 wrapMode: Text.Wrap
@@ -561,7 +568,7 @@ Rectangle {
         z: 5
         radius: Math.round(6 * lane.theme.scale)
         color: lane.theme.surface
-        border.color: isHigh ? "#f87171" : isMed ? lane.theme.attention : lane.theme.line
+        border.color: isHigh ? lane.theme.error : isMed ? lane.theme.attention : lane.theme.line
         border.width: (isHigh || isMed) ? 1.5 : 1
         implicitWidth: Math.min(Math.max(140, lane.width - lane.headerWidth - 20), infoCol.implicitWidth + 16)
         implicitHeight: infoCol.implicitHeight + 10
@@ -593,7 +600,7 @@ Rectangle {
             Text {
                 width: Math.min(implicitWidth, Math.round(360 * lane.theme.scale))
                 visible: !!(lane.hoveredNote && lane.hoveredNote.reviewReason)
-                color: hoverPill.isHigh ? "#f87171" : lane.theme.attention
+                color: hoverPill.isHigh ? lane.theme.error : lane.theme.attention
                 font.pixelSize: Math.round(10 * lane.theme.scale)
                 wrapMode: Text.Wrap
                 text: lane.hoveredNote && lane.hoveredNote.reviewReason

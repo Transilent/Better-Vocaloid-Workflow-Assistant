@@ -847,9 +847,9 @@ Item {
                     break
                 const sharp = timeline.isSharp(pitch)
                 const octave = pitch % 12 === 0
-                fill(ctx, sharp ? (timeline.dark ? "#20212b" : "#eeedf4") : timeline.theme.base,
+                fill(ctx, sharp ? (timeline.dark ? "#20212b" : "#dde1ec") : timeline.theme.surface,
                     keyWidth, y, timeline.plotWidth, height)
-                fill(ctx, timeline.dark ? "#cbced8" : "#f9f9fc", 0, y, keyWidth, height)
+                fill(ctx, timeline.dark ? "#cbced8" : "#eaedf4", 0, y, keyWidth, height)
                 if (sharp) {
                     fill(ctx, "#303440", 0, y + 1, Math.round(keyWidth * 0.77), height - 2)
                     fill(ctx, "#454a5b", Math.round(keyWidth * 0.77) - 3, y + 1, 3, height - 2)

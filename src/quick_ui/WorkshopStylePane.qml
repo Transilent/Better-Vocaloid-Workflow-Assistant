@@ -111,7 +111,7 @@ Item {
             UiIcon {
                 anchors.centerIn: parent
                 glyph: "check"
-                tint: pane.theme.onAccent
+                tint: pane.theme.accentInk
                 width: parent.width - 2
                 height: width
                 visible: option.checked

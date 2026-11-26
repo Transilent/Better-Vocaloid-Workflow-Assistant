@@ -1560,7 +1560,7 @@ Item {
                                 orientation: ListView.Horizontal
                                 spacing: Math.round(2 * page.scale)
                                 boundsBehavior: Flickable.StopAtBounds
-                                ScrollBar.horizontal: ScrollBar {}
+                                ScrollBar.horizontal: UiScrollBar { theme: page.theme }
                                 WheelHandler {
                                     target: null
                                     onWheel: function(event) {
@@ -2266,7 +2266,7 @@ Item {
                                         clip: true
                                         model: page.regions
                                         boundsBehavior: Flickable.StopAtBounds
-                                        ScrollBar.vertical: ScrollBar {}
+                                        ScrollBar.vertical: UiScrollBar { theme: page.theme }
 
                                         delegate: Rectangle {
                                             id: regionRow
@@ -3182,7 +3182,7 @@ Item {
                 model: issuesDialog.rows
                 clip: true
                 spacing: Math.round(5 * page.scale)
-                ScrollBar.vertical: ScrollBar {}
+                ScrollBar.vertical: UiScrollBar { theme: page.theme }
                 delegate: EditorButton {
                     required property var modelData
                     required property int index
