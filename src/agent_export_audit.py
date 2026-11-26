@@ -50,8 +50,7 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _FORMATS = frozenset({"svp", "ustx", "vsqx"})
 
 
-def _io_path(path: Any) -> Path:
-    return Path(native_path(path))
+from agent_primitives import canonical_json, io_path as _io_path, json_digest
 
 
 def _normalise(value: Any) -> str:
@@ -59,20 +58,11 @@ def _normalise(value: Any) -> str:
 
 
 def _canonical(value: Any) -> str:
-    try:
-        return json.dumps(
-            value,
-            ensure_ascii=False,
-            allow_nan=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    except (TypeError, ValueError, UnicodeError, RecursionError) as error:
-        raise ValueError("审计结果必须只包含有限的 JSON 数据。") from error
+    return canonical_json(value, error_message="审计结果必须只包含有限的 JSON 数据。")
 
 
 def _digest(value: Any) -> str:
-    return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+    return json_digest(value, error_message="审计结果必须只包含有限的 JSON 数据。")
 
 
 def _issue(code: str, message: str, fmt: str | None = None, **fields: Any) -> dict[str, Any]:

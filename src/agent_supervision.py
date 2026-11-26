@@ -24,9 +24,7 @@ class SupervisionError(ValueError):
         self.code = code
 
 
-def _digest(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
-        separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
+from agent_primitives import json_digest as _digest
 
 
 def _sha(value, label):

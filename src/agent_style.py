@@ -20,8 +20,7 @@ from common import atomic_json, native_path
 import style_catalog
 
 
-def _io_path(path):
-    return Path(native_path(path))
+from agent_primitives import canonical_json as _canonical, io_path as _io_path, json_digest as _digest
 
 SCHEMA_VERSION = 1
 CONTEXT_KIND = "vwa.style-context"
@@ -127,18 +126,7 @@ class StyleNoteBoundaryError(ValueError):
         self.code = code
         self.details = {**copy.deepcopy(details), "changes_applied": False}
 
-def _canonical(value: Any) -> str:
-    try:
-        return json.dumps(
-            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-            allow_nan=False,
-        )
-    except (TypeError, ValueError, UnicodeError, RecursionError) as error:
-        raise ValueError("值必须只包含有限的 JSON 数据。") from error
-
-
-def _digest(value: Any) -> str:
-    return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+# _canonical and _digest imported from agent_primitives above.
 
 
 def _stable_id(prefix: str, value: dict[str, Any]) -> str:

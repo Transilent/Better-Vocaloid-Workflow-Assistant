@@ -7,21 +7,21 @@ import hashlib
 import json
 from pathlib import Path
 
-import numpy as np
-import onnxruntime as ort
-import soundfile as sf
-from scipy.fft import rfft, irfft
-
 from common import cancelled
 from multi_file_commit import FileTransactionError, commit_file_pair
 
 
 class Transform:
     def __init__(self, n_fft, hop=1024):
+        import numpy as np
+
         self.n_fft, self.hop = n_fft, hop
         self.window = (0.5 - 0.5 * np.cos(2 * np.pi * np.arange(n_fft) / n_fft)).astype(np.float32)
 
     def forward(self, wave, bins):
+        import numpy as np
+        from scipy.fft import rfft
+
         padded = np.pad(wave, ((0, 0), (self.n_fft // 2, self.n_fft // 2)), mode="reflect")
         frames = np.lib.stride_tricks.sliding_window_view(padded, self.n_fft, axis=-1)[:, ::self.hop]
         spectra = rfft(frames * self.window, axis=-1).transpose(0, 2, 1)[:, :bins]
@@ -29,6 +29,9 @@ class Transform:
         return np.stack((spectra.real, spectra.imag), axis=1).reshape(1, 4, bins, spectra.shape[-1]).astype(np.float32)
 
     def inverse(self, tensor):
+        import numpy as np
+        from scipy.fft import irfft
+
         _, channels, bins, count = tensor.shape
         if channels != 4:
             raise ValueError("MDX 模型必须输出四个频谱通道。")
@@ -64,6 +67,10 @@ def model_parameters(model_path, metadata_path):
 
 def separate(source, directory, config, job, log=print,
              output_names=("vocals.wav", "instrumental.wav")):
+    import numpy as np
+    import onnxruntime as ort
+    import soundfile as sf
+
     audio, sr = sf.read(str(source), dtype="float32", always_2d=True)
     if sr != 44100 or audio.shape[1] != 2:
         raise ValueError("分离输入需要 44100Hz 双声道 WAV。")

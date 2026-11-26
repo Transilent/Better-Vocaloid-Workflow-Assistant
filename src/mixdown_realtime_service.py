@@ -13,8 +13,11 @@ from dataclasses import dataclass
 import copy
 import importlib
 import json
+import logging
 import math
 import os
+
+_LOG = logging.getLogger(__name__)
 from pathlib import Path
 import sys
 import threading
@@ -685,8 +688,8 @@ class _RealtimeWorkerServer:
                 self._process_control(pending)
         try:
             self._close_resources(session, graph)
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOG.debug("realtime worker resource cleanup ignored: %s", exc)
 
     def _detach_session_locked(self) -> tuple[Any, Any]:
         session, graph = self._session, self._graph
@@ -832,8 +835,8 @@ class _RealtimeWorkerServer:
                 self._accepting_controls = False
             try:
                 self._close_resources(session, graph)
-            except Exception:
-                pass
+            except Exception as exc:
+                _LOG.debug("realtime worker stop cleanup ignored: %s", exc)
             if owns_generation:
                 self._emit_failure(
                     spec.generation,
@@ -970,8 +973,8 @@ class _RealtimeWorkerServer:
             return
         try:
             graph.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOG.debug("realtime graph close ignored: %s", exc)
 
     def _close_resources(self, session: Any, graph: Any) -> None:
         if session is None:

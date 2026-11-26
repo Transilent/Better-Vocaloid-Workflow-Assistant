@@ -16,6 +16,9 @@ true-peak calibrated stage.
 
 from __future__ import annotations
 
+import logging
+_LOG = logging.getLogger(__name__)
+
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 import hashlib
@@ -205,8 +208,8 @@ def _ffmpeg_executable() -> Path:
     try:
         from common import load_config
         candidates.append(Path(load_config()["ffmpeg"]))
-    except Exception:
-        pass
+    except Exception as exc:
+        _LOG.debug("load_config ffmpeg lookup skipped: %s", exc)
 
     source_root = Path(__file__).resolve().parent
     for root in (source_root, source_root.parent):
@@ -888,9 +891,9 @@ def _emit_progress(callback: Callable[[dict[str, Any]], Any] | None, *,
     }
     try:
         callback(event)
-    except Exception:
+    except Exception as exc:
         # Progress is observational. A UI/pipe failure must not abort a render.
-        pass
+        _LOG.debug("mixdown progress callback ignored: %s", exc)
 
 
 def _source_fingerprint(path: Path) -> tuple[int, int, int, int]:

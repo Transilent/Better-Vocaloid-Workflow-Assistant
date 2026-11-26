@@ -2,7 +2,10 @@
 import argparse
 import base64
 import json
+import logging
 import os
+
+_LOG = logging.getLogger(__name__)
 import re
 import sys
 import time
@@ -75,7 +78,8 @@ def candidates(page, selectors, *, visible=True, container_visible=False):
                     raise ManualStep(f"页面上有多个匹配项：{selector}，请手动完成或更新选择器。")
             except ManualStep:
                 raise
-            except Exception:
+            except Exception as exc:
+                _LOG.debug("selector probe %s skipped: %s", selector, exc)
                 continue
     return None
 
@@ -177,8 +181,8 @@ def image_signature(page, selectors):
                 result += frame.locator(selector).evaluate_all(
                     "es => es.flatMap(e=>{if(e.tagName==='IMG')return e.complete&&e.naturalWidth>0?[e.currentSrc||e.src]:[];"
                     "let b=getComputedStyle(e).backgroundImage;return b&&b!=='none'?[b]:[]})")
-            except Exception:
-                pass
+            except Exception as exc:
+                _LOG.debug("image selector %s probe skipped: %s", selector, exc)
     return sorted(set(result))
 
 
@@ -613,8 +617,8 @@ def run(platform, bundle=None, headless=False, login_only=False):
                 try:
                     from bilibili_session import capture
                     capture(context)
-                except Exception:
-                    pass  # Closing a browser must still release its profile lock.
+                except Exception as exc:
+                    _LOG.debug("bilibili session capture on close ignored: %s", exc)  # Closing a browser must still release its profile lock.
             if inspect_path.exists():
                 inspect_path.unlink()
                 atomic_json(output / (platform + "_DOM诊断.json"), diagnose_page(page))

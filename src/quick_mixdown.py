@@ -10,7 +10,10 @@ from __future__ import annotations
 from datetime import datetime
 import copy
 import json
+import logging
 import math
+
+_LOG = logging.getLogger(__name__)
 from pathlib import Path
 import shutil
 import threading
@@ -457,14 +460,14 @@ class QuickMixdown(QObject):
             self._resume_play_intent = bool(self._preview.play_intent)
             try:
                 self._preview.release()
-            except Exception:
-                pass
+            except Exception as exc:
+                _LOG.debug("preview release before restart ignored: %s", exc)
         self._player = self._preview = None
         if old is not None:
             try:
                 old.close(timeout=2.0)
-            except Exception:
-                pass
+            except Exception as exc:
+                _LOG.debug("old player close ignored: %s", exc)
         self._create_player()
         if self._player is not None and self._resume_play_intent:
             self._player.set_play_intent(True)
@@ -2048,13 +2051,13 @@ class QuickMixdown(QObject):
         if self._preview is not None:
             try:
                 self._preview.release()
-            except Exception:
-                pass
+            except Exception as exc:
+                _LOG.debug("preview release on close ignored: %s", exc)
         if self._player is not None:
             try:
                 self._player.close(timeout=3.0)
-            except Exception:
-                pass
+            except Exception as exc:
+                _LOG.debug("player close on shutdown ignored: %s", exc)
             self._player = None
         self._discard_cache_dir()
         self._cache_dir = None

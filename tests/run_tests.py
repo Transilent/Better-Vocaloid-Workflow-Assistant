@@ -96,6 +96,7 @@ shared_tests = (
     'test_chinese_lyrics.py', 'test_components.py', 'test_local_music.py', 'test_output_directory.py',
     'test_subtitles.py', 'test_publish_browser.py', 'test_publish_adapters.py',
     'test_bilibili_dual_cover.py', 'test_launchers.py', 'test_source_layout.py',
+    'test_architecture_guards.py',
 )
 
 names = qt6_tests + shared_tests

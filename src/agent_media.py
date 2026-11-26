@@ -39,8 +39,7 @@ _WAV_SUFFIXES = frozenset({".wav", ".wave"})
 _MEDIA_SUFFIXES = frozenset({".wav", ".wave", ".flac", ".mp3", ".ogg", ".opus"})
 
 
-def _io_path(path: Any) -> Path:
-    return Path(native_path(path))
+from agent_primitives import io_path as _io_path
 
 
 def _resolved_file(value: Any, label: str) -> Path:

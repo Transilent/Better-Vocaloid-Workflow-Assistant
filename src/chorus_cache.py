@@ -27,7 +27,9 @@ def _cache_root() -> Path | None:
         return None
     from common import ROOT
 
-    return (ROOT / 'cache/chorus-cas').resolve()
+    # Guard against leaking cache files into src/ when imported directly from the source tree.
+    base = ROOT.parent if ROOT.name == 'src' else ROOT
+    return (base / 'cache/chorus-cas').resolve()
 
 
 def _file_stamp_hash(path: Path) -> str:

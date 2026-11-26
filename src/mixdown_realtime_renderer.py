@@ -16,6 +16,9 @@ from collections import deque
 from dataclasses import dataclass, replace
 import hashlib
 import json
+import logging
+
+_LOG = logging.getLogger(__name__)
 import math
 import os
 from pathlib import Path
@@ -1459,8 +1462,8 @@ class PreLimiterMixSession:
         for handle in self._handles:
             try:
                 handle.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                _LOG.debug("close realtime audio handle ignored: %s", exc)
         self._handles = []
 
     def close(self) -> None:

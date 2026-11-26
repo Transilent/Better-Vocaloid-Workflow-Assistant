@@ -13,9 +13,13 @@ the controller must close this instance and create a new one on its owner thread
 from __future__ import annotations
 
 import ctypes
+import logging
 from pathlib import Path
+import sys
 import threading
 from typing import Any, Mapping
+
+_LOG = logging.getLogger(__name__)
 
 import numpy as np
 
@@ -492,8 +496,9 @@ class NativeOutput:
     def __del__(self) -> None:
         try:
             self.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            if not sys.is_finalizing():
+                _LOG.debug("native output __del__ close ignored: %s", exc)
 
 
 __all__ = ["NativeDeviceError", "NativeOutput", "NativeOutputError"]

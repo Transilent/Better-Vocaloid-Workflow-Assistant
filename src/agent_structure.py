@@ -61,9 +61,7 @@ _PLAN_KEYS = {
     "plan_sha256",
 }
 
-def _io_path(path: Any) -> Path:
-    """Apply extended Windows path syntax only at filesystem boundaries."""
-    return Path(native_path(path))
+from agent_primitives import io_path as _io_path
 
 
 # These helpers are version-coupled to agent_score in the same source snapshot:

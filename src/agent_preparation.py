@@ -108,13 +108,7 @@ class PreparationError(RuntimeError):
         self.remediation = remediation
 
 
-def _canonical_bytes(value):
-    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"),
-                      allow_nan=False).encode("utf-8")
-
-
-def _digest(value):
-    return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+from agent_primitives import canonical_json_bytes as _canonical_bytes, json_digest as _digest
 
 
 def _normal_path(value):

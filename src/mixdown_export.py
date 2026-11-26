@@ -5,7 +5,10 @@ import copy
 from dataclasses import dataclass, field
 import inspect
 import json
+import logging
 import os
+
+_LOG = logging.getLogger(__name__)
 from pathlib import Path
 import queue
 import subprocess
@@ -289,8 +292,8 @@ def _run_worker(request, check, progress=None, *, mode):
                 finally:
                     try:
                         process.stdout.close()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _LOG.debug("close mixdown worker stdout ignored: %s", exc)
 
             reader = threading.Thread(target=read_output, daemon=True)
             reader.start()
@@ -322,8 +325,8 @@ def _run_worker(request, check, progress=None, *, mode):
                             if progress is not None:
                                 try:
                                     progress(event)
-                                except Exception:
-                                    pass
+                                except Exception as exc:
+                                    _LOG.debug("mixdown export progress callback ignored: %s", exc)
                         elif event.get('event') == 'done':
                             payload = event.get('report')
                             if isinstance(payload, dict):

@@ -60,8 +60,7 @@ _CONTINUATION_CHARS = frozenset(
 )
 
 
-def _io_path(path) -> Path:
-    return Path(native_path(path))
+from agent_primitives import canonical_json_bytes as _canonical_json_bytes, io_path as _io_path
 
 
 def _sha256(data: bytes) -> str:
@@ -76,18 +75,7 @@ def _canonical_digest(value: Any) -> str:
     return _sha256(payload)
 
 
-def _canonical_json_bytes(value: Any, *, pretty: bool = False) -> bytes:
-    options: dict[str, Any] = {
-        "ensure_ascii": False, "allow_nan": False, "sort_keys": True,
-    }
-    if pretty:
-        options["indent"] = 2
-    else:
-        options["separators"] = (",", ":")
-    text = json.dumps(value, **options)
-    if pretty:
-        text += "\n"
-    return text.encode("utf-8")
+# _canonical_json_bytes imported from agent_primitives above.
 
 
 def _normalise_sha(value: Any, field_name: str) -> str:

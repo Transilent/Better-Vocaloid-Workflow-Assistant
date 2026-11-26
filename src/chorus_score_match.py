@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 import re
+
+_LOG = logging.getLogger(__name__)
 
 import numpy as np
 
@@ -927,7 +930,8 @@ def preparation_score_candidates(check=None):
         title = str(record.get('title') or job.name)
         try:
             rows = task_contract.inspect(job, verify=True, check=check)
-        except Exception:
+        except Exception as exc:
+            _LOG.debug("inspect preparation score candidate %s failed: %s", job, exc)
             continue
         for row in rows:
             if row.get('state') != 'verified':

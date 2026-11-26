@@ -50,15 +50,11 @@ _MAX_AUDIT_SAMPLES = 32
 _MAX_PITCH_VERIFY_FRAMES = 6_000_000
 
 
-def _canonical_bytes(value: Any) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, allow_nan=False, sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-
-
-def _digest(value: Any) -> str:
-    return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+from agent_primitives import (
+    canonical_json_bytes as _canonical_bytes,
+    finite_number as _finite_number,
+    json_digest as _digest,
+)
 
 
 def _plan_digest(plan: Mapping[str, Any]) -> str:
@@ -75,13 +71,7 @@ def _strict_int(value: Any, label: str, *, minimum: int = 0) -> int:
     return value
 
 
-def _finite_number(value: Any, label: str) -> float:
-    if type(value) not in (int, float):
-        raise ValueError(f"{label} 必须是有限数值。")
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError(f"{label} 必须是有限数值。")
-    return number
+# _finite_number imported from agent_primitives above.
 
 
 def _time_origin(value: Any) -> float:
