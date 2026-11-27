@@ -76,6 +76,14 @@ def _has_qt6() -> bool:
         return False
 
 
+def _has_soundfile() -> bool:
+    try:
+        import soundfile  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 def _write_png(path: Path, width: int, height: int, rgb: tuple[int, int, int] = (48, 96, 180)) -> Path:
     """Create a valid minimal RGB PNG with arbitrary (including odd) dimensions."""
     def chunk(tag: bytes, data: bytes) -> bytes:
@@ -138,6 +146,7 @@ class Wave5PurePythonTests(unittest.TestCase):
     def tearDown(self):
         vwa_io.safe_rmtree(self._tmp)
 
+    @unittest.skipUnless(_has_soundfile(), 'soundfile unavailable in minimal CI')
     def test_w5_03_alignment_math_accurate_and_rejects_ambiguous_or_silent(self):
         ref_wav = _write_pulsed_wav(self._tmp / 'ref.wav', duration_s=10.0, shift_s=0.0)
         shifted_wav = _write_pulsed_wav(self._tmp / 'shifted.wav', duration_s=10.0, shift_s=-0.75)
@@ -269,6 +278,7 @@ class Wave5RealFFmpegDeliveryTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             video_mixdown.render(job, png, wav, out_default, offset=0.0)
 
+    @unittest.skipUnless(_has_soundfile(), 'soundfile unavailable in minimal CI')
     def test_w5_03_video_replace_audio_and_loudnorm(self):
         job = self._make_job('Local_norm_job')
         png = _write_png(self._tmp / 'src_img.png', 640, 360)
