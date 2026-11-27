@@ -119,33 +119,11 @@ def _qurl_to_local(value):
     return None
 
 
-def _component_result(request, stop, send):
-    return _task_actions.component_result(request, stop, send)
-
-
-def _run_preparation(draft, existing, retry_cpu, stop, send, *, reuse_job='', reprocess=''):
-    return _task_actions.run_preparation(
-        draft, existing, retry_cpu, stop, send, reuse_job=reuse_job, reprocess=reprocess,
-    )
-
-
-def _controller_view(controller):
-    return _task_actions.controller_view(controller)
-
-
-def _reference_paths(values):
-    return _task_actions.reference_paths(values, url_to_local_fn=_qurl_to_local)
-
-
-def _task_reference_groups(*, mixdown=None, mixdown_tracks=(), tuning=None, video=None,
-                           publication=None, calibration=None, subtitles=None, subtitle_drafts=None,
-                           preparation=None, operation=None, operations=None, chorus_paths=()):
-    return _task_actions.task_reference_groups(
-        mixdown=mixdown, mixdown_tracks=mixdown_tracks, tuning=tuning, video=video,
-        publication=publication, calibration=calibration, subtitles=subtitles,
-        subtitle_drafts=subtitle_drafts, preparation=preparation, operation=operation,
-        operations=operations, chorus_paths=chorus_paths, url_to_local_fn=_qurl_to_local,
-    )
+def _component_result(request, stop, send): return _task_actions.component_result(request, stop, send)
+def _run_preparation(draft, existing, retry_cpu, stop, send, *, reuse_job='', reprocess=''): return _task_actions.run_preparation(draft, existing, retry_cpu, stop, send, reuse_job=reuse_job, reprocess=reprocess)
+def _controller_view(controller): return _task_actions.controller_view(controller)
+def _reference_paths(values): return _task_actions.reference_paths(values, url_to_local_fn=_qurl_to_local)
+def _task_reference_groups(**kwargs): return _task_actions.task_reference_groups(**kwargs, url_to_local_fn=_qurl_to_local)
 
 
 class QuickBridge(QObject):
@@ -168,6 +146,7 @@ class QuickBridge(QObject):
     taskArtifactChanged = Signal()
     taskPrimaryActionChanged = Signal()
     subtitlesRequested = Signal()
+    toastRequested = Signal(str, str)
     closeReady = Signal()
 
     def __init__(self):
@@ -204,6 +183,9 @@ class QuickBridge(QObject):
         self._chorus = QuickChorus(self)
         self._chorus.worker.changed.connect(self._work_changed)
         self._chorus.mixdownHandoffReady.connect(self._open_chorus_mixdown)
+        from quick_recovery import QuickRecoveryBridge
+        self._recovery = QuickRecoveryBridge(self, self._chorus, self._mixdown)
+        self._recovery.toastRequested.connect(self.toastRequested)
         self._converter = QuickConvert(self)
         self._converter.worker.changed.connect(self._work_changed)
         self._converter.tuningHandoffRequested.connect(self._open_converted_in_tuning)
@@ -544,8 +526,17 @@ class QuickBridge(QObject):
         return self._subtitles
 
     @Property(QObject, constant=True)
-    def converter(self):
-        return self._converter
+    def converter(self): return self._converter
+
+    @Property(QObject, constant=True)
+    def recovery(self): return self._recovery
+
+    @Slot(str)
+    @Slot(str, str)
+    def pushToast(self, message, kind='info'):
+        text = str(message or '').strip()
+        if text:
+            self.toastRequested.emit(tr(text), str(kind or 'info'))
 
     @Property(str, notify=activityChanged)
     def operationKind(self):
@@ -1848,6 +1839,7 @@ class QuickBridge(QObject):
         self._tuning.close()
         self._mixdown.close()
         self._chorus.close()
+        self._recovery.close()
         self._converter.close()
         self._video.close()
         self._publication.close()

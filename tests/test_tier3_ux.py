@@ -80,4 +80,63 @@ with tempfile.TemporaryDirectory(dir=APP / "work", prefix="tier3-m2-") as tmp:
 ws_stage = (APP / "src/quick_ui/WorkspaceStage.qml").read_text(encoding="utf-8")
 assert 'objectName: "pageLoader"' in ws_stage and "maxCachedPages" in ws_stage and "lruRoutes" in ws_stage
 
-print("PASS: Tier 3 M1+M2 (11-step tutorial, scenarios, What's New, shortcuts, LRU stage, window/route state)")
+# --- T3-M3: Crash-safe draft recovery, Windows taskbar progress & Toast stack ---
+import draft_recovery as dr
+import win_taskbar as wt
+from chorus_project import ChorusProject
+from mixdown_workspace_state import MixdownWorkspaceState
+
+with tempfile.TemporaryDirectory(dir=APP / "work", prefix="tier3-m3-") as tmp:
+    root = Path(tmp)
+    # 1. Chorus draft write / read / clear
+    proj = ChorusProject.fresh("测试合唱草稿")
+    assert dr.has_draft("chorus", root) is False
+    dr.write_chorus_draft(proj, source_path="demo.vwachorus", root=root)
+    assert dr.has_draft("chorus", root) is True
+    meta = dr.read_draft_meta("chorus", root)
+    assert meta is not None and "测试合唱草稿" in meta["label"]
+    assert dr.chorus_draft_project_path(root).is_file()
+    assert dr.clear_draft("chorus", root) is True
+    assert dr.has_draft("chorus", root) is False
+
+    # 2. Mixdown draft save / apply roundtrip
+    fake_wav = root / "vocal.wav"
+    fake_wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
+    st = MixdownWorkspaceState()
+    st.set_source("vocal-1", str(fake_wav))
+    st.set_track("vocal-1", "gain", -3.5)
+    st.set_option("reverb_enabled", True)
+    st.set_option("reverb_mix", 0.22)
+    payload = dr.mixdown_state_to_draft(st)
+    dr.save_draft("mixdown", payload, label="vocal", root=root)
+    assert dr.has_draft("mixdown", root) is True
+
+    restored_st = MixdownWorkspaceState()
+    loaded = dr.load_draft("mixdown", root)
+    assert loaded is not None
+    restored_count = dr.apply_mixdown_draft(restored_st, loaded["payload"])
+    assert restored_count == 1
+    assert restored_st.reverb_enabled is True
+    assert abs(restored_st.reverb_mix - 0.22) < 1e-6
+    v1 = next(t for t in restored_st.tracks if t["id"] == "vocal-1")
+    assert abs(v1["gain"] - (-3.5)) < 1e-6
+    assert dr.clear_draft("mixdown", root) is True
+
+# 3. Windows taskbar pure state reducer & safe disabled no-op
+assert wt.compute_taskbar_state([]) == ("none", 0, 0)
+assert wt.compute_taskbar_state([], has_recent_error=True) == ("error", 0, 0)
+assert wt.compute_taskbar_state([{"kind": "preparation"}]) == ("indeterminate", 0, 0)
+assert wt.compute_taskbar_state([{"fraction": 0.425}]) == ("progress", 425, 1000)
+assert wt.compute_taskbar_state([{"done": 3, "total": 10}]) == ("progress", 3, 10)
+tb = wt.TaskbarProgress(hwnd=0, enabled=False)
+tb.sync_operations([{"fraction": 0.5}])
+tb.sync_operations([])
+tb.close()
+
+# 4. Toast stack & RecoveryBanner QML contracts
+toast_qml = (APP / "src/quick_ui/UiToastStack.qml").read_text(encoding="utf-8")
+assert 'objectName: "uiToastStack"' in toast_qml and "onToastRequested" in toast_qml
+banner_qml = (APP / "src/quick_ui/RecoveryBanner.qml").read_text(encoding="utf-8")
+assert 'objectName: "recoveryBanner"' in banner_qml and "restoreChorusDraft" in banner_qml and "restoreMixdownDraft" in banner_qml
+
+print("PASS: Tier 3 M1+M2+M3 (tutorial, LRU stage, draft recovery, Win taskbar, Toast stack)")

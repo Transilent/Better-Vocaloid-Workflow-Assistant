@@ -245,7 +245,7 @@ def main(argv=None):
         _clear_graphics_probe(ROOT)
         print('助手已在运行，已唤醒已有窗口。' if activated else '助手已在运行，请使用已打开的窗口。', flush=True)
         return 2
-    engine = controller = modes = ipc_server = None
+    engine = controller = modes = ipc_server = taskbar = None
     exit_code = None
     qInstallMessageHandler(message_handler)
     if not check_mode:
@@ -258,6 +258,18 @@ def main(argv=None):
             QTimer.singleShot(3000, lambda: _clear_graphics_probe(ROOT))
             if auto_fallback:
                 journal.event('qt_warning', kind='startup', code='device', level='warning')
+            if os.environ.get('VWA_TESTING') != '1':
+                try:
+                    from win_taskbar import TaskbarProgress
+                    taskbar = TaskbarProgress(int(window.winId()))
+                    controller.operationActivityChanged.connect(
+                        lambda: taskbar.sync_operations(
+                            controller.activeOperations,
+                            has_recent_error=bool(controller.latestOperationIssue),
+                        )
+                    )
+                except (RuntimeError, ValueError, TypeError):
+                    taskbar = None
         print(f'VWA Quick · Qt {qVersion()} · {runtime}', flush=True)
         if options.check:
             loader = window.findChild(QObject, 'pageLoader')
@@ -327,6 +339,8 @@ def main(argv=None):
                 )
             except (OSError, RuntimeError, ValueError, TypeError):
                 pass
+        if taskbar is not None:
+            taskbar.close()
         if ipc_server is not None:
             ipc_server.close()
         if modes is not None:

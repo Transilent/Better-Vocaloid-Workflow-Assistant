@@ -3679,7 +3679,14 @@
     "删除当前选中的风格片段": "Delete selected style region",
     "新手教程与弹窗": "Tutorial & Dialogs",
     "切换上一步 / 下一步导览": "Previous / next tour step",
-    "确认当前高亮命令或对话框": "Confirm highlighted command or dialog"
+    "确认当前高亮命令或对话框": "Confirm highlighted command or dialog",
+    "已恢复上次未保存的修音草稿": "Restored unsaved chorus draft",
+    "已丢弃修音恢复草稿": "Discarded chorus recovery draft",
+    "已恢复上次未保存的混音草稿": "Restored unsaved mixdown draft",
+    "已丢弃混音恢复草稿": "Discarded mixdown recovery draft",
+    "发现上次异常退出前的未保存草稿": "Unsaved draft found from previous unexpected exit",
+    "恢复草稿": "Restore draft",
+    "丢弃": "Discard"
   },
   "ja": {
     "合唱工作台": "コーラスワークスペース",
@@ -7361,6 +7368,13 @@
     "删除当前选中的风格片段": "選択中のスタイル区間を削除",
     "新手教程与弹窗": "チュートリアル・ダイアログ",
     "切换上一步 / 下一步导览": "前／次のステップへ移動",
-    "确认当前高亮命令或对话框": "選択中のコマンドやダイアログを確定"
+    "确认当前高亮命令或对话框": "選択中のコマンドやダイアログを確定",
+    "已恢复上次未保存的修音草稿": "未保存のピッチ補正下書きを復元しました",
+    "已丢弃修音恢复草稿": "ピッチ補正の復元下書きを破棄しました",
+    "已恢复上次未保存的混音草稿": "未保存のミックス下書きを復元しました",
+    "已丢弃混音恢复草稿": "ミックスの復元下書きを破棄しました",
+    "发现上次异常退出前的未保存草稿": "前回の異常終了前の未保存下書きが見つかりました",
+    "恢复草稿": "下書きを復元",
+    "丢弃": "破棄"
   }
 }

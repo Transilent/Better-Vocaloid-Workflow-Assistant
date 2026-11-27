@@ -498,10 +498,20 @@ ApplicationWindow {
         anchors.right: parent.right
         spacing: 0
 
+        RecoveryBanner {
+            theme: window.tokens
+            controller: window.controller
+        }
+
         Item {
             id: workspaceStage
             Layout.fillWidth: true
             Layout.fillHeight: true
+
+            UiToastStack {
+                theme: window.tokens
+                controller: window.controller
+            }
 
             WorkspaceStage {
                 id: pageLoader

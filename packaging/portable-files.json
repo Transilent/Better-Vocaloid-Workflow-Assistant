@@ -334,6 +334,26 @@
       "source": "src/quick_app.py"
     },
     {
+      "file": "draft_recovery.py",
+      "source": "src/draft_recovery.py"
+    },
+    {
+      "file": "quick_recovery.py",
+      "source": "src/quick_recovery.py"
+    },
+    {
+      "file": "win_taskbar.py",
+      "source": "src/win_taskbar.py"
+    },
+    {
+      "file": "quick_ui/UiToastStack.qml",
+      "source": "src/quick_ui/UiToastStack.qml"
+    },
+    {
+      "file": "quick_ui/RecoveryBanner.qml",
+      "source": "src/quick_ui/RecoveryBanner.qml"
+    },
+    {
       "file": "quick_bridge.py",
       "source": "src/quick_bridge.py"
     },
