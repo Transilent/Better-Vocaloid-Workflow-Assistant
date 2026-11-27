@@ -56,9 +56,22 @@ def check(full=False, features=None, *, tool_paths=None):
             checked += 1
             if full and checked % 4000 == 0:
                 print(f"已校验 {checked}/{len(files)} 个依赖文件。", flush=True)
+    native_audio = {}
+    native_dir = ROOT / 'components/native-audio'
+    for dll in ('vwa_chorus_pitch.dll', 'vwa_limiter.dll', 'vwa_native_output.dll'):
+        present = (native_dir / dll).is_file()
+        native_audio[dll] = present
+        if selected is None and native_dir.is_dir() and not present:
+            missing.append({'component': 'native_audio', 'file': f'components/native-audio/{dll}',
+                            'reason': '原生音频库缺失（可能被安全软件误删）'})
+    qt6_ready = (ROOT / 'runtime/qt6/PySide6/plugins/platforms/qwindows.dll').is_file()
+    if selected is None and (ROOT / 'runtime/qt6').is_dir() and not qt6_ready:
+        missing.append({'component': 'qt6_runtime', 'file': 'runtime/qt6/PySide6/plugins/platforms/qwindows.dll',
+                        'reason': 'Qt Quick 运行库插件缺失'})
     return {"state": "failed" if missing else "passed", "mode": "sha256" if full else "startup",
             "checked_files": checked, "errors": missing,
             "feature_states": feature_states(selected, missing),
+            "native_audio": native_audio, "qt6_ready": qt6_ready,
             "seconds": round(time.monotonic() - started, 2),
             "updated_at": dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).isoformat(timespec="seconds")}
 

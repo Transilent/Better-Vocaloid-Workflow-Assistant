@@ -22,7 +22,7 @@ def inventory_path(name):
     return canonical if canonical.is_file() else ROOT / name
 
 
-def build(output):
+def build(output, *, previous_inventory=None):
     from tools.verify_source_layout import verify
     output = Path(output).resolve()
     program_name({'name':output.name})
@@ -44,19 +44,34 @@ def build(output):
     validate_quick_program(record['file'] for record, _ in selected)
     if len(selected) + 1 > MAX_QUICK_PROGRAM_FILES:  # Includes update-inventory.json.
         raise ValueError('Quick update contains too many program entries')
+    selected_names = {record['file'] for record, _ in selected}
+    removed = []
+    if previous_inventory is not None:
+        prev = json.loads(Path(previous_inventory).read_text(encoding='utf-8-sig'))
+        for item in prev.get('entries', []):
+            name = item.get('file', '')
+            if (name and name not in selected_names and name != 'config.json'
+                    and not name.startswith(('dependencies/', 'models/', 'vendor/', 'runtime/'))):
+                validate_file(item, allow_legacy_removal=True)
+                removed.append({'file': name, 'bytes': int(item['bytes']), 'sha256': str(item['sha256'])})
     output.parent.mkdir(parents=True, exist_ok=True)
+    inv_doc = {'version': version, 'runtime_sha256': runtime_sha, **identity,
+               'entries': [entry for entry, _ in selected]}
+    if removed:
+        inv_doc['removed'] = removed
     with zipfile.ZipFile(output, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zipped:
         for entry, source in selected:
             zipped.write(source, entry['file'])
-        zipped.writestr('update-inventory.json', json.dumps({'version': version, 'runtime_sha256': runtime_sha, **identity,
-                         'entries': [entry for entry, _ in selected]}, ensure_ascii=False, indent=2))
+        zipped.writestr('update-inventory.json', json.dumps(inv_doc, ensure_ascii=False, indent=2))
     return {'name': output.name, 'bytes': output.stat().st_size, 'sha256': file_hash(output),
-            'runtime_sha256': runtime_sha, **identity}
+            'runtime_sha256': runtime_sha, 'removed_count': len(removed), **identity}
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--previous-inventory', type=Path, default=None,
+                        help='Optional previous update-inventory.json or release-inventory.json to emit removed entries')
     parser.add_argument('--user-test-confirmed', action='store_true')
     args = parser.parse_args()
     if not args.user_test_confirmed:
@@ -66,4 +81,4 @@ if __name__ == '__main__':
     except ValueError:
         parser.error('Use VWA-App-Update.zip or VWA-Program-Update.zip for the program update asset '
                      '(BVWA-App-Update.zip and BVWA-Program-Update.zip are accepted for legacy releases).')
-    print(json.dumps(build(args.output), indent=2))
+    print(json.dumps(build(args.output, previous_inventory=args.previous_inventory), indent=2))

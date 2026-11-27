@@ -15,6 +15,7 @@ import numpy as np
 
 _MAX_MEMORY_SPANS = 64
 _MAX_DISK_SPAN_BYTES = 128 * 1024 * 1024
+_MAX_DISK_RMVPE_BYTES = 256 * 1024 * 1024
 _PRUNE_EVERY_WRITES = 32
 _ZSPAN_MAGIC = b'VWAC'
 _ZSPAN_HEADER = struct.Struct('<4sII')
@@ -79,9 +80,29 @@ def save_rmvpe_curve(track_sha: str, model_path: Path, midi: np.ndarray, step: f
             tmp = Path(handle.name)
         np.savez(tmp, midi=np.asarray(midi), step=np.float64(step))
         os.replace(tmp, target)
+        _prune_disk_rmvpe(folder)
     except OSError:
         if tmp is not None:
             tmp.unlink(missing_ok=True)
+
+
+def _prune_disk_rmvpe(folder: Path):
+    try:
+        files = [(f.stat().st_mtime_ns, f.stat().st_size, f) for f in folder.glob('*.npz')]
+    except OSError:
+        return
+    total = sum(sz for _, sz, _ in files)
+    if total <= _MAX_DISK_RMVPE_BYTES:
+        return
+    files.sort(key=lambda item: item[0])
+    for _, sz, path in files:
+        if total <= _MAX_DISK_RMVPE_BYTES:
+            break
+        try:
+            path.unlink(missing_ok=True)
+            total -= sz
+        except OSError:
+            pass
 
 
 def span_cache_key(dry: np.ndarray, rate: int, shift: np.ndarray, engine: str) -> str:

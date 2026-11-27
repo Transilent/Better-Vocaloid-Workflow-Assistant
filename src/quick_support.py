@@ -15,7 +15,7 @@ import updater
 from common import ROOT, environment_value, job_directories, output_directory
 from download_sources import read_small
 from i18n import tr
-from operation_diagnostics import LOG_DIR, clock_text, journal_for, support_lines
+from operation_diagnostics import LOG_DIR, clock_text, export_diagnostic_bundle, journal_for, support_lines
 from quick_work import WorkerLane
 from support_info import FEEDBACK_URL, QQ_GROUP
 from task_store import format_size, size
@@ -285,6 +285,18 @@ class QuickSupport(QObject):
             if getattr(mixdown, '_preview_pending', False) or (
                     preview_timer is not None and preview_timer.isActive()):
                 add('简易混音试听准备')
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        try:
+            chorus = getattr(self.owner, '_chorus', None)
+            if chorus is not None and getattr(getattr(chorus, 'worker', None), 'kind', ''):
+                add('修音工作台')
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        try:
+            converter = getattr(self.owner, '_converter', None)
+            if converter is not None and getattr(getattr(converter, 'worker', None), 'kind', ''):
+                add('工程互转')
         except (AttributeError, RuntimeError, TypeError):
             pass
         try:
@@ -1108,6 +1120,11 @@ class QuickSupport(QObject):
         self._apply_restart_plan()
 
     @Slot()
+    def acknowledgeJustUpdated(self):
+        if self.state.acknowledge_just_updated(ROOT):
+            self.startupChanged.emit()
+
+    @Slot()
     def openRelease(self):
         version = self.state.release.get('version')
         url = updater.RELEASES + (f'/tag/v{version.removeprefix("v")}' if version else '/latest')
@@ -1137,15 +1154,29 @@ class QuickSupport(QObject):
         windows = sys.getwindowsversion() if sys.platform == 'win32' else None
         system = (f'Windows {11 if windows.build >= 22000 else 10} (build {windows.build})'
                   if windows else f'{platform.system()} {platform.release()}')
+        render_backend = str(self.state.values.get('render_backend', 'auto'))
+        if environment_value('VWA_RENDER_FALLBACK') == '1':
+            render_label = f'{render_backend} (auto-fallback: software)'
+        else:
+            render_label = render_backend
+        proxy_mode = str(self.state.values.get('network_proxy_mode', 'direct'))
+        native_dir = ROOT / 'components/native-audio'
+        native_status = ', '.join(
+            f'{dll}={"ok" if (native_dir / dll).is_file() else "missing"}'
+            for dll in ('vwa_chorus_pitch.dll', 'vwa_limiter.dll', 'vwa_native_output.dll')
+        )
         lines = [
             f'VWA: {self.version}', f'Qt Quick: {qVersion()}',
+            f'{tr("渲染后端")}: {render_label}',
             f'{tr("系统")}: {system} ({platform.machine()})',
             f'Python: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}',
             f'{tr("界面语言")}: {self.state.values["ui_language"]}',
             f'{tr("界面缩放")}: {self.state.values["ui_scale"]}%',
             f'{tr("准备任务状态")}: {task_state}',
             f'{tr("更新状态")}: {self.state.update["update_state"]}',
+            f'{tr("网络代理模式")}: {proxy_mode}',
             f'{tr("并行下载数")}: {self.state.values["download_workers"]}',
+            f'{tr("原生音频库")}: {native_status}',
             f'UTC: {datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S}',
             f'{tr("当前操作")}: {len(active)}',
         ]
@@ -1208,6 +1239,33 @@ class QuickSupport(QObject):
             self._diagnostics['message'] = tr('已复制诊断摘要。' if clipboard.text() == self._diagnostics['text']
                                               else '无法访问剪贴板，可选中摘要手动复制。')
             self.diagnosticsChanged.emit()
+
+    @Slot(QUrl, result=bool)
+    def exportDiagnosticsBundle(self, url):
+        if self._diagnostic_lane.kind:
+            return False
+        if not url.isLocalFile():
+            self._diagnostics['message'] = tr('请选择本机保存路径。')
+            self.diagnosticsChanged.emit()
+            return False
+        target = url.toLocalFile()
+        summary_text = str(self._diagnostics.get('text') or '')
+        self._diagnostics.update(busy=True, message=tr('正在生成脱敏诊断包…'))
+        self.diagnosticsChanged.emit()
+
+        def finish(result, error):
+            self._diagnostics['busy'] = False
+            if error is not None:
+                self._diagnostics['message'] = tr('导出诊断包失败：') + str(error)[:400]
+            else:
+                self._diagnostics['message'] = tr('已导出脱敏诊断包：{0}', result.get('path', target))
+            self.diagnosticsChanged.emit()
+
+        return self._diagnostic_lane.start(
+            'diagnostics-export',
+            lambda _stop, _send: export_diagnostic_bundle(target, summary_text, root=ROOT),
+            finish,
+        )
 
     @Slot()
     def openDiagnosticLogs(self):

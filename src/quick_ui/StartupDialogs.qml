@@ -148,6 +148,8 @@ Item {
             return tr("此版本支持一键更新。确认后才会开始下载，下载完成前不会替换程序文件。")
         if (updateState === "current" || updateState === "up_to_date")
             return tr("当前版本已是最新版本。")
+        if (snapshot.full_package_required && String(snapshot.full_package_notice || "").trim().length > 0)
+            return String(snapshot.full_package_notice)
         if (String(snapshot.url || "").length > 0)
             return tr("此版本不支持一键更新。可以打开正式发布页，按页面说明手动下载安装。")
         return tr("暂无更多更新状态。")

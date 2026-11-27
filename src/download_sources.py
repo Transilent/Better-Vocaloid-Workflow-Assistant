@@ -469,7 +469,11 @@ def read_small(url, source='auto', limit=2 * 1024**2, opener=direct_urlopen, *, 
             'Accept-Encoding': 'identity',
         })
         try:
-            with opener(request, timeout=timeout) as response:
+            open_call = (
+                (lambda req, timeout: direct_urlopen(req, timeout=timeout, allow_system_proxy=True))
+                if opener is direct_urlopen else opener
+            )
+            with open_call(request, timeout=timeout) as response:
                 declared = response.headers.get('Content-Length')
                 if declared:
                     try:

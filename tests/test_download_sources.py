@@ -179,8 +179,26 @@ class DownloadSourceTests(unittest.TestCase):
         with patch.object(updater, 'is_newer', return_value=True), \
              patch.object(updater, 'compatible_update', return_value=None):
             updater.check_release('auto', reader)
-        self.assertEqual(calls[0], (updater.API, 'auto'))
+        self.assertTrue(calls and calls[0][0].endswith('/latest/download/release-assets.json'))
+        self.assertEqual(calls[0][1], 'auto')
         self.assertTrue(all(source == 'auto' for _, source in calls))
+
+        # Verify fallback to official REST API when static inventory is unavailable.
+        fallback_calls = []
+        def fallback_reader(url, source):
+            fallback_calls.append((url, source))
+            if url.endswith('/latest/download/release-assets.json'):
+                raise OSError('static inventory unavailable')
+            if url == updater.API:
+                return json.dumps({'tag_name': 'v9.9.9', 'draft': False,
+                                   'prerelease': False, 'body': 'notes'}).encode()
+            return json.dumps({'version': '9.9.9'}).encode()
+
+        with patch.object(updater, 'is_newer', return_value=True), \
+             patch.object(updater, 'compatible_update', return_value=None):
+            res = updater.check_release('auto', fallback_reader)
+        self.assertEqual(res['version'], '9.9.9')
+        self.assertEqual(fallback_calls[1], (updater.API, 'auto'))
 
 
     def test_pypi_tuna_and_aliyun_mirror_routes(self):

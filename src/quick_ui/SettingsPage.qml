@@ -1140,6 +1140,34 @@ Rectangle {
                         selected: page.setting("reduce_motion", false) === true
                         onClicked: page.changeSetting("reduce_motion", !(page.setting("reduce_motion", false) === true))
                     }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 5
+                        Text {
+                            text: page.tr("图形渲染模式（下次启动生效）")
+                            color: page.theme.muted
+                            font.pixelSize: Math.round(12 * page.theme.scale)
+                        }
+                        Flow {
+                            Layout.fillWidth: true
+                            spacing: Math.round(6 * page.theme.scale)
+                            ChoiceChip {
+                                objectName: "settingsRenderAuto"
+                                tokens: page.theme
+                                text: page.tr("自动（硬件加速）")
+                                selected: String(page.setting("render_backend", "auto")) === "auto"
+                                onClicked: page.changeSetting("render_backend", "auto")
+                            }
+                            ChoiceChip {
+                                objectName: "settingsRenderSoftware"
+                                tokens: page.theme
+                                text: page.tr("软件渲染（兼容模式）")
+                                selected: String(page.setting("render_backend", "auto")) === "software"
+                                onClicked: page.changeSetting("render_backend", "software")
+                            }
+                        }
+                    }
                 }
             }
             GridLayout {
@@ -1236,6 +1264,28 @@ Rectangle {
                                     ]
                                     currentIndex: page.indexOfValue(model, page.setting("download_workers", 4))
                                     onActivated: index => page.changeSetting("download_workers", Number(currentValue))
+                                }
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 5
+                                Text {
+                                    text: page.tr("网络代理模式")
+                                    color: page.theme.muted
+                                    font.pixelSize: Math.round(12 * page.theme.scale)
+                                }
+                                UiComboBox {
+                                    id: proxyModeCombo
+                                    objectName: "networkProxyChoice"
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    model: [
+                                        { label: page.tr("直连（忽略系统代理，默认）"), value: "direct" },
+                                        { label: page.tr("跟随系统代理"), value: "system" }
+                                    ]
+                                    currentIndex: page.indexOfValue(model, page.setting("network_proxy_mode", "direct"))
+                                    onActivated: index => page.changeSetting("network_proxy_mode", String(currentValue))
                                 }
                             }
                         }
@@ -1625,6 +1675,38 @@ Rectangle {
                         color: page.theme.muted
                         font.pixelSize: Math.round(12 * page.theme.scale)
                         wrapMode: Text.Wrap
+                    }
+
+                    Rectangle {
+                        objectName: "justUpdatedBanner"
+                        Layout.fillWidth: true
+                        visible: String(page.updateInfo.just_updated_version || "").length > 0
+                        implicitHeight: justUpdatedRow.implicitHeight + Math.round(16 * page.theme.scale)
+                        radius: Math.round(8 * page.theme.scale)
+                        color: page.theme.base
+                        border.color: page.theme.success
+                        RowLayout {
+                            id: justUpdatedRow
+                            anchors.fill: parent
+                            anchors.margins: Math.round(8 * page.theme.scale)
+                            spacing: Math.round(8 * page.theme.scale)
+                            Text {
+                                Layout.fillWidth: true
+                                text: page.tr("已成功更新至 ") + page.formatVersion(page.updateInfo.just_updated_version)
+                                    + page.tr("，旧版暂存文件已自动清理。")
+                                color: page.theme.success
+                                font.pixelSize: Math.round(12 * page.theme.scale)
+                                font.weight: Font.DemiBold
+                                wrapMode: Text.Wrap
+                            }
+                            UiButton {
+                                objectName: "ackJustUpdated"
+                                theme: page.theme
+                                quiet: true
+                                text: page.tr("我知道了")
+                                onClicked: page.controller.acknowledgeJustUpdated()
+                            }
+                        }
                     }
 
                     MotionChoice {

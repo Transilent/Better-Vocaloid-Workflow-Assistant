@@ -1,10 +1,44 @@
 """Explicit disposable locations. User state, sessions, models and results are protected."""
+import errno
+import json
 import shutil
 from pathlib import Path
 from common import ROOT, job_directories, app_path, file_hash, native_path
-from task_store import size, checked_tree, locked, read_json
+from task_store import size, checked_tree, locked, read_json, format_size
 
-CACHE_NAMES = ('numba', 'browser-temp', 'v2m-temp', 'component-probe','qwen-runtime','export-app','video-mixdown','video-preview')
+CACHE_NAMES = (
+    'numba', 'browser-temp', 'v2m-temp', 'component-probe', 'qwen-runtime',
+    'export-app', 'video-mixdown', 'video-preview',
+    'chorus-cas', 'v3', 'pymss-plugins', 'features', 'style-region-drafts',
+)
+_CACHE_LABELS = {
+    'chorus-cas': '修音工作台音高与音频缓存',
+    'v3': '简易混音解码缓存',
+    'pymss-plugins': '分离插件编译缓存',
+    'features': '调音特征提取缓存',
+    'style-region-drafts': '调音分区草稿缓存',
+}
+
+
+def require_free_space(target_path, required_bytes: int, label: str = '当前操作') -> int:
+    """Verify sufficient free space on the target volume before heavy writes."""
+    if required_bytes <= 0:
+        return 0
+    candidate = Path(target_path).expanduser()
+    for probe in (candidate, *candidate.parents):
+        try:
+            if probe.exists():
+                free = shutil.disk_usage(probe).free
+                if free < required_bytes:
+                    raise OSError(
+                        errno.ENOSPC,
+                        f'{label}所需可用空间不足（需要约 {format_size(required_bytes)}，当前仅剩 {format_size(free)}）。'
+                        '请前往「设置与支持 → 下载与存储」清理缓存，或更换剩余空间充足的输出目录。',
+                    )
+                return free
+        except FileNotFoundError:
+            continue
+    return 0
 
 
 def publication_candidates(references=None):
@@ -71,10 +105,26 @@ def candidates(include_protected=False):
     for name in CACHE_NAMES:
         path = ROOT/'cache'/name
         if path.exists():
-            rows.append({'kind': 'cache', 'title': '运行缓存 · '+name, 'path': path, 'bytes': size(path)})
+            label = _CACHE_LABELS.get(name, '运行缓存 · ' + name)
+            rows.append({'kind': 'cache', 'title': label, 'path': path, 'bytes': size(path)})
     update = ROOT/'cache/updates'
-    if update.exists() and not (update/'pending.json').exists():
-        rows.append({'kind': 'cache', 'title': '未使用的更新下载', 'path': update, 'bytes': size(update)})
+    if update.exists():
+        pending_file = update / 'pending.json'
+        if not pending_file.exists():
+            rows.append({'kind': 'cache', 'title': '未使用的更新下载', 'path': update, 'bytes': size(update)})
+        else:
+            keep_stage = None
+            try:
+                rec = json.loads(pending_file.read_text(encoding='utf-8-sig'))
+                if isinstance(rec, dict) and isinstance(rec.get('plan'), str):
+                    keep_stage = Path(rec['plan']).resolve().parent
+            except (OSError, ValueError, TypeError):
+                keep_stage = None
+            for child in sorted(update.iterdir()):
+                if (child.is_dir() and not child.is_symlink() and not child.is_junction()
+                        and child.name.startswith(('stage-', 'runtime-stage-', 'patch-stage-'))
+                        and (keep_stage is None or child.resolve() != keep_stage)):
+                    rows.append({'kind': 'cache', 'title': '过期更新暂存 · ' + child.name, 'path': child, 'bytes': size(child)})
     downloads = ROOT/'dependencies/optional/bs-roformer/downloads'
     if downloads.exists() and not locked(downloads.parent):
         rows.append({'kind': 'component', 'title': '组件安装下载缓存', 'path': downloads, 'bytes': size(downloads)})

@@ -1292,6 +1292,10 @@
     {
       "file": "Start-Quick.bat",
       "source": "tools/portable/Start-Quick.bat"
+    },
+    {
+      "file": "separate_audio.py",
+      "source": "src/separate_audio.py"
     }
   ]
 }

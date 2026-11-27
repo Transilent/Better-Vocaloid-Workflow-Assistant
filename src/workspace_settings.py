@@ -16,10 +16,12 @@ _CHOICES = {
     'material': ('solid', 'glass'),
     'ui_scale': (100, 115, 130),
     'ui_language': ('zh-CN', 'en', 'ja'),
+    'render_backend': ('auto', 'software'),
+    'network_proxy_mode': ('direct', 'system'),
     'download_workers': tuple(range(1, 9)),
 }
 _BOOL = {'reduce_motion', 'check_for_updates', 'auto_restart_updates'}
-_CONFIG = {'theme', 'download_source', 'download_workers', 'check_for_updates', 'auto_restart_updates'}
+_CONFIG = {'theme', 'download_source', 'download_workers', 'network_proxy_mode', 'check_for_updates', 'auto_restart_updates'}
 _UPDATE_RECEIPT_LIMIT = 64 * 1024
 _UPDATE_NOTICE_LIMIT = 256 * 1024
 _TEXT_LIMIT = 60000
@@ -79,6 +81,7 @@ def load_update_recovery(root=ROOT):
             pending = {'version': version, 'plan': plan, 'notes': notes}
     last = _bounded_json(root / 'cache/updates/last-result.json', limit=_UPDATE_RECEIPT_LIMIT)
     last_result = None
+    just_updated = None
     if last.get('state') == 'failed':
         last_result = {
             'state': 'failed',
@@ -86,7 +89,27 @@ def load_update_recovery(root=ROOT):
             'error': _bounded_text(last.get('error'), 1600),
             'reason': _bounded_text(last.get('reason'), 160),
         }
-    return {'pending': pending, 'last_result': last_result}
+    elif last.get('state') == 'passed' and not last.get('acknowledged'):
+        ver = _bounded_text(last.get('version'), 80)
+        try:
+            installed_ver = json.loads((root / 'version.json').read_text(encoding='utf-8-sig')).get('version')
+        except (OSError, ValueError, TypeError):
+            installed_ver = None
+        if ver and ver == installed_ver:
+            notice = _bounded_json(root / 'cache/updates/last-notice.json', limit=_UPDATE_NOTICE_LIMIT)
+            notes = _bounded_text(notice.get('notes')) if notice.get('version') == ver else ''
+            just_updated = {
+                'version': ver,
+                'notes': notes,
+                'runtime_patched': bool(last.get('runtime_patched')),
+            }
+            if pending is None:
+                try:
+                    from tools.update_apply import cleanup_stale_stages
+                    cleanup_stale_stages(root)
+                except (OSError, ValueError, ImportError):
+                    pass
+    return {'pending': pending, 'last_result': last_result, 'just_updated': just_updated}
 
 
 class SettingsState:
@@ -100,6 +123,8 @@ class SettingsState:
         self.values['download_workers'] = workers if type(workers) is int and 1 <= workers <= 8 else 4
         source = config.get('download_source', 'auto')
         self.values['download_source'] = source if source in self.sources else self.sources[0]
+        proxy_mode = config.get('network_proxy_mode', 'direct')
+        self.values['network_proxy_mode'] = proxy_mode if proxy_mode in _CHOICES['network_proxy_mode'] else 'direct'
         for key in ('check_for_updates', 'auto_restart_updates'):
             self.values[key] = config.get(key, True) is True
         self.values['output_directory'] = str(output_directory())
@@ -109,6 +134,7 @@ class SettingsState:
         self.pending_version = ''
         self.pending_notes = ''
         self.last_update_result = {}
+        self.just_updated = {}
         self.restart_pending = False
         self.auto_restart_active = False
         self.restart_deferred = False
@@ -128,6 +154,12 @@ class SettingsState:
             'notes': _bounded_text(self.release.get('notes')),
             'url': self.release.get('url') or '',
             'can_update': bool(self.release.get('update')),
+            'is_runtime_patch': bool(isinstance(self.release.get('update'), dict)
+                                     and self.release['update'].get('kind') == 'runtime_patch'),
+            'full_package_required': bool(self.release.get('full_package_required')),
+            'full_package_notice': _bounded_text(self.release.get('full_package_notice'), 1600),
+            'just_updated_version': _bounded_text(getattr(self, 'just_updated', {}).get('version'), 80),
+            'just_updated_notes': _bounded_text(getattr(self, 'just_updated', {}).get('notes')),
             'can_cancel': self.update['update_state'] == 'downloading' or self.auto_restart_active,
             'apply_ready': self.update_plan is not None,
             'restart_pending': self.restart_pending,
@@ -143,6 +175,7 @@ class SettingsState:
         """Load a pending installer plan or the last bounded update failure."""
         recovery = recovery if isinstance(recovery, dict) else {}
         self.last_update_result = dict(recovery.get('last_result') or {})
+        self.just_updated = dict(recovery.get('just_updated') or {})
         pending = recovery.get('pending')
         if isinstance(pending, dict):
             version = pending.get('version')
@@ -174,7 +207,24 @@ class SettingsState:
         if self.last_update_result.get('state') == 'failed':
             error = self.last_update_result.get('error') or self.last_update_result.get('reason') or '请重新检查更新。'
             self.update.update(update_state='failed', message=f'上次更新未完成：{error}')
+        elif self.just_updated.get('version'):
+            ver = self.just_updated['version']
+            self.update.update(update_state='current', message=f'已成功更新至 v{ver}。')
         return False
+
+    def acknowledge_just_updated(self, root=ROOT):
+        if not getattr(self, 'just_updated', None):
+            return False
+        self.just_updated = {}
+        path = Path(root).resolve() / 'cache/updates/last-result.json'
+        data = _bounded_json(path, limit=_UPDATE_RECEIPT_LIMIT)
+        if data.get('state') == 'passed' and not data.get('acknowledged'):
+            data['acknowledged'] = True
+            try:
+                atomic_json(path, data)
+            except OSError:
+                pass
+        return True
 
     def open_recovered_pending(self):
         if not self.restart_pending or not self.pending_version:
@@ -251,11 +301,21 @@ class SettingsState:
         # In-place installation requires a Quick-aware official launcher and update route.
         if not self.installed_quick_frontend():
             self.release['update'] = None
+        full_notice = str(self.release.get('full_package_notice') or '').strip()
+        if available:
+            if self.release.get('update'):
+                kind_label = '（含运行库增量补丁）' if self.release['update'].get('kind') == 'runtime_patch' else ''
+                msg = f'发现新版本 {version}{kind_label}。'
+            elif self.release.get('full_package_required') and full_notice:
+                msg = f'发现新版本 {version}（需要全量更新）：{full_notice}'
+            else:
+                msg = f'发现新版本 {version}，请从发布页面获取适用的完整包。'
+        else:
+            msg = '暂无可用更新。'
         self.update.update(
             update_state='available' if available else 'current',
             update_open=available and (not startup or startup_preferences.reminder_due(version, self.preferences)),
-            message=(f'发现新版本 {version}。' if self.release.get('update') else
-                     f'发现新版本 {version}，请从发布页面获取适用的完整包。') if available else '暂无可用更新。',
+            message=msg,
             done=0, total=0,
         )
 

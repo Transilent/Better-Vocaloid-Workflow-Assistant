@@ -189,6 +189,8 @@ class QuickBridge(QObject):
         # deferred update restart, not just the preparation/component lane.
         for signal in (self._tuning.changed, self._video.changed,
                        self._publication.viewChanged, self._calibration.changed,
+                       self._mixdown.viewChanged, self._chorus.worker.changed,
+                       self._converter.worker.changed,
                        self._catalog.changed, self._read.changed, self._details.changed,
                        self._task_work.changed, self.preparationTaskChanged):
             signal.connect(self._support.refreshActivity)
@@ -241,7 +243,7 @@ class QuickBridge(QObject):
         # closing. Only operations initiated by the user need the exit choice.
         return any(lane.kind for lane in (self._work, self._task_work, self._calibration.worker,
                                           self._support.storage_lane, self._support.preset_lane,
-                                          self._chorus.worker))
+                                          self._chorus.worker, self._converter.worker))
 
     def _refresh_activity(self):
         busy = any(lane.kind for lane in self._activities)

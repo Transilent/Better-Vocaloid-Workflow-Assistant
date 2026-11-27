@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 
 Dialog {
@@ -110,6 +111,14 @@ Dialog {
                 onClicked: dialog.controller.copyDiagnostics()
             }
             UiButton {
+                objectName: "exportDiagnosticsBundle"
+                theme: dialog.theme
+                primary: true
+                text: dialog.tr("导出诊断包…")
+                enabled: !dialog.diagnostic.busy && !!dialog.diagnostic.text
+                onClicked: exportBundleDialog.open()
+            }
+            UiButton {
                 objectName: "refreshDiagnostics"
                 theme: dialog.theme
                 quiet: true
@@ -140,6 +149,14 @@ Dialog {
                 onClicked: dialog.controller.closeDiagnostics()
             }
         }
+    }
+    FileDialog {
+        id: exportBundleDialog
+        title: dialog.tr("保存脱敏诊断包")
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "zip"
+        nameFilters: [dialog.tr("ZIP 压缩包 (*.zip)")]
+        onAccepted: dialog.controller.exportDiagnosticsBundle(selectedFile)
     }
     onOpened: closeButton.forceActiveFocus()
 }

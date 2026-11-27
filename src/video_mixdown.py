@@ -372,6 +372,9 @@ def _render(job, video, mixdown, output, *, offset=None, reference=None, normali
 
     ffmpeg = load_config()['ffmpeg']
     output.parent.mkdir(parents=True, exist_ok=True)
+    from storage import require_free_space
+    min_space = max(256 * 1024**2, mixdown.stat().st_size * 2 + 128 * 1024**2)
+    require_free_space(output.parent, min_space, '合成视频')
     (job / 'temp').mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='video-mix-', dir=job/'temp') as folder:
         folder = Path(folder)

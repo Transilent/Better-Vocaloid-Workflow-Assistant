@@ -19,8 +19,23 @@ PROGRAM_UPDATE_NAME = 'VWA-Program-Update.zip'
 MAX_UPDATE_BYTES = 64 * 1024**2
 
 
+DEFAULT_FULL_PACKAGE_NOTICE = (
+    '本次更新包含底层架构、更新器或运行库升级，需前往发布页下载最新完整便携包。'
+    '迁移时请保留原目录中的 jobs、config.json 与 user-presets，即可完整保留任务与个人设置。'
+)
+
+
 def current_version():
     return json.loads((ROOT / 'version.json').read_text(encoding='utf-8'))['version']
+
+
+def current_channel():
+    try:
+        data = json.loads((ROOT / 'version.json').read_text(encoding='utf-8-sig'))
+        value = str(data.get('channel') or 'stable').strip().lower()
+        return value if value in ('stable', 'beta', 'prerelease') else 'stable'
+    except (OSError, ValueError, TypeError):
+        return 'stable'
 
 
 def version_key(value):
@@ -50,24 +65,47 @@ def legacy_release(inventory):
             'notes': '当前发布版尚未提供自动更新信息。请从发布页面查看版本并下载完整便携包。'}
 
 
-def compatible_update(inventory):
-    from tools.update_apply import desktop_identity
-    installed = desktop_identity(json.loads((ROOT / 'version.json').read_text(encoding='utf-8-sig')))
+def compatible_update(inventory, *, root=None):
+    from tools.update_apply import desktop_identity, runtime_patch_name
+    root = Path(ROOT if root is None else root).resolve()
+    version_meta = json.loads((root / 'version.json').read_text(encoding='utf-8-sig'))
+    installed_ver = version_meta.get('version')
+    if inventory.get('full_package_required') is True:
+        return None
+    min_inplace = inventory.get('min_inplace_version')
+    if isinstance(min_inplace, str) and min_inplace.strip() and installed_ver:
+        try:
+            if version_key(installed_ver) < version_key(min_inplace.strip()):
+                return None
+        except ValueError:
+            pass
+    installed = desktop_identity(version_meta)
+    local_runtime_sha = file_hash(root / 'dependencies/manifest.json')
     if installed:
         item = inventory.get('program_update')
         if (isinstance(item, dict) and desktop_identity(item) == installed
-                and item.get('runtime_sha256') == file_hash(ROOT / 'dependencies/manifest.json')):
+                and item.get('runtime_sha256') == local_runtime_sha):
             return item
+        patches = inventory.get('runtime_patches')
+        if isinstance(patches, list):
+            for patch in patches:
+                if (isinstance(patch, dict) and desktop_identity(patch) == installed
+                        and patch.get('source_runtime_sha256') == local_runtime_sha):
+                    try:
+                        runtime_patch_name(patch)
+                    except ValueError:
+                        continue
+                    return dict(patch, kind='runtime_patch')
         return None
     if 'updates' in inventory:
         from tools.update_apply import select_update_route
-        route = select_update_route(inventory, file_hash(ROOT / 'dependencies/manifest.json'))
+        route = select_update_route(inventory, local_runtime_sha)
         if route is None:
             return None
         return dict(route['update'], catalog_route=route,
                     download_bytes=route['update']['bytes'] + route['runtime_upgrade']['bytes'])
     item = inventory.get('program_update')
-    if item and item.get('runtime_sha256') == file_hash(ROOT / 'dependencies/manifest.json'):
+    if item and item.get('runtime_sha256') == local_runtime_sha:
         return item
     return inventory.get('update')
 
@@ -77,72 +115,93 @@ def _release_from_inventory(inventory):
     if not version:
         return legacy_release(inventory)
     version_key(version)
+    full_required = bool(inventory.get('full_package_required') is True)
+    full_notice = str(inventory.get('full_package_notice') or '').strip()
+    if full_required and not full_notice:
+        full_notice = DEFAULT_FULL_PACKAGE_NOTICE
     return {'version': version, 'notes': inventory.get('release_notes', ''),
             'url': RELEASES + '/tag/v' + version, 'available': is_newer(version),
-            'update': compatible_update(inventory)}
+            'update': compatible_update(inventory),
+            'full_package_required': full_required,
+            'full_package_notice': full_notice}
 
 
 def check_release(source='auto', reader=read_small):
-    """Read release metadata without routing the public API through a proxy.
+    """Read release metadata, preferring static release-assets.json to avoid GitHub API rate limits.
 
-    ``auto`` starts with the official API. Explicit accelerator IDs prefer the
-    published Release inventory, but ``api.github.com`` itself remains direct so
-    update discovery cannot leak cookies or signed metadata queries.
+    Static ``release-assets.json`` works across direct, system-proxy, and approved
+    GitHub release accelerators without hitting the 60 req/hr unauthenticated REST
+    API limit. Falls back to the official REST API only if the static manifest is
+    unavailable or lacks a release version.
     """
     source = normalize_source(source)
     inventory_url = RELEASES + '/latest/download/release-assets.json'
-    accelerated_first = source in ('mirror', 'gitproxy', 'gh-proxy', 'ghfast')
-    if accelerated_first:
-        try:
-            return _release_from_inventory(json.loads(reader(inventory_url, source)))
-        except (OSError, KeyError, json.JSONDecodeError):
-            pass
     try:
-        release = json.loads(reader(API, source))
-        if release.get('draft') or release.get('prerelease'):
-            raise ValueError('没有可用的正式版本。')
-        version = release['tag_name'].removeprefix('v')
-        version_key(version)
-        result = {'version': version, 'notes': release.get('body', ''),
-                  'url': RELEASES + '/tag/v' + version, 'available': is_newer(version), 'update': None}
-        if result['available']:
-            try:
-                inventory = json.loads(reader(asset_url(version, 'release-assets.json'), source))
-            except InterruptedError:
-                raise
-            except (OSError, json.JSONDecodeError):
-                # The official release still exists even if it has no compatible update asset.
-                return result
-            if inventory.get('version') and inventory['version'] != version:
-                raise ValueError('更新清单与发布版本不一致。')
-            result['update'] = compatible_update(inventory)
-        return result
+        inventory = json.loads(reader(inventory_url, source))
+        parsed = _release_from_inventory(inventory)
+        if parsed.get('version') or parsed.get('legacy'):
+            return parsed
     except InterruptedError:
         raise
-    except (OSError, KeyError, json.JSONDecodeError):
-        # The published inventory is a fallback when the public API cannot be
-        # reached. It contains the version and update checksum.
-        inventory = json.loads(reader(inventory_url, source))
-        return _release_from_inventory(inventory)
+    except (OSError, KeyError, ValueError, json.JSONDecodeError):
+        pass
+
+    release = json.loads(reader(API, source))
+    allow_pre = current_channel() != 'stable'
+    if release.get('draft') or (release.get('prerelease') and not allow_pre):
+        raise ValueError('没有可用的正式版本。')
+    version = release['tag_name'].removeprefix('v')
+    version_key(version)
+    result = {'version': version, 'notes': release.get('body', ''),
+              'url': RELEASES + '/tag/v' + version, 'available': is_newer(version),
+              'update': None, 'full_package_required': False, 'full_package_notice': ''}
+    if result['available']:
+        try:
+            inventory = json.loads(reader(asset_url(version, 'release-assets.json'), source))
+        except InterruptedError:
+            raise
+        except (OSError, json.JSONDecodeError):
+            return result
+        if inventory.get('version') and inventory['version'] != version:
+            raise ValueError('更新清单与发布版本不一致。')
+        result['update'] = compatible_update(inventory)
+        if inventory.get('full_package_required') is True:
+            result['full_package_required'] = True
+            result['full_package_notice'] = str(inventory.get('full_package_notice') or DEFAULT_FULL_PACKAGE_NOTICE)
+    return result
 
 
 def prepare_update(release, source='auto', progress=lambda *args: None, check=None,
                    root=ROOT, downloader=None):
     source = normalize_source(source)
+    from common import direct_urlopen
     from optional_components import download
-    from tools.update_apply import prepare_program_update, prepare_catalog_update
+    from tools.update_apply import prepare_program_update, prepare_catalog_update, prepare_runtime_patch
     root = Path(root).resolve()
     version = release['version']
     version_key(version)
     item = dict(release.get('update') or {})
     def fetch(record, folder, report, cancel, selected_source):
         record = dict(record, url=asset_url(version, record['name']))
-        return (downloader or download)(record, folder, report, cancel, source=selected_source)
+        if downloader is not None:
+            return downloader(record, folder, report, cancel, source=selected_source)
+        return download(
+            record, folder, report, cancel,
+            opener=lambda req, timeout=30: direct_urlopen(req, timeout=timeout, allow_system_proxy=True),
+            source=selected_source,
+        )
     route = item.get('catalog_route')
     if route is not None:
         plan = prepare_catalog_update(version, route, root, progress, check, source, fetch)
+    elif item.get('kind') == 'runtime_patch':
+        plan = prepare_runtime_patch(version, item, root, progress, check, source, fetch)
     else:
         plan = prepare_program_update(version, item, root, progress, check, source, fetch)
+    notes = str(release.get('notes') or '')[:200000]
+    try:
+        _write_cache_json(root, 'last-notice.json', {'version': version, 'notes': notes})
+    except OSError:
+        pass
     total = item.get('download_bytes', item.get('bytes', 1))
     progress(total, total, '下载完成，已校验全部更新文件')
     return plan

@@ -17,6 +17,26 @@ retired = set(manifest['retired_generated'])
 portable = json.loads((APP/'packaging/portable-files.json').read_text(encoding='utf-8'))['entries']
 assert not (retired & {row['file'] for row in portable})
 assert not any((APP / 'src' / name).exists() for name in retired)
+
+# Three-way zero-drift guard: src/ <-> portable-files.json <-> update_apply.validate_file()
+from tools.update_apply import validate_file
+portable_set = {row['file'] for row in portable}
+for src_file in sorted((APP / 'src').rglob('*')):
+    if not src_file.is_file() or '__pycache__' in src_file.parts:
+        continue
+    rel = src_file.relative_to(APP / 'src').as_posix()
+    if rel.startswith('native/'):
+        continue
+    assert rel in portable_set, f'Source file missing from packaging/portable-files.json: {rel}'
+for row in portable:
+    fname = row['file']
+    if fname == 'config.json' or fname.startswith(('dependencies/', 'models/', 'vendor/')):
+        continue
+    validate_file({'file': fname, 'bytes': 0, 'sha256': '0' * 64})
+start_diag = (APP / 'tools/Start-Diagnostics.bat').read_text(encoding='utf-8')
+assert 'if exist' in start_diag.lower() and 'prepare-source.ps1' in start_diag.lower(), (
+    'Start-Diagnostics.bat must guard Prepare-Source.ps1 for portable builds'
+)
 with tempfile.TemporaryDirectory(prefix='source-layout-', dir=APP/'work') as folder:
     checkout = Path(folder)/'checkout with spaces'
     for name in catalog:

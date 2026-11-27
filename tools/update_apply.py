@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 import uuid
 from urllib.parse import quote, urlsplit
@@ -110,9 +111,21 @@ TOOL_FILES = {'tools/update_apply.py', 'tools/Start-Diagnostics.bat',
 TOOL_FILES.add('tools/Setup-AgentMCP.ps1')
 TOOL_FILES.add('tools/install_pedalboard_component.py')
 RUNTIME_UPDATE_NAME = 'VWA-Runtime-Upgrade.zip'
+RUNTIME_PATCH_NAME = 'VWA-Runtime-Patch.zip'
 MAX_RUNTIME_BYTES = 256 * 1024**2
+MAX_RUNTIME_PATCH_BYTES = 192 * 1024**2
 MAX_PROGRAM_BYTES = 64 * 1024**2
-MAX_QUICK_PROGRAM_FILES = 384
+MAX_QUICK_PROGRAM_FILES = 768
+RUNTIME_PATCH_ALLOWED_PREFIXES = (
+    'dependencies/export/',
+    'dependencies/ffmpeg/',
+    'components/native-audio/',
+)
+_ROOT_PY_RE = re.compile(r'^[a-z][a-z0-9_]*\.py$')
+_QUICK_UI_RE = re.compile(r'^quick_ui/[A-Za-z][A-Za-z0-9_]*\.(?:qml|js)$')
+_ASSET_TOP_RE = re.compile(r'^assets/[A-Za-z0-9_.-]+\.(?:svg|ico|png)$')
+_ASSET_I18N_RE = re.compile(r'^assets/i18n/[A-Za-z0-9_.-]+\.json$')
+_REPLACE_RETRY_WINERRORS = frozenset({5, 32, 33})
 QUICK_PROGRAM_REQUIRED = frozenset({'launch.py', 'quick_app.py', 'quick_runtime.py',
     'quick_ui/Main.qml', 'updater.py', 'tools/update_apply.py', 'version.json'})
 LEGACY_FRONTEND_FILES = frozenset({
@@ -152,6 +165,16 @@ ROOT_FILES.update({
     'components/signalsmith-stretch-LICENSE.txt',
     'components/native-audio/vwa_chorus_pitch.dll',
     'components/native-audio/chorus-pitch.json',
+    'quick_convert.py', 'project_convert_service.py', 'project_convert_worker.py',
+    'chorus_review_service.py', 'quick_ui/ProjectConvertPage.qml',
+    'mixdown_handoff_service.py', 'tuning_session_store.py',
+    'publication_browser_service.py', 'publication_draft_service.py',
+    'tuning_pitch_math.py', 'style_helpers.py', 'export_receipts.py',
+    'task_actions_service.py', 'project_io.py', 'browser_runtime.py',
+    'agent_primitives.py', 'mixdown_ffmpeg.py', 'separate_audio.py',
+    'quick_ui/UiCard.qml', 'quick_ui/UiCheckBox.qml', 'quick_ui/UiCommandPalette.qml',
+    'quick_ui/UiDialog.qml', 'quick_ui/UiDropStage.qml', 'quick_ui/UiMenu.qml',
+    'quick_ui/UiProgressBar.qml', 'quick_ui/UiScrollBar.qml', 'quick_ui/UiSlider.qml',
 })
 LAUNCHER_MIGRATION = {'from': 'BVWA.exe', 'to': 'VWA.exe', 'legacy_alias': True}
 SOURCE_POLICY_FORMAT = 1
@@ -262,18 +285,73 @@ def _version_key(value):
                          for part in (suffix or '').split('.')))
 
 
-def validate_file(entry):
+def _is_managed_program_path(name: str, *, allow_legacy_removal: bool = False) -> bool:
+    """Layered security policy: rule-based for Quick app code, exact allowlist for scripts/docs/binaries."""
+    if name in ROOT_FILES | TOOL_FILES:
+        return True
+    if allow_legacy_removal and name in LEGACY_FRONTEND_FILES:
+        return True
+    if _ASSET_TOP_RE.fullmatch(name) or _ASSET_I18N_RE.fullmatch(name):
+        return True
+    if _QUICK_UI_RE.fullmatch(name):
+        return True
+    if _ROOT_PY_RE.fullmatch(name) and name not in LEGACY_FRONTEND_FILES:
+        return True
+    return False
+
+
+def validate_file(entry, *, allow_legacy_removal: bool = False):
     name = entry['file']
     path = PurePosixPath(name)
     if path.is_absolute() or '..' in path.parts or '\\' in name or ':' in name:
         raise ValueError('更新文件路径无效。')
-    allowed_asset = len(path.parts) == 2 and path.parts[0] == 'assets' and path.suffix in ('.svg', '.ico', '.png')
-    if name not in ROOT_FILES | TOOL_FILES and not allowed_asset:
+    if not _is_managed_program_path(name, allow_legacy_removal=allow_legacy_removal):
         raise ValueError('更新包试图修改程序文件以外的内容：' + name)
     if not isinstance(entry.get('bytes'), int) or not 0 <= entry['bytes'] <= 32 * 1024**2:
         raise ValueError('更新文件大小无效。')
     if not re.fullmatch(r'[a-f0-9]{64}', entry.get('sha256', '')):
         raise ValueError('更新文件校验信息无效。')
+
+
+def _is_runtime_patch_dependency_path(name: str) -> bool:
+    if name == 'dependencies/manifest.json':
+        return True
+    if not any(name.startswith(prefix) for prefix in RUNTIME_PATCH_ALLOWED_PREFIXES):
+        return False
+    parts = name.split('/')
+    if any(not part or part in ('.', '..') or part.endswith((' ', '.')) or '\\' in part or ':' in part for part in parts):
+        return False
+    return True
+
+
+def validate_runtime_patch_entry(entry):
+    name = entry.get('file', '')
+    if not isinstance(name, str) or not name:
+        raise ValueError('运行库补丁文件路径无效。')
+    path = PurePosixPath(name)
+    if path.is_absolute() or '..' in path.parts or '\\' in name or ':' in name:
+        raise ValueError('运行库补丁文件路径无效：' + name)
+    if _is_runtime_patch_dependency_path(name):
+        if type(entry.get('bytes')) is not int or not 0 <= entry['bytes'] <= 128 * 1024**2:
+            raise ValueError('运行库补丁文件大小无效：' + name)
+        if not re.fullmatch(r'[a-f0-9]{64}', entry.get('sha256', '')):
+            raise ValueError('运行库补丁文件校验信息无效：' + name)
+        return
+    validate_file(entry)
+
+
+def _replace_with_retry(source: Path, destination: Path, *, retries: int = 8) -> None:
+    """Replace destination with brief exponential backoff for transient Windows AV/DLL handle locks."""
+    delay = 0.08
+    for attempt in range(retries):
+        try:
+            source.replace(destination)
+            return
+        except OSError as exc:
+            if attempt >= retries - 1 or getattr(exc, 'winerror', None) not in _REPLACE_RETRY_WINERRORS:
+                raise
+            time.sleep(delay)
+            delay = min(0.8, delay * 1.6)
 
 
 def desktop_identity(data):
@@ -725,7 +803,7 @@ def _plan_root(plan_path):
     plan_path = Path(plan_path).absolute()
     stage, updates = plan_path.parent, plan_path.parent.parent
     if (plan_path.name != 'plan.json' or updates.name != 'updates' or updates.parent.name != 'cache'
-            or not stage.name.startswith(('stage-', 'runtime-stage-'))):
+            or not stage.name.startswith(('stage-', 'runtime-stage-', 'patch-stage-'))):
         raise ValueError('更新计划不属于助手的暂存目录。')
     root = updates.parent.parent.resolve()
     validate_destination(root, plan_path.relative_to(root).as_posix())
@@ -828,6 +906,8 @@ def apply_update(plan_path, *, program_bridge_sha256=None):
     current = desktop_identity(installed)
     if desktop_identity(plan) != current:
         raise ValueError('更新计划与本机界面或 Qt 运行库不匹配。')
+    if plan.get('kind') == 'runtime_patch':
+        return apply_runtime_patch(plan_path)
     if plan.get('kind') == 'runtime_upgrade':
         if current:
             raise ValueError('Quick 安装不使用历史运行库迁移计划。')
@@ -862,8 +942,21 @@ def apply_update(plan_path, *, program_bridge_sha256=None):
         source = validate_destination(stage / 'files', entry['file'])
         if source.stat().st_size != entry['bytes'] or sha(source) != entry['sha256']:
             raise ValueError('待安装的更新文件已改变：' + entry['file'])
+    removed_raw = plan.get('removed') or []
+    if not isinstance(removed_raw, list):
+        raise ValueError('更新计划的待清理文件清单无效。')
+    entry_names = {entry['file'] for entry in entries}
+    removed_entries = {}
+    for entry in removed_raw:
+        validate_file(entry, allow_legacy_removal=True)
+        name = entry['file']
+        if name in entry_names or name in removed_entries or (current and name in QUICK_PROGRAM_REQUIRED):
+            raise ValueError('待清理文件与本次更新或必要入口冲突：' + name)
+        validate_destination(root, name)
+        removed_entries[name] = entry
     backup = Path(tempfile.mkdtemp(prefix='backup-', dir=_native(stage)))
     touched = []
+    skipped_removals = []
     try:
         for entry in sorted(entries, key=lambda item: (item['file'] == 'version.json', item['file'])):
             destination = validate_destination(root, entry['file'])
@@ -879,18 +972,40 @@ def apply_update(plan_path, *, program_bridge_sha256=None):
             destination.parent.mkdir(parents=True, exist_ok=True)
             temporary = destination.with_name(destination.name + '.vwa-update')
             validate_destination(root, temporary.relative_to(root).as_posix())
-            if temporary.exists() or destination.with_name(destination.name + '.bvwa-update').exists():
+            if destination.with_name(destination.name + '.bvwa-update').exists():
                 raise ValueError('发现未完成的更新临时文件，请先检查更新日志。')
+            if temporary.exists():
+                if destination.is_file():
+                    # Safe self-heal: previous interrupted attempt left a stale temp sibling while original is intact.
+                    temporary.unlink(missing_ok=True)
+                else:
+                    raise ValueError('发现未完成的更新临时文件，请先检查更新日志。')
             try:
                 shutil.copy2(stage / 'files' / entry['file'], temporary)
-                temporary.replace(destination)
+                _replace_with_retry(temporary, destination)
             finally:
                 temporary.unlink(missing_ok=True)
+        for name in sorted(removed_entries):
+            entry = removed_entries[name]
+            destination = validate_destination(root, name)
+            if not destination.is_file() or destination.stat().st_size != entry['bytes'] or sha(destination) != entry['sha256']:
+                skipped_removals.append(name)
+                continue
+            saved = backup / name
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(destination, saved)
+            touched.append((destination, saved, True))
+            destination.unlink()
         _clear_pending(root, plan_path)
-        return {'state': 'passed', 'version': plan['version'], 'files': len(entries)}
+        result = {'state': 'passed', 'version': plan['version'], 'files': len(entries)}
+        if removed_entries:
+            result['removed'] = len(removed_entries) - len(skipped_removals)
+            result['skipped_removals'] = skipped_removals
+        return result
     except BaseException:
         for destination, saved, existed in reversed(touched):
             if existed:
+                destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(saved, destination)
             else:
                 destination.unlink(missing_ok=True)
@@ -1144,6 +1259,13 @@ def _validate_runtime_stage(root, stage, plan, check=None):
     return records, removals, release
 
 
+def runtime_patch_name(item):
+    name = item.get('name', '')
+    if not isinstance(name, str) or not re.fullmatch(r'VWA-Runtime-Patch(?:-v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)?\.zip', name):
+        raise ValueError('运行库增量补丁名称无效。')
+    return name
+
+
 def _runtime_name(item):
     name = item.get('name', '')
     if not isinstance(name, str) or not re.fullmatch(r'(?:VWA|BVWA)-Runtime-Upgrade(?:-v\d+\.\d+\.\d+)?\.zip', name):
@@ -1284,17 +1406,23 @@ def running_application_pids(root):
     except ValueError:
         excluded = {os.getpid()}
     found = []
+    python_dir = (root / 'dependencies/vocal2midi/python').resolve()
+    ffmpeg_exe = (root / 'dependencies/ffmpeg/ffmpeg.exe').resolve()
     try:
         entry = Entry(); entry.size = ctypes.sizeof(entry)
         more = kernel.Process32FirstW(snapshot,ctypes.byref(entry))
         while more:
-            if entry.name.casefold() in ('vwa.exe', 'bvwa.exe') and entry.pid not in excluded:
+            low = entry.name.casefold()
+            if low in ('vwa.exe', 'bvwa.exe', 'python.exe', 'pythonw.exe', 'ffmpeg.exe') and entry.pid not in excluded:
                 handle = kernel.OpenProcess(0x1000,False,entry.pid)
                 if handle:
                     try:
                         buffer = ctypes.create_unicode_buffer(32768); length = ctypes.c_ulong(len(buffer))
                         if kernel.QueryFullProcessImageNameW(handle,0,buffer,ctypes.byref(length)):
-                            if Path(buffer.value).resolve() in (root/'VWA.exe', root/'BVWA.exe'): found.append(entry.pid)
+                            exe_path = Path(buffer.value).resolve()
+                            if (exe_path in (root/'VWA.exe', root/'BVWA.exe', ffmpeg_exe)
+                                    or exe_path.is_relative_to(python_dir)):
+                                found.append(entry.pid)
                     finally: kernel.CloseHandle(handle)
             more = kernel.Process32NextW(snapshot,ctypes.byref(entry))
     finally: kernel.CloseHandle(snapshot)
@@ -1447,6 +1575,17 @@ def prepare_program_update(version, item, root, progress=lambda *args: None, che
                 raise ValueError('程序更新包版本或运行库不匹配。')
             entries = inventory['entries']
             names = {entry['file'] for entry in entries}
+            removed = inventory.get('removed') or []
+            if not isinstance(removed, list):
+                raise ValueError('程序更新包的清理清单无效。')
+            removed_names = set()
+            for rem in removed:
+                validate_file(rem, allow_legacy_removal=True)
+                rname = rem['file']
+                if rname in names or rname in removed_names or (identity and rname in QUICK_PROGRAM_REQUIRED):
+                    raise ValueError('程序更新包的清理清单与更新文件冲突：' + rname)
+                validate_destination(root, rname)
+                removed_names.add(rname)
             if identity:
                 validate_quick_program(names)
             elif not {'app.py', 'version.json'}.issubset(names):
@@ -1454,6 +1593,9 @@ def prepare_program_update(version, item, root, progress=lambda *args: None, che
             if (len(entries) != len(names)
                     or {info.filename for info in infos} != names | {'update-inventory.json'}):
                 raise ValueError('程序更新包与文件清单不一致。')
+            needed = sum(info.file_size for info in infos) * 2 + 64 * 1024**2
+            if shutil.disk_usage(root).free < needed:
+                raise OSError('更新临时空间不足，请清理磁盘后重试。')
             for entry in entries:
                 if check and check():
                     raise InterruptedError('已取消更新下载。')
@@ -1472,8 +1614,11 @@ def prepare_program_update(version, item, root, progress=lambda *args: None, che
         if target_version['version'] != version or desktop_identity(target_version) != identity:
             raise ValueError('更新程序版本信息不匹配。')
         plan = stage / 'plan.json'
-        plan.write_text(json.dumps({'root': str(root), 'version': version, 'runtime_sha256': runtime_sha, **identity,
-                                    'entries': entries, 'state': 'ready'}, ensure_ascii=False, indent=2), encoding='utf-8')
+        plan_payload = {'root': str(root), 'version': version, 'runtime_sha256': runtime_sha, **identity,
+                        'entries': entries, 'state': 'ready'}
+        if removed:
+            plan_payload['removed'] = removed
+        plan.write_text(json.dumps(plan_payload, ensure_ascii=False, indent=2), encoding='utf-8')
         shutil.copy2(Path(__file__), stage / 'apply_helper.py')
         if register_pending:
             _write_pending(root, plan, version)
@@ -1485,7 +1630,7 @@ def prepare_program_update(version, item, root, progress=lambda *args: None, che
 
 def _remove_stage(stage, cache):
     stage, cache = Path(stage).absolute(), Path(cache).resolve()
-    if (stage.resolve().parent != cache or not stage.name.startswith(('stage-', 'runtime-stage-'))
+    if (stage.resolve().parent != cache or not stage.name.startswith(('stage-', 'runtime-stage-', 'patch-stage-'))
             or stage.is_symlink() or stage.is_junction()):
         raise ValueError('更新暂存目录超出清理范围。')
     shutil.rmtree(_native(stage))
@@ -1745,6 +1890,270 @@ def apply_runtime_upgrade(plan_path):
                 destination.unlink(missing_ok=True)
         _clear_pending(root, plan_path)
         raise
+
+
+def prepare_runtime_patch(version, item, root, progress=lambda *args: None, check=None,
+                          source='auto', downloader=None, *, register_pending=True):
+    """Stage and verify a 2.x Quick lightweight runtime/dependency incremental patch."""
+    if not isinstance(version, str) or not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', version):
+        raise ValueError('补丁版本号无效。')
+    runtime_patch_name(item)
+    if (type(item.get('bytes')) is not int or not 0 < item['bytes'] <= MAX_RUNTIME_PATCH_BYTES
+            or any(not isinstance(item.get(k), str) or not re.fullmatch(r'[a-f0-9]{64}', item[k])
+                   for k in ('sha256', 'source_runtime_sha256', 'target_runtime_sha256'))):
+        raise ValueError('运行库增量补丁元数据无效。')
+    root = Path(root).resolve()
+    identity = desktop_identity(json.loads((root / 'version.json').read_text(encoding='utf-8-sig')))
+    if not identity or desktop_identity(item) != identity:
+        raise ValueError('此运行库增量补丁与当前 Quick 界面或 Qt 版本不匹配。')
+    runtime_sha = sha(root / 'dependencies/manifest.json')
+    if item['source_runtime_sha256'] != runtime_sha:
+        raise ValueError('当前运行库与增量补丁的源版本不匹配，请使用完整便携包。')
+    cache = validate_destination(root, 'cache/updates')
+    cache.mkdir(parents=True, exist_ok=True)
+    folder = validate_destination(root, 'cache/updates/downloads')
+    selected = dict(item, version=version)
+    selected['url'] = ('https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/download/v'
+                       + quote(version, safe='') + '/' + quote(runtime_patch_name(item), safe=''))
+    if downloader:
+        archive = downloader(selected, folder, progress, check, source)
+    else:
+        archive = _artifact_download(selected, folder, progress, check, source, runtime=True)
+    if archive.stat().st_size != item['bytes'] or sha(archive) != item['sha256']:
+        raise ValueError('运行库增量补丁校验失败。')
+    stage = Path(tempfile.mkdtemp(prefix='patch-stage-', dir=cache))
+    try:
+        with zipfile.ZipFile(archive) as zipped:
+            infos = zipped.infolist()
+            if (len(infos) > 12000 or sum(info.file_size for info in infos) > MAX_RUNTIME_PATCH_BYTES
+                    or len({info.filename for info in infos}) != len(infos)):
+                raise ValueError('运行库增量补丁内容超过限制或含重复文件。')
+            patch = json.loads(zipped.read('runtime-patch.json'))
+            if (patch.get('version') != version or desktop_identity(patch) != identity
+                    or patch.get('source_runtime_sha256') != runtime_sha
+                    or patch.get('target_runtime_sha256') != item['target_runtime_sha256']):
+                raise ValueError('运行库增量补丁与发布清单不一致。')
+            entries = patch.get('entries') or []
+            removed = patch.get('removed') or []
+            if not isinstance(entries, list) or not isinstance(removed, list):
+                raise ValueError('运行库增量补丁清单格式无效。')
+            names = {entry['file'] for entry in entries}
+            if (len(entries) != len(names)
+                    or {info.filename for info in infos} != names | {'runtime-patch.json'}):
+                raise ValueError('运行库增量补丁成员与清单不一致。')
+            if 'version.json' not in names or 'dependencies/manifest.json' not in names:
+                raise ValueError('运行库增量补丁缺少版本信息或目标运行库清单。')
+            needed = sum(info.file_size for info in infos) * 2 + 64 * 1024**2
+            if shutil.disk_usage(root).free < needed:
+                raise OSError('更新临时空间不足，请清理磁盘后重试。')
+            for entry in entries:
+                validate_runtime_patch_entry(entry)
+                validate_destination(root, entry['file'])
+            removed_names = set()
+            for rem in removed:
+                rname = rem.get('file', '')
+                if _is_runtime_patch_dependency_path(rname):
+                    validate_runtime_patch_entry(rem)
+                else:
+                    validate_file(rem, allow_legacy_removal=True)
+                if rname in names or rname in removed_names or rname in QUICK_PROGRAM_REQUIRED or rname == 'dependencies/manifest.json':
+                    raise ValueError('运行库增量补丁清理清单无效：' + rname)
+                validate_destination(root, rname)
+                removed_names.add(rname)
+            for idx, entry in enumerate(entries):
+                if check and check():
+                    raise InterruptedError('已取消更新下载。')
+                info = zipped.getinfo(entry['file'])
+                if info.file_size != entry['bytes'] or ((info.external_attr >> 16) & 0o170000) == 0o120000:
+                    raise ValueError('运行库补丁文件大小或类型无效：' + entry['file'])
+                target = validate_destination(stage / 'files', entry['file'])
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zipped.open(info) as src, target.open('xb') as dst:
+                    shutil.copyfileobj(src, dst)
+                if sha(target) != entry['sha256']:
+                    raise ValueError('运行库补丁文件校验失败：' + entry['file'])
+                if idx % 128 == 0:
+                    progress(item['bytes'], item['bytes'], f'正在校验补丁文件 {idx + 1}/{len(entries)}…')
+        target_manifest_path = stage / 'files/dependencies/manifest.json'
+        if sha(target_manifest_path) != item['target_runtime_sha256']:
+            raise ValueError('补丁内目标运行库清单摘要不匹配。')
+        base_entries = _manifest_entries(root / 'dependencies/manifest.json')
+        target_entries = _manifest_entries(target_manifest_path)
+        changed_deps = {k for k, v in target_entries.items() if base_entries.get(k) != v}
+        removed_deps = set(base_entries) - set(target_entries)
+        for dep in changed_deps | removed_deps:
+            if not _is_runtime_patch_dependency_path(dep):
+                raise ValueError('运行库增量补丁超出了允许的依赖更新范围：' + dep)
+        entry_map = {e['file']: e for e in entries}
+        for dep in changed_deps:
+            if entry_map.get(dep) != target_entries[dep]:
+                raise ValueError('补丁载荷与目标运行库清单不一致：' + dep)
+        removed_map = {e['file']: e for e in removed}
+        for dep in removed_deps:
+            if removed_map.get(dep) != base_entries[dep]:
+                raise ValueError('补丁清理项与原运行库清单不一致：' + dep)
+        target_version = json.loads((stage / 'files/version.json').read_text(encoding='utf-8-sig'))
+        if target_version.get('version') != version or desktop_identity(target_version) != identity:
+            raise ValueError('补丁目标版本信息不匹配。')
+        plan = stage / 'plan.json'
+        plan_payload = {
+            'root': str(root),
+            'kind': 'runtime_patch',
+            'version': version,
+            'source_runtime_sha256': runtime_sha,
+            'target_runtime_sha256': item['target_runtime_sha256'],
+            **identity,
+            'entries': entries,
+            'removed': removed,
+            'state': 'ready',
+        }
+        plan.write_text(json.dumps(plan_payload, ensure_ascii=False, indent=2), encoding='utf-8')
+        shutil.copy2(Path(__file__), stage / 'apply_helper.py')
+        if register_pending:
+            _write_pending(root, plan, version)
+        return plan
+    except BaseException:
+        _remove_stage(stage, cache)
+        raise
+
+
+def apply_runtime_patch(plan_path):
+    """Apply a staged 2.x Quick lightweight runtime patch atomically with rollback."""
+    plan_path = Path(plan_path).resolve()
+    root, plan = _read_plan(plan_path)
+    installed = _installed_metadata(root)
+    current = desktop_identity(installed)
+    if not current or desktop_identity(plan) != current:
+        raise ValueError('运行库增量补丁与当前界面或 Qt 版本不匹配。')
+    _require_forward_target(root, plan, plan_path)
+    if reason := installation_busy(root):
+        raise RuntimeError(reason)
+    if sha(root / 'dependencies/manifest.json') != plan['source_runtime_sha256']:
+        raise ValueError('当前运行库版本已变化，请重新检查更新。')
+    stage = plan_path.parent
+    entries = plan['entries']
+    removed = plan.get('removed') or []
+    entry_names = {e['file'] for e in entries}
+    if len(entries) != len(entry_names):
+        raise ValueError('运行库补丁包含重复文件。')
+    for entry in entries:
+        validate_runtime_patch_entry(entry)
+        validate_destination(root, entry['file'])
+        src = validate_destination(stage / 'files', entry['file'])
+        if src.stat().st_size != entry['bytes'] or sha(src) != entry['sha256']:
+            raise ValueError('待安装的补丁文件已改变：' + entry['file'])
+    removed_map = {}
+    for rem in removed:
+        rname = rem['file']
+        if _is_runtime_patch_dependency_path(rname):
+            validate_runtime_patch_entry(rem)
+        else:
+            validate_file(rem, allow_legacy_removal=True)
+        if rname in entry_names or rname in removed_map or rname in QUICK_PROGRAM_REQUIRED or rname == 'dependencies/manifest.json':
+            raise ValueError('补丁清理项冲突：' + rname)
+        validate_destination(root, rname)
+        removed_map[rname] = rem
+    backup = Path(tempfile.mkdtemp(prefix='backup-', dir=_native(stage)))
+    touched = []
+    skipped_removals = []
+    try:
+        ordered = sorted(entries, key=lambda item: (item['file'] in ('version.json', 'dependencies/manifest.json'), item['file']))
+        for entry in ordered:
+            destination = validate_destination(root, entry['file'])
+            if (destination.is_file() and destination.stat().st_size == entry['bytes']
+                    and sha(destination) == entry['sha256']):
+                continue
+            saved = backup / entry['file']
+            existed = destination.exists()
+            if existed:
+                saved.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(destination, saved)
+            touched.append((destination, saved, existed))
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_name(destination.name + '.vwa-update')
+            validate_destination(root, temporary.relative_to(root).as_posix())
+            if temporary.exists() and destination.is_file():
+                temporary.unlink(missing_ok=True)
+            elif temporary.exists():
+                raise ValueError('发现未完成的更新临时文件，请检查更新日志。')
+            try:
+                shutil.copy2(stage / 'files' / entry['file'], temporary)
+                _replace_with_retry(temporary, destination)
+            finally:
+                temporary.unlink(missing_ok=True)
+        for rname in sorted(removed_map):
+            rem = removed_map[rname]
+            destination = validate_destination(root, rname)
+            if not destination.is_file() or destination.stat().st_size != rem['bytes'] or sha(destination) != rem['sha256']:
+                skipped_removals.append(rname)
+                continue
+            saved = backup / rname
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(destination, saved)
+            touched.append((destination, saved, True))
+            destination.unlink()
+        _clear_pending(root, plan_path)
+        return {
+            'state': 'passed',
+            'version': plan['version'],
+            'files': len(entries),
+            'removed': len(removed_map) - len(skipped_removals),
+            'skipped_removals': skipped_removals,
+            'runtime_patched': True,
+        }
+    except BaseException:
+        for destination, saved, existed in reversed(touched):
+            if existed:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(saved, destination)
+            else:
+                destination.unlink(missing_ok=True)
+        _clear_pending(root, plan_path)
+        raise
+
+
+def cleanup_stale_stages(root, *, keep_plan=None):
+    """Prune old update staging directories and superseded downloads safely."""
+    root = Path(root).resolve()
+    cache = root / 'cache/updates'
+    if not cache.is_dir() or cache.is_symlink() or cache.is_junction():
+        return 0
+    keep_stage = None
+    if keep_plan is not None:
+        try:
+            keep_stage = Path(keep_plan).resolve().parent
+        except OSError:
+            keep_stage = None
+    else:
+        pending_path = cache / 'pending.json'
+        if pending_path.is_file():
+            try:
+                data = json.loads(pending_path.read_text(encoding='utf-8-sig'))
+                if isinstance(data, dict) and isinstance(data.get('plan'), str):
+                    keep_stage = Path(data['plan']).resolve().parent
+            except (OSError, ValueError, TypeError):
+                pass
+    removed = 0
+    for child in list(cache.iterdir()):
+        if not child.is_dir() or child.is_symlink() or child.is_junction():
+            continue
+        if child.name.startswith(('stage-', 'runtime-stage-', 'patch-stage-')):
+            if keep_stage is not None and child.resolve() == keep_stage:
+                continue
+            try:
+                _remove_stage(child, cache)
+                removed += 1
+            except (OSError, ValueError):
+                pass
+    downloads = cache / 'downloads'
+    if downloads.is_dir() and not downloads.is_symlink() and not downloads.is_junction() and keep_stage is None:
+        for archive in list(downloads.glob('*.zip')):
+            try:
+                archive.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
 
 
 def wait_for_exit(pid, timeout=90):
