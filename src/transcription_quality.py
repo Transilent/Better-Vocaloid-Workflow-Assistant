@@ -149,7 +149,7 @@ def retry_collapsed_alignment(model, directory, predictions, language, native_ru
                               cancel_checker=None, use_phoneme_g2p=False):
     """Retry only suspicious local Chinese windows, using the loaded HFA model."""
     import logging
-    import tempfile
+    from vwa_io import resilient_tempdir
     from pathlib import Path
     import soundfile as sf
     from inference.API import game_api as game
@@ -175,8 +175,7 @@ def retry_collapsed_alignment(model, directory, predictions, language, native_ru
                 entry = {'chunk': stem, 'start': start, 'end': end,
                          'before_usable': alignment_coverage(original, game), 'accepted': False}
                 try:
-                    with tempfile.TemporaryDirectory(prefix='vwa-align-retry-') as tmp:
-                        folder = Path(tmp)
+                    with resilient_tempdir(prefix='vwa-align-retry-') as folder:
                         with sf.SoundFile(str(Path(directory)/(stem+'.wav'))) as audio:
                             rate = audio.samplerate
                             audio.seek(round(start * rate))
@@ -248,7 +247,7 @@ def retry_voiced_pauses(model, outcome, chunks, sr, pitch, native_run, cancel_ch
     neither guesses lyric timing nor bridges an acoustically silent rest.
     """
     import numpy as np
-    import tempfile
+    from vwa_io import resilient_tempdir
     from pathlib import Path
     import soundfile as sf
     from inference.API import game_api as game
@@ -306,8 +305,7 @@ def retry_voiced_pauses(model, outcome, chunks, sr, pitch, native_run, cancel_ch
                     entry={'chunk':stem,'start':start+chunk['offset'],'end':end+chunk['offset'],
                         'context_seconds':margin, 'before_voiced_pause':round(missing(original,chunk),4),'accepted':False}
                     try:
-                        with tempfile.TemporaryDirectory(prefix='vwa-phrase-retry-') as tmp:
-                            folder=Path(tmp)
+                        with resilient_tempdir(prefix='vwa-phrase-retry-') as folder:
                             if audio_path:
                                 with sf.SoundFile(str(audio_path)) as source:
                                     source.seek(round((start+chunk['offset'])*source.samplerate))

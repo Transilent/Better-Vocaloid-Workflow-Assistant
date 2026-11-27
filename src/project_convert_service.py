@@ -12,11 +12,11 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-import tempfile
 import time
 from typing import Any, Callable
 
 from common import ROOT, native_path
+from vwa_io import resilient_tempdir
 from worker_runner import run_worker_process
 
 
@@ -519,9 +519,9 @@ def _run_worker(
     if not export_runtime_available():
         raise FileNotFoundError('缺少工程互转运行库（dependencies/export），请在完整环境中安装或修复组件。')
     worker = _worker_script()
-    with tempfile.TemporaryDirectory(prefix='vwa-convert-') as tmp:
-        req_path = Path(tmp) / 'request.json'
-        res_path = Path(tmp) / 'response.json'
+    with resilient_tempdir(prefix='vwa-convert-') as tmp:
+        req_path = tmp / 'request.json'
+        res_path = tmp / 'response.json'
         req_path.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
         result = run_worker_process(
             [sys.executable, '-B', str(worker), command, str(req_path), str(res_path)],

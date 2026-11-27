@@ -56,46 +56,23 @@ class QuickChorus(QObject):
         self._features, self._curves, self._notes_cache = {}, {}, {}
         self._match_cache, self._rec_cache, self._lyric_inputs = {}, {}, {}
         self._speech = OrderedDict()
-        self._suggestions = ()
-        self._syllables = ()
-        self._syllable_route = ''
-        self._gain_audition = ''
-        self._resolved = set()
-        self._issue = -1
+        self._suggestions, self._syllables, self._syllable_route, self._gain_audition = (), (), '', ''
+        self._resolved, self._issue = set(), -1
         self._undo, self._redo = [], []
-        self._selected = ''
-        self._view_first = 0.
-        self._view_span = 1.
-        self._selection = (0., 0.)
-        self._mode = 'all'
-        self._inspector_open = True
-        self._inspector_section = 'batch'
-        self._batch_strength = {'timing': 100., 'pitch': 88.}
-        self._timing_ref_mode = ''
-        self._pitch_draw = False
-        self._pitch_tool = 'note'
-        self._pitch_snap = True
-        self._show_score_background = True
-        self._midi_audition = False
-        self._selected_notes = ()
-        self._prep_scores = ()
-        self._variant = 'original'
-        self._active_variant = ''
-        self._solo = ''
+        self._selected, self._view_first, self._view_span, self._selection = '', 0., 1., (0., 0.)
+        self._mode, self._inspector_open, self._inspector_section = 'all', True, 'batch'
+        self._batch_strength, self._timing_ref_mode = {'timing': 100., 'pitch': 88.}, ''
+        self._pitch_draw, self._pitch_tool, self._pitch_snap = False, 'note', True
+        self._show_score_background, self._midi_audition = True, False
+        self._selected_notes, self._prep_scores = (), ()
+        self._variant, self._active_variant, self._solo = 'original', '', ''
         self._intent = self._loop = self._follow_hold = False
         self._follow_playhead = True
         self._last_nav_action = 'selection'
         self._position = 0.
-        self._session = None
-        self._session_geometry = None
-        self._current_key = None
-        self._requested = None
-        self._seek_serial = None
+        self._session = self._session_geometry = self._current_key = self._requested = self._seek_serial = None
         self._cache = OrderedDict()
-        self._notice = ''
-        self._error = False
-        self._export = None
-        self._scratch = None
+        self._notice, self._error, self._export, self._scratch = '', False, None, None
         self._reconnect_guard = DeviceReconnectGuard()
         self._closed = False
         self._timer = QTimer(self, interval=33)
@@ -327,7 +304,7 @@ class QuickChorus(QObject):
         self._restore(project)
         self.tracksChanged.emit()
 
-    def _start(self, kind, label, work, done):
+    def _start(self, kind, label, work, done, *, on_error=None):
         if self.worker.kind:
             self._say('请等待当前合唱操作完成，或先取消。')
             return False
@@ -336,8 +313,12 @@ class QuickChorus(QObject):
         def finish(value, error):
             if isinstance(error, InterruptedError):
                 self._say('已取消。')
+                if on_error is not None:
+                    on_error(error)
             elif error is not None:
                 self._say(error, error=True)
+                if on_error is not None:
+                    on_error(error)
             else:
                 done(value)
 
@@ -350,19 +331,21 @@ class QuickChorus(QObject):
         self._replace(ChorusProject.fresh(), {}, None)
         self._say('新建修音工程')
 
-    @Slot(QUrl, bool)
-    def openProject(self, url, replace_dirty=False):
+    def _open_project(self, source, *, replace_dirty=False, target_path=None, mark_dirty=False,
+                      label='正在打开修音工程', notice='已打开修音工程', on_finished=None):
         if self.dirty and not replace_dirty:
             return
         try:
-            path = _path(url)
+            path = _path(source)
+            resolved_target = _path(target_path) if str(target_path or '').strip() else (None if mark_dirty else path)
         except (OSError, ValueError) as error:
             self._say(error, error=True)
+            if on_finished is not None:
+                on_finished(False, str(error))
             return
 
         def work(stop, send):
             from chorus_analysis import feature_track
-
             check = lambda: _check(stop)
             job = ChorusProject.open(path, check, lambda name: send(f'核对素材 · {name}'))
             features = {}
@@ -374,10 +357,25 @@ class QuickChorus(QObject):
 
         def done(result):
             job, features = result
-            self._replace(job, features, path)
-            self._say('已打开修音工程')
+            self._replace(job, features, resolved_target)
+            if mark_dirty:
+                self._saved = ChorusProject.fresh()
+                self.changed.emit()
+            self._say(notice)
+            if on_finished is not None:
+                on_finished(True, '')
 
-        self._start('open', '正在打开修音工程', work, done)
+        on_err = (lambda err: on_finished(False, str(err))) if on_finished is not None else None
+        if not self._start('open', label, work, done, on_error=on_err) and on_finished is not None:
+            on_finished(False, '请等待当前合唱操作完成。')
+
+    @Slot(QUrl, bool)
+    def openProject(self, url, replace_dirty=False):
+        self._open_project(url, replace_dirty=replace_dirty)
+
+    def openRecoveredDraft(self, draft_path, source_path='', on_finished=None):
+        self._open_project(draft_path, replace_dirty=True, target_path=source_path, mark_dirty=True,
+                           label='正在恢复修音草稿', notice='已恢复上次未保存的修音草稿', on_finished=on_finished)
 
     @Slot(QUrl)
     def saveProject(self, url=QUrl()):

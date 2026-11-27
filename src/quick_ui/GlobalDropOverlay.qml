@@ -44,6 +44,8 @@ Item {
     }
 
     Rectangle {
+        objectName: "globalDropBackdrop"
+        parent: Overlay.overlay
         anchors.fill: parent
         visible: globalDrop.containsDrag
         color: overlay.theme.dark ? "#990e1016" : "#99e4e7ef"

@@ -320,9 +320,9 @@ def _load_with_converter(converter, path: Path, fmt: str):
         )
         if not count:
             raise
-        import tempfile
-        with tempfile.TemporaryDirectory(prefix='vwa-ccs-compat-') as tmp:
-            temp_path = Path(tmp) / path.name
+        from vwa_io import resilient_tempdir
+        with resilient_tempdir(prefix='vwa-ccs-compat-') as tmp:
+            temp_path = tmp / path.name
             temp_path.write_text(patched, encoding='utf-8')
             return converter.load(temp_path, opts)
 

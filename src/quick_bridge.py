@@ -299,6 +299,8 @@ class QuickBridge(QObject):
                 self._workshop.cancel()
             elif kind.startswith('chorus-'):
                 self._chorus.cancel()
+            elif kind.startswith('convert-'):
+                self._converter.cancel()
             elif kind.startswith('tuning-'):
                 self._tuning.cancel()
             elif kind in ('mixdown-export', 'mixdown-install', 'mixdown-support-probe'):

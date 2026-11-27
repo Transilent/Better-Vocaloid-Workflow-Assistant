@@ -30,6 +30,7 @@ if str(SRC) not in sys.path:
 
 import audio_device_recovery as adr
 import chorus_model_worker as cmw
+import vwa_io
 
 
 def _write_vocal_wav(path: Path, rate: int = 44100, *, freq_a: float = 264.6, freq_b: float = 297.0,
@@ -121,7 +122,7 @@ class TestWorkerTempCleanupAndLocks(unittest.TestCase):
                     raise PermissionError(13, '另一个程序正在使用此文件，进程无法访问。', str(target / 'worker.log'))
                 return real_rmtree(path, *args, **kwargs)
 
-            with patch.object(cmw.shutil, 'rmtree', side_effect=flaky_rmtree):
+            with patch.object(vwa_io.shutil, 'rmtree', side_effect=flaky_rmtree):
                 removed = cmw.safe_rmtree(target, retries=4, base_delay=0.005)
             self.assertTrue(removed)
             self.assertEqual(attempts['n'], 3)
@@ -132,7 +133,7 @@ class TestWorkerTempCleanupAndLocks(unittest.TestCase):
             def always_locked(_path, *_args, **_kwargs):
                 raise PermissionError(13, 'WinError 32 locked worker.log')
 
-            with patch.object(cmw.shutil, 'rmtree', side_effect=always_locked):
+            with patch.object(vwa_io.shutil, 'rmtree', side_effect=always_locked):
                 with cmw.resilient_tempdir(Path(root), 'model-', stale_seconds=0) as folder:
                     (folder / 'worker.log').write_text('done', encoding='utf-8')
                     saved_path = folder
@@ -183,7 +184,7 @@ class TestWorkerTempCleanupAndLocks(unittest.TestCase):
                     raise PermissionError(13, 'WinError 32', str(Path(path) / 'worker.log'))
                 return real_rmtree(path, *args, **kwargs)
 
-            with patch.object(cmw.shutil, 'rmtree', side_effect=simulate_winerror32):
+            with patch.object(vwa_io.shutil, 'rmtree', side_effect=simulate_winerror32):
                 with cmw.model_batch(
                     worker_script, {'sleep': 0}, cache, lambda: None, lambda _i, _l: None, ['step'], 'failed'
                 ) as folder:
@@ -369,7 +370,7 @@ class TestQuickChorusUserJourneys(unittest.TestCase):
                         raise PermissionError(13, 'WinError 32 locked worker.log')
                     return real_rmtree(path, *args, **kwargs)
 
-                with patch.object(cmw.shutil, 'rmtree', side_effect=flaky_worker_log_rmtree):
+                with patch.object(vwa_io.shutil, 'rmtree', side_effect=flaky_worker_log_rmtree):
                     ctrl.togglePlay()
                     self.assertAlmostEqual(ctrl.position, preroll_pos, delta=0.05,
                                            msg='Loop togglePlay must preserve 120ms pre-roll after focusIssue')

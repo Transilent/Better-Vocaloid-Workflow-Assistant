@@ -8,12 +8,12 @@ Rectangle {
     required property QtObject theme
     required property QtObject controller
     readonly property QtObject recovery: controller ? controller.recovery : null
-    readonly property bool chorusMode: controller && controller.route === "chorus"
-    readonly property bool mixdownMode: controller && controller.route === "audio_mixdown"
-    readonly property bool active: !!recovery && (
-        (chorusMode && recovery.hasChorusDraft) || (mixdownMode && recovery.hasMixdownDraft)
-    )
-    readonly property string draftLabel: chorusMode
+    readonly property bool mixdownPriority: controller && controller.route === "audio_mixdown" && !!recovery && recovery.hasMixdownDraft
+    readonly property bool chorusTarget: !mixdownPriority && !!recovery && recovery.hasChorusDraft
+    readonly property bool mixdownTarget: !chorusTarget && !!recovery && recovery.hasMixdownDraft
+    readonly property bool active: chorusTarget || mixdownTarget
+    readonly property string workspaceTag: chorusTarget ? controller.text("修音工作台") : controller.text("简易混音")
+    readonly property string draftLabel: chorusTarget
         ? (recovery ? recovery.chorusDraftLabel : "")
         : (recovery ? recovery.mixdownDraftLabel : "")
 
@@ -48,6 +48,7 @@ Rectangle {
         Label {
             Layout.fillWidth: true
             text: banner.controller.text("发现上次异常退出前的未保存草稿")
+                + "（" + banner.workspaceTag + "）"
                 + (banner.draftLabel ? "：" + banner.draftLabel : "")
             color: banner.theme.text
             font.pixelSize: banner.theme.fontSm
@@ -62,10 +63,13 @@ Rectangle {
             implicitHeight: Math.round(28 * banner.theme.scale)
             text: banner.controller.text("恢复草稿")
             onClicked: {
-                if (banner.chorusMode)
+                if (banner.chorusTarget) {
+                    banner.controller.navigate("chorus")
                     banner.recovery.restoreChorusDraft()
-                else if (banner.mixdownMode)
+                } else if (banner.mixdownTarget) {
+                    banner.controller.navigate("audio_mixdown")
                     banner.recovery.restoreMixdownDraft()
+                }
             }
         }
 
@@ -76,9 +80,9 @@ Rectangle {
             implicitHeight: Math.round(28 * banner.theme.scale)
             text: banner.controller.text("丢弃")
             onClicked: {
-                if (banner.chorusMode)
+                if (banner.chorusTarget)
                     banner.recovery.discardChorusDraft()
-                else if (banner.mixdownMode)
+                else if (banner.mixdownTarget)
                     banner.recovery.discardMixdownDraft()
             }
         }

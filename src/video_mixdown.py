@@ -4,7 +4,7 @@ import json
 import math
 from pathlib import Path
 import re
-import tempfile
+from vwa_io import resilient_tempdir
 
 from common import atomic_json, cancelled, file_hash, load_config
 
@@ -221,8 +221,7 @@ def _analyze_alignment(job, video, mixdown, *, reference=None, max_shift=30,
     roles = (('video', video), ('mixdown', mixdown), ('reference', reference))
     fingerprints, path_hashes = expected_inputs or _snapshot_inputs(roles)
     (job / 'temp').mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='video-alignment-', dir=job / 'temp') as folder:
-        folder = Path(folder)
+    with resilient_tempdir(job / 'temp', 'video-alignment-') as folder:
         decoded = []
         for index, (role, path) in enumerate((('reference', reference), ('mixdown', mixdown))):
             wav = folder / (role + '.wav')
@@ -376,8 +375,7 @@ def _render(job, video, mixdown, output, *, offset=None, reference=None, normali
     min_space = max(256 * 1024**2, mixdown.stat().st_size * 2 + 128 * 1024**2)
     require_free_space(output.parent, min_space, '合成视频')
     (job / 'temp').mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='video-mix-', dir=job/'temp') as folder:
-        folder = Path(folder)
+    with resilient_tempdir(job / 'temp', 'video-mix-') as folder:
         filters = [f'atrim=start={-offset:.6f}'] if offset < 0 else []
         filters.append('asetpts=PTS-STARTPTS')
         if offset > 0:

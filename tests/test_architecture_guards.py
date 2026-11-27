@@ -317,6 +317,33 @@ def test_file_size_ratchet():
     )
 
 
+def test_no_bare_temporary_directory():
+    """Enforce Windows-resilient temp dirs (vwa_io.resilient_tempdir or ignore_cleanup_errors=True)."""
+    offenders = []
+    for path in _iter_source_py():
+        tree = ast.parse(path.read_text(encoding='utf-8'))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            is_td = (
+                (isinstance(func, ast.Name) and func.id == 'TemporaryDirectory')
+                or (isinstance(func, ast.Attribute) and func.attr == 'TemporaryDirectory')
+            )
+            if not is_td:
+                continue
+            has_ignore = any(
+                kw.arg == 'ignore_cleanup_errors' and isinstance(kw.value, ast.Constant) and kw.value.value is True
+                for kw in node.keywords
+            )
+            if not has_ignore:
+                offenders.append(f'{path.name}:{node.lineno}')
+    assert not offenders, (
+        'Bare TemporaryDirectory() risks Windows [WinError 32] on cleanup; '
+        f'use vwa_io.resilient_tempdir() or ignore_cleanup_errors=True: {offenders}'
+    )
+
+
 def main():
     test_no_qt_in_domain_modules()
     test_no_silent_except_exception()
@@ -327,6 +354,7 @@ def main():
     test_agent_primitives_contract()
     test_browser_runtime_edge_fallback_and_cache_prune()
     test_file_size_ratchet()
+    test_no_bare_temporary_directory()
     print('PASS test_architecture_guards')
 
 

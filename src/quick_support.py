@@ -222,9 +222,9 @@ class QuickSupport(QObject):
     @Property(bool, constant=True)
     def canApplyProgramUpdates(self): return self._can_apply_updates
     @Property(bool, notify=workChanged)
-    def workBusy(self): return bool(self._last_operation_names)
+    def workBusy(self): return bool(self._last_operation_names if self._monitor_active else self._active_operation_names())
     @Property('QStringList', notify=workChanged)
-    def operationBlockers(self): return list(self._last_operation_names)
+    def operationBlockers(self): return list(self._last_operation_names if self._monitor_active else self._active_operation_names())
 
     def _active_operation_names(self):
         names = []
@@ -269,10 +269,8 @@ class QuickSupport(QObject):
             mixdown_view = mixdown.view
             if isinstance(mixdown_view, dict) and mixdown_view.get('busy'):
                 add('简易混音')
-            if isinstance(mixdown_view, dict) and mixdown_view.get('playing'):
+            if isinstance(mixdown_view, dict) and (mixdown_view.get('playing') or mixdown_view.get('loading')):
                 add('简易混音试听')
-            if getattr(mixdown, '_preview', None) is not None:
-                add('简易混音试听会话')
             preview_timer = getattr(mixdown, '_preview_timer', None)
             if getattr(mixdown, '_preview_pending', False) or (
                     preview_timer is not None and preview_timer.isActive()):
@@ -319,10 +317,10 @@ class QuickSupport(QObject):
     @Slot(bool)
     def setMonitorActive(self, active):
         self._monitor_active = bool(active)
-        if self._monitor_active:
-            self._refresh_activity_now()
+        if self._monitor_active: self._refresh_activity_now()
         else:
             self._activity_timer.stop()
+            if self._last_operation_names: self._last_operation_names = (); self.workChanged.emit()
         return self._monitor_active
 
     def _refresh_activity_now(self):
@@ -1277,7 +1275,9 @@ class QuickSupport(QObject):
     def showTutorial(self):
         blockers = self._active_operation_names()
         if blockers:
-            self.state.update.update(message='请先完成 ' + '、'.join(blockers) + '，再查看入门教程。'); self.startupChanged.emit(); return False
+            msg = '请先完成 ' + '、'.join(blockers) + '，再查看入门教程。'; self.state.update.update(message=msg); self.startupChanged.emit()
+            if hasattr(self.owner, 'pushToast'): self.owner.pushToast(msg, 'warning')
+            return False
         self.state.show_tour(mode='scenarios'); self.startupChanged.emit(); return True
 
     @Slot()
