@@ -9,8 +9,8 @@
     {
       "name": "bs_roformer_karaoke_frazer_becruily.onnx",
       "url": "https://github.com/AU-ki/Better-Vocaloid-Workflow-Assistant/releases/download/bs-roformer-onnx/bs_roformer_karaoke_frazer_becruily.onnx",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-      "bytes": 204436907
+      "sha256": "f4ce6de4c109630a60c715e9b029c3bab511f091ce4ecbb610f72a13afa47a20",
+      "bytes": 234044471
     },
     {
       "name": "config.yaml",
