@@ -8,7 +8,7 @@ from workflow_graph import LINKS, NODES, default_graph, validate_graph
 
 DEFAULT_OPTIONS = {'language': 'zh', 'recognize_lyrics': True, 'zh_lyric_mode': 'hanzi',
                    'voice_mode': 'dual', 'midi_steps': 16, 'bpm':None, 'roformer_device': 'auto', 'separation_flow':'cascade',
-                   'separation_device': 'dml', 'midi_device': 'dml', 'midi_backend':'v2',
+                   'separation_device': 'webgpu', 'midi_device': 'webgpu', 'midi_backend':'v2',
                    'alignment_engine':'hfa','project_formats':['ustx','vsqx','svp'],
                    'audio_formats':['wav'],'project_export_enabled':True,'audio_export_enabled':True,
                    'export_pitch':True,'include_instrumental':True,'expression_density':'dense',
@@ -36,10 +36,15 @@ def validate_options(options):
             result[key] = bool(result[kind + '_formats'])
         if type(result[key]) is not bool:
             raise ValueError('导出开关必须为开启或关闭。')
+    for key in ('separation_device', 'midi_device'):
+        if result[key] in ('dml', 'directml', 'cuda'):
+            result[key] = 'webgpu'
+    if result['roformer_device'] in ('cuda', 'dml'):
+        result['roformer_device'] = 'webgpu'
     choices = {'language': LANGUAGES, 'voice_mode': ('dual', 'single', 'import', 'roformer'),
                'zh_lyric_mode': ('hanzi', 'pinyin'), 'midi_steps': (8, 16, 32),
-               'roformer_device': ('auto', 'cpu', 'cuda'),
-               'separation_device': ('cpu', 'dml'), 'midi_device': ('cpu', 'dml')}
+               'roformer_device': ('auto', 'cpu', 'webgpu'),
+               'separation_device': ('cpu', 'webgpu'), 'midi_device': ('cpu', 'webgpu')}
     choices.update(midi_backend=('v1','v2'),alignment_engine=('hfa','tifa'))
     choices.update(reference_mode=('local','netease'),subtitles_mode=('midi','netease'))
     choices.update(separation_flow=('cascade','independent'),

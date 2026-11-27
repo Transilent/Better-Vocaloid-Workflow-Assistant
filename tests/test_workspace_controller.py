@@ -43,14 +43,14 @@ with tempfile.TemporaryDirectory(dir=APP / 'work') as folder:
     assert controller.draft.revision == draft.revision + 1
     assert controller.navigate('components')
     assert controller.query == 'roformer' and controller.selected_id == 'roformer'
-    assert controller.set_runtime('cuda')
+    assert controller.set_runtime('webgpu')
     assert not controller.use_component()
     assert controller.begin('install') is None
     assert not controller.set_catalog('cpu', rows)
-    assert controller.set_catalog('cuda', rows)
+    assert controller.set_catalog('webgpu', rows)
     assert controller.set_download_source('direct')
     install = controller.begin('install', force=True)
-    assert (install.component_id, install.runtime, install.source, install.force) == ('roformer', 'cuda', 'direct', True)
+    assert (install.component_id, install.runtime, install.source, install.force) == ('roformer', 'webgpu', 'direct', True)
     assert not controller.set_runtime('cpu')
     assert controller.return_to_preparation()
     assert controller.active == install
@@ -71,11 +71,11 @@ with tempfile.TemporaryDirectory(dir=APP / 'work') as folder:
 
     # Browsing a different install target cannot change what the draft needs.
     controller.draft = controller.draft.edit('recognize_lyrics', False)
-    cpu_on_cuda_tab = {**rows[1], 'status': 'missing', 'can_use': False}
-    assert controller.set_catalog('cuda', [rows[0], cpu_on_cuda_tab])
+    cpu_on_webgpu_tab = {**rows[1], 'status': 'missing', 'can_use': False}
+    assert controller.set_catalog('webgpu', [rows[0], cpu_on_webgpu_tab])
     assert controller.component_plan['missingIds'] == []
     assert not controller.use_builtin_component()
-    controller.draft = controller.draft.edit('roformer_device', 'cuda').edit('lyrics', '保留歌词')
+    controller.draft = controller.draft.edit('roformer_device', 'webgpu').edit('lyrics', '保留歌词')
     assert controller.component_plan['missingIds'] == ['roformer']
     assert controller.query == 'roformer'
     assert controller.use_builtin_component() and controller.route == 'processing'

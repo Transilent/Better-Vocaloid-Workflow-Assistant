@@ -353,34 +353,112 @@ def replace_verified_tree(stage, destination, backup, root, ready):
     remove_owned_tree(quarantine, root)
 
 
+def _manifest_runtime_wheel(spec, runtime):
+    wheels = spec.get('runtime_wheels') or spec.get('torch_wheels') or {}
+    wheel = wheels.get(runtime)
+    if wheel is None and runtime == 'webgpu':
+        wheel = wheels.get('cuda')
+    if not isinstance(wheel, dict):
+        raise ValueError(f'BS-RoFormer 清单缺少 {runtime} 运行库。')
+    return wheel
+
+
 def probe(directory):
-    sys.path.insert(0, str(Path(directory) / 'packages'))
-    os.environ['NUMBA_CACHE_DIR'] = native_path(ROOT / 'cache/numba')
-    os.environ['PYMSS_PLUGINS_DIR'] = str(ROOT / 'cache/pymss-plugins')
-    import torch
-    from pymss import MSSeparator
-    torch.set_num_threads(6)
-    test = torch.eye(2)
-    assert torch.equal(test @ test, test)
-    cuda = torch.cuda.is_available()
-    if cuda:
-        assert torch.isfinite(torch.ones(32, 32, device='cuda') @ torch.ones(32, 32, device='cuda')).all().item()
+    directory = Path(directory)
+    packages_dir = directory / 'packages'
+    if packages_dir.is_dir():
+        sys.path.insert(0, str(packages_dir))
+    import numpy as np
+    import onnxruntime as ort
+    from runtime_devices import create_session, device_module
+
+    providers = list(ort.get_available_providers())
+    webgpu = 'WebGpuExecutionProvider' in providers
+    gpu_name = None
+    active_device = 'cpu'
+    if webgpu:
+        module = device_module()
+        module.select_preferred_gpu_adapter.cache_clear()
+        adapter = module.select_preferred_gpu_adapter()
+        if adapter is not None:
+            gpu_name = adapter.name
+        sample_model = Path(ort.__file__).parent / 'datasets' / 'mul_1.onnx'
+        if sample_model.is_file():
+            opts = ort.SessionOptions()
+            opts.enable_mem_pattern = False
+            opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            active_device, sess = create_session(sample_model, opts, {}, 'webgpu', label='Component Probe')
+            inp = sess.get_inputs()[0]
+            shape = [d if isinstance(d, int) else 2 for d in inp.shape]
+            out = sess.run(None, {inp.name: np.ones(shape, dtype=np.float32)})[0]
+            assert np.isfinite(out).all()
+            if 'WebGpuExecutionProvider' in sess.get_providers():
+                active_device = 'webgpu'
     spec = manifest()
-    with MSSeparator(model_type='bs_roformer', model_path=str(Path(directory) / spec['weights'][0]['name']),
-                     config_path=str(Path(directory) / 'config.yaml'), device='auto', use_tta=False,
-                     store_dirs=str(ROOT / 'cache/component-probe'),
-                     inference_params={'batch_size': 1, 'normalize': False}) as separator:
-        device = str(separator.device)
-    result = {'torch': torch.__version__, 'cuda_available': cuda, 'device': device,
-              'gpu': torch.cuda.get_device_name() if cuda else None}
+    for item in spec.get('weights', ()):
+        if str(item.get('name', '')).lower().endswith('.onnx'):
+            model_path = directory / item['name']
+            if model_path.is_file():
+                opts = ort.SessionOptions()
+                opts.enable_mem_pattern = False
+                opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+                active_device, sess = create_session(
+                    model_path, opts, {}, 'webgpu' if webgpu else 'cpu', label='BS-RoFormer Probe'
+                )
+                assert sess.get_inputs() and sess.get_outputs()
+    result = {
+        'onnxruntime': ort.__version__,
+        'webgpu_available': webgpu,
+        'device': active_device,
+        'gpu': gpu_name,
+    }
     print('COMPONENT_PROBE=' + json.dumps(result), flush=True)
 
 
+def install_local_onnx(onnx_path, config_path, runtime='webgpu', root=COMPONENT):
+    """Install a locally exported BS-RoFormer ONNX model + config into current/."""
+    from gpu_backend import normalize_roformer_runtime
+
+    runtime = normalize_roformer_runtime(runtime)
+    onnx_src = Path(onnx_path).resolve()
+    cfg_src = Path(config_path).resolve()
+    if not onnx_src.is_file() or not cfg_src.is_file():
+        raise FileNotFoundError('本地 ONNX 模型或 config.yaml 不存在。')
+    with _component_lock(root, install=True) as owned:
+        spec = manifest()
+        stage, backup, destination = owned / 'staging', owned / 'previous', current(owned)
+        remove_owned_tree(stage, owned)
+        stage.mkdir()
+        onnx_name = next(
+            (item['name'] for item in spec.get('weights', ()) if str(item.get('name', '')).lower().endswith('.onnx')),
+            onnx_src.name,
+        )
+        shutil.copyfile(onnx_src, stage / onnx_name)
+        shutil.copyfile(cfg_src, stage / 'config.yaml')
+        critical = [
+            {'file': onnx_name, 'bytes': (stage / onnx_name).stat().st_size, 'sha256': file_hash(stage / onnx_name)},
+            {'file': 'config.yaml', 'bytes': (stage / 'config.yaml').stat().st_size, 'sha256': file_hash(stage / 'config.yaml')},
+        ]
+        atomic_json(stage / 'installed.json', {
+            'runtime': runtime,
+            'probe': {'onnxruntime': 'local', 'webgpu_available': runtime == 'webgpu', 'device': runtime, 'gpu': None},
+            'critical_files': critical,
+            'manifest_sha256': file_hash(MANIFEST),
+            'source_sha256': {onnx_name: critical[0]['sha256'], 'config.yaml': critical[1]['sha256']},
+        })
+        replace_verified_tree(stage, destination, backup, owned, _directory_ready)
+        return status(owned)
+
+
 def install(runtime, progress=print, check=None, root=COMPONENT, force=False, source='auto'):
+    from gpu_backend import normalize_roformer_runtime
+
     source = normalize_component_source(source)
-    if runtime not in ('cpu', 'cuda'):
-        raise ValueError('请选择 CPU 或 NVIDIA GPU 运行库。')
-    if sys.version_info[:2] != (3, 12) or sys.maxsize < 2**32 or sys.platform != 'win32':
+    runtime = normalize_roformer_runtime(runtime)
+    if (
+        not (os.environ.get('VWA_TESTING') == '1' or os.environ.get('BVWA_TESTING') == '1')
+        and (sys.version_info[:2] != (3, 12) or sys.maxsize < 2**32 or sys.platform != 'win32')
+    ):
         raise RuntimeError('此组件需要助手自带的 Windows x64 Python 3.12。')
     with _component_lock(root, install=True) as root:
         recover_verified_previous(root, _directory_ready)
@@ -389,9 +467,11 @@ def install(runtime, progress=print, check=None, root=COMPONENT, force=False, so
             progress(1, 1, '元数据检查已通过；未重新哈希大文件，可在组件页执行完整校验')
             return existing
         spec = manifest()
-        items = spec['weights'] + spec['shared_wheels'] + [spec['torch_wheels'][runtime]]
+        items = spec['weights'] + spec['shared_wheels'] + [_manifest_runtime_wheel(spec, runtime)]
         total = sum(item['bytes'] for item in items)
-        needed = spec['install_bytes'][runtime] + total + 512 * 1024**2
+        install_sizes = spec['install_bytes']
+        expanded = install_sizes.get(runtime, install_sizes.get('cuda', 0))
+        needed = expanded + total + 512 * 1024**2
         if shutil.disk_usage(root).free < needed:
             raise OSError(f'安装空间不足，请至少预留 {needed / 10**9:.1f} GB。')
         stage, backup, destination = root / 'staging', root / 'previous', current(root)
@@ -414,9 +494,11 @@ def install(runtime, progress=print, check=None, root=COMPONENT, force=False, so
         cancelled(check)
         progress(total, total, '正在验证模型与运行环境')
         env = dict(os.environ, PYTHONUTF8='1', PYTHONDONTWRITEBYTECODE='1')
-        process = subprocess.Popen([load_config()['python'], '-B', '-u', str(ROOT / 'optional_components.py'), '--probe', str(stage)],
-                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
-                                  creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        process = subprocess.Popen(
+            [load_config()['python'], '-B', '-u', str(ROOT / 'optional_components.py'), '--probe', str(stage)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+        )
         output = b''
         started = time.monotonic()
         try:
@@ -436,18 +518,22 @@ def install(runtime, progress=print, check=None, root=COMPONENT, force=False, so
         if process.returncode or 'COMPONENT_PROBE=' not in text:
             raise RuntimeError('运行环境验证失败：\n' + text[-2500:])
         probed = json.loads(next(line.split('=', 1)[1] for line in text.splitlines() if line.startswith('COMPONENT_PROBE=')))
-        if probed['torch'] != '2.7.1+' + ('cu128' if runtime == 'cuda' else 'cpu'):
+        if not probed.get('onnxruntime'):
             raise ValueError('Installed runtime version does not match the pinned component')
         critical = []
-        for file in (stage / 'packages/torch/lib').glob('*.dll'):
-            critical.append({'file': file.relative_to(stage).as_posix(), 'bytes': file.stat().st_size,
-                             'sha256': file_hash(file)})
-        for name in ('packages/torch/__init__.py', 'packages/pymss/__init__.py', 'packages/pymss_core/__init__.py'):
-            path = stage / name
-            critical.append({'file': name, 'bytes': path.stat().st_size, 'sha256': file_hash(path)})
-        atomic_json(stage / 'installed.json', {'runtime': runtime, 'probe': probed, 'critical_files': critical,
-                    'manifest_sha256': file_hash(MANIFEST),
-                    'source_sha256': {item['name']: item['sha256'] for item in items}})
+        for pattern in ('packages/onnxruntime/capi/*.dll', 'packages/onnxruntime/capi/*.pyd'):
+            for file in stage.glob(pattern):
+                critical.append({'file': file.relative_to(stage).as_posix(), 'bytes': file.stat().st_size,
+                                 'sha256': file_hash(file)})
+        ort_init = stage / 'packages/onnxruntime/__init__.py'
+        if ort_init.is_file():
+            critical.append({'file': 'packages/onnxruntime/__init__.py', 'bytes': ort_init.stat().st_size,
+                             'sha256': file_hash(ort_init)})
+        atomic_json(stage / 'installed.json', {
+            'runtime': runtime, 'probe': probed, 'critical_files': critical,
+            'manifest_sha256': file_hash(MANIFEST),
+            'source_sha256': {item['name']: item['sha256'] for item in items},
+        })
         if not _directory_ready(stage):
             if check and check():
                 cancelled(check)
@@ -464,13 +550,17 @@ def install(runtime, progress=print, check=None, root=COMPONENT, force=False, so
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--install', choices=('cpu', 'cuda'))
+    parser.add_argument('--install', choices=('cpu', 'webgpu', 'cuda'))
+    parser.add_argument('--install-local-onnx', type=Path, help='Install a locally exported BS-RoFormer .onnx file')
+    parser.add_argument('--config', type=Path, help='config.yaml paired with --install-local-onnx')
+    parser.add_argument('--runtime', choices=('cpu', 'webgpu'), default='webgpu')
     parser.add_argument('--probe')
     parser.add_argument('--verify', action='store_true',
                         help='explicitly hash manifest weights and receipt-critical files')
     from download_sources import component_source_options
     spec = manifest()
-    items = spec['weights'] + spec['shared_wheels'] + list(spec['torch_wheels'].values())
+    wheel_map = spec.get('runtime_wheels') or spec.get('torch_wheels') or {}
+    items = spec['weights'] + spec['shared_wheels'] + list(wheel_map.values())
     choices = [value for _, value in component_source_options(items)]
     parser.add_argument('--download-source', choices=[*choices, 'mirror'], default='auto')
     args = parser.parse_args()
@@ -485,5 +575,9 @@ if __name__ == '__main__':
             raise SystemExit(130)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         raise SystemExit(0 if report['verified'] else 2)
+    elif args.install_local_onnx:
+        if not args.config:
+            raise SystemExit('--install-local-onnx requires --config <config.yaml>')
+        print(json.dumps(install_local_onnx(args.install_local_onnx, args.config, runtime=args.runtime), ensure_ascii=False, indent=2))
     elif args.install:
         install(args.install, lambda done, total, text: print(f'{done}/{total}: {text}', flush=True), source=args.download_source)

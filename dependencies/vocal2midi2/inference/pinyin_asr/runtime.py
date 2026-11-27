@@ -88,11 +88,17 @@ class PinyinASROnnxModel:
             sample_rate = int(meta.get("sample_rate", sample_rate))
 
         requested_device = normalize_runtime_device(device)
-        requested_provider = (provider or requested_device).lower()
+        requested_provider = normalize_runtime_device(provider or requested_device)
         session = create_session(str(model_file), provider=requested_provider)
-        active_provider = "dml" if "DmlExecutionProvider" in session.get_providers() else "cpu"
-        if verbose and requested_provider == "dml" and active_provider == "cpu":
-            logger.info("[Pinyin ASR] DML provider unavailable, using CPUExecutionProvider.")
+        active_providers = session.get_providers()
+        if "WebGpuExecutionProvider" in active_providers:
+            active_provider = "webgpu"
+        elif "DmlExecutionProvider" in active_providers:
+            active_provider = "dml"
+        else:
+            active_provider = "cpu"
+        if verbose and requested_provider in {"webgpu", "dml"} and active_provider == "cpu":
+            logger.info("[Pinyin ASR] GPU provider unavailable, using CPUExecutionProvider.")
 
         id2token, blank_id = load_vocab(vocab_file)
         return cls(

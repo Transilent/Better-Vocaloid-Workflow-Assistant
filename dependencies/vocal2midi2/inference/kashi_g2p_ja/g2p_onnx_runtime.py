@@ -902,9 +902,12 @@ class G2POnnxRuntime:
         self.unk_id = int(self.vocab.get("[UNK]", 1))
         self.lexicon = UnifiedLexicon(self.table, use_rules=True, use_copy=False)
         providers = ort.get_available_providers()
-        use = ["DmlExecutionProvider", "CPUExecutionProvider"] \
-            if prefer_dml and "DmlExecutionProvider" in providers \
-            else ["CPUExecutionProvider"]
+        if prefer_dml and "WebGpuExecutionProvider" in providers:
+            use = ["WebGpuExecutionProvider", "CPUExecutionProvider"]
+        elif prefer_dml and "DmlExecutionProvider" in providers:
+            use = ["DmlExecutionProvider", "CPUExecutionProvider"]
+        else:
+            use = ["CPUExecutionProvider"]
         model_path = resolved_dir / model_file
         self.session = ort.InferenceSession(str(model_path), providers=use)
         self.provider_name = self.session.get_providers()[0]

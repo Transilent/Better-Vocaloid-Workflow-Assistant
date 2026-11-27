@@ -34,8 +34,8 @@ ScrollView {
     readonly property string sourceHint: controller.downloadSource === "direct" ? ""
         : component.id === "roformer" ? controller.text(
             controller.downloadSource === "modelscope" || controller.downloadSource === "github-release"
-            ? "所选方案不经过 Hugging Face；Python 和 PyTorch 依赖由各自的镜像提供。"
-            : "PyPI 只用于普通依赖，SJTU 只用于 PyTorch。连不上 Hugging Face 时可直接选魔搭或 GitHub。")
+            ? "所选方案不经过 Hugging Face；ONNX WebGPU 运行库由 PyPI 镜像提供。"
+            : "PyPI 用于 onnxruntime-webgpu 运行库；连不上 Hugging Face 时可直接选 GitHub。")
         : component.id === "chinese" ? controller.text(
             "HF-Mirror 可能跳回 Hugging Face；暂无核验通过的独立来源。")
         : ""
@@ -467,7 +467,7 @@ ScrollView {
                     Text {
                         Layout.fillWidth: true
                         visible: !!page.component.id && page.usesPlannedRoformer
-                        text: page.controller.text("缺项与已就绪分组按当前准备方案；安装和校验仍以右侧 CPU/CUDA 档为准。")
+                        text: page.controller.text("缺项与已就绪分组按当前准备方案；安装和校验仍以右侧 CPU/WebGPU 档为准。")
                         color: page.theme.muted
                         font.pixelSize: Math.round(11 * page.theme.scale)
                         wrapMode: Text.Wrap
@@ -587,8 +587,8 @@ ScrollView {
                                 enabled: page.idle
                                 Accessible.name: page.controller.text("运行库")
                                 model: [{ label: page.controller.text("仅 CPU"), value: "cpu" },
-                                        { label: page.controller.text("NVIDIA GPU / CUDA"), value: "cuda" }]
-                                currentIndex: page.controller.runtime === "cuda" ? 1 : 0
+                                        { label: page.controller.text("GPU / WebGPU"), value: "webgpu" }]
+                                currentIndex: page.controller.runtime === "webgpu" ? 1 : 0
                                 onActivated: page.controller.setRuntime(currentValue)
                             }
                         }

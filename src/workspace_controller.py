@@ -170,7 +170,9 @@ class WorkspaceController:
         return True
 
     def set_runtime(self, runtime):
-        if self.active or runtime not in ('cpu', 'cuda') or self.runtime == runtime:
+        if runtime == 'cuda':
+            runtime = 'webgpu'
+        if self.active or runtime not in ('cpu', 'webgpu') or self.runtime == runtime:
             return False
         self.runtime = runtime
         return True
@@ -217,10 +219,14 @@ class WorkspaceController:
         ready = {key for key, row in by_id.items() if row['status'] == 'ready'}
         if separator == 'roformer' and known:
             installed = by_id.get('roformer', {}).get('health', {}).get('ready_runtime')
+            if installed == 'cuda':
+                installed = 'webgpu'
             requested = draft['roformer_device']
-            # A CUDA build can run the CPU path; an explicit CUDA request needs
+            if requested == 'cuda':
+                requested = 'webgpu'
+            # A WebGPU build can run the CPU path; an explicit WebGPU request needs
             # that build. This is a file check, not a GPU/driver guarantee.
-            if installed in ('cpu', 'cuda') and (requested != 'cuda' or installed == 'cuda'):
+            if installed in ('cpu', 'webgpu') and (requested != 'webgpu' or installed == 'webgpu'):
                 ready.add('roformer')
             else:
                 ready.discard('roformer')

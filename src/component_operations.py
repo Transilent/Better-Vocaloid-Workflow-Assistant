@@ -39,9 +39,11 @@ _FEATURE_STATUS = {'ready', 'missing', 'partial', 'damaged', 'error'}
 
 
 def _runtime(value):
-    if value not in ('cpu', 'cuda'):
-        raise ValueError('请选择 CPU 或 NVIDIA CUDA 运行库。')
-    return value
+    if value in ('cpu', 'webgpu'):
+        return value
+    if value == 'cuda':
+        return 'webgpu'
+    raise ValueError('请选择 CPU 或 WebGPU 运行库。')
 
 
 def _nonnegative_int(value):
@@ -74,7 +76,7 @@ def _row(component_id, status, *, detail, download=0, installed=0,
         }[component_id],
         'summary': {
             'builtin': '主唱／和声分离 · 内置基础方案 · 无需下载',
-            'roformer': '主唱／和声分离 · 可选 CPU / CUDA 运行库',
+            'roformer': '主唱／和声分离 · 可选 CPU / WebGPU 运行库',
             QWEN_FEATURE: 'Qwen3-ASR · 中文和英文共用',
             'expression': 'WORLD · 张力、气声与发声强度',
         }[component_id],
@@ -197,10 +199,15 @@ def _roformer_manifest_items(spec, runtime):
         if not isinstance(value, list):
             raise ValueError(f'BS-RoFormer 清单缺少 {key}。')
         rows.extend(value)
-    torch_wheels = spec.get('torch_wheels')
-    if not isinstance(torch_wheels, dict) or not isinstance(torch_wheels.get(runtime), dict):
+    runtime_wheels = spec.get('runtime_wheels') or spec.get('torch_wheels')
+    if not isinstance(runtime_wheels, dict):
         raise ValueError(f'BS-RoFormer 清单缺少 {runtime} 运行库。')
-    rows.append(torch_wheels[runtime])
+    wheel = runtime_wheels.get(runtime)
+    if wheel is None and runtime == 'webgpu':
+        wheel = runtime_wheels.get('cuda')
+    if not isinstance(wheel, dict):
+        raise ValueError(f'BS-RoFormer 清单缺少 {runtime} 运行库。')
+    rows.append(wheel)
     for item in rows:
         if not isinstance(item, dict) or type(item.get('bytes')) is not int or item['bytes'] < 0:
             raise ValueError('BS-RoFormer 清单文件大小无效。')
@@ -216,13 +223,18 @@ def _roformer_row(runtime):
         download = sum(item['bytes'] for item in items)
         install_sizes = spec.get('install_bytes')
         expanded = install_sizes.get(runtime) if isinstance(install_sizes, dict) else None
+        if expanded is None and runtime == 'webgpu' and isinstance(install_sizes, dict):
+            expanded = install_sizes.get('cuda')
         expanded = _nonnegative_int(expanded)
         required = download + expanded + 512 * 1024**2
     except Exception as exc:
         return _error_row('roformer', exc, model=model)
 
     ready = bool(state.get('ready'))
-    installed_runtime = state.get('runtime') if state.get('runtime') in ('cpu', 'cuda') else None
+    raw_installed = state.get('runtime')
+    installed_runtime = (
+        'webgpu' if raw_installed in ('webgpu', 'cuda') else ('cpu' if raw_installed == 'cpu' else None)
+    )
     verification = state.get('verification') if isinstance(state.get('verification'), dict) else {}
     cached = 0
     for item in items:
@@ -252,8 +264,8 @@ def _roformer_row(runtime):
         )
 
     if ready and installed_runtime is not None:
-        installed_name = 'CUDA' if installed_runtime == 'cuda' else 'CPU'
-        selected_name = 'CUDA' if runtime == 'cuda' else 'CPU'
+        installed_name = 'WebGPU' if installed_runtime == 'webgpu' else 'CPU'
+        selected_name = 'WebGPU' if runtime == 'webgpu' else 'CPU'
         return _row(
             'roformer', 'missing',
             status_text='当前目标未安装',

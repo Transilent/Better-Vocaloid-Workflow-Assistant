@@ -25,8 +25,8 @@ CONFIG_DEFAULTS: dict[str, Any] = {
     "mdx_metadata": "dependencies/models/mdx-model-data.json",
     "default_source": "",
     "attribution": "source_and_upstream",
-    "separation_device": "dml",
-    "midi_device": "dml",
+    "separation_device": "webgpu",
+    "midi_device": "webgpu",
     "chorus_model": "models/UVR_MDXNET_KARA_2.onnx",
     "chorus_metadata": "models/mdx-model-data.json",
     "mdx_overlap": 0.5,
@@ -44,8 +44,8 @@ CONFIG_DEFAULTS: dict[str, Any] = {
 CONFIG_CHOICES: dict[str, tuple[Any, ...]] = {
     "theme": ("light", "dark", "system"),
     "network_proxy_mode": ("direct", "system"),
-    "separation_device": ("cpu", "dml"),
-    "midi_device": ("cpu", "dml"),
+    "separation_device": ("cpu", "webgpu"),
+    "midi_device": ("cpu", "webgpu"),
     "attribution": ("source_and_upstream", "source_only", "none"),
 }
 
@@ -90,6 +90,12 @@ def validate_and_migrate(raw: Any) -> tuple[dict[str, Any], list[str], bool]:
             result[key] = copy.deepcopy(default)
             if key in ("schema_version", "network_proxy_mode"):
                 migrated = True
+
+    # Migrate legacy DirectML device tokens to cross-vendor WebGPU.
+    for key in ("separation_device", "midi_device"):
+        if result.get(key) in ("dml", "directml", "cuda"):
+            result[key] = "webgpu"
+            migrated = True
 
     # Validate enum choices
     for key, allowed in CONFIG_CHOICES.items():

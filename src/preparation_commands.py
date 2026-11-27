@@ -21,8 +21,8 @@ _CHOICES = {
     'input_mode': ('local', 'bilibili'), 'voice_mode': ('single', 'dual', 'import', 'roformer'),
     'separator_model': ('dual', 'roformer'), 'target': ('separation', 'midi', 'subtitles'),
     'language': LANGUAGES, 'zh_lyric_mode': ('hanzi', 'pinyin'),
-    'roformer_device': ('auto', 'cpu', 'cuda'), 'separation_flow': ('cascade', 'independent'),
-    'separation_device': ('cpu', 'dml'), 'midi_device': ('cpu', 'dml'),
+    'roformer_device': ('auto', 'cpu', 'webgpu'), 'separation_flow': ('cascade', 'independent'),
+    'separation_device': ('cpu', 'webgpu'), 'midi_device': ('cpu', 'webgpu'),
     'midi_backend': ('v1', 'v2'), 'alignment_engine': ('hfa', 'tifa'), 'midi_steps': (8, 16, 32),
     'reference_mode': ('local', 'netease'),
 }
@@ -226,6 +226,10 @@ class PreparationDraft:
 
     def edit(self, name, value):
         if name in _CHOICES:
+            if name in ('separation_device', 'midi_device') and value == 'dml':
+                value = 'webgpu'
+            elif name == 'roformer_device' and value == 'cuda':
+                value = 'webgpu'
             if isinstance(value, bool) or value not in _CHOICES[name]:
                 raise ValueError('选项无效。')
         elif name in _TEXT:
@@ -240,7 +244,7 @@ class PreparationDraft:
             value = [item for item in _FORMATS[name] if item in value]
         elif name == 'dml_adapter':
             if value != 'auto' and (type(value) is not int or value < 0):
-                raise ValueError('DirectML 显卡选择无效。')
+                raise ValueError('GPU 显卡选择无效。')
         elif name == 'cpu_threads':
             if type(value) is not int or not 0 <= value <= 64:
                 raise ValueError('CPU 线程数应为自动或 1–64。')

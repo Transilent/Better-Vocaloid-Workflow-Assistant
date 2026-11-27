@@ -36,23 +36,21 @@ def load_audio(audio_path: str | Path, sample_rate: int = DEFAULT_SAMPLE_RATE) -
 def create_session(model_path: Path, provider: str | None = None) -> ort.InferenceSession:
     provider = normalize_runtime_device(provider)
     sess_options = ort.SessionOptions()
-    from inference.device_utils import configure_onnx_threads
+    from inference.device_utils import configure_onnx_threads, create_onnx_session
     configure_onnx_threads(sess_options)
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
-    if provider == "dml":
+    if provider in {"webgpu", "dml"}:
         sess_options.enable_mem_pattern = False
         sess_options.enable_cpu_mem_arena = False
         sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-        _, providers = resolve_onnx_providers("dml", label="Romaji ASR ONNX")
-    elif provider in {"cpu", "metal"}:
+        _, session = create_onnx_session(model_path, sess_options, provider, label="Romaji ASR ONNX")
+        return session
+    if provider in {"cpu", "metal"}:
         if provider == "metal":
             logger.info("[Romaji ASR ONNX] Metal provider is unavailable for this model; using CPUExecutionProvider.")
-        providers = ["CPUExecutionProvider"]
-    else:
-        raise ValueError(f"Unsupported provider: {provider}")
-
-    return ort.InferenceSession(str(model_path), sess_options=sess_options, providers=providers)
+        return ort.InferenceSession(str(model_path), sess_options=sess_options, providers=["CPUExecutionProvider"])
+    raise ValueError(f"Unsupported provider: {provider}")
 
 
 def get_fixed_batch_size(session: ort.InferenceSession) -> int | None:

@@ -134,8 +134,8 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
         raise FileNotFoundError('TiFA 模型尚未安装，请先安装模型或选择 HubertFA。')
     for key, value in [('separation_device', separation_device), ('midi_device', midi_device)]:
         if value is not None:
-            if value not in ('cpu', 'dml'):
-                raise ValueError('推理设备应为 CPU 或 DirectML。')
+            if value in ('dml', 'directml'): value = 'webgpu'
+            if value not in ('cpu', 'webgpu'): raise ValueError('推理设备应为 CPU 或 WebGPU。')
             tools[key] = value
     from runtime_devices import validate
     validate(tools.get('dml_adapter', 'auto') if dml_adapter is None else dml_adapter,
@@ -165,8 +165,8 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
         raise ValueError('中文歌词格式请选择汉字或拼音。')
     if midi_steps not in (8, 16, 32):
         raise ValueError("MIDI 推理步数应为 8、16 或 32。")
-    if roformer_device not in ('auto', 'cpu', 'cuda'):
-        raise ValueError('新模型的设备请选择自动、CPU 或 CUDA。')
+    if roformer_device == 'cuda': roformer_device = 'webgpu'
+    if roformer_device not in ('auto', 'cpu', 'webgpu'): raise ValueError('新模型的设备请选择自动、CPU 或 WebGPU。')
     if voice_mode == 'roformer':
         from optional_components import require_ready
         require_ready()
@@ -1266,7 +1266,7 @@ def main():
     parser.add_argument('--output-dir', help='Parent directory for a new task; defaults to the application jobs folder')
     parser.add_argument('--zh-lyric-mode', choices=('hanzi', 'pinyin'), default='hanzi')
     parser.add_argument("--voice-mode", choices=("single", "dual", "import", "roformer"), default="dual")
-    parser.add_argument('--roformer-device', choices=('auto', 'cpu', 'cuda'), default='auto')
+    parser.add_argument('--roformer-device', choices=('auto', 'cpu', 'webgpu', 'cuda'), default='auto')
     parser.add_argument('--separation-flow', choices=('cascade','independent'), default='cascade')
     parser.add_argument('--calibration-profile', type=Path, help='可选的声库试音校准配置')
     parser.add_argument("--lead-wav")

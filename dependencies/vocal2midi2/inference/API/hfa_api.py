@@ -136,14 +136,15 @@ def load_hfa_model(model_dir, device=None, use_cache: bool = True):
     model.load_config()
     model.init_decoder()
     import onnxruntime as ort
-    provider_name, providers = resolve_onnx_providers(device, label="HubertFA ONNX")
+    from inference.device_utils import configure_onnx_threads, create_onnx_session
     options = ort.SessionOptions()
-    from inference.device_utils import configure_onnx_threads
     configure_onnx_threads(options)
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     options.enable_mem_pattern = False
     options.enable_cpu_mem_arena = False
-    model.model = ort.InferenceSession(str(model.model_folder / 'model.onnx'), options, providers=providers)
+    provider_name, model.model = create_onnx_session(
+        model.model_folder / 'model.onnx', options, device, label="HubertFA ONNX"
+    )
     logger.info(f"HubertFA ONNX session created with provider={provider_name}: {model.model.get_providers()}")
     if use_cache:
         _HFA_MODEL_CACHE[key] = model

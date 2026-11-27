@@ -69,7 +69,7 @@ MODE_LABELS = {
     'import': '外部分轨',
     'single': '人声单轨',
 }
-DEVICE_LABELS = {'cpu': 'CPU', 'dml': 'GPU / DirectML'}
+DEVICE_LABELS = {'cpu': 'CPU', 'webgpu': 'GPU / WebGPU', 'dml': 'GPU / DirectML'}
 PRODUCER_LABELS = {
     'metadata': '来源资料',
     'download': '下载 / 导入',

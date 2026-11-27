@@ -640,7 +640,7 @@ class QuickBridge(QObject):
         required = plan['components']
         separator = next((key for key in required if key in ('builtin', 'roformer')), '')
         lines = [tr('使用导入的分轨') if not separator else
-                 'BS-RoFormer · ' + {'cpu': 'CPU', 'cuda': 'CUDA', 'auto': tr('自动选择运行库')}[draft['roformer_device']]
+                 'BS-RoFormer · ' + {'cpu': 'CPU', 'webgpu': 'WebGPU', 'cuda': 'WebGPU', 'auto': tr('自动选择运行库')}[draft['roformer_device']]
                  if separator == 'roformer' else tr('内置分离')]
         if draft['target'] != 'separation':
             english = draft['language'] == 'en'

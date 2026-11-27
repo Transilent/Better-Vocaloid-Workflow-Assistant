@@ -351,7 +351,7 @@ def inspect_component(directory, manifest_path, *, full=False, progress=None, ch
     if receipt is not None:
         report['runtime'] = receipt.get('runtime')
         report['probe'] = receipt.get('probe')
-        if report['runtime'] not in ('cpu', 'cuda'):
+        if report['runtime'] not in ('cpu', 'webgpu', 'cuda'):
             report['errors'].append({'code': 'receipt_runtime_invalid',
                                      'message': '安装记录缺少有效运行库。',
                                      'path': 'installed.json'})

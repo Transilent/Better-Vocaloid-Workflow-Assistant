@@ -1256,9 +1256,9 @@ Item {
                                     Layout.fillWidth: true
                                     theme: page.theme
                                     model: [
-                                        {label: page.controller.text("自动 · CUDA 优先"), value: "auto"},
+                                        {label: page.controller.text("自动 · WebGPU 优先"), value: "auto"},
                                         {label: "CPU", value: "cpu"},
-                                        {label: "NVIDIA GPU / CUDA", value: "cuda"}
+                                        {label: "GPU / WebGPU", value: "webgpu"}
                                     ]
                                     textRole: "label"
                                     valueRole: "value"
@@ -1298,7 +1298,7 @@ Item {
                             Layout.fillWidth: true
                             visible: page.roformerSelected
                             theme: page.theme
-                            text: page.controller.text("RoFormer 需要先在模型与组件中安装。自动模式优先使用 CUDA；遇到显存或驱动问题时可在失败后改用 CPU。")
+                            text: page.controller.text("RoFormer 需要先在模型与组件中安装。自动模式优先使用 WebGPU（支持 AMD / NVIDIA / Intel 显卡）；遇到显存或驱动问题时可在失败后改用 CPU。")
                         }
 
                         ColumnLayout {
@@ -1628,7 +1628,7 @@ Item {
                                     theme: page.theme
                                     model: [
                                         {label: "CPU", value: "cpu"},
-                                        {label: "DirectML", value: "dml"}
+                                        {label: "WebGPU", value: "webgpu"}
                                     ]
                                     textRole: "label"
                                     valueRole: "value"
@@ -1653,7 +1653,7 @@ Item {
                                     theme: page.theme
                                     model: [
                                         {label: "CPU", value: "cpu"},
-                                        {label: "DirectML", value: "dml"}
+                                        {label: "WebGPU", value: "webgpu"}
                                     ]
                                     textRole: "label"
                                     valueRole: "value"
@@ -1669,7 +1669,7 @@ Item {
 
                                 LabelText {
                                     theme: page.theme
-                                    text: page.controller.text("DirectML 显卡")
+                                    text: page.controller.text("WebGPU 显卡")
                                 }
 
                                 UiComboBox {

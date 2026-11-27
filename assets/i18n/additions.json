@@ -3727,7 +3727,15 @@
     "音频输出设备已更新": "Audio output device updated",
     "音频输出设备已变动，已自动切换并恢复试听": "Audio output device changed; reconnected preview automatically",
     "已加入准备队列": "Added to preparation queue",
-    "已清空准备队列": "Cleared preparation queue"
+    "已清空准备队列": "Cleared preparation queue",
+    "缺项与已就绪分组按当前准备方案；安装和校验仍以右侧 CPU/WebGPU 档为准。": "Missing and ready groups follow the current preparation plan; install and verification still target the CPU/WebGPU tier on the right.",
+    "RoFormer 需要先在模型与组件中安装。自动模式优先使用 WebGPU（支持 AMD / NVIDIA / Intel 显卡）；遇到显存或驱动问题时可在失败后改用 CPU。": "Install BS-RoFormer in Models & Components first. Auto prefers WebGPU (AMD / NVIDIA / Intel GPUs); switch to CPU after a VRAM or driver failure.",
+    "WebGPU 显卡": "WebGPU adapter",
+    "自动 · WebGPU 优先": "Auto · WebGPU first",
+    "GPU / WebGPU": "GPU / WebGPU",
+    "主唱／和声分离 · 可选 CPU / WebGPU 运行库": "Lead / backing separation · Optional CPU / WebGPU runtime",
+    "所选方案不经过 Hugging Face；ONNX WebGPU 运行库由 PyPI 镜像提供。": "Selected source bypasses Hugging Face; the ONNX WebGPU runtime comes from the PyPI mirror.",
+    "PyPI 用于 onnxruntime-webgpu 运行库；连不上 Hugging Face 时可直接选 GitHub。": "PyPI provides onnxruntime-webgpu; choose GitHub directly if Hugging Face is unreachable."
   },
   "ja": {
     "合唱工作台": "コーラスワークスペース",
@@ -7457,6 +7465,14 @@
     "音频输出设备已更新": "オーディオ出力デバイスを更新しました",
     "音频输出设备已变动，已自动切换并恢复试听": "出力デバイスの変更を検知し、試聴を自動復帰しました",
     "已加入准备队列": "準備キューに追加しました",
-    "已清空准备队列": "準備キューをクリアしました"
+    "已清空准备队列": "準備キューをクリアしました",
+    "缺项与已就绪分组按当前准备方案；安装和校验仍以右侧 CPU/WebGPU 档为准。": "不足・準備済みの分類は現在の準備プランに従います。インストールと検証は右側の CPU/WebGPU 構成が基準です。",
+    "RoFormer 需要先在模型与组件中安装。自动模式优先使用 WebGPU（支持 AMD / NVIDIA / Intel 显卡）；遇到显存或驱动问题时可在失败后改用 CPU。": "先に「モデルとコンポーネント」から BS-RoFormer をインストールしてください。自動モードは WebGPU（AMD / NVIDIA / Intel GPU 対応）を優先し、VRAM やドライバ問題が発生した場合は CPU に切り替えられます。",
+    "WebGPU 显卡": "WebGPU アダプター",
+    "自动 · WebGPU 优先": "自動・WebGPU 優先",
+    "GPU / WebGPU": "GPU / WebGPU",
+    "主唱／和声分离 · 可选 CPU / WebGPU 运行库": "リード／コーラス分離・オプション CPU / WebGPU ランタイム",
+    "所选方案不经过 Hugging Face；ONNX WebGPU 运行库由 PyPI 镜像提供。": "選択したソースは Hugging Face を経由せず、ONNX WebGPU ランタイムは PyPI ミラーから取得します。",
+    "PyPI 用于 onnxruntime-webgpu 运行库；连不上 Hugging Face 时可直接选 GitHub。": "PyPI は onnxruntime-webgpu ランタイム用です。Hugging Face に接続できない場合は GitHub を直接選んでください。"
   }
 }

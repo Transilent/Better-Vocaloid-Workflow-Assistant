@@ -144,24 +144,32 @@ class QwenOnnxASREngine:
         opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
         opts.add_session_config_entry("session.inter_op.allow_spinning", "0")
 
-        encoder_providers = ["CPUExecutionProvider"]
-        if (
-            self.device == "metal"
-            and sys.platform == "darwin"
-            and "CoreMLExecutionProvider" in ort.get_available_providers()
-        ):
-            encoder_providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
-
         encoder_path = _resolve_variant(self.model_dir, "encoder")
         init_path = _resolve_variant(self.model_dir, "decoder_init")
         step_path = _resolve_variant(self.model_dir, "decoder_step")
         if self.verbose:
             logger.info(f"[Qwen ONNX] encoder={encoder_path.name}, init={init_path.name}, step={step_path.name}")
 
-        # The decoder step graph fails during CoreML compilation on M4, so CPU
-        # is used explicitly; this is not silently ignoring the request but
-        # avoids turning a loadable model into a crash-on-startup model.
-        self.encoder_session = ort.InferenceSession(str(encoder_path), opts, providers=encoder_providers)
+        if self.device == "webgpu" and "WebGpuExecutionProvider" in ort.get_available_providers():
+            from inference.device_utils import create_onnx_session
+            enc_opts = ort.SessionOptions()
+            configure_onnx_threads(enc_opts)
+            enc_opts.log_severity_level = 3
+            enc_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            _, self.encoder_session = create_onnx_session(
+                encoder_path, enc_opts, "webgpu", label="Qwen3 Split Encoder ONNX"
+            )
+        else:
+            encoder_providers = ["CPUExecutionProvider"]
+            if (
+                self.device == "metal"
+                and sys.platform == "darwin"
+                and "CoreMLExecutionProvider" in ort.get_available_providers()
+            ):
+                encoder_providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+            self.encoder_session = ort.InferenceSession(str(encoder_path), opts, providers=encoder_providers)
+
+        # Keep autoregressive KV-cache decoders on CPU unless explicitly validated.
         self.decoder_init_session = ort.InferenceSession(
             str(init_path), opts, providers=["CPUExecutionProvider"]
         )

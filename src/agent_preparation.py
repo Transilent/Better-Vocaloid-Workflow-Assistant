@@ -63,8 +63,8 @@ DEFAULT_OPTIONS = {
     "midi_backend": "v2",
     "alignment_engine": "hfa",
     "midi_steps": 16,
-    "separation_device": "dml",
-    "midi_device": "dml",
+    "separation_device": "webgpu",
+    "midi_device": "webgpu",
     "dml_adapter": "auto",
     "cpu_threads": 0,
     "roformer_device": "auto",
@@ -74,8 +74,8 @@ PREPARATION_STAGES = ("metadata", "download", "audio", "separation", "midi")
 # MDX/Vocal2MIDI execution device and BS-RoFormer device are different
 # option surfaces. Keep their accepted values canonical beside the backend
 # validation so the MCP schema cannot silently widen execution support.
-PREPARATION_DEVICE_VALUES = ("cpu", "dml")
-ROFORMER_DEVICE_VALUES = ("auto", "cpu", "cuda")
+PREPARATION_DEVICE_VALUES = ("cpu", "webgpu")
+ROFORMER_DEVICE_VALUES = ("auto", "cpu", "webgpu")
 PREPARATION_CPU_THREADS_RANGE = (0, 64)
 PREPARATION_BPM_RANGE = (20.0, 400.0)
 SCORE_SUFFIXES = {".mid", ".midi", ".ustx", ".svp", ".vsqx"}
@@ -469,10 +469,10 @@ def _normalise_options(options):
     if type(result["midi_steps"]) is not int or result["midi_steps"] not in (8, 16, 32):
         raise ValueError("midi_steps 只能是 8、16 或 32。")
     for name in ("separation_device", "midi_device"):
-        if result[name] not in PREPARATION_DEVICE_VALUES:
-            raise ValueError(f"{name} 只能是 {' 或 '.join(PREPARATION_DEVICE_VALUES)}。")
-    if result["roformer_device"] not in ROFORMER_DEVICE_VALUES:
-        raise ValueError("roformer_device 只能是 auto、cpu 或 cuda。")
+        if result[name] == "dml": result[name] = "webgpu"
+        if result[name] not in PREPARATION_DEVICE_VALUES: raise ValueError(f"{name} 只能是 {' 或 '.join(PREPARATION_DEVICE_VALUES)}。")
+    if result["roformer_device"] == "cuda": result["roformer_device"] = "webgpu"
+    if result["roformer_device"] not in ROFORMER_DEVICE_VALUES: raise ValueError("roformer_device 只能是 auto、cpu 或 webgpu。")
     adapter = result["dml_adapter"]
     if adapter != "auto" and (type(adapter) is not int or adapter < 0):
         raise ValueError("dml_adapter 只能是 auto 或非负整数。")
@@ -963,8 +963,8 @@ def _source_options(request):
         "midi_backend": backend,
         "alignment_engine": request.get("alignment_engine", "hfa"),
         "midi_steps": request.get("midi_steps", 16),
-        "separation_device": request.get("separation_device", tools.get("separation_device", "dml")),
-        "midi_device": request.get("midi_device", tools.get("midi_device", "dml")),
+        "separation_device": request.get("separation_device", tools.get("separation_device", "webgpu")),
+        "midi_device": request.get("midi_device", tools.get("midi_device", "webgpu")),
         "dml_adapter": request.get("dml_adapter", tools.get("dml_adapter", "auto")),
         "cpu_threads": request.get("cpu_threads", tools.get("cpu_threads", 0)),
         "roformer_device": request.get("roformer_device", "auto"),

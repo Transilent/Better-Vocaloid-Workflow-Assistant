@@ -16,13 +16,13 @@ import component_operations as operations
 BASE_MANIFEST = {
     'weights': [{'bytes': 100}],
     'shared_wheels': [{'bytes': 20}],
-    'torch_wheels': {'cpu': {'bytes': 30}, 'cuda': {'bytes': 300}},
-    'install_bytes': {'cpu': 200, 'cuda': 2000},
+    'runtime_wheels': {'cpu': {'bytes': 30}, 'webgpu': {'bytes': 300}},
+    'install_bytes': {'cpu': 200, 'webgpu': 2000},
 }
 CHINESE_MANIFEST = json.loads((APP / 'components/runtime-features.json').read_text(encoding='utf-8'))['features']['chinese']
 READY = {
     'ready': True,
-    'runtime': 'cuda',
+    'runtime': 'webgpu',
     'verification': {'level': 'metadata', 'content_verified': False,
                      'sha256_checked': False, 'state': 'metadata_ready'},
 }
@@ -37,7 +37,7 @@ CHINESE_PARTIAL = {
 EXPRESSION_MISSING = {'ready': False, 'bytes': 0, 'version': '0.3.5'}
 
 
-def catalog(runtime='cuda', *, core=CORE, check_result=PASSED,
+def catalog(runtime='webgpu', *, core=CORE, check_result=PASSED,
             roformer=None, chinese=CHINESE_PARTIAL,
             expression=EXPRESSION_MISSING, manifest=BASE_MANIFEST,
             roformer_root=Path('missing-roformer'),
@@ -56,7 +56,7 @@ def catalog(runtime='cuda', *, core=CORE, check_result=PASSED,
         return operations.catalog(runtime)
 
 
-rows = catalog('cuda')
+rows = catalog('webgpu')
 assert [row['id'] for row in rows] == list(operations.COMPONENT_IDS)
 assert all(tuple(row) == operations.ROW_KEYS for row in rows)
 assert all(set(row) == set(operations.ROW_KEYS) for row in rows)
@@ -81,9 +81,9 @@ builtin_missing = catalog(check_result={'state': 'failed', 'errors': []},
                           core=failed_core)[0]
 assert builtin_missing['status'] == 'missing' and not builtin_missing['can_use']
 
-# The installed CPU runtime must not make the selected CUDA target look usable.
+# The installed CPU runtime must not make the selected WebGPU target look usable.
 cpu_ready = dict(READY, runtime='cpu')
-roformer_cpu = catalog('cuda', roformer=cpu_ready)[1]
+roformer_cpu = catalog('webgpu', roformer=cpu_ready)[1]
 assert roformer_cpu['status'] == 'missing'
 assert roformer_cpu['status_text'] == '当前目标未安装'
 assert roformer_cpu['health']['ready_runtime'] == 'cpu'
@@ -111,9 +111,9 @@ progress = lambda done, total, text: None
 cancel = lambda: False
 sentinel = object()
 with patch.object(operations.optional_components, 'install', return_value=sentinel) as install:
-    assert operations.install('roformer', runtime='cuda', source='mirror',
+    assert operations.install('roformer', runtime='webgpu', source='mirror',
                               progress=progress, check=cancel, force=True) is sentinel
-    install.assert_called_once_with('cuda', progress, cancel, force=True, source='mirror')
+    install.assert_called_once_with('webgpu', progress, cancel, force=True, source='mirror')
 with patch.object(operations.feature_components, 'install', return_value=sentinel) as install:
     assert operations.install('chinese', source='direct', progress=progress,
                               check=cancel, force=True) is sentinel

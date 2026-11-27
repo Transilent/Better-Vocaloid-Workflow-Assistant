@@ -216,7 +216,7 @@ def run(job, voice="vocals", asr_session=None):
         game_model_dir=model("game_model", "experiments/GAME-1.0.3-medium-onnx"),
         hfa_model_dir=model("hfa_model", HUBERTFA_MODEL),
         asr_model_path=model("asr_model", QWEN_MODEL),
-        device=request["tools"].get("midi_device", "dml"), language=language,
+        device=request["tools"].get("midi_device", "webgpu"), language=language,
         ts=[t0 + i * (1 - t0) / nsteps for i in range(nsteps)],
         lyric_output_mode=mode, original_lyrics=reference_lyrics,
         output_formats=formats,
@@ -354,7 +354,7 @@ def run_many(job, voices):
     configure(root)
     session = None
     if (request.get('midi_backend') == 'v2' and PROFILES[request['language']].asr_feature == QWEN_FEATURE
-            and request['tools'].get('midi_device', 'dml') == 'cpu' and request.get('recognize_lyrics', True)):
+            and request['tools'].get('midi_device', 'webgpu') == 'cpu' and request.get('recognize_lyrics', True)):
         # The retained multi-GB text model is worthwhile only with a comfortable
         # host-memory margin. GPU Qwen sessions keep their original release policy.
         from runtime_devices import available_memory

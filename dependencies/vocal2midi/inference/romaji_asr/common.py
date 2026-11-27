@@ -30,25 +30,22 @@ def load_audio(audio_path: str | Path, sample_rate: int = DEFAULT_SAMPLE_RATE) -
     return np.ascontiguousarray(audio, dtype=np.float32)
 
 
-def create_session(model_path: Path, provider: str = "dml") -> ort.InferenceSession:
-    provider = provider.lower()
+def create_session(model_path: Path, provider: str = "webgpu") -> ort.InferenceSession:
+    from inference.device_utils import configure_onnx_threads, create_onnx_session, normalize_runtime_device
+
+    provider = normalize_runtime_device(provider)
     sess_options = ort.SessionOptions()
-    from inference.device_utils import configure_onnx_threads
     configure_onnx_threads(sess_options)
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
-    if provider == "dml":
+    if provider in {"webgpu", "dml"}:
         sess_options.enable_mem_pattern = False
         sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-        provider_name, providers = resolve_onnx_providers("dml", label="Romaji ASR ONNX")
-        if provider_name != "dml":
-            raise RuntimeError("No eligible DirectML adapter is available for romaji ASR.")
-    elif provider == "cpu":
-        providers = ["CPUExecutionProvider"]
-    else:
-        raise ValueError(f"Unsupported provider: {provider}")
-
-    return ort.InferenceSession(str(model_path), sess_options=sess_options, providers=providers)
+        _, session = create_onnx_session(model_path, sess_options, provider, label="Romaji ASR ONNX")
+        return session
+    if provider == "cpu":
+        return ort.InferenceSession(str(model_path), sess_options=sess_options, providers=["CPUExecutionProvider"])
+    raise ValueError(f"Unsupported provider: {provider}")
 
 
 def get_fixed_batch_size(session: ort.InferenceSession) -> int | None:

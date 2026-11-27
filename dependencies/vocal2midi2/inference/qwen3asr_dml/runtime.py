@@ -134,14 +134,14 @@ class Qwen3ASRDmlModel:
         self.device = (
             "metal+cpu"
             if config.llama_backend == "metal"
-            else ("dml+cpu" if config.use_dml else "cpu")
+            else ("webgpu+cpu" if config.use_dml else "cpu")
         )
         if _has_onnx_model_files(config.model_dir):
             from .onnx_runtime import QwenOnnxASREngine
 
             self._engine = QwenOnnxASREngine(
                 model_dir=config.model_dir,
-                device="metal" if config.llama_backend == "metal" else "cpu",
+                device="metal" if config.llama_backend == "metal" else ("webgpu" if config.use_dml else "cpu"),
                 max_decode_tokens=config.max_decode_tokens,
                 verbose=config.verbose,
             )

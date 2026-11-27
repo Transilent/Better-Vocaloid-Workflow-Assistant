@@ -182,9 +182,9 @@ class PreparationPlanTests(unittest.TestCase):
             self.plan("BV1xx411c7mD", {"bpm": float("nan")})
 
     def test_option_boundaries_are_canonical_and_enforced(self):
-        self.assertEqual(agent_preparation.PREPARATION_DEVICE_VALUES, ("cpu", "dml"))
+        self.assertEqual(agent_preparation.PREPARATION_DEVICE_VALUES, ("cpu", "webgpu"))
         self.assertEqual(agent_preparation.ROFORMER_DEVICE_VALUES,
-                         ("auto", "cpu", "cuda"))
+                         ("auto", "cpu", "webgpu"))
         self.assertEqual(agent_preparation.PREPARATION_CPU_THREADS_RANGE, (0, 64))
         self.assertEqual(agent_preparation.PREPARATION_BPM_RANGE, (20.0, 400.0))
 
@@ -208,7 +208,7 @@ class PreparationPlanTests(unittest.TestCase):
         for name in ("separation_device", "midi_device"):
             for unsupported in ("auto", "cuda"):
                 with self.subTest(option=name, value=unsupported):
-                    with self.assertRaisesRegex(ValueError, "cpu.*dml"):
+                    with self.assertRaisesRegex(ValueError, "cpu.*webgpu"):
                         agent_preparation._normalise_options({name: unsupported})
         for invalid in (-1, 65):
             with self.subTest(cpu_threads=invalid):
@@ -309,8 +309,8 @@ class PreparationReuseTests(unittest.TestCase):
             "recognize_lyrics": True, "voice_mode": "single", "midi_steps": 16,
             "midi_backend": "v2", "alignment_engine": "hfa", "bpm": None,
             "prepare_only": True, "project_formats": [], "audio_formats": [], "export_pitch": False,
-            "tools": {"vocal2midi": "dependencies/vocal2midi2", "separation_device": "dml",
-                      "midi_device": "dml", "dml_adapter": "auto", "cpu_threads": 0},
+            "tools": {"vocal2midi": "dependencies/vocal2midi2", "separation_device": "webgpu",
+                      "midi_device": "webgpu", "dml_adapter": "auto", "cpu_threads": 0},
         }
         write_json(self.source_job / "request.json", self.request)
         files = {

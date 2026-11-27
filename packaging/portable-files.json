@@ -510,6 +510,10 @@
       "source": "src/gesture_catalog.py"
     },
     {
+      "file": "gpu_backend.py",
+      "source": "src/gpu_backend.py"
+    },
+    {
       "file": "context_semantics.py",
       "source": "src/context_semantics.py"
     },
@@ -676,6 +680,10 @@
     {
       "file": "roformer.py",
       "source": "src/roformer.py"
+    },
+    {
+      "file": "roformer_onnx.py",
+      "source": "src/roformer_onnx.py"
     },
     {
       "file": "storage.py",

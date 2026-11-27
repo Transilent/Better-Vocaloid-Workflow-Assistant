@@ -47,8 +47,7 @@ class RmvpeTranscriber:
         if ort is None:
             raise RuntimeError("onnxruntime is required for RMVPE ONNX inference.")
 
-        self.provider_name, providers = self._resolve_providers(self.requested_device)
-        self.session = self._create_session(providers)
+        self.provider_name, self.session = self._create_session(self.requested_device)
         self.input_name = self.session.get_inputs()[0].name
         self.fixed_batch_size = self._get_fixed_batch_size()
 
@@ -80,14 +79,14 @@ class RmvpeTranscriber:
     def _resolve_providers(device: str) -> tuple[str, list[str]]:
         return resolve_onnx_providers(device, label="RMVPE ONNX")
 
-    def _create_session(self, providers: list[str]):
+    def _create_session(self, device: str):
         sess_options = ort.SessionOptions()
-        from inference.device_utils import configure_onnx_threads
+        from inference.device_utils import configure_onnx_threads, create_onnx_session
         configure_onnx_threads(sess_options)
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         sess_options.enable_mem_pattern = False
         sess_options.enable_cpu_mem_arena = False
-        return ort.InferenceSession(str(self.model_path), sess_options=sess_options, providers=providers)
+        return create_onnx_session(self.model_path, sess_options, device, label="RMVPE ONNX")
 
     def _get_fixed_batch_size(self) -> int | None:
         shape = self.session.get_inputs()[0].shape
