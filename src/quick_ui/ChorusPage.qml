@@ -1760,7 +1760,7 @@ FocusScope {
                 value: page.activity.done || 0
                 indeterminate: !page.activity.total
             }
-            UiButton { theme: page.theme; implicitHeight: Math.round(26 * page.theme.scale); text: page.t("取消"); visible: page.view.busy
+            UiButton { theme: page.theme; implicitHeight: Math.round(26 * page.theme.scale); text: page.t("取消"); visible: page.view.busy || page.view.loading
                 onClicked: page.controller.cancel() }
             UiButton { theme: page.theme; implicitHeight: Math.round(26 * page.theme.scale); text: page.t("打开输出目录"); visible: !!page.view.export
                 onClicked: page.controller.openExport() }

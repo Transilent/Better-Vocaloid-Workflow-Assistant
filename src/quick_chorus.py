@@ -1,6 +1,5 @@
 """Qt projection of the chorus project and its resident audio transport."""
 from collections import OrderedDict
-from contextlib import contextmanager
 from dataclasses import replace
 from math import nextafter
 from pathlib import Path
@@ -10,6 +9,8 @@ import os
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
+from audio_device_recovery import DeviceReconnectGuard, make_wasapi_output
+from chorus_model_worker import safe_rmtree
 from chorus_pitch_dsp import signalsmith_available
 from chorus_precision import mapped_time, phrase_for
 from chorus_project import (ALIGNMENT_ENGINES, LYRIC_LANGUAGES, PITCH_ENGINES, ROLES, SYLLABLE_GAIN, VARIANTS,
@@ -17,6 +18,7 @@ from chorus_project import (ALIGNMENT_ENGINES, LYRIC_LANGUAGES, PITCH_ENGINES, R
 import chorus_review_service as _review_svc
 from chorus_review_service import _analysis_sources, _check, _meter
 from chorus_speech import alignment_ready
+import chorus_viewmodel as _vm
 from common import ROOT
 from quick_work import WorkerLane
 
@@ -51,13 +53,9 @@ class QuickChorus(QObject):
         self.project = ChorusProject.fresh()
         self._saved = self.project
         self._path = None
-        self._features = {}
-        self._curves = {}
-        self._notes_cache = {}
-        self._match_cache = {}
-        self._rec_cache = {}
+        self._features, self._curves, self._notes_cache = {}, {}, {}
+        self._match_cache, self._rec_cache, self._lyric_inputs = {}, {}, {}
         self._speech = OrderedDict()
-        self._lyric_inputs = {}
         self._suggestions = ()
         self._syllables = ()
         self._syllable_route = ''
@@ -84,10 +82,8 @@ class QuickChorus(QObject):
         self._variant = 'original'
         self._active_variant = ''
         self._solo = ''
-        self._intent = False
-        self._loop = False
+        self._intent = self._loop = self._follow_hold = False
         self._follow_playhead = True
-        self._follow_hold = False
         self._last_nav_action = 'selection'
         self._position = 0.
         self._session = None
@@ -100,6 +96,7 @@ class QuickChorus(QObject):
         self._error = False
         self._export = None
         self._scratch = None
+        self._reconnect_guard = DeviceReconnectGuard()
         self._closed = False
         self._timer = QTimer(self, interval=33)
         self._timer.timeout.connect(self._clock)
@@ -183,17 +180,13 @@ class QuickChorus(QObject):
         )
 
     def _effective_timing_ref_mode(self):
-        import chorus_viewmodel as _vm
-        has_score = bool(self.project.score and self.project.score.lanes)
-        return _vm.resolve_timing_ref_mode(self._timing_ref_mode, has_score=has_score)
+        return _vm.resolve_timing_ref_mode(self._timing_ref_mode, has_score=bool(self.project.score and self.project.score.lanes))
 
     @staticmethod
     def _lyric_row(line):
-        import chorus_viewmodel as _vm
         return _vm.build_lyric_row(line)
 
     def _track_row(self, track):
-        import chorus_viewmodel as _vm
         return _vm.build_track_row(self.project, track, self._features.get(track.sha))
 
     @Property('QVariantList', notify=tracksChanged)
@@ -202,7 +195,6 @@ class QuickChorus(QObject):
 
     @Property('QVariantList', notify=phrasesChanged)
     def phrases(self):
-        import chorus_viewmodel as _vm
         return _vm.build_phrase_rows(self.project)
 
     def _say(self, text, *, error=False):
@@ -255,9 +247,13 @@ class QuickChorus(QObject):
             ),
         )
 
-    def _commit(self, next_project, *, keep_suggestions=False):
+    def _commit(self, next_project, *, keep_suggestions=False, variant=None):
         if next_project == self.project:
+            if variant in VARIANTS and (variant != self._variant or self._gain_audition):
+                self.setVariant(variant)
             return
+        if variant in VARIANTS:
+            self._variant, self._gain_audition = variant, ''
         self._undo.append(self._revision())
         self._redo.clear()
         self._restore(next_project, keep_suggestions)
@@ -289,10 +285,7 @@ class QuickChorus(QObject):
             if self._selection[0] == self._selection[1]:
                 self._selection = (project.start, project.end)
             self._set_position(min(project.end, max(project.start, self._position)))
-        # Emit tracksChanged BEFORE changed so ComboBoxes bound to controller.tracks
-        # rebuild their model before view/currentIndex re-evaluates, and skip
-        # emitting tracksChanged when track rows are unchanged to avoid rebuilding
-        # all ChorusTimeline waveform delegates on pitch/gain/phrase edits.
+        # Emit tracksChanged before changed so ComboBoxes rebuild before currentIndex updates.
         if self._tracks_signature(previous) != self._tracks_signature(project):
             self.tracksChanged.emit()
         self.changed.emit()
@@ -971,11 +964,8 @@ class QuickChorus(QObject):
             next_project, resolved, changed, msg = _review_svc.apply_auto_tune_result(
                 working, suggestions, aligned_info, kind=kind,
             )
-            if next_project != self.project:
-                self._commit(next_project, keep_suggestions=True)
+            self._commit(next_project, keep_suggestions=True, variant='processed' if changed else None)
             self._suggestions, self._resolved, self._issue = suggestions, resolved, -1
-            if changed:
-                self.setVariant('processed')
             self._say(msg)
 
         label = '正在对照 MIDI 对齐节奏并修音' if kind == 'both' else ('正在对照 MIDI 对齐节奏' if kind == 'timing' else '正在对照 MIDI 自动修音')
@@ -1063,6 +1053,9 @@ class QuickChorus(QObject):
             self.project, row, cached_vocal_notes_fn=self._cached_vocal_notes,
         )
         self._select(row.track, self._bounds(start, end))
+        solo_changed = bool(self._solo and self._solo != row.track)
+        if solo_changed:
+            self._solo = row.track
         self._issue = index
         # Always open the Piano Roll so the user can directly inspect & edit notes/timing against MIDI.
         self._mode = 'pitch'
@@ -1075,6 +1068,8 @@ class QuickChorus(QObject):
             self._seek_serial = self._session.seek(self._frame(target_pos))
         self._focus_revision = getattr(self, '_focus_revision', 0) + 1
         self.changed.emit()
+        if solo_changed and (self._session or self._intent):
+            self._request_audio()
 
     @Slot(str)
     def setTimingRefMode(self, mode):
@@ -1283,11 +1278,8 @@ class QuickChorus(QObject):
                 working, phrases, suggestions, failure,
                 full=full, language=language, commit=commit, include_review=include_review,
             )
-            if next_project != self.project:
-                self._commit(next_project, keep_suggestions=True)
+            self._commit(next_project, keep_suggestions=True, variant='processed' if applied else None)
             self._suggestions, self._resolved, self._issue = suggestions, resolved, -1
-            if applied:
-                self.setVariant('processed')
             self._say(msg, error=bool(failure))
 
         self._start('analysis', '正在比较音轨', work, done)
@@ -1315,10 +1307,8 @@ class QuickChorus(QObject):
             updated = apply_suggestions(project, (row,), manual=individual)
             count += updated != project
             project = updated
-        self._commit(project, keep_suggestions=True)
+        self._commit(project, keep_suggestions=True, variant='processed' if count else None)
         self._resolved.update(i for i, _ in picked)
-        if count:
-            self.setVariant('processed')
         return count
 
     @Slot(bool)
@@ -1367,11 +1357,9 @@ class QuickChorus(QObject):
         else:
             updated = self.project.update_track(track.id, score_octave=int(row.target_octave))
             applied_n = 0
-        self._commit(updated, keep_suggestions=True)
+        self._commit(updated, keep_suggestions=True, variant='processed')
         self._resolved.add(index)
         self._issue = -1
-        self.setVariant('processed')
-        self.changed.emit()
         oct_txt = f'{row.target_octave:+d} 半音' if row.target_octave else '原八度 (0)'
         if applied_n:
             self._say(f'已将 {track.name} 切换至 {oct_txt} 并对照 MIDI 完成整轨移调修音（{applied_n} 个音符）')
@@ -1437,8 +1425,7 @@ class QuickChorus(QObject):
             self._say('选择的区间与音轨没有交集。', error=True)
             return
         edits = (Edit(track.id, kind, first, last, value, manual=True),)
-        self._commit(self.project.replace_region(track.id, kind, first, last, edits), keep_suggestions=True)
-        self.setVariant('processed')
+        self._commit(self.project.replace_region(track.id, kind, first, last, edits), keep_suggestions=True, variant='processed')
         self._say('已更新所选范围')
 
     @Slot(str)
@@ -1590,9 +1577,8 @@ class QuickChorus(QObject):
         if not self._syllables or self.worker.kind:
             return
         rows, route = self._syllables, self._syllable_route
-        self._commit(apply_syllables(self.project, self._selected, rows), keep_suggestions=True)
+        self._commit(apply_syllables(self.project, self._selected, rows), keep_suggestions=True, variant='processed')
         self._syllables, self._syllable_route = rows, route
-        self.setVariant('processed')
         self._say('音节力度已写入工程。')
 
     @Slot()
@@ -1641,9 +1627,7 @@ class QuickChorus(QObject):
         clipped = current.clip(first, last)
         edit = replace(clipped, points=tuple((x, y - delta) for x, y in clipped.points),
                        value=clipped.value + delta, manual=True)
-        self._commit(self.project.replace_region(track.id, 'timing', first, last, (edit,)),
-                     keep_suggestions=True)
-        self.setVariant('processed')
+        self._commit(self.project.replace_region(track.id, 'timing', first, last, (edit,)), keep_suggestions=True, variant='processed')
         self._say('已移动并锁定所选范围')
 
     @Slot()
@@ -1719,9 +1703,7 @@ class QuickChorus(QObject):
                 return
             edit = replace(move_anchor(track.id, (current.start, current.end), current.points, origin, destination),
                            basis=current.basis)
-            self._commit(self.project.replace_region(track.id, 'timing', edit.start, edit.end, (edit,)),
-                         keep_suggestions=True)
-            self.setVariant('processed')
+            self._commit(self.project.replace_region(track.id, 'timing', edit.start, edit.end, (edit,)), keep_suggestions=True, variant='processed')
             self._say('已锁定这一段时间锚点。')
         except ValueError as error:
             self._say(error, error=True)
@@ -1730,10 +1712,7 @@ class QuickChorus(QObject):
     def _parse_note_spans(spans):
         parsed = []
         for item in spans or ():
-            if isinstance(item, dict):
-                a, b = number(item['takeStart']), number(item['takeEnd'])
-            else:
-                a, b = number(item[0]), number(item[1])
+            a, b = (number(item['takeStart']), number(item['takeEnd'])) if isinstance(item, dict) else (number(item[0]), number(item[1]))
             if b > a:
                 parsed.append((a, b))
         return tuple(sorted(set(parsed)))
@@ -1762,9 +1741,8 @@ class QuickChorus(QObject):
             return
         if updated != self.project:
             self._selected_notes = parsed
-            self._commit(updated, keep_suggestions=True)
-            if self._variant not in ('pitch', 'processed'):
-                self.setVariant('processed')
+            self._commit(updated, keep_suggestions=True,
+                         variant=None if self._variant in ('pitch', 'processed') else 'processed')
             self._say(f'已调整 {len(parsed)} 个音符音高')
 
     @Slot(float, float, float)
@@ -1856,9 +1834,8 @@ class QuickChorus(QObject):
         project, snapped = _review_svc.snap_notes_to_semitone(self.project, track, parsed, notes)
         if snapped and project != self.project:
             self._selected_notes = parsed
-            self._commit(project, keep_suggestions=True)
-            if self._variant not in ('pitch', 'processed'):
-                self.setVariant('processed')
+            self._commit(project, keep_suggestions=True,
+                         variant=None if self._variant in ('pitch', 'processed') else 'processed')
             self._say(f'已将 {snapped} 个音符对齐到最近半音')
 
     @Slot('QVariantList')
@@ -1881,9 +1858,8 @@ class QuickChorus(QObject):
         project, snapped = _review_svc.snap_notes_to_score(self.project, track, lane, parsed, notes)
         if snapped and project != self.project:
             self._selected_notes = parsed
-            self._commit(project, keep_suggestions=True)
-            if self._variant not in ('pitch', 'processed'):
-                self.setVariant('processed')
+            self._commit(project, keep_suggestions=True,
+                         variant=None if self._variant in ('pitch', 'processed') else 'processed')
             self._say(f'已将 {snapped} 个音符对齐到 MIDI 目标音高')
         else:
             self._say('所选音符已在 MIDI 目标音高上，或附近无匹配谱音。')
@@ -1930,9 +1906,12 @@ class QuickChorus(QObject):
         if last <= first:
             return
         self._select(self._selected, (first, last))
+        solo_changed = bool(self._solo and self._solo != track.id)
+        if solo_changed:
+            self._solo = track.id
         self._loop = True
         self.seek(first)
-        if not self._intent:
+        if not self._intent or solo_changed:
             self._intent = True
             self._request_audio()
         self.changed.emit()
@@ -1967,8 +1946,7 @@ class QuickChorus(QObject):
         project = self.project
         for edit in edits:
             project = project.replace_region(track.id, 'pitch', edit.start, edit.end, (edit,))
-        self._commit(project, keep_suggestions=True)
-        self.setVariant('processed')
+        self._commit(project, keep_suggestions=True, variant='processed')
         self._say(label)
 
     @Slot(str, float)
@@ -2124,12 +2102,17 @@ class QuickChorus(QObject):
     @Slot()
     def cancel(self):
         self.worker.cancel()
+        if self.monitor_worker.kind:
+            self._requested = None
+            self._intent = False
+            self.monitor_worker.cancel()
+            self.changed.emit()
 
     def _cache_dir(self):
         if self._scratch is None:
             directory = ROOT / 'work'
             directory.mkdir(parents=True, exist_ok=True)
-            self._scratch = TemporaryDirectory(dir=directory, prefix='chorus-')
+            self._scratch = TemporaryDirectory(dir=directory, prefix='chorus-', ignore_cleanup_errors=True)
         return Path(self._scratch.name)
 
     @Slot(str)
@@ -2156,7 +2139,7 @@ class QuickChorus(QObject):
         if self.project.frames <= 0:
             return
         first, last = self._selection
-        if self._loop and first < last and not first <= self._position < last:
+        if self._loop and first < last and not (first - .25 <= self._position < last):
             self.seek(first)
         elif self._position >= self.project.end - 1 / self.project.rate:
             self.seek(self.project.start)
@@ -2256,6 +2239,13 @@ class QuickChorus(QObject):
                 if self._requested is not None:
                     self._request_audio()
                 return
+            if isinstance(error, InterruptedError):
+                if self._intent and self._requested == key:
+                    self._request_audio()
+                else:
+                    self._intent = False
+                    self._say('已取消。')
+                return
             if error is not None:
                 self._audio_error(error)
                 return
@@ -2272,7 +2262,6 @@ class QuickChorus(QObject):
 
     def _load_buffer(self, project, variant, key, buffer):
         from chorus_audio import AuditionPCM
-        from mixdown_native_output import NativeOutput
         from mixdown_realtime_core import native_output_path
         from mixdown_realtime_session import RealtimeAuditionSession
 
@@ -2285,8 +2274,8 @@ class QuickChorus(QObject):
             if not dll:
                 raise RuntimeError('缺少原生音频输出组件。')
             snapshot = AuditionPCM(project.rate, buffer.audio, self._frame(self._position))
-            self._session = RealtimeAuditionSession(snapshot, lambda: NativeOutput(
-                dll, project.rate, 2, 16384, 512, 'wasapi'),
+            self._session = RealtimeAuditionSession(
+                snapshot, lambda: make_wasapi_output(dll, project.rate),
                 silent=os.environ.get('VWA_REALTIME_SILENT_PROBE') == '1').start()
             self._session_geometry = self._geometry()
             self._timer.start()
@@ -2295,6 +2284,8 @@ class QuickChorus(QObject):
         if self._session and self._intent:
             self._session.play()
         self._active_variant, self._current_key = variant, key
+        if self._error:
+            self._notice, self._error = '', False
         self.changed.emit()
 
     def _audio_error(self, error):
@@ -2310,8 +2301,16 @@ class QuickChorus(QObject):
             return
         snapshot = session.snapshot()
         if snapshot.get('error'):
+            err = snapshot['error']
+            if self._intent and self._reconnect_guard.should_attempt(err):
+                self._reconnect_guard.mark_attempt()
+                self._stop_session()
+                self._intent = True
+                self._say('音频设备变化，正在自动重连…')
+                QTimer.singleShot(self._reconnect_guard.backoff_ms, self._request_audio)
+                return
             self._stop_session()
-            self._say(snapshot['error'], error=True)
+            self._say(err, error=True)
             return
         if self._session_geometry != self._geometry():
             return
@@ -2358,4 +2357,4 @@ class QuickChorus(QObject):
         self.monitor_worker.close()
         self._stop_session()
         if self._scratch:
-            self._scratch.cleanup()
+            safe_rmtree(self._scratch.name)

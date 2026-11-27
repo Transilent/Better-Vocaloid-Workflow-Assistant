@@ -1261,5 +1261,6 @@
   "发布": "Publishing",
   "工作流": "Workflow",
   "深色界面": "Dark interface",
-  "浅色界面": "Light interface"
+  "浅色界面": "Light interface",
+  "音频设备变化，正在自动重连…": "Audio device changed, reconnecting automatically..."
 }
