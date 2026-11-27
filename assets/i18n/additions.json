@@ -3727,7 +3727,9 @@
     "音频输出设备已更新": "Audio output device updated",
     "音频输出设备已变动，已自动切换并恢复试听": "Audio output device changed; reconnected preview automatically",
     "已加入准备队列": "Added to preparation queue",
-    "已清空准备队列": "Cleared preparation queue"
+    "已清空准备队列": "Cleared preparation queue",
+    "目标运行库（GPU / CPU 独立共存）": "Target runtime (GPU & CPU coexist independently)",
+    "RoFormer 需要先在模型与组件中安装。GPU (CUDA) 与 CPU 运行库独立共存互不覆盖；已安装 CUDA 版即可直接切 CPU 推理，无需重复下载 CPU 版。": "Install BS-RoFormer in Models & Components first. GPU (CUDA) and CPU runtimes coexist independently without overwriting each other; if CUDA is installed, you can switch directly to CPU inference without downloading the CPU runtime."
   },
   "ja": {
     "合唱工作台": "コーラスワークスペース",
@@ -7457,6 +7459,8 @@
     "音频输出设备已更新": "オーディオ出力デバイスを更新しました",
     "音频输出设备已变动，已自动切换并恢复试听": "出力デバイスの変更を検知し、試聴を自動復帰しました",
     "已加入准备队列": "準備キューに追加しました",
-    "已清空准备队列": "準備キューをクリアしました"
+    "已清空准备队列": "準備キューをクリアしました",
+    "目标运行库（GPU / CPU 独立共存）": "対象ランタイム（GPU / CPU 独立共存）",
+    "RoFormer 需要先在模型与组件中安装。GPU (CUDA) 与 CPU 运行库独立共存互不覆盖；已安装 CUDA 版即可直接切 CPU 推理，无需重复下载 CPU 版。": "BS-RoFormer は先に「モデルとコンポーネント」でインストールしてください。GPU (CUDA) と CPU ランタイムは独立して共存し上書きされません。CUDA 版が入っていれば CPU 版を再ダウンロードせずにそのまま CPU 推論へ切り替えられます。"
   }
 }
