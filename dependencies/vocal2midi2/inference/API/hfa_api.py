@@ -114,15 +114,8 @@ _HFA_DICT_FILES = {
 _HFA_MODEL_CACHE: dict[tuple[str, str], InferenceOnnx] = {}
 
 
-def load_hfa_model(model_dir, device=None, use_cache: bool = True):
-    """
-    Load the HubertFA ONNX model on DirectML by default, with CPU fallback.
-
-    Cached in-process and reused across pipeline runs: recreating the
-    DirectML session per song corrupts onnxruntime's DML state and
-    access-violates the process on the next song. run_hubert_fa resets the
-    per-run state (dataset/predictions) at entry, so reuse is safe.
-    """
+def load_hfa_model(model_dir, device=None, use_cache: bool = False):
+    """Load the HubertFA ONNX model on WebGPU by default, with CPU fallback."""
     resolved = str(pathlib.Path(model_dir))
     key = (resolved, str(device or "").strip().lower() or "auto")
     if use_cache:

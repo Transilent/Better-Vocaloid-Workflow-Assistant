@@ -53,6 +53,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Merge-PortableParts.ps1
 
 运行环境为 Windows 10／11 x64，便携包已包含运行环境。最终下载、合并与解压所需空间以正式发行说明为准，模型组件和素材另需空间。声库合成需自行准备兼容的歌声编辑器与声库。
 
+### BS-RoFormer ONNX 精度版本选择（WebGPU）
+
+本分支同时提供 **FP16** 与 **FP32** 两个 BS-RoFormer ONNX 权重版本，按显存大小选择即可：**小显存用 FP16，大显存用 FP32**。
+
+| 版本 | 文件名 | 体积 | 实测峰值显存（RX 9070 XT） | 适用建议 |
+| --- | --- | --- | --- | --- |
+| **FP16（混合精度）** | `bs_roformer_karaoke_frazer_becruily.fp16.onnx` | 约 127.5 MiB | 约 2.1–4.4 GiB | **小显存显卡（6–8 GB）优先选用**，显存占用显著更低 |
+| **FP32（全精度）** | `bs_roformer_karaoke_frazer_becruily.onnx` | 约 223.2 MiB | 约 6.8 GiB | **大显存显卡（12 GB 及以上）优先选用**，精度与原版 PyTorch 基本无损一致 |
+
 ## 使用流程
 
 1. 在**准备工作流**选择音乐来源、歌词语言、处理方式与保存目录，完成后核对音频、音符和歌词。

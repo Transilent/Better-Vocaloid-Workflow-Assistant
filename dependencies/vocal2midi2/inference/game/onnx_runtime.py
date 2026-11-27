@@ -23,14 +23,12 @@ class GameOnnxModel:
         self.languages = dict(self.config.get("languages") or {})
         self.requested_device = str(requested_device)
         self.provider_name, self._sessions = self._load_sessions(self.requested_device)
-        self._use_webgpu_iobinding = self.provider_name == "webgpu"
         active_ep = (
             self._sessions["encoder"].get_providers()[0]
             if self._sessions.get("encoder") and self._sessions["encoder"].get_providers()
             else "CPUExecutionProvider"
         )
-        iob_tag = " + GPU IOBinding" if self._use_webgpu_iobinding else ""
-        print(f"[VWA 后端] 音符提取 (GAME): {active_ep}{iob_tag}", flush=True)
+        print(f"[VWA 后端] 音符提取 (GAME): {active_ep} ({self.provider_name})", flush=True)
 
     @staticmethod
     def _resolve_providers(device: str) -> tuple[str, list[str]]:
@@ -65,102 +63,6 @@ class GameOnnxModel:
 
     release = shutdown
 
-    def _infer_batch_webgpu_iobinding(
-        self,
-        *,
-        waveforms: np.ndarray,
-        durations: np.ndarray,
-        known_durations: np.ndarray | None,
-        boundary_threshold: float,
-        boundary_radius: int,
-        score_threshold: float,
-        language: int,
-        ts: list[float],
-    ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        batch_size = int(waveforms.shape[0])
-        enc_sess = self._sessions["encoder"]
-        enc_iob = enc_sess.io_binding()
-        enc_iob.bind_cpu_input("waveform", np.ascontiguousarray(waveforms, dtype=np.float32))
-        enc_iob.bind_cpu_input("duration", np.ascontiguousarray(durations, dtype=np.float32))
-        for out_meta in enc_sess.get_outputs():
-            enc_iob.bind_output(out_meta.name, "webgpu")
-        enc_sess.run_with_iobinding(enc_iob)
-        x_seg_ov, x_est_ov, mask_t_ov = enc_iob.get_outputs()
-        mask_t = mask_t_ov.numpy()
-
-        if known_durations is not None and known_durations.size > 0:
-            known_boundaries = np.zeros_like(mask_t, dtype=bool)
-            for idx in range(batch_size):
-                valid = known_durations[idx][known_durations[idx] > 0]
-                if len(valid) == 0:
-                    continue
-                kb = self._sessions["dur2bd"].run(
-                    None,
-                    {
-                        "durations": valid[np.newaxis, :].astype(np.float32, copy=False),
-                        "maskT": mask_t[idx : idx + 1],
-                    },
-                )[0]
-                known_boundaries[idx : idx + 1] = kb
-        else:
-            known_boundaries = np.zeros_like(mask_t, dtype=bool)
-
-        known_boundaries = np.ascontiguousarray(known_boundaries, dtype=bool)
-        lang_arr = np.full((batch_size,), int(language), dtype=np.int64)
-        thr_arr = np.array(boundary_threshold, dtype=np.float32)
-        rad_arr = np.array(boundary_radius, dtype=np.int64)
-        seg_sess = self._sessions["segmenter"]
-        seg_out_name = seg_sess.get_outputs()[0].name
-        steps = ts if (self.loop and ts) else [0.0]
-
-        cur_boundaries_ov = None
-        for t in steps:
-            seg_iob = seg_sess.io_binding()
-            seg_iob.bind_ortvalue_input("x_seg", x_seg_ov)
-            seg_iob.bind_cpu_input("language", lang_arr)
-            seg_iob.bind_cpu_input("known_boundaries", known_boundaries)
-            if cur_boundaries_ov is None:
-                seg_iob.bind_cpu_input("prev_boundaries", known_boundaries)
-            else:
-                seg_iob.bind_ortvalue_input("prev_boundaries", cur_boundaries_ov)
-            seg_iob.bind_cpu_input("t", np.full((batch_size,), float(t), dtype=np.float32))
-            seg_iob.bind_ortvalue_input("maskT", mask_t_ov)
-            seg_iob.bind_cpu_input("threshold", thr_arr)
-            seg_iob.bind_cpu_input("radius", rad_arr)
-            seg_iob.bind_output(seg_out_name, "webgpu")
-            seg_sess.run_with_iobinding(seg_iob)
-            cur_boundaries_ov = seg_iob.get_outputs()[0]
-
-        boundaries = cur_boundaries_ov.numpy()
-        durations_out, mask_n = self._sessions["bd2dur"].run(
-            None,
-            {
-                "boundaries": boundaries,
-                "maskT": mask_t,
-            },
-        )
-        est_sess = self._sessions["estimator"]
-        est_iob = est_sess.io_binding()
-        est_iob.bind_ortvalue_input("x_est", x_est_ov)
-        est_iob.bind_ortvalue_input("boundaries", cur_boundaries_ov)
-        est_iob.bind_ortvalue_input("maskT", mask_t_ov)
-        est_iob.bind_cpu_input("maskN", np.ascontiguousarray(mask_n))
-        est_iob.bind_cpu_input("threshold", np.array(score_threshold, dtype=np.float32))
-        for out_meta in est_sess.get_outputs():
-            est_iob.bind_output(out_meta.name, "cpu")
-        est_sess.run_with_iobinding(est_iob)
-        presence, scores = [ov.numpy() for ov in est_iob.get_outputs()]
-        est_iob.clear_binding_inputs()
-        est_iob.clear_binding_outputs()
-        enc_iob.clear_binding_inputs()
-        enc_iob.clear_binding_outputs()
-
-        results = []
-        for idx in range(batch_size):
-            valid = mask_n[idx].astype(bool)
-            results.append((durations_out[idx][valid], presence[idx][valid], scores[idx][valid]))
-        return results
-
     def infer_batch(
         self,
         *,
@@ -174,20 +76,6 @@ class GameOnnxModel:
         ts: list[float] | None = None,
     ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
         ts = list(ts or [])
-        if self._use_webgpu_iobinding:
-            try:
-                return self._infer_batch_webgpu_iobinding(
-                    waveforms=waveforms,
-                    durations=durations,
-                    known_durations=known_durations,
-                    boundary_threshold=boundary_threshold,
-                    boundary_radius=boundary_radius,
-                    score_threshold=score_threshold,
-                    language=language,
-                    ts=ts,
-                )
-            except Exception:
-                self._use_webgpu_iobinding = False
         batch_size = int(waveforms.shape[0])
 
         enc_out = self._sessions["encoder"].run(

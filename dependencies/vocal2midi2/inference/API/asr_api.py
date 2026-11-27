@@ -177,13 +177,8 @@ def clear_qwen_model_cache():
     gc.collect()
 
 
-def load_romaji_asr_model(model_dir, device=None, use_cache=True):
-    """Load the Japanese romaji ASR ONNX runtime from a model directory.
-
-    Cached in-process and reused across pipeline runs: recreating the
-    DirectML session per song corrupts onnxruntime's DML state and
-    access-violates the process on the next song.
-    """
+def load_romaji_asr_model(model_dir, device=None, use_cache=False):
+    """Load the Japanese romaji ASR ONNX runtime from a model directory."""
     resolved_dir = str(resolve_model_dir(model_dir))
     requested_device = normalize_runtime_device(device)
     cache_key = (resolved_dir, requested_device)
@@ -221,13 +216,8 @@ def clear_romaji_model_cache():
     gc.collect()
 
 
-def load_pinyin_asr_model(model_dir, device=None, use_cache=True):
-    """Load the Chinese pinyin ASR ONNX runtime from a model directory.
-
-    Cached in-process and reused across pipeline runs: recreating the
-    DirectML session per song corrupts onnxruntime's DML state and
-    access-violates the process on the next song.
-    """
+def load_pinyin_asr_model(model_dir, device=None, use_cache=False):
+    """Load the Chinese pinyin ASR ONNX runtime from a model directory."""
     resolved_dir = str(resolve_pinyin_model_dir(model_dir))
     requested_device = normalize_runtime_device(device)
     cache_key = (resolved_dir, requested_device)
@@ -276,7 +266,7 @@ def batch_transcribe_pinyin_asr(
 ):
     """Run pinyin ASR directly and return token lists per chunk."""
     logger.info("[ASR API] Running pinyin ASR (ONNX Runtime) for Chinese-pinyin lyric mode...")
-    asr = load_pinyin_asr_model(model_dir, device=device, use_cache=True)
+    asr = load_pinyin_asr_model(model_dir, device=device, use_cache=False)
     model = asr["model"]
 
     audio_paths = []
@@ -307,7 +297,7 @@ def batch_transcribe_romaji_asr(
 ):
     """Run romaji ASR directly and return token lists per chunk."""
     logger.info("[ASR API] Running romaji ASR (ONNX Runtime) for Japanese lyric mode...")
-    asr = load_romaji_asr_model(model_dir, device=device, use_cache=True)
+    asr = load_romaji_asr_model(model_dir, device=device, use_cache=False)
     model = asr["model"]
 
     audio_paths = []

@@ -60,9 +60,10 @@ def _tree_cat(tensors, *, dim: int, max_inputs: int = 6):
     return items[0] if len(items) == 1 else torch.cat(items, dim=dim)
 
 
-def _patch_for_clean_onnx(model) -> None:
+def _patch_for_clean_onnx(model, *, fp16: bool = False) -> None:
     """Switch pymss_core BSRoformer to pure exportable WebGPU-safe ops without altering math."""
     import torch
+    import torch.nn.functional as F
 
     try:
         from pymss_core.modules.bs_roformer import transformer as pymss_transformer
@@ -100,8 +101,15 @@ def _patch_for_clean_onnx(model) -> None:
     def _clean_attend_forward(self, q, k, v):
         scale = self.scale if self.scale is not None else (q.shape[-1] ** -0.5)
         sim = torch.matmul(q, k.transpose(-2, -1)) * scale
-        attn = torch.softmax(sim, dim=-1)
+        if sim.dtype == torch.float16:
+            attn = torch.softmax(sim.float(), dim=-1).to(q.dtype)
+        else:
+            attn = torch.softmax(sim, dim=-1)
         return torch.matmul(attn, v)
+
+    def _clean_rmsnorm_forward(self, x):
+        out = F.normalize(x.float(), dim=-1) * self.scale * self.gamma.float()
+        return out.to(x.dtype)
 
     def _clean_glu_forward(self, x):
         dim = self.dim
@@ -116,6 +124,8 @@ def _patch_for_clean_onnx(model) -> None:
             module.use_flash = False
         if type(module).__name__ == 'Attend':
             module.forward = types.MethodType(_clean_attend_forward, module)
+        if type(module).__name__ == 'RMSNorm':
+            module.forward = types.MethodType(_clean_rmsnorm_forward, module)
         if isinstance(module, torch.nn.GLU):
             module.forward = types.MethodType(_clean_glu_forward, module)
         if type(module).__name__ == 'RotaryEmbedding':
@@ -123,20 +133,27 @@ def _patch_for_clean_onnx(model) -> None:
                 module.cache.clear()
             if hasattr(module, '_pymss_cos_sin_cache'):
                 module._pymss_cos_sin_cache.clear()
+    if fp16:
+        model.half()
+        # Keep RotaryEmbedding base frequencies in fp32 for accurate sin/cos before casting.
+        for module in model.modules():
+            if type(module).__name__ == 'RotaryEmbedding' and hasattr(module, 'freqs'):
+                module.freqs.data = module.freqs.data.float()
 
 
-def _wrap_bs_roformer_core(model, *, band_chunk: int = 8):
+def _wrap_bs_roformer_core(model, *, band_chunk: int = 8, fp16: bool = False):
     """Build a real-valued spectrogram wrapper matching pymss_core's exact stft_repr layout."""
     import torch
     import torch.nn as nn
 
-    _patch_for_clean_onnx(model)
+    _patch_for_clean_onnx(model, fp16=fp16)
 
     class _BSRoFormerSpectrogramCore(nn.Module):
-        def __init__(self, inner, group_size: int):
+        def __init__(self, inner, group_size: int, use_fp16: bool):
             super().__init__()
             self.inner = inner
             self.group_size = max(1, int(group_size))
+            self.use_fp16 = bool(use_fp16)
 
         def _run_time_transformer(self, time_transformer, x):
             # x: (B, T, K, D). The K=62 frequency bands are independent during time attention.
@@ -155,13 +172,16 @@ def _wrap_bs_roformer_core(model, *, band_chunk: int = 8):
             return _tree_cat(chunks, dim=2, max_inputs=6)
 
         def forward(self, spec_4ch):
-            # spec_4ch: (B, 4, F, T) with channels [L_re, L_im, R_re, R_im]
+            # spec_4ch: (B, 4, F, T) float32 with channels [L_re, L_im, R_re, R_im]
             b, _, f, t = spec_4ch.shape
             # Match pymss_core stft_roformer layout: stft_repr = (B, F*2, T, 2)
             x_scft = spec_4ch.reshape(b, 2, 2, f, t)  # (B, s=2, c=2, F, T)
             stft_repr = x_scft.permute(0, 3, 1, 4, 2).reshape(b, f * 2, t, 2)
             # BandSplit input: (B, T, F*2*2)
-            x = self.inner.band_split(stft_repr.permute(0, 2, 1, 3).reshape(b, t, f * 4))
+            band_in = stft_repr.permute(0, 2, 1, 3).reshape(b, t, f * 4)
+            if self.use_fp16:
+                band_in = band_in.half()
+            x = self.inner.band_split(band_in)
 
             residual_store = [] if getattr(self.inner, 'skip_connection', False) else None
             for time_transformer, freq_transformer in self.inner.layers:
@@ -178,9 +198,11 @@ def _wrap_bs_roformer_core(model, *, band_chunk: int = 8):
             x = self.inner.final_norm(x)
             # MaskEstimator output: (B, T, F*4) -> (B, F*2, T, 2)
             mask_flat = self.inner.mask_estimators[0](x)
+            if self.use_fp16:
+                mask_flat = mask_flat.float()
             mask = mask_flat.reshape(b, t, f * 2, 2).permute(0, 2, 1, 3)
 
-            # Complex multiply: (xr + i*xi) * (mr + i*mi)
+            # Complex multiply in float32: (xr + i*xi) * (mr + i*mi)
             xr, xi = stft_repr[..., 0], stft_repr[..., 1]
             mr, mi = mask[..., 0], mask[..., 1]
             yr = xr * mr - xi * mi
@@ -194,7 +216,7 @@ def _wrap_bs_roformer_core(model, *, band_chunk: int = 8):
                 out_4ch = out_4ch * dc_mask
             return out_4ch
 
-    return _BSRoFormerSpectrogramCore(model, band_chunk).eval()
+    return _BSRoFormerSpectrogramCore(model, band_chunk, fp16).eval()
 
 
 def _import_bs_roformer():
@@ -237,7 +259,7 @@ def export_model(
     dim_freqs = int(model_cfg.get('dim_freqs_in', 1025))
     frames = chunk_size // hop_length + 1
 
-    core = _wrap_bs_roformer_core(model, band_chunk=band_chunk)
+    core = _wrap_bs_roformer_core(model, band_chunk=band_chunk, fp16=fp16)
     dummy = torch.randn(1, 4, dim_freqs, frames, dtype=torch.float32) * 0.1
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -246,7 +268,8 @@ def export_model(
     if sidecar.exists():
         sidecar.unlink()
 
-    print(f'Exporting static BS-RoFormer ONNX: shape={tuple(dummy.shape)}, band_chunk={band_chunk}, opset={opset}', flush=True)
+    precision = 'fp16 (mixed)' if fp16 else 'fp32'
+    print(f'Exporting static BS-RoFormer ONNX ({precision}): shape={tuple(dummy.shape)}, band_chunk={band_chunk}, opset={opset}', flush=True)
     t_exp = time.perf_counter()
     with torch.no_grad():
         onnx_program = torch.onnx.export(
@@ -261,27 +284,6 @@ def export_model(
         onnx_program.save(str(output_path), external_data=False)
     print(f'ONNX export finished in {time.perf_counter() - t_exp:.1f}s', flush=True)
 
-    if fp16:
-        try:
-            import onnx
-            from onnxconverter_common import float16
-        except ImportError as exc:
-            raise RuntimeError('开启 --fp16 需要安装 onnx 和 onnxconverter-common。') from exc
-        t_fp16 = time.perf_counter()
-        proto = onnx.load(str(output_path))
-        block_list = list(getattr(float16, 'DEFAULT_OP_BLOCK_LIST', [])) + [
-            'Cast', 'Range', 'LayerNormalization', 'RMSNormalization',
-            'LpNormalization', 'Softmax', 'ReduceMean', 'ReduceSum',
-            'Pow', 'Sqrt', 'Div', 'Sin', 'Cos', 'Clip', 'Max',
-        ]
-        proto_fp16 = float16.convert_float_to_float16(
-            proto,
-            keep_io_types=True,
-            op_block_list=sorted(set(block_list)),
-        )
-        onnx.save(proto_fp16, str(output_path))
-        print(f'Converted ONNX backbone to mixed-precision FP16 in {time.perf_counter() - t_fp16:.1f}s', flush=True)
-
     size = output_path.stat().st_size
     sha256 = _sha256_file(output_path)
     print(f'Exported: {output_path} ({size:,} bytes, {size / 1048576:.1f} MiB, sha256={sha256})', flush=True)
@@ -293,7 +295,7 @@ def export_model(
         from inference.device_utils import create_onnx_session
 
         print('Computing PyTorch CPU reference...', flush=True)
-        _patch_for_clean_onnx(model)
+        _patch_for_clean_onnx(model, fp16=fp16)
         with torch.no_grad():
             ref_out = core(dummy).detach().cpu().numpy()
 

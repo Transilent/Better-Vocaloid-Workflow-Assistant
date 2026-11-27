@@ -53,6 +53,15 @@ The script verifies all three parts and creates `VWA-Windows-x64.zip`. For **JPN
 
 Requirements: Windows 10/11 x64. The portable package includes its runtime. Check the published release notes for the final download, joining and extraction space; leave additional room for optional components and media. A compatible singing editor and voicebank are required for voice synthesis.
 
+### Choosing BS-RoFormer ONNX Precision (WebGPU)
+
+Both **FP16** and **FP32** BS-RoFormer ONNX weights are provided. Choose by GPU VRAM: **use FP16 on smaller-VRAM GPUs, and FP32 on larger-VRAM GPUs**.
+
+| Variant | File | Size | Measured Peak VRAM (RX 9070 XT) | Recommendation |
+| --- | --- | --- | --- | --- |
+| **FP16 (mixed precision)** | `bs_roformer_karaoke_frazer_becruily.fp16.onnx` | ~127.5 MiB | ~2.1–4.4 GiB | **Recommended for smaller-VRAM GPUs (6–8 GB)** |
+| **FP32 (full precision)** | `bs_roformer_karaoke_frazer_becruily.onnx` | ~223.2 MiB | ~6.8 GiB | **Recommended for larger-VRAM GPUs (12 GB+)** for near-lossless PyTorch parity |
+
 ## Basic use
 
 1. In **Preparation**, select the source, lyric language, processing options and output folder. Review the resulting audio, notes and lyrics.

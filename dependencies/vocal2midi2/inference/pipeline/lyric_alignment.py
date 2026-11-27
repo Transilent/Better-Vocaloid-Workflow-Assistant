@@ -366,7 +366,7 @@ def _run_lyric_alignment(
                     free_memory()
             else:
                 logger.info("\n--- Stage 2/3: Loading HubertFA model ---")
-                hfa_model = load_hfa_model(hfa_model_dir, device=ctx.device)
+                hfa_model = load_hfa_model(hfa_model_dir, device=ctx.device, use_cache=False)
                 try:
                     _check_cancel()
                     logger.info("------------------------------------------\n")
@@ -404,9 +404,8 @@ def _run_lyric_alignment(
                             cancel_checker=cancel_checker,
                         )
                 finally:
-                    # Cached in load_hfa_model for reuse across runs; per-song
-                    # DirectML session teardown access-violates onnxruntime on
-                    # the next song.
+                    hfa_model.model = None
+                    del hfa_model
                     free_memory()
             if use_tifa:
                 _check_cancel()

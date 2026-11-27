@@ -163,9 +163,6 @@ def _prepare_context(
     )
 
 
-_RMVPE_TRANSCRIBER_CACHE: dict[tuple[str, str], RmvpeTranscriber] = {}
-
-
 def _extract_pitch_curve(
     waveform,
     sr,
@@ -176,22 +173,18 @@ def _extract_pitch_curve(
     device,
     cancel_checker,
 ):
-    """RMVPE pitch curve for USTX/VSQX export; None when not requested.
-
-    The transcriber is cached in-process and reused across pipeline runs --
-    recreating its DirectML session per song corrupts onnxruntime's DML
-    state and access-violates the process on the next song.
-    """
+    """RMVPE pitch curve for USTX/VSQX export; None when not requested."""
     if not (("ustx" in output_format_set or "vsqx" in output_format_set) and output_pitch_curve):
         return None
     rmvpe_model = _resolve_rmvpe_path(rmvpe_model_path)
     logger.info(f"[Hybrid Pipeline] Running RMVPE from: {rmvpe_model}")
-    key = (rmvpe_model, str(device or "").strip().lower() or "auto")
-    rmvpe = _RMVPE_TRANSCRIBER_CACHE.get(key)
-    if rmvpe is None:
-        rmvpe = RmvpeTranscriber(rmvpe_model, device=device)
-        _RMVPE_TRANSCRIBER_CACHE[key] = rmvpe
-    rmvpe_result = rmvpe.infer(waveform, sr, cancel_checker=cancel_checker)
+    rmvpe = RmvpeTranscriber(rmvpe_model, device=device)
+    try:
+        rmvpe_result = rmvpe.infer(waveform, sr, cancel_checker=cancel_checker)
+    finally:
+        rmvpe.shutdown()
+        del rmvpe
+        free_memory()
     logger.info(f"[Hybrid Pipeline] RMVPE done. Frames={len(rmvpe_result.midi_pitch)} step={rmvpe_result.time_step_seconds:.4f}s")
     return rmvpe_result
 
@@ -254,7 +247,7 @@ def _run_game_stage(
         else:
             logger.info("\n--- Stage 1/1: Loading GAME model (No-Lyrics Mode) ---")
 
-    game_model = load_game_model(game_model_dir, device=ctx.device)
+    game_model = load_game_model(game_model_dir, device=ctx.device, use_cache=False)
     try:
         if cancel_checker and cancel_checker():
             raise InterruptedError("Task was cancelled")
@@ -299,9 +292,8 @@ def _run_game_stage(
         if cancel_checker and cancel_checker():
             raise InterruptedError("Task was cancelled")
     finally:
-        # The model stays cached in load_game_model for reuse across runs;
-        # tearing the DirectML session down per song access-violates
-        # onnxruntime on the next song.
+        game_model.shutdown()
+        del game_model
         free_memory()
     return all_notes
 
