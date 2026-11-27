@@ -132,6 +132,14 @@ def _overlap_window(chunk_size: int, fade_size: int):
 
 def _resolve_onnx_model(environment: Path, spec: dict[str, Any]) -> Path:
     for item in spec.get('weights', ()):
+        for variant in item.get('variants') or ():
+            if not isinstance(variant, dict):
+                continue
+            v_name = str(variant.get('name') or '')
+            if v_name.lower().endswith('.onnx'):
+                candidate = environment / v_name
+                if candidate.is_file():
+                    return candidate
         name = str(item.get('name') or '')
         if name.lower().endswith('.onnx'):
             candidate = environment / name

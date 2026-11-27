@@ -54,11 +54,82 @@ def _status_tree(directory):
     }
 
 
+def _pinned_onnx_weights(spec):
+    """Return pinned ONNX weight entries [(name, bytes, sha256), ...], variants first."""
+    entries = []
+    for item in spec.get('weights', ()):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get('name') or '')
+        if not name.lower().endswith('.onnx'):
+            continue
+        for variant in item.get('variants') or ():
+            if not isinstance(variant, dict):
+                continue
+            v_name = str(variant.get('name') or '')
+            v_size = variant.get('bytes')
+            v_sha = str(variant.get('sha256') or '').strip().lower()
+            if v_name.lower().endswith('.onnx') and type(v_size) is int and v_size > 0 and len(v_sha) == 64:
+                entries.append((v_name, v_size, v_sha))
+        size = item.get('bytes')
+        sha = str(item.get('sha256') or '').strip().lower()
+        if type(size) is int and size > 0 and len(sha) == 64:
+            entries.append((name, size, sha))
+    return entries
+
+
+def _manual_onnx_match(root, manifest_path=MANIFEST):
+    """Detect a pinned FP16/FP32 ONNX weight placed manually without installed.json."""
+    root_path = Path(root)
+    cur_path = current(root_path)
+    if component_health._ancestor_reparse_issue(root_path):
+        return None
+    if cur_path.exists() and component_health._ancestor_reparse_issue(cur_path):
+        return None
+    if (cur_path / 'installed.json').exists():
+        return None
+    manifest_raw, spec, issue, _ = component_health._read_json_regular(
+        manifest_path, component_health.MANIFEST_MAX_BYTES)
+    if issue or not isinstance(spec, dict) or spec.get('engine') != 'onnx-webgpu':
+        return None
+    pinned = _pinned_onnx_weights(spec)
+    if not pinned:
+        return None
+    by_size = {size: sha for _, size, sha in pinned}
+    names = list(dict.fromkeys(name for name, _, _ in pinned))
+    for folder in (cur_path, root_path):
+        if not folder.is_dir() or component_health._ancestor_reparse_issue(folder):
+            continue
+        for name in names:
+            target, info, file_issue = component_health._lstat_regular(folder / name)
+            if file_issue is None and info is not None and info.st_size in by_size:
+                return target, int(info.st_size), by_size[info.st_size], hashlib.sha256(manifest_raw).hexdigest()
+    return None
+
+
 def status(root=COMPONENT):
     """Fast metadata status; this intentionally does not hash model/runtime bytes."""
     try:
         return _status_tree(current(root))
     except (OSError, ValueError, KeyError, TypeError):
+        match = _manual_onnx_match(root, MANIFEST)
+        if match is not None:
+            return {
+                'ready': True,
+                'runtime': 'webgpu',
+                'probe': {
+                    'onnxruntime': 'bundled',
+                    'webgpu_available': True,
+                    'device': 'webgpu',
+                    'manual_weight': match[0].name,
+                },
+                'verification': {
+                    'level': 'metadata',
+                    'content_verified': False,
+                    'sha256_checked': False,
+                    'state': 'metadata_ready',
+                },
+            }
         return {
             'ready': False,
             'runtime': None,
@@ -86,15 +157,57 @@ def full_verify(root=COMPONENT, progress=None, check=None):
     ``progress(done, total, message)``, and never loads the model or uses the
     network. Missing expected SHAs are reported as unverified rather than ready.
     """
+    match = _manual_onnx_match(root, MANIFEST)
+    if match is not None:
+        target, expected_bytes, expected_sha, manifest_sha = match
+        if progress:
+            progress(0, expected_bytes, f'正在完整校验 · {target.name}')
+        try:
+            actual_sha = file_hash(target, check=check)
+        except InterruptedError:
+            return {'component': 'bs-roformer-karaoke', 'level': 'full', 'state': 'cancelled', 'verified': False}
+        ok = actual_sha == expected_sha
+        if progress:
+            progress(expected_bytes, expected_bytes, '完整校验通过' if ok else '完整校验结束')
+        return {
+            'component': 'bs-roformer-karaoke',
+            'level': 'full',
+            'state': 'verified' if ok else 'corrupt',
+            'verified': ok,
+            'metadata_ready': True,
+            'runtime': 'webgpu',
+            'probe': {'onnxruntime': 'bundled', 'webgpu_available': True, 'device': 'webgpu',
+                      'manual_weight': target.name},
+            'manifest_sha256': manifest_sha,
+            'expected': [{'path': target.name, 'kind': 'weight', 'bytes': expected_bytes, 'sha256': expected_sha}],
+            'actual': [{'path': target.name, 'kind': 'weight', 'exists': True, 'bytes': expected_bytes,
+                        'sha256': actual_sha, 'sha256_checked': True}],
+            'corrupted': [] if ok else [{'path': target.name, 'kind': 'weight', 'reason': 'sha256_mismatch',
+                                         'message': '文件内容 SHA-256 与清单不一致。',
+                                         'expected_bytes': expected_bytes, 'actual_bytes': expected_bytes,
+                                         'expected_sha256': expected_sha, 'actual_sha256': actual_sha}],
+            'changed': [],
+            'missing': [],
+            'unverified': [],
+            'errors': [],
+            'progress': {'hash_bytes': expected_bytes, 'total_hash_bytes': expected_bytes,
+                         'sha256_checked': 1, 'files_expected': 1},
+        }
     return component_health.verify_component(current(root), MANIFEST,
                                              progress=progress, check=check)
 
 
 def require_ready(root=None):
     root = COMPONENT if root is None else root
-    if not status(root)['ready']:
-        raise FileNotFoundError(_NOT_READY)
-    return current(root)
+    try:
+        if _status_tree(current(root))['ready']:
+            return current(root)
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    match = _manual_onnx_match(root, MANIFEST)
+    if match is not None:
+        return match[0].parent
+    raise FileNotFoundError(_NOT_READY)
 
 
 @contextmanager

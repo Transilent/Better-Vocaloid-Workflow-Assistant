@@ -64,6 +64,8 @@ ONNX 推理默认自动使用高性能 GPU（WebGPU）。
 | **FP16（混合精度）** | `bs_roformer_karaoke_frazer_becruily.fp16.onnx` | 约 127.5 MiB | 约 2.1–4.4 GiB | **小显存显卡（6–8 GB）优先选用**，显存占用显著更低 |
 | **FP32（全精度）** | `bs_roformer_karaoke_frazer_becruily.onnx` | 约 223.2 MiB | 约 6.8 GiB | **大显存显卡（12 GB 及以上）优先选用**，精度与原版 PyTorch 基本无损一致 |
 
+**安装方式**：可在软件「模型与组件」页在线下载 FP32，或直接将下载的 FP16 / FP32 `.onnx` 文件放入 `dependencies\optional\bs-roformer\current\`（或 `dependencies\optional\bs-roformer\`），无需手动写配置文件即可自动识别并使用。
+
 ## 使用流程
 
 1. 在**准备工作流**选择音乐来源、歌词语言、处理方式与保存目录，完成后核对音频、音符和歌词。

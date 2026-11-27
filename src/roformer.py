@@ -14,15 +14,31 @@ def separate_vocals(source, directory, job, device='auto', *, input_kind='vocals
 
     with use_ready() as environment:
         spec = manifest()
+        from roformer_onnx import _resolve_onnx_model, separate_vocals_onnx
+
+        active_model = _resolve_onnx_model(Path(environment), spec)
+        allowed_onnx_hashes = set()
         for item in spec.get('weights', ()):
-            expected = str(item.get('sha256') or '').strip()
-            target = Path(environment) / item['name']
-            if expected and target.is_file() and file_hash(target) != expected:
-                raise ValueError('BS-RoFormer 权重／配置校验失败，请重新安装组件。')
+            name = str(item.get('name') or '')
+            if name.lower().endswith('.onnx'):
+                expected = str(item.get('sha256') or '').strip().lower()
+                if expected:
+                    allowed_onnx_hashes.add(expected)
+                for variant in item.get('variants') or ():
+                    if isinstance(variant, dict):
+                        v_sha = str(variant.get('sha256') or '').strip().lower()
+                        if v_sha:
+                            allowed_onnx_hashes.add(v_sha)
+            else:
+                expected = str(item.get('sha256') or '').strip().lower()
+                target = Path(environment) / name
+                if expected and target.is_file() and file_hash(target) != expected:
+                    raise ValueError('BS-RoFormer 权重／配置校验失败，请重新安装组件。')
+        if allowed_onnx_hashes and file_hash(active_model) not in allowed_onnx_hashes:
+            raise ValueError('BS-RoFormer 权重／配置校验失败，请重新安装组件。')
         packages_dir = Path(environment) / 'packages'
         if packages_dir.is_dir() and str(packages_dir) not in sys.path:
             sys.path.insert(0, str(packages_dir))
-        from roformer_onnx import separate_vocals_onnx
 
         return separate_vocals_onnx(
             source,

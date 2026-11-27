@@ -36,8 +36,14 @@ def stage_signature(job, request, key):
                 data['chorus'] = {name: model_identity(tools[name]) for name in ('chorus_model', 'chorus_metadata')}
             elif mode == 'roformer':
                 data['roformer'] = request.get('roformer_device', 'auto')
-                from optional_components import manifest
-                data['roformer_model'] = [(e['name'], e['sha256']) for e in manifest()['weights']]
+                from optional_components import manifest, require_ready
+                from roformer_onnx import _resolve_onnx_model
+                spec = manifest()
+                try:
+                    active_model = _resolve_onnx_model(require_ready(), spec)
+                    data['roformer_model'] = (active_model.name, active_model.stat().st_size)
+                except (OSError, ValueError):
+                    data['roformer_model'] = [(e['name'], e['sha256']) for e in spec['weights']]
                 data['roformer_adapter'] = file_hash(CODE_ROOT / 'roformer.py')
         data['adapter'] = file_hash(CODE_ROOT / 'mdx.py') if mode != 'import' else 1
         if mode in ('dual','roformer'):

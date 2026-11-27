@@ -64,6 +64,8 @@ Both **FP16** and **FP32** BS-RoFormer ONNX weights are provided. Choose by GPU 
 | **FP16 (mixed precision)** | `bs_roformer_karaoke_frazer_becruily.fp16.onnx` | ~127.5 MiB | ~2.1–4.4 GiB | **Recommended for smaller-VRAM GPUs (6–8 GB)** |
 | **FP32 (full precision)** | `bs_roformer_karaoke_frazer_becruily.onnx` | ~223.2 MiB | ~6.8 GiB | **Recommended for larger-VRAM GPUs (12 GB+)** for near-lossless PyTorch parity |
 
+**Installation**: Download FP32 directly in **Models and components**, or drop either the FP16 or FP32 `.onnx` file directly into `dependencies\optional\bs-roformer\current\` (or `dependencies\optional\bs-roformer\`) for automatic detection.
+
 ## Basic use
 
 1. In **Preparation**, select the source, lyric language, processing options and output folder. Review the resulting audio, notes and lyrics.
