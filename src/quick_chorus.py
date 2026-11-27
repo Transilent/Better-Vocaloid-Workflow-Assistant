@@ -20,6 +20,7 @@ from chorus_review_service import _analysis_sources, _check, _meter
 from chorus_speech import alignment_ready
 import chorus_viewmodel as _vm
 from common import ROOT
+from project_convert_compat import strip_extended_prefix
 from quick_work import WorkerLane
 
 
@@ -2018,7 +2019,7 @@ class QuickChorus(QObject):
             self._say(error, error=True)
             return
         project = self.project
-        variant = variant or self._variant
+        variant = variant or ('processed' if project.edits else self._variant)
         if variant not in VARIANTS:
             self._say('请选择有效的导出版本。', error=True)
             return
@@ -2095,7 +2096,7 @@ class QuickChorus(QObject):
     @Slot()
     def openExport(self):
         if self._export:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._export)))
+            QDesktopServices.openUrl(QUrl.fromLocalFile(strip_extended_prefix(str(self._export))))
 
     @Slot()
     def cancel(self):

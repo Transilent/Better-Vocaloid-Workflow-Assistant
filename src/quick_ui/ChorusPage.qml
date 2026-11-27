@@ -20,8 +20,10 @@ FocusScope {
     property bool timelineCollapsed: false
     property real timelinePitchHeight: Math.round(118 * theme.scale)
     property real timelinePhraseHeight: Math.round(160 * theme.scale)
-    property bool showBatchAdvanced: false
-    property bool showTrackAdvanced: false
+    property bool showBatchAdvanced: false; property bool showTrackAdvanced: false
+    property url pendingDroppedScore
+    readonly property bool dropScoreDue: !view.busy && ready && String(pendingDroppedScore).length > 0
+    onDropScoreDueChanged: if (dropScoreDue) { const u = pendingDroppedScore; pendingDroppedScore = ""; Qt.callLater(() => controller.importScore(u)) }
 
     function t(text) { return quickTranslation.text(text) }
     function stamp(seconds) {
@@ -69,10 +71,12 @@ FocusScope {
             projectAction("open", projectUrl)
             return
         }
-        if (vocals.length > 0)
+        if (vocals.length > 0) {
+            page.pendingDroppedScore = scoreUrl || ""
             controller.importAudio("vocal", vocals)
-        if (scoreUrl && vocals.length === 0)
+        } else if (scoreUrl) {
             controller.importScore(scoreUrl)
+        }
     }
     function runBatch(apply) {
         const refMode = page.view.timingRefMode || (page.view.score ? "midi" : "lead")
@@ -276,10 +280,12 @@ FocusScope {
         anchors.margins: Math.round(10 * page.theme.scale)
         spacing: Math.round(6 * page.theme.scale)
 
-        // 1. Unified single-row studio header bar
-        RowLayout {
+        // 1. Unified studio header bar (wraps cleanly on narrow / high-DPI viewports)
+        GridLayout {
+            id: headerBar
             Layout.fillWidth: true
-            spacing: Math.round(6 * page.theme.scale)
+            columns: page.width < Math.round(1120 * page.theme.scale) ? 1 : 2
+            columnSpacing: Math.round(6 * page.theme.scale); rowSpacing: Math.round(5 * page.theme.scale)
 
             RowLayout {
                 Layout.fillWidth: true
@@ -290,11 +296,8 @@ FocusScope {
                     Layout.preferredWidth: Math.min(Math.round(170 * page.theme.scale), Math.max(Math.round(88 * page.theme.scale), implicitWidth + 12))
                     Layout.preferredHeight: Math.round(30 * page.theme.scale)
                     text: page.view.title
-                    font.pixelSize: Math.round(16 * page.theme.scale)
-                    font.weight: Font.DemiBold
-                    background: null
-                    leftPadding: 0
-                    rightPadding: 2
+                    font.pixelSize: Math.round(16 * page.theme.scale); font.weight: Font.DemiBold
+                    background: null; leftPadding: 0; rightPadding: 2
                     Accessible.name: page.t("歌曲名称")
                     onEditingFinished: page.controller.nameProject(text)
                 }
@@ -307,162 +310,93 @@ FocusScope {
                 }
             }
 
-            // Primary 3-mode workflow switch (segmented pill)
-            Rectangle {
-                radius: Math.round(7 * page.theme.scale)
-                color: page.theme.raised
-                border.color: page.theme.line
-                Layout.preferredWidth: modeRow.implicitWidth + 4
-                Layout.minimumWidth: Layout.preferredWidth
-                Layout.preferredHeight: modeRow.implicitHeight + 4
-                implicitWidth: Layout.preferredWidth
-                implicitHeight: Layout.preferredHeight
-                RowLayout {
-                    id: modeRow
-                    anchors.fill: parent
-                    anchors.margins: 2
-                    spacing: 2
-                    Repeater {
-                        model: [{id: "all", label: page.t("全曲"), icon: "waveform"},
-                                {id: "phrase", label: page.t("唱段对齐"), icon: "align_tracks"},
-                                {id: "pitch", label: page.t("音高精修"), icon: "pitch_curve"}]
-                        UiButton {
-                            required property var modelData
-                            objectName: "chorusMode-" + modelData.id
-                            theme: page.theme
-                            implicitHeight: Math.round(28 * page.theme.scale)
-                            leftPadding: Math.round(9 * page.theme.scale)
-                            rightPadding: leftPadding
-                            text: modelData.label
-                            leadingGlyph: modelData.icon
-                            leadingIconSize: 14
-                            selected: page.view.mode === modelData.id
-                            quiet: !selected
-                            enabled: page.ready
-                            onClicked: {
-                                page.controller.setMode(modelData.id)
-                                if (modelData.id === "all")
-                                    page.controller.inspectorSection("batch")
-                                else if (modelData.id === "phrase")
-                                    page.controller.inspectorSection("phrase")
+            Flow {
+                Layout.fillWidth: headerBar.columns === 1
+                Layout.alignment: headerBar.columns === 1 ? Qt.AlignLeft : Qt.AlignRight
+                spacing: Math.round(6 * page.theme.scale)
+                Rectangle {
+                    radius: Math.round(7 * page.theme.scale); color: page.theme.raised; border.color: page.theme.line
+                    implicitWidth: modeRow.implicitWidth + 4; implicitHeight: modeRow.implicitHeight + 4
+                    RowLayout {
+                        id: modeRow
+                        anchors.fill: parent; anchors.margins: 2; spacing: 2
+                        Repeater {
+                            model: [{id: "all", label: page.t("全曲"), icon: "waveform"},
+                                    {id: "phrase", label: page.t("唱段对齐"), icon: "align_tracks"},
+                                    {id: "pitch", label: page.t("音高精修"), icon: "pitch_curve"}]
+                            UiButton {
+                                required property var modelData
+                                objectName: "chorusMode-" + modelData.id
+                                theme: page.theme; implicitHeight: Math.round(28 * page.theme.scale)
+                                leftPadding: Math.round(9 * page.theme.scale); rightPadding: leftPadding
+                                text: modelData.label; leadingGlyph: modelData.icon; leadingIconSize: 14
+                                selected: page.view.mode === modelData.id; quiet: !selected; enabled: page.ready
+                                onClicked: {
+                                    page.controller.setMode(modelData.id)
+                                    if (modelData.id === "all") page.controller.inspectorSection("batch")
+                                    else if (modelData.id === "phrase") page.controller.inspectorSection("phrase")
+                                }
                             }
                         }
                     }
                 }
-            }
-
-            // Grouped action buttons (Import, Project, Export, Inspector)
-            UiButton {
-                objectName: "chorusConfirmScore"
-                theme: page.theme
-                implicitHeight: Math.round(30 * page.theme.scale)
-                visible: !!page.view.score && !page.view.scoreConfirmed
-                text: page.t("确认乐谱")
-                enabled: !page.view.busy
-                onClicked: page.controller.confirmScore(true)
-            }
-            UiButton {
-                objectName: "chorusImportMenu"
-                theme: page.theme
-                implicitHeight: Math.round(30 * page.theme.scale)
-                text: "+ " + page.t("导入") + " ▾"
-                enabled: !page.view.busy
-                onClicked: importMenu.popup()
-                UiMenu {
-                    id: importMenu
-                    theme: page.theme
-                    MenuItem {
-                        objectName: "chorusImportVocal"
-                        text: page.t("导入干声…")
-                        onTriggered: page.pickAudio("vocal")
-                    }
-                    MenuItem {
-                        text: page.t("导入导唱…")
-                        onTriggered: page.pickAudio("guide")
-                    }
-                    MenuItem {
-                        text: page.t("导入伴奏…")
-                        onTriggered: page.pickAudio("backing")
-                    }
-                    MenuSeparator {}
-                    MenuItem {
-                        text: page.t("导入乐谱 / 歌声工程…")
-                        onTriggered: scoreDialog.open()
-                    }
-                    MenuItem {
-                        objectName: "chorusImportPrepScore"
-                        text: page.t("从准备任务导入谱轨…")
-                        onTriggered: {
-                            page.controller.refreshPreparationScores()
-                            prepScoreDialog.open()
+                UiButton {
+                    objectName: "chorusConfirmScore"; theme: page.theme; implicitHeight: Math.round(30 * page.theme.scale)
+                    visible: !!page.view.score && !page.view.scoreConfirmed
+                    text: page.t("确认乐谱"); enabled: !page.view.busy
+                    onClicked: page.controller.confirmScore(true)
+                }
+                UiButton {
+                    objectName: "chorusImportMenu"; theme: page.theme; implicitHeight: Math.round(30 * page.theme.scale)
+                    text: "+ " + page.t("导入") + " ▾"; enabled: !page.view.busy
+                    onClicked: importMenu.popup()
+                    UiMenu {
+                        id: importMenu; theme: page.theme
+                        MenuItem { objectName: "chorusImportVocal"; text: page.t("导入干声…"); onTriggered: page.pickAudio("vocal") }
+                        MenuItem { text: page.t("导入导唱…"); onTriggered: page.pickAudio("guide") }
+                        MenuItem { text: page.t("导入伴奏…"); onTriggered: page.pickAudio("backing") }
+                        MenuSeparator {}
+                        MenuItem { text: page.t("导入乐谱 / 歌声工程…"); onTriggered: scoreDialog.open() }
+                        MenuItem {
+                            objectName: "chorusImportPrepScore"; text: page.t("从准备任务导入谱轨…")
+                            onTriggered: { page.controller.refreshPreparationScores(); prepScoreDialog.open() }
                         }
                     }
                 }
-            }
-            UiButton {
-                theme: page.theme
-                implicitHeight: Math.round(30 * page.theme.scale)
-                quiet: true
-                text: page.t("工程") + " ▾"
-                enabled: !page.view.busy
-                onClicked: projectMenu.popup()
-                UiMenu {
-                    id: projectMenu
-                    theme: page.theme
-                    MenuItem {
-                        text: page.t("新建工程")
-                        onTriggered: page.projectAction("new", "")
-                    }
-                    MenuItem {
-                        text: page.t("打开工程…")
-                        onTriggered: openDialog.open()
-                    }
-                    MenuSeparator {}
-                    MenuItem {
-                        text: page.t("保存工程 (Ctrl+S)")
-                        enabled: page.ready
-                        onTriggered: page.view.path ? page.controller.saveProject("") : saveDialog.open()
-                    }
-                    MenuItem {
-                        text: page.t("另存为…")
-                        enabled: page.ready
-                        onTriggered: saveDialog.open()
+                UiButton {
+                    theme: page.theme; implicitHeight: Math.round(30 * page.theme.scale); quiet: true
+                    text: page.t("工程") + " ▾"; enabled: !page.view.busy
+                    onClicked: projectMenu.popup()
+                    UiMenu {
+                        id: projectMenu; theme: page.theme
+                        MenuItem { text: page.t("新建工程"); onTriggered: page.projectAction("new", "") }
+                        MenuItem { text: page.t("打开工程…"); onTriggered: openDialog.open() }
+                        MenuSeparator {}
+                        MenuItem { text: page.t("保存工程 (Ctrl+S)"); enabled: page.ready
+                            onTriggered: page.view.path ? page.controller.saveProject("") : saveDialog.open() }
+                        MenuItem { text: page.t("另存为…"); enabled: page.ready; onTriggered: saveDialog.open() }
                     }
                 }
-            }
-            UiButton {
-                objectName: "chorusSendToMixdown"
-                theme: page.theme
-                implicitHeight: Math.round(30 * page.theme.scale)
-                text: page.t("送入混音")
-                leadingGlyph: "nav_mixdown"
-                leadingIconSize: 14
-                enabled: !page.view.busy && page.view.vocals > 0
-                ToolTip.visible: hovered
-                ToolTip.text: page.t("渲染当前修音分轨并直接送入简易混音（最多支持 16 路独立人声）")
-                onClicked: mixdownHandoffDialog.open()
-            }
-            UiButton {
-                objectName: "chorusExport"
-                theme: page.theme
-                implicitHeight: Math.round(30 * page.theme.scale)
-                text: page.t("分轨导出")
-                leadingGlyph: "export_file"
-                leadingIconSize: 14
-                primary: true
-                enabled: !page.view.busy && page.view.vocals > 0
-                onClicked: exportDialog.open()
-            }
-            UiButton {
-                theme: page.theme
-                implicitHeight: Math.round(30 * page.theme.scale)
-                text: page.t("面板")
-                selected: page.view.inspector
-                quiet: !selected
-                disclosure: page.view.inspector ? 1 : 0
-                ToolTip.visible: hovered
-                ToolTip.text: page.t("展开或收起右侧编辑与自动处理面板")
-                onClicked: page.controller.toggleInspector()
+                UiButton {
+                    objectName: "chorusSendToMixdown"; theme: page.theme; implicitHeight: Math.round(30 * page.theme.scale)
+                    text: page.t("送入混音"); leadingGlyph: "nav_mixdown"; leadingIconSize: 14
+                    enabled: !page.view.busy && page.view.vocals > 0
+                    ToolTip.visible: hovered; ToolTip.text: page.t("渲染当前修音分轨并直接送入简易混音（最多支持 16 路独立人声）")
+                    onClicked: mixdownHandoffDialog.open()
+                }
+                UiButton {
+                    objectName: "chorusExport"; theme: page.theme; implicitHeight: Math.round(30 * page.theme.scale)
+                    text: page.t("分轨导出"); leadingGlyph: "export_file"; leadingIconSize: 14
+                    primary: true; enabled: !page.view.busy && page.view.vocals > 0
+                    onClicked: exportDialog.open()
+                }
+                UiButton {
+                    theme: page.theme; implicitHeight: Math.round(30 * page.theme.scale)
+                    text: page.t("面板"); selected: page.view.inspector; quiet: !selected
+                    disclosure: page.view.inspector ? 1 : 0
+                    ToolTip.visible: hovered; ToolTip.text: page.t("展开或收起右侧编辑与自动处理面板")
+                    onClicked: page.controller.toggleInspector()
+                }
             }
         }
 
@@ -1766,135 +1700,89 @@ FocusScope {
                 onClicked: page.controller.openExport() }
         }
 
-        // 4. Unified studio transport bar (Play, Loop, Follow, Scrub, A/B, Undo, Zoom)
-        RowLayout {
-            Layout.fillWidth: true
-            visible: page.ready
-            spacing: Math.round(5 * page.theme.scale)
-            UiButton {
-                objectName: "chorusPlay"
-                theme: page.theme
-                implicitHeight: Math.round(32 * page.theme.scale)
-                text: page.view.playing ? page.t("暂停") : page.t("播放")
-                glyph: page.view.playing ? "pause" : "play"
-                primary: true
-                enabled: page.ready
-                onClicked: page.controller.togglePlay()
-            }
-            UiButton {
-                theme: page.theme
-                implicitHeight: Math.round(32 * page.theme.scale)
-                text: page.t("循环")
-                selected: page.view.loop
-                quiet: !selected
-                enabled: page.ready
-                ToolTip.visible: hovered
-                ToolTip.text: page.t("循环播放当前选段 (L)")
-                onClicked: page.controller.setLoop(!page.view.loop)
-            }
-            UiButton {
-                objectName: "chorusFollowPlayhead"
-                theme: page.theme
-                implicitHeight: Math.round(32 * page.theme.scale)
-                text: page.t("跟随")
-                selected: !!page.view.followPlayhead
-                quiet: !selected
-                enabled: page.ready
-                ToolTip.visible: hovered
-                ToolTip.text: page.t("播放与跳转时自动翻页跟随播放头 (F)")
-                onClicked: page.controller.setFollowPlayhead(!page.view.followPlayhead)
-            }
-            Caption {
-                text: page.stamp(page.controller.position)
-                font.family: page.theme.monoFont || "Consolas"
-                Layout.minimumWidth: Math.round(64 * page.theme.scale)
-            }
-            UiSlider {
-                id: seek
-                objectName: "chorusSeek"
-                theme: page.theme
-                compact: true
-                property real seekTarget: 0
-                Layout.fillWidth: true
-                Layout.minimumWidth: Math.round(70 * page.theme.scale)
-                from: page.view.first
-                to: Math.max(from + .001, page.view.last)
-                enabled: page.ready
-                Accessible.name: page.t("播放位置")
-                Binding { target: seek; property: "value"; value: page.controller.position; when: !seek.pressed }
-                onPressedChanged: {
-                    if (pressed)
-                        seekTarget = value
-                    else
-                        page.controller.seek(seekTarget)
+        // 4. Unified studio transport bar (wraps cleanly on compact / high-DPI viewports)
+        GridLayout {
+            id: transportBar
+            Layout.fillWidth: true; visible: page.ready
+            columns: page.width < Math.round(880 * page.theme.scale) ? 1 : 2
+            columnSpacing: Math.round(6 * page.theme.scale); rowSpacing: Math.round(4 * page.theme.scale)
+            RowLayout {
+                Layout.fillWidth: true; spacing: Math.round(5 * page.theme.scale)
+                UiButton {
+                    objectName: "chorusPlay"; theme: page.theme; implicitHeight: Math.round(32 * page.theme.scale)
+                    text: page.view.playing ? page.t("暂停") : page.t("播放")
+                    glyph: page.view.playing ? "pause" : "play"; primary: true; enabled: page.ready
+                    onClicked: page.controller.togglePlay()
                 }
-                onMoved: {
-                    seekTarget = value
-                    if (!pressed || !page.view.playing)
-                        page.controller.seek(value)
+                UiButton {
+                    theme: page.theme; implicitHeight: Math.round(32 * page.theme.scale)
+                    text: page.t("循环"); selected: page.view.loop; quiet: !selected; enabled: page.ready
+                    ToolTip.visible: hovered; ToolTip.text: page.t("循环播放当前选段 (L)")
+                    onClicked: page.controller.setLoop(!page.view.loop)
+                }
+                UiButton {
+                    objectName: "chorusFollowPlayhead"; theme: page.theme; implicitHeight: Math.round(32 * page.theme.scale)
+                    text: page.t("跟随"); selected: !!page.view.followPlayhead; quiet: !selected; enabled: page.ready
+                    ToolTip.visible: hovered; ToolTip.text: page.t("播放与跳转时自动翻页跟随播放头 (F)")
+                    onClicked: page.controller.setFollowPlayhead(!page.view.followPlayhead)
+                }
+                Caption {
+                    text: page.stamp(page.controller.position)
+                    font.family: page.theme.monoFont || "Consolas"; Layout.minimumWidth: Math.round(64 * page.theme.scale)
+                }
+                UiSlider {
+                    id: seek; objectName: "chorusSeek"; theme: page.theme; compact: true
+                    property real seekTarget: 0
+                    Layout.fillWidth: true; Layout.minimumWidth: Math.round(70 * page.theme.scale)
+                    from: page.view.first; to: Math.max(from + .001, page.view.last); enabled: page.ready
+                    Accessible.name: page.t("播放位置")
+                    Binding { target: seek; property: "value"; value: page.controller.position; when: !seek.pressed }
+                    onPressedChanged: { if (pressed) seekTarget = value; else page.controller.seek(seekTarget) }
+                    onMoved: { seekTarget = value; if (!pressed || !page.view.playing) page.controller.seek(value) }
                 }
             }
-            Rectangle {
-                radius: Math.round(6 * page.theme.scale)
-                color: page.theme.raised
-                border.color: page.theme.line
-                implicitWidth: variantRow.implicitWidth + 4
-                implicitHeight: variantRow.implicitHeight + 4
-                RowLayout {
-                    id: variantRow
-                    anchors.centerIn: parent
-                    spacing: 2
-                    Repeater {
-                        model: ["original", "timing", "pitch", "processed"]
-                        UiButton {
-                            required property string modelData
-                            theme: page.theme
-                            implicitHeight: Math.round(26 * page.theme.scale)
-                            leftPadding: Math.round(7 * page.theme.scale)
-                            rightPadding: leftPadding
-                            text: page.modeName(modelData)
-                            selected: page.view.variant === modelData
-                            quiet: !selected
-                            enabled: page.ready
-                            onClicked: page.controller.setVariant(modelData)
+            Flow {
+                Layout.fillWidth: transportBar.columns === 1
+                Layout.alignment: transportBar.columns === 1 ? Qt.AlignLeft : Qt.AlignRight
+                spacing: Math.round(5 * page.theme.scale)
+                Rectangle {
+                    radius: Math.round(6 * page.theme.scale); color: page.theme.raised; border.color: page.theme.line
+                    implicitWidth: variantRow.implicitWidth + 4; implicitHeight: variantRow.implicitHeight + 4
+                    RowLayout {
+                        id: variantRow; anchors.centerIn: parent; spacing: 2
+                        Repeater {
+                            model: ["original", "timing", "pitch", "processed"]
+                            UiButton {
+                                required property string modelData
+                                theme: page.theme; implicitHeight: Math.round(26 * page.theme.scale)
+                                leftPadding: Math.round(7 * page.theme.scale); rightPadding: leftPadding
+                                text: page.modeName(modelData); selected: page.view.variant === modelData
+                                quiet: !selected; enabled: page.ready
+                                onClicked: page.controller.setVariant(modelData)
+                            }
                         }
                     }
                 }
-            }
-            UiButton {
-                theme: page.theme
-                implicitHeight: Math.round(32 * page.theme.scale)
-                text: page.t("撤销")
-                glyph: "undo"
-                quiet: true
-                enabled: page.view.undo
-                ToolTip.visible: hovered
-                ToolTip.text: page.t("撤销上一步 (Ctrl+Z)")
-                onClicked: page.controller.undo()
-            }
-            UiButton {
-                theme: page.theme
-                implicitHeight: Math.round(32 * page.theme.scale)
-                leftPadding: Math.round(7 * page.theme.scale)
-                rightPadding: leftPadding
-                text: "−"
-                quiet: true
-                enabled: page.ready
-                ToolTip.visible: hovered
-                ToolTip.text: page.t("缩小视野 (Ctrl+滚轮)")
-                onClicked: page.controller.zoomViewportAt(1.35, page.controller.position)
-            }
-            UiButton {
-                theme: page.theme
-                implicitHeight: Math.round(32 * page.theme.scale)
-                leftPadding: Math.round(7 * page.theme.scale)
-                rightPadding: leftPadding
-                text: "+"
-                quiet: true
-                enabled: page.ready
-                ToolTip.visible: hovered
-                ToolTip.text: page.t("放大视野 (Ctrl+滚轮)")
-                onClicked: page.controller.zoomViewportAt(.74, page.controller.position)
+                UiButton {
+                    theme: page.theme; implicitHeight: Math.round(32 * page.theme.scale)
+                    text: page.t("撤销"); glyph: "undo"; quiet: true; enabled: page.view.undo
+                    ToolTip.visible: hovered; ToolTip.text: page.t("撤销上一步 (Ctrl+Z)")
+                    onClicked: page.controller.undo()
+                }
+                UiButton {
+                    theme: page.theme; implicitHeight: Math.round(32 * page.theme.scale)
+                    leftPadding: Math.round(7 * page.theme.scale); rightPadding: leftPadding
+                    text: "−"; quiet: true; enabled: page.ready
+                    ToolTip.visible: hovered; ToolTip.text: page.t("缩小视野 (Ctrl+滚轮)")
+                    onClicked: page.controller.zoomViewportAt(1.35, page.controller.position)
+                }
+                UiButton {
+                    theme: page.theme; implicitHeight: Math.round(32 * page.theme.scale)
+                    leftPadding: Math.round(7 * page.theme.scale); rightPadding: leftPadding
+                    text: "+"; quiet: true; enabled: page.ready
+                    ToolTip.visible: hovered; ToolTip.text: page.t("放大视野 (Ctrl+滚轮)")
+                    onClicked: page.controller.zoomViewportAt(.74, page.controller.position)
+                }
             }
         }
     }
@@ -2116,7 +2004,7 @@ FocusScope {
             }
         }
         onAboutToShow: {
-            exportMode.currentIndex = Math.max(0, exportMode.indexOfValue(page.view.variant))
+            exportMode.currentIndex = Math.max(0, exportMode.indexOfValue(page.view.hasEdits ? "processed" : page.view.variant))
             exportSendMixdown.checked = false
         }
         onAccepted: {
