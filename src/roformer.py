@@ -12,7 +12,7 @@ def separate_vocals(source, directory, job, device='auto', *, input_kind='vocals
     if input_kind not in ('vocals', 'mix'):
         raise ValueError('分离输入类型无效。')
     from optional_components import use_ready, manifest
-    with use_ready() as environment:
+    with use_ready(runtime=device) as environment:
         # The optional engine probes PATH even for an in-memory waveform.
         binary = str(Path(load_config()['ffmpeg']).parent)
         os.environ['PATH'] = binary + os.pathsep + os.environ.get('PATH', '')

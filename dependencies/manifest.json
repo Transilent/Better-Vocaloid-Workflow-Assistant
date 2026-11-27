@@ -14208,8 +14208,8 @@
     },
     {
       "file": "dependencies/vocal2midi/inference/API/rmvpe_api.py",
-      "bytes": 11115,
-      "sha256": "be74ec7cc5c2ef537f4ef1c36ba2e615dc16dd8dab512a5013f639d79bd12c78"
+      "bytes": 12882,
+      "sha256": "8e6d38da496cb0054073c76cfae8950440386bd4a2ca6510171635f0361648a9"
     },
     {
       "file": "dependencies/vocal2midi/inference/API/slicer_api.py",
@@ -46748,8 +46748,8 @@
     },
     {
       "file": "dependencies/vocal2midi2/inference/API/rmvpe_api.py",
-      "bytes": 12509,
-      "sha256": "83ed0fccd93db6aff352375048a334d1b730289fd407b05afa2269bc4fd28e10"
+      "bytes": 14404,
+      "sha256": "712d51bf0747846b6ee5e9fe54c46ef85246a55ef08faaf06135835319b57231"
     },
     {
       "file": "dependencies/vocal2midi2/inference/API/slicer_api.py",

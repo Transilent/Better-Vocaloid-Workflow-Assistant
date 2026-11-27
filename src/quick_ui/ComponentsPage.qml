@@ -75,8 +75,13 @@ ScrollView {
 
     function healthText() {
         const rows = []
-        if (health.runtime)
+        const installedList = health.installed_runtimes
+        if (Array.isArray(installedList) && installedList.length > 0) {
+            const labels = installedList.map(rt => rt === "cuda" ? "GPU (CUDA)" : "CPU")
+            rows.push(controller.text("已装运行库") + "  " + labels.join(" + "))
+        } else if (health.runtime) {
             rows.push(controller.text("已装运行库") + "  " + health.runtime.toUpperCase())
+        }
         if (component.installed_bytes > 0)
             rows.push(controller.text(health.installed_estimate ? "安装体积（清单估算）" : "已安装")
                       + "  " + sizeLabel(component.installed_bytes))
@@ -464,6 +469,14 @@ ScrollView {
                         textFormat: Text.PlainText
                     }
 
+                    RoformerRuntimeBar {
+                        visible: page.component.id === "roformer"
+                        theme: page.theme
+                        controller: page.controller
+                        health: page.health
+                        idle: page.idle
+                    }
+
                     Text {
                         Layout.fillWidth: true
                         visible: !!page.component.id && page.usesPlannedRoformer
@@ -576,7 +589,7 @@ ScrollView {
                             Layout.fillWidth: true
                             visible: page.component.id === "roformer"
                             Text {
-                                text: page.controller.text("运行库")
+                                text: page.controller.text("目标运行库（GPU / CPU 独立共存）")
                                 color: page.theme.muted
                                 font.pixelSize: Math.round(11 * page.theme.scale)
                             }

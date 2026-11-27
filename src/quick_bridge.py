@@ -153,7 +153,8 @@ class QuickBridge(QObject):
     def __init__(self):
         super().__init__()
         self.journal = journal_for()
-        self.state = WorkspaceController(component_source_preferences(load_config(False)))
+        self.state = WorkspaceController(component_source_preferences(load_config(False)), initial_runtime=_task_actions.initial_roformer_runtime())
+        self._runtime_user_selected = False
         self.selectionChanged.connect(self.componentSourceChanged)
         self._work = WorkerLane(self, 'vwa-workspace', journal=self.journal)
         self._catalog = WorkerLane(self, 'vwa-components', journal=self.journal)
@@ -491,44 +492,25 @@ class QuickBridge(QObject):
         return True
 
     @Property(QObject, constant=True)
-    def support(self):
-        return self._support
-
+    def support(self): return self._support
     @Property(QObject, constant=True)
-    def tuning(self):
-        return self._tuning
-
+    def tuning(self): return self._tuning
     @Property(QObject, constant=True)
-    def calibration(self):
-        return self._calibration
-
+    def calibration(self): return self._calibration
     @Property(QObject, constant=True)
-    def workshop(self):
-        return self._workshop
-
+    def workshop(self): return self._workshop
     @Property(QObject, constant=True)
-    def preparationSources(self):
-        return self._sources
-
+    def preparationSources(self): return self._sources
     @Property(QObject, constant=True)
-    def mixdown(self):
-        return self._mixdown
-
+    def mixdown(self): return self._mixdown
     @Property(QObject, constant=True)
-    def chorus(self):
-        return self._chorus
-
+    def chorus(self): return self._chorus
     @Property(QObject, constant=True)
-    def video(self):
-        return self._video
-
+    def video(self): return self._video
     @Property(QObject, constant=True)
-    def publication(self):
-        return self._publication
-
+    def publication(self): return self._publication
     @Property(QObject, constant=True)
-    def subtitles(self):
-        return self._subtitles
+    def subtitles(self): return self._subtitles
 
     @Property(QObject, constant=True)
     def converter(self): return self._converter
@@ -584,6 +566,8 @@ class QuickBridge(QObject):
     @Property('QVariantList', constant=True)
     def preparationLanguages(self):
         return [{'label': tr(profile.label), 'value': code} for code, profile in PROFILES.items()]
+    @Property('QVariantList', constant=True)
+    def dmlAdapterChoices(self): return _task_actions.dml_adapter_choices()
 
     @Property('QVariantList', notify=preparationPresetsChanged)
     def preparationPresets(self):
@@ -1104,6 +1088,7 @@ class QuickBridge(QObject):
     @Slot(str)
     def setRuntime(self, runtime):
         if not self.workBusy and not self.loading and self.state.set_runtime(runtime):
+            self._runtime_user_selected = True
             self.optionsChanged.emit()
             self.refresh()
 
@@ -1143,6 +1128,9 @@ class QuickBridge(QObject):
             if error is None:
                 first_catalog = not self.state.rows
                 self.state.set_catalog(runtime, rows)
+                preferred = _task_actions.preferred_roformer_runtime(rows, runtime) if first_catalog and not self._runtime_user_selected else None
+                if preferred and self.state.set_runtime(preferred):
+                    self.optionsChanged.emit(); self.refresh(); return
                 missing = self.state.component_plan['missingIds']
                 if first_catalog and missing:
                     self.state.select(missing[0])

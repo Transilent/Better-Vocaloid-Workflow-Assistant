@@ -222,7 +222,15 @@ def _roformer_row(runtime):
         return _error_row('roformer', exc, model=model)
 
     ready = bool(state.get('ready'))
-    installed_runtime = state.get('runtime') if state.get('runtime') in ('cpu', 'cuda') else None
+    installed_runtimes = state.get('installed_runtimes')
+    if isinstance(installed_runtimes, list):
+        installed_runtimes = [rt for rt in ('cuda', 'cpu') if rt in installed_runtimes]
+    else:
+        rt_single = state.get('runtime') if state.get('runtime') in ('cpu', 'cuda') else None
+        installed_runtimes = [rt_single] if (ready and rt_single) else []
+    target_ready = runtime in installed_runtimes
+    installed_runtime = runtime if target_ready else (installed_runtimes[0] if installed_runtimes else None)
+    runtime_states = {rt: ('ready' if rt in installed_runtimes else 'missing') for rt in ('cuda', 'cpu')}
     verification = state.get('verification') if isinstance(state.get('verification'), dict) else {}
     cached = 0
     for item in items:
@@ -234,31 +242,48 @@ def _roformer_row(runtime):
         except OSError:
             cached = None
             break
-    health = {'runtime': installed_runtime or '', 'ready_runtime': (installed_runtime or '') if ready else '',
+    health = {'runtime': installed_runtime or '', 'ready_runtime': (installed_runtime or '') if installed_runtimes else '',
+              'installed_runtimes': installed_runtimes,
+              'runtimes': runtime_states,
+              'target_runtime': runtime,
               'cache_bytes': cached,
-              'installed_estimate': bool(ready and installed_runtime == runtime),
+              'installed_estimate': bool(target_ready),
               'scope': '安装收据、文件路径与大小；完整校验另行执行',
               'source': '当前固定组件清单'}
-    if ready and installed_runtime == runtime:
+    if target_ready:
         installed = expanded
         if verification.get('content_verified') or verification.get('sha256_checked'):
-            detail = '当前运行库的元数据与完整 SHA-256 校验通过；不会加载模型。'
+            verify_note = '元数据与完整 SHA-256 校验通过；不会加载模型。'
         else:
-            detail = '当前运行库的元数据检查通过；尚未执行完整 SHA-256 校验。'
+            verify_note = '元数据检查通过；尚未执行完整 SHA-256 校验。'
+        if len(installed_runtimes) == 2:
+            detail = f'GPU (CUDA) 与 CPU 运行库均已独立安装，可自由切换无需重新下载。{verify_note}'
+        elif runtime == 'cuda':
+            detail = f'GPU (CUDA) 运行库已安装（同时支持 CPU 推理，无需另装 CPU 版）；CPU 独立版未安装。{verify_note}'
+        else:
+            detail = f'CPU 运行库已安装；GPU (CUDA) 运行库未安装（后续加装 CUDA 不会覆盖现有 CPU 版）。{verify_note}'
         return _row(
             'roformer', 'ready', detail=detail,
             download=download, installed=installed, required=required,
             can_install=True, can_verify=True, can_use=True, model=model, health=health, download_items=items,
         )
 
-    if ready and installed_runtime is not None:
-        installed_name = 'CUDA' if installed_runtime == 'cuda' else 'CPU'
-        selected_name = 'CUDA' if runtime == 'cuda' else 'CPU'
+    if installed_runtimes:
+        other_runtime = installed_runtimes[0]
+        if other_runtime == 'cuda' and runtime == 'cpu':
+            detail = (
+                '已安装 GPU (CUDA) 运行库（已自带 CPU 推理能力，在准备工作流中可直接选择 CPU，无需另行下载 CPU 版）；'
+                '当前查看的 CPU 独立运行库未安装，若加装也会独立保存，不会覆盖 CUDA 版。'
+            )
+        else:
+            detail = (
+                '已安装 CPU 运行库；当前选择的 GPU (CUDA) 运行库尚未安装。'
+                '下载安装 CUDA 版会独立保存，不会覆盖已安装的 CPU 版。'
+            )
         return _row(
             'roformer', 'missing',
             status_text='当前目标未安装',
-            detail=f'已安装另一档 {installed_name} 运行库；当前选择的 {selected_name} 尚未安装。'
-                   f' 安装 {selected_name} 会切换到该运行库。',
+            detail=detail,
             download=download, installed=0, required=required,
             can_install=True, can_verify=False, can_use=False, model=model, health=health, download_items=items,
         )
@@ -269,7 +294,11 @@ def _roformer_row(runtime):
     elif state_value == 'corrupt':
         status = 'damaged'
     else:
-        status = _tree_presence(optional_components.COMPONENT)
+        status = _tree_presence(
+            optional_components.COMPONENT,
+            damaged_names=(f'current-{runtime}', 'current'),
+            partial_names=('downloads', f'staging-{runtime}', f'previous-{runtime}', 'staging', 'previous'),
+        )
     if status == 'ready':
         status = 'damaged'
     if status == 'damaged':
@@ -424,7 +453,7 @@ def install(component_id, *, runtime=None, source='auto', progress=None,
     raise ValueError('未知的组件标识。')
 
 
-def verify(component_id, *, progress=None, check=None):
+def verify(component_id, *, runtime=None, progress=None, check=None):
     """Reuse the service-owned verification report or wrap its boolean result."""
     callback = _progress(progress)
     if component_id == 'builtin':
@@ -432,7 +461,9 @@ def verify(component_id, *, progress=None, check=None):
         callback(1, 1, '基础依赖 SHA-256 校验结束')
         return {**report, 'verified': report.get('state') == 'passed'}
     if component_id == 'roformer':
-        return optional_components.full_verify(progress=progress, check=check)
+        if runtime is None:
+            return optional_components.full_verify(progress=progress, check=check)
+        return optional_components.full_verify(progress=progress, check=check, runtime=_runtime(runtime))
     if component_id == 'chinese':
         return feature_components.verify('chinese', progress=progress, check=check)
     if component_id == 'expression':

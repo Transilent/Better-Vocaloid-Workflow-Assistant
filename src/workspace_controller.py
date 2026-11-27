@@ -25,11 +25,11 @@ class WorkspaceController:
     available_routes = ('processing', 'tuning', 'tuning_workshop', 'chorus', 'audio_mixdown', 'video_mixdown', 'publishing',
                         'project_convert', 'components', 'results', 'updates')
 
-    def __init__(self, component_sources=None):
+    def __init__(self, component_sources=None, *, initial_runtime='cpu'):
         self.draft = PreparationDraft()
         self.route = 'processing'
         self.return_route = 'processing'
-        self.runtime = 'cpu'
+        self.runtime = initial_runtime if initial_runtime in ('cpu', 'cuda') else 'cpu'
         self.component_sources = dict(component_sources or {})
         self.query = ''
         self.selected_id = 'builtin'
@@ -216,11 +216,17 @@ class WorkspaceController:
         by_id = {row['id']: row for row in self.rows} if known else {}
         ready = {key for key, row in by_id.items() if row['status'] == 'ready'}
         if separator == 'roformer' and known:
-            installed = by_id.get('roformer', {}).get('health', {}).get('ready_runtime')
+            roformer_health = by_id.get('roformer', {}).get('health', {})
+            installed_list = roformer_health.get('installed_runtimes')
+            if isinstance(installed_list, (list, tuple)):
+                installed_set = {rt for rt in installed_list if rt in ('cpu', 'cuda')}
+            else:
+                installed = roformer_health.get('ready_runtime')
+                installed_set = {installed} if installed in ('cpu', 'cuda') else set()
             requested = draft['roformer_device']
             # A CUDA build can run the CPU path; an explicit CUDA request needs
             # that build. This is a file check, not a GPU/driver guarantee.
-            if installed in ('cpu', 'cuda') and (requested != 'cuda' or installed == 'cuda'):
+            if ('cuda' in installed_set) or (requested != 'cuda' and 'cpu' in installed_set):
                 ready.add('roformer')
             else:
                 ready.discard('roformer')

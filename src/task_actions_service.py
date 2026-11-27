@@ -18,6 +18,44 @@ _CANCELLABLE_TUNING = frozenset(('tuning-loading', 'tuning-freezing', 'tuning-ru
                                  'tuning-checking-calibration', 'tuning-exporting'))
 
 
+def initial_roformer_runtime() -> str:
+    try:
+        state = components.optional_components.status()
+        installed = state.get('installed_runtimes')
+        if isinstance(installed, (list, tuple)):
+            if 'cuda' in installed:
+                return 'cuda'
+            if 'cpu' in installed:
+                return 'cpu'
+        if state.get('ready') and state.get('runtime') in ('cpu', 'cuda'):
+            return state['runtime']
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return 'cpu'
+    return 'cpu'
+
+
+def preferred_roformer_runtime(rows, current_runtime: str) -> str | None:
+    roformer_row = next((row for row in rows if row.get('id') == 'roformer'), None)
+    installed = (roformer_row or {}).get('health', {}).get('installed_runtimes') or []
+    if 'cuda' in installed and current_runtime == 'cpu' and 'cpu' not in installed:
+        return 'cuda'
+    return None
+
+
+def dml_adapter_choices() -> list[dict[str, Any]]:
+    try:
+        import gpu_backend
+        rows = gpu_backend.adapter_choices()
+    except (ImportError, OSError, RuntimeError, ValueError):
+        rows = [{'label': '自动选择', 'value': 'auto'},
+                *[{'label': f'适配器 {index}', 'value': index} for index in range(8)]]
+    return [
+        {'label': tr('自动选择') if row.get('value') == 'auto' else str(row.get('label', '')),
+         'value': row.get('value')}
+        for row in rows
+    ]
+
+
 def can_cancel(kind: str) -> bool:
     if kind == 'video-register':
         return False
@@ -46,7 +84,10 @@ def component_result(request, stop, send):
         except InterruptedError:
             return 'cancelled', '安装已取消；可继续使用已保留的下载。', None
         return 'succeeded', '安装完成。', None
-    report = components.verify(request.component_id, progress=progress, check=stop.is_set)
+    if request.component_id == 'roformer':
+        report = components.verify(request.component_id, runtime=request.runtime, progress=progress, check=stop.is_set)
+    else:
+        report = components.verify(request.component_id, progress=progress, check=stop.is_set)
     if report.get('verified') is True:
         count = report.get('progress', {}).get('sha256_checked')
         return ('succeeded', tr('完整校验通过，已核对 {0} 个文件。', count) if count else '组件完整校验通过。',
