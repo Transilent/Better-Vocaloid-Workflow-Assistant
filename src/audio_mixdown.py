@@ -36,7 +36,7 @@ from typing import Any, Callable, Mapping
 import unicodedata
 
 import mixdown_contract as contract
-from mixdown_loudness import PreLimiterOverloads, measure_file
+from mixdown_metering import PreLimiterOverloads, measure_file
 
 
 PEDALBOARD_VERSION = "0.9.26"

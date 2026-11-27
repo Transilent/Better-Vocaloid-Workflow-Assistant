@@ -208,7 +208,7 @@ def download(item, folder, progress, check=None, opener=direct_urlopen, source='
             partial.replace(target)
             segments=folder/(name+'.segments')
             if segments.exists():
-                from task_store import checked_tree
+                from vwa_io import checked_tree
                 checked_tree(segments,folder)
                 shutil.rmtree(segments)
             trace.record('succeeded', item['bytes'])

@@ -592,7 +592,7 @@ def apply_manual_pitch(original, dest, _format, spans, *, cancel):
 
 
 def process_project(data, options, *, cancel=lambda: None, progress=lambda text: None, layout=None):
-    from tuning_engine import VERSION, StyleTargets, _has_incomplete, apply_style_plan, digest, settings
+    from tuning_plan_core import VERSION, StyleTargets, _has_incomplete, apply_style_plan, digest, settings
 
     options = settings(options)
     layout = layout or Layout(data)

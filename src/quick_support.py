@@ -1261,11 +1261,16 @@ class QuickSupport(QObject):
                 self._diagnostics['message'] = tr('已导出脱敏诊断包：{0}', result.get('path', target))
             self.diagnosticsChanged.emit()
 
-        return self._diagnostic_lane.start(
-            'diagnostics-export',
-            lambda _stop, _send: export_diagnostic_bundle(target, summary_text, root=ROOT),
-            finish,
-        )
+        def _export(_stop, _send):
+            import check_dependencies
+            return export_diagnostic_bundle(
+                target,
+                summary_text,
+                root=ROOT,
+                dependency_check=check_dependencies.check,
+            )
+
+        return self._diagnostic_lane.start('diagnostics-export', _export, finish)
 
     @Slot()
     def openDiagnosticLogs(self):

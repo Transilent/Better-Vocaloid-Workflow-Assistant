@@ -2136,7 +2136,13 @@
     "README.ja.md",
     "tests/qt6_bootstrap.py",
     "tests/test_mixdown_eq_math.py",
-    "tests/test_quick_desktop.py"
+    "tests/test_quick_desktop.py",
+    "src/vwa_paths.py",
+    "src/vwa_io.py",
+    "src/vwa_net.py",
+    "src/mixdown_metering.py",
+    "src/workflow_graph.py",
+    "src/tuning_plan_core.py"
   ],
   "retired_generated": [
     "quick_ui/CalibrationDialog.qml",

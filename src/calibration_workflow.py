@@ -322,7 +322,7 @@ def inherit_expression(previous,job,request):
     if data.get('schema')!=1 or data.get('source_audio_sha256')!=file_hash(previous/'audio/source.wav'):
         raise ValueError('原演唱参数与音乐来源不一致，已停止重新处理。')
     entries={}
-    from project_exports import voices_for
+    from project_io import voices_for
     for voice,row in data['tracks'].items():
         if voice not in voices_for(request):continue
         source=app_path(row['project'])
@@ -496,7 +496,7 @@ def prepare_copy(project,reference,destination,*,track_index=0,template=None,rep
             from pitch_accuracy import absolute_curve,clear_explicit_pitch_scaffolding
             from calibration_refinement import dense_points
             from vocal_expression import TempoMap,automation
-            from project_exports import library
+            from project_io import library
             import os
             result=_infer_pitch(reference,cancel,progress);cancel()
             single=copy.deepcopy(data);single['tracks']=[copy.deepcopy(track)]

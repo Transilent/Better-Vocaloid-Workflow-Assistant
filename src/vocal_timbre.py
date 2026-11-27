@@ -204,7 +204,7 @@ def phonetic_context(notes, language):
     """
     if language not in ('mandarin', 'japanese'):
         return [None] * len(notes)
-    from project_exports import library
+    from project_io import library
     library()
     from libresvip.core.lyric_phoneme.chinese import get_pinyin_series
     from libresvip.core.lyric_phoneme.japanese import to_romaji

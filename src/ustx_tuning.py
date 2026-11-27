@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import math
 import re
 
+from project_io import USTX_MAX_BYTES as MAX_BYTES, read_ustx_bytes as read
 from svp_tuning import Note, Track
 from tuning_clock import meter_events
 
@@ -15,77 +16,8 @@ BLICK = QUARTER // RESOLUTION
 VERSIONS = frozenset(f'0.{minor}' for minor in range(6, 11))
 STYLE_ONLY = 'USTX 支持「保留原表现」下的响度和音高偏差风格编辑。'
 CHANNELS = {'dyn': ('loudness', 10, -240, 120), 'pitd': ('pitchDelta', 1, -1200, 1200)}
-MAX_BYTES = 64 * 1024**2
 MAX_SAMPLES = 750_000
 MAX_POINTS = 250_000
-_TEXT_FIELDS = frozenset(('ustx_version', 'name', 'comment', 'lyric', 'singer', 'phonemizer',
-                          'phoneme', 'relative_path', 'abbr', 'track_name', 'track_color',
-                          'output_dir', 'cache_dir', 'renderer', 'resampler', 'wavtool'))
-
-
-def read(raw, *, require_version=True):
-    """Parse ordinary OpenUtau YAML without aliases, ambiguous keys or YAML 1.1 booleans."""
-    import yaml
-
-    fast_loader = getattr(yaml, 'CSafeLoader', None)
-
-    class Loader(fast_loader or yaml.SafeLoader):
-        depth = 0
-
-        def compose_node(self, parent, index):
-            if self.depth >= 64 or self.check_event(yaml.AliasEvent):
-                raise ValueError('USTX 不支持 YAML 别名或过深的嵌套。')
-            self.depth += 1
-            try:
-                return super().compose_node(parent, index)
-            finally:
-                self.depth -= 1
-
-        def construct_mapping(self, node, deep=False):
-            result = {}
-            for key_node, value_node in node.value:
-                key = self.construct_object(key_node, deep=deep)
-                if not isinstance(key, str) or key in result:
-                    raise ValueError('USTX 包含非文本或重复的 YAML 键。')
-                if (key in _TEXT_FIELDS and isinstance(value_node, yaml.ScalarNode)
-                        and value_node.tag != 'tag:yaml.org,2002:null'):
-                    # The editor reads these fields as strings, even for a plain lyric like 012.
-                    value = value_node.value
-                else:
-                    value = self.construct_object(value_node, deep=deep)
-                result[key] = value
-            return result
-
-    Loader.yaml_implicit_resolvers = {
-        ch: [rule for rule in rules if rule[0] not in
-             ('tag:yaml.org,2002:bool', 'tag:yaml.org,2002:timestamp')]
-        for ch, rules in Loader.yaml_implicit_resolvers.items()
-    }
-    Loader.add_implicit_resolver('tag:yaml.org,2002:bool',
-                                 re.compile(r'^(?:true|True|TRUE|false|False|FALSE)$'), list('tTfF'))
-    if not 0 < len(raw) <= MAX_BYTES:
-        raise ValueError('USTX 工程为空或超过 64 MiB。')
-    try:
-        text = raw.decode('utf-8-sig')
-        if fast_loader:
-            # LibYAML does not call Python's compose_node override. Check
-            # events before composing to keep the same alias and depth limits.
-            depth = 0
-            for event in yaml.parse(text, Loader=fast_loader):
-                if isinstance(event, yaml.AliasEvent):
-                    raise ValueError('USTX 不支持 YAML 别名。')
-                if isinstance(event, (yaml.MappingStartEvent, yaml.SequenceStartEvent)):
-                    depth += 1
-                    if depth >= 64:
-                        raise ValueError('USTX 的 YAML 嵌套过深。')
-                elif isinstance(event, (yaml.MappingEndEvent, yaml.SequenceEndEvent)):
-                    depth -= 1
-        data = yaml.load(text, Loader=Loader)
-    except (UnicodeError, yaml.YAMLError, TypeError, OverflowError) as error:
-        raise ValueError('USTX 工程不是有效的 UTF-8 YAML。') from error
-    if not isinstance(data, dict) or (require_version and 'ustx_version' not in data):
-        raise ValueError('请选择带版本号的 OpenUtau USTX 工程。')
-    return data
 
 
 def encode(output, raw):
@@ -369,7 +301,7 @@ def encode_native_curve(original, grid, target, changed):
 
 
 def process_project(data, options, *, cancel=lambda:None, progress=lambda text:None):
-    from tuning_engine import VERSION, StyleTargets, _has_incomplete, apply_style_plan, digest, settings
+    from tuning_plan_core import VERSION, StyleTargets, _has_incomplete, apply_style_plan, digest, settings
 
     options = settings(options)
     layout = Layout(data)

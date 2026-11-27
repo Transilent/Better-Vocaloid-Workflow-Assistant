@@ -590,7 +590,7 @@ def redact_diagnostic_text(text: str, root=ROOT) -> str:
     return out
 
 
-def export_diagnostic_bundle(target_zip, summary_text: str, *, root=ROOT) -> dict:
+def export_diagnostic_bundle(target_zip, summary_text: str, *, root=ROOT, dependency_check=None) -> dict:
     """Write a strictly redacted diagnostic ZIP bundle without user media, lyrics or tokens."""
     import zipfile
 
@@ -635,23 +635,23 @@ def export_diagnostic_bundle(target_zip, summary_text: str, *, root=ROOT) -> dic
         zf.writestr('update-state.json', json.dumps(update_state, ensure_ascii=False, indent=2).encode('utf-8'))
         included.append('update-state.json')
 
-        dep_report = {'state': 'unavailable'}
-        try:
-            import check_dependencies
-            res = check_dependencies.check(full=False)
-            dep_report = {
-                'state': res.get('state'),
-                'checked_files': res.get('checked_files'),
-                'qt6_ready': res.get('qt6_ready'),
-                'native_audio': res.get('native_audio'),
-                'error_count': len(res.get('errors') or ()),
-                'errors_sample': [
-                    {'component': e.get('component'), 'file': e.get('file'), 'reason': e.get('reason')}
-                    for e in (res.get('errors') or ())[:20]
-                ],
-            }
-        except Exception as exc:
-            dep_report = {'state': 'error', 'reason': type(exc).__name__}
+        dep_report = {'state': 'not_provided'}
+        if callable(dependency_check):
+            try:
+                res = dependency_check(full=False)
+                dep_report = {
+                    'state': res.get('state'),
+                    'checked_files': res.get('checked_files'),
+                    'qt6_ready': res.get('qt6_ready'),
+                    'native_audio': res.get('native_audio'),
+                    'error_count': len(res.get('errors') or ()),
+                    'errors_sample': [
+                        {'component': e.get('component'), 'file': e.get('file'), 'reason': e.get('reason')}
+                        for e in (res.get('errors') or ())[:20]
+                    ],
+                }
+            except Exception as exc:
+                dep_report = {'state': 'error', 'reason': type(exc).__name__}
         zf.writestr('dependency-quick-check.json', json.dumps(dep_report, ensure_ascii=False, indent=2).encode('utf-8'))
         included.append('dependency-quick-check.json')
 

@@ -616,14 +616,14 @@ class _PitchAdapter:
         return _Layout(data, self.native)
 
     def selected_indices(self, data, options, *, layout=None):
-        from tuning_engine import selected_indices
+        from tuning_plan_core import selected_indices
         layout = self.Layout(data) if layout is None else layout
         if options['expression_mode'] != 'preserve':
             raise ValueError(self.STYLE_ONLY)
         return selected_indices(layout.score, options, layout=layout)
 
     def process_project(self, data, options, *, cancel=lambda:None, progress=lambda _text:None):
-        from tuning_engine import StyleTargets, VERSION, _has_incomplete, apply_style_plan, digest, settings
+        from tuning_plan_core import StyleTargets, VERSION, _has_incomplete, apply_style_plan, digest, settings
         from vocal_expression import TempoMap
         options = settings(options)
         layout = self.Layout(data)

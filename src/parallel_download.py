@@ -27,7 +27,7 @@ def sequential_partial(item, folder):
     folder = Path(folder).resolve()
     stage = folder / (item['name'] + '.segments')
     if not (stage / 'data.part').is_file(): return
-    from task_store import checked_tree
+    from vwa_io import checked_tree
     checked_tree(stage, folder)
     saved = json.loads((stage / 'segments.json').read_text(encoding='utf-8'))
     if saved.get('bytes') != item['bytes'] or saved.get('sha256') != item['sha256']:
@@ -196,7 +196,7 @@ def download(item, folder, progress, check=None, source='auto', workers=4,
                 lengths[:] = [0] * count
                 save()
                 raise ChecksumMismatch('分段下载 SHA-256 校验失败，正在尝试其他下载源。')
-            from task_store import checked_tree
+            from vwa_io import checked_tree
             checked_tree(stage, folder)
             data.replace(target)
             shutil.rmtree(stage)

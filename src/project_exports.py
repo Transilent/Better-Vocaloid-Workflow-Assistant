@@ -13,8 +13,6 @@ from common import atomic_json, cancelled, file_hash, resolve_tools, preserve_ch
 from artifact_cache import fingerprint
 from preparation_languages import lyric_continuation
 
-PROJECT_FORMATS=('ustx','vsqx','svp')
-AUDIO_FORMATS=('wav','flac','mp3','ogg')
 SVP_LANGUAGES = {'zh': 'mandarin', 'ja': 'japanese', 'en': 'english'}
 # Bank and program from Yamaha's English CYBER DIVA demonstration project.
 ENGLISH_VSQX_VOICE = {'default_lang_id': 1, 'default_comp_id': 'BCLPDYL3MBTL2CD5',
@@ -25,7 +23,16 @@ JAPANESE_VSQX_VOICE = {'default_lang_id': 0, 'default_comp_id': 'BCX538C32N67536
 
 
 from export_receipts import cached_output, commit_receipt, project_input, project_signatures, read_receipts
-from project_io import context_requested, read_ustx, retained_signature, voices_for
+from project_io import (
+    AUDIO_FORMATS,
+    PROJECT_FORMATS,
+    context_requested,
+    library,
+    read_ustx,
+    retained_signature,
+    validate_export_options as validate_options,
+    voices_for,
+)
 
 
 def _style_target(job, request, baseline):
@@ -188,29 +195,6 @@ def outputs_intact(job, request):
         return True
     except (OSError, ValueError, KeyError, TypeError):
         return False
-
-
-def validate_options(projects, audio):
-    if (not isinstance(projects,list) or not isinstance(audio,list)
-            or any(fmt not in PROJECT_FORMATS for fmt in projects)
-            or any(fmt not in AUDIO_FORMATS for fmt in audio)
-            or len(set(projects))!=len(projects) or len(set(audio))!=len(audio)):
-        raise ValueError('请选择支持的工程与音频格式。')
-
-
-def library():
-    runtime=ROOT/'dependencies/export'
-    if not (runtime/'libresvip/__init__.py').is_file():
-        raise FileNotFoundError('工程转换运行库缺失，请恢复 dependencies/export 目录。')
-    settings=ROOT/'cache/export-app'
-    settings.mkdir(parents=True,exist_ok=True)
-    os.environ['APPDATA']=os.environ['LOCALAPPDATA']=str(settings)
-    sys.path.insert(0,str(runtime))
-    from libresvip.plugins.ustx.ustx_converter import OpenUtauConverter
-    from libresvip.plugins.vsqx.vsqx_converter import VsqxConverter
-    from libresvip.plugins.svp.synthv_studio_converter import SynthVStudioConverter
-    from libresvip.model.base import Project, SingingTrack, InstrumentalTrack
-    return {'ustx':OpenUtauConverter,'vsqx':VsqxConverter,'svp':SynthVStudioConverter},Project,SingingTrack,InstrumentalTrack
 
 
 def project_output_options(fmt, language):

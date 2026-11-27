@@ -435,7 +435,7 @@ def validate_document(value, *, allow_builtin=False):
         if slots:
             _invalid('$.binding_slots', '混音预设不保存工程输入槽位。')
     elif kind == 'preparation':
-        from workflow import validate_graph
+        from workflow_graph import validate_graph
         try:
             validate_graph(payload['graph'])
         except (ValueError, TypeError, KeyError) as error:

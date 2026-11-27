@@ -12,9 +12,10 @@ SRC = ROOT / 'src' if (ROOT / 'src').is_dir() else ROOT
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-# Ratchet ceiling for 2-way circular imports across flat src/*.py.
-# Whenever a cycle is eliminated, lower this number so cycles can only shrink.
+# Ratchet ceiling for circular imports across flat src/*.py.
+# Both direct 2-way pairs AND multi-hop Tarjan SCCs are locked at 0.
 MAX_CIRCULAR_IMPORT_PAIRS = 0
+MAX_SCC_COUNT = 0
 
 HEAVY_FORBIDDEN_IN_STARTUP = frozenset({'torch', 'onnxruntime', 'scipy', 'librosa', 'playwright'})
 QT_MODULES = frozenset({'PySide6', 'PyQt6', 'PyQt5'})
@@ -85,6 +86,44 @@ def test_circular_import_ratchet():
     assert len(cycles) <= MAX_CIRCULAR_IMPORT_PAIRS, (
         f'Circular import count increased to {len(cycles)} (max {MAX_CIRCULAR_IMPORT_PAIRS}): '
         f'{sorted(cycles)}'
+    )
+
+    # Full-graph Tarjan SCC check catches arbitrary multi-hop import cycles (A -> B -> C -> A).
+    index_counter = [0]
+    stack = []
+    on_stack = set()
+    indices = {}
+    lowlink = {}
+    sccs = []
+
+    def strongconnect(v):
+        indices[v] = lowlink[v] = index_counter[0]
+        index_counter[0] += 1
+        stack.append(v)
+        on_stack.add(v)
+        for w in sorted(graph.get(v, ())):
+            if w not in indices:
+                strongconnect(w)
+                lowlink[v] = min(lowlink[v], lowlink[w])
+            elif w in on_stack:
+                lowlink[v] = min(lowlink[v], indices[w])
+        if lowlink[v] == indices[v]:
+            comp = []
+            while True:
+                w = stack.pop()
+                on_stack.remove(w)
+                comp.append(w)
+                if w == v:
+                    break
+            if len(comp) > 1:
+                sccs.append(sorted(comp))
+
+    for mod in sorted(local_mods):
+        if mod not in indices:
+            strongconnect(mod)
+
+    assert len(sccs) <= MAX_SCC_COUNT, (
+        f'Multi-hop circular import SCCs detected ({len(sccs)} > {MAX_SCC_COUNT}): {sccs}'
     )
 
 

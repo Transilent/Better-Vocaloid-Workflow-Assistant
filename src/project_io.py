@@ -48,11 +48,109 @@ def project_data(path):
     return json.loads(Path(native_path(path)).read_bytes().removesuffix(b'\x00').decode('utf-8-sig'))
 
 
+USTX_MAX_BYTES = 64 * 1024**2
+_USTX_TEXT_FIELDS = frozenset((
+    'ustx_version', 'name', 'comment', 'lyric', 'singer', 'phonemizer',
+    'phoneme', 'relative_path', 'abbr', 'track_name', 'track_color',
+    'output_dir', 'cache_dir', 'renderer', 'resampler', 'wavtool',
+))
+PROJECT_FORMATS = ('ustx', 'vsqx', 'svp')
+AUDIO_FORMATS = ('wav', 'flac', 'mp3', 'ogg')
+
+
+def validate_export_options(projects, audio):
+    if (not isinstance(projects, list) or not isinstance(audio, list)
+            or any(fmt not in PROJECT_FORMATS for fmt in projects)
+            or any(fmt not in AUDIO_FORMATS for fmt in audio)
+            or len(set(projects)) != len(projects) or len(set(audio)) != len(audio)):
+        raise ValueError('请选择支持的工程与音频格式。')
+
+
+def library():
+    import os
+    import sys
+    from common import ROOT
+    runtime = ROOT / 'dependencies/export'
+    if not (runtime / 'libresvip/__init__.py').is_file():
+        raise FileNotFoundError('工程转换运行库缺失，请恢复 dependencies/export 目录。')
+    settings = ROOT / 'cache/export-app'
+    settings.mkdir(parents=True, exist_ok=True)
+    os.environ['APPDATA'] = os.environ['LOCALAPPDATA'] = str(settings)
+    if str(runtime) not in sys.path:
+        sys.path.insert(0, str(runtime))
+    from libresvip.plugins.ustx.ustx_converter import OpenUtauConverter
+    from libresvip.plugins.vsqx.vsqx_converter import VsqxConverter
+    from libresvip.plugins.svp.synthv_studio_converter import SynthVStudioConverter
+    from libresvip.model.base import Project, SingingTrack, InstrumentalTrack
+    return {'ustx': OpenUtauConverter, 'vsqx': VsqxConverter, 'svp': SynthVStudioConverter}, Project, SingingTrack, InstrumentalTrack
+
+
+def read_ustx_bytes(raw, *, require_version=True):
+    """Parse ordinary OpenUtau YAML without aliases, ambiguous keys or YAML 1.1 booleans."""
+    import re
+    import yaml
+
+    fast_loader = getattr(yaml, 'CSafeLoader', None)
+
+    class Loader(fast_loader or yaml.SafeLoader):
+        depth = 0
+
+        def compose_node(self, parent, index):
+            if self.depth >= 64 or self.check_event(yaml.AliasEvent):
+                raise ValueError('USTX 不支持 YAML 别名或过深的嵌套。')
+            self.depth += 1
+            try:
+                return super().compose_node(parent, index)
+            finally:
+                self.depth -= 1
+
+        def construct_mapping(self, node, deep=False):
+            result = {}
+            for key_node, value_node in node.value:
+                key = self.construct_object(key_node, deep=deep)
+                if not isinstance(key, str) or key in result:
+                    raise ValueError('USTX 包含非文本或重复的 YAML 键。')
+                if (key in _USTX_TEXT_FIELDS and isinstance(value_node, yaml.ScalarNode)
+                        and value_node.tag != 'tag:yaml.org,2002:null'):
+                    value = value_node.value
+                else:
+                    value = self.construct_object(value_node, deep=deep)
+                result[key] = value
+            return result
+
+    Loader.yaml_implicit_resolvers = {
+        ch: [rule for rule in rules if rule[0] not in
+             ('tag:yaml.org,2002:bool', 'tag:yaml.org,2002:timestamp')]
+        for ch, rules in Loader.yaml_implicit_resolvers.items()
+    }
+    Loader.add_implicit_resolver('tag:yaml.org,2002:bool',
+                                 re.compile(r'^(?:true|True|TRUE|false|False|FALSE)$'), list('tTfF'))
+    if not 0 < len(raw) <= USTX_MAX_BYTES:
+        raise ValueError('USTX 工程为空或超过 64 MiB。')
+    try:
+        text = raw.decode('utf-8-sig')
+        if fast_loader:
+            depth = 0
+            for event in yaml.parse(text, Loader=fast_loader):
+                if isinstance(event, yaml.AliasEvent):
+                    raise ValueError('USTX 不支持 YAML 别名。')
+                if isinstance(event, (yaml.MappingStartEvent, yaml.SequenceStartEvent)):
+                    depth += 1
+                    if depth >= 64:
+                        raise ValueError('USTX 的 YAML 嵌套过深。')
+                elif isinstance(event, (yaml.MappingEndEvent, yaml.SequenceEndEvent)):
+                    depth -= 1
+        data = yaml.load(text, Loader=Loader)
+    except (UnicodeError, yaml.YAMLError, TypeError, OverflowError) as error:
+        raise ValueError('USTX 工程不是有效的 UTF-8 YAML。') from error
+    if not isinstance(data, dict) or (require_version and 'ustx_version' not in data):
+        raise ValueError('请选择带版本号的 OpenUtau USTX 工程。')
+    return data
+
+
 def read_ustx(path):
     """Use the same lyric and YAML rules for export verification and tuning."""
-    from ustx_tuning import read
-
-    return read(Path(path).read_bytes(), require_version=False)
+    return read_ustx_bytes(Path(path).read_bytes(), require_version=False)
 
 
 def voices_for(request):

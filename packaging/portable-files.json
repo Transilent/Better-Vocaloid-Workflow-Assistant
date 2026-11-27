@@ -1296,6 +1296,30 @@
     {
       "file": "separate_audio.py",
       "source": "src/separate_audio.py"
+    },
+    {
+      "file": "vwa_paths.py",
+      "source": "src/vwa_paths.py"
+    },
+    {
+      "file": "vwa_io.py",
+      "source": "src/vwa_io.py"
+    },
+    {
+      "file": "vwa_net.py",
+      "source": "src/vwa_net.py"
+    },
+    {
+      "file": "mixdown_metering.py",
+      "source": "src/mixdown_metering.py"
+    },
+    {
+      "file": "workflow_graph.py",
+      "source": "src/workflow_graph.py"
+    },
+    {
+      "file": "tuning_plan_core.py",
+      "source": "src/tuning_plan_core.py"
     }
   ]
 }

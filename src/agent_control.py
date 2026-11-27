@@ -41,8 +41,9 @@ CODE_FILES = ('agent_control.py', 'agent_primitives.py', 'agent_worker.py', 'age
               'pitch_accuracy.py', 'agent_pitch.py', 'agent_separation_repair.py', 'vocal_partition.py',
               'agent_preparation.py', 'agent_lyrics.py', 'agent_exports.py', 'agent_workflow.py',
               'pipeline.py', 'project_exports.py', 'midi_merge.py', 'task_contract.py', 'artifact_cache.py',
-              'tuning_workflow.py', 'tuning_engine.py', 'style_presets.py', 'style_pitch.py',
-              'common.py', 'vocal_expression.py', 'vocal_timbre.py')
+              'tuning_workflow.py', 'tuning_engine.py', 'tuning_plan_core.py', 'workflow_graph.py',
+              'style_presets.py', 'style_pitch.py',
+              'common.py', 'vwa_paths.py', 'vwa_io.py', 'vwa_net.py', 'vocal_expression.py', 'vocal_timbre.py')
 
 
 def read_json(path):

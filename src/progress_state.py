@@ -85,7 +85,7 @@ def snapshot(job):
     completed = sum(steps.get(k, {}).get('state') == 'done' for k in stages)
     elapsed = status.get('elapsed_seconds', 0)
     if status.get('state') == 'running':
-        from task_store import locked
+        from vwa_io import locked
         if locked(job):
             elapsed += max(0, time.time() - status.get('run_started', time.time()))
         else:

@@ -1,114 +1,41 @@
-"""Small, dependency-free helpers for the desktop app and pipeline."""
+"""Small, dependency-free facade over vwa_paths, vwa_io, and vwa_net plus job/signature helpers."""
 import json
 import hashlib
-import errno
 import os
 import re
-import time
 import unicodedata
 import urllib.request
-import threading
-import weakref
-from contextlib import contextmanager
 from functools import lru_cache
-from importlib import import_module
 from pathlib import Path
-import sys
 
-ROOT = Path(__file__).resolve().parent
+from vwa_paths import (
+    ROOT,
+    TOOL_PATHS,
+    app_path,
+    canonical_kind,
+    dependency_manifest,
+    environment_value,
+    legacy_tool_paths,
+    native_path,
+    saved_path,
+)
+from vwa_io import (
+    SidecarBusy,
+    _write_json,
+    atomic_json,
+    bundled_export_module,
+    cancellation_requested,
+    cancelled,
+    checked_tree,
+    exclusive_sidecar,
+    file_hash,
+    fingerprint,
+    locked,
+    preserve_changed_file,
+)
+import vwa_net
+
 BV_PATTERN = re.compile(r"(?<![A-Za-z0-9])BV1[A-Za-z0-9]{9}(?![A-Za-z0-9])")
-_ATOMIC_LOCKS = weakref.WeakValueDictionary()
-_ATOMIC_GUARD = threading.Lock()
-_EXPORT_IMPORT_LOCK = threading.Lock()
-
-
-TOOL_PATHS = ("python", "vocal2midi", "ffmpeg", "mdx_model", "mdx_metadata",
-              "chorus_model", "chorus_metadata", "publish_browser_executable")
-
-
-def native_path(path):
-    """Use extended Windows paths only at filesystem/cache API boundaries."""
-    import os
-    value = os.path.abspath(os.fspath(path))
-    if os.name != 'nt' or value.startswith('\\\\?\\'):
-        return value
-    if value.startswith('\\\\'):
-        return '\\\\?\\UNC\\' + value[2:]
-    return '\\\\?\\' + value
-
-
-@lru_cache(maxsize=16)
-def bundled_export_module(root, name):
-    """Load an existing export runtime module without leaving it on sys.path."""
-    runtime = (root / 'dependencies/export').resolve()
-    if not runtime.is_dir():
-        raise ImportError('VWA export runtime is missing')
-    with _EXPORT_IMPORT_LOCK:
-        path = str(runtime)
-        inserted = path not in sys.path
-        if inserted:
-            sys.path.insert(0, path)
-        try:
-            module = import_module(name)
-            if not Path(module.__file__).resolve().is_relative_to(runtime):
-                raise ImportError('module is not from the VWA export runtime')
-            return module
-        finally:
-            if inserted:
-                sys.path.remove(path)
-
-
-class SidecarBusy(BlockingIOError):
-    """Another process holds the first byte of the agreed sidecar."""
-
-
-@contextmanager
-def exclusive_sidecar(path, *, create=True, blocking=False, cancel=lambda: None):
-    """Use the existing one-byte lock protocol; caller owns path validation.
-
-    Probes use create=False so listing jobs never creates or updates a lock.
-    The sidecar stays in place after release: unlinking it can split ownership.
-    """
-    if os.name == 'nt':
-        import msvcrt
-
-        def acquire(stream):
-            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-
-        def release(stream):
-            msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
-    else:
-        import fcntl
-
-        def acquire(stream):
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-        def release(stream):
-            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
-
-    with open(native_path(path), 'a+b' if create else 'r+b') as stream:
-        while True:
-            stream.seek(0)
-            try:
-                acquire(stream)
-                break
-            except OSError as error:
-                if (error.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK, errno.EWOULDBLOCK)
-                        and getattr(error, 'winerror', None) not in (32, 33)):
-                    raise
-                if not blocking:
-                    raise SidecarBusy(str(error)) from error
-                cancel()
-                time.sleep(.05)
-        try:
-            # Only the lock owner may initialize a newly opened empty file.
-            if create and stream.seek(0, os.SEEK_END) == 0:
-                stream.write(b'0')
-                stream.flush()
-            yield
-        finally:
-            stream.seek(0)
-            release(stream)
 
 
 def network_proxy_mode():
@@ -124,38 +51,7 @@ def direct_urlopen(request, timeout=30, *, allow_system_proxy=False):
     """Open public metadata/downloads; honor system proxy only when explicitly opted in."""
     if allow_system_proxy and network_proxy_mode() == 'system':
         return urllib.request.urlopen(request, timeout=timeout)
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    return opener.open(request, timeout=timeout)
-
-
-@lru_cache(maxsize=1)
-def dependency_manifest():
-    manifest = ROOT / "dependencies/manifest.json"
-    return json.loads(manifest.read_text(encoding="utf-8")) if manifest.is_file() else {}
-
-
-def legacy_tool_paths():
-    return dependency_manifest().get("legacy_tool_paths", {})
-
-
-def app_path(value):
-    """Resolve saved internal paths, including pre-consolidation history."""
-    text = str(value).strip().strip('"')
-    if text.startswith("@/"):
-        path = (ROOT / text[2:]).resolve()
-        if not path.is_relative_to(ROOT):
-            raise ValueError("助手内部路径超出目录。")
-        return path
-    path = Path(text).expanduser()
-    legacy = dependency_manifest().get("legacy_application_root")
-    if legacy and path.is_absolute() and path.is_relative_to(Path(legacy)):
-        path = ROOT / path.relative_to(Path(legacy))
-    return path.resolve()
-
-
-def saved_path(value):
-    path = app_path(value)
-    return "@/" + path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else str(path)
+    return vwa_net.direct_urlopen(request, timeout=timeout, allow_system_proxy=False)
 
 
 def workspace_state():
@@ -258,64 +154,6 @@ def resolve_tools(tools):
     return result
 
 
-def locked(job):
-    """Return True if *job/run.lock* is currently held by another active run."""
-    path = Path(job) / 'run.lock'
-    try:
-        with exclusive_sidecar(path, create=False):
-            pass
-        return False
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return True
-
-
-def checked_tree(path, boundary):
-    """Refuse links/junctions before any recursive operation; never follow them."""
-    path, boundary = Path(path).absolute(), Path(boundary).resolve()
-    if path == boundary or not path.resolve().is_relative_to(boundary):
-        raise ValueError('清理目标超出允许的目录。')
-    for candidate in (path, *path.parents):
-        if candidate == boundary:
-            break
-        if candidate.is_symlink() or (candidate.exists() and getattr(candidate.lstat(), 'st_file_attributes', 0) & 1024):
-            raise ValueError('目录包含链接或重解析点，已跳过清理。')
-    if path.is_dir():
-        for directory, dirs, files in os.walk(path, followlinks=False):
-            for name in dirs + files:
-                candidate = Path(directory) / name
-                if candidate.is_symlink() or getattr(candidate.lstat(), 'st_file_attributes', 0) & 1024:
-                    raise ValueError('目录包含链接或重解析点，已跳过清理。')
-                if not candidate.resolve().is_relative_to(path.resolve()):
-                    raise ValueError('清理目标包含外部文件。')
-    return path
-
-
-def preserve_changed_file(job, path, expected_sha256=None, replacement_sha256=None):
-    """Keep edits before regenerating an output; intact generated files need no copy."""
-    import datetime as dt
-    import shutil
-    import uuid
-    job, path = Path(job).resolve(), Path(path).absolute()
-    checked_tree(path, job)
-    if not path.is_file() or path.stat().st_size == 0:
-        return None
-    current = file_hash(path)
-    if current in (expected_sha256, replacement_sha256):
-        return None
-    stamp = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime('%y%m%d-%H%M%S')
-    backup = job/'backups'/(stamp+'-'+uuid.uuid4().hex[:6]+'_'+path.stem[:60]+path.suffix)
-    checked_tree(backup, job)
-    backup.parent.mkdir(parents=True,exist_ok=True)
-    shutil.copy2(path, backup)
-    if file_hash(backup) != current or file_hash(path) != current:
-        raise OSError('备份期间文件发生变化，请重试：'+path.name)
-    relative = backup.relative_to(job).as_posix()
-    print('已保留原文件：'+relative,flush=True)
-    return relative
-
-
 def extract_bv(text):
     ids = list(dict.fromkeys(BV_PATTERN.findall(text)))
     if len(ids) != 1:
@@ -333,66 +171,6 @@ def clean_lyrics(text, *, preserve_lines=False, language='zh'):
         return ' '.join(english_words(text))
     return "".join(c for c in unicodedata.normalize("NFC", text)
                    if unicodedata.category(c)[0] in {"L", "N", "M"})
-
-
-def atomic_json(path, data):
-    path = Path(path)
-    Path(native_path(path.parent)).mkdir(parents=True, exist_ok=True)
-    key = str(path.absolute()).casefold()
-    with _ATOMIC_GUARD:
-        lock = _ATOMIC_LOCKS.get(key)
-        if lock is None:
-            lock = threading.RLock()
-            _ATOMIC_LOCKS[key] = lock
-    with lock:
-        _write_json(path, data)
-
-
-def _write_json(path, data):
-    import os
-    import tempfile
-    import time
-    # Concurrent progress writers must not share a temporary filename.
-    name = None
-    try:
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=native_path(path.parent),
-                                         prefix=path.name + '.', suffix='.tmp', delete=False) as stream:
-            name = stream.name
-            json.dump(data, stream, ensure_ascii=False, indent=2)
-        for attempt in range(6):
-            try:
-                os.replace(name, native_path(path))
-                break
-            except OSError as error:
-                if os.name != 'nt' or getattr(error, 'winerror', None) not in (5, 32, 33) or attempt == 5:
-                    raise
-                time.sleep(.01 * 2**attempt)
-    finally:
-        if name:
-            Path(name).unlink(missing_ok=True)
-
-
-def cancellation_requested(job):
-    job = Path(job)
-    if Path(native_path(job / "cancel.flag")).exists():
-        return True
-    token = os.environ.get('VWA_RUN_CANCEL_TOKEN', '')
-    return bool(re.fullmatch(r'[a-f0-9]{32}', token) and Path(native_path(job / f'.cancel-{token}.flag')).exists())
-
-
-def cancelled(job):
-    if cancellation_requested(job):
-        raise InterruptedError("已取消任务；已完成的步骤可以继续使用。")
-
-
-def file_hash(path, *, check=None):
-    digest = hashlib.sha256()
-    with open(native_path(path), "rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            if check is not None and check():
-                raise InterruptedError("已取消文件校验。")
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def legacy_midi_signature(job, request, voice):
@@ -413,11 +191,6 @@ def legacy_midi_signature(job, request, voice):
         from music_timing import effective_bpm
         data['bpm'] = effective_bpm(request)
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
-
-
-def fingerprint(data):
-    return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False,
-                                     separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
 @lru_cache(maxsize=1)
@@ -538,17 +311,3 @@ def completed_voice(job, request, voice):
         return matches and report.get("midi_sha256") == file_hash(folder / (voice + ".mid"))
     except (OSError, ValueError, KeyError):
         return False
-
-
-def environment_value(name, default=None):
-    """Prefer VWA environment names and accept released BVWA callers."""
-    import os
-    if name in os.environ:
-        return os.environ[name]
-    legacy = 'B' + name if name.startswith('VWA_') else name
-    return os.environ.get(legacy, default)
-
-
-def canonical_kind(value):
-    """Compare saved legacy record types without rewriting their signed bytes."""
-    return 'vwa.' + value[5:] if isinstance(value, str) and value.startswith('bvwa.') else value
