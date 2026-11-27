@@ -40,9 +40,23 @@ Popup {
             audio_mixdown: "hunyin eq reverb compressor mixer 混音 均衡 混响",
             video_mixdown: "shipin mp4 video render 视频 合成",
             publishing: "fabu bilibili xiaohongshu publish 发布 B站 小红书",
+            project_convert: "zhuanhuan convert format svp ustx vpr vsqx acep ufdata midi 互转 转换 格式",
             components: "zujian model download rmvpe 组件 模型",
             results: "renwu jobs history 任务 历史 结果",
             updates: "shezhi theme dark light settings 设置 主题 外观"
+        }
+        const recent = controller.ux && controller.ux.recentItems ? controller.ux.recentItems : []
+        for (let ri = 0; ri < Math.min(recent.length, 6); ++ri) {
+            const rec = recent[ri]
+            list.push({
+                id: "recent:" + ri + ":" + rec.path,
+                title: tr("最近使用") + " · " + (rec.title || rec.fileName),
+                subtitle: (rec.kindLabel || "") + (rec.fmt ? " · " + rec.fmt : "") + " · " + rec.fileName,
+                icon: "clock",
+                shortcut: "",
+                keywords: ("recent mru 最近 " + (rec.title || "") + " " + (rec.fileName || "") + " " + (rec.fmt || "") + " " + (rec.kindLabel || "")).toLowerCase(),
+                action: () => controller.ux.openRecentItem(rec.path, rec.kind)
+            })
         }
         const routes = controller.routes || []
         for (let i = 0; i < routes.length; ++i) {
@@ -113,6 +127,42 @@ Popup {
                     action: () => chorus.togglePlay()
                 })
             }
+        }
+        const mixdown = controller.mixdown
+        if (mixdown && mixdown.view && mixdown.view.hasMedia) {
+            list.push({
+                id: "mixdown:toggle-play",
+                title: mixdown.view.playing ? tr("简易混音 · 暂停试听") : tr("简易混音 · 播放试听"),
+                subtitle: tr("控制混音台连续实时试听"),
+                icon: mixdown.view.playing ? "pause" : "play",
+                shortcut: "Space",
+                keywords: "mixdown play pause 混音 播放 暂停 试听",
+                action: () => mixdown.togglePlay()
+            })
+            const nextAb = String(mixdown.view.selection || "B").toUpperCase() === "A" ? "B" : "A"
+            list.push({
+                id: "mixdown:toggle-ab",
+                title: tr("简易混音 · 切换 A/B 试听对比"),
+                subtitle: tr("在原干声与混音效果之间即时切换"),
+                icon: "sliders",
+                shortcut: "",
+                keywords: "mixdown ab compare bypass 混音 对比 原声",
+                action: () => {
+                    controller.navigate("audio_mixdown")
+                    mixdown.selectMix(nextAb)
+                }
+            })
+        }
+        if (controller.tuning && controller.tuning.view && controller.tuning.view.source) {
+            list.push({
+                id: "tuning:open-workshop",
+                title: tr("调音工作台 · 打开风格与校准工坊"),
+                subtitle: tr("提取参考风格、管理配方或校准声库"),
+                icon: "nav_workshop",
+                shortcut: "",
+                keywords: "tuning workshop style calibration 调音 工坊 风格 校准",
+                action: () => controller.openTuningWorkshop("style")
+            })
         }
         const isDark = root.theme.dark
         list.push({

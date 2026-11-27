@@ -186,6 +186,8 @@ class QuickBridge(QObject):
         from quick_recovery import QuickRecoveryBridge
         self._recovery = QuickRecoveryBridge(self, self._chorus, self._mixdown)
         self._recovery.toastRequested.connect(self.toastRequested)
+        from quick_ux_hub import QuickUxHub
+        self._ux = QuickUxHub(self)
         self._converter = QuickConvert(self)
         self._converter.worker.changed.connect(self._work_changed)
         self._converter.tuningHandoffRequested.connect(self._open_converted_in_tuning)
@@ -530,6 +532,9 @@ class QuickBridge(QObject):
 
     @Property(QObject, constant=True)
     def recovery(self): return self._recovery
+
+    @Property(QObject, constant=True)
+    def ux(self): return self._ux
 
     @Slot(str)
     @Slot(str, str)

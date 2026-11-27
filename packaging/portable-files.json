@@ -342,6 +342,14 @@
       "source": "src/quick_recovery.py"
     },
     {
+      "file": "recent_items.py",
+      "source": "src/recent_items.py"
+    },
+    {
+      "file": "quick_ux_hub.py",
+      "source": "src/quick_ux_hub.py"
+    },
+    {
       "file": "win_taskbar.py",
       "source": "src/win_taskbar.py"
     },
@@ -352,6 +360,10 @@
     {
       "file": "quick_ui/RecoveryBanner.qml",
       "source": "src/quick_ui/RecoveryBanner.qml"
+    },
+    {
+      "file": "quick_ui/GlobalDropOverlay.qml",
+      "source": "src/quick_ui/GlobalDropOverlay.qml"
     },
     {
       "file": "quick_bridge.py",

@@ -508,6 +508,11 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.fillHeight: true
 
+            GlobalDropOverlay {
+                theme: window.tokens
+                controller: window.controller
+            }
+
             UiToastStack {
                 theme: window.tokens
                 controller: window.controller

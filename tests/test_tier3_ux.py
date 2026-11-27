@@ -139,4 +139,45 @@ assert 'objectName: "uiToastStack"' in toast_qml and "onToastRequested" in toast
 banner_qml = (APP / "src/quick_ui/RecoveryBanner.qml").read_text(encoding="utf-8")
 assert 'objectName: "recoveryBanner"' in banner_qml and "restoreChorusDraft" in banner_qml and "restoreMixdownDraft" in banner_qml
 
-print("PASS: Tier 3 M1+M2+M3 (tutorial, LRU stage, draft recovery, Win taskbar, Toast stack)")
+# --- T3-M4: Global MRU, window-level smart drop & full Ctrl+K palette ---
+import recent_items as ri
+
+with tempfile.TemporaryDirectory(dir=APP / "work", prefix="tier3-m4-") as tmp:
+    root = Path(tmp)
+    f1 = root / "song_a.vwachorus"
+    f2 = root / "song_b.svp"
+    f3 = root / "missing.ustx"
+    f1.write_text("{}", encoding="utf-8")
+    f2.write_text("{}", encoding="utf-8")
+    f3.write_text("{}", encoding="utf-8")
+
+    ri.record_recent(f1, "chorus", title="Song A", root=root)
+    ri.record_recent(f2, "tuning", title="Song B", root=root)
+    ri.record_recent(f3, "project_convert", title="Song C", root=root)
+    ri.record_recent(f1, "chorus", title="Song A Updated", root=root)
+    rows = ri.list_recent(root=root)
+    assert len(rows) == 3 and rows[0]["title"] == "Song A Updated"
+
+    # Missing file auto-prunes cleanly
+    f3.unlink()
+    rows2 = ri.list_recent(root=root)
+    assert len(rows2) == 2 and all(r["fileName"] != "missing.ustx" for r in rows2)
+    ri.clear_recent(root=root)
+    assert ri.list_recent(root=root) == []
+
+# Smart drop classifier
+d_chorus = ri.classify_dropped_files(["/tmp/test.vwachorus"])
+assert d_chorus["category"] == "chorus_project" and len(d_chorus["targets"]) == 1
+d_svp = ri.classify_dropped_files(["/tmp/song.svp"])
+assert d_svp["category"] == "vocal_project" and {t["id"] for t in d_svp["targets"]} == {"tuning_project", "convert_project", "chorus_score"}
+d_wav = ri.classify_dropped_files(["/tmp/vocal.wav"])
+assert d_wav["category"] == "audio" and {t["id"] for t in d_wav["targets"]} == {"prep_audio", "chorus_audio", "mixdown_vocal"}
+d_mp4 = ri.classify_dropped_files(["/tmp/pv.mp4"])
+assert d_mp4["category"] == "video" and {t["id"] for t in d_mp4["targets"]} == {"video_source", "prep_audio"}
+
+pal_qml = (APP / "src/quick_ui/UiCommandPalette.qml").read_text(encoding="utf-8")
+assert "project_convert:" in pal_qml and "recentItems" in pal_qml and "mixdown:toggle-ab" in pal_qml
+drop_qml = (APP / "src/quick_ui/GlobalDropOverlay.qml").read_text(encoding="utf-8")
+assert 'objectName: "globalDropOverlay"' in drop_qml and "inspectDropUrls" in drop_qml
+
+print("PASS: Tier 3 M1-M4 (tutorial, LRU stage, recovery/taskbar/toast, MRU/smart-drop/Ctrl+K)")
