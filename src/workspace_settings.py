@@ -114,7 +114,8 @@ def load_update_recovery(root=ROOT):
 
 class SettingsState:
     def __init__(self, sources):
-        config = load_config(False)
+        from vwa_config import load_validated_config
+        config, _cfg_warnings = load_validated_config(ROOT, persist_migration=True)
         self.sources = tuple(value for _, value in sources)
         self.values = appearance_state.load_appearance()
         theme = config.get('theme')

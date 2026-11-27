@@ -1320,6 +1320,18 @@
     {
       "file": "tuning_plan_core.py",
       "source": "src/tuning_plan_core.py"
+    },
+    {
+      "file": "vwa_config.py",
+      "source": "src/vwa_config.py"
+    },
+    {
+      "file": "task_index.py",
+      "source": "src/task_index.py"
+    },
+    {
+      "file": "crash_dump.py",
+      "source": "src/crash_dump.py"
     }
   ]
 }

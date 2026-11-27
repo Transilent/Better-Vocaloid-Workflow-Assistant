@@ -107,6 +107,9 @@ def candidates(include_protected=False):
         if path.exists():
             label = _CACHE_LABELS.get(name, '运行缓存 · ' + name)
             rows.append({'kind': 'cache', 'title': label, 'path': path, 'bytes': size(path)})
+    task_idx = ROOT / 'cache/tasks-index.sqlite3'
+    if task_idx.is_file() and not task_idx.is_symlink():
+        rows.append({'kind': 'cache', 'title': '任务列表索引缓存（删除后自动重建）', 'path': task_idx, 'bytes': size(task_idx)})
     update = ROOT/'cache/updates'
     if update.exists():
         pending_file = update / 'pending.json'

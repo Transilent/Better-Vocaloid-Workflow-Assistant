@@ -65,26 +65,33 @@ def record(job):
 
 
 def records(check=None):
-    index_path = ROOT / 'cache/task-index.json'
-    try:
-        data = read_json(index_path) if index_path.stat().st_size<=INDEX_MAX_BYTES else {}
-    except OSError: data = {}
-    valid = data.get('version')==1 and isinstance(data.get('entries'),dict)
-    old = data.get('entries', {})
-    if not isinstance(old, dict): old = {}
+    import task_index
+
+    old, valid = task_index.load_cached_entries(ROOT)
+    if not valid:
+        legacy_path = ROOT / 'cache/task-index.json'
+        try:
+            data = read_json(legacy_path) if legacy_path.stat().st_size <= INDEX_MAX_BYTES else {}
+        except OSError:
+            data = {}
+        if data.get('version') == 1 and isinstance(data.get('entries'), dict):
+            old = data['entries']
     entries = {}
     rows = []
     for path in job_directories():
-        if check and check(): return []
+        if check and check():
+            return []
         try:
             stamps = {}
-            for name in ('request.json','status.json','source-info.json','task.json','artifacts.json'):
+            for name in ('request.json', 'status.json', 'source-info.json', 'task.json', 'artifacts.json'):
                 try:
                     info = (path / name).stat()
                     stamps[name] = [info.st_size, info.st_mtime_ns]
-                except FileNotFoundError: stamps[name] = None
+                except FileNotFoundError:
+                    stamps[name] = None
             saved = old.get(str(path), {})
-            if not isinstance(saved,dict): saved={}
+            if not isinstance(saved, dict):
+                saved = {}
             cached = saved.get('row', {})
             if (saved.get('stamps') == stamps and isinstance(cached, dict)
                     and isinstance(cached.get('request'), dict) and isinstance(cached.get('status'), dict)
@@ -92,8 +99,9 @@ def records(check=None):
                     and math.isfinite(cached['modified'])):
                 row = dict(saved['row'])
             else:
-                row = _metadata_row(path, stamps['status.json'][1]/1e9 if stamps['status.json'] else path.stat().st_mtime)
-                if row is None: continue
+                row = _metadata_row(path, stamps['status.json'][1] / 1e9 if stamps['status.json'] else path.stat().st_mtime)
+                if row is None:
+                    continue
             entries[str(path)] = {'stamps': stamps, 'row': row}
         except OSError:
             continue  # A deleted/moved task must not fail the entire library.
@@ -104,11 +112,10 @@ def records(check=None):
         except (OSError, ValueError, KeyError, TypeError):
             action = 'needs_review'
         rows.append({**row, 'path': path, 'state': status, 'next_action': action})
-    rows.sort(key=lambda r:r['modified'],reverse=True)
-    selected=_bounded_index(entries,rows)
-    if check and check(): return []
-    if selected != old or not valid:
-        atomic_json(index_path, {'version': 1, 'entries': selected})
+    rows.sort(key=lambda r: r['modified'], reverse=True)
+    if check and check():
+        return []
+    task_index.sync_entries(ROOT, entries)
     return rows
 
 

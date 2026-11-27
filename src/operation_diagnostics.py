@@ -655,4 +655,29 @@ def export_diagnostic_bundle(target_zip, summary_text: str, *, root=ROOT, depend
         zf.writestr('dependency-quick-check.json', json.dumps(dep_report, ensure_ascii=False, indent=2).encode('utf-8'))
         included.append('dependency-quick-check.json')
 
+        try:
+            from vwa_config import unified_config_snapshot
+            cfg_snap = unified_config_snapshot(root)
+            zf.writestr('config-snapshot.json', json.dumps(cfg_snap, ensure_ascii=False, indent=2).encode('utf-8'))
+            included.append('config-snapshot.json')
+        except (OSError, ValueError, TypeError, ImportError):
+            pass
+
+        try:
+            from crash_dump import recent_crash_artifacts
+            crashes = recent_crash_artifacts(root)
+            if crashes.get('has_traceback'):
+                zf.writestr(
+                    'crash-traceback.txt',
+                    redact_diagnostic_text(crashes['traceback_tail'], root).encode('utf-8'),
+                )
+                included.append('crash-traceback.txt')
+            zf.writestr(
+                'crash-dumps.json',
+                json.dumps({'dumps': crashes.get('dumps', [])}, ensure_ascii=False, indent=2).encode('utf-8'),
+            )
+            included.append('crash-dumps.json')
+        except (OSError, ValueError, TypeError, ImportError):
+            pass
+
     return {'path': str(target), 'files': included, 'bytes': target.stat().st_size}
