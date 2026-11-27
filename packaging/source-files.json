@@ -165,6 +165,7 @@
     "tests/test_wave5_delivery_journeys.py",
     "tests/test_wave6_convert_journeys.py",
     "tests/test_wave1_preparation_journeys.py",
+    "tests/test_wave2_tuning_journeys.py",
     "tests/test_user_experience_guards.py",
     "tests/test_stability_and_perf_guards.py",
     "tests/test_project_convert.py",

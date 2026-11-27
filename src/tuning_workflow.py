@@ -309,8 +309,10 @@ def _dependencies(options,format):
     if EDITOR_OPTION_KEYS.intersection(options):
         contributors+=('tuning_score_edits.py','agent_style.py')
         if format in ('vpr','vsqx'):
-            from vocaloid_english import DICTIONARY_PATH
-            contributors+=('vocaloid_english.py', 'preparation_languages.py', DICTIONARY_PATH.as_posix())
+            from vocaloid_english import DICTIONARY_PATH, resolve_dictionary_path
+            contributors+=('vocaloid_english.py', 'preparation_languages.py')
+            if (dict_path := resolve_dictionary_path()) is not None:
+                contributors+=((DICTIONARY_PATH.as_posix(), dict_path),)
     if options.get('pitch_strokes') or (format in STYLE_ADAPTERS and options['expression_mode'] == 'reference'):
         contributors+=('tuning_pitch_layer.py',)
     return _execution_dependencies(options,contributors,ROOT)

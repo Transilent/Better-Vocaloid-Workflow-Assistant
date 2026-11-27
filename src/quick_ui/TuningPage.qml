@@ -728,7 +728,7 @@ Item {
             Layout.topMargin: page.editorPadding
             Layout.leftMargin: page.contentMargin
             Layout.rightMargin: page.contentMargin
-            columns: page.availableWidth < Math.round(480 * page.scale) ? 1 : 2
+            columns: page.availableWidth < Math.round(760 * page.scale) ? 1 : 2
             columnSpacing: page.editorPadding
             rowSpacing: page.editorGap
 
@@ -765,17 +765,16 @@ Item {
                 }
             }
 
-            RowLayout {
+            Flow {
+                Layout.fillWidth: projectToolbar.columns === 1
+                Layout.alignment: projectToolbar.columns === 1 ? Qt.AlignLeft : Qt.AlignRight
                 spacing: page.editorGap
                 Rectangle {
                     radius: Math.round(7 * page.scale)
                     color: page.theme.raised
                     border.color: page.theme.line
-                    Layout.preferredWidth: tuningModePillRow.implicitWidth + 4
-                    Layout.minimumWidth: Layout.preferredWidth
-                    Layout.preferredHeight: tuningModePillRow.implicitHeight + 4
-                    implicitWidth: Layout.preferredWidth
-                    implicitHeight: Layout.preferredHeight
+                    implicitWidth: tuningModePillRow.implicitWidth + 4
+                    implicitHeight: tuningModePillRow.implicitHeight + 4
                     RowLayout {
                         id: tuningModePillRow
                         anchors.fill: parent
@@ -890,7 +889,8 @@ Item {
                 Text {
                     id: sessionChip
                     objectName: "tuningSessionLocation"
-                    Layout.preferredWidth: Math.round(96 * page.scale)
+                    width: Math.min(Math.round(96 * page.scale), Math.max(0, parent.width))
+                    height: Math.round(28 * page.scale); verticalAlignment: Text.AlignVCenter
                     text: page.vwaTr(page.sessionStatusText())
                     color: page.theme.muted
                     font.pixelSize: Math.round(10 * page.scale)
