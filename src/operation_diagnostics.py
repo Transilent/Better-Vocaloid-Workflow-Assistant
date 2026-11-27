@@ -8,6 +8,7 @@ import math
 from pathlib import Path
 from queue import Empty, Full, Queue
 import re
+import sys
 from threading import Lock, Thread
 from time import monotonic
 from urllib.parse import urlsplit
@@ -580,12 +581,30 @@ def clock_text(seconds):
 _USER_PATH_RE = re.compile(r'(?i)[A-Z]:\\Users\\[^\\/\r\n]+')
 
 
+def _win_short_path(path_str: str) -> str:
+    if sys.platform != 'win32' or not path_str:
+        return ''
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(4096)
+        n = ctypes.windll.kernel32.GetShortPathNameW(path_str, buf, len(buf))
+        return buf.value if 0 < n < len(buf) else ''
+    except (OSError, AttributeError, ValueError):
+        return ''
+
+
 def redact_diagnostic_text(text: str, root=ROOT) -> str:
     """Strip local usernames and installation paths from diagnostic log excerpts."""
     out = str(text or '')
-    root_str = str(Path(root).resolve())
-    if root_str:
-        out = out.replace(root_str, '<VWA_ROOT>').replace(root_str.replace('\\', '/'), '<VWA_ROOT>')
+    resolved = str(Path(root).resolve())
+    candidates = []
+    for raw_root in (str(Path(root)), resolved, _win_short_path(resolved)):
+        if raw_root:
+            candidates.append(raw_root)
+            candidates.append(raw_root.replace('\\', '/'))
+    flags = re.IGNORECASE if sys.platform == 'win32' else 0
+    for prefix in sorted(set(candidates), key=len, reverse=True):
+        out = re.sub(re.escape(prefix), '<VWA_ROOT>', out, flags=flags)
     out = _USER_PATH_RE.sub(r'<USER_HOME>', out)
     return out
 
