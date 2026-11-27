@@ -621,13 +621,13 @@ Item {
                         Layout.preferredHeight: Math.round(30 * page.theme.scale)
                         theme: page.theme
                         model: page.presetChoices
-                        textRole: "name"
+                        textRole: "name"; valueRole: "key"
                         currentIndex: 0
                         enabled: !page.editLocked && (page.controller.preparationPresets || []).length > 0
                         Accessible.name: page.controller.text("工作流预设")
-                        onActivated: {
+                        onActivated: index => {
                             if (index > 0)
-                                page.controller.applyPreparationPreset(currentValue)
+                                page.controller.applyPreparationPreset(valueAt(index))
                         }
                     }
 

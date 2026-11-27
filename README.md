@@ -55,6 +55,8 @@ Requirements: Windows 10/11 x64. The portable package includes its runtime. Chec
 
 ### Choosing BS-RoFormer ONNX Precision (WebGPU)
 
+ONNX inference automatically uses the high-performance GPU (WebGPU).
+
 Both **FP16** and **FP32** BS-RoFormer ONNX weights are provided. Choose by GPU VRAM: **use FP16 on smaller-VRAM GPUs, and FP32 on larger-VRAM GPUs**.
 
 | Variant | File | Size | Measured Peak VRAM (RX 9070 XT) | Recommendation |

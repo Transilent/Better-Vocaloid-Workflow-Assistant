@@ -47213,8 +47213,8 @@
     },
     {
       "file": "dependencies/vocal2midi2/inference/pipeline/lyric_alignment.py",
-      "bytes": 16699,
-      "sha256": "cf3d17e5291591b0a8843a8b12c4723a2545415fd3abaa17cdbf895d79be9e2d"
+      "bytes": 16655,
+      "sha256": "df14f09d792121bd33268bb3312d6c6e1b0987efdb61a1fe3d85ddc6203ed5dc"
     },
     {
       "file": "dependencies/vocal2midi2/inference/pipeline/memory_utils.py",

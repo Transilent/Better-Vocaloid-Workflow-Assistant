@@ -31,6 +31,7 @@ RUNTIME_DIRS = (
     'models',
     'runtime/qt6',
     'components/native-audio',
+    'vendor',
 )
 
 SKIP_DIR_NAMES = frozenset({'__pycache__', '.git', 'cache', 'jobs', 'work', 'dist', 'build', 'publish-packages'})

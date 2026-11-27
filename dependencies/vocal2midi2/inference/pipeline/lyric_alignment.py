@@ -404,7 +404,6 @@ def _run_lyric_alignment(
                             cancel_checker=cancel_checker,
                         )
                 finally:
-                    hfa_model.model = None
                     del hfa_model
                     free_memory()
             if use_tifa:

@@ -55,6 +55,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Merge-PortableParts.ps1
 
 ### BS-RoFormer ONNX 精度版本选择（WebGPU）
 
+ONNX 推理默认自动使用高性能 GPU（WebGPU）。
+
 本分支同时提供 **FP16** 与 **FP32** 两个 BS-RoFormer ONNX 权重版本，按显存大小选择即可：**小显存用 FP16，大显存用 FP32**。
 
 | 版本 | 文件名 | 体积 | 实测峰值显存（RX 9070 XT） | 适用建议 |
