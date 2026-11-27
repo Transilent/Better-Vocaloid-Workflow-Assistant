@@ -38,10 +38,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path work | Out-Null
           python -B tools/bootstrap_webgpu_runtime.py --pypi-mirror direct --skip-verify
 
-      - name: Build Windows GUI launcher (VWA.exe)
+      - name: Build Windows GUI launcher (build/VWA/VWA.exe)
         shell: pwsh
         run: |
-          & '.\dependencies\vocal2midi\python\python.exe' -B tools/build_windows_launcher.py
+          & '.\dependencies\vocal2midi\python\python.exe' -B tools/build_windows_launcher.py --output build/VWA/VWA.exe
 
       - name: Build native audio DLLs (CMake + MinGW)
         shell: pwsh
@@ -69,12 +69,12 @@ jobs:
           & $py -B tests/test_webgpu_backend.py
           & $py -B tests/test_download_sources.py
 
-      - name: Package ready-to-run portable ZIP
+      - name: Package ready-to-run portable ZIP into build/release/
         shell: pwsh
         run: |
           $tag = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.tag }}" } else { "${{ github.ref_name }}" }
-          $outZip = "dist/VWA-$tag-Windows-x64-WebGPU-Portable.zip"
-          & '.\dependencies\vocal2midi\python\python.exe' -B tools/build_webgpu_portable.py --output $outZip
+          $outZip = "build/release/VWA-$tag-Windows-x64-WebGPU-Portable.zip"
+          & '.\dependencies\vocal2midi\python\python.exe' -B tools/build_webgpu_portable.py --stage-dir build/VWA --output $outZip
           echo "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
 
       - name: Publish GitHub Release
@@ -95,19 +95,20 @@ jobs:
           - LibreSVIP 工程互转与导出运行库（``dependencies\export``）
           - FFmpeg 音频解码/编码工具（``dependencies\ffmpeg``）
           - UVR MDX 人声/伴奏 & 主唱/和声双分离模型（``UVR-MDX-NET-Inst_HQ_3.onnx`` + ``UVR_MDXNET_KARA_2.onnx``）
+          - Vocal2Midi 全套 ONNX 模型（GAME / HubertFA / RMVPE / Romaji ASR）与 llama.cpp 运行库
           - 原生音频处理 DLL（``components\native-audio\vwa_*.dll``）
           - 默认 ``config.json``（默认启用 ``webgpu``，自动选择独立 AMD / NVIDIA / Intel GPU，并支持 AMD 780M/890M APU 核显）
 
           ### 可选扩展
           - **中文/英文歌词识别（Qwen3-ASR，约 4.4 GB）**：打开软件后在左侧 **「模型与组件」** 页点击下载即可。
-          - **BS-RoFormer ONNX**：可使用源码中的 ``tools/export_roformer_onnx.py`` 导出并导入本地 ONNX 模型。
+          - **BS-RoFormer ONNX**：可在左侧 **「模型与组件」** 页下载，或使用 ``tools/export_roformer_onnx.py`` 本地导出。
           - **切换显卡 / CPU**：打开「一键准备 → 高级处理选项 → WebGPU 显卡」，或运行 ``tools\Use-GPU.bat`` / ``tools\Use-CPU.bat``。
           "@
-          $notesFile = "dist/RELEASE_NOTES.md"
+          $notesFile = "build/release/RELEASE_NOTES.md"
           $notes | Out-File -FilePath $notesFile -Encoding utf8
           gh release create $tag `
-            dist/*.zip `
-            dist/SHA256SUMS.txt `
+            build/release/*.zip `
+            build/release/SHA256SUMS.txt `
             --title "VWA $tag (Windows x64 WebGPU 成品便携版)" `
             --notes-file $notesFile `
             --verify-tag

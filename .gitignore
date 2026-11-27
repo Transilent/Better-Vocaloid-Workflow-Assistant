@@ -72,5 +72,7 @@ dependencies/vocal2midi/experiments/
 *.vwa-update
 config.json.*.bak
 /build/
+build/
+/dist/
 .pytest_cache/
 .ruff_cache/
