@@ -37,8 +37,12 @@ class SidecarBusy(BlockingIOError):
 @lru_cache(maxsize=16)
 def bundled_export_module(root, name):
     """Load an existing export runtime module without leaving it on sys.path."""
-    runtime = (Path(root) / "dependencies/export").resolve()
-    if not runtime.is_dir():
+    candidates = [Path(root) / "dependencies/export"]
+    explicit = os.environ.get("VWA_EXPORT_RUNTIME", "").strip()
+    if explicit:
+        candidates.append(Path(explicit))
+    runtime = next((p.resolve() for p in candidates if p.is_dir()), None)
+    if runtime is None:
         raise ImportError("VWA export runtime is missing")
     with _EXPORT_IMPORT_LOCK:
         path = str(runtime)

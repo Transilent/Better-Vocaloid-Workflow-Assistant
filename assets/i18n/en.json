@@ -1273,5 +1273,6 @@
   "同时导入音频人声轨与背景参考谱轨": "Import both vocal audio tracks and background MIDI score together",
   "仅在修音工作台导入乐谱": "Import score only into Pitch & Timing",
   "支持扩展格式转换为 SVP / USTX / VPR / VSQX / UFData / MIDI": "Convert extended formats to SVP / USTX / VPR / VSQX / UFData / MIDI",
-  "已载入首曲，其余 {0} 首已加入准备队列": "Loaded first track and queued {0} remaining track(s)"
+  "已载入首曲，其余 {0} 首已加入准备队列": "Loaded first track and queued {0} remaining track(s)",
+  "转换完成 · 请复核": "Conversion complete · Review recommended"
 }
