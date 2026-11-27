@@ -46,7 +46,10 @@ def component_result(request, stop, send):
         except InterruptedError:
             return 'cancelled', '安装已取消；可继续使用已保留的下载。', None
         return 'succeeded', '安装完成。', None
-    report = components.verify(request.component_id, progress=progress, check=stop.is_set)
+    if request.component_id == 'roformer':
+        report = components.verify(request.component_id, runtime=request.runtime, progress=progress, check=stop.is_set)
+    else:
+        report = components.verify(request.component_id, progress=progress, check=stop.is_set)
     if report.get('verified') is True:
         count = report.get('progress', {}).get('sha256_checked')
         return ('succeeded', tr('完整校验通过，已核对 {0} 个文件。', count) if count else '组件完整校验通过。',

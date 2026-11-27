@@ -25,15 +25,52 @@ from operation_diagnostics import DownloadTrace, download_file, operation_event
 
 COMPONENT = ROOT / 'dependencies/optional/bs-roformer'
 MANIFEST = ROOT / 'components/roformer.json'
+RUNTIMES = ('cuda', 'cpu')
 _NOT_READY = 'BS-RoFormer 组件元数据检查未通过；文件可能未安装、缺失或路径无效。请在“模型与组件”页面重新安装或执行完整校验。'
+_CUDA_NOT_READY = '尚未安装 BS-RoFormer 的 NVIDIA CUDA 运行库；请在“模型与组件”中安装 CUDA 版，或在准备工作流将 RoFormer 设备切换为 CPU。'
 
 
 def manifest():
     return json.loads(MANIFEST.read_text(encoding='utf-8'))
 
 
-def current(root=COMPONENT):
-    return Path(root) / 'current'
+def runtime_directory(runtime, root=None):
+    if runtime not in RUNTIMES:
+        raise ValueError('请选择 CPU 或 NVIDIA GPU 运行库。')
+    return Path(COMPONENT if root is None else root) / f'current-{runtime}'
+
+
+def _legacy_current(root=None):
+    return Path(COMPONENT if root is None else root) / 'current'
+
+
+def current(root=None, runtime=None):
+    root = Path(COMPONENT if root is None else root)
+    if runtime is not None:
+        dedicated = runtime_directory(runtime, root)
+        if dedicated.exists():
+            return dedicated
+        legacy = _legacy_current(root)
+        try:
+            if legacy.exists() and _status_tree(legacy)['runtime'] == runtime:
+                return legacy
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        return dedicated
+    legacy = _legacy_current(root)
+    if _directory_ready(legacy):
+        return legacy
+    for rt in RUNTIMES:
+        candidate = runtime_directory(rt, root)
+        if _directory_ready(candidate):
+            return candidate
+    if legacy.exists():
+        return legacy
+    for rt in RUNTIMES:
+        candidate = runtime_directory(rt, root)
+        if candidate.exists():
+            return candidate
+    return legacy
 
 
 def _status_tree(directory):
@@ -54,21 +91,45 @@ def _status_tree(directory):
     }
 
 
-def status(root=COMPONENT):
+def _not_ready_status():
+    return {
+        'ready': False,
+        'runtime': None,
+        'verification': {
+            'level': 'metadata',
+            'content_verified': False,
+            'sha256_checked': False,
+            'state': 'not_ready',
+        },
+    }
+
+
+def _status_for_runtime(runtime, root=None):
+    root = Path(COMPONENT if root is None else root)
+    for directory in (runtime_directory(runtime, root), _legacy_current(root)):
+        try:
+            report = _status_tree(directory)
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if report.get('runtime') == runtime:
+            return report
+    return _not_ready_status()
+
+
+def status(root=None, runtime=None):
     """Fast metadata status; this intentionally does not hash model/runtime bytes."""
-    try:
-        return _status_tree(current(root))
-    except (OSError, ValueError, KeyError, TypeError):
-        return {
-            'ready': False,
-            'runtime': None,
-            'verification': {
-                'level': 'metadata',
-                'content_verified': False,
-                'sha256_checked': False,
-                'state': 'not_ready',
-            },
-        }
+    root = COMPONENT if root is None else root
+    if runtime is not None:
+        if runtime not in RUNTIMES:
+            raise ValueError('请选择 CPU 或 NVIDIA GPU 运行库。')
+        return _status_for_runtime(runtime, root)
+    per_runtime = {rt: _status_for_runtime(rt, root) for rt in RUNTIMES}
+    installed = [rt for rt in RUNTIMES if per_runtime[rt]['ready']]
+    runtime_states = {rt: ('ready' if per_runtime[rt]['ready'] else 'missing') for rt in RUNTIMES}
+    if installed:
+        preferred = installed[0]
+        return {**per_runtime[preferred], 'installed_runtimes': installed, 'runtimes': runtime_states}
+    return {**_not_ready_status(), 'installed_runtimes': [], 'runtimes': runtime_states}
 
 
 def _directory_ready(directory):
@@ -79,19 +140,44 @@ def _directory_ready(directory):
         return False
 
 
-def full_verify(root=COMPONENT, progress=None, check=None):
+def full_verify(root=None, progress=None, check=None, runtime=None):
     """Explicitly hash manifest weights and receipt-critical files.
 
     This is cancellable through ``check``, reports byte progress through
     ``progress(done, total, message)``, and never loads the model or uses the
     network. Missing expected SHAs are reported as unverified rather than ready.
     """
-    return component_health.verify_component(current(root), MANIFEST,
+    root = COMPONENT if root is None else root
+    return component_health.verify_component(current(root, runtime=runtime), MANIFEST,
                                              progress=progress, check=check)
 
 
-def require_ready(root=None):
+def resolve_runtime_directory(root=None, device='auto'):
     root = COMPONENT if root is None else root
+    mode = (device or 'auto').casefold()
+    if mode == 'cuda':
+        if _status_for_runtime('cuda', root)['ready']:
+            return current(root, runtime='cuda')
+        if _status_for_runtime('cpu', root)['ready']:
+            raise FileNotFoundError(_CUDA_NOT_READY)
+        raise FileNotFoundError(_NOT_READY)
+    if mode == 'cpu':
+        if _status_for_runtime('cpu', root)['ready']:
+            return current(root, runtime='cpu')
+        if _status_for_runtime('cuda', root)['ready']:
+            return current(root, runtime='cuda')
+        raise FileNotFoundError(_NOT_READY)
+    if _status_for_runtime('cuda', root)['ready']:
+        return current(root, runtime='cuda')
+    if _status_for_runtime('cpu', root)['ready']:
+        return current(root, runtime='cpu')
+    raise FileNotFoundError(_NOT_READY)
+
+
+def require_ready(root=None, runtime=None):
+    root = COMPONENT if root is None else root
+    if runtime is not None:
+        return resolve_runtime_directory(root, runtime)
     if not status(root)['ready']:
         raise FileNotFoundError(_NOT_READY)
     return current(root)
@@ -112,11 +198,11 @@ def _component_lock(root, *, install=False):
 
 
 @contextmanager
-def use_ready(root=None):
+def use_ready(root=None, runtime=None):
     """Select and use the current installation under its existing run.lock."""
     root = COMPONENT if root is None else root
     with _component_lock(root) as owned:
-        yield require_ready(owned)
+        yield require_ready(owned, runtime=runtime)
 
 
 def cancelled(check):
@@ -295,15 +381,20 @@ def remove_owned_tree(path, root):
     shutil.rmtree(walk_root)
 
 
-def recover_verified_previous(root, ready):
+def recover_verified_previous(root, ready, *, runtime=None):
     """Restore only a metadata-valid backup when an interrupted swap left no current tree."""
     root = Path(root).resolve()
-    destination, backup = current(root), root / 'previous'
-    if destination.exists() or not backup.exists() or not ready(backup):
-        return False
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    backup.replace(destination)
-    return True
+    pairs = [(_legacy_current(root), root / 'previous')]
+    for rt in ((runtime,) if runtime in RUNTIMES else RUNTIMES):
+        pairs.append((runtime_directory(rt, root), root / f'previous-{rt}'))
+    recovered = False
+    for destination, backup in pairs:
+        if destination.exists() or not backup.exists() or not ready(backup):
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        backup.replace(destination)
+        recovered = True
+    return recovered
 
 
 def replace_verified_tree(stage, destination, backup, root, ready):
@@ -376,7 +467,23 @@ def probe(directory):
     print('COMPONENT_PROBE=' + json.dumps(result), flush=True)
 
 
-def install(runtime, progress=print, check=None, root=COMPONENT, force=False, source='auto'):
+def _reusable_weight_file(root, item, check=None):
+    name = item.get('name', '')
+    if not name or name.endswith('.whl'):
+        return None
+    for folder in (*[runtime_directory(rt, root) for rt in RUNTIMES], _legacy_current(root)):
+        candidate = folder / name
+        try:
+            if candidate.is_file() and candidate.stat().st_size == item['bytes']:
+                if file_hash(candidate, check=check) == item['sha256']:
+                    return candidate
+        except OSError:
+            continue
+    return None
+
+
+def install(runtime, progress=print, check=None, root=None, force=False, source='auto'):
+    root = COMPONENT if root is None else root
     source = normalize_component_source(source)
     if runtime not in ('cpu', 'cuda'):
         raise ValueError('请选择 CPU 或 NVIDIA GPU 运行库。')
@@ -384,23 +491,31 @@ def install(runtime, progress=print, check=None, root=COMPONENT, force=False, so
         raise RuntimeError('此组件需要助手自带的 Windows x64 Python 3.12。')
     with _component_lock(root, install=True) as root:
         recover_verified_previous(root, _directory_ready)
-        existing = status(root)
+        existing = status(root, runtime=runtime)
         if not force and existing['ready'] and existing['runtime'] == runtime:
             progress(1, 1, '元数据检查已通过；未重新哈希大文件，可在组件页执行完整校验')
-            return existing
+            return status(root)
         spec = manifest()
         items = spec['weights'] + spec['shared_wheels'] + [spec['torch_wheels'][runtime]]
         total = sum(item['bytes'] for item in items)
         needed = spec['install_bytes'][runtime] + total + 512 * 1024**2
         if shutil.disk_usage(root).free < needed:
             raise OSError(f'安装空间不足，请至少预留 {needed / 10**9:.1f} GB。')
-        stage, backup, destination = root / 'staging', root / 'previous', current(root)
+        stage = root / f'staging-{runtime}'
+        backup = root / f'previous-{runtime}'
+        destination = runtime_directory(runtime, root)
         remove_owned_tree(stage, root)
         stage.mkdir()
         completed = 0
         downloads = []
         for index, item in enumerate(items):
             cancelled(check)
+            reused = _reusable_weight_file(root, item, check=check)
+            if reused is not None:
+                progress(completed + item['bytes'], total, f'复用已校验模型文件 · 文件 {index + 1}/{len(items)}')
+                shutil.copyfile(reused, stage / item['name'])
+                completed += item['bytes']
+                continue
             def update(done, count, message, base=completed, number=index + 1):
                 progress(base + done, total, f'{message} · 文件 {number}/{len(items)}')
             download_path = download(item, root / 'downloads', update, check, source=source)
@@ -454,6 +569,14 @@ def install(runtime, progress=print, check=None, root=COMPONENT, force=False, so
             raise ValueError('暂存的 BS-RoFormer 组件未通过完整性校验')
         cancelled(check)
         replace_verified_tree(stage, destination, backup, root, _directory_ready)
+        # Clean up a superseded legacy single-slot directory only when it holds the same runtime.
+        legacy = _legacy_current(root)
+        if legacy.exists():
+            try:
+                if _status_tree(legacy).get('runtime') == runtime:
+                    remove_owned_tree(legacy, root)
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
         for path in downloads:
             path.unlink(missing_ok=True)
         # Also remove stale archives and parallel-download .segments dirs left by earlier runs.

@@ -139,7 +139,14 @@ def adapter_choices() -> list[dict[str, Any]]:
     if hardware:
         for adapter in hardware:
             vram_gib = adapter.dedicated_vram_bytes / float(1 << 30)
-            label = f"{adapter.index}: {adapter.name} ({vram_gib:.1f} GiB)"
+            shared_gib = adapter.shared_vram_bytes / float(1 << 30)
+            if vram_gib >= 0.5:
+                mem_label = f"{vram_gib:.1f} GiB"
+            elif shared_gib >= 0.5:
+                mem_label = f"共享 {shared_gib:.1f} GiB"
+            else:
+                mem_label = f"{vram_gib:.1f} GiB"
+            label = f"{adapter.index}: {adapter.name} ({mem_label})"
             rows.append({'label': label, 'value': int(adapter.index)})
         return rows
     for index in range(8):

@@ -1297,7 +1297,7 @@ Item {
                             Layout.fillWidth: true
                             visible: page.roformerSelected
                             theme: page.theme
-                            text: page.controller.text("RoFormer 需要先在模型与组件中安装。自动模式优先使用 CUDA；遇到显存或驱动问题时可在失败后改用 CPU。")
+                            text: page.controller.text("RoFormer 需要先在模型与组件中安装。GPU (CUDA) 与 CPU 运行库独立共存互不覆盖；已安装 CUDA 版即可直接切 CPU 推理，无需重复下载 CPU 版。")
                         }
 
                         ColumnLayout {
@@ -1675,17 +1675,7 @@ Item {
                                     objectName: "dmlAdapter"
                                     Layout.fillWidth: true
                                     theme: page.theme
-                                    model: [
-                                        {label: page.controller.text("自动选择"), value: "auto"},
-                                        {label: page.controller.text("适配器") + " 0", value: 0},
-                                        {label: page.controller.text("适配器") + " 1", value: 1},
-                                        {label: page.controller.text("适配器") + " 2", value: 2},
-                                        {label: page.controller.text("适配器") + " 3", value: 3},
-                                        {label: page.controller.text("适配器") + " 4", value: 4},
-                                        {label: page.controller.text("适配器") + " 5", value: 5},
-                                        {label: page.controller.text("适配器") + " 6", value: 6},
-                                        {label: page.controller.text("适配器") + " 7", value: 7}
-                                    ]
+                                    model: page.controller.dmlAdapterChoices
                                     textRole: "label"
                                     valueRole: "value"
                                     currentIndex: page.indexInModel(model, page.field("dml_adapter"))

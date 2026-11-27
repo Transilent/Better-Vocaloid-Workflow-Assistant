@@ -127,6 +127,22 @@ def _reference_paths(values): return _task_actions.reference_paths(values, url_t
 def _task_reference_groups(**kwargs): return _task_actions.task_reference_groups(**kwargs, url_to_local_fn=_qurl_to_local)
 
 
+def _initial_roformer_runtime():
+    try:
+        state = components.optional_components.status()
+        installed = state.get('installed_runtimes')
+        if isinstance(installed, (list, tuple)):
+            if 'cuda' in installed:
+                return 'cuda'
+            if 'cpu' in installed:
+                return 'cpu'
+        if state.get('ready') and state.get('runtime') in ('cpu', 'cuda'):
+            return state['runtime']
+    except Exception:
+        pass
+    return 'cpu'
+
+
 class QuickBridge(QObject):
     verify_task_artifact = staticmethod(verify_task_artifact)
     verify_publication_bundle = staticmethod(verify_publication_bundle)
@@ -153,7 +169,11 @@ class QuickBridge(QObject):
     def __init__(self):
         super().__init__()
         self.journal = journal_for()
-        self.state = WorkspaceController(component_source_preferences(load_config(False)))
+        self.state = WorkspaceController(
+            component_source_preferences(load_config(False)),
+            initial_runtime=_initial_roformer_runtime(),
+        )
+        self._runtime_user_selected = False
         self.selectionChanged.connect(self.componentSourceChanged)
         self._work = WorkerLane(self, 'vwa-workspace', journal=self.journal)
         self._catalog = WorkerLane(self, 'vwa-components', journal=self.journal)
@@ -584,6 +604,20 @@ class QuickBridge(QObject):
     @Property('QVariantList', constant=True)
     def preparationLanguages(self):
         return [{'label': tr(profile.label), 'value': code} for code, profile in PROFILES.items()]
+
+    @Property('QVariantList', constant=True)
+    def dmlAdapterChoices(self):
+        try:
+            import gpu_backend
+            rows = gpu_backend.adapter_choices()
+        except Exception:
+            rows = [{'label': '自动选择', 'value': 'auto'},
+                    *[{'label': f'适配器 {index}', 'value': index} for index in range(8)]]
+        return [
+            {'label': tr('自动选择') if row.get('value') == 'auto' else str(row.get('label', '')),
+             'value': row.get('value')}
+            for row in rows
+        ]
 
     @Property('QVariantList', notify=preparationPresetsChanged)
     def preparationPresets(self):
@@ -1104,6 +1138,7 @@ class QuickBridge(QObject):
     @Slot(str)
     def setRuntime(self, runtime):
         if not self.workBusy and not self.loading and self.state.set_runtime(runtime):
+            self._runtime_user_selected = True
             self.optionsChanged.emit()
             self.refresh()
 
@@ -1143,6 +1178,14 @@ class QuickBridge(QObject):
             if error is None:
                 first_catalog = not self.state.rows
                 self.state.set_catalog(runtime, rows)
+                if first_catalog and not self._runtime_user_selected:
+                    roformer_row = next((row for row in rows if row.get('id') == 'roformer'), None)
+                    installed = (roformer_row or {}).get('health', {}).get('installed_runtimes') or []
+                    if 'cuda' in installed and runtime == 'cpu' and 'cpu' not in installed:
+                        if self.state.set_runtime('cuda'):
+                            self.optionsChanged.emit()
+                            self.refresh()
+                            return
                 missing = self.state.component_plan['missingIds']
                 if first_catalog and missing:
                     self.state.select(missing[0])

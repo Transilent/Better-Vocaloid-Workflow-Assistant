@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import gc
 import math
 from pathlib import Path
 
@@ -197,16 +198,68 @@ class RmvpeTranscriber:
             if mel_batch.shape[0] < expected:
                 pad_shape = (expected - mel_batch.shape[0],) + mel_batch.shape[1:]
                 mel_batch = np.concatenate([mel_batch, np.zeros(pad_shape, dtype=np.float32)], axis=0)
-            output = self.session.run(None, {self.input_name: mel_batch})[0]
+            output = self._run_session(mel_batch)
             out_segments.extend(np.asarray(output[: batch.shape[0]], dtype=np.float32))
 
         if not out_segments:
             return np.zeros((0, 0, N_CLASS), dtype=np.float32)
         return np.stack(out_segments, axis=0)
 
+    @staticmethod
+    def _is_gpu_device_fault(exc: BaseException) -> bool:
+        # On localized Windows builds, onnxruntime-directml can raise
+        # UnicodeDecodeError when pybind11 decodes a GBK DXGI device-removed
+        # error message as UTF-8.
+        if isinstance(exc, UnicodeDecodeError):
+            return True
+        text = str(exc).casefold()
+        return any(
+            token in text
+            for token in (
+                "887a0005",
+                "887a0006",
+                "887a0007",
+                "887a0020",
+                "dmlexecutionprovider",
+                "directml",
+                "device removed",
+                "device lost",
+                "vk_error_device_lost",
+                "webgpu",
+                "d3d12",
+                "out of memory",
+                "0x8007000e",
+                "cuda error",
+                "cuda runtime",
+            )
+        )
+
+    def _fallback_to_cpu(self, exc: BaseException) -> bool:
+        if str(self.provider_name).casefold() == "cpu":
+            return False
+        print(
+            f"[RMVPE ONNX] Runtime {self.provider_name} device fault "
+            f"({type(exc).__name__}); falling back to CPUExecutionProvider.",
+            flush=True,
+        )
+        self.session = None
+        gc.collect()
+        self.provider_name, self.session = self._create_session("cpu")
+        self.input_name = self.session.get_inputs()[0].name
+        self.fixed_batch_size = self._get_fixed_batch_size()
+        return True
+
+    def _run_session(self, mel_input: np.ndarray) -> np.ndarray:
+        try:
+            return self.session.run(None, {self.input_name: mel_input})[0]
+        except Exception as exc:
+            if self._is_gpu_device_fault(exc) and self._fallback_to_cpu(exc):
+                return self.session.run(None, {self.input_name: mel_input})[0]
+            raise
+
     def _run_single_segment(self, segment: np.ndarray) -> np.ndarray:
         mel = self._waveform_to_mel(segment)[np.newaxis, :, :]
-        output = self.session.run(None, {self.input_name: mel})[0]
+        output = self._run_session(mel)
         output = np.asarray(output, dtype=np.float32)
         if output.ndim == 3:
             return output[0]
