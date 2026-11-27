@@ -69,6 +69,8 @@ VOCALOID 5/6 VPR 可在「保留原表现」下叠加力度（DYN）与音高弯
 
 在**任务与结果**查找、继续或重试任务，在**模型与组件**按需安装模型。到**设置与支持**调整外观和界面语言、重看教程或管理[本机预设库](docs/PresetLibrary.zh-CN.md)。预设可导出分享，导入默认追加。
 
+针对 AMD 等非 NVIDIA 显卡的可选主唱／和声分离，**模型与组件**还提供默认不启用的独立实验组件 **BS-RoFormer ONNX（实验性 / WebGPU）**。该组件在隔离的 `onnxruntime-webgpu 1.27.0` 子进程中运行，不改动基础 DirectML 运行库与原版 PyTorch CUDA BS-RoFormer：8 GB 及以下显存或核显建议使用 `10s FP16`，12 GB 及以上显存可选 `20s FP16`；NVIDIA 显卡仍推荐优先使用原版 PyTorch CUDA 组件。
+
 ## 升级
 
 **1.0.0、1.1.0 或 2.0.0 正式版：** 在旧版的**设置与更新**或**设置与支持**中检查更新，按提示重启安装 2.1.0。普通版和 JPN 均可升级，保留设置、任务、预设、登录会话、已安装模型与可选组件。JPN 不会自动补装原来未安装的中文模型。
@@ -96,6 +98,7 @@ VOCALOID 5/6 VPR 可在「保留原表现」下叠加力度（DYN）与音高弯
 | [FFmpeg](https://ffmpeg.org/)／[Jellyfin FFmpeg](https://github.com/jellyfin/jellyfin-ffmpeg) | 音视频处理。 |
 | [Playwright for Python](https://github.com/microsoft/playwright-python) | 浏览器登录与上传辅助。 |
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime)／[PyTorch](https://pytorch.org/) | 模型运行。 |
+| [@AU-ki](https://github.com/AU-ki) | BS-RoFormer ONNX 导出脚本（`tools/export_roformer_onnx.py`）与跨厂商 WebGPU 验证（RX 9070 XT、Arc 130V、RTX 2080Ti 等）。 |
 | [Qt Quick 和 PySide6](https://doc.qt.io/qtforpython-6.10/) | 桌面界面。 |
 | [NumPy](https://numpy.org/)、[SciPy](https://scipy.org/)、[librosa](https://librosa.org/)、[SoundFile](https://github.com/bastibe/python-soundfile)、[Mido](https://github.com/mido/mido)、[Pillow](https://python-pillow.org/) | 数值、音频、MIDI 与图像处理。 |
 

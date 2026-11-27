@@ -63,6 +63,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Merge-PortableParts.ps1
 
 **タスクと結果**から処理の検索・続行・再試行ができます。追加モデルは**モデル・部品**から導入します。設定画面では表示言語の変更、初回ガイドの再表示、[ローカルプリセット](docs/PresetLibrary.en.md)の管理ができます。
 
+AMD など NVIDIA 以外の GPU 向け追加ボーカル／コーラス分離として、**モデル・部品**では既定で無効な独立実験コンポーネント **BS-RoFormer ONNX（実験版 / WebGPU）** も利用できます。隔離された `onnxruntime-webgpu 1.27.0` 子プロセスで動作し、既定の DirectML ランタイムや従来の PyTorch CUDA BS-RoFormer には影響しません。VRAM 8 GB 以下／内蔵 GPU では `10s FP16`、VRAM 12 GB 以上では `20s FP16` を推奨します（NVIDIA GPU では引き続き従来の PyTorch CUDA 版を推奨）。
+
 ## アップグレード
 
 **正式版の 1.0.0／1.1.0／2.0.0：** 旧版の**設定・更新**で更新を確認し、案内に従って再起動します。完全版・JPN 版ともに設定、タスク、プリセット、ログイン状態、追加済みモデルとコンポーネントを保持します。JPN 版では未導入の中国語モデルを自動で追加しません。
@@ -90,6 +92,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Merge-PortableParts.ps1
 | [FFmpeg](https://ffmpeg.org/)／[Jellyfin FFmpeg](https://github.com/jellyfin/jellyfin-ffmpeg) | 音声・動画処理。 |
 | [Playwright for Python](https://github.com/microsoft/playwright-python) | ブラウザーでのログインとアップロード支援。 |
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime)／[PyTorch](https://pytorch.org/) | モデルの実行。 |
+| [@AU-ki](https://github.com/AU-ki) | BS-RoFormer ONNX エクスポートツール（`tools/export_roformer_onnx.py`）および各種 GPU での WebGPU 検証（RX 9070 XT、Arc 130V、RTX 2080Ti 等）。 |
 | [Qt Quick と PySide6](https://doc.qt.io/qtforpython-6.10/) | デスクトップ UI。 |
 | [NumPy](https://numpy.org/)、[SciPy](https://scipy.org/)、[librosa](https://librosa.org/)、[SoundFile](https://github.com/bastibe/python-soundfile)、[Mido](https://github.com/mido/mido)、[Pillow](https://python-pillow.org/) | 数値、音声、MIDI、画像の処理。 |
 
