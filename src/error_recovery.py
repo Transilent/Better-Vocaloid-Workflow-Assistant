@@ -101,6 +101,6 @@ def retry_with_cpu(job):
     path = Path(job) / 'request.json'
     request = json.loads(path.read_text(encoding='utf-8'))
     request['tools'].update(separation_device='cpu', midi_device='cpu')
-    if request.get('voice_mode') == 'roformer':
+    if request.get('voice_mode') in ('roformer', 'roformer_onnx'):
         request['roformer_device'] = 'cpu'
     atomic_json(path, request)

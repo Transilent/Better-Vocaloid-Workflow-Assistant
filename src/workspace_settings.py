@@ -26,7 +26,7 @@ _UPDATE_RECEIPT_LIMIT = 64 * 1024
 _UPDATE_NOTICE_LIMIT = 256 * 1024
 _TEXT_LIMIT = 60000
 _COMPONENT_DOWNLOAD_KEY = 'component_download_sources'
-_DOWNLOADED_COMPONENTS = ('roformer', 'chinese', 'expression')
+_DOWNLOADED_COMPONENTS = ('roformer', 'roformer_onnx', 'chinese', 'expression')
 
 
 def component_source_preferences(config):

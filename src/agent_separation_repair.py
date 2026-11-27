@@ -301,10 +301,10 @@ def _source_records(source_job):
     request = agent_preparation._read_json(source_job / "request.json", required=True)
     status = agent_preparation._read_json(source_job / "status.json", required=True)
     mode = request.get("voice_mode")
-    if mode not in ("dual", "roformer"):
+    if mode not in ("dual", "roformer", "roformer_onnx"):
         raise SeparationRepairError(
             "separation_mode_unsupported",
-            "声部修复要求源任务是 dual 或 roformer 双声部模式。",
+            "声部修复要求源任务是 dual、roformer 或 roformer_onnx 双声部模式。",
             voice_mode=mode,
             **_evidence_details("rebuild"))
     steps = status.get("steps") if isinstance(status.get("steps"), dict) else {}

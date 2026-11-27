@@ -17,8 +17,8 @@ Item {
     readonly property var task: controller.preparationTask || ({})
     readonly property bool narrow: width < (theme.scale > 1.2 ? 1040 : 820)
     readonly property bool editLocked: controller.preparationBusy || controller.workBusy
-    readonly property bool roformerSelected: prep.voice_mode === "roformer"
-        || (prep.voice_mode === "dual" && prep.separator_model === "roformer")
+    readonly property bool roformerSelected: prep.voice_mode === "roformer" || (prep.voice_mode === "dual" && prep.separator_model === "roformer")
+    readonly property bool roformerOnnxSelected: prep.voice_mode === "roformer_onnx" || (prep.voice_mode === "dual" && prep.separator_model === "roformer_onnx")
     readonly property string taskState: task && task.state ? String(task.state) : "idle"
     readonly property bool taskRunning: taskState === "running" || taskState === "cancelling"
     readonly property bool taskSucceeded: taskState === "succeeded" || taskState === "done" || taskState === "completed"
@@ -94,9 +94,9 @@ Item {
     }
 
     function chooseVoiceMode(value) {
-        if (value === "roformer") {
-            controller.setPreparationField("separator_model", "roformer")
-            controller.setPreparationField("voice_mode", "roformer")
+        if (value === "roformer" || value === "roformer_onnx") {
+            controller.setPreparationField("separator_model", value)
+            controller.setPreparationField("voice_mode", value)
         } else if (value === "dual") {
             controller.setPreparationField("separator_model", "dual")
             controller.setPreparationField("voice_mode", "dual")
@@ -107,9 +107,9 @@ Item {
 
     function chooseSeparatorModel(value) {
         controller.setPreparationField("separator_model", value)
-        if (value === "roformer")
-            controller.setPreparationField("voice_mode", "roformer")
-        else if (field("voice_mode") === "roformer")
+        if (value === "roformer" || value === "roformer_onnx")
+            controller.setPreparationField("voice_mode", value)
+        else if (field("voice_mode") === "roformer" || field("voice_mode") === "roformer_onnx")
             controller.setPreparationField("voice_mode", "dual")
     }
 
@@ -170,6 +170,8 @@ Item {
             return controller.text("导入外部分轨")
         if (field("voice_mode") === "single")
             return controller.text("Karaoke 2 · 合并人声")
+        if (roformerOnnxSelected)
+            return controller.text("BS-RoFormer ONNX（实验性）") + " · " + String(field("roformer_device") || "auto").toUpperCase()
         if (roformerSelected)
             return "BS-RoFormer · " + String(field("roformer_device") || "auto").toUpperCase()
         return controller.text("Karaoke 2 · 主唱与和声")
@@ -1172,11 +1174,12 @@ Item {
                                 {label: page.controller.text("内置 · 主唱与和声双轨"), value: "dual"},
                                 {label: page.controller.text("内置 · 合并人声单轨"), value: "single"},
                                 {label: page.controller.text("BS-RoFormer · 双轨"), value: "roformer"},
+                                {label: page.controller.text("BS-RoFormer ONNX（实验性）· 双轨"), value: "roformer_onnx"},
                                 {label: page.controller.text("导入外部分轨"), value: "import"}
                             ]
                             textRole: "label"
                             valueRole: "value"
-                            currentIndex: page.indexInModel(model, page.roformerSelected ? "roformer" : page.field("voice_mode"))
+                            currentIndex: page.indexInModel(model, page.roformerOnnxSelected ? "roformer_onnx" : (page.roformerSelected ? "roformer" : page.field("voice_mode")))
                             enabled: !page.editLocked
                             onActivated: page.chooseVoiceMode(currentValue)
                         }
@@ -1210,7 +1213,7 @@ Item {
 
                         ColumnLayout {
                             Layout.fillWidth: true
-                            visible: page.field("voice_mode") === "dual" || page.field("voice_mode") === "roformer"
+                            visible: page.field("voice_mode") === "dual" || page.field("voice_mode") === "roformer" || page.field("voice_mode") === "roformer_onnx"
                             spacing: Math.round(5 * page.theme.scale)
 
                             LabelText {
@@ -1224,7 +1227,8 @@ Item {
                                 theme: page.theme
                                 model: [
                                     {label: page.controller.text("Karaoke 2 · 内置"), value: "dual"},
-                                    {label: page.controller.text("BS-RoFormer · 可选组件"), value: "roformer"}
+                                    {label: page.controller.text("BS-RoFormer · 可选组件"), value: "roformer"},
+                                    {label: page.controller.text("BS-RoFormer ONNX（实验性）"), value: "roformer_onnx"}
                                 ]
                                 textRole: "label"
                                 valueRole: "value"
@@ -1236,7 +1240,7 @@ Item {
 
                         GridLayout {
                             Layout.fillWidth: true
-                            visible: page.roformerSelected
+                            visible: page.roformerSelected || page.roformerOnnxSelected
                             columns: 1
                             columnSpacing: Math.round(10 * page.theme.scale)
                             rowSpacing: Math.round(7 * page.theme.scale)
@@ -1254,7 +1258,11 @@ Item {
                                     objectName: "roformerDevice"
                                     Layout.fillWidth: true
                                     theme: page.theme
-                                    model: [
+                                    model: page.roformerOnnxSelected ? [
+                                        {label: page.controller.text("自动 · WebGPU 优先"), value: "auto"},
+                                        {label: "WebGPU", value: "webgpu"},
+                                        {label: "CPU", value: "cpu"}
+                                    ] : [
                                         {label: page.controller.text("自动 · CUDA 优先"), value: "auto"},
                                         {label: "CPU", value: "cpu"},
                                         {label: "NVIDIA GPU / CUDA", value: "cuda"}
@@ -1295,9 +1303,11 @@ Item {
 
                         HelperText {
                             Layout.fillWidth: true
-                            visible: page.roformerSelected
+                            visible: page.roformerSelected || page.roformerOnnxSelected
                             theme: page.theme
-                            text: page.controller.text("RoFormer 需要先在模型与组件中安装。GPU (CUDA) 与 CPU 运行库独立共存互不覆盖；已安装 CUDA 版即可直接切 CPU 推理，无需重复下载 CPU 版。")
+                            text: page.roformerOnnxSelected
+                                ? page.controller.text("实验性 ONNX/WebGPU 后端，默认不启用，需在模型与组件中单独下载（AMD 显卡推荐）。8 GB 及以下显存仅用 10s FP16，可能存在驱动兼容或分离差异；NVIDIA 显卡建议优先使用原版 CUDA。")
+                                : page.controller.text("RoFormer 需要先在模型与组件中安装。GPU (CUDA) 与 CPU 运行库独立共存互不覆盖；已安装 CUDA 版即可直接切 CPU 推理，无需重复下载 CPU 版。")
                         }
 
                         ColumnLayout {

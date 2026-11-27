@@ -85,7 +85,7 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
             raise ValueError('导出偏好格式无效。')
         from workflow import export_preferences as checked_export_preferences
         export_preferences=checked_export_preferences(export_preferences)
-    if separation_flow not in ('cascade', 'independent') or separation_flow == 'independent' and voice_mode != 'roformer':
+    if separation_flow not in ('cascade', 'independent') or separation_flow == 'independent' and voice_mode not in ('roformer', 'roformer_onnx'):
         raise ValueError('原曲独立提取目前需要选择 BS-RoFormer 分离组件。')
     if reference_calibration:
         if 'svp' not in projects: raise ValueError('声库校准拟合需要启用 SVP 工程导出。')
@@ -159,17 +159,20 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
     if local is None:
         reject_unsupported_bilibili_subpage(source)
     bv = None if local is not None else extract_bv(source)
-    if voice_mode not in ("single", "dual", "import", "roformer"):
+    if voice_mode not in ("single", "dual", "import", "roformer", "roformer_onnx"):
         raise ValueError("未知的分轨模式。")
     if zh_lyric_mode not in ('hanzi', 'pinyin'):
         raise ValueError('中文歌词格式请选择汉字或拼音。')
     if midi_steps not in (8, 16, 32):
         raise ValueError("MIDI 推理步数应为 8、16 或 32。")
-    if roformer_device not in ('auto', 'cpu', 'cuda'):
-        raise ValueError('新模型的设备请选择自动、CPU 或 CUDA。')
+    if roformer_device not in ('auto', 'cpu', 'cuda', 'webgpu'):
+        raise ValueError('新模型的设备请选择自动、CPU、CUDA 或 WebGPU。')
     if voice_mode == 'roformer':
         from optional_components import require_ready
         require_ready()
+    elif voice_mode == 'roformer_onnx':
+        from roformer_onnx_component import require_ready as require_onnx_ready
+        require_onnx_ready()
     if voice_mode == "import":
         for key in ("lead", "backing", "instrumental"):
             path = (imported_stems or {}).get(key)
@@ -215,7 +218,7 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
         'reference_mode':reference_mode,'subtitles_mode':subtitles_mode,
         **({'midi_backend':midi_backend} if midi_backend else {}),
         **({'lyric_reference':lyric_reference} if lyric_reference else {}),
-        **({'roformer_device': roformer_device} if voice_mode == 'roformer' else {}),
+        **({'roformer_device': roformer_device} if voice_mode in ('roformer', 'roformer_onnx') else {}),
     })
     if remember:
         remember_job(job)
@@ -892,25 +895,10 @@ def separate(job, request):
         print("进一步拆分主唱与和声（Karaoke 2）……", flush=True)
         report["chorus"] = separate_mdx(job / "audio/vocals.wav", job / "audio", config, job,
                                          output_names=("lead.wav", "backing.wav"))
-    elif mode == 'roformer':
-        from roformer import separate_vocals
-        independent = request.get('separation_flow', 'cascade') == 'independent'
-        target = job/'temp/direct-lead' if independent else job/'audio'
-        report['chorus'] = separate_vocals(job/('audio/source.wav' if independent else 'audio/vocals.wav'),
-            target, job, request.get('roformer_device', 'auto'), input_kind='mix' if independent else 'vocals')
-        if independent:
-            from roformer import combine_independent
-            report['combination'] = combine_independent(job/'audio/vocals.wav', target/'lead.wav', job/'audio', job)
-            # These original-mix predictions are intermediate copies. Keep the
-            # validated final stems, not an extra full-length pair per task.
-            for name in ('lead.wav','backing.wav'):
-                try: (target/name).unlink(missing_ok=True)
-                except OSError: pass  # Task-temp cleanup can remove an in-use file later.
-            try: target.rmdir()
-            except OSError: pass
-        report.update(method='independent_original_mix' if independent else 'cascaded_vocals',
-                      maximum_model_depth=1 if independent else 2, model_invocations=2)
-    if mode in ('dual','roformer'):
+    elif mode in ('roformer', 'roformer_onnx'):
+        from roformer_onnx import run_pipeline_separation
+        run_pipeline_separation(mode, job, request, report)
+    if mode in ('dual', 'roformer', 'roformer_onnx'):
         from vocal_partition import repair
         from progress_state import publish
         print('检查主唱与和声中的重复成分……',flush=True)
@@ -918,7 +906,7 @@ def separate(job, request):
             progress=lambda done,total:publish(job,'separation','检查声部串音',done,total))
         print('声部检查完成：已保留时间轴和总人声。',flush=True)
     original = check_audio(job / "audio/source.wav")
-    for name in (("vocals.wav", "instrumental.wav", "lead.wav", "backing.wav") if mode in ("dual", "roformer") else ("vocals.wav", "instrumental.wav")):
+    for name in (("vocals.wav", "instrumental.wav", "lead.wav", "backing.wav") if mode in ("dual", "roformer", "roformer_onnx") else ("vocals.wav", "instrumental.wav")):
         if check_audio(job / "audio" / name).frames != original.frames:
             raise RuntimeError("分离输出长度与原音频不一致。")
     atomic_json(job / "separation-report.json", report)
@@ -1146,6 +1134,9 @@ def _run(job, until):
         if 'separation' in enabled and request.get('voice_mode') == 'roformer':
             from optional_components import require_ready
             require_ready()
+        elif 'separation' in enabled and request.get('voice_mode') == 'roformer_onnx':
+            from roformer_onnx_component import require_ready as require_onnx_ready
+            require_onnx_ready()
         for key in keys:
             if not config.get(key) or not Path(config[key]).exists():
                 raise FileNotFoundError(f"工具路径不存在：{config.get(key, key)}（可编辑 config.json 后重做任务）")
@@ -1265,8 +1256,8 @@ def main():
     parser.add_argument("--notes-only", action="store_true")
     parser.add_argument('--output-dir', help='Parent directory for a new task; defaults to the application jobs folder')
     parser.add_argument('--zh-lyric-mode', choices=('hanzi', 'pinyin'), default='hanzi')
-    parser.add_argument("--voice-mode", choices=("single", "dual", "import", "roformer"), default="dual")
-    parser.add_argument('--roformer-device', choices=('auto', 'cpu', 'cuda'), default='auto')
+    parser.add_argument("--voice-mode", choices=("single", "dual", "import", "roformer", "roformer_onnx"), default="dual")
+    parser.add_argument('--roformer-device', choices=('auto', 'cpu', 'cuda', 'webgpu'), default='auto')
     parser.add_argument('--separation-flow', choices=('cascade','independent'), default='cascade')
     parser.add_argument('--calibration-profile', type=Path, help='可选的声库试音校准配置')
     parser.add_argument("--lead-wav")

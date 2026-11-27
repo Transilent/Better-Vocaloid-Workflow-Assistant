@@ -1,0 +1,45 @@
+{
+  "format": 1,
+  "component": "bs-roformer-karaoke-onnx",
+  "version": "1",
+  "experimental": true,
+  "python_tag": "cp312",
+  "platform": "win_amd64",
+  "engine": "onnx-webgpu",
+  "precisions": [
+    "fp16_10s",
+    "fp16"
+  ],
+  "weights": {
+    "fp16_10s": {
+      "name": "bs_roformer_karaoke_frazer_becruily.fp16_10s.onnx",
+      "precision": "fp16_10s",
+      "url": "https://github.com/AU-ki/Better-Vocaloid-Workflow-Assistant/releases/download/bs-roformer-onnx/bs_roformer_karaoke_frazer_becruily.fp16_10s.onnx",
+      "sha256": "d5c872b40246a7ca04080fcb958cb003cdbddd180c5bb887b0b28396016b9ae0",
+      "bytes": 133548886
+    },
+    "fp16": {
+      "name": "bs_roformer_karaoke_frazer_becruily.fp16.onnx",
+      "precision": "fp16",
+      "url": "https://github.com/AU-ki/Better-Vocaloid-Workflow-Assistant/releases/download/bs-roformer-onnx/bs_roformer_karaoke_frazer_becruily.fp16.onnx",
+      "sha256": "51d62806b4bf7b809c59b3b1951c870a55ad2f5a4c835632ab30bfb7d05ef240",
+      "bytes": 133660420
+    }
+  },
+  "config": {
+    "name": "config.yaml",
+    "url": "https://github.com/AU-ki/Better-Vocaloid-Workflow-Assistant/releases/download/bs-roformer-onnx/config.yaml",
+    "sha256": "1d3b58b473025183d0d3c91e7a444cb5f1418d9f34e8f46b8d2fb10d2cc8ab34",
+    "bytes": 1903
+  },
+  "runtime_wheel": {
+    "name": "onnxruntime_webgpu-1.27.0-cp312-cp312-win_amd64.whl",
+    "url": "https://files.pythonhosted.org/packages/df/28/016260c51c877ba5b3eba823b43107e894659e73e0ecf250eb07e801e3c2/onnxruntime_webgpu-1.27.0-cp312-cp312-win_amd64.whl",
+    "sha256": "7ef99275b13e8cb9584bd0db7a6f00ebf76095601eeccf7d34749b89ee991c19",
+    "bytes": 27226899
+  },
+  "install_bytes": {
+    "fp16_10s": 320000000,
+    "fp16": 320000000
+  }
+}

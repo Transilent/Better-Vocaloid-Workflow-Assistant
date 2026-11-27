@@ -42,6 +42,17 @@ def preferred_roformer_runtime(rows, current_runtime: str) -> str | None:
     return None
 
 
+def initial_roformer_onnx_precision() -> str:
+    try:
+        import roformer_onnx_component
+        st = roformer_onnx_component.status()
+        if st.get('ready') and st.get('precision') in roformer_onnx_component.PRECISIONS:
+            return st['precision']
+        return roformer_onnx_component.normalize_precision('auto')
+    except (ImportError, OSError, ValueError, KeyError, TypeError, AttributeError):
+        return 'fp16_10s'
+
+
 def dml_adapter_choices() -> list[dict[str, Any]]:
     try:
         import gpu_backend
@@ -79,13 +90,17 @@ def component_result(request, stop, send):
 
     if request.action == 'install':
         try:
-            components.install(request.component_id, runtime=request.runtime, source=request.source,
-                               force=request.force, progress=progress, check=stop.is_set)
+            components.install(request.component_id, runtime=request.runtime,
+                               precision=getattr(request, 'precision', None) or None,
+                               source=request.source, force=request.force, progress=progress, check=stop.is_set)
         except InterruptedError:
             return 'cancelled', '安装已取消；可继续使用已保留的下载。', None
         return 'succeeded', '安装完成。', None
     if request.component_id == 'roformer':
         report = components.verify(request.component_id, runtime=request.runtime, progress=progress, check=stop.is_set)
+    elif request.component_id == 'roformer_onnx':
+        report = components.verify(request.component_id, precision=getattr(request, 'precision', None) or None,
+                                   progress=progress, check=stop.is_set)
     else:
         report = components.verify(request.component_id, progress=progress, check=stop.is_set)
     if report.get('verified') is True:

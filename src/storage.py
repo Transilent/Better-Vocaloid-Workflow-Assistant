@@ -129,9 +129,11 @@ def candidates(include_protected=False):
                         and child.name.startswith(('stage-', 'runtime-stage-', 'patch-stage-'))
                         and (keep_stage is None or child.resolve() != keep_stage)):
                     rows.append({'kind': 'cache', 'title': '过期更新暂存 · ' + child.name, 'path': child, 'bytes': size(child)})
-    downloads = ROOT/'dependencies/optional/bs-roformer/downloads'
-    if downloads.exists() and not locked(downloads.parent):
-        rows.append({'kind': 'component', 'title': '组件安装下载缓存', 'path': downloads, 'bytes': size(downloads)})
+    for rel, title in (('dependencies/optional/bs-roformer/downloads', '组件安装下载缓存'),
+                       ('dependencies/optional/bs-roformer-onnx/downloads', '实验性 ONNX 组件下载缓存')):
+        downloads = ROOT / rel
+        if downloads.exists() and not locked(downloads.parent):
+            rows.append({'kind': 'component', 'title': title, 'path': downloads, 'bytes': size(downloads)})
     downloads = ROOT / 'cache/feature-downloads'
     if downloads.exists() and not any(locked(p) for p in downloads.iterdir() if p.is_dir()):
         rows.append({'kind':'component','title':'语言模型下载缓存','path':downloads,'bytes':size(downloads)})
@@ -174,7 +176,8 @@ def require_idle():
     renders=ROOT/'cache/video-mixdown'
     if renders.is_dir() and any(locked(path) for path in renders.iterdir() if path.is_dir()):
         raise ValueError('视频正在合成，请停止合成后再清理缓存。')
-    if any(locked(job) for job in job_directories()) or locked(ROOT/'dependencies/optional/bs-roformer'):
+    if (any(locked(job) for job in job_directories()) or locked(ROOT/'dependencies/optional/bs-roformer')
+            or locked(ROOT/'dependencies/optional/bs-roformer-onnx')):
         raise ValueError('仍有任务或模型组件在其他窗口中运行，请完成后再清理缓存。')
     downloads = ROOT / 'cache/feature-downloads'
     if downloads.exists() and any(locked(p) for p in downloads.iterdir() if p.is_dir()):

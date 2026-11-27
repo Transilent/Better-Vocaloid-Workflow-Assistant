@@ -153,7 +153,7 @@ class QuickBridge(QObject):
     def __init__(self):
         super().__init__()
         self.journal = journal_for()
-        self.state = WorkspaceController(component_source_preferences(load_config(False)), initial_runtime=_task_actions.initial_roformer_runtime())
+        self.state = WorkspaceController(component_source_preferences(load_config(False)), initial_runtime=_task_actions.initial_roformer_runtime(), initial_onnx_precision=_task_actions.initial_roformer_onnx_precision())
         self._runtime_user_selected = False
         self.selectionChanged.connect(self.componentSourceChanged)
         self._work = WorkerLane(self, 'vwa-workspace', journal=self.journal)
@@ -625,9 +625,11 @@ class QuickBridge(QObject):
         draft = self.state.draft_view
         plan = self.state.component_plan
         required = plan['components']
-        separator = next((key for key in required if key in ('builtin', 'roformer')), '')
+        separator = next((key for key in required if key in ('builtin', 'roformer', 'roformer_onnx')), '')
         lines = [tr('使用导入的分轨') if not separator else
-                 'BS-RoFormer · ' + {'cpu': 'CPU', 'cuda': 'CUDA', 'auto': tr('自动选择运行库')}[draft['roformer_device']]
+                 'BS-RoFormer ONNX · ' + {'cpu': 'CPU', 'webgpu': 'WebGPU', 'auto': tr('自动选择运行库')}.get(draft['roformer_device'], 'WebGPU')
+                 if separator == 'roformer_onnx' else
+                 'BS-RoFormer · ' + {'cpu': 'CPU', 'cuda': 'CUDA', 'auto': tr('自动选择运行库')}.get(draft['roformer_device'], 'CUDA')
                  if separator == 'roformer' else tr('内置分离')]
         if draft['target'] != 'separation':
             english = draft['language'] == 'en'
@@ -654,8 +656,9 @@ class QuickBridge(QObject):
         return self.state.source
 
     @Property(str, notify=optionsChanged)
-    def runtime(self):
-        return self.state.runtime
+    def runtime(self): return self.state.runtime
+    @Property(str, notify=optionsChanged)
+    def onnxPrecision(self): return self.state.onnx_precision
 
     @Property(bool, notify=activityChanged)
     def busy(self):
@@ -1088,9 +1091,11 @@ class QuickBridge(QObject):
     @Slot(str)
     def setRuntime(self, runtime):
         if not self.workBusy and not self.loading and self.state.set_runtime(runtime):
-            self._runtime_user_selected = True
-            self.optionsChanged.emit()
-            self.refresh()
+            self._runtime_user_selected = True; self.optionsChanged.emit(); self.refresh()
+    @Slot(str)
+    def setOnnxPrecision(self, precision):
+        if not self.workBusy and not self.loading and self.state.set_onnx_precision(precision):
+            self.optionsChanged.emit(); self.refresh()
 
     @Slot(str)
     def setDownloadSource(self, source):
@@ -1119,7 +1124,7 @@ class QuickBridge(QObject):
     def refresh(self):
         if self.loading or self.state.active or self._closed:
             return
-        runtime = self.state.runtime
+        runtime, precision = self.state.runtime, self.state.onnx_precision
         self._notice = ''
 
         def finish(rows, error):
@@ -1127,7 +1132,7 @@ class QuickBridge(QObject):
                 return
             if error is None:
                 first_catalog = not self.state.rows
-                self.state.set_catalog(runtime, rows)
+                self.state.set_catalog(runtime, rows, onnx_precision=precision)
                 preferred = _task_actions.preferred_roformer_runtime(rows, runtime) if first_catalog and not self._runtime_user_selected else None
                 if preferred and self.state.set_runtime(preferred):
                     self.optionsChanged.emit(); self.refresh(); return
@@ -1135,12 +1140,12 @@ class QuickBridge(QObject):
                 if first_catalog and missing:
                     self.state.select(missing[0])
             else:
-                self.state.set_catalog(runtime, ())
+                self.state.set_catalog(runtime, (), onnx_precision=precision)
                 self.state.rows_runtime = None
                 self._error(error)
             self._update_rows()
 
-        self._catalog.start('component-scan', lambda stop, _send: components.catalog(runtime, check=stop.is_set), finish)
+        self._catalog.start('component-scan', lambda stop, _send: components.catalog(runtime, check=stop.is_set, onnx_precision=precision), finish)
 
     @Slot()
     def installSelected(self):

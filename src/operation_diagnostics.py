@@ -74,7 +74,7 @@ _CODES = frozenset(('unexpected', 'invalid_input', 'cancelled', 'network_timeout
                     'http', 'checksum', 'range', 'disk_full', 'file_busy', 'permission',
                     'file_missing', 'file_exists', 'dependency', 'device', 'memory', 'child_exit',
                     'io', 'runtime', 'callback', 'qt', 'log_unavailable'))
-_COMPONENTS = ('roformer', 'chinese', 'expression', 'builtin', 'pedalboard')
+_COMPONENTS = ('roformer', 'roformer_onnx', 'chinese', 'expression', 'builtin', 'pedalboard')
 _SOURCES = ('auto', 'direct', 'mirror', 'modelscope', 'github-release', 'hf-mirror',
             'pypi-tuna', 'pypi-aliyun', 'pypi-ustc', 'pytorch-sjtu', 'gitproxy', 'gh-proxy', 'ghfast')
 _EVENT_TEXT = {
