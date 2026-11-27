@@ -12,12 +12,11 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any, Callable
 
-from common import ROOT
-from project_convert_compat import friendly_project_error, strip_extended_prefix
-from vwa_io import resilient_tempdir
+from common import ROOT, native_path
 from worker_runner import run_worker_process
 
 
@@ -415,7 +414,7 @@ def _inspect_native_project(path: Path, fmt: str) -> dict[str, Any]:
         source_notes.append(f'检测到 {overlap_tracks} 条人声轨含重叠音符，转换至单声部格式时请注意核对。')
 
     return {
-        'path': strip_extended_prefix(snapshot.path),
+        'path': str(snapshot.path),
         'fileName': snapshot.path.name,
         'sizeBytes': snapshot.size,
         'sha256': snapshot.sha256,
@@ -425,7 +424,6 @@ def _inspect_native_project(path: Path, fmt: str) -> dict[str, Any]:
         'formatVersion': version_text,
         'sv2': sv2,
         'acep2': acep2,
-        'hasGroupRefs': has_group_refs,
         'engineSource': 'native',
         'tempoSummary': _format_tempo_summary(score['time'].get('tempo', [])),
         'meterSummary': _format_meter_summary(score['time'].get('meter', [])),
@@ -435,7 +433,7 @@ def _inspect_native_project(path: Path, fmt: str) -> dict[str, Any]:
         'instrumentalTrackCount': sum(1 for t in tracks if t['kind'] == 'instrumental'),
         'tracks': tracks,
         'sourceNotes': source_notes,
-        'defaultOutputDir': strip_extended_prefix(snapshot.path.parent),
+        'defaultOutputDir': str(snapshot.path.parent),
     }
 
 
@@ -476,7 +474,7 @@ def _inspect_midi_project(path: Path) -> dict[str, Any]:
 
     tempo_rows = [{'bpm': float(row['bpm'])} for row in parsed.get('tempos', []) if 'bpm' in row]
     return {
-        'path': strip_extended_prefix(path),
+        'path': str(path),
         'fileName': path.name,
         'sizeBytes': path.stat().st_size,
         'sha256': parsed['source_sha256'],
@@ -486,7 +484,6 @@ def _inspect_midi_project(path: Path) -> dict[str, Any]:
         'formatVersion': f"SMF Type {parsed.get('midi_type', 1)} ({parsed.get('ticks_per_beat', 480)} PPQ)",
         'sv2': False,
         'acep2': False,
-        'hasGroupRefs': False,
         'engineSource': 'native',
         'tempoSummary': _format_tempo_summary(tempo_rows),
         'meterSummary': '4/4',
@@ -496,7 +493,7 @@ def _inspect_midi_project(path: Path) -> dict[str, Any]:
         'instrumentalTrackCount': 0,
         'tracks': tracks,
         'sourceNotes': ['标准 MIDI 不含连续音高曲线与伴奏轨。'],
-        'defaultOutputDir': strip_extended_prefix(path.parent),
+        'defaultOutputDir': str(path.parent),
     }
 
 
@@ -522,9 +519,9 @@ def _run_worker(
     if not export_runtime_available():
         raise FileNotFoundError('缺少工程互转运行库（dependencies/export），请在完整环境中安装或修复组件。')
     worker = _worker_script()
-    with resilient_tempdir(prefix='vwa-convert-') as tmp:
-        req_path = tmp / 'request.json'
-        res_path = tmp / 'response.json'
+    with tempfile.TemporaryDirectory(prefix='vwa-convert-') as tmp:
+        req_path = Path(tmp) / 'request.json'
+        res_path = Path(tmp) / 'response.json'
         req_path.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
         result = run_worker_process(
             [sys.executable, '-B', str(worker), command, str(req_path), str(res_path)],
@@ -552,21 +549,18 @@ def inspect_project_file(
     cancel: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Inspect any supported project file and return a unified preflight summary."""
-    resolved = Path(strip_extended_prefix(Path(path).expanduser().resolve()))
+    resolved = Path(native_path(path)).expanduser().resolve()
     if not resolved.is_file():
         raise ValueError('找不到所选工程文件，请确认文件路径是否存在。')
     fmt = detect_format(resolved)
     spec = SPECS_BY_ID[fmt]
     if not spec.can_read:
         raise ValueError(f'{spec.label} 仅支持作为导出目标，不能作为转换源。')
-    try:
-        if fmt in NATIVE_INSPECT_FORMATS:
-            return _inspect_native_project(resolved, fmt)
-        if fmt == 'mid':
-            return _inspect_midi_project(resolved)
-        return _run_worker('inspect', {'path': str(resolved), 'format': fmt}, cancel=cancel, timeout=60.0)
-    except Exception as exc:
-        raise ValueError(friendly_project_error(exc, file_name=resolved.name)) from exc
+    if fmt in NATIVE_INSPECT_FORMATS:
+        return _inspect_native_project(resolved, fmt)
+    if fmt == 'mid':
+        return _inspect_midi_project(resolved)
+    return _run_worker('inspect', {'path': str(resolved), 'format': fmt}, cancel=cancel, timeout=60.0)
 
 
 def build_precheck_warnings(
@@ -621,7 +615,7 @@ def convert_project_file(
     cancel: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Run an isolated conversion in a subprocess and return a verified receipt."""
-    resolved = Path(strip_extended_prefix(Path(source_path).expanduser().resolve()))
+    resolved = Path(native_path(source_path)).expanduser().resolve()
     if not resolved.is_file():
         raise ValueError('找不到所选源工程文件。')
     source_format = detect_format(resolved)
@@ -631,11 +625,7 @@ def convert_project_file(
         raise ValueError(f'目标格式 {target_format!r} 不支持导出。')
 
     opts = normalize_options(options)
-    inspected_path = (
-        Path(strip_extended_prefix(inspection.get('path', ''))).resolve()
-        if inspection and inspection.get('path') else None
-    )
-    info = inspection if (inspection and inspected_path == resolved) else inspect_project_file(resolved, cancel=cancel)
+    info = inspection if (inspection and Path(inspection.get('path', '')).resolve() == resolved) else inspect_project_file(resolved, cancel=cancel)
 
     vocals = [t for t in info.get('tracks', []) if t.get('kind') == 'vocal']
     if opts['selected_tracks'] is not None:
@@ -645,7 +635,7 @@ def convert_project_file(
     if not chosen_vocals:
         raise ValueError('请至少选择 1 条人声轨后再开始转换。')
 
-    out_dir = Path(strip_extended_prefix(Path(output_dir).expanduser().resolve())) if output_dir else resolved.parent
+    out_dir = Path(output_dir).expanduser().resolve() if output_dir else resolved.parent
     out_dir.mkdir(parents=True, exist_ok=True)
     planned = plan_output_paths(
         resolved,
@@ -662,10 +652,9 @@ def convert_project_file(
         'output_dir': str(out_dir),
         'planned_outputs': planned,
         'selected_vocal_indices': [int(t['vocalIndex']) for t in chosen_vocals],
-        'expected_source_notes': [int(t.get('noteCount', 0)) for t in chosen_vocals],
         'options': opts,
         'use_high_fidelity_reader': bool(
-            info.get('sv2') or info.get('hasGroupRefs') or source_format == 'acep'
+            info.get('sv2') or source_format == 'acep'
         ),
     }
     return _run_worker('convert', payload, cancel=cancel, timeout=240.0)

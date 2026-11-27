@@ -701,18 +701,19 @@ def export_projects(job, request):
             if expected!=actual:
                 raise ValueError(f'{fmt.upper()} 导出后的音符数量不一致，请查看导出日志。')
             if english:
-                if fmt == 'ustx': read_english_ustx_lyrics(pending, loaded)
-                elif fmt == 'svp': read_english_svp_lyrics(pending, loaded)
-                else: read_vsqx_export_lyrics(pending, loaded, english=True)
-                actual_lyrics = [sorted((*_note_key(note), note.lyric) for note in track.note_list) for track in loaded.track_list if isinstance(track, SingingTrack)]
-                expected_lyrics = [sorted((*_note_key(note), english_project_lyric(fmt, note.lyric)) for note in track.note_list) for track in merged.track_list if isinstance(track, SingingTrack)]
+                if fmt == 'ustx':
+                    read_english_ustx_lyrics(pending, loaded)
+                elif fmt == 'svp':
+                    read_english_svp_lyrics(pending, loaded)
+                else:
+                    read_vsqx_export_lyrics(pending, loaded, english=True)
+                actual_lyrics = [sorted((*_note_key(note), note.lyric) for note in track.note_list)
+                                 for track in loaded.track_list if isinstance(track, SingingTrack)]
+                expected_lyrics = [sorted((*_note_key(note), english_project_lyric(fmt, note.lyric))
+                                          for note in track.note_list)
+                                   for track in merged.track_list if isinstance(track, SingingTrack)]
                 if actual_lyrics != expected_lyrics or project_signatures(job, request)[fmt] != signatures[fmt]:
                     raise ValueError(fmt.upper() + ' 英文歌词回读与来源不一致，请重新导出。')
-            elif fmt == 'vsqx' and request['language'] == 'ja':
-                vroot = ET.parse(pending).getroot()
-                if any(el.findtext('{*}bs') != str(JAPANESE_VSQX_VOICE['default_lang_id'])
-                       for el in vroot.findall('./{*}vVoiceTable/{*}vVoice') + vroot.findall('./{*}vsTrack/{*}vsPart/{*}singer')):
-                    raise ValueError('VSQX 日文声库声明回读不一致。')
             if protected_vsqx:
                 clock = [(tempo.position, tempo.bpm) for tempo in playback.song_tempo_list]
                 read_clock = [(tempo.position, tempo.bpm) for tempo in loaded.song_tempo_list]

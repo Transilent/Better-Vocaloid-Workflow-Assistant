@@ -18,11 +18,11 @@ Rectangle {
     readonly property var workshopVocals: (detail.artifacts || []).filter(row => !!workshopVocalRoles[row.id])
     property string workshopVocalId: ""
     readonly property real layoutScale: Math.min(1.15, theme.scale)
-    readonly property int railWidth: Math.max(Math.round(168 * layoutScale),
-                                              Math.min(Math.round(268 * layoutScale), Math.round(width * 0.23)))
-    readonly property int inspectorWidth: Math.max(Math.round(188 * layoutScale),
-                                                   Math.min(Math.round(310 * layoutScale), Math.round(width * 0.26)))
-    readonly property real bodyGap: Math.round(10 * layoutScale)
+    readonly property int railWidth: Math.max(Math.round(196 * layoutScale),
+                                              Math.min(Math.round(268 * layoutScale), Math.round(width * 0.24)))
+    readonly property int inspectorWidth: Math.max(Math.round(220 * layoutScale),
+                                                   Math.min(Math.round(310 * layoutScale), Math.round(width * 0.27)))
+    readonly property real bodyGap: Math.round(12 * layoutScale)
     readonly property var selectedArtifact: {
         const row = page.controller.selectedTaskArtifact
         return row && String(row.id || "").length > 0 ? row : ({})
@@ -124,12 +124,6 @@ Rectangle {
     function shortRevision(value) {
         const text = String(value || "")
         return text.length > 12 ? text.substring(0, 12) + "…" : text
-    }
-
-    function isTunableArtifact(row) {
-        if (!row || !row.available || (row.role !== "editor_project" && row.role !== "tuned_project"))
-            return false
-        return /\.(svp|ustx|vsqx|vpr|acep|ufdata)$/i.test(String(row.path || ""))
     }
 
     function optionIndex(options, value) {
@@ -689,7 +683,7 @@ Rectangle {
             Item {
                 objectName: "taskDetailPanel"
                 Layout.fillWidth: true
-                Layout.minimumWidth: Math.round(180 * page.layoutScale)
+                Layout.minimumWidth: Math.round(220 * page.layoutScale)
                 Layout.fillHeight: true
 
                 ColumnLayout {
@@ -844,14 +838,13 @@ Rectangle {
                         }
                     }
 
-                    // Visual 5-Step Production Pipeline Map (responsive Flow prevents right-column overlap)
+                    // Visual 5-Step Production Pipeline Map
                     Rectangle {
                         id: taskPipelineStepper
                         objectName: "taskPipelineStepper"
                         Layout.fillWidth: true
                         visible: !!page.controller.selectedTaskId
-                        clip: true
-                        implicitHeight: pipelineRow.implicitHeight + Math.round(16 * page.theme.scale)
+                        implicitHeight: pipelineRow.implicitHeight + Math.round(18 * page.theme.scale)
                         radius: page.theme.radiusLg !== undefined ? page.theme.radiusLg : Math.round(10 * page.theme.scale)
                         color: page.theme.surface
                         border.width: 1
@@ -864,80 +857,99 @@ Rectangle {
                             color: page.theme.highlightTop !== undefined ? page.theme.highlightTop : "transparent"
                         }
 
-                        Flow {
+                        RowLayout {
                             id: pipelineRow
-                            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                            anchors.margins: Math.round(8 * page.theme.scale)
-                            spacing: Math.round(4 * page.theme.scale)
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.leftMargin: Math.round(10 * page.theme.scale)
+                            anchors.rightMargin: Math.round(10 * page.theme.scale)
+                            spacing: 0
+
                             readonly property var steps: page.pipelineSteps()
 
                             Repeater {
                                 model: pipelineRow.steps
-                                delegate: Row {
+                                delegate: RowLayout {
                                     id: pipeItem
                                     required property var modelData
                                     required property int index
                                     readonly property bool isLast: index === pipelineRow.steps.length - 1
                                     readonly property string st: String(modelData.state || "pending")
-                                    spacing: Math.round(3 * page.theme.scale)
+                                    Layout.fillWidth: !isLast
+                                    spacing: 0
 
                                     AbstractButton {
                                         id: stepBtn
                                         objectName: "pipelineStep_" + String(pipeItem.modelData.key || "")
                                         enabled: !!pipeItem.modelData.actionable
                                         hoverEnabled: true
-                                        implicitWidth: Math.min(pipelineRow.width, stepPillRow.implicitWidth + Math.round(10 * page.theme.scale))
-                                        implicitHeight: Math.round(28 * page.theme.scale)
+                                        implicitWidth: stepPillRow.implicitWidth + Math.round(12 * page.theme.scale)
+                                        implicitHeight: Math.round(32 * page.theme.scale)
                                         Accessible.name: String(pipeItem.modelData.label || "")
                                         ToolTip.visible: hovered && String(pipeItem.modelData.tip || "").length > 0
                                         ToolTip.text: String(pipeItem.modelData.tip || "")
                                         onClicked: page.triggerPipelineStep(String(pipeItem.modelData.key || ""))
 
                                         background: Rectangle {
-                                            radius: Math.round(7 * page.theme.scale)
+                                            radius: Math.round(8 * page.theme.scale)
                                             color: stepBtn.down ? page.theme.selected
                                                 : stepBtn.hovered && stepBtn.enabled ? page.theme.hover
-                                                : pipeItem.st === "next" ? Qt.rgba(page.theme.accent.r, page.theme.accent.g, page.theme.accent.b, 0.12) : "transparent"
+                                                : pipeItem.st === "next" ? Qt.rgba(page.theme.accent.r, page.theme.accent.g, page.theme.accent.b, 0.12)
+                                                : "transparent"
                                             border.width: pipeItem.st === "next" ? 1 : 0
                                             border.color: Qt.rgba(page.theme.accent.r, page.theme.accent.g, page.theme.accent.b, 0.38)
                                         }
 
-                                        contentItem: Row {
+                                        contentItem: RowLayout {
                                             id: stepPillRow
                                             anchors.centerIn: parent
-                                            spacing: Math.round(5 * page.theme.scale)
+                                            spacing: Math.round(6 * page.theme.scale)
 
                                             Rectangle {
-                                                width: Math.round(18 * page.theme.scale); height: width; radius: Math.round(width / 2)
-                                                anchors.verticalCenter: parent.verticalCenter
-                                                color: pipeItem.st === "done" ? Qt.rgba(page.theme.success.r, page.theme.success.g, page.theme.success.b, 0.18)
-                                                    : pipeItem.st === "next" ? page.theme.accent
-                                                    : pipeItem.st === "error" ? Qt.rgba(page.theme.error.r, page.theme.error.g, page.theme.error.b, 0.18)
-                                                    : pipeItem.st === "running" ? Qt.rgba(page.theme.accent.r, page.theme.accent.g, page.theme.accent.b, 0.22) : page.theme.raised
+                                                width: Math.round(20 * page.theme.scale)
+                                                height: width
+                                                radius: Math.round(width / 2)
+                                                color: pipeItem.st === "done"
+                                                    ? Qt.rgba(page.theme.success.r, page.theme.success.g, page.theme.success.b, 0.18)
+                                                    : pipeItem.st === "next"
+                                                        ? page.theme.accent
+                                                        : pipeItem.st === "error"
+                                                            ? Qt.rgba(page.theme.error.r, page.theme.error.g, page.theme.error.b, 0.18)
+                                                            : pipeItem.st === "running"
+                                                                ? Qt.rgba(page.theme.accent.r, page.theme.accent.g, page.theme.accent.b, 0.22)
+                                                                : page.theme.raised
                                                 border.width: 1
                                                 border.color: pipeItem.st === "done" ? page.theme.success
                                                     : pipeItem.st === "next" || pipeItem.st === "running" ? page.theme.accent
-                                                    : pipeItem.st === "error" ? page.theme.error : page.theme.line
+                                                    : pipeItem.st === "error" ? page.theme.error
+                                                    : page.theme.line
 
                                                 Text {
                                                     anchors.centerIn: parent
                                                     visible: pipeItem.st === "done" || pipeItem.st === "error" || pipeItem.st === "running"
                                                     text: pipeItem.st === "done" ? "✓" : pipeItem.st === "error" ? "!" : "…"
-                                                    color: pipeItem.st === "done" ? page.theme.success : pipeItem.st === "error" ? page.theme.error : page.theme.accent
-                                                    font.pixelSize: Math.round(10 * page.theme.scale); font.weight: Font.Bold; textFormat: Text.PlainText
+                                                    color: pipeItem.st === "done" ? page.theme.success
+                                                        : pipeItem.st === "error" ? page.theme.error : page.theme.accent
+                                                    font.pixelSize: Math.round(10 * page.theme.scale)
+                                                    font.weight: Font.Bold
+                                                    textFormat: Text.PlainText
                                                 }
+
                                                 UiIcon {
                                                     anchors.centerIn: parent
                                                     visible: pipeItem.st === "next" || pipeItem.st === "pending"
-                                                    width: Math.round(10 * page.theme.scale); height: width
+                                                    width: Math.round(11 * page.theme.scale)
+                                                    height: width
                                                     glyph: String(pipeItem.modelData.glyph || "nav_results")
                                                     tint: pipeItem.st === "next" ? page.theme.base : page.theme.muted
                                                 }
                                             }
+
                                             Text {
-                                                anchors.verticalCenter: parent.verticalCenter
                                                 text: String(pipeItem.modelData.label || "")
-                                                color: pipeItem.st === "next" || pipeItem.st === "done" ? page.theme.text
+                                                color: pipeItem.st === "next" || pipeItem.st === "done"
+                                                    ? page.theme.text
                                                     : pipeItem.st === "error" ? page.theme.error : page.theme.muted
                                                 font.pixelSize: Math.round(11 * page.theme.scale)
                                                 font.weight: pipeItem.st === "next" ? Font.DemiBold : Font.Normal
@@ -945,13 +957,18 @@ Rectangle {
                                             }
                                         }
                                     }
-                                    Text {
+
+                                    Rectangle {
                                         visible: !pipeItem.isLast
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        text: "›"
-                                        color: pipeItem.st === "done" ? page.theme.success : page.theme.muted
-                                        font.pixelSize: Math.round(12 * page.theme.scale)
-                                        textFormat: Text.PlainText
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: Math.round(8 * page.theme.scale)
+                                        Layout.preferredHeight: 2
+                                        Layout.leftMargin: Math.round(3 * page.theme.scale)
+                                        Layout.rightMargin: Math.round(3 * page.theme.scale)
+                                        radius: 1
+                                        color: pipeItem.st === "done"
+                                            ? Qt.rgba(page.theme.success.r, page.theme.success.g, page.theme.success.b, 0.55)
+                                            : page.theme.line
                                     }
                                 }
                             }
@@ -1385,8 +1402,9 @@ Rectangle {
                                         onClicked: page.controller.openArtifact(String(page.selectedArtifact.id || ""))
                                     }
                                     UiButton {
-                                        objectName: "tuneInspectorArtifact"
-                                        visible: page.isTunableArtifact(page.selectedArtifact)
+                                        visible: !!page.selectedArtifact.available
+                                            && (page.selectedArtifact.role === "editor_project" || page.selectedArtifact.role === "tuned_project")
+                                            && String(page.selectedArtifact.path || "").toLowerCase().endsWith(".svp")
                                         theme: page.theme
                                         quiet: true
                                         text: page.controller.text("调音")
@@ -1526,8 +1544,6 @@ Rectangle {
         modal: true
         interactive: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-        y: 0
-        height: parent ? parent.height : page.height
         width: Math.min(parent ? parent.width - Math.round(28 * page.theme.scale) : Math.round(420 * page.theme.scale),
                         Math.round(430 * page.theme.scale))
 
@@ -1947,7 +1963,7 @@ Rectangle {
                             quiet: true
                             text: page.controller.text("重命名")
                             enabled: page.mutationIdle && !!page.detail.canRename
-                            onClicked: { taskManagementDrawer.close(); renameDialog.open() }
+                            onClicked: renameDialog.open()
                         }
                         UiButton {
                             objectName: "deleteTask"
@@ -1955,7 +1971,7 @@ Rectangle {
                             quiet: true
                             text: page.controller.text("删除…")
                             enabled: page.mutationIdle && !!page.detail.canDelete
-                            onClicked: { taskManagementDrawer.close(); deleteDialog.open() }
+                            onClicked: deleteDialog.open()
                         }
                     }
 

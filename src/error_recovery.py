@@ -22,9 +22,9 @@ def explain(error, stage='', cancelled=False):
         (('887a0005', '887a0006', '887a0007', '887a0020', 'vk_error_device_lost', 'device lost'), '显卡推理被中断',
          '已完成的阶段已保留。可以重试当前阶段；若仍失败，改用 CPU 继续，并查看日志中的设备错误。', 'cpu'),
         (('webgpuexecutionprovider failed', 'failed to create webgpu', 'webgpu error', 'dawn error',
-          'vulkan error', 'hip error', 'rocm error', 'cuda error', 'cuda runtime error',
-          'cuda is not available', 'cuda unavailable', 'no cuda gpus', 'not compiled with cuda',
-          'invalid device ordinal', 'cuda initialization', 'cudaexecutionprovider failed', 'directml error',
+          'wgpu', 'vulkan error', 'cuda error', 'cuda runtime error', 'cuda is not available', 'cuda unavailable',
+          'no cuda gpus', 'not compiled with cuda', 'invalid device ordinal',
+          'cuda initialization', 'cudaexecutionprovider failed', 'directml error',
           'dmlexecutionprovider failed', 'failed to create dml', 'device removed', 'd3d12 error',
           '当前环境无法使用 webgpu'), '推理设备不可用',
          '可以切换为 CPU 后继续，也可以在工作流中检查设备设置。', 'cpu'),
@@ -101,6 +101,6 @@ def retry_with_cpu(job):
     path = Path(job) / 'request.json'
     request = json.loads(path.read_text(encoding='utf-8'))
     request['tools'].update(separation_device='cpu', midi_device='cpu')
-    if request.get('voice_mode') in ('roformer', 'roformer_onnx'):
+    if request.get('voice_mode') == 'roformer':
         request['roformer_device'] = 'cpu'
     atomic_json(path, request)

@@ -4,11 +4,10 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
 
-# SV2 projects start at format version 182 (e.g. 182, 196, 203+). Rather than
-# freezing an upper version cap that breaks on every minor SV2 update, write
-# safety relies on the structural checks below and patch-style preservation of
-# all untouched native fields.
+# SV2 182 (existing project fixture) through 196 (public SV2 project). A newer
+# format can be inspected, but its placement and write contract is unverified.
 SV2_MIN = 182
+SV2_MAX = 196
 GROUP_STYLE_ONLY = '含音符组引用、裁剪或移调的 SV2 轨道，请使用「保留原表现」。'
 GROUPS_PARTLY_PROTECTED = '本轨的共享或裁剪音符组保持只读；可编辑其他独立音符组。'
 
@@ -147,6 +146,8 @@ class Layout:
             else:
                 issue('track.instrumental_unknown', '无法确认该轨道是否为伴奏轨。')
             return row
+        if self.sv2 and self.version > SV2_MAX:
+            issue('track.sv2_version', '此 SV2 工程格式尚未验证写回，当前只读。')
         inline = raw.get('mainGroup')
         main_id = _id(ref.get('groupID'))
         inline_id = _id(_obj(inline).get('uuid'))

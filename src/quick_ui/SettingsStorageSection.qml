@@ -144,7 +144,6 @@ GridLayout {
                         id: outputPath
                         objectName: "outputDirectory"
                         Layout.fillWidth: true
-                        Layout.minimumWidth: 0
                         text: String(page.setting("output_directory", "")).length > 0
                             ? String(page.setting("output_directory", ""))
                             : page.tr("使用系统默认目录")

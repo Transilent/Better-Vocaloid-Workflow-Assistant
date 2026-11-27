@@ -22,20 +22,20 @@ class GameOnnxModel:
         self.loop = bool(self.config.get("loop", True))
         self.languages = dict(self.config.get("languages") or {})
         self.requested_device = str(requested_device)
-        self.provider_name, providers = self._resolve_providers(self.requested_device)
-        self._sessions = self._load_sessions(providers)
+        self.provider_name, self._sessions = self._load_sessions(self.requested_device)
+        active_ep = (
+            self._sessions["encoder"].get_providers()[0]
+            if self._sessions.get("encoder") and self._sessions["encoder"].get_providers()
+            else "CPUExecutionProvider"
+        )
+        print(f"[VWA 后端] 音符提取 (GAME): {active_ep} ({self.provider_name})", flush=True)
 
     @staticmethod
     def _resolve_providers(device: str) -> tuple[str, list[str]]:
         return resolve_onnx_providers(device, label="GAME ONNX")
 
-    def _load_sessions(self, providers: list[str]) -> dict[str, ort.InferenceSession]:
-        sess_options = ort.SessionOptions()
-        from inference.device_utils import configure_onnx_threads
-        configure_onnx_threads(sess_options)
-        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        sess_options.enable_mem_pattern = False
-        sess_options.enable_cpu_mem_arena = False
+    def _load_sessions(self, device: str) -> tuple[str, dict[str, ort.InferenceSession]]:
+        from inference.device_utils import configure_onnx_threads, create_onnx_session
 
         filenames = {
             "encoder": "encoder.onnx",
@@ -45,12 +45,18 @@ class GameOnnxModel:
             "bd2dur": "bd2dur.onnx",
         }
         sessions = {}
+        provider_name = "cpu"
         for key, filename in filenames.items():
             path = self.model_dir / filename
             if not path.exists():
                 raise FileNotFoundError(f"Required GAME ONNX file not found: {path}")
-            sessions[key] = ort.InferenceSession(str(path), sess_options=sess_options, providers=providers)
-        return sessions
+            sess_options = ort.SessionOptions()
+            configure_onnx_threads(sess_options)
+            sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            sess_options.enable_mem_pattern = False
+            sess_options.enable_cpu_mem_arena = False
+            provider_name, sessions[key] = create_onnx_session(path, sess_options, device, label="GAME ONNX")
+        return provider_name, sessions
 
     def shutdown(self) -> None:
         self._sessions.clear()

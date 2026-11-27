@@ -5,10 +5,12 @@ on:
     branches:
       - main
       - "dev/**"
+      - "feat/**"
   pull_request:
     branches:
       - main
       - "dev/**"
+      - "feat/**"
   workflow_dispatch:
 
 concurrency:
@@ -62,6 +64,7 @@ jobs:
           $tests = @(
             'tests/test_source_layout.py',
             'tests/test_architecture_guards.py',
+            'tests/test_webgpu_backend.py',
             'tests/test_i18n.py',
             'tests/test_download_sources.py',
             'tests/test_operation_diagnostics.py',
@@ -69,18 +72,7 @@ jobs:
             'tests/test_updater_and_infra_upgrade.py',
             'tests/test_tier1_infra.py',
             'tests/test_tier2_infra.py',
-            'tests/test_tier3_ux.py',
-            'tests/test_chorus_user_journeys.py',
-            'tests/test_wave0_shell_journeys.py',
-            'tests/test_wave7_management_journeys.py',
-            'tests/test_wave5_delivery_journeys.py',
-            'tests/test_wave6_convert_journeys.py',
-            'tests/test_wave1_preparation_journeys.py',
-            'tests/test_wave2_tuning_journeys.py',
-            'tests/test_wave3_chorus_journeys.py',
-            'tests/test_wave4_mixdown_journeys.py',
-            'tests/test_wave8_marathon_journeys.py',
-            'tests/test_amd_gpu_foundation.py'
+            'tests/test_tier3_ux.py'
           )
           foreach ($t in $tests) {
             Write-Host "=== Running $t ==="

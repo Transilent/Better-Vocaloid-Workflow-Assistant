@@ -16,7 +16,7 @@ import math
 import os
 from pathlib import Path
 import re
-from vwa_io import safe_rmtree, strip_extended_prefix
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1089,7 +1089,7 @@ class QuickPublication(QObject):
                     raise ValueError('截图期间视频已变化，请重新预览。')
                 _check_stop(stop)
             except Exception:
-                safe_rmtree(directory)
+                shutil.rmtree(directory, ignore_errors=True)
                 raise
             return {'path': str(destination), 'temporary': True,
                     'directory': str(directory),
@@ -2023,7 +2023,7 @@ class QuickPublication(QObject):
         _draft_svc.discard_preview_dir(directory, keep)
 
     def _open_local(self, path: Path) -> bool:
-        return QDesktopServices.openUrl(QUrl.fromLocalFile(strip_extended_prefix(Path(path).resolve())))
+        return QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).resolve())))
 
     def _open_url(self, url: str) -> bool:
         return QDesktopServices.openUrl(QUrl(url))

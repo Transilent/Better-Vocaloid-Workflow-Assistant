@@ -629,14 +629,12 @@ ApplicationWindow {
                             text: window.controller.text("修音工作台 · 后台试听")
                         }
                         UiButton {
-                            objectName: "pauseBackgroundChorus"
                             theme: window.tokens
                             implicitHeight: Math.round(28 * theme.scale)
                             text: window.controller.text("暂停")
                             onClicked: window.controller.chorus.togglePlay()
                         }
                         UiButton {
-                            objectName: "returnBackgroundChorus"
                             theme: window.tokens
                             primary: true
                             implicitHeight: Math.round(28 * theme.scale)
@@ -832,20 +830,17 @@ ApplicationWindow {
         }
     }
 
-    readonly property bool modalShortcutBlocked: exitDialog.visible || chorusExitDialog.visible
-        || shortcutSheet.visible || subtitleDialog.visible || !!(window.controller.support.diagnostics && window.controller.support.diagnostics.open)
-
     function navigateByRouteIndex(index) {
-        if (commandPalette.visible || window.modalShortcutBlocked)
+        if (commandPalette.visible)
             return
         const routes = window.controller.routes || []
         if (index >= 0 && index < routes.length && routes[index] && routes[index].pageId)
             window.controller.navigate(routes[index].pageId)
     }
 
-    Shortcut { objectName: "globalCommandPaletteShortcut"; sequence: "Ctrl+K"; context: Qt.WindowShortcut; enabled: !window.modalShortcutBlocked; onActivated: commandPalette.visible ? commandPalette.close() : commandPalette.open() }
-    Shortcut { objectName: "globalShortcutSheet"; sequence: "Ctrl+/"; context: Qt.WindowShortcut; enabled: !exitDialog.visible && !chorusExitDialog.visible; onActivated: shortcutSheet.visible ? shortcutSheet.close() : shortcutSheet.open() }
-    Shortcut { sequence: "F1"; context: Qt.WindowShortcut; enabled: !exitDialog.visible && !chorusExitDialog.visible; onActivated: shortcutSheet.visible ? shortcutSheet.close() : shortcutSheet.open() }
+    Shortcut { objectName: "globalCommandPaletteShortcut"; sequence: "Ctrl+K"; context: Qt.WindowShortcut; onActivated: commandPalette.visible ? commandPalette.close() : commandPalette.open() }
+    Shortcut { objectName: "globalShortcutSheet"; sequence: "Ctrl+/"; context: Qt.WindowShortcut; onActivated: shortcutSheet.visible ? shortcutSheet.close() : shortcutSheet.open() }
+    Shortcut { sequence: "F1"; context: Qt.WindowShortcut; onActivated: shortcutSheet.visible ? shortcutSheet.close() : shortcutSheet.open() }
     Shortcut { sequence: "Ctrl+1"; context: Qt.WindowShortcut; onActivated: window.navigateByRouteIndex(0) }
     Shortcut { sequence: "Ctrl+2"; context: Qt.WindowShortcut; onActivated: window.navigateByRouteIndex(1) }
     Shortcut { sequence: "Ctrl+3"; context: Qt.WindowShortcut; onActivated: window.navigateByRouteIndex(2) }

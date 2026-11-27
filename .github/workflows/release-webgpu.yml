@@ -1,0 +1,111 @@
+name: Release VWA WebGPU Portable Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v2.1.0-webgpu.4)"
+        required: true
+        default: "v2.1.0-webgpu.4"
+
+permissions:
+  contents: write
+
+jobs:
+  build-portable-and-release:
+    name: Build Ready-to-Run Windows x64 WebGPU Portable & Publish Release
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONNOUSERSITE: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up bootstrap Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bootstrap complete standalone WebGPU runtime (Python 3.12 + ORT WebGPU + Qt 6.10.3 + LibreSVIP + FFmpeg + MDX)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path work | Out-Null
+          python -B tools/bootstrap_webgpu_runtime.py --pypi-mirror direct --skip-verify
+
+      - name: Build Windows GUI launcher (build/VWA/VWA.exe)
+        shell: pwsh
+        run: |
+          & '.\dependencies\vocal2midi\python\python.exe' -B tools/build_windows_launcher.py --output build/VWA/VWA.exe
+
+      - name: Build native audio DLLs (CMake + MinGW)
+        shell: pwsh
+        run: |
+          cmake -S src/native -B build/native -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/native --parallel
+          ctest --test-dir build/native --output-on-failure
+          New-Item -ItemType Directory -Force -Path components/native-audio | Out-Null
+          Get-ChildItem build/native -Recurse -Filter "vwa_*.dll" | ForEach-Object {
+            Copy-Item $_.FullName -Destination (Join-Path "components/native-audio" $_.Name) -Force
+          }
+
+      - name: Verify built portable runtime and L0 guards
+        shell: pwsh
+        env:
+          VWA_TESTING: "1"
+          BVWA_TESTING: "1"
+        run: |
+          $py = '.\dependencies\vocal2midi\python\python.exe'
+          & $py -B tools/verify_source_layout.py
+          & $py -B tools/extract_i18n.py --check --max-missing-en 0 --max-missing-ja 0
+          & $py -B launch.py --check
+          & $py -B tests/test_architecture_guards.py
+          & $py -B tests/test_source_layout.py
+          & $py -B tests/test_webgpu_backend.py
+          & $py -B tests/test_download_sources.py
+
+      - name: Package ready-to-run portable ZIP into build/release/
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.tag }}" } else { "${{ github.ref_name }}" }
+          $outZip = "build/release/VWA-$tag-Windows-x64-WebGPU-Portable.zip"
+          & '.\dependencies\vocal2midi\python\python.exe' -B tools/build_webgpu_portable.py --stage-dir build/VWA --output $outZip
+          echo "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:RELEASE_TAG
+          $notes = @"
+          ## VWA $tag — Windows x64 WebGPU 成品便携版（AMD / NVIDIA / Intel 通用）
+
+          **解压后直接双击 ``VWA\VWA.exe`` 即可运行，无需安装 Python 或额外依赖。**
+
+          ### 便携包已内置组件
+          - ``VWA.exe``（Windows 图形启动器）与 ``Start-Quick.bat``
+          - 独立便携 Python 3.12 + **``onnxruntime-webgpu==1.27.0``**（替代已进入维护模式的 DirectML 与 NVIDIA 专属 CUDA）
+          - 独立 Qt Quick 6.10.3 运行库（``runtime\qt6``）
+          - LibreSVIP 工程互转与导出运行库（``dependencies\export``）
+          - FFmpeg 音频解码/编码工具（``dependencies\ffmpeg``）
+          - UVR MDX 人声/伴奏 & 主唱/和声双分离模型（``UVR-MDX-NET-Inst_HQ_3.onnx`` + ``UVR_MDXNET_KARA_2.onnx``）
+          - Vocal2Midi 全套 ONNX 模型（GAME / HubertFA / RMVPE / Romaji ASR）与 llama.cpp 运行库
+          - 原生音频处理 DLL（``components\native-audio\vwa_*.dll``）
+          - 默认 ``config.json``（默认启用 ``webgpu``，自动选择独立 AMD / NVIDIA / Intel GPU，并支持 AMD 780M/890M APU 核显）
+
+          ### 可选扩展
+          - **中文/英文歌词识别（Qwen3-ASR，约 4.4 GB）**：打开软件后在左侧 **「模型与组件」** 页点击下载即可。
+          - **BS-RoFormer ONNX**：可在左侧 **「模型与组件」** 页下载，或使用 ``tools/export_roformer_onnx.py`` 本地导出。
+          - **切换显卡 / CPU**：打开「一键准备 → 高级处理选项 → WebGPU 显卡」，或运行 ``tools\Use-GPU.bat`` / ``tools\Use-CPU.bat``。
+          "@
+          $notesFile = "build/release/RELEASE_NOTES.md"
+          $notes | Out-File -FilePath $notesFile -Encoding utf8
+          gh release create $tag `
+            build/release/*.zip `
+            build/release/SHA256SUMS.txt `
+            --title "VWA $tag (Windows x64 WebGPU 成品便携版)" `
+            --notes-file $notesFile `
+            --verify-tag

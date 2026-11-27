@@ -925,20 +925,21 @@ class _RealtimeWorkerServer:
                 str(error) or type(error).__name__,
             )
 
-    def _default_output_factory_factory(self, graph: Any, spec: _OpenSpec) -> Callable[[], Any]:
+    def _default_output_factory_factory(
+            self, graph: Any, spec: _OpenSpec) -> Callable[[], Any]:
         native_output = _RUNTIME_NATIVE_OUTPUT.NativeOutput
-        sample_rate, channels = int(graph.sample_rate), int(graph.channels)
+        sample_rate = int(graph.sample_rate)
+        channels = int(graph.channels)
 
         def create_output() -> Any:
-            device_index = -1
-            try:
-                from audio_device_recovery import resolve_device_index
-                device_index = resolve_device_index(dll_path=spec.dll_path)
-            except Exception:
-                device_index = -1
-            extra = {"device_index": device_index} if device_index >= 0 else {}
-            return native_output(spec.dll_path, sample_rate=sample_rate, channels=channels,
-                                 capacity_frames=4096, period_frames=256, mode="wasapi", **extra)
+            return native_output(
+                spec.dll_path,
+                sample_rate=sample_rate,
+                channels=channels,
+                capacity_frames=4096,
+                period_frames=256,
+                mode="wasapi",
+            )
 
         return create_output
 

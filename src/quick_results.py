@@ -66,11 +66,10 @@ ARTIFACT_ROLES = {
 MODE_LABELS = {
     'dual': 'Karaoke 2 双轨',
     'roformer': 'BS-RoFormer 双轨',
-    'roformer_onnx': 'BS-RoFormer ONNX（实验性）',
     'import': '外部分轨',
     'single': '人声单轨',
 }
-DEVICE_LABELS = {'cpu': 'CPU', 'dml': 'GPU / DirectML'}
+DEVICE_LABELS = {'cpu': 'CPU', 'webgpu': 'GPU / WebGPU', 'dml': 'GPU / DirectML'}
 PRODUCER_LABELS = {
     'metadata': '来源资料',
     'download': '下载 / 导入',
@@ -413,8 +412,7 @@ def _request_summary(row):
     if bv:
         source = (source + ' · ' + bv) if source else bv
     mode = _text(request.get('voice_mode')) or 'single'
-    lang_code = _text(request.get('language')).lower()
-    language = '日语' if lang_code.startswith('ja') else '英语' if lang_code.startswith('en') else '中文'
+    language = '日语' if _text(request.get('language')).lower() == 'ja' else '中文'
     steps = request.get('midi_steps', 16)
     if type(steps) is not int or steps <= 0:
         steps = 16

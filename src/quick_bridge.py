@@ -32,7 +32,6 @@ from quick_work import WorkerLane
 import task_actions_service as _task_actions
 from workspace_controller import WorkspaceController
 from workspace_settings import component_source_preferences, save_component_source_preferences
-from vwa_paths import strip_extended_prefix
 import workflow
 
 
@@ -153,8 +152,7 @@ class QuickBridge(QObject):
     def __init__(self):
         super().__init__()
         self.journal = journal_for()
-        self.state = WorkspaceController(component_source_preferences(load_config(False)), initial_runtime=_task_actions.initial_roformer_runtime(), initial_onnx_precision=_task_actions.initial_roformer_onnx_precision())
-        self._runtime_user_selected = False
+        self.state = WorkspaceController(component_source_preferences(load_config(False)))
         self.selectionChanged.connect(self.componentSourceChanged)
         self._work = WorkerLane(self, 'vwa-workspace', journal=self.journal)
         self._catalog = WorkerLane(self, 'vwa-components', journal=self.journal)
@@ -301,8 +299,6 @@ class QuickBridge(QObject):
                 self._workshop.cancel()
             elif kind.startswith('chorus-'):
                 self._chorus.cancel()
-            elif kind.startswith('convert-'):
-                self._converter.cancel()
             elif kind.startswith('tuning-'):
                 self._tuning.cancel()
             elif kind in ('mixdown-export', 'mixdown-install', 'mixdown-support-probe'):
@@ -492,25 +488,44 @@ class QuickBridge(QObject):
         return True
 
     @Property(QObject, constant=True)
-    def support(self): return self._support
+    def support(self):
+        return self._support
+
     @Property(QObject, constant=True)
-    def tuning(self): return self._tuning
+    def tuning(self):
+        return self._tuning
+
     @Property(QObject, constant=True)
-    def calibration(self): return self._calibration
+    def calibration(self):
+        return self._calibration
+
     @Property(QObject, constant=True)
-    def workshop(self): return self._workshop
+    def workshop(self):
+        return self._workshop
+
     @Property(QObject, constant=True)
-    def preparationSources(self): return self._sources
+    def preparationSources(self):
+        return self._sources
+
     @Property(QObject, constant=True)
-    def mixdown(self): return self._mixdown
+    def mixdown(self):
+        return self._mixdown
+
     @Property(QObject, constant=True)
-    def chorus(self): return self._chorus
+    def chorus(self):
+        return self._chorus
+
     @Property(QObject, constant=True)
-    def video(self): return self._video
+    def video(self):
+        return self._video
+
     @Property(QObject, constant=True)
-    def publication(self): return self._publication
+    def publication(self):
+        return self._publication
+
     @Property(QObject, constant=True)
-    def subtitles(self): return self._subtitles
+    def subtitles(self):
+        return self._subtitles
 
     @Property(QObject, constant=True)
     def converter(self): return self._converter
@@ -566,8 +581,6 @@ class QuickBridge(QObject):
     @Property('QVariantList', constant=True)
     def preparationLanguages(self):
         return [{'label': tr(profile.label), 'value': code} for code, profile in PROFILES.items()]
-    @Property('QVariantList', constant=True)
-    def dmlAdapterChoices(self): return _task_actions.dml_adapter_choices()
 
     @Property('QVariantList', notify=preparationPresetsChanged)
     def preparationPresets(self):
@@ -625,11 +638,9 @@ class QuickBridge(QObject):
         draft = self.state.draft_view
         plan = self.state.component_plan
         required = plan['components']
-        separator = next((key for key in required if key in ('builtin', 'roformer', 'roformer_onnx')), '')
+        separator = next((key for key in required if key in ('builtin', 'roformer')), '')
         lines = [tr('使用导入的分轨') if not separator else
-                 'BS-RoFormer ONNX · ' + {'cpu': 'CPU', 'webgpu': 'WebGPU', 'auto': tr('自动选择运行库')}.get(draft['roformer_device'], 'WebGPU')
-                 if separator == 'roformer_onnx' else
-                 'BS-RoFormer · ' + {'cpu': 'CPU', 'cuda': 'CUDA', 'auto': tr('自动选择运行库')}.get(draft['roformer_device'], 'CUDA')
+                 'BS-RoFormer · ' + {'cpu': 'CPU', 'webgpu': 'WebGPU', 'cuda': 'WebGPU', 'auto': tr('自动选择运行库')}[draft['roformer_device']]
                  if separator == 'roformer' else tr('内置分离')]
         if draft['target'] != 'separation':
             english = draft['language'] == 'en'
@@ -640,41 +651,25 @@ class QuickBridge(QObject):
         return {**plan, 'summary': ' · '.join(lines)}
 
     @Property(str, notify=selectionChanged)
-    def selectedId(self):
-        return self.state.selected_id
-
+    def selectedId(self): return self.state.selected_id
     @Property(str, notify=queryChanged)
-    def query(self):
-        return self.state.query
-
+    def query(self): return self.state.query
     @Property('QVariantList', notify=componentSourceChanged)
-    def downloadSources(self):
-        return [{'label': tr(label), 'value': value} for label, value in self.state.source_options]
-
+    def downloadSources(self): return [{'label': tr(label), 'value': value} for label, value in self.state.source_options]
     @Property(str, notify=componentSourceChanged)
-    def downloadSource(self):
-        return self.state.source
-
+    def downloadSource(self): return self.state.source
     @Property(str, notify=optionsChanged)
     def runtime(self): return self.state.runtime
     @Property(str, notify=optionsChanged)
-    def onnxPrecision(self): return self.state.onnx_precision
-
+    def roformerPrecision(self): return self.state.roformer_precision
     @Property(bool, notify=activityChanged)
-    def busy(self):
-        return self.state.active is not None
-
+    def busy(self): return self.state.active is not None
     @Property(bool, notify=activityChanged)
-    def loading(self):
-        return bool(self._catalog.kind)
-
+    def loading(self): return bool(self._catalog.kind)
     @Property('QVariantMap', notify=activityChanged)
-    def operation(self):
-        return dict(self.state.operation)
-
+    def operation(self): return dict(self.state.operation)
     @Property(str, notify=activityChanged)
-    def notice(self):
-        return tr(self._notice)
+    def notice(self): return tr(self._notice)
 
     @Property(QObject, constant=True)
     def taskModel(self):
@@ -818,11 +813,7 @@ class QuickBridge(QObject):
 
     def _update_draft(self, call, *, persist=False):
         try:
-            changed = call()
-            if self._notice:
-                self._notice = ''
-                self.activityChanged.emit()
-            if changed:
+            if call():
                 self.draftChanged.emit()
                 if persist:
                     preparation.save_draft_settings(self.state.draft)
@@ -871,8 +862,12 @@ class QuickBridge(QObject):
 
     @Slot(str)
     def setPreparationMusicPath(self, path):
-        value = str(path).strip().strip('"')
-        self._update_draft(lambda: self.state.set_music(value))
+        try:
+            value = str(path).strip().strip('"')
+            if self.state.set_music(value):
+                self.draftChanged.emit()
+        except (OSError, ValueError, TypeError) as exc:
+            self._error(exc)
 
     @Slot(str)
     def applyPreparationPreset(self, key):
@@ -1091,11 +1086,13 @@ class QuickBridge(QObject):
     @Slot(str)
     def setRuntime(self, runtime):
         if not self.workBusy and not self.loading and self.state.set_runtime(runtime):
-            self._runtime_user_selected = True; self.optionsChanged.emit(); self.refresh()
+            self.optionsChanged.emit()
+            self.refresh()
     @Slot(str)
-    def setOnnxPrecision(self, precision):
-        if not self.workBusy and not self.loading and self.state.set_onnx_precision(precision):
-            self.optionsChanged.emit(); self.refresh()
+    def setRoformerPrecision(self, precision):
+        if not self.workBusy and not self.loading and self.state.set_roformer_precision(precision):
+            self.optionsChanged.emit()
+            self.refresh()
 
     @Slot(str)
     def setDownloadSource(self, source):
@@ -1124,7 +1121,7 @@ class QuickBridge(QObject):
     def refresh(self):
         if self.loading or self.state.active or self._closed:
             return
-        runtime, precision = self.state.runtime, self.state.onnx_precision
+        runtime, precision = self.state.runtime, self.state.roformer_precision
         self._notice = ''
 
         def finish(rows, error):
@@ -1132,20 +1129,17 @@ class QuickBridge(QObject):
                 return
             if error is None:
                 first_catalog = not self.state.rows
-                self.state.set_catalog(runtime, rows, onnx_precision=precision)
-                preferred = _task_actions.preferred_roformer_runtime(rows, runtime) if first_catalog and not self._runtime_user_selected else None
-                if preferred and self.state.set_runtime(preferred):
-                    self.optionsChanged.emit(); self.refresh(); return
+                self.state.set_catalog(runtime, rows, precision=precision)
                 missing = self.state.component_plan['missingIds']
                 if first_catalog and missing:
                     self.state.select(missing[0])
             else:
-                self.state.set_catalog(runtime, (), onnx_precision=precision)
+                self.state.set_catalog(runtime, (), precision=precision)
                 self.state.rows_runtime = None
                 self._error(error)
             self._update_rows()
 
-        self._catalog.start('component-scan', lambda stop, _send: components.catalog(runtime, check=stop.is_set, onnx_precision=precision), finish)
+        self._catalog.start('component-scan', lambda stop, _send: components.catalog(runtime, precision=precision, check=stop.is_set), finish)
 
     @Slot()
     def installSelected(self):
@@ -1768,7 +1762,7 @@ class QuickBridge(QObject):
             self._clear_work_task_lock()
 
     def _open_local(self, path):
-        if not QDesktopServices.openUrl(QUrl.fromLocalFile(strip_extended_prefix(path))):
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
             self._error(ValueError('系统无法打开此文件或目录。'))
 
     @Slot(str)

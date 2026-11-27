@@ -202,33 +202,20 @@ class SV2TuningTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '多个片段'):
             process_project(shared, {'track_indices': [0], 'performance_style': 'gentle'})
 
-    def test_newer_sv2_format_version_remains_writable_when_structure_is_valid(self):
-        data = {**project(), 'version': 203}
-        with tempfile.TemporaryDirectory(dir=APP) as temp:
-            notes = ProjectNotes.load(write_project(temp, data))
-            self.assertEqual(notes.project['format_version'], 203)
-            lead = next(iter(notes.tracks))
-            self.assertTrue(notes.tracks[lead]['editable'])
-            self.assertEqual(notes.tracks[lead]['reason'], '')
-            output, _ = process_project(data, {'track_indices': [0], 'performance_style': 'gentle'})
-            self.assertEqual(output['version'], 203)
-
-    def test_ambiguous_or_structurally_invalid_svp_remains_read_only(self):
+    def test_ambiguous_or_unverified_svp_remains_read_only(self):
         source = project()
         overlap = deepcopy(source)
         overlap['tracks'][0]['groups'][1]['blickOffset'] = 9 * Q
         missing = deepcopy(source)
         missing['tracks'][0]['groups'][0]['groupID'] = 'unresolved'
-        broken_notes = deepcopy(source)
-        broken_notes['library'][0]['notes'] = 'invalid'
-        for data, why in ((overlap, '重叠'), (missing, '引用缺失'), (broken_notes, '音符列表')):
+        future = {**source, 'version': 999}
+        for data, why in ((overlap, '重叠'), (missing, '引用缺失'), (future, '尚未验证')):
             with self.subTest(why=why), tempfile.TemporaryDirectory(dir=APP) as temp:
                 notes = ProjectNotes.load(write_project(temp, data))
                 lead = next(iter(notes.tracks))
                 self.assertFalse(notes.tracks[lead]['editable'])
                 self.assertIn(why, notes.tracks[lead]['reason'])
-                if why != '音符列表':
-                    self.assertGreater(notes.tracks[lead]['noteCount'], 0)
+                self.assertGreater(notes.tracks[lead]['noteCount'], 0)
                 with self.assertRaisesRegex(ValueError, why):
                     process_project(data, {'track_indices': [0], 'performance_style': 'gentle'})
                 with self.assertRaises(ValueError):

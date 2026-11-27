@@ -20,7 +20,6 @@ MAX_RECENT_ITEMS = 12
 
 CHORUS_EXTS = frozenset({'.vwachorus'})
 VOCAL_PROJECT_EXTS = frozenset({'.svp', '.ustx', '.vpr', '.vsqx', '.acep', '.ufdata'})
-EXTENDED_PROJECT_EXTS = frozenset({'.ust', '.svip', '.ccs', '.ds', '.dspx', '.musicxml'})
 MIDI_EXTS = frozenset({'.mid', '.midi'})
 AUDIO_EXTS = frozenset({'.wav', '.flac', '.mp3', '.ogg', '.opus', '.m4a', '.aac', '.aif', '.aiff'})
 VIDEO_EXTS = frozenset({'.mp4', '.mkv', '.mov', '.webm', '.avi'})
@@ -196,26 +195,6 @@ def classify_dropped_files(paths: Sequence[str | Path]) -> dict[str, Any]:
                 {'id': 'tuning_project', 'route': 'tuning', 'label': '在调音工作台打开', 'subtitle': '进入钢琴卷帘编辑音符、歌词与演唱风格'},
                 {'id': 'convert_project', 'route': 'project_convert', 'label': '在工程格式互转打开', 'subtitle': '转换为 SVP / USTX / VPR / VSQX / UFData / MIDI'},
                 {'id': 'chorus_score', 'route': 'chorus', 'label': '作为修音对照谱轨导入', 'subtitle': '导入到修音工作台作为音高与节奏参照'},
-            ],
-        }
-    if any(ext in EXTENDED_PROJECT_EXTS for ext in exts):
-        return {
-            'category': 'extended_project',
-            'paths': clean,
-            'primaryName': name,
-            'targets': [
-                {'id': 'convert_project', 'route': 'project_convert', 'label': '在工程格式互转打开', 'subtitle': '支持扩展格式转换为 SVP / USTX / VPR / VSQX / UFData / MIDI'},
-            ],
-        }
-    if any(ext in MIDI_EXTS for ext in exts) and any(ext in AUDIO_EXTS for ext in exts):
-        return {
-            'category': 'audio_and_midi',
-            'paths': clean,
-            'primaryName': name,
-            'targets': [
-                {'id': 'chorus_audio_and_score', 'route': 'chorus', 'label': '在修音工作台同时导入干声与参考 MIDI', 'subtitle': '同时导入音频人声轨与背景参考谱轨'},
-                {'id': 'chorus_score', 'route': 'chorus', 'label': '仅在修音工作台导入乐谱', 'subtitle': '对照 MIDI 自动对齐与修音'},
-                {'id': 'convert_project', 'route': 'project_convert', 'label': '在工程格式互转打开', 'subtitle': '将 MIDI 转为各歌声合成器工程'},
             ],
         }
     if any(ext in MIDI_EXTS for ext in exts):

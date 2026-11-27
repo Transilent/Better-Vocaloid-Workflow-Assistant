@@ -108,22 +108,3 @@ def resolve_device_index(
             except (KeyError, TypeError, ValueError):
                 return -1
     return -1
-
-
-def make_wasapi_output(
-    dll_path: str | Path,
-    sample_rate: int,
-    channels: int = 2,
-    buffer_frames: int = 16384,
-    period_frames: int = 512,
-    *,
-    root: Path = ROOT,
-):
-    """Create a NativeOutput bound to the user's configured WASAPI device (or system default)."""
-    from mixdown_native_output import NativeOutput
-
-    device_index = resolve_device_index(dll_path=dll_path, root=root)
-    return NativeOutput(
-        dll_path, sample_rate, channels, buffer_frames, period_frames, 'wasapi',
-        device_index=device_index,
-    )

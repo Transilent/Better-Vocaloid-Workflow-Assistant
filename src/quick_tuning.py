@@ -910,8 +910,8 @@ class QuickTuning(QObject):
             self._options.update(deepcopy(previous['tool']))
             self._options['track_indices'] = previous['track_indices'] or None
         self._select_saved_tracks()
-        self._left, self._span = _session_store.initial_viewport(project, self._active)
-        self._start = self._end = project.minimum
+        self._start = self._end = self._left = project.minimum
+        self._span = min(18., max(1., project.maximum - project.minimum))
         self._query, self._matches = '', []
         self._lyric_match_index = -1
         self._plan, self._summary = None, ''
@@ -1998,7 +1998,7 @@ class QuickTuning(QObject):
             if not target:
                 raise ValueError('保留结果没有可打开的回执文件。')
             self.state = 'ready' if self._candidate_stale else 'done'
-            if not QDesktopServices.openUrl(QUrl.fromLocalFile(_session_store.local_file_path(target))):
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(target)):
                 raise ValueError('系统未能打开文件，请按路径手动打开。')
             historical = self.candidate.get('historical') is True
             if key == 'output':

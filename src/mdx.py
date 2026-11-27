@@ -84,10 +84,11 @@ def separate(source, directory, config, job, log=print,
     options = ort.SessionOptions()
     options.enable_mem_pattern = False
     options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-    from runtime_devices import providers, session_threads
-    effective_device, selected = providers(config, config.get('separation_device', 'cpu'))
+    from runtime_devices import create_session, session_threads
     session_threads(options, default=4)
-    session = ort.InferenceSession(config["mdx_model"], sess_options=options, providers=selected)
+    effective_device, session = create_session(
+        config["mdx_model"], options, config, config.get('separation_device', 'cpu'), label='MDX'
+    )
     shape = session.get_inputs()[0].shape
     if shape[1:] != [4, bins, frames]:
         raise ValueError(f"模型输入尺寸与 UVR 参数不匹配：{shape}")

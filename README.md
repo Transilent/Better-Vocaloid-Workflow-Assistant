@@ -53,6 +53,22 @@ The script verifies all three parts and creates `VWA-Windows-x64.zip`. For **JPN
 
 Requirements: Windows 10/11 x64. The portable package includes its runtime. Check the published release notes for the final download, joining and extraction space; leave additional room for optional components and media. A compatible singing editor and voicebank are required for voice synthesis.
 
+### Choosing BS-RoFormer ONNX Precision (WebGPU)
+
+ONNX inference automatically uses the high-performance GPU (WebGPU).
+
+Three BS-RoFormer ONNX weight tiers are provided (**10s FP16**, **20s FP16**, and **20s FP32**). Choose by GPU VRAM (**use FP16 on smaller-VRAM GPUs, and FP32 on larger-VRAM GPUs**; **Models and components** also auto-recommends a tier from detected VRAM). Peak values below measure **total adapter dedicated VRAM** (Windows Task Manager metric, including ~3.1 GiB desktop baseline):
+
+| Variant | File | Size | Total Dedicated VRAM Peak (RX 9070 XT) | Recommendation |
+| --- | --- | --- | --- | --- |
+| **10s FP16 (low VRAM)** | `bs_roformer_karaoke_frazer_becruily.fp16_10s.onnx` | ~127.4 MiB | ~5.5 GiB (~3.6 GiB process peak) | **Recommended for 8 GB VRAM GPUs and below** (stays safely under 8 GB and runs faster) |
+| **20s FP16 (mixed precision)** | `bs_roformer_karaoke_frazer_becruily.fp16.onnx` | ~127.5 MiB | ~11.3 GiB (~8.2 GiB process peak) | **Recommended for 12 GB VRAM GPUs** (keeps full 20s context) |
+| **20s FP32 (full precision)** | `bs_roformer_karaoke_frazer_becruily.onnx` | ~223.2 MiB | ~12.6 GiB (~9.3 GiB process peak) | **Recommended for 16 GB+ VRAM GPUs** for near-lossless PyTorch parity |
+
+> **10s vs 20s**: 20s matches the original model's training window and is slightly steadier on sustained >10s tight unison/harmony passages; 10s cuts time-attention memory by 4x so total dedicated VRAM stays under 8 GB with nearly identical quality on typical phrases.
+
+**Installation**: Select the desired tier in **Models and components** to download directly, or drop any `.onnx` variant into `dependencies\optional\bs-roformer\current\` (or `dependencies\optional\bs-roformer\`) for automatic detection.
+
 ## Basic use
 
 1. In **Preparation**, select the source, lyric language, processing options and output folder. Review the resulting audio, notes and lyrics.

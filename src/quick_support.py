@@ -20,7 +20,6 @@ from operation_diagnostics import LOG_DIR, clock_text, export_diagnostic_bundle,
 from quick_work import WorkerLane
 from support_info import FEEDBACK_URL, QQ_GROUP
 from task_store import format_size, size
-from vwa_paths import strip_extended_prefix
 from workspace_settings import SettingsState, load_update_recovery
 
 TOUR_STEP_COUNT = len(tutorial_catalog.TOUR_STEPS)
@@ -223,9 +222,9 @@ class QuickSupport(QObject):
     @Property(bool, constant=True)
     def canApplyProgramUpdates(self): return self._can_apply_updates
     @Property(bool, notify=workChanged)
-    def workBusy(self): return bool(self._last_operation_names if self._monitor_active else self._active_operation_names())
+    def workBusy(self): return bool(self._last_operation_names)
     @Property('QStringList', notify=workChanged)
-    def operationBlockers(self): return list(self._last_operation_names if self._monitor_active else self._active_operation_names())
+    def operationBlockers(self): return list(self._last_operation_names)
 
     def _active_operation_names(self):
         names = []
@@ -270,11 +269,14 @@ class QuickSupport(QObject):
             mixdown_view = mixdown.view
             if isinstance(mixdown_view, dict) and mixdown_view.get('busy'):
                 add('简易混音')
-            if isinstance(mixdown_view, dict) and (mixdown_view.get('playing') or mixdown_view.get('loading')): add('简易混音试听')
-            preview = getattr(mixdown, '_preview', None)
-            if preview is not None and (getattr(preview, 'play_intent', False) or not hasattr(preview, 'play_intent')): add('简易混音试听会话')
+            if isinstance(mixdown_view, dict) and mixdown_view.get('playing'):
+                add('简易混音试听')
+            if getattr(mixdown, '_preview', None) is not None:
+                add('简易混音试听会话')
             preview_timer = getattr(mixdown, '_preview_timer', None)
-            if getattr(mixdown, '_preview_pending', False) or (preview_timer is not None and preview_timer.isActive()): add('简易混音试听准备')
+            if getattr(mixdown, '_preview_pending', False) or (
+                    preview_timer is not None and preview_timer.isActive()):
+                add('简易混音试听准备')
         except (AttributeError, RuntimeError, TypeError):
             pass
         try:
@@ -317,10 +319,10 @@ class QuickSupport(QObject):
     @Slot(bool)
     def setMonitorActive(self, active):
         self._monitor_active = bool(active)
-        if self._monitor_active: self._refresh_activity_now()
+        if self._monitor_active:
+            self._refresh_activity_now()
         else:
             self._activity_timer.stop()
-            if self._last_operation_names: self._last_operation_names = (); self.workChanged.emit()
         return self._monitor_active
 
     def _refresh_activity_now(self):
@@ -1267,7 +1269,7 @@ class QuickSupport(QObject):
     @Slot()
     def openDiagnosticLogs(self):
         folder = ROOT / LOG_DIR
-        if not folder.is_dir() or not QDesktopServices.openUrl(QUrl.fromLocalFile(strip_extended_prefix(folder))):
+        if not folder.is_dir() or not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
             self._diagnostics['message'] = tr('本机日志目录暂不可打开。')
             self.diagnosticsChanged.emit()
 
@@ -1275,9 +1277,7 @@ class QuickSupport(QObject):
     def showTutorial(self):
         blockers = self._active_operation_names()
         if blockers:
-            msg = '请先完成 ' + '、'.join(blockers) + '，再查看入门教程。'; self.state.update.update(message=msg); self.startupChanged.emit()
-            if hasattr(self.owner, 'pushToast'): self.owner.pushToast(msg, 'warning')
-            return False
+            self.state.update.update(message='请先完成 ' + '、'.join(blockers) + '，再查看入门教程。'); self.startupChanged.emit(); return False
         self.state.show_tour(mode='scenarios'); self.startupChanged.emit(); return True
 
     @Slot()

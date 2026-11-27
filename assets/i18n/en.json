@@ -1261,22 +1261,5 @@
   "发布": "Publishing",
   "工作流": "Workflow",
   "深色界面": "Dark interface",
-  "浅色界面": "Light interface",
-  "音频设备变化，正在自动重连…": "Audio device changed, reconnecting automatically...",
-  "修音草稿恢复失败": "Failed to restore pitch & timing draft",
-  "正在恢复修音草稿": "Restoring pitch & timing draft",
-  "请等待当前合唱操作完成。": "Please wait for the current pitch & timing operation to finish.",
-  "修音工作台有未保存修改，请先保存或放弃后再打开其他工程": "Pitch & Timing has unsaved changes; save or discard them before opening another project.",
-  "修音工作台正在处理，请稍候再试": "Pitch & Timing is busy; please try again shortly.",
-  "工程互转正在处理，请稍候再试": "Project Convert is busy; please try again shortly.",
-  "在修音工作台同时导入干声与参考 MIDI": "Import vocal stems and reference MIDI into Pitch & Timing",
-  "同时导入音频人声轨与背景参考谱轨": "Import both vocal audio tracks and background MIDI score together",
-  "仅在修音工作台导入乐谱": "Import score only into Pitch & Timing",
-  "支持扩展格式转换为 SVP / USTX / VPR / VSQX / UFData / MIDI": "Convert extended formats to SVP / USTX / VPR / VSQX / UFData / MIDI",
-  "已载入首曲，其余 {0} 首已加入准备队列": "Loaded first track and queued {0} remaining track(s)",
-  "转换完成 · 请复核": "Conversion complete · Review recommended",
-  "等待队列": "Waiting queue",
-  "开始队列": "Start queue",
-  "已取消当前任务，批量队列已暂停": "Current task cancelled; batch queue paused",
-  "已跳过缺失的队列文件": "Skipped missing queued file"
+  "浅色界面": "Light interface"
 }

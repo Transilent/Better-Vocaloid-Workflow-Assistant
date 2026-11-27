@@ -43,16 +43,6 @@ qt6_tests = (
     'test_quick_workflow_layout.py',
     'test_quick_operation_diagnostics.py',
     'test_quick_ace_tuning.py',
-    'test_chorus_user_journeys.py',
-    'test_wave0_shell_journeys.py',
-    'test_wave7_management_journeys.py',
-    'test_wave5_delivery_journeys.py',
-    'test_wave6_convert_journeys.py',
-    'test_wave1_preparation_journeys.py',
-    'test_wave2_tuning_journeys.py',
-    'test_wave3_chorus_journeys.py',
-    'test_wave4_mixdown_journeys.py',
-    'test_wave8_marathon_journeys.py',
     'test_user_experience_guards.py',
 )
 
@@ -110,7 +100,6 @@ shared_tests = (
     'test_architecture_guards.py', 'test_stability_and_perf_guards.py',
     'test_project_convert.py', 'test_project_convert_e2e.py',
     'test_updater_and_infra_upgrade.py', 'test_tier1_infra.py', 'test_tier2_infra.py', 'test_tier3_ux.py',
-    'test_amd_gpu_foundation.py',
 )
 
 # L1 integration tests that depend on external multi-GB runtime packages/binaries

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import sys
+from tempfile import TemporaryDirectory
 
 import numpy as np
 import soundfile as sf
@@ -15,7 +16,6 @@ if __name__ == '__main__':
     extra = os.environ.get('VWA_MIXDOWN_EXTRA_PATHS', '').split(os.pathsep)
     sys.path[:0] = [str(Path(__file__).resolve().parent), *(path for path in extra if path)]
 
-from chorus_model_worker import resilient_tempdir
 from chorus_project import Recording, SYLLABLE_GAIN, VARIANTS, sha256 as source_digest
 
 
@@ -116,8 +116,8 @@ def analysis_recording(project, track, folder, check):
     if not path.is_file():
         folder.mkdir(exist_ok=True, parents=True)
         audio = _comped_audio(project, track, track.rate, check)
-        with resilient_tempdir(folder, 'comp-') as scratch:
-            staged = scratch / 'comp.wav'
+        with TemporaryDirectory(dir=folder) as scratch:
+            staged = Path(scratch) / 'comp.wav'
             sf.write(staged, audio, track.rate, subtype='FLOAT')
             check()
             staged.replace(path)
@@ -736,8 +736,8 @@ def export_delivery(project, folder, variant, selection, cache, check, progress,
                             include_mix=include_mix, balance_vocals=balance_vocals)
     # The parent owns this directory. Cancellation removes everything here
     # even if the render process was terminated while writing a stem.
-    with resilient_tempdir(folder, '.vwa-delivery-') as directory:
-        stage = directory.resolve()
+    with TemporaryDirectory(dir=folder, prefix='.vwa-delivery-') as directory:
+        stage = Path(directory).resolve()
         spec = _render_spec(project, variant, export=True, folder=str(stage), selection=selection,
                             include_mix=include_mix, balance_vocals=bool(balance_vocals))
         with model_batch(__file__, spec, cache, check, lambda i, text: progress(i, len(rows), text), rows,
@@ -769,8 +769,8 @@ def export_stems(project, folder, variant, selection, check, progress, *,
                'variant': variant, 'sample_rate': project.rate, 'origin_frame': first,
                'origin_seconds': first / project.rate, 'frames': stop - start,
                'balance_vocals': bool(balance_vocals), 'tracks': []}
-    with resilient_tempdir(folder, '.vwa-chorus-') as scratch:
-        stage = scratch / 'stems'
+    with TemporaryDirectory(dir=folder, prefix='.vwa-chorus-') as scratch:
+        stage = Path(scratch) / 'stems'
         stage.mkdir()
         vocal_mix = np.zeros((stop - start, 2), dtype=np.float32) if include_mix else None
         for index, track in enumerate(rows, 1):

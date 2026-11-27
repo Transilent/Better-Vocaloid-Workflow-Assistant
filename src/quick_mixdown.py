@@ -167,21 +167,25 @@ class QuickMixdown(QObject):
         self._preview = None
         self._native_dll = None
         self._component_paths = None
-        self._reconnect_guard = _handoff_svc.make_reconnect_guard()
+
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(90)
         self._preview_timer.timeout.connect(self._refresh_preview)
+
         self._eq_timer = QTimer(self)
         self._eq_timer.setSingleShot(True)
         self._eq_timer.setInterval(16)
         self._eq_timer.timeout.connect(self._emit_eq_curve)
+
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(33)
         self._poll_timer.timeout.connect(self._poll_player)
+
         self._freshness_timer = QTimer(self)
         self._freshness_timer.setInterval(1000)
         self._freshness_timer.timeout.connect(self._refresh_freshness)
+
         self._support_retry = QTimer(self)
         self._support_retry.setSingleShot(True)
         self._support_retry.setInterval(650)
@@ -771,7 +775,7 @@ class QuickMixdown(QObject):
             return False
 
     def _player_prepared(self):
-        self._last_preview_problem = ''; self._reconnect_guard.reset()
+        self._last_preview_problem = ''
         with self._lock:
             if self._state.message == '正在从常驻进程准备连续试听…':
                 self._state.message = '连续试听已就绪；可切换 A/B 并试听整曲。'
@@ -780,18 +784,10 @@ class QuickMixdown(QObject):
         self._recompute_and_emit()
 
     def _player_error(self, message):
-        was_playing = bool(self._player is not None and self._player.play_intent)
         seeking = self._preview is not None and self._preview.pending_seek is not None
         if self._preview is not None:
             self._preview.failed()
         self._clear_hotspots()
-        backoff = _handoff_svc.try_schedule_device_reconnect(self._reconnect_guard, was_playing=was_playing, message=message)
-        if backoff is not None and not self._closed:
-            with self._lock:
-                self._state.message = '音频设备变化，正在自动重连…'
-            self._recompute_and_emit()
-            QTimer.singleShot(backoff, lambda: (not self._closed and self._player and self._state.has_media()) and (self._player.set_play_intent(True), self._refresh_preview()))
-            return
         with self._lock:
             self._state.message = (('定位未完成：' if seeking else '') + str(message))[:1600]
         report = getattr(self.parent(), 'report_problem', None)
@@ -1692,7 +1688,7 @@ class QuickMixdown(QObject):
         if not result or not Path(result).is_file():
             self._notice('当前没有可打开的导出结果。')
             return
-        if not QDesktopServices.openUrl(QUrl.fromLocalFile(_handoff_svc.clean_local_path(Path(result).resolve()))):
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(result).resolve()))):
             self._notice('系统无法打开导出文件。')
 
     @Slot()
@@ -1703,7 +1699,7 @@ class QuickMixdown(QObject):
             folder = Path(path).expanduser().resolve().parent if path else None
             if folder is None or not folder.is_dir():
                 raise ValueError('当前没有可打开的输出目录。')
-            if not QDesktopServices.openUrl(QUrl.fromLocalFile(_handoff_svc.clean_local_path(folder))):
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
                 raise ValueError('系统无法打开输出目录。')
         except (OSError, ValueError) as error:
             self._notice(error)

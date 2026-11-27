@@ -51,10 +51,11 @@ class InferenceOnnx(InferenceBase):
 
     @staticmethod
     def create_session(onnx_path, device: str | None = None):
-        _, providers = resolve_onnx_providers(device, label="HubertFA ONNX")
+        from inference.device_utils import create_onnx_session
         options = ort.SessionOptions()
         options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        return ort.InferenceSession(str(onnx_path), options, providers=providers)
+        _, session = create_onnx_session(onnx_path, options, device, label="HubertFA ONNX")
+        return session
 
 
 @click.command()

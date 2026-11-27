@@ -121,25 +121,10 @@ class QuickRecoveryBridge(QObject):
         if not project_file.is_file():
             self.discardChorusDraft()
             return
-        source_path = str((self._chorus_meta or {}).get('source_path') or '')
-
-        def _done(ok: bool, err_msg: str):
-            if ok:
-                draft_recovery.clear_draft('chorus', self._root)
-                self._chorus_meta = None
-                self.changed.emit()
-                self.toastRequested.emit(tr('已恢复上次未保存的修音草稿'), 'success')
-            else:
-                detail = f'：{err_msg}' if err_msg else ''
-                self.toastRequested.emit(tr('修音草稿恢复失败') + detail, 'error')
-
-        if hasattr(self._chorus, 'openRecoveredDraft'):
-            self._chorus.openRecoveredDraft(project_file, source_path=source_path, on_finished=_done)
-        else:
-            self._chorus_meta = None
-            self.changed.emit()
-            self._chorus.openProject(QUrl.fromLocalFile(str(project_file)), True)
-            self.toastRequested.emit(tr('已恢复上次未保存的修音草稿'), 'success')
+        self._chorus_meta = None
+        self.changed.emit()
+        self._chorus.openProject(QUrl.fromLocalFile(str(project_file)), True)
+        self.toastRequested.emit(tr('已恢复上次未保存的修音草稿'), 'success')
 
     @Slot()
     def discardChorusDraft(self):

@@ -53,6 +53,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Merge-PortableParts.ps1
 
 运行环境为 Windows 10／11 x64，便携包已包含运行环境。最终下载、合并与解压所需空间以正式发行说明为准，模型组件和素材另需空间。声库合成需自行准备兼容的歌声编辑器与声库。
 
+### BS-RoFormer ONNX 精度版本选择（WebGPU）
+
+ONNX 推理默认自动使用高性能 GPU（WebGPU）。
+
+本分支同时提供 **10s FP16**、**20s FP16** 与 **20s FP32** 三个 BS-RoFormer ONNX 权重版本，按显存大小选择即可：**小显存用 FP16，大显存用 FP32**（软件「模型与组件」页也会按本机显存自动推荐）。下表按 Windows 任务管理器同口径的**整卡总独立显存峰值**（含约 3.1 GiB 系统桌面基线）实测：
+
+| 版本 | 文件名 | 体积 | 整卡总独立显存峰值（RX 9070 XT） | 适用建议 |
+| --- | --- | --- | --- | --- |
+| **10s FP16（低显存）** | `bs_roformer_karaoke_frazer_becruily.fp16_10s.onnx` | 约 127.4 MiB | 约 5.5 GiB（单进程增量约 3.6 GiB） | **8 GB 显存及以下优先选用**，稳压 8 GB 内且速度更快 |
+| **20s FP16（混合精度）** | `bs_roformer_karaoke_frazer_becruily.fp16.onnx` | 约 127.5 MiB | 约 11.3 GiB（单进程增量约 8.2 GiB） | **12 GB 显存优先选用**，保留 20 秒完整上下文 |
+| **20s FP32（全精度）** | `bs_roformer_karaoke_frazer_becruily.onnx` | 约 223.2 MiB | 约 12.6 GiB（单进程增量约 9.3 GiB） | **16 GB 及以上大显存优先选用**，精度与原版 PyTorch 基本无损一致 |
+
+> **10s 与 20s 区别**：20s 为模型原版训练窗口，在连续 10 秒以上的紧密双声部齐唱或长拖音段落上主唱/和声归属更稳；10s 将时间注意力矩阵缩小为 1/4，常规乐句听感基本一致且能将总独立显存稳压在 8 GB 以内。
+
+**安装方式**：可在软件「模型与组件」页直接选择对应精度在线下载安装，或将下载的 `.onnx` 文件直接放入 `dependencies\optional\bs-roformer\current\`（或 `dependencies\optional\bs-roformer\`），无需手动写配置文件即可自动识别并使用。
+
 ## 使用流程
 
 1. 在**准备工作流**选择音乐来源、歌词语言、处理方式与保存目录，完成后核对音频、音符和歌词。

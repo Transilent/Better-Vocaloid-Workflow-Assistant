@@ -11,7 +11,6 @@ Item {
     readonly property var draft: design.draft || ({})
     readonly property var preview: design.preview || ({})
     readonly property real unit: theme.scale
-    readonly property bool narrow: width < Math.round(740 * unit)
     readonly property string channel: design.channel || "loudness"
     readonly property bool gain: channel === "loudness"
     readonly property bool pitchPanel: design.panel === "pitch"
@@ -144,66 +143,54 @@ Item {
         }
     }
 
-    GridLayout {
+    RowLayout {
         anchors.fill: parent
-        columns: editor.narrow ? 1 : 2
-        columnSpacing: Math.round(14 * editor.unit)
-        rowSpacing: Math.round(10 * editor.unit)
+        spacing: Math.round(14 * editor.unit)
         Rectangle {
-            Layout.fillHeight: !editor.narrow
-            Layout.fillWidth: editor.narrow
-            Layout.minimumWidth: 0
-            Layout.preferredWidth: editor.narrow ? -1 : Math.round(232 * editor.unit)
-            Layout.preferredHeight: editor.narrow ? sidebarColumn.implicitHeight + Math.round(20 * editor.unit) : -1
+            Layout.fillHeight: true
+            Layout.preferredWidth: Math.round(232 * editor.unit)
             color: editor.theme.surface
             border.color: editor.theme.line
             radius: Math.round(9 * editor.unit)
             ColumnLayout {
-                id: sidebarColumn
                 anchors.fill: parent
-                anchors.margins: Math.round(10 * editor.unit)
-                spacing: Math.round(6 * editor.unit)
+                anchors.margins: Math.round(13 * editor.unit)
+                spacing: Math.round(7 * editor.unit)
                 Heading { text: editor.label("起始配方") }
-                Flow {
-                    Layout.fillWidth: true
-                    Layout.minimumWidth: 0
-                    spacing: Math.round(6 * editor.unit)
-                    Repeater {
-                        model: editor.design.templates || []
-                        delegate: Item {
-                            id: entry
-                            required property var modelData
-                            width: editor.narrow ? Math.min(parent.width, templateButton.implicitWidth + Math.round(10 * editor.unit)) : parent.width
-                            implicitHeight: templateButton.implicitHeight
-                            height: implicitHeight
-                            UiButton {
-                                id: templateButton
-                                objectName: "designTemplate_" + entry.modelData.id
-                                anchors.fill: parent
-                                anchors.leftMargin: Math.round(8 * editor.unit)
-                                theme: editor.theme
-                                text: editor.label(entry.modelData.label)
-                                selected: editor.design.template === entry.modelData.id
-                                quiet: !selected
-                                leftAligned: !editor.narrow
-                                enabled: !editor.view.busy
-                                onClicked: editor.controller.selectTemplate(entry.modelData.id)
-                            }
-                            Rectangle {
-                                anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: Math.round(3 * editor.unit)
-                                height: Math.round(21 * editor.unit)
-                                radius: width / 2
-                                visible: !!entry.modelData.color
-                                color: entry.modelData.color || editor.theme.line
-                            }
+                Repeater {
+                    model: editor.design.templates || []
+                    delegate: Item {
+                        id: entry
+                        required property var modelData
+                        Layout.fillWidth: true
+                        implicitHeight: templateButton.implicitHeight
+                        UiButton {
+                            id: templateButton
+                            objectName: "designTemplate_" + entry.modelData.id
+                            anchors.fill: parent
+                            anchors.leftMargin: Math.round(8 * editor.unit)
+                            theme: editor.theme
+                            text: editor.label(entry.modelData.label)
+                            selected: editor.design.template === entry.modelData.id
+                            quiet: !selected
+                            leftAligned: true
+                            enabled: !editor.view.busy
+                            onClicked: editor.controller.selectTemplate(entry.modelData.id)
+                        }
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: Math.round(3 * editor.unit)
+                            height: Math.round(21 * editor.unit)
+                            radius: width / 2
+                            visible: !!entry.modelData.color
+                            color: entry.modelData.color || editor.theme.line
                         }
                     }
                 }
                 Caption {
                     Layout.fillWidth: true
-                    Layout.topMargin: editor.narrow ? 0 : Math.round(4 * editor.unit)
+                    Layout.topMargin: Math.round(7 * editor.unit)
                     text: {
                         const item = (editor.design.templates || []).find(row => row.id === editor.design.template)
                         return item ? editor.label(item.description) : ""
@@ -217,52 +204,44 @@ Item {
                     color: editor.design.invalidLocalDefault || editor.design.localDefaultEdited
                         ? editor.theme.attention : editor.theme.success
                 }
-                Flow {
+                UiButton {
+                    objectName: "designSaveDefault"
                     Layout.fillWidth: true
-                    Layout.minimumWidth: 0
-                    spacing: Math.round(6 * editor.unit)
-                    UiButton {
-                        objectName: "designSaveDefault"
-                        width: editor.narrow ? implicitWidth : parent.width
-                        visible: !!editor.design.isFactoryTemplate
-                        theme: editor.theme
-                        text: editor.label("保存为本机默认")
-                        leftAligned: !editor.narrow
-                        enabled: !!editor.view.validRecipe && !editor.view.busy
-                        onClicked: editor.controller.saveStyleDefault()
-                    }
-                    UiButton {
-                        objectName: "designUseDefault"
-                        width: editor.narrow ? implicitWidth : parent.width
-                        visible: !!editor.design.hasLocalDefault
-                        theme: editor.theme
-                        text: editor.label("选用本机默认")
-                        leftAligned: !editor.narrow
-                        enabled: !!editor.design.canUseLocalDefault && !editor.view.busy
-                        onClicked: editor.controller.useStyleDefault()
-                    }
-                    UiButton {
-                        objectName: "designRestoreDefault"
-                        width: editor.narrow ? implicitWidth : parent.width
-                        visible: !!editor.design.isFactoryTemplate
-                        theme: editor.theme
-                        text: editor.label("恢复内置参数")
-                        quiet: true
-                        leftAligned: !editor.narrow
-                        enabled: !editor.view.busy
-                        onClicked: editor.controller.restoreStyleDefault()
-                    }
+                    visible: !!editor.design.isFactoryTemplate
+                    theme: editor.theme
+                    text: editor.label("保存为本机默认")
+                    leftAligned: true
+                    enabled: !!editor.view.validRecipe && !editor.view.busy
+                    onClicked: editor.controller.saveStyleDefault()
                 }
-                Item { Layout.fillHeight: !editor.narrow }
+                UiButton {
+                    objectName: "designUseDefault"
+                    Layout.fillWidth: true
+                    visible: !!editor.design.hasLocalDefault
+                    theme: editor.theme
+                    text: editor.label("选用本机默认")
+                    leftAligned: true
+                    enabled: !!editor.design.canUseLocalDefault && !editor.view.busy
+                    onClicked: editor.controller.useStyleDefault()
+                }
+                UiButton {
+                    objectName: "designRestoreDefault"
+                    Layout.fillWidth: true
+                    visible: !!editor.design.isFactoryTemplate
+                    theme: editor.theme
+                    text: editor.label("恢复内置参数")
+                    quiet: true
+                    leftAligned: true
+                    enabled: !editor.view.busy
+                    onClicked: editor.controller.restoreStyleDefault()
+                }
+                Item { Layout.fillHeight: true }
             }
         }
 
         Rectangle {
-            id: rightPane
             Layout.fillHeight: true
             Layout.fillWidth: true
-            Layout.minimumWidth: 0
-            readonly property bool twoCol: width >= Math.round(560 * editor.unit)
             color: editor.theme.surface
             border.color: editor.theme.line
             radius: Math.round(9 * editor.unit)
@@ -271,10 +250,8 @@ Item {
                 anchors.fill: parent
                 anchors.margins: Math.round(14 * editor.unit)
                 spacing: Math.round(10 * editor.unit)
-                Flow {
+                RowLayout {
                     Layout.fillWidth: true
-                    Layout.minimumWidth: 0
-                    spacing: Math.round(6 * editor.unit)
                     UiButton {
                         objectName: "designPanelExpression"
                         theme: editor.theme
@@ -291,6 +268,7 @@ Item {
                         quiet: !selected
                         onClicked: editor.controller.selectDesignPanel("pitch")
                     }
+                    Item { Layout.fillWidth: true }
                     Repeater {
                         model: Object.keys(editor.channelLabels)
                         delegate: UiButton {
@@ -306,156 +284,145 @@ Item {
                     }
                 }
 
-                ScrollView {
-                    id: expressionScroll
+                ColumnLayout {
                     visible: !editor.pitchPanel
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    contentWidth: availableWidth
-                    clip: true
-                    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-                    ColumnLayout {
-                        width: expressionScroll.availableWidth
-                        spacing: Math.round(8 * editor.unit)
+                    spacing: Math.round(8 * editor.unit)
 
-                        Flow {
-                            Layout.fillWidth: true
-                            spacing: Math.round(10 * editor.unit)
-                            Caption {
-                                color: editor.theme.accent
-                                text: editor.label("单音示例 · {0} 秒").replace("{0}", Number(editor.preview.note_seconds || 1.2).toFixed(2))
-                            }
-                            Caption { color: editor.theme.success; text: editor.label("乐句示例 · 3 秒") }
-                            Caption {
-                                visible: !!editor.preview.guide
-                                color: editor.theme.attention
-                                text: editor.label("参考力度")
-                            }
-                            Caption { text: editor.label("当前强度下的增量") + (editor.gain ? " · dB" : "") }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Caption {
+                            color: editor.theme.accent
+                            text: editor.label("单音示例 · {0} 秒").replace("{0}", Number(editor.preview.note_seconds || 1.2).toFixed(2))
                         }
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: Math.round(120 * editor.unit)
-                            Layout.minimumHeight: Math.round(99 * editor.unit)
-                            color: editor.theme.base
-                            border.color: editor.theme.line
-                            radius: Math.round(7 * editor.unit)
-                            Canvas {
-                                id: chart
-                                objectName: "designEnvelope"
-                                anchors.fill: parent
-                                readonly property var curves: editor.preview
-                                readonly property color noteInk: editor.theme.accent
-                                readonly property color phraseInk: editor.theme.success
-                                readonly property color guideInk: editor.theme.attention
-                                readonly property color gridInk: editor.theme.line
-                                readonly property color labelInk: editor.theme.muted
-                                onCurvesChanged: requestPaint()
-                                onNoteInkChanged: requestPaint()
-                                onPhraseInkChanged: requestPaint()
-                                onGuideInkChanged: requestPaint()
-                                onGridInkChanged: requestPaint()
-                                onLabelInkChanged: requestPaint()
-                                onWidthChanged: requestPaint()
-                                onHeightChanged: requestPaint()
-                                onPaint: {
-                                    const ctx = getContext("2d")
-                                    ctx.reset()
-                                    const trace = [curves.note || [], curves.phrase || [], curves.guide || []]
-                                    const values = trace[0].concat(trace[1], trace[2])
-                                    const range = Math.max(editor.gain ? 1 : .10, ...values.map(y => Math.abs(y))) * 1.08
-                                    const left = 49 * editor.unit, right = width - 13 * editor.unit
-                                    const top = 13 * editor.unit, bottom = height - 22 * editor.unit
-                                    ctx.strokeStyle = gridInk
-                                    ctx.fillStyle = labelInk
-                                    ctx.font = Math.round(10 * editor.unit) + "px sans-serif"
-                                    for (let i = 0; i < 5; ++i) {
-                                        const x = left + (right - left) * i / 4
-                                        ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bottom); ctx.stroke()
-                                        ctx.textAlign = i === 0 ? "left" : i === 4 ? "right" : "center"
-                                        ctx.fillText(String(i * 25) + "%", x, bottom + 14 * editor.unit)
+                        Caption { color: editor.theme.success; text: editor.label("乐句示例 · 3 秒") }
+                        Caption {
+                            visible: !!editor.preview.guide
+                            color: editor.theme.attention
+                            text: editor.label("参考力度")
+                        }
+                        Item { Layout.fillWidth: true }
+                        Caption { text: editor.label("当前强度下的增量") + (editor.gain ? " · dB" : "") }
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.minimumHeight: Math.round(99 * editor.unit)
+                        color: editor.theme.base
+                        border.color: editor.theme.line
+                        radius: Math.round(7 * editor.unit)
+                        Canvas {
+                            id: chart
+                            objectName: "designEnvelope"
+                            anchors.fill: parent
+                            readonly property var curves: editor.preview
+                            readonly property color noteInk: editor.theme.accent
+                            readonly property color phraseInk: editor.theme.success
+                            readonly property color guideInk: editor.theme.attention
+                            readonly property color gridInk: editor.theme.line
+                            readonly property color labelInk: editor.theme.muted
+                            onCurvesChanged: requestPaint()
+                            onNoteInkChanged: requestPaint()
+                            onPhraseInkChanged: requestPaint()
+                            onGuideInkChanged: requestPaint()
+                            onGridInkChanged: requestPaint()
+                            onLabelInkChanged: requestPaint()
+                            onWidthChanged: requestPaint()
+                            onHeightChanged: requestPaint()
+                            onPaint: {
+                                const ctx = getContext("2d")
+                                ctx.reset()
+                                const trace = [curves.note || [], curves.phrase || [], curves.guide || []]
+                                const values = trace[0].concat(trace[1], trace[2])
+                                const range = Math.max(editor.gain ? 1 : .10, ...values.map(y => Math.abs(y))) * 1.08
+                                const left = 49 * editor.unit, right = width - 13 * editor.unit
+                                const top = 13 * editor.unit, bottom = height - 22 * editor.unit
+                                ctx.strokeStyle = gridInk
+                                ctx.fillStyle = labelInk
+                                ctx.font = Math.round(10 * editor.unit) + "px sans-serif"
+                                for (let i = 0; i < 5; ++i) {
+                                    const x = left + (right - left) * i / 4
+                                    ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bottom); ctx.stroke()
+                                    ctx.textAlign = i === 0 ? "left" : i === 4 ? "right" : "center"
+                                    ctx.fillText(String(i * 25) + "%", x, bottom + 14 * editor.unit)
+                                }
+                                ctx.textAlign = "left"
+                                for (let i = 0; i < 3; ++i) {
+                                    const y = top + (bottom - top) * i / 2
+                                    ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(right, y); ctx.stroke()
+                                    const value = (1 - i) * range
+                                    ctx.fillText((value > 0 ? "+" : "") + value.toFixed(editor.gain ? 1 : 2), 8 * editor.unit, y + 4)
+                                }
+                                for (let series = 0; series < trace.length; ++series) {
+                                    const points = trace[series]
+                                    if (!points.length) continue
+                                    ctx.strokeStyle = [noteInk, phraseInk, guideInk][series]
+                                    ctx.lineWidth = 1.7 * editor.unit
+                                    ctx.setLineDash(series === 0 ? [] : series === 1
+                                        ? [5 * editor.unit, 4 * editor.unit] : [2 * editor.unit, 4 * editor.unit])
+                                    ctx.beginPath()
+                                    for (let i = 0; i < points.length; ++i) {
+                                        const x = left + (right - left) * i / (points.length - 1)
+                                        const y = top + (bottom - top) * (1 - points[i] / range) / 2
+                                        if (i) ctx.lineTo(x, y)
+                                        else ctx.moveTo(x, y)
                                     }
-                                    ctx.textAlign = "left"
-                                    for (let i = 0; i < 3; ++i) {
-                                        const y = top + (bottom - top) * i / 2
-                                        ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(right, y); ctx.stroke()
-                                        const value = (1 - i) * range
-                                        ctx.fillText((value > 0 ? "+" : "") + value.toFixed(editor.gain ? 1 : 2), 8 * editor.unit, y + 4)
-                                    }
-                                    for (let series = 0; series < trace.length; ++series) {
-                                        const points = trace[series]
-                                        if (!points.length) continue
-                                        ctx.strokeStyle = [noteInk, phraseInk, guideInk][series]
-                                        ctx.lineWidth = 1.7 * editor.unit
-                                        ctx.setLineDash(series === 0 ? [] : series === 1
-                                            ? [5 * editor.unit, 4 * editor.unit] : [2 * editor.unit, 4 * editor.unit])
-                                        ctx.beginPath()
-                                        for (let i = 0; i < points.length; ++i) {
-                                            const x = left + (right - left) * i / (points.length - 1)
-                                            const y = top + (bottom - top) * (1 - points[i] / range) / 2
-                                            if (i) ctx.lineTo(x, y)
-                                            else ctx.moveTo(x, y)
-                                        }
-                                        ctx.stroke()
-                                    }
+                                    ctx.stroke()
                                 }
                             }
                         }
+                    }
 
-                        GridLayout {
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Math.round(20 * editor.unit)
+                        ColumnLayout {
                             Layout.fillWidth: true
-                            columns: rightPane.twoCol ? 2 : 1
-                            columnSpacing: Math.round(16 * editor.unit)
-                            rowSpacing: Math.round(10 * editor.unit)
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                Heading { text: editor.label("单音包络") }
-                                Repeater {
-                                    model: editor.noteRows
-                                    delegate: Parameter {
-                                        required property var modelData
-                                        section: editor.channel + ".note"
-                                        parameterKey: modelData.key
-                                        title: editor.label(modelData.label)
-                                        symbol: editor.gain ? "dB" : ""
-                                    }
-                                }
-                            }
-                            ColumnLayout {
-                                Layout.alignment: Qt.AlignTop
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                Heading { text: editor.label("乐句包络") }
-                                Repeater {
-                                    model: editor.phraseRows
-                                    delegate: Parameter {
-                                        required property var modelData
-                                        section: editor.channel + ".phrase"
-                                        parameterKey: modelData.key
-                                        title: editor.label(modelData.label)
-                                        symbol: editor.gain ? "dB" : ""
-                                    }
+                            Layout.preferredWidth: 1
+                            Heading { text: editor.label("单音包络") }
+                            Repeater {
+                                model: editor.noteRows
+                                delegate: Parameter {
+                                    required property var modelData
+                                    section: editor.channel + ".note"
+                                    parameterKey: modelData.key
+                                    title: editor.label(modelData.label)
+                                    symbol: editor.gain ? "dB" : ""
                                 }
                             }
                         }
-                        GridLayout {
+                        ColumnLayout {
+                            Layout.alignment: Qt.AlignTop
                             Layout.fillWidth: true
-                            columns: rightPane.twoCol ? 2 : 1
-                            columnSpacing: Math.round(16 * editor.unit)
-                            rowSpacing: Math.round(8 * editor.unit)
-                            Parameter {
-                                section: "timing"
-                                parameterKey: "onset"
-                                title: editor.label("起音时窗")
-                                symbol: "ms"
+                            Layout.preferredWidth: 1
+                            Heading { text: editor.label("乐句包络") }
+                            Repeater {
+                                model: editor.phraseRows
+                                delegate: Parameter {
+                                    required property var modelData
+                                    section: editor.channel + ".phrase"
+                                    parameterKey: modelData.key
+                                    title: editor.label(modelData.label)
+                                    symbol: editor.gain ? "dB" : ""
+                                }
                             }
-                            Parameter {
-                                section: "timing"
-                                parameterKey: "release"
-                                title: editor.label("收尾时窗")
-                                symbol: "ms"
-                            }
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Math.round(20 * editor.unit)
+                        Parameter {
+                            section: "timing"
+                            parameterKey: "onset"
+                            title: editor.label("起音时窗")
+                            symbol: "ms"
+                        }
+                        Parameter {
+                            section: "timing"
+                            parameterKey: "release"
+                            title: editor.label("收尾时窗")
+                            symbol: "ms"
                         }
                     }
                 }
@@ -477,7 +444,7 @@ Item {
                         }
                         GridLayout {
                             Layout.fillWidth: true
-                            columns: rules.availableWidth >= Math.round(520 * editor.unit) ? 2 : 1
+                            columns: 2
                             columnSpacing: Math.round(22 * editor.unit)
                             rowSpacing: Math.round(17 * editor.unit)
                             Repeater {

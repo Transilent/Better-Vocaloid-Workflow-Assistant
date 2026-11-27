@@ -1,4 +1,4 @@
-"""One adapter and CPU-thread policy for the assistant's ONNX DirectML/WebGPU/CPU engines."""
+"""One adapter and CPU-thread policy for the assistant's ONNX WebGPU/CPU engines."""
 
 from functools import lru_cache
 import importlib.util
@@ -31,7 +31,7 @@ def available_memory():
 
 def validate(adapter='auto', threads=0):
     if adapter != 'auto' and (type(adapter) is not int or adapter < 0):
-        raise ValueError('DirectML 显卡选择无效。')
+        raise ValueError('GPU 显卡选择无效。')
     if type(threads) is not int or not 0 <= threads <= 64:
         raise ValueError('CPU 线程数应为自动或 1–64。')
 

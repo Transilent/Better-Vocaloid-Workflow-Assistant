@@ -11,8 +11,10 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-RUNTIME_DEVICE_CHOICES = ("dml", "webgpu", "cpu", "cuda", "metal")
-VISIBLE_RUNTIME_DEVICE_CHOICES = ("dml", "cpu") if sys.platform == "win32" else ("cpu", "metal")
+RUNTIME_DEVICE_CHOICES = ("webgpu", "cpu", "dml", "cuda", "metal")
+VISIBLE_RUNTIME_DEVICE_CHOICES = (
+    ("webgpu", "cpu") if sys.platform in ("win32", "linux") else ("webgpu", "cpu", "metal")
+)
 
 ProviderSpec = str | tuple[str, dict[str, str]]
 MIN_GPU_DEDICATED_VRAM_BYTES = 1 << 30
@@ -28,19 +30,19 @@ VENDOR_NAMES = {
     VENDOR_INTEL: "Intel",
 }
 
-GPU_EXECUTION_PROVIDERS = ("DmlExecutionProvider", "WebGpuExecutionProvider")
+GPU_EXECUTION_PROVIDERS = ("WebGpuExecutionProvider", "DmlExecutionProvider")
 _VALID_DAWN_BACKENDS = {"d3d12": "D3D12", "vulkan": "Vulkan", "metal": "Metal"}
 
 _DEVICE_ALIASES = {
-    "": "dml",
-    "auto": "dml",
-    "cuda": "dml",
-    "directml": "dml",
-    "dml": "dml",
-    "gpu": "dml",
-    "rocm": "dml",
+    "": "webgpu",
+    "auto": "webgpu",
     "webgpu": "webgpu",
     "wgpu": "webgpu",
+    "gpu": "webgpu",
+    "dml": "webgpu",
+    "directml": "webgpu",
+    "cuda": "webgpu",
+    "rocm": "webgpu",
     "metal": "metal",
     "cpu": "cpu",
 }
@@ -128,8 +130,8 @@ _IID_IDXGIFactory1 = _GUID(
 
 
 def default_runtime_device() -> str:
-    """Keep DirectML as default on Windows for 100% legacy runtime compatibility."""
-    return "dml" if sys.platform == "win32" else "cpu"
+    """Return the cross-vendor WebGPU backend by default."""
+    return "webgpu"
 
 
 def normalize_runtime_device(device: str | None, default: str | None = None) -> str:
@@ -320,7 +322,7 @@ def _match_webgpu_ep_device(ort, adapter: DxgiAdapterInfo | None):
             meta = getattr(getattr(dev, "device", None), "metadata", None) or {}
             if str(meta.get("Description", "")).strip().lower() == adapter.name.strip().lower():
                 return dev
-
+    # Fallback ranking when DXGI is unavailable (e.g. Linux / macOS): prefer discrete GPU, larger VRAM.
     def _rank(dev):
         meta = getattr(getattr(dev, "device", None), "metadata", None) or {}
         discrete = 1 if str(meta.get("Discrete", "0")) == "1" else 0
@@ -332,30 +334,6 @@ def _match_webgpu_ep_device(ort, adapter: DxgiAdapterInfo | None):
         return (discrete, mem_mb)
 
     return max(ep_devices, key=_rank)
-
-
-def _resolve_webgpu(ort, *, label: str) -> tuple[str, list[ProviderSpec]] | None:
-    adapter = select_preferred_gpu_adapter(MIN_GPU_DEDICATED_VRAM_BYTES) if sys.platform == "win32" else None
-    if sys.platform != "win32" or adapter is not None:
-        opts = _webgpu_provider_options(adapter)
-        if adapter is not None:
-            logger.info(f"[{label}] Using WebGPU {describe_gpu_adapter(adapter)}.")
-        else:
-            logger.info(f"[{label}] Using WebGPU execution provider.")
-        return "webgpu", [("WebGpuExecutionProvider", opts), "CPUExecutionProvider"]
-    if _match_webgpu_ep_device(ort, None) is not None:
-        opts = _webgpu_provider_options(None)
-        logger.info(f"[{label}] Using WebGPU execution provider (EP device auto-select).")
-        return "webgpu", [("WebGpuExecutionProvider", opts), "CPUExecutionProvider"]
-    return None
-
-
-def _resolve_dml(*, label: str) -> tuple[str, list[ProviderSpec]] | None:
-    adapter = _select_preferred_dml_adapter()
-    if adapter is not None:
-        logger.info(f"[{label}] Using DirectML {describe_gpu_adapter(adapter)}.")
-        return "dml", [("DmlExecutionProvider", {"device_id": str(adapter.index)}), "CPUExecutionProvider"]
-    return None
 
 
 def resolve_onnx_providers(device: str | None, *, label: str = "ONNX") -> tuple[str, list[ProviderSpec]]:
@@ -373,19 +351,35 @@ def resolve_onnx_providers(device: str | None, *, label: str = "ONNX") -> tuple[
         logger.info(f"[{label}] Metal/CoreML is not enabled for this ONNX stage; using CPUExecutionProvider.")
         return "cpu", ["CPUExecutionProvider"]
 
-    # Prefer explicitly requested provider; transparently fall back to the other GPU EP if installed.
-    prefer_webgpu = normalized == "webgpu"
-    order = ("WebGpuExecutionProvider", "DmlExecutionProvider") if prefer_webgpu else (
-        "DmlExecutionProvider", "WebGpuExecutionProvider"
-    )
-    for ep_name in order:
-        if ep_name not in available:
-            continue
-        resolved = _resolve_webgpu(ort, label=label) if ep_name == "WebGpuExecutionProvider" else _resolve_dml(label=label)
-        if resolved is not None:
-            return resolved
+    if "WebGpuExecutionProvider" in available:
+        adapter = select_preferred_gpu_adapter(MIN_GPU_DEDICATED_VRAM_BYTES) if sys.platform == "win32" else None
+        if sys.platform != "win32" or adapter is not None:
+            opts = _webgpu_provider_options(adapter)
+            if adapter is not None:
+                logger.info(f"[{label}] Using WebGPU {describe_gpu_adapter(adapter)}.")
+            else:
+                logger.info(f"[{label}] Using WebGPU execution provider.")
+            return "webgpu", [("WebGpuExecutionProvider", opts), "CPUExecutionProvider"]
+        # Even if DXGI didn't enumerate an eligible adapter, check if ORT exposes a WebGPU EP device.
+        if _match_webgpu_ep_device(ort, None) is not None:
+            opts = _webgpu_provider_options(None)
+            logger.info(f"[{label}] Using WebGPU execution provider (EP device auto-select).")
+            return "webgpu", [("WebGpuExecutionProvider", opts), "CPUExecutionProvider"]
+        logger.info(
+            f"[{label}] No WebGPU adapter with sufficient VRAM was found; falling back to CPUExecutionProvider."
+        )
+        return "cpu", ["CPUExecutionProvider"]
 
-    logger.info(f"[{label}] No eligible GPU execution provider/adapter found; falling back to CPUExecutionProvider.")
+    if "DmlExecutionProvider" in available:
+        adapter = _select_preferred_dml_adapter()
+        if adapter is not None:
+            logger.info(f"[{label}] WebGPU unavailable; using legacy DirectML {describe_gpu_adapter(adapter)}.")
+            return "dml", [("DmlExecutionProvider", {"device_id": str(adapter.index)}), "CPUExecutionProvider"]
+        logger.info(
+            f"[{label}] No DirectML adapter with sufficient VRAM was found; falling back to CPUExecutionProvider."
+        )
+    else:
+        logger.info(f"[{label}] WebGpuExecutionProvider unavailable; falling back to CPUExecutionProvider.")
     return "cpu", ["CPUExecutionProvider"]
 
 
@@ -396,10 +390,14 @@ def create_onnx_session(
     *,
     label: str = "ONNX",
 ):
-    """Create an ONNX Runtime InferenceSession bound to the selected DirectML or WebGPU adapter."""
+    """Create an ONNX Runtime InferenceSession bound to the selected WebGPU adapter."""
     import onnxruntime as ort
 
     options = sess_options if sess_options is not None else ort.SessionOptions()
+    if os.environ.get("VWA_ORT_VERBOSE", "").strip().lower() not in {"1", "true", "yes"}:
+        # Suppress noisy per-session node-placement warnings (e.g. shape ops kept on CPU).
+        if getattr(options, "log_severity_level", 2) < 3:
+            options.log_severity_level = 3
     provider_name, providers = resolve_onnx_providers(device, label=label)
     if provider_name == "webgpu" and hasattr(options, "add_provider_for_devices"):
         adapter = select_preferred_gpu_adapter(MIN_GPU_DEDICATED_VRAM_BYTES) if sys.platform == "win32" else None
@@ -417,29 +415,20 @@ def create_onnx_session(
     return provider_name, ort.InferenceSession(str(model_path), sess_options=options, providers=providers)
 
 
-def should_cache_onnx_session(device: str | None = None) -> bool:
-    """Keep per-process session cache ONLY under DirectML to avoid DML teardown AVs."""
-    try:
-        provider_name, _ = resolve_onnx_providers(device, label="CacheCheck")
-    except Exception:
-        return False
-    return provider_name == "dml"
-
-
 def use_gpu(device: str | None) -> bool:
     import onnxruntime as ort
 
     if normalize_runtime_device(device) == "cpu":
         return False
     available = set(ort.get_available_providers())
-    if "DmlExecutionProvider" in available and _select_preferred_dml_adapter() is not None:
-        return True
     if "WebGpuExecutionProvider" in available:
         if sys.platform != "win32":
             return True
         return select_preferred_gpu_adapter(MIN_GPU_DEDICATED_VRAM_BYTES) is not None or (
             _match_webgpu_ep_device(ort, None) is not None
         )
+    if "DmlExecutionProvider" in available:
+        return _select_preferred_dml_adapter() is not None
     return False
 
 

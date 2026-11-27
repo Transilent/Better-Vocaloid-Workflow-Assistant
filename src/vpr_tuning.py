@@ -9,7 +9,6 @@ import hashlib
 import io
 import json
 import math
-import os
 from pathlib import Path
 import stat
 from unicodedata import normalize
@@ -65,9 +64,12 @@ def score_language(part, note):
     return value if type(value) is int else None
 
 
-@lru_cache(maxsize=8)
-def _read_score_phone_table(path_text, name):
-    with open(native_path(Path(path_text)), 'r', encoding='utf-8-sig') as stream:
+@lru_cache(maxsize=4)
+def _score_phone_table(root, language, name):
+    # Use the pinned LibreSVIP tables as data. Importing its core would load
+    # converter dependencies and could replace process-wide YAML behavior.
+    path = root / f'dependencies/export/libresvip/core/lyric_phoneme/{language}/vocaloid_xsampa.py'
+    with open(native_path(path), 'r', encoding='utf-8-sig') as stream:
         source = stream.read(24_001)
     if len(source) <= 24_000:
         for node in ast.parse(source).body:
@@ -77,23 +79,6 @@ def _read_score_phone_table(path_text, name):
                 if isinstance(table, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in table.items()):
                     return table
     raise ValueError('VPR 发音词典结构不符。')
-
-
-def _score_phone_table(root, language, name):
-    # Use the pinned LibreSVIP tables as data. Importing its core would load
-    # converter dependencies and could replace process-wide YAML behavior.
-    rel = Path(f'libresvip/core/lyric_phoneme/{language}/vocaloid_xsampa.py')
-    candidates = [Path(root) / 'dependencies/export' / rel]
-    runtime = os.environ.get('VWA_EXPORT_RUNTIME', '').strip()
-    if runtime:
-        candidates.append(Path(runtime) / rel)
-    for candidate in candidates:
-        if Path(native_path(candidate)).is_file():
-            return _read_score_phone_table(str(candidate), name)
-    return _read_score_phone_table(str(candidates[0]), name)
-
-
-_score_phone_table.cache_clear = _read_score_phone_table.cache_clear
 
 
 @lru_cache(maxsize=512)

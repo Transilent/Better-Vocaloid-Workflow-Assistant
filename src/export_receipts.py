@@ -47,9 +47,9 @@ def project_signatures(job, request):
     if 'vsqx' in signatures and request.get('export_pitch'):
         signatures['vsqx'] = fingerprint([signatures['vsqx'], file_hash(ROOT / 'vocaloid_pitch.py')])
     if 'vsqx' in signatures and request['language'] == 'en':
-        from vocaloid_english import DICTIONARY_PATH, resolve_dictionary_path
+        from vocaloid_english import DICTIONARY_PATH
         signatures['vsqx'] = fingerprint([signatures['vsqx'], file_hash(ROOT / 'vocaloid_english.py'),
-                                          file_hash(resolve_dictionary_path() or (ROOT / DICTIONARY_PATH))])
+                                          file_hash(ROOT / DICTIONARY_PATH)])
     if 'svp' in signatures and (enabled or timbre) and strength > 0:
         signatures['svp'] = fingerprint([
             base, 'svp', strength,

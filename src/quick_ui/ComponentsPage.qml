@@ -23,7 +23,7 @@ ScrollView {
     readonly property bool planLoaded: taskPlan.ready === true
     readonly property bool planComplete: planLoaded && missingIds.length === 0
     readonly property bool builtinFallbackAvailable: planLoaded && taskPlan.builtinReady === true
-        && (missingIds.indexOf("roformer") >= 0 || missingIds.indexOf("roformer_onnx") >= 0)
+        && missingIds.indexOf("roformer") >= 0
     readonly property real reserveBytes: typeof health.reserve_bytes === "number" && health.reserve_bytes >= 0
         ? health.reserve_bytes : 0
     readonly property real freeBytes: typeof volume.free_bytes === "number" ? volume.free_bytes : -1
@@ -34,8 +34,8 @@ ScrollView {
     readonly property string sourceHint: controller.downloadSource === "direct" ? ""
         : component.id === "roformer" ? controller.text(
             controller.downloadSource === "modelscope" || controller.downloadSource === "github-release"
-            ? "所选方案不经过 Hugging Face；Python 和 PyTorch 依赖由各自的镜像提供。"
-            : "PyPI 只用于普通依赖，SJTU 只用于 PyTorch。连不上 Hugging Face 时可直接选魔搭或 GitHub。")
+            ? "所选方案不经过 Hugging Face；ONNX WebGPU 运行库由 PyPI 镜像提供。"
+            : "PyPI 用于 onnxruntime-webgpu 运行库；连不上 Hugging Face 时可直接选 GitHub。")
         : component.id === "chinese" ? controller.text(
             "HF-Mirror 可能跳回 Hugging Face；暂无核验通过的独立来源。")
         : ""
@@ -62,7 +62,6 @@ ScrollView {
     function componentTitle(componentId) {
         return componentId === "builtin" ? controller.text("内置 Karaoke 2")
             : componentId === "roformer" ? "BS-RoFormer"
-            : componentId === "roformer_onnx" ? controller.text("BS-RoFormer ONNX（实验性）")
             : componentId === "chinese" ? controller.text("中文 / 英文歌词识别")
             : componentId === "expression" ? controller.text("参考演唱音色")
             : componentId
@@ -74,15 +73,17 @@ ScrollView {
             : controller.text("其他可选")
     }
 
+    function precisionLabel(code) {
+        return code === "fp16_10s" ? "10s FP16" : code === "fp16" ? "20s FP16" : code === "fp32" ? "20s FP32" : String(code || "").toUpperCase()
+    }
     function healthText() {
         const rows = []
-        const installedList = health.installed_runtimes
-        if (Array.isArray(installedList) && installedList.length > 0) {
-            const labels = installedList.map(rt => rt === "cuda" ? "GPU (CUDA)" : "CPU")
-            rows.push(controller.text("已装运行库") + "  " + labels.join(" + "))
-        } else if (health.runtime) {
+        if (health.runtime)
             rows.push(controller.text("已装运行库") + "  " + health.runtime.toUpperCase())
-        }
+        if (health.precision)
+            rows.push(controller.text("已装精度") + "  " + precisionLabel(health.precision))
+        if (health.recommended_precision)
+            rows.push(controller.text("本机推荐精度") + "  " + precisionLabel(health.recommended_precision))
         if (component.installed_bytes > 0)
             rows.push(controller.text(health.installed_estimate ? "安装体积（清单估算）" : "已安装")
                       + "  " + sizeLabel(component.installed_bytes))
@@ -470,26 +471,10 @@ ScrollView {
                         textFormat: Text.PlainText
                     }
 
-                    RoformerRuntimeBar {
-                        visible: page.component.id === "roformer"
-                        theme: page.theme
-                        controller: page.controller
-                        health: page.health
-                        idle: page.idle
-                    }
-
-                    RoformerOnnxBar {
-                        visible: page.component.id === "roformer_onnx"
-                        theme: page.theme
-                        controller: page.controller
-                        health: page.health
-                        idle: page.idle
-                    }
-
                     Text {
                         Layout.fillWidth: true
                         visible: !!page.component.id && page.usesPlannedRoformer
-                        text: page.controller.text("缺项与已就绪分组按当前准备方案；安装和校验仍以右侧 CPU/CUDA 档为准。")
+                        text: page.controller.text("缺项与已就绪分组按当前准备方案；安装和校验仍以右侧 CPU/WebGPU 档为准。")
                         color: page.theme.muted
                         font.pixelSize: Math.round(11 * page.theme.scale)
                         wrapMode: Text.Wrap
@@ -598,7 +583,7 @@ ScrollView {
                             Layout.fillWidth: true
                             visible: page.component.id === "roformer"
                             Text {
-                                text: page.controller.text("目标运行库（GPU / CPU 独立共存）")
+                                text: page.controller.text("运行库")
                                 color: page.theme.muted
                                 font.pixelSize: Math.round(11 * page.theme.scale)
                             }
@@ -609,9 +594,28 @@ ScrollView {
                                 enabled: page.idle
                                 Accessible.name: page.controller.text("运行库")
                                 model: [{ label: page.controller.text("仅 CPU"), value: "cpu" },
-                                        { label: page.controller.text("NVIDIA GPU / CUDA"), value: "cuda" }]
-                                currentIndex: page.controller.runtime === "cuda" ? 1 : 0
+                                        { label: page.controller.text("GPU / WebGPU"), value: "webgpu" }]
+                                currentIndex: page.controller.runtime === "webgpu" ? 1 : 0
                                 onActivated: page.controller.setRuntime(currentValue)
+                            }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.component.id === "roformer"
+                            Text { text: page.controller.text("模型精度"); color: page.theme.muted; font.pixelSize: Math.round(11 * page.theme.scale) }
+                            UiComboBox {
+                                objectName: "roformerPrecisionChoice"
+                                Layout.fillWidth: true; theme: page.theme; enabled: page.idle
+                                Accessible.name: page.controller.text("模型精度")
+                                readonly property var precisionModel: [
+                                    { label: page.controller.text("自动（推荐 {0}）").replace("{0}", page.precisionLabel(page.health.recommended_precision || "fp16_10s")), value: "auto" },
+                                    { label: page.controller.text("10s FP16（8G 显存）"), value: "fp16_10s" },
+                                    { label: page.controller.text("20s FP16（12G 显存）"), value: "fp16" },
+                                    { label: page.controller.text("20s FP32（16G+ 显存）"), value: "fp32" }
+                                ]
+                                model: precisionModel
+                                currentIndex: Math.max(0, precisionModel.findIndex(o => o.value === page.controller.roformerPrecision))
+                                onActivated: page.controller.setRoformerPrecision(currentValue)
                             }
                         }
                         ColumnLayout {

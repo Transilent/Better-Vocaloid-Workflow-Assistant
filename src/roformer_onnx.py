@@ -1,24 +1,17 @@
-"""Isolated BS-RoFormer ONNX (WebGPU / CPU) experimental karaoke separator.
+"""Pure ONNX Runtime (WebGPU / CPU) inference engine for BS-RoFormer karaoke separation.
 
-Credits: ONNX export and cross-vendor WebGPU validation contributed by AU-ki.
-Runs in an isolated child process so ``onnxruntime-webgpu==1.27.0`` never
-collides with the main process's ``onnxruntime-directml`` installation.
+Strips complex STFT/iSTFT outside the ONNX graph using NumPy + SciPy so the
+neural backbone runs directly on ``onnxruntime-webgpu`` across AMD, NVIDIA,
+and Intel GPUs without requiring PyTorch or CUDA.
 """
 from __future__ import annotations
 
-import argparse
 import json
-import os
 from pathlib import Path
-import subprocess
-import sys
 import time
 from typing import Any
 
-import yaml
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import ROOT, cancelled, file_hash, load_config
+from common import cancelled
 from multi_file_commit import FileTransactionError, commit_file_pair
 
 
@@ -28,34 +21,6 @@ DEFAULT_STFT_N_FFT = 2048
 DEFAULT_STFT_HOP = 512
 DEFAULT_STFT_WIN = 2048
 DEFAULT_DIM_FREQS_IN = 1025
-
-
-class _SafeTupleLoader(yaml.SafeLoader):
-    """Safe YAML loader supporting only ``!!python/tuple`` used by BS-RoFormer configs."""
-
-
-_SafeTupleLoader.add_constructor(
-    'tag:yaml.org,2002:python/tuple',
-    lambda loader, node: tuple(loader.construct_sequence(node)),
-)
-
-
-def load_roformer_audio_config(config_path: Path) -> dict[str, int]:
-    """Read STFT and overlap settings using a restricted safe YAML loader."""
-    raw = yaml.load(Path(config_path).read_text(encoding='utf-8'), Loader=_SafeTupleLoader) or {}
-    if not isinstance(raw, dict):
-        raise ValueError('BS-RoFormer 配置文件格式无效。')
-    audio = raw.get('audio') or {}
-    model = raw.get('model') or {}
-    inference = raw.get('inference') or {}
-    return {
-        'chunk_size': int(audio.get('chunk_size', DEFAULT_CHUNK_SIZE)),
-        'num_overlap': max(1, int(inference.get('num_overlap', DEFAULT_NUM_OVERLAP))),
-        'stft_n_fft': int(model.get('stft_n_fft', DEFAULT_STFT_N_FFT)),
-        'stft_hop_length': int(model.get('stft_hop_length', DEFAULT_STFT_HOP)),
-        'stft_win_length': int(model.get('stft_win_length', DEFAULT_STFT_WIN)),
-        'dim_freqs_in': int(model.get('dim_freqs_in', DEFAULT_DIM_FREQS_IN)),
-    }
 
 
 class RoformerSpectrogram:
@@ -79,6 +44,7 @@ class RoformerSpectrogram:
         ).astype(np.float32)
 
     def forward(self, stereo_wave):
+        """Convert ``(2, L)`` float32 waveform to ``(1, 4, F, T)`` real/imag tensor."""
         import numpy as np
         from scipy.fft import rfft
 
@@ -86,10 +52,12 @@ class RoformerSpectrogram:
         padded = np.pad(stereo_wave, ((0, 0), (pad, pad)), mode='reflect')
         frames = np.lib.stride_tricks.sliding_window_view(padded, self.n_fft, axis=-1)[:, ::self.hop_length]
         spectra = rfft(frames * self.window, n=self.n_fft, axis=-1).transpose(0, 2, 1)[:, :self.dim_freqs_in, :]
+        # Channel order: [L_re, L_im, R_re, R_im]
         stacked = np.stack((spectra.real, spectra.imag), axis=1).reshape(1, 4, self.dim_freqs_in, spectra.shape[-1])
         return np.ascontiguousarray(stacked, dtype=np.float32)
 
     def inverse(self, spec_tensor, target_length: int):
+        """Convert ``(1, 4, F, T)`` real/imag tensor back to ``(2, target_length)`` float32 waveform."""
         import numpy as np
         from scipy.fft import irfft
 
@@ -105,69 +73,108 @@ class RoformerSpectrogram:
         total = (count - 1) * self.hop_length + self.n_fft
         out = np.zeros((2, total), dtype=np.float32)
         weights = np.zeros(total, dtype=np.float32)
-        window_sq = self.window ** 2
-        for i in range(count):
-            start = i * self.hop_length
-            out[:, start:start + self.n_fft] += frames[:, i]
-            weights[start:start + self.n_fft] += window_sq
+        win_sq = self.window ** 2
+        for index in range(count):
+            start = index * self.hop_length
+            out[:, start:start + self.n_fft] += frames[:, index]
+            weights[start:start + self.n_fft] += win_sq
         np.divide(out, weights, out=out, where=weights > 1e-8)
-        pad = self.n_fft // 2
-        trimmed = out[:, pad:pad + target_length]
+        trim = self.n_fft // 2
+        trimmed = out[:, trim:trim + target_length]
         if trimmed.shape[1] < target_length:
             trimmed = np.pad(trimmed, ((0, 0), (0, target_length - trimmed.shape[1])))
-        return trimmed
+        return np.ascontiguousarray(trimmed, dtype=np.float32)
+
+
+def load_roformer_audio_config(config_path: Path | None) -> dict[str, int]:
+    """Read chunk & STFT parameters from config.yaml (falling back to pinned defaults)."""
+    params = {
+        'chunk_size': DEFAULT_CHUNK_SIZE,
+        'num_overlap': DEFAULT_NUM_OVERLAP,
+        'stft_n_fft': DEFAULT_STFT_N_FFT,
+        'stft_hop_length': DEFAULT_STFT_HOP,
+        'stft_win_length': DEFAULT_STFT_WIN,
+        'dim_freqs_in': DEFAULT_DIM_FREQS_IN,
+    }
+    if config_path is None or not Path(config_path).is_file():
+        return params
+    try:
+        import yaml
+    except ImportError:
+        return params
+    raw = yaml.unsafe_load(Path(config_path).read_text(encoding='utf-8'))
+    if not isinstance(raw, dict):
+        return params
+    audio_cfg = raw.get('audio') or {}
+    model_cfg = raw.get('model') or {}
+    infer_cfg = raw.get('inference') or {}
+    if isinstance(audio_cfg.get('chunk_size'), int) and audio_cfg['chunk_size'] > 0:
+        params['chunk_size'] = audio_cfg['chunk_size']
+    if isinstance(infer_cfg.get('num_overlap'), int) and infer_cfg['num_overlap'] >= 1:
+        params['num_overlap'] = infer_cfg['num_overlap']
+    for key in ('stft_n_fft', 'stft_hop_length', 'stft_win_length', 'dim_freqs_in'):
+        value = model_cfg.get(key)
+        if isinstance(value, int) and value > 0:
+            params[key] = value
+    return params
 
 
 def _overlap_window(chunk_size: int, fade_size: int):
     import numpy as np
 
+    fade_size = max(1, min(fade_size, chunk_size // 2))
     window = np.ones(chunk_size, dtype=np.float32)
-    if fade_size > 0 and fade_size * 2 <= chunk_size:
-        fade = np.linspace(0.0, 1.0, fade_size, dtype=np.float32)
-        window[:fade_size] = fade
-        window[-fade_size:] = fade[::-1]
+    fade_in = np.linspace(0.0, 1.0, fade_size, dtype=np.float32)
+    window[:fade_size] = fade_in
+    window[-fade_size:] = fade_in[::-1]
     return window
 
 
-def resolve_installed_model(environment: Path, spec: dict[str, Any]) -> tuple[Path, str, str]:
-    """Strictly load the ONNX weight matching ``installed.json['precision']``."""
-    receipt_path = Path(environment) / 'installed.json'
-    if not receipt_path.is_file():
-        raise ValueError('BS-RoFormer ONNX 缺少安装收据，请重新安装实验组件。')
-    receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
-    precision = receipt.get('precision')
-    weights = spec.get('weights') if isinstance(spec, dict) else None
-    if not isinstance(weights, dict) or precision not in weights:
-        raise ValueError('BS-RoFormer ONNX 安装收据中的精度无效。')
-    item = weights[precision]
-    model_path = Path(environment) / item['name']
-    if not model_path.is_file():
-        raise FileNotFoundError(f"缺少 ONNX 模型文件：{item['name']}")
-    expected_sha = str(item.get('sha256') or '').strip().lower()
-    if expected_sha and file_hash(model_path) != expected_sha:
-        raise ValueError('BS-RoFormer ONNX 权重 SHA-256 校验失败，请重新安装实验组件。')
-    cfg_item = spec.get('config') or {}
-    cfg_path = Path(environment) / cfg_item.get('name', 'config.yaml')
-    if cfg_item.get('sha256') and (not cfg_path.is_file() or file_hash(cfg_path) != cfg_item['sha256']):
-        raise ValueError('BS-RoFormer ONNX 配置文件 SHA-256 校验失败，请重新安装实验组件。')
-    return model_path, precision, expected_sha
+def _resolve_onnx_model(environment: Path, spec: dict[str, Any]) -> Path:
+    for item in spec.get('weights', ()):
+        for variant in item.get('variants') or ():
+            if not isinstance(variant, dict):
+                continue
+            v_name = str(variant.get('name') or '')
+            if v_name.lower().endswith('.onnx'):
+                candidate = environment / v_name
+                if candidate.is_file():
+                    return candidate
+        name = str(item.get('name') or '')
+        if name.lower().endswith('.onnx'):
+            candidate = environment / name
+            if candidate.is_file():
+                return candidate
+    found = sorted(environment.glob('*.onnx'))
+    if found:
+        return found[0]
+    raise FileNotFoundError(
+        '未找到 BS-RoFormer ONNX 模型文件。请重新安装组件，或使用 tools/export_roformer_onnx.py 导出并导入。'
+    )
 
 
-def _worker_separate(source: Path, directory: Path, job: Path, environment: Path,
-                     device: str, input_kind: str) -> dict[str, Any]:
-    """Run inside the isolated child process with ``environment/packages`` first on ``sys.path``."""
-    sys.path.insert(0, str(environment / 'packages'))
+def separate_vocals_onnx(
+    source,
+    directory,
+    job,
+    environment: Path,
+    spec: dict[str, Any],
+    device: str = 'auto',
+    *,
+    input_kind: str = 'vocals',
+):
+    """Run BS-RoFormer ONNX inference on WebGPU or CPU and commit lead/backing WAVs."""
     import numpy as np
     import onnxruntime as ort
     import soundfile as sf
-    from roformer_onnx_component import manifest
+
     from runtime_devices import create_session, session_threads
 
-    spec = manifest()
-    model_path, precision, expected_sha = resolve_installed_model(environment, spec)
-    cfg = load_roformer_audio_config(environment / 'config.yaml')
+    model_path = _resolve_onnx_model(Path(environment), spec)
+    config_path = Path(environment) / 'config.yaml'
+    cfg = load_roformer_audio_config(config_path)
 
-    request_file = job / 'request.json'
+    request_file = Path(job) / 'request.json'
     request = json.loads(request_file.read_text(encoding='utf-8')) if request_file.is_file() else {}
     tools = dict(request.get('tools') or {})
 
@@ -178,15 +185,17 @@ def _worker_separate(source: Path, directory: Path, job: Path, environment: Path
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     session_threads(options, default=6)
 
-    _, session = create_session(model_path, options, tools, requested, label='BS-RoFormer ONNX')
+    effective_device, session = create_session(
+        model_path, options, tools, requested, label='BS-RoFormer ONNX'
+    )
     active_providers = session.get_providers()
     active_provider = active_providers[0] if active_providers else 'CPUExecutionProvider'
     if device == 'webgpu' and active_provider != 'WebGpuExecutionProvider':
-        raise RuntimeError('当前环境无法使用 WebGPU，请改选“自动”或“CPU”。')
+        raise RuntimeError('当前环境无法使用 WebGPU，请在处理设置中选择“自动”或“CPU”。')
 
     audio, rate = sf.read(str(source), dtype='float32', always_2d=True)
     if rate != 44100 or audio.shape[1] != 2 or not len(audio) or not np.isfinite(audio).all():
-        raise ValueError('BS-RoFormer ONNX 需要有效的 44.1 kHz 双声道音频。')
+        raise ValueError('BS-RoFormer 需要有效的 44.1 kHz 双声道音频。')
 
     transform = RoformerSpectrogram(
         n_fft=cfg['stft_n_fft'],
@@ -204,14 +213,14 @@ def _worker_separate(source: Path, directory: Path, job: Path, environment: Path
     model_frames = input_meta.shape[3] if len(input_meta.shape) == 4 and isinstance(input_meta.shape[3], int) else None
     if model_frames and model_frames > 1 and (chunk_size // hop + 1) != model_frames:
         chunk_size = (model_frames - 1) * hop
-    num_overlap = cfg['num_overlap']
+    num_overlap = max(1, cfg['num_overlap'])
     step = max(1, chunk_size // num_overlap)
     fade_size = chunk_size // 10
-    border = chunk_size - step
+    border = max(0, chunk_size - step)
 
-    mix_t = audio.T.astype(np.float32, copy=False)
-    orig_len = mix_t.shape[1]
-    pad_mode = 'reflect' if orig_len > border else 'constant'
+    mix_t = audio.T  # (2, samples)
+    total_samples = mix_t.shape[1]
+    pad_mode = 'reflect' if total_samples > border > 0 else 'constant'
     padded = np.pad(mix_t, ((0, 0), (border, border)), mode=pad_mode) if border else mix_t
     padded_len = padded.shape[1]
 
@@ -219,45 +228,46 @@ def _worker_separate(source: Path, directory: Path, job: Path, environment: Path
     if starts and starts[-1] + chunk_size < padded_len:
         starts.append(padded_len - chunk_size)
 
-    result = np.zeros((2, padded_len), dtype=np.float32)
-    counter = np.zeros((2, padded_len), dtype=np.float32)
+    accum = np.zeros_like(padded, dtype=np.float32)
+    counter = np.zeros(padded_len, dtype=np.float32)
     base_window = _overlap_window(chunk_size, fade_size)
 
-    started = time.monotonic()
-    total_chunks = len(starts)
-    print(f'BS-RoFormer ONNX（实验性 · {precision}）· 设备 {active_provider}', flush=True)
-    for idx, start in enumerate(starts):
-        cancelled(job)
-        segment = padded[:, start:start + chunk_size]
-        seg_len = segment.shape[1]
-        if seg_len < chunk_size:
-            mode = 'reflect' if seg_len > (chunk_size - seg_len) else 'constant'
-            segment = np.pad(segment, ((0, 0), (0, chunk_size - seg_len)), mode=mode)
-        spec_in = transform.forward(segment)
-        if spec_in.dtype != input_dtype:
-            spec_in = spec_in.astype(input_dtype, copy=False)
-        spec_out = session.run([output_name], {input_name: spec_in})[0]
-        if spec_out.dtype != np.float32:
-            spec_out = spec_out.astype(np.float32, copy=False)
-        wave_out = transform.inverse(spec_out, chunk_size)[:, :seg_len]
-        win = base_window.copy()
-        if start == 0:
-            win[:fade_size] = 1.0
-        if start + chunk_size >= padded_len:
-            win[-fade_size:] = 1.0
-        win = win[:seg_len]
-        result[:, start:start + seg_len] += wave_out * win
-        counter[:, start:start + seg_len] += win
-        from progress_state import publish
-        publish(job, 'separation', '主唱 / 和声 · BS-RoFormer ONNX（实验性）', idx + 1, total_chunks)
-        print(f'主唱／和声分离：{idx + 1}/{total_chunks}', flush=True)
-
-    np.divide(result, counter, out=result, where=counter > 1e-8)
-    lead = result[:, border:border + orig_len].T.astype(np.float32, copy=False)
     cancelled(job)
-    if lead.shape != audio.shape or not np.isfinite(lead).all():
-        raise RuntimeError('BS-RoFormer ONNX 输出格式无效。')
+    started = time.monotonic()
+    print(f'BS-RoFormer ONNX · 设备 {active_provider} ({effective_device})', flush=True)
 
+    for index, start in enumerate(starts):
+        cancelled(job)
+        end = min(start + chunk_size, padded_len)
+        piece = padded[:, start:end]
+        valid = piece.shape[1]
+        if valid < chunk_size:
+            piece = np.pad(piece, ((0, 0), (0, chunk_size - valid)), mode='constant')
+        spec_in = transform.forward(piece).astype(input_dtype, copy=False)
+        spec_out = np.asarray(session.run([output_name], {input_name: spec_in})[0], dtype=np.float32)
+        wave_out = transform.inverse(spec_out, chunk_size)[:, :valid]
+
+        window = base_window[:valid].copy()
+        if index == 0:
+            window[:min(fade_size, valid)] = 1.0
+        if end >= padded_len:
+            window[max(0, valid - fade_size):] = 1.0
+
+        accum[:, start:end] += wave_out * window
+        counter[start:end] += window
+
+        from progress_state import publish
+        publish(job, 'separation', '主唱 / 和声 · BS-RoFormer', index + 1, len(starts))
+        print(f'主唱／和声分离：{index + 1}/{len(starts)}', flush=True)
+
+    del session
+    cancelled(job)
+    np.divide(accum, counter, out=accum, where=counter > 1e-8)
+    lead = accum[:, border:border + total_samples].T if border else accum[:, :total_samples].T
+    if lead.shape != audio.shape or not np.isfinite(lead).all():
+        raise RuntimeError('BS-RoFormer 输出格式无效。')
+
+    directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     pending = [directory / 'lead.pending.wav', directory / 'backing.pending.wav']
     max_error = 0.0
@@ -282,12 +292,13 @@ def _worker_separate(source: Path, directory: Path, job: Path, environment: Path
             for path in pending:
                 path.unlink(missing_ok=True)
 
+    model_entry = next(
+        (item for item in spec.get('weights', ()) if str(item.get('name', '')).lower().endswith('.onnx')),
+        {'name': model_path.name, 'sha256': ''},
+    )
     return {
-        'model': model_path.name,
-        'sha256': expected_sha,
-        'engine': 'onnx-webgpu',
-        'experimental': True,
-        'precision': precision,
+        'model': model_entry['name'],
+        'sha256': model_entry.get('sha256', ''),
         'provider': active_provider,
         'method': 'original_mix_to_lead_and_remainder' if input_kind == 'mix' else 'total_vocals_then_karaoke',
         'input_kind': input_kind,
@@ -303,107 +314,3 @@ def _worker_separate(source: Path, directory: Path, job: Path, environment: Path
         'sum_max_error': max_error,
         'transaction': transaction,
     }
-
-
-def separate_vocals(source, directory, job, device: str = 'auto', *, input_kind: str = 'vocals') -> dict[str, Any]:
-    """Run BS-RoFormer ONNX in an isolated child process so DirectML stays unaffected."""
-    if input_kind not in ('vocals', 'mix'):
-        raise ValueError('分离输入类型无效。')
-    if device not in ('auto', 'webgpu', 'cpu'):
-        raise ValueError('BS-RoFormer ONNX 的设备请选择自动、WebGPU 或 CPU。')
-    from roformer_onnx_component import use_ready
-    with use_ready() as environment:
-        report_file = Path(job) / 'temp/roformer-onnx-report.json'
-        report_file.parent.mkdir(parents=True, exist_ok=True)
-        report_file.unlink(missing_ok=True)
-        cmd = [
-            load_config()['python'], '-B', '-u', str(Path(__file__).resolve()),
-            '--worker',
-            '--source', str(source),
-            '--directory', str(directory),
-            '--job', str(job),
-            '--environment', str(environment),
-            '--device', str(device),
-            '--input-kind', str(input_kind),
-            '--report', str(report_file),
-        ]
-        env = dict(os.environ, PYTHONUTF8='1', PYTHONDONTWRITEBYTECODE='1')
-        process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
-            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
-        )
-        tail: list[str] = []
-        try:
-            assert process.stdout is not None
-            for raw_line in process.stdout:
-                cancelled(job)
-                line = raw_line.decode('utf-8', errors='replace').rstrip('\r\n')
-                if line:
-                    print(line, flush=True)
-                    tail.append(line)
-                    if len(tail) > 40:
-                        tail.pop(0)
-            code = process.wait()
-        finally:
-            if process.poll() is None:
-                process.kill()
-                process.wait()
-        cancelled(job)
-        if code != 0 or not report_file.is_file():
-            detail = '\n'.join(tail[-12:])
-            raise RuntimeError(f'BS-RoFormer ONNX（实验性）失败（退出码 {code}）：{detail}')
-        return json.loads(report_file.read_text(encoding='utf-8'))
-
-
-def run_pipeline_separation(mode: str, job: Path, request: dict[str, Any], report: dict[str, Any]) -> None:
-    """Shared pipeline dispatch for both PyTorch ``roformer`` and experimental ``roformer_onnx``."""
-    independent = request.get('separation_flow', 'cascade') == 'independent'
-    target = job / 'temp/direct-lead' if independent else job / 'audio'
-    source_wav = job / ('audio/source.wav' if independent else 'audio/vocals.wav')
-    if mode == 'roformer_onnx':
-        report['chorus'] = separate_vocals(
-            source_wav, target, job, request.get('roformer_device', 'auto'),
-            input_kind='mix' if independent else 'vocals',
-        )
-    else:
-        from roformer import separate_vocals as separate_pytorch
-        report['chorus'] = separate_pytorch(
-            source_wav, target, job, request.get('roformer_device', 'auto'),
-            input_kind='mix' if independent else 'vocals',
-        )
-    if independent:
-        from roformer import combine_independent
-        report['combination'] = combine_independent(job / 'audio/vocals.wav', target / 'lead.wav', job / 'audio', job)
-        for name in ('lead.wav', 'backing.wav'):
-            try:
-                (target / name).unlink(missing_ok=True)
-            except OSError:
-                pass
-        try:
-            target.rmdir()
-        except OSError:
-            pass
-    report.update(
-        method='independent_original_mix' if independent else 'cascaded_vocals',
-        maximum_model_depth=1 if independent else 2,
-        model_invocations=2,
-    )
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--worker', action='store_true')
-    parser.add_argument('--source', required=True)
-    parser.add_argument('--directory', required=True)
-    parser.add_argument('--job', required=True)
-    parser.add_argument('--environment', required=True)
-    parser.add_argument('--device', default='auto')
-    parser.add_argument('--input-kind', default='vocals')
-    parser.add_argument('--report', required=True)
-    args = parser.parse_args()
-    if args.worker:
-        result = _worker_separate(
-            Path(args.source), Path(args.directory), Path(args.job),
-            Path(args.environment), args.device, args.input_kind,
-        )
-        Path(args.report).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')

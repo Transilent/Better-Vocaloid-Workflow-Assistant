@@ -351,7 +351,7 @@ def inspect_component(directory, manifest_path, *, full=False, progress=None, ch
     if receipt is not None:
         report['runtime'] = receipt.get('runtime')
         report['probe'] = receipt.get('probe')
-        if report['runtime'] not in ('cpu', 'cuda'):
+        if report['runtime'] not in ('cpu', 'webgpu', 'cuda'):
             report['errors'].append({'code': 'receipt_runtime_invalid',
                                      'message': '安装记录缺少有效运行库。',
                                      'path': 'installed.json'})
@@ -397,6 +397,43 @@ def inspect_component(directory, manifest_path, *, full=False, progress=None, ch
         else:
             critical = critical_value
 
+    def _resolve_weight_entry(item):
+        relative = item.get('name')
+        expected_size = _expected_bytes(item.get('bytes'))
+        expected_sha = _expected_sha(item.get('sha256'))
+        variants = item.get('variants')
+        if not isinstance(variants, list) or ready_root is None:
+            return relative, expected_size, expected_sha
+        parsed = []
+        for variant in variants:
+            if not isinstance(variant, dict):
+                continue
+            v_name = variant.get('name')
+            v_size = _expected_bytes(variant.get('bytes'))
+            v_sha = _expected_sha(variant.get('sha256'))
+            if isinstance(v_name, str) and v_name and v_size is not None:
+                parsed.append((v_name, v_size, v_sha))
+        if not parsed:
+            return relative, expected_size, expected_sha
+        for v_name, v_size, v_sha in parsed:
+            _, info, issue = _inspect_physical(ready_root, v_name)
+            if issue is None and info is not None and info.st_size == v_size:
+                return v_name, v_size, v_sha
+        if isinstance(relative, str) and relative:
+            _, info, issue = _inspect_physical(ready_root, relative)
+            if issue is None and info is not None:
+                if expected_size is not None and info.st_size == expected_size:
+                    return relative, expected_size, expected_sha
+                for _, v_size, v_sha in parsed:
+                    if info.st_size == v_size:
+                        return relative, v_size, v_sha
+                return relative, expected_size, expected_sha
+        for v_name, v_size, v_sha in parsed:
+            _, info, issue = _inspect_physical(ready_root, v_name)
+            if issue is None and info is not None:
+                return v_name, v_size, v_sha
+        return relative, expected_size, expected_sha
+
     records = []
     for kind, rows, path_key in (('weight', weights, 'name'), ('critical', critical, 'file')):
         for item in rows:
@@ -404,9 +441,12 @@ def inspect_component(directory, manifest_path, *, full=False, progress=None, ch
                 report['errors'].append({'code': 'manifest_entry_invalid',
                                          'message': '组件文件条目无效。', 'kind': kind})
                 continue
-            relative = item.get(path_key)
-            expected_size = _expected_bytes(item.get('bytes'))
-            expected_sha = _expected_sha(item.get('sha256'))
+            if kind == 'weight':
+                relative, expected_size, expected_sha = _resolve_weight_entry(item)
+            else:
+                relative = item.get(path_key)
+                expected_size = _expected_bytes(item.get('bytes'))
+                expected_sha = _expected_sha(item.get('sha256'))
             expected = {'path': relative, 'kind': kind, 'bytes': expected_size,
                         'sha256': expected_sha}
             actual = {'path': relative, 'kind': kind, 'exists': None, 'bytes': None,

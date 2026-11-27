@@ -319,10 +319,9 @@ with tempfile.TemporaryDirectory(prefix='component-health-', dir=APP / 'work') a
     def fake_extract(archive, directory, check=None):
         directory = Path(directory)
         for name, data in (
-            ('torch/__init__.py', b'# torch fixture\n'),
-            ('torch/lib/runtime.dll', b'runtime-dll'),
-            ('pymss/__init__.py', b'# pymss fixture\n'),
-            ('pymss_core/__init__.py', b'# pymss core fixture\n'),
+            ('onnxruntime/__init__.py', b'# ort fixture\n'),
+            ('onnxruntime/capi/onnxruntime.dll', b'runtime-dll'),
+            ('onnxruntime/capi/onnxruntime_pybind11_state.pyd', b'pybind-pyd'),
         ):
             path = directory / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -332,7 +331,7 @@ with tempfile.TemporaryDirectory(prefix='component-health-', dir=APP / 'work') a
         returncode = 0
 
         def communicate(self, timeout=None):
-            payload = b'COMPONENT_PROBE={"torch":"2.7.1+cpu","cuda_available":false,"device":"cpu","gpu":null}\n'
+            payload = b'COMPONENT_PROBE={"onnxruntime":"1.27.0","webgpu_available":true,"device":"cpu","gpu":null}\n'
             return payload, None
 
         def poll(self):
@@ -357,7 +356,7 @@ with tempfile.TemporaryDirectory(prefix='component-health-', dir=APP / 'work') a
         installer_progress.clear()
         no_op = components.install(
             'cpu', progress=lambda done, total, text: installer_progress.append(text), root=install_root)
-    assert full['verified'] and full['progress']['sha256_checked'] == 5
+    assert full['verified'] and full['progress']['sha256_checked'] == 4
     assert no_op['ready'] and any('元数据检查' in text for text in installer_progress)
     invalid_lock = install_base / 'invalid-lock'
     (invalid_lock / 'run.lock').mkdir(parents=True)

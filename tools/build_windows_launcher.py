@@ -1,4 +1,5 @@
 """Build the small Windows GUI launcher and its original icon; no release archive."""
+import argparse
 import json
 import os
 from pathlib import Path
@@ -39,7 +40,7 @@ def render_launcher_source(template, version):
             .replace(INFORMATIONAL_VERSION_TOKEN, version))
 
 
-def build():
+def build(output=None):
     icon = ROOT / 'assets/app.ico'
     if not icon.is_file():
         raise FileNotFoundError('The checked-in multi-resolution assets/app.ico is required.')
@@ -47,10 +48,12 @@ def build():
     if not compiler.is_file():
         raise FileNotFoundError('Windows .NET Framework C# compiler is required for the launcher build.')
     version = _version()
+    target = Path(output).resolve() if output else (ROOT / 'build/VWA/VWA.exe')
+    target.parent.mkdir(parents=True, exist_ok=True)
     template = (ROOT / 'tools/windows/Launcher.cs').read_text(encoding='utf-8')
     generated = render_launcher_source(template, version)
-    temporary_root = ROOT / 'work'
-    temporary_root.mkdir(exist_ok=True)
+    temporary_root = ROOT / 'build/tmp'
+    temporary_root.mkdir(parents=True, exist_ok=True)
     handle = tempfile.NamedTemporaryFile(
         mode='w', encoding='utf-8', suffix='.cs', prefix='launcher-',
         dir=temporary_root, delete=False)
@@ -60,14 +63,18 @@ def build():
         subprocess.run([
             str(compiler), '/nologo', '/target:winexe', '/platform:x64', '/optimize+',
             '/utf8output', '/codepage:65001', '/reference:System.Windows.Forms.dll',
-            '/win32icon:' + str(icon), '/out:' + str(ROOT / 'VWA.exe'), handle.name,
+            '/win32icon:' + str(icon), '/out:' + str(target), handle.name,
         ], check=True)
     finally:
         if not handle.file.closed:
             handle.close()
         Path(handle.name).unlink(missing_ok=True)
-    print('Built VWA.exe with version %s metadata and a multi-resolution app icon. No release archive was created.' % version)
+    print('Built %s with version %s metadata and a multi-resolution app icon. No release archive was created.' % (target, version))
+    return target
 
 
 if __name__ == '__main__':
-    build()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', type=Path, default=None, help='Destination VWA.exe path (default: build/VWA/VWA.exe)')
+    args = parser.parse_args()
+    build(args.output)

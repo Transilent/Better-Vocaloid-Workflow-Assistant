@@ -24,7 +24,7 @@ def main():
     parser.add_argument("--model", default=".", help="Path to model directory or model.onnx")
     parser.add_argument("--audio", type=str, default=None, help="Single audio file")
     parser.add_argument("--manifest", type=str, default=None, help="Manifest jsonl")
-    parser.add_argument("--provider", choices=["dml", "cpu"], default=default_runtime_device())
+    parser.add_argument("--provider", choices=["webgpu", "dml", "cpu"], default=default_runtime_device())
     parser.add_argument("--batch_size", type=int, default=2)
     args = parser.parse_args()
 

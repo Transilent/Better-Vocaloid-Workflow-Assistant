@@ -7,17 +7,16 @@ from PySide6.QtCore import QObject, Property, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
 import project_convert_service as _svc
-from project_convert_compat import strip_extended_prefix
 from quick_work import WorkerLane
 
 
 def _local_path(value) -> str:
     if isinstance(value, QUrl):
-        return strip_extended_prefix(value.toLocalFile()) if value.isLocalFile() else ''
+        return value.toLocalFile() if value.isLocalFile() else ''
     text = str(value or '').strip()
     if text.startswith('file:///'):
-        return strip_extended_prefix(QUrl(text).toLocalFile())
-    return strip_extended_prefix(text)
+        return QUrl(text).toLocalFile()
+    return text
 
 
 class QuickConvert(QObject):
@@ -35,7 +34,6 @@ class QuickConvert(QObject):
         self._selected_tracks: list[int] = []
         self._target_format: str = 'ustx'
         self._output_dir: str = ''
-        self._custom_output_dir: bool = False
         self._pitch_mode: str = 'keep'
         self._lyric_mode: str = 'adapt'
         self._include_instrumental: bool = True
@@ -164,8 +162,8 @@ class QuickConvert(QObject):
             self._selected_tracks = [
                 int(t['vocalIndex']) for t in vocals if t.get('noteCount', 0) > 0
             ] or ([int(vocals[0]['vocalIndex'])] if vocals else [])
-            if not self._custom_output_dir or not self._output_dir:
-                self._output_dir = strip_extended_prefix(result.get('defaultOutputDir', ''))
+            if not self._output_dir:
+                self._output_dir = result.get('defaultOutputDir', '')
             # Pick a sensible default target different from the source format
             src_fmt = result.get('format', '')
             if src_fmt == self._target_format:
@@ -187,8 +185,6 @@ class QuickConvert(QObject):
             return
         self._inspection = None
         self._selected_tracks = []
-        if not self._custom_output_dir:
-            self._output_dir = ''
         self._receipt = None
         self._notice = ''
         self._error = False
@@ -208,7 +204,6 @@ class QuickConvert(QObject):
             self._selected_tracks = [i for i in self._selected_tracks if i != vocal_index]
         else:
             self._selected_tracks = sorted([*self._selected_tracks, vocal_index])
-        self._receipt = None
         self.changed.emit()
 
     @Slot()
@@ -219,7 +214,6 @@ class QuickConvert(QObject):
             int(t['vocalIndex']) for t in self._inspection.get('tracks', [])
             if t.get('kind') == 'vocal' and t.get('vocalIndex') is not None
         )
-        self._receipt = None
         self.changed.emit()
 
     @Slot()
@@ -233,7 +227,6 @@ class QuickConvert(QObject):
         if vocals:
             best = max(vocals, key=lambda t: t.get('noteCount', 0))
             self._selected_tracks = [int(best['vocalIndex'])]
-            self._receipt = None
             self.changed.emit()
 
     @Slot(str)
@@ -243,7 +236,6 @@ class QuickConvert(QObject):
         spec = _svc.SPECS_BY_ID.get(fmt)
         if spec and spec.can_write and fmt != self._target_format:
             self._target_format = fmt
-            self._receipt = None
             self.changed.emit()
 
     @Slot('QVariant')
@@ -252,9 +244,7 @@ class QuickConvert(QObject):
             return
         local = _local_path(path_or_url)
         if local:
-            self._output_dir = strip_extended_prefix(Path(local).expanduser().resolve())
-            self._custom_output_dir = True
-            self._receipt = None
+            self._output_dir = str(Path(local).expanduser().resolve())
             self.changed.emit()
 
     @Slot(str)
@@ -263,7 +253,6 @@ class QuickConvert(QObject):
             return
         if self._pitch_mode != mode:
             self._pitch_mode = mode
-            self._receipt = None
             self.changed.emit()
 
     @Slot(str)
@@ -272,7 +261,6 @@ class QuickConvert(QObject):
             return
         if self._lyric_mode != mode:
             self._lyric_mode = mode
-            self._receipt = None
             self.changed.emit()
 
     @Slot(bool)
@@ -282,7 +270,6 @@ class QuickConvert(QObject):
         value = bool(enabled)
         if self._include_instrumental != value:
             self._include_instrumental = value
-            self._receipt = None
             self.changed.emit()
 
     @Slot(bool)
@@ -292,7 +279,6 @@ class QuickConvert(QObject):
         value = bool(enabled)
         if self._split_tracks != value:
             self._split_tracks = value
-            self._receipt = None
             self.changed.emit()
 
     @Slot()
@@ -335,25 +321,22 @@ class QuickConvert(QObject):
 
     @Slot(str)
     def openFolder(self, path_str: str):
-        clean = strip_extended_prefix(path_str)
-        p = Path(clean) if clean else None
+        p = Path(path_str) if path_str else None
         if p is None:
             return
         folder = p if p.is_dir() else p.parent
         if folder.is_dir():
-            QDesktopServices.openUrl(QUrl.fromLocalFile(strip_extended_prefix(folder)))
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     @Slot(str)
     def sendToTuning(self, path_str: str):
-        clean = strip_extended_prefix(path_str)
-        if clean and Path(clean).is_file():
-            self.tuningHandoffRequested.emit(clean)
+        if path_str and Path(path_str).is_file():
+            self.tuningHandoffRequested.emit(path_str)
 
     @Slot(str)
     def sendToChorusScore(self, path_str: str):
-        clean = strip_extended_prefix(path_str)
-        if clean and Path(clean).is_file():
-            self.chorusScoreHandoffRequested.emit(clean)
+        if path_str and Path(path_str).is_file():
+            self.chorusScoreHandoffRequested.emit(path_str)
 
     def close(self):
         if self._closed:

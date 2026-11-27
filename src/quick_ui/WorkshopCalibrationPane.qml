@@ -52,21 +52,17 @@ Item {
         anchors.fill: parent
         spacing: Math.round(12 * pane.unit)
 
-        Flow {
+        RowLayout {
             Layout.fillWidth: true
-            Layout.minimumWidth: 0
-            spacing: Math.round(10 * pane.unit)
+            spacing: Math.round(15 * pane.unit)
             Repeater {
                 model: ["准备素材", "七轨试音", "拟合结果"]
-                delegate: Row {
+                delegate: RowLayout {
                     required property string modelData
                     required property int index
-                    spacing: Math.round(6 * pane.unit)
-                    height: Math.round(28 * pane.unit)
                     Rectangle {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 23 * pane.unit
-                        height: 23 * pane.unit
+                        Layout.preferredWidth: 23 * pane.unit
+                        Layout.preferredHeight: 23 * pane.unit
                         radius: width / 2
                         color: index === pane.step ? pane.theme.accent : pane.theme.raised
                         Text {
@@ -78,7 +74,6 @@ Item {
                         }
                     }
                     Text {
-                        anchors.verticalCenter: parent.verticalCenter
                         text: pane.label(modelData)
                         font.pixelSize: Math.round(13 * pane.unit)
                         font.weight: index === pane.step ? Font.DemiBold : Font.Normal
@@ -86,6 +81,7 @@ Item {
                     }
                 }
             }
+            Item { Layout.fillWidth: true }
             UiButton {
                 objectName: "calibrationResume"
                 theme: pane.theme

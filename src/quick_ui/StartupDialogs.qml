@@ -18,21 +18,14 @@ Item {
             return routes.map(route => String(route.pageId || ""))
         return ["processing", "components", "results", "updates"]
     }
-    function stepShortcut(step) {
-        if (!step) return ""
-        const idx = routeIds.indexOf(String(step.pageId || ""))
-        const nav = (idx >= 0 && idx < 9) ? ("Ctrl+" + (idx + 1)) : ""
-        const extra = String(step.shortcut || "")
-        return (nav && extra && extra !== nav) ? (nav + " · " + extra) : (nav || extra)
-    }
     readonly property var allTourSteps: [
-        { pageId: "processing", title: tr("准备工作流"), shortcut: "",
+        { pageId: "processing", title: tr("准备工作流"), shortcut: "Ctrl+1",
           body: tr("从一首歌开始：粘贴哔哩哔哩链接或拖入本地音频，按需填写歌词与导出格式，自动完成分离、MIDI 与工程生成。") },
-        { pageId: "results", title: tr("任务与结果"), shortcut: "",
+        { pageId: "results", title: tr("任务与结果"), shortcut: "Ctrl+2",
           body: tr("所有任务的历史进度、分轨音频、工程文件与核验状态都在这里集中管理，可一键流转到调音、混音或合成视频。") },
-        { pageId: "tuning", title: tr("调音工作流"), shortcut: "",
+        { pageId: "tuning", title: tr("调音工作流"), shortcut: "Ctrl+3",
           body: tr("原生打开 SVP / USTX / VPR / VSQX / ACEP / UFData 工程，按片段叠加风格与参数来源，预览变化后另存独立候选工程。") },
-        { pageId: "tuning_workshop", title: tr("调音工坊与声库校准"), shortcut: "",
+        { pageId: "tuning_workshop", title: tr("调音工坊与声库校准"), shortcut: "Ctrl+4",
           body: tr("自定义情绪配方、管理个人风格预设，或通过七轨试音拟合不同声库的实测参数响应。") },
         { pageId: "chorus", title: tr("修音工作台"), shortcut: "Space / N",
           body: tr("拖入多轨干声与背景 MIDI，对照乐谱批量对齐节奏和音高；支持自由手绘音高线、拆音符、按音节补力度与分轨交付。") },
@@ -315,8 +308,18 @@ Item {
     Component.onCompleted: Qt.callLater(syncDialogs)
     onSnapshotChanged: syncDialogs()
 
-    Shortcut { sequence: "Left"; context: Qt.WindowShortcut; enabled: tutorialDialog.opened && !root.isScenarioMode; onActivated: root.requestTutorialPrevious() }
-    Shortcut { sequence: "Right"; context: Qt.WindowShortcut; enabled: tutorialDialog.opened && !root.isScenarioMode; onActivated: root.requestTutorialAdvance() }
+    Shortcut {
+        sequence: "Left"
+        context: Qt.WindowShortcut
+        enabled: tutorialDialog.opened
+        onActivated: root.requestTutorialPrevious()
+    }
+    Shortcut {
+        sequence: "Right"
+        context: Qt.WindowShortcut
+        enabled: tutorialDialog.opened
+        onActivated: root.requestTutorialAdvance()
+    }
 
     Dialog {
         id: tutorialDialog
@@ -440,7 +443,7 @@ Item {
                                 }
                                 Item { Layout.fillWidth: true }
                                 Rectangle {
-                                    visible: root.stepShortcut(root.currentStepData).length > 0
+                                    visible: String(root.currentStepData.shortcut || "").length > 0
                                     radius: Math.round(4 * root.theme.scale)
                                     color: root.theme.raised
                                     border.color: root.theme.line
@@ -448,9 +451,8 @@ Item {
                                     implicitHeight: scTxt.implicitHeight + Math.round(4 * root.theme.scale)
                                     Text {
                                         id: scTxt
-                                        objectName: "tutorialShortcutBadge"
                                         anchors.centerIn: parent
-                                        text: root.stepShortcut(root.currentStepData)
+                                        text: String(root.currentStepData.shortcut || "")
                                         color: root.theme.accent
                                         font.pixelSize: Math.round(10 * root.theme.scale)
                                         font.family: root.theme.monoFont || "Consolas"

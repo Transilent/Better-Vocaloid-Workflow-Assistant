@@ -128,9 +128,9 @@ class PreparationOptions(StrictModel):
     bpm: float | None = Field(default=None, ge=PREPARATION_BPM_RANGE[0],
         le=PREPARATION_BPM_RANGE[1])
     separation_device: PreparationExecutionDevice | None = Field(default=None,
-        description='MDX/声部分离执行设备，仅支持 cpu 或 dml；RoFormer 设备是独立设置。')
+        description='MDX/声部分离执行设备，仅支持 cpu 或 webgpu；RoFormer 设备是独立设置。')
     midi_device: PreparationExecutionDevice | None = Field(default=None,
-        description='Vocal2MIDI 执行设备，仅支持 cpu 或 dml；RoFormer 设备是独立设置。')
+        description='Vocal2MIDI 执行设备，仅支持 cpu 或 webgpu；RoFormer 设备是独立设置。')
     cpu_threads: int | None = Field(default=None, ge=PREPARATION_CPU_THREADS_RANGE[0],
         le=PREPARATION_CPU_THREADS_RANGE[1], description='0 表示自动；最大 64。')
 

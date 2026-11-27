@@ -17,13 +17,11 @@ import dependency_profiles
 import download_sources
 import expression_component
 import feature_components
-import gpu_backend
 import optional_components
-import roformer_onnx_component
 from preparation_languages import QWEN_FEATURE, QWEN_TITLE
 
 
-COMPONENT_IDS = ('builtin', 'roformer', 'chinese', 'expression', 'roformer_onnx')
+COMPONENT_IDS = ('builtin', 'roformer', 'chinese', 'expression')
 ROW_KEYS = (
     'id', 'title', 'summary', 'status', 'status_text', 'detail',
     'download_bytes', 'installed_bytes', 'required_bytes',
@@ -41,9 +39,11 @@ _FEATURE_STATUS = {'ready', 'missing', 'partial', 'damaged', 'error'}
 
 
 def _runtime(value):
-    if value not in ('cpu', 'cuda'):
-        raise ValueError('请选择 CPU 或 NVIDIA CUDA 运行库。')
-    return value
+    if value in ('cpu', 'webgpu'):
+        return value
+    if value == 'cuda':
+        return 'webgpu'
+    raise ValueError('请选择 CPU 或 WebGPU 运行库。')
 
 
 def _nonnegative_int(value):
@@ -71,14 +71,12 @@ def _row(component_id, status, *, detail, download=0, installed=0,
         'title': {
             'builtin': 'Karaoke 2',
             'roformer': 'BS-RoFormer',
-            'roformer_onnx': 'BS-RoFormer ONNX（实验性）',
             QWEN_FEATURE: QWEN_TITLE,
             'expression': '参考演唱音色',
         }[component_id],
         'summary': {
             'builtin': '主唱／和声分离 · 内置基础方案 · 无需下载',
-            'roformer': '主唱／和声分离 · 可选 CPU / CUDA 运行库',
-            'roformer_onnx': '主唱／和声分离 · 实验性 WebGPU/ONNX · 10s/20s FP16 · 默认不启用',
+            'roformer': '主唱／和声分离 · 可选 CPU / WebGPU 运行库',
             QWEN_FEATURE: 'Qwen3-ASR · 中文和英文共用',
             'expression': 'WORLD · 张力、气声与发声强度',
         }[component_id],
@@ -194,47 +192,55 @@ def _builtin_row(check=None):
     )
 
 
-def _roformer_manifest_items(spec, runtime):
+def _roformer_manifest_items(spec, runtime, precision='auto'):
     rows = []
-    for key in ('weights', 'shared_wheels'):
-        value = spec.get(key)
-        if not isinstance(value, list):
-            raise ValueError(f'BS-RoFormer 清单缺少 {key}。')
-        rows.extend(value)
-    torch_wheels = spec.get('torch_wheels')
-    if not isinstance(torch_wheels, dict) or not isinstance(torch_wheels.get(runtime), dict):
+    weights = spec.get('weights')
+    if not isinstance(weights, list):
+        raise ValueError('BS-RoFormer 清单缺少 weights。')
+    rows.extend(optional_components.manifest_weights_for_precision(spec, precision))
+    shared = spec.get('shared_wheels')
+    if not isinstance(shared, list):
+        raise ValueError('BS-RoFormer 清单缺少 shared_wheels。')
+    rows.extend(shared)
+    runtime_wheels = spec.get('runtime_wheels') or spec.get('torch_wheels')
+    if not isinstance(runtime_wheels, dict):
         raise ValueError(f'BS-RoFormer 清单缺少 {runtime} 运行库。')
-    rows.append(torch_wheels[runtime])
+    wheel = runtime_wheels.get(runtime)
+    if wheel is None and runtime == 'webgpu':
+        wheel = runtime_wheels.get('cuda')
+    if not isinstance(wheel, dict):
+        raise ValueError(f'BS-RoFormer 清单缺少 {runtime} 运行库。')
+    rows.append(wheel)
     for item in rows:
         if not isinstance(item, dict) or type(item.get('bytes')) is not int or item['bytes'] < 0:
             raise ValueError('BS-RoFormer 清单文件大小无效。')
     return rows
 
 
-def _roformer_row(runtime):
+def _roformer_row(runtime, precision='auto'):
     model = 'roformer'
     try:
+        recommended = optional_components.recommended_precision()
+        target_precision = optional_components.normalize_precision(precision)
         state = optional_components.status()
         spec = optional_components.manifest()
-        items = _roformer_manifest_items(spec, runtime)
+        items = _roformer_manifest_items(spec, runtime, target_precision)
         download = sum(item['bytes'] for item in items)
         install_sizes = spec.get('install_bytes')
         expanded = install_sizes.get(runtime) if isinstance(install_sizes, dict) else None
+        if expanded is None and runtime == 'webgpu' and isinstance(install_sizes, dict):
+            expanded = install_sizes.get('cuda')
         expanded = _nonnegative_int(expanded)
         required = download + expanded + 512 * 1024**2
     except Exception as exc:
         return _error_row('roformer', exc, model=model)
 
     ready = bool(state.get('ready'))
-    installed_runtimes = state.get('installed_runtimes')
-    if isinstance(installed_runtimes, list):
-        installed_runtimes = [rt for rt in ('cuda', 'cpu') if rt in installed_runtimes]
-    else:
-        rt_single = state.get('runtime') if state.get('runtime') in ('cpu', 'cuda') else None
-        installed_runtimes = [rt_single] if (ready and rt_single) else []
-    target_ready = runtime in installed_runtimes
-    installed_runtime = runtime if target_ready else (installed_runtimes[0] if installed_runtimes else None)
-    runtime_states = {rt: ('ready' if rt in installed_runtimes else 'missing') for rt in ('cuda', 'cpu')}
+    raw_installed = state.get('runtime')
+    installed_runtime = (
+        'webgpu' if raw_installed in ('webgpu', 'cuda') else ('cpu' if raw_installed == 'cpu' else None)
+    )
+    installed_precision = str(state.get('precision') or '').strip().lower()
     verification = state.get('verification') if isinstance(state.get('verification'), dict) else {}
     cached = 0
     for item in items:
@@ -246,48 +252,50 @@ def _roformer_row(runtime):
         except OSError:
             cached = None
             break
-    health = {'runtime': installed_runtime or '', 'ready_runtime': (installed_runtime or '') if installed_runtimes else '',
-              'installed_runtimes': installed_runtimes,
-              'runtimes': runtime_states,
-              'target_runtime': runtime,
+    precision_match = (not installed_precision) or (installed_precision == target_precision)
+    shared_runtime = optional_components.shared_runtime_wheel(spec)
+    runtime_match = (installed_runtime == runtime) or (installed_runtime in ('cpu', 'webgpu') and shared_runtime)
+    ready_runtime = ('webgpu' if shared_runtime else (installed_runtime or '')) if ready else ''
+    health = {'runtime': installed_runtime or '', 'ready_runtime': ready_runtime,
+              'precision': installed_precision, 'target_precision': target_precision,
+              'recommended_precision': recommended,
               'cache_bytes': cached,
-              'installed_estimate': bool(target_ready),
+              'installed_estimate': bool(ready and runtime_match and precision_match),
               'scope': '安装收据、文件路径与大小；完整校验另行执行',
               'source': '当前固定组件清单'}
-    if target_ready:
+    if ready and runtime_match and precision_match:
         installed = expanded
         if verification.get('content_verified') or verification.get('sha256_checked'):
-            verify_note = '元数据与完整 SHA-256 校验通过；不会加载模型。'
+            detail = '当前运行库的元数据与完整 SHA-256 校验通过；不会加载模型。'
         else:
-            verify_note = '元数据检查通过；尚未执行完整 SHA-256 校验。'
-        if len(installed_runtimes) == 2:
-            detail = f'GPU (CUDA) 与 CPU 运行库均已独立安装，可自由切换无需重新下载。{verify_note}'
-        elif runtime == 'cuda':
-            detail = f'GPU (CUDA) 运行库已安装（同时支持 CPU 推理，无需另装 CPU 版）；CPU 独立版未安装。{verify_note}'
-        else:
-            detail = f'CPU 运行库已安装；GPU (CUDA) 运行库未安装（后续加装 CUDA 不会覆盖现有 CPU 版）。{verify_note}'
+            detail = '当前运行库的元数据检查通过；尚未执行完整 SHA-256 校验。'
         return _row(
             'roformer', 'ready', detail=detail,
             download=download, installed=installed, required=required,
             can_install=True, can_verify=True, can_use=True, model=model, health=health, download_items=items,
         )
 
-    if installed_runtimes:
-        other_runtime = installed_runtimes[0]
-        if other_runtime == 'cuda' and runtime == 'cpu':
-            detail = (
-                '已安装 GPU (CUDA) 运行库（已自带 CPU 推理能力，在准备工作流中可直接选择 CPU，无需另行下载 CPU 版）；'
-                '当前查看的 CPU 独立运行库未安装，若加装也会独立保存，不会覆盖 CUDA 版。'
-            )
-        else:
-            detail = (
-                '已安装 CPU 运行库；当前选择的 GPU (CUDA) 运行库尚未安装。'
-                '下载安装 CUDA 版会独立保存，不会覆盖已安装的 CPU 版。'
-            )
+    if ready and runtime_match and not precision_match:
+        labels = {'fp16_10s': '10s FP16', 'fp16': '20s FP16', 'fp32': '20s FP32'}
+        installed_label = labels.get(installed_precision, installed_precision.upper())
+        target_label = labels.get(target_precision, target_precision.upper())
         return _row(
             'roformer', 'missing',
             status_text='当前目标未安装',
-            detail=detail,
+            detail=f'已安装 {installed_label} 权重；当前选择的 {target_label} 尚未安装。'
+                   f' 安装 {target_label} 会切换到该精度。',
+            download=download, installed=0, required=required,
+            can_install=True, can_verify=False, can_use=False, model=model, health=health, download_items=items,
+        )
+
+    if ready and installed_runtime is not None:
+        installed_name = 'WebGPU' if installed_runtime == 'webgpu' else 'CPU'
+        selected_name = 'WebGPU' if runtime == 'webgpu' else 'CPU'
+        return _row(
+            'roformer', 'missing',
+            status_text='当前目标未安装',
+            detail=f'已安装另一档 {installed_name} 运行库；当前选择的 {selected_name} 尚未安装。'
+                   f' 安装 {selected_name} 会切换到该运行库。',
             download=download, installed=0, required=required,
             can_install=True, can_verify=False, can_use=False, model=model, health=health, download_items=items,
         )
@@ -298,11 +306,7 @@ def _roformer_row(runtime):
     elif state_value == 'corrupt':
         status = 'damaged'
     else:
-        status = _tree_presence(
-            optional_components.COMPONENT,
-            damaged_names=(f'current-{runtime}', 'current'),
-            partial_names=('downloads', f'staging-{runtime}', f'previous-{runtime}', 'staging', 'previous'),
-        )
+        status = _tree_presence(optional_components.COMPONENT)
     if status == 'ready':
         status = 'damaged'
     if status == 'damaged':
@@ -404,123 +408,29 @@ def _expression_row():
     )
 
 
-def _roformer_onnx_row(precision=None):
-    model = 'roformer_onnx'
-    try:
-        recommendation = gpu_backend.recommend_roformer_onnx()
-        target_prec = roformer_onnx_component.normalize_precision(
-            precision or recommendation['recommended_precision']
-        )
-        state = roformer_onnx_component.status()
-        spec = roformer_onnx_component.manifest()
-        items = roformer_onnx_component.manifest_items(spec, target_prec)
-        download = sum(item['bytes'] for item in items)
-        install_sizes = spec.get('install_bytes')
-        expanded = _nonnegative_int(install_sizes.get(target_prec) if isinstance(install_sizes, dict) else 0)
-        required = download + expanded + 512 * 1024**2
-    except Exception as exc:
-        return _error_row('roformer_onnx', exc, model=model)
+def catalog(runtime, *, precision='auto', check=None) -> list[dict]:
+    """Return the four stable component rows for the selected RoFormer runtime.
 
-    installed_precisions = [
-        p for p in roformer_onnx_component.PRECISIONS
-        if p in (state.get('installed_precisions') or ())
-    ]
-    prec_states = {p: ('ready' if p in installed_precisions else 'missing') for p in roformer_onnx_component.PRECISIONS}
-    target_ready = target_prec in installed_precisions
-    cached = 0
-    for item in items:
-        name = item.get('name')
-        if not isinstance(name, str) or not name or Path(name).name != name:
-            continue
-        try:
-            cached += feature_components.resumable_cache_bytes(roformer_onnx_component.COMPONENT / 'downloads', item)
-        except OSError:
-            cached = None
-            break
-    health = {
-        'experimental': True,
-        'target_precision': target_prec,
-        'installed_precisions': installed_precisions,
-        'precisions': prec_states,
-        'recommendation': recommendation,
-        'cache_bytes': cached,
-        'installed_estimate': bool(target_ready),
-        'scope': 'ONNX 权重、配置与隔离 onnxruntime-webgpu 1.27.0 校验；不影响原版 PyTorch CUDA 与 DirectML',
-        'source': '实验性固定组件清单（致谢 AU-ki 导出）',
-    }
-    label_map = {'fp16_10s': '10s FP16', 'fp16': '20s FP16'}
-    target_label = label_map[target_prec]
-    if target_ready:
-        detail = (
-            f'实验性 {target_label} 与隔离 WebGPU 运行库已就绪（默认不启用，可在准备工作流中手动选用）。'
-            f'{recommendation["reason"]}'
-        )
-        return _row(
-            'roformer_onnx', 'ready', detail=detail,
-            download=download, installed=expanded, required=required,
-            can_install=True, can_verify=True, can_use=True, model=model,
-            health=health, download_items=items,
-        )
-    if installed_precisions:
-        other = label_map[installed_precisions[0]]
-        detail = (
-            f'已安装实验性 {other}；当前选中的 {target_label} 尚未安装（两档独立存储互不覆盖）。'
-            f'{recommendation["reason"]}'
-        )
-        return _row(
-            'roformer_onnx', 'missing', status_text='当前档位未安装', detail=detail,
-            download=download, installed=0, required=required,
-            can_install=True, can_verify=False, can_use=False, model=model,
-            health=health, download_items=items,
-        )
-    status = _tree_presence(
-        roformer_onnx_component.COMPONENT,
-        damaged_names=(f'current-{target_prec}',),
-        partial_names=('downloads', f'staging-{target_prec}', f'previous-{target_prec}'),
-    )
-    if status == 'damaged':
-        detail = 'BS-RoFormer ONNX（实验性）目录存在但校验未通过；可重新安装或校验。'
-        can_verify = True
-    elif status == 'partial':
-        detail = '检测到未完成的 BS-RoFormer ONNX（实验性）下载或暂存；可继续下载。'
-        can_verify = False
-    else:
-        detail = (
-            f'实验性跨厂商 WebGPU / ONNX 后端，默认不启用。{recommendation["reason"]}'
-            ' 8 GB 及以下显存请仅用 10s FP16；20s FP16 需 12 GB+ 独立显存。'
-        )
-        can_verify = False
-    return _row(
-        'roformer_onnx', status, detail=detail,
-        download=download, installed=0, required=required,
-        can_install=True, can_verify=can_verify, can_use=False, model=model,
-        health=health, download_items=items,
-    )
-
-
-def catalog(runtime, *, check=None, onnx_precision=None) -> list[dict]:
-    """Return the stable component rows for the selected RoFormer runtime and ONNX precision."""
+    ``download_bytes`` is the complete fresh-download size, ``installed_bytes``
+    is the ready payload for the selected component/target, and
+    ``required_bytes`` is the complete install footprint represented by the
+    existing manifests (download plus expanded runtime where known).  RoFormer
+    status and actions are always scoped to the requested CPU/CUDA target; a
+    healthy installation of the other target is reported only as context.
+    """
     runtime = _runtime(runtime)
     rows = []
-    readers = (
-        lambda: _builtin_row(check),
-        lambda: _roformer_row(runtime),
-        _chinese_row,
-        _expression_row,
-        lambda: _roformer_onnx_row(onnx_precision),
-    )
-    for read in readers:
+    for read in (lambda: _builtin_row(check), lambda: _roformer_row(runtime, precision), _chinese_row, _expression_row):
         if check is not None and check():
             raise InterruptedError('已取消组件检查。')
         row = read()
-        root = {
-            'roformer': optional_components.COMPONENT,
-            'roformer_onnx': roformer_onnx_component.COMPONENT,
-            'chinese': feature_components.ROOT,
-            'expression': expression_component.COMPONENT,
-        }.get(row['id'])
+        root = {'roformer': optional_components.COMPONENT, 'chinese': feature_components.ROOT,
+                'expression': expression_component.COMPONENT}.get(row['id'])
         if root is not None:
             row['health']['volume'] = _install_volume(root)
+            # Chinese files are checked again before download. Reserve for the
+            # entire set as an estimate so an unchecked file is never counted
+            # as guaranteed reusable. Only the installer decides if space is enough.
             reserve = row['required_bytes']
             if row['id'] == 'chinese' and reserve:
                 reserve += 64 * 1024**2
@@ -535,13 +445,12 @@ def install(component_id, *, runtime=None, precision=None, source='auto', progre
     callback = _progress(progress)
     if component_id == 'roformer':
         runtime = _runtime(runtime)
+        if precision in ('fp16_10s', 'fp16', 'fp32'):
+            return optional_components.install(
+                runtime, callback, check, force=bool(force), source=source, precision=precision,
+            )
         return optional_components.install(
             runtime, callback, check, force=bool(force), source=source,
-        )
-    if component_id == 'roformer_onnx':
-        prec = roformer_onnx_component.normalize_precision(precision)
-        return roformer_onnx_component.install(
-            prec, callback, check, force=bool(force), source=source,
         )
     if component_id == 'chinese':
         return feature_components.install(
@@ -556,7 +465,7 @@ def install(component_id, *, runtime=None, precision=None, source='auto', progre
     raise ValueError('未知的组件标识。')
 
 
-def verify(component_id, *, runtime=None, precision=None, progress=None, check=None):
+def verify(component_id, *, progress=None, check=None):
     """Reuse the service-owned verification report or wrap its boolean result."""
     callback = _progress(progress)
     if component_id == 'builtin':
@@ -564,15 +473,7 @@ def verify(component_id, *, runtime=None, precision=None, progress=None, check=N
         callback(1, 1, '基础依赖 SHA-256 校验结束')
         return {**report, 'verified': report.get('state') == 'passed'}
     if component_id == 'roformer':
-        if runtime is None:
-            return optional_components.full_verify(progress=progress, check=check)
-        return optional_components.full_verify(progress=progress, check=check, runtime=_runtime(runtime))
-    if component_id == 'roformer_onnx':
-        if precision is None:
-            return roformer_onnx_component.full_verify(progress=progress, check=check)
-        return roformer_onnx_component.full_verify(
-            progress=progress, check=check, precision=roformer_onnx_component.normalize_precision(precision),
-        )
+        return optional_components.full_verify(progress=progress, check=check)
     if component_id == 'chinese':
         return feature_components.verify('chinese', progress=progress, check=check)
     if component_id == 'expression':

@@ -114,15 +114,8 @@ _HFA_DICT_FILES = {
 _HFA_MODEL_CACHE: dict[tuple[str, str], InferenceOnnx] = {}
 
 
-def load_hfa_model(model_dir, device=None, use_cache: bool = True):
-    """
-    Load the HubertFA ONNX model on DirectML by default, with CPU fallback.
-
-    Cached in-process and reused across pipeline runs: recreating the
-    DirectML session per song corrupts onnxruntime's DML state and
-    access-violates the process on the next song. run_hubert_fa resets the
-    per-run state (dataset/predictions) at entry, so reuse is safe.
-    """
+def load_hfa_model(model_dir, device=None, use_cache: bool = False):
+    """Load the HubertFA ONNX model on WebGPU by default, with CPU fallback."""
     resolved = str(pathlib.Path(model_dir))
     key = (resolved, str(device or "").strip().lower() or "auto")
     if use_cache:
@@ -136,14 +129,17 @@ def load_hfa_model(model_dir, device=None, use_cache: bool = True):
     model.load_config()
     model.init_decoder()
     import onnxruntime as ort
-    provider_name, providers = resolve_onnx_providers(device, label="HubertFA ONNX")
+    from inference.device_utils import configure_onnx_threads, create_onnx_session
     options = ort.SessionOptions()
-    from inference.device_utils import configure_onnx_threads
     configure_onnx_threads(options)
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     options.enable_mem_pattern = False
     options.enable_cpu_mem_arena = False
-    model.model = ort.InferenceSession(str(model.model_folder / 'model.onnx'), options, providers=providers)
+    provider_name, model.model = create_onnx_session(
+        model.model_folder / 'model.onnx', options, device, label="HubertFA ONNX"
+    )
+    active_ep = model.model.get_providers()[0] if model.model.get_providers() else "CPUExecutionProvider"
+    print(f"[VWA 后端] 歌词对齐 (HubertFA): {active_ep} ({provider_name})", flush=True)
     logger.info(f"HubertFA ONNX session created with provider={provider_name}: {model.model.get_providers()}")
     if use_cache:
         _HFA_MODEL_CACHE[key] = model

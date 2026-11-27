@@ -1,8 +1,8 @@
-"""Unified GPU capability probe and cross-vendor (AMD/NVIDIA/Intel) backend helpers.
+"""Unified GPU capability probe and WebGPU backend normalization.
 
-Pure Python, zero Qt dependencies. Centralizes DXGI adapter discovery (including
-AMD APU 780M/890M shared-memory eligibility) and ONNX Runtime DirectML / WebGPU
-provider probing without breaking legacy ``dml`` / ``cuda`` configurations.
+Pure Python, zero Qt dependencies. Centralizes AMD/NVIDIA/Intel adapter
+discovery (DXGI + ONNX Runtime WebGPU EP devices) and legacy device token
+migration (``dml`` / ``cuda`` -> ``webgpu``).
 """
 from __future__ import annotations
 
@@ -19,6 +19,55 @@ VENDOR_LABELS = {
     VENDOR_NVIDIA: 'NVIDIA',
     VENDOR_INTEL: 'Intel',
 }
+
+EXECUTION_DEVICE_CHOICES = ('cpu', 'webgpu')
+ROFORMER_DEVICE_CHOICES = ('auto', 'cpu', 'webgpu')
+ROFORMER_RUNTIME_CHOICES = ('cpu', 'webgpu')
+
+_LEGACY_EXECUTION_MAP = {
+    'cpu': 'cpu',
+    'webgpu': 'webgpu',
+    'wgpu': 'webgpu',
+    'gpu': 'webgpu',
+    'dml': 'webgpu',
+    'directml': 'webgpu',
+    'cuda': 'webgpu',
+    'rocm': 'webgpu',
+}
+
+
+def normalize_execution_device(value: Any, *, default: str = 'webgpu') -> str:
+    """Normalize a separation/MIDI device choice, migrating legacy ``dml`` to ``webgpu``."""
+    if isinstance(value, bool) or value is None:
+        return default
+    key = str(value).strip().casefold()
+    if key in _LEGACY_EXECUTION_MAP:
+        return _LEGACY_EXECUTION_MAP[key]
+    raise ValueError('推理设备应为 CPU 或 WebGPU。')
+
+
+def normalize_roformer_device(value: Any, *, default: str = 'auto') -> str:
+    """Normalize a RoFormer execution device choice, migrating legacy ``cuda`` to ``webgpu``."""
+    if isinstance(value, bool) or value is None:
+        return default
+    key = str(value).strip().casefold()
+    if key == 'auto':
+        return 'auto'
+    if key in _LEGACY_EXECUTION_MAP:
+        return _LEGACY_EXECUTION_MAP[key]
+    raise ValueError('新模型的设备请选择自动、CPU 或 WebGPU。')
+
+
+def normalize_roformer_runtime(value: Any) -> str:
+    """Normalize a RoFormer install runtime, migrating legacy ``cuda`` to ``webgpu``."""
+    if isinstance(value, bool) or not isinstance(value, str):
+        raise ValueError('请选择 CPU 或 WebGPU 运行库。')
+    key = value.strip().casefold()
+    if key in ('cpu', 'webgpu'):
+        return key
+    if key in ('cuda', 'dml', 'gpu'):
+        return 'webgpu'
+    raise ValueError('请选择 CPU 或 WebGPU 运行库。')
 
 
 def vendor_name(vendor_id: int, adapter_name: str = '') -> str:
@@ -51,14 +100,12 @@ def _serialize_adapter(adapter: Any) -> dict[str, Any]:
     }
 
 
-def _probe_onnxruntime() -> dict[str, Any]:
+def _probe_ort_webgpu() -> dict[str, Any]:
     try:
         import onnxruntime as ort
     except ImportError as exc:
         return {
             'available': False,
-            'webgpu_available': False,
-            'dml_available': False,
             'version': '',
             'providers': [],
             'ep_devices': [],
@@ -83,12 +130,9 @@ def _probe_onnxruntime() -> dict[str, Any]:
                 })
         except RuntimeError:
             ep_devices = []
-    webgpu = 'WebGpuExecutionProvider' in providers
-    dml = 'DmlExecutionProvider' in providers
     return {
-        'available': webgpu or dml,
-        'webgpu_available': webgpu,
-        'dml_available': dml,
+        'available': 'WebGpuExecutionProvider' in providers,
+        'legacy_dml_available': 'DmlExecutionProvider' in providers,
         'version': str(getattr(ort, '__version__', '')),
         'providers': providers,
         'ep_devices': ep_devices,
@@ -97,95 +141,34 @@ def _probe_onnxruntime() -> dict[str, Any]:
 
 
 def probe_gpu_environment() -> dict[str, Any]:
-    """Inspect local GPUs and ONNX Runtime DirectML/WebGPU readiness for diagnostics & UI."""
+    """Inspect local GPUs and ONNX Runtime WebGPU readiness for UI and diagnostics."""
     dxgi_adapters = [_serialize_adapter(a) for a in runtime_devices.adapters() if not a.is_software]
-    ort_info = _probe_onnxruntime()
+    ort_info = _probe_ort_webgpu()
+    module = runtime_devices.device_module()
     preferred_raw = None
     try:
-        preferred_raw = runtime_devices.preferred_gpu_adapter()
+        module.select_preferred_gpu_adapter.cache_clear()
+        preferred_raw = module.select_preferred_gpu_adapter()
     except ValueError:
         preferred_raw = None
     preferred = _serialize_adapter(preferred_raw) if preferred_raw is not None else None
     webgpu_ready = bool(
-        ort_info['webgpu_available']
+        ort_info['available']
         and (preferred is not None or bool(ort_info['ep_devices']) or sys.platform != 'win32')
     )
-    dml_ready = bool(ort_info['dml_available'] and preferred is not None)
     has_amd = any(a['vendor'] == 'AMD' for a in dxgi_adapters) or any(
         'amd' in (d['vendor'] + ' ' + d['description']).casefold() for d in ort_info['ep_devices']
     )
-    if webgpu_ready:
-        recommended = 'webgpu'
-    elif dml_ready:
-        recommended = 'dml'
-    else:
-        recommended = 'cpu'
+    recommended = 'webgpu' if webgpu_ready else 'cpu'
     return {
         'platform': sys.platform,
         'recommended_device': recommended,
+        'recommended_roformer_runtime': recommended,
         'webgpu_ready': webgpu_ready,
-        'dml_ready': dml_ready,
         'has_amd_gpu': has_amd,
         'preferred_adapter': preferred,
         'adapters': dxgi_adapters,
         'onnxruntime': ort_info,
-    }
-
-
-def recommend_roformer_onnx() -> dict[str, Any]:
-    """Recommend experimental BS-RoFormer ONNX only for AMD GPUs without NVIDIA CUDA dGPU.
-
-    VRAM tiers (only 10s FP16 and 20s FP16 are offered):
-      - >= 11 GiB dedicated VRAM -> ``fp16`` (20s FP16)
-      - <= 10 GiB dedicated VRAM or APU -> ``fp16_10s`` (10s FP16)
-    """
-    try:
-        hardware = [_serialize_adapter(a) for a in runtime_devices.adapters() if not a.is_software]
-    except (OSError, RuntimeError, ValueError):
-        hardware = []
-    amd = [a for a in hardware if a['vendor'] == 'AMD']
-    nvidia_discrete = [a for a in hardware if a['vendor'] == 'NVIDIA' and a['dedicated_vram_bytes'] >= (2 << 30)]
-    max_dedicated_bytes = max((a['dedicated_vram_bytes'] for a in hardware), default=0)
-    max_dedicated_gib = round(max_dedicated_bytes / float(1 << 30), 1)
-    if amd and not nvidia_discrete:
-        best_amd = max(amd, key=lambda a: (a['dedicated_vram_bytes'], a['shared_vram_bytes']))
-        amd_vram_gib = round(best_amd['dedicated_vram_bytes'] / float(1 << 30), 1)
-        precision = 'fp16' if best_amd['dedicated_vram_bytes'] >= (11 << 30) else 'fp16_10s'
-        tier_label = '20s FP16' if precision == 'fp16' else '10s FP16'
-        return {
-            'recommend_onnx': True,
-            'has_amd_gpu': True,
-            'has_nvidia_discrete': False,
-            'recommended_precision': precision,
-            'gpu_name': best_amd['name'],
-            'vram_gib': amd_vram_gib,
-            'max_dedicated_vram_gib': max_dedicated_gib,
-            'reason': f"检测到 AMD 显卡（{best_amd['name']} · 独立显存 {amd_vram_gib:.1f} GiB），推荐下载实验性 {tier_label}。",
-        }
-    if nvidia_discrete:
-        best_nv = max(nvidia_discrete, key=lambda a: a['dedicated_vram_bytes'])
-        nv_vram_gib = round(best_nv['dedicated_vram_bytes'] / float(1 << 30), 1)
-        precision = 'fp16' if best_nv['dedicated_vram_bytes'] >= (11 << 30) else 'fp16_10s'
-        return {
-            'recommend_onnx': False,
-            'has_amd_gpu': bool(amd),
-            'has_nvidia_discrete': True,
-            'recommended_precision': precision,
-            'gpu_name': best_nv['name'],
-            'vram_gib': nv_vram_gib,
-            'max_dedicated_vram_gib': max_dedicated_gib,
-            'reason': f"当前检测到 NVIDIA 独显（{best_nv['name']}），推荐优先使用原版「BS-RoFormer（CUDA）」。",
-        }
-    precision = 'fp16' if max_dedicated_bytes >= (11 << 30) else 'fp16_10s'
-    return {
-        'recommend_onnx': False,
-        'has_amd_gpu': False,
-        'has_nvidia_discrete': False,
-        'recommended_precision': precision,
-        'gpu_name': hardware[0]['name'] if hardware else '',
-        'vram_gib': max_dedicated_gib,
-        'max_dedicated_vram_gib': max_dedicated_gib,
-        'reason': '未检测到 AMD 显卡；默认不启用，仅供实验性测试。',
     }
 
 
@@ -196,14 +179,7 @@ def adapter_choices() -> list[dict[str, Any]]:
     if hardware:
         for adapter in hardware:
             vram_gib = adapter.dedicated_vram_bytes / float(1 << 30)
-            shared_gib = adapter.shared_vram_bytes / float(1 << 30)
-            if vram_gib >= 0.5:
-                mem_label = f"{vram_gib:.1f} GiB"
-            elif shared_gib >= 0.5:
-                mem_label = f"共享 {shared_gib:.1f} GiB"
-            else:
-                mem_label = f"{vram_gib:.1f} GiB"
-            label = f"{adapter.index}: {adapter.name} ({mem_label})"
+            label = f"{adapter.index}: {adapter.name} ({vram_gib:.1f} GiB)"
             rows.append({'label': label, 'value': int(adapter.index)})
         return rows
     for index in range(8):

@@ -9,7 +9,6 @@ from uuid import uuid4
 
 from common import atomic_json, file_hash, native_path
 from i18n import tr
-from project_convert_compat import strip_extended_prefix
 from style_presets import recipe_has_pitch
 import tuning_engine as engine
 from tuning_execution import EDITOR_OPTION_KEYS
@@ -30,30 +29,6 @@ _REGION_BRUSH_FIELDS = {
 
 class SourceChanged(ValueError):
     """The loaded source or its task revision is no longer current."""
-
-
-def local_file_path(value) -> str:
-    """Return a clean local path suitable for QUrl.fromLocalFile on Windows."""
-    return strip_extended_prefix(str(value or ''))
-
-
-def initial_viewport(project, active_track: str, default_span: float = 18.0) -> tuple[float, float]:
-    """Start at project.minimum, or advance to the first vocal note on long-intro tracks."""
-    span = min(default_span, max(1.0, project.maximum - project.minimum))
-    left = project.minimum
-    windows = getattr(project, '_windows', None) or {}
-    notes = (windows.get(active_track) or ((), ()))[0]
-    if not notes:
-        for track_notes, _ in windows.values():
-            if track_notes:
-                notes = track_notes
-                break
-    if notes:
-        first = float(notes[0]['start'])
-        if first >= left + span * 0.85:
-            upper = max(project.minimum, project.maximum - span)
-            left = max(project.minimum, min(upper, first - 1.0))
-    return left, span
 
 
 def read_json_file(path, *, limit: int = 2 * 1024 * 1024):
@@ -432,9 +407,7 @@ def build_view(
         'title': Path(display_source or project.get('path', '')).stem if project else '',
         'sha256': project.get('sha256', ''), 'job': job,
         'projectFormat': (fmt.upper() + ' · ' + str(project['format_version'])) if fmt in workflow.STYLE_ADAPTERS else
-                         ('SV2 · ' + str(project['format_version'])) if project.get('synthesizer_v_2') else
-                         ('SVP · ' + str(project['format_version'])) if project and project.get('format_version') else
-                         ('SVP' if project else ''),
+                         ('SV2 · ' + str(project['format_version'])) if project.get('synthesizer_v_2') else '',
         'projectSuffix': fmt,
         'formatNotice': tr(project['format_notice']) if project.get('format_notice') else '',
         'formatReadOnly': bool(project and fmt in workflow.STYLE_ADAPTERS and not project_obj.editable),

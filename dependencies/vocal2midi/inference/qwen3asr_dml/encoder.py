@@ -119,31 +119,35 @@ class QwenAudioEncoder:
     ):
         self.verbose = verbose
 
-        sess_opts = ort.SessionOptions()
+        from inference.device_utils import configure_onnx_threads, create_onnx_session, is_gpu_provider
 
-        from inference.device_utils import configure_onnx_threads
+        def _make_opts():
+            opts = ort.SessionOptions()
+            configure_onnx_threads(opts)
+            opts.log_severity_level = 3
+            opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
+            opts.add_session_config_entry("session.inter_op.allow_spinning", "0")
+            opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            return opts
 
-        configure_onnx_threads(sess_opts)
-        sess_opts.log_severity_level = 3
-        sess_opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
-        sess_opts.add_session_config_entry("session.inter_op.allow_spinning", "0")
-        sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-
-        requested_device = "dml" if use_dml else "cpu"
-        _, providers = resolve_onnx_providers(requested_device, label="Qwen3 Encoder ONNX")
+        requested_device = "webgpu" if use_dml else "cpu"
 
         if self.verbose:
-            print(f"--- [Encoder] Loading split ONNX models (DML: {use_dml}) ---")
+            print(f"--- [Encoder] Loading split ONNX models (GPU: {use_dml}) ---")
             print(f"    Frontend: {os.path.basename(frontend_path)}")
             print(f"    Backend:  {os.path.basename(backend_path)}")
 
-        self.sess_fe = ort.InferenceSession(frontend_path, sess_options=sess_opts, providers=providers)
-        self.sess_be = ort.InferenceSession(backend_path, sess_options=sess_opts, providers=providers)
+        fe_provider, self.sess_fe = create_onnx_session(
+            frontend_path, _make_opts(), requested_device, label="Qwen3 Encoder Frontend ONNX"
+        )
+        _, self.sess_be = create_onnx_session(
+            backend_path, _make_opts(), requested_device, label="Qwen3 Encoder Backend ONNX"
+        )
         self.frontend_providers = list(self.sess_fe.get_providers())
         self.backend_providers = list(self.sess_be.get_providers())
         self.provider_name = (
-            "dml"
-            if self.frontend_providers and self.frontend_providers[0] == "DmlExecutionProvider"
+            fe_provider
+            if self.frontend_providers and is_gpu_provider(self.frontend_providers[0])
             else "cpu"
         )
         self.mel_extractor = FastWhisperMel()

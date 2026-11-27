@@ -216,7 +216,7 @@ def run(job, voice="vocals", asr_session=None):
         game_model_dir=model("game_model", "experiments/GAME-1.0.3-medium-onnx"),
         hfa_model_dir=model("hfa_model", HUBERTFA_MODEL),
         asr_model_path=model("asr_model", QWEN_MODEL),
-        device=request["tools"].get("midi_device", "dml"), language=language,
+        device=request["tools"].get("midi_device", "webgpu"), language=language,
         ts=[t0 + i * (1 - t0) / nsteps for i in range(nsteps)],
         lyric_output_mode=mode, original_lyrics=reference_lyrics,
         output_formats=formats,
@@ -353,12 +353,10 @@ def run_many(job, voices):
     prepare_environment(request['tools'])
     configure(root)
     session = None
-    midi_device = str(request['tools'].get('midi_device', 'dml') or 'dml').strip().lower()
+    midi_device = str(request['tools'].get('midi_device', 'webgpu') or 'webgpu').strip().lower()
     if (len(voices) > 1 and request.get('midi_backend') == 'v2'
             and PROFILES[request['language']].asr_feature == QWEN_FEATURE
             and request.get('recognize_lyrics', True)):
-        # Retain the multi-GB text model across lead/backing only when host RAM
-        # (>= 16 GiB) and, for GPU runs, dedicated VRAM (>= 12 GiB) have ample margin.
         from runtime_devices import available_memory, preferred_gpu_adapter
         has_host_margin = available_memory() >= 16 * 1024**3
         if midi_device == 'cpu':
@@ -366,10 +364,12 @@ def run_many(job, voices):
         else:
             adapter = preferred_gpu_adapter()
             vram = int(getattr(adapter, 'dedicated_vram_bytes', 0) or 0) if adapter is not None else 0
+            # Keep Qwen3-ASR (~6-7 GiB VRAM) resident across lead/backing only on >= 12 GiB GPUs.
             can_reuse = has_host_margin and vram >= 12 * 1024**3
         if can_reuse:
             from application.pipeline import open_asr_session
             session = open_asr_session()
+            print(f'[VWA 后端] 双轨复用 Qwen3-ASR 会话（device={midi_device}），避免重复加载 4 GB 权重。', flush=True)
     durations = {}
     try:
         for voice in voices:

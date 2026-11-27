@@ -25,52 +25,99 @@ from operation_diagnostics import DownloadTrace, download_file, operation_event
 
 COMPONENT = ROOT / 'dependencies/optional/bs-roformer'
 MANIFEST = ROOT / 'components/roformer.json'
-RUNTIMES = ('cuda', 'cpu')
 _NOT_READY = 'BS-RoFormer 组件元数据检查未通过；文件可能未安装、缺失或路径无效。请在“模型与组件”页面重新安装或执行完整校验。'
-_CUDA_NOT_READY = '尚未安装 BS-RoFormer 的 NVIDIA CUDA 运行库；请在“模型与组件”中安装 CUDA 版，或在准备工作流将 RoFormer 设备切换为 CPU。'
 
 
 def manifest():
     return json.loads(MANIFEST.read_text(encoding='utf-8'))
 
 
-def runtime_directory(runtime, root=None):
-    if runtime not in RUNTIMES:
-        raise ValueError('请选择 CPU 或 NVIDIA GPU 运行库。')
-    return Path(COMPONENT if root is None else root) / f'current-{runtime}'
+def current(root=COMPONENT):
+    return Path(root) / 'current'
 
 
-def _legacy_current(root=None):
-    return Path(COMPONENT if root is None else root) / 'current'
+_FP32_MIN_VRAM_BYTES = 15 * 1024**3
+_FP16_20S_MIN_VRAM_BYTES = 11 * 1024**3
+_PRECISIONS = ('fp16_10s', 'fp16', 'fp32')
 
 
-def current(root=None, runtime=None):
-    root = Path(COMPONENT if root is None else root)
-    if runtime is not None:
-        dedicated = runtime_directory(runtime, root)
-        if dedicated.exists():
-            return dedicated
-        legacy = _legacy_current(root)
-        try:
-            if legacy.exists() and _status_tree(legacy)['runtime'] == runtime:
-                return legacy
-        except (OSError, ValueError, KeyError, TypeError):
-            pass
-        return dedicated
-    legacy = _legacy_current(root)
-    if _directory_ready(legacy):
-        return legacy
-    for rt in RUNTIMES:
-        candidate = runtime_directory(rt, root)
-        if _directory_ready(candidate):
-            return candidate
-    if legacy.exists():
-        return legacy
-    for rt in RUNTIMES:
-        candidate = runtime_directory(rt, root)
-        if candidate.exists():
-            return candidate
-    return legacy
+def recommended_precision():
+    """Recommend 20s FP32 (>=16 GB), 20s FP16 (12 GB), or 10s FP16 (<=8 GB)."""
+    try:
+        from runtime_devices import preferred_gpu_adapter
+        adapter = preferred_gpu_adapter()
+        vram = int(getattr(adapter, 'dedicated_vram_bytes', 0)) if adapter is not None else 0
+        if vram >= _FP32_MIN_VRAM_BYTES:
+            return 'fp32'
+        if vram >= _FP16_20S_MIN_VRAM_BYTES:
+            return 'fp16'
+    except (ImportError, OSError, RuntimeError, ValueError, TypeError):
+        return 'fp16_10s'
+    return 'fp16_10s'
+
+
+def normalize_precision(value='auto'):
+    raw = str(value or 'auto').strip().lower()
+    if raw == 'auto':
+        return recommended_precision()
+    if raw in _PRECISIONS:
+        return raw
+    raise ValueError('请选择自动、10s FP16、20s FP16 或 20s FP32 精度。')
+
+
+def manifest_weights_for_precision(spec, precision='auto'):
+    """Return manifest weight items matching the selected precision tier."""
+    selected = normalize_precision(precision)
+    rows = []
+    for item in spec.get('weights', ()):
+        if isinstance(item, dict) and selected != 'fp32' and str(item.get('name') or '').lower().endswith('.onnx'):
+            match = next((v for v in (item.get('variants') or ())
+                          if isinstance(v, dict) and str(v.get('precision') or '').lower() == selected), None)
+            if match is not None:
+                rows.append(match)
+                continue
+        rows.append(item)
+    return rows
+
+
+def _weight_precision_for_path(path, spec):
+    target = Path(path)
+    name = target.name.lower()
+    if '.fp16_10s.' in name:
+        return 'fp16_10s'
+    try:
+        size = target.stat().st_size
+    except OSError:
+        return 'fp16' if '.fp16.' in name else None
+    for item in spec.get('weights', ()):
+        if not isinstance(item, dict):
+            continue
+        for variant in item.get('variants') or ():
+            if isinstance(variant, dict) and variant.get('bytes') == size:
+                return str(variant.get('precision') or 'fp16').lower()
+        if str(item.get('name') or '').lower().endswith('.onnx') and item.get('bytes') == size:
+            return 'fp32'
+    return 'fp16' if '.fp16.' in name else None
+
+
+def _installed_precision(directory, manifest_path=MANIFEST):
+    try:
+        spec = json.loads(Path(manifest_path).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    directory = Path(directory)
+    for item in spec.get('weights', ()):
+        if not isinstance(item, dict):
+            continue
+        for variant in item.get('variants') or ():
+            if isinstance(variant, dict) and variant.get('name'):
+                candidate = directory / variant['name']
+                if candidate.is_file():
+                    return _weight_precision_for_path(candidate, spec)
+        name = str(item.get('name') or '')
+        if name.lower().endswith('.onnx') and (directory / name).is_file():
+            return _weight_precision_for_path(directory / name, spec)
+    return None
 
 
 def _status_tree(directory):
@@ -78,7 +125,7 @@ def _status_tree(directory):
     if not report['metadata_ready']:
         detail = report['errors'][0]['message'] if report['errors'] else '文件缺失或元数据不一致'
         raise ValueError(detail)
-    return {
+    result = {
         'ready': True,
         'runtime': report['runtime'],
         'probe': report['probe'],
@@ -89,47 +136,85 @@ def _status_tree(directory):
             'state': 'metadata_ready',
         },
     }
+    precision = _installed_precision(directory, MANIFEST)
+    if precision:
+        result['precision'] = precision
+    return result
 
 
-def _not_ready_status():
-    return {
-        'ready': False,
-        'runtime': None,
-        'verification': {
-            'level': 'metadata',
-            'content_verified': False,
-            'sha256_checked': False,
-            'state': 'not_ready',
-        },
-    }
-
-
-def _status_for_runtime(runtime, root=None):
-    root = Path(COMPONENT if root is None else root)
-    for directory in (runtime_directory(runtime, root), _legacy_current(root)):
-        try:
-            report = _status_tree(directory)
-        except (OSError, ValueError, KeyError, TypeError):
+def _pinned_onnx_weights(spec):
+    """Return pinned ONNX weight entries [(name, bytes, sha256), ...], variants first."""
+    entries = []
+    for item in spec.get('weights', ()):
+        if not isinstance(item, dict):
             continue
-        if report.get('runtime') == runtime:
-            return report
-    return _not_ready_status()
+        name = str(item.get('name') or '')
+        if not name.lower().endswith('.onnx'):
+            continue
+        for variant in item.get('variants') or ():
+            if not isinstance(variant, dict):
+                continue
+            v_name = str(variant.get('name') or '')
+            v_size = variant.get('bytes')
+            v_sha = str(variant.get('sha256') or '').strip().lower()
+            if v_name.lower().endswith('.onnx') and type(v_size) is int and v_size > 0 and len(v_sha) == 64:
+                entries.append((v_name, v_size, v_sha))
+        size = item.get('bytes')
+        sha = str(item.get('sha256') or '').strip().lower()
+        if type(size) is int and size > 0 and len(sha) == 64:
+            entries.append((name, size, sha))
+    return entries
 
 
-def status(root=None, runtime=None):
+def _manual_onnx_match(root, manifest_path=MANIFEST):
+    """Detect a pinned FP16/FP32 ONNX weight placed manually without installed.json."""
+    root_path = Path(root)
+    cur_path = current(root_path)
+    if component_health._ancestor_reparse_issue(root_path):
+        return None
+    if cur_path.exists() and component_health._ancestor_reparse_issue(cur_path):
+        return None
+    if (cur_path / 'installed.json').exists():
+        return None
+    manifest_raw, spec, issue, _ = component_health._read_json_regular(
+        manifest_path, component_health.MANIFEST_MAX_BYTES)
+    if issue or not isinstance(spec, dict) or spec.get('engine') != 'onnx-webgpu':
+        return None
+    pinned = _pinned_onnx_weights(spec)
+    if not pinned:
+        return None
+    by_size = {size: sha for _, size, sha in pinned}
+    names = list(dict.fromkeys(name for name, _, _ in pinned))
+    for folder in (cur_path, root_path):
+        if not folder.is_dir() or component_health._ancestor_reparse_issue(folder):
+            continue
+        for name in names:
+            target, info, file_issue = component_health._lstat_regular(folder / name)
+            if file_issue is None and info is not None and info.st_size in by_size:
+                return target, int(info.st_size), by_size[info.st_size], hashlib.sha256(manifest_raw).hexdigest()
+    return None
+
+
+def status(root=COMPONENT):
     """Fast metadata status; this intentionally does not hash model/runtime bytes."""
-    root = COMPONENT if root is None else root
-    if runtime is not None:
-        if runtime not in RUNTIMES:
-            raise ValueError('请选择 CPU 或 NVIDIA GPU 运行库。')
-        return _status_for_runtime(runtime, root)
-    per_runtime = {rt: _status_for_runtime(rt, root) for rt in RUNTIMES}
-    installed = [rt for rt in RUNTIMES if per_runtime[rt]['ready']]
-    runtime_states = {rt: ('ready' if per_runtime[rt]['ready'] else 'missing') for rt in RUNTIMES}
-    if installed:
-        preferred = installed[0]
-        return {**per_runtime[preferred], 'installed_runtimes': installed, 'runtimes': runtime_states}
-    return {**_not_ready_status(), 'installed_runtimes': [], 'runtimes': runtime_states}
+    try:
+        return _status_tree(current(root))
+    except (OSError, ValueError, KeyError, TypeError):
+        match = _manual_onnx_match(root, MANIFEST)
+        if match is not None:
+            result = {
+                'ready': True, 'runtime': 'webgpu',
+                'probe': {'onnxruntime': 'bundled', 'webgpu_available': True, 'device': 'webgpu', 'manual_weight': match[0].name},
+                'verification': {'level': 'metadata', 'content_verified': False, 'sha256_checked': False, 'state': 'metadata_ready'},
+            }
+            precision = _installed_precision(match[0].parent, MANIFEST)
+            if precision:
+                result['precision'] = precision
+            return result
+        return {
+            'ready': False, 'runtime': None,
+            'verification': {'level': 'metadata', 'content_verified': False, 'sha256_checked': False, 'state': 'not_ready'},
+        }
 
 
 def _directory_ready(directory):
@@ -140,47 +225,55 @@ def _directory_ready(directory):
         return False
 
 
-def full_verify(root=None, progress=None, check=None, runtime=None):
+def full_verify(root=COMPONENT, progress=None, check=None):
     """Explicitly hash manifest weights and receipt-critical files.
 
     This is cancellable through ``check``, reports byte progress through
     ``progress(done, total, message)``, and never loads the model or uses the
     network. Missing expected SHAs are reported as unverified rather than ready.
     """
-    root = COMPONENT if root is None else root
-    return component_health.verify_component(current(root, runtime=runtime), MANIFEST,
+    match = _manual_onnx_match(root, MANIFEST)
+    if match is not None:
+        target, expected_bytes, expected_sha, manifest_sha = match
+        if progress:
+            progress(0, expected_bytes, f'正在完整校验 · {target.name}')
+        try:
+            actual_sha = file_hash(target, check=check)
+        except InterruptedError:
+            return {'component': 'bs-roformer-karaoke', 'level': 'full', 'state': 'cancelled', 'verified': False}
+        ok = actual_sha == expected_sha
+        if progress:
+            progress(expected_bytes, expected_bytes, '完整校验通过' if ok else '完整校验结束')
+        return {
+            'component': 'bs-roformer-karaoke', 'level': 'full', 'state': 'verified' if ok else 'corrupt',
+            'verified': ok, 'metadata_ready': True, 'runtime': 'webgpu', 'manifest_sha256': manifest_sha,
+            'probe': {'onnxruntime': 'bundled', 'webgpu_available': True, 'device': 'webgpu', 'manual_weight': target.name},
+            'expected': [{'path': target.name, 'kind': 'weight', 'bytes': expected_bytes, 'sha256': expected_sha}],
+            'actual': [{'path': target.name, 'kind': 'weight', 'exists': True, 'bytes': expected_bytes,
+                        'sha256': actual_sha, 'sha256_checked': True}],
+            'corrupted': [] if ok else [{'path': target.name, 'kind': 'weight', 'reason': 'sha256_mismatch',
+                                         'message': '文件内容 SHA-256 与清单不一致。',
+                                         'expected_bytes': expected_bytes, 'actual_bytes': expected_bytes,
+                                         'expected_sha256': expected_sha, 'actual_sha256': actual_sha}],
+            'changed': [], 'missing': [], 'unverified': [], 'errors': [],
+            'progress': {'hash_bytes': expected_bytes, 'total_hash_bytes': expected_bytes,
+                         'sha256_checked': 1, 'files_expected': 1},
+        }
+    return component_health.verify_component(current(root), MANIFEST,
                                              progress=progress, check=check)
 
 
-def resolve_runtime_directory(root=None, device='auto'):
+def require_ready(root=None):
     root = COMPONENT if root is None else root
-    mode = (device or 'auto').casefold()
-    if mode == 'cuda':
-        if _status_for_runtime('cuda', root)['ready']:
-            return current(root, runtime='cuda')
-        if _status_for_runtime('cpu', root)['ready']:
-            raise FileNotFoundError(_CUDA_NOT_READY)
-        raise FileNotFoundError(_NOT_READY)
-    if mode == 'cpu':
-        if _status_for_runtime('cpu', root)['ready']:
-            return current(root, runtime='cpu')
-        if _status_for_runtime('cuda', root)['ready']:
-            return current(root, runtime='cuda')
-        raise FileNotFoundError(_NOT_READY)
-    if _status_for_runtime('cuda', root)['ready']:
-        return current(root, runtime='cuda')
-    if _status_for_runtime('cpu', root)['ready']:
-        return current(root, runtime='cpu')
+    try:
+        if _status_tree(current(root))['ready']:
+            return current(root)
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    match = _manual_onnx_match(root, MANIFEST)
+    if match is not None:
+        return match[0].parent
     raise FileNotFoundError(_NOT_READY)
-
-
-def require_ready(root=None, runtime=None):
-    root = COMPONENT if root is None else root
-    if runtime is not None:
-        return resolve_runtime_directory(root, runtime)
-    if not status(root)['ready']:
-        raise FileNotFoundError(_NOT_READY)
-    return current(root)
 
 
 @contextmanager
@@ -198,11 +291,11 @@ def _component_lock(root, *, install=False):
 
 
 @contextmanager
-def use_ready(root=None, runtime=None):
+def use_ready(root=None):
     """Select and use the current installation under its existing run.lock."""
     root = COMPONENT if root is None else root
     with _component_lock(root) as owned:
-        yield require_ready(owned, runtime=runtime)
+        yield require_ready(owned)
 
 
 def cancelled(check):
@@ -381,20 +474,15 @@ def remove_owned_tree(path, root):
     shutil.rmtree(walk_root)
 
 
-def recover_verified_previous(root, ready, *, runtime=None):
+def recover_verified_previous(root, ready):
     """Restore only a metadata-valid backup when an interrupted swap left no current tree."""
     root = Path(root).resolve()
-    pairs = [(_legacy_current(root), root / 'previous')]
-    for rt in ((runtime,) if runtime in RUNTIMES else RUNTIMES):
-        pairs.append((runtime_directory(rt, root), root / f'previous-{rt}'))
-    recovered = False
-    for destination, backup in pairs:
-        if destination.exists() or not backup.exists() or not ready(backup):
-            continue
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        backup.replace(destination)
-        recovered = True
-    return recovered
+    destination, backup = current(root), root / 'previous'
+    if destination.exists() or not backup.exists() or not ready(backup):
+        return False
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    backup.replace(destination)
+    return True
 
 
 def replace_verified_tree(stage, destination, backup, root, ready):
@@ -444,78 +532,154 @@ def replace_verified_tree(stage, destination, backup, root, ready):
     remove_owned_tree(quarantine, root)
 
 
+def shared_runtime_wheel(spec):
+    """Return True when CPU and WebGPU targets use the exact same pinned runtime wheel."""
+    wheels = spec.get('runtime_wheels') or spec.get('torch_wheels') or {}
+    cpu = wheels.get('cpu') if isinstance(wheels, dict) else None
+    gpu = (wheels.get('webgpu') or wheels.get('cuda')) if isinstance(wheels, dict) else None
+    if not isinstance(cpu, dict) or not isinstance(gpu, dict):
+        return False
+    if cpu.get('sha256') and cpu.get('sha256') == gpu.get('sha256'):
+        return True
+    return bool(cpu.get('name') and cpu.get('name') == gpu.get('name') and cpu.get('bytes') == gpu.get('bytes'))
+
+
+def _manifest_runtime_wheel(spec, runtime):
+    wheels = spec.get('runtime_wheels') or spec.get('torch_wheels') or {}
+    wheel = wheels.get(runtime)
+    if wheel is None and runtime == 'webgpu':
+        wheel = wheels.get('cuda')
+    if not isinstance(wheel, dict):
+        raise ValueError(f'BS-RoFormer 清单缺少 {runtime} 运行库。')
+    return wheel
+
+
 def probe(directory):
-    sys.path.insert(0, str(Path(directory) / 'packages'))
-    os.environ['NUMBA_CACHE_DIR'] = native_path(ROOT / 'cache/numba')
-    os.environ['PYMSS_PLUGINS_DIR'] = str(ROOT / 'cache/pymss-plugins')
-    import torch
-    from pymss import MSSeparator
-    torch.set_num_threads(6)
-    test = torch.eye(2)
-    assert torch.equal(test @ test, test)
-    cuda = torch.cuda.is_available()
-    if cuda:
-        assert torch.isfinite(torch.ones(32, 32, device='cuda') @ torch.ones(32, 32, device='cuda')).all().item()
+    directory = Path(directory)
+    packages_dir = directory / 'packages'
+    if packages_dir.is_dir():
+        sys.path.insert(0, str(packages_dir))
+    import numpy as np
+    import onnxruntime as ort
+    from runtime_devices import create_session, device_module
+
+    providers = list(ort.get_available_providers())
+    webgpu = 'WebGpuExecutionProvider' in providers
+    gpu_name = None
+    active_device = 'cpu'
+    if webgpu:
+        module = device_module()
+        module.select_preferred_gpu_adapter.cache_clear()
+        adapter = module.select_preferred_gpu_adapter()
+        if adapter is not None:
+            gpu_name = adapter.name
+        sample_model = Path(ort.__file__).parent / 'datasets' / 'mul_1.onnx'
+        if sample_model.is_file():
+            opts = ort.SessionOptions()
+            opts.enable_mem_pattern = False
+            opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            active_device, sess = create_session(sample_model, opts, {}, 'webgpu', label='Component Probe')
+            inp = sess.get_inputs()[0]
+            shape = [d if isinstance(d, int) else 2 for d in inp.shape]
+            out = sess.run(None, {inp.name: np.ones(shape, dtype=np.float32)})[0]
+            assert np.isfinite(out).all()
+            if 'WebGpuExecutionProvider' in sess.get_providers():
+                active_device = 'webgpu'
     spec = manifest()
-    with MSSeparator(model_type='bs_roformer', model_path=str(Path(directory) / spec['weights'][0]['name']),
-                     config_path=str(Path(directory) / 'config.yaml'), device='auto', use_tta=False,
-                     store_dirs=str(ROOT / 'cache/component-probe'),
-                     inference_params={'batch_size': 1, 'normalize': False}) as separator:
-        device = str(separator.device)
-    result = {'torch': torch.__version__, 'cuda_available': cuda, 'device': device,
-              'gpu': torch.cuda.get_device_name() if cuda else None}
+    from roformer_onnx import _resolve_onnx_model
+    try:
+        model_path = _resolve_onnx_model(directory, spec)
+    except FileNotFoundError:
+        model_path = None
+    if model_path is not None and model_path.is_file():
+        opts = ort.SessionOptions()
+        opts.enable_mem_pattern = False
+        opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        active_device, sess = create_session(
+            model_path, opts, {}, 'webgpu' if webgpu else 'cpu', label='BS-RoFormer Probe'
+        )
+        assert sess.get_inputs() and sess.get_outputs()
+    result = {
+        'onnxruntime': ort.__version__,
+        'webgpu_available': webgpu,
+        'device': active_device,
+        'gpu': gpu_name,
+    }
     print('COMPONENT_PROBE=' + json.dumps(result), flush=True)
 
 
-def _reusable_weight_file(root, item, check=None):
-    name = item.get('name', '')
-    if not name or name.endswith('.whl'):
-        return None
-    for folder in (*[runtime_directory(rt, root) for rt in RUNTIMES], _legacy_current(root)):
-        candidate = folder / name
-        try:
-            if candidate.is_file() and candidate.stat().st_size == item['bytes']:
-                if file_hash(candidate, check=check) == item['sha256']:
-                    return candidate
-        except OSError:
-            continue
-    return None
+def install_local_onnx(onnx_path, config_path, runtime='webgpu', root=COMPONENT):
+    """Install a locally exported BS-RoFormer ONNX model + config into current/."""
+    from gpu_backend import normalize_roformer_runtime
+
+    runtime = normalize_roformer_runtime(runtime)
+    onnx_src = Path(onnx_path).resolve()
+    cfg_src = Path(config_path).resolve()
+    if not onnx_src.is_file() or not cfg_src.is_file():
+        raise FileNotFoundError('本地 ONNX 模型或 config.yaml 不存在。')
+    with _component_lock(root, install=True) as owned:
+        spec = manifest()
+        stage, backup, destination = owned / 'staging', owned / 'previous', current(owned)
+        remove_owned_tree(stage, owned)
+        stage.mkdir()
+        onnx_name = next(
+            (item['name'] for item in spec.get('weights', ()) if str(item.get('name', '')).lower().endswith('.onnx')),
+            onnx_src.name,
+        )
+        shutil.copyfile(onnx_src, stage / onnx_name)
+        shutil.copyfile(cfg_src, stage / 'config.yaml')
+        critical = [
+            {'file': onnx_name, 'bytes': (stage / onnx_name).stat().st_size, 'sha256': file_hash(stage / onnx_name)},
+            {'file': 'config.yaml', 'bytes': (stage / 'config.yaml').stat().st_size, 'sha256': file_hash(stage / 'config.yaml')},
+        ]
+        atomic_json(stage / 'installed.json', {
+            'runtime': runtime,
+            'probe': {'onnxruntime': 'local', 'webgpu_available': runtime == 'webgpu', 'device': runtime, 'gpu': None},
+            'critical_files': critical,
+            'manifest_sha256': file_hash(MANIFEST),
+            'source_sha256': {onnx_name: critical[0]['sha256'], 'config.yaml': critical[1]['sha256']},
+        })
+        replace_verified_tree(stage, destination, backup, owned, _directory_ready)
+        return status(owned)
 
 
-def install(runtime, progress=print, check=None, root=None, force=False, source='auto'):
-    root = COMPONENT if root is None else root
+def install(runtime, progress=print, check=None, root=COMPONENT, force=False, source='auto', precision='auto'):
+    from gpu_backend import normalize_roformer_runtime
+
     source = normalize_component_source(source)
-    if runtime not in ('cpu', 'cuda'):
-        raise ValueError('请选择 CPU 或 NVIDIA GPU 运行库。')
-    if sys.version_info[:2] != (3, 12) or sys.maxsize < 2**32 or sys.platform != 'win32':
+    runtime = normalize_roformer_runtime(runtime)
+    selected_precision = normalize_precision(precision)
+    if (
+        not (os.environ.get('VWA_TESTING') == '1' or os.environ.get('BVWA_TESTING') == '1')
+        and (sys.version_info[:2] != (3, 12) or sys.maxsize < 2**32 or sys.platform != 'win32')
+    ):
         raise RuntimeError('此组件需要助手自带的 Windows x64 Python 3.12。')
     with _component_lock(root, install=True) as root:
         recover_verified_previous(root, _directory_ready)
-        existing = status(root, runtime=runtime)
-        if not force and existing['ready'] and existing['runtime'] == runtime:
-            progress(1, 1, '元数据检查已通过；未重新哈希大文件，可在组件页执行完整校验')
-            return status(root)
         spec = manifest()
-        items = spec['weights'] + spec['shared_wheels'] + [spec['torch_wheels'][runtime]]
+        existing = status(root)
+        existing_precision = existing.get('precision')
+        runtime_match = (existing.get('runtime') == runtime
+                         or (existing.get('runtime') in ('cpu', 'webgpu') and shared_runtime_wheel(spec)))
+        if (not force and existing['ready'] and runtime_match
+                and (not existing_precision or existing_precision == selected_precision)):
+            progress(1, 1, '元数据检查已通过；未重新哈希大文件，可在组件页执行完整校验')
+            return existing
+        weights = manifest_weights_for_precision(spec, selected_precision)
+        items = weights + spec['shared_wheels'] + [_manifest_runtime_wheel(spec, runtime)]
         total = sum(item['bytes'] for item in items)
-        needed = spec['install_bytes'][runtime] + total + 512 * 1024**2
+        install_sizes = spec['install_bytes']
+        expanded = install_sizes.get(runtime, install_sizes.get('cuda', 0))
+        needed = expanded + total + 512 * 1024**2
         if shutil.disk_usage(root).free < needed:
             raise OSError(f'安装空间不足，请至少预留 {needed / 10**9:.1f} GB。')
-        stage = root / f'staging-{runtime}'
-        backup = root / f'previous-{runtime}'
-        destination = runtime_directory(runtime, root)
+        stage, backup, destination = root / 'staging', root / 'previous', current(root)
         remove_owned_tree(stage, root)
         stage.mkdir()
         completed = 0
         downloads = []
         for index, item in enumerate(items):
             cancelled(check)
-            reused = _reusable_weight_file(root, item, check=check)
-            if reused is not None:
-                progress(completed + item['bytes'], total, f'复用已校验模型文件 · 文件 {index + 1}/{len(items)}')
-                shutil.copyfile(reused, stage / item['name'])
-                completed += item['bytes']
-                continue
             def update(done, count, message, base=completed, number=index + 1):
                 progress(base + done, total, f'{message} · 文件 {number}/{len(items)}')
             download_path = download(item, root / 'downloads', update, check, source=source)
@@ -529,9 +693,11 @@ def install(runtime, progress=print, check=None, root=None, force=False, source=
         cancelled(check)
         progress(total, total, '正在验证模型与运行环境')
         env = dict(os.environ, PYTHONUTF8='1', PYTHONDONTWRITEBYTECODE='1')
-        process = subprocess.Popen([load_config()['python'], '-B', '-u', str(ROOT / 'optional_components.py'), '--probe', str(stage)],
-                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
-                                  creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        process = subprocess.Popen(
+            [load_config()['python'], '-B', '-u', str(ROOT / 'optional_components.py'), '--probe', str(stage)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+        )
         output = b''
         started = time.monotonic()
         try:
@@ -551,32 +717,28 @@ def install(runtime, progress=print, check=None, root=None, force=False, source=
         if process.returncode or 'COMPONENT_PROBE=' not in text:
             raise RuntimeError('运行环境验证失败：\n' + text[-2500:])
         probed = json.loads(next(line.split('=', 1)[1] for line in text.splitlines() if line.startswith('COMPONENT_PROBE=')))
-        if probed['torch'] != '2.7.1+' + ('cu128' if runtime == 'cuda' else 'cpu'):
+        if not probed.get('onnxruntime'):
             raise ValueError('Installed runtime version does not match the pinned component')
         critical = []
-        for file in (stage / 'packages/torch/lib').glob('*.dll'):
-            critical.append({'file': file.relative_to(stage).as_posix(), 'bytes': file.stat().st_size,
-                             'sha256': file_hash(file)})
-        for name in ('packages/torch/__init__.py', 'packages/pymss/__init__.py', 'packages/pymss_core/__init__.py'):
-            path = stage / name
-            critical.append({'file': name, 'bytes': path.stat().st_size, 'sha256': file_hash(path)})
-        atomic_json(stage / 'installed.json', {'runtime': runtime, 'probe': probed, 'critical_files': critical,
-                    'manifest_sha256': file_hash(MANIFEST),
-                    'source_sha256': {item['name']: item['sha256'] for item in items}})
+        for pattern in ('packages/onnxruntime/capi/*.dll', 'packages/onnxruntime/capi/*.pyd'):
+            for file in stage.glob(pattern):
+                critical.append({'file': file.relative_to(stage).as_posix(), 'bytes': file.stat().st_size,
+                                 'sha256': file_hash(file)})
+        ort_init = stage / 'packages/onnxruntime/__init__.py'
+        if ort_init.is_file():
+            critical.append({'file': 'packages/onnxruntime/__init__.py', 'bytes': ort_init.stat().st_size,
+                             'sha256': file_hash(ort_init)})
+        atomic_json(stage / 'installed.json', {
+            'runtime': runtime, 'precision': selected_precision, 'probe': probed, 'critical_files': critical,
+            'manifest_sha256': file_hash(MANIFEST),
+            'source_sha256': {item['name']: item['sha256'] for item in items},
+        })
         if not _directory_ready(stage):
             if check and check():
                 cancelled(check)
             raise ValueError('暂存的 BS-RoFormer 组件未通过完整性校验')
         cancelled(check)
         replace_verified_tree(stage, destination, backup, root, _directory_ready)
-        # Clean up a superseded legacy single-slot directory only when it holds the same runtime.
-        legacy = _legacy_current(root)
-        if legacy.exists():
-            try:
-                if _status_tree(legacy).get('runtime') == runtime:
-                    remove_owned_tree(legacy, root)
-            except (OSError, ValueError, KeyError, TypeError):
-                pass
         for path in downloads:
             path.unlink(missing_ok=True)
         # Also remove stale archives and parallel-download .segments dirs left by earlier runs.
@@ -587,13 +749,18 @@ def install(runtime, progress=print, check=None, root=None, force=False, source=
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--install', choices=('cpu', 'cuda'))
+    parser.add_argument('--install', choices=('cpu', 'webgpu', 'cuda'))
+    parser.add_argument('--install-local-onnx', type=Path, help='Install a locally exported BS-RoFormer .onnx file')
+    parser.add_argument('--config', type=Path, help='config.yaml paired with --install-local-onnx')
+    parser.add_argument('--runtime', choices=('cpu', 'webgpu'), default='webgpu')
+    parser.add_argument('--precision', choices=('auto', 'fp16_10s', 'fp16', 'fp32'), default='auto')
     parser.add_argument('--probe')
     parser.add_argument('--verify', action='store_true',
                         help='explicitly hash manifest weights and receipt-critical files')
     from download_sources import component_source_options
     spec = manifest()
-    items = spec['weights'] + spec['shared_wheels'] + list(spec['torch_wheels'].values())
+    wheel_map = spec.get('runtime_wheels') or spec.get('torch_wheels') or {}
+    items = spec['weights'] + spec['shared_wheels'] + list(wheel_map.values())
     choices = [value for _, value in component_source_options(items)]
     parser.add_argument('--download-source', choices=[*choices, 'mirror'], default='auto')
     args = parser.parse_args()
@@ -608,5 +775,10 @@ if __name__ == '__main__':
             raise SystemExit(130)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         raise SystemExit(0 if report['verified'] else 2)
+    elif args.install_local_onnx:
+        if not args.config:
+            raise SystemExit('--install-local-onnx requires --config <config.yaml>')
+        print(json.dumps(install_local_onnx(args.install_local_onnx, args.config, runtime=args.runtime), ensure_ascii=False, indent=2))
     elif args.install:
-        install(args.install, lambda done, total, text: print(f'{done}/{total}: {text}', flush=True), source=args.download_source)
+        install(args.install, lambda done, total, text: print(f'{done}/{total}: {text}', flush=True),
+                source=args.download_source, precision=args.precision)

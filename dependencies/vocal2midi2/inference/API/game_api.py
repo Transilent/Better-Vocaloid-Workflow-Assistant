@@ -181,14 +181,8 @@ def _extract_vowel_boundaries_english(result_word, original_chars: list[str]):
 _GAME_MODEL_CACHE: dict[tuple[str, str], GameOnnxModel] = {}
 
 
-def load_game_model(model_dir: str, device=None, use_cache: bool = True):
-    """
-    Loads the GAME ONNX model suite.
-
-    Cached in-process and reused across pipeline runs: recreating the
-    DirectML session per song corrupts onnxruntime's DML state and
-    access-violates the process on the next song.
-    """
+def load_game_model(model_dir: str, device=None, use_cache: bool = False):
+    """Loads the GAME ONNX model suite (WebGPU sessions release cleanly when uncached)."""
     resolved = str(pathlib.Path(model_dir))
     key = (resolved, str(device or "").strip().lower() or "auto")
     if use_cache:

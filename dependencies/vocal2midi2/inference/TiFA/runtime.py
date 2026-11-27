@@ -25,15 +25,15 @@ class TifaModel:
         )
         self.vocabulary = Vocabulary.from_file(self.model_dir / "vocabulary.json")
 
-        provider_name, providers = resolve_onnx_providers(device, label="TiFA ONNX")
-        options = configure_onnx_threads(ort.SessionOptions())
-        options.log_severity_level = 3
-        self.sessions: dict[str, ort.InferenceSession] = {
-            name: ort.InferenceSession(
-                str(self.model_dir / f"{name}.onnx"), options, providers=providers
+        from inference.device_utils import create_onnx_session
+        provider_name = "cpu"
+        self.sessions: dict[str, ort.InferenceSession] = {}
+        for name in GRAPH_NAMES:
+            options = configure_onnx_threads(ort.SessionOptions())
+            options.log_severity_level = 3
+            provider_name, self.sessions[name] = create_onnx_session(
+                self.model_dir / f"{name}.onnx", options, device, label="TiFA ONNX"
             )
-            for name in GRAPH_NAMES
-        }
         self.provider_name = provider_name
 
     @property

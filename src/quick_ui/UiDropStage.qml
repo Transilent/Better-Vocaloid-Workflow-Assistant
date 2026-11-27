@@ -136,8 +136,7 @@ Item {
             }
 
             Flow {
-                Layout.fillWidth: true
-                Layout.minimumWidth: 0
+                Layout.alignment: Qt.AlignHCenter
                 Layout.maximumWidth: parent.width
                 visible: (stage.formatTags || []).length > 0
                 spacing: Math.round(6 * stage.theme.scale)

@@ -269,8 +269,8 @@ Item {
                         page.controller.selectTuningTask(taskPickerDialog.jobId)
                     }
                 }
-                onCountChanged: Qt.callLater(syncChoice)
-                onModelChanged: Qt.callLater(syncChoice)
+                onCountChanged: syncChoice()
+                onModelChanged: syncChoice()
             }
             UiComboBox {
                 objectName: "tuningTaskPickerProject"
@@ -290,8 +290,8 @@ Item {
                     if (index >= 0 && index < taskPickerDialog.projectRows.length)
                         taskPickerDialog.artifactId = String(taskPickerDialog.projectRows[index].artifactId)
                 }
-                onCountChanged: Qt.callLater(syncChoice)
-                onModelChanged: Qt.callLater(syncChoice)
+                onCountChanged: syncChoice()
+                onModelChanged: syncChoice()
             }
             TuningControls.HelperText {
                 Layout.fillWidth: true
