@@ -180,4 +180,76 @@ assert "project_convert:" in pal_qml and "recentItems" in pal_qml and "mixdown:t
 drop_qml = (APP / "src/quick_ui/GlobalDropOverlay.qml").read_text(encoding="utf-8")
 assert 'objectName: "globalDropOverlay"' in drop_qml and "inspectDropUrls" in drop_qml
 
-print("PASS: Tier 3 M1-M4 (tutorial, LRU stage, recovery/taskbar/toast, MRU/smart-drop/Ctrl+K)")
+# --- T3-M5: WASAPI device recovery, 60fps Canvas overlays, Happy Eyeballs mirror race & Prep queue ---
+import audio_device_recovery as adr
+import download_sources as ds
+import mirror_probe as mp
+from preparation_queue import PrepQueueStore
+
+# 1. WASAPI reconnect guard (bounded 1-shot + cooldown)
+now_box = [100.0]
+guard = adr.DeviceReconnectGuard(max_attempts=1, cooldown_seconds=2.0, clock=lambda: now_box[0])
+assert adr.is_recoverable_device_error("WASAPI playback device stopped or was disconnected unexpectedly") is True
+assert adr.is_recoverable_device_error("invalid wav header") is False
+assert guard.should_attempt("WASAPI playback device stopped") is True
+guard.mark_attempt()
+assert guard.should_attempt("WASAPI playback device stopped") is False, "Must not loop reconnects"
+now_box[0] = 105.0
+guard.reset()
+assert guard.should_attempt("WASAPI playback device stopped") is True
+
+# Device name resolution
+fake_devs = [{"index": 0, "name": "Speakers (Realtek)", "is_default": True}, {"index": 1, "name": "USB DAC", "is_default": False}]
+assert adr.resolve_device_index("", devices=fake_devs) == -1
+assert adr.resolve_device_index("USB DAC", devices=fake_devs) == 1
+assert adr.resolve_device_index("Missing Headset", devices=fake_devs) == -1
+
+# 2. Happy Eyeballs mirror racing with 24h health cache
+with tempfile.TemporaryDirectory(dir=APP / "work", prefix="tier3-m5-mirror-") as tmp:
+    root = Path(tmp)
+    cands = [
+        "https://github.com/org/repo/releases/download/v1/a.zip",
+        "https://api.gitproxy.dev/github.com/org/repo/releases/download/v1/a.zip",
+        "https://gh-proxy.com/https://github.com/org/repo/releases/download/v1/a.zip",
+    ]
+    latencies = {
+        "github.com": (False, 9999.0),
+        "api.gitproxy.dev": (True, 180.0),
+        "gh-proxy.com": (True, 45.0),
+    }
+    def fake_probe(url, timeout):
+        from urllib.parse import urlsplit
+        return latencies[urlsplit(url).hostname]
+
+    import time as _t
+    ranked = mp.rank_candidates(cands, root=root, allow_probe=True, probe_fn=fake_probe, now=_t.time())
+    assert "gh-proxy.com" in ranked[0] and "api.gitproxy.dev" in ranked[1] and "github.com" in ranked[2]
+    # Cached hit works without re-probing
+    ranked_cached = ds.ranked_download_urls(cands[0], "auto", allow_probe=False, root=root)
+    assert "gh-proxy.com" in ranked_cached[0] and ranked_cached[-1].startswith("https://github.com/")
+
+# 3. Multi-song Preparation Queue persistence
+with tempfile.TemporaryDirectory(dir=APP / "work", prefix="tier3-m5-queue-") as tmp:
+    root = Path(tmp)
+    q = PrepQueueStore(root)
+    s1 = root / "first.wav"
+    s2 = root / "second.flac"
+    s1.write_bytes(b"0")
+    s2.write_bytes(b"1")
+    e1 = q.enqueue(s1, title="Song 1")
+    e2 = q.enqueue(s2, title="Song 2")
+    assert [r["title"] for r in q.list_items()] == ["Song 1", "Song 2"]
+    assert q.move(e2["id"], -1) is True
+    assert [r["title"] for r in q.list_items()] == ["Song 2", "Song 1"]
+    popped = q.dequeue()
+    assert popped is not None and popped["title"] == "Song 2"
+    assert q.remove(e1["id"]) is True
+    assert q.list_items() == []
+
+# 4. Dual-layer GPU-composited Canvas verification
+pitch_qml = (APP / "src/quick_ui/ChorusPitchLane.qml").read_text(encoding="utf-8")
+assert "Canvas.FramebufferObject" in pitch_qml and "id: marqueeOverlay" in pitch_qml and "id: splitHoverLine" in pitch_qml
+tuning_qml = (APP / "src/quick_ui/TuningTimeline.qml").read_text(encoding="utf-8")
+assert "Canvas.FramebufferObject" in tuning_qml and "id: tuningMarqueeOverlay" in tuning_qml
+
+print("PASS: Tier 3 M1-M5 (full UX infra, WASAPI recovery, 60fps Canvas, mirror racing, prep queue)")

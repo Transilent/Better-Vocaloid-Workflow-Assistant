@@ -205,8 +205,6 @@ Rectangle {
     onStrokeChanged: plot.requestPaint()
     onDragDeltaSemitonesChanged: plot.requestPaint()
     onDraggingNoteChanged: plot.requestPaint()
-    onMarqueeActiveChanged: plot.requestPaint()
-    onHoverXChanged: if (splitting) plot.requestPaint()
     onToolChanged: plot.requestPaint()
     Connections {
         target: lane.controller
@@ -217,6 +215,7 @@ Rectangle {
         id: plot
         anchors.fill: parent
         anchors.margins: 1
+        renderTarget: Canvas.FramebufferObject
         onWidthChanged: requestPaint()
         onHeightChanged: requestPaint()
         onPaint: {
@@ -438,38 +437,6 @@ Rectangle {
             drawCurve(source, lane.theme.muted, 1.1, true, false)
             drawCurve(target, lane.theme.accent, 1.9, false, true)
 
-            // 5. Split tool hover indicator
-            if (lane.splitting && lane.hoverX >= 0) {
-                const hit = lane.noteAt(lane.hoverX, lane.hoverY)
-                if (hit) {
-                    const gx = lane.headerWidth + lane.hoverX
-                    c.strokeStyle = lane.theme.attention
-                    c.lineWidth = 1.6
-                    c.setLineDash([4, 3])
-                    c.beginPath()
-                    c.moveTo(gx, 0)
-                    c.lineTo(gx, height)
-                    c.stroke()
-                    c.setLineDash([])
-                }
-            }
-
-            // 6. Marquee selection box
-            if (lane.marqueeActive) {
-                const mx = lane.headerWidth + Math.min(lane.marqueeX1, lane.marqueeX2)
-                const my = Math.min(lane.marqueeY1, lane.marqueeY2)
-                const mw = Math.abs(lane.marqueeX2 - lane.marqueeX1)
-                const mh = Math.abs(lane.marqueeY2 - lane.marqueeY1)
-                c.fillStyle = lane.theme.accent
-                c.globalAlpha = .14
-                c.fillRect(mx, my, mw, mh)
-                c.globalAlpha = .8
-                c.strokeStyle = lane.theme.accent
-                c.lineWidth = 1
-                c.strokeRect(mx + .5, my + .5, mw, mh)
-                c.globalAlpha = 1
-            }
-
             // 7. Hand-drawn pitch stroke preview
             if (lane.stroke.length) {
                 c.strokeStyle = lane.theme.success
@@ -488,6 +455,32 @@ Rectangle {
             }
             c.restore()
         }
+    }
+
+    // GPU-composited interactive overlays (zero Canvas repaints on hover/marquee)
+    Rectangle {
+        id: splitHoverLine
+        visible: lane.splitting && lane.hoverX >= 0 && !!lane.hoveredNote
+        x: lane.headerWidth + lane.hoverX
+        y: 1
+        width: 2
+        height: Math.max(0, lane.height - 2)
+        color: lane.theme.attention
+        opacity: 0.85
+        z: 3
+    }
+
+    Rectangle {
+        id: marqueeOverlay
+        visible: lane.marqueeActive
+        x: lane.headerWidth + Math.min(lane.marqueeX1, lane.marqueeX2)
+        y: Math.min(lane.marqueeY1, lane.marqueeY2)
+        width: Math.abs(lane.marqueeX2 - lane.marqueeX1)
+        height: Math.abs(lane.marqueeY2 - lane.marqueeY1)
+        color: Qt.rgba(lane.theme.accent.r, lane.theme.accent.g, lane.theme.accent.b, 0.14)
+        border.color: lane.theme.accent
+        border.width: 1
+        z: 4
     }
 
     Text {

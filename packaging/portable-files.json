@@ -350,6 +350,18 @@
       "source": "src/quick_ux_hub.py"
     },
     {
+      "file": "audio_device_recovery.py",
+      "source": "src/audio_device_recovery.py"
+    },
+    {
+      "file": "mirror_probe.py",
+      "source": "src/mirror_probe.py"
+    },
+    {
+      "file": "preparation_queue.py",
+      "source": "src/preparation_queue.py"
+    },
+    {
       "file": "win_taskbar.py",
       "source": "src/win_taskbar.py"
     },

@@ -204,5 +204,44 @@ Rectangle {
                 }
             }
         }
+
+        ColumnLayout {
+            id: audioDeviceBox
+            Layout.fillWidth: true
+            spacing: 5
+            readonly property QtObject uxApi: typeof window !== "undefined" && window.controller ? window.controller.ux : null
+            visible: !!uxApi
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Math.round(8 * page.theme.scale)
+                Text {
+                    text: page.tr("音频输出设备（WASAPI）")
+                    color: page.theme.muted
+                    font.pixelSize: Math.round(12 * page.theme.scale)
+                }
+                UiButton {
+                    theme: page.theme
+                    quiet: true
+                    implicitHeight: Math.round(24 * page.theme.scale)
+                    text: page.tr("刷新设备")
+                    onClicked: if (audioDeviceBox.uxApi) audioDeviceBox.uxApi.refreshAudioDevices()
+                }
+            }
+            Flow {
+                Layout.fillWidth: true
+                spacing: Math.round(6 * page.theme.scale)
+                Repeater {
+                    model: audioDeviceBox.uxApi ? audioDeviceBox.uxApi.audioOutputDevices : []
+                    SettingsChoiceChip {
+                        required property var modelData
+                        tokens: page.theme
+                        text: modelData.label || page.tr("跟随系统默认")
+                        selected: audioDeviceBox.uxApi
+                            && String(audioDeviceBox.uxApi.selectedAudioOutputDevice || "") === String(modelData.name || "")
+                        onClicked: if (audioDeviceBox.uxApi) audioDeviceBox.uxApi.selectAudioOutputDevice(modelData.name || "")
+                    }
+                }
+            }
+        }
     }
 }

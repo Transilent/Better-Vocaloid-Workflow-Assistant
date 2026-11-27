@@ -779,7 +779,6 @@ Item {
     onDragTimeChanged: score.requestPaint()
     onFocusedNoteChanged: score.requestPaint()
     onSelectedNoteSetChanged: score.requestPaint()
-    onMarqueeEndChanged: score.requestPaint()
     onNoteGhostChanged: score.requestPaint()
     onHoveredNoteChanged: score.requestPaint()
     onHoveredLaneNoteChanged: score.requestPaint()
@@ -824,6 +823,7 @@ Item {
         id: score
         anchors.fill: parent
         antialiasing: true
+        renderTarget: Canvas.FramebufferObject
 
         function fill(ctx, color, x, y, width, height) {
             ctx.fillStyle = color
@@ -1095,24 +1095,15 @@ Item {
         }
 
         function paintGesture(ctx) {
+            const preview = timeline.noteGhost || {}
+            const ghostNotes = preview.notes || []
+            if (!ghostNotes.length)
+                return
             ctx.save()
             ctx.beginPath()
             ctx.rect(timeline.plotLeft, timeline.plotTop, timeline.plotWidth, timeline.plotHeight)
             ctx.clip()
-            if (timeline.marqueeEnd) {
-                const x = timeline.plotLeft + Math.min(timeline.pressX, timeline.marqueeEnd.x)
-                const y = timeline.plotTop + Math.min(timeline.pressY, timeline.marqueeEnd.y)
-                const w = Math.abs(timeline.pressX - timeline.marqueeEnd.x)
-                const h = Math.abs(timeline.pressY - timeline.marqueeEnd.y)
-                ctx.globalAlpha = .18
-                fill(ctx, timeline.theme.accent, x, y, w, h)
-                ctx.globalAlpha = 1
-                ctx.strokeStyle = timeline.theme.accent
-                ctx.lineWidth = 1
-                ctx.strokeRect(x, y, w, h)
-            }
-            const preview = timeline.noteGhost || {}
-            for (const note of preview.notes || []) {
+            for (const note of ghostNotes) {
                 const x = timeline.xForTime(note.start)
                 const y = timeline.yForPitch(note.pitch) + 2
                 const w = Math.max(2, timeline.xForTime(note.end) - x)
@@ -1185,14 +1176,21 @@ Item {
     }
 
     Rectangle {
-        x: visible ? timeline.xForTime(timeline.cursorTime) : 0
-        y: timeline.rulerHeight
-        width: 1
-        height: Math.max(0, timeline.height - y)
-        color: timeline.theme.accent
-        opacity: 0.75
+        x: visible ? timeline.xForTime(timeline.cursorTime) : 0; y: timeline.rulerHeight; width: 1
+        height: Math.max(0, timeline.height - y); color: timeline.theme.accent; opacity: 0.75; z: 2
         visible: timeline.cursorTime >= timeline.visibleStart && timeline.cursorTime <= timeline.visibleEnd
-        z: 2
+    }
+
+    Rectangle {
+        id: tuningMarqueeOverlay
+        visible: !!timeline.marqueeEnd
+        x: visible ? timeline.plotLeft + Math.min(timeline.pressX, timeline.marqueeEnd.x) : 0
+        y: visible ? timeline.plotTop + Math.min(timeline.pressY, timeline.marqueeEnd.y) : 0
+        width: visible ? Math.abs(timeline.pressX - timeline.marqueeEnd.x) : 0
+        height: visible ? Math.abs(timeline.pressY - timeline.marqueeEnd.y) : 0
+        color: Qt.rgba(timeline.theme.accent.r, timeline.theme.accent.g, timeline.theme.accent.b, 0.18)
+        border { color: timeline.theme.accent; width: 1 }
+        z: 3
     }
 
     Repeater {

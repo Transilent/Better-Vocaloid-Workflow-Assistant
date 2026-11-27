@@ -86,8 +86,11 @@ struct VwaOutput
     _Atomic int64_t device_error_code;
     _Atomic int64_t last_error_code;
 
+    ma_context context;
+    bool context_initialized;
     ma_device device;
     bool device_initialized;
+    int32_t requested_device_index;
     IAudioClock* p_audio_clock;
     uint64_t actual_device_sample_rate;
     uint64_t actual_device_period_frames;
@@ -569,15 +572,125 @@ static void reset_ring_locked(VwaOutput* output)
     atomic_store_explicit(&output->read_index, write_index, memory_order_release);
 }
 
+static size_t append_json_escaped(char* dst, size_t cap, size_t pos, const char* src)
+{
+    if (dst == NULL || cap == 0u) {
+        return pos;
+    }
+    if (src == NULL) {
+        return pos;
+    }
+    for (const unsigned char* p = (const unsigned char*)src; *p != '\0'; ++p) {
+        unsigned char ch = *p;
+        if (ch == '"' || ch == '\\') {
+            if (pos + 2u < cap) {
+                dst[pos++] = '\\';
+                dst[pos++] = (char)ch;
+            }
+        } else if (ch < 0x20u) {
+            if (pos + 6u < cap) {
+                int written = snprintf(dst + pos, cap - pos, "\\u%04x", (unsigned int)ch);
+                if (written > 0) {
+                    pos += (size_t)written;
+                }
+            }
+        } else if (pos + 1u < cap) {
+            dst[pos++] = (char)ch;
+        }
+    }
+    if (pos < cap) {
+        dst[pos] = '\0';
+    } else {
+        dst[cap - 1u] = '\0';
+    }
+    return pos;
+}
+
+int vwa_output_list_devices(char* json_buffer, size_t json_buffer_capacity)
+{
+    ma_context context;
+    ma_backend backends[1] = { ma_backend_wasapi };
+    ma_device_info* playback_infos = NULL;
+    ma_uint32 playback_count = 0u;
+    ma_result result;
+    size_t pos = 0u;
+
+    if (json_buffer == NULL || json_buffer_capacity < 3u) {
+        return VWA_OUTPUT_ERR_INVALID_ARGUMENT;
+    }
+    json_buffer[0] = '[';
+    json_buffer[1] = ']';
+    json_buffer[2] = '\0';
+
+    result = ma_context_init(backends, 1u, NULL, &context);
+    if (result != MA_SUCCESS) {
+        return VWA_OUTPUT_ERR_DEVICE_INIT;
+    }
+    result = ma_context_get_devices(&context, &playback_infos, &playback_count, NULL, NULL);
+    if (result != MA_SUCCESS) {
+        (void)ma_context_uninit(&context);
+        return VWA_OUTPUT_ERR_DEVICE_INIT;
+    }
+
+    pos = (size_t)snprintf(json_buffer, json_buffer_capacity, "[");
+    for (ma_uint32 i = 0u; i < playback_count; ++i) {
+        int prefix_written = snprintf(
+            json_buffer + pos,
+            pos < json_buffer_capacity ? json_buffer_capacity - pos : 0u,
+            "%s{\"index\":%u,\"is_default\":%s,\"name\":\"",
+            i > 0u ? "," : "",
+            (unsigned int)i,
+            playback_infos[i].isDefault ? "true" : "false");
+        if (prefix_written < 0 || pos + (size_t)prefix_written + 8u >= json_buffer_capacity) {
+            break;
+        }
+        pos += (size_t)prefix_written;
+        pos = append_json_escaped(json_buffer, json_buffer_capacity, pos, playback_infos[i].name);
+        if (pos + 3u < json_buffer_capacity) {
+            json_buffer[pos++] = '"';
+            json_buffer[pos++] = '}';
+            json_buffer[pos] = '\0';
+        }
+    }
+    if (pos + 1u < json_buffer_capacity) {
+        json_buffer[pos++] = ']';
+        json_buffer[pos] = '\0';
+    } else {
+        json_buffer[json_buffer_capacity - 2u] = ']';
+        json_buffer[json_buffer_capacity - 1u] = '\0';
+    }
+    (void)ma_context_uninit(&context);
+    return (int)playback_count;
+}
+
 static int initialize_wasapi(VwaOutput* output, char* error_text, size_t error_text_capacity)
 {
     ma_device_config config;
     ma_result result;
+    ma_context* target_context = NULL;
+    ma_device_id selected_id;
+    bool has_selected_id = false;
+
+    if (output->requested_device_index >= 0) {
+        ma_backend backends[1] = { ma_backend_wasapi };
+        ma_device_info* playback_infos = NULL;
+        ma_uint32 playback_count = 0u;
+        result = ma_context_init(backends, 1u, NULL, &output->context);
+        if (result == MA_SUCCESS) {
+            output->context_initialized = true;
+            if (ma_context_get_devices(&output->context, &playback_infos, &playback_count, NULL, NULL) == MA_SUCCESS
+                && (ma_uint32)output->requested_device_index < playback_count) {
+                selected_id = playback_infos[output->requested_device_index].id;
+                has_selected_id = true;
+                target_context = &output->context;
+            }
+        }
+    }
 
     config = ma_device_config_init(ma_device_type_playback);
     config.playback.format = ma_format_f32;
     config.playback.channels = output->channels;
-    config.playback.pDeviceID = NULL;
+    config.playback.pDeviceID = has_selected_id ? &selected_id : NULL;
     config.playback.shareMode = ma_share_mode_shared;
     config.sampleRate = output->sample_rate;
     config.periodSizeInFrames = output->requested_period_frames;
@@ -590,7 +703,7 @@ static int initialize_wasapi(VwaOutput* output, char* error_text, size_t error_t
     config.notificationCallback = notification_callback;
     config.pUserData = output;
 
-    result = ma_device_init(NULL, &config, &output->device);
+    result = ma_device_init(target_context, &config, &output->device);
     if (result != MA_SUCCESS) {
         char message[256];
         (void)snprintf(
@@ -652,6 +765,29 @@ int vwa_output_create(
     char* error_text,
     size_t error_text_capacity)
 {
+    return vwa_output_create_for_device(
+        mode,
+        sample_rate,
+        channels,
+        capacity_frames,
+        period_frames,
+        -1,
+        out_output,
+        error_text,
+        error_text_capacity);
+}
+
+int vwa_output_create_for_device(
+    uint32_t mode,
+    uint32_t sample_rate,
+    uint32_t channels,
+    uint32_t capacity_frames,
+    uint32_t period_frames,
+    int32_t device_index,
+    VwaOutput** out_output,
+    char* error_text,
+    size_t error_text_capacity)
+{
     VwaOutput* output;
     size_t sample_count;
     int result;
@@ -686,6 +822,7 @@ int vwa_output_create(
     output->channels = channels;
     output->capacity_frames = capacity_frames;
     output->requested_period_frames = period_frames;
+    output->requested_device_index = device_index;
 
     sample_count = (size_t)capacity_frames * (size_t)channels;
     if (sample_count > SIZE_MAX / sizeof(float)) {
@@ -750,6 +887,10 @@ int vwa_output_create(
                 ma_device_uninit(&output->device);
                 output->device_initialized = false;
             }
+            if (output->context_initialized) {
+                (void)ma_context_uninit(&output->context);
+                output->context_initialized = false;
+            }
             DeleteCriticalSection(&output->control_lock);
             free(output->ring);
             free(output);
@@ -779,6 +920,10 @@ void vwa_output_destroy(VwaOutput* output)
         release_audio_clock_locked(output);
         ma_device_uninit(&output->device);
         output->device_initialized = false;
+    }
+    if (output->context_initialized) {
+        (void)ma_context_uninit(&output->context);
+        output->context_initialized = false;
     }
     LeaveCriticalSection(&output->control_lock);
     DeleteCriticalSection(&output->control_lock);

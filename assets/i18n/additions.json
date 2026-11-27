@@ -3720,7 +3720,14 @@
     "调音工作台 · 打开风格与校准工坊": "Tuning · Open Style & Calibration Workshop",
     "提取参考风格、管理配方或校准声库": "Extract reference styles, manage recipes, or calibrate voicebanks",
     "已清空最近使用记录": "Cleared recent items",
-    "文件已不存在，已从最近列表中移除": "File no longer exists; removed from recent list"
+    "文件已不存在，已从最近列表中移除": "File no longer exists; removed from recent list",
+    "音频输出设备（WASAPI）": "Audio output device (WASAPI)",
+    "刷新设备": "Refresh devices",
+    "跟随系统默认": "Follow system default",
+    "音频输出设备已更新": "Audio output device updated",
+    "音频输出设备已变动，已自动切换并恢复试听": "Audio output device changed; reconnected preview automatically",
+    "已加入准备队列": "Added to preparation queue",
+    "已清空准备队列": "Cleared preparation queue"
   },
   "ja": {
     "合唱工作台": "コーラスワークスペース",
@@ -7443,6 +7450,13 @@
     "调音工作台 · 打开风格与校准工坊": "調声 · スタイルとキャリブレーション工房を開く",
     "提取参考风格、管理配方或校准声库": "参照スタイル抽出・レシピ管理・音源キャリブレーションを行います",
     "已清空最近使用记录": "最近開いた項目をクリアしました",
-    "文件已不存在，已从最近列表中移除": "ファイルが存在しないため履歴から削除しました"
+    "文件已不存在，已从最近列表中移除": "ファイルが存在しないため履歴から削除しました",
+    "音频输出设备（WASAPI）": "オーディオ出力デバイス（WASAPI）",
+    "刷新设备": "デバイスを更新",
+    "跟随系统默认": "システム既定に従う",
+    "音频输出设备已更新": "オーディオ出力デバイスを更新しました",
+    "音频输出设备已变动，已自动切换并恢复试听": "出力デバイスの変更を検知し、試聴を自動復帰しました",
+    "已加入准备队列": "準備キューに追加しました",
+    "已清空准备队列": "準備キューをクリアしました"
   }
 }

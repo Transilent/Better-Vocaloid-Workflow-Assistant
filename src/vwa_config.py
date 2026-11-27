@@ -38,6 +38,7 @@ CONFIG_DEFAULTS: dict[str, Any] = {
     "auto_restart_updates": True,
     "theme": "dark",
     "download_workers": 4,
+    "audio_output_device": "",
 }
 
 CONFIG_CHOICES: dict[str, tuple[Any, ...]] = {
@@ -60,6 +61,7 @@ _STRING_KEYS = (
     "chorus_metadata",
     "publish_browser_executable",
     "download_source",
+    "audio_output_device",
 )
 
 

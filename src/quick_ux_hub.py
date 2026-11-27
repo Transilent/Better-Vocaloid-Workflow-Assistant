@@ -5,10 +5,13 @@ import logging
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Property, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 
+import audio_device_recovery as _audio_rec
 from i18n import tr
+from preparation_queue import PrepQueueStore
 import recent_items
+import vwa_config
 from vwa_paths import ROOT
 
 _LOG = logging.getLogger(__name__)
@@ -25,12 +28,22 @@ def _to_local_path(value) -> str:
 
 class QuickUxHub(QObject):
     recentChanged = Signal()
+    audioDevicesChanged = Signal()
+    prepQueueChanged = Signal()
 
     def __init__(self, bridge, *, root: Path = ROOT):
         super().__init__(bridge)
         self._bridge = bridge
         self._root = Path(root).resolve()
         self._last_recorded: dict[str, str] = {}
+        self._prep_queue = PrepQueueStore(self._root)
+        self._was_prep_busy = False
+        self._reconnect_guard = _audio_rec.DeviceReconnectGuard(max_attempts=1, cooldown_seconds=2.0, backoff_ms=300)
+        self._reconnect_timer = QTimer(self)
+        self._reconnect_timer.setSingleShot(True)
+        self._reconnect_timer.setInterval(self._reconnect_guard.backoff_ms)
+        self._reconnect_timer.timeout.connect(self._execute_mixdown_reconnect)
+        self._audio_devices_cache: list[dict] | None = None
         self._connect_auto_recorders()
 
     def _connect_auto_recorders(self):
@@ -46,6 +59,9 @@ class QuickUxHub(QObject):
         mixdown = getattr(self._bridge, '_mixdown', None)
         if mixdown is not None:
             mixdown.tracksChanged.connect(self._watch_mixdown)
+            mixdown.viewChanged.connect(self._watch_mixdown_device)
+        if hasattr(self._bridge, 'activityChanged'):
+            self._bridge.activityChanged.connect(self._watch_preparation_queue)
 
     def _auto_record(self, slot_key: str, path: str, kind: str, title: str = '', fmt: str = ''):
         if os.environ.get('VWA_TESTING') == '1':
@@ -208,3 +224,131 @@ class QuickUxHub(QObject):
         else:
             return
         self._bridge.pushToast(f'已导入：{Path(clean[0]).name}', 'success')
+
+    # --- T3-M5: WASAPI device enumeration, hot-swap reconnect & multi-song prep queue ---
+
+    def _watch_mixdown_device(self):
+        if os.environ.get('VWA_TESTING') == '1':
+            return
+        mixdown = getattr(self._bridge, '_mixdown', None)
+        if mixdown is None or getattr(mixdown, '_closed', False):
+            return
+        player = getattr(mixdown, '_player', None)
+        state = getattr(mixdown, '_state', None)
+        if player is None or state is None:
+            return
+        if not getattr(player, 'failed', False):
+            if getattr(player, 'ready', False):
+                self._reconnect_guard.reset()
+            return
+        msg = str(getattr(state, 'message', '') or '')
+        if not self._reconnect_timer.isActive() and self._reconnect_guard.should_attempt(msg):
+            self._reconnect_guard.mark_attempt()
+            self._reconnect_timer.start()
+
+    def _execute_mixdown_reconnect(self):
+        mixdown = getattr(self._bridge, '_mixdown', None)
+        if mixdown is None or getattr(mixdown, '_closed', False):
+            return
+        replace_fn = getattr(mixdown, '_replace_player', None)
+        if callable(replace_fn):
+            replace_fn()
+            self._bridge.pushToast('音频输出设备已变动，已自动切换并恢复试听', 'info')
+
+    @Property('QVariantList', notify=audioDevicesChanged)
+    def audioOutputDevices(self):
+        if self._audio_devices_cache is None:
+            if os.environ.get('VWA_TESTING') == '1':
+                self._audio_devices_cache = []
+            else:
+                self._audio_devices_cache = _audio_rec.list_wasapi_devices(root=self._root)
+        return [
+            {'index': -1, 'name': '', 'label': tr('跟随系统默认'), 'is_default': True},
+            *[
+                {
+                    'index': int(row.get('index', idx)),
+                    'name': str(row.get('name') or ''),
+                    'label': str(row.get('name') or ''),
+                    'is_default': bool(row.get('is_default', False)),
+                }
+                for idx, row in enumerate(self._audio_devices_cache)
+                if row.get('name')
+            ],
+        ]
+
+    @Property(str, notify=audioDevicesChanged)
+    def selectedAudioOutputDevice(self) -> str:
+        cfg, _ = vwa_config.load_validated_config(root=self._root, persist_migration=False)
+        return str(cfg.get('audio_output_device') or '')
+
+    @Slot()
+    def refreshAudioDevices(self):
+        self._audio_devices_cache = _audio_rec.list_wasapi_devices(root=self._root)
+        self.audioDevicesChanged.emit()
+
+    @Slot(str)
+    def selectAudioOutputDevice(self, device_name: str):
+        from vwa_io import atomic_json
+        cfg, _ = vwa_config.load_validated_config(root=self._root, persist_migration=False)
+        clean = str(device_name or '').strip()
+        if str(cfg.get('audio_output_device') or '') == clean:
+            return
+        cfg['audio_output_device'] = clean
+        atomic_json(self._root / 'config.json', cfg)
+        self.audioDevicesChanged.emit()
+        self._bridge.pushToast(tr('音频输出设备已更新'), 'success')
+
+    @Property('QVariantList', notify=prepQueueChanged)
+    def prepQueue(self):
+        return self._prep_queue.list_items()
+
+    @Slot('QVariant')
+    def enqueuePreparation(self, path_or_url):
+        local = _to_local_path(path_or_url)
+        if not local or not Path(local).is_file():
+            return
+        try:
+            item = self._prep_queue.enqueue(local)
+        except (OSError, ValueError) as exc:
+            self._bridge.pushToast(str(exc), 'warning')
+            return
+        self.prepQueueChanged.emit()
+        self._bridge.pushToast(tr('已加入准备队列') + f'：{item["title"]}', 'info')
+        if not self._bridge.preparationBusy:
+            self._advance_preparation_queue()
+
+    @Slot(str)
+    def removeQueuedPreparation(self, item_id: str):
+        if self._prep_queue.remove(str(item_id)):
+            self.prepQueueChanged.emit()
+
+    @Slot(str, int)
+    def moveQueuedPreparation(self, item_id: str, delta: int):
+        if self._prep_queue.move(str(item_id), int(delta)):
+            self.prepQueueChanged.emit()
+
+    @Slot()
+    def clearPrepQueue(self):
+        if self._prep_queue.clear() > 0:
+            self.prepQueueChanged.emit()
+            self._bridge.pushToast(tr('已清空准备队列'), 'info')
+
+    def _watch_preparation_queue(self):
+        busy = bool(getattr(self._bridge, 'preparationBusy', False))
+        finished = self._was_prep_busy and not busy
+        self._was_prep_busy = busy
+        if finished and not getattr(self._bridge, '_closed', False):
+            self._advance_preparation_queue()
+
+    def _advance_preparation_queue(self):
+        if getattr(self._bridge, '_closed', False) or getattr(self._bridge, 'preparationBusy', False):
+            return
+        nxt = self._prep_queue.dequeue()
+        if nxt is None:
+            return
+        self.prepQueueChanged.emit()
+        music_path = str(nxt.get('music_path') or '')
+        if music_path and Path(music_path).is_file():
+            self._bridge.chooseMusic(QUrl.fromLocalFile(music_path))
+            if hasattr(self._bridge, 'startPreparation'):
+                self._bridge.startPreparation()

@@ -122,6 +122,30 @@ VWA_OUTPUT_API int vwa_output_create(
     char* error_text,
     size_t error_text_capacity);
 
+/*
+ * Device-selectable creation (device_index < 0 selects the system default
+ * WASAPI playback endpoint, matching vwa_output_create).
+ */
+VWA_OUTPUT_API int vwa_output_create_for_device(
+    uint32_t mode,
+    uint32_t sample_rate,
+    uint32_t channels,
+    uint32_t capacity_frames,
+    uint32_t period_frames,
+    int32_t device_index,
+    VwaOutput** out_output,
+    char* error_text,
+    size_t error_text_capacity);
+
+/*
+ * Enumerate active WASAPI playback endpoints as a UTF-8 JSON array:
+ *   [{"index":0,"name":"...","is_default":true}, ...]
+ * Returns the device count (>= 0) on success, or a negative error code.
+ */
+VWA_OUTPUT_API int vwa_output_list_devices(
+    char* json_buffer,
+    size_t json_buffer_capacity);
+
 VWA_OUTPUT_API void vwa_output_destroy(VwaOutput* output);
 
 VWA_OUTPUT_API uint64_t vwa_output_write(
