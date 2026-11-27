@@ -20,7 +20,7 @@ import time
 import uuid
 import weakref
 
-from vwa_paths import native_path
+from vwa_paths import native_path, strip_extended_prefix
 
 _ATOMIC_LOCKS = weakref.WeakValueDictionary()
 _ATOMIC_GUARD = threading.Lock()

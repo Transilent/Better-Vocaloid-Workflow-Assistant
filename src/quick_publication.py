@@ -16,7 +16,7 @@ import math
 import os
 from pathlib import Path
 import re
-from vwa_io import safe_rmtree
+from vwa_io import safe_rmtree, strip_extended_prefix
 import subprocess
 import sys
 import tempfile
@@ -2023,7 +2023,7 @@ class QuickPublication(QObject):
         _draft_svc.discard_preview_dir(directory, keep)
 
     def _open_local(self, path: Path) -> bool:
-        return QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).resolve())))
+        return QDesktopServices.openUrl(QUrl.fromLocalFile(strip_extended_prefix(Path(path).resolve())))
 
     def _open_url(self, url: str) -> bool:
         return QDesktopServices.openUrl(QUrl(url))

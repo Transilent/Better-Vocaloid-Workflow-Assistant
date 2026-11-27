@@ -27,7 +27,7 @@ import source_contract
 import video_mixdown
 from common import ROOT, file_hash
 from i18n import tr
-from vwa_io import safe_rmtree
+from vwa_io import safe_rmtree, strip_extended_prefix
 
 _VIDEO_KINDS = frozenset(('video-analyze', 'video-adopt', 'video-render', 'video-register',
                           'video-preview', 'video-publish', 'video-restore', 'video-task-scan'))
@@ -1238,7 +1238,7 @@ class QuickVideo(QObject):
         if path is None or not path.is_file():
             self._notice(f'当前没有可打开的{label}。')
             return
-        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(strip_extended_prefix(path))):
             self._notice(f'系统无法打开当前{label}。')
 
     @Slot()
@@ -1254,7 +1254,7 @@ class QuickVideo(QObject):
         if not self._result or not Path(self._result).is_file():
             self._notice('当前没有可打开的 MP4 成品。')
             return
-        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(self._result).resolve()))):
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(strip_extended_prefix(Path(self._result).resolve()))):
             self._notice('系统无法打开当前 MP4。')
 
     @Slot()

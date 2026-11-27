@@ -168,6 +168,7 @@
     "tests/test_wave2_tuning_journeys.py",
     "tests/test_wave3_chorus_journeys.py",
     "tests/test_wave4_mixdown_journeys.py",
+    "tests/test_wave8_marathon_journeys.py",
     "tests/test_user_experience_guards.py",
     "tests/test_stability_and_perf_guards.py",
     "tests/test_project_convert.py",

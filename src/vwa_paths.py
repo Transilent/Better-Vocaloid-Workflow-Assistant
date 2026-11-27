@@ -29,6 +29,16 @@ def native_path(path) -> str:
     return "\\\\?\\" + value
 
 
+def strip_extended_prefix(path) -> str:
+    """Remove Windows \\\\?\\ extended-length prefix for clean UI display & QUrl.fromLocalFile."""
+    text = str(path or "")
+    if text.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + text[8:]
+    if text.startswith("\\\\?\\"):
+        return text[4:]
+    return text
+
+
 @lru_cache(maxsize=1)
 def dependency_manifest() -> dict:
     manifest = ROOT / "dependencies/manifest.json"

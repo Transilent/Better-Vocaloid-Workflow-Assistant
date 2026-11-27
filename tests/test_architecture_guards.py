@@ -344,6 +344,41 @@ def test_no_bare_temporary_directory():
     )
 
 
+def test_no_unguarded_open_url_from_local_file():
+    """Enforce Windows \\\\?\\ extended-prefix stripping on every QDesktopServices.openUrl(QUrl.fromLocalFile(...))."""
+    allowed_cleaners = frozenset({'strip_extended_prefix', 'clean_local_path', 'local_file_path'})
+    offenders = []
+    for path in _iter_source_py():
+        tree = ast.parse(path.read_text(encoding='utf-8'))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Attribute) and func.attr == 'openUrl' and node.args):
+                continue
+            arg0 = node.args[0]
+            if not (
+                isinstance(arg0, ast.Call)
+                and isinstance(arg0.func, ast.Attribute)
+                and arg0.func.attr == 'fromLocalFile'
+                and arg0.args
+            ):
+                continue
+            inner = arg0.args[0]
+            clean_name = ''
+            if isinstance(inner, ast.Call):
+                if isinstance(inner.func, ast.Name):
+                    clean_name = inner.func.id
+                elif isinstance(inner.func, ast.Attribute):
+                    clean_name = inner.func.attr
+            if clean_name not in allowed_cleaners:
+                offenders.append(f'{path.name}:{node.lineno}')
+    assert not offenders, (
+        'Unguarded QDesktopServices.openUrl(QUrl.fromLocalFile(...)) breaks on Windows \\\\?\\ paths; '
+        f'wrap argument with strip_extended_prefix(): {offenders}'
+    )
+
+
 def main():
     test_no_qt_in_domain_modules()
     test_no_silent_except_exception()
@@ -355,6 +390,7 @@ def main():
     test_browser_runtime_edge_fallback_and_cache_prune()
     test_file_size_ratchet()
     test_no_bare_temporary_directory()
+    test_no_unguarded_open_url_from_local_file()
     print('PASS test_architecture_guards')
 
 

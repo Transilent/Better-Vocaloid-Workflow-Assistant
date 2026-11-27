@@ -32,6 +32,7 @@ from quick_work import WorkerLane
 import task_actions_service as _task_actions
 from workspace_controller import WorkspaceController
 from workspace_settings import component_source_preferences, save_component_source_preferences
+from vwa_paths import strip_extended_prefix
 import workflow
 
 
@@ -1774,7 +1775,7 @@ class QuickBridge(QObject):
             self._clear_work_task_lock()
 
     def _open_local(self, path):
-        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(strip_extended_prefix(path))):
             self._error(ValueError('系统无法打开此文件或目录。'))
 
     @Slot(str)

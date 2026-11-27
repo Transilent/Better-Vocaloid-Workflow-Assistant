@@ -20,6 +20,7 @@ from operation_diagnostics import LOG_DIR, clock_text, export_diagnostic_bundle,
 from quick_work import WorkerLane
 from support_info import FEEDBACK_URL, QQ_GROUP
 from task_store import format_size, size
+from vwa_paths import strip_extended_prefix
 from workspace_settings import SettingsState, load_update_recovery
 
 TOUR_STEP_COUNT = len(tutorial_catalog.TOUR_STEPS)
@@ -1266,7 +1267,7 @@ class QuickSupport(QObject):
     @Slot()
     def openDiagnosticLogs(self):
         folder = ROOT / LOG_DIR
-        if not folder.is_dir() or not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
+        if not folder.is_dir() or not QDesktopServices.openUrl(QUrl.fromLocalFile(strip_extended_prefix(folder))):
             self._diagnostics['message'] = tr('本机日志目录暂不可打开。')
             self.diagnosticsChanged.emit()
 

@@ -152,6 +152,7 @@ Item {
         Rectangle {
             Layout.fillHeight: !editor.narrow
             Layout.fillWidth: editor.narrow
+            Layout.minimumWidth: 0
             Layout.preferredWidth: editor.narrow ? -1 : Math.round(232 * editor.unit)
             Layout.preferredHeight: editor.narrow ? sidebarColumn.implicitHeight + Math.round(20 * editor.unit) : -1
             color: editor.theme.surface
@@ -165,6 +166,7 @@ Item {
                 Heading { text: editor.label("起始配方") }
                 Flow {
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 0
                     spacing: Math.round(6 * editor.unit)
                     Repeater {
                         model: editor.design.templates || []
@@ -217,6 +219,7 @@ Item {
                 }
                 Flow {
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 0
                     spacing: Math.round(6 * editor.unit)
                     UiButton {
                         objectName: "designSaveDefault"
@@ -258,6 +261,7 @@ Item {
             id: rightPane
             Layout.fillHeight: true
             Layout.fillWidth: true
+            Layout.minimumWidth: 0
             readonly property bool twoCol: width >= Math.round(560 * editor.unit)
             color: editor.theme.surface
             border.color: editor.theme.line
@@ -269,6 +273,7 @@ Item {
                 spacing: Math.round(10 * editor.unit)
                 Flow {
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 0
                     spacing: Math.round(6 * editor.unit)
                     UiButton {
                         objectName: "designPanelExpression"

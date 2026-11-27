@@ -17,31 +17,50 @@ Item {
         anchors.margins: Math.round(12 * page.unit)
         spacing: Math.round(8 * page.unit)
 
-        // Unified single-row studio header with segmented tab pill
-        RowLayout {
+        // Responsive studio header with wrapping segmented tab pill (ZH/EN/JA & compact DPI safe)
+        ColumnLayout {
             Layout.fillWidth: true
-            spacing: Math.round(10 * page.unit)
-            Text {
-                text: page.label("调音工坊")
-                font.pixelSize: Math.round(17 * page.unit)
-                font.weight: Font.DemiBold
-                color: page.theme.text
+            spacing: Math.round(6 * page.unit)
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Math.round(8 * page.unit)
+                Text {
+                    text: page.label("调音工坊")
+                    font.pixelSize: Math.round(17 * page.unit)
+                    font.weight: Font.DemiBold
+                    color: page.theme.text
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    elide: Text.ElideRight
+                }
+                UiButton {
+                    objectName: "workshopReturnTuning"
+                    theme: page.theme
+                    implicitHeight: Math.round(28 * page.unit)
+                    quiet: true
+                    text: page.label("返回调音")
+                    leadingGlyph: "arrow_left"
+                    leadingIconSize: 14
+                    onClicked: page.controller.navigate("tuning")
+                }
             }
-            Item { Layout.fillWidth: true }
+
             Rectangle {
+                Layout.fillWidth: true
+                Layout.minimumWidth: 0
                 radius: Math.round(7 * page.unit)
                 color: page.theme.raised
                 border.color: page.theme.line
-                Layout.preferredWidth: tabs.implicitWidth + 4
-                Layout.minimumWidth: Layout.preferredWidth
-                Layout.preferredHeight: tabs.implicitHeight + 4
-                implicitWidth: Layout.preferredWidth
-                implicitHeight: Layout.preferredHeight
-                RowLayout {
+                Layout.preferredHeight: tabs.implicitHeight + 6
+                implicitHeight: tabs.implicitHeight + 6
+                Flow {
                     id: tabs
-                    anchors.fill: parent
-                    anchors.margins: 2
-                    spacing: 2
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.margins: 3
+                    spacing: 4
                     Repeater {
                         model: [{key: "style", text: "风格制作", icon: "nav_workshop"},
                                 {key: "calibration", text: "声库拟合", icon: "target"},
@@ -62,17 +81,6 @@ Item {
                         }
                     }
                 }
-            }
-            Item { Layout.fillWidth: true }
-            UiButton {
-                objectName: "workshopReturnTuning"
-                theme: page.theme
-                implicitHeight: Math.round(28 * page.unit)
-                quiet: true
-                text: page.label("返回调音")
-                leadingGlyph: "arrow_left"
-                leadingIconSize: 14
-                onClicked: page.controller.navigate("tuning")
             }
         }
 

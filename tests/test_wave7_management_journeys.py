@@ -596,7 +596,11 @@ class Wave7QtOffscreenTests(unittest.TestCase):
 
     def test_w7_01_results_multidpi_stepper_and_drawer_height(self):
         self.owner.navigate('results')
-        self._pump(35)
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and (self.owner._read.kind or self.owner._details.kind):
+            self._pump(4)
+            time.sleep(0.01)
+        self._pump(15)
         # Inject a selected task detail so 5-step pipeline stepper + openTaskManagement are live
         self.owner.state.selected_task_id = 'C:/fake/w7_job'
         self.owner.state.task_detail = {
