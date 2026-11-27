@@ -69,6 +69,8 @@ For VOCALOID 5/6 VPR, **Keep original expression** supports additive dynamics (D
 
 Use **Tasks and results** to find, continue, or retry tasks. Install optional models from **Models and components**. In **Settings and support**, change the interface language, revisit the tour, or manage the [local preset library](docs/PresetLibrary.en.md). Imports append presets by default.
 
+For optional lead/backing vocal separation on AMD and other non-NVIDIA GPUs, **Models and components** also offers an experimental **BS-RoFormer ONNX (WebGPU)** component (disabled by default). It runs in an isolated `onnxruntime-webgpu 1.27.0` child process without modifying the base DirectML runtime or the original PyTorch CUDA BS-RoFormer component: choose `10s FP16` for ≤8 GB VRAM / APUs, or `20s FP16` for ≥12 GB VRAM. NVIDIA GPUs continue to recommend the original PyTorch CUDA BS-RoFormer component.
+
 ## Upgrading
 
 **Released 1.0.0, 1.1.0 or 2.0.0:** Check for updates in the old app under **Settings and updates** or **Settings and support**, then follow the restart prompt. Both full and JPN retain settings, tasks, presets, sign-in sessions, installed models, and optional components. JPN does not automatically add omitted Chinese weights.
@@ -96,6 +98,7 @@ Thanks to the authors and contributors of the following projects.
 | [FFmpeg](https://ffmpeg.org/) / [Jellyfin FFmpeg](https://github.com/jellyfin/jellyfin-ffmpeg) | Audio/video processing. |
 | [Playwright for Python](https://github.com/microsoft/playwright-python) | Browser sign-in and upload assistance. |
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime) / [PyTorch](https://pytorch.org/) | Model execution. |
+| [@AU-ki](https://github.com/AU-ki) | BS-RoFormer ONNX export (`tools/export_roformer_onnx.py`) and cross-vendor WebGPU validation (RX 9070 XT, Arc 130V, RTX 2080Ti, etc.). |
 | [Qt Quick and PySide6](https://doc.qt.io/qtforpython-6.10/) | Desktop interface. |
 | [NumPy](https://numpy.org/), [SciPy](https://scipy.org/), [librosa](https://librosa.org/), [SoundFile](https://github.com/bastibe/python-soundfile), [Mido](https://github.com/mido/mido), [Pillow](https://python-pillow.org/) | Numeric, audio, MIDI and image processing. |
 
