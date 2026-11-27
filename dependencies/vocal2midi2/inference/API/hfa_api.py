@@ -145,6 +145,8 @@ def load_hfa_model(model_dir, device=None, use_cache: bool = True):
     provider_name, model.model = create_onnx_session(
         model.model_folder / 'model.onnx', options, device, label="HubertFA ONNX"
     )
+    active_ep = model.model.get_providers()[0] if model.model.get_providers() else "CPUExecutionProvider"
+    print(f"[VWA 后端] 歌词对齐 (HubertFA): {active_ep} ({provider_name})", flush=True)
     logger.info(f"HubertFA ONNX session created with provider={provider_name}: {model.model.get_providers()}")
     if use_cache:
         _HFA_MODEL_CACHE[key] = model

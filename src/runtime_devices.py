@@ -71,6 +71,12 @@ def adapters():
     return device_module()._enumerate_dxgi_adapters()
 
 
+def preferred_gpu_adapter():
+    module = device_module()
+    module.select_preferred_gpu_adapter.cache_clear()
+    return module.select_preferred_gpu_adapter()
+
+
 def providers(tools, device, label='MDX'):
     prepare_environment(tools)
     module = device_module()

@@ -394,6 +394,10 @@ def create_onnx_session(
     import onnxruntime as ort
 
     options = sess_options if sess_options is not None else ort.SessionOptions()
+    if os.environ.get("VWA_ORT_VERBOSE", "").strip().lower() not in {"1", "true", "yes"}:
+        # Suppress noisy per-session node-placement warnings (e.g. shape ops kept on CPU).
+        if getattr(options, "log_severity_level", 2) < 3:
+            options.log_severity_level = 3
     provider_name, providers = resolve_onnx_providers(device, label=label)
     if provider_name == "webgpu" and hasattr(options, "add_provider_for_devices"):
         adapter = select_preferred_gpu_adapter(MIN_GPU_DEDICATED_VRAM_BYTES) if sys.platform == "win32" else None

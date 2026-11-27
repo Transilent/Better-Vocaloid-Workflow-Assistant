@@ -133,6 +133,10 @@ def load_qwen_model(model_path, device=None, use_cache=True):
             device=requested_device,
             verbose=False,
         )
+        print(
+            f"[VWA 后端] 歌词识别 (Qwen3-ASR): 编码器 {model.encoder_provider_name} / 解码器 {model.decoder_backend}",
+            flush=True,
+        )
         logger.info(
             "Qwen ASR runtime ready: "
             f"encoder={model.encoder_provider_name} {model.encoder_frontend_providers}, "

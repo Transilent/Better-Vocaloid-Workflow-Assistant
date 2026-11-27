@@ -353,14 +353,23 @@ def run_many(job, voices):
     prepare_environment(request['tools'])
     configure(root)
     session = None
-    if (request.get('midi_backend') == 'v2' and PROFILES[request['language']].asr_feature == QWEN_FEATURE
-            and request['tools'].get('midi_device', 'webgpu') == 'cpu' and request.get('recognize_lyrics', True)):
-        # The retained multi-GB text model is worthwhile only with a comfortable
-        # host-memory margin. GPU Qwen sessions keep their original release policy.
-        from runtime_devices import available_memory
-        if available_memory() >= 16 * 1024**3:
+    midi_device = str(request['tools'].get('midi_device', 'webgpu') or 'webgpu').strip().lower()
+    if (len(voices) > 1 and request.get('midi_backend') == 'v2'
+            and PROFILES[request['language']].asr_feature == QWEN_FEATURE
+            and request.get('recognize_lyrics', True)):
+        from runtime_devices import available_memory, preferred_gpu_adapter
+        has_host_margin = available_memory() >= 16 * 1024**3
+        if midi_device == 'cpu':
+            can_reuse = has_host_margin
+        else:
+            adapter = preferred_gpu_adapter()
+            vram = int(getattr(adapter, 'dedicated_vram_bytes', 0) or 0) if adapter is not None else 0
+            # Keep Qwen3-ASR (~6-7 GiB VRAM) resident across lead/backing only on >= 12 GiB GPUs.
+            can_reuse = has_host_margin and vram >= 12 * 1024**3
+        if can_reuse:
             from application.pipeline import open_asr_session
             session = open_asr_session()
+            print(f'[VWA 后端] 双轨复用 Qwen3-ASR 会话（device={midi_device}），避免重复加载 4 GB 权重。', flush=True)
     durations = {}
     try:
         for voice in voices:
