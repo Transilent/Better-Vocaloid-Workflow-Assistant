@@ -830,7 +830,11 @@ class QuickBridge(QObject):
 
     def _update_draft(self, call, *, persist=False):
         try:
-            if call():
+            changed = call()
+            if self._notice:
+                self._notice = ''
+                self.activityChanged.emit()
+            if changed:
                 self.draftChanged.emit()
                 if persist:
                     preparation.save_draft_settings(self.state.draft)
@@ -879,12 +883,8 @@ class QuickBridge(QObject):
 
     @Slot(str)
     def setPreparationMusicPath(self, path):
-        try:
-            value = str(path).strip().strip('"')
-            if self.state.set_music(value):
-                self.draftChanged.emit()
-        except (OSError, ValueError, TypeError) as exc:
-            self._error(exc)
+        value = str(path).strip().strip('"')
+        self._update_draft(lambda: self.state.set_music(value))
 
     @Slot(str)
     def applyPreparationPreset(self, key):

@@ -23,6 +23,7 @@ from PySide6.QtCore import QObject, Property, QUrl, Signal, Slot
 from agent_media import _publish_without_overwrite
 from common import file_hash, native_path
 from i18n import tr
+from project_convert_compat import strip_extended_prefix
 from quick_media_handoff import verify_task_artifact
 import subtitles
 
@@ -49,7 +50,7 @@ def _local_path(value: Any) -> Path:
     if not text:
         raise SubtitleEditError('文件路径为空。')
     try:
-        path = Path(text).expanduser().resolve()
+        path = Path(strip_extended_prefix(Path(text).expanduser().resolve()))
     except (OSError,RuntimeError,TypeError,ValueError) as exc:
         raise SubtitleEditError('无法解析文件路径。') from exc
     if not path.is_file():
@@ -71,7 +72,7 @@ def _output_path(value: Any, format_name: str) -> Path:
         raise SubtitleEditError('导出路径为空。')
     raw = Path(text).expanduser()
     try:
-        parent = raw.parent.resolve()
+        parent = Path(strip_extended_prefix(raw.parent.resolve()))
     except (OSError,RuntimeError,TypeError,ValueError) as exc:
         raise SubtitleEditError('无法解析导出目录。') from exc
     if not parent.is_dir():
@@ -365,6 +366,9 @@ class QuickSubtitles(QObject):
             if self._source_kind != 'midi':
                 raise SubtitleEditError('当前来源不是 MIDI。')
             if self._selected_track == track_id:
+                if self._error:
+                    self._error = ''
+                    self.changed.emit()
                 return True
             self._check_source_hash()
             row = next((item for item in self._tracks if int(item['id']) == int(track_id)), None)
@@ -442,6 +446,9 @@ class QuickSubtitles(QObject):
             if not math.isfinite(value) or not -3600 <= value <= 3600:
                 raise SubtitleEditError('整体偏移应为 -3600 到 3600 秒之间的有限数值。')
             if value == self._offset:
+                if self._error:
+                    self._error = ''
+                    self.changed.emit()
                 return True
             self._offset = value
             self._exported_path = ''

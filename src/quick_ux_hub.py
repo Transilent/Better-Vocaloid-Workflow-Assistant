@@ -400,8 +400,10 @@ class QuickUxHub(QObject):
             return
         self.prepQueueChanged.emit()
         self._bridge.pushToast(tr('已加入准备队列') + f'：{item["title"]}', 'info')
-        if not self._bridge.preparationBusy:
-            self._advance_preparation_queue()
+
+    @Slot(result=bool)
+    def startPrepQueue(self):
+        return self._advance_preparation_queue()
 
     @Slot(str)
     def removeQueuedPreparation(self, item_id: str):
@@ -423,18 +425,40 @@ class QuickUxHub(QObject):
         busy = bool(getattr(self._bridge, 'preparationBusy', False))
         finished = self._was_prep_busy and not busy
         self._was_prep_busy = busy
-        if finished and not getattr(self._bridge, '_closed', False):
-            self._advance_preparation_queue()
+        if not finished or getattr(self._bridge, '_closed', False):
+            return
+        task_state = str(getattr(self._bridge, 'preparationTask', {}).get('state') or '')
+        if task_state == 'cancelled':
+            if self._prep_queue.list_items():
+                self._bridge.pushToast(tr('已取消当前任务，批量队列已暂停'), 'info')
+            return
+        self._advance_preparation_queue()
 
-    def _advance_preparation_queue(self):
+    def _advance_preparation_queue(self) -> bool:
         if getattr(self._bridge, '_closed', False) or getattr(self._bridge, 'preparationBusy', False):
-            return
-        nxt = self._prep_queue.dequeue()
-        if nxt is None:
-            return
-        self.prepQueueChanged.emit()
-        music_path = str(nxt.get('music_path') or '')
-        if music_path and Path(music_path).is_file():
-            self._bridge.chooseMusic(QUrl.fromLocalFile(music_path))
-            if hasattr(self._bridge, 'startPreparation'):
-                self._bridge.startPreparation()
+            return False
+        skipped: list[str] = []
+        while True:
+            nxt = self._prep_queue.dequeue()
+            if nxt is None:
+                self.prepQueueChanged.emit()
+                if skipped:
+                    self._bridge.pushToast(tr('已跳过缺失的队列文件') + f'：{"、".join(skipped[:3])}', 'warning')
+                return False
+            music_path = str(nxt.get('music_path') or '')
+            if music_path and Path(music_path).is_file():
+                self.prepQueueChanged.emit()
+                if skipped:
+                    self._bridge.pushToast(tr('已跳过缺失的队列文件') + f'：{"、".join(skipped[:3])}', 'warning')
+                opts = nxt.get('options') if isinstance(nxt.get('options'), dict) else {}
+                if hasattr(self._bridge, 'setPreparationField'):
+                    self._bridge.setPreparationField('input_mode', 'local')
+                    self._bridge.setPreparationField('lyrics', str(opts.get('lyrics') or ''))
+                    self._bridge.setPreparationField('backing_lyrics', str(opts.get('backing_lyrics') or ''))
+                    if opts.get('language') in ('zh', 'ja', 'en'):
+                        self._bridge.setPreparationField('language', opts['language'])
+                self._bridge.chooseMusic(QUrl.fromLocalFile(music_path))
+                if hasattr(self._bridge, 'startPreparation'):
+                    self._bridge.startPreparation()
+                return True
+            skipped.append(str(nxt.get('fileName') or nxt.get('title') or Path(music_path).name))

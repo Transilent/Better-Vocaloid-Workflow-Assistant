@@ -90,6 +90,10 @@
       "source": "src/quick_ui/ProjectConvertReceiptCard.qml"
     },
     {
+      "file": "quick_ui/PreparationQueueCard.qml",
+      "source": "src/quick_ui/PreparationQueueCard.qml"
+    },
+    {
       "file": "quick_ui/ChorusTimeline.qml",
       "source": "src/quick_ui/ChorusTimeline.qml"
     },

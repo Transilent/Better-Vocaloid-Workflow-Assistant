@@ -781,16 +781,14 @@ Item {
                                         drag.accept(Qt.CopyAction)
                                 }
                                 onDropped: function(drop) {
-                                    const urls = drop.urls || []
-                                    if (urls.length > 0) {
-                                        for (let index = 0; index < urls.length; ++index) {
-                                            if (urls[index] && urls[index].isLocalFile()) {
-                                                page.controller.setPreparationField("input_mode", "local")
-                                                page.controller.setPreparationMusicPath(urls[index].toLocalFile())
-                                                drop.acceptProposedAction()
-                                                return
-                                            }
-                                        }
+                                    const localUrls = (drop.urls || []).filter(u => u && u.isLocalFile())
+                                    if (localUrls.length > 0) {
+                                        page.controller.setPreparationField("input_mode", "local")
+                                        page.controller.setPreparationMusicPath(localUrls[0].toLocalFile())
+                                        for (let i = 1; i < localUrls.length; ++i)
+                                            if (page.controller.ux) page.controller.ux.enqueuePreparation(localUrls[i])
+                                        drop.acceptProposedAction()
+                                        return
                                     }
                                     const text = String(drop.text || "").trim().replace(/^"|"$/g, "")
                                     if (text.length > 0) {
@@ -871,9 +869,10 @@ Item {
                                 text: page.controller.text("移除")
                                 quiet: true
                                 enabled: !page.editLocked
-                                onClicked: page.controller.chooseMusic("")
+                                onClicked: page.controller.clearMusic()
                             }
                         }
+                        PreparationQueueCard { theme: page.theme; controller: page.controller }
 
                         ColumnLayout {
                             Layout.fillWidth: true

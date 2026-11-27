@@ -1274,5 +1274,9 @@
   "仅在修音工作台导入乐谱": "Import score only into Pitch & Timing",
   "支持扩展格式转换为 SVP / USTX / VPR / VSQX / UFData / MIDI": "Convert extended formats to SVP / USTX / VPR / VSQX / UFData / MIDI",
   "已载入首曲，其余 {0} 首已加入准备队列": "Loaded first track and queued {0} remaining track(s)",
-  "转换完成 · 请复核": "Conversion complete · Review recommended"
+  "转换完成 · 请复核": "Conversion complete · Review recommended",
+  "等待队列": "Waiting queue",
+  "开始队列": "Start queue",
+  "已取消当前任务，批量队列已暂停": "Current task cancelled; batch queue paused",
+  "已跳过缺失的队列文件": "Skipped missing queued file"
 }
