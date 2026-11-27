@@ -24,7 +24,7 @@ ROOT_FILES = {'style_presets.py', 'context_project.py', 'context_reading.py', 'c
               'cover_art.py', 'desktop_theme.py', 'download_sources.py', 'launch.py',
               'mdx.py', 'midi_bridge.py', 'midi_checks.py', 'midi_merge.py', 'music_timing.py',
               'optional_components.py', 'pipeline.py', 'publication.py', 'publish_browser.py',
-              'publishing_layout.py', 'publishing_ui.py', 'roformer.py', 'vocal_partition.py', 'updater.py',
+              'publishing_layout.py', 'publishing_ui.py', 'roformer.py', 'roformer_onnx.py', 'gpu_backend.py', 'vocal_partition.py', 'updater.py',
               'updates_ui.py', 'v2m_runtime.py', 'workspace_ui.py', 'vocal_expression.py', 'vocal_timbre.py', 'expression_component.py', 'pitch_accuracy.py', 'transcription_quality.py', 'BVWA.exe',
               'publish-selectors.json', 'version.json', 'README.md', 'README.zh-CN.md',
               'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.zh-CN.md'}

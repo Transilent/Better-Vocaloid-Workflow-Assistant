@@ -5,10 +5,12 @@ on:
     branches:
       - main
       - "dev/**"
+      - "feat/**"
   pull_request:
     branches:
       - main
       - "dev/**"
+      - "feat/**"
   workflow_dispatch:
 
 concurrency:
@@ -62,6 +64,7 @@ jobs:
           $tests = @(
             'tests/test_source_layout.py',
             'tests/test_architecture_guards.py',
+            'tests/test_webgpu_backend.py',
             'tests/test_i18n.py',
             'tests/test_download_sources.py',
             'tests/test_operation_diagnostics.py',

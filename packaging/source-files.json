@@ -2,6 +2,7 @@
   "format": 1,
   "files": [
     "packaging/requirements-quick.lock.txt",
+    "tools/bootstrap_webgpu_runtime.py",
     "tools/build_quick_candidate.py",
     "tools/export_roformer_onnx.py",
     "tools/portable/Start-Quick.bat",
@@ -657,6 +658,7 @@
     "tools/research/reference_audio.py",
     "tools/research/reference_corpus.py",
     "tools/set_device.py",
+    "tools/Setup-WebGPU.bat",
     "tools/Start-Diagnostics.bat",
     "tools/update_apply.py",
     "tools/Use-CPU.bat",

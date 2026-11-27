@@ -1,0 +1,117 @@
+name: Release VWA WebGPU Edition
+
+on:
+  push:
+    tags:
+      - "v*-webgpu*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v2.1.0-webgpu.1)"
+        required: true
+        default: "v2.1.0-webgpu.1"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Verify, Build Native Audio & Publish GitHub Release
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONNOUSERSITE: "1"
+      VWA_TESTING: "1"
+      BVWA_TESTING: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install verification dependencies
+        shell: pwsh
+        run: python -m pip install --upgrade numpy mido pyyaml
+
+      - name: Prepare source tree and run L0 guards
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path work | Out-Null
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools/Prepare-Source.ps1
+          python -B tools/verify_source_layout.py
+          python -B tools/extract_i18n.py --check --max-missing-en 0 --max-missing-ja 0
+          python -B tests/test_architecture_guards.py
+          python -B tests/test_source_layout.py
+          python -B tests/test_webgpu_backend.py
+          python -B tests/test_download_sources.py
+
+      - name: Build native audio DLLs (CMake + MinGW)
+        shell: pwsh
+        run: |
+          cmake -S src/native -B build/native -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/native --parallel
+          ctest --test-dir build/native --output-on-failure
+          New-Item -ItemType Directory -Force -Path components/native-audio | Out-Null
+          Get-ChildItem build/native -Recurse -Filter "vwa_*.dll" | ForEach-Object {
+            Copy-Item $_.FullName -Destination (Join-Path "components/native-audio" $_.Name) -Force
+          }
+
+      - name: Package standalone WebGPU release bundle
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.tag }}" } else { "${{ github.ref_name }}" }
+          $outDir = "dist"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          $zipPath = Join-Path $outDir "VWA-$tag-Windows-x64-WebGPU-Bundle.zip"
+          python -B -c "
+          import hashlib, json, pathlib, zipfile
+          root = pathlib.Path('.').resolve()
+          zip_path = pathlib.Path(r'$zipPath')
+          entries = json.loads((root / 'packaging/source-files.json').read_text(encoding='utf-8'))['files']
+          extra = [p.relative_to(root).as_posix() for p in sorted((root / 'components/native-audio').glob('vwa_*.dll'))]
+          with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+              for rel in sorted(set(entries) | set(extra)):
+                  src = root / rel
+                  if src.is_file():
+                      zf.write(src, 'VWA-WebGPU/' + rel)
+          sha = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+          (zip_path.parent / 'SHA256SUMS.txt').write_text(f'{sha}  {zip_path.name}\n', encoding='utf-8')
+          print(f'Packaged {zip_path.name}: {zip_path.stat().st_size:,} bytes sha256={sha}')
+          "
+          echo "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:RELEASE_TAG
+          $notes = @"
+          ## VWA WebGPU Edition ($tag)
+
+          Migrated DirectML and CUDA backends to **ONNX Runtime WebGPU (`onnxruntime-webgpu==1.27.0`)** for cross-vendor AMD / NVIDIA / Intel GPU acceleration.
+
+          ### Highlights
+          - Unified WebGPU device routing with explicit `OrtEpDevice` GPU binding and AMD APU (780M/890M) support.
+          - All ONNX inference engines (MDX-Net, RMVPE, GAME, HubertFA, TiFA, KashiG2P, Qwen3-ASR Encoder, RomajiASR, PinyinASR) migrated to `WebGpuExecutionProvider`.
+          - BS-RoFormer migrated from PyTorch CUDA to pure ONNX WebGPU (`src/roformer_onnx.py` + `tools/export_roformer_onnx.py` with band-chunked attention).
+          - Standalone WebGPU runtime bootstrapper (`tools/Setup-WebGPU.bat` / `tools/bootstrap_webgpu_runtime.py`) and updated `dependencies/manifest.json`.
+          - Pre-built native audio DLLs (`components/native-audio/vwa_*.dll`) included in the bundle.
+
+          ### Quick Start
+          1. Extract the ZIP archive.
+          2. Run ``tools\Setup-WebGPU.bat`` to bootstrap Python 3.12 + ``onnxruntime-webgpu==1.27.0`` + Qt 6.10.3 + FFmpeg + MDX models (or ``tools\Setup-WebGPU.bat --from-portable <dir>`` to upgrade an existing VWA portable folder).
+          3. Launch via ``dependencies\vocal2midi\python\python.exe -B launch.py``.
+          "@
+          $notesFile = "dist/RELEASE_NOTES.md"
+          $notes | Out-File -FilePath $notesFile -Encoding utf8
+          gh release create $tag `
+            dist/*.zip `
+            dist/SHA256SUMS.txt `
+            --title "VWA $tag (AMD / Cross-Vendor WebGPU)" `
+            --notes-file $notesFile `
+            --verify-tag

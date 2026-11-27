@@ -3,8 +3,8 @@
   "product": "Better Vocaloid Workflow Assistant",
   "platform": "Windows x86_64",
   "legacy_tool_paths": {},
-  "files": 10815,
-  "bytes": 7505758434,
+  "files": 10814,
+  "bytes": 7507944716,
   "entries": [
     {
       "file": "dependencies/browser/chrome/154.0.8037.98/154.0.8037.98.manifest",
@@ -26953,8 +26953,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/__init__.py",
-      "bytes": 17693,
-      "sha256": "bbcdff346dff000fbac075c1fe53b5d093a640e3e7d5362ac11de8d09a4eb124"
+      "bytes": 18123,
+      "sha256": "67a776aaafe60e953fa66b1aeed2c5cd37ea1ba28615abdb944e3c311583dbd7"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/backend/__init__.py",
@@ -26963,18 +26963,13 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/backend/backend.py",
-      "bytes": 8187,
-      "sha256": "c4f03af4b7fbaf0c3081e5a86770a0076252a04c6e2007611e677a44ea75f6c7"
+      "bytes": 10447,
+      "sha256": "75e6b2df1c12db84949497209968ef20cb392099f6b87bca2a116b8ca7e5dee7"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/backend/backend_rep.py",
-      "bytes": 1776,
-      "sha256": "03b4b81aac4b0ba21f91b1172e55a25a9083f40279c7ec4086747c04233670d9"
-    },
-    {
-      "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/capi/DirectML.dll",
-      "bytes": 18527776,
-      "sha256": "b73972115320e906a49602f2027a3266622881b0d325ba685e0f165a9482a8d7"
+      "bytes": 2901,
+      "sha256": "bc5e6bed64391baaec2e1705b0de62bc86d5a583040a4c17b8754d4fd0960fc4"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/capi/__init__.py",
@@ -26993,8 +26988,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/capi/build_and_package_info.py",
-      "bytes": 63,
-      "sha256": "ca0da9d1a4c86a0c5d067fd5c2ee4ff66d5dda7acb45f90aa99aa0adcd758ff1"
+      "bytes": 61,
+      "sha256": "260528e71ad34d20b384a4f684f70367ece9fed0d8dfff01e5a448ba156ed8c8"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/capi/convert_npz_to_onnx_adapter.py",
@@ -27002,9 +26997,19 @@
       "sha256": "3744a162bdf4bc141c3abf4ac8577801474472a596f3d29577cd2a4980a0750e"
     },
     {
+      "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/capi/dxcompiler.dll",
+      "bytes": 17684832,
+      "sha256": "450adfba61a72ec3f8feaec38caa371692974b91ca20470a675214d30b7bf387"
+    },
+    {
+      "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/capi/dxil.dll",
+      "bytes": 1509176,
+      "sha256": "51326f698ac24e45d1d2f125868c66252b0c1c47b79b1427655c9ea50cfd4869"
+    },
+    {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/capi/onnxruntime.dll",
-      "bytes": 21111832,
-      "sha256": "302c69f9779d63ef4ab90316e59444c4acbaca7fe3455020d79d10bcfcb00715"
+      "bytes": 24346976,
+      "sha256": "a2cb98408f9a10f8976c0ec4d933b8732c021e9edef348ef7d87a62d05cdd1bc"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/capi/onnxruntime_collect_build_info.py",
@@ -27013,18 +27018,18 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/capi/onnxruntime_inference_collection.py",
-      "bytes": 62504,
-      "sha256": "657d8bc01fc290ecb4a5ebab814931423afbdbb59de63b5023c609d23aef8f00"
+      "bytes": 68964,
+      "sha256": "69a9a7bcedf47fe290faac4817c579d01f79b358bbb8d0374ea4f5a930839126"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/capi/onnxruntime_providers_shared.dll",
-      "bytes": 21576,
-      "sha256": "f6bbae3af4c0673b0d1e6ca8db900dc85ad959a395b69d361038ec7995cc2652"
+      "bytes": 21816,
+      "sha256": "b595e7f99687840a5402a7c6f75352f3812c17e1b2eca9065a5ab618a1ee2921"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/capi/onnxruntime_pybind11_state.pyd",
-      "bytes": 26509336,
-      "sha256": "40ed801d209e57751643581a8c70fe1a72a3df80b1ce88f26f7950cd1a83ac35"
+      "bytes": 24749920,
+      "sha256": "d4a20637fc007b0071a395735be8fbd5c74a100c847c9c58f5b244c3025699e8"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/capi/onnxruntime_validation.py",
@@ -27073,18 +27078,18 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/quantization/__init__.py",
-      "bytes": 647,
-      "sha256": "80bd68e48e61f7cf163427f327528ca5202f936c63830d0772a62c7d770ababc"
+      "bytes": 730,
+      "sha256": "4e96fb4b1262fb1f2e4a479f5529ce7d71fb53a37f180b868eb9a76f4455b4d1"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/quantization/base_quantizer.py",
-      "bytes": 26179,
-      "sha256": "52bf390a01162dd8b6019d8e714390907db111627cc1ad5b06edb4cd7d561256"
+      "bytes": 26295,
+      "sha256": "4e562d2b96aba76be607833578ba1b25fef384fe3d6e74e039f22feecc6834db"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/quantization/calibrate.py",
-      "bytes": 54638,
-      "sha256": "601c808710c538f98b3d9b3ae2d7a4ce8c0857158f483a132ccc5763bbbc6f51"
+      "bytes": 58144,
+      "sha256": "365feab13dfcb32ed3a10de3f9d3e9cbaf6f528b1ad574099480287a86811e6e"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/quantization/execution_providers/qnn/__init__.py",
@@ -27148,8 +27153,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/quantization/matmul_nbits_quantizer.py",
-      "bytes": 69088,
-      "sha256": "8c989846dd6abd2d7f28c8f08ab56d59fc215759ec44359416862fe06347888b"
+      "bytes": 81039,
+      "sha256": "350120ba9063119808d8ea26e0401261434e819331a0c2656789a558c66154de"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/quantization/neural_compressor/__init__.py",
@@ -27158,8 +27163,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/quantization/neural_compressor/onnx_model.py",
-      "bytes": 51478,
-      "sha256": "88db0a1ae461905a35c5379ddacba7adb00ce08f993222d645c53bc887915a2d"
+      "bytes": 50836,
+      "sha256": "29a31f276e9e74addaf799b9de2491eee03af57d84879f9edf25aff1d437dfb6"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/quantization/neural_compressor/util.py",
@@ -27178,8 +27183,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/quantization/onnx_quantizer.py",
-      "bytes": 50385,
-      "sha256": "edc2bef3d449d35e8d0c232d39cee2ed675759ec07fed7b5ebac6327edff0c13"
+      "bytes": 51001,
+      "sha256": "64c7252804e4d6985b72bb4a6d8f10a56dd8b7b86d6a2787891805e36aab54c9"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/quantization/operators/__init__.py",
@@ -27313,18 +27318,18 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/quantization/qdq_quantizer.py",
-      "bytes": 71354,
-      "sha256": "d98ff16b50c93e857e5e954df8ee354d7e5eb3a709b0e923f839eb860fc54b8b"
+      "bytes": 74285,
+      "sha256": "8206bb08d04015fc292427c6b3fe0bd720644c5ac2473d2a1e1277bf8f7af488"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/quantization/quant_utils.py",
-      "bytes": 41408,
-      "sha256": "beeb5a9353dc0d763c5296228867f78b7b1cbc4cf0d445f8691355a625051c66"
+      "bytes": 52771,
+      "sha256": "5b387f267b43a743080804ecd132c75ea4cede211eb33697b0b8dc908a025faa"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/quantization/quantize.py",
-      "bytes": 53809,
-      "sha256": "28bb205b638a4e10e45cc83811b5fd49417662aa509adf742193356211f9d1fc"
+      "bytes": 58802,
+      "sha256": "d881ff0e250b59579d2d64539c04eceda08f1589027262bd81f0c40c6b613a15"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/quantization/registry.py",
@@ -27333,8 +27338,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/quantization/shape_inference.py",
-      "bytes": 9892,
-      "sha256": "b55c609ccd43c6e35db02c5acf7a5a8cf6cacf717c4bbd5ea6b23e82e3b4fd15"
+      "bytes": 10259,
+      "sha256": "e5aebf65f6838773ba363dfd4a319e6f497fdf1854504225e2affa8f0b777749"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/quantization/static_quantize_runner.py",
@@ -27383,8 +27388,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/tools/mobile_helpers/coreml_supported_mlprogram_ops.md",
-      "bytes": 2456,
-      "sha256": "3e7b993a271cc4d801638ba60d58bf8055a2f6d945cfb7bb5ec4a2ad7a524f1f"
+      "bytes": 3013,
+      "sha256": "c23509a1ef83af3266c99a763118a091ee0b1c7f44693497e50150aa1dc44949"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/tools/mobile_helpers/coreml_supported_neuralnetwork_ops.md",
@@ -27693,8 +27698,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/tools/pytorch_export_helpers.py",
-      "bytes": 5971,
-      "sha256": "3117a01e7df3dd58556d94383be91319e74813ea6e7f2c61ab503519521d0a36"
+      "bytes": 6009,
+      "sha256": "7096488a2d16d18c3d591e481892bf2e2ce8afe800913ec902d91a501839ff7f"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/tools/qdq_helpers/__init__.py",
@@ -27733,8 +27738,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/tools/symbolic_shape_infer.py",
-      "bytes": 145673,
-      "sha256": "61af9a047580cd9e401e1ef9504f66861a77ff71e238d91d3c4c52796b6edd76"
+      "bytes": 145824,
+      "sha256": "65db20d68b19c91a7e621eb19aa32a3f0a5ec9254c6bba996f6461e78d1ffd25"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/tools/update_onnx_opset.py",
@@ -27753,8 +27758,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/benchmark.py",
-      "bytes": 33496,
-      "sha256": "92935034ef995a9fc355062edbaf9335bb7089f917b31dd3ddf1b0ade710039f"
+      "bytes": 33525,
+      "sha256": "351c3d7964922e61a579f522ca81f591e95b76a6f2bb2189804a28bffc6ffe75"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/benchmark_helper.py",
@@ -27803,13 +27808,13 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/float16.py",
-      "bytes": 24687,
-      "sha256": "9cc4d882196728b7ea9e70159ec51808a130b7f9e470f7b74fd2487e0e149f70"
+      "bytes": 25190,
+      "sha256": "006a0d0a5c4592d18abd83ff9aa71bb8e63c76e2b335a33a63c3e998ac905dfb"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/fusion_attention.py",
-      "bytes": 51393,
-      "sha256": "9ac02b97748b02bbc49013b038ab49db6b0cc557432ab5562f8df68e3049bb13"
+      "bytes": 52125,
+      "sha256": "d4c237f4a261eb5ab41acee46aa1de7fea973ee0c1c329729dee44da941f2766"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/fusion_attention_clip.py",
@@ -27833,8 +27838,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/fusion_bart_attention.py",
-      "bytes": 20277,
-      "sha256": "11c4c720c33ea54210d5ec69674782b6958732ae7db9991daaaf40363cb62464"
+      "bytes": 23926,
+      "sha256": "9117f8bac59059b4f0d7622d10e85859677ec04f46f402057ea0aaf623d7f1ff"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/fusion_base.py",
@@ -27858,8 +27863,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/fusion_conformer_attention.py",
-      "bytes": 8424,
-      "sha256": "1bc7eae41541eadf3efbcc42a6bd7fb4a983e957f5930f549dc08a07b0b190a9"
+      "bytes": 12002,
+      "sha256": "34aa36dc9782ace70963f77cf2331f1556a06b123bf78f798e2f75bf749246a3"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/fusion_constant_fold.py",
@@ -27903,8 +27908,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/fusion_gpt_attention_no_past.py",
-      "bytes": 10794,
-      "sha256": "a906fc59e9220c9790515f1e828093acba19922d35f2f7994d5544fb0de9dddb"
+      "bytes": 10830,
+      "sha256": "67f304755be0b4be42450c6042544d4ed112f2f5deca910425580c75e7a07f9f"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/fusion_group_norm.py",
@@ -27915,6 +27920,11 @@
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/fusion_layernorm.py",
       "bytes": 20845,
       "sha256": "a966f9669ee2b405c5c86787e32051aff5d2bcc66dd624ee9018bfbb359645e5"
+    },
+    {
+      "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/fusion_mha_dit.py",
+      "bytes": 24663,
+      "sha256": "f69cbc3b85f8cb72962682a8bb5c95e7fa6360a5f6dee5bf3d03ef7a2ee4851d"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/fusion_mha_mmdit.py",
@@ -27928,8 +27938,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/fusion_options.py",
-      "bytes": 12704,
-      "sha256": "35279055cf47cfd4bee2e1a9c6e61fb2283374b0ce76c46a5f2ba36df44f1a1c"
+      "bytes": 12726,
+      "sha256": "492424e033f827b16d1fbba1c2a9adc48d3be0665dddf74f883b7f6ffd146927"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/fusion_qordered_attention.py",
@@ -27963,8 +27973,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/fusion_rotary_attention.py",
-      "bytes": 68222,
-      "sha256": "5b4aa14ef1bbfc065d7e9519b2e8c660163b29525e9ea810e67e3a233fb37a1f"
+      "bytes": 79638,
+      "sha256": "a61bf811c90c8d1b9c8c9cfe39b3c6511a4843d5c4515b76a06929019ffda6a8"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/fusion_shape.py",
@@ -27983,8 +27993,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/fusion_skiplayernorm.py",
-      "bytes": 9168,
-      "sha256": "3f8afb7175538d12d92323aa90e5e5e6052388e0625d141a695eeee179bffc8d"
+      "bytes": 11075,
+      "sha256": "0fc55c958525b88cc4808ba3e791c9e8f0fb3c1a3407864f9b51d1e4c92fc178"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/fusion_transpose.py",
@@ -28008,8 +28018,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/io_binding_helper.py",
-      "bytes": 19440,
-      "sha256": "0ca0561958b70aff1e09c58264e634bfce470ffc030c8d0595225ce5ad0490ac"
+      "bytes": 21845,
+      "sha256": "12a2dd838fdbef8ead398f01ee8f2ec5754e91b12cc042a122815d70aac8f5cb"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/large_model_exporter.py",
@@ -28338,8 +28348,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/models/t5/t5_helper.py",
-      "bytes": 12515,
-      "sha256": "14ac1a381fb3e2ebc4069b0a65b26056330feb19760fd7ebc9f1e30fee1e9de0"
+      "bytes": 12941,
+      "sha256": "bc1914b46b062c5f01cac0c26de92dca9e0fcb661287d4fba02f3543319fdf2d"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/models/whisper/__init__.py",
@@ -28358,8 +28368,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/models/whisper/convert_to_onnx.py",
-      "bytes": 21750,
-      "sha256": "a6b6b670e186904f19be2e32b833b96e518af2b7f1e68e290c34cab1f94b3469"
+      "bytes": 26611,
+      "sha256": "574ef30664fdfe29b72693e07407c6389130c7b79c9c9a16a16f259a9acb407f"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/models/whisper/whisper_chain.py",
@@ -28383,8 +28393,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/models/whisper/whisper_helper.py",
-      "bytes": 51334,
-      "sha256": "0156ed526b81869731c9c8e2289a9b928cc8051ff93d94d7eb9693622a817c52"
+      "bytes": 51589,
+      "sha256": "323a94d83e1626fab1ec88cc83cb99401c21c6a3291d96e53ff825733b6bf0c1"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/models/whisper/whisper_inputs.py",
@@ -28393,8 +28403,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/models/whisper/whisper_jump_times.py",
-      "bytes": 19950,
-      "sha256": "6e0c4646cd343407f917b87324125bb7b241dc832e08ec729610a09dfd7afa5f"
+      "bytes": 20039,
+      "sha256": "8821f897b7f78ec40927c7b955c608b8cf33c034e30f8e31b1015a8da7f2af88"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/onnx_exporter.py",
@@ -28403,8 +28413,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/onnx_model.py",
-      "bytes": 69954,
-      "sha256": "b60de2a6b8297041709d1938003897acac43f928fe908e3e21e1181033a20a4a"
+      "bytes": 70237,
+      "sha256": "094e205567b47d328bb40045c227bf8e61de3ade8d6b869c8e39a784bc549dd1"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/onnx_model_bart.py",
@@ -28413,8 +28423,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/onnx_model_bert.py",
-      "bytes": 20402,
-      "sha256": "e1417d3a672ad9c290e157b271a1fda251fc87846f944414b2b92e477a971b74"
+      "bytes": 21937,
+      "sha256": "7ceb5ed7e6d64acd4dd4aea714a636fc42f30819389d6a746e493ad9f3e365c5"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/onnx_model_bert_keras.py",
@@ -28443,8 +28453,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/onnx_model_mmdit.py",
-      "bytes": 4209,
-      "sha256": "83243b02e17d654ea8ea8384cad3381cca3e079a7a26f5cfc4ce711807631299"
+      "bytes": 4578,
+      "sha256": "6da5415207b280013dda7a39e9ba662ec61ea63e8bc76e5005aa5423431ae41f"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/onnx_model_phi.py",
@@ -28483,8 +28493,8 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/optimizer.py",
-      "bytes": 25691,
-      "sha256": "ce32ac6eabd745899910a5dcc5a3a4d4ebac0970e77d0b6f2d04bfebaf79535d"
+      "bytes": 25784,
+      "sha256": "c12a594703333fdcd573df9beff6cf37b5618c1e871eaa74510624b7606acb33"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/past_helper.py",
@@ -28503,13 +28513,13 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/quantize_helper.py",
-      "bytes": 2927,
-      "sha256": "c1ca6d310e11892675f038613c5019f006caadb371fbe5068fadd2ea50553a28"
+      "bytes": 3011,
+      "sha256": "de55b623958ac8bbe547f8c7a19e3d48c5fc72eeb24b7370164076c76ad40839"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/shape_infer_helper.py",
-      "bytes": 4566,
-      "sha256": "bfb54a5369bb6e5429db53c16c33dec9283014ca0ffc10b538cfeb508967005a"
+      "bytes": 5418,
+      "sha256": "9fb116d5d34fa28820ea942ad6a57ca2f9d6425fc3a993e65ebbcdb0ced05d44"
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/shape_optimizer.py",
@@ -28518,41 +28528,26 @@
     },
     {
       "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime/transformers/torch_onnx_export_helper.py",
-      "bytes": 2602,
-      "sha256": "ef5d4f0c2fb9400f0c34148b69617e3c49fef6fe3e687a46c7d2c309e21661cb"
+      "bytes": 3083,
+      "sha256": "b77a639be84b4ffc68fa7810e3f7bbf441b87644e02caa8f44ba5a61ec096ab4"
     },
     {
-      "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime_directml-1.24.4.dist-info/INSTALLER",
-      "bytes": 4,
-      "sha256": "ceebae7b8927a3227e5303cf5e0f1f7b34bb542ad7250ac03fbcde36ec2f1508"
+      "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime_webgpu-1.27.0.dist-info/METADATA",
+      "bytes": 5611,
+      "sha256": "8b100228885c31ec25c2eb54f9ee4b5db8b677033b21de617188701fd5d15f08"
     },
     {
-      "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime_directml-1.24.4.dist-info/METADATA",
-      "bytes": 5452,
-      "sha256": "257decf05faac72f39b086f1d8cc1d60c5b6a34985cfbef658f38b07c9608b5b"
-    },
-    {
-      "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime_directml-1.24.4.dist-info/RECORD",
-      "bytes": 60644,
-      "sha256": "0d89a350fdda1254ee1fb7bb1431e9ec625349edbc0e07c2eb053bdbae7f5450"
-    },
-    {
-      "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime_directml-1.24.4.dist-info/REQUESTED",
-      "bytes": 0,
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    },
-    {
-      "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime_directml-1.24.4.dist-info/WHEEL",
+      "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime_webgpu-1.27.0.dist-info/WHEEL",
       "bytes": 101,
       "sha256": "ad1e507ec59c665de6adae409920fb15dd1dcd0c59de51c2a43a3bd0891f0cae"
     },
     {
-      "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime_directml-1.24.4.dist-info/entry_points.txt",
+      "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime_webgpu-1.27.0.dist-info/entry_points.txt",
       "bytes": 77,
       "sha256": "eea2d2e056c65f03d98df7695401a99e693d23a9ba1f90b1127c1c0b1d489a3b"
     },
     {
-      "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime_directml-1.24.4.dist-info/top_level.txt",
+      "file": "dependencies/vocal2midi/python/Lib/site-packages/onnxruntime_webgpu-1.27.0.dist-info/top_level.txt",
       "bytes": 12,
       "sha256": "ce4fdf2447a4ad39bd0cbc57d8bc067a0a2456a3fa6e5a8f845a0c22e87436ff"
     },

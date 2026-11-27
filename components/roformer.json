@@ -8,7 +8,7 @@
   "weights": [
     {
       "name": "bs_roformer_karaoke_frazer_becruily.onnx",
-      "url": "https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/download/bs-roformer-onnx/bs_roformer_karaoke_frazer_becruily.onnx",
+      "url": "https://github.com/AU-ki/Better-Vocaloid-Workflow-Assistant/releases/download/bs-roformer-onnx/bs_roformer_karaoke_frazer_becruily.onnx",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "bytes": 204436907
     },
