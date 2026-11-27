@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -283,6 +284,109 @@ def install_ffmpeg() -> None:
         raise RuntimeError('Downloaded FFmpeg archive did not contain ffmpeg.exe')
 
 
+UPSTREAM_JPN_RELEASE_URLS = (
+    'https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/download/v2.1.0/VWA-Windows-x64-JPN.zip',
+    'https://ghfast.top/https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/download/v2.1.0/VWA-Windows-x64-JPN.zip',
+)
+
+_UPSTREAM_MODEL_PREFIXES = (
+    'VWA/dependencies/vocal2midi/experiments/',
+    'VWA/dependencies/vocal2midi/inference/qwen3asr_dml/bin/',
+    'VWA/components/native-audio/',
+)
+
+
+class _HttpRangeFile(io.RawIOBase):
+    """Minimal seekable HTTP Range reader for selective ZIP extraction."""
+
+    def __init__(self, url: str):
+        req = urllib.request.Request(url, method='HEAD', headers={'User-Agent': 'VWA-WebGPU-Bootstrap/1.0'})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            self.final_url = resp.geturl()
+            self.size = int(resp.headers['Content-Length'])
+        self.pos = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        if whence == io.SEEK_SET:
+            self.pos = offset
+        elif whence == io.SEEK_CUR:
+            self.pos += offset
+        elif whence == io.SEEK_END:
+            self.pos = self.size + offset
+        self.pos = max(0, min(self.size, self.pos))
+        return self.pos
+
+    def tell(self) -> int:
+        return self.pos
+
+    def read(self, n: int = -1) -> bytes:
+        if self.pos >= self.size:
+            return b''
+        end = self.size - 1 if n is None or n < 0 else min(self.size - 1, self.pos + n - 1)
+        req = urllib.request.Request(
+            self.final_url,
+            headers={'Range': f'bytes={self.pos}-{end}', 'User-Agent': 'VWA-WebGPU-Bootstrap/1.0'},
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = resp.read()
+        self.pos += len(data)
+        return data
+
+
+    def readinto(self, b) -> int:
+        data = self.read(len(b))
+        n = len(data)
+        b[:n] = data
+        return n
+
+
+def install_upstream_models() -> None:
+    """Selectively fetch Vocal2Midi ONNX weights, llama.cpp DLLs, and native audio DLLs via HTTP Range."""
+    sentinel_paths = (
+        ROOT / 'dependencies/vocal2midi/experiments/GAME-1.0.3-medium-onnx/encoder.onnx',
+        ROOT / 'dependencies/vocal2midi/experiments/1218_hfa_model_new_dict/model.onnx',
+        ROOT / 'dependencies/vocal2midi/experiments/RMVPE/rmvpe.onnx',
+        ROOT / 'dependencies/vocal2midi/experiments/romajiASR/model.onnx',
+        ROOT / 'dependencies/vocal2midi/inference/qwen3asr_dml/bin/llama.dll',
+    )
+    if all(p.is_file() for p in sentinel_paths):
+        print('Upstream Vocal2Midi ONNX models & llama.cpp runtime already present.')
+        return
+    last_exc: Exception | None = None
+    for url in UPSTREAM_JPN_RELEASE_URLS:
+        print(f'Fetching Vocal2Midi ONNX models via HTTP Range <- {url}', flush=True)
+        try:
+            rf = io.BufferedReader(_HttpRangeFile(url), buffer_size=16 * 1024 * 1024)
+            with zipfile.ZipFile(rf, 'r') as zf:
+                targets = [
+                    info for info in zf.infolist()
+                    if not info.is_dir() and info.filename.startswith(_UPSTREAM_MODEL_PREFIXES)
+                ]
+                for idx, info in enumerate(targets, 1):
+                    rel = info.filename[len('VWA/'):]
+                    dest = ROOT / rel
+                    if dest.is_file() and dest.stat().st_size == info.file_size:
+                        continue
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    tmp = dest.with_suffix(dest.suffix + '.partial')
+                    with zf.open(info, 'r') as src, tmp.open('wb') as dst:
+                        shutil.copyfileobj(src, dst, length=4 * 1024 * 1024)
+                    tmp.replace(dest)
+                    if info.file_size >= 10 * 1024 * 1024 or idx == len(targets):
+                        print(f'  [{idx}/{len(targets)}] {rel} ({info.file_size / 1048576:.1f} MiB)', flush=True)
+            return
+        except Exception as exc:
+            last_exc = exc
+            print(f'  mirror failed ({exc}); trying next...', flush=True)
+    raise RuntimeError(f'Failed to fetch upstream Vocal2Midi models: {last_exc}')
+
+
 def install_mdx_models() -> None:
     for rel, urls in MDX_ASSETS:
         dest = ROOT / rel
@@ -383,6 +487,7 @@ def main() -> None:
         install_ffmpeg()
         if not args.skip_models:
             install_mdx_models()
+            install_upstream_models()
 
     if args.with_native:
         build_native_audio()
