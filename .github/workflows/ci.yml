@@ -34,13 +34,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Ruff linter
+      - name: Install CI lint & L0 pure-Python test dependencies
         shell: pwsh
-        run: python -m pip install --upgrade ruff
+        run: python -m pip install --upgrade ruff mido pyyaml
 
       - name: Prepare generated source tree
         shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File tools/Prepare-Source.ps1
+        run: |
+          New-Item -ItemType Directory -Force -Path work | Out-Null
+          powershell -ExecutionPolicy Bypass -File tools/Prepare-Source.ps1
 
       - name: Verify source layout and manifest parity
         shell: pwsh

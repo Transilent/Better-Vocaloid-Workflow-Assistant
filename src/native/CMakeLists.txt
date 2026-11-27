@@ -8,6 +8,7 @@ include(CTest)
 set(VWA_MINIAUDIO_VERSION "0.11.26")
 set(VWA_MINIAUDIO_COMMIT "877ea4a7c2601c7b0f2a44e83dfac42e6470fea6")
 set(VWA_MINIAUDIO_HEADER_SHA256 "6B376C7FBB1352BA1E0E432AB66069B335EA9405E45CB6C30B97EF0F3C9C3E0E")
+set(VWA_MINIAUDIO_HEADER_SHA256_CRLF "5B325F7D1A6FD72F94294963A441E2442887BC43F63DF796A12C4A75F38B22C6")
 
 set(VWA_SIGNALSMITH_STRETCH_COMMIT "a670068d9aeb64913331d5cc29337b19a457a7df")
 set(VWA_SIGNALSMITH_LINEAR_COMMIT "de55e6a50ffcf6f8f43f649692d94691c7025151")
@@ -28,6 +29,7 @@ else()
         GIT_REPOSITORY https://github.com/mackron/miniaudio.git
         GIT_TAG ${VWA_MINIAUDIO_COMMIT}
         GIT_SHALLOW TRUE
+        GIT_CONFIG "core.autocrlf=false"
     )
     FetchContent_MakeAvailable(miniaudio)
     set(_vwa_miniaudio_dir "${miniaudio_SOURCE_DIR}")
@@ -39,12 +41,14 @@ if(NOT EXISTS "${_vwa_miniaudio_header}")
 endif()
 file(SHA256 "${_vwa_miniaudio_header}" _vwa_miniaudio_actual_sha256)
 string(TOUPPER "${_vwa_miniaudio_actual_sha256}" _vwa_miniaudio_actual_sha256)
-if(NOT _vwa_miniaudio_actual_sha256 STREQUAL "${VWA_MINIAUDIO_HEADER_SHA256}")
+if(NOT _vwa_miniaudio_actual_sha256 STREQUAL "${VWA_MINIAUDIO_HEADER_SHA256}"
+   AND NOT _vwa_miniaudio_actual_sha256 STREQUAL "${VWA_MINIAUDIO_HEADER_SHA256_CRLF}")
     message(FATAL_ERROR
         "miniaudio.h SHA-256 mismatch!\n"
-        "  Expected: ${VWA_MINIAUDIO_HEADER_SHA256}\n"
-        "  Actual:   ${_vwa_miniaudio_actual_sha256}\n"
-        "  Path:     ${_vwa_miniaudio_header}"
+        "  Expected (LF):   ${VWA_MINIAUDIO_HEADER_SHA256}\n"
+        "  Expected (CRLF): ${VWA_MINIAUDIO_HEADER_SHA256_CRLF}\n"
+        "  Actual:          ${_vwa_miniaudio_actual_sha256}\n"
+        "  Path:            ${_vwa_miniaudio_header}"
     )
 endif()
 

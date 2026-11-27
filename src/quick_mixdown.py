@@ -8,17 +8,12 @@ against an already frozen render request.
 from __future__ import annotations
 
 from datetime import datetime
-import copy
-import json
-import logging
-import math
+import copy, json, logging, math
+from pathlib import Path
+import shutil, threading, time, uuid
+from typing import Any
 
 _LOG = logging.getLogger(__name__)
-from pathlib import Path
-import shutil
-import threading
-import time
-import uuid
 
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
