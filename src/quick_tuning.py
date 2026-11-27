@@ -381,35 +381,23 @@ class QuickTuning(QObject):
 
     @Property('QVariantList', notify=tracksChanged)
     def tracks(self):
-        return [{**row, 'reason': tr(row['reason']) if row['reason'] else ''}
-                for row in self.project.tracks.values()] if self.project else []
+        import tuning_viewmodel as _vm
+        return _vm.build_track_rows(self.project, tr)
 
     @Property('QVariantList', constant=True)
     def styles(self):
-        return [{'id': key, 'label': tr(style_catalog.style_label(key)),
-                 'short': tr('不叠加' if key == 'none' else style_catalog.style_region_label(key)),
-                 'color': style_catalog.style_color(key)}
-                for key in style_catalog.VISIBLE_STYLES]
+        import tuning_viewmodel as _vm
+        return _vm.build_style_catalog_rows(style_catalog, tr)
 
     @Property('QVariantList', constant=True)
     def techniques(self):
-        return [{'id': key, 'label': tr(style_catalog.technique_label(key)),
-                 'short': tr(style_catalog.technique_region_label(key) or style_catalog.technique_label(key)),
-                 'color': style_catalog.technique_color(key)}
-                for key in style_catalog.TECHNIQUE_IDS]
+        import tuning_viewmodel as _vm
+        return _vm.build_technique_catalog_rows(style_catalog, tr)
 
     @Property('QVariantList', notify=changed)
     def bindings(self):
-        if not self.project:
-            return []
-        reference = {row['track_index']: row for row in self._options['reference_sources']}
-        retained = {row['track_index']: row for row in self._options['retained_sources']}
-        return [{'trackId': key, 'trackName': self.project.tracks[key]['name'],
-                 'reference': reference.get(index, {}).get('path', ''),
-                 'referenceVoice': reference.get(index, {}).get('voice', ''),
-                 'retained': retained.get(index, {}).get('project', ''),
-                 'retainedIndex': retained.get(index, {}).get('source_track_index', 0)}
-                for key in self.project.editable if (index := self.project.tracks[key]['index']) in self._indices(segments=True)]
+        import tuning_viewmodel as _vm
+        return _vm.build_binding_rows(self.project, self._options, self._indices(segments=True))
 
     @Property('QVariantList', notify=changed)
     def tuningTasks(self):

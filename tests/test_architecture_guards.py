@@ -237,6 +237,86 @@ def test_browser_runtime_edge_fallback_and_cache_prune():
         assert (profile / 'Default/Local Storage/keep.db').read_bytes() == b'login-token'
 
 
+NEW_FILE_MAX_LINES = 800
+# Per-file ratchet ceilings for existing >800-line legacy files (only allowed to shrink).
+LEGACY_FILE_LINE_CEILINGS = {
+    'agent_control.py': 1223,
+    'agent_delivery.py': 857,
+    'agent_export_audit.py': 1483,
+    'agent_exports.py': 1393,
+    'agent_lyric_timeline.py': 933,
+    'agent_lyrics.py': 1401,
+    'agent_mcp_standard_flow.py': 1168,
+    'agent_pitch.py': 1380,
+    'agent_preparation.py': 1719,
+    'agent_pronunciation.py': 1624,
+    'agent_reference.py': 1494,
+    'agent_score.py': 1355,
+    'agent_separation_repair.py': 1003,
+    'agent_structure.py': 897,
+    'agent_style.py': 1728,
+    'agent_views.py': 1309,
+    'agent_workflow.py': 1639,
+    'audio_mixdown.py': 1751,
+    'chorus_analysis.py': 980,
+    'chorus_audio.py': 958,
+    'chorus_pitch_dsp.py': 814,
+    'chorus_score_match.py': 962,
+    'context_planner.py': 1033,
+    'mixdown_realtime_renderer.py': 1481,
+    'mixdown_realtime_service.py': 1212,
+    'mixdown_workspace_state.py': 1202,
+    'pipeline.py': 1350,
+    'pitch_accuracy.py': 1226,
+    'preset_library.py': 1597,
+    'project_exports.py': 848,
+    'publication_draft_service.py': 1005,
+    'quick_bridge.py': 1853,
+    'quick_chorus.py': 2361,
+    'quick_mixdown.py': 1806,
+    'quick_publication.py': 2046,
+    'quick_support.py': 1322,
+    'quick_tuning.py': 2320,
+    'quick_ui/ChorusPage.qml': 2128,
+    'quick_ui/ChorusPitchLane.qml': 1017,
+    'quick_ui/Main.qml': 895,
+    'quick_ui/MixdownEq.qml': 880,
+    'quick_ui/MixdownPage.qml': 3055,
+    'quick_ui/PreparationPage.qml': 2249,
+    'quick_ui/ProjectConvertPage.qml': 854,
+    'quick_ui/PublicationPage.qml': 2330,
+    'quick_ui/ResultsPage.qml': 2537,
+    'quick_ui/StartupDialogs.qml': 868,
+    'quick_ui/TuningPage.qml': 1850,
+    'quick_ui/TuningTimeline.qml': 1783,
+    'quick_ui/VideoPage.qml': 1562,
+    'quick_ui/WorkshopStylePane.qml': 888,
+    'quick_video.py': 1314,
+    'quick_workshop.py': 829,
+    'style_drafts.py': 838,
+    'task_contract.py': 972,
+    'transcription_quality.py': 1175,
+}
+
+
+def test_file_size_ratchet():
+    offenders = []
+    targets = list(_iter_source_py())
+    qml_dir = SRC / 'quick_ui'
+    if qml_dir.is_dir():
+        targets.extend(sorted(qml_dir.glob('*.qml')))
+    for path in targets:
+        rel = path.relative_to(SRC).as_posix()
+        lines = len(path.read_text(encoding='utf-8').splitlines())
+        ceiling = LEGACY_FILE_LINE_CEILINGS.get(rel, NEW_FILE_MAX_LINES)
+        if lines > ceiling:
+            offenders.append(f'{rel}: {lines} lines > ceiling {ceiling}')
+    assert not offenders, (
+        'File-size ratchet violated (split new/modified code into smaller modules): '
+        + ', '.join(offenders)
+    )
+
+
 def main():
     test_no_qt_in_domain_modules()
     test_no_silent_except_exception()
@@ -246,6 +326,7 @@ def main():
     test_chorus_cache_never_inside_src()
     test_agent_primitives_contract()
     test_browser_runtime_edge_fallback_and_cache_prune()
+    test_file_size_ratchet()
     print('PASS test_architecture_guards')
 
 

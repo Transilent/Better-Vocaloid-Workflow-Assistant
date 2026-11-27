@@ -1332,6 +1332,70 @@
     {
       "file": "crash_dump.py",
       "source": "src/crash_dump.py"
+    },
+    {
+      "file": "list_diff.py",
+      "source": "src/list_diff.py"
+    },
+    {
+      "file": "quick_list_model.py",
+      "source": "src/quick_list_model.py"
+    },
+    {
+      "file": "chorus_viewmodel.py",
+      "source": "src/chorus_viewmodel.py"
+    },
+    {
+      "file": "tuning_viewmodel.py",
+      "source": "src/tuning_viewmodel.py"
+    },
+    {
+      "file": "quick_ui/SettingsChoiceChip.qml",
+      "source": "src/quick_ui/SettingsChoiceChip.qml"
+    },
+    {
+      "file": "quick_ui/SettingsMotionChoice.qml",
+      "source": "src/quick_ui/SettingsMotionChoice.qml"
+    },
+    {
+      "file": "quick_ui/SettingsDialogs.qml",
+      "source": "src/quick_ui/SettingsDialogs.qml"
+    },
+    {
+      "file": "quick_ui/SettingsAppearanceSection.qml",
+      "source": "src/quick_ui/SettingsAppearanceSection.qml"
+    },
+    {
+      "file": "quick_ui/SettingsStorageSection.qml",
+      "source": "src/quick_ui/SettingsStorageSection.qml"
+    },
+    {
+      "file": "quick_ui/SettingsPresetsSection.qml",
+      "source": "src/quick_ui/SettingsPresetsSection.qml"
+    },
+    {
+      "file": "quick_ui/SettingsUpdateSection.qml",
+      "source": "src/quick_ui/SettingsUpdateSection.qml"
+    },
+    {
+      "file": "quick_ui/SettingsSupportAboutSection.qml",
+      "source": "src/quick_ui/SettingsSupportAboutSection.qml"
+    },
+    {
+      "file": "quick_ui/TuningControls.qml",
+      "source": "src/quick_ui/TuningControls.qml"
+    },
+    {
+      "file": "quick_ui/TuningDialogs.qml",
+      "source": "src/quick_ui/TuningDialogs.qml"
+    },
+    {
+      "file": "quick_ui/TuningInspectorNoteStyle.qml",
+      "source": "src/quick_ui/TuningInspectorNoteStyle.qml"
+    },
+    {
+      "file": "quick_ui/TuningInspectorSourceResult.qml",
+      "source": "src/quick_ui/TuningInspectorSourceResult.qml"
     }
   ]
 }

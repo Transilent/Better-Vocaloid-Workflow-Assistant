@@ -103,6 +103,16 @@ class QuickChorus(QObject):
         self._closed = False
         self._timer = QTimer(self, interval=33)
         self._timer.timeout.connect(self._clock)
+        from quick_list_model import VwaListModel
+        self._tracks_model = VwaListModel(lambda row: row.get('id', ''), self)
+        self.tracksChanged.connect(self._sync_tracks_model)
+
+    def _sync_tracks_model(self):
+        self._tracks_model.sync_rows(self.tracks)
+
+    @Property(QObject, constant=True)
+    def tracksModel(self):
+        return self._tracks_model
 
     @Property(bool, notify=changed)
     def dirty(self):
@@ -173,32 +183,18 @@ class QuickChorus(QObject):
         )
 
     def _effective_timing_ref_mode(self):
+        import chorus_viewmodel as _vm
         has_score = bool(self.project.score and self.project.score.lanes)
-        if self._timing_ref_mode in ('midi', 'lead', 'ensemble'):
-            if self._timing_ref_mode == 'midi' and not has_score:
-                return 'lead'
-            return self._timing_ref_mode
-        return 'midi' if has_score else 'lead'
+        return _vm.resolve_timing_ref_mode(self._timing_ref_mode, has_score=has_score)
 
     @staticmethod
     def _lyric_row(line):
-        return {'text': line.text, 'language': line.language, 'confirmed': line.confirmed} if line else {}
+        import chorus_viewmodel as _vm
+        return _vm.build_lyric_row(line)
 
     def _track_row(self, track):
-        project = self.project
-        feat = self._features.get(track.sha)
-        return {'id': track.id, 'name': track.name, 'role': track.role, 'part': track.part,
-                'offset': track.offset, 'duration': track.duration, 'muted': track.muted,
-                'scoreLane': track.score_lane, 'scoreOctave': track.score_octave,
-                'timeRef': track.timing_ref, 'lead': project.guide == track.id,
-                'wetWarning': bool(feat.wet_warning) if feat is not None else False,
-                'sideMidDb': float(feat.side_mid_db) if feat is not None else -120.0,
-                'edits': sum(edit.track == track.id for edit in project.edits),
-                'timing': [{'start': edit.start, 'end': edit.end, 'shift': edit.value,
-                            'points': [list(point) for point in edit.points]}
-                           for edit in project.edits_for(track.id, 'timing')],
-                'takes': [{'start': edit.start, 'end': edit.end, 'id': edit.source}
-                          for edit in project.edits_for(track.id, 'take')]}
+        import chorus_viewmodel as _vm
+        return _vm.build_track_row(self.project, track, self._features.get(track.sha))
 
     @Property('QVariantList', notify=tracksChanged)
     def tracks(self):
@@ -206,13 +202,8 @@ class QuickChorus(QObject):
 
     @Property('QVariantList', notify=phrasesChanged)
     def phrases(self):
-        rows = []
-        for index, phrase in enumerate(self.project.phrases, 1):
-            line = phrase.lyric() or next(iter(phrase.lyrics), None)
-            rows.append({'start': phrase.start, 'end': phrase.end,
-                         'name': line.text if line else phrase.label or f'唱段 {index}',
-                         'confirmed': bool(line and line.confirmed)})
-        return rows
+        import chorus_viewmodel as _vm
+        return _vm.build_phrase_rows(self.project)
 
     def _say(self, text, *, error=False):
         self._notice, self._error = str(text or ''), error

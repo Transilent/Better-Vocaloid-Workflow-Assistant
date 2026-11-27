@@ -50,18 +50,51 @@ _PENDING_TASK_STATES = frozenset(('ready', 'partial', 'cancelled', 'interrupted'
 class RowsModel(QAbstractListModel):
     _first = int(Qt.ItemDataRole.UserRole) + 1
 
-    def __init__(self, parent, roles):
+    def __init__(self, parent, roles, *, key_field=None):
         super().__init__(parent)
         self.roles = tuple(roles)
         self.rows = ()
+        self._key_field = key_field or (roles[0][1] if roles else None)
+
+    def _row_key(self, row):
+        if isinstance(row, dict):
+            for candidate in (self._key_field, 'jobId', 'id', 'path', 'key', 'title'):
+                if candidate and candidate in row and row[candidate] not in (None, ''):
+                    return row[candidate]
+        return None
 
     def replace_rows(self, rows):
-        rows = tuple(rows)
-        if rows == self.rows:
+        from list_diff import compute_list_diff
+
+        incoming = tuple(rows)
+        if incoming == self.rows:
             return
-        self.beginResetModel()
-        self.rows = rows
-        self.endResetModel()
+        ops = compute_list_diff(self.rows, incoming, self._row_key)
+        if not ops:
+            return
+        if len(ops) == 1 and ops[0].kind == 'reset':
+            self.beginResetModel()
+            self.rows = incoming
+            self.endResetModel()
+            return
+        working = list(self.rows)
+        for op in ops:
+            if op.kind == 'remove':
+                self.beginRemoveRows(QModelIndex(), op.first, op.last)
+                del working[op.first : op.last + 1]
+                self.rows = tuple(working)
+                self.endRemoveRows()
+            elif op.kind == 'insert':
+                self.beginInsertRows(QModelIndex(), op.first, op.last)
+                for idx in range(op.first, op.last + 1):
+                    working.insert(idx, incoming[idx])
+                self.rows = tuple(working)
+                self.endInsertRows()
+            elif op.kind == 'update':
+                for idx in range(op.first, op.last + 1):
+                    working[idx] = incoming[idx]
+                self.rows = tuple(working)
+                self.dataChanged.emit(self.index(op.first, 0), self.index(op.last, 0))
 
     def roleNames(self):
         return {self._first + index: name.encode() for index, (name, _) in enumerate(self.roles)}

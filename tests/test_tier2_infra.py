@@ -142,4 +142,45 @@ with tempfile.TemporaryDirectory(dir=APP / "work", prefix="tier2-m2-") as tmp:
         dumps_json = json.loads(zf.read("crash-dumps.json").decode("utf-8"))
         assert len(dumps_json["dumps"]) >= 1
 
-print("PASS: Tier 2 M2 (vwa_config migration/self-heal, SQLite task_index, Windows MiniDumpNormal)")
+# --- 4. M3: list_diff incremental engine, pure ViewModels, & QML split size verification ---
+import chorus_viewmodel
+import list_diff
+import style_catalog
+import tuning_viewmodel
+
+# Incremental update only (no reset)
+old_rows = [{"id": "a", "v": 1}, {"id": "b", "v": 2}, {"id": "c", "v": 3}]
+new_rows = [{"id": "a", "v": 1}, {"id": "b", "v": 20}, {"id": "c", "v": 3}]
+ops = list_diff.compute_list_diff(old_rows, new_rows, lambda r: r["id"])
+assert ops == [list_diff.DiffOp("update", 1, 1)], ops
+
+# Remove + insert without reordering emits targeted remove + insert
+ops2 = list_diff.compute_list_diff(
+    [{"id": "a", "v": 1}, {"id": "b", "v": 2}, {"id": "c", "v": 3}],
+    [{"id": "a", "v": 1}, {"id": "c", "v": 3}, {"id": "d", "v": 4}],
+    lambda r: r["id"],
+)
+assert [o.kind for o in ops2] == ["remove", "insert"], ops2
+
+# Reordering falls back cleanly to reset
+ops3 = list_diff.compute_list_diff(
+    [{"id": "a"}, {"id": "b"}],
+    [{"id": "b"}, {"id": "a"}],
+    lambda r: r["id"],
+)
+assert ops3 == [list_diff.DiffOp("reset", 0, 1)], ops3
+
+# Pure-Python ViewModel helpers (zero Qt)
+assert chorus_viewmodel.resolve_timing_ref_mode("midi", has_score=False) == "lead"
+assert chorus_viewmodel.resolve_timing_ref_mode("midi", has_score=True) == "midi"
+assert chorus_viewmodel.resolve_timing_ref_mode("", has_score=True) == "midi"
+styles = tuning_viewmodel.build_style_catalog_rows(style_catalog, lambda s: s)
+assert len(styles) == len(style_catalog.VISIBLE_STYLES) and all("id" in r and "color" in r for r in styles)
+
+# Verify split SettingsPage.qml and TuningPage.qml stay compact
+sp_lines = len((APP / "src/quick_ui/SettingsPage.qml").read_text(encoding="utf-8").splitlines())
+tp_lines = len((APP / "src/quick_ui/TuningPage.qml").read_text(encoding="utf-8").splitlines())
+assert sp_lines <= 650, f"SettingsPage.qml regressed: {sp_lines}"
+assert tp_lines <= 1900, f"TuningPage.qml regressed: {tp_lines}"
+
+print("PASS: Tier 2 M2+M3 (vwa_config, SQLite task_index, MiniDump, list_diff, ViewModels, QML split)")
