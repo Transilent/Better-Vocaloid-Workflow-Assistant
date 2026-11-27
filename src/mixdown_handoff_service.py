@@ -9,8 +9,27 @@ import time
 from typing import Any, Callable
 import uuid
 
+from audio_device_recovery import DeviceReconnectGuard
 from mixdown_contract import DEFAULT_DEESS_STRENGTH, MAX_VOCALS
 from mixdown_runtime import file_sha256, normal_path_key
+from project_convert_compat import strip_extended_prefix
+
+
+def clean_local_path(value: Any) -> str:
+    """Strip Windows \\\\?\\ extended path prefixes before QUrl.fromLocalFile."""
+    return strip_extended_prefix(str(value or ''))
+
+
+def make_reconnect_guard() -> DeviceReconnectGuard:
+    return DeviceReconnectGuard()
+
+
+def try_schedule_device_reconnect(guard: DeviceReconnectGuard, *, was_playing: bool, message: Any) -> int | None:
+    """Consume the 1-shot hot-swap reconnect budget when playback hits a transient WASAPI device error."""
+    if was_playing and guard.should_attempt(str(message or '')):
+        guard.mark_attempt()
+        return guard.backoff_ms
+    return None
 
 
 def artifacts_list(value: Any) -> list[dict[str, Any]]:
