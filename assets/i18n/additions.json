@@ -3735,7 +3735,16 @@
     "GPU / WebGPU": "GPU / WebGPU",
     "主唱／和声分离 · 可选 CPU / WebGPU 运行库": "Lead / backing separation · Optional CPU / WebGPU runtime",
     "所选方案不经过 Hugging Face；ONNX WebGPU 运行库由 PyPI 镜像提供。": "Selected source bypasses Hugging Face; the ONNX WebGPU runtime comes from the PyPI mirror.",
-    "PyPI 用于 onnxruntime-webgpu 运行库；连不上 Hugging Face 时可直接选 GitHub。": "PyPI provides onnxruntime-webgpu; choose GitHub directly if Hugging Face is unreachable."
+    "PyPI 用于 onnxruntime-webgpu 运行库；连不上 Hugging Face 时可直接选 GitHub。": "PyPI provides onnxruntime-webgpu; choose GitHub directly if Hugging Face is unreachable.",
+    "已装精度": "Installed precision",
+    "本机推荐精度": "Recommended precision",
+    "模型精度": "Model precision",
+    "自动（推荐 {0}）": "Auto (recommended: {0})",
+    "10s FP16（8G 显存）": "10s FP16 (8 GB VRAM)",
+    "20s FP16（12G 显存）": "20s FP16 (12 GB VRAM)",
+    "20s FP32（16G+ 显存）": "20s FP32 (16 GB+ VRAM)",
+    "FP16（小显存）": "FP16 (low VRAM)",
+    "FP32（大显存）": "FP32 (high VRAM)"
   },
   "ja": {
     "合唱工作台": "コーラスワークスペース",
@@ -7473,6 +7482,15 @@
     "GPU / WebGPU": "GPU / WebGPU",
     "主唱／和声分离 · 可选 CPU / WebGPU 运行库": "リード／コーラス分離・オプション CPU / WebGPU ランタイム",
     "所选方案不经过 Hugging Face；ONNX WebGPU 运行库由 PyPI 镜像提供。": "選択したソースは Hugging Face を経由せず、ONNX WebGPU ランタイムは PyPI ミラーから取得します。",
-    "PyPI 用于 onnxruntime-webgpu 运行库；连不上 Hugging Face 时可直接选 GitHub。": "PyPI は onnxruntime-webgpu ランタイム用です。Hugging Face に接続できない場合は GitHub を直接選んでください。"
+    "PyPI 用于 onnxruntime-webgpu 运行库；连不上 Hugging Face 时可直接选 GitHub。": "PyPI は onnxruntime-webgpu ランタイム用です。Hugging Face に接続できない場合は GitHub を直接選んでください。",
+    "已装精度": "導入済み精度",
+    "本机推荐精度": "推奨精度",
+    "模型精度": "モデル精度",
+    "自动（推荐 {0}）": "自動（推奨: {0}）",
+    "10s FP16（8G 显存）": "10s FP16（8GB VRAM）",
+    "20s FP16（12G 显存）": "20s FP16（12GB VRAM）",
+    "20s FP32（16G+ 显存）": "20s FP32（16GB+ VRAM）",
+    "FP16（小显存）": "FP16（省 VRAM）",
+    "FP32（大显存）": "FP32（大容量 VRAM）"
   }
 }

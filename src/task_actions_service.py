@@ -41,8 +41,12 @@ def component_result(request, stop, send):
 
     if request.action == 'install':
         try:
-            components.install(request.component_id, runtime=request.runtime, source=request.source,
-                               force=request.force, progress=progress, check=stop.is_set)
+            precision = getattr(request, 'precision', 'auto')
+            kwargs = {'runtime': request.runtime, 'source': request.source, 'force': request.force,
+                      'progress': progress, 'check': stop.is_set}
+            if request.component_id == 'roformer' and precision in ('fp16_10s', 'fp16', 'fp32'):
+                kwargs['precision'] = precision
+            components.install(request.component_id, **kwargs)
         except InterruptedError:
             return 'cancelled', '安装已取消；可继续使用已保留的下载。', None
         return 'succeeded', '安装完成。', None

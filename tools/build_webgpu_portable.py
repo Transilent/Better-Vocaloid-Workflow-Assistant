@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import zipfile
 
@@ -214,6 +215,55 @@ def stage_directory(
     return {'stage_dir': str(stage_dir), 'files': len(mapping), 'written': written, 'bytes': total_bytes}
 
 
+def _find_7zip() -> str | None:
+    for cmd in ('7z', '7za'):
+        found = shutil.which(cmd)
+        if found:
+            return found
+    for candidate in (
+        Path(r'C:\Program Files\7-Zip\7z.exe'),
+        Path(r'C:\Program Files (x86)\7-Zip\7z.exe'),
+    ):
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def _pack_with_7zip(
+    seven_zip: str,
+    mapping: dict[str, Path],
+    tmp_archive: Path,
+    layout_root: str,
+    *,
+    archive_type: str = 'zip',
+) -> int:
+    stage_parent = tmp_archive.parent / f'.7z-stage-{os.getpid()}'
+    if stage_parent.exists():
+        shutil.rmtree(stage_parent)
+    stage_root = stage_parent / layout_root
+    stage_root.mkdir(parents=True, exist_ok=True)
+    total_raw_bytes = 0
+    try:
+        for dest, src in sorted(mapping.items()):
+            target = stage_root / dest
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(src, target)
+            except OSError:
+                shutil.copy2(src, target)
+            total_raw_bytes += src.stat().st_size
+        tmp_archive.unlink(missing_ok=True)
+        level = '-mx=5' if archive_type == '7z' else '-mx=3'
+        cmd = [seven_zip, 'a', f'-t{archive_type}', level, '-mmt=on', '-bd', '-y', str(tmp_archive), layout_root]
+        print(f'Packing {len(mapping)} files ({total_raw_bytes / 1048576:.1f} MiB raw) with 7-Zip ({seven_zip})...', flush=True)
+        result = subprocess.run(cmd, cwd=str(stage_parent))
+        if result.returncode != 0:
+            raise RuntimeError(f'7-Zip exited with code {result.returncode}')
+        return total_raw_bytes
+    finally:
+        shutil.rmtree(stage_parent, ignore_errors=True)
+
+
 def build_zip(
     output_zip: Path,
     *,
@@ -222,6 +272,7 @@ def build_zip(
     include_experiments: bool = True,
     include_qwen: bool = False,
     include_roformer: bool = False,
+    prefer_7zip: bool = True,
 ) -> dict:
     mapping = collect_portable_files(
         ROOT,
@@ -234,17 +285,24 @@ def build_zip(
 
     output_zip = output_zip.resolve()
     output_zip.parent.mkdir(parents=True, exist_ok=True)
-    tmp_zip = output_zip.with_suffix('.zip.partial')
+    tmp_zip = output_zip.with_name(output_zip.name + '.partial')
+    archive_type = '7z' if output_zip.suffix.lower() == '.7z' else 'zip'
 
     total_files = len(mapping)
-    total_raw_bytes = 0
-    with zipfile.ZipFile(tmp_zip, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=3, allowZip64=True) as zf:
-        for index, (dest, src) in enumerate(sorted(mapping.items()), start=1):
-            arcname = f'{layout_root}/{dest}'
-            zf.write(src, arcname)
-            total_raw_bytes += src.stat().st_size
-            if index % 1000 == 0 or index == total_files:
-                print(f'Packed {index}/{total_files} files ({total_raw_bytes / 1048576:.1f} MiB raw)...', flush=True)
+    seven_zip = _find_7zip() if prefer_7zip else None
+    if archive_type == '7z' and not seven_zip:
+        raise FileNotFoundError('Building a .7z archive requires 7z.exe on PATH or in Program Files\\7-Zip.')
+    if seven_zip:
+        total_raw_bytes = _pack_with_7zip(seven_zip, mapping, tmp_zip, layout_root, archive_type=archive_type)
+    else:
+        total_raw_bytes = 0
+        with zipfile.ZipFile(tmp_zip, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=3, allowZip64=True) as zf:
+            for index, (dest, src) in enumerate(sorted(mapping.items()), start=1):
+                arcname = f'{layout_root}/{dest}'
+                zf.write(src, arcname)
+                total_raw_bytes += src.stat().st_size
+                if index % 1000 == 0 or index == total_files:
+                    print(f'Packed {index}/{total_files} files ({total_raw_bytes / 1048576:.1f} MiB raw)...', flush=True)
 
     tmp_zip.replace(output_zip)
     sha256 = _sha256_file(output_zip)
@@ -263,13 +321,14 @@ def build_zip(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output', type=Path, default=None, help='Destination .zip path (default: build/release/VWA-Windows-x64-WebGPU-Portable.zip when --stage-dir is unset)')
+    parser.add_argument('--output', type=Path, default=None, help='Destination .zip or .7z path (default: build/release/VWA-Windows-x64-WebGPU-Portable.zip when --stage-dir is unset)')
     parser.add_argument('--stage-dir', type=Path, default=None, help='Materialize standalone runnable folder (e.g. build/VWA)')
     parser.add_argument('--runtime-root', type=Path, default=None, help='Directory holding downloaded runtime payloads (defaults to repo root or build/VWA)')
-    parser.add_argument('--layout-root', default='VWA', help='Top-level directory inside the ZIP')
+    parser.add_argument('--layout-root', default='VWA', help='Top-level directory inside the archive')
     parser.add_argument('--no-experiments', action='store_true', help='Omit vocal2midi experiments weights')
     parser.add_argument('--include-qwen', action='store_true', help='Include ~4.5 GiB Qwen3-ASR weights inside the archive')
     parser.add_argument('--include-roformer', action='store_true', help='Include optional BS-RoFormer ONNX component')
+    parser.add_argument('--no-7zip', action='store_true', help='Disable 7-Zip and force Python zipfile')
     args = parser.parse_args()
 
     if args.stage_dir is not None:
@@ -289,6 +348,7 @@ def main() -> None:
             include_experiments=not args.no_experiments,
             include_qwen=args.include_qwen,
             include_roformer=args.include_roformer,
+            prefer_7zip=not args.no_7zip,
         )
 
 

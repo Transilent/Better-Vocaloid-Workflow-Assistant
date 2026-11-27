@@ -203,7 +203,16 @@ def separate_vocals_onnx(
         win_length=cfg['stft_win_length'],
         dim_freqs_in=cfg['dim_freqs_in'],
     )
+    input_meta = session.get_inputs()[0]
+    input_name = input_meta.name
+    input_dtype = np.float16 if 'float16' in str(input_meta.type) else np.float32
+    output_name = session.get_outputs()[0].name
+
     chunk_size = cfg['chunk_size']
+    hop = cfg['stft_hop_length']
+    model_frames = input_meta.shape[3] if len(input_meta.shape) == 4 and isinstance(input_meta.shape[3], int) else None
+    if model_frames and model_frames > 1 and (chunk_size // hop + 1) != model_frames:
+        chunk_size = (model_frames - 1) * hop
     num_overlap = max(1, cfg['num_overlap'])
     step = max(1, chunk_size // num_overlap)
     fade_size = chunk_size // 10
@@ -214,11 +223,6 @@ def separate_vocals_onnx(
     pad_mode = 'reflect' if total_samples > border > 0 else 'constant'
     padded = np.pad(mix_t, ((0, 0), (border, border)), mode=pad_mode) if border else mix_t
     padded_len = padded.shape[1]
-
-    input_meta = session.get_inputs()[0]
-    input_name = input_meta.name
-    input_dtype = np.float16 if 'float16' in str(input_meta.type) else np.float32
-    output_name = session.get_outputs()[0].name
 
     starts = list(range(0, padded_len, step))
     if starts and starts[-1] + chunk_size < padded_len:

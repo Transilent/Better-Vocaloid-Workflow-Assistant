@@ -17,6 +17,7 @@ class ComponentRequest:
     runtime: str
     source: str
     force: bool = False
+    precision: str = 'auto'
 
 
 class WorkspaceController:
@@ -30,11 +31,13 @@ class WorkspaceController:
         self.route = 'processing'
         self.return_route = 'processing'
         self.runtime = 'cpu'
+        self.roformer_precision = 'auto'
         self.component_sources = dict(component_sources or {})
         self.query = ''
         self.selected_id = 'builtin'
         self.rows = ()
         self.rows_runtime = None
+        self.rows_precision = None
         self.active = None
         self.operation = {'state': 'idle', 'action': '', 'message': '', 'done': 0, 'total': 0}
         self.preparation_task = {'id': '', 'state': 'idle', 'job': '', 'message': '',
@@ -150,11 +153,12 @@ class WorkspaceController:
     def selected(self):
         return next((row for row in self.visible_rows if row['id'] == self.selected_id), {})
 
-    def set_catalog(self, runtime, rows):
-        if runtime != self.runtime:
+    def set_catalog(self, runtime, rows, *, precision=None):
+        if runtime != self.runtime or (precision is not None and precision != self.roformer_precision):
             return False
         self.rows = tuple(dict(row) for row in rows)
         self.rows_runtime = runtime
+        self.rows_precision = self.roformer_precision if precision is None else precision
         return True
 
     def set_query(self, query):
@@ -175,6 +179,12 @@ class WorkspaceController:
         if self.active or runtime not in ('cpu', 'webgpu') or self.runtime == runtime:
             return False
         self.runtime = runtime
+        return True
+
+    def set_roformer_precision(self, precision):
+        if self.active or precision not in ('auto', 'fp16_10s', 'fp16', 'fp32') or self.roformer_precision == precision:
+            return False
+        self.roformer_precision = precision
         return True
 
     @property
@@ -274,7 +284,9 @@ class WorkspaceController:
         row = self.selected
         if self.active or not capability or self.rows_runtime != self.runtime or not row.get(capability):
             return None
-        request = ComponentRequest(uuid4().hex, action, row['id'], self.runtime, self.source, bool(force))
+        request = ComponentRequest(
+            uuid4().hex, action, row['id'], self.runtime, self.source, bool(force), self.roformer_precision,
+        )
         self.active = request
         self.operation = {'state': 'running', 'action': action, 'component': row['title'],
                           'message': '正在准备…', 'done': 0, 'total': 0}

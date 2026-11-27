@@ -651,40 +651,25 @@ class QuickBridge(QObject):
         return {**plan, 'summary': ' · '.join(lines)}
 
     @Property(str, notify=selectionChanged)
-    def selectedId(self):
-        return self.state.selected_id
-
+    def selectedId(self): return self.state.selected_id
     @Property(str, notify=queryChanged)
-    def query(self):
-        return self.state.query
-
+    def query(self): return self.state.query
     @Property('QVariantList', notify=componentSourceChanged)
-    def downloadSources(self):
-        return [{'label': tr(label), 'value': value} for label, value in self.state.source_options]
-
+    def downloadSources(self): return [{'label': tr(label), 'value': value} for label, value in self.state.source_options]
     @Property(str, notify=componentSourceChanged)
-    def downloadSource(self):
-        return self.state.source
-
+    def downloadSource(self): return self.state.source
     @Property(str, notify=optionsChanged)
-    def runtime(self):
-        return self.state.runtime
-
+    def runtime(self): return self.state.runtime
+    @Property(str, notify=optionsChanged)
+    def roformerPrecision(self): return self.state.roformer_precision
     @Property(bool, notify=activityChanged)
-    def busy(self):
-        return self.state.active is not None
-
+    def busy(self): return self.state.active is not None
     @Property(bool, notify=activityChanged)
-    def loading(self):
-        return bool(self._catalog.kind)
-
+    def loading(self): return bool(self._catalog.kind)
     @Property('QVariantMap', notify=activityChanged)
-    def operation(self):
-        return dict(self.state.operation)
-
+    def operation(self): return dict(self.state.operation)
     @Property(str, notify=activityChanged)
-    def notice(self):
-        return tr(self._notice)
+    def notice(self): return tr(self._notice)
 
     @Property(QObject, constant=True)
     def taskModel(self):
@@ -1103,6 +1088,11 @@ class QuickBridge(QObject):
         if not self.workBusy and not self.loading and self.state.set_runtime(runtime):
             self.optionsChanged.emit()
             self.refresh()
+    @Slot(str)
+    def setRoformerPrecision(self, precision):
+        if not self.workBusy and not self.loading and self.state.set_roformer_precision(precision):
+            self.optionsChanged.emit()
+            self.refresh()
 
     @Slot(str)
     def setDownloadSource(self, source):
@@ -1131,7 +1121,7 @@ class QuickBridge(QObject):
     def refresh(self):
         if self.loading or self.state.active or self._closed:
             return
-        runtime = self.state.runtime
+        runtime, precision = self.state.runtime, self.state.roformer_precision
         self._notice = ''
 
         def finish(rows, error):
@@ -1139,17 +1129,17 @@ class QuickBridge(QObject):
                 return
             if error is None:
                 first_catalog = not self.state.rows
-                self.state.set_catalog(runtime, rows)
+                self.state.set_catalog(runtime, rows, precision=precision)
                 missing = self.state.component_plan['missingIds']
                 if first_catalog and missing:
                     self.state.select(missing[0])
             else:
-                self.state.set_catalog(runtime, ())
+                self.state.set_catalog(runtime, (), precision=precision)
                 self.state.rows_runtime = None
                 self._error(error)
             self._update_rows()
 
-        self._catalog.start('component-scan', lambda stop, _send: components.catalog(runtime, check=stop.is_set), finish)
+        self._catalog.start('component-scan', lambda stop, _send: components.catalog(runtime, precision=precision, check=stop.is_set), finish)
 
     @Slot()
     def installSelected(self):

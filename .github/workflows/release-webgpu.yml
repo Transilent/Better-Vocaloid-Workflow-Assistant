@@ -1,15 +1,12 @@
 name: Release VWA WebGPU Portable Build
 
 on:
-  push:
-    tags:
-      - "v*-webgpu*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v2.1.0-webgpu.2)"
+        description: "Release tag (e.g. v2.1.0-webgpu.4)"
         required: true
-        default: "v2.1.0-webgpu.2"
+        default: "v2.1.0-webgpu.4"
 
 permissions:
   contents: write

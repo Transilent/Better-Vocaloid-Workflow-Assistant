@@ -192,13 +192,16 @@ def _builtin_row(check=None):
     )
 
 
-def _roformer_manifest_items(spec, runtime):
+def _roformer_manifest_items(spec, runtime, precision='auto'):
     rows = []
-    for key in ('weights', 'shared_wheels'):
-        value = spec.get(key)
-        if not isinstance(value, list):
-            raise ValueError(f'BS-RoFormer 清单缺少 {key}。')
-        rows.extend(value)
+    weights = spec.get('weights')
+    if not isinstance(weights, list):
+        raise ValueError('BS-RoFormer 清单缺少 weights。')
+    rows.extend(optional_components.manifest_weights_for_precision(spec, precision))
+    shared = spec.get('shared_wheels')
+    if not isinstance(shared, list):
+        raise ValueError('BS-RoFormer 清单缺少 shared_wheels。')
+    rows.extend(shared)
     runtime_wheels = spec.get('runtime_wheels') or spec.get('torch_wheels')
     if not isinstance(runtime_wheels, dict):
         raise ValueError(f'BS-RoFormer 清单缺少 {runtime} 运行库。')
@@ -214,12 +217,14 @@ def _roformer_manifest_items(spec, runtime):
     return rows
 
 
-def _roformer_row(runtime):
+def _roformer_row(runtime, precision='auto'):
     model = 'roformer'
     try:
+        recommended = optional_components.recommended_precision()
+        target_precision = optional_components.normalize_precision(precision)
         state = optional_components.status()
         spec = optional_components.manifest()
-        items = _roformer_manifest_items(spec, runtime)
+        items = _roformer_manifest_items(spec, runtime, target_precision)
         download = sum(item['bytes'] for item in items)
         install_sizes = spec.get('install_bytes')
         expanded = install_sizes.get(runtime) if isinstance(install_sizes, dict) else None
@@ -235,6 +240,7 @@ def _roformer_row(runtime):
     installed_runtime = (
         'webgpu' if raw_installed in ('webgpu', 'cuda') else ('cpu' if raw_installed == 'cpu' else None)
     )
+    installed_precision = str(state.get('precision') or '').strip().lower()
     verification = state.get('verification') if isinstance(state.get('verification'), dict) else {}
     cached = 0
     for item in items:
@@ -246,12 +252,18 @@ def _roformer_row(runtime):
         except OSError:
             cached = None
             break
-    health = {'runtime': installed_runtime or '', 'ready_runtime': (installed_runtime or '') if ready else '',
+    precision_match = (not installed_precision) or (installed_precision == target_precision)
+    shared_runtime = optional_components.shared_runtime_wheel(spec)
+    runtime_match = (installed_runtime == runtime) or (installed_runtime in ('cpu', 'webgpu') and shared_runtime)
+    ready_runtime = ('webgpu' if shared_runtime else (installed_runtime or '')) if ready else ''
+    health = {'runtime': installed_runtime or '', 'ready_runtime': ready_runtime,
+              'precision': installed_precision, 'target_precision': target_precision,
+              'recommended_precision': recommended,
               'cache_bytes': cached,
-              'installed_estimate': bool(ready and installed_runtime == runtime),
+              'installed_estimate': bool(ready and runtime_match and precision_match),
               'scope': '安装收据、文件路径与大小；完整校验另行执行',
               'source': '当前固定组件清单'}
-    if ready and installed_runtime == runtime:
+    if ready and runtime_match and precision_match:
         installed = expanded
         if verification.get('content_verified') or verification.get('sha256_checked'):
             detail = '当前运行库的元数据与完整 SHA-256 校验通过；不会加载模型。'
@@ -261,6 +273,19 @@ def _roformer_row(runtime):
             'roformer', 'ready', detail=detail,
             download=download, installed=installed, required=required,
             can_install=True, can_verify=True, can_use=True, model=model, health=health, download_items=items,
+        )
+
+    if ready and runtime_match and not precision_match:
+        labels = {'fp16_10s': '10s FP16', 'fp16': '20s FP16', 'fp32': '20s FP32'}
+        installed_label = labels.get(installed_precision, installed_precision.upper())
+        target_label = labels.get(target_precision, target_precision.upper())
+        return _row(
+            'roformer', 'missing',
+            status_text='当前目标未安装',
+            detail=f'已安装 {installed_label} 权重；当前选择的 {target_label} 尚未安装。'
+                   f' 安装 {target_label} 会切换到该精度。',
+            download=download, installed=0, required=required,
+            can_install=True, can_verify=False, can_use=False, model=model, health=health, download_items=items,
         )
 
     if ready and installed_runtime is not None:
@@ -383,7 +408,7 @@ def _expression_row():
     )
 
 
-def catalog(runtime, *, check=None) -> list[dict]:
+def catalog(runtime, *, precision='auto', check=None) -> list[dict]:
     """Return the four stable component rows for the selected RoFormer runtime.
 
     ``download_bytes`` is the complete fresh-download size, ``installed_bytes``
@@ -395,7 +420,7 @@ def catalog(runtime, *, check=None) -> list[dict]:
     """
     runtime = _runtime(runtime)
     rows = []
-    for read in (lambda: _builtin_row(check), lambda: _roformer_row(runtime), _chinese_row, _expression_row):
+    for read in (lambda: _builtin_row(check), lambda: _roformer_row(runtime, precision), _chinese_row, _expression_row):
         if check is not None and check():
             raise InterruptedError('已取消组件检查。')
         row = read()
@@ -414,12 +439,16 @@ def catalog(runtime, *, check=None) -> list[dict]:
     return [{key: row[key] for key in ROW_KEYS} for row in rows]
 
 
-def install(component_id, *, runtime=None, source='auto', progress=None,
+def install(component_id, *, runtime=None, precision=None, source='auto', progress=None,
             check=None, force=False):
     """Dispatch installation to the existing service without reimplementing it."""
     callback = _progress(progress)
     if component_id == 'roformer':
         runtime = _runtime(runtime)
+        if precision in ('fp16_10s', 'fp16', 'fp32'):
+            return optional_components.install(
+                runtime, callback, check, force=bool(force), source=source, precision=precision,
+            )
         return optional_components.install(
             runtime, callback, check, force=bool(force), source=source,
         )

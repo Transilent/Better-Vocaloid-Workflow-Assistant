@@ -234,6 +234,7 @@ def export_model(
     output_path: Path,
     *,
     band_chunk: int = 8,
+    chunk_size: int | None = None,
     opset: int = 18,
     fp16: bool = False,
     verify: bool = True,
@@ -254,10 +255,10 @@ def export_model(
     model.load_state_dict(state, strict=True)
     model.eval()
 
-    chunk_size = int(cfg['audio'].get('chunk_size', 882000))
+    effective_chunk_size = int(chunk_size) if chunk_size is not None else int(cfg['audio'].get('chunk_size', 882000))
     hop_length = int(model_cfg.get('stft_hop_length', 512))
     dim_freqs = int(model_cfg.get('dim_freqs_in', 1025))
-    frames = chunk_size // hop_length + 1
+    frames = effective_chunk_size // hop_length + 1
 
     core = _wrap_bs_roformer_core(model, band_chunk=band_chunk, fp16=fp16)
     dummy = torch.randn(1, 4, dim_freqs, frames, dtype=torch.float32) * 0.1
@@ -326,6 +327,7 @@ def main():
     parser.add_argument('--config', type=Path, required=True, help='Path to config_karaoke_frazer_becruily.yaml')
     parser.add_argument('--output', type=Path, default=Path('bs_roformer_karaoke_frazer_becruily.onnx'))
     parser.add_argument('--band-chunk', type=int, default=8, help='Time-attention band group size (default: 8)')
+    parser.add_argument('--chunk-size', type=int, default=None, help='Override static waveform chunk_size in samples (e.g. 441000 for 10s low-VRAM)')
     parser.add_argument('--opset', type=int, default=18)
     parser.add_argument('--fp16', action='store_true', help='Convert backbone weights to mixed-precision FP16')
     parser.add_argument('--no-verify', action='store_true')
@@ -338,6 +340,7 @@ def main():
         args.config,
         args.output,
         band_chunk=args.band_chunk,
+        chunk_size=args.chunk_size,
         opset=args.opset,
         fp16=args.fp16,
         verify=not args.no_verify,

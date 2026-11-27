@@ -13,6 +13,13 @@
       "bytes": 234044471,
       "variants": [
         {
+          "name": "bs_roformer_karaoke_frazer_becruily.fp16_10s.onnx",
+          "url": "https://github.com/AU-ki/Better-Vocaloid-Workflow-Assistant/releases/download/bs-roformer-onnx/bs_roformer_karaoke_frazer_becruily.fp16_10s.onnx",
+          "sha256": "d5c872b40246a7ca04080fcb958cb003cdbddd180c5bb887b0b28396016b9ae0",
+          "bytes": 133548886,
+          "precision": "fp16_10s"
+        },
+        {
           "name": "bs_roformer_karaoke_frazer_becruily.fp16.onnx",
           "url": "https://github.com/AU-ki/Better-Vocaloid-Workflow-Assistant/releases/download/bs-roformer-onnx/bs_roformer_karaoke_frazer_becruily.fp16.onnx",
           "sha256": "51d62806b4bf7b809c59b3b1951c870a55ad2f5a4c835632ab30bfb7d05ef240",

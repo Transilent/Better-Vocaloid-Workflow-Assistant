@@ -73,10 +73,17 @@ ScrollView {
             : controller.text("其他可选")
     }
 
+    function precisionLabel(code) {
+        return code === "fp16_10s" ? "10s FP16" : code === "fp16" ? "20s FP16" : code === "fp32" ? "20s FP32" : String(code || "").toUpperCase()
+    }
     function healthText() {
         const rows = []
         if (health.runtime)
             rows.push(controller.text("已装运行库") + "  " + health.runtime.toUpperCase())
+        if (health.precision)
+            rows.push(controller.text("已装精度") + "  " + precisionLabel(health.precision))
+        if (health.recommended_precision)
+            rows.push(controller.text("本机推荐精度") + "  " + precisionLabel(health.recommended_precision))
         if (component.installed_bytes > 0)
             rows.push(controller.text(health.installed_estimate ? "安装体积（清单估算）" : "已安装")
                       + "  " + sizeLabel(component.installed_bytes))
@@ -590,6 +597,25 @@ ScrollView {
                                         { label: page.controller.text("GPU / WebGPU"), value: "webgpu" }]
                                 currentIndex: page.controller.runtime === "webgpu" ? 1 : 0
                                 onActivated: page.controller.setRuntime(currentValue)
+                            }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: page.component.id === "roformer"
+                            Text { text: page.controller.text("模型精度"); color: page.theme.muted; font.pixelSize: Math.round(11 * page.theme.scale) }
+                            UiComboBox {
+                                objectName: "roformerPrecisionChoice"
+                                Layout.fillWidth: true; theme: page.theme; enabled: page.idle
+                                Accessible.name: page.controller.text("模型精度")
+                                readonly property var precisionModel: [
+                                    { label: page.controller.text("自动（推荐 {0}）").replace("{0}", page.precisionLabel(page.health.recommended_precision || "fp16_10s")), value: "auto" },
+                                    { label: page.controller.text("10s FP16（8G 显存）"), value: "fp16_10s" },
+                                    { label: page.controller.text("20s FP16（12G 显存）"), value: "fp16" },
+                                    { label: page.controller.text("20s FP32（16G+ 显存）"), value: "fp32" }
+                                ]
+                                model: precisionModel
+                                currentIndex: Math.max(0, precisionModel.findIndex(o => o.value === page.controller.roformerPrecision))
+                                onActivated: page.controller.setRoformerPrecision(currentValue)
                             }
                         }
                         ColumnLayout {

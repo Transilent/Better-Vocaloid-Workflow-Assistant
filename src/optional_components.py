@@ -36,12 +36,96 @@ def current(root=COMPONENT):
     return Path(root) / 'current'
 
 
+_FP32_MIN_VRAM_BYTES = 15 * 1024**3
+_FP16_20S_MIN_VRAM_BYTES = 11 * 1024**3
+_PRECISIONS = ('fp16_10s', 'fp16', 'fp32')
+
+
+def recommended_precision():
+    """Recommend 20s FP32 (>=16 GB), 20s FP16 (12 GB), or 10s FP16 (<=8 GB)."""
+    try:
+        from runtime_devices import preferred_gpu_adapter
+        adapter = preferred_gpu_adapter()
+        vram = int(getattr(adapter, 'dedicated_vram_bytes', 0)) if adapter is not None else 0
+        if vram >= _FP32_MIN_VRAM_BYTES:
+            return 'fp32'
+        if vram >= _FP16_20S_MIN_VRAM_BYTES:
+            return 'fp16'
+    except (ImportError, OSError, RuntimeError, ValueError, TypeError):
+        return 'fp16_10s'
+    return 'fp16_10s'
+
+
+def normalize_precision(value='auto'):
+    raw = str(value or 'auto').strip().lower()
+    if raw == 'auto':
+        return recommended_precision()
+    if raw in _PRECISIONS:
+        return raw
+    raise ValueError('请选择自动、10s FP16、20s FP16 或 20s FP32 精度。')
+
+
+def manifest_weights_for_precision(spec, precision='auto'):
+    """Return manifest weight items matching the selected precision tier."""
+    selected = normalize_precision(precision)
+    rows = []
+    for item in spec.get('weights', ()):
+        if isinstance(item, dict) and selected != 'fp32' and str(item.get('name') or '').lower().endswith('.onnx'):
+            match = next((v for v in (item.get('variants') or ())
+                          if isinstance(v, dict) and str(v.get('precision') or '').lower() == selected), None)
+            if match is not None:
+                rows.append(match)
+                continue
+        rows.append(item)
+    return rows
+
+
+def _weight_precision_for_path(path, spec):
+    target = Path(path)
+    name = target.name.lower()
+    if '.fp16_10s.' in name:
+        return 'fp16_10s'
+    try:
+        size = target.stat().st_size
+    except OSError:
+        return 'fp16' if '.fp16.' in name else None
+    for item in spec.get('weights', ()):
+        if not isinstance(item, dict):
+            continue
+        for variant in item.get('variants') or ():
+            if isinstance(variant, dict) and variant.get('bytes') == size:
+                return str(variant.get('precision') or 'fp16').lower()
+        if str(item.get('name') or '').lower().endswith('.onnx') and item.get('bytes') == size:
+            return 'fp32'
+    return 'fp16' if '.fp16.' in name else None
+
+
+def _installed_precision(directory, manifest_path=MANIFEST):
+    try:
+        spec = json.loads(Path(manifest_path).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    directory = Path(directory)
+    for item in spec.get('weights', ()):
+        if not isinstance(item, dict):
+            continue
+        for variant in item.get('variants') or ():
+            if isinstance(variant, dict) and variant.get('name'):
+                candidate = directory / variant['name']
+                if candidate.is_file():
+                    return _weight_precision_for_path(candidate, spec)
+        name = str(item.get('name') or '')
+        if name.lower().endswith('.onnx') and (directory / name).is_file():
+            return _weight_precision_for_path(directory / name, spec)
+    return None
+
+
 def _status_tree(directory):
     report = component_health.metadata_status(Path(directory), MANIFEST)
     if not report['metadata_ready']:
         detail = report['errors'][0]['message'] if report['errors'] else '文件缺失或元数据不一致'
         raise ValueError(detail)
-    return {
+    result = {
         'ready': True,
         'runtime': report['runtime'],
         'probe': report['probe'],
@@ -52,6 +136,10 @@ def _status_tree(directory):
             'state': 'metadata_ready',
         },
     }
+    precision = _installed_precision(directory, MANIFEST)
+    if precision:
+        result['precision'] = precision
+    return result
 
 
 def _pinned_onnx_weights(spec):
@@ -114,31 +202,18 @@ def status(root=COMPONENT):
     except (OSError, ValueError, KeyError, TypeError):
         match = _manual_onnx_match(root, MANIFEST)
         if match is not None:
-            return {
-                'ready': True,
-                'runtime': 'webgpu',
-                'probe': {
-                    'onnxruntime': 'bundled',
-                    'webgpu_available': True,
-                    'device': 'webgpu',
-                    'manual_weight': match[0].name,
-                },
-                'verification': {
-                    'level': 'metadata',
-                    'content_verified': False,
-                    'sha256_checked': False,
-                    'state': 'metadata_ready',
-                },
+            result = {
+                'ready': True, 'runtime': 'webgpu',
+                'probe': {'onnxruntime': 'bundled', 'webgpu_available': True, 'device': 'webgpu', 'manual_weight': match[0].name},
+                'verification': {'level': 'metadata', 'content_verified': False, 'sha256_checked': False, 'state': 'metadata_ready'},
             }
+            precision = _installed_precision(match[0].parent, MANIFEST)
+            if precision:
+                result['precision'] = precision
+            return result
         return {
-            'ready': False,
-            'runtime': None,
-            'verification': {
-                'level': 'metadata',
-                'content_verified': False,
-                'sha256_checked': False,
-                'state': 'not_ready',
-            },
+            'ready': False, 'runtime': None,
+            'verification': {'level': 'metadata', 'content_verified': False, 'sha256_checked': False, 'state': 'not_ready'},
         }
 
 
@@ -170,15 +245,9 @@ def full_verify(root=COMPONENT, progress=None, check=None):
         if progress:
             progress(expected_bytes, expected_bytes, '完整校验通过' if ok else '完整校验结束')
         return {
-            'component': 'bs-roformer-karaoke',
-            'level': 'full',
-            'state': 'verified' if ok else 'corrupt',
-            'verified': ok,
-            'metadata_ready': True,
-            'runtime': 'webgpu',
-            'probe': {'onnxruntime': 'bundled', 'webgpu_available': True, 'device': 'webgpu',
-                      'manual_weight': target.name},
-            'manifest_sha256': manifest_sha,
+            'component': 'bs-roformer-karaoke', 'level': 'full', 'state': 'verified' if ok else 'corrupt',
+            'verified': ok, 'metadata_ready': True, 'runtime': 'webgpu', 'manifest_sha256': manifest_sha,
+            'probe': {'onnxruntime': 'bundled', 'webgpu_available': True, 'device': 'webgpu', 'manual_weight': target.name},
             'expected': [{'path': target.name, 'kind': 'weight', 'bytes': expected_bytes, 'sha256': expected_sha}],
             'actual': [{'path': target.name, 'kind': 'weight', 'exists': True, 'bytes': expected_bytes,
                         'sha256': actual_sha, 'sha256_checked': True}],
@@ -186,10 +255,7 @@ def full_verify(root=COMPONENT, progress=None, check=None):
                                          'message': '文件内容 SHA-256 与清单不一致。',
                                          'expected_bytes': expected_bytes, 'actual_bytes': expected_bytes,
                                          'expected_sha256': expected_sha, 'actual_sha256': actual_sha}],
-            'changed': [],
-            'missing': [],
-            'unverified': [],
-            'errors': [],
+            'changed': [], 'missing': [], 'unverified': [], 'errors': [],
             'progress': {'hash_bytes': expected_bytes, 'total_hash_bytes': expected_bytes,
                          'sha256_checked': 1, 'files_expected': 1},
         }
@@ -466,6 +532,18 @@ def replace_verified_tree(stage, destination, backup, root, ready):
     remove_owned_tree(quarantine, root)
 
 
+def shared_runtime_wheel(spec):
+    """Return True when CPU and WebGPU targets use the exact same pinned runtime wheel."""
+    wheels = spec.get('runtime_wheels') or spec.get('torch_wheels') or {}
+    cpu = wheels.get('cpu') if isinstance(wheels, dict) else None
+    gpu = (wheels.get('webgpu') or wheels.get('cuda')) if isinstance(wheels, dict) else None
+    if not isinstance(cpu, dict) or not isinstance(gpu, dict):
+        return False
+    if cpu.get('sha256') and cpu.get('sha256') == gpu.get('sha256'):
+        return True
+    return bool(cpu.get('name') and cpu.get('name') == gpu.get('name') and cpu.get('bytes') == gpu.get('bytes'))
+
+
 def _manifest_runtime_wheel(spec, runtime):
     wheels = spec.get('runtime_wheels') or spec.get('torch_wheels') or {}
     wheel = wheels.get(runtime)
@@ -508,17 +586,19 @@ def probe(directory):
             if 'WebGpuExecutionProvider' in sess.get_providers():
                 active_device = 'webgpu'
     spec = manifest()
-    for item in spec.get('weights', ()):
-        if str(item.get('name', '')).lower().endswith('.onnx'):
-            model_path = directory / item['name']
-            if model_path.is_file():
-                opts = ort.SessionOptions()
-                opts.enable_mem_pattern = False
-                opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-                active_device, sess = create_session(
-                    model_path, opts, {}, 'webgpu' if webgpu else 'cpu', label='BS-RoFormer Probe'
-                )
-                assert sess.get_inputs() and sess.get_outputs()
+    from roformer_onnx import _resolve_onnx_model
+    try:
+        model_path = _resolve_onnx_model(directory, spec)
+    except FileNotFoundError:
+        model_path = None
+    if model_path is not None and model_path.is_file():
+        opts = ort.SessionOptions()
+        opts.enable_mem_pattern = False
+        opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        active_device, sess = create_session(
+            model_path, opts, {}, 'webgpu' if webgpu else 'cpu', label='BS-RoFormer Probe'
+        )
+        assert sess.get_inputs() and sess.get_outputs()
     result = {
         'onnxruntime': ort.__version__,
         'webgpu_available': webgpu,
@@ -563,11 +643,12 @@ def install_local_onnx(onnx_path, config_path, runtime='webgpu', root=COMPONENT)
         return status(owned)
 
 
-def install(runtime, progress=print, check=None, root=COMPONENT, force=False, source='auto'):
+def install(runtime, progress=print, check=None, root=COMPONENT, force=False, source='auto', precision='auto'):
     from gpu_backend import normalize_roformer_runtime
 
     source = normalize_component_source(source)
     runtime = normalize_roformer_runtime(runtime)
+    selected_precision = normalize_precision(precision)
     if (
         not (os.environ.get('VWA_TESTING') == '1' or os.environ.get('BVWA_TESTING') == '1')
         and (sys.version_info[:2] != (3, 12) or sys.maxsize < 2**32 or sys.platform != 'win32')
@@ -575,12 +656,17 @@ def install(runtime, progress=print, check=None, root=COMPONENT, force=False, so
         raise RuntimeError('此组件需要助手自带的 Windows x64 Python 3.12。')
     with _component_lock(root, install=True) as root:
         recover_verified_previous(root, _directory_ready)
+        spec = manifest()
         existing = status(root)
-        if not force and existing['ready'] and existing['runtime'] == runtime:
+        existing_precision = existing.get('precision')
+        runtime_match = (existing.get('runtime') == runtime
+                         or (existing.get('runtime') in ('cpu', 'webgpu') and shared_runtime_wheel(spec)))
+        if (not force and existing['ready'] and runtime_match
+                and (not existing_precision or existing_precision == selected_precision)):
             progress(1, 1, '元数据检查已通过；未重新哈希大文件，可在组件页执行完整校验')
             return existing
-        spec = manifest()
-        items = spec['weights'] + spec['shared_wheels'] + [_manifest_runtime_wheel(spec, runtime)]
+        weights = manifest_weights_for_precision(spec, selected_precision)
+        items = weights + spec['shared_wheels'] + [_manifest_runtime_wheel(spec, runtime)]
         total = sum(item['bytes'] for item in items)
         install_sizes = spec['install_bytes']
         expanded = install_sizes.get(runtime, install_sizes.get('cuda', 0))
@@ -643,7 +729,7 @@ def install(runtime, progress=print, check=None, root=COMPONENT, force=False, so
             critical.append({'file': 'packages/onnxruntime/__init__.py', 'bytes': ort_init.stat().st_size,
                              'sha256': file_hash(ort_init)})
         atomic_json(stage / 'installed.json', {
-            'runtime': runtime, 'probe': probed, 'critical_files': critical,
+            'runtime': runtime, 'precision': selected_precision, 'probe': probed, 'critical_files': critical,
             'manifest_sha256': file_hash(MANIFEST),
             'source_sha256': {item['name']: item['sha256'] for item in items},
         })
@@ -667,6 +753,7 @@ if __name__ == '__main__':
     parser.add_argument('--install-local-onnx', type=Path, help='Install a locally exported BS-RoFormer .onnx file')
     parser.add_argument('--config', type=Path, help='config.yaml paired with --install-local-onnx')
     parser.add_argument('--runtime', choices=('cpu', 'webgpu'), default='webgpu')
+    parser.add_argument('--precision', choices=('auto', 'fp16_10s', 'fp16', 'fp32'), default='auto')
     parser.add_argument('--probe')
     parser.add_argument('--verify', action='store_true',
                         help='explicitly hash manifest weights and receipt-critical files')
@@ -693,4 +780,5 @@ if __name__ == '__main__':
             raise SystemExit('--install-local-onnx requires --config <config.yaml>')
         print(json.dumps(install_local_onnx(args.install_local_onnx, args.config, runtime=args.runtime), ensure_ascii=False, indent=2))
     elif args.install:
-        install(args.install, lambda done, total, text: print(f'{done}/{total}: {text}', flush=True), source=args.download_source)
+        install(args.install, lambda done, total, text: print(f'{done}/{total}: {text}', flush=True),
+                source=args.download_source, precision=args.precision)
