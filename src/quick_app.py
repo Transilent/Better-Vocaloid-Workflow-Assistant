@@ -156,6 +156,18 @@ def create_workspace(app, *, root=ROOT, show=True, viewport=None, scale=None):
         display = app.primaryScreen().availableGeometry()
         initial = viewport or (max(1, min(1440, display.width() - 42)),
                                max(1, min(900, display.height() - 54)))
+        restored_geo = None
+        if show and viewport is None and os.environ.get('VWA_TESTING') != '1':
+            from workspace_ui_state import clamp_window_geometry, load_ui_state
+            ui_state = load_ui_state(root)
+            screens = [
+                (s.availableGeometry().x(), s.availableGeometry().y(),
+                 s.availableGeometry().width(), s.availableGeometry().height())
+                for s in app.screens()
+            ]
+            restored_geo = clamp_window_geometry(ui_state.get('window'), screens)
+            if restored_geo is not None:
+                initial = (restored_geo['width'], restored_geo['height'])
         engine.setInitialProperties({
             'controller': controller,
             'assets': QUrl.fromLocalFile(str(assets) + '/'),
@@ -170,6 +182,13 @@ def create_workspace(app, *, root=ROOT, show=True, viewport=None, scale=None):
         if not engine.rootObjects():
             raise RuntimeError('Quick workspace could not load quick_ui/Main.qml.')
         window = engine.rootObjects()[0]
+        if restored_geo is not None:
+            try:
+                window.setPosition(restored_geo['x'], restored_geo['y'])
+                if restored_geo.get('maximized'):
+                    window.showMaximized()
+            except RuntimeError:
+                pass
         modes = WindowModes(app, window, QSize(*(viewport or (1440, 900))),
                             fixture_viewport=viewport is not None) if show else None
         return engine, window, controller, modes
@@ -277,10 +296,37 @@ def main(argv=None):
             controller.activityChanged.connect(complete_smoke)
             QTimer.singleShot(150, complete_smoke)
         else:
+            if os.environ.get('VWA_TESTING') != '1':
+                from workspace_ui_state import load_last_route
+                import startup_preferences
+                if not startup_preferences.tour_due(controller.support.state.preferences):
+                    saved_route = load_last_route(ROOT, default='processing')
+                    if saved_route != controller.route:
+                        controller.navigate(saved_route)
             QTimer.singleShot(0, controller.support.begin_startup)
         exit_code = app.exec()
         return exit_code
     finally:
+        if not check_mode and window is not None and os.environ.get('VWA_TESTING') != '1':
+            try:
+                from PySide6.QtGui import QWindow
+                from workspace_ui_state import save_ui_state
+                maximized = window.visibility() == QWindow.Visibility.Maximized
+                save_ui_state(
+                    {
+                        'window': {
+                            'x': int(window.x()),
+                            'y': int(window.y()),
+                            'width': int(window.width()),
+                            'height': int(window.height()),
+                            'maximized': bool(maximized),
+                        },
+                        'last_route': str(controller.route) if controller is not None else 'processing',
+                    },
+                    root=ROOT,
+                )
+            except (OSError, RuntimeError, ValueError, TypeError):
+                pass
         if ipc_server is not None:
             ipc_server.close()
         if modes is not None:

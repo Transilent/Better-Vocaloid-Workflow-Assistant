@@ -235,7 +235,7 @@ class QuickBridge(QObject):
         self._preparation_presets = []
         self._preparation_preset_rows = {}
         self._preparation_preset_failure = ''
-        self._refresh_preparation_presets()
+        QTimer.singleShot(0, self._refresh_preparation_presets) if os.environ.get('VWA_TESTING') != '1' else self._refresh_preparation_presets()
         draft = self.state.draft.with_options(saved_workflow['options'], saved_workflow['graph'])
         draft = preparation.restore_draft_settings(draft)
         self.state.set_draft(draft)
@@ -760,7 +760,7 @@ class QuickBridge(QObject):
             self._mixdown.enter()
             self._mixdown.refresh_presets()
         elif self.state.route == 'processing':
-            self._refresh_preparation_presets()
+            QTimer.singleShot(0, self._refresh_preparation_presets) if os.environ.get('VWA_TESTING') != '1' else self._refresh_preparation_presets()
         elif self.state.route == 'updates' and self._support.presetLibrary['loaded']:
             self._support.refreshPresetLibrary()
 
@@ -913,7 +913,7 @@ class QuickBridge(QObject):
             return False
         try:
             preparation.append_preset(self._preparation_preset_library, self.state.draft, name)
-            self._refresh_preparation_presets()
+            QTimer.singleShot(0, self._refresh_preparation_presets) if os.environ.get('VWA_TESTING') != '1' else self._refresh_preparation_presets()
         except Exception as exc:
             self._error(exc)
             return False
@@ -947,7 +947,7 @@ class QuickBridge(QObject):
                     **self._legacy_workflow, 'presets': presets, 'preset': selected}
             else:
                 raise ValueError('该预设不可删除。')
-            self._refresh_preparation_presets()
+            QTimer.singleShot(0, self._refresh_preparation_presets) if os.environ.get('VWA_TESTING') != '1' else self._refresh_preparation_presets()
         except Exception as exc:
             self._error(exc)
             return False

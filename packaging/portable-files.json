@@ -1358,6 +1358,10 @@
       "source": "src/tutorial_catalog.py"
     },
     {
+      "file": "workspace_ui_state.py",
+      "source": "src/workspace_ui_state.py"
+    },
+    {
       "file": "quick_ui/ShortcutSheetDialog.qml",
       "source": "src/quick_ui/ShortcutSheetDialog.qml"
     },
@@ -1368,6 +1372,10 @@
     {
       "file": "quick_ui/TutorialScenarioGrid.qml",
       "source": "src/quick_ui/TutorialScenarioGrid.qml"
+    },
+    {
+      "file": "quick_ui/WorkspaceStage.qml",
+      "source": "src/quick_ui/WorkspaceStage.qml"
     },
     {
       "file": "quick_ui/SettingsChoiceChip.qml",

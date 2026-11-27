@@ -503,42 +503,24 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.fillHeight: true
 
-            Loader {
+            WorkspaceStage {
                 id: pageLoader
-                objectName: "pageLoader"
                 anchors.fill: parent
-                onLoaded: {
-                    if (item && !window.tokens.reduceMotion) {
-                        pageFadeAnim.stop()
-                        item.opacity = 0.72
-                        pageFadeAnim.target = item
-                        pageFadeAnim.start()
-                    }
-                }
-                sourceComponent: {
-                    switch (window.controller.route) {
-                    case "components": return componentsPage
-                    case "results": return resultsPage
-                    case "updates": return settingsPage
-                    case "tuning": return tuningPage
-                    case "tuning_workshop": return workshopPage
-                    case "chorus": return chorusPage
-                    case "audio_mixdown": return mixdownPage
-                    case "video_mixdown": return videoPage
-                    case "publishing": return publicationPage
-                    case "project_convert": return convertPage
-                    default: return preparationPage
-                    }
-                }
-            }
-
-            NumberAnimation {
-                id: pageFadeAnim
-                property: "opacity"
-                from: 0.72
-                to: 1.0
-                duration: 110
-                easing.type: Easing.OutCubic
+                route: window.controller.route
+                reduceMotion: window.tokens.reduceMotion
+                pageComponents: ({
+                    components: componentsPage,
+                    results: resultsPage,
+                    updates: settingsPage,
+                    tuning: tuningPage,
+                    tuning_workshop: workshopPage,
+                    chorus: chorusPage,
+                    audio_mixdown: mixdownPage,
+                    video_mixdown: videoPage,
+                    publishing: publicationPage,
+                    project_convert: convertPage,
+                    processing: preparationPage
+                })
             }
 
             // Floating Activity Island (overlays bottom edge without compressing editor canvas height)
