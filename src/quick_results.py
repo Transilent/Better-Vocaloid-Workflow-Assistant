@@ -66,6 +66,7 @@ ARTIFACT_ROLES = {
 MODE_LABELS = {
     'dual': 'Karaoke 2 双轨',
     'roformer': 'BS-RoFormer 双轨',
+    'roformer_onnx': 'BS-RoFormer ONNX（实验性）',
     'import': '外部分轨',
     'single': '人声单轨',
 }
