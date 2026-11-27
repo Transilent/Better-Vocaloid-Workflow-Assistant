@@ -1,6 +1,6 @@
 # VWA 贡献规范
 
-[English](CONTRIBUTING.md) · [反馈与日志说明](.github/SUPPORT.md)
+[English](CONTRIBUTING.md) · [开发者总指南](docs/DeveloperGuide.zh-CN.md) · [AMD 显卡适配指南](docs/AmdGpuAdaptation.zh-CN.md) · [反馈与日志说明](.github/SUPPORT.md)
 
 欢迎使用中文、English 或日本語提交 Issue 和 PR。用户交流群：**490619616**。
 
@@ -45,11 +45,20 @@ PR 标题和提交说明采用 `类型(范围): 简洁说明结果`，范围可�
 
 ## 开发与验证
 
-应用源码只改 `src/`，构建元数据在 `packaging/`。新文件按用途登记 `packaging/source-files.json`、`packaging/portable-files.json`；可执行回归脚本登记 `tests/run_tests.py`。运行 `tools/Prepare-Source.ps1` 更新根目录生成副本，不手改或提交这些副本。
+完整环境搭建、原生 DLL 编译与架构护栏详见[开发者总指南](docs/DeveloperGuide.zh-CN.md)；计划参与 AMD 显卡（A卡）适配的协作者请先阅读[AMD 显卡适配指南](docs/AmdGpuAdaptation.zh-CN.md)。
 
-使用已准备的开发运行库；GitHub 源码包不是完整安装包。`tools/Start-Diagnostics.bat` 用于诊断启动和写日志，不负责安装运行库。参考[便携版说明](docs/Portable.zh-CN.md)，通过项目 Python 执行 `tests/run_tests.py`，用 `BVWA_TEST_SELECTION` 选择受影响的已登记脚本。命令示例见[英文规范](CONTRIBUTING.md#development)。测试沿用隔离机制，不直接操作个人工程和账号目录。
+应用源码只改 `src/`，原生 C/C++ 音频库在 `src/native/`（由 `CMakeLists.txt` + `CMakePresets.json` 构建并用 CTest 验证），构建元数据在 `packaging/`。新文件按用途登记 `packaging/source-files.json`、`packaging/portable-files.json`；可执行回归脚本登记 `tests/run_tests.py`。运行 `tools/Prepare-Source.ps1` 更新根目录生成副本，不手改或提交这些副本。
 
-按改动范围验证，不把全量推理、声库合成或完整发行构建当普通文档 PR 的门槛。自动化通过、启动成功或覆盖率都不能代替真人听感。生成副本、模型、浏览器、日志、本机记忆和账号资料不提交到 Git。
+提 PR 前请确保通过以下与 `.github/workflows/ci.yml` 对齐的本地检查：
+
+- **布局与清单一一对齐**：`tools/Prepare-Source.ps1` + `python -B tools/verify_source_layout.py` + `tests/test_source_layout.py`
+- **代码质量与架构护栏**：`ruff check src tools tests` + `tests/test_architecture_guards.py`（锁定 Tarjan 全图 **0 循环依赖**、新文件 **<= 800 行棘轮**、领域模块禁止导入 Qt、禁止裸 `except Exception: pass`）
+- **多语言 100% 覆盖**：`python -B tools/extract_i18n.py --check --max-missing-en 0 --max-missing-ja 0`（新增中文文案必须在 `assets/i18n/additions.json` 中同步补齐英/日译文）
+- **L0/L1 分层回归**：`tests/test_tier1_infra.py`、`tests/test_tier2_infra.py`、`tests/test_tier3_ux.py`，界面或交互改动另跑 `tests/run_tests.py`（用 `BVWA_TEST_SELECTION` 选择 `test_quick_desktop.py`、`test_user_experience_guards.py` 等受影响脚本）
+
+使用已准备的开发运行库；GitHub 源码包不是完整安装包。`tools/Start-Diagnostics.bat` 用于诊断启动和写日志，不负责安装运行库。参考[便携版说明](docs/Portable.zh-CN.md)，通过项目 Python 执行 `tests/run_tests.py`。测试沿用隔离机制，不直接操作个人工程和账号目录。
+
+按改动范围验证，不把全量推理、声库合成或完整发行构建当普通文档 PR 的门槛。验收请按 `unit_isolated`（隔离单测）、`real_material_dsp`（真实素材/硬件实测）、`quick_offscreen`（离屏界面）、`human_listening`（真人试听）四维分列汇报；自动化通过、启动成功或覆盖率都不能代替真人听感。生成副本、模型、浏览器、日志、本机记忆和账号资料不提交到 Git。
 
 文档以英文为主，同时更新中文对应说明；涉及界面文本时补齐简体中文、英语、日语。面向用户的说明直接描述功能、操作和恢复方式，只有影响用户选择时才展示实现细节。
 

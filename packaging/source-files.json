@@ -408,6 +408,8 @@
     "dependencies/vocal2midi2/NOTICE",
     "docs/Architecture.en.md",
     "docs/Architecture.zh-CN.md",
+    "docs/DeveloperGuide.zh-CN.md",
+    "docs/AmdGpuAdaptation.zh-CN.md",
     "docs/ArtAssets.en.md",
     "docs/ArtAssets.zh-CN.md",
     "docs/ContextAdapter.en.md",
