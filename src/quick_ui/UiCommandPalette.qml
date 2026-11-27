@@ -10,6 +10,7 @@ Popup {
     property var customCommands: []
     property string query: ""
     property int currentIndex: 0
+    signal shortcutSheetRequested()
 
     parent: Overlay.overlay
     x: parent ? Math.round((parent.width - width) / 2) : 0
@@ -131,6 +132,33 @@ Popup {
             shortcut: "",
             keywords: "diagnostics log debug 诊断 日志 排查",
             action: () => controller.support.showDiagnostics()
+        })
+        list.push({
+            id: "global:shortcuts",
+            title: tr("打开快捷键速查表"),
+            subtitle: tr("查看全局与各工作区常用快捷键"),
+            icon: "help",
+            shortcut: "Ctrl+/",
+            keywords: "shortcut hotkey keybinding help 快捷键 速查 帮助",
+            action: () => root.shortcutSheetRequested()
+        })
+        list.push({
+            id: "global:tutorial",
+            title: tr("重新打开新手引导与工作区巡览"),
+            subtitle: tr("选择场景快速上手或查看全部工作区介绍"),
+            icon: "help",
+            shortcut: "",
+            keywords: "tutorial guide tour onboarding 教程 引导 新手",
+            action: () => controller.support.showTutorial()
+        })
+        list.push({
+            id: "global:whats-new",
+            title: tr("查看版本新功能导览"),
+            subtitle: tr("快速了解最新版本的新工作台与效率特性"),
+            icon: "sparkles",
+            shortcut: "",
+            keywords: "whats new release highlights 新功能 更新亮点",
+            action: () => controller.support.showWhatsNew()
         })
         if (customCommands && customCommands.length) {
             for (let j = 0; j < customCommands.length; ++j)

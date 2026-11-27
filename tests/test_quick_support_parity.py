@@ -183,7 +183,7 @@ def dynamic_checks():
             state.tour_step = 2
             support.previousTutorial()
             assert state.tour_step == 1
-            assert support.tutorialStepCount == 7
+            assert support.tutorialStepCount == 11
 
             class FakeLane:
                 kind = ''

@@ -11,6 +11,7 @@ from PySide6.QtGui import QDesktopServices, QGuiApplication
 
 import startup_preferences
 import storage
+import tutorial_catalog
 import updater
 from common import ROOT, environment_value, job_directories, output_directory
 from download_sources import read_small
@@ -21,23 +22,17 @@ from support_info import FEEDBACK_URL, QQ_GROUP
 from task_store import format_size, size
 from workspace_settings import SettingsState, load_update_recovery
 
-
-TOUR_STEP_COUNT = 7
+TOUR_STEP_COUNT = len(tutorial_catalog.TOUR_STEPS)
 MAX_PRESET_INSPECT_CHARS = 256 * 1024
 
 
 def _existing_directory(value):
-    """Find a usable directory for disk-space reporting without touching files."""
-    try:
-        path = Path(value)
-    except (TypeError, ValueError):
-        return None
-    for candidate in (path, *path.parents):
+    try: path = Path(value)
+    except (TypeError, ValueError): return None
+    for c in (path, *path.parents):
         try:
-            if candidate.is_dir():
-                return candidate
-        except OSError:
-            continue
+            if c.is_dir(): return c
+        except OSError: continue
     return None
 
 
@@ -211,28 +206,25 @@ class QuickSupport(QObject):
         return self.state.startup_view
 
     @Property(str, constant=True)
-    def qqGroup(self):
-        return QQ_GROUP
-
+    def qqGroup(self): return QQ_GROUP
     @Property(int, constant=True)
-    def tutorialStepCount(self):
-        return TOUR_STEP_COUNT
-
+    def tutorialStepCount(self): return TOUR_STEP_COUNT
+    @Property('QVariantList', constant=True)
+    def scenarioCards(self): return [dict(x) for x in tutorial_catalog.SCENARIO_CARDS]
+    @Property('QVariantList', constant=True)
+    def whatsNewItems(self): return [dict(x) for x in tutorial_catalog.WHATS_NEW_HIGHLIGHTS]
     @Property(str, constant=True)
-    def currentVersion(self):
-        return self.version
-
+    def whatsNewVersion(self): return tutorial_catalog.FEATURE_HIGHLIGHTS_VERSION
+    @Property('QVariantList', constant=True)
+    def shortcutGroups(self): return [dict(x) for x in tutorial_catalog.SHORTCUT_GROUPS]
+    @Property(str, constant=True)
+    def currentVersion(self): return self.version
     @Property(bool, constant=True)
-    def canApplyProgramUpdates(self):
-        return self._can_apply_updates
-
+    def canApplyProgramUpdates(self): return self._can_apply_updates
     @Property(bool, notify=workChanged)
-    def workBusy(self):
-        return bool(self._last_operation_names)
-
+    def workBusy(self): return bool(self._last_operation_names)
     @Property('QStringList', notify=workChanged)
-    def operationBlockers(self):
-        return list(self._last_operation_names)
+    def operationBlockers(self): return list(self._last_operation_names)
 
     def _active_operation_names(self):
         names = []
@@ -976,6 +968,8 @@ class QuickSupport(QObject):
     def begin_startup(self):
         if startup_preferences.tour_due(self.state.preferences):
             self.showTutorial()
+        elif startup_preferences.whats_new_due(tutorial_catalog.FEATURE_HIGHLIGHTS_VERSION, self.state.preferences):
+            self.state.show_whats_new(); self.startupChanged.emit()
         if self.state.open_recovered_pending():
             self.startupChanged.emit()
         self._auto_check = self.state.values['check_for_updates']
@@ -1283,40 +1277,45 @@ class QuickSupport(QObject):
     def showTutorial(self):
         blockers = self._active_operation_names()
         if blockers:
-            self.state.update.update(message='请先完成 ' + '、'.join(blockers) + '，再查看入门教程。')
-            self.startupChanged.emit()
-            return False
-        self.state.show_tour()
+            self.state.update.update(message='请先完成 ' + '、'.join(blockers) + '，再查看入门教程。'); self.startupChanged.emit(); return False
+        self.state.show_tour(mode='scenarios'); self.startupChanged.emit(); return True
+
+    @Slot()
+    def startFullTour(self):
+        self.state.start_full_tour(); self.startupChanged.emit()
+
+    @Slot(str)
+    def chooseScenario(self, page_id):
+        self._finish_tutorial('completed')
+        if page_id and hasattr(self.owner, 'navigate'): self.owner.navigate(str(page_id))
+
+    @Slot()
+    def showWhatsNew(self):
+        self.state.show_whats_new(); self.startupChanged.emit()
+
+    @Slot()
+    def dismissWhatsNew(self):
+        try: self.state.dismiss_whats_new(tutorial_catalog.FEATURE_HIGHLIGHTS_VERSION)
+        except (OSError, ValueError) as exc: self.state.whats_new_open = False; self._error(exc)
         self.startupChanged.emit()
-        return True
 
     def _finish_tutorial(self, outcome):
-        try:
-            self.state.finish_tour(outcome)
-        except (OSError, ValueError) as exc:
-            self.state.tour_open = False
-            self._error(exc)
+        try: self.state.finish_tour(outcome)
+        except (OSError, ValueError) as exc: self.state.tour_open = False; self._error(exc)
         self.startupChanged.emit()
 
     @Slot()
     def advanceTutorial(self):
-        if not self.state.tour_open:
-            return
-        if self.state.tour_step >= self.tutorialStepCount - 1:
-            self._finish_tutorial('completed')
-        else:
-            self.state.tour_step += 1
-            self.startupChanged.emit()
+        if not self.state.tour_open: return
+        if getattr(self.state, 'tour_mode', 'tour') == 'scenarios': self.startFullTour(); return
+        if self.state.tour_step >= self.tutorialStepCount - 1: self._finish_tutorial('completed')
+        else: self.state.tour_step += 1; self.startupChanged.emit()
 
     @Slot()
     def previousTutorial(self):
-        if not self.state.tour_open:
-            return
-        if self.state.tour_step > 0:
-            self.state.tour_step -= 1
-            self.startupChanged.emit()
+        if not self.state.tour_open: return
+        if getattr(self.state, 'tour_mode', 'tour') == 'tour' and self.state.tour_step > 0: self.state.tour_step -= 1; self.startupChanged.emit()
 
     @Slot()
     def skipTutorial(self):
-        if self.state.tour_open:
-            self._finish_tutorial('skipped')
+        if self.state.tour_open: self._finish_tutorial('skipped')

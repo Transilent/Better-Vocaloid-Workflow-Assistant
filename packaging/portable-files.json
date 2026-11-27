@@ -1354,6 +1354,22 @@
       "source": "src/worker_runner.py"
     },
     {
+      "file": "tutorial_catalog.py",
+      "source": "src/tutorial_catalog.py"
+    },
+    {
+      "file": "quick_ui/ShortcutSheetDialog.qml",
+      "source": "src/quick_ui/ShortcutSheetDialog.qml"
+    },
+    {
+      "file": "quick_ui/WhatsNewDialog.qml",
+      "source": "src/quick_ui/WhatsNewDialog.qml"
+    },
+    {
+      "file": "quick_ui/TutorialScenarioGrid.qml",
+      "source": "src/quick_ui/TutorialScenarioGrid.qml"
+    },
+    {
       "file": "quick_ui/SettingsChoiceChip.qml",
       "source": "src/quick_ui/SettingsChoiceChip.qml"
     },

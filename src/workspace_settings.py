@@ -144,6 +144,8 @@ class SettingsState:
         self.update = {'update_open': False, 'update_state': 'idle', 'message': '', 'done': 0, 'total': 0}
         self.tour_open = False
         self.tour_step = 0
+        self.tour_mode = 'scenarios'
+        self.whats_new_open = False
 
     @property
     def startup_view(self):
@@ -151,6 +153,8 @@ class SettingsState:
             **self.update,
             'tour_open': self.tour_open,
             'tour_step': self.tour_step,
+            'tour_mode': getattr(self, 'tour_mode', 'scenarios'),
+            'whats_new_open': bool(getattr(self, 'whats_new_open', False)),
             'version': self.release.get('version') or '',
             'notes': _bounded_text(self.release.get('notes')),
             'url': self.release.get('url') or '',
@@ -261,13 +265,27 @@ class SettingsState:
         self.values[name] = value
         return True
 
-    def show_tour(self):
+    def show_tour(self, *, mode='scenarios'):
         self.tour_step = 0
+        self.tour_mode = 'tour' if mode == 'tour' else 'scenarios'
+        self.tour_open = True
+        self.whats_new_open = False
+
+    def start_full_tour(self):
+        self.tour_step = 0
+        self.tour_mode = 'tour'
         self.tour_open = True
 
     def finish_tour(self, result):
         self.preferences = startup_preferences.finish_tour(ROOT, result)
         self.tour_open = False
+
+    def show_whats_new(self):
+        self.whats_new_open = True
+
+    def dismiss_whats_new(self, version):
+        self.preferences = startup_preferences.dismiss_whats_new(ROOT, version)
+        self.whats_new_open = False
 
     def set_release(self, release, *, startup):
         version = release.get('version')

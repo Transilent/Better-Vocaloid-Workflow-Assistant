@@ -72,19 +72,23 @@ try:
                 owner.support.showTutorial()
                 app.processEvents()
                 assert window.findChild(QObject, 'tutorialDialog').property('visible')
+                assert window.findChild(QObject, 'tutorialScenarioGrid').property('visible')
+                # Enter the non-blocking 11-step workspace tour from the scenario chooser
+                click(window, 'tutorialNext')
                 assert owner.route == 'processing'
                 click(window, 'tutorialNext')
-                assert owner.route == 'components'
+                assert owner.route == 'results'
                 click(window, 'tutorialPrevious')
                 assert owner.route == 'processing'
-                for route in ('components', 'tuning', 'audio_mixdown', 'video_mixdown', 'publishing', 'updates'):
+                for route in ('results', 'tuning', 'tuning_workshop', 'chorus', 'project_convert',
+                              'audio_mixdown', 'video_mixdown', 'publishing', 'components', 'updates'):
                     click(window, 'tutorialNext')
-                    assert owner.route == route
+                    assert owner.route == route, (owner.route, route)
                 group = window.findChild(QObject, 'tutorialQQGroup')
                 assert group.property('visible') and '490619616' in group.property('text')
                 click(window, 'tutorialSkip')
                 assert not owner.support.startup['tour_open']
-                print('PASS actual tutorial previous/next, all seven routes, QQ and skip', flush=True)
+                print('PASS scenario chooser + non-blocking 11-step tutorial previous/next, QQ and skip', flush=True)
                 completed = []
                 assert owner._work.start('test-close', lambda stop, _send: stop.wait(3),
                                          lambda stopped, error: completed.append((stopped, error)))

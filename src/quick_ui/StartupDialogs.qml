@@ -19,42 +19,33 @@ Item {
         return ["processing", "components", "results", "updates"]
     }
     readonly property var allTourSteps: [
-        {
-            pageId: "processing",
-            title: tr("欢迎与准备"),
-            body: tr("从一首歌开始：选择哔哩哔哩链接或本地音频，按需填写歌词和准备选项。VWA 会把准备、调音、混音与发布串成可复查的本地工作流。")
-        },
-        {
-            pageId: "components",
-            title: tr("模型与组件"),
-            body: tr("在这里查看语音分离模型和本地运行组件的状态。缺少必要组件时，页面会给出安装入口；内置功能不需要额外下载。")
-        },
-        {
-            pageId: "tuning",
-            title: tr("调音"),
-            body: tr("打开 SVP 工程，选择演唱轨与参数来源，预览风格与参数变化后另存新工程。歌声合成和完整听感确认在对应编辑器中完成。")
-        },
-        {
-            pageId: "audio_mixdown",
-            title: tr("简易混音"),
-            body: tr("简易混音用于平衡人声、和声与伴奏。调整电平和声像后先试听，确认无误再导出音频。")
-        },
-        {
-            pageId: "video_mixdown",
-            title: tr("合成视频"),
-            body: tr("将音频、画面或字幕合成为视频。导出前可在预览区检查时间、画面和成片参数。")
-        },
-        {
-            pageId: "publishing",
-            title: tr("发布"),
-            body: tr("发布页整理成片、封面和说明，并在提交平台前显示待核对内容。平台操作始终由你确认。")
-        },
-        {
-            pageId: "updates",
-            title: tr("设置与支持"),
-            body: tr("设置页提供界面外观、组件、更新与运行状态。需要帮助时，可从本页的社区信息找到交流渠道。")
-        }
+        { pageId: "processing", title: tr("准备工作流"), shortcut: "Ctrl+1",
+          body: tr("从一首歌开始：粘贴哔哩哔哩链接或拖入本地音频，按需填写歌词与导出格式，自动完成分离、MIDI 与工程生成。") },
+        { pageId: "results", title: tr("任务与结果"), shortcut: "Ctrl+2",
+          body: tr("所有任务的历史进度、分轨音频、工程文件与核验状态都在这里集中管理，可一键流转到调音、混音或合成视频。") },
+        { pageId: "tuning", title: tr("调音工作流"), shortcut: "Ctrl+3",
+          body: tr("原生打开 SVP / USTX / VPR / VSQX / ACEP / UFData 工程，按片段叠加风格与参数来源，预览变化后另存独立候选工程。") },
+        { pageId: "tuning_workshop", title: tr("调音工坊与声库校准"), shortcut: "Ctrl+4",
+          body: tr("自定义情绪配方、管理个人风格预设，或通过七轨试音拟合不同声库的实测参数响应。") },
+        { pageId: "chorus", title: tr("修音工作台"), shortcut: "Space / N",
+          body: tr("拖入多轨干声与背景 MIDI，对照乐谱批量对齐节奏和音高；支持自由手绘音高线、拆音符、按音节补力度与分轨交付。") },
+        { pageId: "project_convert", title: tr("工程互转"), shortcut: "Ctrl+K",
+          body: tr("在主流歌声合成工程之间安全互转，自动体检轨道、BPM 与音高曲线并回读校验，同时支持导出滚动 LRC / SRT 歌词。") },
+        { pageId: "audio_mixdown", title: tr("简易混音"), shortcut: "Space",
+          body: tr("实时调整人声、和声与伴奏的电平、声像、EQ、柔化齿音、压限与混响，先试听对比响度再无损导出。") },
+        { pageId: "video_mixdown", title: tr("合成视频"), shortcut: "",
+          body: tr("拖入原视频与新混音音频，自动提取高清首帧、对齐音轨并无损封装成 MP4 成片。") },
+        { pageId: "publishing", title: tr("发布准备"), shortcut: "",
+          body: tr("整理成品视频、封面与平台文案，按平台手动核对后安全交接；所有平台操作始终由你最终确认。") },
+        { pageId: "components", title: tr("模型与组件"), shortcut: "",
+          body: tr("集中查看分离模型、AI 推理组件与本地运行库状态，缺少组件时可一键下载或切换国内加速源。") },
+        { pageId: "updates", title: tr("设置与支持"), shortcut: "Ctrl+/",
+          body: tr("切换浅色/深色主题、中英日界面语言、渲染后端与网络代理，随时清理缓存、导出脱敏诊断包或重看本教程。") }
     ]
+    readonly property var scenarioCards: controller && controller.scenarioCards ? controller.scenarioCards : []
+    readonly property string tourMode: String(snapshot.tour_mode || "scenarios")
+    readonly property bool isScenarioMode: tourMode === "scenarios"
+    readonly property bool whatsNewWanted: !!snapshot.whats_new_open && !snapshot.tour_open && !snapshot.update_open
     readonly property var tourSteps: allTourSteps.filter(step => routeIds.indexOf(step.pageId) >= 0)
     readonly property int tourLength: Math.max(0, Number(controller.tutorialStepCount || tourSteps.length || 0))
     readonly property int currentTourStep: {
@@ -98,43 +89,29 @@ Item {
 
     function delayOptions() {
         return [
-            { label: tr("下次启动"), value: 0 },
-            { label: tr("一小时后"), value: 3600 },
-            { label: tr("一天后"), value: 86400 },
-            { label: tr("七天后"), value: 604800 },
-            { label: tr("三十天后"), value: 2592000 },
-            { label: tr("忽略此版本"), value: -1 }
+            { label: tr("下次启动"), value: 0 }, { label: tr("一小时后"), value: 3600 },
+            { label: tr("一天后"), value: 86400 }, { label: tr("七天后"), value: 604800 },
+            { label: tr("三十天后"), value: 2592000 }, { label: tr("忽略此版本"), value: -1 }
         ]
     }
-
     function updateStateLabel(state) {
         switch (String(state || "idle").toLowerCase()) {
         case "checking": return tr("正在检查更新")
-        case "available":
-        case "update_available": return tr("发现新版本")
+        case "available": case "update_available": return tr("发现新版本")
         case "downloading": return tr("正在下载更新")
-        case "ready":
-        case "downloaded": return tr("更新已下载并校验")
+        case "ready": case "downloaded": return tr("更新已下载并校验")
         case "applying": return tr("正在重启并安装")
-        case "current":
-        case "up_to_date": return tr("已是最新版本")
-        case "failed":
-        case "error": return tr("更新检查失败")
+        case "current": case "up_to_date": return tr("已是最新版本")
+        case "failed": case "error": return tr("更新检查失败")
         case "cancelled": return tr("更新已暂缓")
         default: return tr("程序更新")
         }
     }
-
     function updateStateColor(state) {
         switch (String(state || "idle").toLowerCase()) {
-        case "available":
-        case "update_available":
-        case "ready":
-        case "downloaded": return theme.accent
-        case "current":
-        case "up_to_date": return theme.success
-        case "failed":
-        case "error": return theme.error
+        case "available": case "update_available": case "ready": case "downloaded": return theme.accent
+        case "current": case "up_to_date": return theme.success
+        case "failed": case "error": return theme.error
         default: return theme.muted
         }
     }
@@ -240,8 +217,10 @@ Item {
     }
 
     function activateTutorialStep() {
+        if (!snapshot.tour_open || root.isScenarioMode)
+            return
         const step = currentStepData
-        if (!snapshot.tour_open || !step || !step.pageId || !hasRoute(step.pageId))
+        if (!step || !step.pageId || !hasRoute(step.pageId))
             return
         if (currentRoute().length > 0 && currentRoute() !== step.pageId)
             navigateTo(step.pageId)
@@ -304,6 +283,11 @@ Item {
             suppressUpdateReject = false
         }
 
+        if (root.whatsNewWanted && !whatsNewDialog.opened)
+            whatsNewDialog.open()
+        else if (!root.whatsNewWanted && whatsNewDialog.opened)
+            whatsNewDialog.close()
+
         if (!wantsTutorial && tutorialReturnRoute.length > 0)
             restoreTutorialRoute()
 
@@ -343,27 +327,32 @@ Item {
         parent: root
         title: root.tr("新手教程")
         header: null
-        modal: true
+        modal: root.isScenarioMode
         focus: true
-        dim: true
+        dim: root.isScenarioMode
         closePolicy: Popup.CloseOnEscape
         padding: 0
-        width: Math.max(1, Math.min(Math.round(560 * root.theme.scale), root.width - Math.round(24 * root.theme.scale)))
-        height: Math.max(1, Math.min(Math.round(560 * root.theme.scale), root.height - Math.round(24 * root.theme.scale)))
-        x: Math.round((root.width - width) / 2)
-        y: Math.round((root.height - height) / 2)
+        width: root.isScenarioMode
+            ? Math.max(1, Math.min(Math.round(640 * root.theme.scale), root.width - Math.round(24 * root.theme.scale)))
+            : Math.max(1, Math.min(Math.round(440 * root.theme.scale), root.width - Math.round(28 * root.theme.scale)))
+        height: root.isScenarioMode
+            ? Math.max(1, Math.min(Math.round(520 * root.theme.scale), root.height - Math.round(28 * root.theme.scale)))
+            : Math.max(1, Math.min(Math.round(390 * root.theme.scale), root.height - Math.round(28 * root.theme.scale)))
+        x: root.isScenarioMode ? Math.round((root.width - width) / 2) : Math.max(12, root.width - width - Math.round(20 * root.theme.scale))
+        y: root.isScenarioMode ? Math.round((root.height - height) / 2) : Math.max(12, root.height - height - Math.round(22 * root.theme.scale))
 
         Overlay.modal: Rectangle {
-            color: Qt.rgba(root.theme.base.r, root.theme.base.g, root.theme.base.b, 0.86)
+            color: root.isScenarioMode ? Qt.rgba(root.theme.base.r, root.theme.base.g, root.theme.base.b, 0.72) : "transparent"
         }
         background: Rectangle {
             color: root.theme.surface
-            radius: Math.round(11 * root.theme.scale)
-            border.color: root.theme.line
+            radius: Math.round(12 * root.theme.scale)
+            border.width: root.isScenarioMode ? 1 : 2
+            border.color: root.isScenarioMode ? root.theme.line : root.theme.accent
         }
         contentItem: Item {
-            implicitWidth: Math.round(560 * root.theme.scale)
-            implicitHeight: Math.round(560 * root.theme.scale)
+            implicitWidth: tutorialDialog.width
+            implicitHeight: tutorialDialog.height
 
             ColumnLayout {
                 anchors.fill: parent
@@ -371,34 +360,31 @@ Item {
 
                 Rectangle {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: Math.round(62 * root.theme.scale)
+                    Layout.preferredHeight: Math.round(58 * root.theme.scale)
                     color: root.theme.raised
-                    radius: Math.round(11 * root.theme.scale)
+                    radius: Math.round(12 * root.theme.scale)
                     Rectangle {
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.bottom: parent.bottom
-                        height: parent.radius
-                        color: parent.color
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                        height: parent.radius; color: parent.color
                     }
                     RowLayout {
                         anchors.fill: parent
-                        anchors.leftMargin: Math.round(18 * root.theme.scale)
+                        anchors.leftMargin: Math.round(16 * root.theme.scale)
                         anchors.rightMargin: Math.round(12 * root.theme.scale)
                         spacing: Math.round(8 * root.theme.scale)
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 1
                             Text {
-                                text: root.tr("首次使用")
+                                text: root.isScenarioMode ? root.tr("欢迎使用 VWA") : root.tr("非遮挡工作区导览")
                                 color: root.theme.accent
                                 font.pixelSize: Math.round(11 * root.theme.scale)
                                 font.weight: Font.DemiBold
                             }
                             Text {
-                                text: root.tr("了解工作区")
+                                text: root.isScenarioMode ? root.tr("你今天想从哪里开始？") : root.tr("了解工作区")
                                 color: root.theme.text
-                                font.pixelSize: Math.round(18 * root.theme.scale)
+                                font.pixelSize: Math.round(17 * root.theme.scale)
                                 font.weight: Font.DemiBold
                             }
                         }
@@ -418,9 +404,9 @@ Item {
                     objectName: "tutorialScroll"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    Layout.leftMargin: Math.round(18 * root.theme.scale)
-                    Layout.rightMargin: Math.round(18 * root.theme.scale)
-                    Layout.topMargin: Math.round(14 * root.theme.scale)
+                    Layout.leftMargin: Math.round(16 * root.theme.scale)
+                    Layout.rightMargin: Math.round(16 * root.theme.scale)
+                    Layout.topMargin: Math.round(12 * root.theme.scale)
                     contentWidth: availableWidth
                     clip: true
                     ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
@@ -429,102 +415,93 @@ Item {
                         width: tutorialScroll.availableWidth
                         spacing: Math.round(10 * root.theme.scale)
 
-                        Text {
-                            objectName: "tutorialProgress"
-                            text: root.tourSteps.length > 0
-                                ? root.stepCounter(root.currentTourStep, root.tourLength)
-                                : root.tr("暂无可展示的页面")
-                            color: root.theme.muted
-                            font.pixelSize: Math.round(11 * root.theme.scale)
-                        }
-                        Text {
-                            objectName: "tutorialTitle"
-                            Layout.fillWidth: true
-                            text: String(root.currentStepData.title || root.tr("工作区教程"))
-                            color: root.theme.text
-                            font.pixelSize: Math.round(22 * root.theme.scale)
-                            font.weight: Font.DemiBold
-                            wrapMode: Text.Wrap
-                            textFormat: Text.PlainText
-                        }
-                        Text {
-                            objectName: "tutorialBody"
-                            Layout.fillWidth: true
-                            text: String(root.currentStepData.body || "")
-                            color: root.theme.muted
-                            font.pixelSize: Math.round(14 * root.theme.scale)
-                            lineHeight: 1.35
-                            wrapMode: Text.Wrap
-                            textFormat: Text.PlainText
-                        }
-
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.topMargin: Math.round(4 * root.theme.scale)
-                            Layout.preferredHeight: Math.round(44 * root.theme.scale)
-                            color: root.theme.base
-                            radius: Math.round(8 * root.theme.scale)
-                            border.color: root.theme.line
-                            ColumnLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: Math.round(12 * root.theme.scale)
-                                anchors.rightMargin: Math.round(12 * root.theme.scale)
-                                spacing: 0
-                                Text {
-                                    Layout.alignment: Qt.AlignVCenter
-                                    text: root.tr("教程会临时切换页面，关闭后返回进入教程前的页面。")
-                                    color: root.theme.muted
-                                    font.pixelSize: Math.round(11 * root.theme.scale)
-                                    wrapMode: Text.Wrap
-                                }
-                                Item { Layout.fillHeight: true }
+                        TutorialScenarioGrid {
+                            visible: root.isScenarioMode
+                            theme: root.theme
+                            controller: root.controller
+                            cards: root.scenarioCards
+                            onScenarioPicked: pageId => {
+                                root.tutorialReturnRoute = ""
+                                root.controller.chooseScenario(pageId)
                             }
                         }
 
-                        Rectangle {
-                            objectName: "tutorialSupport"
+                        ColumnLayout {
+                            visible: !root.isScenarioMode
                             Layout.fillWidth: true
-                            Layout.topMargin: Math.round(4 * root.theme.scale)
-                            Layout.bottomMargin: Math.round(6 * root.theme.scale)
-                            visible: root.finalTourStep
-                            Layout.preferredHeight: supportLayout.implicitHeight + Math.round(22 * root.theme.scale)
-                            color: root.theme.base
-                            radius: Math.round(8 * root.theme.scale)
-                            border.color: root.theme.line
-                            ColumnLayout {
-                                id: supportLayout
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.top: parent.top
-                                anchors.margins: Math.round(11 * root.theme.scale)
-                                spacing: Math.round(7 * root.theme.scale)
+                            spacing: Math.round(8 * root.theme.scale)
+
+                            RowLayout {
+                                Layout.fillWidth: true
                                 Text {
-                                    text: root.tr("社区支持")
-                                    color: root.theme.text
-                                    font.pixelSize: Math.round(12 * root.theme.scale)
-                                    font.weight: Font.DemiBold
-                                }
-                                Text {
-                                    objectName: "tutorialQQGroup"
-                                    Layout.fillWidth: true
-                                    text: root.tr("QQ 群") + "  " + root.communityNumber
+                                    objectName: "tutorialProgress"
+                                    text: root.tourSteps.length > 0
+                                        ? root.stepCounter(root.currentTourStep, root.tourLength)
+                                        : root.tr("暂无可展示的页面")
                                     color: root.theme.muted
-                                    font.pixelSize: Math.round(12 * root.theme.scale)
+                                    font.pixelSize: Math.round(11 * root.theme.scale)
                                 }
-                                Flow {
-                                    Layout.fillWidth: true
-                                    spacing: Math.round(6 * root.theme.scale)
-                                    UiButton {
-                                        theme: root.theme
-                                        quiet: true
-                                        text: root.tr("复制群号")
-                                        onClicked: root.controller.copyCommunity()
+                                Item { Layout.fillWidth: true }
+                                Rectangle {
+                                    visible: String(root.currentStepData.shortcut || "").length > 0
+                                    radius: Math.round(4 * root.theme.scale)
+                                    color: root.theme.raised
+                                    border.color: root.theme.line
+                                    implicitWidth: scTxt.implicitWidth + Math.round(10 * root.theme.scale)
+                                    implicitHeight: scTxt.implicitHeight + Math.round(4 * root.theme.scale)
+                                    Text {
+                                        id: scTxt
+                                        anchors.centerIn: parent
+                                        text: String(root.currentStepData.shortcut || "")
+                                        color: root.theme.accent
+                                        font.pixelSize: Math.round(10 * root.theme.scale)
+                                        font.family: root.theme.monoFont || "Consolas"
                                     }
-                                    UiButton {
-                                        theme: root.theme
-                                        quiet: true
-                                        text: root.tr("GitHub 反馈")
-                                        onClicked: root.controller.openFeedback()
+                                }
+                            }
+                            Text {
+                                objectName: "tutorialTitle"
+                                Layout.fillWidth: true
+                                text: String(root.currentStepData.title || root.tr("工作区教程"))
+                                color: root.theme.text
+                                font.pixelSize: Math.round(19 * root.theme.scale)
+                                font.weight: Font.DemiBold
+                                wrapMode: Text.Wrap
+                                textFormat: Text.PlainText
+                            }
+                            Text {
+                                objectName: "tutorialBody"
+                                Layout.fillWidth: true
+                                text: String(root.currentStepData.body || "")
+                                color: root.theme.muted
+                                font.pixelSize: Math.round(13 * root.theme.scale)
+                                lineHeight: 1.38
+                                wrapMode: Text.Wrap
+                                textFormat: Text.PlainText
+                            }
+                            Rectangle {
+                                objectName: "tutorialSupport"
+                                Layout.fillWidth: true
+                                visible: root.finalTourStep
+                                Layout.preferredHeight: supportLayout.implicitHeight + Math.round(18 * root.theme.scale)
+                                color: root.theme.base
+                                radius: Math.round(8 * root.theme.scale)
+                                border.color: root.theme.line
+                                ColumnLayout {
+                                    id: supportLayout
+                                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                                    anchors.margins: Math.round(9 * root.theme.scale)
+                                    spacing: Math.round(5 * root.theme.scale)
+                                    Text {
+                                        objectName: "tutorialQQGroup"
+                                        text: root.tr("社区支持") + " · " + root.tr("QQ 群") + "  " + root.communityNumber
+                                        color: root.theme.muted
+                                        font.pixelSize: Math.round(12 * root.theme.scale)
+                                    }
+                                    RowLayout {
+                                        spacing: Math.round(6 * root.theme.scale)
+                                        UiButton { theme: root.theme; quiet: true; text: root.tr("复制群号"); onClicked: root.controller.copyCommunity() }
+                                        UiButton { theme: root.theme; quiet: true; text: root.tr("GitHub 反馈"); onClicked: root.controller.openFeedback() }
                                     }
                                 }
                             }
@@ -534,18 +511,27 @@ Item {
 
                 RowLayout {
                     Layout.fillWidth: true
-                    Layout.leftMargin: Math.round(18 * root.theme.scale)
-                    Layout.rightMargin: Math.round(18 * root.theme.scale)
-                    Layout.topMargin: Math.round(8 * root.theme.scale)
-                    Layout.bottomMargin: Math.round(16 * root.theme.scale)
-                    spacing: Math.round(8 * root.theme.scale)
+                    Layout.leftMargin: Math.round(16 * root.theme.scale)
+                    Layout.rightMargin: Math.round(16 * root.theme.scale)
+                    Layout.topMargin: Math.round(6 * root.theme.scale)
+                    Layout.bottomMargin: Math.round(14 * root.theme.scale)
+                    spacing: Math.round(6 * root.theme.scale)
                     Repeater {
-                        model: root.tourLength
+                        model: root.isScenarioMode ? 0 : root.tourLength
                         Rectangle {
-                            width: Math.round(6 * root.theme.scale)
-                            height: width
-                            radius: width / 2
+                            width: Math.round(5 * root.theme.scale); height: width; radius: width / 2
                             color: index === root.currentTourStep ? root.theme.accent : root.theme.line
+                        }
+                    }
+                    UiButton {
+                        objectName: "tutorialStayHere"
+                        visible: !root.isScenarioMode
+                        theme: root.theme
+                        quiet: true
+                        text: root.tr("留在此页开始")
+                        onClicked: {
+                            root.tutorialReturnRoute = ""
+                            root.controller.skipTutorial()
                         }
                     }
                     Item { Layout.fillWidth: true }
@@ -553,7 +539,7 @@ Item {
                         objectName: "tutorialPrevious"
                         theme: root.theme
                         quiet: true
-                        visible: root.currentTourStep > 0
+                        visible: !root.isScenarioMode && root.currentTourStep > 0
                         text: root.tr("上一步")
                         onClicked: root.requestTutorialPrevious()
                     }
@@ -562,7 +548,9 @@ Item {
                         theme: root.theme
                         primary: true
                         enabled: root.tourSteps.length > 0
-                        text: root.finalTourStep ? root.tr("完成") : root.tr("下一步")
+                        text: root.isScenarioMode
+                            ? root.tr("完整工作区巡览")
+                            : (root.finalTourStep ? root.tr("完成") : root.tr("下一步"))
                         onClicked: root.requestTutorialAdvance()
                     }
                 }
@@ -574,6 +562,13 @@ Item {
             if (!root.suppressTutorialReject)
                 root.requestTutorialSkip()
         }
+    }
+
+    WhatsNewDialog {
+        id: whatsNewDialog
+        theme: root.theme
+        controller: root.controller
+        navigationApi: root.navigationApi
     }
 
     Dialog {

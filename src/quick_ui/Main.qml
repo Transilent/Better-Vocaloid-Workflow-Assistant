@@ -841,12 +841,9 @@ ApplicationWindow {
             window.controller.navigate(routes[index].pageId)
     }
 
-    Shortcut {
-        objectName: "globalCommandPaletteShortcut"
-        sequence: "Ctrl+K"
-        context: Qt.WindowShortcut
-        onActivated: commandPalette.visible ? commandPalette.close() : commandPalette.open()
-    }
+    Shortcut { objectName: "globalCommandPaletteShortcut"; sequence: "Ctrl+K"; context: Qt.WindowShortcut; onActivated: commandPalette.visible ? commandPalette.close() : commandPalette.open() }
+    Shortcut { objectName: "globalShortcutSheet"; sequence: "Ctrl+/"; context: Qt.WindowShortcut; onActivated: shortcutSheet.visible ? shortcutSheet.close() : shortcutSheet.open() }
+    Shortcut { sequence: "F1"; context: Qt.WindowShortcut; onActivated: shortcutSheet.visible ? shortcutSheet.close() : shortcutSheet.open() }
     Shortcut { sequence: "Ctrl+1"; context: Qt.WindowShortcut; onActivated: window.navigateByRouteIndex(0) }
     Shortcut { sequence: "Ctrl+2"; context: Qt.WindowShortcut; onActivated: window.navigateByRouteIndex(1) }
     Shortcut { sequence: "Ctrl+3"; context: Qt.WindowShortcut; onActivated: window.navigateByRouteIndex(2) }
@@ -857,16 +854,9 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+8"; context: Qt.WindowShortcut; onActivated: window.navigateByRouteIndex(7) }
     Shortcut { sequence: "Ctrl+9"; context: Qt.WindowShortcut; onActivated: window.navigateByRouteIndex(8) }
 
-    UiCommandPalette {
-        id: commandPalette
-        theme: window.tokens
-        controller: window.controller
-    }
-
-    DiagnosticsDialog {
-        theme: window.tokens
-        controller: window.controller.support
-    }
+    UiCommandPalette { id: commandPalette; theme: window.tokens; controller: window.controller; onShortcutSheetRequested: shortcutSheet.open() }
+    ShortcutSheetDialog { id: shortcutSheet; theme: window.tokens; controller: window.controller.support }
+    DiagnosticsDialog { theme: window.tokens; controller: window.controller.support }
 
     SubtitleDialog {
         id: subtitleDialog
